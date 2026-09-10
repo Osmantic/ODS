@@ -40,7 +40,20 @@ check_selection lemonade enabled /switchboard.yaml
 check_selection cloud observe /mode.yaml
 check_selection cloud enabled /mode.yaml
 
+default_selection="$(
+    env -u ODS_MODEL_SWITCHBOARD ODS_MODE=local \
+        sh "$SELECTOR" /mode.yaml /switchboard.yaml
+)"
+if [[ "$default_selection" == /switchboard.yaml ]]; then
+    printf '[PASS] local default -> stable switchboard alias\n'
+    passed=$((passed + 1))
+else
+    printf '[FAIL] local default: expected /switchboard.yaml, got %s\n' "$default_selection"
+    failed=$((failed + 1))
+fi
+
 if grep -Fq 'ODS_MODE=${ODS_MODE:-local}' "$COMPOSE" \
+    && grep -Fq 'ODS_MODEL_SWITCHBOARD=${ODS_MODEL_SWITCHBOARD:-enabled}' "$COMPOSE" \
     && grep -Fq 'sh /app/ods-select-config.sh' "$COMPOSE"; then
     printf '[PASS] Compose passes mode and delegates config selection\n'
     passed=$((passed + 1))

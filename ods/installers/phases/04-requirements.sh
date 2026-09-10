@@ -151,12 +151,40 @@ fi
 # Warn-once guard for missing port-check tools
 _port_check_warned=false
 
+_phase04_current_install_owns_docker_port() {
+    local port="${1:-}" container_id ownership working_dir project_name
+    [[ "$port" =~ ^[0-9]+$ ]] || return 1
+    command -v docker >/dev/null 2>&1 || return 1
+
+    # An in-place upgrade is allowed to reuse ports already published by the
+    # fixed ODS Compose project. Compose can retain an unchanged container's
+    # original working-directory label after an install-directory migration,
+    # so accept either the exact directory or the canonical project identity.
+    # Containers from another Compose project remain genuine conflicts.
+    while IFS= read -r container_id; do
+        [[ -n "$container_id" ]] || continue
+        ownership=$(docker inspect --format \
+            '{{ index .Config.Labels "com.docker.compose.project.working_dir" }}|{{ index .Config.Labels "com.docker.compose.project" }}' \
+            "$container_id" 2>/dev/null || true)
+        working_dir="${ownership%%|*}"
+        project_name="${ownership#*|}"
+        [[ -n "$working_dir" && "$working_dir" == "${INSTALL_DIR:-}" ]] && return 0
+        [[ "$project_name" == "${COMPOSE_PROJECT_NAME:-ods}" ]] && return 0
+    done < <(docker ps --filter "publish=${port}" --format '{{.ID}}' 2>/dev/null || true)
+
+    return 1
+}
+
 check_port_conflict() {
     local port="$1"
     PORT_CONFLICT=false
     PORT_CONFLICT_PID=""
     PORT_CONFLICT_PROC=""
     local port_tool_found=false
+
+    if _phase04_current_install_owns_docker_port "$port"; then
+        return 1
+    fi
 
     # Try lsof first (most reliable for getting process info)
     if command -v lsof &> /dev/null; then
@@ -215,6 +243,16 @@ check_port_conflict() {
         fi
     fi
 
+    # Docker Desktop publishes WSL ports through Windows. Native Windows
+    # listeners are invisible to Linux lsof/ss/netstat but still make the
+    # eventual Docker bind fail.
+    if declare -F ods_windows_host_port_in_use >/dev/null 2>&1 \
+        && ods_windows_host_port_in_use "$port"; then
+        PORT_CONFLICT_PROC="Windows host process"
+        PORT_CONFLICT=true
+        return 0
+    fi
+
     return 1
 }
 
@@ -268,6 +306,34 @@ if [[ "${ENABLE_VOICE:-false}" == "true" ]] && _phase04_lemonade_uses_host_9000;
         WHISPER_PORT=9100
         SERVICE_PORTS[whisper]=9100
         log "AMD/Lemonade detected; reserving host port 9000 for Lemonade and checking Whisper on 9100"
+    fi
+    unset _whisper_port_for_check
+fi
+
+# A native Windows application can own 9000 even when WSL reports it free.
+# For the generated Whisper default, select ODS's established alternate only
+# when it is also free on both sides of the WSL boundary. Explicit non-default
+# ports remain untouched and are reported by the normal conflict loop below.
+if [[ "${ENABLE_VOICE:-false}" == "true" ]]; then
+    _whisper_port_for_check="${WHISPER_PORT:-${SERVICE_PORTS[whisper]:-9000}}"
+    if [[ "$_whisper_port_for_check" == "9000" ]] \
+        && declare -F ods_windows_host_port_in_use >/dev/null 2>&1 \
+        && ods_windows_host_port_in_use 9000; then
+        _whisper_alternate=""
+        for _whisper_candidate in 9100 9001; do
+            if ! check_port_conflict "$_whisper_candidate"; then
+                _whisper_alternate="$_whisper_candidate"
+                break
+            fi
+        done
+        if [[ -n "$_whisper_alternate" ]]; then
+            WHISPER_PORT="$_whisper_alternate"
+            SERVICE_PORTS[whisper]="$_whisper_alternate"
+            log "Windows host port 9000 is occupied; checking Whisper on ${_whisper_alternate}"
+        else
+            warn "Windows host port 9000 is occupied and Whisper alternates 9100 and 9001 are unavailable"
+        fi
+        unset _whisper_alternate _whisper_candidate
     fi
     unset _whisper_port_for_check
 fi

@@ -45,6 +45,47 @@ contains "$flags" "extensions/services/litellm/compose.yaml" "cloud mode include
 rejects "$flags" "docker-compose.cpu.yml" "cloud mode does not include CPU llama-server overlay"
 rejects "$flags" "compose.local.yaml" "cloud mode does not include local dependency overlays"
 
+# Installed user extensions can retain older backend-named overlays. Continue,
+# for example, used compose.nvidia.yaml solely to wait for the local
+# llama-server. Cloud mode must keep its route-agnostic base service while
+# omitting that local-only readiness edge; local mode must still include it.
+user_fixture="$(mktemp -d)"
+trap 'rm -rf "$user_fixture"' EXIT
+mkdir -p \
+    "$user_fixture/scripts" \
+    "$user_fixture/config" \
+    "$user_fixture/extensions/services" \
+    "$user_fixture/data/user-extensions/continue"
+cp scripts/resolve-compose-stack.sh "$user_fixture/scripts/"
+cp docker-compose.base.yml docker-compose.cloud.yml docker-compose.nvidia.yml "$user_fixture/"
+cp config/core-service-ids.json "$user_fixture/config/"
+cp extensions/library/services/continue/manifest.yaml \
+    extensions/library/services/continue/compose.yaml \
+    extensions/library/services/continue/compose.nvidia.yaml \
+    "$user_fixture/data/user-extensions/continue/"
+
+cloud_user_flags="$(ODS_PYTHON_CMD="$PY" "$user_fixture/scripts/resolve-compose-stack.sh" \
+    --script-dir "$user_fixture" \
+    --tier CLOUD \
+    --gpu-backend nvidia \
+    --gpu-count 1 \
+    --ods-mode cloud)"
+cloud_user_flags="${cloud_user_flags//\\//}"
+contains "$cloud_user_flags" "data/user-extensions/continue/compose.yaml" \
+    "cloud mode retains route-agnostic user extension base"
+rejects "$cloud_user_flags" "data/user-extensions/continue/compose.nvidia.yaml" \
+    "cloud mode omits user overlay that requires local inference"
+
+local_user_flags="$(ODS_PYTHON_CMD="$PY" "$user_fixture/scripts/resolve-compose-stack.sh" \
+    --script-dir "$user_fixture" \
+    --tier 1 \
+    --gpu-backend nvidia \
+    --gpu-count 1 \
+    --ods-mode local)"
+local_user_flags="${local_user_flags//\\//}"
+contains "$local_user_flags" "data/user-extensions/continue/compose.nvidia.yaml" \
+    "local mode retains user overlay that requires local inference"
+
 lemonade_flags="$(LEMONADE_EXTERNAL=true AMD_INFERENCE_RUNTIME=lemonade AMD_INFERENCE_MANAGED=false ODS_PYTHON_CMD="$PY" ./scripts/resolve-compose-stack.sh \
     --script-dir "$ROOT_DIR" \
     --tier CLOUD \

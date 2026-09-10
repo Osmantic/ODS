@@ -10,6 +10,7 @@ cookie and no prior session is needed for such a request to be authenticated.
 
 from unittest.mock import patch
 
+import pytest
 
 ATTACKER = "https://evil.invalid"
 
@@ -131,6 +132,24 @@ class TestLegitimateOriginsStillWork:
         resp, _ = self._restart(
             test_client, "192.168.1.50:3001", "http://192.168.1.50:3001")
         assert resp.status_code == 200
+
+    @pytest.mark.parametrize("host", ["localhost:23201", "[::1]:33201"])
+    def test_forwarded_port_origin_allowed(self, test_client, monkeypatch, host):
+        monkeypatch.setattr("routers.resources.SERVICES", {
+            "ape": {"name": "APE", "container_name": "ods-ape"},
+        })
+        resp, post_agent = self._restart(test_client, host, f"http://{host}")
+        assert resp.status_code == 200
+        post_agent.assert_called_once()
+
+    def test_other_port_on_same_host_is_rejected(self, test_client, monkeypatch):
+        monkeypatch.setattr("routers.resources.SERVICES", {
+            "ape": {"name": "APE", "container_name": "ods-ape"},
+        })
+        resp, post_agent = self._restart(
+            test_client, "localhost:23201", "http://localhost:24201")
+        assert resp.status_code == 403
+        post_agent.assert_not_called()
 
     def test_ods_proxy_hostname_allowed(self, test_client, monkeypatch):
         """Through ods-proxy the browser sees dashboard.<device>.local on :80.

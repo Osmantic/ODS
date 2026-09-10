@@ -36,11 +36,13 @@ echo "[contract] external Lemonade ODS Talk timeout is long enough for full mode
 grep -q 'ODS_TALK_HERMES_TIMEOUT=${ODS_TALK_HERMES_TIMEOUT:-900}' docker-compose.lemonade-external.yml \
   || { echo "[FAIL] external Lemonade overlay must set ODS_TALK_HERMES_TIMEOUT=900"; exit 1; }
 
-echo "[contract] installer discovers external Lemonade model and avoids stale fallbacks"
+echo "[contract] installer discovers the best available external Lemonade chat model"
 grep -q '_phase06_discover_lemonade_model' installers/phases/06-directories.sh \
   || { echo "[FAIL] phase 06 must discover the model served by external Lemonade"; exit 1; }
-grep -q 'IMAGE_MARKERS' installers/phases/06-directories.sh \
-  || { echo "[FAIL] phase 06 must avoid auto-selecting obvious image models for the chat route"; exit 1; }
+grep -q 'select-external-lemonade-model.py' installers/phases/06-directories.sh \
+  || { echo "[FAIL] phase 06 must use the behavioral external Lemonade model selector"; exit 1; }
+"$PYTHON_CMD" tests/test-external-lemonade-model-selector.py \
+  || { echo "[FAIL] external Lemonade model selector behavioral tests failed"; exit 1; }
 if grep -q 'LLM_MODEL_VALUE' installers/phases/06-directories.sh; then
   echo "[FAIL] phase 06 must not reference undefined LLM_MODEL_VALUE"
   exit 1
@@ -62,6 +64,26 @@ echo "[contract] external Lemonade does not pull managed Lemonade image"
 grep -q '_lemonade_external' installers/phases/08-images.sh \
   || { echo "[FAIL] phase 08 must skip managed Lemonade image pulls in external mode"; exit 1; }
 
+echo "[contract] external Lemonade skips every managed inference image"
+phase08_plan="$({
+  SCRIPT_DIR="$ROOT_DIR" \
+  LOG_FILE="${TMPDIR:-/tmp}/ods-external-lemonade-images.log" \
+  DRY_RUN=true GPU_BACKEND=cpu LEMONADE_EXTERNAL=true \
+  ENABLE_COMFYUI=false ENABLE_VOICE=false ENABLE_WORKFLOWS=false \
+  ENABLE_RAG=false ENABLE_QDRANT=false ENABLE_EMBEDDINGS=false \
+  ENABLE_HERMES=false ENABLE_OPENCLAW=false COMPOSE_FLAGS='' \
+  bash -c '
+    ods_progress() { :; }; show_phase() { :; }; ai() { :; }
+    ai_ok() { :; }; ai_warn() { :; }; bootline() { :; }; signal() { :; }
+    source "$SCRIPT_DIR/installers/phases/08-images.sh"
+    printf "%s\n" "${PULL_LIST[@]}"
+  '
+} 2>/dev/null)"
+if grep -qE 'LLAMA-SERVER|LEMONADE .*brain' <<<"$phase08_plan"; then
+  echo "[FAIL] external Lemonade image plan still contains managed inference: $phase08_plan"
+  exit 1
+fi
+
 echo "[contract] external Lemonade install verifies real completion"
 grep -q '_phase12_verify_external_lemonade_completion' installers/phases/12-health.sh \
   || { echo "[FAIL] phase 12 must verify a real external Lemonade completion"; exit 1; }
@@ -73,6 +95,83 @@ grep -q 'bash install-core.sh --use-existing-lemonade' installers/phases/12-heal
   || { echo "[FAIL] phase 12 Lemonade recovery hint must work when install.sh is absent from the runtime tree"; exit 1; }
 grep -q 'LEMONADE_MODEL=<chat-model-id>' installers/phases/12-health.sh \
   || { echo "[FAIL] phase 12 Lemonade recovery hint must show inline LEMONADE_MODEL assignment"; exit 1; }
+
+echo "[contract] external Lemonade completion reports HTTP failures honestly"
+health_functions="$(awk '
+  /^_phase12_env_get\(\)/ { emit=1 }
+  /^_phase12_verify_external_llm_completion\(\)/ { emit=0 }
+  emit { print }
+' installers/phases/12-health.sh)"
+[[ "$health_functions" == *'-w '\''%{http_code}'\'''* ]] \
+  || { echo "[FAIL] phase 12 Lemonade completion must capture HTTP status"; exit 1; }
+[[ "$health_functions" == *'External Lemonade completion route returned HTTP %s'* ]] \
+  || { echo "[FAIL] phase 12 Lemonade completion must identify HTTP rejection"; exit 1; }
+[[ "$health_functions" == *'"chat_template_kwargs":{"enable_thinking":false}'* ]] \
+  || { echo "[FAIL] phase 12 Lemonade readiness must disable reasoning-token exhaustion"; exit 1; }
+
+declare -A SERVICE_PORTS=([litellm]=4000)
+INSTALL_DIR="${TMPDIR:-/tmp}/ods-lemonade-health-test"
+SCRIPT_DIR="$ROOT_DIR"
+LOG_FILE="$(mktemp "${TMPDIR:-/tmp}/ods-lemonade-health.XXXXXX")"
+RED='' BGRN='' NC=''
+ai() { :; }
+ai_warn() { printf 'WARN:%s\n' "$*"; }
+eval "$health_functions"
+
+STUB_CURL_STATUS=503
+STUB_CURL_RC=0
+STUB_CURL_BODY='{"error":{"message":"No verified active model route is available yet","code":503}}'
+curl() {
+  local output_file=""
+  while (( $# > 0 )); do
+    case "$1" in
+      -o) output_file="$2"; shift 2 ;;
+      -w) shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  printf '%s' "$STUB_CURL_BODY" > "$output_file"
+  printf '%s' "$STUB_CURL_STATUS"
+  return "$STUB_CURL_RC"
+}
+
+set +e
+health_output="$(_phase12_verify_external_lemonade_completion 2>&1)"
+health_rc=$?
+set -e
+[[ "$health_rc" -ne 0 ]] \
+  || { echo "[FAIL] phase 12 accepted a LiteLLM HTTP 503"; exit 1; }
+[[ "$health_output" == *'returned HTTP 503'* ]] \
+  || { echo "[FAIL] phase 12 did not surface the LiteLLM HTTP 503"; exit 1; }
+[[ "$health_output" != *'returned no assistant content'* ]] \
+  || { echo "[FAIL] phase 12 mislabeled an HTTP 503 as empty assistant content"; exit 1; }
+grep -q 'No verified active model route is available yet' "$LOG_FILE" \
+  || { echo "[FAIL] phase 12 did not retain the bounded HTTP error for diagnosis"; exit 1; }
+
+STUB_CURL_STATUS=000
+STUB_CURL_RC=28
+STUB_CURL_BODY=''
+set +e
+transport_output="$(_phase12_verify_external_lemonade_completion 2>&1)"
+transport_rc=$?
+set -e
+[[ "$transport_rc" -ne 0 ]] \
+  || { echo "[FAIL] phase 12 accepted a failed Lemonade transport"; exit 1; }
+[[ "$transport_output" == *'curl exit 28'* ]] \
+  || { echo "[FAIL] phase 12 did not identify the curl transport failure"; exit 1; }
+
+STUB_CURL_STATUS=200
+STUB_CURL_RC=0
+STUB_CURL_BODY='{"choices":[{"message":{"content":"OK"}}]}'
+if ! success_output="$(_phase12_verify_external_lemonade_completion 2>&1)"; then
+  echo "[FAIL] phase 12 rejected a valid external Lemonade completion: $success_output"
+  exit 1
+fi
+[[ "$success_output" == *'completion route healthy'* ]] \
+  || { echo "[FAIL] phase 12 did not report the valid completion as healthy"; exit 1; }
+
+rm -f -- "$LOG_FILE"
+unset -f curl
 
 echo "[contract] external Lemonade preflight checks LiteLLM instead of managed llama-server"
 grep -q 'is_external_lemonade()' ods-preflight.sh \
@@ -107,6 +206,45 @@ grep -Eq 'extensions[\\/]+services[\\/]+litellm[\\/]+compose.yaml' <<<"$resolved
   || { echo "[FAIL] external Lemonade must keep LiteLLM gateway enabled"; exit 1; }
 
 echo "[contract] external Lemonade resolved compose config is valid"
+echo "[contract] installer hardware profiles cannot override external Lemonade"
+for backend in cpu amd nvidia; do
+  for selector in explicit runtime; do
+    installer_resolved="$(
+      export SCRIPT_DIR="$ROOT_DIR" TIER=1 GPU_BACKEND="$backend" GPU_COUNT=1
+      export ODS_MODE=lemonade
+      export CAP_COMPOSE_OVERLAYS="docker-compose.base.yml,docker-compose.${backend}.yml"
+      export LEMONADE_EXTERNAL=false AMD_INFERENCE_RUNTIME='' AMD_INFERENCE_MANAGED=''
+      if [[ "$selector" == explicit ]]; then
+        export LEMONADE_EXTERNAL=true
+      else
+        export AMD_INFERENCE_RUNTIME=lemonade AMD_INFERENCE_MANAGED=false
+      fi
+      LOG_FILE=/dev/null
+      log() { :; }
+      source installers/lib/compose-select.sh
+      resolve_compose_config
+      printf '%s\n' "$COMPOSE_FLAGS"
+    )"
+    [[ "$installer_resolved" == *docker-compose.cloud.yml* \
+       && "$installer_resolved" == *docker-compose.lemonade-external.yml* \
+       && "$installer_resolved" != *"docker-compose.${backend}.yml"* \
+       && "$installer_resolved" != *compose.local.yaml* ]] \
+      || { echo "[FAIL] $backend profile overrode $selector external Lemonade selection"; exit 1; }
+  done
+done
+
+echo "[contract] local and managed Lemonade retain their hardware profiles"
+for mode in local lemonade; do
+  managed_resolved="$(LEMONADE_EXTERNAL=false AMD_INFERENCE_RUNTIME=lemonade \
+    AMD_INFERENCE_MANAGED=true ODS_MODE="$mode" \
+    ./scripts/resolve-compose-stack.sh --script-dir "$ROOT_DIR" \
+      --ods-mode "$mode" --gpu-backend amd --tier SH_LARGE \
+      --profile-overlays docker-compose.base.yml,docker-compose.amd.yml --env)"
+  [[ "$managed_resolved" == *docker-compose.amd.yml* \
+     && "$managed_resolved" != *docker-compose.lemonade-external.yml* ]] \
+    || { echo "[FAIL] $mode lost its managed hardware profile"; exit 1; }
+done
+
 if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
   compose_file_list="$(sed -n 's/^COMPOSE_FILE_LIST="\([^"]*\)".*/\1/p' <<<"$resolved")"
   compose_file_list="${compose_file_list//\\//}"

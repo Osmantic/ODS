@@ -46,6 +46,7 @@ from host_agent_client import (
     request_json as request_agent_json,
 )
 from models import ModelLibraryGpu, ModelLibraryResponse
+from pixel_runtime_state import pixel_stream_active
 from performance_oracle import (
     build_models_payload,
     build_sample_signature,
@@ -1620,6 +1621,8 @@ def _call_agent_model(
     except AgentHTTPError as exc:
         if exc.status_code == 409:
             raise HTTPException(status_code=409, detail=_agent_http_detail(exc)) from exc
+        if exc.status_code == 400:
+            raise HTTPException(status_code=400, detail=_agent_http_detail(exc)) from exc
         raise HTTPException(status_code=502, detail=exc.detail) from exc
     except AgentUnavailable as exc:
         raise HTTPException(status_code=503, detail=f"Host agent unreachable: {exc}") from exc
@@ -2018,6 +2021,16 @@ def load_model(
         if configured_context is not None:
             response["context_length"] = configured_context
         return response
+
+    if pixel_stream_active():
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "pixel_chat_active",
+                "message": "Pixel is working. Stop the active response before changing models.",
+                "requestedModelId": model_id,
+            },
+        )
 
     bootstrap_conflict = _bootstrap_upgrade_download_conflict()
     if bootstrap_conflict is not None:

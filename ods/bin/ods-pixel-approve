@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+die() {
+    printf '[ods-pixel] ERROR: %s\n' "$*" >&2
+    exit 1
+}
+
+[[ $# == 3 && $3 == --confirm ]] || \
+    die "Usage: ods-pixel-approve JOB_ID PLAN_SHA256 --confirm"
+job_id=$1
+plan_hash=$2
+[[ "$job_id" =~ ^ops-[0-9]{13}-[a-f0-9]{12}$ ]] || die "Unsafe Operations job ID"
+[[ "$plan_hash" =~ ^[a-f0-9]{64}$ ]] || die "Plan hash must be one lowercase SHA-256 value"
+[[ $EUID -ne 0 ]] || die "Approval must run as the non-root ODS owner"
+[[ -t 0 && -t 1 && -t 2 && -c /dev/tty && -r /dev/tty && -w /dev/tty ]] || \
+    die "Approval requires a real interactive terminal on standard input, output, and error"
+
+readonly trusted_sudo=/usr/bin/sudo
+readonly trusted_jq=/usr/bin/jq
+readonly trusted_od=/usr/bin/od
+readonly broker_user=pixel-ops-broker
+readonly broker_program=/opt/pixel-ops-broker/broker.py
+readonly broker_policy=/etc/pixel-ops-broker/policy.json
+readonly broker_state=/var/lib/pixel-ops-broker
+readonly plan_path="$broker_state/plans/$job_id.json"
+
+for program in "$trusted_sudo" "$trusted_jq" "$trusted_od" "$broker_program"; do
+    [[ -f "$program" && ! -L "$program" && -x "$program" ]] || \
+        die "Required trusted approval program is unavailable: $program"
+done
+[[ -f "$broker_policy" && ! -L "$broker_policy" ]] || \
+    die "The protected Operations policy is unavailable"
+
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+approval_active=0
+end_approval() {
+    if [[ $approval_active == 1 ]]; then
+        "$trusted_sudo" -K >/dev/null 2>&1 || true
+    fi
+}
+trap end_approval EXIT
+
+printf '[ods-pixel] This exact plan requires fresh administrator authentication and terminal confirmation.\n'
+"$trusted_sudo" -K
+approval_active=1
+if "$trusted_sudo" -n -v >/dev/null 2>&1; then
+    die "Passwordless administrator access cannot establish Pixel's human-authenticated approval boundary"
+fi
+"$trusted_sudo" -v </dev/tty
+
+printf '[ods-pixel] Review the complete protected Operations plan below.\n'
+"$trusted_sudo" "$trusted_jq" -aS -e --arg job "$job_id" --arg hash "$plan_hash" \
+    'select(.jobId == $job and .planHash == $hash)' "$plan_path" || \
+    die "Protected Operations plan is missing, malformed, or does not match the supplied job and hash"
+
+challenge=$(LC_ALL=C "$trusted_od" -An -N8 -tx1 /dev/urandom)
+challenge=${challenge// /}
+[[ "$challenge" =~ ^[a-f0-9]{16}$ ]] || die "Could not create a safe one-time approval challenge"
+expected="APPROVE ${plan_hash:0:12} $challenge"
+printf '\nODS Pixel will approve only the displayed immutable plan.\nJob: %s\nSHA-256: %s\nType exactly: %s\n> ' \
+    "$job_id" "$plan_hash" "$expected" >/dev/tty
+IFS= read -r response </dev/tty || die "Approval confirmation was interrupted"
+[[ "$response" == "$expected" ]] || die "Approval confirmation did not match; nothing was approved"
+
+printf '[ods-pixel] Approving only job=%s planHash=%s\n' "$job_id" "$plan_hash"
+"$trusted_sudo" -u "$broker_user" "$broker_program" \
+    --policy "$broker_policy" --state "$broker_state" \
+    --approve "$job_id" --plan-hash "$plan_hash"

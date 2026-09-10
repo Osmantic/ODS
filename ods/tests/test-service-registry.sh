@@ -118,9 +118,8 @@ else
         fi
 
         # Validate required fields. host_network services (Docker
-        # network_mode: host) don't have a Docker-mapped port and may
-        # not serve an HTTP health endpoint — port and health drop to
-        # "optional" for them.
+        # network_mode: host) and socket_only host-systemd services don't
+        # have a Docker-mapped TCP port.
         validation=$("$PYTHON_CMD" -c "
 import yaml, sys
 with open(sys.argv[1]) as f:
@@ -132,8 +131,8 @@ s = m.get('service', {})
 if not isinstance(s, dict):
     errors.append('service must be a dict')
 else:
-    host_network = bool(s.get('host_network'))
-    required = ['id', 'name'] if host_network else ['id', 'name', 'port', 'health']
+    portless = bool(s.get('host_network')) or bool(s.get('socket_only'))
+    required = ['id', 'name'] if portless else ['id', 'name', 'port', 'health']
     for field in required:
         if not s.get(field):
             errors.append(f'missing required field: service.{field}')
@@ -141,7 +140,7 @@ else:
         errors.append(f'invalid category: {s[\"category\"]}')
     if 'gpu_backends' in s:
         for gb in s['gpu_backends']:
-            if gb not in ('amd', 'nvidia', 'apple', 'all'):
+            if gb not in ('amd', 'nvidia', 'apple', 'cpu', 'none', 'all'):
                 errors.append(f'invalid gpu_backend: {gb}')
     if 'aliases' in s and not isinstance(s['aliases'], list):
         errors.append('aliases must be a list')
@@ -317,12 +316,21 @@ for sid in "${SERVICE_IDS[@]}"; do
         fail "Missing health endpoint: $sid"
     fi
 
+    health_source="${SERVICE_HEALTH_SOURCES[$sid]:-}"
+    if [[ "$health_source" == "http" || "$health_source" == "container" ]]; then
+        pass "Valid health source: $sid → $health_source"
+    else
+        fail "Invalid/missing health source: $sid → '$health_source'"
+    fi
+
     # Every service should have a runtime port. SERVICE_PORTS is the
     # user-facing external port; internal-only services may intentionally set
-    # it to 0 when a proxy owns the LAN entry point. Host-network services
-    # share the host namespace and have no Docker-mapped port to validate.
+    # it to 0 when a proxy owns the LAN entry point. Host-network and
+    # socket-only services have no Docker-mapped TCP port to validate.
     if [[ "${SERVICE_HOST_NETWORK[$sid]:-}" == "1" ]]; then
         pass "host_network service exempt from port check: $sid"
+    elif [[ "${SERVICE_SOCKET_ONLY[$sid]:-}" == "1" ]]; then
+        pass "socket_only service exempt from port check: $sid"
     else
         port="${SERVICE_PORTS[$sid]:-0}"
         if [[ "$port" != "0" ]]; then
@@ -335,6 +343,17 @@ for sid in "${SERVICE_IDS[@]}"; do
     fi
 done
 
+if [[ "${SERVICE_HEALTH_SOURCES[model-router]:-}" == "container" ]]; then
+    pass "Internal model-router uses its Docker healthcheck"
+else
+    fail "Internal model-router must not be probed through an unpublished host port"
+fi
+if [[ "${SERVICE_PORTS[model-router]:-}" == "0" ]]; then
+    pass "Internal model-router publishes no host port"
+else
+    fail "Internal model-router must expose port 9099 only inside Compose"
+fi
+
 # ============================================
 # TEST 6: Compose Fragment Consistency
 # ============================================
@@ -345,13 +364,21 @@ for sid in "${SERVICE_IDS[@]}"; do
     svc_dir="$PROJECT_DIR/extensions/services/$sid"
 
     if [[ "$cat" == "core" ]]; then
-        # Core services should NOT have compose.yaml (live in base.yml)
-        if [[ ! -f "$svc_dir/compose.yaml" ]]; then
+        # Most core services live in base.yml. A core service may also be a
+        # conditional compose fragment (for example Pixel Edge), in which case
+        # validate the declared fragment instead of treating it as optional.
+        core_compose=""
+        if [[ -f "$svc_dir/compose.yaml" ]]; then
+            core_compose="$svc_dir/compose.yaml"
+        elif [[ -f "$svc_dir/compose.yaml.disabled" ]]; then
+            core_compose="$svc_dir/compose.yaml.disabled"
+        fi
+        if [[ -z "$core_compose" ]]; then
             pass "Core service has no compose fragment: $sid"
+        elif "$PYTHON_CMD" -c "import sys, yaml; yaml.safe_load(open(sys.argv[1], encoding='utf-8'))" "$core_compose" 2>/dev/null; then
+            pass "Core service has valid compose fragment: $sid"
         else
-            # comfyui is an exception — it has a stub compose.yaml
-            # Actually, let's just warn — some core services might have compose fragments
-            fail "Core service has compose fragment (unexpected): $sid"
+            fail "Core service has invalid compose fragment: $sid"
         fi
     else
         # Host-native services (e.g. host-systemd) don't need compose fragments

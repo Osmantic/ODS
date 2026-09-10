@@ -400,6 +400,17 @@ _runtime_is_podman() {
     return 1
 }
 
+_docker_is_wsl_host() {
+    [[ "${CAP_PLATFORM_ID:-}" == "wsl" ]] && return 0
+    grep -qiE 'microsoft|wsl' /proc/sys/kernel/osrelease 2>/dev/null
+}
+
+_docker_nvidia_runtime_available() {
+    local runtimes=""
+    runtimes=$(docker_run info --format '{{json .Runtimes}}' 2>/dev/null || true)
+    [[ "$runtimes" =~ \"nvidia\"[[:space:]]*: ]]
+}
+
 _ensure_podman_dockerhub_search() {
     _runtime_is_podman || return 0
     ods_podman_ensure_dockerhub_search
@@ -461,7 +472,12 @@ _docker_post_install_checks
 # NVIDIA Container Toolkit (skip for AMD — uses /dev/dri + /dev/kfd passthrough)
 if [[ $GPU_COUNT -gt 0 && "$GPU_BACKEND" == "nvidia" ]]; then
     ods_progress 36 "docker" "Checking NVIDIA Container Toolkit"
-    if command -v nvidia-container-cli &> /dev/null 2>&1; then
+    if _docker_is_wsl_host && _docker_nvidia_runtime_available; then
+        # Docker Desktop owns the daemon and NVIDIA runtime on WSL2. Installing
+        # another toolkit in the distro rewrites /etc/docker/daemon.json and
+        # then fails trying to restart a docker.service that does not exist.
+        ai_ok "Docker Desktop NVIDIA runtime available"
+    elif command -v nvidia-container-cli &> /dev/null 2>&1; then
         ai_ok "NVIDIA Container Toolkit installed"
         # Always regenerate CDI spec — driver version may have changed since last run
         if command -v nvidia-ctk &>/dev/null && ! $DRY_RUN; then

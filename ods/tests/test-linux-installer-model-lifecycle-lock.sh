@@ -57,8 +57,8 @@ complete_line="$(grep -n 'write_status "complete"' "$UPGRADER" | tail -1 | cut -
     || fail "upgrader must confirm lifecycle ownership before config promotion"
 (( bootstrap_cleanup_line < complete_line )) \
     || fail "upgrader completion must follow bootstrap cleanup"
-grep -q "trap 'release_model_lifecycle_lock; release_upgrade_lock' EXIT" "$UPGRADER" \
-    || fail "upgrader must retain and automatically release both lifecycle locks"
+grep -q "trap 'release_model_router_swap_gate; release_model_lifecycle_lock; release_upgrade_lock' EXIT" "$UPGRADER" \
+    || fail "upgrader must retain and automatically release the router gate and both lifecycle locks"
 finalization_locks="$(grep -c 'acquire_model_lifecycle_lock || fail "Could not serialize full-model finalization' "$UPGRADER")"
 [[ "$finalization_locks" -ge 3 ]] \
     || fail "every Linux path that publishes a final GGUF must first acquire the lifecycle lock"

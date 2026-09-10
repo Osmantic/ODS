@@ -17,14 +17,20 @@ import {
 } from 'lucide-react'
 
 const REQUEST_TIMEOUT_MS = 12000
-const PROBE_TIMEOUT_MS = 22000
-const LIFECYCLE_TIMEOUT_MS = 30000
+// A successful SSH/provider probe also commits the proven route through
+// LiteLLM and the managed Pixel runtime. That bounded transaction can include
+// container recreation and a Pixel gateway restart.
+const PROBE_TIMEOUT_MS = 1805000
+const LIFECYCLE_TIMEOUT_MS = 1805000
 const PEER_MODELS_TIMEOUT_MS = 30000
 const PEER_MODEL_LOAD_TIMEOUT_MS = 2705000
 const INITIAL_FORM = {
   baseUrl: '',
   model: '',
   apiKey: '',
+  contextLength: '32768',
+  maxTokens: '4096',
+  reasoning: false,
 }
 
 const STATUS_META = {
@@ -73,6 +79,9 @@ function configurePayload(form) {
       transport: 'direct',
       baseUrl: form.baseUrl.trim(),
       model: form.model.trim(),
+      contextLength: Number(form.contextLength),
+      maxTokens: Number(form.maxTokens),
+      reasoning: form.reasoning,
     },
     secrets: {
       apiKey: form.apiKey.trim(),
@@ -133,6 +142,8 @@ function peerDownloadSummary(status) {
 function lifecycleTitle(result) {
   const action = titleize(result?.action)
   if (result?.applied) return `${action} applied`
+  if (result?.staged) return `${action} staged - route proof required`
+  if (result?.action === 'test' && result?.probe) return 'Test completed'
   if (result?.ok) return `${action} plan ready`
   return `${action} completed`
 }
@@ -263,6 +274,13 @@ function LifecycleSummary({ result }) {
           tone="text-emerald-300"
         />
       )}
+      {result.activation && (
+        <Field
+          label="Consumer activation"
+          value={result.activation.proven ? `${result.activation.publicModel || 'ods/current'} proven` : titleize(result.activation.reason)}
+          tone={result.activation.proven ? 'text-emerald-300' : 'text-amber-300'}
+        />
+      )}
       {result.rollback?.attempted && (
         <Field label="Rollback" value={result.rollback.ok ? 'Ok' : 'Failed'} tone={result.rollback.ok ? 'text-emerald-300' : 'text-red-300'} />
       )}
@@ -369,6 +387,9 @@ export default function RemoteProvider() {
       ...current,
       baseUrl: provider.baseUrl || '',
       model: provider.model || '',
+      contextLength: String(provider.contextLength || 32768),
+      maxTokens: String(provider.maxTokens || 4096),
+      reasoning: provider.reasoning === true,
     }))
   }, [formDirty, statusData])
 
@@ -471,14 +492,32 @@ export default function RemoteProvider() {
   const provider = routeState.provider || {}
   const routeStatus = routeState.status || {}
   const egress = statusData?.egress || {}
+  const activation = statusData?.activation || {}
   const sshSupervisor = statusData?.sshSupervisor || {}
   const peer = statusData?.peer || {}
   const testEnabled = Boolean(statusData?.availableActions?.test)
+  const enableAvailable = Boolean(statusData?.availableActions?.enable)
   const statusMeta = STATUS_META[statusData?.status] || STATUS_META.unknown
   const lifecycleBusy = planning || Boolean(applyingAction)
-  const configureReady = Boolean(form.baseUrl.trim() && form.model.trim() && form.apiKey.trim()) && !lifecycleBusy
+  const contextLength = Number(form.contextLength)
+  const maxTokens = Number(form.maxTokens)
+  const configureReady = Boolean(
+    form.baseUrl.trim()
+    && form.model.trim()
+    && form.apiKey.trim()
+    && Number.isInteger(contextLength)
+    && contextLength >= 16384
+    && Number.isInteger(maxTokens)
+    && maxTokens >= 1
+    && maxTokens <= contextLength,
+  ) && !lifecycleBusy
   const proofReceipt = testResult?.probe || routeStatus.lastProbe
   const proofRecorded = testResult?.routeProof?.recorded
+  const consumerDrift = activation.reason === 'consumer_drift'
+  let enableActionLabel = routeState.enabled ? 'Reconcile route' : 'Enable route'
+  if (applyingAction === 'enable') {
+    enableActionLabel = routeState.enabled ? 'Reconciling' : 'Enabling'
+  }
   const peerReady = Boolean(statusData?.capabilities?.odsPeerLifecycle)
   const peerModels = Array.isArray(peerModelsData?.models) ? peerModelsData.models : []
   const peerBusy = peerModelsLoading || Boolean(peerAction)
@@ -510,6 +549,11 @@ export default function RemoteProvider() {
             <RefreshCw size={16} />
             Refresh
           </button>
+          {enableAvailable && (
+            <ActionButton icon={RefreshCw} onClick={() => applyLifecycle('enable')} disabled={lifecycleBusy} primary>
+              {enableActionLabel}
+            </ActionButton>
+          )}
           <button
             type="button"
             onClick={runProbe}
@@ -550,6 +594,15 @@ export default function RemoteProvider() {
           {lifecycleError}
         </div>
       )}
+      {consumerDrift && (
+        <div className="mb-4 flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-100" role="status">
+          <AlertCircle className="mt-0.5 shrink-0" size={16} />
+          <span>
+            The provider route is reachable, but ODS and Pixel are not using its exact model contract.
+            Reconcile the route to restore the configured remote model without re-entering its stored secret.
+          </span>
+        </div>
+      )}
 
       <div className="grid gap-4 lg:grid-cols-2">
         <Panel icon={Route} title="Route">
@@ -557,7 +610,12 @@ export default function RemoteProvider() {
           <Field label="Mode" value={routeState.mode} />
           <Field label="Transport" value={provider.transport} />
           <Field label="Model" value={provider.model} />
+          <Field label="Context" value={provider.contextLength} />
+          <Field label="Max output" value={provider.maxTokens} />
+          <Field label="Reasoning" value={boolLabel(provider.reasoning)} />
           <Field label="Proof" value={titleize(routeStatus.reason)} tone={routeStatus.proven ? 'text-emerald-300' : 'text-amber-300'} />
+          <Field label="Consumer route" value={titleize(activation.reason)} tone={activation.proven ? 'text-emerald-300' : 'text-amber-300'} />
+          <Field label="Pixel route" value={titleize(activation.pixel)} />
           <ProbeReceipt receipt={proofReceipt} />
           {Array.isArray(routeState.errors) && routeState.errors.length > 0 && (
             <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-200">
@@ -736,6 +794,28 @@ export default function RemoteProvider() {
               type="password"
               autoComplete="new-password"
             />
+          </div>
+          <div className="grid gap-3 md:grid-cols-[1fr_1fr_1fr]">
+            <TextInput
+              label="Context window"
+              value={form.contextLength}
+              onChange={value => updateForm('contextLength', value)}
+              type="number"
+            />
+            <TextInput
+              label="Max output tokens"
+              value={form.maxTokens}
+              onChange={value => updateForm('maxTokens', value)}
+              type="number"
+            />
+            <label className="flex h-10 items-center gap-2 self-end rounded-lg border border-theme-border bg-theme-bg px-3 text-sm text-theme-text">
+              <input
+                type="checkbox"
+                checked={form.reasoning}
+                onChange={event => updateForm('reasoning', event.target.checked)}
+              />
+              Reasoning route
+            </label>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <ActionButton icon={ClipboardCheck} onClick={planConfigure} disabled={!configureReady}>

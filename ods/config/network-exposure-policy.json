@@ -74,6 +74,12 @@
       "auth_required": false,
       "notes": "Local OpenAI-compatible inference API."
     },
+    "model-router": {
+      "risk": "model-routing-internal-api",
+      "lan_exposure": "none",
+      "auth_required": false,
+      "notes": "Internal-only stable model route for ODS services; it must not publish a host port."
+    },
     "n8n": {
       "risk": "workflow-automation-ui",
       "lan_exposure": "operator-controlled",
@@ -103,6 +109,12 @@
       "lan_exposure": "operator-controlled",
       "auth_required": false,
       "notes": "Deep research UI backed by search and local inference."
+    },
+    "pixel-edge": {
+      "risk": "autonomous-agent-internal-gateway",
+      "lan_exposure": "none",
+      "auth_required": true,
+      "notes": "Internal-only authenticated OpenAI-compatible bridge to the host Pixel ingress Unix socket; it must not publish a host port."
     },
     "privacy-shield": {
       "risk": "privacy-proxy",

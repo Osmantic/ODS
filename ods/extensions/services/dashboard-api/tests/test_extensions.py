@@ -71,6 +71,26 @@ def _patch_extensions_config(monkeypatch, catalog, services=None,
 
 class TestExtensionsCatalog:
 
+    def test_disabled_builtin_remains_discoverable_without_install_authority(self, test_client, monkeypatch, tmp_path):
+        catalog = [{**_make_catalog_ext("native-editor", "Native Editor"), "catalog_source": "builtin"}]
+        _patch_extensions_config(monkeypatch, catalog, tmp_path=tmp_path)
+        builtin = tmp_path / "builtin"
+        (builtin / "native-editor").mkdir(parents=True)
+        (builtin / "native-editor/compose.yaml.disabled").write_text("services: {}\n")
+        monkeypatch.setattr("routers.extensions.EXTENSIONS_DIR", builtin)
+        with patch("helpers.get_cached_services", return_value=[]):
+            response = test_client.get("/api/extensions/native-editor", headers=test_client.auth_headers)
+        assert response.status_code == 200
+        assert response.json()["source"] == "core"
+        assert response.json()["status"] == "disabled"
+        assert response.json()["installable"] is False
+
+    def test_catalog_presence_does_not_remove_always_on_mutation_protection(self, monkeypatch, tmp_path):
+        _patch_extensions_config(monkeypatch, [{**_make_catalog_ext("dashboard", "Dashboard"), "catalog_source": "builtin"}], tmp_path=tmp_path)
+        with pytest.raises(HTTPException) as error:
+            _assert_not_core("dashboard")
+        assert error.value.status_code == 403
+
     def test_catalog_returns_enriched_extensions(self, test_client, monkeypatch, tmp_path):
         """Catalog endpoint returns extensions with status enrichment."""
         catalog = [_make_catalog_ext("test-svc", "Test Service")]
@@ -251,6 +271,37 @@ class TestExtensionDetail:
         assert "setup_instructions" in data
         assert data["setup_instructions"]["cli_enable"] == "ods enable test-svc"
         assert data["setup_instructions"]["cli_disable"] == "ods disable test-svc"
+
+    def test_detail_uses_cached_service_snapshot(
+        self, test_client, monkeypatch, tmp_path,
+    ):
+        """Detail lookup must not repeat the slow all-service health fan-out."""
+        catalog = [_make_catalog_ext("test-svc", "Test Service")]
+        services = {
+            "test-svc": {
+                "host": "localhost",
+                "port": 8080,
+                "name": "Test Service",
+            },
+        }
+        _patch_extensions_config(
+            monkeypatch, catalog, services, tmp_path=tmp_path,
+        )
+        cached = [_make_service_status("test-svc", "healthy")]
+
+        live_scan = AsyncMock(return_value=[])
+        with (
+            patch("helpers.get_cached_services", return_value=cached),
+            patch("helpers.get_all_services", live_scan),
+        ):
+            resp = test_client.get(
+                "/api/extensions/test-svc",
+                headers=test_client.auth_headers,
+            )
+
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "enabled"
+        live_scan.assert_not_awaited()
 
     def test_detail_returns_configured_public_url(self, test_client, monkeypatch, tmp_path):
         catalog = [_make_catalog_ext("test-svc", "Test Service")]

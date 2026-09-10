@@ -19,6 +19,7 @@ matches the work in front of them.
 | I want to... | Read this first | Then use |
 |--------------|-----------------|----------|
 | Install the default path | [../QUICKSTART.md](../QUICKSTART.md) | [INSTALLER_TRUST.md](INSTALLER_TRUST.md), [SUPPORT-MATRIX.md](SUPPORT-MATRIX.md), [POST-INSTALL-CHECKLIST.md](POST-INSTALL-CHECKLIST.md) |
+| Install or operate Pixel | [PIXEL.md](PIXEL.md) | [HERMES.md](HERMES.md), [SUPPORT-MATRIX.md](SUPPORT-MATRIX.md), [RELEASE_VALIDATION.md](RELEASE_VALIDATION.md) |
 | Install on Windows | [WINDOWS-QUICKSTART.md](WINDOWS-QUICKSTART.md) | [WINDOWS-INSTALL-WALKTHROUGH.md](WINDOWS-INSTALL-WALKTHROUGH.md), [WINDOWS-WSL2-GPU-GUIDE.md](WINDOWS-WSL2-GPU-GUIDE.md) |
 | Install on Apple Silicon | [MACOS-QUICKSTART.md](MACOS-QUICKSTART.md) | [MODEL-MANAGEMENT.md](MODEL-MANAGEMENT.md), [TROUBLESHOOTING.md](TROUBLESHOOTING.md) |
 | Debug a broken install | [ODS-DOCTOR.md](ODS-DOCTOR.md) | [INSTALL-TROUBLESHOOTING.md](INSTALL-TROUBLESHOOTING.md), [SUPPORT-BUNDLE.md](SUPPORT-BUNDLE.md) |
@@ -66,9 +67,10 @@ canonical source and treat older recipes as context.
 - The golden paths are Linux NVIDIA, Windows with Docker Desktop + WSL2 for
   NVIDIA/AMD, and Apple Silicon. Linux AMD Strix Halo is actively supported;
   Intel Arc is present but still experimental.
-- The default agent path is Hermes Agent plus `hermes-proxy`. OpenClaw remains
-  available for compatibility, but it is deprecated and no longer enabled by
-  default.
+- Pixel is the preferred agent only on qualified Ubuntu 24.04 or Debian 12
+  PID1-systemd hosts after separate written license authorization. Hermes plus
+  `hermes-proxy` remains the portable default and rollback path everywhere
+  else. OpenClaw is deprecated and explicit opt-in.
 - Linux Docker installs expose llama-server on host `OLLAMA_PORT=11434` by
   default while containers use `llama-server:8080`. macOS native Metal and
   Windows native/Lemonade paths use host port `8080` unless overridden.
@@ -118,6 +120,7 @@ canonical source and treat older recipes as context.
 | [INSTALLER_PHASE_CONTRACTS.md](INSTALLER_PHASE_CONTRACTS.md) | Maintainers / installer reviewers | Phase ownership, inputs, outputs, idempotency, and validation expectations |
 | [COMPOSE_RESOLVER_CONTRACTS.md](COMPOSE_RESOLVER_CONTRACTS.md) | Maintainers / backend reviewers | Compose layer rules for services, hardware overlays, modes, dependencies, and ports |
 | [HERMES.md](HERMES.md) | Developers / operators | Default Hermes Agent packaging, security posture, and operations |
+| [PIXEL.md](PIXEL.md) | Developers / operators | Pixel eligibility, legal boundary, architecture, default routing, bounded ODS tools, operations, rollback, and qualification |
 | [OAUTH_PROVIDER_SETUP.md](OAUTH_PROVIDER_SETUP.md) | Operators / maintainers | OAuth provider registry, private credential bundles, and BYOC setup |
 | [OPENCLAW-INTEGRATION.md](OPENCLAW-INTEGRATION.md) | Developers | Deprecated OpenClaw setup and migration reference |
 

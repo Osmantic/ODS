@@ -60,7 +60,7 @@ INSTANCE_ID = str(uuid.uuid4())
 
 MAX_BODY_BYTES = int(os.environ.get("ODS_ROUTER_MAX_BODY_BYTES", str(2 * 1024 * 1024)))
 MAX_QUEUE_DEPTH = int(os.environ.get("ODS_ROUTER_MAX_QUEUE_DEPTH", "64"))
-QUEUE_WAIT_SECONDS = int(os.environ.get("ODS_ROUTER_QUEUE_WAIT_SECONDS", "60"))
+QUEUE_WAIT_SECONDS = int(os.environ.get("ODS_ROUTER_QUEUE_WAIT_SECONDS", "600"))
 UPSTREAM_TIMEOUT_SECONDS = float(os.environ.get("ODS_ROUTER_UPSTREAM_TIMEOUT", "600"))
 UPSTREAM_MAX_CONNECTIONS = max(
     1, int(os.environ.get(
@@ -109,6 +109,8 @@ app = FastAPI(title="ODS Model Router", docs_url=None, redoc_url=None,
 
 _inflight = 0
 _inflight_lock = asyncio.Lock()
+_waiting = 0
+_swap_gate: dict[str, Any] | None = None
 
 _state_cache: dict[str, Any] = {"mtime": None, "doc": None}
 _endpoints_cache: dict[str, Any] = {"mtime": None, "endpoints": {}}
@@ -812,10 +814,58 @@ async def _release_admission() -> None:
         _inflight -= 1
 
 
+def _expire_swap_gate_locked() -> None:
+    """Expire an abandoned admission gate while holding ``_inflight_lock``."""
+    global _swap_gate
+    if _swap_gate is not None and time.monotonic() >= _swap_gate["expiresAt"]:
+        logger.warning("model-swap admission gate lease expired; reopening admission")
+        _swap_gate = None
+
+
+async def _admit_request() -> tuple[bool, str]:
+    """Atomically wait out a model swap and reserve an upstream slot.
+
+    The swap controller and this function share ``_inflight_lock``. Once the
+    controller closes the gate, no request can slip between an idle check and
+    the runtime restart. Waiting requests are bounded separately from active
+    upstream work, so a closed gate can drain to a mechanically stable zero.
+    """
+    global _inflight, _waiting
+    deadline = time.monotonic() + QUEUE_WAIT_SECONDS
+    async with _inflight_lock:
+        _expire_swap_gate_locked()
+        if _inflight + _waiting >= MAX_QUEUE_DEPTH:
+            return False, "queue_full"
+        _waiting += 1
+
+    admitted = False
+    try:
+        while True:
+            async with _inflight_lock:
+                _expire_swap_gate_locked()
+                if _swap_gate is None:
+                    _waiting -= 1
+                    _inflight += 1
+                    admitted = True
+                    return True, ""
+            if time.monotonic() >= deadline:
+                return False, "model_swap_in_progress"
+            await asyncio.sleep(0.25)
+    finally:
+        if not admitted:
+            async with _inflight_lock:
+                _waiting -= 1
+
+
 @app.get("/health")
 async def health() -> dict[str, Any]:
     doc = _read_state()
     endpoints = _load_endpoints()
+    async with _inflight_lock:
+        _expire_swap_gate_locked()
+        active_requests = _inflight
+        queued_requests = _waiting
+        swap_gate_active = _swap_gate is not None
     # Body-level signal only: with an empty allowlist every forward answers
     # endpoint_not_allowlisted, but the HTTP status stays 200 so the compose
     # healthcheck does not cascade a config gap into container restarts.
@@ -827,6 +877,9 @@ async def health() -> dict[str, Any]:
         "routeSeq": (doc or {}).get("routeSeq"),
         "instanceId": INSTANCE_ID,
         "probeKeyConfigured": bool(_current_probe_key()),
+        "activeRequests": active_requests,
+        "queuedRequests": queued_requests,
+        "modelSwapGateActive": swap_gate_active,
     }
 
 
@@ -854,6 +907,59 @@ async def route_evidence(probe_id: str, request: Request) -> Response:
         return JSONResponse({"error": "not_found"}, status_code=404)
     public = {k: v for k, v in record.items() if k != "storedAt"}
     return JSONResponse(public)
+
+
+@app.post("/internal/model-swap/admission")
+async def model_swap_admission(request: Request) -> Response:
+    """Lease the request-admission gate for a serialized runtime swap.
+
+    This endpoint is reachable only inside the Compose network and requires
+    the router's internal bearer key. Leases are deliberately short: the
+    upgrader renews while it owns the lifecycle lock, and a killed upgrader
+    cannot strand the router closed.
+    """
+    provided = request.headers.get("authorization", "")
+    if not INTERNAL_KEY or provided != f"Bearer {INTERNAL_KEY}":
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        body = await request.json()
+    except (ValueError, json.JSONDecodeError):
+        return JSONResponse({"error": "invalid_json"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "invalid_request"}, status_code=400)
+    action = body.get("action")
+    token = body.get("token")
+    if action not in {"begin", "end"} or not isinstance(token, str) \
+            or not re.fullmatch(r"[A-Za-z0-9._-]{16,128}", token):
+        return JSONResponse({"error": "invalid_request"}, status_code=400)
+
+    global _swap_gate
+    async with _inflight_lock:
+        _expire_swap_gate_locked()
+        if action == "end":
+            if _swap_gate is None:
+                return JSONResponse({"status": "open", "activeRequests": _inflight})
+            if _swap_gate["token"] != token:
+                return JSONResponse({"error": "gate_owned"}, status_code=409)
+            _swap_gate = None
+            return JSONResponse({"status": "open", "activeRequests": _inflight})
+
+        lease_seconds = body.get("leaseSeconds", 30)
+        if not isinstance(lease_seconds, int) or isinstance(lease_seconds, bool) \
+                or not 5 <= lease_seconds <= 120:
+            return JSONResponse({"error": "invalid_lease"}, status_code=400)
+        if _swap_gate is not None and _swap_gate["token"] != token:
+            return JSONResponse({"error": "gate_owned"}, status_code=409)
+        _swap_gate = {
+            "token": token,
+            "expiresAt": time.monotonic() + lease_seconds,
+        }
+        return JSONResponse({
+            "status": "closed",
+            "activeRequests": _inflight,
+            "queuedRequests": _waiting,
+            "leaseSeconds": lease_seconds,
+        })
 
 
 @app.api_route("/{full_path:path}", methods=["GET", "POST", "PUT", "DELETE",
@@ -889,15 +995,19 @@ async def forward(full_path: str, request: Request) -> Response:
 
     requested_alias = str(payload.get("model") or PUBLIC_ALIASES[0])
 
-    global _inflight
-    async with _inflight_lock:
-        if _inflight >= MAX_QUEUE_DEPTH:
+    admitted, reason = await _admit_request()
+    if not admitted:
+        if reason == "queue_full":
             return JSONResponse(
                 {"error": {"message": "Router queue is full",
                            "type": "overloaded", "code": "503"}},
                 status_code=503, headers={"Retry-After": "5"},
             )
-        _inflight += 1
+        return JSONResponse(
+            {"error": {"message": "A model swap is in progress",
+                       "type": "model_swap_in_progress", "code": "503"}},
+            status_code=503, headers={"Retry-After": "10"},
+        )
     stream_owns_admission = False
     try:
         response, stream_owns_admission = await _forward_inner(

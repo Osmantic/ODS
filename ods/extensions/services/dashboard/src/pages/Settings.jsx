@@ -23,6 +23,7 @@ import {
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import EnvEditor from '../components/settings/EnvEditor'
+import PixelAccessCard from '../components/settings/PixelAccessCard'
 import { useTheme } from '../contexts/ThemeContext'
 import { dashboardHost, serviceUrl } from '../lib/serviceUrls'
 import {
@@ -407,6 +408,7 @@ export default function Settings() {
           <AccountUsageCard usageReport={usageReport} className="xl:col-span-7" />
           <RemoteSetupCard setupStatus={setupStatus} className="xl:col-span-5" />
         </div>
+        <PixelAccessCard />
         <RoutingTableCard
           services={services}
           counts={routeCounts}

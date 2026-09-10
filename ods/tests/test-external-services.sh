@@ -142,6 +142,14 @@ run_phase_case() {
             EXTERNAL_LLM_PROVIDER="ollama"
             EXTERNAL_LLM_MODEL="qwen3.5:9b"
             ;;
+        explicit-openai|detect-openai)
+            MOCK_LMSTUDIO=up
+            MOCK_OLLAMA=down
+            EXTERNAL_LLM_URL="http://10.0.2.2:18080"
+            EXTERNAL_LLM_PROVIDER="openai-compatible"
+            [[ "$case_name" != detect-openai ]] || EXTERNAL_LLM_PROVIDER=auto
+            EXTERNAL_LLM_MODEL="local-model"
+            ;;
         explicit-cloud)
             MOCK_OLLAMA=up
             ODS_MODE=cloud
@@ -174,6 +182,15 @@ run_phase_case() {
 
 TEMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TEMP_DIR"' EXIT
+
+for external_case in explicit-openai detect-openai; do
+    if output="$(run_phase_case "$external_case" "$TEMP_DIR/$external_case"; printf '%s|%s\n' \
+        "${EXTERNAL_LLM_PROVIDER:-}" "${EXTERNAL_LLM_MODEL:-}")"; then
+        assert_eq "$output" "openai-compatible|local-model" "$external_case preserves protocol and exact model identity"
+    else
+        fail "$external_case accepts a generic OpenAI-compatible endpoint"
+    fi
+done
 
 if output="$(run_phase_case default "$TEMP_DIR/default"; printf '%s|%s\n' "${EXTERNAL_LLM_URL:-}" "${SKIP_MODEL_DOWNLOAD:-}")"; then
     assert_eq "$output" "|false" "non-interactive ambient discovery is inert by default"
@@ -317,9 +334,13 @@ run_phase06_env_cycle() (
 
     grep -qx 'LLM_BACKEND=external' "$install_dir/.env"
     grep -qx 'LLM_MODEL=qwen3.5:9b' "$install_dir/.env"
-    grep -qx 'LLM_API_URL=http://host.docker.internal:11434' "$install_dir/.env"
-    grep -qx 'OPEN_WEBUI_LLM_BASE_URL=http://host.docker.internal:11434/v1' "$install_dir/.env"
-    grep -qx 'HERMES_LLM_BASE_URL=http://host.docker.internal:11434/v1' "$install_dir/.env"
+    grep -qx 'LLM_API_URL=http://litellm:4000' "$install_dir/.env"
+    grep -qx 'OPEN_WEBUI_LLM_BASE_URL=http://litellm:4000/v1' "$install_dir/.env"
+    grep -qx 'HERMES_LLM_BASE_URL=http://litellm:4000/v1' "$install_dir/.env"
+    grep -q 'model_name: "ods/current"' "$install_dir/config/litellm/local.yaml"
+    grep -q 'model: "openai/qwen3.5:9b"' "$install_dir/config/litellm/local.yaml"
+    grep -q 'api_base: "http://host.docker.internal:11434/v1"' "$install_dir/config/litellm/local.yaml"
+    grep -q 'master_key: os.environ/LITELLM_MASTER_KEY' "$install_dir/config/litellm/local.yaml"
     grep -qx 'EXTERNAL_LLM_PROVIDER=ollama' "$install_dir/.env"
     grep -qx 'SKIP_MODEL_DOWNLOAD=true' "$install_dir/.env"
     grep -qx 'MODEL_RECOMMENDED_MODEL=qwen3-1.7b' "$install_dir/.env"
@@ -343,6 +364,8 @@ run_phase06_env_cycle() (
     grep -qx 'EXTERNAL_LLM_URL=' "$install_dir/.env"
     grep -qx 'EXTERNAL_LLM_PROVIDER=' "$install_dir/.env"
     grep -qx 'SKIP_MODEL_DOWNLOAD=false' "$install_dir/.env"
+    grep -q 'api_base: http://llama-server:8080/v1' "$install_dir/config/litellm/local.yaml"
+    ! grep -q 'host.docker.internal:11434\|openai/qwen3.5:9b' "$install_dir/config/litellm/local.yaml"
 )
 
 if run_phase06_env_cycle; then
@@ -425,6 +448,12 @@ if run_phase06_amd_external; then
     pass "AMD external reuse writes one coherent non-Lemonade backend contract"
 else
     fail "AMD external reuse .env contract"
+fi
+
+if python3 "$ROOT_DIR/tests/test-external-completion-probe.py"; then
+    pass "completion probe distinguishes reasoning budget exhaustion from invalid responses"
+else
+    fail "external completion response validation"
 fi
 
 printf '\nResult: %d passed, %d failed\n' "$PASSED" "$FAILED"

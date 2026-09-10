@@ -1,0 +1,80 @@
+schema_version: ods.services.v1
+
+compatibility:
+  ods_min: "2.0.0"
+
+# Pixel Agent — host/systemd ingress from Open WebUI to the single Pixel
+# gateway. This is the dependency-free host-side boundary: it owns no
+# container, binds no TCP port, and exposes the Pixel gateway to a restricted
+# Unix-socket group (PIXEL_INGRESS_GID) only. The separate pixel-edge container
+# proxy is a different lane and is intentionally not referenced here.
+service:
+  id: pixel-agent
+  name: Pixel Agent (host ingress)
+  aliases: []
+  container_name: ""
+  default_host: localhost
+  # No external port or external_port_env: this is a Unix-domain-socket host
+  # service with no network binding, so advertising a configurable TCP port
+  # would be both inaccurate and unsafe.
+  socket_only: true
+  port: 0
+  health: /health
+  health_timeout: 10
+  type: host-systemd
+  macos_host_supported: false
+  gpu_backends: [all]
+  category: core
+  depends_on: [litellm, searxng]
+  startup_check: false
+  description: >
+    Host ingress for the Pixel gateway. Serves GET /health and
+    POST /v1/chat/completions over a Unix-domain socket only (never TCP),
+    reads the Pixel gateway token from a restricted PIXEL_GATEWAY_TOKEN_FILE,
+    and forwards a sanitized, allowlisted OpenAI-compatible request to the
+    fixed loopback gateway. No inbound headers are forwarded, unknown fields
+    are dropped, and only type-valid fields reach the gateway. The systemd
+    unit runs as the unprivileged Pixel owner, hardens with
+    NoNewPrivileges/ProtectSystem=strict/ProtectHome=true, and keeps the
+    socket readable/writable only by PIXEL_INGRESS_GID.
+
+  env_vars:
+    - key: PIXEL_INGRESS_SOCKET
+      default: "/run/ods-pixel/pixel-ingress.sock"
+      description: Unix-domain socket path the ingress listens on. UDS only, never TCP.
+    - key: PIXEL_INGRESS_GID
+      default: ""
+      description: Numeric ods-pixel group GID allowed to connect to the mode-0660 ingress socket.
+    - key: PIXEL_GATEWAY_TOKEN_FILE
+      default: "/etc/pixel/openclaw.json"
+      description: Restricted owner-private OpenClaw config containing the gateway token.
+    - key: PIXEL_GATEWAY_PORT
+      default: "18789"
+      description: Fixed loopback port of the Pixel gateway (127.0.0.1 only).
+    - key: PIXEL_STATUS_FILE
+      default: "/run/ods-pixel/ods-status.json"
+      description: Sanitized status projection path written on startup and interval.
+    - key: PIXEL_STATUS_INTERVAL_MS
+      default: "30000"
+      description: Interval in ms between status projection writes.
+
+features:
+  - id: pixel-agent-ingress
+    name: Pixel host ingress
+    description: >-
+      Dependency-free host/systemd service that exposes the Pixel gateway to
+      Open WebUI over a restricted Unix-domain socket, forwarding only
+      allowlisted, sanitized chat requests. Open WebUI never receives the
+      operator gateway token. Rollback surface is Hermes/OpenCode.
+    icon: Shield
+    category: agent
+    requirements:
+      services: [pixel-agent, litellm, searxng]
+      vram_gb: 0
+    enabled_services_all: [pixel-agent, litellm, searxng]
+    setup_time: ~1 minute
+    priority: 60
+    launch:
+      type: service
+      service: pixel-agent
+    gpu_backends: [all]
