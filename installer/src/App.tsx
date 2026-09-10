@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Welcome from "./pages/Welcome";
 import SystemCheck from "./pages/SystemCheck";
 import Prerequisites from "./pages/Prerequisites";
@@ -35,12 +35,28 @@ const STEPS: WizardStep[] = [
   "complete",
 ];
 
+const STEP_LABELS: Record<WizardStep, string> = {
+  welcome: "Welcome",
+  system_check: "System check",
+  prerequisites: "Prerequisites",
+  gpu: "GPU selection",
+  features: "Feature selection",
+  installing: "Installation",
+  complete: "Complete",
+  error: "Installation error",
+};
+
 export default function App() {
   const [step, setStep] = useState<WizardStep>("welcome");
   const [state, setState] = useState<WizardState>({
     tier: 1,
     features: [],
   });
+
+  const contentRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    contentRef.current?.focus();
+  }, [step]);
 
   const stepIndex = STEPS.indexOf(step);
   const progress =
@@ -54,7 +70,15 @@ export default function App() {
     <div className="flex flex-col h-screen bg-gray-950">
       {/* Progress bar */}
       {step !== "welcome" && step !== "error" && (
-        <div className="h-1 bg-gray-800">
+        <div
+          className="h-1 bg-gray-800"
+          role="progressbar"
+          aria-label="Setup progress"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={progress}
+          aria-valuetext={`Step ${stepIndex + 1} of ${STEPS.length}: ${STEP_LABELS[step]}`}
+        >
           <div
             className="h-full bg-ods-500 transition-all duration-500"
             style={{ width: `${progress}%` }}
@@ -63,7 +87,12 @@ export default function App() {
       )}
 
       {/* Content */}
-      <div className="flex-1 overflow-y-auto">
+      <main
+        ref={contentRef}
+        tabIndex={-1}
+        aria-label={`ODS setup: ${STEP_LABELS[step]}`}
+        className="flex-1 overflow-y-auto"
+      >
         {step === "welcome" && <Welcome onNext={() => goTo("system_check")} />}
         {step === "system_check" && (
           <SystemCheck
@@ -118,7 +147,7 @@ export default function App() {
             onRetry={() => goTo("system_check")}
           />
         )}
-      </div>
+      </main>
     </div>
   );
 }
