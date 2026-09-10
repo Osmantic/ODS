@@ -1163,3 +1163,30 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def string_extract_domain_names_safe(text: str) -> list:
+    """
+    Safely extract domain names (hostnames) from a raw string or text block.
+    Guards against None, non-string input, empty string, malformed URLs, and regex exceptions.
+    Returns a sorted list of unique lowercase domain names.
+    """
+    if not isinstance(text, str) or not text.strip():
+        return []
+    import re
+    pattern = r'(?:https?://)?(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,63}'
+    try:
+        matches = re.findall(pattern, text)
+        domains = set()
+        for m in matches:
+            clean = m.lower()
+            if clean.startswith("http://"):
+                clean = clean[7:]
+            elif clean.startswith("https://"):
+                clean = clean[8:]
+            clean = clean.split('/')[0].split(':')[0].strip('.')
+            if clean and '.' in clean:
+                domains.add(clean)
+        return sorted(list(domains))
+    except Exception:
+        return []

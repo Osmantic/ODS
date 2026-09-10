@@ -10,6 +10,7 @@ import httpx
 import pytest
 
 from helpers import (
+    string_extract_domain_names_safe,
     get_model_info, get_bootstrap_status, _update_lifetime_tokens,
     get_uptime, get_cpu_metrics, get_ram_metrics,
     check_service_health, get_all_services,
@@ -1607,3 +1608,16 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+
+class TestStringExtractDomainNamesSafe:
+    def test_extract_valid_domains(self):
+        text = "Check https://api.example.com/v1 and http://test.org for updates"
+        res = string_extract_domain_names_safe(text)
+        assert res == ["api.example.com", "test.org"]
+
+    def test_invalid_types_and_none(self):
+        assert string_extract_domain_names_safe(None) == []
+        assert string_extract_domain_names_safe(12345) == []
+        assert string_extract_domain_names_safe("") == []
