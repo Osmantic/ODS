@@ -45,6 +45,7 @@ Environment variables (set in `.env`):
 | `./data/comfyui/output` | `/output` | Generated images output directory |
 | `./data/comfyui/input` | `/input` | Input images for img2img and inpainting |
 | `./data/comfyui/workflows` | `/workflows` | Workflow JSON templates (read-only) |
+| `./data/comfyui/user` | `/user` | Saved workflows and UI settings (persisted across recreates) |
 
 ### AMD
 
