@@ -924,6 +924,8 @@ def _predicted_from_calibration(model: dict[str, Any], metadata: dict[str, Any],
     if calibration_mb <= 0:
         return None
     target_mb = _model_decode_mb(model, metadata)
+    if target_mb <= 0:
+        return None
     predicted = max(base_tps * (calibration_mb / target_mb), 1.0)
     if not is_plausible_single_request_tps(predicted):
         return None
