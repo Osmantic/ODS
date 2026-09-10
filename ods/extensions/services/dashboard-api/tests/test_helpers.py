@@ -1607,3 +1607,18 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+class TestDictDeepGetSafe:
+    def test_valid_deep_get(self):
+        from helpers import dict_deep_get_safe
+        data = {"a": {"b": {"c": 42}}}
+        assert dict_deep_get_safe(data, ["a", "b", "c"]) == 42
+        assert dict_deep_get_safe(data, "a.b.c") == 42
+
+    def test_invalid_inputs(self):
+        from helpers import dict_deep_get_safe
+        assert dict_deep_get_safe(None, "a.b") is None
+        assert dict_deep_get_safe({"a": 1}, "a.b", default="fallback") == "fallback"
+        assert dict_deep_get_safe("not dict", "a.b") is None
+
