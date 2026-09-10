@@ -1,3 +1,4 @@
+import { useMemo, useState } from "react";
 import Button from "../components/Button";
 
 interface Props {
@@ -6,14 +7,26 @@ interface Props {
 }
 
 export default function ErrorPage({ message, onRetry }: Props) {
-  const copyDiagnostics = () => {
-    const info = [
-      `Error: ${message}`,
-      `Platform: ${navigator.platform}`,
-      `Time: ${new Date().toISOString()}`,
-      `UserAgent: ${navigator.userAgent}`,
-    ].join("\n");
-    navigator.clipboard.writeText(info);
+  const [copyState, setCopyState] = useState<"idle" | "pending" | "copied" | "failed">("idle");
+  const diagnostics = useMemo(() => [
+    `Error: ${message}`,
+    `Platform: ${navigator.platform}`,
+    `Time: ${new Date().toISOString()}`,
+    `UserAgent: ${navigator.userAgent}`,
+  ].join("\n"), [message]);
+
+  const copyDiagnostics = async () => {
+    setCopyState("pending");
+    if (!navigator.clipboard?.writeText) {
+      setCopyState("failed");
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(diagnostics);
+      setCopyState("copied");
+    } catch {
+      setCopyState("failed");
+    }
   };
 
   return (
@@ -44,11 +57,29 @@ export default function ErrorPage({ message, onRetry }: Props) {
       </div>
 
       <div className="flex gap-3">
-        <Button variant="ghost" onClick={copyDiagnostics}>
-          Copy Diagnostics
+        <Button variant="ghost" onClick={copyDiagnostics} disabled={copyState === "pending"}>
+          {copyState === "pending" ? "Copying..." : "Copy Diagnostics"}
         </Button>
         <Button onClick={onRetry}>Try Again</Button>
       </div>
+      {copyState === "copied" && (
+        <p role="status" className="mt-4 text-sm text-green-400">Diagnostics copied.</p>
+      )}
+      {copyState === "failed" && (
+        <div className="mt-4 w-full max-w-md">
+          <p role="alert" className="mb-2 text-sm text-yellow-400">
+            Automatic copy failed. Select and copy the diagnostics below.
+          </p>
+          <textarea
+            aria-label="Diagnostics to copy manually"
+            readOnly
+            rows={6}
+            value={diagnostics}
+            onFocus={(event) => event.currentTarget.select()}
+            className="w-full rounded-lg bg-gray-900 p-3 text-xs font-mono text-gray-300"
+          />
+        </div>
+      )}
     </div>
   );
 }
