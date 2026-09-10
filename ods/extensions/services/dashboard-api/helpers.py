@@ -1163,3 +1163,25 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def numeric_safe_pow(base, exp, max_val: float = 1e12, default: float = 0.0) -> float:
+    """Safely calculate base exponentiation with overflow bounds protection."""
+    if base is None or exp is None:
+        return default
+    try:
+        if isinstance(base, float) and (math.isnan(base) or math.isinf(base)):
+            return default
+        if isinstance(exp, float) and (math.isnan(exp) or math.isinf(exp)):
+            return default
+        b = float(base)
+        e = float(exp)
+        if math.isnan(b) or math.isinf(b) or math.isnan(e) or math.isinf(e):
+            return default
+        res = math.pow(b, e)
+        if math.isnan(res) or math.isinf(res) or abs(res) > max_val:
+            return default
+        return float(res)
+    except (ValueError, TypeError, OverflowError, ZeroDivisionError):
+        return default
+
