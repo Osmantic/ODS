@@ -106,6 +106,21 @@ export default function Prerequisites({ onNext, onError }: Props) {
     setPrereqs(updated);
   };
 
+  // These are the same conditions check_prerequisites folds into all_met, and
+  // they have to stay that way: the page only renders this branch when all_met
+  // is false, so a Continue that disagrees walks the user straight past
+  // whatever is missing. It used to ignore Compose and WSL2 both, which meant
+  // the button was live on a Windows box with no WSL2, and live on any host
+  // with Docker but no Compose — an install that fails minutes later in
+  // 05-docker.sh rather than here.
+  const blockers = [
+    !prereqs.git_installed && "Git",
+    !prereqs.docker_installed && "Docker",
+    prereqs.docker_installed && !prereqs.docker_running && "Docker to be running",
+    !prereqs.compose_installed && "Docker Compose",
+    prereqs.wsl2_needed && !prereqs.wsl2_installed && "WSL2",
+  ].filter((blocker): blocker is string => typeof blocker === "string");
+
   return (
     <div className="flex flex-col items-center justify-center h-full px-8">
       <h2 className="text-2xl font-bold mb-2">Prerequisites Needed</h2>
@@ -177,11 +192,33 @@ export default function Prerequisites({ onNext, onError }: Props) {
             </Button>
           )}
         </div>
+
+        {/* Docker Compose */}
+        <div className="flex items-center justify-between bg-gray-900 rounded-lg px-4 py-3">
+          <div className="flex items-center gap-3">
+            <StatusIcon status={prereqs.compose_installed ? "pass" : "fail"} />
+            <div>
+              <p className="text-sm text-white">Docker Compose</p>
+              {!prereqs.compose_installed && (
+                <p className="text-xs text-yellow-500">
+                  Ships with Docker Desktop. On Linux, install the
+                  docker-compose-plugin package.
+                </p>
+              )}
+            </div>
+          </div>
+        </div>
       </div>
 
       {message && (
         <p className="text-sm text-gray-400 mb-4 text-center max-w-md">
           {message}
+        </p>
+      )}
+
+      {blockers.length > 0 && (
+        <p className="text-sm text-gray-500 mb-4 text-center max-w-md">
+          Still waiting on {blockers.join(", ")}.
         </p>
       )}
 
@@ -200,14 +237,7 @@ export default function Prerequisites({ onNext, onError }: Props) {
           <Button variant="ghost" onClick={handleRecheck}>
             Re-check
           </Button>
-          <Button
-            onClick={onNext}
-            disabled={
-              !prereqs.git_installed ||
-              !prereqs.docker_installed ||
-              !prereqs.docker_running
-            }
-          >
+          <Button onClick={onNext} disabled={blockers.length > 0}>
             Continue
           </Button>
         </div>

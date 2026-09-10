@@ -34,6 +34,8 @@ pub struct PrerequisiteStatus {
     pub git_installed: bool,
     pub docker_installed: bool,
     pub docker_running: bool,
+    /// Counted by all_met, so the page has to be able to show it as a blocker.
+    pub compose_installed: bool,
     pub wsl2_needed: bool,
     pub wsl2_installed: bool,
     pub all_met: bool,
@@ -64,6 +66,7 @@ pub fn check_prerequisites() -> PrerequisiteStatus {
         git_installed: git,
         docker_installed: docker_status.installed,
         docker_running: docker_status.running,
+        compose_installed: docker_status.compose_installed,
         wsl2_needed,
         wsl2_installed,
         all_met,

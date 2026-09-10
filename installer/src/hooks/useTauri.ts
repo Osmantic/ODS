@@ -39,6 +39,7 @@ export interface PrerequisiteStatus {
   git_installed: boolean;
   docker_installed: boolean;
   docker_running: boolean;
+  compose_installed: boolean;
   wsl2_needed: boolean;
   wsl2_installed: boolean;
   all_met: boolean;
