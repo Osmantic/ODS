@@ -22,11 +22,23 @@ pub fn check() -> DockerStatus {
 }
 
 fn get_docker_version() -> Option<String> {
-    let out = Command::new("docker").args(["--version"]).output().ok()?;
-    if out.status.success() {
-        Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
-    } else {
+    probe_version("docker", &["--version"])
+}
+
+/// Run a version command, returning its trimmed stdout only if it succeeded.
+///
+/// Returns None for every kind of failure — the binary is missing, it exited
+/// non-zero, or it printed nothing — so callers can chain probes with or_else.
+fn probe_version(program: &str, args: &[&str]) -> Option<String> {
+    let out = Command::new(program).args(args).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if text.is_empty() {
         None
+    } else {
+        Some(text)
     }
 }
 
@@ -39,27 +51,13 @@ fn is_docker_running() -> bool {
 }
 
 fn get_compose_version() -> Option<String> {
-    // Try "docker compose" (v2 plugin) first
-    let out = Command::new("docker")
-        .args(["compose", "version", "--short"])
-        .output()
-        .ok()?;
-
-    if out.status.success() {
-        return Some(String::from_utf8_lossy(&out.stdout).trim().to_string());
-    }
-
-    // Fallback: docker-compose (standalone v1)
-    let out = Command::new("docker-compose")
-        .args(["--version"])
-        .output()
-        .ok()?;
-
-    if out.status.success() {
-        Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
-    } else {
-        None
-    }
+    // The v2 plugin first, then the standalone v1 binary. The two probes have to
+    // be independent: `?` on the v2 output() returned from the whole function
+    // when spawning failed, and spawning fails outright when there is no docker
+    // binary — so a host running Podman or carrying only docker-compose reported
+    // no Compose at all, and the Prerequisites page offered no way forward.
+    probe_version("docker", &["compose", "version", "--short"])
+        .or_else(|| probe_version("docker-compose", &["--version"]))
 }
 
 /// Get the Docker Desktop download URL for the current platform.
@@ -107,5 +105,46 @@ pub async fn install_docker() -> Result<String, String> {
             "For safety, the desktop installer does not install Docker Desktop automatically.\n\nInstall Docker Desktop manually, then open it once from Applications before rerunning prerequisite checks:\n{}",
             download_url()
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A name no host has on PATH, standing in for an uninstalled docker.
+    const MISSING: &str = "ods-installer-no-such-binary";
+
+    #[test]
+    fn probe_version_reports_nothing_when_the_binary_is_missing() {
+        assert_eq!(probe_version(MISSING, &["--version"]), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn probe_version_trims_the_output() {
+        assert_eq!(probe_version("echo", &["1.29.2"]).as_deref(), Some("1.29.2"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn probe_version_rejects_a_failed_command() {
+        assert_eq!(probe_version("false", &[]), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn probe_version_rejects_empty_output() {
+        assert_eq!(probe_version("true", &[]), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_missing_first_probe_does_not_abort_the_chain() {
+        // The regression: an unspawnable first probe used to end the lookup, so
+        // the standalone docker-compose fallback was never reached.
+        let version = probe_version(MISSING, &["compose", "version", "--short"])
+            .or_else(|| probe_version("echo", &["docker-compose version 1.29.2"]));
+        assert_eq!(version.as_deref(), Some("docker-compose version 1.29.2"));
     }
 }
