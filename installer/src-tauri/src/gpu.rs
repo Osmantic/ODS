@@ -69,47 +69,94 @@ fn detect_windows() -> GpuInfo {
 
 #[cfg(target_os = "macos")]
 fn detect_macos() -> GpuInfo {
-    let output = Command::new("system_profiler")
-        .args(["SPDisplaysDataType", "-json"])
-        .output();
+    let profiled = profile_macos_gpu();
 
-    if let Ok(out) = output {
-        let text = String::from_utf8_lossy(&out.stdout);
-        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
-            if let Some(displays) = val["SPDisplaysDataType"].as_array() {
-                if let Some(gpu) = displays.first() {
-                    let name = gpu["sppci_model"].as_str().unwrap_or("Apple GPU").to_string();
-                    // Apple Silicon reports unified memory; estimate GPU-available portion
-                    let vram_str = gpu["spdisplays_vram"].as_str().unwrap_or("0");
-                    let vram = parse_vram_string(vram_str);
-                    return GpuInfo {
-                        vendor: GpuVendor::Apple,
-                        name,
-                        vram_mb: vram,
-                        driver_version: None,
-                    };
-                }
+    // A discrete or external GPU reports its own VRAM. Apple Silicon does not:
+    // the GPU draws on unified memory, so SPDisplaysDataType carries no vram key
+    // at all. Reading that missing key as "0" and returning right here left every
+    // Apple Silicon Mac on vram_mb 0, which recommend_tier answers with tier 0 —
+    // Cloud Mode — and made the hw.memsize fallback below unreachable.
+    let vram_mb = match profiled.as_ref().and_then(|(_, vram)| *vram) {
+        Some(vram) => vram,
+        None => unified_memory_share_mb(),
+    };
+
+    match profiled {
+        Some((name, _)) => GpuInfo {
+            vendor: GpuVendor::Apple,
+            name,
+            vram_mb,
+            driver_version: None,
+        },
+        // system_profiler is missing or unparseable, but sysctl still answered.
+        None if vram_mb > 0 => GpuInfo {
+            vendor: GpuVendor::Apple,
+            name: "Apple Silicon".into(),
+            vram_mb,
+            driver_version: None,
+        },
+        None => GpuInfo {
+            vendor: GpuVendor::None,
+            name: "No GPU detected".into(),
+            vram_mb: 0,
+            driver_version: None,
+        },
+    }
+}
+
+/// The primary GPU's name and, when it has dedicated video memory, its size in MB.
+#[cfg(target_os = "macos")]
+fn profile_macos_gpu() -> Option<(String, Option<u64>)> {
+    let out = Command::new("system_profiler")
+        .args(["SPDisplaysDataType", "-json"])
+        .output()
+        .ok()?;
+    let val: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
+    let gpu = val["SPDisplaysDataType"].as_array()?.first()?;
+    Some((macos_gpu_name(gpu), macos_gpu_vram_mb(gpu)))
+}
+
+#[cfg(target_os = "macos")]
+fn macos_gpu_name(gpu: &serde_json::Value) -> String {
+    // sppci_model is the documented key; _name is what the JSON output actually
+    // carries on some releases, and the two agree when both are present.
+    for key in ["sppci_model", "_name"] {
+        match gpu[key].as_str() {
+            Some(name) if !name.trim().is_empty() => return name.trim().to_string(),
+            _ => {}
+        }
+    }
+    "Apple GPU".into()
+}
+
+/// Dedicated VRAM in MB, or None when the GPU shares system memory.
+#[cfg(target_os = "macos")]
+fn macos_gpu_vram_mb(gpu: &serde_json::Value) -> Option<u64> {
+    // Intel-era Macs use spdisplays_vram, newer profiles prefix it, and an
+    // integrated Intel GPU only reports the shared figure.
+    for key in ["spdisplays_vram", "_spdisplays_vram", "spdisplays_vram_shared"] {
+        if let Some(text) = gpu[key].as_str() {
+            let mb = parse_vram_string(text);
+            if mb > 0 {
+                return Some(mb);
             }
         }
     }
+    None
+}
 
-    // Fallback: assume Apple Silicon with unified memory via sysctl
-    let mem_output = Command::new("sysctl").args(["-n", "hw.memsize"]).output();
-    if let Ok(out) = mem_output {
-        let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if let Ok(bytes) = text.parse::<u64>() {
-            // Apple Silicon shares ~75% of unified memory with GPU
-            let gpu_share_mb = (bytes / (1024 * 1024)) * 3 / 4;
-            return GpuInfo {
-                vendor: GpuVendor::Apple,
-                name: "Apple Silicon".into(),
-                vram_mb: gpu_share_mb,
-                driver_version: None,
-            };
-        }
-    }
-
-    GpuInfo { vendor: GpuVendor::None, name: "No GPU detected".into(), vram_mb: 0, driver_version: None }
+/// The share of unified memory Apple Silicon will let the GPU use.
+#[cfg(target_os = "macos")]
+fn unified_memory_share_mb() -> u64 {
+    let Ok(out) = Command::new("sysctl").args(["-n", "hw.memsize"]).output() else {
+        return 0;
+    };
+    String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .parse::<u64>()
+        // Metal will not hand out the whole machine; ~75% is the usual ceiling.
+        .map(|bytes| (bytes / (1024 * 1024)) * 3 / 4)
+        .unwrap_or(0)
 }
 
 // ---------------------------------------------------------------------------
@@ -238,18 +285,69 @@ fn classify_vendor(name: &str) -> GpuVendor {
     }
 }
 
+/// Parse the VRAM figures system_profiler prints: "16 GB", "8192 MB", "1536MB".
 #[cfg(target_os = "macos")]
 fn parse_vram_string(s: &str) -> u64 {
-    // Apple reports like "16 GB" or "8192 MB"
-    let parts: Vec<&str> = s.split_whitespace().collect();
-    if parts.len() >= 2 {
-        let num: u64 = parts[0].parse().unwrap_or(0);
-        match parts[1].to_uppercase().as_str() {
-            "GB" => num * 1024,
-            "MB" => num,
-            _ => num,
-        }
+    let s = s.trim();
+    let digits: String = s.chars().take_while(|c| c.is_ascii_digit()).collect();
+    let num: u64 = digits.parse().unwrap_or(0);
+    // The unit is optional and may or may not be separated by a space; anything
+    // that is not gigabytes is read as megabytes, which is what Apple emits.
+    if s[digits.len()..].trim_start().to_ascii_uppercase().starts_with("GB") {
+        num * 1024
     } else {
-        0
+        num
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod macos_tests {
+    use super::*;
+
+    #[test]
+    fn parse_vram_string_handles_apples_formats() {
+        assert_eq!(parse_vram_string("16 GB"), 16 * 1024);
+        assert_eq!(parse_vram_string("8192 MB"), 8192);
+        assert_eq!(parse_vram_string("1536MB"), 1536);
+        assert_eq!(parse_vram_string("0"), 0);
+        assert_eq!(parse_vram_string(""), 0);
+    }
+
+    #[test]
+    fn apple_silicon_reports_no_dedicated_vram() {
+        // Verbatim shape of an Apple Silicon entry: there is no vram key.
+        let gpu = serde_json::json!({
+            "_name": "Apple M5 Pro",
+            "sppci_model": "Apple M5 Pro",
+            "sppci_cores": "20",
+            "spdisplays_vendor": "sppci_vendor_Apple",
+        });
+        assert_eq!(macos_gpu_name(&gpu), "Apple M5 Pro");
+        assert_eq!(macos_gpu_vram_mb(&gpu), None);
+    }
+
+    #[test]
+    fn discrete_gpu_vram_is_read_from_the_profile() {
+        let gpu = serde_json::json!({
+            "sppci_model": "AMD Radeon Pro 5500M",
+            "spdisplays_vram": "8 GB",
+        });
+        assert_eq!(macos_gpu_vram_mb(&gpu), Some(8 * 1024));
+    }
+
+    #[test]
+    fn gpu_name_falls_back_to_the_underscore_key() {
+        let gpu = serde_json::json!({ "_name": "Apple M1" });
+        assert_eq!(macos_gpu_name(&gpu), "Apple M1");
+        assert_eq!(macos_gpu_name(&serde_json::json!({})), "Apple GPU");
+    }
+
+    #[test]
+    fn apple_silicon_does_not_land_in_cloud_mode() {
+        // The regression this guards: unified memory has to reach recommend_tier
+        // as something other than 0, or every Apple Silicon Mac gets Cloud Mode.
+        let gpu = detect_macos();
+        assert!(gpu.vram_mb > 0, "detected no usable VRAM: {:?}", gpu.vram_mb);
+        assert!(recommend_tier(&gpu) > 0);
     }
 }
