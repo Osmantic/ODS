@@ -1146,3 +1146,21 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def string_truncate_ellipsis_safe(text: str | None, max_length: int = 100, ellipsis: str = "...") -> str:
+    """Safely truncate text to max_length including ellipsis.
+    Returns "" on invalid inputs or negative max_length.
+    """
+    if text is None or not isinstance(text, str):
+        return ""
+    if not isinstance(max_length, int) or isinstance(max_length, bool) or max_length < 0:
+        return ""
+    if not isinstance(ellipsis, str):
+        ellipsis = "..."
+    if len(text) <= max_length:
+        return text
+    if max_length <= len(ellipsis):
+        return ellipsis[:max_length]
+    return text[: max_length - len(ellipsis)] + ellipsis
+
