@@ -106,7 +106,7 @@ Environment variables (set in `.env`):
 | `GET` | `/api/agents/metrics` | Yes | Full agent metrics (sessions, tokens, cost) |
 | `GET` | `/api/agents/metrics.html` | Yes | Agent metrics as HTML fragment (htmx) |
 | `GET` | `/api/agents/cluster` | Yes | Cluster health and GPU node status |
-| `GET` | `/api/agents/throughput` | Yes | Throughput stats (tokens/sec) |
+| `GET` | `/api/agents/throughput` | Yes | Throughput stats; optional history limit (1–180, default 30) |
 
 ### Privacy Shield
 
@@ -205,3 +205,22 @@ docker compose logs dashboard-api
 ## License
 
 Part of ODS — Local AI Infrastructure
+
+
+### Agent throughput history
+
+Authenticated clients can request more of the collector's retained samples with
+`GET /api/agents/throughput?limit=180`. The optional integer limit accepts 1–180;
+invalid values return HTTP 422. Omitting it preserves the 30-sample response
+used by existing clients.
+
+History is ordered oldest to newest and may contain fewer points than requested
+during startup, collection outages, or after retention pruning. At the nominal
+five-second collection interval, 180 samples cover approximately 15 minutes.
+This is an in-memory observation history, not a durable event or billing log.
+
+The limit affects only the history array. Current, average and peak remain
+statistics over the full retained window, so comparing different response limits
+does not change their meaning. Samples currently represent Token Spy's 24-hour
+output-token average, not instantaneous generation speed. Existing
+`/api/agents/metrics` responses keep their default 30-sample history.
