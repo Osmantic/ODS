@@ -14,6 +14,14 @@ interface Props {
 
 type InstallStatus = "idle" | "installing" | "done" | "failed";
 
+// A failed attempt has to keep offering the button. Gating it on "idle" alone
+// meant the one transient failure — a dropped download, a declined UAC prompt
+// — removed the only way to try again, leaving a red row with no affordance
+// and Continue still disabled. Re-check cannot help: nothing got installed, so
+// it just confirms the same missing prerequisite.
+const canAttempt = (status: InstallStatus) =>
+  status === "idle" || status === "failed";
+
 export default function Prerequisites({ onNext, onError }: Props) {
   const [prereqs, setPrereqs] = useState<PrerequisiteStatus | null>(null);
   const [dockerStatus, setDockerStatus] = useState<InstallStatus>("idle");
@@ -62,6 +70,11 @@ export default function Prerequisites({ onNext, onError }: Props) {
     );
   }
 
+  const refresh = async () => {
+    const updated = await checkPrerequisites();
+    setPrereqs(updated);
+  };
+
   const handleInstallDocker = async () => {
     setDockerStatus("installing");
     setMessage("Installing Docker... this may take a few minutes.");
@@ -70,6 +83,11 @@ export default function Prerequisites({ onNext, onError }: Props) {
       if (result.success) {
         setDockerStatus("done");
         setMessage(result.message);
+        // Nothing re-read the prerequisites after a success, so the row kept
+        // its failure icon and Continue stayed disabled until the user
+        // happened to press Re-check. Deliberately outside the try below: a
+        // re-check that fails is not a failed install.
+        refresh().catch(() => setMessage(`${result.message} Press Re-check.`));
       } else {
         setDockerStatus("failed");
         setMessage(result.message);
@@ -90,6 +108,10 @@ export default function Prerequisites({ onNext, onError }: Props) {
         setMessage(result.message);
         if (result.reboot_required) {
           setRebootNeeded(true);
+        } else {
+          refresh().catch(() =>
+            setMessage(`${result.message} Press Re-check.`),
+          );
         }
       } else {
         setWslStatus("failed");
@@ -99,11 +121,6 @@ export default function Prerequisites({ onNext, onError }: Props) {
       setWslStatus("failed");
       setMessage(String(e));
     }
-  };
-
-  const handleRecheck = async () => {
-    const updated = await checkPrerequisites();
-    setPrereqs(updated);
   };
 
   return (
@@ -142,9 +159,9 @@ export default function Prerequisites({ onNext, onError }: Props) {
               />
               <span className="text-sm text-white">WSL2</span>
             </div>
-            {!prereqs.wsl2_installed && wslStatus === "idle" && (
+            {!prereqs.wsl2_installed && canAttempt(wslStatus) && (
               <Button variant="secondary" onClick={handleInstallWSL}>
-                Install
+                {wslStatus === "failed" ? "Retry" : "Install"}
               </Button>
             )}
           </div>
@@ -171,9 +188,9 @@ export default function Prerequisites({ onNext, onError }: Props) {
               )}
             </div>
           </div>
-          {!prereqs.docker_installed && dockerStatus === "idle" && (
+          {!prereqs.docker_installed && canAttempt(dockerStatus) && (
             <Button variant="secondary" onClick={handleInstallDocker}>
-              Install
+              {dockerStatus === "failed" ? "Retry" : "Install"}
             </Button>
           )}
         </div>
@@ -197,7 +214,7 @@ export default function Prerequisites({ onNext, onError }: Props) {
         </div>
       ) : (
         <div className="flex gap-3">
-          <Button variant="ghost" onClick={handleRecheck}>
+          <Button variant="ghost" onClick={refresh}>
             Re-check
           </Button>
           <Button
