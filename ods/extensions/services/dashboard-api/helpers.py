@@ -1163,3 +1163,23 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def numeric_exponential_decay_safe(initial_val, decay_rate, time_steps, min_val: float = 0.0) -> float:
+    """Safely calculate exponential decay values for telemetry and metrics algorithms."""
+    if initial_val is None or decay_rate is None or time_steps is None:
+        return float(min_val or 0.0)
+    try:
+        v0 = float(initial_val)
+        r = float(decay_rate)
+        t = float(time_steps)
+        m = float(min_val or 0.0)
+        if math.isnan(v0) or math.isinf(v0) or math.isnan(r) or math.isinf(r) or math.isnan(t) or math.isinf(t):
+            return m
+        decayed = v0 * math.exp(-abs(r) * max(0.0, t))
+        if math.isnan(decayed) or math.isinf(decayed):
+            return m
+        return max(m, float(decayed))
+    except (ValueError, TypeError, OverflowError, ZeroDivisionError):
+        return float(min_val or 0.0)
+
