@@ -1,7 +1,7 @@
 use crate::state::{GpuInfo, InstallPhase, InstallState};
 use crate::{docker, gpu, installer, platform};
 use serde::Serialize;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
 const ALLOWED_FEATURES: &[&str] = &["voice", "workflows", "rag", "image_gen", "all"];
 
@@ -177,10 +177,48 @@ pub async fn start_install(
     let state_clone = state.clone();
 
     // Run installation in a blocking thread
-    tokio::task::spawn_blocking(move || installer::run_install(state_clone, dir, tier, features))
-        .await
-        .map_err(|e| format!("Install task failed: {}", e))?
-        .map(|_| "Installation complete!".to_string())
+    let outcome = tokio::task::spawn_blocking(move || {
+        installer::run_install(state_clone, dir, tier, features)
+    })
+    .await;
+
+    match outcome {
+        Ok(result) => result.map(|_| "Installation complete!".to_string()),
+        Err(join_error) => {
+            let message = format!("Install task failed: {}", join_error);
+            persist_task_failure(&state, &message);
+            Err(message)
+        }
+    }
+}
+
+/// Record a dead install task on the persisted state.
+///
+/// The error used to be returned without touching the state file, which was
+/// left saying Installing with no error set. get_install_progress serves the
+/// front end from that file, so the progress page kept polling a run that had
+/// already stopped — and the file outlives the process, so relaunching the
+/// installer resumed into the same dead state.
+fn persist_task_failure(state: &Mutex<InstallState>, message: &str) {
+    let mut s = lock_recovering(state);
+    mark_task_failed(&mut s, message);
+    let _ = s.save();
+}
+
+/// Lock the state, taking it back if a panic left the mutex poisoned.
+///
+/// spawn_blocking only fails when its closure panicked — a blocking task
+/// cannot be cancelled once it is running — and run_install holds this lock
+/// while it writes progress, so a poisoned mutex is the expected case here
+/// rather than an exceptional one. The state behind it is still the state that
+/// needs the failure recorded on it.
+fn lock_recovering(state: &Mutex<InstallState>) -> MutexGuard<'_, InstallState> {
+    state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn mark_task_failed(state: &mut InstallState, message: &str) {
+    state.phase = InstallPhase::Error;
+    state.error = Some(message.to_string());
 }
 
 fn validate_install_request(tier: u8, features: &[String]) -> Result<(), String> {
@@ -297,5 +335,68 @@ fn state_file_path() -> std::path::PathBuf {
         std::path::PathBuf::from(base)
             .join("ods")
             .join("installer-state.json")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn installing() -> InstallState {
+        InstallState {
+            phase: InstallPhase::Installing,
+            selected_tier: Some(2),
+            selected_features: vec!["voice".to_string()],
+            progress_pct: 40,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_dead_install_task_is_marked_failed() {
+        let mut state = installing();
+        mark_task_failed(&mut state, "Install task failed: panicked");
+
+        assert_eq!(state.phase, InstallPhase::Error);
+        assert_eq!(
+            state.error.as_deref(),
+            Some("Install task failed: panicked")
+        );
+    }
+
+    #[test]
+    fn marking_a_failure_keeps_what_the_user_chose() {
+        // The wizard reads these back to offer a resume, so the failure has to
+        // amend the state rather than reset it.
+        let mut state = installing();
+        mark_task_failed(&mut state, "boom");
+
+        assert_eq!(state.selected_tier, Some(2));
+        assert_eq!(state.selected_features, vec!["voice".to_string()]);
+        assert_eq!(state.progress_pct, 40);
+    }
+
+    #[test]
+    fn a_poisoned_lock_still_yields_the_state() {
+        // The panic that produces the JoinError is the same panic that poisons
+        // this mutex, so plain lock().unwrap() would panic on the error path.
+        let state = Mutex::new(installing());
+
+        let panicked = std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    let _guard = state.lock().unwrap();
+                    panic!("install thread died holding the lock");
+                })
+                .join()
+        });
+        assert!(panicked.is_err(), "the helper thread should have panicked");
+        assert!(state.lock().is_err(), "the mutex should be poisoned");
+
+        let mut recovered = lock_recovering(&state);
+        assert_eq!(recovered.progress_pct, 40);
+
+        mark_task_failed(&mut recovered, "Install task failed: panicked");
+        assert_eq!(recovered.phase, InstallPhase::Error);
     }
 }
