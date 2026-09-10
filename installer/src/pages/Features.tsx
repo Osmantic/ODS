@@ -11,6 +11,12 @@ interface FeatureOption {
   description: string;
   default: boolean;
   vramNote?: string;
+  /**
+   * The feature id understood by the `start_install` command, or null when the
+   * installer has no flag for it and always installs it. Only non-null ids may
+   * be sent — the Rust side rejects anything outside its allowlist.
+   */
+  installerFlag: string | null;
 }
 
 const FEATURES: FeatureOption[] = [
@@ -20,6 +26,7 @@ const FEATURES: FeatureOption[] = [
     description:
       "AI chat interface with a powerful language model running locally.",
     default: true,
+    installerFlag: null,
   },
   {
     id: "voice",
@@ -27,6 +34,7 @@ const FEATURES: FeatureOption[] = [
     description: "Speech-to-text and text-to-speech for voice conversations.",
     default: false,
     vramNote: "Adds ~1GB VRAM usage",
+    installerFlag: "voice",
   },
   {
     id: "workflows",
@@ -34,6 +42,7 @@ const FEATURES: FeatureOption[] = [
     description:
       "n8n workflow automation and OpenClaw AI agents for complex tasks.",
     default: false,
+    installerFlag: "workflows",
   },
   {
     id: "rag",
@@ -41,6 +50,7 @@ const FEATURES: FeatureOption[] = [
     description:
       "Vector search with Qdrant for retrieval-augmented generation.",
     default: false,
+    installerFlag: "rag",
   },
   {
     id: "image_gen",
@@ -48,13 +58,15 @@ const FEATURES: FeatureOption[] = [
     description: "Generate images locally with ComfyUI and FLUX.",
     default: false,
     vramNote: "Requires 8GB+ VRAM",
+    installerFlag: "image_gen",
   },
   {
     id: "search",
     name: "Private Search",
     description:
       "Self-hosted search engine (SearXNG) with no tracking or ads.",
-    default: false,
+    default: true,
+    installerFlag: null,
   },
 ];
 
@@ -64,8 +76,8 @@ export default function Features({ onNext }: Props) {
   );
 
   const toggle = (id: string) => {
-    // Chat is always enabled
-    if (id === "chat") return;
+    // Features without an installer flag are always installed.
+    if (!FEATURES.find((f) => f.id === id)?.installerFlag) return;
     setSelected((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
@@ -78,6 +90,14 @@ export default function Features({ onNext }: Props) {
     setSelected(new Set(FEATURES.map((f) => f.id)));
   };
 
+  // Send only ids the installer has a flag for; `start_install` rejects the rest.
+  const submit = () =>
+    onNext(
+      FEATURES.filter((f) => f.installerFlag && selected.has(f.id)).map(
+        (f) => f.installerFlag as string,
+      ),
+    );
+
   return (
     <div className="flex flex-col items-center justify-center h-full px-8">
       <h2 className="text-2xl font-bold mb-2">Choose Features</h2>
@@ -88,7 +108,7 @@ export default function Features({ onNext }: Props) {
       <div className="w-full max-w-md space-y-2 mb-6">
         {FEATURES.map((feature) => {
           const isSelected = selected.has(feature.id);
-          const isRequired = feature.id === "chat";
+          const isRequired = feature.installerFlag === null;
           return (
             <button
               key={feature.id}
@@ -137,7 +157,7 @@ export default function Features({ onNext }: Props) {
         <Button variant="ghost" onClick={selectAll}>
           Select All
         </Button>
-        <Button onClick={() => onNext(Array.from(selected))}>
+        <Button onClick={submit}>
           Install
         </Button>
       </div>
