@@ -212,6 +212,31 @@ def test_approve_unknown_token(make_client):
     assert g.json()["granted"] is False
 
 
+def test_approve_token_expires(make_client):
+    """Approval token returns 403 when expired."""
+    client, _ = make_client()
+    with patch("main._APPROVAL_TTL", 0):
+        r = _verify(client, tool="web_fetch", args={"url": "http://x"}, session="ap-exp")
+        token = r.json()["approval_token"]
+
+    g = client.post("/approve", json={"approval_token": token, "approver": "alice"})
+    assert g.status_code == 200
+    assert g.json()["granted"] is False
+    assert "expired" in g.json().get("reason", "").lower()
+
+
+def test_approve_token_not_expired(make_client):
+    """Approval token is accepted before TTL expires."""
+    client, _ = make_client()
+    with patch("main._APPROVAL_TTL", 9999):
+        r = _verify(client, tool="web_fetch", args={"url": "http://x"}, session="ap-valid")
+        token = r.json()["approval_token"]
+
+    g = client.post("/approve", json={"approval_token": token, "approver": "alice"})
+    assert g.status_code == 200
+    assert g.json()["granted"] is True
+
+
 # ── Approval is a REAL one-shot retry bypass (issue #1269 remediation) ───────
 
 
