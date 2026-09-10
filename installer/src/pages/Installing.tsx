@@ -34,36 +34,50 @@ export default function Installing({
   });
   const started = useRef(false);
 
+  // App recreates onComplete and onError on every render, so an effect that
+  // lists them re-runs whenever the parent renders. Reach them through a ref
+  // instead, and keep the effects below independent of the render cycle.
+  const callbacks = useRef({ onComplete, onError });
+  useEffect(() => {
+    callbacks.current = { onComplete, onError };
+  });
+
+  // Starting the install is not idempotent, so it is guarded — including
+  // against StrictMode's development double-invoke, which mounts twice.
   useEffect(() => {
     if (started.current) return;
     started.current = true;
 
-    // Start the install
-    startInstall(tier, features, installDir).then(() => {
-      onComplete();
-    }).catch((e) => {
-      onError(String(e));
-    });
+    startInstall(tier, features, installDir)
+      .then(() => callbacks.current.onComplete())
+      .catch((e) => callbacks.current.onError(String(e)));
+    // Install parameters are fixed for the life of this screen; re-running with
+    // new ones would start a second install.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-    // Poll for progress
+  // Polling is separate and unguarded, so a teardown is always followed by a
+  // fresh interval. Folding it into the effect above meant the started guard
+  // short-circuited the re-run, leaving the cleared interval with no
+  // replacement and the progress bar frozen at 0% for the whole install.
+  useEffect(() => {
     const interval = setInterval(async () => {
       try {
         const p = await getInstallProgress();
         setProgress(p);
         if (p.error) {
           clearInterval(interval);
-          onError(p.error);
-        }
-        if (p.percent >= 100) {
+          callbacks.current.onError(p.error);
+        } else if (p.percent >= 100) {
           clearInterval(interval);
         }
       } catch {
-        // Ignore polling errors
+        // A dropped poll is not fatal; the next tick picks the state back up.
       }
     }, 2000);
 
     return () => clearInterval(interval);
-  }, [tier, features, installDir, onComplete, onError]);
+  }, []);
 
   const phaseLabel =
     PHASE_LABELS[progress.phase] || progress.message || "Working...";
