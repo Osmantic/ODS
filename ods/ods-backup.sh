@@ -676,7 +676,7 @@ main() {
     # Delete mode
     if [[ -n "$delete_id" ]]; then
         delete_backup "$delete_id"
-        exit 0
+        exit $?
     fi
 
     # Verify mode
