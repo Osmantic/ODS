@@ -1146,3 +1146,18 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def list_chunk_by_size_safe(items: list | None, size: int) -> list:
+    """Safely split a sequence/list into chunks of maximum size `size`.
+    Returns [] on invalid/empty inputs or size <= 0.
+    """
+    if not items or not isinstance(items, (list, tuple)):
+        return []
+    if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
+        return []
+    try:
+        return [list(items[i : i + size]) for i in range(0, len(items), size)]
+    except (TypeError, ValueError, OverflowError):
+        return []
+
