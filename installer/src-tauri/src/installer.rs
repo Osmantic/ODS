@@ -123,8 +123,7 @@ pub fn run_install(
     let stderr_handle = child.stderr.take().map(|stderr| {
         thread::spawn(move || {
             let reader = BufReader::new(stderr);
-            reader
-                .lines()
+            output_lines(reader)
                 .map_while(Result::ok)
                 .collect::<Vec<String>>()
         })
@@ -133,7 +132,7 @@ pub fn run_install(
     // Parse stdout for progress updates
     if let Some(stdout) = child.stdout.take() {
         let reader = BufReader::new(stdout);
-        for line in reader.lines() {
+        for line in output_lines(reader) {
             if let Ok(line) = line {
                 if let Some(progress) = parse_progress_line(&line) {
                     update_progress(&state, &progress.message, progress.percent);
@@ -172,6 +171,20 @@ pub fn run_install(
             Err(format!("Installation failed:\n{}", detail))
         }
     }
+}
+
+
+// Native installers may emit legacy-encoded diagnostics. Decoding a line must
+// not close the pipe and interrupt the child before its final error is read.
+fn output_lines(reader: impl BufRead) -> impl Iterator<Item = std::io::Result<String>> {
+    reader.split(b'\n').map(|line| {
+        line.map(|mut bytes| {
+            if bytes.last() == Some(&b'\r') {
+                bytes.pop();
+            }
+            String::from_utf8_lossy(&bytes).into_owned()
+        })
+    })
 }
 
 fn ensure_checkout(install_dir: &Path) -> Result<(), String> {
@@ -429,4 +442,60 @@ mod tests {
             DEFAULT_REPO_URL
         ));
     }
+    #[test]
+    fn installation_drains_logs_after_non_utf8_output() {
+        let root = std::env::temp_dir().join(format!(
+            "ods-native-output-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        std::fs::create_dir(root.join("ods")).unwrap();
+        for args in [vec!["init", "-q"], vec!["remote", "add", "origin", repo_url()]] {
+            assert!(Command::new("git").arg("-C").arg(&root).args(args).status().unwrap().success());
+        }
+        std::fs::write(root.join("install.ps1"), r#"
+param([switch]$NonInteractive, [int]$Tier)
+$ErrorActionPreference = 'Stop'
+$stream = [Console]::OpenStandardError()
+$stream.Write([byte[]]@(255,10),0,2)
+$line = [Text.Encoding]::ASCII.GetBytes(('x' * 8192) + [char]10)
+for ($i = 0; $i -lt 32; $i++) { $stream.Write($line,0,$line.Length) }
+$tail = [Text.Encoding]::ASCII.GetBytes("FINAL-DIAGNOSTIC" + [char]13 + [char]10)
+$stream.Write($tail,0,$tail.Length)
+$stream.Flush()
+exit 1
+"#).unwrap();
+        std::fs::write(root.join("ods/install.sh"), r#"#!/usr/bin/env python3
+import sys
+sys.stderr.buffer.write(bytes([255, 10]))
+for _ in range(32):
+    sys.stderr.buffer.write(b"x" * 8192 + b"\n")
+sys.stderr.buffer.write(b"FINAL-DIAGNOSTIC\r\n")
+sys.stderr.buffer.flush()
+sys.exit(1)
+"#).unwrap();
+
+        // Isolate persisted installer state from the developer's real profile.
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "installer::tests::output_fixture_child", "--ignored", "--nocapture"])
+            .env("ODS_OUTPUT_FIXTURE", &root)
+            .env("LOCALAPPDATA", &root)
+            .env("XDG_DATA_HOME", &root)
+            .env("HOME", &root)
+            .output().unwrap();
+        assert!(root.canonicalize().unwrap().starts_with(std::env::temp_dir().canonicalize().unwrap()));
+        std::fs::remove_dir_all(&root).unwrap();
+        assert!(output.status.success(), "{}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    }
+
+    #[test]
+    #[ignore = "invoked in an isolated child by installation_drains_logs_after_non_utf8_output"]
+    fn output_fixture_child() {
+        let checkout = PathBuf::from(std::env::var_os("ODS_OUTPUT_FIXTURE").unwrap());
+        let state = Arc::new(Mutex::new(InstallState::default()));
+        let error = run_install(state, checkout, 1, vec![]).unwrap_err();
+        assert!(error.contains("FINAL-DIAGNOSTIC"), "final child diagnostic was lost: {error}");
+    }
+
 }
