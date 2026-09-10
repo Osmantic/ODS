@@ -38,11 +38,11 @@ pub fn run_install(
     features: Vec<String>,
 ) -> Result<(), String> {
     // Phase 1: Clone the repo
-    update_progress(&state, "Downloading ODS", 5);
+    update_progress(&state, "setup", "Downloading ODS", 5);
 
     ensure_checkout(&install_dir)?;
 
-    update_progress(&state, "Configuring installation", 15);
+    update_progress(&state, "setup", "Configuring installation", 15);
 
     // Phase 2: Build installer arguments
     let ods_dir = install_dir.join("ods");
@@ -65,7 +65,7 @@ pub fn run_install(
     }
 
     // Phase 3: Run the installer with progress parsing
-    update_progress(&state, "Running installer", 20);
+    update_progress(&state, "setup", "Running installer", 20);
 
     let install_script = ods_dir.join("install.sh");
     let install_ps1 = install_dir.join("install.ps1");
@@ -136,7 +136,7 @@ pub fn run_install(
         for line in reader.lines() {
             if let Ok(line) = line {
                 if let Some(progress) = parse_progress_line(&line) {
-                    update_progress(&state, &progress.message, progress.percent);
+                    update_progress(&state, &progress.phase, &progress.message, progress.percent);
                 }
             }
         }
@@ -150,7 +150,7 @@ pub fn run_install(
         .unwrap_or_default();
 
     if output.success() {
-        update_progress(&state, "Installation complete!", 100);
+        update_progress(&state, "complete", "Installation complete!", 100);
         let mut s = state.lock().unwrap();
         s.phase = InstallPhase::Complete;
         let _ = s.save();
@@ -338,13 +338,29 @@ fn parse_progress_line(line: &str) -> Option<ProgressEvent> {
     })
 }
 
-fn update_progress(state: &Arc<Mutex<InstallState>>, message: &str, percent: u8) {
+fn update_progress(state: &Arc<Mutex<InstallState>>, phase: &str, message: &str, percent: u8) {
     if let Ok(mut s) = state.lock() {
-        s.progress_pct = percent;
-        s.progress_message = message.to_string();
-        s.phase = InstallPhase::Installing;
+        set_progress(&mut s, phase, message, percent);
         let _ = s.save();
     }
+}
+
+/// Record one progress event on the state.
+///
+/// `phase` is the installer's own phase id from the ODS_PROGRESS line, which
+/// the front end keys its phase labels and dots off. parse_progress_line has
+/// always read it and update_progress always threw it away, so the id never
+/// reached the state file and the dots never lit.
+///
+/// An empty id means the line carried no phase — the two-field ODS_PROGRESS
+/// form — so the last known one is kept rather than blanking the dots.
+fn set_progress(state: &mut InstallState, phase: &str, message: &str, percent: u8) {
+    state.progress_pct = percent;
+    state.progress_message = message.to_string();
+    if !phase.is_empty() {
+        state.progress_phase = phase.to_string();
+    }
+    state.phase = InstallPhase::Installing;
 }
 
 /// Default install directory per platform.
@@ -369,6 +385,110 @@ pub fn default_install_dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn progressed(events: &[(&str, &str, u8)]) -> InstallState {
+        let mut state = InstallState::default();
+        for (phase, message, percent) in events {
+            set_progress(&mut state, phase, message, *percent);
+        }
+        state
+    }
+
+    #[test]
+    fn a_progress_event_records_the_installer_phase_id() {
+        let state = progressed(&[("docker", "Setting up Docker", 30)]);
+        assert_eq!(state.progress_phase, "docker");
+        assert_eq!(state.progress_message, "Setting up Docker");
+        assert_eq!(state.progress_pct, 30);
+    }
+
+    #[test]
+    fn a_blank_phase_keeps_the_one_before_it() {
+        // The two-field ODS_PROGRESS form parses to an empty phase; it should
+        // still move the bar without dropping the dots back to nothing.
+        let state = progressed(&[("images", "Downloading", 48), ("", "Pulling 3/9", 52)]);
+        assert_eq!(state.progress_phase, "images");
+        assert_eq!(state.progress_pct, 52);
+    }
+
+    #[test]
+    fn the_parsed_phase_survives_all_the_way_onto_the_state() {
+        let event = parse_progress_line("ODS_PROGRESS:85:health:Checking service health")
+            .expect("the three-field form should parse");
+        let state = progressed(&[(event.phase.as_str(), event.message.as_str(), event.percent)]);
+        assert_eq!(state.progress_phase, "health");
+    }
+
+    /// Every id the PHASES ladder in installer/src/pages/Installing.tsx draws a
+    /// dot for. Any phase id that reaches the front end has to be in here, or
+    /// the label lookup misses and the dots go dark mid-install.
+    const LADDER_IDS: &[&str] = &[
+        "setup",
+        "preflight",
+        "detection",
+        "features",
+        "requirements",
+        "docker",
+        "directories",
+        "devtools",
+        "images",
+        "offline",
+        "amd-tuning",
+        "services",
+        "health",
+        "summary",
+        "complete",
+    ];
+
+    #[test]
+    fn every_phase_the_installer_emits_has_a_dot() {
+        // One real ODS_PROGRESS line per phase, as emitted by the ods_progress
+        // calls in ods/installers/phases/01-preflight .. 13-summary.
+        for line in [
+            "ODS_PROGRESS:5:preflight:Running preflight checks",
+            "ODS_PROGRESS:12:detection:Detecting GPU hardware",
+            "ODS_PROGRESS:18:features:Selecting features",
+            "ODS_PROGRESS:25:requirements:Checking system requirements",
+            "ODS_PROGRESS:30:docker:Setting up Docker",
+            "ODS_PROGRESS:38:directories:Preparing installation directory",
+            "ODS_PROGRESS:42:devtools:Installing developer tools",
+            "ODS_PROGRESS:48:images:Downloading container images",
+            "ODS_PROGRESS:65:offline:Configuring offline mode",
+            "ODS_PROGRESS:70:amd-tuning:Tuning AMD GPU settings",
+            "ODS_PROGRESS:75:services:Starting services",
+            "ODS_PROGRESS:85:health:Checking service health",
+            "ODS_PROGRESS:98:summary:Finishing up",
+        ] {
+            let event = parse_progress_line(line).expect(line);
+            assert!(
+                LADDER_IDS.contains(&event.phase.as_str()),
+                "{line} carries phase {} which the ladder has no dot for",
+                event.phase
+            );
+        }
+    }
+
+    #[test]
+    fn the_keyword_fallback_stays_on_the_ladder_too() {
+        // Plain installer output with no ODS_PROGRESS prefix falls through to
+        // keyword matching, which makes up phase ids of its own.
+        for line in [
+            "Running preflight checks",
+            "Detecting GPU hardware",
+            "Installing Docker engine",
+            "Pulling image 3/9",
+            "Starting services",
+            "Running health check",
+            "Stack is ready",
+        ] {
+            let event = parse_progress_line(line).expect(line);
+            assert!(
+                LADDER_IDS.contains(&event.phase.as_str()),
+                "{line} was read as phase {} which the ladder has no dot for",
+                event.phase
+            );
+        }
+    }
 
     fn fnv1a64(bytes: &[u8]) -> u64 {
         bytes.iter().fold(0xcbf29ce484222325, |hash, byte| {

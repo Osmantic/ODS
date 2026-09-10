@@ -11,6 +11,12 @@ pub struct InstallState {
     pub selected_tier: Option<u8>,
     pub selected_features: Vec<String>,
     pub error: Option<String>,
+    /// The installer script's own phase id — "preflight", "docker", "health",
+    /// as emitted by ods_progress. Distinct from `phase` above, which tracks
+    /// the wizard page. Defaulted so a state file written before this field
+    /// existed still loads.
+    #[serde(default)]
+    pub progress_phase: String,
     pub progress_pct: u8,
     pub progress_message: String,
     pub reboot_pending: bool,
@@ -56,6 +62,7 @@ impl Default for InstallState {
             selected_tier: None,
             selected_features: vec![],
             error: None,
+            progress_phase: String::new(),
             progress_pct: 0,
             progress_message: String::new(),
             reboot_pending: false,

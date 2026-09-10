@@ -206,7 +206,11 @@ pub fn get_install_progress() -> ProgressInfo {
     if let Ok(data) = std::fs::read_to_string(&state_path) {
         if let Ok(state) = serde_json::from_str::<InstallState>(&data) {
             return ProgressInfo {
-                phase: format!("{:?}", state.phase),
+                // The installer's phase id, not the wizard phase. The front
+                // end keys its labels and dots off this field, and the wizard
+                // phase only ever debug-printed as "Installing" — which is not
+                // one of those keys, so nothing ever matched.
+                phase: state.progress_phase,
                 percent: state.progress_pct,
                 message: state.progress_message,
                 error: state.error,

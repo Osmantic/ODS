@@ -9,15 +9,33 @@ interface Props {
   onError: (msg: string) => void;
 }
 
-const PHASE_LABELS: Record<string, string> = {
-  preflight: "Running preflight checks",
-  detection: "Detecting hardware",
-  docker: "Setting up Docker",
-  images: "Downloading container images",
-  services: "Starting services",
-  health: "Checking service health",
-  complete: "Finishing up",
-};
+// The phase ids ods_progress emits, in the order install-core.sh sources the
+// phases (ods/installers/phases/01-preflight .. 13-summary). "setup" is the
+// Tauri side's own clone-and-configure step before the script starts, and
+// "complete" is the success write it makes afterwards.
+//
+// The old list was keyed on ids the installer never emits — it was missing
+// features, requirements, directories, devtools, offline, amd-tuning and
+// summary, and carried a "complete" that only the backend sends. That was
+// moot while get_install_progress reported the wizard phase here, but it
+// would have left half the ladder dark once it stopped.
+const PHASES: { id: string; label: string }[] = [
+  { id: "setup", label: "Preparing" },
+  { id: "preflight", label: "Running preflight checks" },
+  { id: "detection", label: "Detecting hardware" },
+  { id: "features", label: "Selecting features" },
+  { id: "requirements", label: "Checking system requirements" },
+  { id: "docker", label: "Setting up Docker" },
+  { id: "directories", label: "Preparing installation directory" },
+  { id: "devtools", label: "Installing developer tools" },
+  { id: "images", label: "Downloading container images" },
+  { id: "offline", label: "Configuring offline mode" },
+  { id: "amd-tuning", label: "Tuning AMD GPU settings" },
+  { id: "services", label: "Starting services" },
+  { id: "health", label: "Checking service health" },
+  { id: "summary", label: "Finishing up" },
+  { id: "complete", label: "Done" },
+];
 
 export default function Installing({
   tier,
@@ -65,8 +83,12 @@ export default function Installing({
     return () => clearInterval(interval);
   }, [tier, features, installDir, onComplete, onError]);
 
+  // -1 for a phase the installer skipped past or one this build does not know;
+  // the dots then stay dark and the label falls through to whatever the
+  // installer last said, which is the same as the old unknown-phase behaviour.
+  const currentIdx = PHASES.findIndex((p) => p.id === progress.phase);
   const phaseLabel =
-    PHASE_LABELS[progress.phase] || progress.message || "Working...";
+    PHASES[currentIdx]?.label || progress.message || "Working...";
 
   return (
     <div className="flex flex-col items-center justify-center h-full px-8">
@@ -93,25 +115,22 @@ export default function Installing({
 
       {/* Phase dots */}
       <div className="flex gap-2">
-        {Object.keys(PHASE_LABELS).map((phase) => {
-          const currentIdx = Object.keys(PHASE_LABELS).indexOf(progress.phase);
-          const thisIdx = Object.keys(PHASE_LABELS).indexOf(phase);
-          const done = thisIdx < currentIdx;
-          const active = phase === progress.phase;
-          return (
-            <div
-              key={phase}
-              className={`w-2 h-2 rounded-full transition-colors ${
-                done
-                  ? "bg-ods-500"
-                  : active
-                    ? "bg-ods-400 animate-pulse"
-                    : "bg-gray-700"
-              }`}
-              title={PHASE_LABELS[phase]}
-            />
-          );
-        })}
+        {PHASES.map((phase, idx) => (
+          <div
+            key={phase.id}
+            // Index order, not equality, so a phase the run skips — offline
+            // and amd-tuning do not fire on every host — still reads as done
+            // once the install is past it.
+            className={`w-2 h-2 rounded-full transition-colors ${
+              idx < currentIdx
+                ? "bg-ods-500"
+                : idx === currentIdx
+                  ? "bg-ods-400 animate-pulse"
+                  : "bg-gray-700"
+            }`}
+            title={phase.label}
+          />
+        ))}
       </div>
 
       <p className="mt-10 text-xs text-gray-600 text-center max-w-sm">
