@@ -227,7 +227,7 @@ acquire_upgrade_lock() {
             if [[ ! -f "$STATUS_FILE" ]] || grep -q 'Another bootstrap model upgrade is already running' "$STATUS_FILE" 2>/dev/null; then
                 write_existing_upgrade_status "$existing_pid"
             fi
-            exit 0
+            exit 1
         fi
 
         log "Removing stale bootstrap model upgrade lock: $lock_dir"
