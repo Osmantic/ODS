@@ -793,6 +793,8 @@ export default function Pixel({ systemStatus = null }) {
     let latestAssistantText = ''
 
     async function streamAttempt(chatId, attemptConversation) {
+      const customRules = getSystemRules()
+      const payloadMessages = customRules ? [{role: 'system', content: customRules}, ...attemptConversation] : attemptConversation
       let reader
       let assistantText = ''
       let receivedDone = false
@@ -819,7 +821,7 @@ export default function Pixel({ systemStatus = null }) {
         const response = await fetch('/api/pixel/chat/stream', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ chat_id: chatId, request_id: requestId, messages: attemptConversation }),
+          body: JSON.stringify({ chat_id: chatId, request_id: requestId, messages: payloadMessages }),
           signal: controller.signal,
         })
         if (!isCurrentTurn()) return { kind: 'obsolete' }
