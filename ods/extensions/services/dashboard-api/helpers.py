@@ -1163,3 +1163,30 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def list_interleave_sequences_safe(*sequences) -> list:
+    """Safely interleave elements from multiple input sequences into a single combined list."""
+    if not sequences:
+        return []
+    valid_seqs = []
+    for seq in sequences:
+        if seq is None:
+            continue
+        if not isinstance(seq, (list, tuple, set)):
+            try:
+                valid_seqs.append(list(seq))
+            except TypeError:
+                continue
+        else:
+            valid_seqs.append(list(seq))
+    if not valid_seqs:
+        return []
+    res = []
+    max_len = max(len(s) for s in valid_seqs)
+    for i in range(max_len):
+        for seq in valid_seqs:
+            if i < len(seq):
+                res.append(seq[i])
+    return res
+
