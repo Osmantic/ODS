@@ -630,6 +630,7 @@ _check_version_compat() {
 
     # 4. Downgrade detection — warn and confirm before proceeding
     if (( major_jump < 0 )); then
+
         echo ""
         echo -e "${YELLOW}┌──────────────────────────────────────────────────────────┐${NC}"
         echo -e "${YELLOW}│  Downgrade detected                                      │${NC}"
@@ -2006,7 +2007,8 @@ cmd_update() {
         fi
     elif [[ -x "$INSTALL_DIR/ods-backup.sh" ]]; then
         log "Creating pre-update backup (${_snap_label})..."
-        if ! "$INSTALL_DIR/ods-backup.sh" "$_snap_label"; then
+        if ! "$INSTALL_DIR/ods-backup.sh" "$_snap_label" -t user-data; then
+
             warn "Pre-update backup failed; proceeding without safety net."
         fi
     else
