@@ -1,11 +1,12 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Search, Settings as Gear, Palette, Activity, Network, HardDrive, RefreshCw, Terminal, Bot, ShieldCheck, Share2, UserRound } from 'lucide-react'
+import { Search, Settings as Gear, Palette, Activity, Network, HardDrive, RefreshCw, Terminal, Bot, ShieldCheck, Share2, UserRound, ScrollText } from 'lucide-react'
 import Settings from '../pages/Settings'
 import MetalMetricIcon from './MetalMetricIcon'
 import ProfileSettings from './settings/ProfileSettings'
 import AssistantIdentitySettings from './settings/AssistantIdentitySettings'
 import PortalMascotSettings from './settings/PortalMascotSettings'
+import PixelSystemRulesSettings from './settings/PixelSystemRulesSettings'
 import '../settings-refinement.css'
 import '../settings-workspace.css'
 const Integrations = lazy(() => import('../pages/ServiceMap'))
@@ -15,6 +16,7 @@ const PixelDiagnostics = lazy(() => import('./settings/PixelDiagnostics'))
 const sections = [
   ['general', 'General', Gear], ['profile', 'Profile', UserRound], ['appearance', 'Appearance', Palette],
   ['portal-mascot', 'Portal mascot', Bot],
+  ['pixel-rules', 'Custom Instructions', ScrollText],
   ['usage', 'Usage', Activity], ['owner', 'Owner access', UserRound],
   ['connections', 'Pixel connections', Bot], ['access', 'Pixel access', ShieldCheck],
   ['sharing', 'Model sharing', Share2], ['services', 'Services', Network],
@@ -48,6 +50,7 @@ export default function SettingsModal() {
     <div ref={content} className="ods-settings-content" aria-label={sections.find(([id]) => id === section)[1]}><div hidden={['profile','portal-mascot','pixel-diagnostics','integrations','remote'].includes(section)}><Settings activeSection={section} /></div>
       {visited.has('profile') && <div hidden={section !== 'profile'} className="space-y-6"><ProfileSettings/><AssistantIdentitySettings/></div>}
       {section === 'portal-mascot' && <PortalMascotSettings/>}
+      {section === 'pixel-rules' && <PixelSystemRulesSettings/>}
       <Suspense fallback={<p>Loading settings…</p>}>
         {section === 'pixel-diagnostics' && <PixelDiagnostics />}
         {visited.has('integrations') && <div hidden={section !== 'integrations'}><Integrations compact /></div>}
