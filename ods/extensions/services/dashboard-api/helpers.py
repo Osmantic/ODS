@@ -1146,3 +1146,27 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def format_bytes_human_safe(num_bytes: float | int | None, decimals: int = 2) -> str:
+    """Safely format raw byte count into human readable string (e.g. 1.50 MB).
+    Returns '0 B' on invalid or negative byte count.
+    """
+    if num_bytes is None or isinstance(num_bytes, bool) or not isinstance(num_bytes, (int, float)):
+        return "0 B"
+    if isinstance(num_bytes, float) and (math.isnan(num_bytes) or math.isinf(num_bytes)):
+        return "0 B"
+    if num_bytes < 0:
+        return "0 B"
+    if not isinstance(decimals, int) or isinstance(decimals, bool) or decimals < 0:
+        decimals = 2
+    units = ["B", "KB", "MB", "GB", "TB", "PB"]
+    val = float(num_bytes)
+    idx = 0
+    while val >= 1024.0 and idx < len(units) - 1:
+        val /= 1024.0
+        idx += 1
+    if idx == 0:
+        return f"{int(val)} B"
+    return f"{val:.{decimals}f} {units[idx]}"
+
