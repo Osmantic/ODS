@@ -29,6 +29,34 @@ pub struct ProgressEvent {
     pub message: String,
 }
 
+/// Build the argument list for the Unix `ods/install.sh` entrypoint.
+///
+/// Pulled out of the spawn so the flags can be asserted on any host.
+fn build_install_args(tier: u8, features: &[String]) -> Vec<String> {
+    // install-core.sh defaults to INTERACTIVE=true and does no tty detection of
+    // its own, so without this it runs show_install_menu and blocks on a prompt
+    // the GUI has no terminal to answer. It would also discard the flags below,
+    // and skip the Tier 0/1 ComfyUI safety net, which is gated on non-interactive.
+    let mut args = vec![
+        "--tier".to_string(),
+        tier.to_string(),
+        "--non-interactive".to_string(),
+    ];
+
+    for feature in features {
+        match feature.as_str() {
+            "voice" => args.push("--voice".into()),
+            "workflows" => args.push("--workflows".into()),
+            "rag" => args.push("--rag".into()),
+            "image_gen" => args.push("--image-gen".into()),
+            "all" => args.push("--all".into()),
+            _ => {}
+        }
+    }
+
+    args
+}
+
 /// Run the full ODS installation.
 /// This clones the repo and delegates to the existing install-core.sh.
 pub fn run_install(
@@ -46,23 +74,7 @@ pub fn run_install(
 
     // Phase 2: Build installer arguments
     let ods_dir = install_dir.join("ods");
-    let mut args = vec!["--tier".to_string(), tier.to_string()];
-
-    if features.contains(&"voice".to_string()) {
-        args.push("--voice".into());
-    }
-    if features.contains(&"workflows".to_string()) {
-        args.push("--workflows".into());
-    }
-    if features.contains(&"rag".to_string()) {
-        args.push("--rag".into());
-    }
-    if features.contains(&"image_gen".to_string()) {
-        args.push("--image-gen".into());
-    }
-    if features.contains(&"all".to_string()) {
-        args.push("--all".into());
-    }
+    let args = build_install_args(tier, &features);
 
     // Phase 3: Run the installer with progress parsing
     update_progress(&state, "Running installer", 20);
@@ -105,6 +117,7 @@ pub fn run_install(
             .args(&ps_args)
             .current_dir(&install_dir)
             .env("ODS_INSTALLER_GUI", "1")
+            .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -114,6 +127,7 @@ pub fn run_install(
             .args(&args)
             .current_dir(&ods_dir)
             .env("ODS_INSTALLER_GUI", "1")
+            .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -374,6 +388,30 @@ mod tests {
         bytes.iter().fold(0xcbf29ce484222325, |hash, byte| {
             (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
         })
+    }
+
+    fn install_args(features: &[&str]) -> Vec<String> {
+        let owned: Vec<String> = features.iter().map(|f| f.to_string()).collect();
+        build_install_args(1, &owned)
+    }
+
+    #[test]
+    fn install_args_are_always_non_interactive() {
+        for features in [&[][..], &["voice"][..], &["all"][..]] {
+            assert!(
+                install_args(features).contains(&"--non-interactive".to_string()),
+                "missing --non-interactive for {:?}",
+                features
+            );
+        }
+    }
+
+    #[test]
+    fn install_args_pass_the_tier_and_selected_features() {
+        assert_eq!(
+            build_install_args(2, &["voice".to_string(), "rag".to_string()]),
+            vec!["--tier", "2", "--non-interactive", "--voice", "--rag"]
+        );
     }
 
     #[test]
