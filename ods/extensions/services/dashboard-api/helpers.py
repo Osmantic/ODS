@@ -1163,3 +1163,27 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def list_chunk_overlapping_safe(items, size: int = 2, step: int = 1) -> list:
+    """Safely generate sliding window / overlapping sublists from a sequence."""
+    if items is None:
+        return []
+    if not isinstance(items, (list, tuple, set)):
+        try:
+            items = list(items)
+        except TypeError:
+            return []
+    else:
+        items = list(items)
+    if not isinstance(size, int) or size <= 0:
+        size = 2
+    if not isinstance(step, int) or step <= 0:
+        step = 1
+    chunks = []
+    for i in range(0, len(items), step):
+        chunk = items[i:i + size]
+        if chunk:
+            chunks.append(chunk)
+    return chunks
+
