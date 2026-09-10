@@ -1607,3 +1607,17 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+class TestListUniqueSortedSafe:
+    def test_valid_unique_sort(self):
+        from helpers import list_unique_sorted_safe
+        assert list_unique_sorted_safe([3, 1, 2, 1, 3]) == [1, 2, 3]
+        assert list_unique_sorted_safe([3, 1, 2, 1], reverse=True) == [3, 2, 1]
+
+    def test_invalid_inputs(self):
+        from helpers import list_unique_sorted_safe
+        assert list_unique_sorted_safe(None) == []
+        assert list_unique_sorted_safe("not a list") == []
+        assert list_unique_sorted_safe(123) == []
+
