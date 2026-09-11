@@ -1,3 +1,5 @@
+import {browserUuid} from './browserUuid'
+
 const DATABASE = 'ods-wallpapers-v1'
 const STORE = 'images'
 export const MAX_WALLPAPER_VIDEO_BYTES = 100 * 1024 * 1024
@@ -64,7 +66,7 @@ async function prepareVideoWallpaper(file) {
     if (!context) throw new Error('Video thumbnails are unavailable in this browser.')
     context.drawImage(video, 0, 0, canvas.width, canvas.height)
     const image = canvas.toDataURL('image/webp', .8)
-    const row = {id:`custom-${crypto.randomUUID()}`, name:file.name.replace(/\.[^.]+$/, '').slice(0,80) || 'My video', kind:'video', image, video:file}
+    const row = {id:`custom-${browserUuid()}`, name:file.name.replace(/\.[^.]+$/, '').slice(0,80) || 'My video', kind:'video', image, video:file}
     if (!isStoredWallpaper(row)) throw new Error('Could not create a thumbnail for this video.')
     return row
   } finally {
@@ -95,7 +97,7 @@ export async function prepareWallpaper(file) {
     context.drawImage(bitmap, 0, 0, canvas.width, canvas.height)
     const image = canvas.toDataURL('image/webp', .86)
     if (image.length > 6 * 1024 * 1024 || !/^data:image\/(webp|png);base64,/.test(image)) throw new Error('The wallpaper could not be resized. Try another image.')
-    return {id:`custom-${crypto.randomUUID()}`, name:file.name.replace(/\.[^.]+$/, '').slice(0, 80) || 'My wallpaper', image}
+    return {id:`custom-${browserUuid()}`, name:file.name.replace(/\.[^.]+$/, '').slice(0, 80) || 'My wallpaper', image}
   } finally { bitmap.close() }
 }
 
