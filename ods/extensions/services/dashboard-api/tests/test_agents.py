@@ -89,3 +89,13 @@ class TestGetThroughput:
         assert "average" in data
         assert "peak" in data
         assert "history" in data
+
+    def test_throughput_metrics_add_sample_sanitization(self):
+        from agent_monitor import ThroughputMetrics
+        tm = ThroughputMetrics()
+        tm.add_sample(float("nan"))
+        tm.add_sample(-10.5)
+        tm.add_sample(25.0)
+        stats = tm.get_stats()
+        assert stats["current"] == 25.0
+        assert stats["average"] == (0.0 + 0.0 + 25.0) / 3.0
