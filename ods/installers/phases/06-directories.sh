@@ -1103,10 +1103,17 @@ WEBUI_AUTH=${WEBUI_AUTH}
 ENABLE_WEB_SEARCH=${ENABLE_WEB_SEARCH:-true}
 WEB_SEARCH_ENGINE=searxng
 
-#=== n8n Settings ===
-N8N_HOST=localhost
-N8N_WEBHOOK_URL=http://localhost:5678
-TIMEZONE=${SYSTEM_TZ:-UTC}
+    #=== n8n Settings ===
+    N8N_HOST=$(if [[ "$BIND_ADDRESS" == "0.0.0.0" && -n "$HOST_LAN_IP" ]]; then echo "$HOST_LAN_IP"; else echo "localhost"; fi)
+    N8N_WEBHOOK_URL=$(if [[ "$BIND_ADDRESS" == "0.0.0.0" && -n "$HOST_LAN_IP" ]]; then echo "http://${HOST_LAN_IP}:5678"; else echo "http://localhost:5678"; fi)
+    # Fix: ensure N8N_WEBHOOK_URL is not hardcoded to localhost when LAN IP is available.
+    # The logic above handles it, but some legacy versions had a hardcoded fallback.
+    # We explicitly verify it here to ensure no regressions.
+    if [[ "$BIND_ADDRESS" == "0.0.0.0" && -n "$HOST_LAN_IP" && "$N8N_WEBHOOK_URL" == *"localhost"* ]]; then
+        N8N_WEBHOOK_URL="http://${HOST_LAN_IP}:5678"
+    fi
+    TIMEZONE=${SYSTEM_TZ:-UTC}
+
 
 #=== Langfuse (LLM Observability) ===
 LANGFUSE_ENABLED=${LANGFUSE_ENABLED}
