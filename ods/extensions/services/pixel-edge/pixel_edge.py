@@ -1097,6 +1097,9 @@ def _preview_upstream_path(site_id: str, tail: str) -> str | None:
         return f"/{site_id}/{tail}"
     if re.fullmatch(r"__ods_changes__/(?:initial|site-[a-f0-9]{24})\.json", tail):
         return f"/{site_id}/{tail}"
+    # Match the host static server: a directory URL selects its index file.
+    if tail.endswith("/"):
+        tail += "index.html"
     parts = tail.split("/")
     if any(_PREVIEW_PATH_COMPONENT.fullmatch(part) is None for part in parts):
         return None
