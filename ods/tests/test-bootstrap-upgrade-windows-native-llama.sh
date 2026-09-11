@@ -50,9 +50,21 @@ exit 22
 EOF_CURL
 chmod +x "$fakebin/curl"
 
+cat > "$fakebin/cygpath" <<'EOF_CYGPATH'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "${!#}"
+EOF_CYGPATH
+chmod +x "$fakebin/cygpath"
+
 cat > "$fakebin/powershell.exe" <<'EOF_PS'
 #!/usr/bin/env bash
 set -euo pipefail
+if [[ -n "${ODS_ENV_REPLACE_SOURCE:-}" && -n "${ODS_ENV_REPLACE_TARGET:-}" && -n "${ODS_ENV_REPLACE_BACKUP:-}" ]]; then
+  cp -p "$ODS_ENV_REPLACE_TARGET" "$ODS_ENV_REPLACE_BACKUP"
+  mv -f "$ODS_ENV_REPLACE_SOURCE" "$ODS_ENV_REPLACE_TARGET"
+  exit 0
+fi
 : "${ODS_WIN_PID_FILE:?}"
 : "${ODS_WIN_LLAMA_EXE:?}"
 : "${ODS_WIN_MODEL_PATH:?}"
