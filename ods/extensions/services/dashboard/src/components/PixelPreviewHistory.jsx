@@ -1,5 +1,12 @@
 export default function PixelPreviewHistory({previews, selected, onSelect}) {
-  const versions = [...new Map(previews.map(preview => [preview.siteId,preview])).values()]
+  const retained = new Map()
+  for (const preview of previews) {
+    // Content-addressed IDs recur when a user restores an earlier snapshot.
+    // Order each distinct snapshot by its latest retained publication.
+    retained.delete(preview.siteId)
+    retained.set(preview.siteId, preview)
+  }
+  const versions = [...retained.values()]
   const currentListed = versions.some(preview => preview.siteId === selected.siteId)
   if (versions.length + (currentListed ? 0 : 1) < 2) return null
   const latest = versions.at(-1)
