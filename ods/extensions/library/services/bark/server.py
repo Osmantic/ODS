@@ -8,11 +8,12 @@ import io
 import base64
 import logging
 import threading
+import os
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor
 
 import soundfile as sf
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header, Depends
 from fastapi.responses import Response
 from pydantic import BaseModel, Field, field_validator
 
@@ -34,47 +35,155 @@ VALID_FORMATS = {"WAV", "MP3", "OGG", "FLAC"}
 # Max text length to prevent DoS via memory exhaustion
 MAX_TEXT_LENGTH = 10000
 
+
+async def verify_api_key(x_api_key: Optional[str] = Header(None)):
+    """Verify ODS_API_KEY from X-API-KEY header. Fails closed if env var is missing."""
+    expected_key = os.environ.get("ODS_API_KEY")
+    if not expected_key:
+        logger.error(
+            "ODS_API_KEY environment variable is not configured. Server failing closed."
+        )
+        raise HTTPException(
+            status_code=500, detail="Server configuration error: API key not set."
+        )
+
+    if x_api_key != expected_key:
+        logger.warning(f"Unauthorized access attempt with key: {x_api_key}")
+        raise HTTPException(status_code=401, detail="Invalid or missing API key.")
+
+
 # Valid Bark voice presets (exact match: vX/xx_speaker_N)
 VALID_VOICES = {
-    "v2/en_speaker_0", "v2/en_speaker_1", "v2/en_speaker_2", "v2/en_speaker_3",
-    "v2/en_speaker_4", "v2/en_speaker_5", "v2/en_speaker_6", "v2/en_speaker_7",
-    "v2/en_speaker_8", "v2/en_speaker_9",
-    "v2/de_speaker_0", "v2/de_speaker_1", "v2/de_speaker_2", "v2/de_speaker_3",
-    "v2/de_speaker_4", "v2/de_speaker_5", "v2/de_speaker_6", "v2/de_speaker_7",
-    "v2/de_speaker_8", "v2/de_speaker_9",
-    "v2/es_speaker_0", "v2/es_speaker_1", "v2/es_speaker_2", "v2/es_speaker_3",
-    "v2/es_speaker_4", "v2/es_speaker_5", "v2/es_speaker_6", "v2/es_speaker_7",
-    "v2/es_speaker_8", "v2/es_speaker_9",
-    "v2/fr_speaker_0", "v2/fr_speaker_1", "v2/fr_speaker_2", "v2/fr_speaker_3",
-    "v2/fr_speaker_4", "v2/fr_speaker_5", "v2/fr_speaker_6", "v2/fr_speaker_7",
-    "v2/fr_speaker_8", "v2/fr_speaker_9",
-    "v2/hi_speaker_0", "v2/hi_speaker_1", "v2/hi_speaker_2", "v2/hi_speaker_3",
-    "v2/hi_speaker_4", "v2/hi_speaker_5", "v2/hi_speaker_6", "v2/hi_speaker_7",
-    "v2/hi_speaker_8", "v2/hi_speaker_9",
-    "v2/it_speaker_0", "v2/it_speaker_1", "v2/it_speaker_2", "v2/it_speaker_3",
-    "v2/it_speaker_4", "v2/it_speaker_5", "v2/it_speaker_6", "v2/it_speaker_7",
-    "v2/it_speaker_8", "v2/it_speaker_9",
-    "v2/ja_speaker_0", "v2/ja_speaker_1", "v2/ja_speaker_2", "v2/ja_speaker_3",
-    "v2/ja_speaker_4", "v2/ja_speaker_5", "v2/ja_speaker_6", "v2/ja_speaker_7",
-    "v2/ja_speaker_8", "v2/ja_speaker_9",
-    "v2/ko_speaker_0", "v2/ko_speaker_1", "v2/ko_speaker_2", "v2/ko_speaker_3",
-    "v2/ko_speaker_4", "v2/ko_speaker_5", "v2/ko_speaker_6", "v2/ko_speaker_7",
-    "v2/ko_speaker_8", "v2/ko_speaker_9",
-    "v2/pl_speaker_0", "v2/pl_speaker_1", "v2/pl_speaker_2", "v2/pl_speaker_3",
-    "v2/pl_speaker_4", "v2/pl_speaker_5", "v2/pl_speaker_6", "v2/pl_speaker_7",
-    "v2/pl_speaker_8", "v2/pl_speaker_9",
-    "v2/pt_speaker_0", "v2/pt_speaker_1", "v2/pt_speaker_2", "v2/pt_speaker_3",
-    "v2/pt_speaker_4", "v2/pt_speaker_5", "v2/pt_speaker_6", "v2/pt_speaker_7",
-    "v2/pt_speaker_8", "v2/pt_speaker_9",
-    "v2/ru_speaker_0", "v2/ru_speaker_1", "v2/ru_speaker_2", "v2/ru_speaker_3",
-    "v2/ru_speaker_4", "v2/ru_speaker_5", "v2/ru_speaker_6", "v2/ru_speaker_7",
-    "v2/ru_speaker_8", "v2/ru_speaker_9",
-    "v2/tr_speaker_0", "v2/tr_speaker_1", "v2/tr_speaker_2", "v2/tr_speaker_3",
-    "v2/tr_speaker_4", "v2/tr_speaker_5", "v2/tr_speaker_6", "v2/tr_speaker_7",
-    "v2/tr_speaker_8", "v2/tr_speaker_9",
-    "v2/zh_speaker_0", "v2/zh_speaker_1", "v2/zh_speaker_2", "v2/zh_speaker_3",
-    "v2/zh_speaker_4", "v2/zh_speaker_5", "v2/zh_speaker_6", "v2/zh_speaker_7",
-    "v2/zh_speaker_8", "v2/zh_speaker_9",
+    "v2/en_speaker_0",
+    "v2/en_speaker_1",
+    "v2/en_speaker_2",
+    "v2/en_speaker_3",
+    "v2/en_speaker_4",
+    "v2/en_speaker_5",
+    "v2/en_speaker_6",
+    "v2/en_speaker_7",
+    "v2/en_speaker_8",
+    "v2/en_speaker_9",
+    "v2/de_speaker_0",
+    "v2/de_speaker_1",
+    "v2/de_speaker_2",
+    "v2/de_speaker_3",
+    "v2/de_speaker_4",
+    "v2/de_speaker_5",
+    "v2/de_speaker_6",
+    "v2/de_speaker_7",
+    "v2/de_speaker_8",
+    "v2/de_speaker_9",
+    "v2/es_speaker_0",
+    "v2/es_speaker_1",
+    "v2/es_speaker_2",
+    "v2/es_speaker_3",
+    "v2/es_speaker_4",
+    "v2/es_speaker_5",
+    "v2/es_speaker_6",
+    "v2/es_speaker_7",
+    "v2/es_speaker_8",
+    "v2/es_speaker_9",
+    "v2/fr_speaker_0",
+    "v2/fr_speaker_1",
+    "v2/fr_speaker_2",
+    "v2/fr_speaker_3",
+    "v2/fr_speaker_4",
+    "v2/fr_speaker_5",
+    "v2/fr_speaker_6",
+    "v2/fr_speaker_7",
+    "v2/fr_speaker_8",
+    "v2/fr_speaker_9",
+    "v2/hi_speaker_0",
+    "v2/hi_speaker_1",
+    "v2/hi_speaker_2",
+    "v2/hi_speaker_3",
+    "v2/hi_speaker_4",
+    "v2/hi_speaker_5",
+    "v2/hi_speaker_6",
+    "v2/hi_speaker_7",
+    "v2/hi_speaker_8",
+    "v2/hi_speaker_9",
+    "v2/it_speaker_0",
+    "v2/it_speaker_1",
+    "v2/it_speaker_2",
+    "v2/it_speaker_3",
+    "v2/it_speaker_4",
+    "v2/it_speaker_5",
+    "v2/it_speaker_6",
+    "v2/it_speaker_7",
+    "v2/it_speaker_8",
+    "v2/it_speaker_9",
+    "v2/ja_speaker_0",
+    "v2/ja_speaker_1",
+    "v2/ja_speaker_2",
+    "v2/ja_speaker_3",
+    "v2/ja_speaker_4",
+    "v2/ja_speaker_5",
+    "v2/ja_speaker_6",
+    "v2/ja_speaker_7",
+    "v2/ja_speaker_8",
+    "v2/ja_speaker_9",
+    "v2/ko_speaker_0",
+    "v2/ko_speaker_1",
+    "v2/ko_speaker_2",
+    "v2/ko_speaker_3",
+    "v2/ko_speaker_4",
+    "v2/ko_speaker_5",
+    "v2/ko_speaker_6",
+    "v2/ko_speaker_7",
+    "v2/ko_speaker_8",
+    "v2/ko_speaker_9",
+    "v2/pl_speaker_0",
+    "v2/pl_speaker_1",
+    "v2/pl_speaker_2",
+    "v2/pl_speaker_3",
+    "v2/pl_speaker_4",
+    "v2/pl_speaker_5",
+    "v2/pl_speaker_6",
+    "v2/pl_speaker_7",
+    "v2/pl_speaker_8",
+    "v2/pl_speaker_9",
+    "v2/pt_speaker_0",
+    "v2/pt_speaker_1",
+    "v2/pt_speaker_2",
+    "v2/pt_speaker_3",
+    "v2/pt_speaker_4",
+    "v2/pt_speaker_5",
+    "v2/pt_speaker_6",
+    "v2/pt_speaker_7",
+    "v2/pt_speaker_8",
+    "v2/pt_speaker_9",
+    "v2/ru_speaker_0",
+    "v2/ru_speaker_1",
+    "v2/ru_speaker_2",
+    "v2/ru_speaker_3",
+    "v2/ru_speaker_4",
+    "v2/ru_speaker_5",
+    "v2/ru_speaker_6",
+    "v2/ru_speaker_7",
+    "v2/ru_speaker_8",
+    "v2/ru_speaker_9",
+    "v2/tr_speaker_0",
+    "v2/tr_speaker_1",
+    "v2/tr_speaker_2",
+    "v2/tr_speaker_3",
+    "v2/tr_speaker_4",
+    "v2/tr_speaker_5",
+    "v2/tr_speaker_6",
+    "v2/tr_speaker_7",
+    "v2/tr_speaker_8",
+    "v2/tr_speaker_9",
+    "v2/zh_speaker_0",
+    "v2/zh_speaker_1",
+    "v2/zh_speaker_2",
+    "v2/zh_speaker_3",
+    "v2/zh_speaker_4",
+    "v2/zh_speaker_5",
+    "v2/zh_speaker_6",
+    "v2/zh_speaker_7",
+    "v2/zh_speaker_8",
+    "v2/zh_speaker_9",
 }
 
 
@@ -84,15 +193,22 @@ def _load_models():
     if not _models_loaded:
         with _model_lock:
             if not _models_loaded:
-                logger.info("Loading Bark models (first request — may take a few minutes)...")
+                logger.info(
+                    "Loading Bark models (first request — may take a few minutes)..."
+                )
                 from bark import preload_models
+
                 preload_models()
                 _models_loaded = True
                 logger.info("Bark models loaded.")
 
 
 class TTSRequest(BaseModel):
-    text: str = Field(..., max_length=MAX_TEXT_LENGTH, description="Text to synthesize (max 10K chars)")
+    text: str = Field(
+        ...,
+        max_length=MAX_TEXT_LENGTH,
+        description="Text to synthesize (max 10K chars)",
+    )
     voice_preset: Optional[str] = "v2/en_speaker_6"
     output_format: Optional[str] = "wav"  # wav, mp3, ogg, flac
 
@@ -101,7 +217,9 @@ class TTSRequest(BaseModel):
     def validate_format(cls, v: str) -> str:
         fmt = v.upper()
         if fmt not in VALID_FORMATS:
-            raise ValueError(f"Invalid format '{v}'. Must be one of: {', '.join(VALID_FORMATS)}")
+            raise ValueError(
+                f"Invalid format '{v}'. Must be one of: {', '.join(VALID_FORMATS)}"
+            )
         return fmt
 
     @field_validator("voice_preset")
@@ -110,7 +228,9 @@ class TTSRequest(BaseModel):
         if not v:
             return v
         if v not in VALID_VOICES:
-            raise ValueError(f"Invalid voice_preset '{v}'. Use format 'vX/xx_speaker_N' (e.g., v2/en_speaker_6). See /voices for list.")
+            raise ValueError(
+                f"Invalid voice_preset '{v}'. Use format 'vX/xx_speaker_N' (e.g., v2/en_speaker_6). See /voices for list."
+            )
         return v
 
 
@@ -145,7 +265,7 @@ def health():
 
 
 @app.post("/tts", response_model=TTSResponse)
-def text_to_speech(req: TTSRequest):
+def text_to_speech(req: TTSRequest, _=Depends(verify_api_key)):
     """
     Generate speech audio from text using Bark.
 
@@ -175,11 +295,13 @@ def text_to_speech(req: TTSRequest):
     except Exception as e:
         # Internal errors — log full trace, return generic message
         logger.exception(f"TTS generation failed: {e}")
-        raise HTTPException(status_code=500, detail="TTS generation failed. Please try again.")
+        raise HTTPException(
+            status_code=500, detail="TTS generation failed. Please try again."
+        )
 
 
 @app.post("/tts/stream")
-def text_to_speech_stream(req: TTSRequest):
+def text_to_speech_stream(req: TTSRequest, _=Depends(verify_api_key)):
     """
     Generate speech and return raw audio bytes (wav).
     Suitable for streaming to audio players.
@@ -196,7 +318,9 @@ def text_to_speech_stream(req: TTSRequest):
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.exception(f"TTS stream failed: {e}")
-        raise HTTPException(status_code=500, detail="TTS generation failed. Please try again.")
+        raise HTTPException(
+            status_code=500, detail="TTS generation failed. Please try again."
+        )
 
 
 def _generate_audio_stream_sync(text: str, voice_preset: str) -> Response:
