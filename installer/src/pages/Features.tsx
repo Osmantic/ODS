@@ -13,6 +13,8 @@ interface FeatureOption {
   vramNote?: string;
 }
 
+const REQUIRED_FEATURE_ID = "chat";
+
 const FEATURES: FeatureOption[] = [
   {
     id: "chat",
@@ -65,7 +67,7 @@ export default function Features({ onNext }: Props) {
 
   const toggle = (id: string) => {
     // Chat is always enabled
-    if (id === "chat") return;
+    if (id === REQUIRED_FEATURE_ID) return;
     setSelected((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
@@ -88,7 +90,7 @@ export default function Features({ onNext }: Props) {
       <div className="w-full max-w-md space-y-2 mb-6">
         {FEATURES.map((feature) => {
           const isSelected = selected.has(feature.id);
-          const isRequired = feature.id === "chat";
+          const isRequired = feature.id === REQUIRED_FEATURE_ID;
           return (
             <button
               key={feature.id}
