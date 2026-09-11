@@ -5,13 +5,57 @@ on:
     branches: [main]
     tags: ["v*"]
   pull_request:
-    branches: [main]
+    paths:
+      - "installer/**"
+      - ".github/workflows/installer.yml"
 
 permissions:
   contents: write
 
 jobs:
+  # A fast gate ahead of the four-platform bundle matrix. The Rust suites under
+  # src-tauri were never executed by anything before this workflow was moved
+  # into the scanned directory, so this runs them on their own.
+  check:
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: installer
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: installer/package-lock.json
+
+      # The tauri crate links webkit2gtk, so even `cargo test` needs these.
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Type-check and build frontend
+        run: npm run build
+
+      - name: Run Rust tests
+        working-directory: installer/src-tauri
+        run: cargo test --locked
+
   build:
+    needs: check
     strategy:
       fail-fast: false
       matrix:
@@ -30,8 +74,11 @@ jobs:
             artifact: ods-installer-linux
 
     runs-on: ${{ matrix.platform }}
+    defaults:
+      run:
+        working-directory: installer
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -39,10 +86,11 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Install Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
           node-version: 20
           cache: npm
+          cache-dependency-path: installer/package-lock.json
 
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
@@ -68,6 +116,7 @@ jobs:
           ODS_REPO_URL: https://github.com/${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name || github.repository }}.git
           ODS_INSTALL_REF: ${{ github.ref_type == 'tag' && github.ref_name || github.event_name == 'pull_request' && github.event.pull_request.head.ref || github.ref_name }}
         with:
+          projectPath: installer
           tagName: ${{ github.ref_name }}
           releaseName: "ODS Installer ${{ github.ref_name }}"
           releaseBody: "Cross-platform installer for ODS."
@@ -76,14 +125,14 @@ jobs:
           args: --target ${{ matrix.target }}
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ${{ matrix.artifact }}
           path: |
-            src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*.exe
-            src-tauri/target/${{ matrix.target }}/release/bundle/msi/*.msi
-            src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
-            src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app
-            src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
-            src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb
+            installer/src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*.exe
+            installer/src-tauri/target/${{ matrix.target }}/release/bundle/msi/*.msi
+            installer/src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+            installer/src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app
+            installer/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
+            installer/src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb
           if-no-files-found: ignore
