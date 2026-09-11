@@ -42,7 +42,7 @@ export default function ProfileSettings() {
     catch {setError('Your profile could not be saved. Browser storage may be full or disabled.');setNotice('')}
   }
   return <form className="profile-settings" aria-label="Your profile" onSubmit={submit}>
-    <h2>Your identity</h2><p>Your name and photo in the sidebar and Pixel conversations.</p>
+    <h2>Your identity</h2><p>Your name and photo in the sidebar and assistant conversations.</p>
     <div className="profile-photo-editor"><UserAvatar profile={draft}/><div>
       <input ref={input} type="file" accept="image/jpeg,image/png,image/webp" aria-label="Profile photo" onChange={upload} hidden/>
       <button type="button" onClick={() => input.current?.click()} disabled={busy}><MetalMetricIcon icon={Upload} size={14}/>{busy ? 'Preparing photo…' : 'Upload photo'}</button>

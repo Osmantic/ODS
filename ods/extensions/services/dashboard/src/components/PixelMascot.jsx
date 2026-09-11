@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import {useMascotPreferences} from '../lib/portalMascotPreferences'
+import {DEFAULT_ASSISTANT_NAME} from '../lib/portalIdentity'
 
 // Reuse the original Pixel renderer, including gaze and reduced-motion handling.
-export default function PixelMascot({ state = 'idle', settled = false, brand = false, interactive = false, name = 'Portal', className = '', preview = false, activityKey = '' }) {
+export default function PixelMascot({ state = 'idle', settled = false, brand = false, interactive = false, name = DEFAULT_ASSISTANT_NAME, className = '', preview = false, activityKey = '' }) {
   const preferences = useMascotPreferences()
   const visible = preview || preferences.enabled
   const element = useRef(null)

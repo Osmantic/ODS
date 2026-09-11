@@ -178,7 +178,7 @@ export default function PixelRuntimeSettings() {
           setRawChanges({});
           setStale(false);
           setError(null);
-          setNotice('Preferences saved. Pixel runtime is unchanged.');
+          setNotice('Preferences saved. The assistant runtime is unchanged.');
         });
       })
       .catch((e) => {
@@ -292,9 +292,9 @@ export default function PixelRuntimeSettings() {
 
   return (
     <section aria-labelledby="pixel-runtime-title" className="rounded-lg border border-theme-border bg-theme-card p-5 text-theme-text space-y-4 min-w-0">
-      <h2 id="pixel-runtime-title" className="text-lg font-semibold">Pixel runtime settings</h2>
-      <p className="text-sm text-theme-text-muted">Saving preferences does not apply them to Pixel.</p>
-      <p className="text-sm text-theme-text-muted">Inspect runtime support below, then apply your saved preferences when Pixel is idle.</p>
+      <h2 id="pixel-runtime-title" className="text-lg font-semibold">Assistant runtime settings</h2>
+      <p className="text-sm text-theme-text-muted">Saving preferences does not apply them to the assistant.</p>
+      <p className="text-sm text-theme-text-muted">Inspect runtime support below, then apply your saved preferences when the assistant is idle.</p>
       {stale && (
         <div className="text-sm text-amber-600">Connection stale. Reload before saving.</div>
       )}
@@ -313,23 +313,23 @@ export default function PixelRuntimeSettings() {
           className="rounded border border-theme-border px-3 py-2 text-sm disabled:opacity-40"
           disabled={!canSave}
           onClick={handleSave}
-          aria-label="Save Pixel preferences"
+          aria-label="Save assistant preferences"
         >
-          {pending ? 'Please wait…' : 'Save Pixel preferences'}
+          {pending ? 'Please wait…' : 'Save assistant preferences'}
         </button>
         <button
           className="rounded border border-theme-border px-3 py-2 text-sm disabled:opacity-40"
           disabled={!canReload}
           onClick={handleReload}
         >
-          Reload Pixel preferences
+          Reload assistant preferences
         </button>
         <button
           className="rounded border border-theme-border px-3 py-2 text-sm disabled:opacity-40"
           disabled={!canCancel}
           onClick={handleCancel}
         >
-          Cancel Pixel edits
+          Cancel assistant edits
         </button>
       </div>
       <PixelSettingsRuntime savedRevision={snapshot?.revision ?? null} saving={pending}

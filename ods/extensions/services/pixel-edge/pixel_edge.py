@@ -132,14 +132,14 @@ _SHORT_TEST_MESSAGE = re.compile(
     re.IGNORECASE,
 )
 _SHORT_TEST_REPLY = (
-    "Pixel is online and responding. What would you like me to help with?"
+    "The assistant is online and responding. What would you like me to help with?"
 )
 _EMPTY_REPLY = (
     "I couldn't produce a useful response to that request. Please try again or "
     "tell me what you'd like me to do differently."
 )
 _INTERACTIVE_DELIVERY_CONTRACT = (
-    "\n\n[ODS Pixel delivery requirement: Answer the owner's complete message above. "
+    "\n\n[ODS assistant delivery requirement: Answer the owner's complete message above. "
     "If it asks for exact text, copy that full exact text. Do not answer with a "
     "generic acknowledgement. Do not output NO_REPLY.]"
 )
@@ -176,7 +176,7 @@ _EXACT_SINGLE_LINE_FILE = re.compile(
     re.IGNORECASE,
 )
 _WORKSPACE_MUTATION_ROUTE = (
-    "\n[ODS Pixel workspace task route: Perform the requested workspace mutation "
+    "\n[ODS assistant workspace task route: Perform the requested workspace mutation "
     "before verification. When tool_call is visible, use it with id write and normal "
     "write args for every new file. edit cannot create a file and requires a non-empty "
     "oldText copied from an existing file. Use edit or apply_patch only after reading "
@@ -185,7 +185,7 @@ _WORKSPACE_MUTATION_ROUTE = (
     "or hash proposed text instead of the created file.]"
 )
 _RUN_COMMAND_AND_WAIT_ROUTE = (
-    "\n[ODS Pixel command completion route: Call exec exactly once for the owner's "
+    "\n[ODS assistant command completion route: Call exec exactly once for the owner's "
     "command. If exec returns a running process session, do not call exec again. "
     "Use the visible tool_call control with id process and args containing action "
     "poll plus that exact returned sessionId, and keep polling only that session "
@@ -427,7 +427,7 @@ def _with_interactive_delivery_contract(data: dict) -> dict:
         # target and permissions. Do not prescribe a local identity receipt as
         # a substitute for a remote operation or force one tool-call sequence.
         contract += (
-            "\n[ODS Pixel network inspection route: Discover the available "
+            "\n[ODS assistant network inspection route: Discover the available "
             "Operations tools using tool_call. Use host.network-peer for bounded "
             "reachability of the owner's explicit endpoint and requested ports. "
             "Keep remote reachability, protocol banners and authenticated remote "
@@ -449,7 +449,7 @@ def _with_interactive_delivery_contract(data: dict) -> dict:
             and not (excludes_network_location and action in _ADDRESS_BEARING_HOST_ACTIONS)
         ]
         route = (
-            "\n[ODS Pixel host inspection route: Generic sandbox commands and "
+            "\n[ODS assistant host inspection route: Generic sandbox commands and "
             "status projections cannot establish host facts. Use the visible "
             "tool_call Tool Search control for the deferred Operations tools. "
         )
@@ -490,7 +490,7 @@ def _with_interactive_delivery_contract(data: dict) -> dict:
                 separators=(",", ":"),
             )
             contract += (
-                "\n[ODS Pixel exact workspace route: Use the visible tool_call control. "
+                "\n[ODS assistant exact workspace route: Use the visible tool_call control. "
                 "Call tool_call exactly once with id write and args "
                 f"{write_args}. After it succeeds, call tool_call once with id read and "
                 f"args {read_args}, then call tool_call once with id exec and args "

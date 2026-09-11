@@ -1,5 +1,5 @@
 export function parseConversationImport(value) {
-  if (value?.schemaVersion !== 1 || value.kind !== 'ods-pixel-conversation' || value.conversation?.schema !== 1) throw new Error('Choose a Pixel conversation JSON export (version 1).')
+  if (value?.schemaVersion !== 1 || value.kind !== 'ods-pixel-conversation' || value.conversation?.schema !== 1) throw new Error('Choose an ODS assistant conversation JSON export (version 1).')
   const chat = value.conversation
   if (!Array.isArray(chat.messages) || chat.messages.length > 2000) throw new Error('The export must contain at most 2,000 messages.')
   let bytes = 0

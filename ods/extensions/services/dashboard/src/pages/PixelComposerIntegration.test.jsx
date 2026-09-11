@@ -12,7 +12,7 @@ it('keeps one file input and draft preview across composer updates and chat swit
   render(<Pixel/>)
   await screen.findByText('Available')
   for (const value of ['One', 'Two\nlines', 'Three', '']) {
-    fireEvent.change(screen.getByPlaceholderText('Message Portal...'), {target:{value}})
+    fireEvent.change(screen.getByPlaceholderText('Message Assistant...'), {target:{value}})
     expect(screen.getAllByRole('button', {name:'Add text file',exact:true})).toHaveLength(1)
     expect(screen.getAllByRole('button', {name:'Preview draft',exact:true})).toHaveLength(1)
   }

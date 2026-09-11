@@ -1,7 +1,7 @@
 {
   "id": "pixel-ods",
-  "name": "Pixel ODS Integration",
-  "description": "ODS status, delegated Perplexica research, guarded public-page evidence, verified downloads, and isolated workspace previews for Pixel.",
+  "name": "ODS Assistant Integration",
+  "description": "ODS status, delegated Perplexica research, guarded public-page evidence, verified downloads, and isolated workspace previews for the ODS assistant.",
   "version": "1.0.0",
   "providers": ["ods-policy"],
   "contracts": {

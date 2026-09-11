@@ -478,7 +478,7 @@ test('offers one-click reconciliation when the active consumer drifted', async (
 
   render(createElement(RemoteProvider))
 
-  expect(await screen.findByText(/ODS and Pixel are not using its exact model contract/i)).toBeInTheDocument()
+  expect(await screen.findByText(/ODS and the assistant are not using its exact model contract/i)).toBeInTheDocument()
   fireEvent.click(screen.getByRole('button', { name: /^reconcile route$/i }))
 
   await waitFor(() => {

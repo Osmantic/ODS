@@ -28,14 +28,14 @@ export function summarizeCheck(id, data) {
     const runtime = 'inference' in data
     const name = text(runtime ? data.inference?.loadedModel : data.model?.name)
     return { state: name ? 'Reported by ODS' : 'Not loaded', ok: Boolean(name),
-      detail: 'Local model telemetry. A remote Pixel route may use a different model.',
+      detail: 'Local model telemetry. A remote assistant route may use a different model.',
       rows: [['Local model', name || 'Not reported'], ['Context window', context(runtime ? data.inference?.contextSize : data.model?.contextLength)]],
     }
   }
   if (typeof data.available !== 'boolean') throw new Error('Invalid status')
   const verified = data.available && data.runtime_verified === true && ['sandboxed', 'full-access'].includes(data.effective_mode)
   return { state: verified ? 'Verified' : 'Not verified', ok: verified,
-    detail: data.pending ? 'An access transition is unfinished.' : data.busy ? 'Pixel is working; access changes must wait.'
+    detail: data.pending ? 'An access transition is unfinished.' : data.busy ? 'The assistant is working; access changes must wait.'
       : verified ? 'The host verified the effective access mode.' : 'The host has not verified an effective access mode. Do not infer permissions from chat availability.',
     rows: [['Configured', mode(data.configured_mode)], ['Effective', verified ? mode(data.effective_mode) : 'Not verified']],
   }
@@ -71,7 +71,7 @@ export default function PixelDiagnostics() {
     return () => { request.current?.abort(); request.current = null }
   }, [refresh])
 
-  return <section className="pixel-diagnostics" aria-label="Pixel diagnostics checks">
+  return <section className="pixel-diagnostics" aria-label="Assistant diagnostics checks">
     <div className="pixel-diagnostics-intro">
       <p>Inspect the agent, its model, and the host access boundary without changing configuration.</p>
       <button type="button" onClick={refresh} disabled={busy}><MetalMetricIcon icon={RefreshCw} size={14}/>{busy ? 'Checking…' : 'Refresh checks'}</button>

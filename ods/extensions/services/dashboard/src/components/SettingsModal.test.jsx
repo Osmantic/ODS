@@ -22,9 +22,9 @@ it('renders inline, filters sections, and preserves form state across navigation
   fireEvent.click(screen.getByRole('button', {name:'Storage',exact:true}))
   expect(screen.getByText('storage content')).toBeVisible()
   expect(screen.getByLabelText('Draft')).toHaveValue('Unsaved')
-  fireEvent.change(screen.getByLabelText('Search settings'), {target:{value:'pixel'}})
+  fireEvent.change(screen.getByLabelText('Search settings'), {target:{value:'assistant'}})
   expect(screen.queryByRole('button', {name:'Storage',exact:true})).toBeNull()
-  expect(screen.getByRole('button', {name:'Pixel access'})).toBeVisible()
+  expect(screen.getByRole('button', {name:'Assistant access'})).toBeVisible()
 })
 
 it('leaves closing and collapsing to the workspace panel header', () => {
@@ -38,8 +38,8 @@ it('leaves closing and collapsing to the workspace panel header', () => {
 
 it('provides mascot controls in their own settings section',()=>{
   render(<SettingsModal/>)
-  fireEvent.click(screen.getByRole('button',{name:'Portal mascot',exact:true}))
-  expect(screen.getByRole('heading',{name:'Portal mascot'})).toBeVisible()
+  fireEvent.click(screen.getByRole('button',{name:'Assistant mascot',exact:true}))
+  expect(screen.getByRole('heading',{name:'Assistant mascot'})).toBeVisible()
   expect(screen.getByLabelText('Sleep after inactivity')).toBeVisible()
   expect(screen.getByRole('button',{name:'Thinking',exact:true})).toHaveAttribute('aria-pressed','true')
 })

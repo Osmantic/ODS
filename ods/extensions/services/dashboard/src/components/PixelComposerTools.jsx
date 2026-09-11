@@ -50,6 +50,6 @@ export default function PixelComposerTools({ disabled, input, onInsert, children
     <button type="button" disabled={disabled} title="Prompt commands" aria-label="Open prompt commands" aria-expanded={menu === 'commands'} onClick={event => toggle('commands', event)}><Slash size={16}/></button>
     <span className="pixel-tool-divider" aria-hidden="true"/>
     <Link to="/models" className="pixel-composer-agent" title="Choose the agent model"><PixelMascot name={displayName}/><span>{displayName} agent</span></Link>
-    <Link to="/pixel/settings?section=access" title="Pixel access settings"><ShieldCheck size={15}/><span>Permissions</span></Link>
+    <Link to="/pixel/settings?section=access" title="Assistant access settings"><ShieldCheck size={15}/><span>Permissions</span></Link>
   </div>
 }
