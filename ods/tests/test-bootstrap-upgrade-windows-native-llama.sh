@@ -60,6 +60,9 @@ chmod +x "$fakebin/cygpath"
 cat > "$fakebin/powershell.exe" <<'EOF_PS'
 #!/usr/bin/env bash
 set -euo pipefail
+if [[ -n "${ODS_ENV_ACL_SOURCE:-}" && -n "${ODS_ENV_ACL_TARGET:-}" ]]; then
+  exit 0
+fi
 if [[ -n "${ODS_ENV_REPLACE_SOURCE:-}" && -n "${ODS_ENV_REPLACE_TARGET:-}" && -n "${ODS_ENV_REPLACE_BACKUP:-}" ]]; then
   cp -p "$ODS_ENV_REPLACE_TARGET" "$ODS_ENV_REPLACE_BACKUP"
   mv -f "$ODS_ENV_REPLACE_SOURCE" "$ODS_ENV_REPLACE_TARGET"
