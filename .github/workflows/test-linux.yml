@@ -226,6 +226,9 @@ jobs:
       - name: Windows Installer Flag Tests
         run: bash tests/test-windows-installer-flags.sh
 
+      - name: Windows Bootstrap Download Handoff Tests
+        run: bash tests/test-windows-bootstrap-download-handoff.sh
+
       - name: Validate Env Tests
         run: bash tests/test-validate-env.sh
 

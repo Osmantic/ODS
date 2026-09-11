@@ -80,6 +80,10 @@ jobs:
         shell: pwsh
         run: ./tests/test-windows-model-activation.ps1
 
+      - name: Windows Bootstrap Download Handoff Contract
+        shell: pwsh
+        run: ./tests/test-windows-bootstrap-download-handoff.ps1
+
       - name: Windows Dotenv Serializer Contract
         shell: pwsh
         run: ./tests/test-windows-dotenv-serializer.ps1
