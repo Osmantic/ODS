@@ -3,11 +3,14 @@ import {
   closeSync,
   constants,
   fchmodSync,
-  ftruncateSync,
   fsyncSync,
   fstatSync,
   lstatSync,
   mkdirSync,
+  mkdtempSync,
+  renameSync,
+  rmdirSync,
+  unlinkSync,
   openSync,
   readSync,
   realpathSync,
@@ -21,6 +24,7 @@ const SAFE_COMPONENT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const WRITE_FLAGS =
   constants.O_RDWR |
   constants.O_CREAT |
+  constants.O_EXCL |
   (constants.O_NOFOLLOW ?? 0) |
   (constants.O_CLOEXEC ?? 0);
 
@@ -34,6 +38,26 @@ function assertOwnedDirectory(value, owner) {
   ) {
     throw new Error("unsafe Pixel workspace directory");
   }
+}
+
+// Inspect without truncating or changing permissions on the existing report.
+function destinationState(destination, owner) {
+  let info;
+  try { info = lstatSync(destination); }
+  catch (error) { if (error?.code === "ENOENT") return null; throw error; }
+  if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 ||
+      (owner !== undefined && info.uid !== owner)) {
+    throw new Error("unsafe Pixel evidence destination");
+  }
+  // Preserve the original writable-file requirement, including filesystem ACLs.
+  const handle = openSync(destination, constants.O_RDWR | (constants.O_NOFOLLOW ?? 0));
+  try {
+    const opened = fstatSync(handle);
+    if (opened.dev !== info.dev || opened.ino !== info.ino) {
+      throw new Error("Pixel evidence destination changed");
+    }
+  } finally { closeSync(handle); }
+  return info;
 }
 
 function safeParts(relativePath) {
@@ -94,9 +118,12 @@ export function createEvidenceArtifactWriter({
       throw new Error("Pixel evidence path escaped its workspace");
     }
 
+    const previous = destinationState(destination, owner);
+    const stage = mkdtempSync(path.join(parent, ".pixel-evidence-"));
+    const temporary = path.join(stage, "report");
     let handle;
     try {
-      handle = openSync(destination, WRITE_FLAGS, 0o600);
+      handle = openSync(temporary, WRITE_FLAGS, 0o600);
       const details = fstatSync(handle);
       if (
         !details.isFile() ||
@@ -106,10 +133,7 @@ export function createEvidenceArtifactWriter({
         throw new Error("unsafe Pixel evidence destination");
       }
       fchmodSync(handle, 0o600);
-      // Validate the opened inode before changing any bytes. In particular,
-      // O_TRUNC at open time would destroy a multiply-linked destination even
-      // though the guard subsequently rejects it.
-      ftruncateSync(handle, 0);
+      // The previous report remains untouched until staged bytes pass readback.
       let written = 0;
       while (written < bytes.length) {
         written += writeSync(handle, bytes, written, bytes.length - written, written);
@@ -125,8 +149,19 @@ export function createEvidenceArtifactWriter({
       if (read !== bytes.length || !observed.equals(bytes)) {
         throw new Error("Pixel evidence readback mismatch");
       }
+      closeSync(handle);
+      handle = undefined;
+      const current = destinationState(destination, owner);
+      if (previous === null ? current !== null : current === null ||
+          ["dev", "ino", "size", "mtimeMs", "ctimeMs"].some(key => previous[key] !== current[key])) {
+        throw new Error("Pixel evidence destination changed");
+      }
+      renameSync(temporary, destination);
     } finally {
       if (handle !== undefined) closeSync(handle);
+      try { unlinkSync(temporary); }
+      catch (error) { if (error?.code !== "ENOENT") throw error; }
+      rmdirSync(stage);
     }
 
     return {
