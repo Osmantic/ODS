@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import {browserUuid} from '../lib/browserUuid'
 
 const button = 'rounded border border-theme-border px-3 py-2 text-xs disabled:opacity-40'
 const scopes = ['task', 'conversation', 'default']
@@ -82,7 +83,7 @@ export default function PixelProviderScopes({ chatId, sending = false }) {
     const current = generation.current
     try {
       const body = { chatId, expectedRevision: state.revision, taskId: state.taskId }
-      if (action === 'begin') body.taskId = crypto.randomUUID()
+      if (action === 'begin') body.taskId = browserUuid()
       if (action === 'select' || action === 'return') body.scope = scope
       if (action === 'select') Object.assign(body, { providerId: target.id, providerRevision: configuration.revision,
         allowCloud: target.kind === 'cloud' && cloud, acceptUnknownCost: target.kind === 'cloud' && cost })

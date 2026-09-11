@@ -1,4 +1,5 @@
 import {prepareWallpaper, isCustomWallpaper, isStoredWallpaper, MAX_WALLPAPER_VIDEO_BYTES} from './customWallpapers'
+import {mockHttpCrypto} from '../test/httpCrypto'
 const {HTMLMediaElement, HTMLVideoElement} = window
 afterEach(()=>{vi.restoreAllMocks();vi.unstubAllGlobals()})
 it('accepts only opaque custom IDs, not URLs or CSS',()=>{
@@ -21,6 +22,15 @@ function mockVideo({error = false, width = 1920, duration = 3} = {}) {
   vi.spyOn(HTMLCanvasElement.prototype, 'toDataURL').mockReturnValue('data:image/webp;base64,YQ==')
   return {createObjectURL, revokeObjectURL, pause, drawImage}
 }
+
+it('prepares local video on an HTTP LAN origin without randomUUID', async () => {
+  const id = '11111111-2222-4333-8444-555555555555'
+  mockVideo()
+  mockHttpCrypto(id)
+  const row = await prepareWallpaper(new File(['video'],'local.mp4',{type:'video/mp4'}))
+  expect(row.id).toBe(`custom-${id}`)
+  expect(isStoredWallpaper(row)).toBe(true)
+})
 
 it.each(['video/mp4','video/webm'])('stores %s as a local blob with a static thumbnail', async type => {
   const mocks = mockVideo()

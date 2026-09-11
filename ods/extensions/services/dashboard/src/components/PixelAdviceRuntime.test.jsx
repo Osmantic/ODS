@@ -2,6 +2,7 @@ import { fireEvent, screen, waitFor, act } from '@testing-library/react'
 import { createElement } from 'react'
 import { render } from '../test/test-utils'
 import PixelAdviceRuntime from './PixelAdviceRuntime.jsx'
+import {mockHttpCrypto} from '../test/httpCrypto'
 
 const id = 'c2ac7cba-198d-4cb6-b4ca-722eb29d778f'
 const storage = 'ods.pixel.advice.setup.v1'
@@ -24,6 +25,16 @@ async function setup(handler) {
 }
 beforeEach(() => localStorage.clear())
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); localStorage.clear() })
+
+it('tracks an explicitly approved runtime preparation on an HTTP LAN origin', async () => {
+  const {fetchMock} = await setup()
+  mockHttpCrypto(id)
+  fireEvent.click(screen.getByLabelText(consent))
+  fireEvent.click(screen.getByRole('button', {name:'Prepare private runtime'}))
+  await screen.findByText('Setup: running')
+  expect(localStorage.getItem(storage)).toBe(id)
+  expect(fetchMock.mock.calls.filter(([url]) => url.endsWith('/prepare'))).toHaveLength(1)
+})
 
 it('requires explicit consent and submits only the server candidate ID once', async () => {
   const { fetchMock } = await setup()

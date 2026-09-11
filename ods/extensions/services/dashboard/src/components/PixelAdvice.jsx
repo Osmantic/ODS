@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { configurationError } from './settings/pixelProviderForm.js'
 import PixelAdviceRuntime from './PixelAdviceRuntime.jsx'
+import {browserUuid} from '../lib/browserUuid'
 
 const STORAGE = 'ods.pixel.advice.job.v1'
 const jobPattern = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/
@@ -111,7 +112,7 @@ export default function PixelAdvice({ onInsert, canInsert = true }) {
     jobVersion.current++
     let id
     try {
-      id = crypto.randomUUID()
+      id = browserUuid()
       // Only an opaque ID is persisted, before any possibly billable request.
       // A reload queries that ID; it never submits the capsule automatically.
       localStorage.setItem(STORAGE, id)
