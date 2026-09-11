@@ -260,8 +260,10 @@ esac
 log "Checking prerequisites..."
 
 # Docker check (informational — the installer auto-installs Docker if missing)
-if command -v docker &> /dev/null; then
+if command -v docker &> /dev/null && docker --version &> /dev/null; then
     success "Docker found: $(docker --version | head -1)"
+elif command -v docker &> /dev/null; then
+    warn "Docker command found but unusable — the installer will attempt to install a working engine"
 else
     warn "Docker not found — the installer will attempt to install it"
 fi
@@ -348,13 +350,15 @@ else
 fi
 
 # docker (the installer auto-installs Docker if missing — don't block here)
-if command -v docker &> /dev/null; then
+if command -v docker &> /dev/null && docker --version &> /dev/null; then
     success "docker found: $(docker --version | head -1)"
     if docker compose version &> /dev/null || docker-compose --version &> /dev/null; then
         success "docker compose found"
     else
         warn "Docker Compose not found — the installer will attempt to set it up"
     fi
+elif command -v docker &> /dev/null; then
+    warn "Docker command found but unusable — the installer will attempt to install a working engine"
 else
     warn "Docker not found — the installer will attempt to install it"
 fi
