@@ -21,8 +21,8 @@ pub fn detect() -> GpuInfo {
 pub fn recommend_tier(gpu: &GpuInfo) -> u8 {
     match gpu.vram_mb {
         0 => 0,                    // CPU-only / cloud
-        v if v < 8192 => 1,       // < 8GB
-        v if v < 12288 => 1,      // 8GB — Tier 1
+        v if v < 8192 => 1,       // < 8GB — Tier 1
+        v if v < 12288 => 1,      // 8-12GB — Tier 1
         v if v < 24576 => 2,      // 12-24GB — Tier 2
         v if v < 49152 => 3,      // 24-48GB — Tier 3
         _ => 4,                    // 48GB+ — Tier 4
@@ -247,7 +247,7 @@ fn parse_vram_string(s: &str) -> u64 {
         match parts[1].to_uppercase().as_str() {
             "GB" => num * 1024,
             "MB" => num,
-            _ => num,
+            _ => 0, // Unrecognized unit; treat as no VRAM
         }
     } else {
         0
