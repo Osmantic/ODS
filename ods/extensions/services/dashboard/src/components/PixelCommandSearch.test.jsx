@@ -5,8 +5,8 @@ import { saveConversation, deleteConversation, SELECT_EVENT } from '../lib/pixel
 
 beforeEach(() => {
   localStorage.clear()
-  HTMLDialogglobalThis.Element.prototype.showModal = function () { this.open = true }
-  HTMLDialogglobalThis.Element.prototype.close = function () { this.open = false }
+  HTMLDialogElement.prototype.showModal = function () { this.open = true }
+  HTMLDialogElement.prototype.close = function () { this.open = false }
 })
 
 test('keeps keyboard-selected results visible and announces the selected action', () => {
