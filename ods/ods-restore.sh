@@ -100,7 +100,8 @@ OPTIONS:
     -l, --list              List available backups
     -f, --force             Skip confirmation prompts
     -d, --dry-run           Show what would be restored without doing it
-    -s, --stop-containers   Stop containers before restore (recommended)
+    -s, --stop-containers   Stop containers before restore (DEFAULT)
+                                MANDATORY to prevent data corruption during restore.
     --data-only             Restore only user data, not config
     --config-only           Restore only config, not user data
     --skip-verify           Skip checksum verification (NOT RECOMMENDED)
@@ -385,7 +386,8 @@ stop_containers() {
     if docker compose down; then
         log_success "Containers stopped"
     else
-        log_warn "Some containers may not have stopped cleanly"
+        log_error "Containers failed to stop. Aborting to prevent data corruption."
+        return 1
     fi
 }
 
@@ -526,6 +528,10 @@ do_restore() {
 
     # Dry run mode
     if [[ "$dry_run" == "true" ]]; then
+        # Even in dry run, we should show if containers would be stopped
+        if [[ "$stop_first" == "true" ]]; then
+            log_step "Dry Run: Would stop containers"
+        fi
         dry_run_preview "$backup_dir" "$restore_data" "$restore_config"
         return 0
     fi
@@ -545,7 +551,9 @@ do_restore() {
 
     # Stop containers if requested
     if [[ "$stop_first" == "true" ]]; then
-        stop_containers
+        if ! stop_containers; then
+            return 1
+        fi
     fi
 
     # Perform restore
@@ -573,7 +581,7 @@ main() {
     local backup_id=""
     local force="false"
     local dry_run="false"
-    local stop_first="false"
+    local stop_first="true"
     local restore_data="true"
     local restore_config="true"
     local list_mode="false"
