@@ -177,6 +177,85 @@ function Get-ODSPythonDownloadCommand {
     return $null
 }
 
+function Test-ODSBootstrapUpgradeActive {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$InstallDir,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ModelFile
+    )
+
+    try {
+        $task = Get-ScheduledTask -TaskName "ODSModelUpgrade" -ErrorAction Stop
+        if ($task.State.ToString() -eq "Running") {
+            return $true
+        }
+    } catch {
+        # The direct-launch fallback intentionally has no Scheduled Task. Check
+        # the live Windows command line below before deciding the handoff is idle.
+    }
+
+    $installNeedle = ($InstallDir -replace "\\", "/").TrimEnd("/").ToLowerInvariant()
+    $modelNeedle = $ModelFile.ToLowerInvariant()
+    try {
+        foreach ($process in @(Get-CimInstance Win32_Process -ErrorAction Stop)) {
+            $commandLine = [string]$process.CommandLine
+            if ([string]::IsNullOrWhiteSpace($commandLine)) { continue }
+            $normalized = ($commandLine -replace "\\", "/").ToLowerInvariant()
+            if ($normalized.Contains("bootstrap-upgrade.sh") -and
+                $normalized.Contains($installNeedle) -and
+                $normalized.Contains($modelNeedle)) {
+                return $true
+            }
+        }
+    } catch {
+        # Failure to enumerate processes is not affirmative evidence that a
+        # bootstrap owner exists. The shared part-file check remains guarded by
+        # the Scheduled Task path on normal Windows installs.
+    }
+    return $false
+}
+
+function Wait-ODSBootstrapDownloadHandoff {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$InstallDir,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ModelFile,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Destination,
+
+        [int]$WaitSeconds = 7200
+    )
+
+    if ($WaitSeconds -lt 1) { $WaitSeconds = 7200 }
+    $wasActive = Test-ODSBootstrapUpgradeActive -InstallDir $InstallDir -ModelFile $ModelFile
+    if (-not $wasActive) {
+        return [pscustomobject]@{ WasActive = $false; Completed = (Test-Path -LiteralPath $Destination); TimedOut = $false }
+    }
+
+    Write-AI "A background download already owns $ModelFile; waiting for a safe handoff instead of opening the same .part file twice..."
+    $deadline = (Get-Date).AddSeconds($WaitSeconds)
+    while ((Get-Date) -lt $deadline) {
+        if (-not (Test-ODSBootstrapUpgradeActive -InstallDir $InstallDir -ModelFile $ModelFile)) {
+            $completed = Test-Path -LiteralPath $Destination -PathType Leaf
+            if ($completed) {
+                Write-AISuccess "Background model download completed; reusing $ModelFile"
+            } else {
+                Write-AIWarn "Background model download stopped before completion; resuming its preserved partial safely."
+            }
+            return [pscustomobject]@{ WasActive = $true; Completed = $completed; TimedOut = $false }
+        }
+        Start-Sleep -Seconds 2
+    }
+
+    Write-AIError "Background model download did not release $ModelFile within $WaitSeconds seconds."
+    return [pscustomobject]@{ WasActive = $true; Completed = $false; TimedOut = $true }
+}
+
 function Invoke-ODSHuggingFaceDownloadFallback {
     param(
         [string]$Url,
