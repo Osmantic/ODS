@@ -1,3 +1,5 @@
+import { sha256 as hashSha256 } from '@noble/hashes/sha2.js'
+
 const DIGEST = /^[a-f0-9]{64}$/
 export const isSnapshotId = value => typeof value === 'string' && /^site-[a-f0-9]{24}$/.test(value)
 export const isArtifactPath = value => typeof value === 'string' && value.length <= 1664
@@ -34,7 +36,8 @@ export async function readBoundedBytes(response, maximum) {
 }
 
 export async function sha256(bytes) {
-  return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), byte => byte.toString(16).padStart(2, '0')).join('')
+  // LAN HTTP has no SubtleCrypto. Verify the same digest on every origin.
+  return Array.from(hashSha256(new Uint8Array(bytes)), byte => byte.toString(16).padStart(2, '0')).join('')
 }
 
 export async function loadSnapshotFiles(preview, signal) {
