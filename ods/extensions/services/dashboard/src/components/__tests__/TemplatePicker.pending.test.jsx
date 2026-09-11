@@ -27,7 +27,7 @@ test.each([true, false])('retains the apply dialog until the request settles (su
 test('unlocks dismissal when the apply response body reaches its deadline', async () => {
   vi.stubGlobal('fetch', vi.fn(async (url, { signal }) => url.endsWith('/preview')
     ? { ok: true, json: async () => ({ changes: { to_enable: ['n8n'] } }) }
-    : { ok: true, json: () => new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(new DOMException('Timed out', 'AbortError')))) }))
+    : { ok: true, json: () => new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(new globalThis.DOMException('Timed out', 'AbortError')))) }))
   render(<TemplatePicker templates={[{ id: 'workflows', name: 'Workflows', services: ['n8n'] }]} />)
   fireEvent.click(screen.getByRole('button', { name: /Workflows/ }))
   const apply = await screen.findByRole('button', { name: 'Apply Template' })

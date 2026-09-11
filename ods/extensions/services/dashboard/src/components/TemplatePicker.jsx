@@ -15,7 +15,7 @@ const fetchJson = async (url, options = {}) => {
   try {
     const response = await fetch(url, { ...options, signal: c.signal })
     const data = await response.json()
-    if (c.signal.aborted) throw new DOMException('Request timed out', 'AbortError')
+    if (c.signal.aborted) throw new globalThis.DOMException('Request timed out', 'AbortError')
     return { ok: response.ok, status: response.status, data }
   } finally {
     clearTimeout(t)
