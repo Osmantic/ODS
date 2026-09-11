@@ -1607,3 +1607,14 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+class TestListFindIndicesSafe:
+    def test_valid_indices(self):
+        from helpers import list_find_indices_safe
+        assert list_find_indices_safe([1, 2, 1, 3, 1], 1) == [0, 2, 4]
+
+    def test_invalid_and_bounds(self):
+        from helpers import list_find_indices_safe
+        assert list_find_indices_safe(None, 1) == []
+        assert list_find_indices_safe("abc", "b") == [1]
