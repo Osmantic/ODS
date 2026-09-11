@@ -463,6 +463,10 @@ def main():
     model_size_mb    = args.model_size
     gpu_count        = topology.get("gpu_count", 0)
 
+    if model_size_mb <= 0:
+        print("ERROR: --model-size must be a positive number", file=sys.stderr)
+        sys.exit(1)
+
     if gpu_count == 0:
         print("ERROR: no GPUs found in topology", file=sys.stderr)
         sys.exit(1)
