@@ -295,6 +295,24 @@ class TestClusterStatusRefresh:
 
         assert cs.total_gpus == 0
 
+    @pytest.mark.asyncio
+    async def test_refresh_handles_null_nodes_payload(self):
+        """ClusterStatus.refresh handles {"nodes": null} without TypeError."""
+        cs = ClusterStatus()
+
+        async def _fake_subprocess(*args, **kwargs):
+            proc = MagicMock()
+            proc.communicate = AsyncMock(return_value=(b'{"nodes": null}', b""))
+            proc.returncode = 0
+            return proc
+
+        with patch("asyncio.create_subprocess_exec", side_effect=_fake_subprocess):
+            await cs.refresh()
+
+        assert cs.nodes == []
+        assert cs.total_gpus == 0
+        assert cs.active_gpus == 0
+
 
 class TestGetFullAgentMetrics:
 
