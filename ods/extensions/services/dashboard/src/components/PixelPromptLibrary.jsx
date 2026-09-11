@@ -1,5 +1,6 @@
 import {useEffect, useRef, useState} from 'react'
 import { Bookmark } from 'lucide-react'
+import PixelPromptTransfer from './PixelPromptTransfer'
 import {readSavedPrompts, writeSavedPrompt} from '../lib/pixelSavedPrompts'
 
 export default function PixelPromptLibrary({input, disabled, onInsert}) {
@@ -8,6 +9,7 @@ export default function PixelPromptLibrary({input, disabled, onInsert}) {
   const [editing, setEditing] = useState(null)
   const [removing, setRemoving] = useState(null)
   const [error, setError] = useState('')
+  const [isOpen, setIsOpen] = useState(false)
   function refresh() {
     try {setItems(readSavedPrompts()); setError('')}
     catch {setError('Saved prompts could not be read. Existing browser data has been preserved.')}
@@ -17,7 +19,7 @@ export default function PixelPromptLibrary({input, disabled, onInsert}) {
     window.addEventListener('storage', update)
     return () => window.removeEventListener('storage', update)
   }, [])
-  function close() {dialog.current?.close(); setEditing(null); setRemoving(null); trigger.current?.focus()}
+  function close() {dialog.current?.close(); setIsOpen(false); setEditing(null); setRemoving(null); trigger.current?.focus()}
   function edit(item) {previous.current = item; setEditing(item || {id:'prompt-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2, 10), title:'', text:input}); setError('')}
   function save(event) {
     event.preventDefault()
@@ -31,7 +33,7 @@ export default function PixelPromptLibrary({input, disabled, onInsert}) {
   const fieldClass = 'my-2 block w-full rounded border border-theme-border bg-theme-bg p-2 text-theme-text'
   const buttonClass = 'rounded border border-theme-border px-3 py-2 text-xs hover:bg-theme-surface-hover disabled:opacity-40'
   return <>
-    <button ref={trigger} type="button" disabled={disabled} aria-label="Saved prompts" title="Saved prompts" onClick={() => {refresh(); dialog.current.showModal()}}><Bookmark size={16}/></button>
+    <button ref={trigger} type="button" disabled={disabled} aria-label="Saved prompts" title="Saved prompts" onClick={() => {refresh(); setIsOpen(true); dialog.current.showModal()}}><Bookmark size={16}/></button>
     <dialog ref={dialog} className="chat-delete-dialog" style={{maxHeight:'calc(100dvh - 32px)', overflowY:'auto'}} aria-label="Saved prompts" onCancel={event => {event.preventDefault(); close()}}>
       <h3>Saved prompts</h3><p>Reusable text stored in this browser. Insert a prompt into your draft, then review it before sending.</p>
       {error && <p role="alert">{error}</p>}
@@ -44,6 +46,7 @@ export default function PixelPromptLibrary({input, disabled, onInsert}) {
         <footer><button type="button" autoFocus onClick={() => setRemoving(null)}>Keep prompt</button><button type="button" onClick={remove}>Delete prompt</button></footer>
       </div> : <>
         <button className={buttonClass} type="button" onClick={() => edit(null)}>Save a new prompt</button>
+        {isOpen && <PixelPromptTransfer onImported={setItems}/>}
         {!items.length && <p>No saved prompts yet. Start with your current draft or write a new one.</p>}
         <ul>{items.map(item => {
           const fits = input.length + item.text.length + 1 <= 16384
