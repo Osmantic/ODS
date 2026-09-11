@@ -387,6 +387,7 @@ function Update-HermesConfigFile {
         [string]$Path,
         [string]$Model,
         [string]$BaseUrl,
+        [string]$ApiKey = "",
         [int]$ContextLength,
         [int]$RequestTimeoutSeconds = 180,
         [int]$MaxTokens = 1024,
@@ -404,11 +405,20 @@ function Update-HermesConfigFile {
     # is what should actually land on disk.
     $modelReplacement = $Model.Replace('$', '$$')
     $baseUrlReplacement = $BaseUrl.Replace('$', '$$')
+    $apiKeyReplacement = $ApiKey.Replace('$', '$$')
     # The source template quotes these values, while Hermes serializes its live
     # data/config.yaml without quotes. Match either form so post-start model
     # persistence does not silently no-op against the live file.
     $content = $content -replace '(?m)^  default:\s*(?:"[^"]*"|[^\r\n#]+)\s*(?:#.*)?\r?$', "  default: `"$modelReplacement`""
     $content = $content -replace '(?m)^  base_url:\s*(?:"[^"]*"|[^\r\n#]+)\s*(?:#.*)?\r?$', "  base_url: `"$baseUrlReplacement`""
+    if (-not [string]::IsNullOrWhiteSpace($ApiKey)) {
+        if ($content -match '(?m)^  api_key:') {
+            $content = $content -replace '(?m)^  api_key:\s*(?:"[^"]*"|[^\r\n#]+)\s*(?:#.*)?\r?$', "  api_key: `"$apiKeyReplacement`""
+        } else {
+            $baseUrlLine = "  base_url: `"$BaseUrl`""
+            $content = $content.Replace($baseUrlLine, "$baseUrlLine`n  api_key: `"$ApiKey`"")
+        }
+    }
     $content = $content -replace '(?m)^  context_length: .+\r?$', "  context_length: $ContextLength"
     $content = $content -replace '(?m)^    context_length: .+\r?$', "    context_length: $ContextLength"
     if ($MaxTokens -lt 1) { $MaxTokens = 1024 }
@@ -506,6 +516,7 @@ agent:
     $verified = [System.IO.File]::ReadAllText($Path, $utf8NoBom)
     if (-not $verified.Contains("  default: `"$Model`"")) { return $false }
     if (-not $verified.Contains("  base_url: `"$BaseUrl`"")) { return $false }
+    if (-not [string]::IsNullOrWhiteSpace($ApiKey) -and -not $verified.Contains("  api_key: `"$ApiKey`"")) { return $false }
     return $true
 }
 
@@ -615,6 +626,18 @@ if ($enableHermes) {
             "http://llama-server:8080/v1"
         })
     }
+    $_hermesApiKey = ""
+    if ($_envLines.ContainsKey("HERMES_LLM_API_KEY")) {
+        $_hermesApiKey = $_envLines["HERMES_LLM_API_KEY"].Trim().Trim('"').Trim("'")
+    }
+    if ([string]::IsNullOrWhiteSpace($_hermesApiKey) -and $_hermesBaseUrl -match 'litellm:4000') {
+        if ($_envLines.ContainsKey("LITELLM_KEY")) {
+            $_hermesApiKey = $_envLines["LITELLM_KEY"].Trim().Trim('"').Trim("'")
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($_hermesApiKey)) {
+        $_hermesApiKey = "sk-ods-hermes-local"
+    }
     $_hermesTemplate = Join-Path (Join-Path (Join-Path $installDir "extensions") "services\hermes") "cli-config.yaml.template"
     $_hermesLive = Join-Path (Join-Path $installDir "data\hermes") "config.yaml"
     if (-not (Test-Path $_hermesTemplate)) {
@@ -625,8 +648,8 @@ if ($enableHermes) {
         Copy-Item -Path $_hermesTemplate -Destination $_hermesLive -Force
     }
     $_hermesRequestTimeout = $(if ($cloudMode -and $_switchboardMode -ne "enabled") { 180 } else { 900 })
-    $_patchedHermesTemplate = Update-HermesConfigFile -Path $_hermesTemplate -Model $_hermesModel -BaseUrl $_hermesBaseUrl -ContextLength ([int]$tierConfig.MaxContext) -RequestTimeoutSeconds $_hermesRequestTimeout -LemonadeCompact:($gpuInfo.Backend -eq "amd")
-    $_patchedHermesLive = Update-HermesConfigFile -Path $_hermesLive -Model $_hermesModel -BaseUrl $_hermesBaseUrl -ContextLength ([int]$tierConfig.MaxContext) -RequestTimeoutSeconds $_hermesRequestTimeout -LemonadeCompact:($gpuInfo.Backend -eq "amd")
+    $_patchedHermesTemplate = Update-HermesConfigFile -Path $_hermesTemplate -Model $_hermesModel -BaseUrl $_hermesBaseUrl -ApiKey $_hermesApiKey -ContextLength ([int]$tierConfig.MaxContext) -RequestTimeoutSeconds $_hermesRequestTimeout -LemonadeCompact:($gpuInfo.Backend -eq "amd")
+    $_patchedHermesLive = Update-HermesConfigFile -Path $_hermesLive -Model $_hermesModel -BaseUrl $_hermesBaseUrl -ApiKey $_hermesApiKey -ContextLength ([int]$tierConfig.MaxContext) -RequestTimeoutSeconds $_hermesRequestTimeout -LemonadeCompact:($gpuInfo.Backend -eq "amd")
     if (-not ($_patchedHermesTemplate -and $_patchedHermesLive)) {
         Write-AIError "Failed to patch Hermes config for Windows runtime (model=$_hermesModel, base_url=$_hermesBaseUrl)"
         throw "ODS_INSTALL_ABORTED"

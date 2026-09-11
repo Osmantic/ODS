@@ -37,6 +37,7 @@ model:
   default: "old-model"
   provider: "custom"
   base_url: "http://old.invalid/v1"
+  api_key: "old-key"
   context_length: 4096
 providers:
   custom:
@@ -75,6 +76,7 @@ terminal:
             -Path $path `
             -Model "ods/current" `
             -BaseUrl "http://litellm:4000/v1" `
+            -ApiKey "sk-test-hermes-runtime" `
             -ContextLength 65536 `
             -RequestTimeoutSeconds 900
         if (-not $updated) {
@@ -86,6 +88,9 @@ terminal:
         }
         if (-not $actual.Contains('  base_url: "http://litellm:4000/v1"')) {
             throw "Base URL was not updated for $($fixture.Name)"
+        }
+        if (-not $actual.Contains('  api_key: "sk-test-hermes-runtime"')) {
+            throw "API key was not inserted or updated for $($fixture.Name)"
         }
     }
 } finally {

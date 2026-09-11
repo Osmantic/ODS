@@ -269,14 +269,17 @@ function Set-ODSWindowsHermesRuntimeModel {
         } else {
             "http://llama-server:8080/v1"
         })
+    $hermesApiKey = Get-WindowsODSEnvValue `
+        -EnvMap $runtimeEnv -Keys @("HERMES_LLM_API_KEY", "LITELLM_KEY") `
+        -Default "sk-ods-hermes-local"
     $hermesTemplate = Join-Path (Join-Path (Join-Path $installDir "extensions") "services\hermes") "cli-config.yaml.template"
     $hermesLive = Join-Path (Join-Path $installDir "data\hermes") "config.yaml"
     $hermesRequestTimeout = $(if ($cloudMode -and -not $switchboardEnabled) { 180 } else { 900 })
-    $templateUpdated = Update-HermesConfigFile -Path $hermesTemplate -Model $ModelId -BaseUrl $hermesBaseUrl -ContextLength ([int]$tierConfig.MaxContext) `
+    $templateUpdated = Update-HermesConfigFile -Path $hermesTemplate -Model $ModelId -BaseUrl $hermesBaseUrl -ApiKey $hermesApiKey -ContextLength ([int]$tierConfig.MaxContext) `
         -RequestTimeoutSeconds $hermesRequestTimeout `
         -LemonadeCompact:($gpuInfo.Backend -eq "amd")
     $liveUpdated = Update-HermesConfigFile `
-        -Path $hermesLive -Model $ModelId -BaseUrl $hermesBaseUrl `
+        -Path $hermesLive -Model $ModelId -BaseUrl $hermesBaseUrl -ApiKey $hermesApiKey `
         -ContextLength ([int]$tierConfig.MaxContext) `
         -RequestTimeoutSeconds $hermesRequestTimeout `
         -LemonadeCompact:($gpuInfo.Backend -eq "amd")

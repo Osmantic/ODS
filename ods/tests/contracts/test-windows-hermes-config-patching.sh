@@ -111,6 +111,20 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 6c. Hermes provider=custom ignores OPENAI_API_KEY unless model.api_key is
+#     persisted in config.yaml. Windows must patch the generated key into both
+#     template and live configs or authenticated LiteLLM calls fail at runtime.
+# ---------------------------------------------------------------------------
+if grep -q '\[string\]\$ApiKey = ""' "$PHASE" \
+   && grep -q 'api_key: `"\$ApiKey`"' "$PHASE" \
+   && grep -q -- '-ApiKey \$_hermesApiKey' "$PHASE" \
+   && grep -q -- '-ApiKey \$hermesApiKey' "$MONO"; then
+    pass "Windows persists the Hermes custom-provider API key"
+else
+    fail "Windows Hermes config patching must persist HERMES_LLM_API_KEY"
+fi
+
+# ---------------------------------------------------------------------------
 # 7. Windows local inference needs a longer Hermes provider timeout than the
 #    shared template default. The helper must expose a timeout parameter and
 #    both installer paths must pass the Windows-local value.
