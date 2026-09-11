@@ -72,6 +72,10 @@ jobs:
         shell: pwsh
         run: ./tests/contracts/test-windows-lemonade-task-cleanup.ps1
 
+      - name: Windows Hermes Config Runtime Contract
+        shell: pwsh
+        run: ./tests/contracts/test-windows-hermes-config-runtime.ps1
+
       - name: Windows Model Activation Contract
         shell: pwsh
         run: ./tests/test-windows-model-activation.ps1

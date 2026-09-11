@@ -49,13 +49,13 @@ fi
 # ---------------------------------------------------------------------------
 # 3. The helper must verify the requested model/base URL after writing.
 # ---------------------------------------------------------------------------
-if grep -Fq 'default: ".*"\r?$' "$PHASE" \
-   && grep -Fq 'base_url: ".*"\r?$' "$PHASE" \
+if grep -Fq 'default:\s*(?:"[^"]*"|[^\r\n#]+)' "$PHASE" \
+   && grep -Fq 'base_url:\s*(?:"[^"]*"|[^\r\n#]+)' "$PHASE" \
    && grep -q '\.Contains("  default: `"\$Model`"")' "$PHASE" \
    && grep -q '\.Contains("  base_url: `"\$BaseUrl`"")' "$PHASE"; then
-    pass "Hermes config patching is CRLF-tolerant and verifies model/base_url after write"
+    pass "Hermes config patching accepts template/live YAML and verifies model/base_url after write"
 else
-    fail "Hermes config patching must handle CRLF YAML and verify model/base_url after write"
+    fail "Hermes config patching must handle quoted/unquoted CRLF YAML and verify model/base_url after write"
 fi
 
 # ---------------------------------------------------------------------------

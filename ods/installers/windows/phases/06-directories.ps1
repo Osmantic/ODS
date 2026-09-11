@@ -404,8 +404,11 @@ function Update-HermesConfigFile {
     # is what should actually land on disk.
     $modelReplacement = $Model.Replace('$', '$$')
     $baseUrlReplacement = $BaseUrl.Replace('$', '$$')
-    $content = $content -replace '(?m)^  default: ".*"\r?$', "  default: `"$modelReplacement`""
-    $content = $content -replace '(?m)^  base_url: ".*"\r?$', "  base_url: `"$baseUrlReplacement`""
+    # The source template quotes these values, while Hermes serializes its live
+    # data/config.yaml without quotes. Match either form so post-start model
+    # persistence does not silently no-op against the live file.
+    $content = $content -replace '(?m)^  default:\s*(?:"[^"]*"|[^\r\n#]+)\s*(?:#.*)?\r?$', "  default: `"$modelReplacement`""
+    $content = $content -replace '(?m)^  base_url:\s*(?:"[^"]*"|[^\r\n#]+)\s*(?:#.*)?\r?$', "  base_url: `"$baseUrlReplacement`""
     $content = $content -replace '(?m)^  context_length: .+\r?$', "  context_length: $ContextLength"
     $content = $content -replace '(?m)^    context_length: .+\r?$', "    context_length: $ContextLength"
     if ($MaxTokens -lt 1) { $MaxTokens = 1024 }
