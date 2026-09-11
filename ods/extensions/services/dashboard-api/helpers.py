@@ -1146,3 +1146,25 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def compact_dict_keys(data: dict | None, strip_whitespace: bool = True) -> dict:
+    """Sanitize and compact dictionary key strings safely.
+
+    Strips whitespace from string keys, filters out empty string keys or None keys,
+    and returns a clean dictionary. Returns an empty dict for non-dict or None inputs.
+    """
+    if not isinstance(data, dict):
+        return {}
+    result = {}
+    for k, v in data.items():
+        if k is None:
+            continue
+        key_str = str(k)
+        if strip_whitespace:
+            key_str = key_str.strip()
+        if not key_str:
+            continue
+        result[key_str] = v
+    return result
+
