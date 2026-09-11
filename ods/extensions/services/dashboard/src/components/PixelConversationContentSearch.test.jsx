@@ -58,3 +58,18 @@ it('does not match a metadata-only value or create synthetic conversation conten
   search('hiddenmagic')
   expect(screen.getByText('No matching conversations or actions.')).toBeVisible()
 })
+
+it('keeps a complete long matching phrase after preceding context', () => {
+  const phrase = 'matching phrase '.repeat(15).trim()
+  chat('long-phrase', [{role:'user', content:'Find this reply'}, {role:'assistant', content:'x'.repeat(300) + phrase + 'z'.repeat(300)}])
+  search(phrase)
+  const snippet = screen.getByText(/^Reply: …/)
+  expect(snippet.textContent).toContain(phrase)
+  expect(snippet.textContent.length).toBeLessThan(phrase.length + 70)
+})
+
+it('maps case-expanded Unicode prefixes back to retained text offsets', () => {
+  chat('unicode-offset', [{role:'user', content:'Find this reply'}, {role:'assistant', content:'İ'.repeat(300) + ' exact phrase ' + 'z'.repeat(300)}])
+  search('EXACT PHRASE')
+  expect(screen.getByText(/^Reply: …/).textContent).toContain('exact phrase')
+})
