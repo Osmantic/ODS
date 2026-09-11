@@ -602,7 +602,7 @@ export default function RemoteProvider({ compact = false }) {
         <div className="mb-4 flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-100" role="status">
           <AlertCircle className="mt-0.5 shrink-0" size={16} />
           <span>
-            The provider route is reachable, but ODS and Pixel are not using its exact model contract.
+            The provider route is reachable, but ODS and the assistant are not using its exact model contract.
             Reconcile the route to restore the configured remote model without re-entering its stored secret.
           </span>
         </div>
@@ -619,7 +619,7 @@ export default function RemoteProvider({ compact = false }) {
           <Field label="Reasoning" value={boolLabel(provider.reasoning)} />
           <Field label="Proof" value={titleize(routeStatus.reason)} tone={routeStatus.proven ? 'text-emerald-300' : 'text-amber-300'} />
           <Field label="Consumer route" value={titleize(activation.reason)} tone={activation.proven ? 'text-emerald-300' : 'text-amber-300'} />
-          <Field label="Pixel route" value={titleize(activation.pixel)} />
+          <Field label="Assistant route" value={titleize(activation.pixel)} />
           <ProbeReceipt receipt={proofReceipt} />
           {Array.isArray(routeState.errors) && routeState.errors.length > 0 && (
             <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-200">

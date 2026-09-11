@@ -1656,7 +1656,7 @@ def test_load_model_refuses_to_interrupt_an_active_pixel_stream(monkeypatch):
     assert exc_info.value.status_code == 409
     assert exc_info.value.detail == {
         "code": "pixel_chat_active",
-        "message": "Pixel is working. Stop the active response before changing models.",
+        "message": "The assistant is working. Stop the active response before changing models.",
         "requestedModelId": "next-model",
     }
 

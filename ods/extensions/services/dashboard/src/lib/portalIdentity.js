@@ -1,4 +1,4 @@
-export const DEFAULT_ASSISTANT_NAME = 'Portal'
+export const DEFAULT_ASSISTANT_NAME = 'Assistant'
 
 export function normalizeDisplayName(value) {
   if (typeof value !== 'string' || value.length > 480 || [...value].length > 240) throw new Error('Invalid assistant name')

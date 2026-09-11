@@ -2027,7 +2027,7 @@ def load_model(
             status_code=409,
             detail={
                 "code": "pixel_chat_active",
-                "message": "Pixel is working. Stop the active response before changing models.",
+                "message": "The assistant is working. Stop the active response before changing models.",
                 "requestedModelId": model_id,
             },
         )

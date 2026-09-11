@@ -25,5 +25,5 @@ it('keeps short conversations uncluttered and does not modify a draft while navi
   saveConversation({schema:1,chatId:'short',messages:[{role:'user',content:'One prompt'}],draft:'Keep draft'})
   render(<Pixel/>);await screen.findByText('Available')
   expect(screen.queryByLabelText('Jump to conversation turn')).toBeNull()
-  expect(screen.getByPlaceholderText('Message Portal...')).toHaveValue('Keep draft')
+  expect(screen.getByPlaceholderText('Message Assistant...')).toHaveValue('Keep draft')
 })

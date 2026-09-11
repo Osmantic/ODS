@@ -2,8 +2,8 @@
 
 Settings → Assistant identity changes the name shown in the assistant navigation,
 chat heading, composer, current working label and preview label. The default is
-**Portal**. Enter a name and choose **Save name**. Blank names reset to Portal;
-**Reset to Portal** edits the draft and still requires Save.
+**Assistant**. Enter a name and choose **Save name**. Blank names reset to
+Assistant; **Reset to Assistant** edits the draft and still requires Save.
 
 Names are saved for this ODS installation, not in a browser profile. Reloading
 the dashboard or opening it in another browser reads the server's saved name.
@@ -31,8 +31,32 @@ Each Save requires the last observed revision. Conflicts or an unconfirmed
 response disable another Save until an explicit refresh. The dashboard confirms
 both the Save response and a matching subsequent server read before displaying
 success; it never automatically replays a Save. If data is corrupt, it is not
-silently replaced with a default. An unavailable initial read displays Portal
+silently replaced with a default. An unavailable initial read displays Assistant
 as a fallback label and keeps editing disabled with an error.
+
+## Saved-name preservation
+
+Every valid saved display name, including `Portal`, remains unchanged across an
+upgrade. ODS cannot tell whether an existing value was accepted as an earlier
+default or deliberately chosen, so only an owner edit or reset changes it.
+
+## Presentation-only semantics
+
+The display name is cosmetic. It does not change the structural agent ID
+`pixel`, plugin ID `pixel-ods`, internal services, routes, session identifiers,
+model selection, permissions, tool access or runtime configuration. It is not
+inserted into the privileged model prompt, and it does not rewrite prior chat
+messages or workspace content.
+
+## Ordinary conversation and runtime disclosure
+
+The assistant presents itself generically as the owner's ODS assistant. It does
+not volunteer or promote framework, vendor, implementation or internal-service
+names in ordinary replies. When the owner explicitly asks about the runtime or
+when an implementation detail is material to accurate troubleshooting, it
+answers truthfully from available evidence. Administrator diagnostics, logs,
+licenses and migration documentation retain exact technical names, including
+OpenClaw when that is the active runtime.
 
 ## Qualification boundaries
 

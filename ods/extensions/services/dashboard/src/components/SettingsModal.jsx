@@ -14,11 +14,11 @@ const PixelDiagnostics = lazy(() => import('./settings/PixelDiagnostics'))
 
 const sections = [
   ['general', 'General', Gear], ['profile', 'Profile', UserRound], ['appearance', 'Appearance', Palette],
-  ['portal-mascot', 'Portal mascot', Bot],
+  ['portal-mascot', 'Assistant mascot', Bot],
   ['usage', 'Usage', Activity], ['owner', 'Owner access', UserRound],
-  ['connections', 'Pixel connections', Bot], ['access', 'Pixel access', ShieldCheck],
+  ['connections', 'Assistant connections', Bot], ['access', 'Assistant access', ShieldCheck],
   ['sharing', 'Model sharing', Share2], ['services', 'Services', Network],
-  ['pixel-diagnostics', 'Pixel diagnostics', Activity],
+  ['pixel-diagnostics', 'Assistant diagnostics', Activity],
   ['storage', 'Storage', HardDrive], ['updates', 'Updates', RefreshCw],
   ['advanced', 'Advanced', Terminal],
   ['integrations', 'Integrations', Network], ['remote', 'Remote GPU', Share2],

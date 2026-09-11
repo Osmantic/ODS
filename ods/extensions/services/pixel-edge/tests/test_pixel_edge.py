@@ -896,8 +896,8 @@ class TestModelAllowlist(BaseEdgeTest):
         ) as resp:
             self.assertEqual(resp.status, 200)
         content = self.up_runner.app["chat_requests"][-1]["messages"][-1]["content"]
-        self.assertIn("[ODS Pixel workspace task route:", content)
-        self.assertNotIn("[ODS Pixel host inspection route:", content)
+        self.assertIn("[ODS assistant workspace task route:", content)
+        self.assertNotIn("[ODS assistant host inspection route:", content)
         self.assertNotIn("pixel_ods_host_observe", content)
 
     async def test_workspace_mutation_gets_mutate_before_verify_route(self):
@@ -936,7 +936,7 @@ class TestModelAllowlist(BaseEdgeTest):
         ) as resp:
             self.assertEqual(resp.status, 200)
         content = self.up_runner.app["chat_requests"][-1]["messages"][-1]["content"]
-        self.assertIn("ODS Pixel command completion route", content)
+        self.assertIn("ODS assistant command completion route", content)
         self.assertIn("Call exec exactly once", content)
         self.assertIn("tool_call control with id process", content)
         self.assertIn("action poll", content)
@@ -959,7 +959,7 @@ class TestModelAllowlist(BaseEdgeTest):
         ) as resp:
             self.assertEqual(resp.status, 200)
         content = self.up_runner.app["chat_requests"][-1]["messages"][-1]["content"]
-        self.assertIn("ODS Pixel exact workspace route", content)
+        self.assertIn("ODS assistant exact workspace route", content)
         self.assertIn("tool_call exactly once with id write", content)
         self.assertIn("tool_call once with id read", content)
         self.assertIn("tool_call once with id exec", content)
@@ -991,7 +991,7 @@ class TestModelAllowlist(BaseEdgeTest):
         ) as resp:
             self.assertEqual(resp.status, 200)
         content = self.up_runner.app["chat_requests"][-1]["messages"][-1]["content"]
-        self.assertIn("ODS Pixel exact workspace route", content)
+        self.assertIn("ODS assistant exact workspace route", content)
         self.assertIn("tool_call exactly once with id write", content)
         self.assertIn(
             r'{"path":"pixel-qualification/model-flex-9b.txt","content":"Pixel 9B model flexibility passed.\n"}',
@@ -1083,7 +1083,7 @@ class TestModelAllowlist(BaseEdgeTest):
             {"messages": [{"role": "user", "content": original}]}
         )["messages"][-1]["content"]
         self.assertTrue(content.startswith(original + self.pe._INTERACTIVE_DELIVERY_CONTRACT))
-        self.assertIn("[ODS Pixel exact workspace route:", content)
+        self.assertIn("[ODS assistant exact workspace route:", content)
         self.assertIn(json.dumps({"path": "/workspace/rules.txt", "content": '"Do not edit files".\n'},
                                  separators=(",", ":")), content)
 
@@ -1561,8 +1561,8 @@ class TestHostRequestIntent(BaseEdgeTest):
         ]:
             content = await self.forwarded_content(prompt)
             self.assertIn(prompt, content)
-            self.assertIn("[ODS Pixel delivery requirement:", content)
-            self.assertNotIn("[ODS Pixel host inspection route:", content)
+            self.assertIn("[ODS assistant delivery requirement:", content)
+            self.assertNotIn("[ODS assistant host inspection route:", content)
 
     async def test_host_route_uses_only_positive_facets(self):
         content = await self.forwarded_content(

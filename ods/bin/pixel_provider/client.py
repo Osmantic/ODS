@@ -166,7 +166,7 @@ def prepare_client(connection, directory, *, confirmed_endpoint, pixel_repositor
     agent_id = 'pixel-client-'+uuid.uuid4().hex[:16]
     answers = dict(deploymentProfile='prepared',capabilityProfile='minimal',
         ownerName='ODS Owner',organization='Local ODS',deploymentName=agent_id,timeZone='UTC',
-        agentId=agent_id,agentName='Pixel',openclawBin=str(executable),openclawHome=str(directory/'state'),
+        agentId=agent_id,agentName='Assistant',openclawBin=str(executable),openclawHome=str(directory/'state'),
         installDir=str(directory/'installation'),workspace=str(directory/'state/workspace'),
         modelProvider='ods-peer',modelId='ods/shared',modelName='ODS '+connection['label'],
         modelBaseUrl=connection['baseUrl'],modelApiKey=connection['credential']['apiKey'],

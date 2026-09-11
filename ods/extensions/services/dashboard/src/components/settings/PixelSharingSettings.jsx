@@ -134,7 +134,7 @@ export default function PixelSharingSettings() {
   return <section className="rounded-xl border border-theme-border bg-theme-card p-5 space-y-4" aria-labelledby="pixel-sharing-title">
     <div className="flex items-center justify-between gap-3">
       <div><h2 id="pixel-sharing-title" className="text-lg font-semibold">Share inference with your devices</h2>
-        <p className="text-sm text-theme-text-muted">Use this ODS model from Pixel on another device. Tools and permissions stay on that device.</p></div>
+        <p className="text-sm text-theme-text-muted">Use this ODS model from an assistant on another device. Tools and permissions stay on that device.</p></div>
       <button className={buttonStyle} disabled={busy} onClick={() => request()}>Reload sharing</button>
     </div>
     {error && <p role="alert" className="text-sm text-red-400">{error}</p>}
@@ -167,7 +167,7 @@ export default function PixelSharingSettings() {
         <p className="text-sm text-theme-text-muted">On your laptop, forward this host’s 127.0.0.1:{snapshot.transport.port} through authenticated SSH, or use your explicitly configured HTTPS ingress. The key grants inference only, not SSH or computer access.</p>
         <label className="block text-sm">Laptop connection URL<input className={inputStyle} value={baseUrl} onChange={event => { baseUrlEdited.current = true; setBaseUrl(event.target.value) }} spellCheck={false} /></label>
         <label className="block text-sm">Device API key<input className={inputStyle} type="password" value={issued.credential.key} readOnly autoComplete="off" /></label>
-        <p className="text-sm">OpenAI-compatible model: <code>ods/shared</code>. Test the connection on the client before choosing it as Pixel’s leader.</p>
+        <p className="text-sm">OpenAI-compatible model: <code>ods/shared</code>. Test the connection on the client before choosing it as the assistant’s leader.</p>
         <button className={buttonStyle} onClick={copyConnection}>Copy connection settings</button>{' '}
         <button className={buttonStyle} onClick={() => setIssued(null)}>Dismiss key</button>
       </div>}

@@ -32,55 +32,55 @@ const MAX_COMPARE_SWAP_REPAIRS_PER_PATH = 3;
 const MAX_TRACKED_WORKSPACE_FILE_BYTES = 4 * 1024 * 1024;
 
 export const WEB_BUDGET_EXHAUSTED_REASON =
-  "Pixel's web-research budget is exhausted for this response. Do not call web tools again. Finish using the evidence already collected and any otherwise-authorized tools, including saving the requested report. Preserve existing evidence and clearly state any missing external information.";
+  "The assistant's web-research budget is exhausted for this response. Do not call web tools again. Finish using the evidence already collected and any otherwise-authorized tools, including saving the requested report. Preserve existing evidence and clearly state any missing external information.";
 
 export const WEB_SEARCH_BUDGET_EXHAUSTED_REASON =
-  "Pixel's search-call allowance is exhausted for this response. Do not repeat web_search. Use web_fetch or targeted extraction for already identified public sources within the remaining page-reading and total allowances, or finish using collected evidence and otherwise-authorized tools, including saving the requested report.";
+  "The assistant's search-call allowance is exhausted for this response. Do not repeat web_search. Use web_fetch or targeted extraction for already identified public sources within the remaining page-reading and total allowances, or finish using collected evidence and otherwise-authorized tools, including saving the requested report.";
 
 export const WEB_FETCH_BUDGET_EXHAUSTED_REASON =
-  "Pixel's page-reading allowance is exhausted for this response. Do not repeat web_fetch, pixel_ods_web_extract or pixel_ods_research. Search may continue within its remaining search and total allowances. Finish using collected evidence and otherwise-authorized tools, including saving the requested report; do not claim unread pages were verified.";
+  "The assistant's page-reading allowance is exhausted for this response. Do not repeat web_fetch, pixel_ods_web_extract or pixel_ods_research. Search may continue within its remaining search and total allowances. Finish using collected evidence and otherwise-authorized tools, including saving the requested report; do not claim unread pages were verified.";
 
 export const WEB_LOOP_ABORT_REASON =
-  "Pixel stopped this response because it requested another web tool after the bounded research budget was exhausted. Start a fresh message to continue with a narrower research question.";
+  "The assistant stopped this response because it requested another web tool after the bounded research budget was exhausted. Start a fresh message to continue with a narrower research question.";
 
 export const WEB_LOOP_DELIVERY_REASON =
-  "Pixel stopped a repeated web-research loop after reaching this response's research limit. It did not finish your request. The conversation and any saved files are preserved. You can ask Pixel to continue from the evidence already collected.";
+  "The assistant stopped a repeated web-research loop after reaching this response's research limit. It did not finish your request. The conversation and any saved files are preserved. You can ask the assistant to continue from the evidence already collected.";
 
 export const WEB_FETCH_REPEAT_PIVOT_REASON =
-  "Pixel already fetched this public page in this response. Avoid repeating that fetch. Use the returned evidence, target a missing detail with pixel_ods_web_extract, or choose another relevant source. Other authorized work may continue.";
+  "The assistant already fetched this public page in this response. Avoid repeating that fetch. Use the returned evidence, target a missing detail with pixel_ods_web_extract, or choose another relevant source. Other authorized work may continue.";
 
 export const WEB_FETCH_TRUNCATED_PIVOT_REASON =
   "The fetched public page was truncated. Only the returned content is evidence. Choose targeted extraction, another relevant source, or continue other authorized work; do not claim unread content was verified.";
 
 export const WEB_FETCH_PUBLIC_ONLY_REASON =
-  "Pixel blocked this fetch because web_fetch is restricted to public HTTP(S) hostnames and must not contact local, private, or raw-IP destinations. Do not retry that access through another tool. Other authorized work may continue, including approved ODS tools, public research, and saving verified findings.";
+  "The assistant blocked this fetch because web_fetch is restricted to public HTTP(S) hostnames and must not contact local, private, or raw-IP destinations. Do not retry that access through another tool. Other authorized work may continue, including approved ODS tools, public research, and saving verified findings.";
 
 export const GITHUB_CANONICAL_SOURCE_PREFIX =
-  "Pixel already has the owner's identified canonical public GitHub source:";
+  "The assistant already has the owner's identified canonical public GitHub source:";
 
 export const GITHUB_CANONICAL_FETCH_FAILED_REASON =
   "The attempted GitHub source was not fetched successfully. Other sources and authorized work remain available; distinguish unread information from verified findings.";
 
 export const GITHUB_SOURCE_UNVERIFIED_DELIVERY_PREFIX =
-  "Pixel did not successfully read a source belonging to the requested GitHub repository in this response. Repository claims remain unverified; the workspace and other collected evidence are preserved.";
+  "The assistant did not successfully read a source belonging to the requested GitHub repository in this response. Repository claims remain unverified; the workspace and other collected evidence are preserved.";
 
 export const EXEC_PRIVATE_NETWORK_REASON =
-  "Pixel blocked this command because shell execution cannot be used to contact local, private, or raw-IP HTTP(S) destinations. Do not retry that access through another tool. Other authorized work may continue, including approved ODS tools, public research, and saving verified findings.";
+  "The assistant blocked this command because shell execution cannot be used to contact local, private, or raw-IP HTTP(S) destinations. Do not retry that access through another tool. Other authorized work may continue, including approved ODS tools, public research, and saving verified findings.";
 
 export const PRIVATE_NETWORK_LOOP_ABORT_REASON =
-  "Pixel stopped this response because it requested another tool after a private-network boundary was enforced. Start a fresh message with a safe public destination or an approved ODS status capability.";
+  "The assistant stopped this response because it requested another tool after a private-network boundary was enforced. Start a fresh message with a safe public destination or an approved ODS status capability.";
 
 export const PRIVATE_URL_REQUEST_REASON =
-  "This request contains a private URL that Pixel cannot open from this chat. Do not call or substitute any tool, including ODS status or shell tools. Reply concisely that the private page was not accessed and ask the user to provide its content or use a separately approved private-access capability.";
+  "This request contains a private URL that the assistant cannot open from this chat. Do not call or substitute any tool, including ODS status or shell tools. Reply concisely that the private page was not accessed and ask the user to provide its content or use a separately approved private-access capability.";
 
 export const CODING_RETRY_EXHAUSTED_REASON =
-  "Pixel stopped a no-progress coding repair loop after its bounded failed-verification limit. Do not call another tool in this turn. Give the user a visible summary of the verified failure, the changes attempted, and the most useful next step.";
+  "The assistant stopped a no-progress coding repair loop after its bounded failed-verification limit. Do not call another tool in this turn. Give the user a visible summary of the verified failure, the changes attempted, and the most useful next step.";
 
 export const CODING_REPEAT_NO_PROGRESS_REASON =
   "That exact command already succeeded twice without a workspace mutation. Do not run it again. Perform the requested change with write, edit, or apply_patch, choose a materially different command, or give the owner a visible blocker.";
 
 export const CODING_LOOP_ABORT_REASON =
-  "Pixel stopped this response because it requested another coding tool after the repeated-command limit was reached. Start a fresh message to continue from the preserved workspace with a different approach.";
+  "The assistant stopped this response because it requested another coding tool after the repeated-command limit was reached. Start a fresh message to continue from the preserved workspace with a different approach.";
 
 export const VISIBLE_REPLY_REQUIRES_FINAL_REASON =
   "Do not use a tool to deliver the reply and do not send a message to this same session. End the turn now with the requested text as the normal assistant response.";
@@ -89,49 +89,49 @@ export const EDIT_CREATE_REQUIRES_WRITE_REASON =
   "edit cannot create a new file because every edit replacement requires a non-empty oldText copied from existing content. Use the visible tool_call control now with id write and args containing the same path plus the exact newText as content. Do not retry edit.";
 
 export const EDIT_CREATE_RETRY_EXHAUSTED_REASON =
-  "Pixel blocked a repeated invalid attempt to create a file with edit. Do not call another tool in this turn. Tell the owner the file was not created and that a fresh retry must use write.";
+  "The assistant blocked a repeated invalid attempt to create a file with edit. Do not call another tool in this turn. Tell the owner the file was not created and that a fresh retry must use write.";
 
 export const EDIT_CREATE_LOOP_ABORT_REASON =
-  "Pixel stopped this response because it kept retrying edit after the new-file write correction. The workspace is preserved; start a fresh message to retry with write.";
+  "The assistant stopped this response because it kept retrying edit after the new-file write correction. The workspace is preserved; start a fresh message to retry with write.";
 
 export const REPEATED_WRITE_REQUIRES_PATCH_REASON =
   "The write content matches what was previously recorded for that path in this turn. Use edit or apply_patch for the smallest relevant correction instead of rewriting the whole file with identical content; the file on disk may have been deleted or changed externally.";
 
 export const REPEATED_WRITE_RETRY_EXHAUSTED_REASON =
-  "Pixel blocked a second identical-content rewrite of that path after already directing a focused edit. Do not call another tool in this turn; start a fresh message and continue with edit or apply_patch.";
+  "The assistant blocked a second identical-content rewrite of that path after already directing a focused edit. Do not call another tool in this turn; start a fresh message and continue with edit or apply_patch.";
 
 export const FOCUSED_EDIT_REQUIRED_REASON =
   "This edit repeats a large existing file in oldText and newText. Preserve context and make only the smallest unique replacements with edit, or use a focused apply_patch; do not resend the whole file.";
 
 export const FOCUSED_EDIT_RETRY_EXHAUSTED_REASON =
-  "Pixel blocked a second oversized whole-file edit after directing focused replacements. Do not call another tool in this turn. The existing file is preserved; start a fresh message and continue with small edit blocks or apply_patch.";
+  "The assistant blocked a second oversized whole-file edit after directing focused replacements. Do not call another tool in this turn. The existing file is preserved; start a fresh message and continue with small edit blocks or apply_patch.";
 
 export const NOOP_EDIT_REQUIRES_CHANGE_REASON =
   "This edit makes no change because every oldText and newText pair is identical. Re-read the exact verification error already present in this turn and make one meaningful focused replacement. If the test asserts behavior the owner did not request, correct that test expectation; otherwise repair the implementation. Do not rerun verification until a real edit succeeds.";
 
 export const NOOP_EDIT_RETRY_EXHAUSTED_REASON =
-  "Pixel blocked a repeated no-op edit after explaining that identical replacement text cannot repair the failure. Do not call another tool in this turn. The workspace is preserved; start a fresh message and make one evidence-based focused change.";
+  "The assistant blocked a repeated no-op edit after explaining that identical replacement text cannot repair the failure. Do not call another tool in this turn. The workspace is preserved; start a fresh message and make one evidence-based focused change.";
 
 export const PENDING_EXEC_REQUIRES_POLL_REASON =
   "That exact command is already running. Do not call exec again or start a replacement process. Use the visible tool_call control now with id process and args containing action poll plus the exact sessionId returned by the running command; continue polling that same session until it reaches a terminal result.";
 
 export const PENDING_EXEC_RETRY_EXHAUSTED_REASON =
-  "Pixel blocked another attempt to restart a command that is still running. Do not call exec again in this turn. Poll only the exact existing process session to a terminal result, then report its real output.";
+  "The assistant blocked another attempt to restart a command that is still running. Do not call exec again in this turn. Poll only the exact existing process session to a terminal result, then report its real output.";
 
 export const PENDING_EXEC_LOOP_ABORT_REASON =
-  "Pixel stopped this response because it kept restarting an already-running command instead of polling its process session. The original process was preserved for cancellation cleanup; start a fresh message to continue safely.";
+  "The assistant stopped this response because it kept restarting an already-running command instead of polling its process session. The original process was preserved for cancellation cleanup; start a fresh message to continue safely.";
 
 export const VERIFICATION_PENDING_DELIVERY_PREFIX =
-  "Pixel stopped before the verification process reached a terminal result, so success is unverified. The workspace is preserved; ask Pixel to continue the run or inspect the process.";
+  "The assistant stopped before the verification process reached a terminal result, so success is unverified. The workspace is preserved; ask the assistant to continue the run or inspect the process.";
 
 export const VERIFICATION_FAILED_DELIVERY_PREFIX =
-  "Pixel could not complete this task successfully because the latest verification check failed. The workspace is preserved; ask Pixel to continue with a focused repair.";
+  "The assistant could not complete this task successfully because the latest verification check failed. The workspace is preserved; ask the assistant to continue with a focused repair.";
 
 export const VERIFICATION_NOT_RUN_DELIVERY_PREFIX =
-  "Pixel could not complete this task successfully because the owner-requested verification was not executed. The workspace is preserved; ask Pixel to continue and run the requested checks.";
+  "The assistant could not complete this task successfully because the owner-requested verification was not executed. The workspace is preserved; ask the assistant to continue and run the requested checks.";
 
 export const VERIFICATION_COMMAND_NOT_AUDITABLE_REASON =
-  "Pixel blocked this verification because a shell pipeline, redirect, or chained command can hide the test runner's exit status or truncate its evidence. Rerun the same test command directly, with no pipeline, redirection, chaining, or output filter, and inspect its complete output.";
+  "The assistant blocked this verification because a shell pipeline, redirect, or chained command can hide the test runner's exit status or truncate its evidence. Rerun the same test command directly, with no pipeline, redirection, chaining, or output filter, and inspect its complete output.";
 
 export const REQUESTED_UNITTEST_REQUIRED_REASON =
   "The owner explicitly requested Python unittest coverage, so that attempted file was not written. Make exactly one tool_call now with id write, the same path, and a complete replacement under 1000 characters. Begin with the needed imports including unittest; use one unittest.TestCase class with only the requested test_* methods and assertions; finish with unittest.main(). No narration, comments, docstrings, extra cases, or print-only custom runner. Do not run verification before this test file is accepted.";
@@ -146,19 +146,19 @@ export const REQUESTED_PARSED_JSON_REQUIRED_REASON =
   "The owner explicitly required parsed JSON verification, so that raw-text comparison test was not written. Write the same test file with `json.loads(result.stdout)` and compare the resulting Python object and numeric values; do not compare JSON whitespace or a literal expression such as `10/3` inside a string.";
 
 export const RECURSIVE_DELETE_REQUIRES_OWNER_REASON =
-  "Pixel stopped tool use for this turn because a recursive deletion was not authorized. The deletion was blocked, but earlier actions may have completed. Do not retry through another command, tool, or agent. Explain what was attempted and wait for a new owner instruction.";
+  "The assistant stopped tool use for this turn because a recursive deletion was not authorized. The deletion was blocked, but earlier actions may have completed. Do not retry through another command, tool, or agent. Explain what was attempted and wait for a new owner instruction.";
 
 export const CANCELLABLE_EXEC_UNAVAILABLE_REASON =
-  "Pixel could not establish the exact cancellation boundary for this command. Do not call another tool in this turn; explain that execution is temporarily unavailable.";
+  "The assistant could not establish the exact cancellation boundary for this command. Do not call another tool in this turn; explain that execution is temporarily unavailable.";
 
 export const EXEC_ARGUMENTS_REQUIRE_COMMAND_REASON =
   "The exec command was not a non-empty string, so nothing was executed. Retry with command containing the shell text and workdir as a separate field, not an object inside command. For tool_call, use id exec and args containing those fields. Do not change the intended command or its authority.";
 
 export const WORKSPACE_PREVIEW_REQUIRES_TOOL_REASON =
-  "A server started inside Pixel's disposable sandbox is not reachable from the owner's browser. Do not start python http.server, npm dev, Vite, or another background server and do not claim any localhost port. Finish the static files, then call pixel_ods_workspace_preview with their one workspace-relative directory; share only its independently verified URL.";
+  "A server started inside the assistant's disposable sandbox is not reachable from the owner's browser. Do not start python http.server, npm dev, Vite, or another background server and do not claim any localhost port. Finish the static files, then call pixel_ods_workspace_preview with their one workspace-relative directory; share only its independently verified URL.";
 
 export const WORKSPACE_PREVIEW_REQUIRES_FILES_REASON =
-  "Pixel cannot publish this website yet because this response has not created or inspected an index.html in the requested workspace directory. Create the static site files first, then call pixel_ods_workspace_preview with that one relative directory.";
+  "The assistant cannot publish this website yet because this response has not created or inspected an index.html in the requested workspace directory. Create the static site files first, then call pixel_ods_workspace_preview with that one relative directory.";
 
 export const WORKSPACE_PREVIEW_REQUIRES_READBACK_REASON =
   "The host verified the published snapshot. The owner also requested file inspection; complete the remaining file reads alongside any other requested checks. Static publication does not prove functional behavior.";
@@ -167,74 +167,74 @@ export const WORKSPACE_PREVIEW_COMPLETE_REASON =
   "The host verified the published snapshot and requested file readbacks are complete. Complete any remaining owner-requested checks, then give the concise final result. Static publication does not prove functional behavior; workspace changes require a fresh publication.";
 
 export const WORKSPACE_VISUAL_CONTINUATION_REQUIRES_READ_REASON =
-  "Pixel is updating the most recently verified visual artifact in this chat. Read the existing file inside that exact artifact directory before editing or replacing it; do not guess its contents or create a replacement project.";
+  "The assistant is updating the most recently verified visual artifact in this chat. Read the existing file inside that exact artifact directory before editing or replacing it; do not guess its contents or create a replacement project.";
 
 export const WORKSPACE_VISUAL_CONTINUATION_REQUIRES_EDIT_REASON =
-  "Pixel has not yet completed the requested visual change. Edit or replace a file already read inside the bound artifact directory, then republish that same directory; do not publish an unchanged snapshot.";
+  "The assistant has not yet completed the requested visual change. Edit or replace a file already read inside the bound artifact directory, then republish that same directory; do not publish an unchanged snapshot.";
 
 export const WORKSPACE_VISUAL_CONTINUATION_SCOPE_REASON =
   "Keep this visual follow-up in the bound artifact directory. Read existing files before editing or replacing them, use sandbox exec/process for inspection and verification, then republish the same directory with pixel_ods_workspace_preview. Do not blindly overwrite files, create a replacement project, or modify another directory.";
 
 
 export const WORKSPACE_PREVIEW_UNVERIFIED_DELIVERY_PREFIX =
-  "Pixel preserved the website files in its workspace, but ODS did not verify a browser-accessible preview. No localhost URL is live or claimed; ask Pixel to continue and publish the static site through the workspace preview capability.";
+  "The assistant preserved the website files in its workspace, but ODS did not verify a browser-accessible preview. No localhost URL is live or claimed; ask the assistant to continue and publish the static site through the workspace preview capability.";
 
 export const WORKSPACE_PREVIEW_NOT_CREATED_DELIVERY_PREFIX =
-  "Pixel did not create or verify the requested website files, so ODS did not publish a browser preview. No localhost URL is live or claimed; ask Pixel to retry the build.";
+  "The assistant did not create or verify the requested website files, so ODS did not publish a browser preview. No localhost URL is live or claimed; ask the assistant to retry the build.";
 
 export const WORKSPACE_PREVIEW_PUBLISHED_DELIVERY_PREFIX =
   "Your preview is ready.";
 
 export const CLIENT_CANCELLED_REASON =
-  "The owner cancelled this Pixel response. Do not call another tool or continue the task in this turn.";
+  "The owner cancelled this assistant response. Do not call another tool or continue the task in this turn.";
 
 export const EXACT_DOWNLOAD_REQUIRES_BROKER_REASON =
-  "Pixel cannot turn web_fetch or another transformed page view into an exact-byte download. Call pixel_ops_download_stage now; ODS will bind it to the owner's exact HTTPS URL, destination basename, and expected digest. Wait for that exact job with pixel_ops_job_wait, then publish only its verified receipt with pixel_ods_download_promote. Do not create a substitute file.";
+  "The assistant cannot turn web_fetch or another transformed page view into an exact-byte download. Call pixel_ops_download_stage now; ODS will bind it to the owner's exact HTTPS URL, destination basename, and expected digest. Wait for that exact job with pixel_ops_job_wait, then publish only its verified receipt with pixel_ods_download_promote. Do not create a substitute file.";
 
 export const EXACT_DOWNLOAD_REQUIRES_WAIT_REASON =
-  "Pixel submitted the exact-byte staged download but has not obtained its terminal receipt. Call pixel_ops_job_wait now; ODS will bind it to the submitted job. Do not read, recreate, or transfer the quarantine path.";
+  "The assistant submitted the exact-byte staged download but has not obtained its terminal receipt. Call pixel_ops_job_wait now; ODS will bind it to the submitted job. Do not read, recreate, or transfer the quarantine path.";
 
 export const EXACT_DOWNLOAD_REQUIRES_PROMOTION_REASON =
-  "Pixel verified the staged artifact in quarantine. Call pixel_ods_download_promote now; ODS will bind the job, source URL, digest, filename, and workspace-relative destination. Do not read the root-only quarantine path or create a substitute file.";
+  "The assistant verified the staged artifact in quarantine. Call pixel_ods_download_promote now; ODS will bind the job, source URL, digest, filename, and workspace-relative destination. Do not read the root-only quarantine path or create a substitute file.";
 
 export const EXACT_DOWNLOAD_REQUEST_UNBOUND_REASON =
-  "Pixel could not bind this exact-byte request to one unambiguous HTTPS source URL and one safe workspace-relative destination. Do not call another tool or create a substitute; ask the owner for one exact HTTPS URL and destination path.";
+  "The assistant could not bind this exact-byte request to one unambiguous HTTPS source URL and one safe workspace-relative destination. Do not call another tool or create a substitute; ask the owner for one exact HTTPS URL and destination path.";
 
 export const EXACT_DOWNLOAD_LOOP_ABORT_REASON =
-  "Pixel stopped this response because it requested another tool after the exact-download provenance boundary was enforced. Start a fresh message with an approved staged-download capability or ask for a non-byte-exact page summary.";
+  "The assistant stopped this response because it requested another tool after the exact-download provenance boundary was enforced. Start a fresh message with an approved staged-download capability or ask for a non-byte-exact page summary.";
 
 export const EXACT_DOWNLOAD_UNAVAILABLE_DELIVERY_PREFIX =
-  "Pixel did not submit the requested exact-byte download through a verified broker path. No downloadable artifact was created. web_fetch and page extraction return transformed, safety-marked evidence rather than origin bytes; retry with the policy-approved staged-download capability or provide a trusted local artifact and digest.";
+  "The assistant did not submit the requested exact-byte download through a verified broker path. No downloadable artifact was created. web_fetch and page extraction return transformed, safety-marked evidence rather than origin bytes; retry with the policy-approved staged-download capability or provide a trusted local artifact and digest.";
 
 export const EXACT_DOWNLOAD_UNVERIFIED_DELIVERY_PREFIX =
-  "Pixel did not verify that the requested artifact was staged. A broker request may have been submitted, but exact-byte success requires a matching terminal succeeded Operations receipt with an absolute quarantine path, byte count, SHA-256 digest, HTTPS source, and non-executable artifact evidence. Continue or retry the broker job; do not treat a workspace substitute as the download.";
+  "The assistant did not verify that the requested artifact was staged. A broker request may have been submitted, but exact-byte success requires a matching terminal succeeded Operations receipt with an absolute quarantine path, byte count, SHA-256 digest, HTTPS source, and non-executable artifact evidence. Continue or retry the broker job; do not treat a workspace substitute as the download.";
 
 export const EXACT_DOWNLOAD_UNPUBLISHED_DELIVERY_PREFIX =
-  "Pixel verified the requested bytes in Operations quarantine but did not publish them into the owner workspace. No workspace download was accepted; retry the verified create-only promotion path.";
+  "The assistant verified the requested bytes in Operations quarantine but did not publish them into the owner workspace. No workspace download was accepted; retry the verified create-only promotion path.";
 
 export const EXACT_DOWNLOAD_PROMOTION_FAILED_DELIVERY_PREFIX =
-  "Pixel could not publish the verified staged bytes into the owner workspace. No overwrite or substitute file was accepted.";
+  "The assistant could not publish the verified staged bytes into the owner workspace. No overwrite or substitute file was accepted.";
 
 export const EXACT_DOWNLOAD_PUBLISHED_DELIVERY_PREFIX =
-  "Pixel securely published the requested exact-byte download into the owner workspace:";
+  "ODS securely published the requested exact-byte download into the owner workspace:";
 
 export const EXACT_DOWNLOAD_FAILED_DELIVERY_PREFIX =
-  "Pixel's staged-download job reached a verified terminal failure. No artifact was created, and Pixel did not claim success.";
+  "The staged-download job reached a verified terminal failure. No artifact was created, and the assistant did not claim success.";
 
 export const EXACT_DOWNLOAD_APPROVAL_DELIVERY_PREFIX =
-  "Pixel staged the requested download as an immutable plan, but external approval is required. No artifact was created, and Pixel did not self-approve it.";
+  "ODS staged the requested download as an immutable plan, but external approval is required. No artifact was created, and the assistant did not self-approve it.";
 
 export const OPERATIONS_REQUIRES_BROKER_REASON =
-  "The owner requested host or Operations evidence. Generic exec runs inside Pixel's sandbox and cannot establish host facts. For requested host.* observations, use the visible tool_call Tool Search control once with id pixel_ods_host_observe and args containing the exact requested actions; it returns the terminal broker receipt. Use pixel_ops_inventory, pixel_ops_run, and pixel_ops_job_wait only for other named Operations work. A status projection cannot substitute for required host work; use it only for an owner-requested ODS runtime facet after terminal host evidence.";
+  "The owner requested host or Operations evidence. Generic exec runs inside the assistant's sandbox and cannot establish host facts. For requested host.* observations, use the visible tool_call Tool Search control once with id pixel_ods_host_observe and args containing the exact requested actions; it returns the terminal broker receipt. Use pixel_ops_inventory, pixel_ops_run, and pixel_ops_job_wait only for other named Operations work. A status projection cannot substitute for required host work; use it only for an owner-requested ODS runtime facet after terminal host evidence.";
 
 export const OPERATIONS_NOT_REQUESTED_REASON =
-  "Pixel blocked this Operations tool because the owner's current request did not ask for host or ODS Operations work. Continue only the owner's original authorized task. For requested sandbox workspace work, use read, write, edit, apply_patch, exec, or process; do not submit an Operations job or broaden the task.";
+  "The assistant blocked this Operations tool because the owner's current request did not ask for host or ODS Operations work. Continue only the owner's original authorized task. For requested sandbox workspace work, use read, write, edit, apply_patch, exec, or process; do not submit an Operations job or broaden the task.";
 
 export const UNREQUESTED_OPERATIONS_TERMINAL_REASON =
-  "Pixel blocked another unrequested Operations attempt after a routing correction. Do not call another tool in this response or submit an Operations job. Give the owner a final answer explaining what was verified and what remains incomplete; existing work is preserved.";
+  "The assistant blocked another unrequested Operations attempt after a routing correction. Do not call another tool in this response or submit an Operations job. Give the owner a final answer explaining what was verified and what remains incomplete; existing work is preserved.";
 
 export const UNREQUESTED_OPERATIONS_LOOP_ABORT_REASON =
-  "Pixel stopped this response after another tool was requested following repeated unrequested Operations attempts and a terminal no-more-tools instruction. No additional tool was authorized; existing work is preserved.";
+  "The assistant stopped this response after another tool was requested following repeated unrequested Operations attempts and a terminal no-more-tools instruction. No additional tool was authorized; existing work is preserved.";
 
 export const NETWORK_DISCOVERY_UNVERIFIED_TEXT =
   "LAN discovery and remote SSH availability were not verified by these local-host observations. No peer scan or remote login was performed.";
@@ -243,84 +243,84 @@ export const OPERATIONS_INVENTORY_REQUIRES_TOOL_REASON =
   "The owner asked what Operations capabilities are actually available. Call only pixel_ops_inventory with no arguments, then report its bounded current inventory. Do not submit a job, call status, search for tools, or exercise any capability.";
 
 export const OPERATIONS_INVENTORY_COMPLETE_REASON =
-  "Pixel already obtained the current bounded Operations capability inventory. Do not call another tool; report that inventory and its authority boundary now.";
+  "The assistant already obtained the current bounded Operations capability inventory. Do not call another tool; report that inventory and its authority boundary now.";
 
 export const OPERATIONS_INVENTORY_EVIDENCE_PREFIX =
-  "Pixel verified the current Operations capability inventory through the external broker's bounded projection:";
+  "ODS verified the current Operations capability inventory through the external broker's bounded projection:";
 
 export const OPERATIONS_INVENTORY_UNVERIFIED_DELIVERY_PREFIX =
-  "Pixel did not obtain a structurally valid current Operations capability inventory. No capability availability or authority claim was accepted.";
+  "The assistant did not obtain a structurally valid current Operations capability inventory. No capability availability or authority claim was accepted.";
 
 export const OPERATIONS_HOST_COMMAND_REQUIRES_PROPOSAL_REASON =
   "The owner requested one protected command from the local ODS host, possibly including an explicit SSH operation to an owner-named destination. Call only pixel_ods_host_command_propose with the exact command. The ODS adapter fixes execution to ods-host and waits internally for the immutable approval plan or terminal broker receipt. Do not use generic exec, inventory, a named action, a workflow, another broker target, pixel_ops_shell_propose, pixel_ops_job_wait, or a second command proposal.";
 
 export const OPERATIONS_HOST_COMMAND_COMPLETE_REASON =
-  "Pixel already obtained the broker's terminal state for this protected host-command proposal. Do not call another tool; report the verified approval requirement or terminal outcome now.";
+  "The assistant already obtained the broker's terminal state for this protected host-command proposal. Do not call another tool; report the verified approval requirement or terminal outcome now.";
 
 export const OPERATIONS_HOST_COMMAND_EVIDENCE_PREFIX =
-  "Pixel verified this owner-approved ODS host command through a structurally matched terminal Operations Broker receipt:";
+  "ODS verified this owner-approved host command through a structurally matched terminal Operations Broker receipt:";
 
 export const WORKSPACE_TOOL_SEARCH_COMPLETE_REASON =
-  "Pixel already resolved the deferred workspace tools. Do not search again. Call tool_call now with the returned exact id, such as openclaw:core:exec, openclaw:core:write, openclaw:core:read, openclaw:core:edit, openclaw:core:apply_patch, or openclaw:core:process, and put that tool's normal arguments in args.";
+  "The assistant already resolved the deferred workspace tools. Do not search again. Call tool_call now with the returned exact id, such as openclaw:core:exec, openclaw:core:write, openclaw:core:read, openclaw:core:edit, openclaw:core:apply_patch, or openclaw:core:process, and put that tool's normal arguments in args.";
 
 export const WORKSPACE_UNREQUESTED_PROJECTION_REASON =
   "This is a sandbox workspace task, not an ODS status or application-list request. Do not call pixel_ods_status or pixel_ods_apps_list. Call tool_search once for write read edit apply_patch exec process, then use the returned exact workspace tool id to inspect or change only the owner-requested workspace path.";
 
 export const OPERATIONS_REQUIRES_PROJECTIONS_REASON =
-  "Pixel completed the requested host Operations jobs, but the owner also requested ODS status evidence that is still missing. Call each requested pixel_ods_status or pixel_ods_apps_list projection exactly once now. After every requested projection is verified, continue any explicitly requested workspace work.";
+  "The assistant completed the requested host Operations jobs, but the owner also requested ODS status evidence that is still missing. Call each requested pixel_ods_status or pixel_ods_apps_list projection exactly once now. After every requested projection is verified, continue any explicitly requested workspace work.";
 
 export const OPERATIONS_LOOP_ABORT_REASON =
-  "Pixel stopped this response because it requested another non-Operations tool after the host Operations boundary was enforced. Start a fresh message to retry the named broker action.";
+  "The assistant stopped this response because it requested another non-Operations tool after the host Operations boundary was enforced. Start a fresh message to retry the named broker action.";
 
 export const OPERATIONS_UNAVAILABLE_DELIVERY_PREFIX =
-  "Pixel did not submit the requested host or Operations work through the isolated Operations Broker. No sandbox command was accepted as host evidence.";
+  "The assistant did not submit the requested host or Operations work through the isolated Operations Broker. No sandbox command was accepted as host evidence.";
 export const OPERATIONS_UNAVAILABLE_ZERO_SUBMISSIONS_CODE =
   "operations-unavailable-zero-submissions";
 
 export const OPERATIONS_UNVERIFIED_DELIVERY_PREFIX =
-  "Pixel submitted Operations work but did not obtain a matching terminal broker result in this response. Treat the host outcome as pending or unverified, not completed.";
+  "The assistant submitted Operations work but did not obtain a matching terminal broker result in this response. Treat the host outcome as pending or unverified, not completed.";
 
 export const OPERATIONS_MISSING_REQUIRED_DELIVERY_PREFIX =
-  "Pixel completed its submitted Operations work but did not request every required host observation.";
+  "The assistant completed its submitted Operations work but did not request every required host observation.";
 
 export const OPERATIONS_WRONG_ACTION_REASON =
-  "Pixel blocked an Operations submission that did not match the host facts requested. Use only the exact named ods-host actions listed in this correction, then wait for every submitted job to reach a terminal state.";
+  "The assistant blocked an Operations submission that did not match the host facts requested. Use only the exact named ods-host actions listed in this correction, then wait for every submitted job to reach a terminal state.";
 
 export const OPERATIONS_REQUIRES_WORKFLOW_REASON =
-  "Pixel blocked a fragmented host inventory. Submit exactly one pixel_ops_workflow_submit containing every required ods-host action, then call pixel_ops_job_wait once for that workflow job. Do not submit separate pixel_ops_run jobs.";
+  "The assistant blocked a fragmented host inventory. Submit exactly one pixel_ops_workflow_submit containing every required ods-host action, then call pixel_ops_job_wait once for that workflow job. Do not submit separate pixel_ops_run jobs.";
 
 export const OPERATIONS_EXTENSION_LIFECYCLE_SEQUENCE_REASON =
-  "Pixel blocked an extension lifecycle shortcut. Submit exactly one ods.extensions.inspect action for the owner's extension ID and wait for its terminal receipt before submitting the requested lifecycle action. Do not combine lifecycle actions in a workflow or continue when inspection reports missing configuration.";
+  "The assistant blocked an extension lifecycle shortcut. Submit exactly one ods.extensions.inspect action for the owner's extension ID and wait for its terminal receipt before submitting the requested lifecycle action. Do not combine lifecycle actions in a workflow or continue when inspection reports missing configuration.";
 
 export const OPERATIONS_CONTINUATION_REQUIRES_STATUS_REASON =
-  "Pixel blocked a new action while checking an existing immutable Operations plan. Query only the exact owner-supplied job with pixel_ops_job_get or pixel_ops_job_wait; do not resubmit, repeat, approve, or widen the operation.";
+  "The assistant blocked a new action while checking an existing immutable Operations plan. Query only the exact owner-supplied job with pixel_ops_job_get or pixel_ops_job_wait; do not resubmit, repeat, approve, or widen the operation.";
 
 export const OPERATIONS_CONTINUATION_COMPLETE_REASON =
-  "Pixel already obtained a structurally matched terminal receipt for the exact owner-supplied Operations job and plan hash. Do not call another tool; report only that verified outcome.";
+  "The assistant already obtained a structurally matched terminal receipt for the exact owner-supplied Operations job and plan hash. Do not call another tool; report only that verified outcome.";
 
 export const OPERATIONS_CONTINUATION_UNVERIFIED_DELIVERY_PREFIX =
-  "Pixel did not obtain a structurally matched terminal Operations receipt for the exact owner-supplied job and plan hash. The owner's approval or success statement was not accepted as host evidence.";
+  "The assistant did not obtain a structurally matched terminal Operations receipt for the exact owner-supplied job and plan hash. The owner's approval or success statement was not accepted as host evidence.";
 
 export const OPERATIONS_HOST_EVIDENCE_PREFIX =
-  "Pixel verified these ODS host facts through structurally matched terminal Operations Broker receipts:";
+  "ODS verified these host facts through structurally matched terminal Operations Broker receipts:";
 
 export const OPERATIONS_ODS_APPS_UNAVAILABLE_TEXT =
-  "ODS containers: a current sanitized ODS application projection was not obtained. Host Operations facts above remain verified, but Pixel cannot claim a container inventory from them.";
+  "ODS containers: a current sanitized ODS application projection was not obtained. Host Operations facts above remain verified, but the assistant cannot claim a container inventory from them.";
 
 export const OPERATIONS_ODS_STATUS_UNAVAILABLE_TEXT =
-  "ODS runtime status: a current sanitized ODS status projection was not obtained. Host Operations facts above remain verified, but Pixel cannot claim the active model, context, version, or Pixel availability from them.";
+  "ODS runtime status: a current sanitized ODS status projection was not obtained. Host Operations facts above remain verified, but the assistant cannot claim the active model, context, version, or assistant availability from them.";
 
 export const OPERATIONS_TRUSTED_CONTINUATION_PREFIX =
-  "[ODS Pixel trusted continuation]";
+  "[ODS assistant trusted continuation]";
 
 export const OPERATIONS_EXTENSION_CATALOG_EVIDENCE_PREFIX =
-  "Pixel verified this ODS extension catalog result through a structurally matched terminal Operations Broker receipt:";
+  "ODS verified this extension catalog result through a structurally matched terminal Operations Broker receipt:";
 
 export const OPERATIONS_EXTENSION_INVENTORY_EVIDENCE_PREFIX =
-  "Pixel verified this live ODS extension inventory through a structurally matched terminal Operations Broker receipt:";
+  "ODS verified this live extension inventory through a structurally matched terminal Operations Broker receipt:";
 
 export const OPERATIONS_EXTENSION_LIFECYCLE_EVIDENCE_PREFIX =
-  "Pixel verified this ODS extension lifecycle result through structurally matched Operations Broker receipts:";
+  "ODS verified this extension lifecycle result through structurally matched Operations Broker receipts:";
 
 const WEB_TOOLS = new Set(["web_search", "web_fetch", "pixel_ods_web_extract", "pixel_ods_research"]);
 const CODING_TOOLS = new Set(["exec", "write", "edit", "apply_patch"]);
@@ -2404,7 +2404,7 @@ function operationsHostEvidenceText(
     const plan = typeof failedRequiredOutcome.planHash === "string" && SHA256.test(failedRequiredOutcome.planHash)
       ? ` Plan SHA-256: ${failedRequiredOutcome.planHash}.`
       : "";
-    return `Pixel's required host Operations job reached terminal status ${failedRequiredOutcome.status}. Job: ${failedRequiredOutcome.jobId}.${plan}`;
+    return `The required host Operations job reached terminal status ${failedRequiredOutcome.status}. Job: ${failedRequiredOutcome.jobId}.${plan}`;
   }
   const lines = [OPERATIONS_HOST_EVIDENCE_PREFIX];
   const identity = steps.get("host.identity");
@@ -2512,7 +2512,7 @@ function operationsHostEvidenceText(
       ? `model \`${odsStatusProjection.runtime.model}\`; context ${odsStatusProjection.runtime.context_length} tokens`
       : "model unavailable; context unavailable";
     lines.push(
-      `- ODS runtime projection: ${runtime}; Pixel ${availability}; ODS version \`${odsStatusProjection.ods_version}\`.`
+      `- ODS runtime projection: ${runtime}; assistant ${availability}; ODS version \`${odsStatusProjection.ods_version}\`.`
     );
     if (!odsAppsProjection) {
       lines.push(
@@ -3385,10 +3385,10 @@ function operationsContinuationTerminalOutcome(event, continuation) {
 function operationsContinuationEvidenceText(outcome) {
   if (!outcome) return undefined;
   if (outcome.status === "awaiting-approval") {
-    return `Pixel rechecked Operations job ${outcome.jobId} with plan SHA-256 ${outcome.planHash}; the host still reports awaiting-approval. No operation was accepted as completed.`;
+    return `ODS rechecked Operations job ${outcome.jobId} with plan SHA-256 ${outcome.planHash}; the host still reports awaiting-approval. No operation was accepted as completed.`;
   }
   if (outcome.status !== "succeeded") {
-    return `Pixel rechecked Operations job ${outcome.jobId} with plan SHA-256 ${outcome.planHash}; its verified terminal status is ${outcome.status}. No successful operation result was accepted.`;
+    return `ODS rechecked Operations job ${outcome.jobId} with plan SHA-256 ${outcome.planHash}; its verified terminal status is ${outcome.status}. No successful operation result was accepted.`;
   }
   if (outcome.kind === "host-command") {
     const step = outcome.step;
@@ -3559,7 +3559,7 @@ function extensionLifecycleEvidenceText(requiredActions, terminalJobs) {
     const plan = typeof inspectionOutcome.planHash === "string" && SHA256.test(inspectionOutcome.planHash)
       ? ` Plan SHA-256: ${inspectionOutcome.planHash}.`
       : "";
-    return `Pixel's ODS extension inspection job reached terminal status ${inspectionOutcome.status}. No lifecycle change was accepted. Job: ${inspectionOutcome.jobId}.${plan}`;
+    return `The ODS extension inspection job reached terminal status ${inspectionOutcome.status}. No lifecycle change was accepted. Job: ${inspectionOutcome.jobId}.${plan}`;
   }
   const inspection = parsedLifecycleOutcome(terminalJobs, "ods.extensions.inspect");
   if (!inspection || !["ready", "inspected", "blocked"].includes(inspection.result.outcome)) return undefined;
@@ -3595,10 +3595,10 @@ function extensionLifecycleEvidenceText(requiredActions, terminalJobs) {
     ].join("\n");
   }
   if (mutationOutcome.status === "awaiting-approval") {
-    return `Pixel prepared the exact ${mutationAction} plan for extension ${inspection.result.extensionId}, but external approval is required. No lifecycle change was executed. Job: ${mutationOutcome.jobId}. Plan SHA-256: ${mutationOutcome.planHash}.`;
+    return `ODS prepared the exact ${mutationAction} plan for extension ${inspection.result.extensionId}, but external approval is required. No lifecycle change was executed. Job: ${mutationOutcome.jobId}. Plan SHA-256: ${mutationOutcome.planHash}.`;
   }
   if (mutationOutcome.status !== "succeeded") {
-    return `Pixel's ODS extension lifecycle job reached terminal status ${mutationOutcome.status}. No successful lifecycle result was accepted. Job: ${mutationOutcome.jobId}.`;
+    return `The ODS extension lifecycle job reached terminal status ${mutationOutcome.status}. No successful lifecycle result was accepted. Job: ${mutationOutcome.jobId}.`;
   }
   const mutation = parsedLifecycleOutcome(terminalJobs, mutationAction);
   if (!mutation || mutation.result.extensionId !== inspection.result.extensionId) return undefined;
@@ -3637,14 +3637,14 @@ function operationsEvidenceText(
     if (outcome.status === "awaiting-approval") {
       return outcome.approvalRequired === true &&
         typeof outcome.planHash === "string" && SHA256.test(outcome.planHash)
-        ? `Pixel prepared a protected ODS host command plan, but external approval is required. No command was executed. Job: ${outcome.jobId}. Plan SHA-256: ${outcome.planHash}.`
+        ? `ODS prepared a protected ODS host command plan, but external approval is required. No command was executed. Job: ${outcome.jobId}. Plan SHA-256: ${outcome.planHash}.`
         : undefined;
     }
     if (outcome.status !== "succeeded") {
       const plan = typeof outcome.planHash === "string" && SHA256.test(outcome.planHash)
         ? ` Plan SHA-256: ${outcome.planHash}.`
         : "";
-      return `Pixel's protected ODS host command job reached terminal status ${outcome.status}. No successful command result was accepted. Job: ${outcome.jobId}.${plan}`;
+      return `The protected ODS host command job reached terminal status ${outcome.status}. No successful command result was accepted. Job: ${outcome.jobId}.${plan}`;
     }
     if (
       outcome.approvalRequired !== true ||
@@ -3704,7 +3704,7 @@ function operationsEvidenceText(
       const plan = typeof outcome.planHash === "string" && SHA256.test(outcome.planHash)
         ? ` Plan SHA-256: ${outcome.planHash}.`
         : "";
-      return `Pixel's live ODS extension inventory job reached terminal status ${outcome.status}. No extension-state result or external effect was accepted. Job: ${outcome.jobId}.${plan}`;
+      return `The live ODS extension inventory job reached terminal status ${outcome.status}. No extension-state result or external effect was accepted. Job: ${outcome.jobId}.${plan}`;
     }
     if (outcome.steps.length !== 1 || outcome.actions.length !== 1) return undefined;
     const result = extensionInventoryResult(outcome.steps[0], outcome.actions[0]);
@@ -3744,7 +3744,7 @@ function operationsEvidenceText(
         ? `model \`${odsStatusProjection.runtime.model}\`; context ${odsStatusProjection.runtime.context_length} tokens`
         : "model unavailable; context unavailable";
       lines.push(
-        `- ODS runtime projection: ${runtime}; Pixel ${availability}; ODS version \`${odsStatusProjection.ods_version}\`; ${odsStatusProjection.online_app_count} of ${odsStatusProjection.app_count} projected containers online.`
+        `- ODS runtime projection: ${runtime}; assistant ${availability}; ODS version \`${odsStatusProjection.ods_version}\`; ${odsStatusProjection.online_app_count} of ${odsStatusProjection.app_count} projected containers online.`
       );
     }
     lines.push(`- Authority: ${EXTENSION_INVENTORY_BOUNDARY}`);
@@ -3763,7 +3763,7 @@ function operationsEvidenceText(
     const plan = typeof outcome.planHash === "string" && SHA256.test(outcome.planHash)
       ? ` Plan SHA-256: ${outcome.planHash}.`
       : "";
-    return `Pixel's ODS extension catalog job reached terminal status ${outcome.status}. No catalog result or external effect was accepted. Job: ${outcome.jobId}.${plan}`;
+    return `The ODS extension catalog job reached terminal status ${outcome.status}. No catalog result or external effect was accepted. Job: ${outcome.jobId}.${plan}`;
   }
   if (outcome.steps.length !== 1 || outcome.actions.length !== 1) return undefined;
   const result = extensionCatalogResult(
@@ -3797,7 +3797,7 @@ function operationsEvidenceText(
   } else {
     lines.push("- Matches: none.");
   }
-  lines.push("- Installed/enabled state: not included in this read-only catalog receipt; Pixel will inspect one exact extension ID before any lifecycle action.");
+  lines.push("- Installed/enabled state: not included in this read-only catalog receipt; the assistant will inspect one exact extension ID before any lifecycle action.");
   lines.push("- Configuration scope: declared environment keys only, not exhaustive runtime prerequisites. No match establishes only absence from this catalog snapshot.");
   lines.push("- Authority: read-only catalog projection; no installation or configuration authority.");
   lines.push(`- Broker job: \`${outcome.jobId}\`.`);
@@ -3980,8 +3980,9 @@ function currentUserText(messages, prompt = undefined) {
 
 function currentOwnerIntentText(messages, prompt = undefined) {
   const currentText = currentUserText(messages, prompt);
-  const deliveryContractIndex = currentText.lastIndexOf(
-    "\n\n[ODS Pixel delivery requirement:"
+  const deliveryContractIndex = Math.max(
+    currentText.lastIndexOf("\n\n[ODS assistant delivery requirement:"),
+    currentText.lastIndexOf("\n\n[ODS Pixel delivery requirement:")
   );
   return deliveryContractIndex >= 0
     ? currentText.slice(0, deliveryContractIndex)
@@ -6778,7 +6779,7 @@ export function createToolLoopGuard({
         return {
           block: true,
           blockReason:
-            "Pixel blocked workspace publication because the current owner request is unavailable or explicitly prohibits displaying a preview.",
+            "The assistant blocked workspace publication because the current owner request is unavailable or explicitly prohibits displaying a preview.",
         };
       }
       const suppliedArgs =
@@ -6787,7 +6788,7 @@ export function createToolLoopGuard({
         return {
           block: true,
           blockReason:
-            "Pixel blocked an ODS-authored creative scaffold. The active model must create the owner's requested artifact with workspace tools, then publish that exact directory.",
+            "The assistant blocked an ODS-authored creative scaffold. The active model must create the owner's requested artifact with workspace tools, then publish that exact directory.",
         };
       }
       const args = suppliedArgs;
@@ -6801,7 +6802,7 @@ export function createToolLoopGuard({
       );
       if (hasDirectory && hasRelativeDirectory &&
           normalizeWorkspaceFilePath(args.directory) !== providedDirectory) {
-        return { block: true, blockReason: "Pixel blocked conflicting preview directories. Supply one exact relativeDirectory." };
+        return { block: true, blockReason: "The assistant blocked conflicting preview directories. Supply one exact relativeDirectory." };
       }
       const observedDirectory = workspacePreviewDirectoryFromState(state);
       // An explicit target must not be silently replaced by a previous one.
@@ -7070,7 +7071,7 @@ export function createToolLoopGuard({
         return {
           block: true,
           blockReason:
-            "Pixel does not need a separate directory-preparation command for this preview. " +
+            "The assistant does not need a separate directory-preparation command for this preview. " +
             `Call tool_call now with id write and path "${setupDirectory}/index.html" plus ` +
             "HTML authored entirely by the active model. Use a polished self-contained document, " +
             "or write any local assets inside that artifact directory before calling " +
@@ -7242,7 +7243,7 @@ export function createToolLoopGuard({
       const params = permittedHostObservationParams(selected, state?.hostObservationPolicy);
       if (!params) return {
         block: true,
-        blockReason: "Pixel could not validate this host observation against the current request. " +
+        blockReason: "The assistant could not validate this host observation against the current request. " +
           "Check the tool argument schema and any explicit inspection exclusions. A network peer " +
           "must match one unambiguous owner-requested endpoint and its permitted ports; " +
           "if the endpoint is unclear, ask the owner rather than retrying the same call.",
@@ -7814,7 +7815,7 @@ export function createToolLoopGuard({
       return {
         block: true,
         blockReason:
-          "Pixel could not establish the bounded run identity required for web access. Do not call another tool in this turn; explain that web research is temporarily unavailable.",
+          "The assistant could not establish the bounded run identity required for web access. Do not call another tool in this turn; explain that web research is temporarily unavailable.",
       };
     }
 
@@ -9203,24 +9204,24 @@ export function createToolLoopGuard({
               "comments, docstrings, helper cases, and a custom print runner."
             : " For a Python test file, include every required test-framework and implementation import.";
         return (
-          "[ODS Pixel next step] Call tool_call next with id openclaw:core:write and " +
+          "[ODS assistant next step] Call tool_call next with id openclaw:core:write and " +
           `args path ${JSON.stringify(nextPath)} plus the complete requested content. ` +
           "Keep it concise (under 1000 characters when the requirements fit); do not " +
           `inspect or narrate first.${testFileHint}`
         );
       }
       if (state.latestVerificationStatus === "failed") {
-        return `[ODS Pixel next step] ${FAILED_TEST_READ_REPAIR_REASON}`;
+        return `[ODS assistant next step] ${FAILED_TEST_READ_REPAIR_REASON}`;
       }
       if (state.latestVerificationStatus === "passed") {
         return (
-          "[ODS Pixel next step] Verification passed. Give the owner the concise final " +
+          "[ODS assistant next step] Verification passed. Give the owner the concise final " +
           "result now; do not call another tool."
         );
       }
       if (state.workspaceMutationRequested && state.workspaceRequestedFiles.length > 0) {
         return (
-          "[ODS Pixel next step] All explicitly requested files are written. Run the " +
+          "[ODS assistant next step] All explicitly requested files are written. Run the " +
           "owner-requested verification command now; the project workdir is applied automatically."
         );
       }
@@ -9230,7 +9231,7 @@ export function createToolLoopGuard({
       if (state?.workspacePreviewRequired && !state.workspacePreview && !state.workspacePreviewVerifiedDirectory &&
           !state.workspacePreviewForbidden && !state.operationsRequired && !state.exactDownloadRequested) {
         const directory = workspacePreviewDirectoryFromState(state);
-        return "[ODS Pixel next step] This visual project must be delivered in Workbench. " +
+        return "[ODS assistant next step] This visual project must be delivered in Workbench. " +
           "Finish all requested files, edits and checks first, then publish BEFORE your final answer. " +
           (directory ? `Call tool_call with id ${WORKSPACE_PREVIEW_TOOL} and args ${JSON.stringify({relativeDirectory:directory})}. ` :
             "Prepare a browser-ready directory with index.html and local assets, preserve the source files, then call pixel_ods_workspace_preview with that relativeDirectory. ") +
@@ -9239,7 +9240,7 @@ export function createToolLoopGuard({
       if (state?.workspacePreviewVerifiedDirectory && !state.workspacePreview &&
           state.workspacePreviewRequired && !state.workspacePreviewForbidden &&
           !state.operationsRequired && !state.exactDownloadRequested) {
-        return "[ODS Pixel next step] Files or checks changed after the earlier publication. " +
+        return "[ODS assistant next step] Files or checks changed after the earlier publication. " +
           "Finish any remaining requested edits and checks, then call tool_call with id " +
           WORKSPACE_PREVIEW_TOOL + " and args " +
           JSON.stringify({ relativeDirectory: state.workspacePreviewVerifiedDirectory }) +
@@ -9253,16 +9254,16 @@ export function createToolLoopGuard({
         return undefined;
       }
       if (workspacePreviewReadbackComplete(state)) {
-        return `[ODS Pixel next step] ${WORKSPACE_PREVIEW_COMPLETE_REASON}`;
+        return `[ODS assistant next step] ${WORKSPACE_PREVIEW_COMPLETE_REASON}`;
       }
       const nextPath = workspacePreviewNextKnownReadPath(state);
       return nextPath
         ? (
-          "[ODS Pixel next step] The preview is already independently verified. " +
+          "[ODS assistant next step] The preview is already independently verified. " +
           `The owner still requested reading ${nextPath}. ` +
           "Complete that inspection alongside any remaining requested checks."
         )
-        : `[ODS Pixel next step] ${WORKSPACE_PREVIEW_REQUIRES_READBACK_REASON}`;
+        : `[ODS assistant next step] ${WORKSPACE_PREVIEW_REQUIRES_READBACK_REASON}`;
     })();
     const hostToolResult =
       pending?.selectedToolName === SYNCHRONOUS_HOST_OBSERVE_TOOL ||
@@ -9347,7 +9348,7 @@ export function createToolLoopGuard({
     if (!continuation) return undefined;
     return {
       action: "revise",
-      reason: "Pixel has not completed every owner-requested verified step.",
+      reason: "The assistant has not completed every owner-requested verified step.",
       retry: {
         instruction: continuation.instruction,
         idempotencyKey: `pixel-ods-${continuation.stage}`,
@@ -9418,7 +9419,7 @@ export function createToolLoopGuard({
           `${WORKSPACE_PREVIEW_PUBLISHED_DELIVERY_PREFIX}\n\n` +
           `[Open preview](${state.workspacePreview.url})\n\n` +
           (state.workspacePreviewModelAuthored
-            ? "Created by Pixel."
+            ? "Created by the assistant."
             : "Published from your workspace."),
         preview: {
           schemaVersion: 1,
@@ -9559,7 +9560,7 @@ export function createToolLoopGuard({
             state.operationsWorkspaceExpectedPath &&
             state.operationsWorkspaceWriteVerified &&
             state.operationsWorkspaceReadVerified
-              ? `- Workspace artifact: Pixel wrote and read back \`/workspace/${state.operationsWorkspaceExpectedPath}\` in this response.`
+              ? `- Workspace artifact: The assistant wrote and read back \`/workspace/${state.operationsWorkspaceExpectedPath}\` in this response.`
               : "- Workspace continuation: the requested workspace artifact was not both written and read back successfully in this response."
           }`
           : evidenceText;
@@ -9615,13 +9616,13 @@ export function createToolLoopGuard({
           // a fabricated model answer or a claim that every requirement passed.
           return {
             status: "passed",
-            text: "Pixel stopped repeating completed work before it could finish its explanation. " +
+            text: "The assistant stopped repeating completed work before it could finish its explanation. " +
               "The following results were recorded by its tools:\n" +
               writtenFiles.slice(0, 20).map((file) => `- File written: \`/workspace/${file}\`.`).join("\n") +
               (writtenFiles.length > 20 ? `\n- ${writtenFiles.length - 20} additional files were written.` : "") +
               "\n- The latest recognized test command completed successfully.\n" +
               "This does not establish complete test coverage or completion of every requested step. " +
-              "The workspace is preserved; ask Pixel to continue from these files.",
+              "The workspace is preserved; ask the assistant to continue from these files.",
             ...staleExecWarningSuppression,
           };
         }
@@ -9668,7 +9669,7 @@ export function createToolLoopGuard({
     if (event?.kind !== "final") {
       return {
         cancel: true,
-        reason: "Pixel delivers one terminal owner-visible reply per turn.",
+        reason: "The assistant delivers one terminal owner-visible reply per turn.",
       };
     }
     const verification = deliveryVerificationForRun(event?.runId);
@@ -9694,7 +9695,7 @@ export function createToolLoopGuard({
         text: authoritativeText,
       },
       reason:
-        "Pixel replaced an unverified terminal reply with host-authoritative evidence truth.",
+        "The assistant replaced an unverified terminal reply with host-authoritative evidence truth.",
     };
   }
 
