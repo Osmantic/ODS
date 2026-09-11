@@ -102,30 +102,77 @@ if ! $INTERACTIVE && [[ "$ENABLE_COMFYUI" == "true" ]]; then
     esac
 fi
 
+# The Assistant First profile is a fixed minimal first-boot contract. Apply it
+# again here so interactive menu option 4 and the CLI flag are identical.
+if [[ "${ODS_INSTALL_PROFILE:-legacy}" == "assistant-first" ]]; then
+    if [[ -f "${INSTALL_DIR:-$SCRIPT_DIR}/.env" ]] \
+       && ! grep -qx 'ODS_INSTALL_PROFILE=assistant-first' "${INSTALL_DIR:-$SCRIPT_DIR}/.env" 2>/dev/null; then
+        error "Assistant First is limited to fresh installs during public beta; existing installs remain unchanged."
+    fi
+    ENABLE_VOICE=false
+    ENABLE_WORKFLOWS=false
+    ENABLE_RAG=false
+    ENABLE_RECOMMENDED=false
+    ENABLE_HERMES=false
+    ENABLE_OPENCLAW=false
+    ENABLE_OPENCODE=false
+    ENABLE_COMFYUI=false
+    ENABLE_APE=false
+    ENABLE_PERPLEXICA=false
+    ENABLE_PRIVACY_SHIELD=false
+    ENABLE_LANGFUSE=false
+    ENABLE_ODS_PROXY=false
+    ENABLE_TAILSCALE=false
+    ENABLE_BRAVE_SEARCH=false
+    ENABLE_PIXEL=true
+    PIXEL_EXPLICIT=true
+fi
+
 # Pixel is the preferred agent only where its narrower host predicate and
 # separately executed license agreement are both satisfied. ODS platform
 # support remains unchanged; auto mode falls back to Hermes without failing.
 if ! PIXEL_AGENT_MODE="$(ods_pixel_resolve_enablement "${ENABLE_PIXEL:-auto}" 2>/dev/null)"; then
-    ai_bad "Pixel was explicitly required, but this host or license is not qualified."
-    ai "Pixel requires Ubuntu 24.04 or Debian 12 with PID1 systemd and PIXEL_LICENSE_ACCEPTED=true after a separate written agreement."
+    if [[ "${ODS_INSTALL_PROFILE:-legacy}" == "assistant-first" ]]; then
+        ai_bad "The assistant runtime is not qualified on this host or its license has not been accepted."
+        ai "Assistant First currently requires Ubuntu 24.04 or Debian 12 with PID1 systemd and a separately accepted runtime license."
+    else
+        ai_bad "Pixel was explicitly required, but this host or license is not qualified."
+        ai "Pixel requires Ubuntu 24.04 or Debian 12 with PID1 systemd and PIXEL_LICENSE_ACCEPTED=true after a separate written agreement."
+    fi
     return 1 2>/dev/null || exit 1
 fi
 ENABLE_PIXEL_RUNTIME=false
 if [[ "$PIXEL_AGENT_MODE" == "pixel" ]]; then
     _pixel_model_route_class="$(ods_pixel_model_route_class \
         "${ODS_MODE:-local}" "${EXTERNAL_LLM_URL:-}" "${LEMONADE_EXTERNAL:-false}")" || {
-        ai_bad "Pixel received an unsupported ODS model route."
+        if [[ "${ODS_INSTALL_PROFILE:-legacy}" == "assistant-first" ]]; then
+            ai_bad "The assistant received an unsupported ODS model route."
+        else
+            ai_bad "Pixel received an unsupported ODS model route."
+        fi
         return 1 2>/dev/null || exit 1
     }
     if [[ "${PIXEL_AGENT_MODEL_READY:-unknown}" == "false" \
         && "$_pixel_model_route_class" == "local" ]]; then
         ENABLE_PIXEL_RUNTIME=true
-        ai_warn "Pixel adaptive mode will use this best-fit local model."
+        if [[ "${ODS_INSTALL_PROFILE:-legacy}" == "assistant-first" ]]; then
+            ai_warn "The assistant will use this best-fit local model."
+        else
+            ai_warn "Pixel adaptive mode will use this best-fit local model."
+        fi
         ai_warn "Every callable model remains selectable; catalog testing is performance guidance, not an access gate."
-        log "Pixel selected in adaptive mode on an untested local model; Hermes remains available as rollback when enabled"
+        if [[ "${ODS_INSTALL_PROFILE:-legacy}" == "assistant-first" ]]; then
+            log "Assistant runtime selected an untested but callable local model"
+        else
+            log "Pixel selected in adaptive mode on an untested local model; Hermes remains available as rollback when enabled"
+        fi
     else
         ENABLE_PIXEL_RUNTIME=true
-        log "Pixel enabled as the core conversational experience alongside existing ODS tools on the managed ODS model route; Hermes remains available as rollback when enabled"
+        if [[ "${ODS_INSTALL_PROFILE:-legacy}" == "assistant-first" ]]; then
+            log "Assistant runtime enabled on the managed ODS model route"
+        else
+            log "Pixel enabled as the core conversational experience alongside existing ODS tools on the managed ODS model route; Hermes remains available as rollback when enabled"
+        fi
     fi
     unset _pixel_model_route_class
 else
@@ -208,13 +255,20 @@ if ! $DRY_RUN; then
         ENABLE_APE=false
     fi
     _pixel_support_services="${ENABLE_RECOMMENDED:-false}"
-    [[ "${ENABLE_PIXEL_RUNTIME:-false}" == "true" ]] && _pixel_support_services=true
-    [[ -n "${EXTERNAL_LLM_URL:-}" ]] && _pixel_support_services=true
+    if [[ "${ODS_INSTALL_PROFILE:-legacy}" != "assistant-first" ]]; then
+        [[ "${ENABLE_PIXEL_RUNTIME:-false}" == "true" ]] && _pixel_support_services=true
+        [[ -n "${EXTERNAL_LLM_URL:-}" ]] && _pixel_support_services=true
+    elif [[ "${ODS_MODE:-local}" == "cloud" || "${ODS_MODE:-local}" == "lemonade" ]]; then
+        # Cloud and external Lemonade use LiteLLM as their single selected
+        # inference-route provider; other recommended services remain absent.
+        _pixel_support_services=true
+    fi
     _sync_extension_compose "$_pixel_support_services" litellm    "LiteLLM"       "neither recommended services nor Pixel are enabled"
     # SearXNG backs Pixel, Open WebUI web search, Perplexica, and agent web tools.
     # It is not only a recommended extra — --no-recommended with Perplexica
     # still needs the search backend.
-    if [[ "${ENABLE_RECOMMENDED:-false}" == "true" ||
+    if [[ "${ODS_INSTALL_PROFILE:-legacy}" != "assistant-first" ]] &&
+       [[ "${ENABLE_RECOMMENDED:-false}" == "true" ||
           "${ENABLE_PIXEL_RUNTIME:-false}" == "true" ||
           "${ENABLE_PERPLEXICA:-false}" == "true" ||
           "${ENABLE_HERMES:-false}" == "true" ||
@@ -251,6 +305,15 @@ if ! $DRY_RUN; then
     _sync_extension_compose "${ENABLE_TAILSCALE:-false}" tailscale "Tailscale"  "remote access not enabled"
     _sync_extension_compose "${ENABLE_LANGFUSE:-}"   langfuse   "Langfuse"      "LLM observability not enabled"
     _sync_extension_compose "${ENABLE_BRAVE_SEARCH:-false}" brave-search "Brave Search" "Brave Search API not enabled"
+    if [[ "${ODS_INSTALL_PROFILE:-legacy}" == "assistant-first" ]]; then
+        _sync_extension_compose false open-webui "Open WebUI" "not part of Assistant First"
+        _sync_extension_compose false remote-provider-egress "Remote provider egress" "not part of Assistant First"
+        _sync_extension_compose false remote-provider-ssh-tunnel "Remote provider SSH tunnel" "not part of Assistant First"
+    else
+        _sync_extension_compose true open-webui "Open WebUI" "legacy profile"
+        _sync_extension_compose true remote-provider-egress "Remote provider egress" "legacy profile"
+        _sync_extension_compose true remote-provider-ssh-tunnel "Remote provider SSH tunnel" "legacy profile"
+    fi
 
 fi
 
@@ -263,7 +326,8 @@ if [[ -x "$SCRIPT_DIR/scripts/resolve-compose-stack.sh" ]]; then
     # plumbing on installs that already detected GPU_COUNT >= 2 in Phase 02.
     _refreshed_flags=$("$SCRIPT_DIR/scripts/resolve-compose-stack.sh" \
         --script-dir "$SCRIPT_DIR" --tier "${TIER:-1}" --gpu-backend "${GPU_BACKEND:-nvidia}" \
-        --gpu-count "${GPU_COUNT:-1}" --ods-mode "${ODS_MODE:-local}" 2>/dev/null) || true
+        --gpu-count "${GPU_COUNT:-1}" --ods-mode "${ODS_MODE:-local}" \
+        --install-profile "${ODS_INSTALL_PROFILE:-legacy}" 2>/dev/null) || true
     if [[ -n "$_refreshed_flags" ]]; then
         COMPOSE_FLAGS="$_refreshed_flags"
         log "Compose flags refreshed after feature selection"
@@ -286,7 +350,11 @@ if [[ "$ENABLE_OPENCLAW" == "true" ]]; then
     log "OpenClaw config: $OPENCLAW_CONFIG (matched to Tier $TIER)"
 fi
 
-log "All services enabled (core install)"
+if [[ "${ODS_INSTALL_PROFILE:-legacy}" == "assistant-first" ]]; then
+    log "Assistant First minimal graph selected; optional applications remain disabled"
+else
+    log "All services enabled (core install)"
+fi
 
 # Single GPU — generate a trivial assignment so the dashboard API can map
 # the GPU UUID to services (without this, /api/gpu/detailed shows empty

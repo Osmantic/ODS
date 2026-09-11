@@ -421,11 +421,13 @@ grep -qE '_sync_extension_compose +"\$\{ENABLE_EMBEDDINGS:-\$\{ENABLE_RAG:-false
   || { echo "[FAIL] Embeddings compose is not gated by ENABLE_EMBEDDINGS in $features_phase"; exit 1; }
 grep -q 'HOST_PAGE_SIZE:-$(getconf PAGE_SIZE' "$features_phase" \
   || { echo "[FAIL] Qdrant arm64 page-size guard missing from $features_phase"; exit 1; }
-for f in installers/phases/04-requirements.sh installers/phases/08-images.sh installers/phases/12-health.sh installers/phases/13-summary.sh; do
+for f in installers/phases/04-requirements.sh installers/phases/12-health.sh installers/phases/13-summary.sh; do
   test -f "$f" || { echo "[FAIL] missing installer phase: $f"; exit 1; }
   grep -q 'ENABLE_QDRANT:-${ENABLE_RAG:-false}' "$f" \
     || { echo "[FAIL] $f still gates Qdrant on ENABLE_RAG directly"; exit 1; }
 done
+grep -q 'ods_compose_external_images' installers/phases/08-images.sh \
+  || { echo "[FAIL] image pulls must derive optional services from the resolved Compose graph"; exit 1; }
 
 run_phase03_rag_guard() {
   local arch="$1" page_size="$2" tmpdir
@@ -604,10 +606,11 @@ grep -qE 'ENABLE_OPENCLAW:-false' "$features_phase" \
   || { echo "[FAIL] ENABLE_SEARXNG derivation must consult ENABLE_OPENCLAW"; exit 1; }
 grep -Fq 'ENABLE_WEB_SEARCH="$ENABLE_SEARXNG"' "$features_phase" \
   || { echo "[FAIL] ENABLE_WEB_SEARCH must track ENABLE_SEARXNG"; exit 1; }
-grep -Fq 'ENABLE_WEB_SEARCH: "${ENABLE_WEB_SEARCH:-false}"' docker-compose.base.yml \
-  || { echo "[FAIL] docker-compose.base.yml must interpolate ENABLE_WEB_SEARCH"; exit 1; }
-if grep -qE 'ENABLE_WEB_SEARCH: "true"' docker-compose.base.yml; then
-  echo "[FAIL] docker-compose.base.yml must not hardcode ENABLE_WEB_SEARCH=true"
+open_webui_compose="extensions/services/open-webui/compose.yaml"
+grep -Fq 'ENABLE_WEB_SEARCH: "${ENABLE_WEB_SEARCH:-false}"' "$open_webui_compose" \
+  || { echo "[FAIL] Open WebUI compose must interpolate ENABLE_WEB_SEARCH"; exit 1; }
+if grep -qE 'ENABLE_WEB_SEARCH: "true"' "$open_webui_compose"; then
+  echo "[FAIL] Open WebUI compose must not hardcode ENABLE_WEB_SEARCH=true"
   exit 1
 fi
 grep -Fq 'ENABLE_WEB_SEARCH=${ENABLE_WEB_SEARCH:-true}' installers/phases/06-directories.sh \

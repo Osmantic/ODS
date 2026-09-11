@@ -35,10 +35,15 @@ show_phase 6 6 "Systems Online" "~1-2 minutes"
 
 if $DRY_RUN; then
     log "[DRY RUN] Would verify service health:"
-    log "[DRY RUN]   - llama-server, Open WebUI, Perplexica, ComfyUI"
-    log "[DRY RUN]   - Auto-configure Perplexica for ${LLM_MODEL:-default model}"
+    if [[ "${ODS_INSTALL_PROFILE:-legacy}" == "assistant-first" ]]; then
+        log "[DRY RUN]   - Dashboard, Dashboard API, and the selected inference route"
+        [[ "${ENABLE_PIXEL_RUNTIME:-false}" == "true" ]] && log "[DRY RUN]   - Assistant gateway, private ingress, and edge"
+    else
+        log "[DRY RUN]   - llama-server, Open WebUI, Perplexica, ComfyUI"
+        log "[DRY RUN]   - Auto-configure Perplexica for ${LLM_MODEL:-default model}"
+        [[ "${ENABLE_PIXEL_RUNTIME:-false}" == "true" ]] && log "[DRY RUN]   - Pixel gateway + private ingress + edge"
+    fi
     [[ "$ENABLE_HERMES" == "true" ]] && log "[DRY RUN]   - Hermes Agent + hermes-proxy"
-    [[ "${ENABLE_PIXEL_RUNTIME:-false}" == "true" ]] && log "[DRY RUN]   - Pixel gateway + private ingress + edge"
     [[ "$ENABLE_OPENCLAW" == "true" ]] && log "[DRY RUN]   - OpenClaw"
     [[ "$ENABLE_VOICE" == "true" ]] && log "[DRY RUN]   - Whisper (STT), Kokoro (TTS), pre-download STT model"
     [[ "$ENABLE_WORKFLOWS" == "true" ]] && log "[DRY RUN]   - n8n"
@@ -297,7 +302,7 @@ else:
     }
 
     printf "  ${BGRN}OK${NC} External ${provider} inference probe passed (%s)\n" "$response"
-    ai "A completed user-visible answer still requires a real Pixel turn."
+    ai "A completed user-visible answer still requires a real assistant turn."
 }
 
 # Core service health checks with adaptive timeouts.
@@ -396,9 +401,15 @@ else
     fi
 fi
 
-# Open WebUI: 150 attempts * adaptive backoff = up to ~20 minutes
-ods_progress 89 "health" "Waiting for Chat UI"
-_check_health "Open WebUI" "http://127.0.0.1:${SERVICE_PORTS[open-webui]:-3000}${SERVICE_HEALTH[open-webui]:-/}" 150 10 "$(sr_container open-webui)"
+if [[ "${ODS_INSTALL_PROFILE:-legacy}" == "assistant-first" ]]; then
+    ods_progress 89 "health" "Waiting for assistant control plane"
+    _check_health "Dashboard API" "http://127.0.0.1:${SERVICE_PORTS[dashboard-api]:-3002}${SERVICE_HEALTH[dashboard-api]:-/health}" 150 10 "$(sr_container dashboard-api)"
+    _check_health "Assistant" "http://127.0.0.1:${SERVICE_PORTS[dashboard]:-3001}${SERVICE_HEALTH[dashboard]:-/}" 150 10 "$(sr_container dashboard)"
+else
+    # Open WebUI: 150 attempts * adaptive backoff = up to ~20 minutes
+    ods_progress 89 "health" "Waiting for Chat UI"
+    _check_health "Open WebUI" "http://127.0.0.1:${SERVICE_PORTS[open-webui]:-3000}${SERVICE_HEALTH[open-webui]:-/}" 150 10 "$(sr_container open-webui)"
+fi
 # Perplexica: 150 attempts * adaptive backoff = up to ~20 minutes
 if [[ "${ENABLE_PERPLEXICA:-false}" == "true" ]]; then
     ods_progress 91 "health" "Waiting for Research engine"
@@ -561,6 +572,8 @@ fi
 # hermes-proxy is the LAN-facing entry and has an anonymous /health endpoint.
 [[ "$ENABLE_HERMES" == "true" ]] && _check_health "Hermes Proxy" "http://127.0.0.1:${SERVICE_PORTS[hermes-proxy]:-9120}${SERVICE_HEALTH[hermes-proxy]:-/health}" 60 5 "$(sr_container hermes-proxy)"
 if [[ "${ENABLE_PIXEL_RUNTIME:-false}" == "true" ]]; then
+    _assistant_health_label="Pixel"
+    [[ "${ODS_INSTALL_PROFILE:-legacy}" == "assistant-first" ]] && _assistant_health_label="Assistant"
     _pixel_owner="${PIXEL_SERVICE_USER:-$(ods_pixel_install_owner 2>/dev/null || true)}"
     _pixel_home=""
     [[ -n "$_pixel_owner" ]] && _pixel_home="$(ods_pixel_owner_home "$_pixel_owner" 2>/dev/null || true)"
@@ -568,14 +581,15 @@ if [[ "${ENABLE_PIXEL_RUNTIME:-false}" == "true" ]]; then
         || ! systemctl is-active --quiet openclaw-gateway.service pixel-ingress.service \
         || ! ods_pixel_run_as_owner "$_pixel_owner" "$_pixel_home" curl --fail --silent --show-error --max-time 10 \
             --unix-socket /run/ods-pixel/pixel-ingress.sock http://localhost/health >/dev/null; then
-        ai_warn "Pixel gateway or private host ingress did not pass its health check."
+        ai_warn "${_assistant_health_label} gateway or private host ingress did not pass its health check."
         HEALTH_FAILURES=$((HEALTH_FAILURES + 1))
     else
-        printf "  ${BGRN}OK${NC} %-56s\n" "Pixel private ingress healthy"
+        printf "  ${BGRN}OK${NC} %-56s\n" "${_assistant_health_label} private ingress healthy"
     fi
-    if ! _check_container_health "Pixel Edge" "$(sr_container pixel-edge)" 60; then
+    if ! _check_container_health "${_assistant_health_label} Edge" "$(sr_container pixel-edge)" 60; then
         HEALTH_FAILURES=$((HEALTH_FAILURES + 1))
     fi
+    unset _assistant_health_label
 fi
 [[ "$ENABLE_OPENCLAW" == "true" ]] && _check_health "OpenClaw" "http://127.0.0.1:${SERVICE_PORTS[openclaw]:-7860}${SERVICE_HEALTH[openclaw]:-/}" 150 10 "$(sr_container openclaw)"
 if [[ "${ENABLE_OPENCODE:-false}" == "true" ]]; then

@@ -463,6 +463,10 @@ If the host agent is unreachable, file-level operations (install, enable, disabl
 4. Walks `data/user-extensions/*/` and includes compose files from user-installed extensions
 5. Appends `docker-compose.override.yml` if it exists (user customizations)
 
+Assistant First supplies an explicit built-in allowlist, excludes user
+extensions and the operator override from its fresh first-boot graph, and
+selects only the profile-safe edge fragment plus the required inference route.
+
 ### 7. Uninstall
 
 Uninstalling (`DELETE /api/extensions/{service_id}`) requires the extension to be disabled first (compose file must be renamed to `.disabled`). It then removes the extension directory from `user-extensions/` under file lock.

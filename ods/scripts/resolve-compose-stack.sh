@@ -10,6 +10,7 @@ SKIP_BROKEN="false"
 GPU_COUNT="1"
 ODS_MODE="${ODS_MODE:-local}"
 SKIP_GPU_OVERLAYS="${ODS_SKIP_GPU_OVERLAYS:-${ODS_SKIP_GPU_OVERLAYS_FOR:-}}"
+INSTALL_PROFILE="${ODS_INSTALL_PROFILE:-legacy}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -45,6 +46,10 @@ while [[ $# -gt 0 ]]; do
             ODS_MODE="${2:-$ODS_MODE}"
             shift 2
             ;;
+        --install-profile)
+            INSTALL_PROFILE="${2:-$INSTALL_PROFILE}"
+            shift 2
+            ;;
         --skip-gpu-overlays|--skip-gpu-overlays-for)
             SKIP_GPU_OVERLAYS="${2:-$SKIP_GPU_OVERLAYS}"
             shift 2
@@ -73,7 +78,7 @@ if ! "$PYTHON_CMD" -c 'import yaml' >/dev/null 2>&1; then
     exit 2
 fi
 
-"$PYTHON_CMD" - "$SCRIPT_DIR" "$TIER" "$GPU_BACKEND" "$PROFILE_OVERLAYS" "$ENV_MODE" "$SKIP_BROKEN" "$GPU_COUNT" "$ODS_MODE" "$SKIP_GPU_OVERLAYS" <<'PY'
+"$PYTHON_CMD" - "$SCRIPT_DIR" "$TIER" "$GPU_BACKEND" "$PROFILE_OVERLAYS" "$ENV_MODE" "$SKIP_BROKEN" "$GPU_COUNT" "$ODS_MODE" "$SKIP_GPU_OVERLAYS" "$INSTALL_PROFILE" <<'PY'
 import os
 import pathlib
 import platform
@@ -93,6 +98,11 @@ skip_gpu_overlays = {
     for x in (sys.argv[9] or os.environ.get("ODS_SKIP_GPU_OVERLAYS", "")).split(",")
     if x.strip()
 }
+install_profile = (sys.argv[10] or os.environ.get("ODS_INSTALL_PROFILE", "legacy")).lower()
+if install_profile not in {"legacy", "assistant-first"}:
+    print(f"ERROR: unsupported install profile: {install_profile}", file=sys.stderr)
+    sys.exit(1)
+assistant_first = install_profile == "assistant-first"
 if os.environ.get("WHISPER_ACCELERATION", "").strip().lower() == "cpu":
     skip_gpu_overlays.add("whisper")
 lemonade_external = (
@@ -105,6 +115,9 @@ lemonade_external = (
 external_llm = bool(os.environ.get("EXTERNAL_LLM_URL", "").strip())
 
 IS_DARWIN = platform.system() == "Darwin"
+if assistant_first and IS_DARWIN:
+    print("ERROR: Assistant First is qualified for Linux only in this public-beta phase", file=sys.stderr)
+    sys.exit(1)
 APPLE_OVERLAY = "installers/macos/docker-compose.macos.yml" if IS_DARWIN else "docker-compose.apple.yml"
 macos_cloud_auth = script_dir / "data" / "generated" / "docker-compose.macos-cloud-auth.yml"
 
@@ -206,6 +219,12 @@ if gpu_count > 1:
     multigpu_file = f"docker-compose.multigpu-{gpu_backend}.yml"
     if (script_dir / multigpu_file).exists():
         resolved.append(multigpu_file)
+
+# Tier-specific resource limits are part of the authoritative graph, not a
+# caller-side suffix. Keeping them here makes every installer, CLI, and host
+# agent observe the same ordering.
+if tier == "0" and (script_dir / "docker-compose.tier0.yml").exists():
+    resolved.append("docker-compose.tier0.yml")
 
 # PyYAML is a hard requirement — extensions and overlays are YAML and must be
 # parsed for the compose security scan. Silent fallback used to hide install
@@ -561,6 +580,12 @@ if ext_dir.exists():
     for service_dir in sorted(ext_dir.iterdir()):
         if not service_dir.is_dir():
             continue
+        if assistant_first:
+            allowed = {"pixel-edge"}
+            if ods_mode in {"cloud", "lemonade"}:
+                allowed.add("litellm")
+            if service_dir.name not in allowed:
+                continue
         # Find manifest
         manifest_path = None
         for name in ("manifest.yaml", "manifest.yml", "manifest.json"):
@@ -589,7 +614,13 @@ if ext_dir.exists():
                 continue
             compose_rel = service.get("compose_file")
             if compose_rel:
-                compose_path = _extension_base_path(service_dir, service, service_dir.name)
+                if assistant_first and service_dir.name == "pixel-edge":
+                    compose_path = service_dir / "compose.assistant-first.yaml"
+                    if not compose_path.exists():
+                        print("ERROR: Assistant First Pixel edge fragment is missing", file=sys.stderr)
+                        sys.exit(1)
+                else:
+                    compose_path = _extension_base_path(service_dir, service, service_dir.name)
                 if compose_path is None:
                     continue
                 resolved.append(str(compose_path.relative_to(script_dir)))
@@ -603,8 +634,20 @@ if ext_dir.exists():
                     continue
             # GPU-specific overlay (filesystem discovery — not in manifest)
             gpu_overlay = service_dir / f"compose.{gpu_backend}.yaml"
-            if service_dir.name.lower() not in skip_gpu_overlays and gpu_overlay.exists():
+            gpu_overlay_matches_base = (
+                service_dir.name != "open-webui"
+                or f"docker-compose.{gpu_backend}.yml" in resolved
+            )
+            if (
+                service_dir.name.lower() not in skip_gpu_overlays
+                and gpu_overlay.exists()
+                and gpu_overlay_matches_base
+            ):
                 resolved.append(str(gpu_overlay.relative_to(script_dir)))
+
+            tier_overlay = service_dir / f"compose.tier{tier.lower()}.yaml"
+            if tier_overlay.exists():
+                resolved.append(str(tier_overlay.relative_to(script_dir)))
 
             # Mode-specific overlay — depends_on for local/hybrid mode only.
             # Skip on Apple Silicon: macOS runs llama-server natively on the host
@@ -620,6 +663,19 @@ if ext_dir.exists():
                 local_mode_overlay = service_dir / "compose.local.yaml"
                 if local_mode_overlay.exists():
                     resolved.append(str(local_mode_overlay.relative_to(script_dir)))
+
+            # Open WebUI mode-specific settings live with its extracted service
+            # definition. Assistant First never selects this service, so these
+            # overlays cannot create a partial Open WebUI service there.
+            if service_dir.name == "open-webui":
+                if external_llm:
+                    mode_overlay = service_dir / "compose.external.yaml"
+                elif lemonade_external and ods_mode == "lemonade":
+                    mode_overlay = service_dir / "compose.lemonade.yaml"
+                else:
+                    mode_overlay = None
+                if mode_overlay is not None and mode_overlay.exists():
+                    resolved.append(str(mode_overlay.relative_to(script_dir)))
 
             # Multi-GPU overlay if we have more than 1 GPU
             if gpu_count > 1:
@@ -647,7 +703,7 @@ if ext_dir.exists():
 
 # Discover enabled user-installed extensions (from dashboard portal)
 user_ext_dir = script_dir / "data" / "user-extensions"
-if user_ext_dir.exists():
+if user_ext_dir.exists() and not assistant_first:
     try:
         for service_dir in sorted(user_ext_dir.iterdir()):
             if not service_dir.is_dir():
@@ -799,7 +855,7 @@ if external_llm:
 # trusts less than themselves (cloned repo, restored backup). Apply the
 # same content scan as user extensions.
 override = script_dir / "docker-compose.override.yml"
-if override.exists():
+if override.exists() and not assistant_first:
     ok, warnings = _scan_user_compose_content(override)
     for w in warnings:
         print(f"WARNING: docker-compose.override.yml: {w}", file=sys.stderr)

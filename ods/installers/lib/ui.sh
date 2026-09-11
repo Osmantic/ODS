@@ -519,6 +519,10 @@ show_install_menu() {
     echo -e "  ${BGRN}[3]${NC} Custom"
     echo "      Choose exactly what you want"
     echo ""
+    echo -e "  ${BGRN}[4]${NC} Assistant First ${AMB}(public beta; qualified Linux hosts)${NC}"
+    echo "      Your named assistant + control plane + one inference route"
+    echo "      Optional applications remain available on demand"
+    echo ""
     read -p "  Select an option [1]: " -r INSTALL_CHOICE < /dev/tty
     INSTALL_CHOICE="${INSTALL_CHOICE:-1}"
     echo ""
@@ -570,6 +574,26 @@ show_install_menu() {
             signal "Acknowledged."
             log "Selected: Custom"
             ;;
+        4)
+            signal "Acknowledged."
+            log "Selected: Assistant First (public beta)"
+            ODS_INSTALL_PROFILE="assistant-first"
+            INTERACTIVE=false
+            ENABLE_PIXEL=true
+            PIXEL_EXPLICIT=true
+            ENABLE_VOICE=false
+            ENABLE_WORKFLOWS=false
+            ENABLE_RAG=false
+            ENABLE_RECOMMENDED=false
+            ENABLE_HERMES=false
+            ENABLE_OPENCLAW=false
+            ENABLE_OPENCODE=false
+            ENABLE_COMFYUI=false
+            ENABLE_APE=false
+            ENABLE_PERPLEXICA=false
+            ENABLE_PRIVACY_SHIELD=false
+            ENABLE_LANGFUSE=false
+            ;;
         *)
             warn "Invalid choice '$INSTALL_CHOICE', defaulting to Full Stack"
             ENABLE_VOICE=true
@@ -617,8 +641,12 @@ show_success_card() {
     echo ""
     echo -e "${GRN}+--------------------------------------------------------------+${NC}"
     echo -e "${GRN}|${NC}                                                              ${GRN}|${NC}"
-    printf "${GRN}|${NC}   Dashboard:   ${WHT}%-43s${NC} ${GRN}|${NC}\n" "${dashboard_url}"
-    printf "${GRN}|${NC}   Chat:        ${WHT}%-43s${NC} ${GRN}|${NC}\n" "${webui_url}"
+    if [[ "${ODS_INSTALL_PROFILE:-legacy}" == "assistant-first" ]]; then
+        printf "${GRN}|${NC}   Assistant:   ${WHT}%-43s${NC} ${GRN}|${NC}\n" "${dashboard_url}"
+    else
+        printf "${GRN}|${NC}   Dashboard:   ${WHT}%-43s${NC} ${GRN}|${NC}\n" "${dashboard_url}"
+        printf "${GRN}|${NC}   Chat:        ${WHT}%-43s${NC} ${GRN}|${NC}\n" "${webui_url}"
+    fi
     echo -e "${GRN}|${NC}                                                              ${GRN}|${NC}"
     if [[ -n "$ip_addr" ]]; then
         echo -e "${GRN}|${NC}   ${AMB}Access from other devices:${NC}                               ${GRN}|${NC}"

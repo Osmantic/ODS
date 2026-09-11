@@ -7,6 +7,7 @@
 #
 # Provides:
 #   ods_compose_external_images <compose-cmd> [compose flags...]
+#   ods_docker_known_image_bytes <docker-cmd> <image...>
 # ============================================================================
 
 _ods_compose_python_cmd() {
@@ -68,4 +69,23 @@ for service in (data.get("services") or {}).values():
     # Older Compose builds may lack JSON output. This fallback can include
     # generated build tags, so the local-image filter below remains important.
     $compose_cmd "${compose_flags[@]}" config --images 2>/dev/null | _ods_compose_filter_external_images
+}
+
+ods_docker_known_image_bytes() {
+    local docker_cmd="${1:-docker}"
+    shift || true
+    local image size total=0 unknown=0 seen=$'\n'
+
+    for image in "$@"; do
+        [[ -n "$image" ]] || continue
+        [[ "$seen" == *$'\n'"$image"$'\n'* ]] && continue
+        seen+="$image"$'\n'
+        size="$($docker_cmd image inspect --format '{{.Size}}' "$image" 2>/dev/null || true)"
+        if [[ "$size" =~ ^[0-9]+$ ]]; then
+            total=$((total + size))
+        else
+            unknown=$((unknown + 1))
+        fi
+    done
+    printf '%s %s\n' "$total" "$unknown"
 }

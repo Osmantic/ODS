@@ -135,14 +135,18 @@ else
 fi
 bootline
 # Core services always shown
-echo "  • Chat UI:       http://localhost:${SERVICE_PORTS[open-webui]:-3000}"
-echo "  • Dashboard:     http://localhost:${SERVICE_PORTS[dashboard]:-3001}"
+if [[ "${ODS_INSTALL_PROFILE:-legacy}" == "assistant-first" ]]; then
+    echo "  • Assistant:     http://localhost:${SERVICE_PORTS[dashboard]:-3001}"
+else
+    echo "  • Chat UI:       http://localhost:${SERVICE_PORTS[open-webui]:-3000}"
+    echo "  • Dashboard:     http://localhost:${SERVICE_PORTS[dashboard]:-3001}"
+fi
 if [[ "${ODS_MODE:-local}" == "cloud" || "${ODS_MODE:-local}" == "lemonade" || "${LEMONADE_EXTERNAL:-false}" == "true" ]]; then
     echo "  • LLM API:       http://localhost:${SERVICE_PORTS[litellm]:-4000}/v1  (managed LiteLLM gateway)"
 else
     echo "  • LLM API:       http://localhost:${SERVICE_PORTS[llama-server]:-11434}/v1  (llama-server)"
 fi
-[[ "${ENABLE_PIXEL_RUNTIME:-false}" == "true" ]] && echo "  • Pixel Agent:   http://localhost:${SERVICE_PORTS[dashboard]:-3001}/pixel  (core agent; default Open WebUI model)"
+[[ "${ENABLE_PIXEL_RUNTIME:-false}" == "true" && "${ODS_INSTALL_PROFILE:-legacy}" != "assistant-first" ]] && echo "  • Pixel Agent:   http://localhost:${SERVICE_PORTS[dashboard]:-3001}/pixel  (core agent; default Open WebUI model)"
 [[ "${ENABLE_PERPLEXICA:-false}" == "true" ]] && echo "  • Perplexica:    http://localhost:${SERVICE_PORTS[perplexica]:-3004}"
 [[ "${ENABLE_COMFYUI:-false}" == "true" ]] && echo "  • ComfyUI:       http://localhost:${SERVICE_PORTS[comfyui]:-8188}"
 [[ "$ENABLE_HERMES" == "true" ]] && echo "  • Hermes (auth): http://localhost:${SERVICE_PORTS[hermes-proxy]:-9120}  (magic-link gated; not direct :9119)"
@@ -167,7 +171,11 @@ bootline
 echo "  • Tier: $TIER ($TIER_NAME)"
 echo "  • Model: $LLM_MODEL"
 if [[ "${ENABLE_PIXEL_RUNTIME:-false}" == "true" ]]; then
-    echo "  • Pixel core agent: enabled (default Open WebUI model: pixel/default)"
+    if [[ "${ODS_INSTALL_PROFILE:-legacy}" == "assistant-first" ]]; then
+        echo "  • Assistant runtime: enabled"
+    else
+        echo "  • Pixel core agent: enabled (default Open WebUI model: pixel/default)"
+    fi
 elif [[ "${ENABLE_HERMES:-false}" == "true" ]]; then
     echo "  • Hermes Agent: enabled"
 fi
@@ -184,7 +192,7 @@ echo "  docker compose logs -f                     # View container logs"
 echo "  docker compose restart                     # Restart containers"
 echo "  systemctl --user list-timers               # Check maintenance timers"
 echo "  ods status                                 # Check service health"
-[[ "${ENABLE_PIXEL_RUNTIME:-false}" == "true" ]] && echo "  bash install.sh --no-pixel --hermes         # Disable Pixel; keep Hermes enabled"
+[[ "${ENABLE_PIXEL_RUNTIME:-false}" == "true" && "${ODS_INSTALL_PROFILE:-legacy}" != "assistant-first" ]] && echo "  bash install.sh --no-pixel --hermes         # Disable Pixel; keep Hermes enabled"
 echo ""
 
 if [[ -f "$LOG_FILE" ]]; then
@@ -448,9 +456,13 @@ else
 fi
 echo -e "${GRN}──────────────────────────────────────────────────────────────────────────────${NC}"
 echo ""
-echo -e "  ${BGRN}Dashboard${NC}    ${WHT}http://localhost:${DASHBOARD_PORT}${NC}"
-echo -e "  ${BGRN}Chat${NC}         ${WHT}http://localhost:${WEBUI_PORT}${NC}"
-[[ "${ENABLE_PIXEL_RUNTIME:-false}" == "true" ]] && \
+if [[ "${ODS_INSTALL_PROFILE:-legacy}" == "assistant-first" ]]; then
+    echo -e "  ${BGRN}Assistant${NC}    ${WHT}http://localhost:${DASHBOARD_PORT}${NC}"
+else
+    echo -e "  ${BGRN}Dashboard${NC}    ${WHT}http://localhost:${DASHBOARD_PORT}${NC}"
+    echo -e "  ${BGRN}Chat${NC}         ${WHT}http://localhost:${WEBUI_PORT}${NC}"
+fi
+[[ "${ENABLE_PIXEL_RUNTIME:-false}" == "true" && "${ODS_INSTALL_PROFILE:-legacy}" != "assistant-first" ]] && \
 echo -e "  ${BGRN}Pixel${NC}        ${WHT}http://localhost:${DASHBOARD_PORT}/pixel${NC}  ${AMB}(core agent; default in Open WebUI)${NC}"
 [[ "$ENABLE_HERMES" == "true" ]] && \
 echo -e "  ${BGRN}Hermes${NC}       ${WHT}http://localhost:${SERVICE_PORTS[hermes-proxy]:-9120}${NC}  ${AMB}(magic-link gated)${NC}"
@@ -475,7 +487,11 @@ if $DRY_RUN; then
 else
     echo -e "  Start here → ${WHT}http://localhost:${DASHBOARD_PORT}${NC}"
 fi
-echo -e "  The Dashboard shows all services, GPU status, and quick links."
+if [[ "${ODS_INSTALL_PROFILE:-legacy}" == "assistant-first" ]]; then
+    echo -e "  The Dashboard shows the active control plane, inference status, and available extensions."
+else
+    echo -e "  The Dashboard shows all services, GPU status, and quick links."
+fi
 echo ""
 echo -e "${GRN}──────────────────────────────────────────────────────────────────────────────${NC}"
 echo ""

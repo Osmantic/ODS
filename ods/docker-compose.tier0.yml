@@ -33,11 +33,3 @@ services:
           memory: 512M
         reservations:
           memory: 128M
-
-  open-webui:
-    deploy:
-      resources:
-        limits:
-          memory: 1G
-        reservations:
-          memory: 256M

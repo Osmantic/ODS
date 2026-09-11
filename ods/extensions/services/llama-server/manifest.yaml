@@ -20,6 +20,10 @@ service:
   gpu_backends: [cpu, amd, nvidia]
   category: core
   depends_on: []
+  capabilities:
+    provides: [inference-route@1]
+    requires: []
+    optional: []
 
 features:
   - id: chat

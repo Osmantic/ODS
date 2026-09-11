@@ -72,6 +72,14 @@ if [[ "$1" == "compose" && "$*" == *"config --format json"* ]]; then
 JSON
   exit 0
 fi
+if [[ "$1" == "image" && "$2" == "inspect" ]]; then
+  image="${@: -1}"
+  case "$image" in
+    ghcr.io/ggml-org/llama.cpp:server-b8248) echo 1073741824; exit 0 ;;
+    caddy:2.11.3-alpine) echo 134217728; exit 0 ;;
+  esac
+  exit 1
+fi
 exit 1
 EOF
 chmod +x "$TMP_DIR/docker"
@@ -97,6 +105,20 @@ if [[ "$caddy_count" == "1" ]]; then
 else
     fail "deduplicates repeated images"
     echo "    caddy count: $caddy_count"
+fi
+
+read -r known_bytes unknown_count < <(
+    ods_docker_known_image_bytes "$TMP_DIR/docker" \
+        ghcr.io/ggml-org/llama.cpp:server-b8248 \
+        caddy:2.11.3-alpine \
+        caddy:2.11.3-alpine \
+        example.invalid/unknown:1
+)
+if [[ "$known_bytes" == "1207959552" && "$unknown_count" == "1" ]]; then
+    pass "reports known local image bytes and unavailable metadata without double-counting"
+else
+    fail "reports known local image bytes and unavailable metadata without double-counting"
+    echo "    got: $known_bytes $unknown_count"
 fi
 
 echo ""
