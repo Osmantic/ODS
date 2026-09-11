@@ -1,4 +1,5 @@
 import { webcrypto, createHash } from 'node:crypto'
+import { Buffer } from 'node:buffer'
 import { render, screen, waitFor } from '@testing-library/react'
 import PixelPreviewSource from './PixelPreviewSource'
 const source = '<!doctype html><button onclick="alert(1)">Click</button>\n```\n<script>bad()</script>'
@@ -60,4 +61,27 @@ it.each([
   const {container}=render(<PixelPreviewSource preview={{...preview,entrySha256:digest}} file={{path,sha256:digest,bytes:bytes.byteLength}}/>)
   await waitFor(() => expect(screen.getByRole('button',{name:'Copy code'})).toBeEnabled())
   expect(container.querySelector('pre code').textContent).toBe(text)
+})
+
+it.each(['Dockerfile', 'containers/Containerfile', 'Makefile', 'docs/README', 'LICENSE', 'NOTICE'])('inspects verified project text in %s', async path => {
+  const text = '# Project configuration\nkeep exact text\n'
+  const bytes = new TextEncoder().encode(text)
+  const file = {path,bytes:bytes.byteLength,sha256:createHash('sha256').update(bytes).digest('hex')}
+  vi.stubGlobal('fetch',vi.fn(async () => ({ok:true,arrayBuffer:async () => bytes.buffer})))
+  const view = render(<PixelPreviewSource preview={preview} file={file}/>)
+  await waitFor(() => expect(screen.queryByText('Verifying source…')).toBeNull())
+  expect(view.container.querySelector('pre code')).toHaveTextContent('keep exact text')
+  expect(view.container.querySelector('pre code').textContent).toBe(text)
+  expect(screen.getByRole('button',{name:'Copy code'})).toBeEnabled()
+})
+
+it('keeps unknown extensionless binary artifacts out of the text inspector', async () => {
+  // Node 20 WebCrypto expects the Node-realm buffer a real fetch supplies.
+  const bytes = Buffer.alloc(3)
+  bytes.set([0,255,3])
+  const file = {path:'app',bytes:3,sha256:createHash('sha256').update(bytes).digest('hex')}
+  vi.stubGlobal('fetch',vi.fn(async () => ({ok:true,arrayBuffer:async () => bytes.buffer})))
+  const view = render(<PixelPreviewSource preview={preview} file={file}/>)
+  expect(await screen.findByText(/Binary asset/)).toBeVisible()
+  expect(view.container.querySelector('pre')).toBeNull()
 })
