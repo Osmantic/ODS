@@ -1,6 +1,7 @@
 import { Navigate, Routes, Route, useLocation, useNavigate } from 'react-router-dom'
 import { useState, useEffect, Suspense, useMemo, useCallback, lazy } from 'react'
 import Sidebar from './components/Sidebar'
+import WallpaperVideo from './components/WallpaperVideo'
 import PanelResizeHandle from './components/PanelResizeHandle'
 import MetalMetricIcon from './components/MetalMetricIcon'
 import InstallPromptBanner from './components/InstallPromptBanner'
@@ -124,6 +125,7 @@ function App() {
   return (
     <PortalIdentityProvider>
     <div className={`pixel-app flex min-h-screen bg-theme-bg text-theme-text relative ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
+      <WallpaperVideo />
       {!splashDone && <SplashScreen onComplete={() => {
         setStorageValue('sessionStorage', 'ods-splash-shown', '1')
         setSplashDone(true)

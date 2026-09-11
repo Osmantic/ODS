@@ -190,6 +190,94 @@ function seedNamedPreview(guard) {
   return { write, params, details };
 }
 
+test('malformed dispatch failures stop only their active run and retain its verified preview', () => {
+  const aborted = [];
+  const signalled = [];
+  const guard = createToolLoopGuard({abortRun: id => {aborted.push(id); return true;}, execControl:{signal:id=>signalled.push(id)}});
+  const {details} = seedNamedPreview(guard);
+  const context = {agentId:'pixel',runId:'run-1',sessionId:'session-1'};
+  for (let i=0; i<4; i++) {
+    guard.observeModelCall({},context);
+    const event = {toolName:'tool_call',toolCallId:`broken-${i}`,params:{id:'exec</parameter>,',args:{}},result:{isError:true,content:[{type:'text',text:'Unknown tool id'}]}};
+    guard.afterToolCall(event,context);
+    guard.toolResultPersist({toolCallId:event.toolCallId,message:{role:'toolResult',isError:true,content:event.result.content}},context);
+  }
+  assert.equal(guard.beforeAgentFinalize({},context), undefined);
+  guard.observeModelCall({},context);
+  guard.observeModelCall({},context);
+  assert.deepEqual(aborted,[]);
+  assert.equal(guard.beforeToolCall({toolName:'tool_search',params:{query:'retry'}},context).block,true);
+  guard.observeModelEnd({},context);
+  guard.observeModelEnd({},context);
+  assert.deepEqual(aborted,['session-1']);
+  assert.deepEqual(signalled,['run-1']);
+  assert.equal(guard.beforeToolCall({toolName:'tool_search',params:{query:'retry'}},context).block,true);
+  const delivery = guard.deliveryVerificationForRun('run-1');
+  assert.equal(delivery.status,'failed');
+  assert.equal(delivery.preview.sha256,details.sha256);
+  assert.match(delivery.text,/Open last published preview/);
+  assert.match(delivery.text,/not completed/);
+  const other = {agentId:'pixel',runId:'run-2',sessionId:'session-2'};
+  guard.observeRun(other,'pixel',{prompt:'hello'});
+  assert.equal(guard.deliveryVerificationForRun('run-2').status,'none');
+});
+
+test('native blocks that bypass tool hooks cannot keep model continuations running', () => {
+  const aborted=[];
+  const guard=createToolLoopGuard({abortRun:id=>aborted.push(id)});
+  const context={agentId:'pixel',runId:'run-loop',sessionId:'session-loop'};
+  guard.observeRun(context,'pixel',{prompt:'Make a site'});
+  for(let i=0;i<9;i++) guard.observeModelCall({},context);
+  assert.deepEqual(aborted,[]);
+  guard.observeModelEnd({},context);
+  assert.deepEqual(aborted,['session-loop']);
+  assert.equal(guard.deliveryVerificationForRun('run-loop').status,'failed');
+});
+
+test('unbound or other-agent model events cannot exhaust a Pixel run', () => {
+  const aborted=[];
+  const guard=createToolLoopGuard({abortRun:id=>aborted.push(id)});
+  guard.observeRun({agentId:'pixel',runId:'owned',sessionId:'owned-session'},'pixel',{prompt:'hello'});
+  for(let i=0;i<20;i++) {
+    guard.observeModelCall({},{runId:'owned',sessionId:'unrelated'});
+    guard.observeModelCall({},{agentId:'other',runId:'owned',sessionId:'owned-session'});
+  }
+  assert.deepEqual(aborted,[]);
+});
+
+test('late model completion cannot interrupt a newer turn in the same session', () => {
+  const aborted=[];
+  const guard=createToolLoopGuard({abortRun:id=>aborted.push(id)});
+  const context={agentId:'pixel',runId:'old-run',sessionId:'shared-session'};
+  guard.observeRun(context,'pixel',{prompt:'Make a site'});
+  for(let i=0;i<9;i++) guard.observeModelCall({},context);
+  guard.beforeToolCall({toolName:'tool_search',params:{query:'retry'}},context);
+  guard.observeRun({...context,runId:'new-run'},'pixel',{prompt:'hello'});
+  guard.observeModelEnd({},context);
+  assert.deepEqual(aborted,[]);
+  assert.equal(guard.deliveryVerificationForRun('new-run').status,'none');
+});
+
+test('literal announcements preserve preview; potentially mutating shell retains only historical publication', () => {
+  const guard=createToolLoopGuard();
+  const {details}=seedNamedPreview(guard);
+  afterCall(guard,'exec',{event:{params:{command:'echo "Marketing site is now live!"'},result:{details:{exitCode:0}}}});
+  assert.equal(guard.verificationForRun('run-1').status,'passed');
+  afterCall(guard,'exec',{event:{params:{command:'echo "changed" > index.html'},result:{details:{exitCode:0}}}});
+  assert.equal(guard.verificationForRun('run-1').status,'failed');
+  assert.equal(guard.verificationForRun('run-1').preview.sha256,details.sha256);
+});
+
+test('cancellation wrapper does not turn a literal announcement into a workspace mutation', () => {
+  const guard=createToolLoopGuard({execControl:{prepare:(_run,command)=>`wrapped ${command}`}});
+  seedNamedPreview(guard);
+  const context={agentId:'pixel',runId:'run-1',sessionId:'session-1',toolName:'exec',toolCallId:'echo-wrapped'};
+  const decision=guard.beforeToolCall({toolName:'exec',params:{command:'echo "Done"'}},context);
+  assert.equal(decision.params.command,'wrapped echo "Done"');
+  guard.afterToolCall({toolName:'exec',params:decision.params,result:{details:{exitCode:0}}},context);
+  assert.equal(guard.verificationForRun('run-1').status,'passed');
+});
+
 test("Portuguese HTML creation requests require a preview without overriding negative or quoted intent", () => {
   for (const prompt of ["crie um jogo em html da cobrinha", "Faça um site de portfolio", "Por favor, pode criar um aplicativo web?"]) {
     assert.equal(userMessageRequestsWorkspacePreview([], prompt), true, prompt);

@@ -535,7 +535,7 @@ function AppearanceCard({ theme, themes, labels, onThemeChange, className = '', 
               <span className="wallpaper-mini-sidebar"><i/><i/><i/></span><span className="wallpaper-mini-chat"><i/><i/></span>
               {theme === themeId && <span className="wallpaper-check" aria-hidden="true">✓</span>}
             </span>
-            <span className="wallpaper-caption"><span>{labels[themeId] || themeId}</span>{themeId === 'ods' && <small>Default</small>}</span>
+            <span className="wallpaper-caption"><span>{labels[themeId] || themeId}</span>{themeId === 'ods' ? <small>Default</small> : wallpapers.find(item => item.id === themeId)?.kind === 'video' && <small>Video</small>}</span>
           </button>
         ))}
       </div>

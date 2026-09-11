@@ -1,4 +1,6 @@
 /* A single landscape beneath the existing shell; only wallpaper themes use glass. */
+.workspace-wallpaper-video { position:fixed; inset:0; width:100%; height:100%; object-fit:cover; z-index:-2; pointer-events:none; filter:brightness(.65); }
+.wallpaper-motion { display:flex; align-items:center; gap:9px; margin-top:16px; color:#dce1e7; font-size:12px; }
 :root[data-wallpaper] #root > .pixel-app {
   background:linear-gradient(#080c1266,#080c1280),var(--workspace-wallpaper) center/cover fixed;
   isolation:isolate;
@@ -101,3 +103,11 @@
 .conversation-row:hover .conversation-export,.conversation-row:focus-within .conversation-export { opacity:1; pointer-events:auto; }
 .conversation-export:hover { color:#fff; background:#ffffff12; }
 @media(hover:none) { .conversation-export { opacity:1; pointer-events:auto; } }
+
+/* One decoder for the whole shell; glass stays on the sidebar, not the video. */
+:root[data-wallpaper-kind=video] #root > .pixel-app::before { backdrop-filter:none; -webkit-backdrop-filter:none; }
+:root[data-wallpaper-kind=video] .pixel-sidebar { backdrop-filter:blur(32px) saturate(115%); -webkit-backdrop-filter:blur(32px) saturate(115%); }
+:root[data-wallpaper-kind=video] .pixel-workspace.dashboard-market-shell { background:#0b101830; }
+@media(prefers-reduced-transparency:reduce) {
+  :root[data-wallpaper-kind=video] .pixel-sidebar { background:#13181ff2; backdrop-filter:none; -webkit-backdrop-filter:none; }
+}

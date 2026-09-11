@@ -238,7 +238,8 @@ export default definePluginEntry({
     // so every ODS lookup is followed by a user-visible answer.
     api.on("before_prompt_build", (event, context) => {
       const privateBrowserAccess = privateBrowserAccessForAgent(api.config, AGENT_ID);
-      toolLoopGuard.observeRun(context, AGENT_ID, event, { privateBrowserAccess });
+      const workspaceRoot = api.config?.agents?.list?.find(agent => agent.id === AGENT_ID)?.workspace;
+      toolLoopGuard.observeRun(context, AGENT_ID, event, { privateBrowserAccess, workspaceRoot });
       if (!accessRuntime.isProbe(context)) taskActivity.begin(event, context);
       return promptContractForAgent(context, AGENT_ID, event, {
         verificationStatus: toolLoopGuard.verificationStatus(context?.runId),
@@ -249,6 +250,9 @@ export default definePluginEntry({
     });
     api.on("model_call_started", (event, context) =>
       toolLoopGuard.observeModelCall(event, context, AGENT_ID)
+    );
+    api.on("model_call_ended", (event, context) =>
+      toolLoopGuard.observeModelEnd(event, context, AGENT_ID)
     );
     if (!managedRuntime) {
       api.on("before_agent_run", (event, context) => accessRuntime.admit(undefined, context));

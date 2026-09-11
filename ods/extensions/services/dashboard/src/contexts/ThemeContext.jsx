@@ -12,6 +12,9 @@ const ThemeContext = createContext(null)
 export function ThemeProvider({ children }) {
   const [custom, setCustom] = useState([])
   const [wallpaperError, setWallpaperError] = useState('')
+  const [wallpaperMotion, setWallpaperMotionState] = useState(() => {
+    try { return localStorage.getItem('ods-wallpaper-motion') !== 'paused' } catch { return true }
+  })
   const galleryRevision = useRef(0)
   const wallpapers = [...WALLPAPERS, ...custom]
   const [theme, setThemeState] = useState(() => {
@@ -32,6 +35,7 @@ export function ThemeProvider({ children }) {
       }).catch(error => { if (active && revision === galleryRevision.current) setWallpaperError(error.message) })
     }
     const sync = event => {
+      if (event.key === 'ods-wallpaper-motion') { setWallpaperMotionState(event.newValue !== 'paused'); return }
       if (event.key !== STORAGE_KEY) return
       setThemeState(THEMES.includes(event.newValue) || isCustomWallpaper(event.newValue) ? event.newValue : DEFAULT_THEME)
       void refresh()
@@ -49,13 +53,20 @@ export function ThemeProvider({ children }) {
     const wallpaper = [...WALLPAPERS, ...custom].find(item => item.id === theme)
     if (wallpaper?.image) {
       root.setAttribute('data-wallpaper', theme)
+      root.setAttribute('data-wallpaper-kind', wallpaper.kind === 'video' ? 'video' : 'image')
       root.style.setProperty('--workspace-wallpaper', `url("${wallpaper.image}")`)
     } else {
       root.removeAttribute('data-wallpaper')
+      root.removeAttribute('data-wallpaper-kind')
       root.style.removeProperty('--workspace-wallpaper')
     }
     try { localStorage.setItem(STORAGE_KEY, theme) } catch { /* Session-only theme. */ }
   }, [theme, custom])
+
+  const setWallpaperMotion = useCallback(enabled => {
+    setWallpaperMotionState(Boolean(enabled))
+    try { localStorage.setItem('ods-wallpaper-motion', enabled ? 'playing' : 'paused') } catch { /* Session-only preference. */ }
+  }, [])
 
   const setTheme = useCallback((t) => {
     if (THEMES.includes(t) || isCustomWallpaper(t)) setThemeState(t)
@@ -82,7 +93,7 @@ export function ThemeProvider({ children }) {
   }, [])
 
   return (
-    <ThemeContext.Provider value={{ theme, setTheme, cycleTheme, themes: wallpapers.map(item => item.id), labels: {...THEME_LABELS, ...Object.fromEntries(custom.map(item => [item.id, item.name]))}, wallpapers, addWallpaper, removeWallpaper, wallpaperError }}>
+    <ThemeContext.Provider value={{ theme, setTheme, cycleTheme, themes: wallpapers.map(item => item.id), labels: {...THEME_LABELS, ...Object.fromEntries(custom.map(item => [item.id, item.name]))}, wallpapers, addWallpaper, removeWallpaper, wallpaperError, wallpaperMotion, setWallpaperMotion }}>
       {children}
     </ThemeContext.Provider>
   )
