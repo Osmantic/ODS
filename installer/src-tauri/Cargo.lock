@@ -656,7 +656,6 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
- "sys-info",
  "tauri",
  "tauri-build",
  "tokio",
@@ -3248,7 +3247,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "sys-info"
 version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b3a0d0aba8bf96a0e1ddfdc352fc53b3df7f39318c71854910c3c4b024ae52c"
