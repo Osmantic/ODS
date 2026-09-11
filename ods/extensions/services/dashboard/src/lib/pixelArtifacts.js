@@ -1,7 +1,6 @@
 const DIGEST = /^[a-f0-9]{64}$/
 export const isSnapshotId = value => typeof value === 'string' && /^site-[a-f0-9]{24}$/.test(value)
 export const isArtifactPath = value => typeof value === 'string' && value.length <= 1664
-  && value.split('/').length <= 13
   && value.split('/').every(part => /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(part))
 
 export async function readBoundedBytes(response, maximum) {
