@@ -524,7 +524,10 @@ class PreviewHandler(http.server.BaseHTTPRequestHandler):
 
     def _target(self) -> tuple[pathlib.Path, bytes] | None:
         parsed = urllib.parse.urlsplit(self.path)
-        if parsed.query or parsed.fragment:
+        # Static snapshot queries (for example style.css?v=2) do not select
+        # different bytes or authority. Match the private relay's path-only
+        # lookup; never interpret a query as a source or filesystem path.
+        if parsed.fragment:
             return None
         try:
             decoded = urllib.parse.unquote(parsed.path, errors="strict")
@@ -534,6 +537,8 @@ class PreviewHandler(http.server.BaseHTTPRequestHandler):
         if len(parts) < 1 or SITE_ID.fullmatch(parts[0]) is None:
             return None
         site_id = parts[0]
+        if parsed.query and len(parts) > 1 and parts[1].startswith("__ods_"):
+            return None
         if self.server.internal_proxy:  # type: ignore[attr-defined]
             expected_host = "portal-preview.internal" if PROFILE_ID is not None else "pixel-preview.internal"
         else:

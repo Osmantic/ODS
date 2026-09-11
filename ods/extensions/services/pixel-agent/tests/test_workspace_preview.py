@@ -427,3 +427,51 @@ def test_unix_http_preview_accepts_only_the_internal_relay_authority():
             finally:
                 server.shutdown()
                 thread.join(timeout=5)
+
+
+def test_http_snapshot_ignores_asset_queries_without_changing_path_or_bytes():
+    with tempfile.TemporaryDirectory() as temporary:
+        root = pathlib.Path(temporary)
+        workspace, previews = root / "workspace", root / "previews"
+        workspace.mkdir(mode=0o700)
+        previews.mkdir(mode=0o700)
+        site = workspace / "site"
+        site.mkdir(mode=0o700)
+        page = b'<link rel="stylesheet" href="style.css?v=2"><script src="app.js?build=abc"></script>'
+        assets = {"index.html": page, "style.css": b"body{color:purple}", "app.js": b"document.title='Ready'"}
+        for name, data in assets.items():
+            (site / name).write_bytes(data)
+            (site / name).chmod(0o600)
+        receipt = MODULE.publish_snapshot(workspace, previews, "site", os.getuid())
+        with MODULE.PreviewHTTPServer(("127.0.0.1", 0), previews) as server:
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            port = server.server_address[1]
+            host = f"{receipt['siteId']}.localhost:{port}"
+
+            def request(path, method="GET", authority=host):
+                connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+                try:
+                    connection.request(method, path, headers={"Host": authority})
+                    response = connection.getresponse()
+                    return response.status, dict(response.getheaders()), response.read()
+                finally:
+                    connection.close()
+
+            try:
+                for name, expected in assets.items():
+                    path = f"/{receipt['siteId']}/{name}?v=2&path=../../secret"
+                    status, headers, body = request(path)
+                    assert status == 200
+                    assert body == expected
+                    assert headers["X-Preview-SHA256"] == hashlib.sha256(expected).hexdigest()
+                    assert headers["Cache-Control"] == "no-store"
+                    assert "form-action 'none'" in headers["Content-Security-Policy"]
+                    status, head, body = request(path, "HEAD")
+                    assert status == 200 and body == b""
+                    assert int(head["Content-Length"]) == len(expected)
+                assert request(f"/{receipt['siteId']}/../secret?v=2")[0] == 404
+                assert request(f"/{receipt['siteId']}/style.css?v=2", authority="wrong.localhost")[0] == 404
+            finally:
+                server.shutdown()
+                thread.join(timeout=5)
