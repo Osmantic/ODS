@@ -36,24 +36,24 @@ function pad2(value) {
 }
 
 function toDateKey(date) {
-  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`
+  return `${date.getUTCFullYear()}-${pad2(date.getUTCMonth() + 1)}-${pad2(date.getUTCDate())}`
 }
 
 function monthRange(anchor = new Date()) {
-  const start = new Date(anchor.getFullYear(), anchor.getMonth(), 1)
-  const end = new Date(anchor.getFullYear(), anchor.getMonth() + 1, 0)
+  const start = new Date(Date.UTC(anchor.getUTCFullYear(), anchor.getUTCMonth(), 1))
+  const end = new Date(Date.UTC(anchor.getUTCFullYear(), anchor.getUTCMonth() + 1, 0))
   return { start: toDateKey(start), end: toDateKey(end), anchor: start }
 }
 
 function addMonths(date, delta) {
-  return new Date(date.getFullYear(), date.getMonth() + delta, 1)
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + delta, 1))
 }
 
 function emptyReport(start, end, detail = null) {
-  const startDate = new Date(`${start}T00:00:00`)
-  const endDate = new Date(`${end}T00:00:00`)
+  const startDate = new Date(`${start}T00:00:00Z`)
+  const endDate = new Date(`${end}T00:00:00Z`)
   const daily = []
-  for (let cursor = new Date(startDate); cursor <= endDate; cursor.setDate(cursor.getDate() + 1)) {
+  for (let cursor = new Date(startDate); cursor <= endDate; cursor.setUTCDate(cursor.getUTCDate() + 1)) {
     daily.push({
       date: toDateKey(cursor),
       spend_usd: 0,
