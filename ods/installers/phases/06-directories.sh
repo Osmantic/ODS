@@ -610,7 +610,15 @@ raise SystemExit(1)' 2>/dev/null && return 0
     LANGFUSE_INIT_PROJECT_ID=$(_phase06_env_hex_secret LANGFUSE_INIT_PROJECT_ID 16)
     LANGFUSE_INIT_USER_EMAIL=$(_env_get LANGFUSE_INIT_USER_EMAIL "admin@ods.local")
     LANGFUSE_INIT_USER_PASSWORD=$(_phase06_env_hex_secret LANGFUSE_INIT_USER_PASSWORD 16)
-    # LLM Model and GGUF settings — preserve user/tier overrides across reruns.
+    # Ensure context size is sufficient for Hermes if enabled (min 64K)
+    if [[ "${ENABLE_HERMES:-false}" == "true" ]]; then
+        _current_ctx=$(_env_get MAX_CONTEXT "${MAX_CONTEXT:-8192}")
+        if [[ "$_current_ctx" -lt 65536 ]]; then
+            MAX_CONTEXT=65536
+            ai_ok "Hermes enabled; raising MAX_CONTEXT to 65536 for stability"
+        fi
+    fi
+    # Preserve other model-related settings
     LLM_MODEL_VALUE=$(_env_get LLM_MODEL "${LLM_MODEL:-}")
     GGUF_FILE_VALUE=$(_env_get GGUF_FILE "${GGUF_FILE:-}")
     
