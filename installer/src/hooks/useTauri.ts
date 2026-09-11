@@ -111,4 +111,4 @@ export const getInstallProgress = () =>
 export const getInstallState = () =>
   invoke<InstallState>("get_install_state");
 
-export const openODSserver = () => invoke("open_ods");
+export const openODSserver = () => invoke<void>("open_ods");
