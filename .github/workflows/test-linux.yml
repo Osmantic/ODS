@@ -304,6 +304,7 @@ jobs:
         run: |
           bash tests/test-linux-install-preflight.sh
           bash tests/test-preflight-dashboard-port.sh
+          bash tests/test-wsl-broken-docker-shim.sh
 
       - name: Installer Simulation Harness
         run: |
