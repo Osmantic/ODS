@@ -92,6 +92,23 @@ terminal:
         if (-not $actual.Contains('  api_key: "sk-test-hermes-runtime"')) {
             throw "API key was not inserted or updated for $($fixture.Name)"
         }
+        if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
+            $acl = Get-Acl -LiteralPath $path
+            if (-not $acl.AreAccessRulesProtected) {
+                throw "Credential file retained inherited access for $($fixture.Name)"
+            }
+            $everyoneSid = New-Object System.Security.Principal.SecurityIdentifier("S-1-1-0")
+            foreach ($rule in $acl.GetAccessRules(
+                $true,
+                $true,
+                [System.Security.Principal.SecurityIdentifier]
+            )) {
+                if ($rule.IdentityReference -eq $everyoneSid -and
+                    $rule.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow) {
+                    throw "Credential file retained an Everyone allow rule for $($fixture.Name)"
+                }
+            }
+        }
     }
 } finally {
     Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue

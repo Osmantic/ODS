@@ -118,10 +118,13 @@ fi
 if grep -q '\[string\]\$ApiKey = ""' "$PHASE" \
    && grep -q 'api_key: `"\$ApiKey`"' "$PHASE" \
    && grep -q -- '-ApiKey \$_hermesApiKey' "$PHASE" \
-   && grep -q -- '-ApiKey \$hermesApiKey' "$MONO"; then
-    pass "Windows persists the Hermes custom-provider API key"
+   && grep -q -- '-ApiKey \$hermesApiKey' "$MONO" \
+   && grep -q 'SetAccessRuleProtection(\$true, \$false)' "$PHASE" \
+   && grep -q 'RemoveAccessRuleSpecific' "$PHASE" \
+   && grep -q 'AreAccessRulesProtected' "$PHASE"; then
+    pass "Windows persists and ACL-restricts the Hermes custom-provider API key"
 else
-    fail "Windows Hermes config patching must persist HERMES_LLM_API_KEY"
+    fail "Windows Hermes config patching must persist and ACL-restrict HERMES_LLM_API_KEY"
 fi
 
 # ---------------------------------------------------------------------------

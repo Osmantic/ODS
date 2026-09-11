@@ -513,10 +513,52 @@ agent:
     }
 
     [System.IO.File]::WriteAllText($Path, $content, $utf8NoBom)
+    if (-not [string]::IsNullOrWhiteSpace($ApiKey) -and
+        [System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
+        try {
+            # data\ is container-writable and receives an inheritable Everyone
+            # grant earlier in this phase. A Hermes config containing the
+            # LiteLLM master key must not retain that broad DACL. Match the
+            # current-user-only protection used for .env, including on
+            # reinstalls where icacls may have made the grant explicit.
+            $secretAcl = Get-Acl -LiteralPath $Path
+            $secretAcl.SetAccessRuleProtection($true, $false)
+            foreach ($existingRule in @($secretAcl.Access)) {
+                $secretAcl.RemoveAccessRuleSpecific($existingRule)
+            }
+            $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+            $currentUserRule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+                $currentUser,
+                "FullControl",
+                "Allow"
+            )
+            $secretAcl.SetAccessRule($currentUserRule)
+            Set-Acl -LiteralPath $Path -AclObject $secretAcl
+        } catch {
+            Write-AIWarn "Could not restrict Hermes credential file permissions: $Path"
+            return $false
+        }
+    }
     $verified = [System.IO.File]::ReadAllText($Path, $utf8NoBom)
     if (-not $verified.Contains("  default: `"$Model`"")) { return $false }
     if (-not $verified.Contains("  base_url: `"$BaseUrl`"")) { return $false }
     if (-not [string]::IsNullOrWhiteSpace($ApiKey) -and -not $verified.Contains("  api_key: `"$ApiKey`"")) { return $false }
+    if (-not [string]::IsNullOrWhiteSpace($ApiKey) -and
+        [System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
+        $verifiedAcl = Get-Acl -LiteralPath $Path
+        if (-not $verifiedAcl.AreAccessRulesProtected) { return $false }
+        $everyoneSid = New-Object System.Security.Principal.SecurityIdentifier("S-1-1-0")
+        foreach ($verifiedRule in $verifiedAcl.GetAccessRules(
+            $true,
+            $true,
+            [System.Security.Principal.SecurityIdentifier]
+        )) {
+            if ($verifiedRule.IdentityReference -eq $everyoneSid -and
+                $verifiedRule.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow) {
+                return $false
+            }
+        }
+    }
     return $true
 }
 
