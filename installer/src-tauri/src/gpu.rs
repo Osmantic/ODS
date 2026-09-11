@@ -33,6 +33,27 @@ pub fn recommend_tier(gpu: &GpuInfo) -> u8 {
 // Windows: try nvidia-smi first, then fall back to WMIC/PowerShell
 // ---------------------------------------------------------------------------
 
+/// Ask PowerShell for the largest video controller and the 64-bit VRAM size
+/// its driver publishes under the display adapter class key.
+///
+/// The registry row is matched to the chosen controller by DriverDesc so a
+/// hybrid laptop cannot pair the iGPU's name with the discrete card's memory.
+/// Both lookups are best-effort: a miss leaves QwMemorySize null, which is
+/// what the AdapterRAM fallback in `windows_vram_mb` is for.
+#[cfg(target_os = "windows")]
+const WMI_GPU_QUERY: &str = concat!(
+    "$c = Get-CimInstance Win32_VideoController | ",
+    "Sort-Object AdapterRAM -Descending | Select-Object -First 1; ",
+    "$qw = Get-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Control",
+    "\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}\\*' ",
+    "-ErrorAction SilentlyContinue | ",
+    "Where-Object { $_.DriverDesc -eq $c.Name } | Select-Object -First 1 ",
+    "-ExpandProperty 'HardwareInformation.qwMemorySize' ",
+    "-ErrorAction SilentlyContinue; ",
+    "[pscustomobject]@{ Name = $c.Name; AdapterRAM = $c.AdapterRAM; ",
+    "DriverVersion = $c.DriverVersion; QwMemorySize = $qw } | ConvertTo-Json",
+);
+
 #[cfg(target_os = "windows")]
 fn detect_windows() -> GpuInfo {
     // Try NVIDIA first
@@ -40,20 +61,29 @@ fn detect_windows() -> GpuInfo {
         return gpu;
     }
 
-    // Fall back to PowerShell WMI query for any GPU
+    // Fall back to a WMI query for any GPU.
+    //
+    // Win32_VideoController.AdapterRAM is a uint32 of *bytes*, so it saturates
+    // at 4 GiB: Windows reports 4293918720 for every card at or above that, so
+    // an 8 GB Arc A770 and a 16 GB RX 7800 both read as "4095 MB". That is
+    // below recommend_tier's 8 GB step, so every non-NVIDIA card large enough
+    // to matter was pinned to the smallest tier on Windows.
+    //
+    // The display class registry key carries a 64-bit qwMemorySize, which is
+    // what Task Manager reads. Prefer it, and keep AdapterRAM as the fallback
+    // for drivers that do not publish it.
     let output = Command::new("powershell")
-        .args([
-            "-NoProfile",
-            "-Command",
-            "Get-CimInstance Win32_VideoController | Select-Object -First 1 Name, AdapterRAM, DriverVersion | ConvertTo-Json",
-        ])
+        .args(["-NoProfile", "-Command", WMI_GPU_QUERY])
         .output();
 
     if let Ok(out) = output {
         let text = String::from_utf8_lossy(&out.stdout);
         if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
             let name = val["Name"].as_str().unwrap_or("Unknown GPU").to_string();
-            let vram = val["AdapterRAM"].as_u64().unwrap_or(0) / (1024 * 1024);
+            let vram = windows_vram_mb(
+                val["QwMemorySize"].as_u64(),
+                val["AdapterRAM"].as_u64(),
+            );
             let driver = val["DriverVersion"].as_str().map(String::from);
             let vendor = classify_vendor(&name);
             return GpuInfo { vendor, name, vram_mb: vram, driver_version: driver };
@@ -61,6 +91,21 @@ fn detect_windows() -> GpuInfo {
     }
 
     GpuInfo { vendor: GpuVendor::None, name: "No GPU detected".into(), vram_mb: 0, driver_version: None }
+}
+
+/// Resolve Windows VRAM in MB from the two sources, preferring the 64-bit one.
+///
+/// Free of any Windows API so it can be tested on any host. `qw_bytes` is the
+/// registry's qwMemorySize; `adapter_ram_bytes` is the uint32 AdapterRAM, used
+/// only when the registry has nothing and reported as it stands — a saturated
+/// value is still a better floor than zero.
+#[cfg(any(target_os = "windows", test))]
+fn windows_vram_mb(qw_bytes: Option<u64>, adapter_ram_bytes: Option<u64>) -> u64 {
+    qw_bytes
+        .filter(|bytes| *bytes > 0)
+        .or(adapter_ram_bytes)
+        .unwrap_or(0)
+        / (1024 * 1024)
 }
 
 // ---------------------------------------------------------------------------
@@ -251,5 +296,46 @@ fn parse_vram_string(s: &str) -> u64 {
         }
     } else {
         0
+    }
+}
+
+#[cfg(test)]
+mod windows_vram_tests {
+    use super::windows_vram_mb;
+
+    /// What AdapterRAM reports for any card at or above 4 GiB.
+    const SATURATED_ADAPTER_RAM: u64 = 4_293_918_720;
+
+    fn gb(n: u64) -> u64 {
+        n * 1024 * 1024 * 1024
+    }
+
+    #[test]
+    fn the_registry_value_wins_over_the_saturated_one() {
+        assert_eq!(
+            windows_vram_mb(Some(gb(16)), Some(SATURATED_ADAPTER_RAM)),
+            16384
+        );
+    }
+
+    #[test]
+    fn a_large_card_is_no_longer_pinned_below_the_first_tier_step() {
+        // The bug: whatever is fitted, AdapterRAM alone reads as a sub-8GB card.
+        let old_path = windows_vram_mb(None, Some(SATURATED_ADAPTER_RAM));
+        assert!(old_path < 8192, "the old path really did under-report");
+
+        let fixed = windows_vram_mb(Some(gb(16)), Some(SATURATED_ADAPTER_RAM));
+        assert!(fixed >= 8192, "a 16GB card must clear the 8GB step");
+    }
+
+    #[test]
+    fn adapter_ram_is_the_fallback_when_the_registry_is_silent() {
+        assert_eq!(windows_vram_mb(None, Some(gb(2))), 2048);
+        assert_eq!(windows_vram_mb(Some(0), Some(gb(2))), 2048);
+    }
+
+    #[test]
+    fn neither_source_means_no_gpu_memory() {
+        assert_eq!(windows_vram_mb(None, None), 0);
     }
 }
