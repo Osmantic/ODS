@@ -13,7 +13,10 @@ const fetchJson = async (url, options = {}) => {
   const c = new AbortController()
   const t = setTimeout(() => c.abort(), options.timeout || 30000)
   try {
-    return await fetch(url, { ...options, signal: c.signal })
+    const response = await fetch(url, { ...options, signal: c.signal })
+    const data = await response.json()
+    if (c.signal.aborted) throw new DOMException('Request timed out', 'AbortError')
+    return { ok: response.ok, status: response.status, data }
   } finally {
     clearTimeout(t)
   }
@@ -133,6 +136,7 @@ export function TemplatePreview({ template, onClose, onApplied }) {
   const [error, setError] = useState(null)
   const [applied, setApplied] = useState(false)
   const [applyResult, setApplyResult] = useState(null)
+  const requestClose = () => { if (!applying) onClose() }
 
   const Icon = ICON_MAP[template.icon] || Package
 
@@ -142,7 +146,7 @@ export function TemplatePreview({ template, onClose, onApplied }) {
     try {
       const res = await fetchJson(`/api/templates/${template.id}/preview`, { method: 'POST' })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      setPreviewData(await res.json())
+      setPreviewData(res.data)
     } catch (err) {
       setError(err.name === 'AbortError' ? 'Request timed out' : 'Failed to load preview')
     } finally {
@@ -151,6 +155,7 @@ export function TemplatePreview({ template, onClose, onApplied }) {
   }
 
   const handleApply = async () => {
+    if (applying) return
     setApplying(true)
     setError(null)
     try {
@@ -159,7 +164,7 @@ export function TemplatePreview({ template, onClose, onApplied }) {
         timeout: TEMPLATE_APPLY_TIMEOUT_MS,
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const data = await res.json()
+      const data = res.data
       setApplyResult(data)
       if (data.failed_services?.length > 0 || data.skipped_services?.length > 0) {
         setApplied('partial')
@@ -184,7 +189,7 @@ export function TemplatePreview({ template, onClose, onApplied }) {
   const changes = previewData?.changes || {}
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={onClose}>
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={requestClose}>
       <div
         className="bg-theme-card border border-theme-border rounded-xl p-6 max-w-lg mx-4 w-full"
         onClick={e => e.stopPropagation()}
@@ -203,7 +208,7 @@ export function TemplatePreview({ template, onClose, onApplied }) {
               <p className="text-xs text-theme-text-muted">{template.description}</p>
             </div>
           </div>
-          <button onClick={onClose} className="text-theme-text-muted hover:text-theme-text transition-colors">
+          <button onClick={requestClose} disabled={applying} className="text-theme-text-muted hover:text-theme-text transition-colors disabled:opacity-50">
             <X size={18} />
           </button>
         </div>
@@ -326,10 +331,12 @@ export function TemplatePreview({ template, onClose, onApplied }) {
         )}
 
         {/* Actions */}
+        {applying && <p role="status" className="mt-4 text-xs text-theme-text-muted">Applying template. Keep this dialog open while the services are prepared.</p>}
         <div className="flex justify-end gap-3 mt-4">
           <button
-            onClick={onClose}
-            className="px-4 py-2 text-sm text-theme-text-muted hover:text-theme-text transition-colors"
+            onClick={requestClose}
+            disabled={applying}
+            className="px-4 py-2 text-sm text-theme-text-muted hover:text-theme-text transition-colors disabled:opacity-50"
           >
             {applied ? 'Close' : 'Cancel'}
           </button>
