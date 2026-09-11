@@ -20,6 +20,36 @@ function create() {
   fireEvent.change(screen.getByLabelText('Prompt name'), {target:{value:'Review'}})
   fireEvent.click(screen.getByRole('button', {name:'Save prompt'}))
 }
+it('searches full prompt text and names without changing stored prompts or inserting automatically', () => {
+  const items = [{id:'a', title:'Review', text:'x'.repeat(170)+'Narrow regression'}, {id:'b', title:'Deployment', text:'Inspect logs'}]
+  const saved = JSON.stringify(items)
+  localStorage.setItem(SAVED_PROMPTS_KEY, saved)
+  const insert = mount()
+  fireEvent.change(screen.getByLabelText('Search saved prompts'), {target:{value:'REGRESSION'}})
+  expect(screen.getByRole('button',{name:'Insert prompt: Review'})).toBeVisible()
+  expect(screen.queryByRole('button',{name:'Insert prompt: Deployment'})).toBeNull()
+  expect(screen.getByRole('status')).toHaveTextContent('1 of 2 prompts')
+  fireEvent.change(screen.getByLabelText('Search saved prompts'), {target:{value:'missing'}})
+  expect(screen.getByText('No prompts match your search.')).toBeVisible()
+  fireEvent.click(screen.getByRole('button',{name:'Clear prompt search'}))
+  expect(screen.getByRole('button',{name:'Insert prompt: Deployment'})).toBeVisible()
+  expect(insert).not.toHaveBeenCalled()
+  expect(localStorage.getItem(SAVED_PROMPTS_KEY)).toBe(saved)
+})
+
+it('reapplies search after an edit and a cross-tab update while preserving the filter', () => {
+  localStorage.setItem(SAVED_PROMPTS_KEY, JSON.stringify([{id:'a', title:'Review', text:'Evidence'}]))
+  mount()
+  fireEvent.change(screen.getByLabelText('Search saved prompts'), {target:{value:'review'}})
+  fireEvent.click(screen.getByRole('button',{name:'Edit prompt: Review'}))
+  fireEvent.change(screen.getByLabelText('Prompt name'),{target:{value:'Inspect'}})
+  fireEvent.click(screen.getByRole('button',{name:'Save prompt'}))
+  expect(screen.getByText('No prompts match your search.')).toBeVisible()
+  localStorage.setItem(SAVED_PROMPTS_KEY, JSON.stringify([{id:'a',title:'Review again',text:'Evidence'}]))
+  fireEvent(window, new StorageEvent('storage',{key:SAVED_PROMPTS_KEY}))
+  expect(screen.getByRole('button',{name:'Insert prompt: Review again'})).toBeVisible()
+  expect(screen.getByLabelText('Search saved prompts')).toHaveValue('review')
+})
 it('saves the current draft, edits it, then explicitly inserts reusable text', () => {
   const insert = mount()
   create()
