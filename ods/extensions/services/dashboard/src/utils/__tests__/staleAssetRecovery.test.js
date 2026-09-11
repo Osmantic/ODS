@@ -76,3 +76,37 @@ describe('stale asset recovery', () => {
     expect(globalThis.sessionStorage.getItem(RECOVERY_KEY)).toBeNull()
   })
 })
+
+describe('browser-denied sessionStorage access', () => {
+  let descriptor
+  beforeEach(() => {
+    descriptor = Object.getOwnPropertyDescriptor(globalThis, 'sessionStorage')
+    Object.defineProperty(globalThis, 'sessionStorage', {configurable:true, get() {
+      throw new globalThis.DOMException('Storage access denied', 'SecurityError')
+    }})
+  })
+  afterEach(() => {Object.defineProperty(globalThis, 'sessionStorage', descriptor)})
+
+  it('leaves stale-asset recovery to the error boundary without an unprotected reload', () => {
+    const reload = vi.fn()
+    expect(recoverFromStaleAsset(new Error('Loading chunk 9 failed'), {reload})).toBe(false)
+    expect(reload).not.toHaveBeenCalled()
+  })
+
+  it('does not replace an unrelated application error with a storage exception', () => {
+    expect(recoverFromStaleAsset(new Error('Render failed'))).toBe(false)
+  })
+
+  it('allows the normal startup cleanup timer to finish', () => {
+    expect(() => clearStaleAssetRecovery()).not.toThrow()
+  })
+
+  it('still supports explicitly provided storage without reading the browser getter', () => {
+    const storage = {getItem:vi.fn(() => null), setItem:vi.fn(), removeItem:vi.fn()}
+    const reload = vi.fn()
+    expect(recoverFromStaleAsset(new Error('Loading chunk 9 failed'), {storage, reload})).toBe(true)
+    clearStaleAssetRecovery(storage)
+    expect(reload).toHaveBeenCalledOnce()
+    expect(storage.removeItem).toHaveBeenCalledWith(RECOVERY_KEY)
+  })
+})
