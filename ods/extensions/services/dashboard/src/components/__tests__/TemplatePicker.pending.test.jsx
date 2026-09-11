@@ -35,7 +35,7 @@ test('unlocks dismissal when the apply response body reaches its deadline', asyn
   await act(async () => fireEvent.click(apply))
   expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled()
   await act(async () => vi.advanceTimersByTimeAsync(30 * 60 * 1000))
-  expect(screen.getByText('Request timed out')).toBeVisible()
+  expect(screen.getByText('Request timed out. Close and check extension status before retrying.')).toBeVisible()
   fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
   expect(screen.queryByRole('dialog')).toBeNull()
 })

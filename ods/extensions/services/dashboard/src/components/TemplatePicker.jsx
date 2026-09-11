@@ -175,7 +175,7 @@ export function TemplatePreview({ template, onClose, onApplied }) {
       }
       onApplied?.()
     } catch (err) {
-      setError(err.name === 'AbortError' ? 'Request timed out' : 'Failed to apply template')
+      setError(err.name === 'AbortError' ? 'Request timed out. Close and check extension status before retrying.' : 'Failed to apply template')
     } finally {
       setApplying(false)
     }
