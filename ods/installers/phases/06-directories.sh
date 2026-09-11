@@ -610,9 +610,30 @@ raise SystemExit(1)' 2>/dev/null && return 0
     LANGFUSE_INIT_PROJECT_ID=$(_phase06_env_hex_secret LANGFUSE_INIT_PROJECT_ID 16)
     LANGFUSE_INIT_USER_EMAIL=$(_env_get LANGFUSE_INIT_USER_EMAIL "admin@ods.local")
     LANGFUSE_INIT_USER_PASSWORD=$(_phase06_env_hex_secret LANGFUSE_INIT_USER_PASSWORD 16)
+    # LLM Model and GGUF settings — preserve user/tier overrides across reruns.
+    LLM_MODEL_VALUE=$(_env_get LLM_MODEL "${LLM_MODEL:-}")
+    GGUF_FILE_VALUE=$(_env_get GGUF_FILE "${GGUF_FILE:-}")
+    
+    # If these are empty, they will be backfilled by the tier-map defaults
+    # passed into this phase from the orchestrator.
+    if [[ -z "$LLM_MODEL_VALUE" ]]; then
+        LLM_MODEL_VALUE="${LLM_MODEL:-}"
+    fi
+    if [[ -z "$GGUF_FILE_VALUE" ]]; then
+        GGUF_FILE_VALUE="${GGUF_FILE:-}"
+    fi
+    
+    # Ensure GGUF_FILE is not hardcoded to a default if a specific model was requested.
+    # This prevents Tiers 1/2/3 from defaulting back to a generic model when
+    # a specific GGUF was already associated with the install.
+    if [[ -n "$LLM_MODEL_VALUE" && -z "$GGUF_FILE_VALUE" ]]; then
+        # We don't auto-assign here; let Phase 12 or the tier-map handle it.
+        :
+    fi
+    
     MODEL_PROFILE_VALUE=$(_env_get MODEL_PROFILE "${MODEL_PROFILE_REQUESTED:-${MODEL_PROFILE:-qwen}}")
-    MODEL_RECOMMENDED_MODEL_VALUE="${LLM_MODEL}"
-    MODEL_RECOMMENDED_GGUF_VALUE="${GGUF_FILE}"
+    MODEL_RECOMMENDED_MODEL_VALUE="${LLM_MODEL_VALUE}"
+    MODEL_RECOMMENDED_GGUF_VALUE="${GGUF_FILE_VALUE}"
     MODEL_RECOMMENDED_CONTEXT_VALUE="${MAX_CONTEXT}"
     EXTERNAL_LLM_URL_VALUE="${EXTERNAL_LLM_URL:-}"
     EXTERNAL_LLM_CONTAINER_URL_VALUE="${EXTERNAL_LLM_CONTAINER_URL:-}"
@@ -939,8 +960,8 @@ TARGET_API_KEY=not-needed
 #=== LLM Settings (llama-server) ===
 MODEL_PROFILE=${MODEL_PROFILE_VALUE}
 # Effective model profile for this hardware: ${MODEL_PROFILE_EFFECTIVE:-qwen}
-LLM_MODEL=${LLM_MODEL}
-GGUF_FILE=${GGUF_FILE}
+LLM_MODEL=${LLM_MODEL_VALUE}
+GGUF_FILE=${GGUF_FILE_VALUE}
 MAX_CONTEXT=${MAX_CONTEXT}
 CTX_SIZE=${MAX_CONTEXT}
 MODEL_RECOMMENDED_MODEL=${MODEL_RECOMMENDED_MODEL_VALUE}
