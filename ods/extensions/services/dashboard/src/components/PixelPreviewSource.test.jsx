@@ -1,4 +1,5 @@
 import { webcrypto, createHash } from 'node:crypto'
+import { Buffer } from 'node:buffer'
 import { render, screen, waitFor } from '@testing-library/react'
 import PixelPreviewSource from './PixelPreviewSource'
 const source = '<!doctype html><button onclick="alert(1)">Click</button>\n```\n<script>bad()</script>'
@@ -75,7 +76,9 @@ it.each(['Dockerfile', 'containers/Containerfile', 'Makefile', 'docs/README', 'L
 })
 
 it('keeps unknown extensionless binary artifacts out of the text inspector', async () => {
-  const bytes = new Uint8Array([0,255,3])
+  // Node 20 WebCrypto expects the Node-realm buffer a real fetch supplies.
+  const bytes = Buffer.alloc(3)
+  bytes.set([0,255,3])
   const file = {path:'app',bytes:3,sha256:createHash('sha256').update(bytes).digest('hex')}
   vi.stubGlobal('fetch',vi.fn(async () => ({ok:true,arrayBuffer:async () => bytes.buffer})))
   const view = render(<PixelPreviewSource preview={preview} file={file}/>)
