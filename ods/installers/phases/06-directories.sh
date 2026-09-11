@@ -204,6 +204,18 @@ else
             fi
         done
     fi
+    # Special case: n8n data dir must be explicitly repaired if it exists,
+    # as it is often created by the container with root ownership on first run
+    # and can block subsequent installer repairs or data migrations.
+    if ! $_phase06_rootless && [[ -d "$INSTALL_DIR/data/n8n" ]]; then
+        _phase06_repair_host_path "$INSTALL_DIR/data/n8n" "n8n data directory" || return 1
+    fi
+    for _cfg_dir in "$INSTALL_DIR"/config/*/; do
+        if [[ -d "$_cfg_dir" ]] && ! [[ -w "$_cfg_dir" ]]; then
+            _phase06_repair_host_path "$_cfg_dir" "container-owned config directory" || return 1
+        fi
+    done
+    fi
     for _cfg_dir in "$INSTALL_DIR"/config/*/; do
         if [[ -d "$_cfg_dir" ]] && ! [[ -w "$_cfg_dir" ]]; then
             _phase06_repair_host_path "$_cfg_dir" "container-owned config directory" || return 1
