@@ -46,8 +46,7 @@ def test_workflow_executions_requires_auth(test_client):
 def test_workflow_enable_authenticated(test_client):
     """POST /api/workflows/{id}/enable with auth → 404 when workflow not in catalog."""
     resp = test_client.post(
-        "/api/workflows/nonexistent-workflow/enable",
-        headers=test_client.auth_headers
+        "/api/workflows/nonexistent-workflow/enable", headers=test_client.auth_headers
     )
     assert resp.status_code == 404
 
@@ -55,8 +54,7 @@ def test_workflow_enable_authenticated(test_client):
 def test_workflow_disable_authenticated(test_client):
     """DELETE /api/workflows/{id} with auth → 404 when workflow not in catalog."""
     resp = test_client.delete(
-        "/api/workflows/nonexistent-workflow",
-        headers=test_client.auth_headers
+        "/api/workflows/nonexistent-workflow", headers=test_client.auth_headers
     )
     assert resp.status_code == 404
 
@@ -65,7 +63,7 @@ def test_workflow_executions_authenticated(test_client):
     """GET /api/workflows/{id}/executions with auth → 404 when workflow not in catalog."""
     resp = test_client.get(
         "/api/workflows/nonexistent-workflow/executions",
-        headers=test_client.auth_headers
+        headers=test_client.auth_headers,
     )
     assert resp.status_code == 404
 
@@ -116,9 +114,14 @@ def test_load_workflow_catalog_valid(tmp_path, monkeypatch):
 
     catalog = {
         "workflows": [
-            {"id": "wf-1", "name": "Test Workflow", "description": "A test", "file": "test.json"}
+            {
+                "id": "wf-1",
+                "name": "Test Workflow",
+                "description": "A test",
+                "file": "test.json",
+            }
         ],
-        "categories": {"automation": {"name": "Automation", "icon": "Cog"}}
+        "categories": {"automation": {"name": "Automation", "icon": "Cog"}},
     }
     catalog_file = tmp_path / "catalog.json"
     catalog_file.write_text(json.dumps(catalog))
@@ -135,7 +138,9 @@ def test_load_workflow_catalog_invalid_inner_types(tmp_path, monkeypatch):
     import routers.workflows as wf_mod
 
     catalog_file = tmp_path / "catalog.json"
-    catalog_file.write_text(json.dumps({"workflows": "not-a-list", "categories": "not-a-dict"}))
+    catalog_file.write_text(
+        json.dumps({"workflows": "not-a-list", "categories": "not-a-dict"})
+    )
     monkeypatch.setattr(wf_mod, "WORKFLOW_CATALOG_FILE", catalog_file)
 
     result = wf_mod.load_workflow_catalog()
@@ -169,6 +174,7 @@ def test_get_n8n_workflows_success(test_client, monkeypatch):
 
     with patch("routers.workflows.aiohttp.ClientSession", return_value=session_mock):
         import asyncio
+
         result = asyncio.run(wf_mod.get_n8n_workflows())
 
     assert len(result) == 1
@@ -186,6 +192,7 @@ def test_get_n8n_workflows_failure(test_client, monkeypatch):
 
     with patch("routers.workflows.aiohttp.ClientSession", return_value=session_mock):
         import asyncio
+
         result = asyncio.run(wf_mod.get_n8n_workflows())
 
     assert result == []
@@ -203,7 +210,9 @@ def test_check_workflow_dependencies_all_healthy(test_client, monkeypatch):
 
     async def mock_health(sid, cfg):
         return ServiceStatus(
-            id=sid, name=cfg["name"], port=cfg["port"],
+            id=sid,
+            name=cfg["name"],
+            port=cfg["port"],
             external_port=cfg.get("external_port", cfg["port"]),
             status="healthy",
         )
@@ -211,9 +220,8 @@ def test_check_workflow_dependencies_all_healthy(test_client, monkeypatch):
     monkeypatch.setattr("helpers.check_service_health", mock_health)
 
     import asyncio
-    result = asyncio.run(
-        wf_mod.check_workflow_dependencies(["llama-server"])
-    )
+
+    result = asyncio.run(wf_mod.check_workflow_dependencies(["llama-server"]))
     # "llama-server" should be checked directly (no alias mapping)
     # Result depends on whether llama-server is in SERVICES
     assert isinstance(result, dict)
@@ -225,17 +233,19 @@ def test_check_workflow_dependencies_with_alias(test_client, monkeypatch):
     from models import ServiceStatus
 
     healthy_status = ServiceStatus(
-        id="llama-server", name="LLM Server", port=8080,
-        external_port=8080, status="healthy",
+        id="llama-server",
+        name="LLM Server",
+        port=8080,
+        external_port=8080,
+        status="healthy",
     )
 
     mock_fn = AsyncMock(return_value=healthy_status)
     monkeypatch.setattr("helpers.check_service_health", mock_fn)
 
     import asyncio
-    result = asyncio.run(
-        wf_mod.check_workflow_dependencies(["ollama"])
-    )
+
+    result = asyncio.run(wf_mod.check_workflow_dependencies(["ollama"]))
     assert result["ollama"] is True
 
 
@@ -245,20 +255,24 @@ def test_check_workflow_dependencies_unhealthy(test_client, monkeypatch):
     from models import ServiceStatus
 
     # Ensure "llama-server" is in SERVICES so the code path actually calls check_service_health
-    monkeypatch.setitem(wf_mod.SERVICES, "llama-server", {"name": "LLM Server", "port": 8080})
+    monkeypatch.setitem(
+        wf_mod.SERVICES, "llama-server", {"name": "LLM Server", "port": 8080}
+    )
 
     unhealthy_status = ServiceStatus(
-        id="llama-server", name="LLM Server", port=8080,
-        external_port=8080, status="down",
+        id="llama-server",
+        name="LLM Server",
+        port=8080,
+        external_port=8080,
+        status="down",
     )
 
     mock_fn = AsyncMock(return_value=unhealthy_status)
     monkeypatch.setattr("helpers.check_service_health", mock_fn)
 
     import asyncio
-    result = asyncio.run(
-        wf_mod.check_workflow_dependencies(["ollama"])
-    )
+
+    result = asyncio.run(wf_mod.check_workflow_dependencies(["ollama"]))
     assert result["ollama"] is False
 
 
@@ -267,6 +281,7 @@ def test_check_workflow_dependencies_unknown_dep(test_client, monkeypatch):
     import routers.workflows as wf_mod
 
     import asyncio
+
     result = asyncio.run(
         wf_mod.check_workflow_dependencies(["totally-unknown-service-xyz"])
     )
@@ -282,6 +297,7 @@ def test_check_workflow_dependencies_uses_cache(test_client, monkeypatch):
 
     cache = {"llama-server": True}
     import asyncio
+
     result = asyncio.run(
         wf_mod.check_workflow_dependencies(["ollama"], health_cache=cache)
     )
@@ -313,6 +329,7 @@ def test_check_n8n_available_success(test_client):
 
     with patch("helpers._get_aio_session", side_effect=fake_get_session):
         import asyncio
+
         result = asyncio.run(wf_mod.check_n8n_available())
 
     assert result is True
@@ -330,6 +347,7 @@ def test_check_n8n_available_failure(test_client):
 
     with patch("helpers._get_aio_session", side_effect=fake_get_session):
         import asyncio
+
         result = asyncio.run(wf_mod.check_n8n_available())
 
     assert result is False
@@ -346,19 +364,23 @@ def test_workflow_categories_requires_auth(test_client):
     assert resp.status_code == 401
 
 
-def test_workflow_categories_returns_catalog_categories(test_client, tmp_path, monkeypatch):
+def test_workflow_categories_returns_catalog_categories(
+    test_client, tmp_path, monkeypatch
+):
     """GET /api/workflows/categories → 200, returns categories from catalog."""
     import routers.workflows as wf_mod
 
     catalog = {
         "workflows": [],
-        "categories": {"automation": {"name": "Automation", "icon": "Cog"}}
+        "categories": {"automation": {"name": "Automation", "icon": "Cog"}},
     }
     catalog_file = tmp_path / "catalog.json"
     catalog_file.write_text(json.dumps(catalog))
     monkeypatch.setattr(wf_mod, "WORKFLOW_CATALOG_FILE", catalog_file)
 
-    resp = test_client.get("/api/workflows/categories", headers=test_client.auth_headers)
+    resp = test_client.get(
+        "/api/workflows/categories", headers=test_client.auth_headers
+    )
     assert resp.status_code == 200
     data = resp.json()
     assert "categories" in data
@@ -392,7 +414,9 @@ def test_n8n_status_available(test_client):
         return session_mock
 
     with patch("helpers._get_aio_session", side_effect=fake_get_session):
-        resp = test_client.get("/api/workflows/n8n/status", headers=test_client.auth_headers)
+        resp = test_client.get(
+            "/api/workflows/n8n/status", headers=test_client.auth_headers
+        )
 
     assert resp.status_code == 200
     data = resp.json()
@@ -409,7 +433,9 @@ def test_n8n_status_unavailable(test_client):
         return session_mock
 
     with patch("helpers._get_aio_session", side_effect=fake_get_session):
-        resp = test_client.get("/api/workflows/n8n/status", headers=test_client.auth_headers)
+        resp = test_client.get(
+            "/api/workflows/n8n/status", headers=test_client.auth_headers
+        )
 
     assert resp.status_code == 200
     data = resp.json()
@@ -457,23 +483,35 @@ def test_workflow_enable_missing_deps(test_client, tmp_path, monkeypatch):
 
     catalog = {
         "workflows": [
-            {"id": "dep-wf", "name": "Dep Workflow", "description": "needs llama",
-             "file": "dep-wf.json", "dependencies": ["llama-server"]}
+            {
+                "id": "dep-wf",
+                "name": "Dep Workflow",
+                "description": "needs llama",
+                "file": "dep-wf.json",
+                "dependencies": ["llama-server"],
+            }
         ],
-        "categories": {}
+        "categories": {},
     }
     catalog_file = tmp_path / "catalog.json"
     catalog_file.write_text(json.dumps(catalog))
     monkeypatch.setattr(wf_mod, "WORKFLOW_CATALOG_FILE", catalog_file)
 
     # Ensure "llama-server" is in SERVICES so the code path actually calls check_service_health
-    monkeypatch.setitem(wf_mod.SERVICES, "llama-server", {"name": "LLM Server", "port": 8080})
+    monkeypatch.setitem(
+        wf_mod.SERVICES, "llama-server", {"name": "LLM Server", "port": 8080}
+    )
 
     unhealthy_status = ServiceStatus(
-        id="llama-server", name="LLM Server", port=8080,
-        external_port=8080, status="down",
+        id="llama-server",
+        name="LLM Server",
+        port=8080,
+        external_port=8080,
+        status="down",
     )
-    monkeypatch.setattr("helpers.check_service_health", AsyncMock(return_value=unhealthy_status))
+    monkeypatch.setattr(
+        "helpers.check_service_health", AsyncMock(return_value=unhealthy_status)
+    )
 
     resp = test_client.post(
         "/api/workflows/dep-wf/enable",
@@ -494,10 +532,15 @@ def test_workflow_enable_file_not_found(test_client, tmp_path, monkeypatch):
 
     catalog = {
         "workflows": [
-            {"id": "file-wf", "name": "File Workflow", "description": "no file",
-             "file": "missing.json", "dependencies": []}
+            {
+                "id": "file-wf",
+                "name": "File Workflow",
+                "description": "no file",
+                "file": "missing.json",
+                "dependencies": [],
+            }
         ],
-        "categories": {}
+        "categories": {},
     }
     catalog_file = tmp_path / "catalog.json"
     catalog_file.write_text(json.dumps(catalog))
@@ -528,7 +571,9 @@ def test_workflow_disable_post_requires_auth(test_client):
 
 def test_workflow_disable_post_not_in_catalog(test_client):
     """POST /api/workflows/{id}/disable → 404 when workflow not in catalog."""
-    with patch("routers.workflows.get_n8n_workflows", new_callable=AsyncMock, return_value=[]):
+    with patch(
+        "routers.workflows.get_n8n_workflows", new_callable=AsyncMock, return_value=[]
+    ):
         resp = test_client.post(
             "/api/workflows/nonexistent/disable",
             headers=test_client.auth_headers,
@@ -542,16 +587,23 @@ def test_workflow_disable_post_not_installed(test_client, tmp_path, monkeypatch)
 
     catalog = {
         "workflows": [
-            {"id": "dis-wf", "name": "Disable Me", "description": "test",
-             "file": "dis.json", "dependencies": []}
+            {
+                "id": "dis-wf",
+                "name": "Disable Me",
+                "description": "test",
+                "file": "dis.json",
+                "dependencies": [],
+            }
         ],
-        "categories": {}
+        "categories": {},
     }
     catalog_file = tmp_path / "catalog.json"
     catalog_file.write_text(json.dumps(catalog))
     monkeypatch.setattr(wf_mod, "WORKFLOW_CATALOG_FILE", catalog_file)
 
-    with patch("routers.workflows.get_n8n_workflows", new_callable=AsyncMock, return_value=[]):
+    with patch(
+        "routers.workflows.get_n8n_workflows", new_callable=AsyncMock, return_value=[]
+    ):
         resp = test_client.post(
             "/api/workflows/dis-wf/disable",
             headers=test_client.auth_headers,
@@ -571,16 +623,23 @@ def test_workflow_executions_not_installed(test_client, tmp_path, monkeypatch):
 
     catalog = {
         "workflows": [
-            {"id": "exec-wf", "name": "Exec Workflow", "description": "test",
-             "file": "exec.json", "dependencies": []}
+            {
+                "id": "exec-wf",
+                "name": "Exec Workflow",
+                "description": "test",
+                "file": "exec.json",
+                "dependencies": [],
+            }
         ],
-        "categories": {}
+        "categories": {},
     }
     catalog_file = tmp_path / "catalog.json"
     catalog_file.write_text(json.dumps(catalog))
     monkeypatch.setattr(wf_mod, "WORKFLOW_CATALOG_FILE", catalog_file)
 
-    with patch("routers.workflows.get_n8n_workflows", new_callable=AsyncMock, return_value=[]):
+    with patch(
+        "routers.workflows.get_n8n_workflows", new_callable=AsyncMock, return_value=[]
+    ):
         resp = test_client.get(
             "/api/workflows/exec-wf/executions",
             headers=test_client.auth_headers,
@@ -597,10 +656,15 @@ def test_workflow_executions_installed(test_client, tmp_path, monkeypatch):
 
     catalog = {
         "workflows": [
-            {"id": "exec-wf", "name": "Exec Workflow", "description": "test",
-             "file": "exec.json", "dependencies": []}
+            {
+                "id": "exec-wf",
+                "name": "Exec Workflow",
+                "description": "test",
+                "file": "exec.json",
+                "dependencies": [],
+            }
         ],
-        "categories": {}
+        "categories": {},
     }
     catalog_file = tmp_path / "catalog.json"
     catalog_file.write_text(json.dumps(catalog))
@@ -611,7 +675,11 @@ def test_workflow_executions_installed(test_client, tmp_path, monkeypatch):
     executions_data = {"data": [{"id": "100", "finished": True, "mode": "trigger"}]}
 
     # Mock get_n8n_workflows to return our installed workflow
-    with patch("routers.workflows.get_n8n_workflows", new_callable=AsyncMock, return_value=n8n_workflows):
+    with patch(
+        "routers.workflows.get_n8n_workflows",
+        new_callable=AsyncMock,
+        return_value=n8n_workflows,
+    ):
         # Mock the aiohttp session for the executions API call
         resp_mock = AsyncMock()
         resp_mock.status = 200
@@ -626,7 +694,9 @@ def test_workflow_executions_installed(test_client, tmp_path, monkeypatch):
         session_mock.__aenter__ = AsyncMock(return_value=session_mock)
         session_mock.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("routers.workflows.aiohttp.ClientSession", return_value=session_mock):
+        with patch(
+            "routers.workflows.aiohttp.ClientSession", return_value=session_mock
+        ):
             resp = test_client.get(
                 "/api/workflows/exec-wf/executions",
                 headers=test_client.auth_headers,
@@ -639,9 +709,73 @@ def test_workflow_executions_installed(test_client, tmp_path, monkeypatch):
     assert len(data["executions"]) == 1
 
 
-# ---------------------------------------------------------------------------
-# /api/workflows/{id}/enable — full import to n8n
-# ---------------------------------------------------------------------------
+def test_workflow_enable_idempotent(test_client, tmp_path, monkeypatch):
+    """POST /api/workflows/{id}/enable → 200 and activates existing if name matches, no duplicate POST."""
+    import routers.workflows as wf_mod
+
+    catalog = {
+        "workflows": [
+            {
+                "id": "idem-wf",
+                "name": "Idempotent Workflow",
+                "description": "test",
+                "file": "idem.json",
+                "dependencies": [],
+            }
+        ],
+        "categories": {},
+    }
+    catalog_file = tmp_path / "catalog.json"
+    catalog_file.write_text(json.dumps(catalog))
+    monkeypatch.setattr(wf_mod, "WORKFLOW_CATALOG_FILE", catalog_file)
+
+    workflow_dir = tmp_path / "workflows"
+    workflow_dir.mkdir()
+    (workflow_dir / "idem.json").write_text(
+        json.dumps({"name": "Idempotent Workflow", "nodes": []})
+    )
+    monkeypatch.setattr(wf_mod, "WORKFLOW_DIR", workflow_dir)
+
+    # Mock existing workflow in n8n
+    n8n_workflows = [
+        {"id": "n8n-exist", "name": "Idempotent Workflow", "active": False}
+    ]
+
+    # Mocks for n8n API
+    activate_resp = AsyncMock()
+    activate_resp.status = 200
+
+    activate_ctx = AsyncMock()
+    activate_ctx.__aenter__ = AsyncMock(return_value=activate_resp)
+    activate_ctx.__aexit__ = AsyncMock(return_value=False)
+
+    session_mock = AsyncMock()
+    session_mock.patch = MagicMock(return_value=activate_ctx)
+    session_mock.post = MagicMock()  # Should NOT be called
+    session_mock.__aenter__ = AsyncMock(return_value=session_mock)
+    session_mock.__aexit__ = AsyncMock(return_value=False)
+
+    with (
+        patch(
+            "routers.workflows.get_n8n_workflows",
+            new_callable=AsyncMock,
+            return_value=n8n_workflows,
+        ),
+        patch("routers.workflows.aiohttp.ClientSession", return_value=session_mock),
+    ):
+        resp = test_client.post(
+            "/api/workflows/idem-wf/enable",
+            headers=test_client.auth_headers,
+        )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["n8nId"] == "n8n-exist"
+    assert data["activated"] is True
+    assert "already installed" in data["message"]
+
+    # Critical: verify that session.post was NOT called (no duplicate creation)
+    session_mock.post.assert_not_called()
 
 
 def test_workflow_enable_success(test_client, tmp_path, monkeypatch):
@@ -650,10 +784,15 @@ def test_workflow_enable_success(test_client, tmp_path, monkeypatch):
 
     catalog = {
         "workflows": [
-            {"id": "ok-wf", "name": "OK Workflow", "description": "test",
-             "file": "ok-wf.json", "dependencies": []}
+            {
+                "id": "ok-wf",
+                "name": "OK Workflow",
+                "description": "test",
+                "file": "ok-wf.json",
+                "dependencies": [],
+            }
         ],
-        "categories": {}
+        "categories": {},
     }
     catalog_file = tmp_path / "catalog.json"
     catalog_file.write_text(json.dumps(catalog))
@@ -661,7 +800,9 @@ def test_workflow_enable_success(test_client, tmp_path, monkeypatch):
 
     workflow_dir = tmp_path / "workflows"
     workflow_dir.mkdir()
-    (workflow_dir / "ok-wf.json").write_text(json.dumps({"name": "OK Workflow", "nodes": []}))
+    (workflow_dir / "ok-wf.json").write_text(
+        json.dumps({"name": "OK Workflow", "nodes": []})
+    )
     monkeypatch.setattr(wf_mod, "WORKFLOW_DIR", workflow_dir)
 
     # Mock n8n POST (create) → 201 with id
@@ -706,10 +847,15 @@ def test_workflow_enable_n8n_error(test_client, tmp_path, monkeypatch):
 
     catalog = {
         "workflows": [
-            {"id": "err-wf", "name": "Err Workflow", "description": "test",
-             "file": "err-wf.json", "dependencies": []}
+            {
+                "id": "err-wf",
+                "name": "Err Workflow",
+                "description": "test",
+                "file": "err-wf.json",
+                "dependencies": [],
+            }
         ],
-        "categories": {}
+        "categories": {},
     }
     catalog_file = tmp_path / "catalog.json"
     catalog_file.write_text(json.dumps(catalog))
@@ -748,10 +894,15 @@ def test_workflow_enable_n8n_unreachable(test_client, tmp_path, monkeypatch):
 
     catalog = {
         "workflows": [
-            {"id": "net-wf", "name": "Net Workflow", "description": "test",
-             "file": "net-wf.json", "dependencies": []}
+            {
+                "id": "net-wf",
+                "name": "Net Workflow",
+                "description": "test",
+                "file": "net-wf.json",
+                "dependencies": [],
+            }
         ],
-        "categories": {}
+        "categories": {},
     }
     catalog_file = tmp_path / "catalog.json"
     catalog_file.write_text(json.dumps(catalog))
@@ -787,10 +938,15 @@ def test_workflow_disable_success(test_client, tmp_path, monkeypatch):
 
     catalog = {
         "workflows": [
-            {"id": "rm-wf", "name": "Remove Me", "description": "test",
-             "file": "rm.json", "dependencies": []}
+            {
+                "id": "rm-wf",
+                "name": "Remove Me",
+                "description": "test",
+                "file": "rm.json",
+                "dependencies": [],
+            }
         ],
-        "categories": {}
+        "categories": {},
     }
     catalog_file = tmp_path / "catalog.json"
     catalog_file.write_text(json.dumps(catalog))
@@ -810,8 +966,14 @@ def test_workflow_disable_success(test_client, tmp_path, monkeypatch):
     session_mock.__aenter__ = AsyncMock(return_value=session_mock)
     session_mock.__aexit__ = AsyncMock(return_value=False)
 
-    with patch("routers.workflows.get_n8n_workflows", new_callable=AsyncMock, return_value=n8n_workflows), \
-         patch("routers.workflows.aiohttp.ClientSession", return_value=session_mock):
+    with (
+        patch(
+            "routers.workflows.get_n8n_workflows",
+            new_callable=AsyncMock,
+            return_value=n8n_workflows,
+        ),
+        patch("routers.workflows.aiohttp.ClientSession", return_value=session_mock),
+    ):
         resp = test_client.post(
             "/api/workflows/rm-wf/disable",
             headers=test_client.auth_headers,
@@ -832,10 +994,15 @@ def test_workflow_executions_n8n_error(test_client, tmp_path, monkeypatch):
 
     catalog = {
         "workflows": [
-            {"id": "ex-wf", "name": "Ex Workflow", "description": "test",
-             "file": "ex.json", "dependencies": []}
+            {
+                "id": "ex-wf",
+                "name": "Ex Workflow",
+                "description": "test",
+                "file": "ex.json",
+                "dependencies": [],
+            }
         ],
-        "categories": {}
+        "categories": {},
     }
     catalog_file = tmp_path / "catalog.json"
     catalog_file.write_text(json.dumps(catalog))
@@ -848,8 +1015,14 @@ def test_workflow_executions_n8n_error(test_client, tmp_path, monkeypatch):
     session_mock.__aenter__ = AsyncMock(return_value=session_mock)
     session_mock.__aexit__ = AsyncMock(return_value=False)
 
-    with patch("routers.workflows.get_n8n_workflows", new_callable=AsyncMock, return_value=n8n_workflows), \
-         patch("routers.workflows.aiohttp.ClientSession", return_value=session_mock):
+    with (
+        patch(
+            "routers.workflows.get_n8n_workflows",
+            new_callable=AsyncMock,
+            return_value=n8n_workflows,
+        ),
+        patch("routers.workflows.aiohttp.ClientSession", return_value=session_mock),
+    ):
         resp = test_client.get(
             "/api/workflows/ex-wf/executions",
             headers=test_client.auth_headers,
@@ -872,20 +1045,33 @@ def test_workflows_with_matching_n8n(test_client, tmp_path, monkeypatch):
 
     catalog = {
         "workflows": [
-            {"id": "chat-wf", "name": "Chat Assistant", "description": "Chat bot",
-             "file": "chat.json", "dependencies": [],
-             "icon": "MessageSquare", "category": "general",
-             "featured": True, "setupTime": "~1 min",
-             "diagram": {"nodes": 3}}
+            {
+                "id": "chat-wf",
+                "name": "Chat Assistant",
+                "description": "Chat bot",
+                "file": "chat.json",
+                "dependencies": [],
+                "icon": "MessageSquare",
+                "category": "general",
+                "featured": True,
+                "setupTime": "~1 min",
+                "diagram": {"nodes": 3},
+            }
         ],
-        "categories": {"general": {"name": "General", "icon": "Cog"}}
+        "categories": {"general": {"name": "General", "icon": "Cog"}},
     }
     catalog_file = tmp_path / "catalog.json"
     catalog_file.write_text(json.dumps(catalog))
     monkeypatch.setattr(wf_mod, "WORKFLOW_CATALOG_FILE", catalog_file)
 
-    n8n_workflows = [{"id": "55", "name": "Chat Assistant", "active": True,
-                       "statistics": {"executions": {"total": 42}}}]
+    n8n_workflows = [
+        {
+            "id": "55",
+            "name": "Chat Assistant",
+            "active": True,
+            "statistics": {"executions": {"total": 42}},
+        }
+    ]
 
     resp_mock = AsyncMock()
     resp_mock.status = 200
@@ -913,7 +1099,9 @@ def test_workflows_with_matching_n8n(test_client, tmp_path, monkeypatch):
     assert wf["featured"] is True
 
 
-def test_workflow_enable_rejects_path_traversal_in_catalog_file(test_client, monkeypatch):
+def test_workflow_enable_rejects_path_traversal_in_catalog_file(
+    test_client, monkeypatch
+):
     """A catalog 'file' that escapes WORKFLOW_DIR via .. must be refused by
     the is_relative_to containment guard, not resolved and imported."""
     import routers.workflows as wf_mod
@@ -921,15 +1109,21 @@ def test_workflow_enable_rejects_path_traversal_in_catalog_file(test_client, mon
     async def _no_missing_deps(*args, **kwargs):
         return {}
 
-    monkeypatch.setattr(wf_mod, "load_workflow_catalog", lambda: {
-        "workflows": [{
-            "id": "evil-workflow",
-            "name": "Evil",
-            "file": "../n8n-evil/pwned.json",
-            "dependencies": [],
-        }],
-        "categories": {},
-    })
+    monkeypatch.setattr(
+        wf_mod,
+        "load_workflow_catalog",
+        lambda: {
+            "workflows": [
+                {
+                    "id": "evil-workflow",
+                    "name": "Evil",
+                    "file": "../n8n-evil/pwned.json",
+                    "dependencies": [],
+                }
+            ],
+            "categories": {},
+        },
+    )
     monkeypatch.setattr(wf_mod, "check_workflow_dependencies", _no_missing_deps)
 
     resp = test_client.post(
