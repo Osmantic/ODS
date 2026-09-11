@@ -156,16 +156,11 @@ pub fn run_install(
         let _ = s.save();
         Ok(())
     } else {
-        let detail = stderr_lines
-            .iter()
-            .rev()
-            .take(10)
-            .cloned()
-            .collect::<Vec<String>>()
-            .into_iter()
-            .rev()
-            .collect::<Vec<String>>()
-            .join("\n");
+        let detail = if stderr_lines.len() > 10 {
+            stderr_lines[stderr_lines.len() - 10..].join("\n")
+        } else {
+            stderr_lines.join("\n")
+        };
         if detail.is_empty() {
             Err("Installation failed. Check logs for details.".into())
         } else {
