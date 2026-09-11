@@ -4,6 +4,8 @@ use serde::Serialize;
 use std::sync::Mutex;
 
 const ALLOWED_FEATURES: &[&str] = &["voice", "workflows", "rag", "image_gen", "all"];
+const ODS_SERVER_URL: &str = "http://localhost:3000";
+const BROWSER_OPEN_ERROR: &str = "Failed to open browser";
 
 // ---- System Check ----
 
@@ -247,27 +249,26 @@ pub fn get_install_state() -> InstallState {
 
 #[tauri::command]
 pub fn open_ods() -> Result<(), String> {
-    let url = "http://localhost:3000";
     #[cfg(target_os = "windows")]
     {
         std::process::Command::new("cmd")
-            .args(["/C", "start", url])
+            .args(["/C", "start", ODS_SERVER_URL])
             .spawn()
-            .map_err(|e| format!("Failed to open browser: {}", e))?;
+            .map_err(|e| format!("{}: {}", BROWSER_OPEN_ERROR, e))?;
     }
     #[cfg(target_os = "macos")]
     {
         std::process::Command::new("open")
-            .arg(url)
+            .arg(ODS_SERVER_URL)
             .spawn()
-            .map_err(|e| format!("Failed to open browser: {}", e))?;
+            .map_err(|e| format!("{}: {}", BROWSER_OPEN_ERROR, e))?;
     }
     #[cfg(target_os = "linux")]
     {
         std::process::Command::new("xdg-open")
-            .arg(url)
+            .arg(ODS_SERVER_URL)
             .spawn()
-            .map_err(|e| format!("Failed to open browser: {}", e))?;
+            .map_err(|e| format!("{}: {}", BROWSER_OPEN_ERROR, e))?;
     }
     Ok(())
 }
