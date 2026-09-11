@@ -198,7 +198,13 @@ async def chat(request: ChatRequest, api_key: str = Depends(verify_api_key)):
         system_prompt = await asyncio.to_thread(get_active_persona_prompt)
 
     _llm = SERVICES.get("llama-server", {})
-    llm_url = os.environ.get("OLLAMA_URL", f"http://{_llm.get('host', 'llama-server')}:{_llm.get('port', 0)}")
+    llm_url = (read_live_env_value("LLM_API_URL") or read_live_env_value(
+        "OLLAMA_URL", f"http://{_llm.get('host', 'llama-server')}:{_llm.get('port', 0)}",
+    )).strip().rstrip("/")
+    api_path = "/" + (read_live_env_value("LLM_API_BASE_PATH", "/v1").strip() or "/v1").strip("/")
+    # Accept either a host root or a complete OpenAI-compatible API base.
+    if not llm_url.endswith(("/v1", api_path)):
+        llm_url += api_path.rstrip("/")
     model = read_live_env_value("LLM_MODEL", "qwen3-coder-next")
 
     payload = {
@@ -209,8 +215,7 @@ async def chat(request: ChatRequest, api_key: str = Depends(verify_api_key)):
 
     try:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
-            _api_path = os.environ.get("LLM_API_BASE_PATH", "/v1")
-            async with session.post(f"{llm_url}{_api_path}/chat/completions", json=payload, headers={"Content-Type": "application/json"}) as resp:
+            async with session.post(f"{llm_url}/chat/completions", json=payload, headers={"Content-Type": "application/json"}) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     choices = data.get("choices") or [{}]
