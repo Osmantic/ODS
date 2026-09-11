@@ -204,6 +204,18 @@ else
             fi
         done
     fi
+    # Special case: n8n data dir must be explicitly repaired if it exists,
+    # as it is often created by the container with root ownership on first run
+    # and can block subsequent installer repairs or data migrations.
+    if ! $_phase06_rootless && [[ -d "$INSTALL_DIR/data/n8n" ]]; then
+        _phase06_repair_host_path "$INSTALL_DIR/data/n8n" "n8n data directory" || return 1
+    fi
+    for _cfg_dir in "$INSTALL_DIR"/config/*/; do
+        if [[ -d "$_cfg_dir" ]] && ! [[ -w "$_cfg_dir" ]]; then
+            _phase06_repair_host_path "$_cfg_dir" "container-owned config directory" || return 1
+        fi
+    done
+    fi
     for _cfg_dir in "$INSTALL_DIR"/config/*/; do
         if [[ -d "$_cfg_dir" ]] && ! [[ -w "$_cfg_dir" ]]; then
             _phase06_repair_host_path "$_cfg_dir" "container-owned config directory" || return 1
@@ -570,6 +582,11 @@ raise SystemExit(1)' 2>/dev/null && return 0
     if [[ -z "$_token_spy_key_default" ]]; then
         _token_spy_key_default=$(_phase06_generate_hex_secret 32)
     fi
+    # Ensure the key in the text file matches the one in .env on reruns
+    if [[ -n "$_token_spy_key_default" ]]; then
+        mkdir -p "$INSTALL_DIR/data/token-spy"
+        printf '%s' "$_token_spy_key_default" > "$INSTALL_DIR/data/token-spy/token-spy-api-key.txt"
+    fi
     TOKEN_SPY_API_KEY=$(_env_get TOKEN_SPY_API_KEY "$_token_spy_key_default")
     unset _token_spy_key_default
     OPENCODE_SERVER_PASSWORD=$(_env_get OPENCODE_SERVER_PASSWORD "$(openssl rand -base64 16 2>/dev/null || head -c 16 /dev/urandom | base64)")
@@ -806,8 +823,19 @@ raise SystemExit(1)' 2>/dev/null && return 0
         _default_stt_model="Systran/faster-whisper-base"
     fi
     AUDIO_STT_MODEL=$(_env_get AUDIO_STT_MODEL "${AUDIO_STT_MODEL:-$_default_stt_model}")
+    # RAG model profile updates must be preserved on reruns.
+    # If EMBEDDING_MODEL was changed by the user or by a tier update, 
+    # the associated RAG_EMBEDDING_MODEL and related configs must be 
+    # synchronized to avoid mismatch between the model used by 
+    # embeddings-server and the one expected by RAG.
     EMBEDDING_MODEL_VALUE=$(_env_get EMBEDDING_MODEL "${EMBEDDING_MODEL:-BAAI/bge-base-en-v1.5}")
     RAG_EMBEDDING_MODEL_VALUE=$(_env_get_preserve_empty RAG_EMBEDDING_MODEL "${RAG_EMBEDDING_MODEL:-}")
+    
+    # Sync RAG model if it's currently empty or matches the default but EMBEDDING_MODEL changed
+    if [[ -z "$RAG_EMBEDDING_MODEL_VALUE" ]]; then
+        RAG_EMBEDDING_MODEL_VALUE="$EMBEDDING_MODEL_VALUE"
+    fi
+    
     RAG_OPENAI_API_BASE_URL_VALUE=$(_env_get_preserve_empty RAG_OPENAI_API_BASE_URL "${RAG_OPENAI_API_BASE_URL:-}")
     RAG_OPENAI_API_KEY_VALUE=$(_env_get_preserve_empty RAG_OPENAI_API_KEY "${RAG_OPENAI_API_KEY:-}")
     EMBEDDINGS_MEMORY_LIMIT_VALUE=$(_env_get EMBEDDINGS_MEMORY_LIMIT "${EMBEDDINGS_MEMORY_LIMIT:-4G}")
@@ -1103,10 +1131,17 @@ WEBUI_AUTH=${WEBUI_AUTH}
 ENABLE_WEB_SEARCH=${ENABLE_WEB_SEARCH:-true}
 WEB_SEARCH_ENGINE=searxng
 
-#=== n8n Settings ===
-N8N_HOST=localhost
-N8N_WEBHOOK_URL=http://localhost:5678
-TIMEZONE=${SYSTEM_TZ:-UTC}
+    #=== n8n Settings ===
+    N8N_HOST=$(if [[ "$BIND_ADDRESS" == "0.0.0.0" && -n "$HOST_LAN_IP" ]]; then echo "$HOST_LAN_IP"; else echo "localhost"; fi)
+    N8N_WEBHOOK_URL=$(if [[ "$BIND_ADDRESS" == "0.0.0.0" && -n "$HOST_LAN_IP" ]]; then echo "http://${HOST_LAN_IP}:5678"; else echo "http://localhost:5678"; fi)
+    # Fix: ensure N8N_WEBHOOK_URL is not hardcoded to localhost when LAN IP is available.
+    # The logic above handles it, but some legacy versions had a hardcoded fallback.
+    # We explicitly verify it here to ensure no regressions.
+    if [[ "$BIND_ADDRESS" == "0.0.0.0" && -n "$HOST_LAN_IP" && "$N8N_WEBHOOK_URL" == *"localhost"* ]]; then
+        N8N_WEBHOOK_URL="http://${HOST_LAN_IP}:5678"
+    fi
+    TIMEZONE=${SYSTEM_TZ:-UTC}
+
 
 #=== Langfuse (LLM Observability) ===
 LANGFUSE_ENABLED=${LANGFUSE_ENABLED}
