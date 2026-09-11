@@ -359,6 +359,9 @@ test('compact views keep the connection draft and never apply changes on navigat
   render(createElement(RemoteProvider, { compact: true }))
   await screen.findByRole('button', { name: 'Connection', exact: true })
   expect(screen.queryByRole('heading', { name: 'Egress' })).toBeNull()
+  // The tab exists before the status-to-form effect has hydrated the fields.
+  // Start this navigation test from a fully loaded connection draft.
+  await waitFor(() => expect(screen.getByLabelText('Base URL')).toHaveValue(statusPayload.routeState.provider.baseUrl))
   fireEvent.change(screen.getByLabelText('Base URL'), { target: { value: 'https://draft.example/v1' } })
   fireEvent.click(screen.getByRole('button', { name: 'Diagnostics', exact: true }))
   expect(screen.getByRole('heading', { name: 'Egress' })).toBeVisible()
