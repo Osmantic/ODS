@@ -478,7 +478,9 @@ function loadStoredChat(selected) {
       chatId: stored.chatId, messages, preview,
       contextStart: Number.isInteger(stored.contextStart) && stored.contextStart >= 0 && stored.contextStart <= messages.length ? stored.contextStart : 0,
       workspaceOpen: stored.workspaceOpen !== false && (stored.workspaceOpen === true || Boolean(preview)),
-      draft: typeof stored.draft === 'string' ? stored.draft.slice(0, MAX_INPUT_LEN) : '',
+      // The send limit must not truncate unsent text when restoring a draft.
+      // The composer keeps sending disabled until the user shortens it.
+      draft: typeof stored.draft === 'string' ? stored.draft : '',
       requestId: SAFE_CHAT_ID.test(stored.requestId || '') ? stored.requestId : null,
       interrupted: stored.inFlight === true || stored.interrupted === true,
     }
