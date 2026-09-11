@@ -29,7 +29,12 @@ export function ThemeProvider({ children }) {
       const revision = ++galleryRevision.current
       return readCustomWallpapers().then(rows => {
         if (!active || revision !== galleryRevision.current) return
-        setCustom(rows)
+        setCustom(previous => {
+          // Stored records are immutable: imports allocate new IDs. IndexedDB
+          // clones Blobs on reads; retain live resources for unchanged IDs.
+          const existing = new Map(previous.map(row => [row.id,row]))
+          return rows.map(row => existing.get(row.id) ?? row)
+        })
         setWallpaperError('')
         setThemeState(previous => isCustomWallpaper(previous) && !rows.some(row => row.id === previous) ? DEFAULT_THEME : previous)
       }).catch(error => { if (active && revision === galleryRevision.current) setWallpaperError(error.message) })
