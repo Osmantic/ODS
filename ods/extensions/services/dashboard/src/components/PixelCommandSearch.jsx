@@ -45,6 +45,9 @@ export default function PixelCommandSearch({ onInsert, onNewTask }) {
     { title: 'Research with evidence', detail: 'Draft a research request with citations', icon: Globe2, run: () => onInsert('Research this question using current sources, inline citations, and explicit evidence-versus-inference labels.') },
     ...chats.map(chat => ({ title: conversationTitle(chat), detail: `${chat.messages.filter(item => item.role === 'user').length} turns · Saved locally`, excerpt:conversationExcerpt(chat, query), icon: MessageSquare, run: () => window.dispatchEvent(new CustomEvent(SELECT_EVENT, { detail: chat.chatId })) })),
   ].filter(item => item.excerpt || `${item.title} ${item.detail}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()))
+  useEffect(() => {
+    if (dialog.current?.open) dialog.current.querySelector('.pixel-command-results .is-active')?.scrollIntoView?.({block:'nearest'})
+  }, [index, query, chats])
   function close() { dialog.current.close(); trigger.current?.focus?.() }
   function choose(entry) { if (entry) { close(); entry.run() } }
   return <dialog ref={dialog} className="pixel-command-dialog" aria-label="Search Pixel" onClick={event => { if (event.target === event.currentTarget) close() }} onCancel={() => trigger.current?.focus?.()}>
@@ -53,6 +56,7 @@ export default function PixelCommandSearch({ onInsert, onNewTask }) {
       if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); setIndex(value => entries.length ? (value + (event.key === 'ArrowDown' ? 1 : -1) + entries.length) % entries.length : 0) }
       if (event.key === 'Enter') { event.preventDefault(); choose(entries[index]) }
     }}/><button aria-label="Close search" onClick={close}><X size={16}/></button></div>
+    <p className="sr-only" role="status">{entries[index] ? `${index + 1} of ${entries.length}: ${entries[index].title}` : 'No results'}</p>
     <div className="pixel-command-results">{entries.length ? entries.map((entry, at) => <button className={at === index ? 'is-active' : ''} key={`${entry.title}-${at}`} onFocus={() => setIndex(at)} onClick={() => choose(entry)}><entry.icon size={17}/><span><strong>{entry.title}</strong><small>{entry.detail}</small>{entry.excerpt && <small className="break-words whitespace-normal">{entry.excerpt}</small>}</span></button>) : <p>No matching conversations or actions.</p>}</div>
   </dialog>
 }
