@@ -61,7 +61,7 @@ it('resumes video after hiding the tab interrupts a pending play', async () => {
   const view = render(<WallpaperVideo/>)
   hidden.mockReturnValue(true)
   fireEvent(document, new Event('visibilitychange'))
-  await act(async () => { rejectPlay(new DOMException('Playback interrupted by pause', 'AbortError')) })
+  await act(async () => { rejectPlay(new globalThis.DOMException('Playback interrupted by pause', 'AbortError')) })
   expect(view.container.querySelector('video')).not.toBeNull()
   hidden.mockReturnValue(false)
   fireEvent(document, new Event('visibilitychange'))
