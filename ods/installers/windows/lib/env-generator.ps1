@@ -1058,10 +1058,22 @@ WEBUI_AUTH=$webuiAuth
 ENABLE_WEB_SEARCH=$enableWebSearchValue
 WEB_SEARCH_ENGINE=searxng
 
-#=== n8n Settings ===
-N8N_HOST=localhost
-N8N_WEBHOOK_URL=http://localhost:5678
-TIMEZONE=$tz
+    #=== n8n Settings ===
+    $n8nHost = if ($EnableLan) {
+        # Try to detect LAN IP for Windows
+        $lanIp = (Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.InterfaceAlias -notmatch 'Loopback' -and $_.IPAddress -notmatch '^169.254' } | Select-Object -First 1).IPAddress
+        if ($lanIp) { $lanIp } else { "localhost" }
+    } else {
+        "localhost"
+    }
+    $n8nWebhookUrl = if ($EnableLan -and $n8nHost -ne "localhost") {
+        "http://$n8nHost:5678"
+    } else {
+        "http://localhost:5678"
+    }
+    N8N_HOST=$n8nHost
+    N8N_WEBHOOK_URL=$n8nWebhookUrl
+    TIMEZONE=$tz
 
 #=== Langfuse Observability ===
 LANGFUSE_PORT=$langfusePort
