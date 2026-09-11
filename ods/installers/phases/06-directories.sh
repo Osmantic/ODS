@@ -648,12 +648,16 @@ raise SystemExit(1)' 2>/dev/null && return 0
         LLM_MODEL="$EXTERNAL_SELECTED_MODEL"
     fi
     LLAMA_SERVER_MEMORY_LIMIT_VALUE=""
+    # Always preserve user override from .env first
+    _user_mem_limit=$(_env_get LLAMA_SERVER_MEMORY_LIMIT "")
     if [[ "$GPU_BACKEND" == "nvidia" && "$EXTERNAL_LLM_ACTIVE" != "true" && "${ODS_MODE:-local}" != "cloud" ]]; then
         _docker_memory_gb="$(ods_docker_memory_gb 2>/dev/null || true)"
         _effective_memory_gb="$(ods_effective_container_memory_gb "${RAM_GB:-0}" "$_docker_memory_gb")"
         _llama_memory_default="$(ods_default_nvidia_llama_memory_limit "$_effective_memory_gb")"
-        LLAMA_SERVER_MEMORY_LIMIT_VALUE="$(_env_get LLAMA_SERVER_MEMORY_LIMIT "$_llama_memory_default")"
+        LLAMA_SERVER_MEMORY_LIMIT_VALUE="${_user_mem_limit:-$_llama_memory_default}"
         unset _docker_memory_gb _effective_memory_gb _llama_memory_default
+    else
+        LLAMA_SERVER_MEMORY_LIMIT_VALUE="$_user_mem_limit"
     fi
     ODS_MODE_VALUE="$(if [[ "$EXTERNAL_LLM_ACTIVE" == "true" ]]; then echo "local"; elif [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "lemonade"; elif [[ "$GPU_BACKEND" == "amd" && "${ODS_MODE:-local}" == "local" ]]; then echo "lemonade"; else echo "${ODS_MODE:-local}"; fi)"
     ODS_MODEL_SWITCHBOARD_VALUE=$(_env_get ODS_MODEL_SWITCHBOARD "${ODS_MODEL_SWITCHBOARD:-observe}")
