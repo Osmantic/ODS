@@ -33,7 +33,7 @@ export default function PixelTextFileInput({ input, disabled, limit, onInsert })
       try {
         const text = new TextDecoder('utf-8', {fatal:true}).decode(next.result)
         if (text.includes('\0')) throw new Error('Binary content')
-        setFile({name:selected.name, text:quotedFile(selected.name, text)})
+        setFile({name:selected.name, content:text, bytes:selected.size, text:quotedFile(selected.name, text)})
       } catch { setError('The file must contain valid UTF-8 text, without binary bytes.') }
     }
     next.onerror = () => { setReading(false); setError('The file could not be read. Choose it again.') }
@@ -47,6 +47,10 @@ export default function PixelTextFileInput({ input, disabled, limit, onInsert })
     {error && <p role="alert">{error}</p>}
     {file && <div role="group" aria-label="Review text file">
       <p>{file.name} · Text will be inserted into your draft. It is sent to the selected model only when you send the message.</p>
+      <p>Bytes: {file.bytes.toLocaleString()} · Lines: {file.content.replace(/\n$/u, '').split('\n').length.toLocaleString()}</p>
+      <details open><summary>Review file contents</summary>
+        <pre role="region" aria-label="Local file contents" tabIndex={0} className="my-2 max-h-48 overflow-auto whitespace-pre rounded border border-theme-border bg-theme-bg p-2 text-theme-text">{file.content}</pre>
+      </details>
       {!fits && <p role="alert">The file and draft exceed the message limit. Shorten the draft or choose a smaller file.</p>}
       <button type="button" disabled={disabled || !fits} onClick={() => { onInsert(file.text); setFile(null) }}>Insert file text</button>
       <button type="button" onClick={() => setFile(null)}>Discard file</button>
