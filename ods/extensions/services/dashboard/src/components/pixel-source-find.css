@@ -4,3 +4,6 @@
 .pixel-source-find button:disabled { opacity:.4; }
 .pixel-source-find [role=status] { flex-basis:100%; padding:0; }
 .pixel-preview-source [data-source-find-current] { background:#e9ac3328; outline:1px solid #b78c40; outline-offset:-1px; }
+.pixel-preview-source[data-wrap-lines=true] pre > code { min-width:0; }
+.pixel-preview-source[data-wrap-lines=true] .code-line { min-width:0; grid-template-columns:44px minmax(0,1fr); }
+.pixel-preview-source[data-wrap-lines=true] .code-line-content { white-space:pre-wrap; overflow-wrap:anywhere; }

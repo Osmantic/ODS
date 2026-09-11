@@ -17,6 +17,7 @@ export default function PixelPreviewSource({ preview, file }) {
   const [error, setError] = useState('')
   const [copied, setCopied] = useState(false)
   const [attempt, setAttempt] = useState(0)
+  const [wrapLines, setWrapLines] = useState(false)
   const codeRef = useRef(null)
   useEffect(() => {
     let current = true
@@ -40,13 +41,13 @@ export default function PixelPreviewSource({ preview, file }) {
     try { await navigator.clipboard.writeText(source); setCopied(true); setError('') }
     catch { setCopied(false); setError('Clipboard access failed. You can select and copy the code manually.') }
   }
-  return <section className="pixel-preview-source pixel-original-source" aria-label={path === 'index.html' ? 'Published HTML source' : `Source: ${path}`}>
+  return <section className="pixel-preview-source pixel-original-source" data-wrap-lines={wrapLines} aria-label={path === 'index.html' ? 'Published HTML source' : `Source: ${path}`}>
     {source === null && binarySize === null && !error && <p role="status">Verifying source…</p>}
     {binarySize !== null && <p role="status">Binary asset. Its bytes are verified; no text source is available.</p>}
     {error && <div role="alert"><p>{error}</p><button type="button" onClick={() => setAttempt(value => value + 1)}>Retry source</button></div>}
     <div className="pixel-code-block">
       <header className="code-block-header"><PixelLanguageBadge path={path}/><span title={path}>{path}</span><PixelArtifactDownload key={`${preview.siteId}/${path}/${expectedDigest}`} preview={preview} file={{path, sha256:expectedDigest, bytes:file?.bytes}}/>{language && <button type="button" aria-label="Copy code" onClick={copy} disabled={source === null}>{copied ? 'Copied' : 'Copy'}</button>}</header>
-      {source !== null && <><PixelSourceFind key={`${preview.siteId}/${path}/${expectedDigest}`} source={source} codeRef={codeRef}/><pre ref={codeRef} tabIndex={0} aria-label={`Code for ${path}`}><PixelCodeLines source={source} language={language}/></pre></>}
+      {source !== null && <><div className="p-2 text-xs"><button type="button" aria-pressed={wrapLines} onClick={() => setWrapLines(value => !value)}>Wrap lines</button></div><PixelSourceFind key={`${preview.siteId}/${path}/${expectedDigest}`} source={source} codeRef={codeRef}/><pre ref={codeRef} tabIndex={0} aria-label={`Code for ${path}`}><PixelCodeLines source={source} language={language}/></pre></>}
 
     </div>
     {(source !== null || binarySize !== null) && <p className="pixel-source-verification">Published snapshot · SHA-256 verified{binarySize !== null ? ` · ${binarySize.toLocaleString()} bytes` : ''}</p>}
