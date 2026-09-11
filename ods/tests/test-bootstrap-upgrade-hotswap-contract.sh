@@ -98,8 +98,10 @@ request:
 YAML
 hermes_docker_calls=0
 hermes_docker_args=()
+hermes_docker_pathconv=""
 docker() {
     hermes_docker_calls=$((hermes_docker_calls + 1))
+    hermes_docker_pathconv="${MSYS_NO_PATHCONV:-}"
     hermes_docker_args=("$@")
     local arg_count=${#hermes_docker_args[@]}
     local sed_arg_count=$((arg_count - 4))
@@ -119,6 +121,8 @@ patch_hermes_yaml_in_container \
     && "${hermes_docker_args[3]:-}" == "-i" \
     && "${hermes_docker_args[${#hermes_docker_args[@]}-1]:-}" == "/opt/data/config.yaml" ]] \
     || fail "Hermes live patch helper did not preserve the expected docker/sed argv boundary"
+[[ "$hermes_docker_pathconv" == "1" ]] \
+    || fail "Hermes live patch helper did not disable Git Bash path conversion for container paths"
 for hermes_arg in "${hermes_docker_args[@]}"; do
     [[ "$hermes_arg" != "sh" && "$hermes_arg" != "-c" ]] \
         || fail "Hermes live patch helper reintroduced a container shell"
@@ -150,7 +154,10 @@ unset -f docker patch_hermes_yaml_in_container patch_hermes_yaml_with_sed \
 pass "Hermes live patch values stay inside explicit docker exec arguments"
 
 compose_hermes_block="$(function_block compose_recreate_hermes | grep -v '^[[:space:]]*#')"
+windows_compose_loader_block="$(function_block load_windows_lemonade_compose_args | grep -v '^[[:space:]]*#')"
 eval "$compose_hermes_block"
+eval "$windows_compose_loader_block"
+log() { :; }
 compose_hermes_tmp="$(mktemp -d "${TMPDIR:-/tmp}/ods-hermes-compose.XXXXXX")"
 INSTALL_DIR="$compose_hermes_tmp/install"
 mkdir -p "$INSTALL_DIR"
@@ -211,8 +218,43 @@ grep -Fxq "arg=$INSTALL_DIR/persisted.yml" "$compose_capture" \
     && grep -Fxq "arg=$INSTALL_DIR/persisted-overlay.yml" "$compose_capture" \
     || fail "Hermes recreate did not fall back to the persisted Compose stack"
 
+: >"$compose_capture"
+unset WINDOWS_LEMONADE_COMPOSE_ARGS
+declare -a WINDOWS_LEMONADE_COMPOSE_ARGS=()
+rm -f "$INSTALL_DIR/.compose-flags"
+mkdir -p "$INSTALL_DIR/logs"
+touch "$INSTALL_DIR/recovered.yml" "$INSTALL_DIR/recovered-overlay.yml"
+printf '%s\n' \
+    $'compose_flags=-f recovered.yml -f recovered-overlay.yml\r' \
+    >"$INSTALL_DIR/logs/compose-launch.txt"
+is_windows_bash() { return 0; }
+compose_recreate_hermes || fail "Hermes recreate did not recover the Windows launch stack"
+grep -Fxq "arg=recovered.yml" "$compose_capture" \
+    && grep -Fxq "arg=recovered-overlay.yml" "$compose_capture" \
+    || fail "Hermes recreate changed the recovered Windows launch stack"
+grep -Fxq -- "-f recovered.yml -f recovered-overlay.yml" "$INSTALL_DIR/.compose-flags" \
+    || fail "Hermes recreate did not persist the recovered Windows launch stack"
+
+: >"$compose_capture"
+WINDOWS_LEMONADE_COMPOSE_ARGS=()
+rm -f "$INSTALL_DIR/.compose-flags"
+printf '%s\n' "compose_flags=-f missing.yml" >"$INSTALL_DIR/logs/compose-launch.txt"
+if compose_recreate_hermes; then
+    fail "Hermes recreate accepted a recovered stack with a missing Compose file"
+fi
+[[ ! -e "$INSTALL_DIR/.compose-flags" && ! -s "$compose_capture" ]] \
+    || fail "Hermes recreate persisted or executed an invalid recovered stack"
+
+WINDOWS_LEMONADE_COMPOSE_ARGS=()
+printf '%s\n' "compose_flags=--env-file .env" >"$INSTALL_DIR/logs/compose-launch.txt"
+if compose_recreate_hermes; then
+    fail "Hermes recreate accepted a recovered stack without any Compose file"
+fi
+[[ ! -e "$INSTALL_DIR/.compose-flags" ]] \
+    || fail "Hermes recreate persisted a recovered stack without a Compose file"
+
 rm -rf -- "$compose_hermes_tmp"
-unset -f compose_recreate_hermes
+unset -f compose_recreate_hermes load_windows_lemonade_compose_args is_windows_bash log
 unset ODS_COMPOSE_CAPTURE DOCKER_COMPOSE_CMD GGUF_FILE LLM_MODEL LEMONADE_MODEL MAX_CONTEXT CTX_SIZE
 pass "Hermes recreation preserves the active stack and strips model overrides"
 

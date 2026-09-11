@@ -412,6 +412,8 @@ compose_recreate_hermes() {
         compose_args=("${WINDOWS_LEMONADE_COMPOSE_ARGS[@]}")
     elif [[ -s "$INSTALL_DIR/.compose-flags" ]]; then
         read -ra compose_args <<< "$(cat "$INSTALL_DIR/.compose-flags")"
+    elif is_windows_bash && load_windows_lemonade_compose_args; then
+        compose_args=("${WINDOWS_LEMONADE_COMPOSE_ARGS[@]}")
     fi
 
     if [[ ${#compose_args[@]} -eq 0 || -z "${DOCKER_COMPOSE_CMD:-}" ]]; then
@@ -1696,7 +1698,11 @@ patch_hermes_yaml_in_container() {
         )
     fi
 
-    $DOCKER_CMD exec ods-hermes sed -i \
+    # Git for Windows rewrites POSIX-looking arguments passed to native
+    # executables (for example /opt/data/config.yaml becomes
+    # C:/Program Files/Git/opt/data/config.yaml).  That path belongs inside
+    # the container, so keep the docker argv byte-for-byte on every host.
+    MSYS_NO_PATHCONV=1 $DOCKER_CMD exec ods-hermes sed -i \
         "${sed_args[@]}" \
         /opt/data/config.yaml
 }
@@ -1788,22 +1794,66 @@ load_windows_lemonade_compose_args() {
     [[ ${#WINDOWS_LEMONADE_COMPOSE_ARGS[@]} -eq 0 ]] || return 0
     [[ -n "${DOCKER_COMPOSE_CMD:-}" ]] || return 1
 
-    if [[ -f "$INSTALL_DIR/.compose-flags" ]]; then
-        read -ra WINDOWS_LEMONADE_COMPOSE_ARGS <<< "$(cat "$INSTALL_DIR/.compose-flags")"
-    elif [[ -x "$INSTALL_DIR/scripts/resolve-compose-stack.sh" ]]; then
-        local tier resolved_env resolved_flags
+    local resolved_flags="" recovered_flags=false
+    if [[ -s "$INSTALL_DIR/.compose-flags" ]]; then
+        resolved_flags="$(cat "$INSTALL_DIR/.compose-flags")"
+    fi
+    if [[ -z "$resolved_flags" && -s "$INSTALL_DIR/logs/compose-launch.txt" ]]; then
+        # The Windows launcher records the exact successfully started stack.
+        # Recover it when an interrupted copy or filesystem quirk leaves the
+        # ordinary cache absent; this is the same fallback used by ods.ps1.
+        resolved_flags="$(sed -n 's/^compose_flags=//p' "$INSTALL_DIR/logs/compose-launch.txt" | tr -d '\r' | tail -1)"
+        [[ -z "$resolved_flags" ]] || recovered_flags=true
+    fi
+    if [[ -z "$resolved_flags" && -x "$INSTALL_DIR/scripts/resolve-compose-stack.sh" ]]; then
+        local tier gpu_count ods_mode resolved_env
         tier="$(read_env_value TIER)"
         [[ -n "$tier" ]] || tier="1"
+        gpu_count="$(read_env_value GPU_COUNT)"
+        [[ -n "$gpu_count" ]] || gpu_count="1"
+        ods_mode="$(read_env_value ODS_MODE)"
+        [[ -n "$ods_mode" ]] || ods_mode="lemonade"
         resolved_env=$("$INSTALL_DIR/scripts/resolve-compose-stack.sh" \
             --script-dir "$INSTALL_DIR" \
             --tier "$tier" \
             --gpu-backend amd \
+            --gpu-count "$gpu_count" \
+            --ods-mode "$ods_mode" \
             --env 2>/dev/null || true)
         resolved_flags=$(printf '%s\n' "$resolved_env" | sed -n 's/^COMPOSE_FLAGS="\([^"]*\)".*/\1/p')
-        [[ -n "$resolved_flags" ]] && read -ra WINDOWS_LEMONADE_COMPOSE_ARGS <<< "$resolved_flags"
+        [[ -z "$resolved_flags" ]] || recovered_flags=true
     fi
 
-    [[ ${#WINDOWS_LEMONADE_COMPOSE_ARGS[@]} -gt 0 ]]
+    [[ -n "$resolved_flags" ]] || return 1
+    local -a candidate_args=()
+    read -ra candidate_args <<< "$resolved_flags"
+    [[ ${#candidate_args[@]} -gt 0 ]] || return 1
+
+    local index compose_file compose_file_count=0
+    for ((index = 0; index < ${#candidate_args[@]}; index++)); do
+        [[ "${candidate_args[$index]}" == "-f" ]] || continue
+        (( index + 1 < ${#candidate_args[@]} )) || return 1
+        compose_file="${candidate_args[$((index + 1))]}"
+        compose_file_count=$((compose_file_count + 1))
+        case "$compose_file" in
+            /*) ;;
+            [A-Za-z]:[/\\]*|\\\\*)
+                if command -v cygpath >/dev/null 2>&1; then
+                    compose_file="$(cygpath -u "$compose_file" 2>/dev/null)" || return 1
+                fi
+                ;;
+            *) compose_file="$INSTALL_DIR/$compose_file" ;;
+        esac
+        [[ -f "$compose_file" ]] || return 1
+        index=$((index + 1))
+    done
+    (( compose_file_count > 0 )) || return 1
+
+    if [[ "$recovered_flags" == "true" ]]; then
+        printf '%s\n' "$resolved_flags" > "$INSTALL_DIR/.compose-flags" || return 1
+    fi
+    WINDOWS_LEMONADE_COMPOSE_ARGS=("${candidate_args[@]}")
+    return 0
 }
 
 refresh_windows_lemonade_litellm_after_swap() {
