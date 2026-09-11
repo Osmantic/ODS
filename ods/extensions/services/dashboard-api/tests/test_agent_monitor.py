@@ -214,6 +214,27 @@ class TestFetchTokenSpyMetrics:
         with patch("aiohttp.ClientSession", return_value=mock_session_cm):
             await agent_monitor._fetch_token_spy_metrics()
 
+    @pytest.mark.asyncio
+    async def test_handles_dict_response_shape(self, monkeypatch):
+        """Token Spy returning a dict payload with nested sessions updates metrics cleanly."""
+        monkeypatch.setattr(agent_monitor, "TOKEN_SPY_URL", "http://token-spy:8080")
+        monkeypatch.setattr(agent_monitor, "TOKEN_SPY_API_KEY", "")
+
+        dict_payload = {
+            "status": "ok",
+            "sessions": [
+                {"total_output_tokens": 86400},
+                {"total_output_tokens": 172800},
+            ],
+        }
+        mock_session_cm = self._make_session_mock(200, resp_json=dict_payload)
+
+        with patch("aiohttp.ClientSession", return_value=mock_session_cm):
+            await agent_monitor._fetch_token_spy_metrics()
+
+        assert agent_monitor.agent_metrics.session_count == 2
+        assert agent_monitor.agent_metrics.tokens_per_second == 3.0
+
 
 class TestClusterStatusRefresh:
 
