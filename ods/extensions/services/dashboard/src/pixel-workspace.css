@@ -26,7 +26,15 @@ body { font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFon
 /* Native menus need opaque option colors; translucent select fills do not carry over on Windows. */
 select, select option, select optgroup { color-scheme:dark; }
 select option, select optgroup { background-color:rgb(var(--theme-card)); color:rgb(var(--theme-text)); }
-.ods-opening { position:fixed; inset:0; z-index:100; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:18px; background:#111212; color:#969aa2; font-family:Inter,system-ui,sans-serif; font-size:13px; }
+.ods-opening { position:fixed; inset:0; z-index:9999; display:flex; align-items:center; justify-content:center; isolation:isolate; overflow:hidden; background:#101112; color:#a2a7ae; font-family:Inter,system-ui,sans-serif; font-size:14px; opacity:1; transition:opacity .4s ease; }
+.ods-opening.is-leaving { opacity:0; pointer-events:none; }
+.ods-opening-orb { position:absolute; width:min(110vw,960px); height:min(100vh,760px); pointer-events:none; }
+.ods-opening-content { position:relative; display:flex; flex-direction:column; align-items:center; gap:20px; padding:40px; }
+.ods-opening-content::before { content:''; position:absolute; inset:-70px; z-index:-1; background:radial-gradient(ellipse,#101112 15%,#101112d9 38%,#10111200 70%); pointer-events:none; }
+.ods-opening-content .ods-opening-wordmark { font-size:clamp(44px,7vw,68px); line-height:1.1; font-weight:500; letter-spacing:.12em; margin:0 0 8px; }
+.ods-opening-content p { margin:0; }
+.ods-opening button:hover { background:#ffffff0b; color:#fff; border-color:#70757c; }
+.ods-opening button:focus-visible { outline:2px solid #cdd2d8; outline-offset:5px; }
 .ods-opening-emblem { animation:ods-opening-in .5s ease-out both; }
 .ods-opening-wordmark { font-family:Inter,system-ui,sans-serif; font-size:48px; font-weight:600; letter-spacing:.16em; padding-left:.16em; color:#e2e4e7; background:linear-gradient(110deg,#7e858c 10%,#f7f8f9 35%,#a2a8b0 48%,#fff 58%,#727a84 85%); background-size:220% 100%; background-clip:text; -webkit-background-clip:text; -webkit-text-fill-color:transparent; animation:ods-metal-sweep 2.2s ease-in-out infinite; }
 .ods-opening-track { width:100px; height:2px; background:#2c3034; overflow:hidden; }

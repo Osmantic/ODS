@@ -107,7 +107,7 @@ function App() {
   if (firstRun) {
     return (
       <div className="min-h-screen bg-theme-bg text-theme-text">
-        {!splashDone && <SplashScreen onComplete={() => {
+        {!splashDone && <SplashScreen preview={new URLSearchParams(location.search).get('intro') === 'preview'} onComplete={() => {
           setStorageValue('sessionStorage', 'ods-splash-shown', '1')
           setSplashDone(true)
         }} />}
@@ -126,7 +126,7 @@ function App() {
     <PortalIdentityProvider>
     <div className={`pixel-app flex min-h-screen bg-theme-bg text-theme-text relative ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
       <WallpaperVideo />
-      {!splashDone && <SplashScreen onComplete={() => {
+      {!splashDone && <SplashScreen preview={new URLSearchParams(location.search).get('intro') === 'preview'} onComplete={() => {
         setStorageValue('sessionStorage', 'ods-splash-shown', '1')
         setSplashDone(true)
       }} />}
