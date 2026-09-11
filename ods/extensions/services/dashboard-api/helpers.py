@@ -139,6 +139,15 @@ async def _get_httpx_client() -> httpx.AsyncClient:
     return _httpx_client
 
 
+async def shutdown_llm_client() -> None:
+    """Close the pooled LLM client after application users have stopped."""
+    global _httpx_client, _httpx_client_lock
+    if _httpx_client is not None:
+        await _httpx_client.aclose()
+        _httpx_client = None
+    _httpx_client_lock = None
+
+
 def _service_status_from_config(service_id: str, config: dict, status: str) -> ServiceStatus:
     return ServiceStatus(
         id=service_id, name=config["name"], port=config["port"],
