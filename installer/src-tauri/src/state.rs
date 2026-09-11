@@ -64,7 +64,7 @@ impl Default for InstallState {
 }
 
 impl InstallState {
-    fn state_path() -> PathBuf {
+    pub fn state_path() -> PathBuf {
         let dir = dirs_next().join("ods");
         let _ = fs::create_dir_all(&dir);
         dir.join("installer-state.json")
@@ -75,28 +75,21 @@ impl InstallState {
         let tmp = path.with_extension("json.tmp");
         let json = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
         fs::write(&tmp, json).map_err(|e| e.to_string())?;
-        match fs::rename(&tmp, &path) {
-            Ok(()) => Ok(()),
-            Err(err) if path.exists() => {
+        fs::rename(&tmp, &path).or_else(|err| {
+            if path.exists() {
                 fs::remove_file(&path).map_err(|remove_err| remove_err.to_string())?;
                 fs::rename(&tmp, &path).map_err(|rename_err| {
                     format!(
                         "Failed to replace installer state after rename error ({err}): {rename_err}"
                     )
                 })
+            } else {
+                Err(err.to_string())
             }
-            Err(err) => Err(err.to_string()),
-        }
+        })
     }
 }
 
-impl InstallState {
-    pub fn load() -> Option<InstallState> {
-        let path = Self::state_path();
-        let data = fs::read_to_string(path).ok()?;
-        serde_json::from_str(&data).ok()
-    }
-}
 
 fn dirs_next() -> PathBuf {
     #[cfg(target_os = "windows")]
