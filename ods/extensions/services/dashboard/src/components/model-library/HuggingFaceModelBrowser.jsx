@@ -45,12 +45,13 @@ export default function HuggingFaceModelBrowser({ gpu, downloadBusy, onImportSta
         const params = new URLSearchParams({ q: query.trim(), sort, limit: '20' })
         const response = await fetch(`/api/models/huggingface/search?${params}`, { signal: controller.signal })
         const body = await responseJson(response)
+        if (controller.signal.aborted) return
         if (!response.ok) throw new Error(errorMessage(body, 'Hugging Face search failed'))
         setResults(Array.isArray(body.models) ? body.models : [])
         setAuthenticated(Boolean(body.authenticated))
         setStale(Boolean(body.stale))
       } catch (requestError) {
-        if (requestError?.name !== 'AbortError') setError(requestError.message)
+        if (!controller.signal.aborted && requestError?.name !== 'AbortError') setError(requestError.message)
       } finally {
         if (!controller.signal.aborted) setLoading(false)
       }
