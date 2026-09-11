@@ -3659,6 +3659,19 @@ elif [[ -f "$HOME/Library/LaunchAgents/com.ods.host-agent.plist" ]]; then
     log "Restarting ods-host-agent (launchctl)..."
     launchctl kickstart -k "gui/$(id -u)/com.ods.host-agent" 2>&1 || \
         log "WARNING: Could not restart host agent (non-fatal)"
+elif is_windows_bash; then
+    _windows_agent_ps="$(windows_ps_command)"
+    _windows_agent_cli="$INSTALL_DIR/installers/windows/ods.ps1"
+    if [[ -z "$_windows_agent_ps" || ! -f "$_windows_agent_cli" ]]; then
+        log "WARNING: Could not locate the Windows ODS CLI for host agent restart (non-fatal)"
+    elif ! _windows_agent_cli_arg="$(windows_path "$_windows_agent_cli")"; then
+        log "WARNING: Could not resolve the Windows ODS CLI path for host agent restart (non-fatal)"
+    else
+        log "Restarting ods-host-agent (Windows)..."
+        "$_windows_agent_ps" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass \
+            -File "$_windows_agent_cli_arg" agent restart 2>&1 || \
+            log "WARNING: Could not restart host agent (non-fatal)"
+    fi
 fi
 
 notify_host_agent_model_status() {
