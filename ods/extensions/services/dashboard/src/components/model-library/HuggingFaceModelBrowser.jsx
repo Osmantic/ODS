@@ -289,8 +289,20 @@ function RepositoryRow({ model, onInspect }) {
 }
 
 function ArtifactDialog({ model, details, loading, error, gpu, downloadBusy, importingArtifact, onClose, onImport, onRetry }) {
+  const dialog = useRef(null)
+  const closeButton = useRef(null)
+  useEffect(() => {
+    const previous = document.activeElement
+    const element = dialog.current
+    element.showModal()
+    closeButton.current?.focus()
+    return () => {
+      element.close()
+      if (previous?.isConnected) previous.focus()
+    }
+  }, [])
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label={`Choose a GGUF from ${model.id}`}>
+    <dialog ref={dialog} onCancel={event => { event.preventDefault(); onClose() }} className="fixed inset-0 m-0 h-screen w-screen max-h-none max-w-none border-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm" aria-label={`Choose a GGUF from ${model.id}`}>
       <div className="max-h-[88vh] w-full max-w-5xl overflow-hidden rounded-lg border border-white/[0.1] bg-[#090910] shadow-2xl">
         <header className="flex items-start justify-between gap-4 border-b border-white/[0.07] px-5 py-4">
           <div className="min-w-0">
@@ -300,7 +312,7 @@ function ArtifactDialog({ model, details, loading, error, gpu, downloadBusy, imp
             </div>
             <p className="mt-1 text-xs text-theme-text-muted">Select an exact, integrity-qualified GGUF artifact.</p>
           </div>
-          <button type="button" onClick={onClose} disabled={Boolean(importingArtifact)} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-white/[0.08] text-theme-text-muted hover:text-theme-text disabled:opacity-40" title="Close">
+          <button ref={closeButton} type="button" onClick={onClose} disabled={Boolean(importingArtifact)} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-white/[0.08] text-theme-text-muted hover:text-theme-text disabled:opacity-40" title="Close">
             <X size={15} />
           </button>
         </header>
@@ -374,7 +386,7 @@ function ArtifactDialog({ model, details, loading, error, gpu, downloadBusy, imp
           )}
         </div>
       </div>
-    </div>
+    </dialog>
   )
 }
 
