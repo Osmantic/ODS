@@ -32,9 +32,44 @@ def test_chat_handles_empty_choices(test_client, monkeypatch):
     assert data["response"] == ""
 
 
-# ---------------------------------------------------------------------------
-# Auth enforcement — 401 without Bearer token
-# ---------------------------------------------------------------------------
+def test_chat_url_normalization(test_client, monkeypatch):
+    """Verify that /v1 is not double-appended to the LLM URL."""
+    # Case 1: llm_url has /v1, api_path is v1 -> should be /v1/chat/completions
+    monkeypatch.setenv("OLLAMA_URL", "http://llama-server:11434/v1")
+    monkeypatch.setenv("LLM_API_BASE_PATH", "/v1")
+
+    mock_resp = MagicMock()
+    mock_resp.status = 200
+    mock_resp.json = AsyncMock(
+        return_value={"choices": [{"message": {"content": "ok"}}]}
+    )
+    post_cm = MagicMock()
+    post_cm.__aenter__ = AsyncMock(return_value=mock_resp)
+    post_cm.__aexit__ = AsyncMock(return_value=False)
+    mock_session = MagicMock()
+    mock_session.post = MagicMock(return_value=post_cm)
+    session_cm = MagicMock()
+    session_cm.__aenter__ = AsyncMock(return_value=mock_session)
+    session_cm.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("routers.setup.aiohttp.ClientSession", return_value=session_cm):
+        test_client.post(
+            "/api/chat", json={"message": "hi"}, headers=test_client.auth_headers
+        )
+
+    called_url = mock_session.post.call_args[0][0]
+    assert called_url == "http://llama-server:11434/v1/chat/completions"
+    assert "/v1/v1" not in called_url
+
+    # Case 2: llm_url has no /v1, api_path is v1 -> should be /v1/chat/completions
+    monkeypatch.setenv("OLLAMA_URL", "http://llama-server:11434")
+    with patch("routers.setup.aiohttp.ClientSession", return_value=session_cm):
+        test_client.post(
+            "/api/chat", json={"message": "hi"}, headers=test_client.auth_headers
+        )
+
+    called_url = mock_session.post.call_args[0][0]
+    assert called_url == "http://llama-server:11434/v1/chat/completions"
 
 
 def test_setup_persona_requires_auth(test_client):
@@ -234,7 +269,9 @@ def test_list_personas_includes_name_and_icon(test_client, setup_config_dir):
 
 def test_get_persona_info_valid(test_client, setup_config_dir):
     """GET /api/setup/persona/general returns the persona details."""
-    resp = test_client.get("/api/setup/persona/general", headers=test_client.auth_headers)
+    resp = test_client.get(
+        "/api/setup/persona/general", headers=test_client.auth_headers
+    )
     assert resp.status_code == 200
     data = resp.json()
     assert data["id"] == "general"
@@ -244,7 +281,9 @@ def test_get_persona_info_valid(test_client, setup_config_dir):
 
 def test_get_persona_info_not_found(test_client, setup_config_dir):
     """GET /api/setup/persona/<unknown> returns 404."""
-    resp = test_client.get("/api/setup/persona/unknown-persona", headers=test_client.auth_headers)
+    resp = test_client.get(
+        "/api/setup/persona/unknown-persona", headers=test_client.auth_headers
+    )
     assert resp.status_code == 404
 
 
@@ -262,9 +301,11 @@ def test_diagnostics_fallback_uses_client_timeout(test_client, monkeypatch):
     monkeypatch.setattr(setup_router, "INSTALL_DIR", "/nonexistent-path")
 
     # Provide at least one service so the health-check loop body executes
-    monkeypatch.setattr(setup_router, "SERVICES", {
-        "fake-svc": {"name": "Fake", "host": "localhost", "port": 1, "health": "/"}
-    })
+    monkeypatch.setattr(
+        setup_router,
+        "SERVICES",
+        {"fake-svc": {"name": "Fake", "host": "localhost", "port": 1, "health": "/"}},
+    )
 
     captured_timeouts = []
 

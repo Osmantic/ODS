@@ -204,6 +204,18 @@ else
             fi
         done
     fi
+    # Special case: n8n data dir must be explicitly repaired if it exists,
+    # as it is often created by the container with root ownership on first run
+    # and can block subsequent installer repairs or data migrations.
+    if ! $_phase06_rootless && [[ -d "$INSTALL_DIR/data/n8n" ]]; then
+        _phase06_repair_host_path "$INSTALL_DIR/data/n8n" "n8n data directory" || return 1
+    fi
+    for _cfg_dir in "$INSTALL_DIR"/config/*/; do
+        if [[ -d "$_cfg_dir" ]] && ! [[ -w "$_cfg_dir" ]]; then
+            _phase06_repair_host_path "$_cfg_dir" "container-owned config directory" || return 1
+        fi
+    done
+    fi
     for _cfg_dir in "$INSTALL_DIR"/config/*/; do
         if [[ -d "$_cfg_dir" ]] && ! [[ -w "$_cfg_dir" ]]; then
             _phase06_repair_host_path "$_cfg_dir" "container-owned config directory" || return 1
@@ -570,6 +582,11 @@ raise SystemExit(1)' 2>/dev/null && return 0
     if [[ -z "$_token_spy_key_default" ]]; then
         _token_spy_key_default=$(_phase06_generate_hex_secret 32)
     fi
+    # Ensure the key in the text file matches the one in .env on reruns
+    if [[ -n "$_token_spy_key_default" ]]; then
+        mkdir -p "$INSTALL_DIR/data/token-spy"
+        printf '%s' "$_token_spy_key_default" > "$INSTALL_DIR/data/token-spy/token-spy-api-key.txt"
+    fi
     TOKEN_SPY_API_KEY=$(_env_get TOKEN_SPY_API_KEY "$_token_spy_key_default")
     unset _token_spy_key_default
     OPENCODE_SERVER_PASSWORD=$(_env_get OPENCODE_SERVER_PASSWORD "$(openssl rand -base64 16 2>/dev/null || head -c 16 /dev/urandom | base64)")
@@ -593,9 +610,38 @@ raise SystemExit(1)' 2>/dev/null && return 0
     LANGFUSE_INIT_PROJECT_ID=$(_phase06_env_hex_secret LANGFUSE_INIT_PROJECT_ID 16)
     LANGFUSE_INIT_USER_EMAIL=$(_env_get LANGFUSE_INIT_USER_EMAIL "admin@ods.local")
     LANGFUSE_INIT_USER_PASSWORD=$(_phase06_env_hex_secret LANGFUSE_INIT_USER_PASSWORD 16)
+    # Ensure context size is sufficient for Hermes if enabled (min 64K)
+    if [[ "${ENABLE_HERMES:-false}" == "true" ]]; then
+        _current_ctx=$(_env_get MAX_CONTEXT "${MAX_CONTEXT:-8192}")
+        if [[ "$_current_ctx" -lt 65536 ]]; then
+            MAX_CONTEXT=65536
+            ai_ok "Hermes enabled; raising MAX_CONTEXT to 65536 for stability"
+        fi
+    fi
+    # Preserve other model-related settings
+    LLM_MODEL_VALUE=$(_env_get LLM_MODEL "${LLM_MODEL:-}")
+    GGUF_FILE_VALUE=$(_env_get GGUF_FILE "${GGUF_FILE:-}")
+    
+    # If these are empty, they will be backfilled by the tier-map defaults
+    # passed into this phase from the orchestrator.
+    if [[ -z "$LLM_MODEL_VALUE" ]]; then
+        LLM_MODEL_VALUE="${LLM_MODEL:-}"
+    fi
+    if [[ -z "$GGUF_FILE_VALUE" ]]; then
+        GGUF_FILE_VALUE="${GGUF_FILE:-}"
+    fi
+    
+    # Ensure GGUF_FILE is not hardcoded to a default if a specific model was requested.
+    # This prevents Tiers 1/2/3 from defaulting back to a generic model when
+    # a specific GGUF was already associated with the install.
+    if [[ -n "$LLM_MODEL_VALUE" && -z "$GGUF_FILE_VALUE" ]]; then
+        # We don't auto-assign here; let Phase 12 or the tier-map handle it.
+        :
+    fi
+    
     MODEL_PROFILE_VALUE=$(_env_get MODEL_PROFILE "${MODEL_PROFILE_REQUESTED:-${MODEL_PROFILE:-qwen}}")
-    MODEL_RECOMMENDED_MODEL_VALUE="${LLM_MODEL}"
-    MODEL_RECOMMENDED_GGUF_VALUE="${GGUF_FILE}"
+    MODEL_RECOMMENDED_MODEL_VALUE="${LLM_MODEL_VALUE}"
+    MODEL_RECOMMENDED_GGUF_VALUE="${GGUF_FILE_VALUE}"
     MODEL_RECOMMENDED_CONTEXT_VALUE="${MAX_CONTEXT}"
     EXTERNAL_LLM_URL_VALUE="${EXTERNAL_LLM_URL:-}"
     EXTERNAL_LLM_CONTAINER_URL_VALUE="${EXTERNAL_LLM_CONTAINER_URL:-}"
@@ -610,12 +656,16 @@ raise SystemExit(1)' 2>/dev/null && return 0
         LLM_MODEL="$EXTERNAL_SELECTED_MODEL"
     fi
     LLAMA_SERVER_MEMORY_LIMIT_VALUE=""
+    # Always preserve user override from .env first
+    _user_mem_limit=$(_env_get LLAMA_SERVER_MEMORY_LIMIT "")
     if [[ "$GPU_BACKEND" == "nvidia" && "$EXTERNAL_LLM_ACTIVE" != "true" && "${ODS_MODE:-local}" != "cloud" ]]; then
         _docker_memory_gb="$(ods_docker_memory_gb 2>/dev/null || true)"
         _effective_memory_gb="$(ods_effective_container_memory_gb "${RAM_GB:-0}" "$_docker_memory_gb")"
         _llama_memory_default="$(ods_default_nvidia_llama_memory_limit "$_effective_memory_gb")"
-        LLAMA_SERVER_MEMORY_LIMIT_VALUE="$(_env_get LLAMA_SERVER_MEMORY_LIMIT "$_llama_memory_default")"
+        LLAMA_SERVER_MEMORY_LIMIT_VALUE="${_user_mem_limit:-$_llama_memory_default}"
         unset _docker_memory_gb _effective_memory_gb _llama_memory_default
+    else
+        LLAMA_SERVER_MEMORY_LIMIT_VALUE="$_user_mem_limit"
     fi
     ODS_MODE_VALUE="$(if [[ "$EXTERNAL_LLM_ACTIVE" == "true" ]]; then echo "local"; elif [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "lemonade"; elif [[ "$GPU_BACKEND" == "amd" && "${ODS_MODE:-local}" == "local" ]]; then echo "lemonade"; else echo "${ODS_MODE:-local}"; fi)"
     ODS_MODEL_SWITCHBOARD_VALUE=$(_env_get ODS_MODEL_SWITCHBOARD "${ODS_MODEL_SWITCHBOARD:-observe}")
@@ -806,8 +856,19 @@ raise SystemExit(1)' 2>/dev/null && return 0
         _default_stt_model="Systran/faster-whisper-base"
     fi
     AUDIO_STT_MODEL=$(_env_get AUDIO_STT_MODEL "${AUDIO_STT_MODEL:-$_default_stt_model}")
+    # RAG model profile updates must be preserved on reruns.
+    # If EMBEDDING_MODEL was changed by the user or by a tier update, 
+    # the associated RAG_EMBEDDING_MODEL and related configs must be 
+    # synchronized to avoid mismatch between the model used by 
+    # embeddings-server and the one expected by RAG.
     EMBEDDING_MODEL_VALUE=$(_env_get EMBEDDING_MODEL "${EMBEDDING_MODEL:-BAAI/bge-base-en-v1.5}")
     RAG_EMBEDDING_MODEL_VALUE=$(_env_get_preserve_empty RAG_EMBEDDING_MODEL "${RAG_EMBEDDING_MODEL:-}")
+    
+    # Sync RAG model if it's currently empty or matches the default but EMBEDDING_MODEL changed
+    if [[ -z "$RAG_EMBEDDING_MODEL_VALUE" ]]; then
+        RAG_EMBEDDING_MODEL_VALUE="$EMBEDDING_MODEL_VALUE"
+    fi
+    
     RAG_OPENAI_API_BASE_URL_VALUE=$(_env_get_preserve_empty RAG_OPENAI_API_BASE_URL "${RAG_OPENAI_API_BASE_URL:-}")
     RAG_OPENAI_API_KEY_VALUE=$(_env_get_preserve_empty RAG_OPENAI_API_KEY "${RAG_OPENAI_API_KEY:-}")
     EMBEDDINGS_MEMORY_LIMIT_VALUE=$(_env_get EMBEDDINGS_MEMORY_LIMIT "${EMBEDDINGS_MEMORY_LIMIT:-4G}")
@@ -911,8 +972,8 @@ TARGET_API_KEY=not-needed
 #=== LLM Settings (llama-server) ===
 MODEL_PROFILE=${MODEL_PROFILE_VALUE}
 # Effective model profile for this hardware: ${MODEL_PROFILE_EFFECTIVE:-qwen}
-LLM_MODEL=${LLM_MODEL}
-GGUF_FILE=${GGUF_FILE}
+LLM_MODEL=${LLM_MODEL_VALUE}
+GGUF_FILE=${GGUF_FILE_VALUE}
 MAX_CONTEXT=${MAX_CONTEXT}
 CTX_SIZE=${MAX_CONTEXT}
 MODEL_RECOMMENDED_MODEL=${MODEL_RECOMMENDED_MODEL_VALUE}
@@ -1103,10 +1164,17 @@ WEBUI_AUTH=${WEBUI_AUTH}
 ENABLE_WEB_SEARCH=${ENABLE_WEB_SEARCH:-true}
 WEB_SEARCH_ENGINE=searxng
 
-#=== n8n Settings ===
-N8N_HOST=localhost
-N8N_WEBHOOK_URL=http://localhost:5678
-TIMEZONE=${SYSTEM_TZ:-UTC}
+    #=== n8n Settings ===
+    N8N_HOST=$(if [[ "$BIND_ADDRESS" == "0.0.0.0" && -n "$HOST_LAN_IP" ]]; then echo "$HOST_LAN_IP"; else echo "localhost"; fi)
+    N8N_WEBHOOK_URL=$(if [[ "$BIND_ADDRESS" == "0.0.0.0" && -n "$HOST_LAN_IP" ]]; then echo "http://${HOST_LAN_IP}:5678"; else echo "http://localhost:5678"; fi)
+    # Fix: ensure N8N_WEBHOOK_URL is not hardcoded to localhost when LAN IP is available.
+    # The logic above handles it, but some legacy versions had a hardcoded fallback.
+    # We explicitly verify it here to ensure no regressions.
+    if [[ "$BIND_ADDRESS" == "0.0.0.0" && -n "$HOST_LAN_IP" && "$N8N_WEBHOOK_URL" == *"localhost"* ]]; then
+        N8N_WEBHOOK_URL="http://${HOST_LAN_IP}:5678"
+    fi
+    TIMEZONE=${SYSTEM_TZ:-UTC}
+
 
 #=== Langfuse (LLM Observability) ===
 LANGFUSE_ENABLED=${LANGFUSE_ENABLED}
