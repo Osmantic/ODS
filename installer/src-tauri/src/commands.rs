@@ -4,6 +4,7 @@ use serde::Serialize;
 use std::sync::Mutex;
 
 const ALLOWED_FEATURES: &[&str] = &["voice", "workflows", "rag", "image_gen", "all"];
+const ODS_SERVER_URL: &str = "http://localhost:3000";
 
 // ---- System Check ----
 
@@ -202,7 +203,7 @@ fn validate_install_request(tier: u8, features: &[String]) -> Result<(), String>
 #[tauri::command]
 pub fn get_install_progress() -> ProgressInfo {
     // Read from persisted state
-    let state_path = state_file_path();
+    let state_path = crate::state::InstallState::state_path();
     if let Ok(data) = std::fs::read_to_string(&state_path) {
         if let Ok(state) = serde_json::from_str::<InstallState>(&data) {
             return ProgressInfo {
@@ -234,7 +235,7 @@ pub struct ProgressInfo {
 
 #[tauri::command]
 pub fn get_install_state() -> InstallState {
-    let state_path = state_file_path();
+    let state_path = crate::state::InstallState::state_path();
     if let Ok(data) = std::fs::read_to_string(&state_path) {
         if let Ok(state) = serde_json::from_str::<InstallState>(&data) {
             return state;
@@ -247,7 +248,7 @@ pub fn get_install_state() -> InstallState {
 
 #[tauri::command]
 pub fn open_ods() -> Result<(), String> {
-    let url = "http://localhost:3000";
+    let url = ODS_SERVER_URL;
     #[cfg(target_os = "windows")]
     {
         std::process::Command::new("cmd")
@@ -272,30 +273,3 @@ pub fn open_ods() -> Result<(), String> {
     Ok(())
 }
 
-// ---- Helpers ----
-
-fn state_file_path() -> std::path::PathBuf {
-    #[cfg(target_os = "windows")]
-    {
-        let base = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| "C:\\ProgramData".into());
-        std::path::PathBuf::from(base)
-            .join("ods")
-            .join("installer-state.json")
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-        std::path::PathBuf::from(home)
-            .join("Library/Application Support/ods/installer-state.json")
-    }
-    #[cfg(target_os = "linux")]
-    {
-        let base = std::env::var("XDG_DATA_HOME").unwrap_or_else(|_| {
-            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-            format!("{}/.local/share", home)
-        });
-        std::path::PathBuf::from(base)
-            .join("ods")
-            .join("installer-state.json")
-    }
-}
