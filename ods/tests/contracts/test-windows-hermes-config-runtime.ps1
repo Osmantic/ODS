@@ -92,6 +92,11 @@ terminal:
         if (-not $actual.Contains('  api_key: "sk-test-hermes-runtime"')) {
             throw "API key was not inserted or updated for $($fixture.Name)"
         }
+        if (-not $actual.Contains('  threshold: 0.75') -or
+            -not $actual.Contains('  target_ratio: 0.50') -or
+            -not $actual.Contains('  protect_last_n: 40')) {
+            throw "Hermes compression defaults diverged for $($fixture.Name)"
+        }
         if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
             $acl = Get-Acl -LiteralPath $path
             if (-not $acl.AreAccessRulesProtected) {

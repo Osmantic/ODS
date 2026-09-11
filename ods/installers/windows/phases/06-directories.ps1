@@ -457,23 +457,25 @@ function Update-HermesConfigFile {
     }
 
     if ($content -notmatch '(?m)^compression:\s*$') {
-        $content += "`ncompression:`n  enabled: true`n  threshold: 0.50`n  target_ratio: 0.20`n  protect_last_n: 20`n"
+        $content += "`ncompression:`n  enabled: true`n  threshold: 0.75`n  target_ratio: 0.50`n  protect_last_n: 40`n"
     } else {
         if ($content -notmatch '(?m)^  enabled:') {
             $content = $content -replace '(?m)^compression:\s*$', "compression:`n  enabled: true"
         }
         if ($content -match '(?m)^  threshold:') {
-            $content = $content -replace '(?m)^  threshold: .+$', "  threshold: 0.50"
+            $content = $content -replace '(?m)^  threshold: .+$', "  threshold: 0.75"
         } else {
-            $content = $content -replace '(?m)^compression:\s*$', "compression:`n  threshold: 0.50"
+            $content = $content -replace '(?m)^compression:\s*$', "compression:`n  threshold: 0.75"
         }
         if ($content -match '(?m)^  target_ratio:') {
-            $content = $content -replace '(?m)^  target_ratio: .+$', "  target_ratio: 0.20"
+            $content = $content -replace '(?m)^  target_ratio: .+$', "  target_ratio: 0.50"
         } else {
-            $content = $content -replace '(?m)^compression:\s*$', "compression:`n  target_ratio: 0.20"
+            $content = $content -replace '(?m)^compression:\s*$', "compression:`n  target_ratio: 0.50"
         }
-        if ($content -notmatch '(?m)^  protect_last_n:') {
-            $content = $content -replace '(?m)^compression:\s*$', "compression:`n  protect_last_n: 20"
+        if ($content -match '(?m)^  protect_last_n:') {
+            $content = $content -replace '(?m)^  protect_last_n: .+$', "  protect_last_n: 40"
+        } else {
+            $content = $content -replace '(?m)^compression:\s*$', "compression:`n  protect_last_n: 40"
         }
     }
 

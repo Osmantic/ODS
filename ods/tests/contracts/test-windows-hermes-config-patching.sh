@@ -128,6 +128,18 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 6d. Windows must converge to the same conservative Talk compression values
+#     as the canonical template and Linux patcher.
+# ---------------------------------------------------------------------------
+if grep -q 'threshold: 0.75' "$PHASE" \
+   && grep -q 'target_ratio: 0.50' "$PHASE" \
+   && grep -q 'protect_last_n: 40' "$PHASE"; then
+    pass "Windows Hermes compression defaults match the canonical patcher"
+else
+    fail "Windows Hermes compression defaults must match the canonical patcher"
+fi
+
+# ---------------------------------------------------------------------------
 # 7. Windows local inference needs a longer Hermes provider timeout than the
 #    shared template default. The helper must expose a timeout parameter and
 #    both installer paths must pass the Windows-local value.
