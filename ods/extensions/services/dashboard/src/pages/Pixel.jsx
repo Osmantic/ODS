@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { readConversations, saveConversation, SELECT_EVENT, DELETE_EVENT, deleteConversation, isConversationDeleted } from '../lib/pixelConversations'
 import ReactMarkdown from 'react-markdown'
+import PixelReplyTable from '../components/PixelReplyTable'
 import remarkGfm from 'remark-gfm'
 import rehypeHighlight from 'rehype-highlight'
 import { Link } from 'react-router-dom'
@@ -59,11 +60,7 @@ const MARKDOWN_COMPONENTS = {
   em: ({ children }) => <em className="italic">{children}</em>,
   code: ({ children, className = '' }) => <code className={`rounded bg-theme-bg/70 px-1 py-0.5 font-mono text-[13px] text-theme-text ${className}`}>{children}</code>,
   pre: ({ children }) => <pre className="my-2 overflow-x-auto rounded border border-theme-border bg-theme-bg/70 [&>code]:block [&>code]:p-2">{children}</pre>,
-  table: ({ children }) => (
-    <div role="region" aria-label="Scrollable table" tabIndex={0} className="my-3 max-w-full overflow-x-auto rounded border border-theme-border">
-      <table className="w-full border-collapse text-left text-sm">{children}</table>
-    </div>
-  ),
+  table: PixelReplyTable,
   th: ({ children, style }) => <th scope="col" style={style} className="border-b border-theme-border bg-theme-bg/70 px-3 py-2 font-semibold">{children}</th>,
   td: ({ children, style }) => <td style={style} className="border-b border-theme-border px-3 py-2 align-top [overflow-wrap:anywhere]">{children}</td>,
   a: ({ href, children }) => {
