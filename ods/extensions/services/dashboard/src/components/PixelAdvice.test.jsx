@@ -34,6 +34,33 @@ async function setup({ kind, post, onInsert = vi.fn() } = {}) {
 beforeEach(() => localStorage.clear())
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); localStorage.clear() })
 
+it('keeps the newest provider inspection when reloads finish out of order', async () => {
+  const {fetchMock} = await setup()
+  let finishOld
+  const latest = {...config(),revision:4}
+  fetchMock.mockImplementationOnce(() => new Promise(resolve => {finishOld=resolve}))
+    .mockResolvedValueOnce(response({configuration:latest}))
+  const reload = screen.getByRole('button',{name:'Reload saved providers'})
+  fireEvent.click(reload)
+  fireEvent.click(reload)
+  await screen.findByText(/saved revision 4/)
+  await act(async () => finishOld(response({configuration:config()})))
+  expect(screen.getByText(/saved revision 4/)).toBeVisible()
+  expect(fetchMock.mock.calls.some(([url]) => url.endsWith('/start'))).toBe(false)
+})
+
+it('ignores a provider inspection failure from a closed advice panel', async () => {
+  const {fetchMock} = await setup()
+  let failOld
+  fetchMock.mockImplementationOnce(() => new Promise((_,reject) => {failOld=reject}))
+  fireEvent.click(screen.getByRole('button',{name:'Reload saved providers'}))
+  fireEvent.click(screen.getByRole('button',{name:'Close advice'}))
+  fireEvent.click(screen.getByRole('button',{name:/^Ask for advice/}))
+  await screen.findByText(/saved revision 3/)
+  await act(async () => failOld(new Error('Old inspection failed')))
+  expect(screen.queryByText('Provider settings unavailable. Reload before submitting.')).toBeNull()
+})
+
 it('sends only reviewed capsule and fixed selected revision once, stores only job ID', async () => {
   const { fetchMock, onInsert } = await setup()
   const baselineKeys = Object.keys(localStorage)
