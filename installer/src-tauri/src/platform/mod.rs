@@ -7,6 +7,11 @@ pub mod linux;
 
 use serde::Serialize;
 
+const MINIMUM_RAM_GB: f64 = 8.0;
+const MINIMUM_RAM_CHECK_GB: f64 = 7.5; // Allow 0.5 GB tolerance
+const MINIMUM_DISK_GB: f64 = 20.0;
+const SUPPORTED_ARCHITECTURES: &[&str] = &["x86_64", "aarch64", "arm64"];
+
 #[derive(Debug, Serialize)]
 pub struct SystemInfo {
     pub os: String,
@@ -45,10 +50,10 @@ pub fn check_requirements(info: &SystemInfo) -> Vec<RequirementCheck> {
     // RAM: minimum 8GB
     checks.push(RequirementCheck {
         name: "RAM".into(),
-        met: info.ram_gb >= 7.5,
+        met: info.ram_gb >= MINIMUM_RAM_CHECK_GB,
         found: format!("{:.1} GB", info.ram_gb),
-        required: "8 GB minimum".into(),
-        help: if info.ram_gb < 7.5 {
+        required: format!("{} GB minimum", MINIMUM_RAM_GB as i32),
+        help: if info.ram_gb < MINIMUM_RAM_CHECK_GB {
             Some("ODS needs at least 8GB RAM. Close memory-heavy apps or consider cloud mode.".into())
         } else {
             None
@@ -58,10 +63,10 @@ pub fn check_requirements(info: &SystemInfo) -> Vec<RequirementCheck> {
     // Disk: minimum 20GB free
     checks.push(RequirementCheck {
         name: "Disk Space".into(),
-        met: info.disk_free_gb >= 20.0,
+        met: info.disk_free_gb >= MINIMUM_DISK_GB,
         found: format!("{:.1} GB free", info.disk_free_gb),
-        required: "20 GB minimum".into(),
-        help: if info.disk_free_gb < 20.0 {
+        required: format!("{} GB minimum", MINIMUM_DISK_GB as i32),
+        help: if info.disk_free_gb < MINIMUM_DISK_GB {
             Some("Free up disk space. Docker images and AI models require significant storage.".into())
         } else {
             None
@@ -69,7 +74,7 @@ pub fn check_requirements(info: &SystemInfo) -> Vec<RequirementCheck> {
     });
 
     // Architecture
-    let arch_ok = info.arch == "x86_64" || info.arch == "aarch64" || info.arch == "arm64";
+    let arch_ok = SUPPORTED_ARCHITECTURES.contains(&info.arch.as_str());
     checks.push(RequirementCheck {
         name: "Architecture".into(),
         met: arch_ok,
