@@ -52,7 +52,7 @@ const AGENT_ID = process.env.PIXEL_AGENT_ID ?? "pixel";
 const ABORT_BODY_LIMIT = 256;
 const OPENAI_RUN_ID = /^chatcmpl_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const toolLoopGuardRegistry = createToolLoopGuardRegistry();
-const taskActivity = createTaskActivity();
+const taskActivity = createTaskActivity({agentId:AGENT_ID});
 let execCancellationControl;
 let accessRuntime;
 const managedRuntimeRegistry = createManagedRuntimeRegistry();
