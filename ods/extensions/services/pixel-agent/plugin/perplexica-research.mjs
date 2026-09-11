@@ -169,6 +169,8 @@ export function createPerplexicaResearchTool(deps = {}) {
           : "Perplexica research was unavailable or did not finish correctly. No completed research answer was returned. Check the installed Perplexica service and its model/search configuration before retrying.",
         { status: interrupted ? (signal?.aborted ? "cancelled" : "timed_out") : "unavailable", researchSubmitted: researchStarted, upstreamCancellationVerified: false }, true);
       } finally {
+        // Release unread error bodies as well as any completed request resources.
+        controller.abort();
         clearTimeout(timer);
         signal?.removeEventListener("abort", abort);
       }
