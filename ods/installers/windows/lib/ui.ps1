@@ -192,6 +192,11 @@ function Test-ODSBootstrapUpgradeActive {
         $bashInstallNeedle = "/$($Matches[1])/$($Matches[2])"
     }
     $modelNeedle = $ModelFile.ToLowerInvariant()
+    $partNeedle = ((Join-Path (Join-Path $InstallDir "data\models") "$ModelFile.part") -replace "\\", "/").ToLowerInvariant()
+    $bashPartNeedle = $partNeedle
+    if ($partNeedle -match '^([a-z]):/(.*)$') {
+        $bashPartNeedle = "/$($Matches[1])/$($Matches[2])"
+    }
     $wrapperPath = Join-Path $InstallDir "logs\bootstrap-run.sh"
     $wrapperNeedle = ($wrapperPath -replace "\\", "/").ToLowerInvariant()
 
@@ -230,9 +235,11 @@ function Test-ODSBootstrapUpgradeActive {
             $commandLine = [string]$process.CommandLine
             if ([string]::IsNullOrWhiteSpace($commandLine)) { continue }
             $normalized = ($commandLine -replace "\\", "/").ToLowerInvariant()
-            if ($normalized.Contains("bootstrap-upgrade.sh") -and
+            $scriptOwner = $normalized.Contains("bootstrap-upgrade.sh") -and
                 ($normalized.Contains($installNeedle) -or $normalized.Contains($bashInstallNeedle)) -and
-                $normalized.Contains($modelNeedle)) {
+                $normalized.Contains($modelNeedle)
+            $partWriter = $normalized.Contains($partNeedle) -or $normalized.Contains($bashPartNeedle)
+            if ($scriptOwner -or $partWriter) {
                 return $true
             }
         }

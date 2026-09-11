@@ -46,6 +46,16 @@ try {
     Assert-True (Test-ODSBootstrapUpgradeActive -InstallDir $testRoot -ModelFile $modelFile) `
         'Git Bash direct-launch process was not detected'
 
+    $partPath = ((Join-Path (Split-Path -Parent $destination) "$modelFile.part") -replace '\\', '/').ToLowerInvariant()
+    if ($partPath -match '^([a-z]):/(.*)$') {
+        $partPath = "/$($Matches[1])/$($Matches[2])"
+    }
+    $script:mockProcesses = @([pscustomobject]@{
+        CommandLine = "curl.exe -fSL -C - -o $partPath https://example.invalid/$modelFile"
+    })
+    Assert-True (Test-ODSBootstrapUpgradeActive -InstallDir $testRoot -ModelFile $modelFile) `
+        'orphaned process still writing the exact partial file was not detected'
+
     $script:activeChecks = 0
     function Test-ODSBootstrapUpgradeActive {
         $script:activeChecks++

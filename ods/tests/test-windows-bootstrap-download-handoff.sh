@@ -30,6 +30,8 @@ grep -Fq 'Refusing to race the active bootstrap downloader' "$INSTALLER" \
     || fail "timeout must fail closed instead of racing the shared partial"
 grep -Fq '$normalized.Contains($bashInstallNeedle)' "$UI" \
     || fail "direct Git Bash launch detection must normalize Windows drive paths"
+grep -Fq '$normalized.Contains($bashPartNeedle)' "$UI" \
+    || fail "orphaned download children must be detected from the exact partial path"
 
 python3 - "$INSTALLER" <<'PY'
 from pathlib import Path
