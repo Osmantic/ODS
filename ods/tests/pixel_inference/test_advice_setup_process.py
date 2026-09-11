@@ -19,7 +19,8 @@ pytestmark=pytest.mark.skipif(sys.platform!='linux',reason='Linux process-state 
 
 def live(pid):
     try: return Path(f'/proc/{pid}/stat').read_text().split(') ',1)[1].split()[0]!='Z'
-    except FileNotFoundError: return False
+    # A process can disappear after procfs opens stat but before read completes.
+    except (FileNotFoundError, ProcessLookupError): return False
 
 
 def until(check,seconds=5):
