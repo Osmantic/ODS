@@ -285,6 +285,10 @@ def _resolve_peer(target: str) -> list[tuple[int, str, str]]:
         if family not in {socket.AF_INET, socket.AF_INET6}:
             continue
         address = str(ipaddress.ip_address(sockaddr[0]))
+        # Link-local IPv6 names can resolve on more than one interface. The
+        # scope is part of the endpoint, not an interchangeable duplicate.
+        if family == socket.AF_INET6 and sockaddr[3] and "%" not in address:
+            address = f"{address}%{sockaddr[3]}"
         if address in seen:
             continue
         seen.add(address)
@@ -364,7 +368,11 @@ def _probe_icmp(family: int, address: str) -> bool | None:
 
 
 def _probe_tcp(family: int, address: str, port: int) -> bool:
-    endpoint = (address, port) if family == socket.AF_INET else (address, port, 0, 0)
+    if family == socket.AF_INET6:
+        host, separator, interface = address.partition("%")
+        endpoint = (host, port, 0, int(interface) if separator else 0)
+    else:
+        endpoint = (address, port)
     try:
         with socket.socket(family, socket.SOCK_STREAM) as connection:
             connection.settimeout(0.4)

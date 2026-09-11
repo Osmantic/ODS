@@ -147,6 +147,29 @@ class SystemObserveTests(unittest.TestCase):
             "tcp": [{"port": 22, "open": True}, {"port": 3389, "open": False}],
         }])
 
+    def test_link_local_peer_retains_resolved_interface_for_each_probe(self):
+        records = [
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("fe80::1234", 0, 0, 3)),
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("fe80::1234", 0, 0, 4)),
+        ]
+        tailscale = {"available": False, "found": False, "online": None, "addresses": []}
+        connection = mock.MagicMock()
+        connection.__enter__.return_value = connection
+        connection.connect_ex.side_effect = lambda endpoint: 0 if endpoint[3] == 3 else 113
+        with mock.patch.object(system_observe.socket, "getaddrinfo", return_value=records), \
+             mock.patch.object(system_observe.socket, "socket", return_value=connection), \
+             mock.patch.object(system_observe, "_tailscale_peer_status", return_value=tailscale), \
+             mock.patch.object(system_observe, "_probe_icmp", return_value=False) as icmp:
+            value = system_observe.observe_network_peer("printer.local", "443")
+        self.assertTrue(value["reachable"])
+        self.assertEqual([row["address"] for row in value["addresses"]], ["fe80::1234%3", "fe80::1234%4"])
+        self.assertEqual([row["tcp"] for row in value["addresses"]],
+                         [[{"port": 443, "open": True}], [{"port": 443, "open": False}]])
+        self.assertEqual(connection.connect_ex.call_args_list,
+                         [mock.call(("fe80::1234", 443, 0, 3)), mock.call(("fe80::1234", 443, 0, 4))])
+        self.assertEqual(icmp.call_args_list,
+                         [mock.call(socket.AF_INET6, "fe80::1234%3"), mock.call(socket.AF_INET6, "fe80::1234%4")])
+
     def test_network_peer_rejects_public_resolution_and_unbounded_ports(self):
         records = [
             (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("203.0.113.7", 0)),
