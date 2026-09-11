@@ -3349,7 +3349,11 @@ elif [[ -n "$DOCKER_CMD" ]] && $DOCKER_CMD ps --filter name=ods-llama-server --f
                 sleep 2
             done
             if $_hermes_ready; then
-                if $DOCKER_CMD exec ods-hermes timeout 90 \
+                # Git Bash rewrites leading-slash arguments passed to native
+                # Windows executables unless path conversion is disabled. Keep
+                # the container's Hermes path intact just as the live-config
+                # patch above keeps /opt/data/config.yaml intact.
+                if MSYS_NO_PATHCONV=1 $DOCKER_CMD exec ods-hermes timeout 90 \
                     /opt/hermes/.venv/bin/hermes -z "ping" --yolo \
                     >/dev/null 2>&1; then
                     log "Hermes system prompt cached — first user prompt will be fast."

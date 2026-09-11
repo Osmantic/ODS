@@ -153,6 +153,17 @@ unset -f docker patch_hermes_yaml_in_container patch_hermes_yaml_with_sed \
     yaml_double_quoted_scalar_content sed_replacement_escape
 pass "Hermes live patch values stay inside explicit docker exec arguments"
 
+hermes_prewarm_block="$(awk '
+    /Pre-warming Hermes system prompt/ { in_block=1 }
+    in_block { print }
+    in_block && /\/opt\/hermes\/\.venv\/bin\/hermes/ { exit }
+' "$TARGET" | grep -v '^[[:space:]]*#')"
+grep -qF 'MSYS_NO_PATHCONV=1 $DOCKER_CMD exec ods-hermes timeout 90' <<<"$hermes_prewarm_block" \
+    || fail "Hermes pre-warm must disable Git Bash path conversion for the container executable"
+grep -qF '/opt/hermes/.venv/bin/hermes -z "ping" --yolo' <<<"$hermes_prewarm_block" \
+    || fail "Hermes pre-warm must preserve the exact container executable and argv"
+pass "Hermes pre-warm preserves its container-absolute executable on Windows"
+
 compose_hermes_block="$(function_block compose_recreate_hermes | grep -v '^[[:space:]]*#')"
 windows_compose_loader_block="$(function_block load_windows_lemonade_compose_args | grep -v '^[[:space:]]*#')"
 eval "$compose_hermes_block"
