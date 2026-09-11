@@ -27,7 +27,7 @@ export default function PixelPreviewSource({ preview, file }) {
       try {
         const bytes = await loadArtifactBytes(preview, {path, sha256:expectedDigest, bytes:file?.bytes}, controller.signal)
         if (language) {
-          const value = new TextDecoder('utf-8', {fatal:true}).decode(bytes)
+          const value = new TextDecoder('utf-8', {fatal:true, ignoreBOM:true}).decode(bytes)
           if (current) setSource(value)
         } else if (current) setBinarySize(bytes.byteLength)
       } catch { if (current) setError('The published source could not be verified. No unverified code is displayed.') }
