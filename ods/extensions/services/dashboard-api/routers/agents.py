@@ -21,26 +21,44 @@ async def get_agent_metrics(api_key: str = Depends(verify_api_key)):
 async def get_agent_metrics_html(api_key: str = Depends(verify_api_key)):
     """Get agent metrics as HTML fragment for htmx."""
     metrics = get_full_agent_metrics()
-    cluster = metrics.get("cluster", {})
-    agent = metrics.get("agent", {})
-    tp = metrics.get("throughput", {})
+    cluster = metrics.get("cluster", {}) if isinstance(metrics, dict) else {}
+    agent = metrics.get("agent", {}) if isinstance(metrics, dict) else {}
+    tp = metrics.get("throughput", {}) if isinstance(metrics, dict) else {}
 
-    cluster_class = "status-ok" if cluster.get("failover_ready") else "status-warn"
-    failover_text = "Ready \u2705" if cluster.get("failover_ready") else "Single GPU \u26a0\ufe0f"
-    last_update = agent.get("last_update", "")
-    last_update_time = last_update.split("T")[1][:8] if "T" in last_update else "N/A"
+    failover_ready = bool(cluster.get("failover_ready")) if isinstance(cluster, dict) else False
+    cluster_class = "status-ok" if failover_ready else "status-warn"
+    failover_text = "Ready \u2705" if failover_ready else "Single GPU \u26a0\ufe0f"
 
-    # Escape all interpolated values for HTML safety
-    def esc(value):
-        return html_mod.escape(str(value))
+    raw_last_update = agent.get("last_update", "") if isinstance(agent, dict) else ""
+    if isinstance(raw_last_update, str) and "T" in raw_last_update:
+        last_update_time = raw_last_update.split("T")[1][:8]
+    else:
+        last_update_time = "N/A"
 
-    active_gpus = esc(cluster.get("active_gpus", 0))
-    total_gpus = esc(cluster.get("total_gpus", 0))
+    def esc(value) -> str:
+        return html_mod.escape(str(value if value is not None else ""))
+
+    def _safe_int_val(value, default: int = 0) -> int:
+        try:
+            val = int(value)
+            return max(0, val)
+        except (TypeError, ValueError):
+            return default
+
+    def _safe_float_fmt(value, default: float = 0.0) -> str:
+        try:
+            val = float(value)
+            return f"{val:.1f}" if val >= 0 else f"{default:.1f}"
+        except (TypeError, ValueError):
+            return f"{default:.1f}"
+
+    active_gpus = esc(_safe_int_val(cluster.get("active_gpus", 0) if isinstance(cluster, dict) else 0))
+    total_gpus = esc(_safe_int_val(cluster.get("total_gpus", 0) if isinstance(cluster, dict) else 0))
     failover_safe = esc(failover_text)
-    sessions = esc(agent.get("session_count", 0))
+    sessions = esc(_safe_int_val(agent.get("session_count", 0) if isinstance(agent, dict) else 0))
     last_update_safe = esc(last_update_time)
-    tp_current = esc(f"{tp.get('current', 0):.1f}")
-    tp_average = esc(f"{tp.get('average', 0):.1f}")
+    tp_current = esc(_safe_float_fmt(tp.get("current", 0) if isinstance(tp, dict) else 0))
+    tp_average = esc(_safe_float_fmt(tp.get("average", 0) if isinstance(tp, dict) else 0))
 
     html = f"""
     <div class="grid">
