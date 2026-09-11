@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Pencil } from 'lucide-react'
 import { fileLanguage, PixelCodeLines, PixelLanguageBadge } from './PixelCodeBlock'
 import './pixel-file-changes.css'
@@ -50,22 +50,40 @@ function FileChange({file, onPreview, expansion}) {
   useEffect(() => {if (expansion) setOpen(expansion.open)}, [expansion])
   const [copyState, setCopyState] = useState('Copy')
   const rows = Array.isArray(file.diff) ? file.diff : []
+  const copyRequest = useRef(null)
+  // Receipts belong to the displayed patch, not merely its filename.
+  const patch = rows.map(row => `${row?.type === 'add' ? '+' : row?.type === 'remove' ? '-' : ' '}${row?.text}${row?.noFinalNewline ? '\n\\ No newline at end of file' : ''}`).join('\n')
+  useEffect(() => {
+    setCopyState('Copy')
+    return () => { clearTimeout(copyRequest.current?.timer); copyRequest.current = null }
+  }, [patch])
   const hasCounts = count(file.additions) && count(file.deletions)
   const validRows = rows.every(row => row && ['context','add','remove'].includes(row.type) && typeof row.text === 'string' && !row.text.includes('\n') &&
     (row.oldLine === null || Number.isSafeInteger(row.oldLine) && row.oldLine > 0) &&
     (row.newLine === null || Number.isSafeInteger(row.newLine) && row.newLine > 0))
   const copy = async () => {
+    if (copyRequest.current) return
+    const request = {timer:null}
+    copyRequest.current = request
+    setCopyState('Copying…')
     try {
-      await navigator.clipboard.writeText(rows.map(row => `${row.type === 'add' ? '+' : row.type === 'remove' ? '-' : ' '}${row.text}${row.noFinalNewline ? '\n\\ No newline at end of file' : ''}`).join('\n'))
-      setCopyState('Copied')
-    } catch { setCopyState('Copy failed') }
+      await Promise.race([
+        navigator.clipboard.writeText(patch),
+        new Promise((_, reject) => { request.timer = setTimeout(() => reject(new Error('Clipboard timed out')), 5000) }),
+      ])
+      if (copyRequest.current === request) setCopyState('Copied')
+    } catch { if (copyRequest.current === request) setCopyState('Copy failed') }
+    finally {
+      clearTimeout(request.timer)
+      if (copyRequest.current === request) copyRequest.current = null
+    }
   }
   return <details className="chat-file-change" open={open} onToggle={event => setOpen(event.currentTarget.open)}>
     <summary><Pencil size={16} strokeWidth={1.25} aria-hidden="true"/><span className="file-change-name">{LABELS[file.change] || 'Changed'} {file.path}</span><PixelChangeCounts additions={file.additions} deletions={file.deletions}/></summary>
     {open && <div className="inline-artifact-content">
       {file.change === 'published' && <p className="pixel-publication-baseline">First published version. No earlier snapshot was available for comparison.</p>}
       {!validRows || !hasCounts && (file.additions !== null || file.deletions !== null) ? <p role="status">Changes could not be verified.</p> : !hasCounts ? <p role="status">Line comparison unavailable for this file.</p> : !rows.length ? <p role="status">{file.additions || file.deletions ? 'Line changes are unavailable for this file.' : 'No line changes.'}</p> : <section className="pixel-code-block artifact-diff" aria-label={`Changes to ${file.path}`}>
-        <header className="code-block-header"><PixelLanguageBadge path={file.path}/><span title={file.path}>{file.path}</span><PixelChangeCounts additions={file.additions} deletions={file.deletions}/>{onPreview && file.change !== 'deleted' && <button type="button" onClick={() => onPreview(file)} aria-label={`Preview ${file.path}`}>Preview</button>}<button type="button" onClick={copy} aria-label={`Copy changes to ${file.path}`}>{copyState}</button></header>
+        <header className="code-block-header"><PixelLanguageBadge path={file.path}/><span title={file.path}>{file.path}</span><PixelChangeCounts additions={file.additions} deletions={file.deletions}/>{onPreview && file.change !== 'deleted' && <button type="button" onClick={() => onPreview(file)} aria-label={`Preview ${file.path}`}>Preview</button>}<button type="button" onClick={copy} disabled={copyState === 'Copying…'} aria-label={`Copy changes to ${file.path}`}>{copyState}</button></header>
         <pre tabIndex={0} aria-label={`Diff for ${file.path}`}><DiffLines rows={rows} path={file.path}/></pre>
         {file.truncated && <p className="pixel-diff-notice" role="status">Only part of this diff is displayed. Counts cover the verified file change.</p>}
         {copyState === 'Copy failed' && <p className="pixel-diff-notice" role="alert">Clipboard access failed. Select the changes to copy them manually.</p>}
