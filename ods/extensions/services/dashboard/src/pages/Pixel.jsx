@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { readConversations, saveConversation, SELECT_EVENT, DELETE_EVENT, deleteConversation, isConversationDeleted } from '../lib/pixelConversations'
 import ReactMarkdown from 'react-markdown'
+import {boundedHistory} from '../lib/pixelRequestContext'
+import PixelRequestContext from '../components/PixelRequestContext'
 import remarkGfm from 'remark-gfm'
 import rehypeHighlight from 'rehype-highlight'
 import { Link } from 'react-router-dom'
@@ -82,8 +84,6 @@ const MARKDOWN_COMPONENTS = {
 }
 
 const MAX_INPUT_LEN = 16 * 1024
-const MAX_REQUEST_MESSAGES = 50
-const MAX_TOTAL_MESSAGE_BYTES = 256 * 1024
 // Visible history is independent of the model's per-request context budget.
 const MAX_STORED_MESSAGES = 2000
 const MAX_STORED_MESSAGE_BYTES = 4 * 1024 * 1024
@@ -487,27 +487,6 @@ function loadStoredChat(selected) {
   }
 }
 
-function boundedHistory(messages, nextUserContent) {
-  const encoder = new TextEncoder()
-  const budget = MAX_TOTAL_MESSAGE_BYTES - encoder.encode(nextUserContent).byteLength
-  const selected = []
-  let bytes = 0
-  for (let index = messages.length - 1; index >= 0 && selected.length < MAX_REQUEST_MESSAGES - 2; index -= 1) {
-    const { role } = messages[index]
-    // The transport's per-message cap is not a transcript storage limit.
-    // Bound only the copy sent to the model; keep the complete reply in chat.
-    const omission = '\n[Earlier response shortened for model context.]'
-    const original = messages[index].content
-    const content = original.length > MAX_INPUT_LEN
-      ? original.slice(0, MAX_INPUT_LEN - omission.length) + omission : original
-    const size = encoder.encode(content).byteLength
-    if (bytes + size > budget) break
-    selected.unshift({ role, content })
-    bytes += size
-  }
-  while (selected[0]?.role === 'assistant') selected.shift()
-  return selected
-}
 
 export default function Pixel({ systemStatus = null }) {
   const profile = useLocalProfile()
@@ -1218,6 +1197,7 @@ export default function Pixel({ systemStatus = null }) {
             <label className="block p-2 text-xs">Send shortcut<select className="mt-1 block w-full rounded border border-theme-border bg-theme-bg p-2" aria-label="Send shortcut" value={sendKey.mode} onChange={event => sendKey.change(event.target.value)}><option value="enter">Enter to send</option><option value="mod-enter">Ctrl/⌘+Enter to send</option></select></label>
             {sendKey.error && <p role="alert" className="p-2 text-xs">{sendKey.error}</p>}
 
+            <PixelRequestContext messages={messages} contextStart={contextStartRef.current} draft={input} busy={sending || restoredActive || restoredChecking || stopping}/>
             <PixelTurnNavigation messages={messages} onNavigate={index => {
               const row = scrollRef.current?.parentElement?.querySelector(`[data-pixel-message-index="${index}"]`)
               row?.scrollIntoView?.({block:'start', behavior:'auto'})
