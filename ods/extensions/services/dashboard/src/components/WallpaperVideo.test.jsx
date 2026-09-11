@@ -53,3 +53,17 @@ it('falls back to the theme poster when decoding or autoplay fails', async () =>
   await act(async () => {})
   expect(retry.container.querySelector('video')).toBeNull()
 })
+
+it('resumes video after hiding the tab interrupts a pending play', async () => {
+  let rejectPlay
+  HTMLMediaElement.prototype.play.mockImplementationOnce(() => new Promise((_, reject) => { rejectPlay = reject }))
+  const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(false)
+  const view = render(<WallpaperVideo/>)
+  hidden.mockReturnValue(true)
+  fireEvent(document, new Event('visibilitychange'))
+  await act(async () => { rejectPlay(new globalThis.DOMException('Playback interrupted by pause', 'AbortError')) })
+  expect(view.container.querySelector('video')).not.toBeNull()
+  hidden.mockReturnValue(false)
+  fireEvent(document, new Event('visibilitychange'))
+  expect(HTMLMediaElement.prototype.play).toHaveBeenCalledTimes(2)
+})
