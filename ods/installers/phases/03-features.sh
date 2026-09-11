@@ -154,12 +154,16 @@ fi
 # only gates cosmetic things (image pre-pull, health checks, summary URLs)
 # and the service still starts. Every optional service must be listed here
 # or the user can't opt out of it.
-_sync_extension_compose() {
-    local flag="$1" svc_dir="$2" label="$3" reason="$4"
-    local compose="$SCRIPT_DIR/extensions/services/$svc_dir/compose.yaml"
+_sync_extension_compose_at() {
+    local root="$1" flag="$2" svc_dir="$3" label="$4" reason="$5"
+    local compose="$root/extensions/services/$svc_dir/compose.yaml"
     if [[ "$flag" == "true" ]]; then
         # Re-enable if previously disabled (re-install with different options)
-        if [[ ! -f "$compose" && -f "${compose}.disabled" ]]; then
+        if [[ -f "$compose" ]]; then
+            # An upgrade copy does not prune the prior state file. Make the
+            # selected enabled state authoritative when both names exist.
+            rm -f -- "${compose}.disabled"
+        elif [[ -f "${compose}.disabled" ]]; then
             mv "${compose}.disabled" "$compose"
             log "$label compose re-enabled"
         fi
@@ -167,9 +171,24 @@ _sync_extension_compose() {
         # Disable — prevents resolve-compose-stack.sh from including a compose
         # file whose image was never built/pulled, blocking ALL containers.
         if [[ -f "$compose" ]]; then
+            rm -f -- "${compose}.disabled"
             mv "$compose" "${compose}.disabled"
             log "$label compose disabled ($reason)"
         fi
+    fi
+}
+
+_sync_extension_compose() {
+    local flag="$1" svc_dir="$2" label="$3" reason="$4"
+    _sync_extension_compose_at "$SCRIPT_DIR" "$flag" "$svc_dir" "$label" "$reason"
+
+    # On an upgrade, Phase 06 deliberately preserves runtime data and does not
+    # use rsync --delete. Reconcile the existing installed tree now as well so
+    # its stale opposite state cannot survive the later source copy and cause
+    # resolve-compose-stack.sh to launch a service the user disabled.
+    if [[ -n "${INSTALL_DIR:-}" && "$INSTALL_DIR" != "$SCRIPT_DIR" \
+        && -d "$INSTALL_DIR/extensions/services/$svc_dir" ]]; then
+        _sync_extension_compose_at "$INSTALL_DIR" "$flag" "$svc_dir" "$label" "$reason"
     fi
 }
 

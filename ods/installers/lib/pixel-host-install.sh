@@ -3633,7 +3633,7 @@ _ods_pixel_wait_extension_manager_probe() {
             && jq -e --arg id "$extension_id" '.schemaVersion == 1
                 and .kind == "ods-pixel-extension-lifecycle"
                 and .action == "inspect" and .extensionId == $id
-                and (.outcome == "ready" or .outcome == "blocked")
+                and (.outcome == "inspected" or .outcome == "blocked")
                 and .changed == false and .externalEffectOccurred == false
                 and (.requiredConfiguration | type == "array")
                 and (.optionalConfiguration | type == "array")

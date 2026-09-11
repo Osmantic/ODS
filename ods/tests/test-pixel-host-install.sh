@@ -35,7 +35,7 @@ import json, os, pathlib, sys
 counter = pathlib.Path(os.environ["PIXEL_TEST_COUNTER"])
 calls = int(counter.read_text() if counter.exists() else "0") + 1
 counter.write_text(str(calls), encoding="utf-8")
-if calls == 1 and os.environ.get("PIXEL_TEST_BAD") != "true":
+if calls == 1 and os.environ.get("PIXEL_TEST_TRANSIENT") == "true":
     raise SystemExit(1)
 extension_id = "wrong" if os.environ.get("PIXEL_TEST_BAD") == "true" else sys.argv[4]
 print(json.dumps({
@@ -43,7 +43,7 @@ print(json.dumps({
     "kind": "ods-pixel-extension-lifecycle",
     "action": "inspect",
     "extensionId": extension_id,
-    "outcome": "ready",
+    "outcome": os.environ.get("PIXEL_TEST_OUTCOME", "inspected"),
     "previousStatus": "not_installed",
     "currentStatus": "not_installed",
     "changed": False,
@@ -57,7 +57,7 @@ print(json.dumps({
 PY
 if (
     ods_sudo() { shift 2; "$@"; }
-    export PIXEL_TEST_COUNTER="$probe_counter"
+    export PIXEL_TEST_COUNTER="$probe_counter" PIXEL_TEST_TRANSIENT=true
     _ods_pixel_wait_extension_manager_probe "$probe_program" crewai 3 0
 ); then
     pass "extension manager readiness retries a transient failure"
@@ -65,6 +65,16 @@ else
     fail "extension manager readiness retries a transient failure"
 fi
 check test "$(cat "$probe_counter")" = 2
+rm -f -- "$probe_counter"
+if (
+    ods_sudo() { shift 2; "$@"; }
+    export PIXEL_TEST_COUNTER="$probe_counter" PIXEL_TEST_OUTCOME=ready
+    _ods_pixel_wait_extension_manager_probe "$probe_program" crewai 1 0
+); then
+    fail "extension manager readiness rejects the obsolete ready inspect outcome"
+else
+    pass "extension manager readiness rejects the obsolete ready inspect outcome"
+fi
 rm -f -- "$probe_counter"
 if (
     ods_sudo() { shift 2; "$@"; }

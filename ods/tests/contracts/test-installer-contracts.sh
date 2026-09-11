@@ -557,6 +557,7 @@ done
 unset _resolver_callers
 
 echo "[contract] optional extension compose files are installer-gated"
+bash tests/test-installer-feature-state-sync.sh
 # Bundled optional/recommended services that ship compose.yaml must not enter
 # a Core Only install just because their compose file exists in the source tree.
 for spec in \
