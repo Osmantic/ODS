@@ -166,13 +166,22 @@ pub async fn start_install(
         .map(std::path::PathBuf::from)
         .unwrap_or_else(installer::default_install_dir);
 
-    let state = std::sync::Arc::new(Mutex::new(InstallState {
-        phase: InstallPhase::Installing,
-        install_dir: Some(dir.to_string_lossy().to_string()),
-        selected_tier: Some(tier),
-        selected_features: features.clone(),
-        ..Default::default()
-    }));
+    let state = std::sync::Arc::new(Mutex::new(fresh_install_state(
+        &dir,
+        tier,
+        features.clone(),
+    )));
+
+    // The state file outlives the process, and get_install_progress serves the
+    // front end straight from it. Without this write, the Installing page polls
+    // the *previous* run's file for the whole clone-and-configure step: a prior
+    // success shows 100% and "Installation complete!" before anything has
+    // happened, and a prior failure shows its error, which the page forwards to
+    // onError and tears the wizard down to the error screen — for an install
+    // that is running fine.
+    if let Ok(s) = state.lock() {
+        let _ = s.save();
+    }
 
     let state_clone = state.clone();
 
@@ -181,6 +190,25 @@ pub async fn start_install(
         .await
         .map_err(|e| format!("Install task failed: {}", e))?
         .map(|_| "Installation complete!".to_string())
+}
+
+/// The state a starting install begins from.
+///
+/// Everything not set here comes from Default, which is the point: the progress
+/// counter, message and error must all be blank, because this value is written
+/// over a state file that may still describe an earlier run.
+fn fresh_install_state(
+    dir: &std::path::Path,
+    tier: u8,
+    features: Vec<String>,
+) -> InstallState {
+    InstallState {
+        phase: InstallPhase::Installing,
+        install_dir: Some(dir.to_string_lossy().to_string()),
+        selected_tier: Some(tier),
+        selected_features: features,
+        ..Default::default()
+    }
 }
 
 fn validate_install_request(tier: u8, features: &[String]) -> Result<(), String> {
@@ -297,5 +325,35 @@ fn state_file_path() -> std::path::PathBuf {
         std::path::PathBuf::from(base)
             .join("ods")
             .join("installer-state.json")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn starting() -> InstallState {
+        fresh_install_state(
+            std::path::Path::new("/tmp/ods"),
+            2,
+            vec!["voice".to_string()],
+        )
+    }
+
+    #[test]
+    fn a_starting_install_carries_no_progress_from_an_earlier_run() {
+        let state = starting();
+        assert_eq!(state.progress_pct, 0);
+        assert_eq!(state.progress_message, "");
+        assert_eq!(state.error, None);
+    }
+
+    #[test]
+    fn a_starting_install_records_what_the_user_chose() {
+        let state = starting();
+        assert_eq!(state.phase, InstallPhase::Installing);
+        assert_eq!(state.selected_tier, Some(2));
+        assert_eq!(state.selected_features, vec!["voice".to_string()]);
+        assert_eq!(state.install_dir.as_deref(), Some("/tmp/ods"));
     }
 }
