@@ -1760,6 +1760,30 @@ litellm_settings:
 
         Push-Location $installDir
         try {
+            $_composeServicesDockerArgs = @($script:ODSWindowsDockerClientArgs)
+            $_enabledComposeServices = @(
+                & docker @_composeServicesDockerArgs compose @composeFlags config --services 2>> $_buildLog
+            )
+            if ($LASTEXITCODE -ne 0) {
+                Write-AIError "Could not resolve Windows compose services before local image rebuilds."
+                Write-AI "Inspect compose config with: cd '$installDir'; docker compose $($composeFlags -join ' ') config --services"
+                exit 1
+            }
+            $_enabledComposeServices = @(
+                $_enabledComposeServices |
+                    ForEach-Object { ([string]$_).Trim() } |
+                    Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+            )
+            $_selectedBuildServices = @()
+            foreach ($_svc in $_buildServices) {
+                if ($_enabledComposeServices -contains $_svc) {
+                    $_selectedBuildServices += $_svc
+                } else {
+                    Write-AI "Skipping local image build for disabled service: $_svc"
+                }
+            }
+            $_buildServices = $_selectedBuildServices
+
             Write-AI "Rebuilding local-built images (no-cache)..."
             $_failedBuildServices = @()
             $_legacyBuilderServices = @()
