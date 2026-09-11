@@ -433,7 +433,7 @@ _update_rollback() {
             docker-compose ${compose_flags_arg} down --remove-orphans
         fi
         if ! docker compose ${compose_flags_arg} up -d; then
-            log_warn "docker compose v2 up failed, trying v1..."
+            log_error "docker compose v2 up failed, trying v1..."
             docker-compose ${compose_flags_arg} up -d
         fi
     else
@@ -442,11 +442,11 @@ _update_rollback() {
             docker-compose down --remove-orphans
         fi
         if ! docker compose up -d; then
-            log_warn "docker compose v2 up failed, trying v1..."
+            log_error "docker compose v2 up failed, trying v1..."
             docker-compose up -d
         fi
     fi
-    log_warn "Rollback complete. Run 'ods-update.sh health' to verify."
+    log_ok "Rollback complete. Run 'ods-update.sh health' to verify."
 }
 
 #==============================================================================
@@ -698,7 +698,7 @@ cmd_update() {
             docker-compose ${compose_flags} down --remove-orphans
         fi
         if ! docker compose ${compose_flags} up -d; then
-            log_warn "docker compose v2 up failed, trying v1..."
+            log_error "docker compose v2 up failed, trying v1..."
             docker-compose ${compose_flags} up -d
         fi
     elif [[ -f "${INSTALL_DIR}/docker-compose.yml" ]]; then
@@ -707,7 +707,7 @@ cmd_update() {
             docker-compose down --remove-orphans
         fi
         if ! docker compose up -d; then
-            log_warn "docker compose v2 up failed, trying v1..."
+            log_error "docker compose v2 up failed, trying v1..."
             docker-compose up -d
         fi
     else
@@ -866,12 +866,12 @@ cmd_rollback() {
 
     if [[ ${#restored_compose_args[@]} -gt 0 ]]; then
         if ! docker compose "${restored_compose_args[@]}" up -d; then
-            log_warn "docker compose v2 up failed, trying v1..."
+            log_error "docker compose v2 up failed, trying v1..."
             docker-compose "${restored_compose_args[@]}" up -d
         fi
     else
         if ! docker compose up -d; then
-            log_warn "docker compose v2 up failed, trying v1..."
+            log_error "docker compose v2 up failed, trying v1..."
             docker-compose up -d
         fi
     fi
