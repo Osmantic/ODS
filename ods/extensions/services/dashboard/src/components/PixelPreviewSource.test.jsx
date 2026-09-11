@@ -61,3 +61,24 @@ it.each([
   await waitFor(() => expect(screen.getByRole('button',{name:'Copy code'})).toBeEnabled())
   expect(container.querySelector('pre code').textContent).toBe(text)
 })
+
+it.each(['Dockerfile', 'containers/Containerfile', 'Makefile', 'docs/README', 'LICENSE', 'NOTICE'])('inspects verified project text in %s', async path => {
+  const text = '# Project configuration\nkeep exact text\n'
+  const bytes = new TextEncoder().encode(text)
+  const file = {path,bytes:bytes.byteLength,sha256:createHash('sha256').update(bytes).digest('hex')}
+  vi.stubGlobal('fetch',vi.fn(async () => ({ok:true,arrayBuffer:async () => bytes.buffer})))
+  const view = render(<PixelPreviewSource preview={preview} file={file}/>)
+  await waitFor(() => expect(screen.queryByText('Verifying source…')).toBeNull())
+  expect(view.container.querySelector('pre code')).toHaveTextContent('keep exact text')
+  expect(view.container.querySelector('pre code').textContent).toBe(text)
+  expect(screen.getByRole('button',{name:'Copy code'})).toBeEnabled()
+})
+
+it('keeps unknown extensionless binary artifacts out of the text inspector', async () => {
+  const bytes = new Uint8Array([0,255,3])
+  const file = {path:'app',bytes:3,sha256:createHash('sha256').update(bytes).digest('hex')}
+  vi.stubGlobal('fetch',vi.fn(async () => ({ok:true,arrayBuffer:async () => bytes.buffer})))
+  const view = render(<PixelPreviewSource preview={preview} file={file}/>)
+  expect(await screen.findByText(/Binary asset/)).toBeVisible()
+  expect(view.container.querySelector('pre')).toBeNull()
+})

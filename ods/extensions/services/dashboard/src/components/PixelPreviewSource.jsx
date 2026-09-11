@@ -3,15 +3,14 @@ import { loadArtifactBytes } from '../lib/pixelArtifacts'
 import { PixelCodeLines, PixelLanguageBadge } from './PixelCodeBlock'
 import PixelArtifactDownload from './PixelArtifactDownload'
 import PixelSourceFind from './PixelSourceFind'
+import { sourceLanguage } from '../lib/pixelSourceLanguage'
 
 
-const TEXT_LANGUAGES = {html:'html',htm:'html',css:'css',scss:'scss',js:'javascript',mjs:'javascript',cjs:'javascript',jsx:'javascript',ts:'typescript',tsx:'typescript',py:'python',sh:'bash',yml:'yaml',yaml:'yaml',toml:'ini',json:'json',svg:'xml',xml:'xml',md:'markdown',markdown:'markdown',txt:'text',map:'json',csv:'text',tsv:'text'}
 
 export default function PixelPreviewSource({ preview, file }) {
   const path = file?.path || 'index.html'
   const expectedDigest = file?.sha256 || preview.entrySha256
-  const extension = path.split('.').pop().toLowerCase()
-  const language = TEXT_LANGUAGES[extension]
+  const language = sourceLanguage(path)
   const [source, setSource] = useState(null)
   const [binarySize, setBinarySize] = useState(null)
   const [error, setError] = useState('')
