@@ -204,6 +204,18 @@ else
             fi
         done
     fi
+    # Special case: n8n data dir must be explicitly repaired if it exists,
+    # as it is often created by the container with root ownership on first run
+    # and can block subsequent installer repairs or data migrations.
+    if ! $_phase06_rootless && [[ -d "$INSTALL_DIR/data/n8n" ]]; then
+        _phase06_repair_host_path "$INSTALL_DIR/data/n8n" "n8n data directory" || return 1
+    fi
+    for _cfg_dir in "$INSTALL_DIR"/config/*/; do
+        if [[ -d "$_cfg_dir" ]] && ! [[ -w "$_cfg_dir" ]]; then
+            _phase06_repair_host_path "$_cfg_dir" "container-owned config directory" || return 1
+        fi
+    done
+    fi
     for _cfg_dir in "$INSTALL_DIR"/config/*/; do
         if [[ -d "$_cfg_dir" ]] && ! [[ -w "$_cfg_dir" ]]; then
             _phase06_repair_host_path "$_cfg_dir" "container-owned config directory" || return 1
@@ -1103,10 +1115,17 @@ WEBUI_AUTH=${WEBUI_AUTH}
 ENABLE_WEB_SEARCH=${ENABLE_WEB_SEARCH:-true}
 WEB_SEARCH_ENGINE=searxng
 
-#=== n8n Settings ===
-N8N_HOST=localhost
-N8N_WEBHOOK_URL=http://localhost:5678
-TIMEZONE=${SYSTEM_TZ:-UTC}
+    #=== n8n Settings ===
+    N8N_HOST=$(if [[ "$BIND_ADDRESS" == "0.0.0.0" && -n "$HOST_LAN_IP" ]]; then echo "$HOST_LAN_IP"; else echo "localhost"; fi)
+    N8N_WEBHOOK_URL=$(if [[ "$BIND_ADDRESS" == "0.0.0.0" && -n "$HOST_LAN_IP" ]]; then echo "http://${HOST_LAN_IP}:5678"; else echo "http://localhost:5678"; fi)
+    # Fix: ensure N8N_WEBHOOK_URL is not hardcoded to localhost when LAN IP is available.
+    # The logic above handles it, but some legacy versions had a hardcoded fallback.
+    # We explicitly verify it here to ensure no regressions.
+    if [[ "$BIND_ADDRESS" == "0.0.0.0" && -n "$HOST_LAN_IP" && "$N8N_WEBHOOK_URL" == *"localhost"* ]]; then
+        N8N_WEBHOOK_URL="http://${HOST_LAN_IP}:5678"
+    fi
+    TIMEZONE=${SYSTEM_TZ:-UTC}
+
 
 #=== Langfuse (LLM Observability) ===
 LANGFUSE_ENABLED=${LANGFUSE_ENABLED}
