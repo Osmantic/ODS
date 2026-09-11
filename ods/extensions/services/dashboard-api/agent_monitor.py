@@ -59,7 +59,7 @@ class ClusterStatus:
             stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
 
             if proc.returncode == 0:
-                data = json.loads(stdout.decode())
+                data = json.loads(stdout.decode("utf-8", errors="replace"))
                 self.nodes = data.get("nodes", [])
                 self.total_gpus = len(self.nodes)
                 self.active_gpus = sum(1 for n in self.nodes if n.get("healthy", False))
@@ -69,8 +69,11 @@ class ClusterStatus:
         except FileNotFoundError:
             logger.debug("Cluster proxy not available: curl command not found")
         except asyncio.TimeoutError:
-            proc.kill()
-            await proc.wait()
+            try:
+                proc.kill()
+                await proc.wait()
+            except ProcessLookupError:
+                pass
             logger.debug("Cluster proxy health check timed out after 5s")
         except OSError as e:
             logger.debug("Cluster proxy connection failed: %s", e)
