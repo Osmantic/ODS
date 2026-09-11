@@ -456,6 +456,7 @@ fi
 manifest_env_contract() {
     awk '
         /^[[:space:]]+external_port_env:[[:space:]]*/ {
+            if ($2 == "\047\047" || $2 == "\"\"") next
             print FILENAME "	" $2
             next
         }
@@ -468,7 +469,8 @@ manifest_env_contract() {
             pending = ""
         }
         /^[[:space:]]+-[[:space:]]+key:/ { pending = $3 }
-    ' "$ROOT_DIR"/extensions/services/*/manifest.yaml | sort -u
+    ' "$ROOT_DIR"/extensions/services/*/manifest.yaml \
+      "$ROOT_DIR"/extensions/library/services/*/manifest.yaml | sort -u
 }
 
 undeclared=""
@@ -504,5 +506,28 @@ else
 fi
 
 echo ""
+# Library port overrides are optional, but must be valid when operators set them.
+cp "$TMP_DIR/valid.env" "$TMP_DIR/library-ports.env"
+port=31000
+while read -r key; do
+    printf '%s=%s\n' "$key" "$port" >> "$TMP_DIR/library-ports.env"
+    port=$((port + 1))
+done < <(awk '/^[[:space:]]+external_port_env:/ { if ($2 != "\047\047" && $2 != "\"\"") print $2 }' \
+    "$ROOT_DIR"/extensions/library/services/*/manifest.yaml | sort -u)
+if out=$("$VALIDATE_ENV_BASH" "$ROOT_DIR/scripts/validate-env.sh" "$TMP_DIR/library-ports.env" "$ROOT_DIR/.env.schema.json" 2>&1); then
+    pass "Every library port override passes public env validation"
+else
+    fail "Library port overrides failed validation: $out"
+fi
+cp "$TMP_DIR/valid.env" "$TMP_DIR/library-invalid-port.env"
+printf 'DIFY_PORT=65536\n' >> "$TMP_DIR/library-invalid-port.env"
+if out=$("$VALIDATE_ENV_BASH" "$ROOT_DIR/scripts/validate-env.sh" "$TMP_DIR/library-invalid-port.env" "$ROOT_DIR/.env.schema.json" 2>&1); then
+    fail "Out-of-range library port passed validation"
+elif [[ "$out" == *"DIFY_PORT: value 65536 is > maximum 65535"* ]]; then
+    pass "Library ports retain numeric range validation"
+else
+    fail "Library port was rejected for the wrong reason: $out"
+fi
+
 echo "Result: $PASSED passed, $FAILED failed"
 [[ $FAILED -eq 0 ]]
