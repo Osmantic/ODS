@@ -330,20 +330,6 @@ if ($dryRun) {
             $modelPath    = Join-Path (Join-Path $installDir "data\models") $tierConfig.GgufFile
             $needsDownload = -not (Test-Path $modelPath)
 
-            if ($needsDownload) {
-                $handoffWait = Get-ODSPositiveIntEnv -Name "ODS_BOOTSTRAP_HANDOFF_WAIT_SECONDS" -Default 7200
-                $handoff = Wait-ODSBootstrapDownloadHandoff `
-                    -InstallDir $installDir `
-                    -ModelFile $tierConfig.GgufFile `
-                    -Destination $modelPath `
-                    -WaitSeconds $handoffWait
-                if ($handoff.TimedOut) {
-                    Write-AIError "Refusing to race the active bootstrap downloader. Re-run the installer after it finishes."
-                    exit 1
-                }
-                $needsDownload = -not (Test-Path -LiteralPath $modelPath -PathType Leaf)
-            }
-
             if ((Test-Path $modelPath) -and $tierConfig.GgufSha256) {
                 Write-AI "Verifying model integrity (SHA256)..."
                 $integrity = Test-ModelIntegrity -Path $modelPath -ExpectedHash $tierConfig.GgufSha256
@@ -356,6 +342,20 @@ if ($dryRun) {
                 }
             } elseif (Test-Path $modelPath) {
                 Write-AISuccess "Model already present: $($tierConfig.GgufFile)"
+            }
+
+            if ($needsDownload) {
+                $handoffWait = Get-ODSPositiveIntEnv -Name "ODS_BOOTSTRAP_HANDOFF_WAIT_SECONDS" -Default 7200
+                $handoff = Wait-ODSBootstrapDownloadHandoff `
+                    -InstallDir $installDir `
+                    -ModelFile $tierConfig.GgufFile `
+                    -Destination $modelPath `
+                    -WaitSeconds $handoffWait
+                if ($handoff.TimedOut) {
+                    Write-AIError "Refusing to race the active bootstrap downloader. Re-run the installer after it finishes."
+                    exit 1
+                }
+                $needsDownload = -not (Test-Path -LiteralPath $modelPath -PathType Leaf)
             }
 
             if ($needsDownload) {

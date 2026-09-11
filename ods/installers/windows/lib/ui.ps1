@@ -186,25 +186,52 @@ function Test-ODSBootstrapUpgradeActive {
         [string]$ModelFile
     )
 
+    $installNeedle = ($InstallDir -replace "\\", "/").TrimEnd("/").ToLowerInvariant()
+    $bashInstallNeedle = $installNeedle
+    if ($installNeedle -match '^([a-z]):/(.*)$') {
+        $bashInstallNeedle = "/$($Matches[1])/$($Matches[2])"
+    }
+    $modelNeedle = $ModelFile.ToLowerInvariant()
+    $wrapperPath = Join-Path $InstallDir "logs\bootstrap-run.sh"
+    $wrapperNeedle = ($wrapperPath -replace "\\", "/").ToLowerInvariant()
+
     try {
         $task = Get-ScheduledTask -TaskName "ODSModelUpgrade" -ErrorAction Stop
         if ($task.State.ToString() -eq "Running") {
-            return $true
+            $taskMatchesInstall = $false
+            foreach ($action in @($task.Actions)) {
+                $arguments = ([string]$action.Arguments -replace "\\", "/").ToLowerInvariant()
+                if ($arguments.Contains($wrapperNeedle)) {
+                    $taskMatchesInstall = $true
+                    break
+                }
+            }
+            if ($taskMatchesInstall) {
+                try {
+                    $wrapperContent = (Get-Content -LiteralPath $wrapperPath -Raw -ErrorAction Stop).ToLowerInvariant()
+                    if ($wrapperContent.Contains("bootstrap-upgrade.sh") -and
+                        $wrapperContent.Contains($modelNeedle)) {
+                        return $true
+                    }
+                } catch {
+                    # A running task owned by this install is unsafe to race if
+                    # its launcher cannot be inspected conclusively.
+                    return $true
+                }
+            }
         }
     } catch {
         # The direct-launch fallback intentionally has no Scheduled Task. Check
         # the live Windows command line below before deciding the handoff is idle.
     }
 
-    $installNeedle = ($InstallDir -replace "\\", "/").TrimEnd("/").ToLowerInvariant()
-    $modelNeedle = $ModelFile.ToLowerInvariant()
     try {
         foreach ($process in @(Get-CimInstance Win32_Process -ErrorAction Stop)) {
             $commandLine = [string]$process.CommandLine
             if ([string]::IsNullOrWhiteSpace($commandLine)) { continue }
             $normalized = ($commandLine -replace "\\", "/").ToLowerInvariant()
             if ($normalized.Contains("bootstrap-upgrade.sh") -and
-                $normalized.Contains($installNeedle) -and
+                ($normalized.Contains($installNeedle) -or $normalized.Contains($bashInstallNeedle)) -and
                 $normalized.Contains($modelNeedle)) {
                 return $true
             }
