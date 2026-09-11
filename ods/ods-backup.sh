@@ -173,6 +173,7 @@ OPTIONS:
     -l, --list              List existing backups
     -d, --delete ID         Delete specific backup by ID
     --description DESC      Add description to backup manifest
+    --label LABEL        Custom backup label (overrides timestamp)
 
 BACKUP TYPES:
     full        Backup everything (user data + config + cache)
@@ -483,7 +484,7 @@ do_backup() {
 
     # Generate backup ID
     local backup_id
-    backup_id=$(date +%Y%m%d-%H%M%S)
+    if [[ -n "$backup_label" ]]; then backup_id="$backup_label"; else backup_id=$(date +%Y%m%d-%H%M%S); fi
     local backup_dir="$BACKUP_ROOT/$backup_id"
 
     log_info "Starting $backup_type backup: $backup_id"
@@ -610,6 +611,7 @@ main() {
     local description=""
     local list_mode="false"
     local delete_id=""
+    local backup_label=""
     local verify_id=""
 
     # Parse arguments
@@ -656,6 +658,9 @@ main() {
                 shift 2
                 ;;
             --description)
+            --label)
+                backup_label="$2"
+                shift 2
                 description="$2"
                 shift 2
                 ;;

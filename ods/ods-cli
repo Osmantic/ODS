@@ -384,8 +384,13 @@ _get_host_logical_cpus() {
 
 _get_docker_available_cpus() {
     local cores=""
-    if command -v docker &>/dev/null; then
-        cores=$(docker info --format '{{.NCPU}}' 2>/dev/null || true)
+    local runtime_cmd="${DOCKER_CMD:-docker}"
+    local -a runtime_arr=()
+    read -r -a runtime_arr <<< "$runtime_cmd"
+    [[ ${#runtime_arr[@]} -gt 0 ]] || runtime_arr=(docker)
+
+    if command -v "${runtime_arr[0]}" &>/dev/null; then
+        cores=$("${runtime_arr[@]}" info --format '{{.NCPU}}' 2>/dev/null || true)
         cores="${cores//[!0-9]/}"
     fi
 
@@ -972,6 +977,11 @@ _compose_run_with_summary() {
         [[ "$_arg" == "pull" ]] && _is_compose_pull=true
     done
 
+    local runtime_cmd="${DOCKER_COMPOSE_CMD:-docker compose}"
+    local -a runtime_arr=()
+    read -r -a runtime_arr <<< "$runtime_cmd"
+    [[ ${#runtime_arr[@]} -gt 0 ]] || runtime_arr=(docker compose)
+
     _compose_remove_conflicting_ods_containers() {
         local _log_path="$1"
         local _removed=false
@@ -980,7 +990,7 @@ _compose_run_with_summary() {
             [[ -n "${_name:-}" && -n "${_id:-}" ]] || continue
             case "$_name" in
                 /ods-*|ods-*)
-                    docker rm -f "$_id" >>"$_log_path" 2>&1 || return 1
+                    "${runtime_arr[@]}" rm -f "$_id" >>"$_log_path" 2>&1 || return 1
                     _removed=true
                     ;;
                 *)
@@ -993,7 +1003,7 @@ _compose_run_with_summary() {
     }
 
     local _rc=0
-    docker compose --progress quiet "$@" >"$_compose_log" 2>&1 || _rc=$?
+    "${runtime_arr[@]}" --progress quiet "$@" >"$_compose_log" 2>&1 || _rc=$?
 
     local _pull_max_attempts="${ODS_COMPOSE_PULL_RETRY_ATTEMPTS:-3}"
     if ! [[ "$_pull_max_attempts" =~ ^[0-9]+$ ]] || (( _pull_max_attempts < 1 )); then
@@ -1018,14 +1028,15 @@ _compose_run_with_summary() {
         docker compose --progress quiet "$@" >"$_compose_log" 2>&1 || _rc=$?
     done
 
-    if (( _rc != 0 )) && $_is_compose_up \
-       && grep -Eiq 'port is already allocated|Bind for .* failed: port is already allocated' "$_compose_log"; then
-        warn "Docker reported a port allocation race; waiting briefly and retrying once."
+    if (( _rc != 0 )) && _is_compose_up \
+        && grep -Eiq 'port is already allocated|Bind for .* failed: port is already allocated' "$_compose_log"; then
+        warn "Container runtime reported a port allocation race; waiting briefly and retrying once."
         sleep "${ODS_COMPOSE_PORT_RETRY_DELAY:-10}"
         : >"$_compose_log"
         _rc=0
-        docker compose --progress quiet "$@" >"$_compose_log" 2>&1 || _rc=$?
+        "${runtime_arr[@]}" --progress quiet "$@" >"$_compose_log" 2>&1 || _rc=$?
     fi
+
 
     local _startup_max_attempts="${ODS_COMPOSE_STARTUP_RETRY_ATTEMPTS:-3}"
     if ! [[ "$_startup_max_attempts" =~ ^[0-9]+$ ]] || (( _startup_max_attempts < 1 )); then
@@ -1044,12 +1055,12 @@ _compose_run_with_summary() {
                 break
             fi
             _name_conflict_attempt=$(( _name_conflict_attempt + 1 ))
-            warn "Docker reported a stale ODS container-name conflict; removing the conflicting container and retrying (${_name_conflict_attempt}/${_name_conflict_retries})."
+            warn "Container runtime reported a stale ODS container-name conflict; removing the conflicting container and retrying (${_name_conflict_attempt}/${_name_conflict_retries})."
             _compose_remove_conflicting_ods_containers "$_compose_log" || break
             sleep "${ODS_COMPOSE_NAME_CONFLICT_RETRY_DELAY:-3}"
         elif (( _startup_attempt < _startup_max_attempts )) \
-           && grep -Eiq 'dependency failed to start|No such container|container .* (exited|is unhealthy)|service .* failed to start|failed to start.*container' "$_compose_log"; then
-            warn "Docker reported a transient service startup failure; waiting briefly and retrying (${_startup_attempt}/${_startup_retries})."
+            && grep -Eiq 'dependency failed to start|No such container|container .* (exited|is unhealthy)|service .* failed to start|failed to start.*container' "$_compose_log"; then
+            warn "Container runtime reported a transient service startup failure; waiting briefly and retrying (${_startup_attempt}/${_startup_retries})."
             sleep "${ODS_COMPOSE_STARTUP_RETRY_DELAY:-15}"
             _startup_attempt=$(( _startup_attempt + 1 ))
         else
@@ -1057,8 +1068,9 @@ _compose_run_with_summary() {
         fi
         : >"$_compose_log"
         _rc=0
-        docker compose --progress quiet "$@" >"$_compose_log" 2>&1 || _rc=$?
+        "${runtime_arr[@]}" --progress quiet "$@" >"$_compose_log" 2>&1 || _rc=$?
     done
+
 
     if (( _rc == 0 )); then
         success "${_verb} — done"
@@ -1124,8 +1136,8 @@ _compose_run_with_summary() {
         fi
     fi
 
-    if grep -qiE 'permission denied.*(docker API|docker daemon|docker\.sock|/var/run/docker\.sock)|/var/run/docker\.sock.*permission denied' "$_compose_log"; then
-        warn "Docker socket permission denied. Add your user to the docker group, then start a new login shell:"
+    if grep -qiE 'permission denied.*(container API|container daemon|container\.sock|/var/run/docker\.sock)|/var/run/docker\.sock.*permission denied' "$_compose_log"; then
+        warn "Container socket permission denied. Add your user to the container group, then start a new login shell:"
         warn "  sudo usermod -aG docker \"\$USER\""
         warn "  newgrp docker   # or log out and back in"
         warn "Then verify with: docker ps"
@@ -1148,15 +1160,20 @@ _compose_run_with_summary() {
 _check_docker_access() {
     [[ "$(uname -s)" == Linux* ]] || return 0
     local _docker_ps_output
-    if _docker_ps_output=$(docker ps 2>&1); then
+    local runtime_cmd="${DOCKER_CMD:-docker}"
+    local -a runtime_arr=()
+    read -r -a runtime_arr <<< "$runtime_cmd"
+    [[ ${#runtime_arr[@]} -gt 0 ]] || runtime_arr=(docker)
+
+    if _docker_ps_output=$("${runtime_arr[@]}" ps 2>&1); then
         return 0
     fi
-    if grep -qiE 'permission denied.*(docker API|docker daemon|docker\.sock|/var/run/docker\.sock)|/var/run/docker\.sock.*permission denied' <<<"$_docker_ps_output"; then
-        warn "Current user cannot reach the Docker daemon: Docker socket permission denied."
+    if grep -qiE 'permission denied.*(container API|container daemon|container\.sock|/var/run/docker\.sock)|/var/run/docker\.sock.*permission denied' <<<"$_docker_ps_output"; then
+        warn "Current user cannot reach the container daemon: Container socket permission denied."
         warn "Run: sudo usermod -aG docker \"\$USER\""
         warn "Then run: newgrp docker  (or log out and back in) and retry."
     else
-        warn "Current user cannot reach the Docker daemon. Start Docker and verify with: docker ps"
+        warn "Current user cannot reach the container daemon. Start the runtime and verify with: docker ps"
     fi
 }
 
@@ -1180,7 +1197,13 @@ _ods_cli_rebuild_images() {
     [[ "${GPU_BACKEND:-}" == "amd" ]] && svcs+=(llama-server)
     _check_docker_access
     log "Rebuilding local-built images (--rebuild-images)..."
-    if ! docker compose "${flags[@]}" build --no-cache "${svcs[@]}"; then
+    
+    local runtime_cmd="${DOCKER_COMPOSE_CMD:-docker compose}"
+    local -a runtime_arr=()
+    read -r -a runtime_arr <<< "$runtime_cmd"
+    [[ ${#runtime_arr[@]} -gt 0 ]] || runtime_arr=(docker compose)
+
+    if ! "${runtime_arr[@]}" build --no-cache "${svcs[@]}"; then
         warn "One or more images failed to rebuild (continuing — see compose output above)"
     fi
 }
@@ -1196,6 +1219,10 @@ _ods_cli_pull_external_images() {
     fi
 
     if ! command -v ods_compose_external_images >/dev/null 2>&1; then
+        local runtime_cmd="${DOCKER_COMPOSE_CMD:-docker compose}"
+        local -a runtime_arr=()
+        read -r -a runtime_arr <<< "$runtime_cmd"
+        [[ ${#runtime_arr[@]} -gt 0 ]] || runtime_arr=(docker compose)
         _compose_run_with_summary "Pulling latest images" "${flags[@]}" pull
         return
     fi
@@ -1233,7 +1260,11 @@ _ods_cli_pull_external_images() {
         _pull_log=$(mktemp)
         while (( _pull_attempt <= _pull_max_attempts )); do
             : >"$_pull_log"
-            if docker pull "$image" >"$_pull_log" 2>&1; then
+            local runtime_cmd="${DOCKER_CMD:-docker}"
+            local -a runtime_arr=()
+            read -r -a runtime_arr <<< "$runtime_cmd"
+            [[ ${#runtime_arr[@]} -gt 0 ]] || runtime_arr=(docker)
+            if "${runtime_arr[@]}" pull "$image" >"$_pull_log" 2>&1; then
                 _pull_ok=true
                 break
             fi
@@ -1247,7 +1278,7 @@ _ods_cli_pull_external_images() {
                 2) _pull_delay="${ODS_COMPOSE_PULL_RETRY_DELAY_2:-15}" ;;
                 *) _pull_delay="${ODS_COMPOSE_PULL_RETRY_DELAY_N:-30}" ;;
             esac
-            warn "Docker registry pull hit a transient network error; retrying (${_pull_attempt}/$((_pull_max_attempts - 1)))."
+            warn "Container registry pull hit a transient network error; retrying (${_pull_attempt}/$((_pull_max_attempts - 1)))."
             sleep "$_pull_delay"
             _pull_attempt=$((_pull_attempt + 1))
         done
@@ -2022,12 +2053,12 @@ cmd_update() {
     local _snap_label="pre-update-$(date +%Y%m%d-%H%M%S)"
     if [[ -x "$INSTALL_DIR/ods-update.sh" ]]; then
         log "Creating pre-update snapshot (${_snap_label})..."
-        if ! bash "$INSTALL_DIR/ods-update.sh" backup "$_snap_label"; then
+        if ! bash "$INSTALL_DIR/ods-update.sh" backup --label "$_snap_label"; then
             warn "Pre-update snapshot failed; proceeding without safety net."
         fi
     elif [[ -x "$INSTALL_DIR/ods-backup.sh" ]]; then
         log "Creating pre-update backup (${_snap_label})..."
-        if ! "$INSTALL_DIR/ods-backup.sh" "$_snap_label"; then
+        if ! "$INSTALL_DIR/ods-backup.sh" --label "$_snap_label"; then
             warn "Pre-update backup failed; proceeding without safety net."
         fi
     else
