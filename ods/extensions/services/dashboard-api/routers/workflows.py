@@ -143,7 +143,7 @@ async def api_workflows(api_key: str = Depends(verify_api_key)):
         wf_name_lower = wf["name"].lower()
         installed = None
         for n8n_name, n8n_wf in n8n_by_name.items():
-            if wf_name_lower in n8n_name or n8n_name in wf_name_lower:
+            if wf_name_lower == n8n_name:
                 installed = n8n_wf
                 break
 
@@ -318,7 +318,7 @@ async def _remove_workflow(workflow_id: str):
     n8n_wf = None
     wf_name_lower = wf_info["name"].lower()
     for wf in n8n_workflows:
-        if wf_name_lower in wf.get("name", "").lower():
+        if wf_name_lower == wf.get("name", "").lower():
             n8n_wf = wf
             break
     if not n8n_wf:
@@ -386,7 +386,7 @@ async def workflow_executions(
     n8n_wf = None
     wf_name_lower = wf_info["name"].lower()
     for wf in n8n_workflows:
-        if wf_name_lower in wf.get("name", "").lower():
+        if wf_name_lower == wf.get("name", "").lower():
             n8n_wf = wf
             break
     if not n8n_wf:
