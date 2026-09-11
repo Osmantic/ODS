@@ -238,3 +238,33 @@ test("requires every security dependency", () => {
     /dependencies are unavailable/
   );
 });
+
+test("extraction includes a late match on a long paragraph after a heading", async () => {
+  const body = "Heading\n" + "background ".repeat(3000) + "Path.exists returns true for existing files." + " tail".repeat(3000);
+  const harness = fixture({ body });
+  const result = await harness.tool.execute("late-match", {
+    url: "https://docs.example.org/reference", query: "Path.exists",
+  });
+  assert.equal(result.details.matched, true);
+  assert.match(result.content[0].text, /Path.exists returns true/);
+  assert.equal(result.details.evidence_truncated_before, true);
+  assert.equal(result.details.evidence_truncated_after, true);
+  assert.ok(selectEvidenceWindow(body, "Path.exists").text.length <= 6000);
+});
+
+test("a line break inside a multi-word match does not truncate the match", async () => {
+  const body = "intro ".repeat(400) + "needle one\nneedle two" + " tail".repeat(2000);
+  const selected = selectEvidenceWindow(body, "needle one");
+  assert.match(selected.text, /needle one/);
+  assert.ok(selected.text.length <= 6000);
+});
+
+test("keyword extraction finds terms deep inside a long paragraph", async () => {
+  const body = "Heading\n" + "background ".repeat(3000) + "Follow symlinks to existing targets." + " tail".repeat(3000);
+  const harness = fixture({ body });
+  const result = await harness.tool.execute("keywords", {
+    url: "https://docs.example.org/reference", query: "symlinks existing targets",
+  });
+  assert.equal(result.details.matched, true);
+  assert.match(result.content[0].text, /Follow symlinks to existing targets/);
+});

@@ -99,8 +99,9 @@ function queryKeywords(query) {
 
 function evidenceBounds(text, index) {
   let start = Math.max(0, index - BEFORE_MATCH_CHARS);
-  const priorBreak = text.lastIndexOf("\n", start);
-  if (priorBreak >= 0) start = priorBreak + 1;
+  // Prefer a nearby line boundary without moving the match out of the window.
+  const priorBreak = text.lastIndexOf("\n", index);
+  if (priorBreak >= start) start = priorBreak + 1;
   let end = Math.min(text.length, start + MAX_EVIDENCE_CHARS);
   const finalBreak = text.lastIndexOf("\n", end);
   if (end < text.length && finalBreak > index) end = finalBreak;
