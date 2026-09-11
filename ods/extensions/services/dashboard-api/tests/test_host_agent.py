@@ -1008,7 +1008,9 @@ class TestFindUsableBash:
         monkeypatch.setattr(_mod.subprocess, "run", fake_run)
 
         assert _mod._find_usable_bash() is None
-        assert _mod._usable_bash is False
+        # Negative result is not cached as False — it resets to None so a
+        # subsequent call can re-probe if the transient condition clears.
+        assert _mod._usable_bash is None
 
 
 class TestValidateCoreRecreateIds:

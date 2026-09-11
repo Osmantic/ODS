@@ -349,12 +349,21 @@ def _windows_whisper_cuda_supported(env: dict) -> bool:
 
 
 def _find_usable_bash() -> str | None:
-    """Return a Bash executable compatible with this host's path contract."""
+    """Return a Bash executable compatible with this host's path contract.
+
+    On success the resolved path is cached for the lifetime of the process.
+    On failure the cache is *not* set to ``False`` — a transient startup
+    condition (installer still writing, AV scan, first-run setup) can make
+    the initial probe fail even when the binary is genuinely present.  By
+    only caching positive results we permit safe retry without changing the
+    happy path.
+    """
     global _usable_bash
     if isinstance(_usable_bash, str):
         return _usable_bash
-    if _usable_bash is False:
-        return None
+    # Deliberately do NOT short-circuit on ``False`` here.  A previous
+    # failed probe must be allowed to re-run in case the transient condition
+    # has cleared.  We only reset to None (below) on failure.
 
     candidates: list[str] = []
     if platform.system() == "Windows":
@@ -441,7 +450,7 @@ def _find_usable_bash() -> str | None:
             _usable_bash = bash
             return bash
 
-    _usable_bash = False
+    _usable_bash = None
     return None
 
 # Model download state — only one download at a time
@@ -6382,11 +6391,11 @@ def _find_update_bash() -> str | None:
     global _update_usable_bash
     if isinstance(_update_usable_bash, str):
         return _update_usable_bash
-    if _update_usable_bash is False:
-        return None
+    # Do not short-circuit on False — re-probe every time the underlying
+    # function hasn't cached a success yet.
 
     bash = _find_usable_bash()
-    _update_usable_bash = bash if bash else False
+    _update_usable_bash = bash if bash else None
     return bash
 
 
