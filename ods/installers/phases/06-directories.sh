@@ -823,8 +823,19 @@ raise SystemExit(1)' 2>/dev/null && return 0
         _default_stt_model="Systran/faster-whisper-base"
     fi
     AUDIO_STT_MODEL=$(_env_get AUDIO_STT_MODEL "${AUDIO_STT_MODEL:-$_default_stt_model}")
+    # RAG model profile updates must be preserved on reruns.
+    # If EMBEDDING_MODEL was changed by the user or by a tier update, 
+    # the associated RAG_EMBEDDING_MODEL and related configs must be 
+    # synchronized to avoid mismatch between the model used by 
+    # embeddings-server and the one expected by RAG.
     EMBEDDING_MODEL_VALUE=$(_env_get EMBEDDING_MODEL "${EMBEDDING_MODEL:-BAAI/bge-base-en-v1.5}")
     RAG_EMBEDDING_MODEL_VALUE=$(_env_get_preserve_empty RAG_EMBEDDING_MODEL "${RAG_EMBEDDING_MODEL:-}")
+    
+    # Sync RAG model if it's currently empty or matches the default but EMBEDDING_MODEL changed
+    if [[ -z "$RAG_EMBEDDING_MODEL_VALUE" ]]; then
+        RAG_EMBEDDING_MODEL_VALUE="$EMBEDDING_MODEL_VALUE"
+    fi
+    
     RAG_OPENAI_API_BASE_URL_VALUE=$(_env_get_preserve_empty RAG_OPENAI_API_BASE_URL "${RAG_OPENAI_API_BASE_URL:-}")
     RAG_OPENAI_API_KEY_VALUE=$(_env_get_preserve_empty RAG_OPENAI_API_KEY "${RAG_OPENAI_API_KEY:-}")
     EMBEDDINGS_MEMORY_LIMIT_VALUE=$(_env_get EMBEDDINGS_MEMORY_LIMIT "${EMBEDDINGS_MEMORY_LIMIT:-4G}")
