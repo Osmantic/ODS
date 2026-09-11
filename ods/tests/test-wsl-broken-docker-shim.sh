@@ -10,6 +10,8 @@ FIXTURE_DIR="$(mktemp -d -t ods-wsl-docker-shim-XXXXXX)"
 trap 'rm -rf "$FIXTURE_DIR"' EXIT
 mkdir -p "$FIXTURE_DIR/bin"
 export DOCKER_INSTALLED_MARKER="$FIXTURE_DIR/native-docker-installed"
+export DOCKER_COMPOSE_SHIM_MARKER="$FIXTURE_DIR/docker-compose-shim-works"
+export PATH="$FIXTURE_DIR/bin:$PATH"
 
 cat > "$FIXTURE_DIR/bin/docker" <<'STUB'
 #!/bin/bash
@@ -47,10 +49,20 @@ INSTALLER
 STUB
 chmod +x "$FIXTURE_DIR/bin/curl"
 
+cat > "$FIXTURE_DIR/bin/docker-compose" <<'STUB'
+#!/bin/bash
+if [[ -f "${DOCKER_COMPOSE_SHIM_MARKER:?}" && "$*" == "--version" ]]; then
+    echo "docker-compose version 1.29.2"
+    exit 0
+fi
+echo "docker-compose is present but unavailable" >&2
+exit 1
+STUB
+chmod +x "$FIXTURE_DIR/bin/docker-compose"
+
 OUTPUT_FILE="$FIXTURE_DIR/output.txt"
 set +e
 (
-    export PATH="$FIXTURE_DIR/bin:$PATH"
     export SCRIPT_DIR="$ODS_ROOT"
     export SKIP_DOCKER=false
     export DRY_RUN=false
@@ -118,6 +130,22 @@ grep -qF 'AI: Installing Docker...' "$OUTPUT_FILE" || {
 docker_checks=$(grep -cF 'command -v docker &> /dev/null && docker --version &> /dev/null' "$ODS_ROOT/get-ods.sh" || true)
 [[ "$docker_checks" == "2" ]] || {
     echo "FAIL: bootstrap must validate both Docker checks behaviorally"
+    exit 1
+}
+
+# The v1 fallback must also reject a command shim that exists but cannot run.
+eval "$(sed -n '/^_docker_compose_detect_cmd() {/,/^}/p' "$ODS_ROOT/installers/phases/05-docker.sh")"
+docker_compose_run() { return 1; }
+rm -f "$DOCKER_COMPOSE_SHIM_MARKER"
+detected="$(_docker_compose_detect_cmd || true)"
+[[ -z "$detected" ]] || {
+    echo "FAIL: unusable docker-compose shim was accepted as the v1 fallback"
+    exit 1
+}
+touch "$DOCKER_COMPOSE_SHIM_MARKER"
+detected="$(_docker_compose_detect_cmd || true)"
+[[ "$detected" == "docker-compose" ]] || {
+    echo "FAIL: usable docker-compose v1 fallback was not detected"
     exit 1
 }
 
