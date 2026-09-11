@@ -1,6 +1,7 @@
 """Security-focused tests for the Settings environment editor."""
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -148,6 +149,24 @@ def test_api_settings_env_masks_secret_values(test_client, settings_env_fixture)
     assert payload["values"]["LLM_BACKEND"] == "local"
     assert payload["fields"]["LLM_BACKEND"]["value"] == "local"
     assert payload["agentAvailable"] is True
+
+
+def test_api_settings_env_recognizes_library_ports_and_keeps_library_secrets_masked(
+    test_client, settings_env_fixture,
+):
+    schema = Path(__file__).resolve().parents[4] / ".env.schema.json"
+    settings_env_fixture["schema_path"].write_bytes(schema.read_bytes())
+    settings_env_fixture["env_path"].write_text(
+        "DIFY_PORT=18002\nFLOWISE_PASSWORD=library-secret-fixture\n", encoding="utf-8",
+    )
+    response = test_client.get("/api/settings/env", headers=test_client.auth_headers)
+    assert response.status_code == 200
+    fields = response.json()["fields"]
+    assert fields["DIFY_PORT"]["type"] == "integer"
+    assert fields["DIFY_PORT"]["value"] == "18002"
+    assert fields["FLOWISE_PASSWORD"]["secret"] is True
+    assert fields["FLOWISE_PASSWORD"]["hasValue"] is True
+    assert "library-secret-fixture" not in response.text
 
 
 def test_api_settings_env_does_not_treat_plural_tokens_as_a_secret(
