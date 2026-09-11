@@ -29,9 +29,14 @@ function currentConversation() {
 
 function loadConversations(preserveInvalid = false) {
   const stored = storedArray(LIBRARY_KEY)
-  const entries = preserveInvalid ? stored : stored.filter(valid)
+  let entries = preserveInvalid ? stored : stored.filter(valid)
   const current = currentConversation()
-  if (valid(current) && current.messages.length && !entries.some(item => valid(item) && item.chatId === current.chatId)) entries.push(current)
+  if (valid(current) && (current.persistenceVersion === 2 || !entries.some(item => valid(item) && item.chatId === current.chatId))) {
+    // The active record is committed first. Reconcile a library write that
+    // failed afterward, including deletion of an emptied unsent draft.
+    entries = entries.filter(item => !valid(item) || item.chatId !== current.chatId)
+    if (current.messages.length || current.draft?.trim()) entries.push(current)
+  }
   const deleted = deletedIds()
   return entries.filter(item => !valid(item) || !deleted.includes(item.chatId))
     .sort((a, b) => (Number.isFinite(b?.updatedAt) ? b.updatedAt : 0) - (Number.isFinite(a?.updatedAt) ? a.updatedAt : 0))
@@ -50,18 +55,24 @@ export function saveConversation(chat) {
   // A read error is not an empty library. Never overwrite unreadable history.
   const entries = loadConversations(true)
   const previous = entries.find(item => valid(item) && item.chatId === chat.chatId)
-  const value = { ...previous, ...chat, updatedAt: Date.now() }
+  const value = { ...previous, ...chat, updatedAt: Date.now(), persistenceVersion: 2 }
   const remaining = entries.filter(item => !valid(item) || item.chatId !== value.chatId)
-  if (value.messages.length || value.draft?.trim()) {
-    const next = [value, ...remaining]
+  const next = value.messages.length || value.draft?.trim() ? [value, ...remaining] : remaining
+  const current = currentConversation()
+  if (valid(current) && current.chatId !== value.chatId) {
+    // Do not replace the only durable copy of a previous partial save when
+    // switching tasks. Flush its reconciled library before moving the pointer.
+    localStorage.setItem(LIBRARY_KEY, JSON.stringify(entries))
+  }
+  // Validate/read the library before either write. Commit the reload authority
+  // first so a failed second write cannot restore stale text over newer text.
+  localStorage.setItem(CHAT_KEY, JSON.stringify(value))
+  try {
     // Never silently evict an older conversation when browser storage fills up.
     localStorage.setItem(LIBRARY_KEY, JSON.stringify(next))
-  } else if (previous) {
-    // An erased unsent draft must not survive in the sidebar's saved library.
-    localStorage.setItem(LIBRARY_KEY, JSON.stringify(remaining))
+  } finally {
+    window.dispatchEvent(new Event(LIBRARY_EVENT))
   }
-  localStorage.setItem(CHAT_KEY, JSON.stringify(value))
-  window.dispatchEvent(new Event(LIBRARY_EVENT))
 }
 
 export function conversationTitle(chat) {
