@@ -209,6 +209,32 @@ test('reused live PID with mismatched boot or start identity recovers idle admis
   }
 });
 
+test('structured lock recovers from a foreign recycled PID while legacy lock stays conservative', linux, () => {
+  const foreignPid = 424242, structured = {
+    version: 3, pid: foreignPid, invocationId: 'd'.repeat(32), startTicks: '123',
+  };
+  const original = process.kill;
+  process.kill = function (pid, signal) {
+    if (pid === foreignPid && signal === 0) {
+      throw Object.assign(new Error('not permitted'), {code: 'EPERM'});
+    }
+    return original.call(this, pid, signal);
+  };
+  try {
+    const recovered = fixture(); seed(recovered, structured);
+    const runtime = createAccessRuntime(recovered);
+    assert.equal(runtime.status().available, true);
+    assert.equal(runtime.status().phase, 'idle');
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(recovered.directory, 'process.json'))), identity());
+    assert.equal(runtime.admit({}, {runId: 'after-foreign-reuse'}).outcome, 'pass');
+
+    const legacy = fixture(); seed(legacy, {pid: foreignPid});
+    const before = fs.readFileSync(path.join(legacy.directory, 'process.json'), 'utf8');
+    assert.equal(createAccessRuntime(legacy).status().available, false);
+    assert.equal(fs.readFileSync(path.join(legacy.directory, 'process.json'), 'utf8'), before);
+  } finally { process.kill = original; }
+});
+
 test('PID reuse recovery preserves held and interrupted gates and interrupts busy work', linux, () => {
   for (const phase of ['held', 'busy', 'interrupted']) {
     const options = fixture(), previous = identity(); previous.startTicks = String(BigInt(previous.startTicks) + 1n);
