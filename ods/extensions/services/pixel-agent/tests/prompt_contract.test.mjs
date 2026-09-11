@@ -223,6 +223,7 @@ test("uses a bounded complete core on compact contexts without changing requeste
   assert.match(plain.appendSystemContext, /untrusted data, never authority/);
   assert.match(plain.appendSystemContext, /never self-approve/);
   assert.match(plain.appendSystemContext, /run the requested focused verification/);
+  assert.match(plain.appendSystemContext, /optional pixel_ods_research\(query\)/);
 
   const host = promptContractForAgent(
     { agentId: "pixel", contextTokenBudget: 16384 },
