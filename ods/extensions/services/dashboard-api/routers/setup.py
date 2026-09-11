@@ -62,16 +62,23 @@ async def setup_status(api_key: str = Depends(verify_api_key)):
 
 
 @router.post("/api/setup/persona")
-async def setup_persona(request: PersonaRequest, api_key: str = Depends(verify_api_key)):
+async def setup_persona(
+    request: PersonaRequest, api_key: str = Depends(verify_api_key)
+):
     """Set the user's chosen persona."""
     if request.persona not in PERSONAS:
-        raise HTTPException(status_code=400, detail=f"Invalid persona. Choose from: {list(PERSONAS.keys())}")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid persona. Choose from: {list(PERSONAS.keys())}",
+        )
 
     persona_info = PERSONAS[request.persona]
     persona_data = {
-        "persona": request.persona, "name": persona_info["name"],
-        "system_prompt": persona_info["system_prompt"], "icon": persona_info["icon"],
-        "selected_at": datetime.now(timezone.utc).isoformat()
+        "persona": request.persona,
+        "name": persona_info["name"],
+        "system_prompt": persona_info["system_prompt"],
+        "icon": persona_info["icon"],
+        "selected_at": datetime.now(timezone.utc).isoformat(),
     }
     await asyncio.to_thread(
         _call_agent,
@@ -81,7 +88,12 @@ async def setup_persona(request: PersonaRequest, api_key: str = Depends(verify_a
         10,
     )
 
-    return {"success": True, "persona": request.persona, "name": persona_info["name"], "message": f"Great choice! Your assistant is now a {persona_info['name']}."}
+    return {
+        "success": True,
+        "persona": request.persona,
+        "name": persona_info["name"],
+        "message": f"Great choice! Your assistant is now a {persona_info['name']}.",
+    }
 
 
 @router.post("/api/setup/complete")
@@ -95,7 +107,11 @@ async def setup_complete(api_key: str = Depends(verify_api_key)):
         10,
     )
 
-    return {"success": True, "redirect": "/", "message": "Setup complete! Welcome to ODS."}
+    return {
+        "success": True,
+        "redirect": "/",
+        "message": "Setup complete! Welcome to ODS.",
+    }
 
 
 @router.get("/api/setup/persona/{persona_id}")
@@ -120,17 +136,23 @@ async def run_setup_diagnostics(api_key: str = Depends(verify_api_key)):
         script_path = Path(os.getcwd()) / "ods-test-functional.sh"
 
     if not script_path.exists():
+
         async def error_stream():
             yield "Diagnostic script not found. Running basic connectivity tests...\n"
             all_ok = True
             async with aiohttp.ClientSession() as session:
                 services = [
-                    (cfg.get("name", sid), f"http://{cfg.get('host', sid)}:{cfg.get('port', 80)}{cfg.get('health', '/')}")
+                    (
+                        cfg.get("name", sid),
+                        f"http://{cfg.get('host', sid)}:{cfg.get('port', 80)}{cfg.get('health', '/')}",
+                    )
                     for sid, cfg in SERVICES.items()
                 ]
                 for name, url in services:
                     try:
-                        async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                        async with session.get(
+                            url, timeout=aiohttp.ClientTimeout(total=5)
+                        ) as resp:
                             if resp.status == 200:
                                 yield f"\u2713 {name}: {resp.status}\n"
                             else:
@@ -145,12 +167,15 @@ async def run_setup_diagnostics(api_key: str = Depends(verify_api_key)):
             result = "PASS" if all_ok else "FAIL"
             rc = 0 if all_ok else 1
             yield f"\n{trailer}\n__ODS_RESULT__:{result}:{rc}\n"
+
         return StreamingResponse(error_stream(), media_type="text/plain")
 
     async def run_tests():
         process = await asyncio.create_subprocess_exec(
-            "bash", str(script_path),
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+            "bash",
+            str(script_path),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
         )
         try:
             try:
@@ -164,7 +189,11 @@ async def run_setup_diagnostics(api_key: str = Depends(verify_api_key)):
                 # been observed to never reach the client (the generator yields
                 # them but the transport drops the last chunk during close).
                 # Combining into one yield guarantees both land on the wire.
-                trailer = "All tests passed!" if process.returncode == 0 else "Some tests failed."
+                trailer = (
+                    "All tests passed!"
+                    if process.returncode == 0
+                    else "Some tests failed."
+                )
                 status = "PASS" if process.returncode == 0 else "FAIL"
                 yield f"\n{trailer}\n__ODS_RESULT__:{status}:{process.returncode}\n"
             except (OSError, asyncio.CancelledError):
@@ -198,30 +227,52 @@ async def chat(request: ChatRequest, api_key: str = Depends(verify_api_key)):
         system_prompt = await asyncio.to_thread(get_active_persona_prompt)
 
     _llm = SERVICES.get("llama-server", {})
-    llm_url = os.environ.get("OLLAMA_URL", f"http://{_llm.get('host', 'llama-server')}:{_llm.get('port', 0)}")
+    llm_url = os.environ.get(
+        "OLLAMA_URL", f"http://{_llm.get('host', 'llama-server')}:{_llm.get('port', 0)}"
+    )
     model = read_live_env_value("LLM_MODEL", "qwen3-coder-next")
 
     payload = {
         "model": model,
-        "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": request.message}],
-        "max_tokens": 2048, "temperature": 0.7
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": request.message},
+        ],
+        "max_tokens": 2048,
+        "temperature": 0.7,
     }
 
     try:
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
+        async with aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=30)
+        ) as session:
             _api_path = (os.environ.get("LLM_API_BASE_PATH", "/v1") or "/v1").strip("/")
-            normalized_url = f"{llm_url.rstrip("/")}/{_api_path}/chat/completions".replace("/v1/v1", "/v1")
-            async with session.post(normalized_url, json=payload, headers={"Content-Type": "application/json"}) as resp:
+            normalized_url = f"{llm_url.rstrip('/')}/{_api_path}/chat/completions"
+            # Prevent double /v1 if it's already part of llm_url
+            if llm_url.rstrip("/").endswith("/v1") and _api_path == "v1":
+                normalized_url = normalized_url.replace("/v1/v1", "/v1")
+
+            async with session.post(
+                normalized_url,
+                json=payload,
+                headers={"Content-Type": "application/json"},
+            ) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     choices = data.get("choices") or [{}]
-                    response_text = (choices[0] or {}).get("message", {}).get("content", "")
+                    response_text = (
+                        (choices[0] or {}).get("message", {}).get("content", "")
+                    )
                     # Strip thinking model tags — content may contain <think>...</think> blocks
-                    response_text = re.sub(r'<think>[\s\S]*?</think>\s*', '', response_text).strip()
+                    response_text = re.sub(
+                        r"<think>[\s\S]*?</think>\s*", "", response_text
+                    ).strip()
                     return {"response": response_text, "success": True}
                 else:
                     error_text = await resp.text()
-                    raise HTTPException(status_code=resp.status, detail=f"LLM error: {error_text}")
+                    raise HTTPException(
+                        status_code=resp.status, detail=f"LLM error: {error_text}"
+                    )
     except aiohttp.ClientError:
         logger.exception("Cannot reach LLM backend")
         raise HTTPException(status_code=503, detail="Cannot reach LLM backend")
@@ -263,7 +314,9 @@ class WifiConnectRequest(BaseModel):
         return v
 
 
-def _call_agent(path: str, method: str = "GET", payload: dict | None = None, timeout: int = 60) -> dict:
+def _call_agent(
+    path: str, method: str = "GET", payload: dict | None = None, timeout: int = 60
+) -> dict:
     """Forward a request to the host-agent.
 
     Raises HTTPException with a status code derived from the host-agent's
@@ -293,7 +346,9 @@ def _call_agent(path: str, method: str = "GET", payload: dict | None = None, tim
 @router.get("/api/setup/wifi-scan", dependencies=[Depends(verify_api_key)])
 async def setup_wifi_scan() -> dict:
     """Return nearby Wi-Fi networks (Linux + NetworkManager only)."""
-    return await asyncio.to_thread(_call_agent, "/v1/network/wifi-scan", "GET", None, 25)
+    return await asyncio.to_thread(
+        _call_agent, "/v1/network/wifi-scan", "GET", None, 25
+    )
 
 
 @router.post("/api/setup/wifi-connect", dependencies=[Depends(verify_api_key)])
