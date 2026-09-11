@@ -18,7 +18,9 @@ export default function PixelPreviewSource({ preview, file }) {
   const [copied, setCopied] = useState(false)
   const [attempt, setAttempt] = useState(0)
   const codeRef = useRef(null)
+  const copyRevision = useRef(0)
   useEffect(() => {
+    copyRevision.current++
     let current = true
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), 12000)
@@ -34,11 +36,19 @@ export default function PixelPreviewSource({ preview, file }) {
       finally { clearTimeout(timeout) }
     }
     void load()
-    return () => { current = false; controller.abort(); clearTimeout(timeout) }
+    return () => { current = false; copyRevision.current++; controller.abort(); clearTimeout(timeout) }
   }, [preview.siteId, path, expectedDigest, file?.bytes, language, attempt])
   async function copy() {
-    try { await navigator.clipboard.writeText(source); setCopied(true); setError('') }
-    catch { setCopied(false); setError('Clipboard access failed. You can select and copy the code manually.') }
+    const revision = ++copyRevision.current
+    setCopied(false)
+    try {
+      await navigator.clipboard.writeText(source)
+      if (revision !== copyRevision.current) return
+      setCopied(true); setError('')
+    } catch {
+      if (revision !== copyRevision.current) return
+      setCopied(false); setError('Clipboard access failed. You can select and copy the code manually.')
+    }
   }
   return <section className="pixel-preview-source pixel-original-source" aria-label={path === 'index.html' ? 'Published HTML source' : `Source: ${path}`}>
     {source === null && binarySize === null && !error && <p role="status">Verifying source…</p>}
