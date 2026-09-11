@@ -582,6 +582,11 @@ raise SystemExit(1)' 2>/dev/null && return 0
     if [[ -z "$_token_spy_key_default" ]]; then
         _token_spy_key_default=$(_phase06_generate_hex_secret 32)
     fi
+    # Ensure the key in the text file matches the one in .env on reruns
+    if [[ -n "$_token_spy_key_default" ]]; then
+        mkdir -p "$INSTALL_DIR/data/token-spy"
+        printf '%s' "$_token_spy_key_default" > "$INSTALL_DIR/data/token-spy/token-spy-api-key.txt"
+    fi
     TOKEN_SPY_API_KEY=$(_env_get TOKEN_SPY_API_KEY "$_token_spy_key_default")
     unset _token_spy_key_default
     OPENCODE_SERVER_PASSWORD=$(_env_get OPENCODE_SERVER_PASSWORD "$(openssl rand -base64 16 2>/dev/null || head -c 16 /dev/urandom | base64)")
