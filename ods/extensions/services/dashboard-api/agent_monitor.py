@@ -74,7 +74,7 @@ class ClusterStatus:
             logger.debug("Cluster proxy health check timed out after 5s")
         except OSError as e:
             logger.debug("Cluster proxy connection failed: %s", e)
-        except json.JSONDecodeError as e:
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as e:
             logger.warning("Cluster proxy returned invalid JSON: %s", e)
 
     def to_dict(self) -> dict:
