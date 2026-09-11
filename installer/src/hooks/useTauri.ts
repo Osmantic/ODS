@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 // Types matching Rust structs
 
@@ -112,3 +113,10 @@ export const getInstallState = () =>
   invoke<InstallState>("get_install_state");
 
 export const openODSserver = () => invoke("open_ods");
+
+// Close the installer window.
+//
+// The DOM's window.close() is a no-op in an embedded webview — it only closes
+// windows that script opened — so the Close buttons need the Tauri window API,
+// which also means the capability has to grant core:window:allow-close.
+export const closeInstaller = () => getCurrentWindow().close();

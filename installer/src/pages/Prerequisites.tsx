@@ -3,6 +3,7 @@ import Button from "../components/Button";
 import StatusIcon from "../components/StatusIcon";
 import {
   checkPrerequisites,
+  closeInstaller,
   installPrerequisite,
   type PrerequisiteStatus,
 } from "../hooks/useTauri";
@@ -191,7 +192,7 @@ export default function Prerequisites({ onNext, onError }: Props) {
             A restart is needed to finish WSL2 setup. After restarting, run this
             installer again — it will pick up where it left off.
           </p>
-          <Button variant="secondary" onClick={() => window.close()}>
+          <Button variant="secondary" onClick={() => void closeInstaller()}>
             Close &amp; Restart Later
           </Button>
         </div>

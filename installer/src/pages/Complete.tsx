@@ -1,5 +1,5 @@
 import Button from "../components/Button";
-import { openODSserver } from "../hooks/useTauri";
+import { closeInstaller, openODSserver } from "../hooks/useTauri";
 
 export default function Complete() {
   return (
@@ -33,7 +33,7 @@ export default function Complete() {
       </div>
 
       <div className="flex gap-3">
-        <Button variant="secondary" onClick={() => window.close()}>
+        <Button variant="secondary" onClick={() => void closeInstaller()}>
           Close Installer
         </Button>
         <Button onClick={() => openODSserver()}>Open ODS</Button>

@@ -4,6 +4,7 @@
   "description": "Default capability for the installer",
   "windows": ["main"],
   "permissions": [
-    "core:default"
+    "core:default",
+    "core:window:allow-close"
   ]
 }
