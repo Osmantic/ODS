@@ -87,7 +87,7 @@ export default function EnvEditor({
   const issueSectionCount = countIssueSections(sections, issues)
 
   return (
-    <section className="settings-premium-card liquid-metal-frame liquid-metal-frame--soft rounded-lg border border-theme-border p-5 lg:p-7">
+    <section className="settings-premium-card settings-environment p-5 lg:p-7">
       <EnvironmentEditorHeader
         onRefresh={onRefresh || onReload}
         onReload={onReload}
@@ -168,7 +168,7 @@ export default function EnvEditor({
             onSectionChange={onSectionChange}
           />
 
-          <div className="rounded-lg border border-theme-border bg-theme-card p-5">
+          <div className="settings-environment-fields">
             {activeSection ? (
               <>
                 <div className="mb-5 flex flex-col gap-4 border-b border-theme-border pb-5 lg:flex-row lg:items-center lg:justify-between">
@@ -219,7 +219,7 @@ export default function EnvEditor({
 
 function EnvironmentEditorHeader({ onRefresh, onReload, onSave, onApply, saving, applying, dirty, canApply }) {
   return (
-    <header className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
+    <header className="settings-environment-header flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
       <div className="flex items-start gap-3.5">
         <Database size={22} strokeWidth={1.7} className="mt-1 shrink-0 text-theme-accent-light" />
         <div>
@@ -244,7 +244,7 @@ function EnvironmentEditorHeader({ onRefresh, onReload, onSave, onApply, saving,
 
 function EnvironmentStatusStrip({ editor, fieldCount, issueCount, issueSectionCount }) {
   return (
-    <div className="grid gap-4 rounded-lg border border-theme-border bg-theme-bg/30 px-5 py-4 md:grid-cols-[1.2fr_1fr_1fr_1fr] md:items-center">
+    <div className="env-status-strip grid gap-4 rounded-lg border border-theme-border bg-theme-bg/30 px-5 py-4 md:grid-cols-[1.2fr_1fr_1fr_1fr] md:items-center">
       <div className="flex items-center gap-3">
         <Folder size={19} className="shrink-0 text-theme-accent-light" />
         <div>
@@ -273,7 +273,7 @@ function EnvironmentBehaviorCards({ editor, canApply, applyPlan }) {
       : 'Apply Changes becomes available after saving keys that affect running services. You will see affected services before applying.'
 
   return (
-    <div className="grid overflow-hidden rounded-lg border border-theme-border bg-theme-bg/30 lg:grid-cols-3 lg:divide-x lg:divide-theme-border">
+    <div className="settings-environment-behavior">
       <BehaviorCard icon={Download} title="Save Behavior" text={editor.saveHint || 'Saving writes the .env file directly, preserves blank secrets, and stores a backup first.'} />
       <BehaviorCard icon={RefreshCw} title="Restart Behavior" text={editor.restartHint || 'Some ODS services need a container recreate before changes take effect.'} />
       <BehaviorCard icon={Zap} title="Apply Behavior" text={applyText} />
@@ -284,7 +284,7 @@ function EnvironmentBehaviorCards({ editor, canApply, applyPlan }) {
 function EnvironmentCategorySidebar({ search, onSearchChange, sections, activeSection, onSectionChange }) {
   const grouped = groupSections(sections)
   return (
-    <aside className="self-start rounded-lg border border-theme-border bg-theme-card p-3 xl:sticky xl:top-6">
+    <aside className="env-category-nav self-start rounded-lg border border-theme-border bg-theme-card p-3 xl:sticky xl:top-6">
       <label className="flex items-center gap-2 rounded-md border border-theme-border bg-theme-bg/35 px-3 py-2.5">
         <span className="sr-only">Filter configuration fields</span>
         <Search size={15} className="text-theme-text-muted" />
@@ -346,11 +346,11 @@ function EnvironmentFieldCard({ field, value, issues, revealed, cleared, onToggl
   const versionLike = /version/i.test(field?.key || '')
 
   return (
-    <div className={`rounded-lg border px-5 py-5 ${hasIssues ? 'border-yellow-500/25 bg-yellow-500/5' : 'border-theme-border bg-theme-bg/30'}`}>
+    <div className={`settings-environment-field ${hasIssues ? 'settings-environment-field--issue' : ''}`}>
       <div>
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <p className="text-base font-semibold text-theme-text">{field?.label}</p>
+            <label htmlFor={`env-field-${field?.key}`} className="text-base font-semibold text-theme-text">{field?.label}</label>
             <Badge muted>{fieldKeyLabel(field?.key)}</Badge>
             {field?.secret ? <Badge accent>Secret</Badge> : null}
             {field?.required ? <Badge>Required</Badge> : <Badge muted>Optional</Badge>}
@@ -362,7 +362,7 @@ function EnvironmentFieldCard({ field, value, issues, revealed, cleared, onToggl
 
       <div className="mt-4">
         {isBoolean ? (
-          <div className="inline-flex rounded-lg border border-theme-border bg-theme-bg/40 p-1">
+          <div id={`env-field-${field?.key}`} role="group" aria-label={field?.label} className="inline-flex rounded-lg border border-theme-border bg-theme-bg/40 p-1">
             {[
               { id: '', label: 'Default' },
               { id: 'true', label: 'True' },
@@ -372,6 +372,7 @@ function EnvironmentFieldCard({ field, value, issues, revealed, cleared, onToggl
                 key={option.label}
                 type="button"
                 disabled={isReadOnly}
+                aria-pressed={String(value).toLowerCase() === option.id}
                 onClick={() => onChange(option.id)}
                 className={`rounded-lg px-4 py-2 text-xs font-semibold uppercase tracking-[0.14em] transition-colors disabled:cursor-default disabled:opacity-60 ${
                   String(value).toLowerCase() === option.id ? 'bg-theme-accent text-white' : 'text-theme-text-muted hover:text-theme-text'
@@ -383,6 +384,7 @@ function EnvironmentFieldCard({ field, value, issues, revealed, cleared, onToggl
           </div>
         ) : isEnum ? (
           <select
+            id={`env-field-${field?.key}`}
             value={value}
             disabled={isReadOnly}
             onChange={(event) => onChange(event.target.value)}
@@ -394,6 +396,7 @@ function EnvironmentFieldCard({ field, value, issues, revealed, cleared, onToggl
         ) : (
           <div className="flex items-center gap-2">
             <input
+              id={`env-field-${field?.key}`}
               type={field?.secret && !revealed ? 'password' : (isInteger ? 'number' : 'text')}
               value={value}
               disabled={isReadOnly}

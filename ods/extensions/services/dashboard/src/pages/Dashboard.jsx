@@ -24,6 +24,7 @@ import {
 } from 'lucide-react'
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
+import CompactDashboard from '../components/CompactDashboard'
 import { serviceUrl } from '../lib/serviceUrls'
 
 // Compute overall health from services (excludes not_deployed from counts)
@@ -606,7 +607,7 @@ function buildChartPoints(values, maxValue) {
   })
 }
 
-export default function Dashboard({ status, loading }) {
+export default function Dashboard({ status, loading, compact = false }) {
   const [featuresData, setFeaturesData] = useState(null)
   const [serviceResources, setServiceResources] = useState(null)
 
@@ -796,6 +797,8 @@ export default function Dashboard({ status, loading }) {
       subvalue: 'loaded',
     }
   )
+
+  if (compact) return <CompactDashboard metrics={systemMetrics} services={status?.services || []} health={health}/>
 
   return (
     <div className="p-8">
@@ -1021,8 +1024,8 @@ const SystemOverviewPanel = memo(function SystemOverviewPanel({ tokensPerSecond,
           currentDisplay={(tokensPerSecond || 0).toFixed(1)}
           unit="tokens / sec"
           delta={computeDeltaFromSamples(history, range, 'tokensPerSecond', tokensPerSecond)}
-          accent="rgba(168,85,247,0.98)"
-          fill="rgba(157,0,255,0.52)"
+          accent="rgba(190,196,205,0.98)"
+          fill="rgba(190,196,205,0.12)"
           defaultMax={12}
           axisFormatter={(value) => `${Math.round(value)}`}
         />
@@ -1041,8 +1044,8 @@ const SystemOverviewPanel = memo(function SystemOverviewPanel({ tokensPerSecond,
           currentDisplay={formatTokenCount(totalTokens || 0)}
           unit="tokens"
           delta={computeDeltaFromSamples(history, range, 'totalTokens', totalTokens)}
-          accent="rgba(251,146,60,0.98)"
-          fill="rgba(245,158,11,0.48)"
+          accent="rgba(139,151,166,0.98)"
+          fill="rgba(139,151,166,0.12)"
           defaultMax={6000}
           axisFormatter={(value) => formatTokenCount(Math.round(value))}
           divided
@@ -1171,7 +1174,6 @@ const OverviewChart = memo(function OverviewChart({
             stroke={`url(#overview-line-${chartId})`}
             strokeWidth="3"
             strokeLinecap="round"
-            style={{ filter: `drop-shadow(0 0 4px ${accent})` }}
           />
         ) : (
           <text

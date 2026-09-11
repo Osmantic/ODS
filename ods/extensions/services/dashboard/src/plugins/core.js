@@ -10,6 +10,7 @@ import {
   UserPlus,
   CreditCard,
   Code,
+  Bot,
 } from 'lucide-react'
 
 const Dashboard = lazy(() => import('../pages/Dashboard'))
@@ -21,11 +22,15 @@ const RemoteProvider = lazy(() => import('../pages/RemoteProvider'))
 const ServiceMap = lazy(() => import('../pages/ServiceMap'))
 const Invites = lazy(() => import('../pages/Invites'))
 const Usage = lazy(() => import('../pages/Usage'))
+const Pixel = lazy(() => import('../pages/Pixel'))
+const PixelSettings = lazy(() => import('../pages/PixelSettings'))
 
 export const coreRoutes = [
+  { id: 'home', path: '/', label: 'Home', icon: Bot, component: Pixel, getProps: ({ status }) => ({ systemStatus: status }), sidebar: false },
+  { id: 'pixel-settings', path: '/pixel/settings', label: 'Pixel settings', icon: Settings, component: PixelSettings, getProps: () => ({}), sidebar: false },
   {
     id: 'dashboard',
-    path: '/',
+    path: '/dashboard',
     label: 'Dashboard',
     icon: LayoutDashboard,
     component: Dashboard,
@@ -61,7 +66,7 @@ export const coreRoutes = [
     icon: Network,
     component: ServiceMap,
     getProps: () => ({}),
-    sidebar: true,
+    sidebar: false,
     order: 2.1,
   },
   {
@@ -81,7 +86,7 @@ export const coreRoutes = [
     icon: Cloud,
     component: RemoteProvider,
     getProps: () => ({}),
-    sidebar: true,
+    sidebar: false,
     order: 3.2,
   },
   // Usage + Setup / Owner are reachable from Settings rather than the top-level
@@ -97,6 +102,16 @@ export const coreRoutes = [
     getProps: ({ status }) => ({ status }),
     sidebar: false,
     order: 3.5,
+  },
+  {
+    id: 'pixel',
+    path: '/pixel',
+    label: 'Pixel',
+    icon: Bot,
+    component: Pixel,
+    getProps: ({ status }) => ({ systemStatus: status }),
+    sidebar: false,
+    order: 0.5,
   },
   {
     id: 'invites',

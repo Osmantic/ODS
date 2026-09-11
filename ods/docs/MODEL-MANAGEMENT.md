@@ -77,6 +77,15 @@ The registry and completed model files are also independent of dashboard-api
 and host-agent process lifetime: restarting either service reloads the same
 pinned records and on-disk artifacts.
 
+A routine Linux installer rerun also preserves the valid local model that is
+currently active, including its exact GGUF pin, context, runtime profile, and
+safe llama.cpp tuning. The installer still refreshes its hardware-based
+recommendation separately, so the Models page can offer a better candidate
+without changing the live agent behind the operator's back. Use
+`./install.sh --reselect-model` only when you intentionally want the installer
+to replace the active local model with its current recommendation. Missing,
+incomplete, non-local, or catalog-mismatched state is never adopted.
+
 When a catalog model is loaded, ODS updates the active GGUF settings
 and restarts the local inference service so OpenAI-compatible clients use the
 new model. After the switch settles, verify it from the host:
@@ -93,10 +102,22 @@ Dashboard activation, Unix `ods model swap <tier>`, and Windows
 `.\ods.ps1 model swap <tier>` use the same authenticated host-agent transaction.
 The transaction updates `.env`, `models.ini`, the
 native or container inference runtime, LiteLLM, Hermes, OpenClaw, OpenCode, and
-Perplexica when those consumers are installed. It verifies the new runtime and
-downstream routes before reporting success. A late failure restores the prior
-files, runtime, and persisted app routes and then proves the previous model is
-serving again.
+Perplexica when those consumers are installed. On a qualified ODS-managed
+Pixel installation it also updates Pixel's model ID, context, output limit,
+reasoning and model-family compatibility policy, then restarts and verifies the
+gateway. It verifies the new runtime and downstream routes before reporting
+success. A late failure restores the prior files, runtime, persisted app routes,
+and Pixel binding, then proves the previous model is serving again.
+
+An ODS-managed Pixel route supports OpenClaw's 4096-token minimum. Below 16K it
+uses a deliberately constrained adaptive prompt, so complex-task reliability
+still depends on the selected model and available context, but the route is not
+blocked. A requested context below 4K is rejected before activation writes
+files or restarts services. Below 32K, ODS gives Pixel an output ceiling of one
+quarter of the committed context; at 32K and above it allows up to 4096 output
+tokens. Compaction keeps a context-scaled recent tail and uses extra headroom
+for 8K-31K profiles so recovery occurs before a dense tool transcript exhausts
+the model window.
 
 ### Choosing the runtime context
 
@@ -133,6 +154,56 @@ runtime verification decide whether it can be served.
 This selector applies to local inference in `local`, `hybrid`, and `lemonade`
 modes. In `cloud` mode, the remote provider owns its context policy, so ODS
 does not rewrite local runtime or application context from the Models page.
+
+### Activating a remote provider for agents
+
+The Dashboard **Remote Provider** page can move the stable `ods/current` route
+to an OpenAI-compatible provider without giving Pixel a provider URL or
+credential. Enter the provider model ID, context window, maximum output tokens,
+and whether that route supports reasoning. Those limits become Pixel's managed
+runtime contract, so model-family and context changes are explicit instead of
+being guessed from a provider response.
+
+For a direct HTTPS provider, **Configure** first performs a bounded provider
+probe. ODS then writes the private egress credential, renders the cloud
+LiteLLM route, recreates and health-checks LiteLLM, serves a real completion
+through `ods/current`, and reconciles the ODS-managed Pixel gateway. For an SSH
+provider, Configure stages the route; **Test route** completes the same
+consumer activation only after the managed tunnel and egress proof succeed.
+The Dashboard reports the provider as Ready only when the egress path and the
+actual consumer route are both active and proven.
+
+The status page rechecks the current host-owned Pixel runtime instead of
+trusting an older activation receipt. If the provider is reachable but ODS or
+Pixel has moved to a different model contract, the page reports **Consumer
+drift**, marks inference unavailable, and offers **Reconcile route** in the
+header. Reconcile runs the same fresh proof and transactional activation as
+`ods remote-provider enable`; it reuses the owner-custodied secret and does not
+ask the browser to recover or resubmit it.
+
+The operation is transactional. ODS retains the exact prior mode, LiteLLM
+config, and Pixel model contract in a private recovery record. A failed render,
+container health check, completion, or Pixel restart restores that state.
+**Disable** and **Remove** likewise restore and prove the pre-provider route
+before reporting success. Disable is a reversible pause: ODS retains the
+non-secret route metadata in an owner-only, fingerprint-bound profile and keeps
+the existing secret custody, so `ods remote-provider enable` can freshly prove
+and reactivate either a direct or SSH route without asking for the endpoint,
+model, key, or SSH inputs again. A transition from paused or degraded state
+never trusts the prior probe receipt; an exact healthy already-active route is
+an idempotent no-op. An SSH proof failure automatically pauses the staged route
+again. Remove is the intentional clean slate and deletes the saved profile as
+well as the stored secrets. A legacy disabled route that predates saved profiles
+remains disabled and requires `ods remote-provider configure` once. Provider
+credentials remain in the host-owned egress secret store and never enter
+generated LiteLLM YAML, Pixel state, Dashboard responses, or browser logs.
+
+```bash
+ods remote-provider disable       # restore local ODS/Pixel and retain the route
+ods remote-provider status        # shows only whether a saved route is available
+ods remote-provider enable        # fresh proof, then transactional reactivation
+ods remote-provider remove        # delete route profile and secret custody
+```
 
 ### Multi-GPU assignment replanning
 

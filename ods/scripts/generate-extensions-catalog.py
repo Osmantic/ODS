@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generate a static extensions catalog JSON from extension manifest files.
 
-Scans the product-owned extension library for valid ods.services.v1 manifests,
+Scans the product-owned library and first-party service manifests,
 extracts catalog-relevant fields, and writes a sorted JSON catalog
 to ods/config/extensions-catalog.json.
 """
@@ -34,6 +34,11 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=script_dir / ".." / "extensions" / "library" / "services",
         help="Path to extensions/library/services directory",
+    )
+    parser.add_argument(
+        "--services-dir",
+        type=Path,
+        help="Also include first-party service manifests from this directory",
     )
     parser.add_argument(
         "--output",
@@ -120,33 +125,44 @@ def extract_entry(manifest: dict) -> dict | None:
     return entry
 
 
-def generate_catalog(library_dir: Path) -> list[dict]:
+def generate_catalog(library_dir: Path, services_dir: Path | None = None) -> list[dict]:
     """Scan manifest files and return sorted catalog entries."""
     if not library_dir.is_dir():
         print(f"ERROR: Library directory not found: {library_dir}", file=sys.stderr)
         sys.exit(1)
 
-    entries = []
-    for service_dir in sorted(library_dir.iterdir()):
-        if not service_dir.is_dir():
-            continue
-
-        manifest_path = service_dir / "manifest.yaml"
-        if not manifest_path.exists():
-            continue
-
-        manifest = load_manifest(manifest_path)
-        if manifest is None:
-            continue
-
-        entry = extract_entry(manifest)
-        if entry is None:
-            continue
-
-        entries.append(entry)
-
-    entries.sort(key=lambda e: e["id"])
-    return entries
+    entries: dict[str, dict] = {}
+    roots = [(library_dir, "library")]
+    if services_dir is not None:
+        if not services_dir.is_dir() or services_dir.is_symlink():
+            raise ValueError("First-party service directory is unavailable")
+        roots.append((services_dir, "builtin"))
+    for root, source in roots:
+        for service_dir in sorted(root.iterdir()):
+            if not service_dir.is_dir() or service_dir.is_symlink():
+                continue
+            manifest_path = service_dir / "manifest.yaml"
+            if not manifest_path.is_file() or manifest_path.is_symlink():
+                continue
+            manifest = load_manifest(manifest_path)
+            if manifest is None:
+                continue
+            entry = extract_entry(manifest)
+            if entry is None or entry["id"] != service_dir.name:
+                continue
+            if source == "builtin":
+                # Native services can be disabled or managed outside Docker.
+                # Their manifests remain discoverable; this grants no mutation.
+                descriptions = [f.get("description") for f in entry["features"]
+                                if isinstance(f, dict) and isinstance(f.get("description"), str)]
+                entry["description"] = entry["description"] or next(iter(descriptions), entry["name"])
+                entry["category"] = entry["category"] or "optional"
+                entry["catalog_source"] = "builtin"
+            entry["configuration_scope"] = "declared-environment-keys"
+            # The installed native definition takes precedence over a library
+            # alternative with the same service ID, matching ODS resolution.
+            entries[entry["id"]] = entry
+    return sorted(entries.values(), key=lambda entry: entry["id"])
 
 
 def main() -> None:
@@ -154,7 +170,11 @@ def main() -> None:
     library_dir = args.library_dir.resolve()
     output_path = args.output.resolve()
 
-    entries = generate_catalog(library_dir)
+    default_library = Path(__file__).resolve().parent.parent / "extensions/library/services"
+    services_dir = args.services_dir
+    if services_dir is None and library_dir == default_library.resolve():
+        services_dir = default_library.parent.parent / "services"
+    entries = generate_catalog(library_dir, services_dir.resolve() if services_dir else None)
 
     catalog = {
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),

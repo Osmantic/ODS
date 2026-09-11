@@ -11,6 +11,7 @@ import importlib
 import json
 import sys
 import threading
+import time
 import uuid
 from pathlib import Path
 
@@ -101,6 +102,8 @@ def router(tmp_path, monkeypatch):
         transport=httpx.MockTransport(upstream_handler)
     )
     mod._inflight = 0
+    mod._waiting = 0
+    mod._swap_gate = None
     yield mod, client, write_state, calls
     client.__exit__(None, None, None)
 
@@ -333,6 +336,66 @@ class TestForwarding:
         assert resp.json()["error"]["type"] == "model_swap_in_progress"
         assert "Retry-After" in resp.headers
 
+    def test_swap_gate_queues_new_request_until_owner_reopens(self, router):
+        _mod, client, write_state, calls = router
+        write_state()
+        headers = {"Authorization": "Bearer internal-secret"}
+        token = "0123456789abcdef0123456789abcdef"
+
+        closed = client.post("/internal/model-swap/admission", headers=headers, json={
+            "action": "begin", "token": token, "leaseSeconds": 30,
+        })
+        assert closed.status_code == 200
+        assert closed.json()["status"] == "closed"
+
+        result = {}
+
+        def make_request():
+            result["response"] = client.post("/v1/chat/completions", json={
+                "model": "ods/current", "messages": [],
+            })
+
+        worker = threading.Thread(target=make_request)
+        worker.start()
+        for _ in range(100):
+            health = client.get("/health").json()
+            if health["queuedRequests"] == 1:
+                break
+            time.sleep(0.01)
+        assert health["modelSwapGateActive"] is True
+        assert health["activeRequests"] == 0
+        assert health["queuedRequests"] == 1
+        assert calls == []
+
+        opened = client.post("/internal/model-swap/admission", headers=headers, json={
+            "action": "end", "token": token,
+        })
+        assert opened.status_code == 200
+        worker.join(5)
+        assert not worker.is_alive()
+        assert result["response"].status_code == 200
+        assert len(calls) == 1
+
+    def test_swap_gate_is_authenticated_and_single_owner(self, router):
+        mod, client, write_state, calls = router
+        first = "0123456789abcdef0123456789abcdef"
+        second = "fedcba9876543210fedcba9876543210"
+        payload = {"action": "begin", "token": first, "leaseSeconds": 30}
+        assert client.post("/internal/model-swap/admission", json=payload).status_code == 401
+        headers = {"Authorization": "Bearer internal-secret"}
+        assert client.post(
+            "/internal/model-swap/admission", headers=headers, json=payload
+        ).status_code == 200
+        conflict = client.post("/internal/model-swap/admission", headers=headers, json={
+            "action": "begin", "token": second, "leaseSeconds": 30,
+        })
+        assert conflict.status_code == 409
+        wrong_end = client.post("/internal/model-swap/admission", headers=headers, json={
+            "action": "end", "token": second,
+        })
+        assert wrong_end.status_code == 409
+        assert client.get("/health").json()["modelSwapGateActive"] is True
+
     def test_fragmented_sse_is_framed_before_rewrite(self, router):
         mod, client, write_state, calls = router
         write_state()
@@ -373,6 +436,9 @@ class TestForwarding:
         worker.start()
         assert started.wait(5)
         assert mod._inflight == 1
+        health = client.get("/health").json()
+        assert health["activeRequests"] == 1
+        assert health["queuedRequests"] == 0
         release.set()
         worker.join(5)
         assert not worker.is_alive()
@@ -726,6 +792,9 @@ class TestProbeKeyLifecycleAndInstance:
         assert first["instanceId"] == second["instanceId"] == mod.INSTANCE_ID
         assert uuid.UUID(first["instanceId"])
         assert first["probeKeyConfigured"] is True  # fixture env key
+        assert first["activeRequests"] == 0
+        assert first["queuedRequests"] == 0
+        assert first["modelSwapGateActive"] is False
 
 
 class TestEndpointsReload:

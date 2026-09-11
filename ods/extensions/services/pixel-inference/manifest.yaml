@@ -1,0 +1,29 @@
+schema_version: ods.services.v1
+
+compatibility:
+  ods_min: "2.0.0"
+
+service:
+  id: pixel-inference
+  name: Pixel inference sharing (development)
+  aliases: []
+  container_name: ods-pixel-inference
+  host_env: PIXEL_INFERENCE_HOST
+  default_host: pixel-inference
+  port: 8093
+  external_port_env: PIXEL_INFERENCE_PORT
+  external_port_default: 4005
+  external_link: false
+  health: /health
+  health_source: container
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: [model-router]
+  startup_check: false
+  description: >-
+    Disabled by default. Owner-provisioned, inference-only device credentials;
+    loopback transport only. Does not provide Pixel agent or computer access.
+    Private state must be provisioned before service activation. Native Windows
+    private-state support and guided setup are not yet implemented.

@@ -303,10 +303,10 @@ function VoiceReadiness() {
 
 function EmptyOwnerState({ onCreate, disabled }) {
   return (
-    <div className="mt-5 rounded-xl border border-dashed border-theme-border p-6 text-center">
-      <ShieldCheck size={32} className="mx-auto mb-3 text-theme-text-muted" />
+    <div className="mt-5 border-t border-theme-border pt-5">
+      <ShieldCheck size={18} className="mb-2 text-theme-text-muted" />
       <h3 className="text-base font-semibold text-theme-text mb-1">No owner cards yet</h3>
-      <p className="text-sm text-theme-text-muted mb-4 max-w-lg mx-auto">
+      <p className="text-sm text-theme-text-muted mb-4 max-w-2xl">
         Generate one for a factory card or first owner handoff. Revoke it if the printed card is lost.
       </p>
       <button
@@ -323,10 +323,10 @@ function EmptyOwnerState({ onCreate, disabled }) {
 
 function EmptyGuestState({ onCreate }) {
   return (
-    <div className="mt-5 rounded-xl border border-dashed border-theme-border p-6 text-center">
-      <Users size={32} className="mx-auto mb-3 text-theme-text-muted" />
+    <div className="mt-5 border-t border-theme-border pt-5">
+      <Users size={18} className="mb-2 text-theme-text-muted" />
       <h3 className="text-base font-semibold text-theme-text mb-1">No guest invites yet</h3>
-      <p className="text-sm text-theme-text-muted mb-4 max-w-lg mx-auto">
+      <p className="text-sm text-theme-text-muted mb-4 max-w-2xl">
         Guest links are temporary credentials. Anyone who opens one gets the selected access until it expires or is used.
       </p>
       <button
@@ -355,7 +355,7 @@ function TokenRow({ token, onRevoke }) {
           {isOwnerToken(token) ? (
             <span className="text-xs px-2 py-0.5 rounded bg-theme-accent/20 text-theme-accent-light">owner</span>
           ) : token.reusable && (
-            <span className="text-xs px-2 py-0.5 rounded bg-purple-500/20 text-purple-300">reusable</span>
+            <span className="text-xs px-2 py-0.5 rounded bg-theme-surface text-theme-text-secondary">reusable</span>
           )}
           <span className="text-xs text-theme-text-muted">scope: {token.scope}</span>
         </div>

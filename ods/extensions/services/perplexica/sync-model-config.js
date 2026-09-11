@@ -55,6 +55,7 @@ async function update() {
   if (!provider || !provider.id) {
     return;
   }
+  const providerBefore = JSON.stringify(provider);
   provider.chatModels = [{ key: model, name: model }];
   provider.config = { ...(provider.config || {}), baseURL, apiKey };
   const preferences = {
@@ -62,9 +63,36 @@ async function update() {
     defaultChatModel: model,
     defaultChatProvider: provider.id,
   };
+  // Perplexica's API needs both defaults even when its UI advertises built-in
+  // embedding models. Initialize only an unselected pair, preserving owners'
+  // explicit choices and never inventing a provider or a remote dependency.
+  const unset = (value) => value === null || value === undefined || value === "";
+  const missingProvider = unset(preferences.defaultEmbeddingProvider);
+  const missingModel = unset(preferences.defaultEmbeddingModel);
+  if (missingProvider && missingModel) {
+    const key = "Xenova/all-MiniLM-L6-v2";
+    const embeddingProvider = values.modelProviders.find((entry) =>
+      entry?.type === "transformers" && typeof entry.id === "string" && entry.id.trim() &&
+      Array.isArray(entry.embeddingModels) && entry.embeddingModels.some((candidate) => candidate?.key === key));
+    if (embeddingProvider) {
+      preferences.defaultEmbeddingProvider = embeddingProvider.id;
+      preferences.defaultEmbeddingModel = key;
+    } else {
+      process.stderr.write("[ods-perplexica] local embedding default unavailable; leaving embedding preferences unchanged\n");
+    }
+  } else if (missingProvider !== missingModel) {
+    process.stderr.write("[ods-perplexica] incomplete embedding selection; leaving embedding preferences unchanged\n");
+  }
 
-  await request(configUrl, { key: "modelProviders", value: values.modelProviders });
-  await request(configUrl, { key: "preferences", value: preferences });
+  // The API includes built-in model entries in its read response. Persisting
+  // that hydrated catalog on every start can accumulate duplicate entries.
+  // Initializing embedding preferences does not require rewriting providers.
+  if (JSON.stringify(provider) !== providerBefore) {
+    await request(configUrl, { key: "modelProviders", value: values.modelProviders });
+  }
+  if (JSON.stringify(preferences) !== JSON.stringify(values.preferences || {})) {
+    await request(configUrl, { key: "preferences", value: preferences });
+  }
 
   const verified = (await request(configUrl)).values || {};
   const verifiedProvider = (verified.modelProviders || []).find(
@@ -83,6 +111,11 @@ async function update() {
     || verified.preferences.defaultChatProvider !== verifiedProvider.id
   ) {
     throw new Error("active model route did not persist");
+  }
+  for (const key of ["defaultEmbeddingProvider", "defaultEmbeddingModel"]) {
+    if (verified.preferences[key] !== preferences[key]) {
+      throw new Error("embedding preferences did not persist");
+    }
   }
   process.stdout.write(`${model}\n`);
 }

@@ -1,0 +1,96 @@
+/* A single landscape beneath the existing shell; only wallpaper themes use glass. */
+:root[data-wallpaper] #root > .pixel-app {
+  background:linear-gradient(#080c1266,#080c1280),var(--workspace-wallpaper) center/cover fixed;
+  isolation:isolate;
+  --pixel-border:#ffffff20;
+  --pixel-text:#e4e7eb;
+  --pixel-muted:#b3bdc7;
+  --theme-text:228 231 235;
+  --theme-text-secondary:205 211 219;
+  --theme-text-muted:179 189 199;
+}
+:root[data-wallpaper] #root > .pixel-app::before {
+  /* The sidebar glass also owns every exposed gutter and rounded corner. */
+  content:'';
+  position:fixed;
+  inset:0;
+  z-index:-1;
+  pointer-events:none;
+  background:#0b101880;
+  backdrop-filter:blur(32px) saturate(115%);
+  -webkit-backdrop-filter:blur(32px) saturate(115%);
+}
+:root[data-wallpaper] .pixel-sidebar {
+  /* The shared shell below provides the glass, not a separate sidebar slab. */
+  background:transparent;
+  backdrop-filter:none;
+  -webkit-backdrop-filter:none;
+  border:0;
+  border-radius:0;
+  box-shadow:none;
+}
+:root[data-wallpaper] .pixel-workspace.dashboard-market-shell {
+  /* Inherit Pixel's exact margins, height and corner radii. Only the fill changes. */
+  background:linear-gradient(#0b101880,#0b101880),linear-gradient(#080c1266,#080c1280),var(--workspace-wallpaper);
+  background-position:center;
+  background-size:cover;
+  background-attachment:fixed;
+  box-shadow:none;
+}
+:root[data-wallpaper] .portal-chat { background:transparent; }
+:root[data-wallpaper] .pixel-original-sections :is(summary,.rail-empty),
+:root[data-wallpaper] .pixel-applications summary { color:#a9b2ba; }
+:root[data-wallpaper] .pixel-chat-header,
+:root[data-wallpaper] .pixel-workspace-toolbar { background:transparent; }
+:root[data-wallpaper] .portal-side-panel,
+:root[data-wallpaper] .pixel-preview-panel {
+  background:#111820b8;
+  backdrop-filter:blur(26px) saturate(110%);
+  -webkit-backdrop-filter:blur(26px) saturate(110%);
+}
+:root[data-wallpaper] .pixel-nav-item:hover,
+:root[data-wallpaper] .pixel-nav-item.is-active,
+:root[data-wallpaper] .pixel-original-sections .conversation-link.active,
+:root[data-wallpaper] .pixel-original-sections .conversation-link:hover { background:#ffffff12; color:#f0f2f5; }
+:root[data-wallpaper] .pixel-chat textarea { background:#151b24bc; border-color:#ffffff24; backdrop-filter:blur(16px); }
+:root[data-wallpaper] .portal-chat .bg-theme-card { background:#17212abe; border-color:#ffffff20; }
+:root[data-wallpaper] .pixel-original-sections summary:hover { background:#ffffff09; }
+:root[data-wallpaper] .ods-settings-modal.ods-settings-panel { background:transparent; }
+.wallpaper-intro { margin:0 0 22px; }
+.wallpaper-intro h3 { color:#eceef1; margin-bottom:6px; }
+.wallpaper-intro p,.wallpaper-note { color:#a5adb7; font-size:12px; line-height:1.65; }
+.wallpaper-gallery { display:grid; grid-template-columns:repeat(auto-fit,minmax(145px,1fr)); gap:22px 14px; }
+.wallpaper-choice { display:block; padding:0; min-width:0; text-align:left; background:transparent; border:0; border-radius:9px; }
+.wallpaper-thumbnail { display:block; position:relative; overflow:hidden; aspect-ratio:1.6; border-radius:9px; background:#111212; border:1px solid #ffffff20; transition:box-shadow .15s,border-color .15s; }
+.wallpaper-thumbnail > img { width:100%; height:100%; object-fit:cover; }
+.wallpaper-thumbnail::after { content:''; position:absolute; inset:0; background:linear-gradient(#0000,#0003); pointer-events:none; }
+.wallpaper-choice:hover .wallpaper-thumbnail { border-color:#ffffff70; }
+.wallpaper-choice[aria-pressed=true] .wallpaper-thumbnail { border-color:#e1e5e9; box-shadow:0 0 0 2px #dce2e329; }
+.wallpaper-mini-sidebar { position:absolute; inset:8px auto 8px 8px; width:24%; border:1px solid #ffffff20; border-radius:4px; background:#11151b77; backdrop-filter:blur(5px); padding:9px 5px; }
+.wallpaper-mini-sidebar i { display:block; height:2px; margin-bottom:6px; background:#ffffff70; border-radius:1px; }
+.wallpaper-mini-chat { position:absolute; inset:8px 8px 8px 34%; border-radius:4px; background:#11151b50; padding:20px 10px; }
+.wallpaper-mini-chat i { display:block; height:3px; background:#ffffff70; width:70%; margin-bottom:9px; border-radius:2px; }
+.wallpaper-mini-chat i:last-child { width:90%; background:#ffffff30; }
+.wallpaper-check { position:absolute; z-index:1; bottom:8px; right:8px; display:grid; place-items:center; width:21px; height:21px; border-radius:50%; color:#14191f; background:#ecf0f3; font-size:12px; }
+.wallpaper-caption { display:flex; justify-content:space-between; align-items:baseline; gap:5px; margin-top:9px; color:#dce1e7; font-size:12px; }
+.wallpaper-caption small { font-size:10px; color:#99a2ad; }
+.wallpaper-note { margin-top:24px; padding-top:18px; border-top:1px solid #ffffff17; }
+.conversation-row { position:relative; min-width:0; }
+.pixel-original-sections .conversation-row .conversation-link { padding-left:35px; }
+.conversation-delete { position:absolute; left:4px; top:50%; transform:translateY(-50%); width:26px; height:26px; display:grid; place-items:center; opacity:0; color:#aeb5be; border:0; border-radius:5px; background:transparent; pointer-events:none; }
+.conversation-row:hover .conversation-delete,.conversation-row:focus-within .conversation-delete { opacity:1; pointer-events:auto; }
+.conversation-delete:hover { color:#fff; background:#ffffff12; }
+.chat-delete-dialog { width:min(380px,calc(100vw - 32px)); padding:24px; border:1px solid #3a3e44; border-radius:14px; background:#181b20; color:#dce1e7; box-shadow:0 20px 90px #0008; }
+.chat-delete-dialog::backdrop { background:#0007; backdrop-filter:blur(6px); }
+.chat-delete-dialog h3 { font-size:16px; font-weight:550; margin-bottom:12px; }
+.chat-delete-dialog p { font-size:12px; line-height:1.7; color:#aeb6c1; overflow-wrap:anywhere; }
+.chat-delete-dialog footer { display:flex; justify-content:flex-end; gap:10px; margin-top:22px; }
+.chat-delete-dialog footer button { padding:7px 12px; border-radius:7px; border:1px solid #3d434b; font-size:12px; }
+.chat-delete-dialog footer button:last-child { background:#d5dae0; color:#171b20; }
+@media(hover:none) { .conversation-delete { opacity:1; pointer-events:auto; } }
+@media(prefers-reduced-transparency:reduce) {
+  :root[data-wallpaper] #root > .pixel-app::before { background:#13181ff2; backdrop-filter:none; -webkit-backdrop-filter:none; }
+  :root[data-wallpaper] .pixel-sidebar,:root[data-wallpaper] .portal-side-panel,:root[data-wallpaper] .pixel-preview-panel { background:#13181ff2; backdrop-filter:none; }
+  :root[data-wallpaper] .portal-chat { background:#111820ed; }
+}
+@media(prefers-reduced-motion:reduce) { .wallpaper-thumbnail { transition:none; } }

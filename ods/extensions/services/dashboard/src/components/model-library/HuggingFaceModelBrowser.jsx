@@ -233,7 +233,7 @@ function RepositoryRow({ model, onInspect }) {
   const [avatarFailed, setAvatarFailed] = useState(false)
   const fallbackStyle = authorFallbackStyle(model.author)
   return (
-    <div className="grid grid-cols-2 gap-3 px-4 py-4 transition-colors hover:bg-white/[0.025] sm:grid-cols-[minmax(0,1fr)_auto] lg:grid-cols-[minmax(280px,1.5fr)_120px_100px_110px_140px] lg:items-center lg:gap-4 lg:px-5 lg:py-3.5">
+    <div className="hf-repository-row grid grid-cols-2 gap-3 px-4 py-4 transition-colors hover:bg-white/[0.025] sm:grid-cols-[minmax(0,1fr)_auto] lg:grid-cols-[minmax(280px,1.5fr)_120px_100px_110px_140px] lg:items-center lg:gap-4 lg:px-5 lg:py-3.5">
       <div className="col-span-2 flex min-w-0 items-start gap-3 sm:col-span-1">
         <div className="relative flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-lg border text-xs font-bold" style={fallbackStyle}>
           <span>{model.author?.slice(0, 2).toUpperCase() || 'HF'}</span>

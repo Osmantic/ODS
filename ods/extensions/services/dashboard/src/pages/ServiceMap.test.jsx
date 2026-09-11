@@ -1,5 +1,37 @@
-import { describe, expect, it } from 'vitest'
-import { buildTopology } from './ServiceMap'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import ServiceMap, { buildTopology } from './ServiceMap'
+
+afterEach(() => { cleanup(); vi.unstubAllGlobals() })
+
+it('fits the map initially, offers actual size, and opens details by keyboard', async () => {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => statusPayload }))
+  render(<ServiceMap />)
+  const zoom = await screen.findByRole('button', { name: 'Actual size' })
+  const region = screen.getByRole('region', { name: 'Service topology' })
+  expect(region.querySelector('svg')).toHaveAttribute('width', '100%')
+  fireEvent.click(zoom)
+  expect(region.querySelector('svg').getAttribute('width')).not.toBe('100%')
+  fireEvent.click(screen.getByRole('button', { name: 'Fit to panel' }))
+  expect(region.querySelector('svg')).toHaveAttribute('width', '100%')
+  fireEvent.keyDown(screen.getByRole('button', { name: 'APE (Agent Policy Engine): healthy' }), { key: 'Enter' })
+  expect(screen.getByRole('button', { name: 'Close service details' })).toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: 'Close service details' }))
+  expect(screen.queryByRole('button', { name: 'Close service details' })).toBeNull()
+})
+
+it('starts with readable service rows in a panel and keeps the full map accessible', async () => {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ok:true,json:async () => statusPayload}))
+  render(<ServiceMap compact />)
+  await screen.findByRole('button',{name:'View map'})
+  expect(screen.queryByRole('region',{name:'Service topology'})).toBeNull()
+  fireEvent.click(screen.getByRole('button',{name:/APE/}))
+  expect(screen.getByRole('button',{name:'Close service details'})).toBeVisible()
+  fireEvent.click(screen.getByRole('button',{name:'View map'}))
+  expect(screen.getByRole('region',{name:'Service topology'})).toBeVisible()
+  fireEvent.click(screen.getByRole('button',{name:'← Service list'}))
+  expect(screen.getByRole('button',{name:'View map'})).toBeVisible()
+})
 
 const statusPayload = {
   services: [

@@ -1,0 +1,14 @@
+{
+  "version": "2026.6.33",
+  "sourceSha256": "314dfdf16cd253ed1b4d0f8551a7793f42537f25004887cf0d68b72c123fa012",
+  "patchedSha256": "ddba857542d53dc1c9ca6c3a47a8fcff6b2deee7e1573042e689eb5d927683b6",
+  "reviewedDependencies": {
+    "embedded-agent-subscribe.handlers.compaction.runtime-BcFOW95l.js": "ef0f36218416d32e8a18687fe4bc311ee1df0a7d41d63930a68bf59d40f06067"
+  },
+  "replacements": [
+    [
+      "export * from \"./embedded-agent-subscribe.handlers.compaction.runtime-BcFOW95l.js\";\n",
+      "export * from \"./embedded-agent-subscribe.handlers.compaction.runtime-BcFOW95l.js\";\nexport { default } from \"./embedded-agent-subscribe.handlers.compaction.runtime-BcFOW95l.js\";\n"
+    ]
+  ]
+}

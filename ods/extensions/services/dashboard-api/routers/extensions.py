@@ -399,6 +399,11 @@ def _compute_extension_status(ext: dict, services_by_id: dict) -> str:
     if gpu_backends and "all" not in gpu_backends and GPU_BACKEND not in gpu_backends:
         return "incompatible"
 
+    if ext.get("catalog_source") == "builtin":
+        builtin_dir = EXTENSIONS_DIR / ext_id
+        if any((builtin_dir / name).is_file() for name in ("compose.yaml.disabled", "compose.yml.disabled")):
+            return "disabled"
+
     return "not_installed"
 
 
@@ -1160,7 +1165,7 @@ async def extensions_catalog(
         installable = _is_installable(ext["id"])
         ext_id = ext["id"]
         user_dir = USER_EXTENSIONS_DIR / ext_id
-        source = "user" if user_dir.is_dir() else ("core" if ext_id in SERVICES else "library")
+        source = "user" if user_dir.is_dir() else ("core" if ext_id in SERVICES or ext.get("catalog_source") == "builtin" else "library")
         has_data = (Path(DATA_DIR) / ext_id).is_dir()
         update_state = update_states.get(ext_id, {
             "update_status": "unavailable",
@@ -1288,10 +1293,23 @@ async def extension_detail(
     if not ext:
         raise HTTPException(status_code=404, detail=f"Extension not found: {service_id}")
 
-    from helpers import _CATALOG_HEALTH_TIMEOUT, check_service_health, get_all_services
+    from helpers import (
+        _CATALOG_HEALTH_TIMEOUT,
+        check_service_health,
+        get_all_services,
+        get_cached_services,
+    )
     from user_extensions import get_user_services_cached
 
-    service_list = await get_all_services()
+    # The background health poll owns the expensive all-service fan-out.  A
+    # detail request is also used by Pixel's bounded extension-manager probe
+    # during installation, so repeating the full scan here can exceed that
+    # caller's timeout even while the API and requested extension are healthy.
+    # Match the catalog endpoint: use the latest complete snapshot and only
+    # fall back to a live scan before the first poll has completed.
+    service_list = get_cached_services()
+    if service_list is None:
+        service_list = await get_all_services()
     services_by_id = {s.id: s for s in service_list}
 
     user_svc_configs = await asyncio.to_thread(get_user_services_cached, USER_EXTENSIONS_DIR)
@@ -1326,7 +1344,7 @@ async def extension_detail(
     manifest = {**ext, **({"llm": llm_contract} if llm_contract is not None else {})}
 
     user_dir = USER_EXTENSIONS_DIR / service_id
-    source = "user" if user_dir.is_dir() else ("core" if service_id in SERVICES else "library")
+    source = "user" if user_dir.is_dir() else ("core" if service_id in SERVICES or ext.get("catalog_source") == "builtin" else "library")
     update_state = await asyncio.to_thread(_library_update_state, service_id) if source == "user" else {
         "update_status": "unavailable",
         "update_available": False,

@@ -16,6 +16,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $checks = @()
+. (Join-Path $PSScriptRoot "wsl-lifecycle.ps1") -Distro $Distro
 
 function Write-Section([string]$Message) {
     Write-Host ""
@@ -65,7 +66,7 @@ if (Get-Command wsl.exe -ErrorAction SilentlyContinue) {
 
 $distroList = @()
 if (Get-Command wsl.exe -ErrorAction SilentlyContinue) {
-    $distroList = (& wsl.exe -l -q 2>$null | Where-Object { $_.Trim() -ne "" })
+    $distroList = @(& wsl.exe -l -q 2>$null | ForEach-Object { ($_ -replace "`0", "").Trim() } | Where-Object { $_ -and $_ -notmatch "^docker-desktop(?:-data)?$" })
 }
 if (-not $distroList) {
     Write-Host "[ERROR] No WSL distro found." -ForegroundColor Red
@@ -172,17 +173,12 @@ if (@($checks | Where-Object { $_.status -eq "blocker" }).Count -gt 0) {
 
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSCommandPath)
 $repoRootWsl = Convert-ToWslPath $repoRoot
-$argsString = ""
-if ($PassthroughArgs) {
-    $escaped = $PassthroughArgs | ForEach-Object { "'" + ($_ -replace "'", "'\\''") + "'" }
-    $argsString = ($escaped -join " ")
-}
 
 Write-Section "WSL delegation target"
 Write-Host "Repo path (Windows): $repoRoot"
 Write-Host "Repo path (WSL):     $repoRootWsl"
 
-$wslCommand = "cd '$repoRootWsl' && bash install-core.sh $argsString"
+$wslCommand = New-ODSWslInstallerCommand $repoRootWsl $PassthroughArgs ""
 Write-Host "Command:"
 Write-Host "  wsl.exe bash -lc `"$wslCommand`""
 
@@ -192,10 +188,33 @@ if ($NoDelegate) {
     exit 0
 }
 
+# Establish the independent Windows-owned WSL client before the installer's
+# client can exit. The installed directory may not exist until install-core runs.
+$rootCommand = New-ODSWslRootCommand $repoRootWsl
+$linuxInstallRoot = (& wsl.exe --distribution $Distro --exec bash -lc $rootCommand | Select-Object -Last 1).Trim()
+if ($LASTEXITCODE -ne 0) { throw "Could not resolve the Linux installation directory" }
+$lifetimeIdentity = Get-ODSWslIdentity $Distro $linuxInstallRoot
+# Pin the resolver result into the actual installer invocation, even when a
+# later login shell would choose different environment defaults.
+$wslCommand = New-ODSWslInstallerCommand $repoRootWsl $PassthroughArgs $lifetimeIdentity.installRoot
+# Help and dry-run retain their preview semantics: no persistent Windows task.
+$lifetimeRequired = -not (@($PassthroughArgs | Where-Object { $_ -cin @('--dry-run','--help','-h') }).Count -gt 0)
+if ($lifetimeRequired) {
+    Initialize-ODSPrivateDirectory $lifetimeIdentity.directory
+    $lifetimeLock = Open-ODSPrivateLock (Join-Path $lifetimeIdentity.directory 'command.lock')
+    try { $null = Start-ODSWslLifetime $lifetimeIdentity } finally { $lifetimeLock.Dispose() }
+    Write-Host "ODS WSL lifetime is active independently of this installer window."
+    Write-Host "Lifecycle: powershell -File `"$PSScriptRoot\wsl-lifecycle.ps1`" -Action status|stop|start|restart -Distro `"$Distro`" -InstallRoot `"$linuxInstallRoot`""
+}
+
 Write-Section "Running installer in WSL"
 if ($Distro) {
     & wsl.exe -d $Distro bash -lc $wslCommand
 } else {
     & wsl.exe bash -lc $wslCommand
 }
-exit $LASTEXITCODE
+$installerExitCode = $LASTEXITCODE
+if ($installerExitCode -ne 0 -and $lifetimeRequired) {
+    Write-Warning "Installation failed. The ODS WSL lifetime remains available for diagnosis; use lifecycle release to release only its WSL client if the incomplete install cannot stop normally."
+}
+exit $installerExitCode

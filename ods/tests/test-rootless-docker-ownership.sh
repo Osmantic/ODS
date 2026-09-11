@@ -62,6 +62,31 @@ pass "rootless config ownership repair rejects symlinks"
 ) || fail "docker-info failure was treated as rootful"
 pass "indeterminate Docker rootless state fails closed"
 
+(
+    source "$LIB"
+    unset ODS_ASSUME_ROOTLESS
+    # A fresh installer process has not inherited its new docker group yet.
+    # Phase 05 has already selected and verified the sudo-backed wrapper.
+    docker() { return 1; }
+    docker_run() {
+        [[ "$*" == "info --format {{json .SecurityOptions}}" ]] || return 1
+        printf '%s\n' '["name=seccomp,profile=builtin"]'
+    }
+    state_rc=0
+    ods_docker_rootless_state || state_rc=$?
+    [[ "$state_rc" -eq 1 ]]
+) || fail "fresh-install Docker detection ignored the selected command"
+pass "fresh-install Docker detection uses the verified installer command"
+
+(
+    source "$LIB"
+    unset ODS_ASSUME_ROOTLESS
+    docker() { return 1; }
+    docker_run() { printf '%s\n' '["name=rootless"]'; }
+    ods_docker_rootless_state
+) || fail "selected-command rootless detection"
+pass "selected-command rootless detection preserves ownership mode"
+
 INSTALL_DIR="$TMP_DIR/ods"
 mkdir -p "$INSTALL_DIR/data"/{ape,privacy-shield,token-spy,n8n,whisper,hermes,comfyui}
 mkdir -p "$INSTALL_DIR/data/langfuse"/{postgres,clickhouse}

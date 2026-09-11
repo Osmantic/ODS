@@ -21,6 +21,7 @@ from config import SERVICES, INSTALL_DIR, DATA_DIR, LLM_BACKEND, read_live_env_v
 from env_values import strip_matching_quotes
 from host_agent_client import AgentClientError, async_request_json as request_agent_json
 from models import ServiceStatus, DiskUsage, ModelInfo, BootstrapStatus
+from service_health_dns import ServiceHealthResolver
 
 
 class _DirSizeCache:
@@ -72,6 +73,7 @@ logger = logging.getLogger(__name__)
 
 _aio_session: Optional[aiohttp.ClientSession] = None
 _aio_session_lock: Optional[asyncio.Lock] = None
+_health_resolver: Optional[ServiceHealthResolver] = None
 _HEALTH_TIMEOUT = aiohttp.ClientTimeout(total=30)
 # Short timeout for the catalog fan-out: one slow probe must not stall the
 # whole Extensions page (frontend aborts after 8 s).
@@ -87,16 +89,31 @@ def _get_aio_session_lock() -> asyncio.Lock:
 
 async def _get_aio_session() -> aiohttp.ClientSession:
     """Return (and lazily create) a module-level aiohttp session."""
-    global _aio_session
+    global _aio_session, _health_resolver
     if _aio_session is not None and not _aio_session.closed:
         return _aio_session
     async with _get_aio_session_lock():
         if _aio_session is None or _aio_session.closed:
+            if _health_resolver is not None:
+                await _health_resolver.close()
+            _health_resolver = ServiceHealthResolver()
             _aio_session = aiohttp.ClientSession(
                 timeout=_HEALTH_TIMEOUT,
-                connector=aiohttp.TCPConnector(family=socket.AF_INET),
+                connector=aiohttp.TCPConnector(family=socket.AF_INET, resolver=_health_resolver),
             )
     return _aio_session
+
+
+async def shutdown_service_health_client() -> None:
+    """Close health sockets and cancel queued resolver work at app shutdown."""
+    global _aio_session, _health_resolver, _aio_session_lock
+    if _aio_session is not None:
+        await _aio_session.close()
+        _aio_session = None
+    if _health_resolver is not None:
+        await _health_resolver.close()
+        _health_resolver = None
+    _aio_session_lock = None
 
 
 # Shared httpx client for llama-server requests (connection pooling)

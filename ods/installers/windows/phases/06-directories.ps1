@@ -76,6 +76,7 @@ $_dirs = @(
     (Join-Path $_dataDir "privacy-shield"),
     (Join-Path $_dataDir "hermes"),
     (Join-Path $_dataDir "persona"),
+    (Join-Path (Join-Path $_dataDir "remote-provider") "secrets"),
     (Join-Path (Join-Path $_dataDir "hermes-proxy") "caddy-data"),
     (Join-Path (Join-Path $_dataDir "hermes-proxy") "caddy-config")
 )
