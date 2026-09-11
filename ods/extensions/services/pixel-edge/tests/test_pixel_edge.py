@@ -1194,12 +1194,12 @@ class TestHeaderStripping(BaseEdgeTest):
             self.assertFalse(seen.get("xforwarded"))
 
             await cap_runner.cleanup()
-            os.unlink(cap_sock)
+            Path(cap_sock).unlink(missing_ok=True)
         finally:
             os.environ["PIXEL_INGRESS_SOCKET"] = self.up_sock
             importlib.reload(pixel_edge)
             await runner.cleanup()
-            os.unlink(path)
+            Path(path).unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1535,7 +1535,7 @@ class TestSanitizedErrors(BaseEdgeTest):
                     self.assertNotIn("Traceback", json.dumps(data))
 
             await runner.cleanup()
-            os.unlink(sock)
+            Path(sock).unlink(missing_ok=True)
         finally:
             pixel_edge._SOCKET_PATH = old
 
