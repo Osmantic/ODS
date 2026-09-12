@@ -16,9 +16,10 @@ const sourceDescription = {
   local_zero_cost:'Local inference has no external API bill. Hardware and electricity costs are not included.',
   untracked:'No reliable pricing or billing source. Cost is unknown, not zero.',
 }
+const pricedCostAvailable = row => ['actual_billed','priced_from_tokens'].includes(row.cost_source) && row.cost_usd != null && row.cost_usd !== '' && Number.isFinite(Number(row.cost_usd))
 const costLabel = row => {
   if (row.cost_source === 'local_zero_cost') return 'Local'
-  if (!['actual_billed','priced_from_tokens'].includes(row.cost_source) || row.cost_usd == null || row.cost_usd === '' || !Number.isFinite(Number(row.cost_usd))) return '—'
+  if (!pricedCostAvailable(row)) return '—'
   return money(row.cost_usd)
 }
 const metadataValue = value => value || 'unknown'
@@ -26,10 +27,14 @@ const requestCountAvailable = (row, source) => row.requests != null && Number.is
 const requestLabel = (row, source) => requestCountAvailable(row,source) ? integer(row.requests) : '—'
 const seriesInfo = {input:{field:'input_tokens',label:'Input',color:'#dce1e5'},output:{field:'output_tokens',label:'Output',color:'#909ba8'},cache:{label:'Cache',color:'#66717d'}}
 
-export function csvForRows(rows) {
+export function csvForRows(rows, telemetrySource) {
   const fields=['model','provider','service','input_tokens','output_tokens','cache_read_tokens','cache_write_tokens','requests','cost_usd','cost_source']
   const cell=value=>`"${String(value ?? '').replace(/^[=+@\-\t\r]/,"'$&").replaceAll('"','""')}"`
-  return [fields.join(','),...rows.map(row=>fields.map(key=>cell(row[key])).join(','))].join('\r\n')
+  return [fields.join(','),...rows.map(row => {
+    const values = {...row, requests:requestCountAvailable(row,telemetrySource) ? row.requests : null,
+      cost_usd:row.cost_source === 'local_zero_cost' ? 0 : pricedCostAvailable(row) ? row.cost_usd : null}
+    return fields.map(key=>cell(values[key])).join(',')
+  })].join('\r\n')
 }
 
 export default function UsageView({compact=false,report,readiness,loading,error,range,onPrevious,onNext,onRefresh,actionState,onAction}) {
@@ -115,7 +120,7 @@ function ModelView({rows,telemetrySource}) {
   const filtered=useMemo(()=>rows.filter(row=>(provider==='all'||metadataValue(row.provider)===provider)&&(service==='all'||metadataValue(row.service)===service)&&(source==='all'||metadataValue(row.cost_source)===source)&&[row.model,row.provider,row.service,row.cost_source].some(value=>String(value || '').toLowerCase().includes(query.trim().toLowerCase()))).sort((a,b)=>tokens(b)-tokens(a)),[rows,query,provider,service,source])
   useEffect(()=>setPage(0),[query,provider,service,source])
   const count=Math.max(1,Math.ceil(filtered.length/8)), current=Math.min(page,count-1)
-  function exportCsv(){const url=URL.createObjectURL(new Blob([csvForRows(filtered)],{type:'text/csv;charset=utf-8'}));const link=document.createElement('a');link.href=url;link.download='ods-usage-by-model.csv';link.click();URL.revokeObjectURL(url)}
+  function exportCsv(){const url=URL.createObjectURL(new Blob([csvForRows(filtered,telemetrySource)],{type:'text/csv;charset=utf-8'}));const link=document.createElement('a');link.href=url;link.download='ods-usage-by-model.csv';link.click();URL.revokeObjectURL(url)}
   return <>
     <header className="usage-section-title"><div><h2>Usage by Model</h2><p>Ordered by recorded token volume</p></div><button className="usage-text-button" disabled={!filtered.length} onClick={exportCsv}><Download size={14}/>Export CSV</button></header>
     <label className="usage-search"><Search size={14}/><input aria-label="Search models" placeholder="Search models..." value={query} onChange={event=>setQuery(event.target.value)}/></label>
