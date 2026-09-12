@@ -22,8 +22,9 @@ import secrets
 import threading
 import time
 import uuid
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import Any, Callable, Iterable
+from typing import Any
 
 
 LEASE_SCHEMA = "ods.extension-operation-lease.v1"

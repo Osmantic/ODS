@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import collections
+import importlib
 import sys
 import threading
 from pathlib import Path
@@ -14,7 +15,7 @@ BIN_DIR = Path(__file__).resolve().parents[4] / "bin"
 if str(BIN_DIR) not in sys.path:
     sys.path.insert(0, str(BIN_DIR))
 
-import extension_operation_leases as leases  # noqa: E402
+leases = importlib.import_module("extension_operation_leases")
 
 
 TRANSACTION_ID = "txn-" + "1" * 24
@@ -289,11 +290,12 @@ def test_use_pins_expired_lease_until_mutation_exits():
     ) as evidence:
         assert evidence["planHash"] == PLAN_HASH
         assert evidence["serviceIds"] == ["documents"]
-        with pytest.raises(leases.LeaseBusy, match="lease-mutation-active"):
-            with manager.use(
-                grant["leaseId"], TOKEN, TRANSACTION_ID, PLAN_HASH, ["voice"]
-            ):
-                pass
+        with pytest.raises(
+            leases.LeaseBusy, match="lease-mutation-active"
+        ), manager.use(
+            grant["leaseId"], TOKEN, TRANSACTION_ID, PLAN_HASH, ["voice"]
+        ):
+            pass
         with pytest.raises(leases.LeaseBusy, match="lease-mutation-active"):
             manager.release(grant["leaseId"], TOKEN, TRANSACTION_ID, PLAN_HASH)
         clock.advance(1)
@@ -313,11 +315,10 @@ def test_use_rejects_a_service_outside_the_exact_grant():
 
     with pytest.raises(
         leases.LeaseAuthorizationError, match="lease-service-not-covered"
+    ), manager.use(
+        grant["leaseId"], TOKEN, TRANSACTION_ID, PLAN_HASH, ["voice"]
     ):
-        with manager.use(
-            grant["leaseId"], TOKEN, TRANSACTION_ID, PLAN_HASH, ["voice"]
-        ):
-            pass
+        pass
 
     assert lock_map["documents"].locked()
     manager.release(grant["leaseId"], TOKEN, TRANSACTION_ID, PLAN_HASH)
@@ -327,11 +328,10 @@ def test_use_body_exception_clears_active_state_without_releasing_live_lease():
     manager, lock_map, _events = make_manager()
     grant = acquire(manager, ("documents",))
 
-    with pytest.raises(RuntimeError, match="mutation-failed"):
-        with manager.use(
-            grant["leaseId"], TOKEN, TRANSACTION_ID, PLAN_HASH, ["documents"]
-        ):
-            raise RuntimeError("mutation-failed")
+    with pytest.raises(RuntimeError, match="mutation-failed"), manager.use(
+        grant["leaseId"], TOKEN, TRANSACTION_ID, PLAN_HASH, ["documents"]
+    ):
+        raise RuntimeError("mutation-failed")
 
     assert manager.describe(grant["leaseId"])["active"] is False
     assert lock_map["documents"].locked()
