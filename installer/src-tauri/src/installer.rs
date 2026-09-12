@@ -13,6 +13,7 @@ const TRANSFERRED_REPO_URL_BYTES: &[u8] = &[
     105, 103, 104, 116, 45, 72, 101, 97, 114, 116, 45, 76, 97, 98, 115, 47, 79, 68, 83, 46, 103,
     105, 116,
 ];
+const CONFIGURING_INSTALLATION_MSG: &str = "Configuring installation";
 
 fn repo_url() -> &'static str {
     option_env!("ODS_REPO_URL").unwrap_or(DEFAULT_REPO_URL)
