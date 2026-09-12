@@ -211,6 +211,39 @@ def approval_for(descriptor, envelope=None, **changes):
     return approval
 
 
+def advance_to_committed(store, descriptor, envelope=None):
+    envelope = envelope or build_envelope()
+    transaction_id = descriptor["transactionId"]
+    store._approve_record(
+        transaction_id, approval_for(descriptor, envelope), NOW
+    )
+    for state in (
+        "reserved",
+        "downloading",
+        "staged",
+        "configuring",
+        "applying",
+        "verifying",
+        "committed",
+    ):
+        store.transition(transaction_id, state, ACTOR, NOW, NOW)
+    return store.read(transaction_id)
+
+
+def finalization_receipt(transaction, **changes):
+    receipt = {
+        "schema": transactions.FINALIZATION_SCHEMA,
+        "transactionId": transaction["transactionId"],
+        "planHash": transaction["envelope"]["planHash"],
+        "sequence": transaction["sequence"],
+        "lockfileHash": "b" * 64,
+        "postCommitObservedStateRevision": "c" * 64,
+        "recordedAt": NOW,
+    }
+    receipt.update(changes)
+    return receipt
+
+
 def test_real_planner_envelope_create_read_and_idempotent_replay(tmp_path):
     store = transactions.TransactionStore(tmp_path / "transactions")
     envelope = build_envelope()
@@ -1143,3 +1176,119 @@ def test_configuration_reservation_rejects_malformed_direct_inputs(
             NOW,
         )
     assert caught.value.code == code
+
+
+def test_finalization_receipt_requires_a_committed_transaction(tmp_path):
+    store = transactions.TransactionStore(tmp_path / "transactions")
+    envelope = build_envelope()
+    descriptor = create(store, envelope)
+    loaded = store.read(descriptor["transactionId"])
+
+    with pytest.raises(transactions.TransitionError) as caught:
+        store.record_finalization(
+            descriptor["transactionId"], finalization_receipt(loaded)
+        )
+    assert caught.value.code == "transaction-not-committed"
+
+
+def test_finalization_receipt_is_bound_immutable_and_idempotent(tmp_path):
+    store = transactions.TransactionStore(tmp_path / "transactions")
+    envelope = build_envelope()
+    descriptor = create(store, envelope)
+    committed = advance_to_committed(store, descriptor, envelope)
+    receipt = finalization_receipt(committed)
+
+    first = store.record_finalization(descriptor["transactionId"], receipt)
+    second = store.record_finalization(
+        descriptor["transactionId"],
+        finalization_receipt(committed, recordedAt="2026-09-11T12:03:00Z"),
+    )
+
+    assert first == {**receipt, "duplicate": False}
+    assert second == {**receipt, "duplicate": True}
+    assert store.read(descriptor["transactionId"])["finalization"] == receipt
+    path = store._tx_dir / descriptor["transactionId"] / "finalization.json"
+    assert path.read_bytes() == transactions.canonical_json_bytes(receipt)
+
+    conflicting = finalization_receipt(committed, lockfileHash="d" * 64)
+    with pytest.raises(transactions.IdempotencyConflict) as caught:
+        store.record_finalization(descriptor["transactionId"], conflicting)
+    assert caught.value.code == "finalization-conflict"
+
+
+def test_finalization_receipt_serializes_competing_store_instances(tmp_path):
+    root = tmp_path / "transactions"
+    first_store = transactions.TransactionStore(root)
+    second_store = transactions.TransactionStore(root)
+    envelope = build_envelope()
+    descriptor = create(first_store, envelope)
+    committed = advance_to_committed(first_store, descriptor, envelope)
+    receipt = finalization_receipt(committed)
+    results = []
+    errors = []
+
+    def record(store):
+        try:
+            results.append(
+                store.record_finalization(descriptor["transactionId"], receipt)
+            )
+        except transactions.TransactionError as exc:
+            errors.append(exc)
+
+    threads = [
+        threading.Thread(target=record, args=(first_store,)),
+        threading.Thread(target=record, args=(second_store,)),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert errors == []
+    assert sorted(result["duplicate"] for result in results) == [False, True]
+    assert first_store.read(descriptor["transactionId"])["finalization"] == receipt
+
+
+@pytest.mark.parametrize(
+    ("changes", "code"),
+    [
+        ({"transactionId": "txn-" + "0" * 24}, "finalization-binding-mismatch"),
+        ({"planHash": "0" * 64}, "finalization-binding-mismatch"),
+        ({"sequence": 0}, "finalization-binding-mismatch"),
+        ({"lockfileHash": "secret-value"}, "invalid-finalization-digest"),
+        ({"recordedAt": "2020-01-01T00:00:00Z"}, "finalization-time-order"),
+    ],
+)
+def test_finalization_receipt_rejects_unbound_or_invalid_fields(
+    tmp_path, changes, code
+):
+    store = transactions.TransactionStore(tmp_path / "transactions")
+    envelope = build_envelope()
+    descriptor = create(store, envelope)
+    committed = advance_to_committed(store, descriptor, envelope)
+
+    with pytest.raises(transactions.TransactionError) as caught:
+        store.record_finalization(
+            descriptor["transactionId"],
+            finalization_receipt(committed, **changes),
+        )
+    assert caught.value.code == code
+
+
+def test_finalization_receipt_tampering_fails_closed(tmp_path):
+    store = transactions.TransactionStore(tmp_path / "transactions")
+    envelope = build_envelope()
+    descriptor = create(store, envelope)
+    committed = advance_to_committed(store, descriptor, envelope)
+    receipt = finalization_receipt(committed)
+    store.record_finalization(descriptor["transactionId"], receipt)
+
+    path = store._tx_dir / descriptor["transactionId"] / "finalization.json"
+    tampered = dict(receipt)
+    tampered["secretValue"] = "must-not-be-accepted"
+    path.write_bytes(transactions.canonical_json_bytes(tampered))
+
+    with pytest.raises(transactions.IntegrityError) as caught:
+        store.read(descriptor["transactionId"])
+    assert caught.value.code == "finalization-keys"
