@@ -48,6 +48,13 @@ MISMATCH=trailing-quote"
 CROSS="abc'
 LONE_DQ="
 EMPTY_DQ=""
+IC_PORT=11434          # llama-server API (external → internal 8080)
+IC_HASH_NO_SPACE=abc#not-a-comment
+IC_DQ="quoted value" # trailing note
+IC_SQ='single value'   # trailing note
+IC_DQ_INNER="keep # this"
+IC_EMPTY_COMMENT=  # auto-generated during install
+IC_LEADING_HASH= #x
 EOF
 
 INSTALL_DIR="$TMP_DIR"
@@ -71,6 +78,17 @@ assert_env "MISMATCH" 'trailing-quote"'
 assert_env "CROSS" '"abc'\'''
 assert_env "LONE_DQ" '"'
 assert_env "EMPTY_DQ" ''
+# Compose's inline-comment rule, mirrored from lib/safe-env.sh
+assert_env "IC_PORT" '11434'
+assert_env "IC_HASH_NO_SPACE" 'abc#not-a-comment'
+assert_env "IC_DQ" 'quoted value'
+assert_env "IC_SQ" 'single value'
+assert_env "IC_DQ_INNER" 'keep # this'
+# Compose trims leading whitespace before the inline-comment cut, so a value
+# that is only a comment keeps the literal "#..." (checked with docker compose
+# config); read_ods_env matches so ods exports what Compose would read.
+assert_env "IC_EMPTY_COMMENT" '# auto-generated during install'
+assert_env "IC_LEADING_HASH" '#x'
 
 echo ""
 echo "Result: $PASSED passed, $FAILED failed"

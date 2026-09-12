@@ -151,5 +151,39 @@ load_env_file "$tmpdir/.env-escaped"
     || fail "FILE_ESCAPED not decoded safely (got: ${FILE_ESCAPED:-})"
 pass "load_env_file decodes supported escapes without evaluation"
 
+echo "Test 14: load_env_file applies Compose's inline-comment and whitespace rules"
+# ods-cli exports these values before calling docker compose, and Compose gives
+# the environment precedence over .env — so a value Compose would read as
+# "11434" must not reach it as "11434 # comment" (invalid hostPort).
+unset IC_PORT IC_HASH_NO_SPACE IC_DQ IC_SQ IC_DQ_INNER IC_SQ_INNER IC_PAD IC_EMPTY_COMMENT IC_LEADING_HASH IC_DQ_PAD 2>/dev/null || true
+cat > "$tmpdir/.env-comments" << 'EOF'
+IC_PORT=11434          # llama-server API (external → internal 8080)
+IC_HASH_NO_SPACE=abc#not-a-comment
+IC_DQ="quoted value" # trailing note
+IC_SQ='single value'   # trailing note
+IC_DQ_INNER="keep # this"
+IC_SQ_INNER='keep # this too'
+IC_EMPTY_COMMENT=  # auto-generated during install
+IC_LEADING_HASH= #x
+EOF
+# Trailing whitespace on purpose; written with printf so the source stays clean.
+printf '%s\n' 'IC_PAD=   padded value   ' 'IC_DQ_PAD=  "spaced quotes"  ' >> "$tmpdir/.env-comments"
+load_env_file "$tmpdir/.env-comments"
+[[ "${IC_PORT:-}" == "11434" ]] || fail "IC_PORT kept its inline comment (got: '${IC_PORT:-}')"
+[[ "${IC_HASH_NO_SPACE:-}" == "abc#not-a-comment" ]] || fail "IC_HASH_NO_SPACE lost a '#' that is not a comment (got: '${IC_HASH_NO_SPACE:-}')"
+[[ "${IC_DQ:-}" == "quoted value" ]] || fail "IC_DQ kept the comment after its closing quote (got: '${IC_DQ:-}')"
+[[ "${IC_SQ:-}" == "single value" ]] || fail "IC_SQ kept the comment after its closing quote (got: '${IC_SQ:-}')"
+[[ "${IC_DQ_INNER:-}" == "keep # this" ]] || fail "IC_DQ_INNER lost quoted content (got: '${IC_DQ_INNER:-}')"
+[[ "${IC_SQ_INNER:-}" == "keep # this too" ]] || fail "IC_SQ_INNER lost quoted content (got: '${IC_SQ_INNER:-}')"
+[[ "${IC_PAD:-}" == "padded value" ]] || fail "IC_PAD kept surrounding whitespace (got: '${IC_PAD:-}')"
+# Compose trims leading whitespace BEFORE the inline-comment cut, so
+# "KEY=  # x" becomes "# x" — the '#' is no longer preceded by a space and is
+# kept as a literal value (verified with `docker compose config`). safe-env
+# must match, or ods-cli would export a value Compose never produced.
+[[ "${IC_EMPTY_COMMENT-unset}" == "# auto-generated during install" ]] || fail "IC_EMPTY_COMMENT should be the literal comment like Compose (got: '${IC_EMPTY_COMMENT-unset}')"
+[[ "${IC_LEADING_HASH-unset}" == "#x" ]] || fail "IC_LEADING_HASH should stay '#x' like Compose (got: '${IC_LEADING_HASH-unset}')"
+[[ "${IC_DQ_PAD:-}" == "spaced quotes" ]] || fail "IC_DQ_PAD not unquoted after trimming (got: '${IC_DQ_PAD:-}')"
+pass "load_env_file matches Compose for inline comments and surrounding whitespace"
+
 echo ""
 echo "All safe-env tests passed."
