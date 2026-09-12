@@ -1420,3 +1420,66 @@ def test_env_example_keys_are_present_in_schema():
     schema_keys = set(schema.get("properties", {}))
 
     assert documented_keys - schema_keys == set()
+
+
+def test_api_settings_env_masks_extension_keys_outside_the_schema(test_client, settings_env_fixture):
+    """Extension-written credentials that the schema does not describe must be
+    masked by name. LibreChat's compose requires CREDS_KEY and
+    LIBRECHAT_MEILI_KEY in .env (``${CREDS_KEY:?...}``), so they exist as
+    local overrides; they used to come back in cleartext with secret=false.
+    """
+    env_path = settings_env_fixture["env_path"]
+    env_path.write_text(
+        env_path.read_text(encoding="utf-8")
+        + "CREDS_KEY=creds-leak-value\n"
+        + "LIBRECHAT_MEILI_KEY=meili-leak-value\n"
+        + "GOOGLE_KEY=google-leak-value\n"
+        + "ODS_ROUTER_INTERNAL_KEY=router-leak-value\n"
+        + "LANGFUSE_PROJECT_PUBLIC_KEY=pk-lf-visible\n"
+        + "TLS_KEY_FILE=/etc/ods/tls.key\n",
+        encoding="utf-8",
+    )
+
+    response = test_client.get("/api/settings/env", headers=test_client.auth_headers)
+
+    assert response.status_code == 200
+    payload = response.json()
+    body = json.dumps(payload)
+    for key, sentinel in (
+        ("CREDS_KEY", "creds-leak-value"),
+        ("LIBRECHAT_MEILI_KEY", "meili-leak-value"),
+        ("GOOGLE_KEY", "google-leak-value"),
+        ("ODS_ROUTER_INTERNAL_KEY", "router-leak-value"),
+    ):
+        assert payload["fields"][key]["secret"] is True, key
+        assert payload["fields"][key]["hasValue"] is True, key
+        assert payload["values"][key] == "", key
+        assert sentinel not in body, key
+    # Precision: a public key and a key *file path* are not credentials.
+    assert payload["fields"]["LANGFUSE_PROJECT_PUBLIC_KEY"]["secret"] is False
+    assert payload["values"]["LANGFUSE_PROJECT_PUBLIC_KEY"] == "pk-lf-visible"
+    assert payload["fields"]["TLS_KEY_FILE"]["secret"] is False
+    assert payload["values"]["TLS_KEY_FILE"] == "/etc/ods/tls.key"
+
+
+@pytest.mark.parametrize(
+    ("key", "expected"),
+    [
+        ("CREDS_KEY", True),
+        ("GOOGLE_KEY", True),
+        ("OPENROUTER_KEY", True),
+        ("LIBRECHAT_MEILI_KEY", True),
+        ("ODS_FLEET_PROBE_KEY", True),
+        ("BEDROCK_AWS_SECRET_ACCESS_KEY", True),
+        ("LANGFUSE_PROJECT_PUBLIC_KEY", False),
+        ("SHIELD_API_KEY_PATH", True),   # already matched by API_KEY before this change
+        ("TLS_KEY_FILE", False),
+        ("LLAMA_ARG_CACHE_TYPE_K", False),
+        ("LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS", False),
+        ("KEYBOARD_LAYOUT", False),
+    ],
+)
+def test_is_secret_field_name_heuristic(key, expected):
+    from settings import _is_secret_field
+
+    assert _is_secret_field(key) is expected

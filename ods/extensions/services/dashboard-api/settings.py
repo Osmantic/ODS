@@ -20,8 +20,12 @@ from host_agent_client import AgentClientError, request_json as request_agent_js
 
 _ENV_ASSIGNMENT_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
 _ENV_COMMENTED_ASSIGNMENT_RE = re.compile(r"^\s*#\s*([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
+# Name heuristic for keys the schema does not describe (extension-written
+# local overrides such as LibreChat's CREDS_KEY / LIBRECHAT_MEILI_KEY /
+# GOOGLE_KEY). A trailing "_KEY" is a credential unless it is a PUBLIC_KEY
+# (excluded in _is_secret_field); "_KEY_PATH" / "_KEY_FILE" stay visible.
 _SENSITIVE_ENV_KEY_RE = re.compile(
-    r"(SECRET|(?:^|_)TOKEN(?:$|_)|PASSWORD|(?:^|_)PASS(?:$|_)|API_KEY|PRIVATE_KEY|ENCRYPTION_KEY|(?:^|_)SALT(?:$|_))"
+    r"(SECRET|(?:^|_)TOKEN(?:$|_)|PASSWORD|(?:^|_)PASS(?:$|_)|API_KEY|PRIVATE_KEY|ENCRYPTION_KEY|(?:^|_)SALT(?:$|_)|(?:^|_)KEY$)"
 )
 _GGUF_QUANTIZED_MODEL_RE = re.compile(
     r"(?:^|[-_.])q[2-8](?:_[a-z0-9]+)*(?:$|[-_.])",
