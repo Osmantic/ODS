@@ -35,6 +35,7 @@ test: ## Run unit and contract tests
 	@bash tests/test-external-services.sh
 	@bash tests/test-resolve-compose-resilient.sh
 	@bash tests/test-phase03-multigpu-tty.sh
+	@bash tests/test-phase03-no-gpu-assignment-message.sh
 	@bash tests/contracts/test-preflight-fixtures.sh
 	@bash tests/test-preflight-resolver-bug.sh
 	@bash tests/test-linux-cloud-mode.sh

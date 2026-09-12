@@ -288,6 +288,13 @@ fi
 
 log "All services enabled (core install)"
 
+# No GPU (CPU-only) — nothing to assign. Say so plainly instead of falling
+# into the single-GPU branch below and logging "Single GPU detected".
+if [[ "${GPU_COUNT:-0}" -eq 0 ]]; then
+    log "No GPU detected — skipping GPU assignment (CPU-only mode)."
+    return
+fi
+
 # Single GPU — generate a trivial assignment so the dashboard API can map
 # the GPU UUID to services (without this, /api/gpu/detailed shows empty
 # assigned_services).  Multi-GPU systems fall through to the full TUI below.
