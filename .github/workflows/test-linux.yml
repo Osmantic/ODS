@@ -253,6 +253,9 @@ jobs:
       - name: Atomic Environment Write Tests
         run: bash tests/test-atomic-env-writes.sh
 
+      - name: Secret Security Tests
+        run: bash tests/test-secret-security.sh
+
       - name: Issue-to-PR Security Contract Tests
         run: bash tests/test-issue-to-pr-security.sh
 
