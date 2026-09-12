@@ -134,31 +134,57 @@ _ods_is_related_install_dir() {
 }
 
 _ods_related_compose_containers() {
-    command -v docker >/dev/null 2>&1 || return 0
+    command -v docker >/dev/null 2>&1 || command -v podman >/dev/null 2>&1 || return 0
 
-    docker ps -a \
-        --format '{{.Names}}|{{.Label "com.docker.compose.project"}}|{{.Label "com.docker.compose.service"}}' \
-        2>/dev/null |
-        awk -F '|' '
-            $2 != "" {
-                project = $2
-                if (names[project] == "") {
-                    names[project] = $1
-                } else {
-                    names[project] = names[project] " " $1
+    if command -v docker >/dev/null 2>&1; then
+        docker ps -a \
+            --format '{{.Names}}|{{.Label "com.docker.compose.project"}}|{{.Label "com.docker.compose.service"}}' \
+            2>/dev/null |
+            awk -F '|' '
+                $2 != "" {
+                    project = $2
+                    if (names[project] == "") {
+                        names[project] = $1
+                    } else {
+                        names[project] = names[project] " " $1
+                    }
+                    if ($3 == "open-webui") open_webui[project] = 1
+                    if ($3 == "dashboard-api") dashboard_api[project] = 1
+                    if ($3 == "llama-server" || $3 == "litellm") inference[project] = 1
                 }
-                if ($3 == "open-webui") open_webui[project] = 1
-                if ($3 == "dashboard-api") dashboard_api[project] = 1
-                if ($3 == "llama-server" || $3 == "litellm") inference[project] = 1
-            }
-            END {
-                for (project in names) {
-                    if (open_webui[project] && dashboard_api[project] && inference[project]) {
-                        print names[project]
+                END {
+                    for (project in names) {
+                        if (open_webui[project] && dashboard_api[project] && inference[project]) {
+                            print names[project]
+                        }
                     }
                 }
-            }
-        '
+            '
+    elif command -v podman >/dev/null 2>&1; then
+        podman ps -a \
+            --format '{{.Names}}|{{.Label "io.podman.compose.project"}}|{{.Label "io.podman.compose.service"}}' \
+            2>/dev/null |
+            awk -F '|' '
+                $2 != "" {
+                    project = $2
+                    if (names[project] == "") {
+                        names[project] = $1
+                    } else {
+                        names[project] = names[project] " " $1
+                    }
+                    if ($3 == "open-webui") open_webui[project] = 1
+                    if ($3 == "dashboard-api") dashboard_api[project] = 1
+                    if ($3 == "llama-server" || $3 == "litellm") inference[project] = 1
+                }
+                END {
+                    for (project in names) {
+                        if (open_webui[project] && dashboard_api[project] && inference[project]) {
+                            print names[project]
+                        }
+                    }
+                }
+            '
+    fi
 }
 
 if [[ ! -d "$INSTALL_DIR" ]] && ! _ods_truthy "${ODS_ALLOW_LEGACY_PARALLEL:-}"; then
@@ -243,6 +269,11 @@ re-run, e.g.:  INSTALL_DIR=\"\$HOME/ods\" $0"
 # Docker Desktop file-sharing probe — only meaningful when Docker Desktop
 # is in use (most Linux installs use the native daemon and skip this).
 check_docker_desktop_sharing() {
+    # Skip if only podman is available (no Docker Desktop)
+    if ! command -v docker &>/dev/null && command -v podman &>/dev/null; then
+        return 0
+    fi
+    
     command -v docker >/dev/null 2>&1 || return 0
 
     local os_string=""

@@ -104,6 +104,9 @@ get_docker_available_cpus() {
     if command -v docker &>/dev/null; then
         cores=$(docker info --format '{{.NCPU}}' 2>/dev/null || true)
         cores="${cores//[!0-9]/}"
+    elif command -v podman &>/dev/null; then
+        cores=$(podman info --format '{{.Host.CPUs}}' 2>/dev/null || true)
+        cores="${cores//[!0-9]/}"
     fi
 
     if [[ "$cores" =~ ^[0-9]+$ ]] && [[ "$cores" -gt 0 ]]; then
