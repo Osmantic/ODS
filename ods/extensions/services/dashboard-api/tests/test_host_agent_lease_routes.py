@@ -604,6 +604,41 @@ def test_malformed_start_stop_lease_fails_before_lock_or_compose(
 
 
 @pytest.mark.parametrize("action", ["start", "stop"])
+def test_start_stop_without_lease_releases_lock_before_response(
+    host_server, host_request, monkeypatch, action
+):
+    agent, _listener = host_server
+    agent._service_locks = collections.defaultdict(CountingLock)
+    lock = agent._service_locks["documents"]
+    original_json_response = agent.json_response
+    locked_at_response = []
+
+    def observed_json_response(handler, code, body, **kwargs):
+        if body.get("service_id") == "documents":
+            locked_at_response.append(lock.locked())
+        return original_json_response(handler, code, body, **kwargs)
+
+    monkeypatch.setattr(agent, "_read_progress_status", lambda _sid: "complete")
+    monkeypatch.setattr(agent, "docker_compose_action", lambda *_args: (True, ""))
+    monkeypatch.setattr(agent, "json_response", observed_json_response)
+    status, result = host_request(
+        f"/v1/extension/{action}",
+        {"service_id": "documents"},
+        expect_no_store=False,
+    )
+
+    assert status == 200
+    assert result == {
+        "status": "ok",
+        "service_id": "documents",
+        "action": action,
+    }
+    assert lock.acquire_calls == 1
+    assert locked_at_response == [False]
+    assert not lock.locked()
+
+
+@pytest.mark.parametrize("action", ["start", "stop"])
 def test_valid_start_stop_lease_covers_compose_without_reacquiring(
     host_server, host_request, monkeypatch, action
 ):
@@ -611,6 +646,8 @@ def test_valid_start_stop_lease_covers_compose_without_reacquiring(
     agent._service_locks = collections.defaultdict(CountingLock)
     grant = acquire_lease(agent, host_request)
     lock = agent._service_locks["documents"]
+    original_json_response = agent.json_response
+    state_at_response = []
 
     def observed_compose(service_id, observed_action):
         state = agent._extension_lease_manager.describe(grant["leaseId"])
@@ -619,7 +656,14 @@ def test_valid_start_stop_lease_covers_compose_without_reacquiring(
         assert observed_action == action
         return True, ""
 
+    def observed_json_response(handler, code, body, **kwargs):
+        if body.get("service_id") == "documents":
+            state = agent._extension_lease_manager.describe(grant["leaseId"])
+            state_at_response.append((state["active"], lock.locked()))
+        return original_json_response(handler, code, body, **kwargs)
+
     monkeypatch.setattr(agent, "docker_compose_action", observed_compose)
+    monkeypatch.setattr(agent, "json_response", observed_json_response)
     status, result = host_request(
         f"/v1/extension/{action}",
         {
@@ -636,6 +680,7 @@ def test_valid_start_stop_lease_covers_compose_without_reacquiring(
         "action": action,
     }
     assert lock.acquire_calls == 1
+    assert state_at_response == [(False, True)]
     assert lock.locked()
     assert agent._extension_lease_manager.describe(grant["leaseId"])["active"] is False
 
@@ -772,11 +817,20 @@ def test_start_compose_exception_clears_active_lease_window(
     agent._service_locks = collections.defaultdict(CountingLock)
     grant = acquire_lease(agent, host_request)
     lock = agent._service_locks["documents"]
+    original_json_response = agent.json_response
+    state_at_response = []
 
     def fail_compose(*_args):
         raise RuntimeError("synthetic compose failure")
 
+    def observed_json_response(handler, code, body, **kwargs):
+        if code == 500:
+            state = agent._extension_lease_manager.describe(grant["leaseId"])
+            state_at_response.append((state["active"], lock.locked()))
+        return original_json_response(handler, code, body, **kwargs)
+
     monkeypatch.setattr(agent, "docker_compose_action", fail_compose)
+    monkeypatch.setattr(agent, "json_response", observed_json_response)
     status, result = host_request(
         "/v1/extension/start",
         {
@@ -788,6 +842,7 @@ def test_start_compose_exception_clears_active_lease_window(
 
     assert status == 500
     assert result == {"error": "synthetic compose failure"}
+    assert state_at_response == [(False, True)]
     assert agent._extension_lease_manager.describe(grant["leaseId"])["active"] is False
     assert lock.acquire_calls == 1
     assert lock.locked()

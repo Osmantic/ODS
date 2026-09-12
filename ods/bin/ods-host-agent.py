@@ -8973,18 +8973,25 @@ class AgentHandler(BaseHTTPRequestHandler):
             try:
                 ok, err = docker_compose_action(service_id, action)
             except RuntimeError as exc:
-                json_response(self, 500, {"error": str(exc)})
-                return
+                response_status, response_body = 500, {"error": str(exc)}
             except subprocess.CalledProcessError as exc:
-                json_response(self, 500, {"error": f"Compose resolution failed: {exc.stderr[:300]}"})
-                return
+                response_status, response_body = 500, {
+                    "error": f"Compose resolution failed: {exc.stderr[:300]}"
+                }
+            else:
+                if ok:
+                    response_status, response_body = 200, {
+                        "status": "ok",
+                        "service_id": service_id,
+                        "action": action,
+                    }
+                else:
+                    response_status = 503 if "timed out" in err else 500
+                    response_body = {"error": err}
         finally:
             if not admission_handed_off:
                 admission.__exit__(None, None, None)
-        if ok:
-            json_response(self, 200, {"status": "ok", "service_id": service_id, "action": action})
-        else:
-            json_response(self, 503 if "timed out" in err else 500, {"error": err})
+        json_response(self, response_status, response_body)
 
     def _handle_extension_compose_toggle(self, activate: bool):
         """Rename compose.yaml.disabled <-> compose.yaml for an extension.
