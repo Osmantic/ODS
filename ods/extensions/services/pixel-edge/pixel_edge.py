@@ -561,6 +561,14 @@ def _rewrite_json_response(raw: bytes, fallback: str) -> bytes:
     return json.dumps(parsed).encode("utf-8")
 
 
+def _normalize_sse_line(line: bytes) -> bytes:
+    # CRLF and the optional space after "data:" carry the same SSE field.
+    line = line.removesuffix(b"\r")
+    if line.startswith(b"data:") and not line.startswith(b"data: "):
+        line = b"data: " + line[5:]
+    return line
+
+
 def _sse_event(line: bytes):
     if not line.startswith(b"data: ") or line == b"data: [DONE]":
         return None, None, None
@@ -956,11 +964,11 @@ async def _stream_upstream(
             if content is None and finish_reason is None:
                 await response.write(line + b"\n")
         await response.write(
-            _fallback_sse_line(template, empty_reply_fallback, finished=False) + b"\n"
+            _fallback_sse_line(template, empty_reply_fallback, finished=False) + b"\n\n"
         )
         if synthesize_finish:
             await response.write(
-                _fallback_sse_line(template, empty_reply_fallback, finished=True) + b"\n"
+                _fallback_sse_line(template, empty_reply_fallback, finished=True) + b"\n\n"
             )
         pending = []
 
@@ -972,6 +980,7 @@ async def _stream_upstream(
             while b"\n" in buffered:
                 line, _, remainder = buffered.partition(b"\n")
                 buffered = bytearray(remainder)
+                line = _normalize_sse_line(line)
                 if cancel_event is not None and cancel_event.is_set():
                     pending = []
                     await response.write(b"data: [DONE]\n\n")
@@ -1044,7 +1053,7 @@ async def _stream_upstream(
         if buffered:
             if len(buffered) > _MAX_SSE_LINE:
                 raise ValueError("SSE line exceeded limit")
-            line = bytes(buffered)
+            line = _normalize_sse_line(bytes(buffered))
             if line.rstrip(b"\r") == b"data: [DONE]" and activity is not None:
                 activity["terminal"] = True
             if line.startswith(b"data: ") and line != b"data: [DONE]":

@@ -103,6 +103,12 @@ async def _upstream_chat(request):
         )
         await resp.prepare(request)
         async for chunk in generate():
+            if data.get("sse_no_space"):
+                chunk = chunk.replace(b"data: ", b"data:")
+            if data.get("sse_crlf"):
+                chunk = chunk.replace(b"\n", b"\r\n")
+            if data.get("sse_without_finish") and b'"delta":{}' in chunk:
+                continue
             await resp.write(chunk)
         await resp.write_eof()
         return resp
@@ -1431,6 +1437,35 @@ class TestPrivateUrlBoundary(BaseEdgeTest):
 # ---------------------------------------------------------------------------
 
 class TestSSE(BaseEdgeTest):
+    async def test_fallback_frames_are_independently_decodable_sse_events(self):
+        for no_space in (False, True):
+            for crlf in (False, True):
+                for without_finish in (False, True):
+                    with self.subTest(no_space=no_space, crlf=crlf, without_finish=without_finish):
+                        async with self.client.post(
+                            "http://localhost/v1/chat/completions", headers=self.auth(),
+                            json={"model": "pixel/default", "stream": True,
+                                  "messages": [{"role": "user", "content": "testing 123"}],
+                                  "trigger_reserved": True, "sse_no_space": no_space,
+                                  "sse_crlf": crlf, "sse_without_finish": without_finish},
+                        ) as response:
+                            self.assertEqual(response.status, 200)
+                            body = await response.text()
+                        events = []
+                        for frame in body.replace("\r\n", "\n").split("\n\n"):
+                            fields = [line[5:].removeprefix(" ") for line in frame.split("\n")
+                                      if line.startswith("data:")]
+                            if fields:
+                                events.append("\n".join(fields))
+                        self.assertEqual(events[-1], "[DONE]")
+                        packets = [json.loads(event) for event in events[:-1]]
+                        self.assertTrue(all(packet.get("model") == "pixel/default" for packet in packets))
+                        text = "".join(packet["choices"][0].get("delta", {}).get("content", "")
+                                       for packet in packets)
+                        self.assertEqual(text, self.pe._SHORT_TEST_REPLY)
+                        self.assertEqual(sum(packet["choices"][0].get("finish_reason") == "stop"
+                                             for packet in packets), 1)
+
     async def test_sse_streams_incrementally(self):
         async with self.client.post(
             "http://localhost/v1/chat/completions",
