@@ -91,6 +91,30 @@ compensating actions where atomicity is impossible, and reconciles every
 nonterminal transaction after restart. No second component independently
 rewrites the lockfile or silently re-plans an approved operation.
 
+The durable transaction sequence is `planned`, `awaiting_approval`,
+`approved`, `reserved`, `downloading`, `staged`, `configuring`, `applying`,
+`verifying`, and `committed`. Every failure enters `failed` and then
+`reconciling` before reaching either `rolled_back` or
+`manual_recovery_required`. Phase effects occur only while their matching
+in-progress state is already durable. Restart recovery combines the journal
+with strict host observation and never treats a queued request or HTTP 202 as
+completion.
+
+All selected services are locked in canonical order before the final
+provenance check and before lifecycle work. Artifacts are downloaded and
+verified before apply. The first pre-transaction backup is replay-safe,
+operations apply in plan order, and compensation follows the durably observed
+applied prefix in reverse order. A failed health or representative functional
+check cannot transition to `committed`.
+
+Owner approval is a separate authentication scope. Owner, guest, and admin
+session scopes are covered by the session-cookie HMAC. Legacy cookies remain
+valid for ordinary authenticated access but are never approval-capable. The
+API-key session exchange mints only an admin scope. Only an owner magic-link
+redemption can produce the hashed, non-secret approval identity bound to an
+exact transaction; the assistant-facing lifecycle protocol contains no
+approval operation.
+
 ### 7. Preserve data by default
 
 Disable and remove are distinct from data purge. Removal preserves extension
