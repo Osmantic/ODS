@@ -226,7 +226,7 @@ def _source_files(
                 or info.st_nlink != 1
                 or info.st_uid != owner_uid
                 or info.st_mode & 0o022
-                or not 1 <= info.st_size <= MAX_FILE_BYTES
+                or not (1 if relative == "index.html" else 0) <= info.st_size <= MAX_FILE_BYTES
                 or any(PATH_COMPONENT.fullmatch(part) is None for part in relative.split("/"))
             ):
                 raise PreviewError("unsafe preview file")

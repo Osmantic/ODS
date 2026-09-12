@@ -50,7 +50,7 @@ export async function loadSnapshotFiles(preview, signal) {
   const seen = new Set()
   for (const file of manifest.files) {
     if (!file || !isArtifactPath(file.path) || seen.has(file.path) || !DIGEST.test(file.sha256)
-      || !Number.isInteger(file.bytes) || file.bytes < 1 || file.bytes > 4 * 1024 * 1024) throw new Error('Invalid file')
+      || !Number.isInteger(file.bytes) || file.bytes < (file.path === 'index.html' ? 1 : 0) || file.bytes > 4 * 1024 * 1024) throw new Error('Invalid file')
     total += file.bytes
     seen.add(file.path)
   }
