@@ -14,6 +14,7 @@ MODELS_MOUNT="/models"
 OUTPUT_MOUNT="/output"
 INPUT_MOUNT="/input"
 WORKFLOWS_MOUNT="/workflows"
+USER_MOUNT="/user"
 
 #-----------------------------------------------------------------------------
 # Create model subdirectories in bind mount (idempotent)
@@ -52,6 +53,29 @@ for pair in "output:${OUTPUT_MOUNT}" "input:${INPUT_MOUNT}"; do
     fi
     ln -s "$mount_path" "$target"
 done
+
+#-----------------------------------------------------------------------------
+# Persist ComfyUI's user directory (saved workflows + UI settings)
+#
+# ComfyUI writes everything the user creates under user/. Without a bind mount
+# that lives only in the container's writable layer and is destroyed on the
+# next recreate — which a routine `ods update` performs (compose down + up).
+# Mount outside the ComfyUI tree and symlink, exactly as output/ and input/ do.
+# Skipped when /user is not mounted, so an older compose file still works.
+#-----------------------------------------------------------------------------
+if [ -d "$USER_MOUNT" ]; then
+    user_target="${COMFYUI_DIR}/user"
+    if [ -L "$user_target" ]; then
+        rm "$user_target"
+    elif [ -d "$user_target" ]; then
+        # First start after this mount was introduced: carry over whatever the
+        # container already holds rather than discarding it. -n keeps anything
+        # already on the host authoritative.
+        cp -a -n "$user_target/." "$USER_MOUNT/" 2>/dev/null || true
+        rm -rf "$user_target"
+    fi
+    ln -s "$USER_MOUNT" "$user_target"
+fi
 
 #-----------------------------------------------------------------------------
 # Copy workflow templates (read-only mount → writable user dir)

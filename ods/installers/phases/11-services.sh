@@ -911,7 +911,7 @@ else
         fi
         # NVIDIA ComfyUI also needs output/input/workflows bind-mount dirs
         if [[ "$GPU_BACKEND" == "nvidia" ]]; then
-            mkdir -p "$INSTALL_DIR/data/comfyui"/{output,input,workflows}
+            mkdir -p "$INSTALL_DIR/data/comfyui"/{output,input,workflows,user}
         fi
 
         SDXL_MODEL="sdxl_lightning_4step.safetensors"
