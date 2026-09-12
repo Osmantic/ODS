@@ -503,6 +503,25 @@ else
 ' ' ')"
 fi
 
+# 22. Keys the Linux installer itself writes for Intel Arc (GPU_BACKEND=sycl,
+# installers/phases/06-directories.sh INTEL_ENV block) must be declared, or
+# `ods config validate` reports them as unknown on every Arc install.
+cp "$TMP_DIR/valid.env" "$TMP_DIR/arc.env"
+cat >> "$TMP_DIR/arc.env" <<'EOF'
+ONEAPI_DEVICE_SELECTOR=level_zero:gpu
+SYCL_CACHE_PERSISTENT=1
+ZES_ENABLE_SYSMAN=1
+EOF
+set +e
+out=$("$VALIDATE_ENV_BASH" "$ROOT_DIR/scripts/validate-env.sh" "$TMP_DIR/arc.env" "$ROOT_DIR/.env.schema.json" 2>&1)
+r=$?
+set -e
+if [[ $r -eq 0 ]]; then
+    pass "Installer-written Intel Arc keys validate cleanly"
+else
+    fail "Intel Arc keys should validate, got exit $r: $(echo "$out" | grep -iE 'ONEAPI|SYCL|ZES' | tr '\n' ' ')"
+fi
+
 echo ""
 echo "Result: $PASSED passed, $FAILED failed"
 [[ $FAILED -eq 0 ]]
