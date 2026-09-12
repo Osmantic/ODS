@@ -18,6 +18,7 @@ fn repo_url() -> &'static str {
     option_env!("ODS_REPO_URL").unwrap_or(DEFAULT_REPO_URL)
 }
 
+const GIT_GET_URL_ARG: &str = "get-url";
 fn install_ref() -> &'static str {
     option_env!("ODS_INSTALL_REF").unwrap_or(DEFAULT_INSTALL_REF)
 }
