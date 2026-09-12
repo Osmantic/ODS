@@ -1740,3 +1740,15 @@ def test_flatten_bounds_cycles_and_large_depth_without_losing_empty_leaves():
         nested = {"child": nested}
     result = dict_flatten_nested_safe(nested, max_depth=100000)
     assert len(next(iter(result)).split(".")) == 128
+
+
+class TestListFlattenNestedSafe:
+    def test_valid_flattening(self):
+        from helpers import list_flatten_nested_safe
+        nested = [1, [2, [3, 4]], 5]
+        assert list_flatten_nested_safe(nested) == [1, 2, 3, 4, 5]
+
+    def test_invalid_inputs(self):
+        from helpers import list_flatten_nested_safe
+        assert list_flatten_nested_safe(None) == []
+        assert list_flatten_nested_safe("not_a_list") == []

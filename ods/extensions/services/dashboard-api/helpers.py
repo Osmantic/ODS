@@ -1372,3 +1372,24 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def list_flatten_nested_safe(items: list | None, max_depth: int = 10) -> list:
+    """Safely flatten nested list/tuple structures up to max_depth.
+    Returns [] on None or non-sequence inputs.
+    """
+    if not items or not isinstance(items, (list, tuple)):
+        return []
+    if not isinstance(max_depth, int) or isinstance(max_depth, bool) or max_depth < 0:
+        max_depth = 10
+    result = []
+
+    def _flatten(curr, depth):
+        for item in curr:
+            if isinstance(item, (list, tuple)) and depth < max_depth:
+                _flatten(item, depth + 1)
+            else:
+                result.append(item)
+
+    _flatten(items, 0)
+    return result
