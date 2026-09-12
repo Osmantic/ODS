@@ -707,10 +707,19 @@ def _rewrite_sse_event(
                     obj = None
                 if isinstance(obj, dict):
                     payloads.append(obj)
-                    if isinstance(obj.get("model"), str):
-                        if obj["model"]:
-                            models.append(obj["model"])
-                        obj["model"] = alias
+                    model_objects = [obj]
+                    # Responses lifecycle events wrap their response object.
+                    # Observe the concrete identity before restoring the alias,
+                    # just as for top-level Chat/Completions model fields.
+                    if (isinstance(obj.get("type"), str)
+                            and obj["type"].startswith("response.")
+                            and isinstance(obj.get("response"), dict)):
+                        model_objects.append(obj["response"])
+                    for model_object in model_objects:
+                        if isinstance(model_object.get("model"), str):
+                            if model_object["model"]:
+                                models.append(model_object["model"])
+                            model_object["model"] = alias
                     _sanitize_choice_content(obj)
                     content = (
                         b"data: "
