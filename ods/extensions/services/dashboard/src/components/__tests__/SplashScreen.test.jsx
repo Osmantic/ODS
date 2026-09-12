@@ -38,9 +38,14 @@ vi.mock('gsap/CustomEase', () => ({
   },
 }))
 
+if (!HTMLDialogElement.prototype.showModal) HTMLDialogElement.prototype.showModal = function () {}
+if (!HTMLDialogElement.prototype.close) HTMLDialogElement.prototype.close = function () {}
+
 describe('SplashScreen', () => {
   beforeEach(() => {
     vi.useFakeTimers()
+    vi.spyOn(HTMLDialogElement.prototype, 'showModal').mockImplementation(function () { this.setAttribute('open', '') })
+    vi.spyOn(HTMLDialogElement.prototype, 'close').mockImplementation(function () { this.removeAttribute('open') })
     vi.stubGlobal('requestAnimationFrame', vi.fn(() => 1))
     vi.stubGlobal('cancelAnimationFrame', vi.fn())
     vi.stubGlobal('matchMedia', vi.fn(() => ({
@@ -69,7 +74,29 @@ describe('SplashScreen', () => {
     expect(container.querySelectorAll('.ell')).toHaveLength(31)
   })
 
-  test('completes immediately when reduced motion is requested', () => {
+  test('uses browser modal isolation and releases it on unmount', () => {
+    const view = render(<SplashScreen preview onComplete={() => {}} />)
+    const dialog = screen.getByRole('dialog', { name: 'ODS' })
+    expect(dialog.tagName).toBe('DIALOG')
+    expect(dialog).toHaveAttribute('open')
+    view.unmount()
+    expect(dialog).not.toHaveAttribute('open')
+  })
+
+  test('Escape keeps modal isolation during the exit animation and completes once', () => {
+    const onComplete = vi.fn()
+    render(<SplashScreen preview onComplete={onComplete} />)
+    const dialog = screen.getByRole('dialog', { name: 'ODS' })
+    const event = new Event('cancel', { cancelable: true })
+    fireEvent(dialog, event)
+    expect(event.defaultPrevented).toBe(true)
+    expect(dialog).toHaveAttribute('open')
+    expect(onComplete).not.toHaveBeenCalled()
+    act(() => vi.advanceTimersByTime(400))
+    expect(onComplete).toHaveBeenCalledTimes(1)
+  })
+
+  test('completes immediately when reduced motion is requested' , () => {
     const onComplete = vi.fn()
     globalThis.matchMedia = vi.fn(() => ({
       matches: true,

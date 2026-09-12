@@ -26,7 +26,7 @@ body { font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFon
 /* Native menus need opaque option colors; translucent select fills do not carry over on Windows. */
 select, select option, select optgroup { color-scheme:dark; }
 select option, select optgroup { background-color:rgb(var(--theme-card)); color:rgb(var(--theme-text)); }
-.ods-opening { position:fixed; inset:0; z-index:9999; display:flex; align-items:center; justify-content:center; isolation:isolate; overflow:hidden; background:#101112; color:#a2a7ae; font-family:Inter,system-ui,sans-serif; font-size:14px; opacity:1; transition:opacity .4s ease; }
+.ods-opening { width:100%; height:100%; max-width:none; max-height:none; margin:0; padding:0; border:0; position:fixed; inset:0; z-index:9999; display:flex; align-items:center; justify-content:center; isolation:isolate; overflow:hidden; background:#101112; color:#a2a7ae; font-family:Inter,system-ui,sans-serif; font-size:14px; opacity:1; transition:opacity .4s ease; }
 .ods-opening.is-leaving { opacity:0; pointer-events:none; }
 .ods-opening-orb { position:absolute; width:min(110vw,960px); height:min(100vh,760px); pointer-events:none; }
 .ods-opening-content { position:relative; display:flex; flex-direction:column; align-items:center; gap:20px; padding:40px; }
