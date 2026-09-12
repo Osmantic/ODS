@@ -48,6 +48,22 @@ success() { echo -e "${GREEN}[  ok ]${NC} $1"; }
 warn()    { echo -e "${YELLOW}[warn ]${NC} $1"; }
 error()   { echo -e "${RED}[error]${NC} $1"; exit 1; }
 
+secure_pixel_catalog_sources() {
+    local install_dir="$1" source
+    local sources=()
+
+    for source in \
+        "$install_dir/config/extensions-catalog.json" \
+        "$install_dir/extensions/library/services" \
+        "$install_dir/extensions/services"; do
+        if [[ -e "$source" && ! -L "$source" ]]; then
+            sources+=("$source")
+        fi
+    done
+
+    (( ${#sources[@]} == 0 )) || chmod -R go-w -- "${sources[@]}"
+}
+
 
 format_git_clone_error() {
     local clone_err="$1"
@@ -472,6 +488,13 @@ if [[ -d "$TEMP_DIR/repo/ods" ]]; then
     fi
 else
     error "ods directory not found in repository."
+fi
+
+# Pixel refuses group- or world-writable catalog inputs. Git and rsync preserve
+# an ambient umask such as 0002, so remove only write access Pixel cannot accept
+# without making a stricter user umask more permissive.
+if ! secure_pixel_catalog_sources "$INSTALL_DIR"; then
+    error "Failed to secure Pixel extension catalog inputs."
 fi
 
 success "Cloned to $INSTALL_DIR"
