@@ -152,6 +152,19 @@ fn tier_description(tier: u8) -> String {
     }
 }
 
+// ---- Network ----
+
+#[tauri::command]
+pub async fn check_network() -> network::NetworkStatus {
+    tokio::task::spawn_blocking(network::check)
+        .await
+        .unwrap_or(network::NetworkStatus {
+            github_reachable: false,
+            docker_registry_reachable: false,
+            all_reachable: false,
+        })
+}
+
 // ---- Installation ----
 
 #[tauri::command]
