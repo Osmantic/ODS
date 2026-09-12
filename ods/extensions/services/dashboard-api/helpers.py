@@ -1372,3 +1372,14 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+import re
+
+def string_extract_urls_safe(text: str | None) -> list[str]:
+    """Safely extract all valid HTTP/HTTPS URLs from a text string.
+    Returns [] on None or non-string inputs.
+    """
+    if text is None or not isinstance(text, str):
+        return []
+    url_pattern = r'https?://[^\s<>"]+|www\.[^\s<>"]+'
+    return re.findall(url_pattern, text)
