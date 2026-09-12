@@ -80,6 +80,8 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== config migration (version check under set -e) ==="
 	@bash tests/test-migrate-config.sh
+	@echo "=== installer simulation harness records real exit codes ==="
+	@bash tests/test-simulate-installers-exit-codes.sh
 	@echo ""
 	@echo "=== restore refuses empty backup config ==="
 	@bash tests/test-restore-empty-config.sh
