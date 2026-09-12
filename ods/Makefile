@@ -46,6 +46,8 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== ods-doctor rootless subordinate IDs ==="
 	@bash tests/test-ods-doctor-rootless-subid.sh
+	@echo "=== ods-test.sh reports HTTP 000 for a failed probe ==="
+	@bash tests/test-ods-test-http-code.sh
 	@echo "=== Docker rootless bind-mount ownership ==="
 	@bash tests/test-rootless-docker-ownership.sh
 	@echo ""

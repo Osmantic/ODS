@@ -165,15 +165,17 @@ test_http() {
     start_time=$(_now_ms)
 
     if [[ -n "$payload" && "$method" == "POST" ]]; then
+        # curl prints "000" itself when no response arrives, so a fallback in
+        # the substitution would append a second "000" ("HTTP 000000").
         response_code=$(curl -s -o /dev/null -w "%{http_code}" \
             --max-time "$custom_timeout" \
             -X POST "$url" \
             -H "Content-Type: application/json" \
-            -d "$payload" 2>/dev/null || echo "000")
+            -d "$payload" 2>/dev/null) || response_code="000"
     else
         response_code=$(curl -s -o /dev/null -w "%{http_code}" \
             --max-time "$custom_timeout" \
-            "$url" 2>/dev/null || echo "000")
+            "$url" 2>/dev/null) || response_code="000"
     fi
     
     end_time=$(_now_ms)
