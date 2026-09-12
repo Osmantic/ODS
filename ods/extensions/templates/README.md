@@ -13,7 +13,7 @@ copy them into `extensions/services/<your-service>/` and rename the manifest to
 | `compose-template.yaml` | Your service has one normal Docker Compose definition |
 | `compose-gpu-swap.yaml` | Your service has a CPU base image and GPU-specific image tags |
 | `compose-gpu-only.yaml` | Your service only runs with a GPU and needs backend-specific compose files |
-| `dashboard-plugin-template.js` | Your service needs a dashboard plugin entry point |
+| `dashboard-plugin-template.jsx` | Your service needs a dashboard plugin entry point |
 
 ## Copy Path
 
