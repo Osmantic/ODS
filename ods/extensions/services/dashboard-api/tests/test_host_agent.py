@@ -5610,7 +5610,7 @@ class TestRootlessDataOwnershipRepair:
         ok, error = _mod.docker_compose_action("hermes", "start")
 
         assert ok is False
-        assert error == "ownership mismatch"
+        assert error == _mod._public_process_failure("compose_action_failed")
         assert compose_calls == []
 
 
@@ -5675,7 +5675,7 @@ class TestProxyAuthStart:
         ok, error = _mod.docker_compose_action("ods-proxy", "start")
 
         assert ok is False
-        assert "ods-proxy was not started" in error
+        assert error == _mod._public_process_failure("compose_action_failed")
         assert len(calls) == 1
         assert calls[0][-1] == "open-webui"
         assert (tmp_path / ".env").read_text(encoding="utf-8") == (
@@ -5781,11 +5781,8 @@ class TestInstallRunningStateVerification:
         a hardcoded duration.
         """
         src = self._install_source()
-        # Error path uses the existing _write_progress("error", ...) API.
-        assert '_write_progress(service_id, "error"' in src
-        # Error message template carries the dynamic startup_timeout.
-        assert "did not reach running state within" in src
-        assert "{startup_timeout}s" in src
+        # Public progress carries only the stable failure category.
+        assert 'error_code="container_readiness_failed"' in src
 
     def test_install_supports_startup_check_opt_out(self):
         """One-shot / setup-only extensions can set
@@ -5969,8 +5966,11 @@ class TestEnableRetry:
         progress = self._progress(data_dir, "fakesvc")
         assert progress is not None
         assert progress["status"] == "error"
-        assert "state=exited" in (progress["error"] or "")
-        assert "boom" in (progress["error"] or "")
+        assert progress["error"] == _mod._public_process_failure(
+            "container_readiness_failed"
+        )
+        assert progress["error_code"] == "container_readiness_failed"
+        assert "boom" not in json.dumps(progress)
 
     def test_retry_startup_check_opt_out_writes_started(self, retry_env, monkeypatch):
         _, data_dir, builtin_root, _ = retry_env
@@ -6022,7 +6022,11 @@ class TestEnableRetry:
         progress = self._progress(data_dir, "fakesvc")
         assert progress is not None
         assert progress["status"] == "error"
-        assert "hook boom" in (progress["error"] or "")
+        assert progress["error"] == _mod._public_process_failure(
+            "extension_hook_failed"
+        )
+        assert progress["error_code"] == "extension_hook_failed"
+        assert "hook boom" not in json.dumps(progress)
         # Hook failure must NOT proceed to compose start
         assert compose_calls == []
 
@@ -8123,3 +8127,230 @@ class TestObservabilityWire:
             server.shutdown()
             server.server_close()
             thread.join(timeout=2)
+
+
+class TestLifecycleTransportDetailSanitization:
+    """Public lifecycle surfaces must never project raw process diagnostics."""
+
+    RAW_DETAIL = (
+        "\x1b[31mcompose failed\x1b[0m\n"
+        "Bearer synthetic-secret token=another-secret\n"
+        "C:\\Users\\owner\\private\\compose.yaml"
+    )
+
+    @pytest.mark.parametrize(
+        ("error_code", "message"),
+        [
+            ("compose_action_failed", "Container operation failed; review host logs"),
+            ("compose_recreate_failed", "Container recreation failed; review host logs"),
+            ("service_restart_failed", "Service restart failed; review host logs"),
+            ("extension_hook_failed", "Extension hook failed; review host logs"),
+            ("extension_install_failed", "Extension installation failed; review host logs"),
+            ("extension_retry_failed", "Extension retry failed; review host logs"),
+            ("extension_hook_runtime_missing", "Extension hook requires a supported Bash runtime"),
+            ("extension_not_found", "Extension files are unavailable; review installed extension state"),
+            ("inference_sharing_failed", "Inference sharing operation failed; reload state before retrying"),
+            ("container_readiness_failed", "Container did not reach running state; review host logs"),
+        ],
+    )
+    def test_public_process_failure_is_fixed(self, error_code, message):
+        assert _mod._public_process_failure(error_code) == message
+        assert "secret" not in message.lower()
+        assert "\\" not in message
+        assert "\n" not in message
+
+    def test_public_process_failure_rejects_unknown_code(self):
+        with pytest.raises(ValueError, match="Unknown public process failure code"):
+            _mod._public_process_failure("attacker-controlled")
+
+    def test_progress_error_code_discards_supplied_process_detail(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(_mod, "DATA_DIR", tmp_path)
+
+        _mod._write_progress(
+            "documents",
+            "error",
+            "Installation failed",
+            error=self.RAW_DETAIL,
+            error_code="extension_install_failed",
+        )
+
+        progress = json.loads(
+            (tmp_path / "extension-progress" / "documents.json").read_text(encoding="utf-8")
+        )
+        assert progress["error"] == _mod._public_process_failure("extension_install_failed")
+        assert progress["error_code"] == "extension_install_failed"
+        assert self.RAW_DETAIL not in json.dumps(progress)
+
+    def test_error_progress_requires_allowlisted_code(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(_mod, "DATA_DIR", tmp_path)
+
+        with pytest.raises(ValueError, match="requires an allowlisted error_code"):
+            _mod._write_progress("documents", "error", error=self.RAW_DETAIL)
+
+        assert not (tmp_path / "extension-progress" / "documents.json").exists()
+
+    def test_compose_action_does_not_return_raw_stderr(self, monkeypatch):
+        monkeypatch.setattr(_mod, "resolve_compose_flags", lambda: [])
+        monkeypatch.setattr(
+            _mod.subprocess,
+            "run",
+            lambda cmd, **kwargs: subprocess.CompletedProcess(
+                cmd, 1, stdout="", stderr=self.RAW_DETAIL,
+            ),
+        )
+
+        ok, error = _mod.docker_compose_action("documents", "stop")
+
+        assert ok is False
+        assert error == _mod._public_process_failure("compose_action_failed")
+        assert self.RAW_DETAIL not in error
+
+    def test_compose_recreate_does_not_return_raw_stderr(self, monkeypatch):
+        monkeypatch.setattr(_mod, "validate_core_recreate_ids", lambda _ids: (True, ""))
+        monkeypatch.setattr(_mod, "resolve_compose_flags", lambda: [])
+        monkeypatch.setattr(_mod, "_proxy_compose_enabled", lambda: False)
+        monkeypatch.setattr(
+            _mod.subprocess,
+            "run",
+            lambda cmd, **kwargs: subprocess.CompletedProcess(
+                cmd, 1, stdout="", stderr=self.RAW_DETAIL,
+            ),
+        )
+
+        ok, error = _mod.docker_compose_recreate(["open-webui"])
+
+        assert ok is False
+        assert error == _mod._public_process_failure("compose_recreate_failed")
+        assert self.RAW_DETAIL not in error
+
+    def test_restart_failure_keeps_status_without_raw_detail(self, monkeypatch):
+        monkeypatch.setattr(_mod, "AGENT_API_KEY", "test-key")
+        monkeypatch.setattr(
+            _mod,
+            "validate_service_id",
+            lambda _handler, body: body["service_id"],
+        )
+        monkeypatch.setattr(_mod, "_service_has_docker_container", lambda _sid: (True, ""))
+        monkeypatch.setattr(_mod, "_resolve_container_name", lambda _sid: "ods-documents")
+        monkeypatch.setattr(_mod, "_service_locks", {"documents": threading.Lock()})
+        monkeypatch.setattr(
+            _mod.subprocess,
+            "run",
+            lambda cmd, **kwargs: subprocess.CompletedProcess(
+                cmd, 1, stdout="", stderr=self.RAW_DETAIL,
+            ),
+        )
+        handler = _FakeHandler(json.dumps({"service_id": "documents"}).encode())
+
+        _mod.AgentHandler._handle_service_restart(handler)
+
+        assert handler.response_code == 500
+        assert handler.parse_response() == {
+            "error": _mod._public_process_failure("service_restart_failed"),
+            "error_code": "service_restart_failed",
+            "service_id": "documents",
+            "container_name": "ods-documents",
+        }
+
+    def test_core_recreate_exception_keeps_500_without_raw_detail(self, monkeypatch):
+        monkeypatch.setattr(_mod, "AGENT_API_KEY", "test-key")
+        monkeypatch.setattr(_mod, "validate_core_recreate_ids", lambda _ids: (True, ""))
+        monkeypatch.setattr(_mod, "_service_locks", {"open-webui": threading.Lock()})
+
+        def fail_recreate(_service_ids):
+            raise subprocess.CalledProcessError(
+                1, ["docker", "compose"], stderr=self.RAW_DETAIL,
+            )
+
+        monkeypatch.setattr(_mod, "docker_compose_recreate", fail_recreate)
+        handler = _FakeHandler(json.dumps({"service_ids": ["open-webui"]}).encode())
+
+        _mod.AgentHandler._handle_core_recreate(handler)
+
+        assert handler.response_code == 500
+        assert handler.parse_response() == {
+            "error": _mod._public_process_failure("compose_recreate_failed"),
+            "error_code": "compose_recreate_failed",
+        }
+
+    @pytest.mark.parametrize(("hook_name", "expected_status"), [("post_start", 200), ("pre_stop", 500)])
+    def test_hook_failure_preserves_envelope_without_raw_stderr(
+        self, tmp_path, monkeypatch, caplog, hook_name, expected_status,
+    ):
+        class FailedHook:
+            returncode = 7
+
+            def communicate(self, timeout=None):
+                return b"", TestLifecycleTransportDetailSanitization.RAW_DETAIL.encode()
+
+        monkeypatch.setattr(_mod, "_check_bash_version", lambda: (True, ""))
+        monkeypatch.setattr(_mod, "_read_manifest", lambda _path: {"service": {}})
+        monkeypatch.setattr(_mod, "_find_usable_bash", lambda: "bash")
+        monkeypatch.setattr(_mod.platform, "system", lambda: "Windows")
+        monkeypatch.setattr(_mod.subprocess, "Popen", lambda *args, **kwargs: FailedHook())
+        handler = _FakeHandler(b"")
+
+        with caplog.at_level(logging.ERROR, logger="ods-host-agent"):
+            _mod.AgentHandler._execute_hook(
+                handler, "documents", tmp_path, tmp_path / "hook.sh", hook_name,
+            )
+
+        result = handler.parse_response()
+        assert handler.response_code == expected_status
+        assert result["stderr"] == _mod._public_process_failure("extension_hook_failed")
+        assert result["error_code"] == "extension_hook_failed"
+        assert self.RAW_DETAIL not in json.dumps(result)
+        assert self.RAW_DETAIL not in caplog.text
+
+    def test_install_start_failure_writes_only_public_progress(self, tmp_path, monkeypatch):
+        progress = []
+
+        class ImmediateThread:
+            def __init__(self, target=None, daemon=None, **kwargs):
+                self.target = target
+
+            def start(self):
+                self.target()
+
+        def run(cmd, **kwargs):
+            return subprocess.CompletedProcess(
+                cmd,
+                1 if "up" in cmd else 0,
+                stdout="",
+                stderr=self.RAW_DETAIL if "up" in cmd else "",
+            )
+
+        monkeypatch.setattr(_mod, "AGENT_API_KEY", "test-key")
+        monkeypatch.setattr(
+            _mod,
+            "validate_service_id",
+            lambda _handler, body: body["service_id"],
+        )
+        monkeypatch.setattr(_mod, "_service_locks", {"documents": threading.Lock()})
+        monkeypatch.setattr(_mod, "resolve_compose_flags", lambda: [])
+        monkeypatch.setattr(_mod, "_find_ext_dir", lambda _sid: tmp_path)
+        monkeypatch.setattr(_mod, "_narrow_install_pull_flags", lambda flags, _sid: flags)
+        monkeypatch.setattr(_mod, "_precreate_data_dirs", lambda _sid: None)
+        monkeypatch.setattr(_mod, "_repair_rootless_data_ownership", lambda _sid: None)
+        monkeypatch.setattr(_mod.subprocess, "run", run)
+        monkeypatch.setattr(_mod.threading, "Thread", ImmediateThread)
+        monkeypatch.setattr(
+            _mod,
+            "_write_progress",
+            lambda service_id, status, phase_label="", error=None, error_code=None: progress.append(
+                (service_id, status, phase_label, error, error_code)
+            ),
+        )
+        handler = _FakeHandler(json.dumps({"service_id": "documents"}).encode())
+
+        _mod.AgentHandler._handle_install(handler)
+
+        assert handler.response_code == 202
+        assert progress[-1] == (
+            "documents",
+            "error",
+            "Installation failed",
+            None,
+            "extension_install_failed",
+        )
+        assert self.RAW_DETAIL not in json.dumps(progress)
