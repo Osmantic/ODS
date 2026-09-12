@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import contextlib
+import multiprocessing
 import sys
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -15,6 +17,14 @@ if str(DASHBOARD_API_DIR) not in sys.path:
     sys.path.insert(0, str(DASHBOARD_API_DIR))
 
 import extension_operation_locks as locks  # noqa: E402
+
+
+def _hold_lock_until_terminated(lock_path: str, ready_path: str) -> None:
+    """Child-process target used to prove kernel-owned crash release."""
+    with locks.exclusive_file_lock(Path(lock_path)):
+        Path(ready_path).write_text("ready", encoding="utf-8")
+        while True:
+            time.sleep(1)
 
 
 def test_composite_locks_are_deduplicated_and_acquired_in_canonical_order(
@@ -112,6 +122,33 @@ def test_competing_lock_times_out_then_succeeds_after_release(tmp_path):
 
     assert outcome == ["timed-out"]
     with locks.exclusive_file_lock(lock_path, timeout=0.1):
+        pass
+
+
+def test_cross_process_timeout_and_crash_release(tmp_path):
+    lock_path = locks.operation_lock_path(tmp_path, "documents")
+    ready_path = tmp_path / "child-ready"
+    context = multiprocessing.get_context("spawn")
+    process = context.Process(
+        target=_hold_lock_until_terminated,
+        args=(str(lock_path), str(ready_path)),
+    )
+    process.start()
+    try:
+        deadline = time.monotonic() + 5
+        while not ready_path.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert ready_path.exists(), "child did not acquire the operation lock"
+
+        with pytest.raises(locks.ServiceLockTimeout):
+            with locks.exclusive_file_lock(lock_path, timeout=0.05):
+                pass
+    finally:
+        process.terminate()
+        process.join(timeout=5)
+
+    assert not process.is_alive()
+    with locks.exclusive_file_lock(lock_path, timeout=1):
         pass
 
 
