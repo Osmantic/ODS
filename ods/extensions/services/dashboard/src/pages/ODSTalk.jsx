@@ -456,6 +456,7 @@ export default function ODSTalk() {
       // for ``data:`` only below.
       while (true) {
         const { value, done } = await reader.read()
+        controller.signal.throwIfAborted()
         if (done) break
         buffer += decoder.decode(value, { stream: true })
         let sepIdx
@@ -504,6 +505,7 @@ export default function ODSTalk() {
         }
       }
 
+      controller.signal.throwIfAborted()
       if (errorDetail) throw new Error(errorDetail)
       const reply = assembled || 'I did not get a response back.'
       setMessages(items => items.map(item =>
@@ -514,8 +516,9 @@ export default function ODSTalk() {
       speak(reply)
     } catch (err) {
       if (err.name === 'AbortError') {
-        // User-initiated cancellation. Drop the placeholder bubble silently.
-        setMessages(items => items.filter(item => item.id !== assistantId))
+        setMessages(items => items.map(item => item.id === assistantId
+          ? {...item, text:assembled || 'Response stopped.', status:'done', statusLabel:null, statusTool:null, statusDetail:null, warning:'Response stopped. The reply may be incomplete.'}
+          : item))
       } else {
         setMessages(items => items.map(item =>
           item.id === assistantId
@@ -788,6 +791,9 @@ export default function ODSTalk() {
               {sending ? <Loader2 size={18} className="animate-spin" /> : <Send size={18} />}
             </button>
           </div>
+          {sending && streamControllerRef.current && <div className="mt-2 flex justify-end">
+            <button type="button" onClick={() => streamControllerRef.current?.abort()} className="rounded border border-zinc-300 px-3 py-2 text-sm">Stop response</button>
+          </div>}
           {messages.some(message => message.status === 'error') && (
             <div className="mt-2 flex justify-end">
               <button type="button" onClick={retryLast} className="text-sm font-medium text-zinc-700">
