@@ -41,10 +41,18 @@ if [[ -f "$ROOT_DIR/lib/safe-env.sh" ]]; then
     . "$ROOT_DIR/lib/safe-env.sh"
 fi
 
-# Safe .env loading (no direct source to avoid injection)
+# Safe .env loading (no direct source to avoid injection). Prefer the shared
+# reader from lib/safe-env.sh, sourced above: it applies Compose's grammar
+# (quotes, inline comments after a quoted or unquoted value) and skips the
+# readonly UID that older .env files still carry. The loop below is only the
+# fallback for a tree without lib/.
 load_env_safe() {
     local env_file="${1:-$ROOT_DIR/.env}"
     [[ -f "$env_file" ]] || return 0
+    if declare -F load_env_file >/dev/null 2>&1; then
+        load_env_file "$env_file"
+        return 0
+    fi
     while IFS='=' read -r key value; do
         value="${value%$'\r'}"
         [[ "$key" =~ ^[[:space:]]*# ]] && continue
