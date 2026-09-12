@@ -69,6 +69,10 @@
     },
     "extensions": {
       "serviceManifestSchema": "extensions/schema/service-manifest.v1.json",
+      "serviceManifestSchemas": {
+        "ods.services.v1": "extensions/schema/service-manifest.v1.json",
+        "ods.services.v2": "extensions/schema/service-manifest.v2.json"
+      },
       "serviceDirectory": "extensions/services/",
       "serviceRegistryLib": "lib/service-registry.sh"
     },
