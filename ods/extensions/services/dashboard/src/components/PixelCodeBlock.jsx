@@ -1,10 +1,10 @@
 import { Children, isValidElement } from 'react'
 import ReactMarkdown from 'react-markdown'
 import rehypeHighlight from 'rehype-highlight'
+import { sourceLanguage } from '../lib/pixelSourceLanguage'
 import './pixel-file-changes.css'
 
-const LANGUAGES = {html:'html',htm:'html',css:'css',js:'javascript',mjs:'javascript',cjs:'javascript',jsx:'jsx',ts:'typescript',tsx:'tsx',py:'python',json:'json',svg:'xml',xml:'xml',md:'markdown',markdown:'markdown',sh:'bash',yml:'yaml',yaml:'yaml',txt:'text',map:'json',csv:'text',tsv:'text'}
-export const fileLanguage = path => LANGUAGES[String(path).split('.').pop().toLowerCase()] || 'text'
+export const fileLanguage = path => sourceLanguage(path) || 'text'
 export function PixelLanguageBadge({path}) {
   const language = fileLanguage(path)
   const extension = String(path).split('.').pop().toLowerCase()

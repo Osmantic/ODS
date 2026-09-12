@@ -47,6 +47,7 @@ ALLOWED_SUFFIXES = frozenset(
     }
 )
 MAX_REQUEST_BYTES = 2048
+PROJECT_TEXT_NAMES = frozenset({'readme', 'license', 'notice', 'dockerfile', 'containerfile', 'makefile', 'gnumakefile'})
 MAX_RESPONSE_BYTES = 8192
 MAX_FILES = 128
 MAX_FILE_BYTES = 4 * 1024 * 1024
@@ -230,7 +231,8 @@ def _source_files(
                 or any(PATH_COMPONENT.fullmatch(part) is None for part in relative.split("/"))
             ):
                 raise PreviewError("unsafe preview file")
-            if pathlib.PurePosixPath(relative).suffix.lower() not in ALLOWED_SUFFIXES:
+            if (pathlib.PurePosixPath(relative).suffix.lower() not in ALLOWED_SUFFIXES
+                    and name.lower() not in PROJECT_TEXT_NAMES):
                 raise PreviewError("unsupported preview file type")
             files.append((relative, source, info))
             if len(files) > MAX_FILES:
@@ -506,7 +508,7 @@ def snapshot_changes(previews: pathlib.Path, site_id: str, before_id: str | None
 
 def _preview_content_type(target: pathlib.Path, body: bytes) -> str:
     content_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
-    if target.suffix.lower() in {".md", ".markdown"}:
+    if target.suffix.lower() in {".md", ".markdown"} or target.name.lower() in PROJECT_TEXT_NAMES:
         content_type = "text/plain"
     if content_type.startswith("text/") or content_type == "application/javascript":
         try:
