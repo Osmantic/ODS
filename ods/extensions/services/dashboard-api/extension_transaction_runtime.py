@@ -36,6 +36,7 @@ class TransactionRuntime:
     clock: Clock
     executor: Any | None = None
     configuration: Any | None = None
+    finalizer: Any | None = None
 
 
 class CurrentInputsProvenanceVerifier:

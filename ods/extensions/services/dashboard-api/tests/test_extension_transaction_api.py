@@ -110,6 +110,7 @@ class FakeStore:
                 {"sequence": 2, "state": "awaiting_approval"},
             ],
             "approval": None,
+            "finalization": None,
         }
 
     def create(self, plan, actor, key, timestamp, current_time):
@@ -161,7 +162,15 @@ class FakeExecutor:
             sequence=10,
             applied_services=["notes"],
             error=None,
+            lockfile_hash="b" * 64,
+            post_commit_observed_state_revision="c" * 64,
         )
+
+
+class FakeFinalizer:
+    def inspect(self, transaction):
+        receipt = transaction.get("finalization")
+        return None if receipt is None else dict(receipt)
 
 
 class FakeConfiguration:
@@ -220,6 +229,7 @@ def api(monkeypatch):
     session_signer._set_secret_for_tests("phase3c-session-secret")
     store = FakeStore()
     executor = FakeExecutor()
+    finalizer = FakeFinalizer()
     configuration = FakeConfiguration()
     calls = []
 
@@ -255,6 +265,7 @@ def api(monkeypatch):
         clock=lambda: NOW,
         executor=executor,
         configuration=configuration,
+        finalizer=finalizer,
     )
     with TestClient(app) as client:
         yield SimpleNamespace(
@@ -625,6 +636,37 @@ def test_status_is_no_store_and_redacts_approval_binding(api):
     }
     assert IDEMPOTENCY_KEY not in response.text
     assert response.json()["plan"]["requiredSecretKeys"] == ["NOTES_API_KEY"]
+    assert response.json()["desiredState"] == {
+        "status": "not-committed",
+        "lockfileHash": None,
+        "postCommitObservedStateRevision": None,
+        "recordedAt": None,
+    }
+
+
+def test_status_distinguishes_committed_runtime_from_finalized_desired_state(api):
+    api.store.record["state"] = "committed"
+    api.store.record["sequence"] = 10
+    path = f"/api/extensions/transactions/{TX_ID}"
+
+    pending = api.client.get(path, headers=api.headers)
+    assert pending.status_code == 200
+    assert pending.json()["state"] == "committed"
+    assert pending.json()["desiredState"]["status"] == "pending"
+
+    api.store.record["finalization"] = {
+        "schema": "ods.assistant-first.transaction-finalization.v1",
+        "transactionId": TX_ID,
+        "planHash": PLAN_HASH,
+        "sequence": 10,
+        "lockfileHash": "b" * 64,
+        "postCommitObservedStateRevision": "c" * 64,
+        "recordedAt": NOW,
+    }
+    finalized = api.client.get(path, headers=api.headers)
+    assert finalized.status_code == 200
+    assert finalized.json()["desiredState"]["status"] == "committed"
+    assert finalized.json()["desiredState"]["lockfileHash"] == "b" * 64
 
 
 def test_configuration_routes_are_authenticated_bounded_and_value_safe(api):
@@ -728,6 +770,11 @@ def test_execute_requires_api_key_and_passes_only_id_and_hash(api):
     assert api.executor.calls == [(TX_ID, PLAN_HASH)]
     assert api.configuration.ready_calls == [(TX_ID, PLAN_HASH)]
     assert response.json()["finalState"] == "committed"
+    assert response.json()["desiredState"] == {
+        "status": "committed",
+        "lockfileHash": "b" * 64,
+        "postCommitObservedStateRevision": "c" * 64,
+    }
 
     rejected = api.client.post(
         path,
@@ -736,6 +783,31 @@ def test_execute_requires_api_key_and_passes_only_id_and_hash(api):
     )
     assert rejected.status_code == 422
     assert api.executor.calls == [(TX_ID, PLAN_HASH)]
+
+
+def test_execute_refuses_committed_success_without_finalization_receipt(api):
+    def missing_receipt(transaction_id, plan_hash):
+        return SimpleNamespace(
+            transaction_id=transaction_id,
+            plan_hash=plan_hash,
+            final_state="committed",
+            sequence=10,
+            applied_services=["notes"],
+            error=None,
+            lockfile_hash=None,
+            post_commit_observed_state_revision=None,
+        )
+
+    api.executor.execute = missing_receipt
+    response = api.client.post(
+        f"/api/extensions/transactions/{TX_ID}/execute",
+        json={"planHash": PLAN_HASH},
+        headers=api.headers,
+    )
+    assert response.status_code == 503
+    assert response.json() == {
+        "error": {"code": "missing-finalization-receipt"}
+    }
 
 
 def test_execute_is_unavailable_without_injected_executor(api):

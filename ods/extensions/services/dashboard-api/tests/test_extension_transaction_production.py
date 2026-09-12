@@ -251,6 +251,12 @@ def test_production_runtime_wires_configuration_but_not_execution(monkeypatch):
     assert isinstance(captured["configuration"][1], Custodian)
     assert runtime.configuration is not None
     assert runtime.executor is None
+    assert runtime.finalizer is not None
+    assert runtime.finalizer._transactions is runtime.store
+    assert (
+        runtime.finalizer._lockfiles.root.as_posix()
+        == "/var/lib/ods-test/assistant-first/desired-state"
+    )
 
 
 def test_production_runtime_feature_gate(monkeypatch):

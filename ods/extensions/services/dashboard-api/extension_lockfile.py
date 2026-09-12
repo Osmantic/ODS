@@ -968,12 +968,7 @@ class ExtensionLockfileStore:
             os.replace(temporary_path, self.path)
             replaced = True
             temporary_path = None
-            if os.name == "posix":
-                directory_descriptor = os.open(self.root, os.O_RDONLY)
-                try:
-                    os.fsync(directory_descriptor)
-                finally:
-                    os.close(directory_descriptor)
+            self._sync_root_directory()
         except ExtensionLockfileError:
             raise
         except OSError as exc:
@@ -991,6 +986,35 @@ class ExtensionLockfileStore:
                     temporary_path.unlink(missing_ok=True)
                 except OSError:
                     pass
+
+    def _sync_root_directory(self) -> None:
+        if os.name != "posix":
+            return
+        try:
+            directory_descriptor = os.open(self.root, os.O_RDONLY)
+            try:
+                os.fsync(directory_descriptor)
+            finally:
+                os.close(directory_descriptor)
+        except OSError as exc:
+            raise ExtensionLockfileError("lockfile-durability-uncertain") from exc
+
+    def confirm_durable(self, document: Mapping[str, Any]) -> dict[str, Any]:
+        """Re-fsync and verify one exact active lockfile before receipting it."""
+
+        candidate = lockfile_envelope(document)
+        self._prepare_root()
+        try:
+            with exclusive_file_lock(self._lock_path):
+                self._validate_lock_path()
+                if self._read_unlocked() != candidate:
+                    _fail("lockfile-durability-mismatch")
+                self._sync_root_directory()
+                if self._read_unlocked() != candidate:
+                    _fail("lockfile-durability-mismatch")
+                return copy.deepcopy(candidate)
+        except ServiceLockError as exc:
+            raise ExtensionLockfileError("lockfile-lock-failed") from exc
 
     def commit(self, document: Mapping[str, Any]) -> dict[str, Any]:
         candidate = lockfile_envelope(document)

@@ -323,6 +323,25 @@ def _assistant_projection(
     }
 
 
+def _desired_state_projection(loaded: dict[str, Any]) -> dict[str, Any]:
+    receipt = loaded.get("finalization")
+    if isinstance(receipt, dict):
+        return {
+            "status": "committed",
+            "lockfileHash": receipt["lockfileHash"],
+            "postCommitObservedStateRevision": receipt[
+                "postCommitObservedStateRevision"
+            ],
+            "recordedAt": receipt["recordedAt"],
+        }
+    return {
+        "status": "pending" if loaded.get("state") == "committed" else "not-committed",
+        "lockfileHash": None,
+        "postCommitObservedStateRevision": None,
+        "recordedAt": None,
+    }
+
+
 @router.post("")
 async def create_transaction(
     request: Request,
@@ -509,6 +528,16 @@ async def transaction_status(
         loaded = runtime.store.read(transaction_id)
     except TransactionError as exc:
         return _error_response(exc)
+    if loaded.get("finalization") is not None:
+        if runtime.finalizer is None:
+            return _error_response(IntegrityError("finalization-verifier-unavailable"))
+        try:
+            verified_receipt = await asyncio.to_thread(runtime.finalizer.inspect, loaded)
+        except TransactionError as exc:
+            return _error_response(exc)
+        if verified_receipt is None:
+            return _error_response(IntegrityError("finalization-receipt-unverified"))
+        loaded = {**loaded, "finalization": verified_receipt}
     envelope = loaded["envelope"]
     approval = loaded["approval"]
     safe_approval = {
@@ -529,6 +558,7 @@ async def transaction_status(
             "plan": envelope["plan"],
             "journal": loaded["journal"],
             "approval": safe_approval,
+            "desiredState": _desired_state_projection(loaded),
         },
         headers={"Cache-Control": "no-store"},
     )
@@ -558,6 +588,14 @@ async def execute_transaction(
         result = runtime.executor.execute(transaction_id, model.planHash)
     except TransactionError as exc:
         return _error_response(exc)
+    if result.final_state == "committed" and (
+        result.lockfile_hash is None
+        or result.post_commit_observed_state_revision is None
+    ):
+        return _error_response(IntegrityError("missing-finalization-receipt"))
+    desired_state_status = (
+        "committed" if result.lockfile_hash is not None else "not-committed"
+    )
     return JSONResponse(
         content={
             "transactionId": result.transaction_id,
@@ -566,6 +604,13 @@ async def execute_transaction(
             "sequence": result.sequence,
             "appliedServices": result.applied_services,
             "error": result.error,
+            "desiredState": {
+                "status": desired_state_status,
+                "lockfileHash": result.lockfile_hash,
+                "postCommitObservedStateRevision": (
+                    result.post_commit_observed_state_revision
+                ),
+            },
         },
         headers={"Cache-Control": "no-store"},
     )

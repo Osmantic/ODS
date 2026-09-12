@@ -6,6 +6,7 @@ recording fake adapter / verifier / lock factory / observer.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import os
 import sys
@@ -20,8 +21,10 @@ if str(DASHBOARD_API_DIR) not in sys.path:
     sys.path.insert(0, str(DASHBOARD_API_DIR))
 
 import assistant_first_planner as planner  # noqa: E402
+import extension_lockfile as lockfile_mod  # noqa: E402
 import extension_operation_locks as operation_locks  # noqa: E402
 import extension_transaction_executor as executor_mod  # noqa: E402
+import extension_transaction_finalizer as finalizer_mod  # noqa: E402
 import extension_transactions as transactions  # noqa: E402
 
 pytestmark = pytest.mark.skipif(
@@ -171,6 +174,20 @@ def build_envelope(*, service_ids: list[str] | None = None) -> dict:
     )
 
 
+def installed_host_state(envelope: dict) -> dict:
+    state = copy.deepcopy(HOST_STATE)
+    state["installedServices"] = [
+        {
+            "id": definition["id"],
+            "version": definition["version"],
+            "definitionSha256": definition["definitionSha256"],
+            "status": "enabled",
+        }
+        for definition in envelope["plan"]["definitions"]
+    ]
+    return state
+
+
 def approval_for(descriptor: dict, envelope: dict) -> dict:
     return {
         "actor": ACTOR,
@@ -303,17 +320,48 @@ class AlwaysTrueVerifier:
         return True
 
 
+class RecordingFinalizer:
+    def __init__(self, failures: int = 0) -> None:
+        self.failures = failures
+        self.calls: list[str] = []
+
+    def finalize(self, transaction: dict) -> dict:
+        self.calls.append(transaction["transactionId"])
+        if self.failures:
+            self.failures -= 1
+            raise transactions.IntegrityError("lockfile-finalization-unavailable")
+        return {
+            "schema": transactions.FINALIZATION_SCHEMA,
+            "transactionId": transaction["transactionId"],
+            "planHash": transaction["envelope"]["planHash"],
+            "sequence": transaction["sequence"],
+            "lockfileHash": "b" * 64,
+            "postCommitObservedStateRevision": "c" * 64,
+            "recordedAt": NOW,
+        }
+
+
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
-def create_and_approve(store, envelope: dict):
+def create_and_approve(
+    store, envelope: dict, *, idempotency_key: str = IDEMPOTENCY_KEY
+):
     """Create a transaction and approve it, returning (descriptor, txn_id)."""
-    descriptor = store.create(envelope, ACTOR, IDEMPOTENCY_KEY, CREATED_AT, NOW)
-    store._approve_record(descriptor["transactionId"], approval_for(descriptor, envelope), NOW)
+    descriptor = store.create(envelope, ACTOR, idempotency_key, CREATED_AT, NOW)
+    approval = approval_for(descriptor, envelope)
+    approval["idempotencyKey"] = idempotency_key
+    store._approve_record(descriptor["transactionId"], approval, NOW)
     return descriptor
 
 
 def make_executor(
-    store, adapter=None, observer=None, verifier=None, lock_factory=None
+    store,
+    adapter=None,
+    observer=None,
+    verifier=None,
+    lock_factory=None,
+    finalizer=None,
+    clock=None,
 ):
     if observer is None:
         observer = RecordingObserver()
@@ -325,13 +373,22 @@ def make_executor(
         verifier = AlwaysTrueVerifier()
     if lock_factory is None:
         lock_factory = NoOpLockFactory()
+    if finalizer is None:
+        finalizer = RecordingFinalizer()
+    if clock is None:
+        def fixed_clock():
+            return NOW
+
+        clock = fixed_clock
     return executor_mod.TransactionExecutor(
         store=store,
         verifier=verifier,
         lock_factory=lock_factory,
         adapter=adapter,
         observer=observer,
+        finalizer=finalizer,
         actor=ACTOR,
+        clock=clock,
     )
 
 
@@ -359,6 +416,8 @@ def test_approved_only_execution(tmp_path):
     assert result.plan_hash == envelope["planHash"]
     assert result.applied_services == ["notes"]
     assert result.error is None
+    assert result.lockfile_hash == "b" * 64
+    assert result.post_commit_observed_state_revision == "c" * 64
 
     # Verify all expected adapter calls were made
     call_names = [c[0] for c in adapter.calls]
@@ -376,6 +435,281 @@ def test_approved_only_execution(tmp_path):
     assert loaded["state"] == "committed"
 
 
+def test_committed_finalization_failure_retries_without_replaying_effects(tmp_path):
+    store = transactions.TransactionStore(tmp_path / "store")
+    envelope = build_envelope(service_ids=["notes"])
+    descriptor = create_and_approve(store, envelope)
+    adapter = RecordingAdapter()
+    finalizer = RecordingFinalizer(failures=1)
+    lock_factory = NoOpLockFactory()
+    executor = make_executor(
+        store,
+        adapter=adapter,
+        finalizer=finalizer,
+        lock_factory=lock_factory,
+    )
+
+    with pytest.raises(transactions.IntegrityError) as caught:
+        executor.execute(descriptor["transactionId"], envelope["planHash"])
+    assert caught.value.code == "lockfile-finalization-unavailable"
+    assert store.read(descriptor["transactionId"])["state"] == "committed"
+    lifecycle_calls = list(adapter.calls)
+    lock_factory.locked_services = None
+
+    result = executor.execute(descriptor["transactionId"], envelope["planHash"])
+
+    assert result.final_state == "committed"
+    assert result.lockfile_hash == "b" * 64
+    assert adapter.calls == lifecycle_calls
+    assert finalizer.calls == [descriptor["transactionId"]] * 2
+    assert lock_factory.locked_services is None
+
+
+def test_real_lockfile_finalizer_commits_and_receipts_desired_state(tmp_path):
+    store = transactions.TransactionStore(tmp_path / "store")
+    lockfiles = lockfile_mod.ExtensionLockfileStore(tmp_path / "desired-state")
+    envelope = build_envelope(service_ids=["notes"])
+    descriptor = create_and_approve(store, envelope)
+    adapter = RecordingAdapter()
+    finalizer = finalizer_mod.TransactionLockfileFinalizer(
+        transactions=store,
+        lockfiles=lockfiles,
+        observed_state=lambda: installed_host_state(envelope),
+        runtime_mode="assistant-first",
+        clock=lambda: NOW,
+    )
+
+    result = make_executor(store, adapter=adapter, finalizer=finalizer).execute(
+        descriptor["transactionId"], envelope["planHash"]
+    )
+
+    committed_lockfile = lockfiles.read()
+    receipt = store.read(descriptor["transactionId"])["finalization"]
+    assert committed_lockfile is not None
+    assert result.lockfile_hash == committed_lockfile["lockfileHash"]
+    assert receipt["lockfileHash"] == committed_lockfile["lockfileHash"]
+    assert receipt["transactionId"] == descriptor["transactionId"]
+    assert "secret" not in str(receipt).casefold()
+
+
+def test_recorded_receipt_does_not_hide_a_missing_active_lockfile(tmp_path):
+    store = transactions.TransactionStore(tmp_path / "store")
+    lockfiles = lockfile_mod.ExtensionLockfileStore(tmp_path / "desired-state")
+    envelope = build_envelope(service_ids=["notes"])
+    descriptor = create_and_approve(store, envelope)
+    adapter = RecordingAdapter()
+    finalizer = finalizer_mod.TransactionLockfileFinalizer(
+        transactions=store,
+        lockfiles=lockfiles,
+        observed_state=lambda: installed_host_state(envelope),
+        runtime_mode="assistant-first",
+        clock=lambda: NOW,
+    )
+    executor = make_executor(store, adapter=adapter, finalizer=finalizer)
+    executor.execute(descriptor["transactionId"], envelope["planHash"])
+    lifecycle_calls = list(adapter.calls)
+    lockfiles.path.unlink()
+
+    with pytest.raises(transactions.IntegrityError) as caught:
+        executor.execute(descriptor["transactionId"], envelope["planHash"])
+    assert caught.value.code == "lockfile-missing-for-finalized-transaction"
+    assert adapter.calls == lifecycle_calls
+
+
+def test_crash_after_lockfile_commit_backfills_receipt_without_effect_replay(
+    tmp_path, monkeypatch
+):
+    store = transactions.TransactionStore(tmp_path / "store")
+    lockfiles = lockfile_mod.ExtensionLockfileStore(tmp_path / "desired-state")
+    envelope = build_envelope(service_ids=["notes"])
+    descriptor = create_and_approve(store, envelope)
+    adapter = RecordingAdapter()
+    finalizer = finalizer_mod.TransactionLockfileFinalizer(
+        transactions=store,
+        lockfiles=lockfiles,
+        observed_state=lambda: installed_host_state(envelope),
+        runtime_mode="assistant-first",
+        clock=lambda: NOW,
+    )
+    executor = make_executor(store, adapter=adapter, finalizer=finalizer)
+    original_record = store.record_finalization
+    failures = 1
+
+    def crash_once(transaction_id, receipt):
+        nonlocal failures
+        if failures:
+            failures -= 1
+            raise transactions.IntegrityError("injected-receipt-crash")
+        return original_record(transaction_id, receipt)
+
+    monkeypatch.setattr(store, "record_finalization", crash_once)
+    with pytest.raises(transactions.IntegrityError) as caught:
+        executor.execute(descriptor["transactionId"], envelope["planHash"])
+    assert caught.value.code == "injected-receipt-crash"
+    assert store.read(descriptor["transactionId"])["state"] == "committed"
+    assert store.read(descriptor["transactionId"])["finalization"] is None
+    assert lockfiles.read() is not None
+    lifecycle_calls = list(adapter.calls)
+
+    result = executor.execute(descriptor["transactionId"], envelope["planHash"])
+
+    assert result.final_state == "committed"
+    assert result.lockfile_hash == lockfiles.read()["lockfileHash"]
+    assert adapter.calls == lifecycle_calls
+    assert store.read(descriptor["transactionId"])["finalization"] is not None
+
+
+def test_durability_uncertainty_recovers_by_exact_lockfile_readback(
+    tmp_path, monkeypatch
+):
+    store = transactions.TransactionStore(tmp_path / "store")
+    lockfiles = lockfile_mod.ExtensionLockfileStore(tmp_path / "desired-state")
+    envelope = build_envelope(service_ids=["notes"])
+    descriptor = create_and_approve(store, envelope)
+    original_commit = lockfiles.commit
+    original_confirm = lockfiles.confirm_durable
+    confirmed = []
+
+    def uncertain_after_commit(document):
+        original_commit(document)
+        raise lockfile_mod.ExtensionLockfileError("lockfile-durability-uncertain")
+
+    def confirm(document):
+        confirmed.append(True)
+        return original_confirm(document)
+
+    monkeypatch.setattr(lockfiles, "commit", uncertain_after_commit)
+    monkeypatch.setattr(lockfiles, "confirm_durable", confirm)
+    finalizer = finalizer_mod.TransactionLockfileFinalizer(
+        transactions=store,
+        lockfiles=lockfiles,
+        observed_state=lambda: installed_host_state(envelope),
+        runtime_mode="assistant-first",
+        clock=lambda: NOW,
+    )
+
+    result = make_executor(store, finalizer=finalizer).execute(
+        descriptor["transactionId"], envelope["planHash"]
+    )
+
+    assert result.final_state == "committed"
+    assert result.lockfile_hash == lockfiles.read()["lockfileHash"]
+    assert store.read(descriptor["transactionId"])["finalization"] is not None
+    assert confirmed == [True]
+
+
+def test_unconfirmed_lockfile_durability_never_creates_a_receipt(
+    tmp_path, monkeypatch
+):
+    store = transactions.TransactionStore(tmp_path / "store")
+    lockfiles = lockfile_mod.ExtensionLockfileStore(tmp_path / "desired-state")
+    envelope = build_envelope(service_ids=["notes"])
+    descriptor = create_and_approve(store, envelope)
+    adapter = RecordingAdapter()
+    original_commit = lockfiles.commit
+    original_confirm = lockfiles.confirm_durable
+
+    def uncertain_after_commit(document):
+        original_commit(document)
+        raise lockfile_mod.ExtensionLockfileError("lockfile-durability-uncertain")
+
+    def unconfirmed(_document):
+        raise lockfile_mod.ExtensionLockfileError("lockfile-durability-uncertain")
+
+    monkeypatch.setattr(lockfiles, "commit", uncertain_after_commit)
+    monkeypatch.setattr(lockfiles, "confirm_durable", unconfirmed)
+    finalizer = finalizer_mod.TransactionLockfileFinalizer(
+        transactions=store,
+        lockfiles=lockfiles,
+        observed_state=lambda: installed_host_state(envelope),
+        runtime_mode="assistant-first",
+        clock=lambda: NOW,
+    )
+    executor = make_executor(store, adapter=adapter, finalizer=finalizer)
+
+    with pytest.raises(transactions.IntegrityError) as caught:
+        executor.execute(descriptor["transactionId"], envelope["planHash"])
+    assert caught.value.code == "lockfile-finalization-durability-unconfirmed"
+    assert store.read(descriptor["transactionId"])["state"] == "committed"
+    assert store.read(descriptor["transactionId"])["finalization"] is None
+    lifecycle_calls = list(adapter.calls)
+
+    lockfiles.path.unlink()
+    monkeypatch.setattr(lockfiles, "confirm_durable", original_confirm)
+    result = executor.execute(descriptor["transactionId"], envelope["planHash"])
+
+    assert result.final_state == "committed"
+    assert store.read(descriptor["transactionId"])["finalization"] is not None
+    assert adapter.calls == lifecycle_calls
+
+
+def test_finalizer_retries_transient_post_commit_observation_mismatch(tmp_path):
+    store = transactions.TransactionStore(tmp_path / "store")
+    lockfiles = lockfile_mod.ExtensionLockfileStore(tmp_path / "desired-state")
+    envelope = build_envelope(service_ids=["notes"])
+    descriptor = create_and_approve(store, envelope)
+    observations = 0
+
+    def observe():
+        nonlocal observations
+        observations += 1
+        state = installed_host_state(envelope)
+        if observations == 1:
+            state["installedServices"][0]["version"] = "9.9.9"
+        return state
+
+    finalizer = finalizer_mod.TransactionLockfileFinalizer(
+        transactions=store,
+        lockfiles=lockfiles,
+        observed_state=observe,
+        runtime_mode="assistant-first",
+        clock=lambda: NOW,
+    )
+
+    result = make_executor(store, finalizer=finalizer).execute(
+        descriptor["transactionId"], envelope["planHash"]
+    )
+
+    assert result.final_state == "committed"
+    assert observations == 2
+
+
+def test_foreign_lockfile_history_fails_with_stable_integrity_error(tmp_path):
+    first_store = transactions.TransactionStore(tmp_path / "first-store")
+    second_store = transactions.TransactionStore(tmp_path / "second-store")
+    lockfiles = lockfile_mod.ExtensionLockfileStore(tmp_path / "desired-state")
+    envelope = build_envelope(service_ids=["notes"])
+    first = create_and_approve(first_store, envelope)
+    first_finalizer = finalizer_mod.TransactionLockfileFinalizer(
+        transactions=first_store,
+        lockfiles=lockfiles,
+        observed_state=lambda: installed_host_state(envelope),
+        runtime_mode="assistant-first",
+        clock=lambda: NOW,
+    )
+    make_executor(first_store, finalizer=first_finalizer).execute(
+        first["transactionId"], envelope["planHash"]
+    )
+    second = create_and_approve(
+        second_store, envelope, idempotency_key="2" * 64
+    )
+    second_finalizer = finalizer_mod.TransactionLockfileFinalizer(
+        transactions=second_store,
+        lockfiles=lockfiles,
+        observed_state=lambda: installed_host_state(envelope),
+        runtime_mode="assistant-first",
+        clock=lambda: NOW,
+    )
+
+    with pytest.raises(transactions.IntegrityError) as caught:
+        make_executor(second_store, finalizer=second_finalizer).execute(
+            second["transactionId"], envelope["planHash"]
+        )
+
+    assert caught.value.code == "lockfile-history-unavailable"
+    assert second_store.read(second["transactionId"])["state"] == "committed"
+
+
 def test_executor_accepts_the_shared_canonical_file_lock_factory(tmp_path):
     store = transactions.TransactionStore(tmp_path / "store")
     envelope = build_envelope(service_ids=["voice", "documents"])
@@ -386,6 +720,7 @@ def test_executor_accepts_the_shared_canonical_file_lock_factory(tmp_path):
     result = make_executor(store, lock_factory=lock_factory).execute(
         descriptor["transactionId"], envelope["planHash"]
     )
+
 
     assert result.final_state == "committed"
     assert [
@@ -974,6 +1309,7 @@ def test_locks_are_canonical_and_provenance_is_checked_inside_lock(tmp_path):
         lock_factory=OrderedLockFactory(),
         adapter=RecordingAdapter(observer),
         observer=observer,
+        finalizer=RecordingFinalizer(),
         actor=ACTOR,
     )
     result = executor.execute(descriptor["transactionId"], envelope["planHash"])
