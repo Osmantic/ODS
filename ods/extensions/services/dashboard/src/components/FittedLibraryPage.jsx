@@ -20,9 +20,10 @@ export default function FittedLibraryPage({items, label, children, minimumItems 
   const measured = useRef({width: 0, row: 0})
   const [capacity, setCapacity] = useState(4)
   const [availableHeight, setAvailableHeight] = useState(0)
-  const [page, setPage] = useState(1)
+  // Anchor pagination to an item, so resizing cannot jump to unrelated entries.
+  const [firstItem, setFirstItem] = useState(0)
   const pages = Math.max(1, Math.ceil(items.length / capacity))
-  const current = Math.min(page, pages)
+  const current = Math.min(Math.floor(firstItem / capacity) + 1, pages)
   useEffect(() => {
     const element = root.current
     if (!element) return
@@ -57,7 +58,7 @@ export default function FittedLibraryPage({items, label, children, minimumItems 
       {pages > 1 && <nav className="dashboard-pagination" aria-label={`${label} pages`}>
         {fittedPageNumbers(current, pages).map(number => typeof number === 'string'
           ? <span key={number} aria-hidden="true">…</span>
-          : <button key={number} aria-label={`Page ${number}`} aria-current={number === current ? 'page' : undefined} onClick={() => setPage(number)}>{number}</button>)}
+          : <button key={number} aria-label={`Page ${number}`} aria-current={number === current ? 'page' : undefined} onClick={() => setFirstItem((number - 1) * capacity)}>{number}</button>)}
       </nav>}
     </footer>}
   </section>
