@@ -14,6 +14,7 @@ const TRANSFERRED_REPO_URL_BYTES: &[u8] = &[
     105, 116,
 ];
 
+const INSTALL_SCRIPT_WIN: &str = "install.ps1";
 fn repo_url() -> &'static str {
     option_env!("ODS_REPO_URL").unwrap_or(DEFAULT_REPO_URL)
 }
