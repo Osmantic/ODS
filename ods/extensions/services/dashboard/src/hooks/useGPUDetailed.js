@@ -13,25 +13,39 @@ export function useGPUDetailed() {
   const fetchInFlight = useRef(false)
 
   useEffect(() => {
+    let disposed = false
+    let activeController = null
     const fetchAll = async () => {
       if (document.hidden) return
       if (fetchInFlight.current) return
       fetchInFlight.current = true
+      const controller = new AbortController()
+      activeController = controller
+      let rejectAbort
+      const aborted = new Promise((_, reject) => {
+        rejectAbort = () => reject(new Error('GPU status request timed out'))
+        controller.signal.addEventListener('abort', rejectAbort, {once:true})
+      })
+      const timer = setTimeout(() => controller.abort(), 15000)
       try {
-        const [detRes, histRes, topoRes] = await Promise.all([
-          fetch('/api/gpu/detailed'),
-          fetch('/api/gpu/history'),
-          fetch('/api/gpu/topology'),
-        ])
-        if (detRes.ok) setDetailed(await detRes.json())
-        if (histRes.ok) setHistory(await histRes.json())
-        if (topoRes.ok) setTopology(await topoRes.json())
+        const snapshot = Promise.all(['detailed', 'history', 'topology'].map(async endpoint => {
+          const response = await fetch(`/api/gpu/${endpoint}`, {signal:controller.signal})
+          return response.ok ? response.json() : undefined
+        }))
+        const [details, samples, links] = await Promise.race([snapshot, aborted])
+        if (disposed) return
+        if (details !== undefined) setDetailed(details)
+        if (samples !== undefined) setHistory(samples)
+        if (links !== undefined) setTopology(links)
         setError(null)
       } catch (err) {
-        setError(err.message)
+        if (!disposed) setError(err.message)
       } finally {
+        clearTimeout(timer)
+        controller.signal.removeEventListener('abort', rejectAbort)
+        if (activeController === controller) activeController = null
         fetchInFlight.current = false
-        setLoading(false)
+        if (!disposed) setLoading(false)
       }
     }
 
@@ -40,6 +54,8 @@ export function useGPUDetailed() {
     const onVisibility = () => { if (!document.hidden) fetchAll() }
     document.addEventListener('visibilitychange', onVisibility)
     return () => {
+      disposed = true
+      activeController?.abort()
       clearInterval(interval)
       document.removeEventListener('visibilitychange', onVisibility)
     }
