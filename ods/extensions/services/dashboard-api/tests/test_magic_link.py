@@ -625,6 +625,41 @@ def test_redeem_issues_signed_cookie_that_verifies(
 
     ok, reason = session_signer.verify(cookie)
     assert ok is True, f"signed cookie did not verify: {reason}"
+    ok, _, claims = session_signer.verify_scoped(cookie)
+    assert ok is True and claims is not None
+    assert claims.scope == "guest"
+    assert session_signer.owner_approval_identity(cookie) is None
+
+
+def test_owner_redemption_is_the_only_approval_capable_magic_link(
+    magic_link_client, magic_link_module
+):
+    import session_signer
+
+    gen = magic_link_client.post(
+        "/api/auth/magic-link/generate",
+        json={"target_username": "owner", "token_type": "owner"},
+        headers=magic_link_client.auth_headers,
+    )
+    assert gen.status_code == 200, gen.text
+    response = magic_link_client.get(
+        f"/auth/magic-link/{gen.json()['token']}", follow_redirects=False
+    )
+    assert response.status_code == 302
+
+    from http.cookies import SimpleCookie
+
+    cookies = SimpleCookie()
+    for key, value in response.headers.raw:
+        if key.lower() == b"set-cookie":
+            cookies.load(value.decode("latin1"))
+    cookie = cookies["ods-session"].value if "ods-session" in cookies else None
+    assert cookie
+    ok, _, claims = session_signer.verify_scoped(cookie)
+    assert ok is True and claims is not None
+    assert claims.scope == "owner"
+    approved_by = session_signer.owner_approval_identity(cookie)
+    assert approved_by is not None and approved_by.startswith("owner-")
 
 
 def test_redeem_redirects_to_chat_subdomain(

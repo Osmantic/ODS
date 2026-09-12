@@ -7,22 +7,17 @@ Two endpoints today:
     Hermes auth-proxy) via ``forward_auth`` to gate access on a valid
     session without each proxy needing to know the signing secret.
 
-  * ``POST /api/auth/admin-session`` — mints a signed ``ods-session``
-    cookie for the install owner (gated by ``DASHBOARD_API_KEY``). Lets
-    the admin reach cookie-gated services (Hermes, etc.) without
-    redeeming their own magic link. Without this, the install owner
-    would be locked out of their own services until they minted +
-    redeemed an invite to themselves, which is absurd UX.
+  * ``POST /api/auth/admin-session`` — mints an ``admin``-scoped cookie
+    (gated by ``DASHBOARD_API_KEY``) for ordinary administration. It is
+    intentionally not an owner-approval credential.
 
 Security:
   * ``verify-session`` is intentionally NOT gated by the API key — it's
     reachable from any reverse proxy on the bridge network. The cookie
     ITSELF is the credential.
-  * ``admin-session`` IS gated by the API key. Only callers that already
-    hold the admin secret (the dashboard, ods-cli, the host agent)
-    can mint a session. The minted cookie is identical in shape to one
-    issued by magic-link redemption; downstream consumers can't tell
-    them apart.
+  * ``admin-session`` IS gated by the API key. The HMAC-covered ``admin``
+    scope remains distinguishable from an owner magic-link redemption,
+    so an API-key holder cannot manufacture owner approval.
 """
 
 from __future__ import annotations
@@ -86,7 +81,7 @@ def verify_session(request: Request) -> dict:
     the parser.
     """
     cookie_value = request.cookies.get(SESSION_COOKIE_NAME, "")
-    ok, reason = session_signer.verify(cookie_value)
+    ok, reason, claims = session_signer.verify_scoped(cookie_value)
     if not ok:
         logger.info("verify-session denied: reason=%s", reason)
         # We don't echo the reason back to the caller — that would help
@@ -94,29 +89,33 @@ def verify_session(request: Request) -> dict:
         # Caddy only needs the status code.
         raise HTTPException(status_code=401, detail="Invalid or expired session")
 
-    # On success, return the expiry so the dashboard can surface "session
-    # ends at X" without each consumer re-parsing the cookie. The format is
-    # `<id>.<expiry>.<sig>`; we already validated the signature in verify().
-    try:
-        _, expiry_str, _ = cookie_value.split(".")
-        expiry = int(expiry_str)
-    except (ValueError, TypeError):
-        # Validated above, but be defensive.
-        expiry = 0
+    assert claims is not None
+    return {
+        "valid": True,
+        "expires_at": claims.expires_at,
+        "scope": claims.scope,
+    }
 
-    return {"valid": True, "expires_at": expiry}
+
+def require_owner_approval_session(request: Request) -> str:
+    """Require an owner-scoped cookie and return only its hashed audit ID."""
+    cookie_value = request.cookies.get(SESSION_COOKIE_NAME, "")
+    approved_by = session_signer.owner_approval_identity(cookie_value)
+    if approved_by is None:
+        raise HTTPException(status_code=403, detail="Owner approval session required")
+    return approved_by
 
 
 @router.post("/api/auth/admin-session", dependencies=[Depends(verify_api_key)])
 def admin_session(response: Response, request: Request) -> dict:
-    """Mint a signed ``ods-session`` cookie for the install owner.
+    """Mint a signed ``admin`` session for ordinary API-key administration.
 
     The install owner already holds ``DASHBOARD_API_KEY`` (the admin
     credential). Requiring them to ALSO redeem a magic link to access
     cookie-gated services (Hermes, future ones) is bad UX — they own
     the box. This endpoint trades the admin API key in for a signed
-    ``ods-session`` cookie identical to one a magic-link redemption
-    would issue.
+    ``ods-session`` cookie. The cookie cannot approve extension transactions;
+    that requires an owner-scoped magic-link redemption.
 
     Used by:
       * The dashboard UI on load — when ``verify-session`` returns 401
@@ -128,8 +127,8 @@ def admin_session(response: Response, request: Request) -> dict:
       * The host agent / ods-cli — when running setup flows that
         need to leave a cookie in a browser session for follow-up.
 
-    The cookie is identical in shape to a magic-link-issued one:
-    HMAC-SHA256 signed against ``ODS_SESSION_SECRET``, ``HttpOnly``,
+    The cookie carries an HMAC-covered ``admin`` scope and is signed against
+    ``ODS_SESSION_SECRET``, ``HttpOnly``,
     ``SameSite=Lax``, ``Secure`` when reached over HTTPS, with the
     operator's ``ODS_COOKIE_DOMAIN`` (if set) so it travels across
     proxy subdomains.
@@ -148,7 +147,9 @@ def admin_session(response: Response, request: Request) -> dict:
             detail="Session signing is not configured on this server.",
         )
 
-    session_token = session_signer.issue(ttl_seconds=SESSION_TTL_SECONDS)
+    session_token = session_signer.issue_scoped(
+        "admin", ttl_seconds=SESSION_TTL_SECONDS
+    )
     secure_cookie = request.url.scheme == "https"
     cookie_domain = _cookie_domain()
 
@@ -168,13 +169,8 @@ def admin_session(response: Response, request: Request) -> dict:
         **cookie_kwargs,
     )
 
-    # Pull the expiry out for the dashboard's "session ends at X" surface.
-    # We know the format because we just minted it; defensive parse anyway.
-    try:
-        _, expiry_str, _ = session_token.split(".")
-        expiry = int(expiry_str)
-    except (ValueError, TypeError):
-        expiry = 0
+    ok, _, claims = session_signer.verify_scoped(session_token)
+    expiry = claims.expires_at if ok and claims is not None else 0
 
     logger.info("admin-session minted; expires_at=%d", expiry)
     return {"ok": True, "expires_at": expiry}
