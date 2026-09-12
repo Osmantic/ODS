@@ -98,6 +98,84 @@ def test_observed_state_uses_injected_paths_and_cached_health(
     assert failed["installedServices"][0]["status"] == "error"
 
 
+def test_observed_state_projects_manifest_v2_and_legacy_host_ports(
+    monkeypatch, tmp_path
+):
+    install = tmp_path / "install"
+    data = tmp_path / "data"
+    builtin = install / "extensions" / "services"
+    data.mkdir()
+    entries = [catalog_entry("legacy"), catalog_entry("notes")]
+    entries[0]["planning"]["resources"] = {"hostPorts": [9000]}
+    entries[1]["manifest_schema_version"] = "ods.services.v2"
+    entries[1]["planning"]["resources"] = {
+        "hostPorts": [
+            {"port": 5353, "protocol": "udp"},
+            {"port": 8080, "protocol": "tcp"},
+        ]
+    }
+    for service_id in ("legacy", "notes"):
+        service = builtin / service_id
+        service.mkdir(parents=True)
+        (service / "compose.yaml").write_text("services: {}\n", encoding="utf-8")
+    monkeypatch.setattr(production.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(production.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(production, "GPU_BACKEND", "cpu")
+    monkeypatch.setenv("ODS_CONTAINER_RUNTIME", "docker")
+
+    state = production.production_observed_state(
+        install_dir=install,
+        data_dir=data,
+        user_extensions_dir=data / "user-extensions",
+        builtin_extensions_dir=builtin,
+        catalog_entries=entries,
+        cached_statuses={"legacy": "healthy", "notes": "healthy"},
+    )
+
+    assert state["occupiedPorts"] == [
+        {"port": 9000, "protocol": "tcp", "owner": "legacy"},
+        {"port": 5353, "protocol": "udp", "owner": "notes"},
+        {"port": 8080, "protocol": "tcp", "owner": "notes"},
+    ]
+
+
+@pytest.mark.parametrize(
+    "host_ports",
+    [
+        "8080",
+        [True],
+        [{"port": 8080, "protocol": "sctp"}],
+        [{"port": 8080, "protocol": "tcp", "extra": True}],
+    ],
+)
+def test_observed_state_rejects_invalid_catalog_host_ports(
+    monkeypatch, tmp_path, host_ports
+):
+    install = tmp_path / "install"
+    data = tmp_path / "data"
+    builtin = install / "extensions" / "services"
+    service = builtin / "notes"
+    service.mkdir(parents=True)
+    data.mkdir()
+    (service / "compose.yaml").write_text("services: {}\n", encoding="utf-8")
+    entry = catalog_entry()
+    entry["planning"]["resources"] = {"hostPorts": host_ports}
+    monkeypatch.setattr(production.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(production.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(production, "GPU_BACKEND", "cpu")
+    monkeypatch.setenv("ODS_CONTAINER_RUNTIME", "docker")
+
+    with pytest.raises(PlanningError, match="invalid-catalog-host-port"):
+        production.production_observed_state(
+            install_dir=install,
+            data_dir=data,
+            user_extensions_dir=data / "user-extensions",
+            builtin_extensions_dir=builtin,
+            catalog_entries=[entry],
+            cached_statuses={"notes": "healthy"},
+        )
+
+
 @pytest.mark.parametrize("backend", ["intel", "sycl", "jetson"])
 def test_observed_state_accepts_supported_installer_gpu_backends(
     monkeypatch, tmp_path, backend
