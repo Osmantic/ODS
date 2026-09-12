@@ -39,6 +39,63 @@ def envelope() -> dict:
     }
 
 
+def assistant_envelope() -> dict:
+    value = envelope()
+    value["plan"] = {
+        "schema": "ods.assistant-first.plan.v1",
+        "validUntil": "2026-09-11T12:15:00Z",
+        "requestedServices": ["notes"],
+        "requestedCapabilities": [],
+        "selectedServices": ["dependency", "notes"],
+        "operations": [
+            {"serviceId": "dependency", "action": "install"},
+            {"serviceId": "notes", "action": "install"},
+        ],
+        "providerBindings": [],
+        "definitions": [
+            {
+                "id": "dependency",
+                "dependsOn": [],
+                "resources": {
+                    "hostPorts": [],
+                    "devices": [],
+                    "linuxCapabilities": [],
+                    "hostPermissions": [],
+                },
+                "data": [],
+            },
+            {
+                "id": "notes",
+                "dependsOn": ["dependency"],
+                "resources": {
+                    "hostPorts": [{"port": 8080, "protocol": "tcp"}],
+                    "devices": [],
+                    "linuxCapabilities": [],
+                    "hostPermissions": ["filesystem-read"],
+                },
+                "data": [{"path": "notes"}],
+            },
+        ],
+        "resourceDelta": {
+            "downloadBytes": 100,
+            "diskBytes": 200,
+            "cpuMillicores": 300,
+            "ramBytes": 400,
+            "vramBytes": 0,
+            "gpuCount": 0,
+        },
+        "requiredConfigKeys": ["NOTES_PATH"],
+        "requiredSecretKeys": ["NOTES_API_KEY"],
+        "rollbackEffects": [
+            {"serviceId": "dependency", "contract": "snapshot"},
+            {"serviceId": "notes", "contract": "snapshot"},
+        ],
+        "warnings": [{"code": "legacy-manifest"}],
+        "approval": {"required": True, "scope": "exact-plan-hash"},
+    }
+    return value
+
+
 class FakeStore:
     def __init__(self) -> None:
         self.created = []
@@ -258,6 +315,143 @@ def test_create_requires_api_key_and_uses_only_server_providers(api):
             "policy": {"source": "server-policy"},
         }
     ]
+
+
+def test_assistant_plan_is_narrow_nonsecret_and_server_authoritative(
+    api, monkeypatch
+):
+    calls = []
+
+    def authorize(intent, *, catalog, observed_state, policy):
+        calls.append(intent)
+        return assistant_envelope()
+
+    monkeypatch.setattr(transaction_api, "authorize_plan", authorize)
+    body = {"request": "install:notes", "idempotencyKey": IDEMPOTENCY_KEY}
+    assert api.client.post(
+        "/api/extensions/transactions/assistant-plan", json=body
+    ).status_code == 401
+
+    response = api.client.post(
+        "/api/extensions/transactions/assistant-plan",
+        json=body,
+        headers=api.headers,
+    )
+
+    assert response.status_code == 201
+    assert response.headers["cache-control"] == "no-store"
+    assert response.json() == {
+        "schema": "ods.assistant-first.assistant-plan-proposal.v1",
+        "transactionId": TX_ID,
+        "planHash": PLAN_HASH,
+        "state": "awaiting_approval",
+        "validUntil": "2026-09-11T12:15:00Z",
+        "requested": {"action": "install", "serviceId": "notes"},
+        "selectedExtensions": [
+            {
+                "id": "dependency",
+                "reason": "dependency",
+                "plannedAction": "install",
+                "dependencyCount": 0,
+            },
+            {
+                "id": "notes",
+                "reason": "requested",
+                "plannedAction": "install",
+                "dependencyCount": 1,
+            },
+        ],
+        "impact": {
+            "downloadBytes": 100,
+            "diskBytes": 200,
+            "cpuMillicores": 300,
+            "ramBytes": 400,
+            "vramBytes": 0,
+            "gpuCount": 0,
+            "hostPortCount": 1,
+            "permissionCount": 1,
+            "dataPathCount": 1,
+        },
+        "configuration": {
+            "required": True,
+            "requiredFieldCount": 1,
+            "secretsRequired": True,
+            "requiredSecretCount": 1,
+        },
+        "warningCount": 1,
+        "rollbackAvailable": True,
+        "approvalRequired": True,
+        "executionAvailable": True,
+        "duplicate": False,
+    }
+    assert calls == [
+        {
+            "requestedServices": ["notes"],
+            "requestedCapabilities": [],
+            "providerPreferences": {},
+            "validUntil": "2026-09-11T12:15:00Z",
+            "missingConfigKeys": [],
+            "missingSecretKeys": [],
+        }
+    ]
+    assert "NOTES_API_KEY" not in response.text
+    assert "NOTES_PATH" not in response.text
+    assert "catalogRevision" not in response.text
+    assert "operations" not in response.text
+
+
+@pytest.mark.parametrize("action", ["disable", "remove"])
+def test_assistant_plan_rejects_actions_not_supported_by_ensure_planner(api, action):
+    response = api.client.post(
+        "/api/extensions/transactions/assistant-plan",
+        json={"request": f"{action}:notes", "idempotencyKey": IDEMPOTENCY_KEY},
+        headers=api.headers,
+    )
+    assert response.status_code == 409
+    assert response.json() == {"error": {"code": "unsupported-transaction-action"}}
+    assert api.store.created == []
+
+
+def test_assistant_plan_accepts_catalog_style_dotted_ids_before_action_check(api):
+    response = api.client.post(
+        "/api/extensions/transactions/assistant-plan",
+        json={"request": "remove:tools.v2", "idempotencyKey": IDEMPOTENCY_KEY},
+        headers=api.headers,
+    )
+    assert response.status_code == 409
+    assert response.json() == {"error": {"code": "unsupported-transaction-action"}}
+
+
+def test_assistant_plan_rejects_extra_authority_and_invalid_runtime_clock(api):
+    path = "/api/extensions/transactions/assistant-plan"
+    extra = api.client.post(
+        path,
+        json={
+            "request": "install:notes",
+            "idempotencyKey": IDEMPOTENCY_KEY,
+            "approved": True,
+        },
+        headers=api.headers,
+    )
+    assert extra.status_code == 422
+    runtime = api.client.app.state.extension_transaction_runtime
+    api.client.app.state.extension_transaction_runtime = TransactionRuntime(
+        store=runtime.store,
+        catalog=runtime.catalog,
+        observed_state=runtime.observed_state,
+        policy=runtime.policy,
+        clock=lambda: "invalid-secret-clock-value",
+        executor=runtime.executor,
+        configuration=runtime.configuration,
+    )
+    failed = api.client.post(
+        path,
+        json={"request": "install:notes", "idempotencyKey": IDEMPOTENCY_KEY},
+        headers=api.headers,
+    )
+    assert failed.status_code == 503
+    assert failed.json() == {"error": {"code": "runtime-clock-invalid"}}
+    assert "invalid-secret-clock-value" not in failed.text
 
 
 def test_capabilities_advertise_only_the_injected_runtime(api):
@@ -568,10 +762,59 @@ def test_main_registers_transaction_routes():
 
     paths = {route.path for route in app.routes}
     assert "/api/extensions/transactions" in paths
+    assert "/api/extensions/transactions/assistant-plan" in paths
     assert "/api/extensions/transactions/{transaction_id}/approval" in paths
     assert "/api/extensions/transactions/{transaction_id}/configuration" in paths
     assert "/api/extensions/transactions/{transaction_id}" in paths
     assert "/api/extensions/transactions/{transaction_id}/execute" in paths
+
+
+def test_main_installs_only_an_opt_in_production_runtime(monkeypatch):
+    import extension_transaction_production as production
+    import main
+
+    application = FastAPI()
+    runtime = TransactionRuntime(
+        store=object(),
+        catalog=lambda: ([], "1" * 64),
+        observed_state=lambda: {},
+        policy=lambda: {},
+        clock=lambda: NOW,
+    )
+    monkeypatch.setattr(production, "production_runtime_enabled", lambda: False)
+    monkeypatch.setattr(production, "create_production_runtime", lambda: runtime)
+    assert main.install_extension_transaction_runtime(application) is False
+    assert not hasattr(application.state, "extension_transaction_runtime")
+
+    monkeypatch.setattr(production, "production_runtime_enabled", lambda: True)
+    assert main.install_extension_transaction_runtime(application) is True
+    assert application.state.extension_transaction_runtime is runtime
+
+    replacement = TransactionRuntime(
+        store=object(),
+        catalog=runtime.catalog,
+        observed_state=runtime.observed_state,
+        policy=runtime.policy,
+        clock=runtime.clock,
+    )
+    monkeypatch.setattr(production, "create_production_runtime", lambda: replacement)
+    assert main.install_extension_transaction_runtime(application) is True
+    assert application.state.extension_transaction_runtime is runtime
+
+
+def test_main_runtime_installation_fails_closed(monkeypatch):
+    import extension_transaction_production as production
+    import main
+
+    application = FastAPI()
+    monkeypatch.setattr(production, "production_runtime_enabled", lambda: True)
+
+    def fail():
+        raise RuntimeError("sensitive-local-detail")
+
+    monkeypatch.setattr(production, "create_production_runtime", fail)
+    assert main.install_extension_transaction_runtime(application) is False
+    assert not hasattr(application.state, "extension_transaction_runtime")
 
 
 def test_main_csrf_blocks_cross_origin_owner_approval(test_client, monkeypatch):

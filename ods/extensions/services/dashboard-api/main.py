@@ -1043,8 +1043,33 @@ def _prepare_env_save(payload: dict[str, Any]) -> tuple[str, list[dict[str, Any]
 
 # --- App ---
 
+def install_extension_transaction_runtime(application: FastAPI) -> bool:
+    """Install the opt-in production proposal runtime, or fail closed."""
+    from extension_transaction_production import (
+        create_production_runtime,
+        production_runtime_enabled,
+    )
+    from extension_transaction_runtime import TransactionRuntime
+
+    if not production_runtime_enabled():
+        return False
+    existing = getattr(application.state, "extension_transaction_runtime", None)
+    if isinstance(existing, TransactionRuntime):
+        return True
+    try:
+        application.state.extension_transaction_runtime = create_production_runtime()
+    except Exception as exc:
+        logger.error(
+            "Assistant First transaction runtime is unavailable (%s)",
+            type(exc).__name__,
+        )
+        return False
+    return True
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
+    install_extension_transaction_runtime(app)
     background_tasks = [
         asyncio.create_task(collect_metrics()),
         asyncio.create_task(_poll_service_health()),

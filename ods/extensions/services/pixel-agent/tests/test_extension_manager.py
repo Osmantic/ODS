@@ -35,6 +35,53 @@ def detail(status: str, *, required: tuple[str, ...] = ()) -> dict[str, object]:
     }
 
 
+def assistant_plan_response() -> dict[str, object]:
+    return {
+        "schema": "ods.assistant-first.assistant-plan-proposal.v1",
+        "transactionId": "txn-" + "c" * 24,
+        "planHash": "d" * 64,
+        "state": "awaiting_approval",
+        "validUntil": "2026-09-12T12:15:00Z",
+        "requested": {"action": "install", "serviceId": "crewai"},
+        "selectedExtensions": [
+            {
+                "id": "crewai",
+                "reason": "requested",
+                "plannedAction": "install",
+                "dependencyCount": 1,
+            },
+            {
+                "id": "qdrant",
+                "reason": "dependency",
+                "plannedAction": "noop",
+                "dependencyCount": 0,
+            },
+        ],
+        "impact": {
+            "downloadBytes": 100,
+            "diskBytes": 200,
+            "cpuMillicores": 300,
+            "ramBytes": 400,
+            "vramBytes": 0,
+            "gpuCount": 0,
+            "hostPortCount": 1,
+            "permissionCount": 0,
+            "dataPathCount": 1,
+        },
+        "configuration": {
+            "required": True,
+            "requiredFieldCount": 1,
+            "secretsRequired": True,
+            "requiredSecretCount": 1,
+        },
+        "warningCount": 2,
+        "rollbackAvailable": True,
+        "approvalRequired": True,
+        "executionAvailable": False,
+        "duplicate": False,
+    }
+
+
 class ExtensionManagerTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
@@ -116,12 +163,101 @@ class ExtensionManagerTests(unittest.TestCase):
             {"schemaVersion": 1, "action": "list", "extensionId": "all"}
         ).encode()
         self.assertEqual(manager._parse_request(inventory), ("list", "all"))
+        proposal = json.dumps(
+            {
+                "schemaVersion": 1,
+                "action": "request-plan",
+                "extensionId": "install:crewai",
+            }
+        ).encode()
+        self.assertEqual(
+            manager._parse_request(proposal), ("request-plan", "install:crewai")
+        )
+        dotted_proposal = json.dumps(
+            {
+                "schemaVersion": 1,
+                "action": "request-plan",
+                "extensionId": "enable:tools.v2",
+            }
+        ).encode()
+        self.assertEqual(
+            manager._parse_request(dotted_proposal),
+            ("request-plan", "enable:tools.v2"),
+        )
         for invalid in (
             {"schemaVersion": 1, "action": "list", "extensionId": "crewai"},
             {"schemaVersion": 1, "action": "inspect", "extensionId": "all"},
+            {
+                "schemaVersion": 1,
+                "action": "request-plan",
+                "extensionId": "execute:crewai",
+            },
+            {
+                "schemaVersion": 1,
+                "action": "request-plan",
+                "extensionId": "install:tools.",
+            },
         ):
             with self.assertRaises(manager.ManagerError):
                 manager._parse_request(json.dumps(invalid).encode())
+
+    def test_assistant_plan_is_exact_nonsecret_and_nonmutating(self) -> None:
+        upstream = assistant_plan_response()
+        with (
+            mock.patch.object(manager.secrets, "token_hex", return_value="b" * 64),
+            mock.patch.object(
+                manager, "_request_json", return_value=(201, upstream)
+            ) as request,
+            mock.patch.object(manager, "_detail") as detail_request,
+            mock.patch.object(manager, "_mutate") as mutation,
+        ):
+            result = manager._execute(
+                env_path=self.env_path,
+                port=3002,
+                action="request-plan",
+                extension_id="install:crewai",
+            )
+
+        request.assert_called_once_with(
+            port=3002,
+            credential="a" * 64,
+            method="POST",
+            path="/api/extensions/transactions/assistant-plan",
+            timeout=60,
+            request_body={
+                "request": "install:crewai",
+                "idempotencyKey": "b" * 64,
+            },
+        )
+        detail_request.assert_not_called()
+        mutation.assert_not_called()
+        self.assertEqual(result["kind"], manager.PLAN_KIND)
+        self.assertEqual(result["outcome"], "proposed")
+        self.assertEqual(result["transactionId"], "txn-" + "c" * 24)
+        self.assertEqual(result["planHash"], "d" * 64)
+        self.assertEqual(result["state"], "awaiting_approval")
+        self.assertFalse(result["externalEffectOccurred"])
+        serialized = json.dumps(result)
+        self.assertNotIn("API_KEY", serialized)
+        self.assertNotIn("catalogRevision", serialized)
+        self.assertNotIn("operations", serialized)
+
+    def test_assistant_plan_rejects_extra_or_inconsistent_projection(self) -> None:
+        for mutate in (
+            lambda value: value.update({"secretValues": {"TOKEN": "leak"}}),
+            lambda value: value["configuration"].update(
+                {"required": False, "requiredFieldCount": 1}
+            ),
+            lambda value: value.update({"approvalRequired": False}),
+            lambda value: value["selectedExtensions"][0].update(
+                {"plannedAction": "delete"}
+            ),
+        ):
+            value = assistant_plan_response()
+            mutate(value)
+            with mock.patch.object(manager, "_request_json", return_value=(201, value)):
+                with self.assertRaises(manager.ManagerError):
+                    manager._assistant_plan(3002, "a" * 64, "install:crewai")
 
     def test_live_inventory_projects_only_bounded_status_metadata(self) -> None:
         response = {

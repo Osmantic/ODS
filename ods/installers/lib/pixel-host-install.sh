@@ -3294,6 +3294,26 @@ payload = {
             "timeoutSeconds": 30,
             "exclusiveTarget": False,
         },
+        "ods.extensions.request-plan": {
+            "description": "Request one host-authoritative exact extension plan. This persists only an awaiting-approval proposal and cannot approve, configure, execute, or change an extension.",
+            "tier": "read",
+            "effect": "observe",
+            "defaultAuthority": "observe",
+            "idempotent": True,
+            "reversible": False,
+            "targets": ["ods-host"],
+            "parameters": {
+                "request": {
+                    "pattern": "^(install|enable|disable|remove):([a-z0-9]|[a-z0-9][a-z0-9._-]{0,62}[a-z0-9])$",
+                    "maxLength": 79,
+                },
+            },
+            "argv": [
+                python_binary, manager_program, "client", manager_socket, "request-plan", "{request}",
+            ],
+            "timeoutSeconds": 60,
+            "exclusiveTarget": False,
+        },
         "ods.extensions.install": {
             "description": "Install and verify one cataloged ODS extension through the scoped lifecycle proxy. Exact-plan owner approval is required.",
             "tier": "managed",
