@@ -1372,3 +1372,21 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def list_interleave_sequences_safe(seq1: list | None, seq2: list | None) -> list:
+    """Safely interleave two sequence lists.
+    Returns interleaved list or single sequence if one is None/empty.
+    """
+    if not isinstance(seq1, (list, tuple)):
+        seq1 = []
+    if not isinstance(seq2, (list, tuple)):
+        seq2 = []
+    res = []
+    max_len = max(len(seq1), len(seq2))
+    for i in range(max_len):
+        if i < len(seq1):
+            res.append(seq1[i])
+        if i < len(seq2):
+            res.append(seq2[i])
+    return res
