@@ -1372,3 +1372,16 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def string_slugify_safe(text: str | None, max_len: int = 80) -> str:
+    """Safely convert text to lowercase hyphenated URL slug.
+    Returns "" on None or invalid string inputs.
+    """
+    if text is None or not isinstance(text, str) or not text.strip():
+        return ""
+    if not isinstance(max_len, int) or isinstance(max_len, bool) or max_len <= 0:
+        max_len = 80
+    slug = re.sub(r"[^\w\s-]", "", text.strip().lower())
+    slug = re.sub(r"[-\s]+", "-", slug).strip("-")
+    return slug[:max_len]
