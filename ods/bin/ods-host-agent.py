@@ -6497,7 +6497,7 @@ def _find_ext_dir(service_id: str) -> Path | None:
 
 
 def _extension_lease_lock_provider(service_id: str):
-    """Return the existing host lock only for an installed manageable service."""
+    """Return the existing host lock only for a lease-manageable service."""
     if (
         _extension_leases is None
         or not isinstance(service_id, str)
@@ -6509,7 +6509,13 @@ def _extension_lease_lock_provider(service_id: str):
         (ext_dir / name).is_file()
         for name in ("manifest.yaml", "manifest.yml", "manifest.json")
     )
-    if service_id in ALWAYS_ON_SERVICES or not has_manifest:
+    is_recreatable_core_service = (
+        service_id in CORE_SERVICE_IDS
+        and service_id in _ALLOWED_CORE_RECREATE_IDS
+    )
+    if service_id in ALWAYS_ON_SERVICES or (
+        not has_manifest and not is_recreatable_core_service
+    ):
         raise _extension_leases.LeaseAuthorizationError(
             "lease-service-not-manageable"
         )
@@ -9014,52 +9020,56 @@ class AgentHandler(BaseHTTPRequestHandler):
         body = read_json_body(self)
         if body is None:
             return
+        lease_evidence = _parse_extension_mutation_lease(self, body)
+        if lease_evidence is _EXTENSION_MUTATION_LEASE_REJECTED:
+            return
 
         requested = body.get("service_ids", [])
-        unique_service_ids = sorted(set(requested)) if isinstance(requested, list) else requested
-        ok, error = validate_core_recreate_ids(unique_service_ids)
+        ok, error = validate_core_recreate_ids(requested)
         if not ok:
             json_response(self, 400, {"error": error})
             return
+        unique_service_ids = sorted(set(requested))
 
-        locks = []
         try:
-            for service_id in unique_service_ids:
-                lock = _service_locks[service_id]
-                if not lock.acquire(blocking=False):
-                    json_response(self, 409, {"error": f"Operation already in progress for {service_id}"})
-                    return
-                locks.append(lock)
-
-            logger.info("Recreating core services: %s", ", ".join(unique_service_ids))
-            ok, err = docker_compose_recreate(unique_service_ids)
-            if ok:
-                json_response(self, 200, {
-                    "status": "ok",
-                    "action": "recreate",
-                    "service_ids": unique_service_ids,
-                })
-            else:
-                json_response(
-                    self,
-                    503 if "timed out" in err else 500,
-                    {
+            with _ExtensionMutationAdmission(
+                self, lease_evidence, unique_service_ids
+            ):
+                logger.info(
+                    "Recreating core services: %s",
+                    ", ".join(unique_service_ids),
+                )
+                try:
+                    ok, err = docker_compose_recreate(unique_service_ids)
+                    if ok:
+                        response_status = 200
+                        response_body = {
+                            "status": "ok",
+                            "action": "recreate",
+                            "service_ids": unique_service_ids,
+                        }
+                    else:
+                        response_status = 503 if "timed out" in err else 500
+                        response_body = {
+                            "error": _public_process_failure(
+                                "compose_recreate_failed"
+                            ),
+                            "error_code": "compose_recreate_failed",
+                        }
+                except (RuntimeError, subprocess.CalledProcessError) as exc:
+                    logger.warning(
+                        "Core recreation failed before completion (%s)",
+                        type(exc).__name__,
+                    )
+                    response_status = 500
+                    response_body = {
                         "error": _public_process_failure("compose_recreate_failed"),
                         "error_code": "compose_recreate_failed",
-                    },
-                )
-        except (RuntimeError, subprocess.CalledProcessError) as exc:
-            logger.warning(
-                "Core recreation failed before completion (%s)",
-                type(exc).__name__,
-            )
-            json_response(self, 500, {
-                "error": _public_process_failure("compose_recreate_failed"),
-                "error_code": "compose_recreate_failed",
-            })
-        finally:
-            for lock in reversed(locks):
-                lock.release()
+                    }
+        except _ExtensionMutationAdmissionRejected:
+            return
+
+        json_response(self, response_status, response_body)
 
     def _handle_extension(self, action: str):
         if not check_auth(self):

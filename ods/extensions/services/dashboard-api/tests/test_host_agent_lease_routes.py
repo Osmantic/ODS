@@ -211,6 +211,255 @@ class CountingLock:
         return self._lock.locked()
 
 
+def test_core_recreate_malformed_lease_fails_before_lock_or_compose(
+    host_server, host_request, monkeypatch
+):
+    agent, _listener = host_server
+    monkeypatch.setattr(agent, "CORE_SERVICE_IDS", frozenset({"open-webui"}))
+    compose_calls = []
+    monkeypatch.setattr(
+        agent,
+        "docker_compose_recreate",
+        lambda service_ids: (compose_calls.append(service_ids) or (True, "")),
+    )
+
+    status, result = host_request(
+        "/v1/core/recreate",
+        {"service_ids": ["open-webui"], "lease": {"schema": "wrong"}},
+    )
+
+    assert status == 422
+    assert result == {"error": {"code": "invalid-lease-request"}}
+    assert compose_calls == []
+    assert agent._extension_lease_manager is None
+    assert dict(agent._service_locks) == {}
+
+
+def test_core_recreate_without_lease_preserves_legacy_lock_lifetime(
+    host_server, host_request, monkeypatch
+):
+    agent, _listener = host_server
+    monkeypatch.setattr(agent, "CORE_SERVICE_IDS", frozenset({"litellm"}))
+    agent._service_locks = collections.defaultdict(CountingLock)
+    lock = agent._service_locks["litellm"]
+    original_json_response = agent.json_response
+    locked_at_response = []
+
+    def observed_recreate(service_ids):
+        assert service_ids == ["litellm"]
+        assert lock.locked()
+        return True, ""
+
+    def observed_json_response(handler, code, body, **kwargs):
+        if body.get("action") == "recreate":
+            locked_at_response.append(lock.locked())
+        return original_json_response(handler, code, body, **kwargs)
+
+    monkeypatch.setattr(agent, "docker_compose_recreate", observed_recreate)
+    monkeypatch.setattr(agent, "json_response", observed_json_response)
+    status, result = host_request(
+        "/v1/core/recreate",
+        {"service_ids": ["litellm"]},
+        expect_no_store=False,
+    )
+
+    assert status == 200
+    assert result == {
+        "status": "ok",
+        "action": "recreate",
+        "service_ids": ["litellm"],
+    }
+    assert lock.acquire_calls == 1
+    assert locked_at_response == [False]
+    assert not lock.locked()
+
+
+def test_core_recreate_without_lease_preserves_legacy_busy_response(
+    host_server, host_request, monkeypatch
+):
+    agent, _listener = host_server
+    monkeypatch.setattr(agent, "CORE_SERVICE_IDS", frozenset({"litellm"}))
+    lock = threading.Lock()
+    lock.acquire()
+    agent._service_locks = {"litellm": lock}
+    try:
+        status, result = host_request(
+            "/v1/core/recreate",
+            {"service_ids": ["litellm"]},
+            expect_no_store=False,
+        )
+    finally:
+        lock.release()
+
+    assert status == 409
+    assert result == {"error": "Operation already in progress for litellm"}
+
+
+def test_core_recreate_timeout_releases_legacy_lock_before_response(
+    host_server, host_request, monkeypatch
+):
+    agent, _listener = host_server
+    monkeypatch.setattr(agent, "CORE_SERVICE_IDS", frozenset({"litellm"}))
+    lock = threading.Lock()
+    agent._service_locks = {"litellm": lock}
+    original_json_response = agent.json_response
+    locked_at_response = []
+
+    def observed_json_response(handler, code, body, **kwargs):
+        if body.get("error_code") == "compose_recreate_failed":
+            locked_at_response.append(lock.locked())
+        return original_json_response(handler, code, body, **kwargs)
+
+    monkeypatch.setattr(
+        agent,
+        "docker_compose_recreate",
+        lambda _service_ids: (False, "Docker compose operation timed out"),
+    )
+    monkeypatch.setattr(agent, "json_response", observed_json_response)
+    status, result = host_request(
+        "/v1/core/recreate",
+        {"service_ids": ["litellm"]},
+        expect_no_store=False,
+    )
+
+    assert status == 503
+    assert result == {
+        "error": agent._public_process_failure("compose_recreate_failed"),
+        "error_code": "compose_recreate_failed",
+    }
+    assert locked_at_response == [False]
+    assert not lock.locked()
+
+
+def test_core_recreate_valid_lease_covers_compose_without_reacquiring(
+    host_server, host_request, monkeypatch
+):
+    agent, _listener = host_server
+    service_ids = ["hermes", "litellm"]
+    monkeypatch.setattr(agent, "CORE_SERVICE_IDS", frozenset(service_ids))
+    agent._service_locks = collections.defaultdict(CountingLock)
+    grant = acquire_lease(agent, host_request, service_ids)
+    locks = [agent._service_locks[service_id] for service_id in service_ids]
+    original_json_response = agent.json_response
+    state_at_response = []
+
+    def observed_recreate(observed_service_ids):
+        state = agent._extension_lease_manager.describe(grant["leaseId"])
+        assert state["active"] is True
+        assert observed_service_ids == service_ids
+        assert all(lock.locked() for lock in locks)
+        return True, ""
+
+    def observed_json_response(handler, code, body, **kwargs):
+        if body.get("action") == "recreate":
+            state = agent._extension_lease_manager.describe(grant["leaseId"])
+            state_at_response.append(
+                (state["active"], [lock.locked() for lock in locks])
+            )
+        return original_json_response(handler, code, body, **kwargs)
+
+    monkeypatch.setattr(agent, "docker_compose_recreate", observed_recreate)
+    monkeypatch.setattr(agent, "json_response", observed_json_response)
+    status, result = host_request(
+        "/v1/core/recreate",
+        {
+            "service_ids": list(reversed(service_ids)),
+            "lease": mutation_lease(agent, grant),
+        },
+        expect_no_store=False,
+    )
+
+    assert status == 200
+    assert result == {
+        "status": "ok",
+        "action": "recreate",
+        "service_ids": service_ids,
+    }
+    assert all(lock.acquire_calls == 1 for lock in locks)
+    assert state_at_response == [(False, [True, True])]
+    assert agent._extension_lease_manager.describe(grant["leaseId"])["active"] is False
+
+
+def test_core_recreate_lease_must_cover_every_requested_service(
+    host_server, host_request, monkeypatch
+):
+    agent, _listener = host_server
+    monkeypatch.setattr(
+        agent,
+        "CORE_SERVICE_IDS",
+        frozenset({"hermes", "litellm"}),
+    )
+    compose_calls = []
+    grant = acquire_lease(agent, host_request, ["hermes"])
+    monkeypatch.setattr(
+        agent,
+        "docker_compose_recreate",
+        lambda service_ids: (compose_calls.append(service_ids) or (True, "")),
+    )
+
+    status, result = host_request(
+        "/v1/core/recreate",
+        {
+            "service_ids": ["litellm"],
+            "lease": mutation_lease(agent, grant),
+        },
+    )
+
+    assert status == 403
+    assert result == {"error": {"code": "lease-service-not-covered"}}
+    assert compose_calls == []
+    assert "litellm" not in agent._service_locks
+
+
+@pytest.mark.parametrize(
+    ("service_id", "always_on"),
+    [
+        ("not-eligible-core", frozenset()),
+        ("open-webui", frozenset({"open-webui"})),
+    ],
+)
+def test_core_recreate_lease_rejects_unmanageable_core_service(
+    host_server, host_request, monkeypatch, service_id, always_on
+):
+    agent, _listener = host_server
+    monkeypatch.setattr(agent, "CORE_SERVICE_IDS", frozenset({service_id}))
+    monkeypatch.setattr(agent, "ALWAYS_ON_SERVICES", always_on)
+
+    status, result = host_request(
+        "/v1/extension/lease/acquire",
+        acquire_request(agent._extension_leases.LEASE_SCHEMA, [service_id]),
+    )
+
+    assert status == 403
+    assert result == {"error": {"code": "lease-service-not-manageable"}}
+    assert service_id not in agent._service_locks
+
+
+def test_core_recreate_unhashable_service_id_returns_bounded_400(
+    host_server, host_request, monkeypatch
+):
+    agent, _listener = host_server
+    monkeypatch.setattr(agent, "CORE_SERVICE_IDS", frozenset({"litellm"}))
+    compose_calls = []
+    monkeypatch.setattr(
+        agent,
+        "docker_compose_recreate",
+        lambda service_ids: (compose_calls.append(service_ids) or (True, "")),
+    )
+
+    status, result = host_request(
+        "/v1/core/recreate",
+        {"service_ids": [{"service": "litellm"}]},
+        expect_no_store=False,
+    )
+
+    assert status == 400
+    assert result == {"error": "Invalid service_id: {'service': 'litellm'}"}
+    assert compose_calls == []
+    assert agent._extension_lease_manager is None
+    assert dict(agent._service_locks) == {}
+
+
 def test_valid_toggle_lease_uses_existing_custody_without_reacquiring(
     host_server, host_request
 ):
