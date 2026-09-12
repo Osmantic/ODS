@@ -200,7 +200,7 @@ function ServiceNode({ node, pos, selected, onSelect, compact = false }) {
   const meta = statusMeta(node.status)
   const label = compact ? node.name.replace(/\s*\(.*\)$/, '') : node.name
   return (
-    <g role="button" tabIndex={0} aria-label={`${node.name}: ${node.status}`} onClick={() => onSelect(node)} onKeyDown={event => {
+    <g role="button" tabIndex={0} aria-label={`${node.name}: ${node.status}`} onClick={event => { event.currentTarget.focus(); onSelect(node) }} onKeyDown={event => {
       if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onSelect(node) }
     }} className="cursor-pointer">
       <title>{node.name}: {node.status}</title>
@@ -223,6 +223,17 @@ function ServiceNode({ node, pos, selected, onSelect, compact = false }) {
 }
 
 function DetailPanel({ node, edges, onClose, inline = false }) {
+  const closeControl = useRef(null)
+  const opener = useRef(null)
+  useEffect(() => {
+    if (!node) return
+    opener.current = document.activeElement
+    closeControl.current?.focus()
+  }, [node?.id])
+  function dismiss() {
+    onClose()
+    if (opener.current?.isConnected) opener.current.focus()
+  }
   if (!node) return null
   const meta = statusMeta(node.status)
   const upstream = edges.filter(edge => edge.target === node.id)
@@ -230,13 +241,13 @@ function DetailPanel({ node, edges, onClose, inline = false }) {
   const url = serviceUrl(node)
 
   return (
-    <div className={inline ? 'integration-detail' : 'absolute top-4 right-4 z-10 w-72 overflow-hidden rounded-xl border border-theme-border bg-theme-card shadow-2xl'}>
+    <div role="region" aria-label={`Service details: ${node.name}`} onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); dismiss() } }} className={inline ? 'integration-detail' : 'absolute top-4 right-4 z-10 w-72 overflow-hidden rounded-xl border border-theme-border bg-theme-card shadow-2xl'}>
       <div className="flex items-center justify-between border-b border-theme-border px-4 py-3">
         <div className="flex items-center gap-2">
           <span className={`h-2.5 w-2.5 rounded-full ${meta.dot}`} />
           <span className="text-sm font-semibold text-theme-text">{node.name}</span>
         </div>
-        <button onClick={onClose} aria-label="Close service details" className="text-theme-text-muted hover:text-theme-text"><X size={16} /></button>
+        <button ref={closeControl} onClick={dismiss} aria-label="Close service details" className="text-theme-text-muted hover:text-theme-text"><X size={16} /></button>
       </div>
       <div className="space-y-3 px-4 py-3 text-xs">
         <div className="flex justify-between"><span className="text-theme-text-muted">Status</span><span className={meta.text}>{node.status}</span></div>
@@ -296,7 +307,7 @@ function CompactIntegrations({ nodes, edges, refresh, error }) {
     {!visible.length ? <p className="integrations-empty">{nodes.length ? 'No matching services.' : 'No services reported.'}</p> : view === 'list' ? <div className="integrations-list">
       {LAYERS.map(layer => {
         const members = visible.filter(node => node.category === layer).sort((a, b) => a.name.localeCompare(b.name))
-        return members.length > 0 && <section key={layer}><h3>{LAYER_LABELS[layer].toLowerCase().replace('-', ' ')}</h3>{members.map(node => <button type="button" key={node.id} onClick={() => setSelectedId(node.id)} aria-pressed={selectedId === node.id}><span className="integration-name"><span className={`integration-dot ${statusMeta(node.status).dot}`} /><span>{node.name}</span></span><span className="integration-status">{node.status.replaceAll('_', ' ')}{node.port && <small>:{node.port}</small>}</span></button>)}</section>
+        return members.length > 0 && <section key={layer}><h3>{LAYER_LABELS[layer].toLowerCase().replace('-', ' ')}</h3>{members.map(node => <button type="button" key={node.id} onClick={event => { event.currentTarget.focus(); setSelectedId(node.id) }} aria-pressed={selectedId === node.id}><span className="integration-name"><span className={`integration-dot ${statusMeta(node.status).dot}`} /><span>{node.name}</span></span><span className="integration-status">{node.status.replaceAll('_', ' ')}{node.port && <small>:{node.port}</small>}</span></button>)}</section>
       })}
     </div> : <div className="integrations-map" role="region" aria-label="Service topology" tabIndex={0}>
       <p>Known dependencies · select a service to highlight its connections</p>
