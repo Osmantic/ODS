@@ -741,7 +741,7 @@ assert broker["allowedRoots"] == ["/var/lib/pixel-ops-broker"]
 assert broker["writableRoots"] == ["/var/lib/pixel-ops-broker/artifacts"]
 host_inventory={"host.uptime","host.processes","host.services","host.cpu","host.gpu","host.memory","host.storage","host.network-addresses","host.network-routes","host.listening-ports","host.tailscale","host.network-peer"}
 assert set(v["actions"]) == {"host.identity","host.kernel","host.architecture","host.platform","host.os-release",*host_inventory,"ods.extensions.search","ods.extensions.list","ods.extensions.inspect","ods.extensions.request-plan","ods.extensions.install","ods.extensions.enable","ods.extensions.disable","ods.extensions.remove"}
-for name in {"host.identity","host.kernel","host.architecture","host.platform","host.os-release",*host_inventory,"ods.extensions.search","ods.extensions.list","ods.extensions.inspect","ods.extensions.request-plan"}:
+for name in {"host.identity","host.kernel","host.architecture","host.platform","host.os-release",*host_inventory,"ods.extensions.search","ods.extensions.list","ods.extensions.inspect"}:
     assert v["actions"][name]["tier"] == "read" and v["actions"][name]["defaultAuthority"] == "observe"
 assert v["actions"]["host.identity"]["argv"] == ["/usr/bin/hostname"]
 assert v["actions"]["host.kernel"]["argv"] == ["/usr/bin/uname", "-sr"]
@@ -773,7 +773,7 @@ assert v["actions"]["ods.extensions.list"]["argv"] == [str(pathlib.Path("/usr/bi
 extension_plan=v["actions"]["ods.extensions.request-plan"]
 assert extension_plan["parameters"] == {"request":{"pattern":"^(install|enable|disable|remove):([a-z0-9]|[a-z0-9][a-z0-9._-]{0,62}[a-z0-9])$","maxLength":79}}
 assert extension_plan["argv"] == [str(pathlib.Path("/usr/bin/python3").resolve()),"/opt/pixel-ops-broker/ods-extension-manager.py","client","/run/ods-pixel-manager/extension-manager.sock","request-plan","{request}"]
-assert extension_plan | {"tier":"read","effect":"observe","defaultAuthority":"observe","idempotent":True,"reversible":False,"timeoutSeconds":60,"exclusiveTarget":False} == extension_plan
+assert extension_plan | {"tier":"staging","effect":"stage","defaultAuthority":"propose","idempotent":False,"reversible":False,"timeoutSeconds":60,"exclusiveTarget":False} == extension_plan
 parameter={"serviceId":{"pattern":"^([a-z0-9]|[a-z0-9][a-z0-9._-]{0,62}[a-z0-9])$","maxLength":64}}
 for action in ("inspect","install","enable","disable","remove"):
     item=v["actions"][f"ods.extensions.{action}"]

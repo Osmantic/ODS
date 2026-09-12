@@ -3296,10 +3296,10 @@ payload = {
         },
         "ods.extensions.request-plan": {
             "description": "Request one host-authoritative exact extension plan. This persists only an awaiting-approval proposal and cannot approve, configure, execute, or change an extension.",
-            "tier": "read",
-            "effect": "observe",
-            "defaultAuthority": "observe",
-            "idempotent": True,
+            "tier": "staging",
+            "effect": "stage",
+            "defaultAuthority": "propose",
+            "idempotent": False,
             "reversible": False,
             "targets": ["ods-host"],
             "parameters": {
