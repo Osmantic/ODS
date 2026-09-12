@@ -13,7 +13,9 @@ service:
   health: ""
   type: docker
   startup_check: false  # one-shot CLI tool; container exits 0 by design
-  gpu_backends: [amd, nvidia, apple]
+  # Aider is a one-shot CLI container and does not require GPU access. `none`
+  # keeps it installable when ODS selects the CPU fallback backend.
+  gpu_backends: [amd, nvidia, apple, none]
   compose_file: compose.yaml
   category: optional
   depends_on: []
