@@ -458,6 +458,8 @@ assert_in_order "$windows_activation_block" "Windows Lemonade activation" \
     'recreate_windows_lemonade_openclaw' \
     'verify_windows_lemonade_openclaw_model_env "$model_id"' \
     'request_windows_switchboard_route_reconciliation' \
+    'reconcile_ods_managed_pixel_model' \
+    'release_model_router_swap_gate' \
     'verify_windows_lemonade_downstream_route "$model_id" "full model route"'
 
 switchboard_reconcile_block="$(function_block request_windows_switchboard_route_reconciliation | grep -v '^[[:space:]]*#')"
@@ -476,10 +478,9 @@ windows_lemonade_block="$(awk '
 assert_in_order "$windows_lemonade_block" "Windows Lemonade main path" \
     'activate_windows_lemonade_full_model' \
     'HOT_SWAP_VERIFIED=true' \
-    'reconcile_ods_managed_pixel_model' \
     'discard_active_model_config_snapshot' \
     'discard_bootstrap_model_backup_after_windows_swap'
-grep -qF 'windows_lemonade_swap_failed "the managed Pixel route could not be reconciled" true' <<<"$windows_lemonade_block" \
+grep -qF 'windows_lemonade_swap_failed "the managed Pixel route could not be reconciled" true' <<<"$windows_activation_block" \
     || fail "Windows Lemonade must restore and verify both inference and Pixel after Pixel promotion failure"
 pass "Windows Lemonade verifies the exact downstream route before commit"
 
@@ -558,12 +559,13 @@ assert_in_order "$rollback_block" "Windows Lemonade rollback" \
     'restart_windows_lemonade_with_previous_model "$previous_gguf"' \
     'restart_windows_lemonade_dependents_after_rollback' \
     'verify_windows_lemonade_openclaw_model_env "$previous_model_id"' \
-    'verify_windows_lemonade_downstream_route "$previous_model_id" "previous model route"' \
     'reconcile_ods_managed_pixel_model "$previous_llm_model"' \
+    'release_model_router_swap_gate' \
+    'verify_windows_lemonade_downstream_route "$previous_model_id" "previous model route"' \
     'Rollback verified: the previous model completed through the restored downstream route.'
 pass "Windows Lemonade rollback restarts and proves the previous routed model and managed Pixel route"
 
-for injected_failure in native model-id litellm hermes openclaw openclaw-env reconcile route; do
+for injected_failure in native model-id litellm hermes openclaw openclaw-env reconcile pixel route; do
     if ! (
         eval "$windows_activation_block"
         failure_stage="$injected_failure"
@@ -598,6 +600,17 @@ for injected_failure in native model-id litellm hermes openclaw openclaw-env rec
             calls+=(reconcile)
             [[ "$failure_stage" != "reconcile" ]]
         }
+        reconcile_ods_managed_pixel_model() {
+            calls+=(pixel)
+            [[ "$failure_stage" != "pixel" ]]
+        }
+        release_model_router_swap_gate() {
+            calls+=(gate-open)
+        }
+        acquire_model_router_swap_gate() {
+            calls+=(gate-close)
+            return 0
+        }
         verify_windows_lemonade_downstream_route() {
             calls+=(route)
             [[ "$failure_stage" != "route" ]]
@@ -623,7 +636,8 @@ for injected_failure in native model-id litellm hermes openclaw openclaw-env rec
             openclaw) expected+=(litellm hermes openclaw) ;;
             openclaw-env) expected+=(litellm hermes openclaw openclaw-env) ;;
             reconcile) expected+=(litellm hermes openclaw openclaw-env reconcile) ;;
-            route) expected+=(litellm hermes openclaw openclaw-env reconcile route) ;;
+            pixel) expected+=(litellm hermes openclaw openclaw-env reconcile pixel) ;;
+            route) expected+=(litellm hermes openclaw openclaw-env reconcile pixel gate-open route gate-close) ;;
         esac
         expected+=(rollback)
         [[ "${calls[*]}" == "${expected[*]}" ]]

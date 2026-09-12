@@ -2131,14 +2131,22 @@ rollback_windows_lemonade_swap() {
     if [[ "$WINDOWS_LEMONADE_OPENCLAW_PRESENT" == "true" && -n "$previous_model_id" ]]; then
         verify_windows_lemonade_openclaw_model_env "$previous_model_id" || rollback_ok=false
     fi
-    if [[ "$inference_restored" == "true" && -n "$previous_model_id" ]] \
-        && verify_windows_lemonade_downstream_route "$previous_model_id" "previous model route"; then
-        route_verified=true
-    else
-        rollback_ok=false
-    fi
     if [[ "$reconcile_pixel" == "true" && -n "$previous_llm_model" ]] \
         && ! reconcile_ods_managed_pixel_model "$previous_llm_model"; then
+        rollback_ok=false
+    fi
+
+    # Downstream verification traverses the model router. Keep admission
+    # closed until every previous consumer has been restored, then reopen it
+    # so the proof cannot queue behind this transaction's own swap gate.
+    if [[ "$rollback_ok" == "true" && "$inference_restored" == "true" && -n "$previous_model_id" ]]; then
+        release_model_router_swap_gate
+        if verify_windows_lemonade_downstream_route "$previous_model_id" "previous model route"; then
+            route_verified=true
+        else
+            rollback_ok=false
+        fi
+    else
         rollback_ok=false
     fi
 
@@ -2194,8 +2202,26 @@ activate_windows_lemonade_full_model() {
         windows_lemonade_swap_failed "the host agent could not reconcile the promoted switchboard route"
         return 1
     fi
+    if ! reconcile_ods_managed_pixel_model; then
+        windows_lemonade_swap_failed "the managed Pixel route could not be reconciled" true
+        return 1
+    fi
+
+    # The downstream proof itself traverses the switchboard. Reopen request
+    # admission only after every promoted consumer is coherent; otherwise the
+    # probe queues behind our own renewable gate and can stall for an hour.
+    release_model_router_swap_gate
     if ! verify_windows_lemonade_downstream_route "$model_id" "full model route"; then
-        windows_lemonade_swap_failed "the full model failed through the configured downstream route"
+        # Re-establish the drained transaction boundary before mutating state
+        # during rollback. If that cannot be proven, leave the promoted state
+        # untouched and fail closed for operator inspection.
+        if acquire_model_router_swap_gate; then
+            windows_lemonade_swap_failed "the full model failed through the configured downstream route" true
+        else
+            WINDOWS_LEMONADE_SWAP_FAILURE="the full model failed through the configured downstream route, and request admission could not be re-closed for safe rollback"
+            WINDOWS_LEMONADE_ROLLBACK_VERIFIED=false
+            log "Windows Lemonade full-model activation failed: ${WINDOWS_LEMONADE_SWAP_FAILURE}"
+        fi
         return 1
     fi
     return 0
@@ -2736,20 +2762,6 @@ if [[ "$_windows_lemonade_swap_applies" == "true" ]]; then
 
     if activate_windows_lemonade_full_model; then
         HOT_SWAP_VERIFIED=true
-        # Pixel is a host-side OpenClaw deployment rather than the legacy
-        # ods-openclaw container. Reconcile its reviewed configuration while
-        # the bootstrap model and the active-config snapshot are still intact,
-        # so a failure can restore both the agent route and inference runtime.
-        if ! reconcile_ods_managed_pixel_model; then
-            _rollback_status="Previous active model config restore was attempted; inspect the logs before retrying."
-            windows_lemonade_swap_failed "the managed Pixel route could not be reconciled" true
-            if [[ "$WINDOWS_LEMONADE_ROLLBACK_VERIFIED" == "true" ]]; then
-                _rollback_status="Previous active model config and Pixel route restored; re-run to retry the full-model swap."
-            fi
-            write_status "failed" 100 "$TOTAL_BYTES" "$TOTAL_BYTES" 0 \
-                "Full model served, but ODS could not reconcile the managed Pixel route. ${_rollback_status}"
-            exit 1
-        fi
         discard_active_model_config_snapshot
         discard_bootstrap_model_backup_after_windows_swap
     else
