@@ -490,7 +490,10 @@ def adapt_manifest(manifest: Any) -> dict[str, Any]:
                 build.get("download_bytes"), f"builds[{index}].download_bytes", 0, 2**63 - 1
             ),
         }
-        if normalized_build["output"] in seen_builds:
+        if (
+            normalized_build["output"] in seen_builds
+            or normalized_build["output"] in seen_images
+        ):
             _fail("duplicate-artifact", field="artifacts.builds", output=normalized_build["output"])
         seen_builds.add(normalized_build["output"])
         builds.append(normalized_build)

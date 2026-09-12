@@ -594,6 +594,19 @@ def test_manifest_rejects_wrong_typed_defaults_and_duplicate_artifact_outputs() 
     duplicate_image["service"]["planning"]["artifacts"]["images"].append(image)
     error("duplicate-artifact", lambda: planner.adapt_manifest(duplicate_image))
 
+    colliding_output = manifest("app")
+    existing_image = colliding_output["service"]["planning"]["artifacts"]["images"][0]
+    colliding_output["service"]["planning"]["artifacts"]["builds"] = [
+        {
+            "source": "https://example.invalid/source.git",
+            "revision": "0123456789abcdef",
+            "context_digest": "sha256:" + "a" * 64,
+            "output": existing_image["reference"],
+            "download_bytes": 0,
+        }
+    ]
+    error("duplicate-artifact", lambda: planner.adapt_manifest(colliding_output))
+
     duplicate_data = manifest("app")
     entry = {
         "path": "data/app",

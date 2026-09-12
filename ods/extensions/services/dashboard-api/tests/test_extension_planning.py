@@ -240,6 +240,29 @@ def test_client_cannot_supply_or_broaden_server_policy(client) -> None:
 
 
 @pytest.mark.parametrize(
+    "invalid_policy",
+    [
+        {},
+        {**POLICY, "unknownPolicyControl": True},
+        {**POLICY, "allowedTrustTiers": []},
+    ],
+)
+def test_missing_or_malformed_server_policy_fails_closed(
+    client, monkeypatch, invalid_policy
+) -> None:
+    monkeypatch.setattr(api, "EXTENSION_PLANNING_POLICY", invalid_policy)
+    contract = client.get("/api/extensions/planning-contract", headers=AUTH)
+    assert contract.status_code == 503
+    assert contract.json()["detail"] == "Planning contract is invalid"
+    assert contract.headers["cache-control"] == "no-store"
+
+    response = client.post("/api/extensions/plan", headers=AUTH, json=request_body())
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Planning policy is invalid"
+    assert response.headers["cache-control"] == "no-store"
+
+
+@pytest.mark.parametrize(
     "change",
     [
         {"surprise": True},
