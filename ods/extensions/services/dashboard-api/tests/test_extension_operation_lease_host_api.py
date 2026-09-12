@@ -12,7 +12,6 @@ from pathlib import Path
 
 import pytest
 
-
 BIN_DIR = Path(__file__).resolve().parents[4] / "bin"
 TRANSACTION_ID = "txn-" + "1" * 24
 PLAN_HASH = "2" * 64
@@ -200,6 +199,10 @@ def test_host_parser_and_schema_reject_ambiguous_or_oversized_input(
     status, result = host_request("/v1/extension/lease/acquire", raw=duplicate)
     assert status == 400
     assert "do-not-echo" not in json.dumps(result)
+    for raw in (b"[]", b"null"):
+        status, result = host_request("/v1/extension/lease/acquire", raw=raw)
+        assert status == 400
+        assert result == {"error": {"code": "invalid-lease-request"}}
 
     status, result = host_request(
         "/v1/extension/lease/acquire",
@@ -221,6 +224,12 @@ def test_host_parser_and_schema_reject_ambiguous_or_oversized_input(
     )
     assert status == 422
     assert result == {"error": {"code": "invalid-lease-request"}}
+    status, result = host_request(
+        "/v1/extension/lease/acquire",
+        acquire_request(schema, ttlSeconds="60"),
+    )
+    assert status == 422
+    assert result == {"error": {"code": "invalid-lease-ttl"}}
     status, result = host_request(
         "/v1/extension/lease/acquire",
         acquire_request(
