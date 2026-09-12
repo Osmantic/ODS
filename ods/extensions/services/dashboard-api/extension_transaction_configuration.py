@@ -33,18 +33,7 @@ class TransactionConfigurationManager:
         schema = self._schema(envelope, plan_hash, integrity=True)
         record = loaded.get("configuration")
         if record is None:
-            return {
-                "schema": "ods.assistant-first.transaction-configuration-view.v1",
-                "transactionId": transaction_id,
-                "planHash": plan_hash,
-                "schemaHash": schema["schemaHash"],
-                "fields": schema["fields"],
-                "configured": False,
-                "values": {},
-                "presentConfigKeys": [],
-                "presentSecretKeys": [],
-                "appliedDefaultKeys": [],
-            }
+            return self._empty_projection(transaction_id, plan_hash, schema)
         self._verify_record(loaded, schema)
         return self._project(record, schema, duplicate=None)
 
@@ -132,7 +121,9 @@ class TransactionConfigurationManager:
         schema = self._schema(envelope, plan_hash, integrity=True)
         record = loaded.get("configuration")
         if record is None:
-            raise TransitionError("missing-configuration")
+            if self._requires_configuration(envelope):
+                raise TransitionError("missing-configuration")
+            return self._empty_projection(transaction_id, plan_hash, schema)
         self._verify_record(loaded, schema)
         if record["presentSecretKeys"]:
             if self._secret_custodian is None:
@@ -149,6 +140,30 @@ class TransactionConfigurationManager:
             if status.get("presentSecretKeys") != record["presentSecretKeys"]:
                 raise IntegrityError("secret-custody-presence-mismatch")
         return self._project(record, schema, duplicate=None)
+
+    @staticmethod
+    def _requires_configuration(envelope: dict[str, Any]) -> bool:
+        plan = envelope["plan"]
+        return bool(plan["requiredConfigKeys"] or plan["requiredSecretKeys"])
+
+    @staticmethod
+    def _empty_projection(
+        transaction_id: str,
+        plan_hash: str,
+        schema: dict[str, Any],
+    ) -> dict[str, Any]:
+        return {
+            "schema": "ods.assistant-first.transaction-configuration-view.v1",
+            "transactionId": transaction_id,
+            "planHash": plan_hash,
+            "schemaHash": schema["schemaHash"],
+            "fields": schema["fields"],
+            "configured": False,
+            "values": {},
+            "presentConfigKeys": [],
+            "presentSecretKeys": [],
+            "appliedDefaultKeys": [],
+        }
 
     @staticmethod
     def _schema(

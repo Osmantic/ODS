@@ -249,7 +249,10 @@ def _validate_value(value: Any, contract: Mapping[str, Any], field: str) -> None
 
     rules = contract.get("validation", {})
     if config_type in {"string", "url"}:
-        if len(value) < rules.get("minLength", 0):
+        minimum_length = rules.get("minLength", 0)
+        if contract["secret"]:
+            minimum_length = max(1, minimum_length)
+        if len(value) < minimum_length:
             _fail("configuration-value-too-short", field=field)
         if len(value) > rules.get("maxLength", _MAX_STRING_LENGTH):
             _fail("configuration-value-too-long", field=field)

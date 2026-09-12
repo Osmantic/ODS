@@ -49,6 +49,28 @@ def envelope() -> dict:
     return {"plan": plan, "planHash": hashlib.sha256(canonical.encode()).hexdigest()}
 
 
+def optional_envelope() -> dict:
+    plan = {
+        "schema": "ods.assistant-first.plan.v1",
+        "selectedServices": ["notes"],
+        "definitions": [
+            {
+                "id": "notes",
+                "configuration": [
+                    {
+                        **contract("LABEL"),
+                        "required": False,
+                    }
+                ],
+            }
+        ],
+        "requiredConfigKeys": [],
+        "requiredSecretKeys": [],
+    }
+    canonical = json.dumps(plan, sort_keys=True, separators=(",", ":")) + "\n"
+    return {"plan": plan, "planHash": hashlib.sha256(canonical.encode()).hexdigest()}
+
+
 class FakeStore:
     def __init__(self) -> None:
         self.loaded = {
@@ -261,3 +283,14 @@ def test_require_ready_rejects_missing_or_stale_configuration() -> None:
     with pytest.raises(IntegrityError) as caught:
         service.require_ready(TRANSACTION_ID, store.loaded["envelope"]["planHash"])
     assert caught.value.code == "configuration-record-invalid"
+
+
+def test_require_ready_allows_unset_optional_configuration() -> None:
+    service, store, custody = manager()
+    store.loaded["envelope"] = optional_envelope()
+    result = service.require_ready(
+        TRANSACTION_ID, store.loaded["envelope"]["planHash"]
+    )
+    assert result["configured"] is False
+    assert [field["key"] for field in result["fields"]] == ["LABEL"]
+    assert custody.events == []

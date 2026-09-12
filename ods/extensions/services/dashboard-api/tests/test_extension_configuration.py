@@ -446,6 +446,14 @@ def test_secret_value_is_validated_but_absent_from_receipt_and_errors() -> None:
     assert sentinel not in json.dumps(caught.as_dict())
 
 
+def test_empty_secret_is_rejected_before_host_custody() -> None:
+    stored = envelope(("provider", [contract("TOKEN", secret=True)]))
+    error(
+        "configuration-value-too-short",
+        lambda: submit(stored, {}, {"TOKEN": ""}),
+    )
+
+
 def test_valid_submission_receipt_contains_presence_only() -> None:
     sentinel = "private-value-1234567890"
     stored = envelope(
