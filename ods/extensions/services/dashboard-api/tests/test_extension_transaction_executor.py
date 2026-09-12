@@ -202,12 +202,18 @@ class RecordingAdapter:
     def fail_at(self, method: str, call_number: int) -> None:
         self._fail_at.setdefault(method, []).append(call_number)
 
-    def _record(self, method: str, kwargs: dict) -> dict:
+    def _record(self, method: str, binding, kwargs: dict) -> dict:
         count = len([c for c in self.calls if c[0] == method])
+        kwargs = {"binding": binding, **kwargs}
         self.calls.append((method, kwargs))
         if self._fail_at.get(method, []) and count in self._fail_at[method]:
             return {"ok": False, "error": "injected-failure"}
-        result = {"ok": True, "completed": True}
+        result = {
+            "ok": True,
+            "completed": True,
+            "transactionId": binding.transaction_id,
+            "planHash": binding.plan_hash,
+        }
         if method == "apply_one" and self.observer is not None:
             service_id = kwargs["operation"]["serviceId"]
             if service_id not in self.observer.applied_services:
@@ -218,35 +224,39 @@ class RecordingAdapter:
                 self.observer.applied_services.remove(service_id)
         return result
 
-    def reserve(self, operation: dict[str, str]) -> dict:
-        return self._record("reserve", {"operation": operation})
+    def reserve(self, binding, operation: dict[str, str]) -> dict:
+        return self._record("reserve", binding, {"operation": operation})
 
-    def download_and_verify_all(self, operations: list[dict[str, str]]) -> dict:
-        return self._record("download_and_verify_all", {"operations": operations})
+    def download_and_verify_all(
+        self, binding, operations: list[dict[str, str]]
+    ) -> dict:
+        return self._record(
+            "download_and_verify_all", binding, {"operations": operations}
+        )
 
-    def stage_all(self, operations: list[dict[str, str]]) -> dict:
-        return self._record("stage_all", {"operations": operations})
+    def stage_all(self, binding, operations: list[dict[str, str]]) -> dict:
+        return self._record("stage_all", binding, {"operations": operations})
 
-    def backup_all(self, service_ids: list[str]) -> dict:
-        return self._record("backup_all", {"service_ids": service_ids})
+    def backup_all(self, binding, service_ids: list[str]) -> dict:
+        return self._record("backup_all", binding, {"service_ids": service_ids})
 
-    def configure_all(self, service_ids: list[str]) -> dict:
-        return self._record("configure_all", {"service_ids": service_ids})
+    def configure_all(self, binding, service_ids: list[str]) -> dict:
+        return self._record("configure_all", binding, {"service_ids": service_ids})
 
-    def apply_one(self, operation: dict[str, str]) -> dict:
-        return self._record("apply_one", {"operation": operation})
+    def apply_one(self, binding, operation: dict[str, str]) -> dict:
+        return self._record("apply_one", binding, {"operation": operation})
 
-    def verify_all(self, service_ids: list[str]) -> dict:
-        return self._record("verify_all", {"service_ids": service_ids})
+    def verify_all(self, binding, service_ids: list[str]) -> dict:
+        return self._record("verify_all", binding, {"service_ids": service_ids})
 
-    def release(self, service_ids: list[str]) -> dict:
-        return self._record("release", {"service_ids": service_ids})
+    def release(self, binding, service_ids: list[str]) -> dict:
+        return self._record("release", binding, {"service_ids": service_ids})
 
-    def compensate_one(self, operation: dict[str, str]) -> dict:
-        return self._record("compensate_one", {"operation": operation})
+    def compensate_one(self, binding, operation: dict[str, str]) -> dict:
+        return self._record("compensate_one", binding, {"operation": operation})
 
-    def restore_all(self, service_ids: list[str]) -> dict:
-        return self._record("restore_all", {"service_ids": service_ids})
+    def restore_all(self, binding, service_ids: list[str]) -> dict:
+        return self._record("restore_all", binding, {"service_ids": service_ids})
 
 
 class RecordingObserver:
@@ -254,9 +264,15 @@ class RecordingObserver:
 
     def __init__(self) -> None:
         self.applied_services: list[str] = []
+        self.bindings = []
 
-    def observe(self, transaction_id: str) -> dict:
-        return {"appliedServices": list(self.applied_services)}
+    def observe(self, binding) -> dict:
+        self.bindings.append(binding)
+        return {
+            "transactionId": binding.transaction_id,
+            "planHash": binding.plan_hash,
+            "appliedServices": list(self.applied_services),
+        }
 
 
 class NoOpLockFactory:
@@ -333,6 +349,7 @@ def test_approved_only_execution(tmp_path):
     result = executor.execute(txn_id, envelope["planHash"])
 
     assert result.final_state == "committed"
+    assert result.plan_hash == envelope["planHash"]
     assert result.applied_services == ["notes"]
     assert result.error is None
 
@@ -350,6 +367,77 @@ def test_approved_only_execution(tmp_path):
     # Verify terminal state in store
     loaded = store.read(txn_id)
     assert loaded["state"] == "committed"
+
+
+def test_every_host_call_carries_the_exact_immutable_binding(tmp_path):
+    store = transactions.TransactionStore(tmp_path / "store")
+    envelope = build_envelope(service_ids=["notes"])
+    descriptor = create_and_approve(store, envelope)
+    observer = RecordingObserver()
+    adapter = RecordingAdapter(observer)
+
+    result = make_executor(
+        store, adapter=adapter, observer=observer
+    ).execute(descriptor["transactionId"], envelope["planHash"])
+
+    assert result.final_state == "committed"
+    bindings = [payload["binding"] for _, payload in adapter.calls]
+    bindings.extend(observer.bindings)
+    assert bindings
+    assert all(
+        binding == executor_mod.ExecutionBinding(
+            descriptor["transactionId"], envelope["planHash"]
+        )
+        for binding in bindings
+    )
+    with pytest.raises(AttributeError):
+        bindings[0].plan_hash = "0" * 64
+
+
+@pytest.mark.parametrize("field", ["transactionId", "planHash"])
+def test_adapter_completion_with_wrong_binding_fails_closed(tmp_path, field):
+    store = transactions.TransactionStore(tmp_path / "store")
+    envelope = build_envelope(service_ids=["notes"])
+    descriptor = create_and_approve(store, envelope)
+    adapter = RecordingAdapter()
+
+    def wrong_bound_reserve(binding, operation):
+        result = adapter._record("reserve", binding, {"operation": operation})
+        result[field] = "0" * 64
+        return result
+
+    adapter.reserve = wrong_bound_reserve
+    result = make_executor(store, adapter=adapter).execute(
+        descriptor["transactionId"], envelope["planHash"]
+    )
+
+    assert result.final_state == "rolled_back"
+    expected = (
+        "adapter-transaction-mismatch"
+        if field == "transactionId"
+        else "adapter-plan-hash-mismatch"
+    )
+    assert expected in result.error
+
+
+def test_observation_with_wrong_binding_requires_manual_recovery(tmp_path):
+    store = transactions.TransactionStore(tmp_path / "store")
+    envelope = build_envelope(service_ids=["notes"])
+    descriptor = create_and_approve(store, envelope)
+
+    class WrongBoundObserver(RecordingObserver):
+        def observe(self, binding):
+            evidence = super().observe(binding)
+            evidence["planHash"] = "0" * 64
+            return evidence
+
+    observer = WrongBoundObserver()
+    result = make_executor(store, observer=observer).execute(
+        descriptor["transactionId"], envelope["planHash"]
+    )
+
+    assert result.final_state == "manual_recovery_required"
+    assert "adapter-plan-hash-mismatch" in result.error
 
 
 def test_noop_services_are_observed_but_never_mutated(tmp_path):
@@ -552,19 +640,27 @@ def test_adapter_incomplete_rejection(tmp_path):
     class IncompleteAdapter:
         """Returns partial results without ok=True on reserve."""
         calls = []
-        def reserve(self, operation):
+        @staticmethod
+        def _complete(binding):
+            return {
+                "ok": True,
+                "completed": True,
+                "transactionId": binding.transaction_id,
+                "planHash": binding.plan_hash,
+            }
+        def reserve(self, binding, operation):
             self.calls.append(("reserve", operation))
             return {"status": "accepted"}  # No ok field → adapter-incomplete
-        def download_and_verify_all(self, operations):
-            return {"ok": True, "completed": True}
-        def stage_all(self, operations): return {"ok": True, "completed": True}
-        def backup_all(self, service_ids): return {"ok": True, "completed": True}
-        def configure_all(self, service_ids): return {"ok": True, "completed": True}
-        def apply_one(self, operation): return {"ok": True, "completed": True}
-        def verify_all(self, service_ids): return {"ok": True, "completed": True}
-        def release(self, service_ids): return {"ok": True, "completed": True}
-        def compensate_one(self, operation): return {"ok": True, "completed": True}
-        def restore_all(self, service_ids): return {"ok": True, "completed": True}
+        def download_and_verify_all(self, binding, operations):
+            return self._complete(binding)
+        def stage_all(self, binding, operations): return self._complete(binding)
+        def backup_all(self, binding, service_ids): return self._complete(binding)
+        def configure_all(self, binding, service_ids): return self._complete(binding)
+        def apply_one(self, binding, operation): return self._complete(binding)
+        def verify_all(self, binding, service_ids): return self._complete(binding)
+        def release(self, binding, service_ids): return self._complete(binding)
+        def compensate_one(self, binding, operation): return self._complete(binding)
+        def restore_all(self, binding, service_ids): return self._complete(binding)
 
     adapter = IncompleteAdapter()
     executor = make_executor(store, adapter=adapter)
@@ -804,8 +900,10 @@ def test_background_ack_is_not_completion(tmp_path):
 
     adapter = RecordingAdapter()
 
-    def queued_reserve(operation):
-        adapter.calls.append(("reserve", {"operation": operation}))
+    def queued_reserve(binding, operation):
+        adapter.calls.append(
+            ("reserve", {"binding": binding, "operation": operation})
+        )
         return {"ok": True, "completed": False, "statusCode": 202}
 
     adapter.reserve = queued_reserve
@@ -874,8 +972,8 @@ def test_crash_after_apply_resumes_from_durable_observation(tmp_path):
         pass
 
     class CrashAfterFirstApply(RecordingAdapter):
-        def apply_one(self, operation):
-            result = super().apply_one(operation)
+        def apply_one(self, binding, operation):
+            result = super().apply_one(binding, operation)
             if len([call for call in self.calls if call[0] == "apply_one"]) == 1:
                 raise InjectedCrash("simulated process death")
             return result
@@ -1025,8 +1123,8 @@ def test_crash_at_each_phase_converges_without_duplicate_effect(
             self.effects: set[tuple[str, str]] = set()
             self.effect_counts: dict[tuple[str, str], int] = {}
 
-        def _record(self, method, kwargs):
-            result = super()._record(method, kwargs)
+        def _record(self, method, binding, kwargs):
+            result = super()._record(method, binding, kwargs)
             operation = kwargs.get("operation")
             subject = operation["serviceId"] if operation else "all"
             key = (method, subject)
@@ -1070,8 +1168,8 @@ def test_crash_during_compensation_resumes_without_duplicate_compensation(tmp_pa
             self.crashed = False
             self.compensation_effects = 0
 
-        def compensate_one(self, operation):
-            result = super().compensate_one(operation)
+        def compensate_one(self, binding, operation):
+            result = super().compensate_one(binding, operation)
             self.compensation_effects += 1
             if not self.crashed:
                 self.crashed = True

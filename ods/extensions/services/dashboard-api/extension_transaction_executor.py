@@ -10,6 +10,7 @@ deliberately absent from this module.
 from __future__ import annotations
 
 import datetime
+import re
 import threading
 from dataclasses import dataclass, field
 from typing import Any, Callable, Protocol
@@ -33,6 +34,21 @@ EXECUTION_STEPS = (
 )
 ACTIVE_STATES = frozenset(EXECUTION_STEPS[:-1])
 RECOVERY_STATES = frozenset({"failed", "reconciling"})
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+@dataclass(frozen=True)
+class ExecutionBinding:
+    """Immutable identity that every host effect and observation must echo."""
+
+    transaction_id: str
+    plan_hash: str
+
+    def __post_init__(self) -> None:
+        if not self.transaction_id:
+            raise ValidationRejected("invalid-transaction-id")
+        if _SHA256_RE.fullmatch(self.plan_hash) is None:
+            raise ValidationRejected("invalid-plan-hash")
 
 
 class ProvenanceVerifier(Protocol):
@@ -58,44 +74,64 @@ class LifecycleAdapter(Protocol):
 
     Every method returns a mapping containing both ``ok: true`` and
     ``completed: true`` only after the requested work has completed. A queued
-    job or HTTP 202 acknowledgement is never completion. ``backup_all`` must
+    job or HTTP 202 acknowledgement is never completion. The mapping must echo
+    the binding as ``transactionId`` and ``planHash``. ``backup_all`` must
     preserve the first pre-transaction backup when replayed after a crash.
     """
 
-    def reserve(self, operation: dict[str, str]) -> dict[str, Any]: ...
-
-    def download_and_verify_all(
-        self, operations: list[dict[str, str]]
+    def reserve(
+        self, binding: ExecutionBinding, operation: dict[str, str]
     ) -> dict[str, Any]: ...
 
-    def stage_all(self, operations: list[dict[str, str]]) -> dict[str, Any]: ...
+    def download_and_verify_all(
+        self, binding: ExecutionBinding, operations: list[dict[str, str]]
+    ) -> dict[str, Any]: ...
 
-    def backup_all(self, service_ids: list[str]) -> dict[str, Any]: ...
+    def stage_all(
+        self, binding: ExecutionBinding, operations: list[dict[str, str]]
+    ) -> dict[str, Any]: ...
 
-    def configure_all(self, service_ids: list[str]) -> dict[str, Any]: ...
+    def backup_all(
+        self, binding: ExecutionBinding, service_ids: list[str]
+    ) -> dict[str, Any]: ...
 
-    def apply_one(self, operation: dict[str, str]) -> dict[str, Any]: ...
+    def configure_all(
+        self, binding: ExecutionBinding, service_ids: list[str]
+    ) -> dict[str, Any]: ...
 
-    def verify_all(self, service_ids: list[str]) -> dict[str, Any]: ...
+    def apply_one(
+        self, binding: ExecutionBinding, operation: dict[str, str]
+    ) -> dict[str, Any]: ...
 
-    def compensate_one(self, operation: dict[str, str]) -> dict[str, Any]: ...
+    def verify_all(
+        self, binding: ExecutionBinding, service_ids: list[str]
+    ) -> dict[str, Any]: ...
 
-    def restore_all(self, service_ids: list[str]) -> dict[str, Any]: ...
+    def compensate_one(
+        self, binding: ExecutionBinding, operation: dict[str, str]
+    ) -> dict[str, Any]: ...
 
-    def release(self, service_ids: list[str]) -> dict[str, Any]: ...
+    def restore_all(
+        self, binding: ExecutionBinding, service_ids: list[str]
+    ) -> dict[str, Any]: ...
+
+    def release(
+        self, binding: ExecutionBinding, service_ids: list[str]
+    ) -> dict[str, Any]: ...
 
 
 class ObservationAdapter(Protocol):
-    """Read durable host evidence, never transient progress UI state."""
+    """Read durable host evidence bound to the exact stored plan."""
 
-    def observe(self, transaction_id: str) -> dict[str, Any]:
-        """Return exactly ``{"appliedServices": [IDs in plan order]}``."""
+    def observe(self, binding: ExecutionBinding) -> dict[str, Any]:
+        """Return the binding plus ``appliedServices`` in plan order."""
         ...
 
 
 @dataclass(frozen=True)
 class ExecuteResult:
     transaction_id: str
+    plan_hash: str
     final_state: str
     sequence: int
     applied_services: list[str] = field(default_factory=list)
@@ -131,6 +167,7 @@ class TransactionExecutor:
         secrets, shell commands, or purge intent.
         """
         with self._process_lock:
+            binding = ExecutionBinding(transaction_id, plan_hash)
             initial = self._load_exact(transaction_id, plan_hash)
             if initial["state"] in TERMINAL_STATES:
                 return self._result(initial)
@@ -148,7 +185,7 @@ class TransactionExecutor:
                 if state in TERMINAL_STATES:
                     return self._result(loaded)
                 if state in RECOVERY_STATES:
-                    return self._reconcile(transaction_id, operations, service_ids)
+                    return self._reconcile(binding, operations, service_ids)
                 if state != "approved" and state not in ACTIVE_STATES:
                     raise TransitionError("invalid-start-state", state)
 
@@ -160,7 +197,7 @@ class TransactionExecutor:
                     if state == "approved":
                         raise TransitionError("provenance-check-failed") from exc
                     return self._fail_and_reconcile(
-                        transaction_id,
+                        binding,
                         operations,
                         service_ids,
                         "provenance-check-failed",
@@ -169,7 +206,7 @@ class TransactionExecutor:
                     if state == "approved":
                         raise TransitionError("provenance-mismatch")
                     return self._fail_and_reconcile(
-                        transaction_id,
+                        binding,
                         operations,
                         service_ids,
                         "provenance-mismatch",
@@ -184,7 +221,7 @@ class TransactionExecutor:
                     )
                     state = "reserved"
 
-                return self._drive(transaction_id, state, operations, service_ids)
+                return self._drive(binding, state, operations, service_ids)
 
     def _load_exact(self, transaction_id: str, plan_hash: str) -> dict[str, Any]:
         loaded = self._store.read(transaction_id)
@@ -197,7 +234,7 @@ class TransactionExecutor:
 
     def _drive(
         self,
-        transaction_id: str,
+        binding: ExecutionBinding,
         state: str,
         operations: list[dict[str, str]],
         service_ids: list[str],
@@ -205,10 +242,10 @@ class TransactionExecutor:
         while state != "committed":
             try:
                 next_state = self._complete_phase(
-                    transaction_id, state, operations, service_ids
+                    binding, state, operations, service_ids
                 )
                 self._transition(
-                    transaction_id,
+                    binding.transaction_id,
                     next_state,
                     step=state,
                     status="completed",
@@ -216,13 +253,13 @@ class TransactionExecutor:
                 state = next_state
             except Exception as exc:
                 return self._fail_and_reconcile(
-                    transaction_id,
+                    binding,
                     operations,
                     service_ids,
                     _safe_failure_code(state, exc),
                 )
 
-        loaded = self._store.read(transaction_id)
+        loaded = self._store.read(binding.transaction_id)
         mutable_ops = [op for op in operations if op["action"] != "noop"]
         return self._result(
             loaded,
@@ -231,7 +268,7 @@ class TransactionExecutor:
 
     def _complete_phase(
         self,
-        transaction_id: str,
+        binding: ExecutionBinding,
         state: str,
         operations: list[dict[str, str]],
         service_ids: list[str],
@@ -242,44 +279,55 @@ class TransactionExecutor:
         if state == "reserved":
             for operation in mutable_ops:
                 self._require_completed(
-                    self._adapter.reserve(dict(operation)), "reserve"
+                    self._adapter.reserve(binding, dict(operation)),
+                    "reserve",
+                    binding,
                 )
             return "downloading"
 
         if state == "downloading":
             self._require_completed(
                 self._adapter.download_and_verify_all(
-                    [dict(op) for op in mutable_ops]
+                    binding, [dict(op) for op in mutable_ops]
                 ),
                 "download-and-verify",
+                binding,
             )
             return "staged"
 
         if state == "staged":
             self._require_completed(
-                self._adapter.stage_all([dict(op) for op in mutable_ops]), "stage"
+                self._adapter.stage_all(binding, [dict(op) for op in mutable_ops]),
+                "stage",
+                binding,
             )
             return "configuring"
 
         if state == "configuring":
             self._require_completed(
-                self._adapter.backup_all(list(mutable_service_ids)), "backup"
+                self._adapter.backup_all(binding, list(mutable_service_ids)),
+                "backup",
+                binding,
             )
             self._require_completed(
-                self._adapter.configure_all(list(mutable_service_ids)), "configure"
+                self._adapter.configure_all(binding, list(mutable_service_ids)),
+                "configure",
+                binding,
             )
             return "applying"
 
         if state == "applying":
-            applied = self._observed_applied(transaction_id, mutable_ops)
+            applied = self._observed_applied(binding, mutable_ops)
             for index, operation in enumerate(mutable_ops):
                 service_id = operation["serviceId"]
                 if index < len(applied):
                     continue
                 self._require_completed(
-                    self._adapter.apply_one(dict(operation)), "apply"
+                    self._adapter.apply_one(binding, dict(operation)),
+                    "apply",
+                    binding,
                 )
-                applied = self._observed_applied(transaction_id, mutable_ops)
+                applied = self._observed_applied(binding, mutable_ops)
                 expected = [op["serviceId"] for op in mutable_ops[: index + 1]]
                 if applied != expected:
                     raise IntegrityError(
@@ -288,15 +336,19 @@ class TransactionExecutor:
             return "verifying"
 
         if state == "verifying":
-            applied = self._observed_applied(transaction_id, mutable_ops)
+            applied = self._observed_applied(binding, mutable_ops)
             expected = [op["serviceId"] for op in mutable_ops]
             if applied != expected:
                 raise IntegrityError("incomplete-apply-before-verify")
             self._require_completed(
-                self._adapter.verify_all(list(service_ids)), "verify"
+                self._adapter.verify_all(binding, list(service_ids)),
+                "verify",
+                binding,
             )
             self._require_completed(
-                self._adapter.release(list(mutable_service_ids)), "release"
+                self._adapter.release(binding, list(mutable_service_ids)),
+                "release",
+                binding,
             )
             return "committed"
 
@@ -304,25 +356,25 @@ class TransactionExecutor:
 
     def _fail_and_reconcile(
         self,
-        transaction_id: str,
+        binding: ExecutionBinding,
         operations: list[dict[str, str]],
         service_ids: list[str],
         failure_code: str,
     ) -> ExecuteResult:
-        loaded = self._store.read(transaction_id)
+        loaded = self._store.read(binding.transaction_id)
         state = loaded["state"]
         if state in TERMINAL_STATES:
             return self._result(loaded)
         if state not in RECOVERY_STATES:
             self._transition(
-                transaction_id,
+                binding.transaction_id,
                 "failed",
                 step="execute",
                 status="failed",
                 detail=failure_code,
             )
         return self._reconcile(
-            transaction_id,
+            binding,
             operations,
             service_ids,
             failure_code=failure_code,
@@ -330,15 +382,15 @@ class TransactionExecutor:
 
     def _reconcile(
         self,
-        transaction_id: str,
+        binding: ExecutionBinding,
         operations: list[dict[str, str]],
         service_ids: list[str],
         failure_code: str = "interrupted-execution",
     ) -> ExecuteResult:
-        loaded = self._store.read(transaction_id)
+        loaded = self._store.read(binding.transaction_id)
         if loaded["state"] == "failed":
             self._transition(
-                transaction_id,
+                binding.transaction_id,
                 "reconciling",
                 step="reconcile",
                 status="started",
@@ -350,7 +402,7 @@ class TransactionExecutor:
         mutable_service_ids = [op["serviceId"] for op in mutable_ops]
         recovery_ok = True
         try:
-            applied = self._observed_applied(transaction_id, mutable_ops)
+            applied = self._observed_applied(binding, mutable_ops)
         except Exception:
             applied = []
             recovery_ok = False
@@ -359,10 +411,13 @@ class TransactionExecutor:
         for service_id in reversed(applied):
             try:
                 self._require_completed(
-                    self._adapter.compensate_one(dict(by_service[service_id])),
+                    self._adapter.compensate_one(
+                        binding, dict(by_service[service_id])
+                    ),
                     "compensate",
+                    binding,
                 )
-                remaining = self._observed_applied(transaction_id, mutable_ops)
+                remaining = self._observed_applied(binding, mutable_ops)
                 if service_id in remaining:
                     raise IntegrityError(
                         "missing-durable-compensation-evidence", service_id
@@ -373,31 +428,41 @@ class TransactionExecutor:
         for operation_name, call in (
             (
                 "restore",
-                lambda: self._adapter.restore_all(list(mutable_service_ids)),
+                lambda: self._adapter.restore_all(
+                    binding, list(mutable_service_ids)
+                ),
             ),
-            ("release", lambda: self._adapter.release(list(mutable_service_ids))),
+            (
+                "release",
+                lambda: self._adapter.release(binding, list(mutable_service_ids)),
+            ),
         ):
             try:
-                self._require_completed(call(), operation_name)
+                self._require_completed(call(), operation_name, binding)
             except Exception:
                 recovery_ok = False
 
         final_state = "rolled_back" if recovery_ok else "manual_recovery_required"
         self._transition(
-            transaction_id,
+            binding.transaction_id,
             final_state,
             step="reconcile",
             status="completed" if recovery_ok else "manual-required",
         )
-        loaded = self._store.read(transaction_id)
+        loaded = self._store.read(binding.transaction_id)
         return self._result(loaded, applied_services=applied, error=failure_code)
 
     def _observed_applied(
-        self, transaction_id: str, operations: list[dict[str, str]]
+        self, binding: ExecutionBinding, operations: list[dict[str, str]]
     ) -> list[str]:
-        evidence = self._observer.observe(transaction_id)
-        if not isinstance(evidence, dict) or set(evidence) != {"appliedServices"}:
+        evidence = self._observer.observe(binding)
+        if not isinstance(evidence, dict) or set(evidence) != {
+            "appliedServices",
+            "planHash",
+            "transactionId",
+        }:
             raise IntegrityError("invalid-observation-shape")
+        self._require_binding(evidence, "observation", binding)
         applied = evidence["appliedServices"]
         if not isinstance(applied, list) or any(
             not isinstance(service_id, str) for service_id in applied
@@ -410,14 +475,29 @@ class TransactionExecutor:
             raise IntegrityError("non-prefix-applied-services")
         return list(applied)
 
-    @staticmethod
-    def _require_completed(result: dict[str, Any], operation: str) -> None:
+    @classmethod
+    def _require_completed(
+        cls,
+        result: dict[str, Any],
+        operation: str,
+        binding: ExecutionBinding,
+    ) -> None:
         if not isinstance(result, dict):
             raise TransitionError("adapter-incomplete", operation)
         if result.get("statusCode") in {202, "202"} or result.get("accepted") is True:
             raise TransitionError("adapter-background-ack", operation)
         if result.get("ok") is not True or result.get("completed") is not True:
             raise TransitionError("adapter-incomplete", operation)
+        cls._require_binding(result, operation, binding)
+
+    @staticmethod
+    def _require_binding(
+        evidence: dict[str, Any], operation: str, binding: ExecutionBinding
+    ) -> None:
+        if evidence.get("transactionId") != binding.transaction_id:
+            raise IntegrityError("adapter-transaction-mismatch", operation)
+        if evidence.get("planHash") != binding.plan_hash:
+            raise IntegrityError("adapter-plan-hash-mismatch", operation)
 
     def _transition(
         self,
@@ -450,6 +530,7 @@ class TransactionExecutor:
     ) -> ExecuteResult:
         return ExecuteResult(
             transaction_id=loaded["transactionId"],
+            plan_hash=loaded["envelope"]["planHash"],
             final_state=loaded["state"],
             sequence=loaded["sequence"],
             applied_services=list(applied_services or []),
