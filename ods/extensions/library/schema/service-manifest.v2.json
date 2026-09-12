@@ -259,6 +259,7 @@
               "properties": {
                 "host_ports": {
                   "type": "array",
+                  "uniqueItems": true,
                   "items": {
                     "type": "object",
                     "required": ["port", "protocol"],

@@ -181,6 +181,17 @@ PY
 write_base_manifest
 check_case "minimal docker manifest" valid
 
+cat >> "$CASE_ROOT/case/manifest.yaml" <<'YAML'
+schema_version: ods.services.v1
+YAML
+if env ODS_MANIFEST_DIRS="$CASE_ROOT" bash "$VALIDATOR" \
+    >"$TMP_DIR/duplicate-key.log" 2>&1; then
+    fail "manifest validator accepted a duplicate YAML key"
+fi
+grep -q "found duplicate key" "$TMP_DIR/duplicate-key.log" ||
+    fail "duplicate YAML key failure was not actionable"
+pass "duplicate YAML keys fail before schema validation"
+
 cat > "$CASE_ROOT/case/manifest.yaml" <<'YAML'
 schema_version: ods.services.v2
 compatibility:

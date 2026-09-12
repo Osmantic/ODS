@@ -27,6 +27,40 @@ LOCAL_SCHEMA_PATHS = {
 SERVICES_DIR = SCRIPT_DIR / "services"
 
 
+class UniqueKeyLoader(yaml.SafeLoader):
+    """Safe YAML loader that rejects ambiguous duplicate mapping keys."""
+
+
+def construct_unique_mapping(loader, node, deep=False):
+    loader.flatten_mapping(node)
+    result = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        try:
+            duplicate = key in result
+        except TypeError as exc:
+            raise yaml.constructor.ConstructorError(
+                "while constructing a mapping",
+                node.start_mark,
+                "found an unhashable mapping key",
+                key_node.start_mark,
+            ) from exc
+        if duplicate:
+            raise yaml.constructor.ConstructorError(
+                "while constructing a mapping",
+                node.start_mark,
+                f"found duplicate key: {key!r}",
+                key_node.start_mark,
+            )
+        result[key] = loader.construct_object(value_node, deep=deep)
+    return result
+
+
+UniqueKeyLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, construct_unique_mapping
+)
+
+
 def schema_path(schema_version="ods.services.v1"):
     """Use the repository contract when available, with a standalone fallback."""
     if schema_version not in LOCAL_SCHEMA_PATHS:
@@ -60,9 +94,9 @@ def main():
 
         try:
             with open(manifest_path, encoding="utf-8") as f:
-                data = yaml.safe_load(f)
-        except yaml.YAMLError as e:
-            print(f"FAIL  {service_name}: YAML parse error: {e}")
+                data = yaml.load(f, Loader=UniqueKeyLoader)
+        except (OSError, UnicodeError, yaml.YAMLError) as e:
+            print(f"FAIL  {service_name}: YAML read or parse error: {e}")
             failed += 1
             continue
 

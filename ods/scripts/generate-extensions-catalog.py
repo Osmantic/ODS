@@ -12,6 +12,7 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import math
 import re
 import sys
 from datetime import datetime, timezone
@@ -24,6 +25,7 @@ SCHEMA_VERSIONS = {"ods.services.v1", "ods.services.v2"}
 CATALOG_SCHEMA_VERSION = "1.0.0"
 EXCLUDED_IDS = {"privacy-shield"}
 SERVICE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+RELATIVE_COMPOSE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
 
 PLANNER_PATH = (
     Path(__file__).resolve().parent.parent
@@ -34,6 +36,46 @@ if PLANNER_SPEC is None or PLANNER_SPEC.loader is None:
     raise RuntimeError("Assistant First planner module is unavailable")
 PLANNER = importlib.util.module_from_spec(PLANNER_SPEC)
 PLANNER_SPEC.loader.exec_module(PLANNER)
+
+
+class _UniqueKeyLoader(yaml.SafeLoader):
+    """Safe YAML loader that rejects ambiguous duplicate mapping keys."""
+
+
+def _construct_unique_mapping(
+    loader: _UniqueKeyLoader, node: yaml.MappingNode, deep: bool = False
+) -> dict:
+    loader.flatten_mapping(node)
+    result = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        try:
+            duplicate = key in result
+        except TypeError as exc:
+            raise yaml.constructor.ConstructorError(
+                "while constructing a mapping",
+                node.start_mark,
+                "found an unhashable mapping key",
+                key_node.start_mark,
+            ) from exc
+        if duplicate:
+            raise yaml.constructor.ConstructorError(
+                "while constructing a mapping",
+                node.start_mark,
+                f"found duplicate key: {key!r}",
+                key_node.start_mark,
+            )
+        result[key] = loader.construct_object(value_node, deep=deep)
+    return result
+
+
+_UniqueKeyLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _construct_unique_mapping
+)
+
+
+def _load_yaml(text: str) -> object:
+    return yaml.load(text, Loader=_UniqueKeyLoader)
 
 
 def parse_args() -> argparse.Namespace:
@@ -70,10 +112,47 @@ def strip_secrets(env_vars: list[dict]) -> list[dict]:
     return cleaned
 
 
+def _validate_json_document(value: object, active: set[int] | None = None) -> None:
+    """Reject YAML-only values that cannot have one portable JSON identity."""
+
+    if active is None:
+        active = set()
+    if value is None or type(value) in {str, bool, int}:
+        if isinstance(value, str) and any(
+            0xD800 <= ord(character) <= 0xDFFF for character in value
+        ):
+            raise ValueError("document contains invalid Unicode")
+        return
+    if type(value) is float:
+        if not math.isfinite(value):
+            raise ValueError("document contains a non-finite number")
+        return
+    if isinstance(value, (list, dict)):
+        identity = id(value)
+        if identity in active:
+            raise ValueError("document contains a cyclic YAML alias")
+        active.add(identity)
+        if isinstance(value, dict):
+            if any(not isinstance(key, str) for key in value):
+                raise ValueError("document contains a non-string object key")
+            children = value.values()
+        else:
+            children = value
+        for child in children:
+            _validate_json_document(child, active)
+        active.remove(identity)
+        return
+    raise ValueError(f"document contains unsupported YAML value: {type(value).__name__}")
+
+
 def canonical_document_sha256(path: Path) -> str:
     """Hash parsed YAML/JSON semantics so checkout newline policy cannot drift plans."""
 
-    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    try:
+        data = _load_yaml(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, yaml.YAMLError) as exc:
+        raise ValueError(f"cannot parse document: {path}") from exc
+    _validate_json_document(data)
     serialized = json.dumps(
         data,
         ensure_ascii=False,
@@ -84,11 +163,39 @@ def canonical_document_sha256(path: Path) -> str:
     return "sha256:" + hashlib.sha256((serialized + "\n").encode("utf-8")).hexdigest()
 
 
+def _compose_path(manifest_path: Path, compose_name: str) -> Path | None:
+    """Resolve an ordinary file below the manifest directory without symlink traversal."""
+
+    if (
+        not RELATIVE_COMPOSE_RE.fullmatch(compose_name)
+        or ".." in Path(compose_name).parts
+        or Path(compose_name).is_absolute()
+    ):
+        raise ValueError(f"unsafe compose_file path: {compose_name}")
+    candidate = manifest_path.parent / compose_name
+    if not candidate.exists():
+        return None
+    root = manifest_path.parent.resolve(strict=True)
+    current = candidate
+    while current != manifest_path.parent:
+        if current.is_symlink():
+            raise ValueError(f"unsafe compose_file symlink: {compose_name}")
+        current = current.parent
+    resolved = candidate.resolve(strict=True)
+    try:
+        resolved.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(f"compose_file escapes service directory: {compose_name}") from exc
+    if not resolved.is_file():
+        raise ValueError(f"compose_file is not an ordinary file: {compose_name}")
+    return resolved
+
+
 def load_manifest(manifest_path: Path) -> dict | None:
     """Load and validate a single manifest file. Returns None on failure."""
     try:
-        data = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
-    except (yaml.YAMLError, OSError) as e:
+        data = _load_yaml(manifest_path.read_text(encoding="utf-8"))
+    except (yaml.YAMLError, OSError, UnicodeError) as e:
         print(f"WARNING: Failed to read {manifest_path}: {e}", file=sys.stderr)
         return None
 
@@ -130,8 +237,8 @@ def extract_entry(manifest: dict, manifest_path: Path | None = None) -> dict | N
         definition_sha256 = canonical_document_sha256(manifest_path)
         compose_name = service.get("compose_file")
         if isinstance(compose_name, str) and compose_name:
-            compose_path = manifest_path.parent / compose_name
-            if compose_path.is_file() and not compose_path.is_symlink():
+            compose_path = _compose_path(manifest_path, compose_name)
+            if compose_path is not None:
                 compose_sha256 = canonical_document_sha256(compose_path)
     planning_record = PLANNER.adapt_manifest(
         {

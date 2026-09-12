@@ -146,6 +146,40 @@ errors = []
 warnings = []
 
 
+class UniqueKeyLoader(yaml.SafeLoader):
+    pass
+
+
+def construct_unique_mapping(loader, node, deep=False):
+    loader.flatten_mapping(node)
+    result = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        try:
+            duplicate = key in result
+        except TypeError as exc:
+            raise yaml.constructor.ConstructorError(
+                "while constructing a mapping",
+                node.start_mark,
+                "found an unhashable mapping key",
+                key_node.start_mark,
+            ) from exc
+        if duplicate:
+            raise yaml.constructor.ConstructorError(
+                "while constructing a mapping",
+                node.start_mark,
+                f"found duplicate key: {key!r}",
+                key_node.start_mark,
+            )
+        result[key] = loader.construct_object(value_node, deep=deep)
+    return result
+
+
+UniqueKeyLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, construct_unique_mapping
+)
+
+
 def report_error(message):
     errors.append(message)
     print(f"ERROR: {service_name}: {message}", file=sys.stderr)
@@ -162,11 +196,11 @@ def error_path(validation_error):
 
 try:
     with open(manifest_path, encoding="utf-8") as manifest_file:
-        manifest = yaml.safe_load(manifest_file)
+        manifest = yaml.load(manifest_file, Loader=UniqueKeyLoader)
 except yaml.YAMLError as exc:
     report_error(f"Invalid YAML syntax: {exc}")
     raise SystemExit(1)
-except OSError as exc:
+except (OSError, UnicodeError) as exc:
     report_error(f"Cannot read manifest: {exc}")
     raise SystemExit(1)
 

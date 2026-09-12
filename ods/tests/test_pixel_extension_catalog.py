@@ -130,6 +130,44 @@ class CatalogTests(unittest.TestCase):
         document.write_bytes(b"service:\r\n  id: stable\r\n  enabled: true\r\n")
         self.assertEqual(first, generator.canonical_document_sha256(document))
 
+    def test_definition_digest_rejects_yaml_only_values_with_controlled_errors(self):
+        timestamp = self.root / "timestamp.yaml"
+        timestamp.write_text("released: 2026-09-12\n")
+        with self.assertRaisesRegex(ValueError, "unsupported YAML value"):
+            generator.canonical_document_sha256(timestamp)
+
+        non_string_key = self.root / "key.yaml"
+        non_string_key.write_text("1: value\n")
+        with self.assertRaisesRegex(ValueError, "non-string object key"):
+            generator.canonical_document_sha256(non_string_key)
+
+        duplicate = self.root / "duplicate.yaml"
+        duplicate.write_text("service: one\nservice: two\n")
+        with self.assertRaisesRegex(ValueError, "cannot parse document"):
+            generator.canonical_document_sha256(duplicate)
+
+    def test_compose_path_cannot_escape_the_service_directory(self):
+        service_dir = self.manifest(self.services, "contained", compose=False)
+        manifest_path = service_dir / "manifest.yaml"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["service"]["compose_file"] = "../../outside.yaml"
+        manifest_path.write_text(json.dumps(manifest))
+        with self.assertRaisesRegex(ValueError, "unsafe compose_file path"):
+            generator.generate_catalog(self.library, self.services)
+
+    @unittest.skipIf(os.name == "nt", "Symlink semantics require a POSIX filesystem")
+    def test_compose_symlink_is_rejected_instead_of_hashed(self):
+        service_dir = self.manifest(self.services, "linked-compose", compose=False)
+        outside = self.root / "outside-compose.yaml"
+        outside.write_text("services: {}\n")
+        (service_dir / "compose.yaml").symlink_to(outside)
+        manifest_path = service_dir / "manifest.yaml"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["service"]["compose_file"] = "compose.yaml"
+        manifest_path.write_text(json.dumps(manifest))
+        with self.assertRaisesRegex(ValueError, "unsafe compose_file symlink"):
+            generator.generate_catalog(self.library, self.services)
+
     def test_shipped_comfyui_manifest_reaches_pixel_catalog(self):
         function = (ROOT / "installers/lib/pixel-host-install.sh").read_text().split("_ods_pixel_write_extension_catalog() {", 1)[1]
         body = function.split("<<'PY'\n", 1)[1].split("\nPY\n", 1)[0]
