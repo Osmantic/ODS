@@ -4,6 +4,7 @@ use serde::Serialize;
 use std::sync::Mutex;
 
 const ALLOWED_FEATURES: &[&str] = &["voice", "workflows", "rag", "image_gen", "all"];
+const WSL2_COMPONENT: &str = "wsl2";
 
 // ---- System Check ----
 
@@ -95,7 +96,7 @@ pub async fn install_prerequisites(component: String) -> InstallPrereqResult {
             },
         },
         #[cfg(target_os = "windows")]
-        "wsl2" => match crate::platform::windows::install_wsl2() {
+        WSL2_COMPONENT => match crate::platform::windows::install_wsl2() {
             Ok(needs_reboot) => InstallPrereqResult {
                 success: true,
                 message: if needs_reboot {
