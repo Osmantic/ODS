@@ -2734,13 +2734,13 @@ for (const wrapped of [false, true]) {
   test(`native extension planning is canonical, bound, and nonmutating (${wrapped ? "wrapped" : "direct"})`, () => {
     const guard = createToolLoopGuard();
     guard.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel", {
-      prompt: "Install the ODS extension vendor.crewai.",
+      prompt: "Install the ODS extension vendor-crewai.",
     });
     const name = "pixel_ods_extensions";
     const proposed = { action: "inspect", serviceId: "other", target: "registered-peer" };
     const params = wrapped ? { id: `openclaw:pixel-ods:${name}`, args: proposed } : proposed;
     const toolName = wrapped ? "tool_call" : name;
-    const canonical = { action: "request-plan", request: "install:vendor.crewai" };
+    const canonical = { action: "request-plan", request: "install:vendor-crewai" };
     assert.deepEqual(
       call(guard, toolName, { event: { params } }),
       wrapped ? { params: { id: name, args: canonical } } : { params: canonical }
@@ -2753,8 +2753,8 @@ for (const wrapped of [false, true]) {
         waitTimedOut: false,
         steps: [extensionPlanStep(
           "install",
-          "vendor.crewai",
-          extensionPlanResult("install", "vendor.crewai")
+          "vendor-crewai",
+          extensionPlanResult("install", "vendor-crewai")
         )],
       },
     };
@@ -2768,7 +2768,7 @@ for (const wrapped of [false, true]) {
     afterCall(guard, toolName, { event: { params: actualParams, result } });
     const verification = guard.deliveryVerificationForRun("run-1");
     assert.equal(verification.status, "passed");
-    assert.match(verification.text, /vendor\.crewai/);
+    assert.match(verification.text, /vendor-crewai/);
     assert.match(verification.text, /awaiting external owner review/);
     assert.match(verification.text, /did not approve, configure, execute, or change/);
   });
@@ -5507,8 +5507,8 @@ test("classifies one exact extension lifecycle action and owner extension ID", (
     { action: "remove", serviceId: "n8n" }
   );
   assert.deepEqual(
-    userMessageExtensionLifecycleIntent([], "Enable ODS extension vendor.crewai."),
-    { action: "enable", serviceId: "vendor.crewai" }
+    userMessageExtensionLifecycleIntent([], "Enable ODS extension vendor-crewai."),
+    { action: "enable", serviceId: "vendor-crewai" }
   );
   assert.deepEqual(
     userMessageExtensionLifecycleIntent(
@@ -5575,7 +5575,7 @@ test("routes ID-first extension requests without treating explanations as lifecy
   assert.deepEqual(userMessageOperationsRequirements([], prompt),
     { required: true, actions: ["ods.extensions.request-plan"] });
   for (const [request, expected] of [
-    ["Enable the `vendor.crewai` ODS extension.", { action: "enable", serviceId: "vendor.crewai" }],
+    ["Enable the `vendor-crewai` ODS extension.", { action: "enable", serviceId: "vendor-crewai" }],
     ["Uninstall n8n as an extension.", { action: "remove", serviceId: "n8n" }],
     ["Disable Gitea extension.", { action: "disable", serviceId: "gitea" }],
   ]) assert.deepEqual(userMessageExtensionLifecycleIntent([], request), expected);
@@ -5585,6 +5585,7 @@ test("routes ID-first extension requests without treating explanations as lifecy
     "Explain how to install Gitea as an ODS extension.",
     'The example says "install Gitea as an ODS extension". Only describe it.',
     `Install ${"a".repeat(65)} as an ODS extension.`,
+    "Enable the vendor.crewai ODS extension.",
     "Inspect Gitea extension state without installing anything.",
   ]) assert.equal(userMessageExtensionLifecycleIntent([], request), undefined, request);
 });

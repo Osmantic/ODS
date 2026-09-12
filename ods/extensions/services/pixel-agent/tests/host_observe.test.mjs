@@ -94,6 +94,7 @@ test("extension read preserves a queued job after timeout and rejects mutable or
       { action: "request-plan", request: "install:comfyui", approval: true },
       { action: "request-plan", request: "inspect:comfyui" },
       { action: "request-plan", request: "install:bad." },
+      { action: "request-plan", request: "install:vendor.comfyui" },
       { action: "inspect", serviceId: "comfyui", query: "extra" },
       { action: "search", query: "all", serviceId: "comfyui" },
       { action: "list", approval: true },
@@ -118,7 +119,7 @@ test("extension planning publishes one exact nonmutating request and returns its
   try {
     const tool = createExtensionReadTool({ requestDir, resultDir, timeoutMs: 2_000, pollIntervalMs: 5 });
     assert.deepEqual(tool.parameters.properties.action.enum, ["search", "list", "inspect", "request-plan"]);
-    const pending = tool.execute("plan", { action: "request-plan", request: "enable:vendor.comfyui" });
+    const pending = tool.execute("plan", { action: "request-plan", request: "enable:vendor-comfyui" });
     let names = [];
     for (let i = 0; i < 200 && names.length === 0; i += 1) {
       names = (await readdir(requestDir)).filter((name) => name.endsWith(".json"));
@@ -129,7 +130,7 @@ test("extension planning publishes one exact nonmutating request and returns its
     assert.equal(request.kind, "action");
     assert.equal(request.target, "ods-host");
     assert.equal(request.action, "ods.extensions.request-plan");
-    assert.deepEqual(request.parameters, { request: "enable:vendor.comfyui" });
+    assert.deepEqual(request.parameters, { request: "enable:vendor-comfyui" });
     assert.match(request.reason, /no lifecycle execution is authorized/i);
     const receipt = {
       schemaVersion: 2,

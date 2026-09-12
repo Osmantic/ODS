@@ -47,7 +47,7 @@ PLAN_BOUNDARY = (
 )
 PLAN_REQUEST = re.compile(
     r"^(?:install|enable|disable|remove):"
-    r"(?:[a-z0-9]|[a-z0-9][a-z0-9._-]{0,62}[a-z0-9])$"
+    r"[a-z0-9][a-z0-9-]{0,63}$"
 )
 ALLOWED_ACTIONS = frozenset(
     {"list", "inspect", "request-plan", "install", "enable", "disable", "remove"}

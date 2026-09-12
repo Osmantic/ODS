@@ -3303,7 +3303,7 @@ function extensionPlanResult(step, submittedAction) {
     typeof step.stdout !== "string" ||
     step.stdout.length > 256 * 1024 ||
     !exactKeys(submittedAction?.parameters, ["request"]) ||
-    !/^(?:install|enable|disable|remove):(?:[a-z0-9]|[a-z0-9][a-z0-9._-]{0,62}[a-z0-9])$/.test(
+    !/^(?:install|enable|disable|remove):[a-z0-9][a-z0-9-]{0,63}$/.test(
       submittedAction.parameters.request
     )
   ) {
@@ -4635,9 +4635,9 @@ export function userMessageExtensionLifecycleIntent(messages, prompt = undefined
   const text = currentOwnerIntentText(messages, prompt);
   if (!text) return undefined;
   const match = text.match(
-    /\b(install|enable|disable|remove|uninstall)\s+(?:the\s+)?(?:(?:installed|existing|enabled|disabled)\s+)?(?:ODS\s+)?extension\s+(?:(?:with\s+)?(?:the\s+)?(?:exact\s+)?id\s+)?[`"']?([a-z0-9](?:[a-z0-9_-]|\.(?=[a-z0-9])){0,63})(?![a-z0-9_-]|\.(?=[a-z0-9]))[`"']?/i
+    /\b(install|enable|disable|remove|uninstall)\s+(?:the\s+)?(?:(?:installed|existing|enabled|disabled)\s+)?(?:ODS\s+)?extension\s+(?:(?:with\s+)?(?:the\s+)?(?:exact\s+)?id\s+)?[`"']?([a-z0-9][a-z0-9-]{0,63})(?![a-z0-9_-]|\.(?=[a-z0-9]))[`"']?/i
   ) ?? text.match(
-    /\b(install|enable|disable|remove|uninstall)\s+(?:the\s+)?[`"']?((?!ODS\b|extension\b)[a-z0-9](?:[a-z0-9_-]|\.(?=[a-z0-9])){0,63})[`"']?\s+(?:as\s+(?:an?\s+)?|(?:as\s+)?the\s+)?(?:ODS\s+)?extension\b/i
+    /\b(install|enable|disable|remove|uninstall)\s+(?:the\s+)?[`"']?((?!ODS\b|extension\b)[a-z0-9][a-z0-9-]{0,63})(?![a-z0-9_-]|\.(?=[a-z0-9]))[`"']?\s+(?:as\s+(?:an?\s+)?|(?:as\s+)?the\s+)?(?:ODS\s+)?extension\b/i
   );
   if (!match) return undefined;
   // Naming the extension before its type is ordinary owner language. It

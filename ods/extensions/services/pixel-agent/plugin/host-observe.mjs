@@ -386,7 +386,7 @@ export function createExtensionReadTool({ requestDir = REQUEST_DIR, resultDir, t
         target: { type: "string", minLength: 2, maxLength: 64 },
         query: { type: "string", minLength: 1, maxLength: 80, pattern: "^[A-Za-z0-9 _/+:#.\\-]{1,80}$", description: "Short catalog keywords; defaults to all when omitted for search." },
         serviceId: { type: "string", pattern: "^[a-z0-9][a-z0-9._-]{0,63}$", description: "Exact catalog extension ID required for inspect." },
-        request: { type: "string", pattern: "^(install|enable|disable|remove):([a-z0-9]|[a-z0-9][a-z0-9._-]{0,62}[a-z0-9])$", description: "Exact requested lifecycle intent required for request-plan." },
+        request: { type: "string", pattern: "^(install|enable|disable|remove):[a-z0-9][a-z0-9-]{0,63}$", description: "Exact requested lifecycle intent required for request-plan." },
       },
     },
     execute: async (_toolCallId, params) => {
@@ -406,7 +406,7 @@ export function createExtensionReadTool({ requestDir = REQUEST_DIR, resultDir, t
           params.action === "inspect" ?
             (params.query !== undefined || params.request !== undefined || typeof params.serviceId !== "string" || !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(params.serviceId)) :
           params.action === "request-plan" ?
-            (params.query !== undefined || params.serviceId !== undefined || typeof params.request !== "string" || !/^(?:install|enable|disable|remove):(?:[a-z0-9]|[a-z0-9][a-z0-9._-]{0,62}[a-z0-9])$/.test(params.request)) :
+            (params.query !== undefined || params.serviceId !== undefined || typeof params.request !== "string" || !/^(?:install|enable|disable|remove):[a-z0-9][a-z0-9-]{0,63}$/.test(params.request)) :
             (params.query !== undefined || params.serviceId !== undefined || params.request !== undefined)) {
         return invalid("Search accepts query; inspect requires serviceId; request-plan requires an exact action:service request; list takes no additional field.");
       }

@@ -30,6 +30,13 @@ transactions:
   authority. Unsupported lifecycle actions fail closed until the planner owns
   those semantics.
 
+Assistant proposal requests use the same lowercase, hyphenated service-ID
+grammar as the extension manifest and planner. Broader legacy IDs may still be
+inspected through the read-only inventory path, but they cannot cross into a
+plan. Host-state projection normalizes both legacy integer ports and Manifest
+v2 `{port, protocol}` declarations; invalid installed-service port metadata
+fails closed instead of disappearing from conflict detection.
+
 Every response is `Cache-Control: no-store`. Request JSON is size-bounded and
 rejects duplicate keys, floating-point values, constants, coercion, and extra
 fields. Destructive data purge remains a separate future action and approval.

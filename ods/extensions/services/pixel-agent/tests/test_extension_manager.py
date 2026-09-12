@@ -173,16 +173,16 @@ class ExtensionManagerTests(unittest.TestCase):
         self.assertEqual(
             manager._parse_request(proposal), ("request-plan", "install:crewai")
         )
-        dotted_proposal = json.dumps(
+        hyphenated_proposal = json.dumps(
             {
                 "schemaVersion": 1,
                 "action": "request-plan",
-                "extensionId": "enable:tools.v2",
+                "extensionId": "enable:tools-v2",
             }
         ).encode()
         self.assertEqual(
-            manager._parse_request(dotted_proposal),
-            ("request-plan", "enable:tools.v2"),
+            manager._parse_request(hyphenated_proposal),
+            ("request-plan", "enable:tools-v2"),
         )
         for invalid in (
             {"schemaVersion": 1, "action": "list", "extensionId": "crewai"},
@@ -196,6 +196,11 @@ class ExtensionManagerTests(unittest.TestCase):
                 "schemaVersion": 1,
                 "action": "request-plan",
                 "extensionId": "install:tools.",
+            },
+            {
+                "schemaVersion": 1,
+                "action": "request-plan",
+                "extensionId": "install:tools.v2",
             },
         ):
             with self.assertRaises(manager.ManagerError):
