@@ -1740,3 +1740,14 @@ def test_flatten_bounds_cycles_and_large_depth_without_losing_empty_leaves():
         nested = {"child": nested}
     result = dict_flatten_nested_safe(nested, max_depth=100000)
     assert len(next(iter(result)).split(".")) == 128
+
+
+class TestNumericStandardizeScaleSafe:
+    def test_valid_standardization(self):
+        from helpers import numeric_standardize_scale_safe
+        assert numeric_standardize_scale_safe([10, 20, 30]) == [0.0, 0.5, 1.0]
+
+    def test_invalid_inputs(self):
+        from helpers import numeric_standardize_scale_safe
+        assert numeric_standardize_scale_safe(None) == []
+        assert numeric_standardize_scale_safe([5, 5, 5]) == [0.0, 0.0, 0.0]
