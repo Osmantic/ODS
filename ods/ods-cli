@@ -1565,6 +1565,40 @@ cmd_logs() {
     docker compose "${flags[@]}" logs -f --tail "$lines" "$service"
 }
 
+_ods_cli_wait_for_hermes_ready() {
+    local timeout interval attempts state i
+    timeout="${ODS_HERMES_READY_TIMEOUT:-180}"
+    interval="${ODS_HERMES_READY_INTERVAL:-3}"
+    [[ "$timeout" =~ ^[1-9][0-9]*$ ]] || timeout=180
+    [[ "$interval" =~ ^[1-9][0-9]*$ ]] || interval=3
+
+    # Hermes is optional. A restart that does not include it must not acquire
+    # a new product dependency or delay otherwise-healthy installations.
+    docker inspect ods-hermes >/dev/null 2>&1 || return 0
+    log "Waiting for Hermes agent readiness..."
+
+    attempts=$(( (timeout + interval - 1) / interval ))
+    for (( i=1; i<=attempts; i++ )); do
+        state=$(docker inspect --format \
+            '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' \
+            ods-hermes 2>/dev/null || true)
+        case "$state" in
+            healthy)
+                success "Hermes agent — ready"
+                return 0
+                ;;
+            unhealthy|exited|dead|restarting)
+                log_error "Hermes agent did not recover after restart (state: $state)."
+                return 1
+                ;;
+        esac
+        (( i < attempts )) && sleep "$interval"
+    done
+
+    log_error "Hermes agent did not become ready within ${timeout}s (last state: ${state:-missing})."
+    return 1
+}
+
 cmd_restart() {
     check_install
     cd "$INSTALL_DIR"
@@ -1636,6 +1670,13 @@ cmd_restart() {
     # needing the Docker Desktop-hostile nested bind mount.
     if [[ "$refresh_soul" == "true" ]]; then
         _ods_cli_refresh_soul || true
+    fi
+
+    # `docker compose up -d` only proves that container creation was accepted.
+    # Do not tell users a full/Hermes restart is done while Dream Talk and the
+    # default agent path can still return a startup error.
+    if [[ -z "$resolved_service" || "$resolved_service" == "hermes" ]]; then
+        _ods_cli_wait_for_hermes_ready
     fi
 
     if [[ -z "$resolved_service" || "$resolved_service" == "llama-server" ]]; then
