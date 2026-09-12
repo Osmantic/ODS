@@ -4,6 +4,7 @@ use serde::Serialize;
 use std::sync::Mutex;
 
 const ALLOWED_FEATURES: &[&str] = &["voice", "workflows", "rag", "image_gen", "all"];
+const DOCKER_COMPONENT: &str = "docker";
 
 // ---- System Check ----
 
@@ -82,7 +83,7 @@ pub struct InstallPrereqResult {
 #[tauri::command]
 pub async fn install_prerequisites(component: String) -> InstallPrereqResult {
     match component.as_str() {
-        "docker" => match docker::install_docker().await {
+        DOCKER_COMPONENT => match docker::install_docker().await {
             Ok(msg) => InstallPrereqResult {
                 success: true,
                 message: msg,
