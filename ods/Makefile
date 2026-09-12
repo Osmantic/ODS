@@ -46,6 +46,8 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== ods-doctor rootless subordinate IDs ==="
 	@bash tests/test-ods-doctor-rootless-subid.sh
+	@echo "=== ods-test.sh completes and reports when checks fail ==="
+	@bash tests/test-ods-test-complete-run.sh
 	@echo "=== Docker rootless bind-mount ownership ==="
 	@bash tests/test-rootless-docker-ownership.sh
 	@echo ""

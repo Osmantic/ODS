@@ -93,11 +93,22 @@ load_env() {
 
 log() {
     [[ "$VERBOSE" == "true" ]] && echo "$@" >&2
+    # Always succeed: log is the last command of `[[ ... ]] && log` guards,
+    # and a non-zero status there aborts the run under set -e.
+    return 0
 }
 
 # Portable millisecond timestamp (macOS BSD date lacks %N)
 _now_ms() {
     python3 -c 'import time; print(int(time.time() * 1000))' 2>/dev/null || echo "$(date +%s)000"
+}
+
+# Section banner; silent in --json mode so stdout stays one JSON document.
+print_section() {
+    if [[ "$JSON_OUTPUT" != "true" ]]; then
+        echo ""
+        echo "> $1"
+    fi
 }
 
 print_header() {
@@ -211,8 +222,7 @@ test_tcp() {
 #--------------------------------------------------------------------------
 
 test_docker() {
-    echo ""
-    echo "> Docker Infrastructure"
+    print_section "Docker Infrastructure"
     
     if ! command -v docker &>/dev/null; then
         record_result "Docker Available" "fail" "docker not installed"
@@ -236,11 +246,11 @@ test_docker() {
     running_count=$(timeout 10 docker ps --format '{{.Names}}' 2>/dev/null | wc -l)
     record_result "Running Containers" "pass" "$running_count containers"
     print_test "Running Containers" "pass" "$running_count containers"
+    return 0  # results are tallied by record_result; never surface a status to set -e
 }
 
 test_gpu() {
-    echo ""
-    echo "> GPU Resources"
+    print_section "GPU Resources"
     
     if ! command -v nvidia-smi &>/dev/null; then
         record_result "NVIDIA GPU" "skip" "nvidia-smi not found"
@@ -273,14 +283,17 @@ test_gpu() {
         record_result "NVIDIA GPU" "fail" "no GPU detected"
         print_test "NVIDIA GPU" "fail" "not detected"
     fi
+    return 0  # results are tallied by record_result; never surface a status to set -e
 }
 
 test_llm() {
-    echo ""
-    echo "> LLM Inference (llama-server)"
+    print_section "LLM Inference (llama-server)"
 
-    test_http "LLM Health" "$LLM_URL/health" "200" || return 1
-    test_http "LLM Models API" "$LLM_URL/v1/models" "200"
+    # A failed check is already recorded; return 0 so the short-circuit only
+    # skips this section's dependent checks instead of aborting the whole run
+    # under set -e (which lost the summary and the --json document).
+    test_http "LLM Health" "$LLM_URL/health" "200" || return 0
+    test_http "LLM Models API" "$LLM_URL/v1/models" "200" || log "LLM models API check failed"
 
     if [[ "$QUICK_MODE" == "true" ]]; then
         record_result "LLM Inference" "skip" "quick mode"
@@ -308,13 +321,13 @@ test_llm() {
     else
         record_result "LLM Inference" "fail" "no content in response"
         print_test "LLM Inference" "fail"
-        return 1
+        return 0
     fi
+    return 0  # results are tallied by record_result; never surface a status to set -e
 }
 
 test_tool_calling() {
-    echo ""
-    echo "> Tool Calling M8 Critical"
+    print_section "Tool Calling M8 Critical"
     
     if [[ "$QUICK_MODE" == "true" ]]; then
         record_result "Tool Calling" "skip" "quick mode"
@@ -338,13 +351,13 @@ test_tool_calling() {
         record_result "Tool Calling" "fail" "no tool_calls in response"
         print_test "Tool Calling" "fail" "no tool call"
     fi
+    return 0  # results are tallied by record_result; never surface a status to set -e
 }
 
 test_whisper() {
-    echo ""
-    echo "> Whisper Speech-to-Text"
+    print_section "Whisper Speech-to-Text"
     
-    test_tcp "Whisper Port" "$WHISPER_HOST" "$WHISPER_PORT"
+    test_tcp "Whisper Port" "$WHISPER_HOST" "$WHISPER_PORT" || log "Whisper port check failed"
     
     local health_url="http://${WHISPER_HOST}:${WHISPER_PORT}/health"
     local response
@@ -363,13 +376,13 @@ test_whisper() {
         test_http "Whisper HTTP" "http://${WHISPER_HOST}:${WHISPER_PORT}/" "200" || whisper_http_exit=$?
         [[ $whisper_http_exit -ne 0 ]] && log "Whisper HTTP check failed (exit $whisper_http_exit)"
     fi
+    return 0  # results are tallied by record_result; never surface a status to set -e
 }
 
 test_tts() {
-    echo ""
-    echo "> Kokoro TTS Text-to-Speech"
+    print_section "Kokoro TTS Text-to-Speech"
     
-    test_tcp "TTS Port" "$TTS_HOST" "$TTS_PORT"
+    test_tcp "TTS Port" "$TTS_HOST" "$TTS_PORT" || log "TTS port check failed"
     
     local voices_url="http://${TTS_HOST}:${TTS_PORT}/v1/audio/voices"
     local response
@@ -385,13 +398,13 @@ test_tts() {
         test_http "TTS API" "http://${TTS_HOST}:${TTS_PORT}/" "200" || tts_api_exit=$?
         [[ $tts_api_exit -ne 0 ]] && log "TTS API check failed (exit $tts_api_exit)"
     fi
+    return 0  # results are tallied by record_result; never surface a status to set -e
 }
 
 test_embeddings() {
-    echo ""
-    echo "> Embeddings TEI"
+    print_section "Embeddings TEI"
     
-    test_tcp "Embeddings Port" "$EMBEDDING_HOST" "$EMBEDDING_PORT"
+    test_tcp "Embeddings Port" "$EMBEDDING_HOST" "$EMBEDDING_PORT" || log "Embeddings port check failed"
     
     local health_url="http://${EMBEDDING_HOST}:${EMBEDDING_PORT}/health"
     local response
@@ -406,11 +419,11 @@ test_embeddings() {
         test_http "Embeddings API" "http://${EMBEDDING_HOST}:${EMBEDDING_PORT}/embed" "200" "POST" "$payload" || embeddings_api_exit=$?
         [[ $embeddings_api_exit -ne 0 ]] && log "Embeddings API check failed (exit $embeddings_api_exit)"
     fi
+    return 0  # results are tallied by record_result; never surface a status to set -e
 }
 
 test_voice_roundtrip() {
-    echo ""
-    echo "> Voice Round-Trip M8 Critical"
+    print_section "Voice Round-Trip M8 Critical"
     
     if [[ "$QUICK_MODE" == "true" ]]; then
         record_result "Voice Round-Trip" "skip" "quick mode"
@@ -461,7 +474,7 @@ test_voice_roundtrip() {
     if ! echo "$llm_response" | grep -q '"content"'; then
         record_result "Voice Round-Trip" "fail" "LLM step failed"
         print_test "Voice Round-Trip" "fail" "LLM failed"
-        return 1
+        return 0
     fi
     
     local tts_text="The weather today is sunny and 75 degrees."
@@ -482,11 +495,11 @@ test_voice_roundtrip() {
         record_result "Voice Round-Trip" "fail" "TTS step failed"
         print_test "Voice Round-Trip" "fail" "TTS failed"
     fi
+    return 0  # results are tallied by record_result; never surface a status to set -e
 }
 
 test_privacy_shield() {
-    echo ""
-    echo "> Privacy Shield M3"
+    print_section "Privacy Shield M3"
     
     local shield_url="http://localhost:${PRIVACY_SHIELD_PORT}"
     
@@ -512,16 +525,17 @@ test_privacy_shield() {
         record_result "Privacy Shield Proxy" "fail" "no response"
         print_test "Privacy Shield Proxy" "fail"
     fi
+    return 0  # results are tallied by record_result; never surface a status to set -e
 }
 
 test_livekit() {
-    echo ""
-    echo "> LiveKit Voice Infrastructure"
+    print_section "LiveKit Voice Infrastructure"
     
-    test_tcp "LiveKit Port" "$LIVEKIT_HOST" "$LIVEKIT_PORT"
+    test_tcp "LiveKit Port" "$LIVEKIT_HOST" "$LIVEKIT_PORT" || log "LiveKit port check failed"
     livekit_health_exit=0
     test_http "LiveKit Health" "http://${LIVEKIT_HOST}:${LIVEKIT_PORT}/" "200" || livekit_health_exit=$?
     [[ $livekit_health_exit -ne 0 ]] && log "LiveKit health check failed (exit $livekit_health_exit)"
+    return 0  # results are tallied by record_result; never surface a status to set -e
 }
 
 #--------------------------------------------------------------------------
