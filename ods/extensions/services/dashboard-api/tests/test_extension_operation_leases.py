@@ -53,7 +53,9 @@ class TrackingLock:
         return self.lock.locked()
 
 
-def make_manager(*, clock=None, token_factory=None, lease_ids=None):
+def make_manager(
+    *, clock=None, token_factory=None, lease_ids=None, max_active_leases=None
+):
     events = []
     lock_map = {}
 
@@ -64,12 +66,14 @@ def make_manager(*, clock=None, token_factory=None, lease_ids=None):
 
     if lease_ids is None:
         lease_ids = iter(["lease-" + "a" * 32, "lease-" + "b" * 32])
-    manager = leases.ExtensionLeaseManager(
-        lock_provider,
-        clock=clock or FakeClock(),
-        lease_id_factory=lambda: next(lease_ids),
-        token_factory=token_factory or (lambda: TOKEN),
-    )
+    manager_args = {
+        "clock": clock or FakeClock(),
+        "lease_id_factory": lambda: next(lease_ids),
+        "token_factory": token_factory or (lambda: TOKEN),
+    }
+    if max_active_leases is not None:
+        manager_args["max_active_leases"] = max_active_leases
+    manager = leases.ExtensionLeaseManager(lock_provider, **manager_args)
     return manager, lock_map, events
 
 
@@ -132,7 +136,22 @@ def test_conflict_unwinds_the_already_acquired_prefix():
         (TRANSACTION_ID, "bad", ["voice"], 10, "invalid-plan-hash"),
         (TRANSACTION_ID, PLAN_HASH, [], 10, "invalid-service-ids"),
         (TRANSACTION_ID, PLAN_HASH, "voice", 10, "invalid-service-ids"),
+        (TRANSACTION_ID, PLAN_HASH, {"voice": True}, 10, "invalid-service-ids"),
         (TRANSACTION_ID, PLAN_HASH, ["../voice"], 10, "invalid-service-id"),
+        (
+            TRANSACTION_ID,
+            PLAN_HASH,
+            ["v" * (leases.MAX_SERVICE_ID_LENGTH + 1)],
+            10,
+            "invalid-service-id",
+        ),
+        (
+            TRANSACTION_ID,
+            PLAN_HASH,
+            [f"service-{index}" for index in range(leases.MAX_LEASE_SERVICES + 1)],
+            10,
+            "too-many-service-ids",
+        ),
         (TRANSACTION_ID, PLAN_HASH, ["voice"], 0, "invalid-lease-ttl"),
         (TRANSACTION_ID, PLAN_HASH, ["voice"], True, "invalid-lease-ttl"),
         (
@@ -168,6 +187,33 @@ def test_invalid_token_factory_unwinds_locks():
 
     assert lock_map["documents"].acquire(blocking=False)
     lock_map["documents"].release()
+
+
+@pytest.mark.parametrize("capacity", [0, True, leases.MAX_ACTIVE_LEASES + 1])
+def test_invalid_capacity_is_rejected_before_any_lock_is_requested(capacity):
+    requested = []
+
+    with pytest.raises(leases.LeaseError, match="invalid-lease-capacity"):
+        leases.ExtensionLeaseManager(requested.append, max_active_leases=capacity)
+
+    assert requested == []
+
+
+def test_capacity_exhaustion_fails_before_requesting_another_service_lock():
+    ids = iter(["lease-" + "a" * 32, "lease-" + "b" * 32])
+    tokens = iter(["first-" + "x" * 32, "second-" + "x" * 32])
+    manager, lock_map, _events = make_manager(
+        lease_ids=ids,
+        token_factory=lambda: next(tokens),
+        max_active_leases=1,
+    )
+    first = acquire(manager, ("documents",))
+
+    with pytest.raises(leases.LeaseConflict, match="lease-capacity-exhausted"):
+        acquire(manager, ("voice",))
+
+    assert "voice" not in lock_map
+    manager.release(first["leaseId"], "first-" + "x" * 32, TRANSACTION_ID, PLAN_HASH)
 
 
 def test_token_and_binding_mismatch_cannot_use_or_release_lease():
@@ -221,6 +267,18 @@ def test_expiry_releases_locks_and_lease_cannot_be_revived():
         manager.renew(grant["leaseId"], TOKEN, TRANSACTION_ID, PLAN_HASH)
 
 
+def test_release_after_natural_expiry_fails_closed_and_releases_locks():
+    clock = FakeClock()
+    manager, lock_map, _events = make_manager(clock=clock)
+    grant = acquire(manager, ("documents",), ttl_seconds=1)
+    clock.advance(1)
+
+    with pytest.raises(leases.LeaseExpired, match="lease-not-active"):
+        manager.release(grant["leaseId"], TOKEN, TRANSACTION_ID, PLAN_HASH)
+
+    assert not lock_map["documents"].locked()
+
+
 def test_use_pins_expired_lease_until_mutation_exits():
     clock = FakeClock()
     manager, lock_map, _events = make_manager(clock=clock)
@@ -263,6 +321,58 @@ def test_use_rejects_a_service_outside_the_exact_grant():
 
     assert lock_map["documents"].locked()
     manager.release(grant["leaseId"], TOKEN, TRANSACTION_ID, PLAN_HASH)
+
+
+def test_use_body_exception_clears_active_state_without_releasing_live_lease():
+    manager, lock_map, _events = make_manager()
+    grant = acquire(manager, ("documents",))
+
+    with pytest.raises(RuntimeError, match="mutation-failed"):
+        with manager.use(
+            grant["leaseId"], TOKEN, TRANSACTION_ID, PLAN_HASH, ["documents"]
+        ):
+            raise RuntimeError("mutation-failed")
+
+    assert manager.describe(grant["leaseId"])["active"] is False
+    assert lock_map["documents"].locked()
+    manager.release(grant["leaseId"], TOKEN, TRANSACTION_ID, PLAN_HASH)
+
+
+def test_concurrent_acquire_allows_one_exact_winner_without_lock_leak():
+    ids = iter(["lease-" + "a" * 32, "lease-" + "b" * 32])
+    tokens = iter(["first-" + "x" * 32, "second-" + "x" * 32])
+    manager, lock_map, _events = make_manager(
+        lease_ids=ids,
+        token_factory=lambda: next(tokens),
+    )
+    barrier = threading.Barrier(3)
+    outcomes = []
+
+    def contend():
+        barrier.wait()
+        try:
+            outcomes.append(("grant", acquire(manager, ("documents",))))
+        except leases.LeaseConflict as exc:
+            outcomes.append(("conflict", exc.code))
+
+    threads = [threading.Thread(target=contend) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    barrier.wait()
+    for thread in threads:
+        thread.join(timeout=2)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert sorted(item[0] for item in outcomes) == ["conflict", "grant"]
+    grant = next(item[1] for item in outcomes if item[0] == "grant")
+    token = (
+        "first-" + "x" * 32
+        if grant["leaseId"].endswith("a" * 32)
+        else "second-" + "x" * 32
+    )
+    assert lock_map["documents"].locked()
+    manager.release(grant["leaseId"], token, TRANSACTION_ID, PLAN_HASH)
+    assert not lock_map["documents"].locked()
 
 
 def test_second_lease_for_same_service_is_rejected_until_release():

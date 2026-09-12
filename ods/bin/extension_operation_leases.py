@@ -29,6 +29,9 @@ from typing import Any, Callable, Iterable
 LEASE_SCHEMA = "ods.extension-operation-lease.v1"
 DEFAULT_TTL_SECONDS = 600
 MAX_TTL_SECONDS = 3600
+MAX_LEASE_SERVICES = 128
+MAX_SERVICE_ID_LENGTH = 128
+MAX_ACTIVE_LEASES = 1024
 
 _SERVICE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 _TRANSACTION_ID_RE = re.compile(r"^txn-[0-9a-f]{24}$")
@@ -84,9 +87,12 @@ def _canonical_service_ids(service_ids: Iterable[str]) -> tuple[str, ...]:
         raise LeaseError("invalid-service-ids") from exc
     if not values:
         raise LeaseError("invalid-service-ids", "empty")
+    if len(values) > MAX_LEASE_SERVICES:
+        raise LeaseError("too-many-service-ids")
     for service_id in values:
         if (
             not isinstance(service_id, str)
+            or len(service_id) > MAX_SERVICE_ID_LENGTH
             or _SERVICE_ID_RE.fullmatch(service_id) is None
         ):
             raise LeaseError("invalid-service-id")
@@ -130,13 +136,22 @@ class ExtensionLeaseManager:
         clock: Callable[[], float] = time.monotonic,
         lease_id_factory: Callable[[], str] | None = None,
         token_factory: Callable[[], str] | None = None,
+        max_active_leases: int = MAX_ACTIVE_LEASES,
     ) -> None:
+        if (
+            isinstance(max_active_leases, bool)
+            or not isinstance(max_active_leases, int)
+            or max_active_leases < 1
+            or max_active_leases > MAX_ACTIVE_LEASES
+        ):
+            raise LeaseError("invalid-lease-capacity")
         self._lock_provider = lock_provider
         self._clock = clock
         self._lease_id_factory = lease_id_factory or (
             lambda: "lease-" + uuid.uuid4().hex
         )
         self._token_factory = token_factory or (lambda: secrets.token_urlsafe(32))
+        self._max_active_leases = max_active_leases
         self._guard = threading.Lock()
         self._leases: dict[str, _Lease] = {}
 
@@ -157,6 +172,8 @@ class ExtensionLeaseManager:
 
         with self._guard:
             self._expire_locked(now)
+            if len(self._leases) >= self._max_active_leases:
+                raise LeaseConflict("lease-capacity-exhausted")
             try:
                 for service_id in canonical_ids:
                     lock = self._lock_provider(service_id)
