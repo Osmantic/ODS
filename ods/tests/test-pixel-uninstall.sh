@@ -528,6 +528,13 @@ JSON
 cat >"$HOME_DIR/.openclaw/openclaw.json" <<'JSON'
 {"gateway":{"http":{"endpoints":{"chatCompletions":{"enabled":true}}}},"ambient":true}
 JSON
+printf '%s\n' '# inert install-tree source' \
+    >"$INSTALL_DIR/extensions/services/pixel-agent/host/extension_manager.py"
+printf '%s\n' '# inert install-tree source' \
+    >"$INSTALL_DIR/extensions/services/pixel-agent/host/workspace_preview.py"
+chmod 0644 \
+    "$INSTALL_DIR/extensions/services/pixel-agent/host/extension_manager.py" \
+    "$INSTALL_DIR/extensions/services/pixel-agent/host/workspace_preview.py"
 chmod 0600 "$HOME_DIR/.config/ods/pixel-managed.json" "$HOME_DIR/.openclaw/openclaw.json"
 pre_apply_config_sha="$(sha256sum "$HOME_DIR/.openclaw/openclaw.json" | awk '{print $1}')"
 if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME_DIR"; then
@@ -543,6 +550,20 @@ if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME_DIR"; then
         || fail "modified pre-apply cleanup did not preserve unbound OpenClaw config exactly"
 else
     fail "modified pre-apply OpenClaw config blocked inert ODS state cleanup"
+fi
+
+write_fixture
+printf '%s\n' '# source without generated owner unit' \
+    >"$INSTALL_DIR/extensions/services/pixel-agent/host/extension_manager.py"
+chmod 0644 "$INSTALL_DIR/extensions/services/pixel-agent/host/extension_manager.py"
+if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME_DIR"; then
+    fail "ready Pixel marker accepted an incomplete extension-manager contract"
+else
+    [[ -e "$HOME_DIR/.config/ods/pixel-managed.json" \
+        && -e "$HOME_DIR/.openclaw/openclaw.json" \
+        && ! -s "$SYSTEMCTL_LOG" ]] \
+        && pass "source-only extension contract is allowed only for an inactive installing attempt" \
+        || fail "incomplete ready extension contract caused mutation"
 fi
 
 write_fixture

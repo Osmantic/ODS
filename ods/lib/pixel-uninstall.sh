@@ -500,7 +500,7 @@ workspace_preview_source = pathlib.Path(workspace_preview_source_raw)
 workspace_preview_owner_unit = pathlib.Path(workspace_preview_owner_unit_raw)
 system_observer_source = pathlib.Path(system_observer_source_raw)
 ops_dropin_source = pathlib.Path(ops_dropin_source_raw)
-extension_manager_present = (
+extension_manager_source_present = (
     extension_manager_source.exists() or extension_manager_source.is_symlink()
 )
 extension_manager_unit_present = (
@@ -508,8 +508,12 @@ extension_manager_unit_present = (
 )
 if extension_catalog_present and not extension_program_present:
     raise SystemExit("ODS Pixel extension projection source is incomplete")
-if extension_manager_present != extension_manager_unit_present:
+inactive_installing = cleanup[0] == "none" and state == "installing"
+if extension_manager_unit_present and not extension_manager_source_present:
     raise SystemExit("ODS Pixel extension lifecycle source is incomplete")
+if extension_manager_source_present and not extension_manager_unit_present and not inactive_installing:
+    raise SystemExit("ODS Pixel extension lifecycle source is incomplete")
+extension_manager_present = extension_manager_unit_present
 if extension_manager_present:
     regular(extension_manager_source, owner_uid, 2 * 1024 * 1024)
     regular(extension_manager_owner_unit, owner_uid, 2 * 1024 * 1024, private=True)
@@ -528,7 +532,9 @@ workspace_preview_source_present = workspace_preview_source.exists() or workspac
 workspace_preview_contract_present = (
     workspace_preview_owner_unit.exists() or workspace_preview_owner_unit.is_symlink()
 )
-if workspace_preview_source_present != workspace_preview_contract_present:
+if workspace_preview_contract_present and not workspace_preview_source_present:
+    raise SystemExit("ODS Pixel workspace preview source is incomplete")
+if workspace_preview_source_present and not workspace_preview_contract_present and not inactive_installing:
     raise SystemExit("ODS Pixel workspace preview source is incomplete")
 if workspace_preview_contract_present:
     regular(workspace_preview_source, owner_uid, 2 * 1024 * 1024)
