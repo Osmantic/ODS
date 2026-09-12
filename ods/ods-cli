@@ -1329,8 +1329,11 @@ cmd_status() {
     echo -e "${BLUE}━━━ ODS Status ━━━${NC}"
     echo ""
 
-    # Container status
-    docker compose "${flags[@]}" ps --format "table {{.Name}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null || docker-compose ps
+    # Container status. Let compose's own stderr through: when the daemon is
+    # unreachable the user needs "Cannot connect to the Docker daemon", not a
+    # flag-less fallback complaining about a missing configuration file.
+    docker compose "${flags[@]}" ps --format "table {{.Name}}\t{{.Status}}\t{{.Ports}}" \
+        || warn "Could not list containers (see the docker error above); continuing with health checks."
 
     echo ""
 
