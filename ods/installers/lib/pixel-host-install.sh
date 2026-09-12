@@ -4252,7 +4252,11 @@ ods_pixel_install_default_agent() {
     local owner home source_root pixel_root plugin_root answers operations_policy extension_catalog extension_manager_unit artifact_promoter_unit workspace_preview_unit openclaw_bin plugin_digest contract_sha256 runtime_budget_status gateway_alias pixel_log
     local candidate_runtime_status reuse_active=false same_verified_source=false same_source_resume=false pixel_gateway_port gateway_port_status
     local web_search_provider parallel_path="" parallel_digest="" apply_attempt=""
-    local -a pixel_prerequisites=(litellm dashboard-api)
+    # The access coordinator's proof ceremony inspects Pixel Edge's durable
+    # transition gate. Start the edge before the host ingress is installed;
+    # its transition endpoint is independent of upstream chat readiness, and
+    # the final access reproof below still runs only after ingress is healthy.
+    local -a pixel_prerequisites=(litellm dashboard-api pixel-edge)
     owner="${PIXEL_SERVICE_USER:-$(ods_pixel_install_owner)}" || return 1
     home="$(ods_pixel_owner_home "$owner")" || return 1
     pixel_gateway_port="$(_ods_pixel_gateway_port)" || {
@@ -4328,11 +4332,13 @@ ods_pixel_install_default_agent() {
     esac
     ai "Starting the ODS model gateway, control API, and search prerequisites for Pixel review..."
     # The scoped extension manager validates its contract against dashboard-api
-    # while Pixel is installed below. Start the API from this exact Compose
-    # project before that probe. Otherwise a fresh install has no endpoint, and
-    # a migration can accidentally probe a stale related install on the same
-    # port. Treat Compose startup failure as authoritative instead of allowing
-    # later endpoint checks to accept unrelated containers.
+    # while Pixel is installed below. The access coordinator also requires the
+    # exact Pixel Edge transition gate before the later whole-stack launch.
+    # Start both from this exact Compose project before those probes. Otherwise
+    # a fresh install has no endpoint, and a migration can accidentally probe a
+    # stale related install on the same port. Treat Compose startup failure as
+    # authoritative instead of allowing later checks to accept unrelated
+    # containers.
     if ! $DOCKER_COMPOSE_CMD "${COMPOSE_FLAGS_ARR[@]}" up -d --no-build --pull never \
         "${pixel_prerequisites[@]}" >>"$LOG_FILE" 2>&1; then
         ai_bad "Could not start Pixel's exact ODS prerequisite services. See $LOG_FILE."

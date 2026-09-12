@@ -2096,6 +2096,7 @@ check python3 -c '
 import pathlib,sys
 text=pathlib.Path(sys.argv[1]).read_text()
 installer=text[text.index("ods_pixel_install_default_agent() {"):]
+assert "local -a pixel_prerequisites=(litellm dashboard-api pixel-edge)" in installer
 assert "ods_pixel_run_as_owner \"$owner\" \"$home\" curl" in text
 assert "_ods_pixel_wait_ingress \"$owner\" \"$home\"" in installer
 assert installer.index("_ods_pixel_wait_ingress \"$owner\" \"$home\"") < installer.index("_ods_pixel_mark_ready \"$owner\" \"$home\"")
@@ -2235,7 +2236,9 @@ assert "PIXEL_ODS_WHISPER_PORT=${WHISPER_PORT:-9000}" in text
 prerequisites = installer.index("\"${pixel_prerequisites[@]}\"")
 control_health = installer.index("_ods_pixel_wait_http \"ODS control API\"", prerequisites)
 bootstrap = installer.index("ai \"Bootstrapping the exact Pixel source", control_health)
-assert prerequisites < control_health < bootstrap
+access_service = installer.index("if ! _ods_pixel_install_access_service", bootstrap)
+access_reproof = installer.index("_ods_pixel_reverify_access_after_gateway_restart \"$owner\" \"$home\" true", access_service)
+assert prerequisites < control_health < bootstrap < access_service < access_reproof
 assert "exact ODS prerequisite services" in installer
 ' "$ROOT/installers/lib/pixel-host-install.sh"
 check python3 -c '
