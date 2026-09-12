@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pytest
 
+import extension_configuration as configuration
+
 
 MODULE = Path(__file__).resolve().parents[1] / "assistant_first_planner.py"
 SPEC = importlib.util.spec_from_file_location("assistant_first_planner", MODULE)
@@ -617,6 +619,135 @@ def test_manifest_rejects_wrong_typed_defaults_and_duplicate_artifact_outputs() 
     }
     duplicate_data["service"]["planning"]["data"] = [entry, copy.deepcopy(entry)]
     error("duplicate-value", lambda: planner.adapt_manifest(duplicate_data))
+
+
+def test_manifest_normalizes_bounded_non_executable_configuration_validation() -> None:
+    record = manifest("app")
+    record["service"]["planning"]["configuration"] = [
+        {
+            "key": "MODE",
+            "type": "enum",
+            "required": True,
+            "secret": False,
+            "source": "user",
+            "restart_behavior": "service",
+            "validation": {"choices": ["remote", "local"]},
+            "default": "local",
+        },
+        {
+            "key": "WORKERS",
+            "type": "integer",
+            "required": False,
+            "secret": False,
+            "source": "user",
+            "restart_behavior": "service",
+            "validation": {"minimum": 1, "maximum": 8},
+            "default": 4,
+        },
+    ]
+    adapted = planner.adapt_manifest(record)
+    assert adapted["configuration"][0]["validation"] == {
+        "choices": ["local", "remote"]
+    }
+    assert adapted["configuration"][1]["validation"] == {
+        "minimum": 1,
+        "maximum": 8,
+    }
+
+
+@pytest.mark.parametrize(
+    ("config_type", "validation", "code"),
+    [
+        ("string", "^[a-z]+$", "invalid-field-type"),
+        ("string", {"pattern": "^[a-z]+$"}, "invalid-config-validation-fields"),
+        ("string", {"minimum": 1}, "incompatible-config-validation"),
+        ("integer", {"minimum": True}, "invalid-integer"),
+        ("integer", {"minimum": 8, "maximum": 1}, "invalid-config-validation-range"),
+        ("enum", None, "missing-config-validation"),
+        ("enum", {"choices": []}, "invalid-config-choices"),
+        ("enum", {"choices": ["one", "one"]}, "duplicate-value"),
+        ("boolean", {"minLength": 1}, "incompatible-config-validation"),
+    ],
+)
+def test_manifest_rejects_unsafe_or_incompatible_configuration_validation(
+    config_type: str,
+    validation,
+    code: str,
+) -> None:
+    record = manifest("app")
+    item = {
+        "key": "VALUE",
+        "type": config_type,
+        "required": True,
+        "secret": False,
+        "source": "user",
+        "restart_behavior": "service",
+    }
+    if validation is not None:
+        item["validation"] = validation
+    record["service"]["planning"]["configuration"] = [item]
+    error(code, lambda: planner.adapt_manifest(record))
+
+
+def test_manifest_default_must_satisfy_validation_and_url_contract() -> None:
+    bounded = manifest("app")
+    bounded["service"]["planning"]["configuration"] = [
+        {
+            "key": "WORKERS",
+            "type": "integer",
+            "required": True,
+            "secret": False,
+            "source": "user",
+            "restart_behavior": "service",
+            "validation": {"minimum": 2, "maximum": 8},
+            "default": 1,
+        }
+    ]
+    error("invalid-config-default", lambda: planner.adapt_manifest(bounded))
+
+    invalid_url = manifest("app")
+    invalid_url["service"]["planning"]["configuration"] = [
+        {
+            "key": "ENDPOINT",
+            "type": "url",
+            "required": True,
+            "secret": False,
+            "source": "user",
+            "restart_behavior": "service",
+            "default": "https://user:password@example.invalid",
+        }
+    ]
+    error("invalid-config-default", lambda: planner.adapt_manifest(invalid_url))
+
+
+def test_planner_output_is_accepted_by_the_typed_configuration_boundary() -> None:
+    record = manifest("provider")
+    record["service"]["planning"]["configuration"] = [
+        {
+            "key": "ENDPOINT",
+            "type": "url",
+            "required": True,
+            "secret": False,
+            "source": "user",
+            "restart_behavior": "service",
+            "validation": {"minLength": 8, "maxLength": 256},
+        },
+        {
+            "key": "TOKEN",
+            "type": "string",
+            "required": True,
+            "secret": True,
+            "source": "user",
+            "restart_behavior": "service",
+            "validation": {"minLength": 16},
+        },
+    ]
+    plan = build([record], requested_services=["provider"])
+    schema = configuration.configuration_schema(
+        plan, expected_plan_hash=plan["planHash"]
+    )
+    assert schema["planHash"] == plan["planHash"]
+    assert [item["key"] for item in schema["fields"]] == ["ENDPOINT", "TOKEN"]
 
 
 def test_all_shared_configuration_keys_must_have_identical_contracts() -> None:
