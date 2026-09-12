@@ -81,6 +81,21 @@ accepts but does not need those fields; a future host-owned lease factory must
 bind its grant, renewal, mutation calls, and evidence to both values. A lock
 factory that sees only service IDs is not sufficient for transaction custody.
 
+A dormant, transport-neutral host lease core defines the next boundary without
+activating it. It acquires the host agent's existing per-service locks as one
+canonical set, stores only a SHA-256 digest of a one-time lease token, and
+binds acquire, renew, use, release, and public evidence to the exact
+transaction ID and plan hash. Invalid grants unwind their held lock prefix.
+Expiry releases an idle lease, while an in-flight mutation pins the lock set
+until that mutation exits; expired lease IDs cannot be renewed or replayed.
+Only one mutation may be active under a lease at a time, and it may address
+only services covered by the exact grant.
+
+The lease core is not imported by the host agent, exposed over HTTP, or wired
+into the production runtime in this phase. Those integrations require a
+fail-closed header/body protocol, renewal supervision, legacy direct-caller
+tests, and crash/restart recovery evidence before use.
+
 This source foundation does not yet make the host agent a second lock owner.
 The current Dashboard routes call host-agent lifecycle endpoints while holding
 their operation lock, so making the callee acquire the same lock would
