@@ -8,6 +8,7 @@ use std::thread;
 
 const DEFAULT_REPO_URL: &str = "https://github.com/Osmantic/ODS.git";
 const DEFAULT_INSTALL_REF: &str = "main";
+const ENV_INSTALLER_GUI: &str = "ODS_INSTALLER_GUI";
 const TRANSFERRED_REPO_URL_BYTES: &[u8] = &[
     104, 116, 116, 112, 115, 58, 47, 47, 103, 105, 116, 104, 117, 98, 46, 99, 111, 109, 47, 76,
     105, 103, 104, 116, 45, 72, 101, 97, 114, 116, 45, 76, 97, 98, 115, 47, 79, 68, 83, 46, 103,
@@ -104,7 +105,7 @@ pub fn run_install(
         Command::new("powershell.exe")
             .args(&ps_args)
             .current_dir(&install_dir)
-            .env("ODS_INSTALLER_GUI", "1")
+            .env(ENV_INSTALLER_GUI, "1")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -113,7 +114,7 @@ pub fn run_install(
         Command::new(&install_script)
             .args(&args)
             .current_dir(&ods_dir)
-            .env("ODS_INSTALLER_GUI", "1")
+            .env(ENV_INSTALLER_GUI, "1")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
