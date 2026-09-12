@@ -1372,3 +1372,22 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def numeric_standardize_scale_safe(values: list | None) -> list[float]:
+    """Safely scale a numeric list to [0.0, 1.0] range using min-max normalization.
+    Returns [] on None, non-list, or uniform list inputs.
+    """
+    if not values or not isinstance(values, (list, tuple)):
+        return []
+    cleaned = []
+    for v in values:
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            cleaned.append(float(v))
+    if not cleaned:
+        return []
+    min_val, max_val = min(cleaned), max(cleaned)
+    if min_val == max_val:
+        return [0.0] * len(cleaned)
+    diff = max_val - min_val
+    return [round((x - min_val) / diff, 4) for x in cleaned]
