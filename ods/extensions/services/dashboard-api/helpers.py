@@ -1372,3 +1372,12 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def string_normalize_whitespace_safe(text: str | None) -> str:
+    """Safely collapse multiple whitespace characters into single spaces and trim string.
+    Returns "" on None or non-string inputs.
+    """
+    if text is None or not isinstance(text, str):
+        return ""
+    return " ".join(text.split())
