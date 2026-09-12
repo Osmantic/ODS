@@ -149,6 +149,8 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== macOS uninstall LaunchAgent cleanup ==="
 	@bash tests/test-macos-uninstall-launchagents.sh
+	@echo "=== uninstall removes the ods-mdns systemd unit ==="
+	@bash tests/test-uninstall-mdns-unit.sh
 	@echo ""
 	@echo "=== token-spy session manager active-id extraction ==="
 	@bash tests/test-token-spy-session-manager.sh
