@@ -245,7 +245,10 @@ def query_report(start: str, end: str) -> dict:
         WHERE timestamp >= ? AND timestamp < ?
         ORDER BY timestamp ASC
         """,
-        (f"{start_day.isoformat()}T00:00:00Z", f"{end_exclusive.isoformat()}T00:00:00Z"),
+        # Match the fractional UTC representation written by the column default.
+        # "." sorts before "Z", so a bare 00:00:00Z excludes that day's
+        # first second while admitting the following day's first second.
+        (f"{start_day.isoformat()}T00:00:00.000Z", f"{end_exclusive.isoformat()}T00:00:00.000Z"),
     ).fetchall()
 
     report = _empty_report(start, end)
