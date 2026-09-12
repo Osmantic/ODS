@@ -1372,3 +1372,14 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+import re
+
+def string_camel_to_snake_safe(text: str | None) -> str:
+    """Safely convert camelCase or PascalCase string to snake_case format.
+    Returns "" on None or non-string inputs.
+    """
+    if text is None or not isinstance(text, str):
+        return ""
+    s1 = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', text)
+    return re.sub('([a-z0-9])([A-Z])', r'\1_\2', s1).lower()
