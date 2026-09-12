@@ -102,6 +102,7 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== Bash 3.2 guard contracts ==="
 	@bash tests/test-bash32-guards.sh
+	@bash tests/test-macos-doctor-bash-guard.sh
 	@echo ""
 	@echo "=== CLI update post-verification ==="
 	@bash tests/test-cli-update-verification.sh
