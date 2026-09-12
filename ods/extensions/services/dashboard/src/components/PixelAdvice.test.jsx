@@ -31,7 +31,11 @@ async function setup({ kind, post, onInsert = vi.fn() } = {}) {
   return { fetchMock, onInsert, ...view }
 }
 
-beforeEach(() => localStorage.clear())
+beforeEach(() => {
+  localStorage.clear()
+  Object.defineProperty(globalThis.HTMLDialogElement.prototype, 'showModal', {configurable:true, value:vi.fn(function () { this.setAttribute('open', '') })})
+  Object.defineProperty(globalThis.HTMLDialogElement.prototype, 'close', {configurable:true, value:vi.fn(function () { this.removeAttribute('open') })})
+})
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); localStorage.clear() })
 
 it('sends only reviewed capsule and fixed selected revision once, stores only job ID', async () => {
@@ -136,15 +140,12 @@ it('closing panel does not start, stop, or change the chat', async () => {
   expect(JSON.stringify(localStorage)).not.toContain('Private draft')
 })
 
-it('keeps keyboard focus in the dialog and Escape returns it to the trigger', async () => {
+it('focuses the close control and native cancellation returns to the trigger', async () => {
   await setup()
-  const close = screen.getByRole('button', { name: 'Close advice' })
-  expect(close).toHaveFocus()
-  fireEvent.keyDown(close, { key: 'Tab', shiftKey: true })
-  expect(screen.getByLabelText('Capsule to send')).toHaveFocus()
-  fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })
+  expect(screen.getByRole('button', {name:'Close advice'})).toHaveFocus()
+  fireEvent(screen.getByRole('dialog'), new Event('cancel', {cancelable:true}))
   expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
-  expect(screen.getByRole('button', { name: 'Ask for advice' })).toHaveFocus()
+  expect(screen.getByRole('button', {name:/Ask for advice/})).toHaveFocus()
 })
 
 it('ignores an old pending status response after forgetting and starting a new job', async () => {
@@ -170,4 +171,20 @@ it('ignores an old pending status response after forgetting and starting a new j
   expect(screen.queryByText('<img src=x onerror=alert(1)> Advice')).not.toBeInTheDocument()
   expect(localStorage.getItem(key)).toBe(nextId)
   expect(fetchMock.mock.calls.filter(([url]) => url.endsWith('/start'))).toHaveLength(1)
+})
+
+
+it('opens a native modal and cancellation preserves the tracked job', async () => {
+  localStorage.setItem(key, id)
+  const {fetchMock} = await setup({post:async()=>response(job('running'))})
+  const dialog = screen.getByRole('dialog')
+  expect(dialog.tagName).toBe('DIALOG')
+  expect(dialog).toHaveAttribute('open')
+  fireEvent(dialog, new Event('cancel', {cancelable:true}))
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  expect(localStorage.getItem(key)).toBe(id)
+  expect(fetchMock.mock.calls.filter(([url])=>url.endsWith('/cancel'))).toHaveLength(0)
+  expect(screen.getByRole('button',{name:/Ask for advice/})).toHaveFocus()
+  fireEvent.click(screen.getByRole('button',{name:/Ask for advice/}))
+  expect(screen.getByRole('dialog')).toHaveAttribute('open')
 })

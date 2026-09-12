@@ -67,21 +67,14 @@ export default function PixelAdvice({ onInsert, canInsert = true }) {
 
   useEffect(() => { if (open) void load() }, [open, load])
   useEffect(() => {
-    if (open) panel.current?.querySelector('button')?.focus()
+    if (!open) return
+    const dialog = panel.current
+    dialog.showModal()
+    dialog.querySelector('button')?.focus()
+    return () => { dialog.close() }
   }, [open])
 
   function close() { setOpen(false); setRuntimeReady(false); trigger.current?.focus() }
-  function dialogKey(event) {
-    if (event.key === 'Escape') { event.stopPropagation(); close(); return }
-    if (event.key !== 'Tab') return
-    const controls = [...panel.current.querySelectorAll('button, input, textarea, select, a[href]')].filter(el => !el.disabled)
-    const first = controls[0], last = controls.at(-1)
-    if (event.shiftKey && (document.activeElement === first || !panel.current.contains(document.activeElement))) {
-      event.preventDefault(); last?.focus()
-    } else if (!event.shiftKey && (document.activeElement === last || !panel.current.contains(document.activeElement))) {
-      event.preventDefault(); first?.focus()
-    }
-  }
 
   const inspect = useCallback(async () => {
     if (!jobId || polling.current || inFlight.current) return
@@ -154,8 +147,7 @@ export default function PixelAdvice({ onInsert, canInsert = true }) {
 
   return <>
     <button ref={trigger} type="button" className={button} onClick={() => setOpen(true)}>Ask for advice{jobId ? ' · tracked' : ''}</button>
-    {open && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-3">
-      <section ref={panel} role="dialog" aria-modal="true" aria-labelledby="pixel-advice-title" onKeyDown={dialogKey} className="max-h-[90dvh] w-full max-w-2xl space-y-4 overflow-y-auto rounded-xl border border-theme-border bg-theme-card p-4 text-theme-text">
+    {open && <dialog ref={panel} aria-labelledby="pixel-advice-title" onCancel={event => { event.preventDefault(); close() }} className="m-auto backdrop:bg-black/60 max-h-[90dvh] w-full max-w-2xl space-y-4 overflow-y-auto rounded-xl border border-theme-border bg-theme-card p-4 text-theme-text">
         <div className="flex items-center justify-between gap-3"><h2 id="pixel-advice-title" className="font-semibold">Ask for advice</h2><button className={button} onClick={close}>Close advice</button></div>
         <p className="text-sm">Only the capsule below and a fixed tools-free advisory instruction are sent. Your chat, files, memory, and tools are not included automatically. The current leader and execution permissions stay unchanged.</p>
         <PixelAdviceRuntime onReadyChange={setRuntimeReady} />
@@ -188,7 +180,6 @@ export default function PixelAdvice({ onInsert, canInsert = true }) {
           </div>}
           <button className={button} disabled={!ready || submitting || !capsule.trim() || new TextEncoder().encode(capsule).length > 16384 || (advisor?.kind === 'cloud' && (!cloud || !cost))} onClick={submit}>Send reviewed capsule</button>
         </>}
-      </section>
-    </div>}
+    </dialog>}
   </>
 }
