@@ -2175,7 +2175,7 @@ assert "failure_phase=\"sandbox-recreate\"" in text
 assert "failure_phase=\"contract-hash\"" in text
 assert "failure_phase=\"ready-marker\"" in text
 assert "failure_phase=\"installing-marker\"" in text
-assert "'gateway_port': gateway_port" in text
+assert chr(39) + "gateway_port" + chr(39) + ": gateway_port" in text
 assert "pixel_access_reconcile.py" in text
 assert "_ods_pixel_reverify_access_after_gateway_restart \"$owner\" \"$home\" true" in text
 assert "rollback=verified" in text
