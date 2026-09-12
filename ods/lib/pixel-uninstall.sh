@@ -74,6 +74,7 @@ ods_pixel_uninstall_managed() {
     local deployment_lock="$pixel_install/.deployment.lock"
     local retired_releases="$pixel_install/retired-ods-releases"
     local cleanup_plan cleanup_state release_version sandbox_image sandbox_image_id release_path marker_state pixel_source_ref
+    local preserve_openclaw_config
     local release_identity_sha256 install_manifest_sha256 retired_release_path
     local ops_plan="absent||||" ops_state_status ops_uid ops_gid ops_user_present ops_group_present
     local ops_passwd_entry="" ops_group_entry="" ops_user_group_ids="" ops_user_group_names="" ops_artifacts_present=false
@@ -418,6 +419,7 @@ if exec_control.exists() or exec_control.is_symlink():
     if not wrapper.exists() or not sudo_adapter.exists():
         raise SystemExit("ODS-managed Pixel execution control is incomplete")
 
+preserve_openclaw_config = False
 if openclaw_config.exists():
     config = json.loads(openclaw_config.read_text(encoding="utf-8"))
     serialized_config = json.dumps(config, sort_keys=True, separators=(",", ":"))
@@ -439,14 +441,18 @@ if openclaw_config.exists():
         "pixel_source_ref": source_ref,
     }
     # ODS enables the loopback chat endpoint immediately before Pixel apply.
-    # A fail-closed apply can therefore leave this exact bootstrap-only config
-    # with no active release. Accept only that byte-semantic shape and the
-    # original minimal marker; arbitrary ambient OpenClaw config still fails.
-    if str(install_dir) not in serialized_config and not (
-        cleanup[0] == "none" and config == bootstrap_config and value == bootstrap_marker
-    ):
-        raise SystemExit("OpenClaw configuration is not bound to this ODS install")
-    if cleanup[0] != "none":
+    # A fail-closed apply can therefore leave the exact bootstrap config or a
+    # later, unbound OpenClaw config with no active release. The minimal marker
+    # proves ownership of the inert ODS attempt, not of arbitrary config drift:
+    # remove the exact bootstrap config, but preserve every other unbound shape.
+    if cleanup[0] == "none":
+        if str(install_dir) not in serialized_config:
+            if value != bootstrap_marker:
+                raise SystemExit("inactive ODS marker is not the original pre-apply marker")
+            preserve_openclaw_config = config != bootstrap_config
+    else:
+        if str(install_dir) not in serialized_config:
+            raise SystemExit("OpenClaw configuration is not bound to this ODS install")
         canonical = json.dumps(config, sort_keys=True, separators=(",", ":")).encode()
         observed = hashlib.sha256(b"ods-pixel-openclaw-v1\0" + canonical).hexdigest()
         if value.get("configuration_sha256") != observed:
@@ -833,14 +839,15 @@ if ingress_program.exists():
         raise SystemExit("ODS Pixel ingress source is unavailable for cleanup verification")
     if ingress_program.read_bytes() != source_program.read_bytes():
         raise SystemExit("installed Pixel ingress program drifted from this ODS install")
-print("|".join((*cleanup, state, source_ref)))
+print("|".join((*cleanup, state, source_ref, "true" if preserve_openclaw_config else "false")))
 PY
     )"; then
         log_error "ODS-managed Pixel validation failed; leaving every Pixel artifact untouched"
         return 1
     fi
     IFS='|' read -r cleanup_state release_version sandbox_image sandbox_image_id release_path \
-        release_identity_sha256 install_manifest_sha256 retired_release_path marker_state pixel_source_ref <<<"$cleanup_plan"
+        release_identity_sha256 install_manifest_sha256 retired_release_path marker_state pixel_source_ref \
+        preserve_openclaw_config <<<"$cleanup_plan"
     [[ "$cleanup_state" == none || "$cleanup_state" == active || "$cleanup_state" == staged \
         || "$cleanup_state" == staging-attestation || "$cleanup_state" == staging-link \
         || "$cleanup_state" == retiring || "$cleanup_state" == retired ]] || {
@@ -853,6 +860,10 @@ PY
     }
     [[ "$pixel_source_ref" =~ ^[0-9a-f]{40}$ ]] || {
         log_error "ODS-managed Pixel source binding is invalid"
+        return 1
+    }
+    [[ "$preserve_openclaw_config" == true || "$preserve_openclaw_config" == false ]] || {
+        log_error "ODS-managed Pixel OpenClaw cleanup plan is invalid"
         return 1
     }
 
@@ -1707,10 +1718,14 @@ for item in root.iterdir():
 root.rmdir()
 PY
     fi
-    rm -f -- "$openclaw_config" "$gateway_env" "$onboarding" "$ops_owner_policy" \
+    if [[ "$preserve_openclaw_config" == false ]]; then
+        rm -f -- "$openclaw_config"
+    fi
+    rm -f -- "$gateway_env" "$onboarding" "$ops_owner_policy" \
         "$ops_owner_extension_catalog" "$extension_manager_owner_unit" \
         "$artifact_promoter_owner_unit" "$workspace_preview_owner_unit"
-    if [[ -e "$openclaw_config" || -e "$gateway_env" || -e "$onboarding" \
+    if [[ ( "$preserve_openclaw_config" == false && ( -e "$openclaw_config" || -L "$openclaw_config" ) ) \
+        || -e "$gateway_env" || -e "$onboarding" \
         || -e "$ops_owner_policy" || -L "$ops_owner_policy" \
         || -e "$ops_owner_extension_catalog" || -L "$ops_owner_extension_catalog" \
         || -e "$extension_manager_owner_unit" || -L "$extension_manager_owner_unit" \

@@ -529,13 +529,16 @@ cat >"$HOME_DIR/.openclaw/openclaw.json" <<'JSON'
 {"gateway":{"http":{"endpoints":{"chatCompletions":{"enabled":true}}}},"ambient":true}
 JSON
 chmod 0600 "$HOME_DIR/.config/ods/pixel-managed.json" "$HOME_DIR/.openclaw/openclaw.json"
+pre_apply_config_sha="$(sha256sum "$HOME_DIR/.openclaw/openclaw.json" | awk '{print $1}')"
 if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME_DIR"; then
-    fail "modified pre-apply OpenClaw config was claimed by ODS cleanup"
+    [[ ! -e "$HOME_DIR/.config/ods/pixel-managed.json" \
+        && -e "$HOME_DIR/.openclaw/openclaw.json" \
+        && "$(sha256sum "$HOME_DIR/.openclaw/openclaw.json" | awk '{print $1}')" == "$pre_apply_config_sha" \
+        && ! -s "$SYSTEMCTL_LOG" ]] \
+        && pass "modified pre-apply OpenClaw config is preserved while inert ODS state is removed" \
+        || fail "modified pre-apply cleanup mutated unbound OpenClaw config"
 else
-    [[ -e "$HOME_DIR/.config/ods/pixel-managed.json" \
-        && -e "$HOME_DIR/.openclaw/openclaw.json" && ! -s "$SYSTEMCTL_LOG" ]] \
-        && pass "modified pre-apply OpenClaw config remains fail-closed" \
-        || fail "modified pre-apply cleanup refusal caused mutation"
+    fail "modified pre-apply OpenClaw config blocked inert ODS state cleanup"
 fi
 
 write_fixture
