@@ -28,7 +28,7 @@ const seriesInfo = {input:{field:'input_tokens',label:'Input',color:'#dce1e5'},o
 
 export function csvForRows(rows) {
   const fields=['model','provider','service','input_tokens','output_tokens','cache_read_tokens','cache_write_tokens','requests','cost_usd','cost_source']
-  const cell=value=>`"${String(value ?? '').replace(/^[=+@\-\t\r]/,"'$&").replaceAll('"','""')}"`
+  const cell=value=>`"${String(value ?? '').replace(/^[=+@\-\t\r\n＝＋－＠]/,"'$&").replaceAll('"','""')}"`
   return [fields.join(','),...rows.map(row=>fields.map(key=>cell(row[key])).join(','))].join('\r\n')
 }
 
