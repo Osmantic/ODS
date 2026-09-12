@@ -1372,3 +1372,14 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def string_count_words_safe(text: str | None) -> int:
+    """Safely count total words in text string across whitespace and punctuation boundaries.
+    Returns 0 on None or non-string inputs.
+    """
+    if text is None or not isinstance(text, str):
+        return 0
+    cleaned = re.sub(r"[^\w\s]", " ", text)
+    words = cleaned.split()
+    return len(words)
