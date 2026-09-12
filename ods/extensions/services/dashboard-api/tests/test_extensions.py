@@ -860,7 +860,7 @@ class TestEnableExtension:
 
     def test_enable_allows_core_service_dependency(self, test_client, monkeypatch, tmp_path):
         """Enable succeeds when depends_on includes a core service."""
-        manifest = {"service": {"depends_on": ["open-webui"]}}
+        manifest = {"service": {"depends_on": ["dashboard"]}}
         user_dir = _setup_user_ext(tmp_path, "my-ext", enabled=False,
                                    manifest=manifest)
         _patch_mutation_config(monkeypatch, tmp_path, user_dir=user_dir)
@@ -894,7 +894,7 @@ class TestEnableExtension:
         _patch_mutation_config(monkeypatch, tmp_path)
 
         resp = test_client.post(
-            "/api/extensions/open-webui/enable",
+            "/api/extensions/dashboard/enable",
             headers=test_client.auth_headers,
         )
         assert resp.status_code == 403
@@ -1415,7 +1415,7 @@ class TestUninstallExtension:
         _patch_mutation_config(monkeypatch, tmp_path)
 
         resp = test_client.delete(
-            "/api/extensions/open-webui",
+            "/api/extensions/dashboard",
             headers=test_client.auth_headers,
         )
         assert resp.status_code == 403
