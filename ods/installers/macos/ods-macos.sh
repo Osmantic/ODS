@@ -94,7 +94,10 @@ test_docker_running() {
     return 0
 }
 
-test_install() {
+# Install-directory checks only. Commands that read or edit local files
+# (config show / config edit) use this so they keep working while the Docker
+# runtime is down -- which is exactly when a user needs to look at .env.
+test_install_dir() {
     if [[ ! -d "$INSTALL_DIR" ]]; then
         ai_err "ODS not found at ${INSTALL_DIR}."
         ai "Invoke from inside the install dir (bash <install>/ods-macos.sh status), export ODS_HOME=<install>, or run the installer."
@@ -106,6 +109,12 @@ test_install() {
         ai_err "docker-compose.base.yml not found in ${INSTALL_DIR}"
         exit 1
     fi
+}
+
+# Install directory plus a reachable Docker runtime, for commands that talk
+# to compose.
+test_install() {
+    test_install_dir
     test_docker_running || exit 1
 }
 
@@ -912,7 +921,7 @@ cmd_logs() {
 }
 
 cmd_config_show() {
-    test_install
+    test_install_dir
 
     echo ""
     echo -e "  ${GRN}Configuration${NC}"
@@ -1070,7 +1079,7 @@ case "$COMMAND" in
         ACTION="${1:-show}"
         case "$ACTION" in
             edit)
-                test_install
+                test_install_dir
                 ${EDITOR:-nano} "${INSTALL_DIR}/.env"
                 ;;
             *)
