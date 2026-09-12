@@ -561,4 +561,82 @@ describe('ODSTalk', () => {
       expect.objectContaining({ method: 'POST' }),
     ))
   })
+
+  test('renders a tool approval and submits one choice-only response', async () => {
+    let resolveApproval
+    const approvalResponse = new Promise(resolve => {
+      resolveApproval = () => resolve(response({ accepted: true, choice: 'once' }))
+    })
+    const fetchMock = vi.fn(async (url, options = {}) => {
+      if (url === '/api/talk/status') return response({ capabilities: { text_chat: true } })
+      if (url === '/api/talk/message/stream' && options.method === 'POST') {
+        return sseResponse([
+          { type: 'session', session_id: 'sid' },
+          { type: 'delta', text: 'Let me check.' },
+          {
+            type: 'approval',
+            command: 'python -c "print(4)"',
+            description: 'Run a short calculation',
+            choices: ['once', 'deny'],
+          },
+        ], { holdOpen: true })
+      }
+      if (url === '/api/talk/approval' && options.method === 'POST') return approvalResponse
+      throw new Error(`unexpected request: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<ODSTalk />)
+    expect(await screen.findByText('Ready')).toBeInTheDocument()
+    fireEvent.change(screen.getByPlaceholderText('Message ODS'), { target: { value: 'calculate' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+
+    expect(await screen.findByText('Permission required')).toBeInTheDocument()
+    expect(screen.getByText('Let me check.')).toBeInTheDocument()
+    expect(screen.getByText('Run a short calculation')).toBeInTheDocument()
+    expect(screen.getByText('python -c "print(4)"')).toBeInTheDocument()
+    const allow = screen.getByRole('button', { name: 'Allow once' })
+    const deny = screen.getByRole('button', { name: 'Deny' })
+
+    fireEvent.click(allow)
+    fireEvent.click(allow)
+    await waitFor(() => {
+      const calls = fetchMock.mock.calls.filter(([url]) => url === '/api/talk/approval')
+      expect(calls).toHaveLength(1)
+      expect(JSON.parse(calls[0][1].body)).toEqual({ choice: 'once' })
+      expect(Object.keys(JSON.parse(calls[0][1].body))).toEqual(['choice'])
+    })
+    expect(allow).toBeDisabled()
+    expect(deny).toBeDisabled()
+
+    resolveApproval()
+    await waitFor(() => expect(screen.queryByText('Permission required')).not.toBeInTheDocument())
+    expect(screen.getByText('Let me check.')).toBeInTheDocument()
+  })
+
+  test('keeps approval actions retryable after a failed response', async () => {
+    const fetchMock = vi.fn(async (url, options = {}) => {
+      if (url === '/api/talk/status') return response({ capabilities: { text_chat: true } })
+      if (url === '/api/talk/message/stream' && options.method === 'POST') {
+        return sseResponse([
+          { type: 'approval', command: 'echo retry', description: 'Run a command' },
+        ], { holdOpen: true })
+      }
+      if (url === '/api/talk/approval' && options.method === 'POST') {
+        return response({ detail: 'Approval response failed safely.' }, 502)
+      }
+      throw new Error(`unexpected request: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<ODSTalk />)
+    expect(await screen.findByText('Ready')).toBeInTheDocument()
+    fireEvent.change(screen.getByPlaceholderText('Message ODS'), { target: { value: 'run it' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Deny' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Approval response failed safely.')
+    expect(screen.getByRole('button', { name: 'Allow once' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Deny' })).toBeEnabled()
+  })
 })

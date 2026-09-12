@@ -557,6 +557,7 @@ done
 unset _resolver_callers
 
 echo "[contract] optional extension compose files are installer-gated"
+bash tests/test-installer-feature-state-sync.sh
 # Bundled optional/recommended services that ship compose.yaml must not enter
 # a Core Only install just because their compose file exists in the source tree.
 for spec in \
@@ -633,6 +634,16 @@ if grep -q '^[[:space:]]*_build_services=(dashboard dashboard-api ape token-spy 
   echo "[FAIL] Linux installer must not build every local service unconditionally"
   exit 1
 fi
+
+echo "[contract] Windows local rebuilds respect selected compose services"
+grep -q 'config --services' installers/windows/install-windows.ps1 \
+  || { echo "[FAIL] Windows installer must inspect selected compose services before local rebuilds"; exit 1; }
+grep -q 'Could not resolve Windows compose services before local image rebuilds' installers/windows/install-windows.ps1 \
+  || { echo "[FAIL] Windows installer must fail clearly if compose service resolution fails"; exit 1; }
+grep -q 'Skipping local image build for disabled service' installers/windows/install-windows.ps1 \
+  || { echo "[FAIL] Windows installer must skip disabled local-build services"; exit 1; }
+grep -q '\$_buildServices = \$_selectedBuildServices' installers/windows/install-windows.ps1 \
+  || { echo "[FAIL] Windows installer must build only services selected from the resolved compose stack"; exit 1; }
 
 echo "[contract] failed requested local builds cannot reuse stale images"
 bash tests/test-phase11-local-build-failure.sh

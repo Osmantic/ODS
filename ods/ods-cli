@@ -1048,7 +1048,7 @@ _compose_run_with_summary() {
             _compose_remove_conflicting_ods_containers "$_compose_log" || break
             sleep "${ODS_COMPOSE_NAME_CONFLICT_RETRY_DELAY:-3}"
         elif (( _startup_attempt < _startup_max_attempts )) \
-           && grep -Eiq 'dependency failed to start|No such container|container .* (exited|is unhealthy)|service .* failed to start|failed to start.*container' "$_compose_log"; then
+           && grep -Eiq 'dependency failed to start|No such container|container .* (exited|is unhealthy)|service .* failed to start|failed to start.*container|failed to create task.*OCI runtime create failed|OCI runtime create failed.*message recipient disconnected from message bus' "$_compose_log"; then
             warn "Docker reported a transient service startup failure; waiting briefly and retrying (${_startup_attempt}/${_startup_retries})."
             sleep "${ODS_COMPOSE_STARTUP_RETRY_DELAY:-15}"
             _startup_attempt=$(( _startup_attempt + 1 ))
@@ -1565,6 +1565,64 @@ cmd_logs() {
     docker compose "${flags[@]}" logs -f --tail "$lines" "$service"
 }
 
+_ods_cli_wait_for_hermes_ready() {
+    local timeout interval attempts state i
+    timeout="${ODS_HERMES_READY_TIMEOUT:-180}"
+    interval="${ODS_HERMES_READY_INTERVAL:-3}"
+    [[ "$timeout" =~ ^[1-9][0-9]*$ ]] || timeout=180
+    [[ "$interval" =~ ^[1-9][0-9]*$ ]] || interval=3
+
+    # Hermes is optional. A restart that does not include it must not acquire
+    # a new product dependency or delay otherwise-healthy installations.
+    docker inspect ods-hermes >/dev/null 2>&1 || return 0
+    log "Waiting for Hermes agent readiness..."
+
+    attempts=$(( (timeout + interval - 1) / interval ))
+    for (( i=1; i<=attempts; i++ )); do
+        state=$(docker inspect --format \
+            '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' \
+            ods-hermes 2>/dev/null || true)
+        case "$state" in
+            healthy)
+                success "Hermes agent — ready"
+                return 0
+                ;;
+            unhealthy|exited|dead|restarting)
+                log_error "Hermes agent did not recover after restart (state: $state)."
+                return 1
+                ;;
+        esac
+        (( i < attempts )) && sleep "$interval"
+    done
+
+    log_error "Hermes agent did not become ready within ${timeout}s (last state: ${state:-missing})."
+    return 1
+}
+
+_ods_cli_wait_for_hermes_ready_with_retry() {
+    local flags=("$@")
+    local state
+
+    if _ods_cli_wait_for_hermes_ready; then
+        return 0
+    fi
+
+    state=$(docker inspect --format \
+        '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' \
+        ods-hermes 2>/dev/null || true)
+    [[ "$state" == "unhealthy" ]] || return 1
+
+    # Repeated fleet restart cycles can occasionally leave Hermes in Docker's
+    # explicit unhealthy state even though a clean recreate recovers it. Retry
+    # only that terminal state once; a second failed readiness check remains a
+    # hard restart failure.
+    log "Hermes was unhealthy after restart; recreating it once..."
+    _compose_run_with_summary "Retrying Hermes" \
+        "${flags[@]}" up -d --force-recreate --no-build --pull never hermes
+    _ods_cli_refresh_soul || true
+    _ods_cli_wait_for_hermes_ready
+}
+
 cmd_restart() {
     check_install
     cd "$INSTALL_DIR"
@@ -1636,6 +1694,13 @@ cmd_restart() {
     # needing the Docker Desktop-hostile nested bind mount.
     if [[ "$refresh_soul" == "true" ]]; then
         _ods_cli_refresh_soul || true
+    fi
+
+    # `docker compose up -d` only proves that container creation was accepted.
+    # Do not tell users a full/Hermes restart is done while Dream Talk and the
+    # default agent path can still return a startup error.
+    if [[ -z "$resolved_service" || "$resolved_service" == "hermes" ]]; then
+        _ods_cli_wait_for_hermes_ready_with_retry "${flags[@]}"
     fi
 
     if [[ -z "$resolved_service" || "$resolved_service" == "llama-server" ]]; then

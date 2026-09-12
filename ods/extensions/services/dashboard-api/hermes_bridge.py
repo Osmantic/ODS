@@ -55,6 +55,8 @@ def _env_int(name: str, default: int, *, minimum: int = 1) -> int:
 # Connection pool tuning. Override per environment if needed.
 _IDLE_EXPIRY_SECONDS = _env_int("ODS_TALK_IDLE_EXPIRY", 300)  # 5 min default
 _IDLE_SWEEP_INTERVAL = 60  # how often the background sweeper runs
+_APPROVAL_SEND_TIMEOUT = 5.0
+_APPROVAL_DISPLAY_LIMIT = 500
 
 
 class HermesBridgeError(RuntimeError):
@@ -181,12 +183,19 @@ class _HermesConnection:
     session_id: str
     last_used: float = field(default_factory=time.monotonic)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # Approval responses must be writable while ``lock`` is held by the
+    # long-running prompt receive loop. All WS writes use this narrower lock.
+    write_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # The browser never owns or echoes this protocol payload. It only submits
+    # one of the two choices accepted by ``respond_approval``.
+    pending_approval: dict[str, Any] | None = None
     closed: bool = False
 
     async def aclose(self) -> None:
         if self.closed:
             return
         self.closed = True
+        self.pending_approval = None
         try:
             await self.ws.close()
         except Exception:  # pragma: no cover — best-effort cleanup
@@ -360,12 +369,13 @@ async def _submit_on_connection(
     request_id = f"ods-talk-prompt-{int(time.monotonic() * 1000)}"
     try:
         conn.last_used = time.monotonic()
-        await conn.ws.send_str(json.dumps({
-            "jsonrpc": "2.0",
-            "id": request_id,
-            "method": "prompt.submit",
-            "params": {"session_id": conn.session_id, "text": text},
-        }))
+        async with conn.write_lock:
+            await conn.ws.send_str(json.dumps({
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "method": "prompt.submit",
+                "params": {"session_id": conn.session_id, "text": text},
+            }))
     except (aiohttp.ClientError, ConnectionResetError, ConnectionError) as exc:
         # Pooled WS was closed under us between the freshness check and this
         # send (Hermes restart, network blip, idle timeout that hadn't been
@@ -448,11 +458,25 @@ async def _submit_on_connection(
                     "duration_s": payload.get("duration_s") if isinstance(payload.get("duration_s"), (int, float)) else None,
                     "summary": payload.get("summary") if isinstance(payload.get("summary"), str) else None,
                 }
+        elif event_type == "approval.request":
+            # Keep the authoritative request on the live server-side
+            # connection. The phone receives bounded display text only and
+            # can answer with a fixed choice; it cannot alter the command.
+            conn.pending_approval = dict(payload)
+            command = payload.get("command") if isinstance(payload.get("command"), str) else ""
+            description = payload.get("description") if isinstance(payload.get("description"), str) else ""
+            yield {
+                "type": "approval",
+                "command": command[:_APPROVAL_DISPLAY_LIMIT],
+                "description": description[:_APPROVAL_DISPLAY_LIMIT],
+                "choices": ["once", "deny"],
+            }
         elif event_type == "message.complete":
             final_text = payload.get("text")
             if not isinstance(final_text, str) or not final_text.strip():
                 final_text = "".join(chunks)
             conn.last_used = time.monotonic()
+            conn.pending_approval = None
             yield {
                 "type": "complete",
                 "session_id": conn.session_id,
@@ -462,6 +486,7 @@ async def _submit_on_connection(
             }
             return
         elif event_type == "error":
+            conn.pending_approval = None
             message = payload.get("message") if isinstance(payload.get("message"), str) else "Hermes reported an error"
             raise HermesBridgeError(message)
 
@@ -526,6 +551,73 @@ async def stream_prompt(session_key: str, text: str) -> AsyncIterator[dict[str, 
             except HermesUnavailable:
                 await _drop_connection(session_key, conn)
                 raise
+
+
+async def respond_approval(session_key: str, choice: str) -> bool:
+    """Answer the current approval on an existing pooled Talk connection.
+
+    This deliberately never opens a connection and never acquires the prompt
+    ``lock``: that lock is held while Hermes waits for this response. The
+    pending request is claimed under ``write_lock`` before sending, so at most
+    one racing browser request can succeed. After the send begins, failures are
+    treated as ambiguous and the request is not restored or retried.
+    """
+    if choice not in {"once", "deny"}:
+        raise ValueError("choice must be 'once' or 'deny'")
+
+    async with _POOL_GUARD:
+        conn = _CONNECTION_POOL.get(session_key)
+        if conn is None or conn.closed or conn.ws.closed:
+            return False
+
+    try:
+        await asyncio.wait_for(conn.write_lock.acquire(), timeout=_APPROVAL_SEND_TIMEOUT)
+    except asyncio.TimeoutError as exc:
+        raise HermesBridgeError("Hermes approval channel is busy") from exc
+
+    try:
+        if conn.closed or conn.ws.closed or conn.pending_approval is None:
+            return False
+
+        rpc = json.dumps({
+            "jsonrpc": "2.0",
+            "id": f"ods-talk-approval-{time.monotonic_ns()}",
+            "method": "approval.respond",
+            "params": {
+                "session_id": conn.session_id,
+                "choice": choice,
+                "all": False,
+            },
+        })
+        conn.pending_approval = None
+        try:
+            await asyncio.wait_for(
+                conn.ws.send_str(rpc),
+                timeout=_APPROVAL_SEND_TIMEOUT,
+            )
+        except asyncio.TimeoutError as exc:
+            raise HermesBridgeError(
+                "Hermes approval response timed out; response state is unknown"
+            ) from exc
+        except (aiohttp.ClientError, ConnectionResetError, ConnectionError) as exc:
+            raise HermesBridgeError("Hermes approval response could not be sent") from exc
+        conn.last_used = time.monotonic()
+        return True
+    finally:
+        conn.write_lock.release()
+
+
+async def deny_pending_approval(session_key: str) -> bool:
+    """Best-effort safety denial used before abandoning an SSE stream."""
+    try:
+        return await respond_approval(session_key, "deny")
+    except (HermesBridgeError, asyncio.TimeoutError):
+        logger.warning(
+            "hermes-bridge: could not deny abandoned approval for %s",
+            session_key[:8],
+            exc_info=True,
+        )
+        return False
 
 
 async def submit_prompt(session_key: str, text: str) -> HermesReply:

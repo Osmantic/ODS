@@ -1189,3 +1189,212 @@ def test_ods_talk_hermes_timeout_is_env_configurable(monkeypatch):
 
     monkeypatch.setenv("ODS_TALK_HERMES_TIMEOUT", "5")
     assert hermes_bridge._request_timeout() == 10
+
+
+class _ApprovalFakeWS:
+    def __init__(self):
+        self.closed = False
+        self.sent = []
+
+    async def send_str(self, data):
+        self.sent.append(data)
+
+    async def close(self):
+        self.closed = True
+
+
+class _ApprovalFakeHTTP:
+    async def close(self):
+        pass
+
+
+def test_bridge_maps_approval_request_and_keeps_authoritative_payload(monkeypatch):
+    import hermes_bridge
+
+    long_command = "x" * 700
+    original = {
+        "command": long_command,
+        "description": "Run the requested code",
+        "pattern_key": "server-owned",
+    }
+
+    async def fake_recv(_ws, _timeout):
+        return {
+            "method": "event",
+            "params": {"type": "approval.request", "payload": original},
+        }
+
+    monkeypatch.setattr("hermes_bridge._recv_json", fake_recv)
+
+    async def main():
+        conn = hermes_bridge._HermesConnection(
+            http_session=_ApprovalFakeHTTP(),
+            ws=_ApprovalFakeWS(),
+            session_id="sid-approval",
+        )
+        stream = hermes_bridge._submit_on_connection(conn, "hello", 10)
+        event = await stream.__anext__()
+        assert conn.pending_approval == original
+        assert conn.pending_approval is not original
+        await stream.aclose()
+        await conn.aclose()
+        return event
+
+    event = _run_with_one_loop(main)
+    assert event == {
+        "type": "approval",
+        "command": long_command[:500],
+        "description": "Run the requested code",
+        "choices": ["once", "deny"],
+    }
+
+
+def test_approval_response_bypasses_prompt_lock_and_is_single_claim():
+    import asyncio as _asyncio
+    import json as _json
+    import hermes_bridge
+
+    hermes_bridge._CONNECTION_POOL.clear()
+    hermes_bridge._SWEEPER_TASK = None
+
+    async def main():
+        ws = _ApprovalFakeWS()
+        conn = hermes_bridge._HermesConnection(
+            http_session=_ApprovalFakeHTTP(),
+            ws=ws,
+            session_id="sid-live",
+        )
+        conn.pending_approval = {"command": "server-owned"}
+        hermes_bridge._CONNECTION_POOL["phone"] = conn
+
+        async with conn.lock:
+            results = await _asyncio.wait_for(
+                _asyncio.gather(
+                    hermes_bridge.respond_approval("phone", "once"),
+                    hermes_bridge.respond_approval("phone", "deny"),
+                ),
+                timeout=1,
+            )
+
+        assert results.count(True) == 1
+        assert results.count(False) == 1
+        assert len(ws.sent) == 1
+        return _json.loads(ws.sent[0])
+
+    rpc = _run_with_one_loop(main)
+    assert rpc["method"] == "approval.respond"
+    assert rpc["params"]["session_id"] == "sid-live"
+    assert rpc["params"]["choice"] in {"once", "deny"}
+    assert rpc["params"]["all"] is False
+
+
+def test_approval_send_timeout_is_not_retried_or_restored(monkeypatch):
+    import asyncio as _asyncio
+    import hermes_bridge
+
+    hermes_bridge._CONNECTION_POOL.clear()
+    hermes_bridge._SWEEPER_TASK = None
+    monkeypatch.setattr("hermes_bridge._APPROVAL_SEND_TIMEOUT", 0.01)
+
+    class SlowWS(_ApprovalFakeWS):
+        async def send_str(self, data):
+            self.sent.append(data)
+            await _asyncio.sleep(60)
+
+    async def main():
+        ws = SlowWS()
+        conn = hermes_bridge._HermesConnection(
+            http_session=_ApprovalFakeHTTP(),
+            ws=ws,
+            session_id="sid-timeout",
+        )
+        conn.pending_approval = {"command": "server-owned"}
+        hermes_bridge._CONNECTION_POOL["phone"] = conn
+        with pytest.raises(hermes_bridge.HermesBridgeError, match="state is unknown"):
+            await hermes_bridge.respond_approval("phone", "once")
+        assert conn.pending_approval is None
+        assert len(ws.sent) == 1
+
+    _run_with_one_loop(main)
+
+
+def test_talk_approval_endpoint_requires_session(test_client):
+    unauthenticated = test_client.post(
+        "/api/talk/approval",
+        json={"choice": "once"},
+        headers=test_client.auth_headers,
+    )
+    assert unauthenticated.status_code == 401
+
+
+def test_talk_approval_endpoint_is_choice_only(talk_client, monkeypatch):
+    calls = []
+
+    async def fake_respond(session_key, choice):
+        calls.append((session_key, choice))
+        return True
+
+    monkeypatch.setattr("hermes_bridge.respond_approval", fake_respond)
+
+    for payload in ({}, {"choice": "always"}, {"choice": "once", "command": "changed"}):
+        assert talk_client.post("/api/talk/approval", json=payload).status_code == 422
+    assert calls == []
+
+    response = talk_client.post("/api/talk/approval", json={"choice": "once"})
+    assert response.status_code == 200
+    assert response.json() == {"accepted": True, "choice": "once"}
+    assert len(calls) == 1
+    assert calls[0][1] == "once"
+
+    async def no_pending(_session_key, _choice):
+        return False
+
+    monkeypatch.setattr("hermes_bridge.respond_approval", no_pending)
+    assert talk_client.post("/api/talk/approval", json={"choice": "deny"}).status_code == 409
+
+
+def test_sse_disconnect_denies_approval_before_cancelling(monkeypatch):
+    import asyncio as _asyncio
+    from routers.talk import _stream_hermes_sse
+
+    monkeypatch.setattr("routers.talk._KEEPALIVE_INTERVAL", 0.01)
+    order = []
+
+    async def approval_then_hang(_session_key, _text):
+        yield {"type": "session", "session_id": "sid"}
+        yield {
+            "type": "approval",
+            "command": "echo safe",
+            "description": "Run code",
+            "choices": ["once", "deny"],
+        }
+        try:
+            await _asyncio.sleep(60)
+        except _asyncio.CancelledError:
+            order.append("cancel")
+            raise
+
+    async def fake_deny(_session_key):
+        order.append("deny")
+        return True
+
+    monkeypatch.setattr("hermes_bridge.stream_prompt", approval_then_hang)
+    monkeypatch.setattr("hermes_bridge.deny_pending_approval", fake_deny)
+
+    class DisconnectedRequest:
+        async def is_disconnected(self):
+            return True
+
+    async def drive():
+        return [chunk async for chunk in _stream_hermes_sse("phone", "hi", DisconnectedRequest())]
+
+    loop = _asyncio.new_event_loop()
+    try:
+        body = b"".join(loop.run_until_complete(drive())).decode("utf-8")
+    finally:
+        loop.close()
+
+    assert '"type":"approval"' in body
+    assert '"choices":["once","deny"]' in body
+    assert '"type":"done"' not in body
+    assert order == ["deny", "cancel"]

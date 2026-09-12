@@ -349,12 +349,21 @@ def _windows_whisper_cuda_supported(env: dict) -> bool:
 
 
 def _find_usable_bash() -> str | None:
-    """Return a Bash executable compatible with this host's path contract."""
+    """Return a Bash executable compatible with this host's path contract.
+
+    On success the resolved path is cached for the lifetime of the process.
+    On failure the cache is *not* set to ``False`` — a transient startup
+    condition (installer still writing, AV scan, first-run setup) can make
+    the initial probe fail even when the binary is genuinely present.  By
+    only caching positive results we permit safe retry without changing the
+    happy path.
+    """
     global _usable_bash
     if isinstance(_usable_bash, str):
         return _usable_bash
-    if _usable_bash is False:
-        return None
+    # Deliberately do NOT short-circuit on ``False`` here.  A previous
+    # failed probe must be allowed to re-run in case the transient condition
+    # has cleared.  We only reset to None (below) on failure.
 
     candidates: list[str] = []
     if platform.system() == "Windows":
@@ -441,7 +450,7 @@ def _find_usable_bash() -> str | None:
             _usable_bash = bash
             return bash
 
-    _usable_bash = False
+    _usable_bash = None
     return None
 
 # Model download state — only one download at a time
@@ -4621,6 +4630,19 @@ def _detect_docker_bridge_gateway() -> str:
     return _detect_docker_network_gateway("bridge")
 
 
+def _local_bind_address_available(address: str) -> bool:
+    """Return whether an address belongs to this host network namespace."""
+    if not address:
+        return False
+    family = socket.AF_INET6 if ":" in address else socket.AF_INET
+    try:
+        with socket.socket(family, socket.SOCK_STREAM) as probe:
+            probe.bind((address, 0))
+    except OSError:
+        return False
+    return True
+
+
 def _running_under_wsl(
     system_name: str | None = None,
     kernel_release: str | None = None,
@@ -4641,7 +4663,19 @@ def _resolve_agent_bind_addr(env: dict, system_name: str | None = None) -> str:
             return "0.0.0.0"
         return explicit
 
-    if system_name in ("Darwin", "Windows") or _running_under_wsl(system_name):
+    if system_name in ("Darwin", "Windows"):
+        return "127.0.0.1"
+
+    if _running_under_wsl(system_name):
+        # A native Docker daemon inside WSL owns its default bridge locally,
+        # and Compose's host-gateway mapping resolves to that address. Bind
+        # only that scoped bridge so dashboard-api can reach the agent without
+        # exposing it on WSL's LAN-facing interface. Docker Desktop reports a
+        # bridge gateway from a different network namespace; the bindability
+        # check preserves its existing loopback-forwarding path.
+        bridge_gateway = _detect_docker_bridge_gateway()
+        if _local_bind_address_available(bridge_gateway):
+            return bridge_gateway
         return "127.0.0.1"
 
     if system_name == "Linux":
@@ -6382,11 +6416,11 @@ def _find_update_bash() -> str | None:
     global _update_usable_bash
     if isinstance(_update_usable_bash, str):
         return _update_usable_bash
-    if _update_usable_bash is False:
-        return None
+    # Do not short-circuit on False — re-probe every time the underlying
+    # function hasn't cached a success yet.
 
     bash = _find_usable_bash()
-    _update_usable_bash = bash if bash else False
+    _update_usable_bash = bash if bash else None
     return bash
 
 
@@ -11045,7 +11079,25 @@ class AgentHandler(BaseHTTPRequestHandler):
                     container_states["ods-hermes"],
                     recreate=True,
                 ):
-                    _wait_for_container_health("ods-hermes")
+                    try:
+                        _wait_for_container_health("ods-hermes")
+                    except ContainerUnhealthyError:
+                        # Docker health can enter ``unhealthy`` while Hermes is
+                        # still starting after a model swap. A clean recreate
+                        # recovered this exact transient on the fleet. Retry
+                        # only that explicit state once; every other error and
+                        # a second unhealthy start still trigger rollback.
+                        logger.warning(
+                            "Hermes became unhealthy after model activation; "
+                            "recreating it once before rollback"
+                        )
+                        if not _restart_existing_container(
+                            "ods-hermes",
+                            container_states["ods-hermes"],
+                            recreate=True,
+                        ):
+                            raise
+                        _wait_for_container_health("ods-hermes")
                     _verify_running_hermes_route(
                         hermes_model_name,
                         hermes_base_url,
@@ -13425,6 +13477,10 @@ def _capture_container_state(container: str) -> dict[str, bool]:
     return {"exists": True, "running": value == "true"}
 
 
+class ContainerUnhealthyError(RuntimeError):
+    """A running dependent reached Docker's explicit unhealthy state."""
+
+
 def _wait_for_container_health(container: str, attempts: int = 60) -> None:
     """Wait until a restarted dependent is healthy, failing on terminal states."""
     for attempt in range(attempts):
@@ -13450,7 +13506,9 @@ def _wait_for_container_health(container: str, attempts: int = 60) -> None:
                 return
             raise RuntimeError(f"{container} exited while waiting for health")
         if status == "unhealthy":
-            raise RuntimeError(f"{container} became unhealthy after model activation")
+            raise ContainerUnhealthyError(
+                f"{container} became unhealthy after model activation"
+            )
         if status != "starting":
             raise RuntimeError(f"Docker returned invalid health state for {container}: {status!r}")
         if attempt + 1 < attempts:
@@ -15569,9 +15627,9 @@ def main():
 
     # Determine bind address: explicit env override, or a platform-aware safe
     # default. Native Linux prefers the ods-network gateway so dashboard-api
-    # containers can reach the agent without exposing it to the LAN. WSL uses
-    # loopback because Docker Desktop forwards host.docker.internal there; its
-    # compose gateway belongs to Docker Desktop and is not locally bindable.
+    # containers can reach the agent without exposing it to the LAN. Native
+    # Docker inside WSL binds its locally owned default bridge; Docker Desktop
+    # keeps the loopback path because its reported bridge is not locally bindable.
     # The bridge gateway fallback keeps partial/older native-Linux installs
     # reachable until phase 11 can restart the service after ods-network exists.
     bind_addr = _resolve_agent_bind_addr(env)

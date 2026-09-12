@@ -226,6 +226,9 @@ jobs:
       - name: Windows Installer Flag Tests
         run: bash tests/test-windows-installer-flags.sh
 
+      - name: Windows Bootstrap Download Handoff Tests
+        run: bash tests/test-windows-bootstrap-download-handoff.sh
+
       - name: Validate Env Tests
         run: bash tests/test-validate-env.sh
 
@@ -301,6 +304,7 @@ jobs:
         run: |
           bash tests/test-linux-install-preflight.sh
           bash tests/test-preflight-dashboard-port.sh
+          bash tests/test-wsl-broken-docker-shim.sh
 
       - name: Installer Simulation Harness
         run: |

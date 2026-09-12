@@ -387,6 +387,7 @@ function Update-HermesConfigFile {
         [string]$Path,
         [string]$Model,
         [string]$BaseUrl,
+        [string]$ApiKey = "",
         [int]$ContextLength,
         [int]$RequestTimeoutSeconds = 180,
         [int]$MaxTokens = 1024,
@@ -404,8 +405,20 @@ function Update-HermesConfigFile {
     # is what should actually land on disk.
     $modelReplacement = $Model.Replace('$', '$$')
     $baseUrlReplacement = $BaseUrl.Replace('$', '$$')
-    $content = $content -replace '(?m)^  default: ".*"\r?$', "  default: `"$modelReplacement`""
-    $content = $content -replace '(?m)^  base_url: ".*"\r?$', "  base_url: `"$baseUrlReplacement`""
+    $apiKeyReplacement = $ApiKey.Replace('$', '$$')
+    # The source template quotes these values, while Hermes serializes its live
+    # data/config.yaml without quotes. Match either form so post-start model
+    # persistence does not silently no-op against the live file.
+    $content = $content -replace '(?m)^  default:\s*(?:"[^"]*"|[^\r\n#]+)\s*(?:#.*)?\r?$', "  default: `"$modelReplacement`""
+    $content = $content -replace '(?m)^  base_url:\s*(?:"[^"]*"|[^\r\n#]+)\s*(?:#.*)?\r?$', "  base_url: `"$baseUrlReplacement`""
+    if (-not [string]::IsNullOrWhiteSpace($ApiKey)) {
+        if ($content -match '(?m)^  api_key:') {
+            $content = $content -replace '(?m)^  api_key:\s*(?:"[^"]*"|[^\r\n#]+)\s*(?:#.*)?\r?$', "  api_key: `"$apiKeyReplacement`""
+        } else {
+            $baseUrlLine = "  base_url: `"$BaseUrl`""
+            $content = $content.Replace($baseUrlLine, "$baseUrlLine`n  api_key: `"$ApiKey`"")
+        }
+    }
     $content = $content -replace '(?m)^  context_length: .+\r?$', "  context_length: $ContextLength"
     $content = $content -replace '(?m)^    context_length: .+\r?$', "    context_length: $ContextLength"
     if ($MaxTokens -lt 1) { $MaxTokens = 1024 }
@@ -444,23 +457,25 @@ function Update-HermesConfigFile {
     }
 
     if ($content -notmatch '(?m)^compression:\s*$') {
-        $content += "`ncompression:`n  enabled: true`n  threshold: 0.50`n  target_ratio: 0.20`n  protect_last_n: 20`n"
+        $content += "`ncompression:`n  enabled: true`n  threshold: 0.75`n  target_ratio: 0.50`n  protect_last_n: 40`n"
     } else {
         if ($content -notmatch '(?m)^  enabled:') {
             $content = $content -replace '(?m)^compression:\s*$', "compression:`n  enabled: true"
         }
         if ($content -match '(?m)^  threshold:') {
-            $content = $content -replace '(?m)^  threshold: .+$', "  threshold: 0.50"
+            $content = $content -replace '(?m)^  threshold: .+$', "  threshold: 0.75"
         } else {
-            $content = $content -replace '(?m)^compression:\s*$', "compression:`n  threshold: 0.50"
+            $content = $content -replace '(?m)^compression:\s*$', "compression:`n  threshold: 0.75"
         }
         if ($content -match '(?m)^  target_ratio:') {
-            $content = $content -replace '(?m)^  target_ratio: .+$', "  target_ratio: 0.20"
+            $content = $content -replace '(?m)^  target_ratio: .+$', "  target_ratio: 0.50"
         } else {
-            $content = $content -replace '(?m)^compression:\s*$', "compression:`n  target_ratio: 0.20"
+            $content = $content -replace '(?m)^compression:\s*$', "compression:`n  target_ratio: 0.50"
         }
-        if ($content -notmatch '(?m)^  protect_last_n:') {
-            $content = $content -replace '(?m)^compression:\s*$', "compression:`n  protect_last_n: 20"
+        if ($content -match '(?m)^  protect_last_n:') {
+            $content = $content -replace '(?m)^  protect_last_n: .+$', "  protect_last_n: 40"
+        } else {
+            $content = $content -replace '(?m)^compression:\s*$', "compression:`n  protect_last_n: 40"
         }
     }
 
@@ -500,9 +515,52 @@ agent:
     }
 
     [System.IO.File]::WriteAllText($Path, $content, $utf8NoBom)
+    if (-not [string]::IsNullOrWhiteSpace($ApiKey) -and
+        [System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
+        try {
+            # data\ is container-writable and receives an inheritable Everyone
+            # grant earlier in this phase. A Hermes config containing the
+            # LiteLLM master key must not retain that broad DACL. Match the
+            # current-user-only protection used for .env, including on
+            # reinstalls where icacls may have made the grant explicit.
+            $secretAcl = Get-Acl -LiteralPath $Path
+            $secretAcl.SetAccessRuleProtection($true, $false)
+            foreach ($existingRule in @($secretAcl.Access)) {
+                $secretAcl.RemoveAccessRuleSpecific($existingRule)
+            }
+            $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+            $currentUserRule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+                $currentUser,
+                "FullControl",
+                "Allow"
+            )
+            $secretAcl.SetAccessRule($currentUserRule)
+            Set-Acl -LiteralPath $Path -AclObject $secretAcl
+        } catch {
+            Write-AIWarn "Could not restrict Hermes credential file permissions: $Path"
+            return $false
+        }
+    }
     $verified = [System.IO.File]::ReadAllText($Path, $utf8NoBom)
     if (-not $verified.Contains("  default: `"$Model`"")) { return $false }
     if (-not $verified.Contains("  base_url: `"$BaseUrl`"")) { return $false }
+    if (-not [string]::IsNullOrWhiteSpace($ApiKey) -and -not $verified.Contains("  api_key: `"$ApiKey`"")) { return $false }
+    if (-not [string]::IsNullOrWhiteSpace($ApiKey) -and
+        [System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
+        $verifiedAcl = Get-Acl -LiteralPath $Path
+        if (-not $verifiedAcl.AreAccessRulesProtected) { return $false }
+        $everyoneSid = New-Object System.Security.Principal.SecurityIdentifier("S-1-1-0")
+        foreach ($verifiedRule in $verifiedAcl.GetAccessRules(
+            $true,
+            $true,
+            [System.Security.Principal.SecurityIdentifier]
+        )) {
+            if ($verifiedRule.IdentityReference -eq $everyoneSid -and
+                $verifiedRule.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow) {
+                return $false
+            }
+        }
+    }
     return $true
 }
 
@@ -612,6 +670,18 @@ if ($enableHermes) {
             "http://llama-server:8080/v1"
         })
     }
+    $_hermesApiKey = ""
+    if ($_envLines.ContainsKey("HERMES_LLM_API_KEY")) {
+        $_hermesApiKey = $_envLines["HERMES_LLM_API_KEY"].Trim().Trim('"').Trim("'")
+    }
+    if ([string]::IsNullOrWhiteSpace($_hermesApiKey) -and $_hermesBaseUrl -match 'litellm:4000') {
+        if ($_envLines.ContainsKey("LITELLM_KEY")) {
+            $_hermesApiKey = $_envLines["LITELLM_KEY"].Trim().Trim('"').Trim("'")
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($_hermesApiKey)) {
+        $_hermesApiKey = "sk-ods-hermes-local"
+    }
     $_hermesTemplate = Join-Path (Join-Path (Join-Path $installDir "extensions") "services\hermes") "cli-config.yaml.template"
     $_hermesLive = Join-Path (Join-Path $installDir "data\hermes") "config.yaml"
     if (-not (Test-Path $_hermesTemplate)) {
@@ -622,8 +692,8 @@ if ($enableHermes) {
         Copy-Item -Path $_hermesTemplate -Destination $_hermesLive -Force
     }
     $_hermesRequestTimeout = $(if ($cloudMode -and $_switchboardMode -ne "enabled") { 180 } else { 900 })
-    $_patchedHermesTemplate = Update-HermesConfigFile -Path $_hermesTemplate -Model $_hermesModel -BaseUrl $_hermesBaseUrl -ContextLength ([int]$tierConfig.MaxContext) -RequestTimeoutSeconds $_hermesRequestTimeout -LemonadeCompact:($gpuInfo.Backend -eq "amd")
-    $_patchedHermesLive = Update-HermesConfigFile -Path $_hermesLive -Model $_hermesModel -BaseUrl $_hermesBaseUrl -ContextLength ([int]$tierConfig.MaxContext) -RequestTimeoutSeconds $_hermesRequestTimeout -LemonadeCompact:($gpuInfo.Backend -eq "amd")
+    $_patchedHermesTemplate = Update-HermesConfigFile -Path $_hermesTemplate -Model $_hermesModel -BaseUrl $_hermesBaseUrl -ApiKey $_hermesApiKey -ContextLength ([int]$tierConfig.MaxContext) -RequestTimeoutSeconds $_hermesRequestTimeout -LemonadeCompact:($gpuInfo.Backend -eq "amd")
+    $_patchedHermesLive = Update-HermesConfigFile -Path $_hermesLive -Model $_hermesModel -BaseUrl $_hermesBaseUrl -ApiKey $_hermesApiKey -ContextLength ([int]$tierConfig.MaxContext) -RequestTimeoutSeconds $_hermesRequestTimeout -LemonadeCompact:($gpuInfo.Backend -eq "amd")
     if (-not ($_patchedHermesTemplate -and $_patchedHermesLive)) {
         Write-AIError "Failed to patch Hermes config for Windows runtime (model=$_hermesModel, base_url=$_hermesBaseUrl)"
         throw "ODS_INSTALL_ABORTED"

@@ -412,6 +412,8 @@ compose_recreate_hermes() {
         compose_args=("${WINDOWS_LEMONADE_COMPOSE_ARGS[@]}")
     elif [[ -s "$INSTALL_DIR/.compose-flags" ]]; then
         read -ra compose_args <<< "$(cat "$INSTALL_DIR/.compose-flags")"
+    elif is_windows_bash && load_windows_lemonade_compose_args; then
+        compose_args=("${WINDOWS_LEMONADE_COMPOSE_ARGS[@]}")
     fi
 
     if [[ ${#compose_args[@]} -eq 0 || -z "${DOCKER_COMPOSE_CMD:-}" ]]; then
@@ -1696,7 +1698,11 @@ patch_hermes_yaml_in_container() {
         )
     fi
 
-    $DOCKER_CMD exec ods-hermes sed -i \
+    # Git for Windows rewrites POSIX-looking arguments passed to native
+    # executables (for example /opt/data/config.yaml becomes
+    # C:/Program Files/Git/opt/data/config.yaml).  That path belongs inside
+    # the container, so keep the docker argv byte-for-byte on every host.
+    MSYS_NO_PATHCONV=1 $DOCKER_CMD exec ods-hermes sed -i \
         "${sed_args[@]}" \
         /opt/data/config.yaml
 }
@@ -1788,22 +1794,66 @@ load_windows_lemonade_compose_args() {
     [[ ${#WINDOWS_LEMONADE_COMPOSE_ARGS[@]} -eq 0 ]] || return 0
     [[ -n "${DOCKER_COMPOSE_CMD:-}" ]] || return 1
 
-    if [[ -f "$INSTALL_DIR/.compose-flags" ]]; then
-        read -ra WINDOWS_LEMONADE_COMPOSE_ARGS <<< "$(cat "$INSTALL_DIR/.compose-flags")"
-    elif [[ -x "$INSTALL_DIR/scripts/resolve-compose-stack.sh" ]]; then
-        local tier resolved_env resolved_flags
+    local resolved_flags="" recovered_flags=false
+    if [[ -s "$INSTALL_DIR/.compose-flags" ]]; then
+        resolved_flags="$(cat "$INSTALL_DIR/.compose-flags")"
+    fi
+    if [[ -z "$resolved_flags" && -s "$INSTALL_DIR/logs/compose-launch.txt" ]]; then
+        # The Windows launcher records the exact successfully started stack.
+        # Recover it when an interrupted copy or filesystem quirk leaves the
+        # ordinary cache absent; this is the same fallback used by ods.ps1.
+        resolved_flags="$(sed -n 's/^compose_flags=//p' "$INSTALL_DIR/logs/compose-launch.txt" | tr -d '\r' | tail -1)"
+        [[ -z "$resolved_flags" ]] || recovered_flags=true
+    fi
+    if [[ -z "$resolved_flags" && -x "$INSTALL_DIR/scripts/resolve-compose-stack.sh" ]]; then
+        local tier gpu_count ods_mode resolved_env
         tier="$(read_env_value TIER)"
         [[ -n "$tier" ]] || tier="1"
+        gpu_count="$(read_env_value GPU_COUNT)"
+        [[ -n "$gpu_count" ]] || gpu_count="1"
+        ods_mode="$(read_env_value ODS_MODE)"
+        [[ -n "$ods_mode" ]] || ods_mode="lemonade"
         resolved_env=$("$INSTALL_DIR/scripts/resolve-compose-stack.sh" \
             --script-dir "$INSTALL_DIR" \
             --tier "$tier" \
             --gpu-backend amd \
+            --gpu-count "$gpu_count" \
+            --ods-mode "$ods_mode" \
             --env 2>/dev/null || true)
         resolved_flags=$(printf '%s\n' "$resolved_env" | sed -n 's/^COMPOSE_FLAGS="\([^"]*\)".*/\1/p')
-        [[ -n "$resolved_flags" ]] && read -ra WINDOWS_LEMONADE_COMPOSE_ARGS <<< "$resolved_flags"
+        [[ -z "$resolved_flags" ]] || recovered_flags=true
     fi
 
-    [[ ${#WINDOWS_LEMONADE_COMPOSE_ARGS[@]} -gt 0 ]]
+    [[ -n "$resolved_flags" ]] || return 1
+    local -a candidate_args=()
+    read -ra candidate_args <<< "$resolved_flags"
+    [[ ${#candidate_args[@]} -gt 0 ]] || return 1
+
+    local index compose_file compose_file_count=0
+    for ((index = 0; index < ${#candidate_args[@]}; index++)); do
+        [[ "${candidate_args[$index]}" == "-f" ]] || continue
+        (( index + 1 < ${#candidate_args[@]} )) || return 1
+        compose_file="${candidate_args[$((index + 1))]}"
+        compose_file_count=$((compose_file_count + 1))
+        case "$compose_file" in
+            /*) ;;
+            [A-Za-z]:[/\\]*|\\\\*)
+                if command -v cygpath >/dev/null 2>&1; then
+                    compose_file="$(cygpath -u "$compose_file" 2>/dev/null)" || return 1
+                fi
+                ;;
+            *) compose_file="$INSTALL_DIR/$compose_file" ;;
+        esac
+        [[ -f "$compose_file" ]] || return 1
+        index=$((index + 1))
+    done
+    (( compose_file_count > 0 )) || return 1
+
+    if [[ "$recovered_flags" == "true" ]]; then
+        printf '%s\n' "$resolved_flags" > "$INSTALL_DIR/.compose-flags" || return 1
+    fi
+    WINDOWS_LEMONADE_COMPOSE_ARGS=("${candidate_args[@]}")
+    return 0
 }
 
 refresh_windows_lemonade_litellm_after_swap() {
@@ -2081,14 +2131,22 @@ rollback_windows_lemonade_swap() {
     if [[ "$WINDOWS_LEMONADE_OPENCLAW_PRESENT" == "true" && -n "$previous_model_id" ]]; then
         verify_windows_lemonade_openclaw_model_env "$previous_model_id" || rollback_ok=false
     fi
-    if [[ "$inference_restored" == "true" && -n "$previous_model_id" ]] \
-        && verify_windows_lemonade_downstream_route "$previous_model_id" "previous model route"; then
-        route_verified=true
-    else
-        rollback_ok=false
-    fi
     if [[ "$reconcile_pixel" == "true" && -n "$previous_llm_model" ]] \
         && ! reconcile_ods_managed_pixel_model "$previous_llm_model"; then
+        rollback_ok=false
+    fi
+
+    # Downstream verification traverses the model router. Keep admission
+    # closed until every previous consumer has been restored, then reopen it
+    # so the proof cannot queue behind this transaction's own swap gate.
+    if [[ "$rollback_ok" == "true" && "$inference_restored" == "true" && -n "$previous_model_id" ]]; then
+        release_model_router_swap_gate
+        if verify_windows_lemonade_downstream_route "$previous_model_id" "previous model route"; then
+            route_verified=true
+        else
+            rollback_ok=false
+        fi
+    else
         rollback_ok=false
     fi
 
@@ -2144,8 +2202,26 @@ activate_windows_lemonade_full_model() {
         windows_lemonade_swap_failed "the host agent could not reconcile the promoted switchboard route"
         return 1
     fi
+    if ! reconcile_ods_managed_pixel_model; then
+        windows_lemonade_swap_failed "the managed Pixel route could not be reconciled" true
+        return 1
+    fi
+
+    # The downstream proof itself traverses the switchboard. Reopen request
+    # admission only after every promoted consumer is coherent; otherwise the
+    # probe queues behind our own renewable gate and can stall for an hour.
+    release_model_router_swap_gate
     if ! verify_windows_lemonade_downstream_route "$model_id" "full model route"; then
-        windows_lemonade_swap_failed "the full model failed through the configured downstream route"
+        # Re-establish the drained transaction boundary before mutating state
+        # during rollback. If that cannot be proven, leave the promoted state
+        # untouched and fail closed for operator inspection.
+        if acquire_model_router_swap_gate; then
+            windows_lemonade_swap_failed "the full model failed through the configured downstream route" true
+        else
+            WINDOWS_LEMONADE_SWAP_FAILURE="the full model failed through the configured downstream route, and request admission could not be re-closed for safe rollback"
+            WINDOWS_LEMONADE_ROLLBACK_VERIFIED=false
+            log "Windows Lemonade full-model activation failed: ${WINDOWS_LEMONADE_SWAP_FAILURE}"
+        fi
         return 1
     fi
     return 0
@@ -2608,8 +2684,11 @@ elif [[ -n "$DOCKER_CMD" ]]; then
 fi
 
 if [[ "$_windows_lemonade_swap_applies" == "true" || "$_windows_native_llama_swap_applies" == "true" || "$_docker_llama_swap_applies" == "true" ]]; then
-    acquire_model_router_swap_gate \
-        || fail "Could not safely drain model traffic before full-model activation."
+    if ! acquire_model_router_swap_gate; then
+        write_status "failed" 100 "$TOTAL_BYTES" "$TOTAL_BYTES" 0 \
+            "Full model downloaded and verified, but ODS could not safely drain model traffic before activation. The current model was left unchanged; re-run to retry."
+        fail "Could not safely drain model traffic before full-model activation."
+    fi
 fi
 
 if [[ "$_windows_lemonade_swap_applies" == "true" || "$_windows_native_llama_swap_applies" == "true" || "$_docker_llama_swap_applies" == "true" ]]; then
@@ -2686,20 +2765,6 @@ if [[ "$_windows_lemonade_swap_applies" == "true" ]]; then
 
     if activate_windows_lemonade_full_model; then
         HOT_SWAP_VERIFIED=true
-        # Pixel is a host-side OpenClaw deployment rather than the legacy
-        # ods-openclaw container. Reconcile its reviewed configuration while
-        # the bootstrap model and the active-config snapshot are still intact,
-        # so a failure can restore both the agent route and inference runtime.
-        if ! reconcile_ods_managed_pixel_model; then
-            _rollback_status="Previous active model config restore was attempted; inspect the logs before retrying."
-            windows_lemonade_swap_failed "the managed Pixel route could not be reconciled" true
-            if [[ "$WINDOWS_LEMONADE_ROLLBACK_VERIFIED" == "true" ]]; then
-                _rollback_status="Previous active model config and Pixel route restored; re-run to retry the full-model swap."
-            fi
-            write_status "failed" 100 "$TOTAL_BYTES" "$TOTAL_BYTES" 0 \
-                "Full model served, but ODS could not reconcile the managed Pixel route. ${_rollback_status}"
-            exit 1
-        fi
         discard_active_model_config_snapshot
         discard_bootstrap_model_backup_after_windows_swap
     else
@@ -3299,7 +3364,11 @@ elif [[ -n "$DOCKER_CMD" ]] && $DOCKER_CMD ps --filter name=ods-llama-server --f
                 sleep 2
             done
             if $_hermes_ready; then
-                if $DOCKER_CMD exec ods-hermes timeout 90 \
+                # Git Bash rewrites leading-slash arguments passed to native
+                # Windows executables unless path conversion is disabled. Keep
+                # the container's Hermes path intact just as the live-config
+                # patch above keeps /opt/data/config.yaml intact.
+                if MSYS_NO_PATHCONV=1 $DOCKER_CMD exec ods-hermes timeout 90 \
                     /opt/hermes/.venv/bin/hermes -z "ping" --yolo \
                     >/dev/null 2>&1; then
                     log "Hermes system prompt cached — first user prompt will be fast."
@@ -3605,6 +3674,19 @@ elif [[ -f "$HOME/Library/LaunchAgents/com.ods.host-agent.plist" ]]; then
     log "Restarting ods-host-agent (launchctl)..."
     launchctl kickstart -k "gui/$(id -u)/com.ods.host-agent" 2>&1 || \
         log "WARNING: Could not restart host agent (non-fatal)"
+elif is_windows_bash; then
+    _windows_agent_ps="$(windows_ps_command)"
+    _windows_agent_cli="$INSTALL_DIR/installers/windows/ods.ps1"
+    if [[ -z "$_windows_agent_ps" || ! -f "$_windows_agent_cli" ]]; then
+        log "WARNING: Could not locate the Windows ODS CLI for host agent restart (non-fatal)"
+    elif ! _windows_agent_cli_arg="$(windows_path "$_windows_agent_cli")"; then
+        log "WARNING: Could not resolve the Windows ODS CLI path for host agent restart (non-fatal)"
+    else
+        log "Restarting ods-host-agent (Windows)..."
+        "$_windows_agent_ps" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass \
+            -File "$_windows_agent_cli_arg" agent restart 2>&1 || \
+            log "WARNING: Could not restart host agent (non-fatal)"
+    fi
 fi
 
 notify_host_agent_model_status() {

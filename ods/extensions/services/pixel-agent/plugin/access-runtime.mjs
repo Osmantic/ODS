@@ -20,6 +20,19 @@ function processAlive(pid) {
   catch (error) { if (error.code === 'ESRCH') return false; throw error; }
 }
 
+function structuredOwnerAlive(pid) {
+  try { return processAlive(pid); }
+  catch (error) {
+    // process.json is a private, owner-created file and every structured lock
+    // is written by this same uid. A still-live owner is therefore signalable.
+    // EPERM means Linux has recycled the PID to a different security principal;
+    // ProtectProc=invisible can also hide its /proc identity, so retaining that
+    // foreign PID would otherwise disable admission permanently.
+    if (error.code === 'EPERM') return false;
+    throw error;
+  }
+}
+
 function processStartTicks(pid) {
   let stat;
   try { stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8'); }
@@ -103,7 +116,7 @@ function previousProcessAlive(previous) {
       !/^(0|[1-9][0-9]*)$/.test(previous.startTicks) || process.platform !== 'linux') throw new Error('unknown process lock identity');
   // Death is independently verifiable even if an older record used boot_id
   // and this gateway's namespace now hides it. A live unknown owner stays held.
-  if (!processAlive(previous.pid)) return false;
+  if (!structuredOwnerAlive(previous.pid)) return false;
   // A reused PID may belong to an unrelated process whose environment is
   // unreadable under proc restrictions. A different start time already proves
   // that the recorded owner is gone; do not require that stranger's identity.

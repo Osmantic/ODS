@@ -35,7 +35,7 @@ import json, os, pathlib, sys
 counter = pathlib.Path(os.environ["PIXEL_TEST_COUNTER"])
 calls = int(counter.read_text() if counter.exists() else "0") + 1
 counter.write_text(str(calls), encoding="utf-8")
-if calls == 1 and os.environ.get("PIXEL_TEST_BAD") != "true":
+if calls == 1 and os.environ.get("PIXEL_TEST_TRANSIENT") == "true":
     raise SystemExit(1)
 extension_id = "wrong" if os.environ.get("PIXEL_TEST_BAD") == "true" else sys.argv[4]
 print(json.dumps({
@@ -43,7 +43,7 @@ print(json.dumps({
     "kind": "ods-pixel-extension-lifecycle",
     "action": "inspect",
     "extensionId": extension_id,
-    "outcome": "ready",
+    "outcome": os.environ.get("PIXEL_TEST_OUTCOME", "inspected"),
     "previousStatus": "not_installed",
     "currentStatus": "not_installed",
     "changed": False,
@@ -57,7 +57,7 @@ print(json.dumps({
 PY
 if (
     ods_sudo() { shift 2; "$@"; }
-    export PIXEL_TEST_COUNTER="$probe_counter"
+    export PIXEL_TEST_COUNTER="$probe_counter" PIXEL_TEST_TRANSIENT=true
     _ods_pixel_wait_extension_manager_probe "$probe_program" crewai 3 0
 ); then
     pass "extension manager readiness retries a transient failure"
@@ -65,6 +65,16 @@ else
     fail "extension manager readiness retries a transient failure"
 fi
 check test "$(cat "$probe_counter")" = 2
+rm -f -- "$probe_counter"
+if (
+    ods_sudo() { shift 2; "$@"; }
+    export PIXEL_TEST_COUNTER="$probe_counter" PIXEL_TEST_OUTCOME=ready
+    _ods_pixel_wait_extension_manager_probe "$probe_program" crewai 1 0
+); then
+    fail "extension manager readiness rejects the obsolete ready inspect outcome"
+else
+    pass "extension manager readiness rejects the obsolete ready inspect outcome"
+fi
 rm -f -- "$probe_counter"
 if (
     ods_sudo() { shift 2; "$@"; }
@@ -303,6 +313,128 @@ else
 fi
 check test ! -e "$ambient_active_home/.config/ods/pixel-managed.json"
 
+inactive_home="$TEST_ROOT/inactive-conflict-home"
+inactive_pixel_root="$TEST_ROOT/inactive-conflict-source"
+inactive_release="$inactive_home/.local/share/pixel/releases/4.3.27"
+inactive_log="$TEST_ROOT/inactive-conflict-apply.log"
+mkdir -p "$inactive_home/.config/ods" "$inactive_release" "$inactive_pixel_root"
+chmod 0700 "$inactive_home/.config/ods" "$inactive_home/.local/share/pixel" \
+    "$inactive_home/.local/share/pixel/releases"
+printf '%s\n' 4.3.27 >"$inactive_pixel_root/VERSION"
+write_inactive_marker() {
+    cat >"$inactive_home/.config/ods/pixel-managed.json" <<JSON
+{"schema_version":2,"manager":"ods","state":"installing","initial_active_state":"absent","install_dir":"$INSTALL_DIR","pixel_source_ref":"$PIXEL_SOURCE_REF"}
+JSON
+    chmod 0600 "$inactive_home/.config/ods/pixel-managed.json"
+}
+write_inactive_marker
+cat >"$inactive_release/release-identity.json" <<JSON
+{"kind":"pixel-release-source-identity","pixel":"4.3.27","source":{"state":"git-clean","commit":"$PIXEL_SOURCE_REF","tree":"$(printf 'a%.0s' {1..40})"}}
+JSON
+printf '%s\n' 'reviewed inactive release' >"$inactive_release/payload.txt"
+printf '%s\n' 4.3.27 >"$inactive_release/VERSION"
+(
+    cd "$inactive_release"
+    sha256sum ./VERSION ./payload.txt ./release-identity.json >install-manifest.sha256
+)
+printf '%s\n' '[pixel] ERROR: unrelated apply failure' >"$inactive_log"
+chmod 0600 "$inactive_log"
+if _ods_pixel_retire_inactive_conflicting_release \
+    "$owner" "$inactive_home" "$inactive_pixel_root" "$inactive_log" >/dev/null 2>&1; then
+    fail "unrelated Pixel apply failure triggered inactive-release retirement"
+else
+    check test -d "$inactive_release"
+fi
+printf '[pixel] ERROR: Release already exists but is not byte-exact to the reviewed plan: %s\n' \
+    "$inactive_release" >"$inactive_log"
+printf '%s\n' tampered >>"$inactive_release/payload.txt"
+if _ods_pixel_retire_inactive_conflicting_release \
+    "$owner" "$inactive_home" "$inactive_pixel_root" "$inactive_log" >/dev/null 2>&1; then
+    fail "manifest-drifted inactive Pixel release was retired"
+else
+    check test -d "$inactive_release"
+fi
+printf '%s\n' 'reviewed inactive release' >"$inactive_release/payload.txt"
+(
+    cd "$inactive_release"
+    sha256sum ./VERSION ./payload.txt ./release-identity.json >install-manifest.sha256
+)
+for marker_case in initial-active verified-state wrong-requested-source wrong-schema wrong-manager; do
+    write_inactive_marker
+    python3 - "$inactive_home/.config/ods/pixel-managed.json" "$marker_case" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+case = sys.argv[2]
+value = json.loads(path.read_text())
+if case == "initial-active":
+    value["initial_active_state"] = "running"
+elif case == "verified-state":
+    value["active_release_version"] = "4.3.27"
+elif case == "wrong-requested-source":
+    value["requested_source_ref"] = "f" * 40
+elif case == "wrong-schema":
+    value["schema_version"] = 1
+elif case == "wrong-manager":
+    value["manager"] = "ambient"
+path.write_text(json.dumps(value, separators=(",", ":")) + "\n")
+PY
+    if _ods_pixel_retire_inactive_conflicting_release \
+        "$owner" "$inactive_home" "$inactive_pixel_root" "$inactive_log" >/dev/null 2>&1; then
+        fail "unsafe $marker_case marker triggered inactive-release retirement"
+    else
+        pass "unsafe $marker_case marker is rejected before inactive-release retirement"
+    fi
+    check test -d "$inactive_release"
+done
+write_inactive_marker
+inactive_gateway_unit="$TEST_ROOT/inactive-openclaw-gateway.service"
+printf '%s\n' '[Unit]' >"$inactive_gateway_unit"
+if ODS_PIXEL_GATEWAY_UNIT_PATH="$inactive_gateway_unit" \
+    _ods_pixel_retire_inactive_conflicting_release \
+        "$owner" "$inactive_home" "$inactive_pixel_root" "$inactive_log" >/dev/null 2>&1; then
+    fail "existing Pixel gateway unit allowed inactive-release retirement"
+else
+    pass "existing Pixel gateway unit blocks inactive-release retirement"
+fi
+rm -f -- "$inactive_gateway_unit"
+printf '%s\n' '{}' >"$inactive_home/.local/share/pixel/runtime-attestation.json"
+if _ods_pixel_retire_inactive_conflicting_release \
+    "$owner" "$inactive_home" "$inactive_pixel_root" "$inactive_log" >/dev/null 2>&1; then
+    fail "runtime-attested Pixel allowed inactive-release retirement"
+else
+    pass "runtime-attested Pixel blocks inactive-release retirement"
+fi
+rm -f -- "$inactive_home/.local/share/pixel/runtime-attestation.json"
+mv -- "$inactive_release" "$inactive_release.real"
+ln -s -- "$inactive_release.real" "$inactive_release"
+if _ods_pixel_retire_inactive_conflicting_release \
+    "$owner" "$inactive_home" "$inactive_pixel_root" "$inactive_log" >/dev/null 2>&1; then
+    fail "symlinked Pixel release root allowed inactive-release retirement"
+else
+    pass "symlinked Pixel release root blocks inactive-release retirement"
+fi
+rm -f -- "$inactive_release"
+mv -- "$inactive_release.real" "$inactive_release"
+ln -s "$inactive_release" "$inactive_home/.local/share/pixel/current"
+if _ods_pixel_retire_inactive_conflicting_release \
+    "$owner" "$inactive_home" "$inactive_pixel_root" "$inactive_log" >/dev/null 2>&1; then
+    fail "active Pixel release was retired by inactive conflict recovery"
+else
+    check test -d "$inactive_release"
+fi
+rm -f -- "$inactive_home/.local/share/pixel/current"
+inactive_retired="$(_ods_pixel_retire_inactive_conflicting_release \
+    "$owner" "$inactive_home" "$inactive_pixel_root" "$inactive_log")"
+check test -d "$inactive_retired"
+check test ! -e "$inactive_release"
+check test "${inactive_retired%/release}" != "$inactive_retired"
+check test "$(stat -c '%a' "$inactive_home/.local/share/pixel/retired-ods-releases")" = 700
+check test "$(sha256sum "$inactive_retired/payload.txt" | awk '{print $1}')" \
+    = "$(printf '%s\n' 'reviewed inactive release' | sha256sum | awk '{print $1}')"
+
 plugin_tree="$INSTALL_DIR/extensions/services/pixel-agent/plugin"
 mkdir -p "$plugin_tree/nested"
 printf '%s\n' '{"id":"pixel-ods"}' > "$plugin_tree/openclaw.plugin.json"
@@ -460,12 +592,15 @@ if (
     }
     ods_sudo_available() { return 0; }
     ods_sudo() { [[ "$*" == "systemctl restart openclaw-gateway.service" ]]; }
-    curl() { printf '%s\n' '{"ok":true,"status":"live"}'; }
+    curl() {
+        [[ "$*" == *"http://127.0.0.1:18790/health"* ]] || return 1
+        printf '%s\n' '{"ok":true,"status":"live"}'
+    }
     ods_pixel_run_as_owner() {
         [[ "$1" == "$owner" && "$2" == "$home" \
             && "$3" == "$restart_probe/pixel-root/pixel" && "$4" == verify ]]
     }
-    _ods_pixel_restart_gateway_and_verify "$owner" "$home" "$restart_probe/pixel-root"
+    PIXEL_GATEWAY_PORT=18790 _ods_pixel_restart_gateway_and_verify "$owner" "$home" "$restart_probe/pixel-root"
 ); then
     pass "privileged Pixel restart tolerates transient MainPID zero"
 else
@@ -793,7 +928,36 @@ else
     pass "symlink Operations policy rejected"
 fi
 _ods_pixel_write_onboarding "$owner" "$home" "$answers" /usr/bin/openclaw /opt/ods/pixel-plugin "$digest"
-check python3 -c 'import json,sys; v=json.load(open(sys.argv[1])); assert v["webSearchProvider"] == "searxng"; assert not any(e["id"] == "parallel" for e in v["gatewayExtensions"])' "$answers"
+check python3 -c 'import json,sys; v=json.load(open(sys.argv[1])); assert v["gatewayPort"] == 18789; assert v["webSearchProvider"] == "searxng"; assert not any(e["id"] == "parallel" for e in v["gatewayExtensions"])' "$answers"
+alternate_gateway_answers="$TEST_ROOT/alternate-gateway-onboarding.json"
+PIXEL_GATEWAY_PORT=18790 _ods_pixel_write_onboarding "$owner" "$home" \
+    "$alternate_gateway_answers" /usr/bin/openclaw /opt/ods/pixel-plugin "$digest"
+check python3 -c 'import json,sys; v=json.load(open(sys.argv[1])); assert v["gatewayPort"] == 18790' \
+    "$alternate_gateway_answers"
+for invalid_gateway_port in 0 65536 invalid; do
+    if PIXEL_GATEWAY_PORT="$invalid_gateway_port" _ods_pixel_write_onboarding "$owner" "$home" \
+        "$TEST_ROOT/invalid-gateway-onboarding.json" /usr/bin/openclaw \
+        /opt/ods/pixel-plugin "$digest" >/dev/null 2>&1; then
+        fail "invalid Pixel gateway port rejected: $invalid_gateway_port"
+    else
+        pass "invalid Pixel gateway port rejected: $invalid_gateway_port"
+    fi
+done
+gateway_port_home="$TEST_ROOT/gateway-port-home"
+mkdir -p "$gateway_port_home/.config/pixel-deployment"
+chmod 0700 "$gateway_port_home/.config" "$gateway_port_home/.config/pixel-deployment"
+cp "$answers" "$gateway_port_home/.config/pixel-deployment/onboarding.json"
+chmod 0600 "$gateway_port_home/.config/pixel-deployment/onboarding.json"
+check _ods_pixel_existing_gateway_port_matches "$owner" "$gateway_port_home" 18789
+if _ods_pixel_existing_gateway_port_matches "$owner" "$gateway_port_home" 18790 \
+    >/dev/null 2>&1; then
+    fail "installed Pixel gateway port change rejected before reconciliation"
+else
+    check test "$?" = 2
+fi
+fresh_gateway_port_home="$TEST_ROOT/fresh-gateway-port-home"
+mkdir -p "$fresh_gateway_port_home"
+check _ods_pixel_existing_gateway_port_matches "$owner" "$fresh_gateway_port_home" 18790
 native_answers="$TEST_ROOT/native-search-onboarding.json"
 _ods_pixel_write_onboarding "$owner" "$home" "$native_answers" /usr/bin/openclaw \
     /opt/ods/pixel-plugin "$digest" parallel-free /opt/ods/native-search/parallel-2026.6.33 "$digest"
@@ -1801,6 +1965,31 @@ else
 fi
 eval "$original_run_as_owner"
 
+# The access coordinator restart is asynchronous. Prove the fresh-install
+# helper retries a bounded number of fail-closed attempts and stops immediately
+# after the protected reconciliation succeeds.
+access_reconcile_attempts="$TEST_ROOT/access-reconcile-attempts"
+printf '0\n' > "$access_reconcile_attempts"
+ods_pixel_run_as_owner() {
+    local count
+    read -r count < "$access_reconcile_attempts"
+    count=$((count + 1))
+    printf '%s\n' "$count" > "$access_reconcile_attempts"
+    (( count >= 3 ))
+}
+sleep() { :; }
+check _ods_pixel_wait_access_reconcile "$owner" "$home" /protected/reconcile.py 5 1
+check test "$(cat "$access_reconcile_attempts")" = 3
+printf '0\n' > "$access_reconcile_attempts"
+if _ods_pixel_wait_access_reconcile "$owner" "$home" /protected/reconcile.py 2 1; then
+    fail "Pixel access reconciliation exhausts its bounded retry budget"
+else
+    pass "Pixel access reconciliation exhausts its bounded retry budget"
+fi
+check test "$(cat "$access_reconcile_attempts")" = 2
+unset -f sleep
+eval "$original_run_as_owner"
+
 # The long-lived host agent normally lacks an active sudo credential. Prove
 # its fallback can only terminate the same-owner PID of the exact hardened
 # Restart=always unit, then waits for systemd to replace it before verification.
@@ -1932,6 +2121,7 @@ check python3 -c '
 import pathlib,sys
 text=pathlib.Path(sys.argv[1]).read_text()
 installer=text[text.index("ods_pixel_install_default_agent() {"):]
+assert "local -a pixel_prerequisites=(litellm dashboard-api pixel-edge)" in installer
 assert "ods_pixel_run_as_owner \"$owner\" \"$home\" curl" in text
 assert "_ods_pixel_wait_ingress \"$owner\" \"$home\"" in installer
 assert installer.index("_ods_pixel_wait_ingress \"$owner\" \"$home\"") < installer.index("_ods_pixel_mark_ready \"$owner\" \"$home\"")
@@ -2005,11 +2195,15 @@ assert "failure_phase=\"runtime-budget\"" in text
 assert "failure_phase=\"managed-update-validation\"" in text
 assert "failure_phase=\"config-install\"" in text
 assert "failure_phase=\"gateway-restart-verify\"" in text
+assert "failure_phase=\"access-runtime-reproof\"" in text
 assert "failure_phase=\"ingress-runtime-refresh\"" in text
 assert "failure_phase=\"sandbox-recreate\"" in text
 assert "failure_phase=\"contract-hash\"" in text
 assert "failure_phase=\"ready-marker\"" in text
 assert "failure_phase=\"installing-marker\"" in text
+assert chr(39) + "gateway_port" + chr(39) + ": gateway_port" in text
+assert "pixel_access_reconcile.py" in text
+assert "_ods_pixel_reverify_access_after_gateway_restart \"$owner\" \"$home\" true" in text
 assert "rollback=verified" in text
 assert "rollback=failed" in text
 assert installer.index("if _ods_pixel_verified_source_matches") < installer.index("_ods_pixel_mark_installing")
@@ -2057,13 +2251,19 @@ assert installer.index("_ods_pixel_refresh_plugin_registry") < installer.index("
 assert "ods_linux_node_tools_available" in text
 assert "runtime_token_file=\"/run/ods-pixel/openclaw.json\"" in text
 assert "PIXEL_GATEWAY_TOKEN_FILE=$runtime_token_file" in text
+assert "PIXEL_GATEWAY_PORT=$gateway_port" in text
+assert "(( preview_port != gateway_port )) || return 1" in text
+assert "\"http://127.0.0.1:${pixel_gateway_port}/health\"" in text
+assert installer.index("_ods_pixel_existing_gateway_port_matches") < installer.index("_ods_pixel_prepare_attempt_log")
 assert "PIXEL_ODS_VERSION=$ods_version" in text
 assert "PIXEL_ODS_N8N_PORT=${N8N_PORT:-5678}" in text
 assert "PIXEL_ODS_WHISPER_PORT=${WHISPER_PORT:-9000}" in text
 prerequisites = installer.index("\"${pixel_prerequisites[@]}\"")
 control_health = installer.index("_ods_pixel_wait_http \"ODS control API\"", prerequisites)
 bootstrap = installer.index("ai \"Bootstrapping the exact Pixel source", control_health)
-assert prerequisites < control_health < bootstrap
+access_service = installer.index("if ! _ods_pixel_install_access_service", bootstrap)
+access_reproof = installer.index("_ods_pixel_reverify_access_after_gateway_restart \"$owner\" \"$home\" true", access_service)
+assert prerequisites < control_health < bootstrap < access_service < access_reproof
 assert "exact ODS prerequisite services" in installer
 ' "$ROOT/installers/lib/pixel-host-install.sh"
 check python3 -c '
@@ -2080,6 +2280,13 @@ checkout = phase.index("if ! _ods_pixel_source_checkout", preflight)
 assert phase.index(handoff) < preflight < checkout < phase.index("PIXEL_SOURCE_URL=$(dotenv_quote")
 assert "Pixel source is unavailable. Configure authorized Git access" in phase
 assert "PIXEL_SOURCE_REF \"bbd1d2d62c7260f822ba1e727728a0a02f78895f\"" in phase
+assert "PIXEL_GATEWAY_PORT_VALUE=\"$(_env_get_explicit_first PIXEL_GATEWAY_PORT \"18789\")\"" in phase
+assert "PIXEL_PREVIEW_PORT_VALUE=\"$(_env_get_explicit_first PIXEL_PREVIEW_PORT \"9437\")\"" in phase
+assert "export PIXEL_GATEWAY_PORT=\"$PIXEL_GATEWAY_PORT_VALUE\"" in phase
+assert "export PIXEL_PREVIEW_PORT=\"$PIXEL_PREVIEW_PORT_VALUE\"" in phase
+assert "PIXEL_GATEWAY_PORT=${PIXEL_GATEWAY_PORT_VALUE}" in phase
+assert "PIXEL_PREVIEW_PORT=${PIXEL_PREVIEW_PORT_VALUE}" in phase
+assert "PIXEL_GATEWAY_PORT and PIXEL_PREVIEW_PORT must be different" in phase
 ' "$ROOT/installers/phases/06-directories.sh"
 check python3 -c '
 import pathlib,sys

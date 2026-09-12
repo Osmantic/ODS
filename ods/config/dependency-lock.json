@@ -173,13 +173,13 @@
       "id": "langfuse.minio",
       "type": "image",
       "path": "extensions/services/langfuse/compose.yaml.disabled",
-      "value": "minio/minio:RELEASE.2025-09-07T16-13-09Z"
+      "value": "quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z"
     },
     {
       "id": "langfuse.minio-client",
       "type": "image",
       "path": "extensions/services/langfuse/compose.yaml.disabled",
-      "value": "minio/mc:RELEASE.2025-08-13T08-35-41Z"
+      "value": "quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z"
     },
     {
       "id": "litellm.proxy",

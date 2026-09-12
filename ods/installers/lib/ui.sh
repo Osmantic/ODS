@@ -414,7 +414,15 @@ check_service() {
       [[ ${#docker_cmd_arr[@]} -gt 0 ]] || docker_cmd_arr=(docker)
       local container_state=""
       if command -v "${docker_cmd_arr[0]}" >/dev/null 2>&1; then
-        container_state=$("${docker_cmd_arr[@]}" inspect --format '{{.State.Status}}' "$container_name" 2>/dev/null || echo "missing")
+        if ! container_state=$("${docker_cmd_arr[@]}" inspect --format '{{.State.Status}}' "$container_name" 2>/dev/null); then
+          # Docker 29 can emit a blank stdout line before failing an inspect.
+          # Appending "missing" with `|| echo` produced a leading newline, so
+          # the exact-state case below missed it and retried for up to 20 min.
+          container_state="missing"
+        fi
+        container_state="${container_state//$'\r'/}"
+        container_state="${container_state//$'\n'/}"
+        [[ -n "$container_state" ]] || container_state="missing"
         case "$container_state" in
           exited|dead|missing)
             printf "\r  ${RED}✗${NC} %-55s\n" "$name container $container_state"

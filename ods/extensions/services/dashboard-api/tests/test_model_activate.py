@@ -7179,7 +7179,70 @@ class TestModelActivateRollback:
         assert env_path.read_text(encoding="utf-8") == expected_env
         assert restarts == []
 
-    def test_dependent_health_failure_rolls_back_previous_route(
+    def test_transient_hermes_unhealthy_recreates_once_without_rollback(
+        self, tmp_path, monkeypatch,
+    ):
+        install_dir, env_path, _env_text, _models_ini, _ini_text, _yaml, _yaml_text = (
+            _write_model_activation_fixture(tmp_path)
+        )
+        hermes_live = install_dir / "data" / "hermes" / "config.yaml"
+        hermes_template = (
+            install_dir / "extensions" / "services" / "hermes" / "cli-config.yaml.template"
+        )
+        hermes_live.parent.mkdir(parents=True)
+        hermes_template.parent.mkdir(parents=True)
+        old_config = (
+            "model:\n"
+            '  default: "old-model.gguf"\n'
+            "  context_length: 2048\n"
+        )
+        hermes_live.write_text(old_config, encoding="utf-8")
+        hermes_template.write_text(old_config, encoding="utf-8")
+        states = {
+            "ods-litellm": {"exists": False, "running": False},
+            "ods-hermes": {"exists": True, "running": True},
+            "ods-openclaw": {"exists": False, "running": False},
+            "ods-perplexica": {"exists": False, "running": False},
+        }
+        runtime_models = []
+        restart_calls = []
+        health_checks = []
+
+        def restart(container, _state=None, **kwargs):
+            restart_calls.append((container, kwargs.get("recreate")))
+            return container == "ods-hermes"
+
+        def check_health(container):
+            health_checks.append(container)
+            if len(health_checks) == 1:
+                raise _mod.ContainerUnhealthyError("simulated transient unhealthy Hermes")
+
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.setattr(_mod, "_capture_container_state", lambda name: states[name])
+        monkeypatch.setattr(
+            _mod,
+            "_compose_restart_llama_server",
+            lambda env: runtime_models.append(env["GGUF_FILE"]),
+        )
+        monkeypatch.setattr(_mod, "_wait_for_model_readiness", _mock_verified_readiness)
+        monkeypatch.setattr(_mod, "_restart_existing_container", restart)
+        monkeypatch.setattr(_mod, "_verify_running_hermes_route", lambda *_args: None)
+        monkeypatch.setattr(_mod, "_wait_for_container_health", check_health)
+        handler = _ResponseHandler()
+
+        _mod.AgentHandler._do_model_activate(handler, "target-model")
+
+        assert handler.response_code == 200
+        assert runtime_models == ["new-model.gguf"]
+        assert [call for call in restart_calls if call[0] == "ods-hermes"] == [
+            ("ods-hermes", True),
+            ("ods-hermes", True),
+        ]
+        assert health_checks == ["ods-hermes", "ods-hermes"]
+        assert _mod.load_env(env_path)["GGUF_FILE"] == "new-model.gguf"
+        assert handler.parse_response()["consumers"]["hermes"] == "restarted"
+
+    def test_repeated_hermes_unhealthy_rolls_back_previous_route(
         self, tmp_path, monkeypatch,
     ):
         install_dir, env_path, env_text, _models_ini, _ini_text, _yaml, _yaml_text = (
@@ -7221,8 +7284,8 @@ class TestModelActivateRollback:
             nonlocal health_checks
             assert container == "ods-hermes"
             health_checks += 1
-            if health_checks == 1:
-                raise RuntimeError("simulated unhealthy Hermes")
+            if health_checks <= 2:
+                raise _mod.ContainerUnhealthyError("simulated unhealthy Hermes")
 
         monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
         monkeypatch.setattr(_mod, "_capture_container_state", lambda name: states[name])
@@ -7253,7 +7316,7 @@ class TestModelActivateRollback:
         assert handler.response_code == 500
         assert handler.parse_response()["rolled_back"] is True
         assert runtime_models == ["new-model.gguf", "old-model.gguf"]
-        assert health_checks == 2
+        assert health_checks == 3
         assert env_path.read_text(encoding="utf-8") == env_text
         assert hermes_live.read_text(encoding="utf-8") == old_config
         assert json.loads(completion_receipt.read_text(encoding="utf-8")) == old_receipt

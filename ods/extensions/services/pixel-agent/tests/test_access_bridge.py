@@ -280,6 +280,17 @@ class BridgeTests(unittest.TestCase):
         self.runtime.pid += 1
         self.assertEqual(self.runtime.status()["effective_mode"], "unknown")
 
+    def test_root_owned_gateway_port_overrides_missing_or_stale_owner_config(self):
+        explicit = bridge.SystemdAccessBridge(self.root, "k" * 64, gateway_port=18790)
+        self.assertEqual(explicit.configured_gateway_port({}), 18790)
+        self.assertEqual(explicit.configured_gateway_port({"gateway": {"port": 18789}}), 18790)
+        legacy = bridge.SystemdAccessBridge(self.root, "k" * 64)
+        self.assertEqual(legacy.configured_gateway_port({}), 18789)
+        self.assertEqual(legacy.configured_gateway_port({"gateway": {"port": 19432}}), 19432)
+        for invalid in (0, 65536, True, "18790"):
+            with self.subTest(invalid=invalid), self.assertRaises(bridge.AccessError):
+                bridge.SystemdAccessBridge(self.root, "k" * 64, gateway_port=invalid)
+
     def test_stopped_gateway_recovery_requires_empty_unit_and_same_durable_lease(self):
         real = bridge.SystemdAccessBridge(self.root, "k" * 64)
         real.home = self.root
