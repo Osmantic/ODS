@@ -9048,6 +9048,9 @@ class AgentHandler(BaseHTTPRequestHandler):
         body = read_json_body(self)
         if body is None:
             return
+        lease_evidence = _parse_extension_mutation_lease(self, body)
+        if lease_evidence is _EXTENSION_MUTATION_LEASE_REJECTED:
+            return
 
         sid = body.get("service_id", "")
         if not isinstance(sid, str) or not SERVICE_ID_RE.match(sid):
@@ -9057,6 +9060,20 @@ class AgentHandler(BaseHTTPRequestHandler):
         if not isinstance(preserve_existing, bool):
             json_response(self, 400, {"error": "preserve_existing must be a boolean"})
             return
+
+        admission = _ExtensionMutationAdmission(self, lease_evidence, (sid,))
+        try:
+            with admission:
+                self._handle_extension_sync_config_admitted(sid, preserve_existing)
+        except _ExtensionMutationAdmissionRejected:
+            return
+
+    def _handle_extension_sync_config_admitted(
+        self,
+        sid: str,
+        preserve_existing: bool,
+    ) -> None:
+        """Validate and copy one config tree inside its admission boundary."""
 
         # Only user-installed extensions ship a config/ subdir for sync
         # at install time; built-in configs are pre-created by the
@@ -9177,46 +9194,39 @@ class AgentHandler(BaseHTTPRequestHandler):
                         return
 
         synced: list[str] = []
-        lock = _service_locks[sid]
-        if not lock.acquire(blocking=False):
-            json_response(self, 409, {"error": f"Operation already in progress for {sid}"})
-            return
         try:
-            try:
-                if preserve_existing:
-                    for source_path in sorted(src_svc.rglob("*")):
-                        relative = source_path.relative_to(src_svc)
-                        target_path = target / relative
-                        if source_path.is_dir():
-                            target_path.mkdir(parents=True, exist_ok=True)
-                        elif source_path.is_file() and not target_path.exists():
-                            target_path.parent.mkdir(parents=True, exist_ok=True)
-                            shutil.copy2(source_path, target_path)
-                else:
-                    shutil.copytree(
-                        str(src_svc), str(target),
-                        dirs_exist_ok=True, symlinks=False,
-                    )
-                synced.append(sid)
-            except OSError as exc:
-                json_response(self, 500, {
-                    "error": f"Failed to copy {sid}/config/{sid}: {exc}",
-                })
-                return
-            # Mark .sh files executable in the synced service tree.
-            for root, _dirs, files in os.walk(str(target)):
-                for fname in files:
-                    if fname.endswith(".sh"):
-                        fpath = Path(root) / fname
-                        try:
-                            fpath.chmod(
-                                fpath.stat().st_mode
-                                | stat_mod.S_IXUSR | stat_mod.S_IXGRP | stat_mod.S_IXOTH,
-                            )
-                        except OSError as exc:
-                            logger.warning("chmod +x failed for %s: %s", fpath, exc)
-        finally:
-            lock.release()
+            if preserve_existing:
+                for source_path in sorted(src_svc.rglob("*")):
+                    relative = source_path.relative_to(src_svc)
+                    target_path = target / relative
+                    if source_path.is_dir():
+                        target_path.mkdir(parents=True, exist_ok=True)
+                    elif source_path.is_file() and not target_path.exists():
+                        target_path.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(source_path, target_path)
+            else:
+                shutil.copytree(
+                    str(src_svc), str(target),
+                    dirs_exist_ok=True, symlinks=False,
+                )
+            synced.append(sid)
+        except OSError as exc:
+            json_response(self, 500, {
+                "error": f"Failed to copy {sid}/config/{sid}: {exc}",
+            })
+            return
+        # Mark .sh files executable in the synced service tree.
+        for root, _dirs, files in os.walk(str(target)):
+            for fname in files:
+                if fname.endswith(".sh"):
+                    fpath = Path(root) / fname
+                    try:
+                        fpath.chmod(
+                            fpath.stat().st_mode
+                            | stat_mod.S_IXUSR | stat_mod.S_IXGRP | stat_mod.S_IXOTH,
+                        )
+                    except OSError as exc:
+                        logger.warning("chmod +x failed for %s: %s", fpath, exc)
 
         logger.info(
             "synced config for extension %s (%d in-scope, %d out-of-scope ignored)",

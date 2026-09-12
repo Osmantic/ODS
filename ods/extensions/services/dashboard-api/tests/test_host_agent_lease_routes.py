@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import collections
 import json
+import shutil
 import threading
 import traceback
 
@@ -45,6 +46,18 @@ def write_compose(agent, service_id: str, *, active: bool) -> None:
     directory = agent.EXTENSIONS_DIR / service_id
     name = "compose.yaml" if active else "compose.yaml.disabled"
     (directory / name).write_text("services: {}\n", encoding="utf-8")
+
+
+def write_user_config(agent, service_id: str) -> tuple:
+    directory = agent.USER_EXTENSIONS_DIR / service_id
+    source = directory / "config" / service_id
+    source.mkdir(parents=True)
+    (directory / "manifest.yaml").write_text("service: {}\n", encoding="utf-8")
+    (source / "settings.yaml").write_text("enabled: true\n", encoding="utf-8")
+    install_dir = agent.USER_EXTENSIONS_DIR.parent / "install"
+    install_dir.mkdir()
+    agent.INSTALL_DIR = install_dir
+    return source, install_dir / "config" / service_id
 
 
 def test_compose_toggle_without_lease_preserves_legacy_behavior(
@@ -344,3 +357,131 @@ def test_toggle_mutation_error_clears_active_window_and_redacts_evidence(
             None,
         )
     )
+
+
+def test_malformed_sync_config_lease_fails_before_manager_lock_or_copy(
+    host_server, host_request
+):
+    agent, _listener = host_server
+    _source, target = write_user_config(agent, "documents")
+
+    status, result = host_request(
+        "/v1/extension/sync_config",
+        {"service_id": "documents", "lease": {"schema": "wrong"}},
+    )
+
+    assert status == 422
+    assert result == {"error": {"code": "invalid-lease-request"}}
+    assert agent._extension_lease_manager is None
+    assert dict(agent._service_locks) == {}
+    assert not target.exists()
+
+
+def test_sync_config_without_lease_preserves_legacy_behavior(
+    host_server, host_request
+):
+    agent, _listener = host_server
+    agent._service_locks = collections.defaultdict(CountingLock)
+    _source, target = write_user_config(agent, "documents")
+
+    status, result = host_request(
+        "/v1/extension/sync_config",
+        {"service_id": "documents"},
+        expect_no_store=False,
+    )
+
+    assert status == 200
+    assert result == {
+        "status": "ok",
+        "service_id": "documents",
+        "synced": ["documents"],
+        "skipped": [],
+        "preserve_existing": False,
+    }
+    assert agent._extension_lease_manager is None
+    assert agent._service_locks["documents"].acquire_calls == 1
+    assert not agent._service_locks["documents"].locked()
+    assert (target / "settings.yaml").read_text(encoding="utf-8") == "enabled: true\n"
+
+
+def test_valid_sync_config_lease_covers_copy_without_reacquiring(
+    host_server, host_request, monkeypatch
+):
+    agent, _listener = host_server
+    agent._service_locks = collections.defaultdict(CountingLock)
+    _source, target = write_user_config(agent, "documents")
+    grant = acquire_lease(agent, host_request)
+    lock = agent._service_locks["documents"]
+    original_copytree = shutil.copytree
+
+    def observed_copytree(*args, **kwargs):
+        state = agent._extension_lease_manager.describe(grant["leaseId"])
+        assert state["active"] is True
+        return original_copytree(*args, **kwargs)
+
+    monkeypatch.setattr(agent.shutil, "copytree", observed_copytree)
+    status, result = host_request(
+        "/v1/extension/sync_config",
+        {
+            "service_id": "documents",
+            "lease": mutation_lease(agent, grant),
+        },
+        expect_no_store=False,
+    )
+
+    assert status == 200
+    assert result == {
+        "status": "ok",
+        "service_id": "documents",
+        "synced": ["documents"],
+        "skipped": [],
+        "preserve_existing": False,
+    }
+    assert (target / "settings.yaml").read_text(encoding="utf-8") == "enabled: true\n"
+    assert lock.acquire_calls == 1
+    assert lock.locked()
+    assert agent._extension_lease_manager.describe(grant["leaseId"])["active"] is False
+
+
+def test_sync_config_lease_scope_failure_cannot_prepare_target(
+    host_server, host_request
+):
+    agent, _listener = host_server
+    _source, target = write_user_config(agent, "voice")
+    grant = acquire_lease(agent, host_request, ["documents"])
+
+    status, result = host_request(
+        "/v1/extension/sync_config",
+        {
+            "service_id": "voice",
+            "lease": mutation_lease(agent, grant),
+        },
+    )
+
+    assert status == 403
+    assert result == {"error": {"code": "lease-service-not-covered"}}
+    assert not target.exists()
+    assert "voice" not in agent._service_locks
+
+
+def test_sync_config_authenticates_lease_before_noop(host_server, host_request):
+    agent, _listener = host_server
+    directory = agent.USER_EXTENSIONS_DIR / "documents"
+    directory.mkdir()
+    (directory / "manifest.yaml").write_text("service: {}\n", encoding="utf-8")
+    grant = acquire_lease(agent, host_request)
+    submitted = mutation_lease(
+        agent,
+        grant,
+        leaseToken="wrong-token-value" * 3,
+    )
+
+    status, result = host_request(
+        "/v1/extension/sync_config",
+        {"service_id": "documents", "lease": submitted},
+    )
+
+    assert status == 403
+    assert result == {"error": {"code": "lease-token-mismatch"}}
+    assert not (directory / "config").exists()
+    assert submitted["leaseToken"] not in json.dumps(result)
