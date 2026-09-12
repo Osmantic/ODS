@@ -49,12 +49,24 @@ log_ok()    { echo -e "${GREEN}[OK]${NC} $*"; }
 log_warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 
+# Installed version. .version is written by this script after an update
+# (git describe), so when it carries a version it is the freshest record for
+# this flow. No installer creates it, though, and `check` only stores
+# last_check in it -- so on a fresh install fall back to what the installer
+# did record: ODS_VERSION in .env (Linux phase 06), then manifest.json's
+# ods_version, the same sources ods-cli and the dashboard read.
 get_current_version() {
+    local version=""
     if [[ -f "$VERSION_FILE" ]]; then
-        jq -r '.version // "0.0.0"' "$VERSION_FILE" 2>/dev/null || echo "0.0.0"
-    else
-        echo "0.0.0"
+        version=$(jq -r '.version // empty' "$VERSION_FILE" 2>/dev/null || true)
     fi
+    if [[ -z "$version" ]]; then
+        version=$(env_file_value ODS_VERSION)
+    fi
+    if [[ -z "$version" && -f "${INSTALL_DIR}/manifest.json" ]]; then
+        version=$(jq -r '.ods_version // empty' "${INSTALL_DIR}/manifest.json" 2>/dev/null || true)
+    fi
+    echo "${version:-0.0.0}"
 }
 
 env_file_value() {

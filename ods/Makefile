@@ -123,6 +123,7 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== ods-update.sh backup command ==="
 	@bash tests/test-update-script-backup.sh
+	@bash tests/test-update-current-version.sh
 	@bash tests/test-backup-data-coverage.sh
 	@echo ""
 	@echo "=== backup integrity and restore round-trip ==="
