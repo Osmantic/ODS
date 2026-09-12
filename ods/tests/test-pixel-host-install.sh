@@ -321,9 +321,13 @@ mkdir -p "$inactive_home/.config/ods" "$inactive_release" "$inactive_pixel_root"
 chmod 0700 "$inactive_home/.config/ods" "$inactive_home/.local/share/pixel" \
     "$inactive_home/.local/share/pixel/releases"
 printf '%s\n' 4.3.27 >"$inactive_pixel_root/VERSION"
-cat >"$inactive_home/.config/ods/pixel-managed.json" <<JSON
+write_inactive_marker() {
+    cat >"$inactive_home/.config/ods/pixel-managed.json" <<JSON
 {"schema_version":2,"manager":"ods","state":"installing","initial_active_state":"absent","install_dir":"$INSTALL_DIR","pixel_source_ref":"$PIXEL_SOURCE_REF"}
 JSON
+    chmod 0600 "$inactive_home/.config/ods/pixel-managed.json"
+}
+write_inactive_marker
 cat >"$inactive_release/release-identity.json" <<JSON
 {"kind":"pixel-release-source-identity","pixel":"4.3.27","source":{"state":"git-clean","commit":"$PIXEL_SOURCE_REF","tree":"$(printf 'a%.0s' {1..40})"}}
 JSON
@@ -333,7 +337,6 @@ printf '%s\n' 4.3.27 >"$inactive_release/VERSION"
     cd "$inactive_release"
     sha256sum ./VERSION ./payload.txt ./release-identity.json >install-manifest.sha256
 )
-chmod 0600 "$inactive_home/.config/ods/pixel-managed.json"
 printf '%s\n' '[pixel] ERROR: unrelated apply failure' >"$inactive_log"
 chmod 0600 "$inactive_log"
 if _ods_pixel_retire_inactive_conflicting_release \
@@ -356,6 +359,65 @@ printf '%s\n' 'reviewed inactive release' >"$inactive_release/payload.txt"
     cd "$inactive_release"
     sha256sum ./VERSION ./payload.txt ./release-identity.json >install-manifest.sha256
 )
+for marker_case in initial-active verified-state wrong-requested-source wrong-schema wrong-manager; do
+    write_inactive_marker
+    python3 - "$inactive_home/.config/ods/pixel-managed.json" "$marker_case" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+case = sys.argv[2]
+value = json.loads(path.read_text())
+if case == "initial-active":
+    value["initial_active_state"] = "running"
+elif case == "verified-state":
+    value["active_release_version"] = "4.3.27"
+elif case == "wrong-requested-source":
+    value["requested_source_ref"] = "f" * 40
+elif case == "wrong-schema":
+    value["schema_version"] = 1
+elif case == "wrong-manager":
+    value["manager"] = "ambient"
+path.write_text(json.dumps(value, separators=(",", ":")) + "\n")
+PY
+    if _ods_pixel_retire_inactive_conflicting_release \
+        "$owner" "$inactive_home" "$inactive_pixel_root" "$inactive_log" >/dev/null 2>&1; then
+        fail "unsafe $marker_case marker triggered inactive-release retirement"
+    else
+        pass "unsafe $marker_case marker is rejected before inactive-release retirement"
+    fi
+    check test -d "$inactive_release"
+done
+write_inactive_marker
+inactive_gateway_unit="$TEST_ROOT/inactive-openclaw-gateway.service"
+printf '%s\n' '[Unit]' >"$inactive_gateway_unit"
+if ODS_PIXEL_GATEWAY_UNIT_PATH="$inactive_gateway_unit" \
+    _ods_pixel_retire_inactive_conflicting_release \
+        "$owner" "$inactive_home" "$inactive_pixel_root" "$inactive_log" >/dev/null 2>&1; then
+    fail "existing Pixel gateway unit allowed inactive-release retirement"
+else
+    pass "existing Pixel gateway unit blocks inactive-release retirement"
+fi
+rm -f -- "$inactive_gateway_unit"
+printf '%s\n' '{}' >"$inactive_home/.local/share/pixel/runtime-attestation.json"
+if _ods_pixel_retire_inactive_conflicting_release \
+    "$owner" "$inactive_home" "$inactive_pixel_root" "$inactive_log" >/dev/null 2>&1; then
+    fail "runtime-attested Pixel allowed inactive-release retirement"
+else
+    pass "runtime-attested Pixel blocks inactive-release retirement"
+fi
+rm -f -- "$inactive_home/.local/share/pixel/runtime-attestation.json"
+mv -- "$inactive_release" "$inactive_release.real"
+ln -s -- "$inactive_release.real" "$inactive_release"
+if _ods_pixel_retire_inactive_conflicting_release \
+    "$owner" "$inactive_home" "$inactive_pixel_root" "$inactive_log" >/dev/null 2>&1; then
+    fail "symlinked Pixel release root allowed inactive-release retirement"
+else
+    pass "symlinked Pixel release root blocks inactive-release retirement"
+fi
+rm -f -- "$inactive_release"
+mv -- "$inactive_release.real" "$inactive_release"
 ln -s "$inactive_release" "$inactive_home/.local/share/pixel/current"
 if _ods_pixel_retire_inactive_conflicting_release \
     "$owner" "$inactive_home" "$inactive_pixel_root" "$inactive_log" >/dev/null 2>&1; then
