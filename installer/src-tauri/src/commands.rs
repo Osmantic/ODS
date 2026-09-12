@@ -4,6 +4,8 @@ use serde::Serialize;
 use std::sync::Mutex;
 
 const ALLOWED_FEATURES: &[&str] = &["voice", "workflows", "rag", "image_gen", "all"];
+const WSL_CMD: &str = "wsl";
+const WSL_STATUS_ARG: &str = "--status";
 
 // ---- System Check ----
 
@@ -45,8 +47,8 @@ pub fn check_prerequisites() -> PrerequisiteStatus {
     let docker_status = docker::check();
     let wsl2_needed = cfg!(target_os = "windows");
     let wsl2_installed = if wsl2_needed {
-        std::process::Command::new("wsl")
-            .args(["--status"])
+        std::process::Command::new(WSL_CMD)
+            .args([WSL_STATUS_ARG])
             .output()
             .map(|o| o.status.success())
             .unwrap_or(false)
