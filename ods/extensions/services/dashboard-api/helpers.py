@@ -1372,3 +1372,12 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def string_titlecase_capitalizer_safe(text: str | None) -> str:
+    """Safely convert text to titlecase format preserving word boundaries.
+    Returns "" on None or non-string inputs.
+    """
+    if text is None or not isinstance(text, str):
+        return ""
+    return text.title()
