@@ -135,6 +135,15 @@ BACKUP_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 MAX_BODY = 16384
 _ASSISTANT_SECRET_MAX_BODY = 64 * 1024
 _ASSISTANT_LEASE_MAX_BODY = 32 * 1024
+_EXTENSION_MUTATION_LEASE_SCHEMA = "ods.extension-operation-lease.v1"
+_EXTENSION_MUTATION_LEASE_KEYS = frozenset({
+    "schema", "leaseId", "leaseToken", "transactionId", "planHash",
+})
+_EXTENSION_MUTATION_LEASE_ID_RE = re.compile(r"^lease-[0-9a-f]{32}$")
+_EXTENSION_MUTATION_TRANSACTION_ID_RE = re.compile(r"^txn-[0-9a-f]{24}$")
+_EXTENSION_MUTATION_PLAN_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
+_EXTENSION_MUTATION_LEASE_ABSENT = object()
+_EXTENSION_MUTATION_LEASE_REJECTED = object()
 MAX_TELEMETRY_RESPONSE_BYTES = 1024 * 1024
 SUBPROCESS_TIMEOUT_START = 600  # 10 min — image pulls can be slow
 SUBPROCESS_TIMEOUT_STOP = 120   # 2 min — stop should be fast
@@ -6397,6 +6406,200 @@ def _get_extension_lease_manager():
         return _extension_lease_manager
 
 
+class _ExtensionMutationLeaseEvidence:
+    """Validated request-scoped lease evidence with a redacted credential."""
+
+    __slots__ = (
+        "lease_id", "__lease_token", "transaction_id", "plan_hash",
+    )
+
+    def __init__(
+        self,
+        lease_id: str,
+        lease_token: str,
+        transaction_id: str,
+        plan_hash: str,
+    ) -> None:
+        self.lease_id = lease_id
+        self.__lease_token = lease_token
+        self.transaction_id = transaction_id
+        self.plan_hash = plan_hash
+
+    def reveal_token(self) -> str:
+        return self.__lease_token
+
+    def __repr__(self) -> str:
+        return (
+            "_ExtensionMutationLeaseEvidence("
+            f"lease_id={self.lease_id!r}, lease_token=<redacted>, "
+            f"transaction_id={self.transaction_id!r}, "
+            f"plan_hash={self.plan_hash!r})"
+        )
+
+    __str__ = __repr__
+
+
+class _ExtensionMutationAdmissionRejected(Exception):
+    """Internal control flow after the admission boundary wrote a response."""
+
+
+def _parse_extension_mutation_lease(handler, body: dict):
+    """Return exact lease evidence, absence, or a responded rejection marker."""
+
+    if "lease" not in body:
+        return _EXTENSION_MUTATION_LEASE_ABSENT
+    if not ASSISTANT_TRANSACTIONS_ENABLED:
+        json_response(
+            handler,
+            404,
+            {"error": {"code": "not-found"}},
+            no_store=True,
+        )
+        return _EXTENSION_MUTATION_LEASE_REJECTED
+
+    value = body.get("lease")
+    valid = (
+        isinstance(value, dict)
+        and set(value) == _EXTENSION_MUTATION_LEASE_KEYS
+        and all(isinstance(value.get(key), str) for key in value)
+    )
+    if valid:
+        valid = (
+            value["schema"] == _EXTENSION_MUTATION_LEASE_SCHEMA
+            and _EXTENSION_MUTATION_LEASE_ID_RE.fullmatch(value["leaseId"])
+            is not None
+            and 32 <= len(value["leaseToken"]) <= 256
+            and _EXTENSION_MUTATION_TRANSACTION_ID_RE.fullmatch(
+                value["transactionId"]
+            )
+            is not None
+            and _EXTENSION_MUTATION_PLAN_HASH_RE.fullmatch(value["planHash"])
+            is not None
+        )
+    if not valid:
+        json_response(
+            handler,
+            422,
+            {"error": {"code": "invalid-lease-request"}},
+            no_store=True,
+        )
+        return _EXTENSION_MUTATION_LEASE_REJECTED
+    return _ExtensionMutationLeaseEvidence(
+        value["leaseId"],
+        value["leaseToken"],
+        value["transactionId"],
+        value["planHash"],
+    )
+
+
+def _extension_mutation_lease_error(handler, exc: Exception) -> None:
+    """Write the stable lease error taxonomy without emitting details."""
+
+    module = _extension_leases
+    if module is not None and isinstance(exc, module.LeaseExpired):
+        status = 410
+    elif module is not None and isinstance(
+        exc, (module.LeaseBusy, module.LeaseConflict)
+    ):
+        status = 409
+    elif module is not None and isinstance(exc, module.LeaseAuthorizationError):
+        status = 403
+    elif module is not None and isinstance(exc, module.LeaseError):
+        status = 422
+    else:
+        logger.error(
+            "Extension mutation lease admission failed (%s)",
+            type(exc).__name__,
+        )
+        json_response(
+            handler,
+            503,
+            {"error": {"code": "extension-lease-manager-unavailable"}},
+            no_store=True,
+        )
+        return
+    json_response(
+        handler,
+        status,
+        {"error": {"code": exc.code}},
+        no_store=True,
+    )
+
+
+class _ExtensionMutationAdmission:
+    """Enter either the unchanged legacy locks or one exact lease window."""
+
+    __slots__ = (
+        "_handler", "_evidence", "_service_ids", "_legacy_locks",
+        "_lease_context",
+    )
+
+    def __init__(self, handler, evidence, service_ids) -> None:
+        self._handler = handler
+        self._evidence = evidence
+        self._service_ids = tuple(service_ids)
+        self._legacy_locks = []
+        self._lease_context = None
+
+    def __repr__(self) -> str:
+        mode = (
+            "legacy"
+            if self._evidence is _EXTENSION_MUTATION_LEASE_ABSENT
+            else "lease"
+        )
+        return f"_ExtensionMutationAdmission(mode={mode!r})"
+
+    def __enter__(self):
+        if self._evidence is _EXTENSION_MUTATION_LEASE_ABSENT:
+            for service_id in self._service_ids:
+                lock = _service_locks[service_id]
+                if lock.acquire(blocking=False) is not True:
+                    for held_lock in reversed(self._legacy_locks):
+                        held_lock.release()
+                    self._legacy_locks.clear()
+                    json_response(
+                        self._handler,
+                        409,
+                        {
+                            "error": (
+                                "Operation already in progress for "
+                                f"{service_id}"
+                            )
+                        },
+                    )
+                    raise _ExtensionMutationAdmissionRejected from None
+                self._legacy_locks.append(lock)
+            return None
+
+        try:
+            manager = _get_extension_lease_manager()
+            if manager is None:
+                raise RuntimeError("extension-lease-manager-unavailable")
+            context = manager.use(
+                self._evidence.lease_id,
+                self._evidence.reveal_token(),
+                self._evidence.transaction_id,
+                self._evidence.plan_hash,
+                self._service_ids,
+            )
+            result = context.__enter__()
+        except Exception as exc:
+            _extension_mutation_lease_error(self._handler, exc)
+            raise _ExtensionMutationAdmissionRejected from None
+        self._lease_context = context
+        return result
+
+    def __exit__(self, exc_type, exc_value, traceback) -> bool:
+        if self._lease_context is not None:
+            context = self._lease_context
+            self._lease_context = None
+            return bool(context.__exit__(exc_type, exc_value, traceback))
+        for lock in reversed(self._legacy_locks):
+            lock.release()
+        self._legacy_locks.clear()
+        return False
+
+
 def _service_has_docker_container(service_id: str) -> tuple[bool, str]:
     """Return whether service_id maps to a Docker container restart target."""
     ext_dir = _find_ext_dir(service_id)
@@ -8774,6 +8977,9 @@ class AgentHandler(BaseHTTPRequestHandler):
         body = read_json_body(self)
         if body is None:
             return
+        lease_evidence = _parse_extension_mutation_lease(self, body)
+        if lease_evidence is _EXTENSION_MUTATION_LEASE_REJECTED:
+            return
 
         # Validate service_id format and existence
         sid = body.get("service_id", "")
@@ -8797,25 +9003,28 @@ class AgentHandler(BaseHTTPRequestHandler):
             src = ext_dir / "compose.yaml"
             dst = ext_dir / "compose.yaml.disabled"
 
-        lock = _service_locks[sid]
-        if not lock.acquire(blocking=False):
-            json_response(self, 409, {"error": f"Operation already in progress for {sid}"})
-            return
+        admission = _ExtensionMutationAdmission(self, lease_evidence, (sid,))
         try:
-            # Check existence inside the lock to prevent TOCTOU races
-            if not src.exists():
-                state = "enabled" if activate else "disabled"
-                json_response(self, 409, {"error": f"Extension already {state}: {sid}"})
-                return
-            # os.replace (not os.rename) — Windows os.rename raises
-            # FileExistsError when destination exists; os.replace always
-            # overwrites atomically.
-            os.replace(str(src), str(dst))
+            with admission:
+                # Check existence inside the admission boundary to prevent
+                # TOCTOU races across legacy and lease-authorized callers.
+                if not src.exists():
+                    state = "enabled" if activate else "disabled"
+                    json_response(
+                        self,
+                        409,
+                        {"error": f"Extension already {state}: {sid}"},
+                    )
+                    return
+                # os.replace (not os.rename) — Windows os.rename raises
+                # FileExistsError when destination exists; os.replace always
+                # overwrites atomically.
+                os.replace(str(src), str(dst))
+        except _ExtensionMutationAdmissionRejected:
+            return
         except OSError as exc:
             json_response(self, 500, {"error": f"Failed to {action} extension: {exc}"})
             return
-        finally:
-            lock.release()
 
         logger.info("%sd extension compose: %s", action, sid)
         json_response(self, 200, {"status": "ok", "service_id": sid, "action": action})
