@@ -1372,3 +1372,20 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def dict_compact_none_values_safe(d: dict | None, recursive: bool = True) -> dict:
+    """Safely strip None values recursively from dictionary objects.
+    Returns {} on None or non-dict inputs.
+    """
+    if not isinstance(d, dict) or d is None:
+        return {}
+    res = {}
+    for k, v in d.items():
+        if v is None:
+            continue
+        if recursive and isinstance(v, dict):
+            res[k] = dict_compact_none_values_safe(v, recursive=True)
+        else:
+            res[k] = v
+    return res
