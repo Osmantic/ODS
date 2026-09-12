@@ -98,7 +98,7 @@ describe('Extensions page — unhealthy + install derivations', () => {
     const transactionId = `txn-${'b'.repeat(24)}`
     const plan = {
       schema: 'ods.assistant-first.plan.v1',
-      validUntil: '2026-09-13T00:00:00Z',
+      validUntil: '2099-09-13T00:00:00Z',
       requestedServices: ['demo'],
       selectedServices: ['demo'],
       operations: [{serviceId:'demo',action:'install'}],

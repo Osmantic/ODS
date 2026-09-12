@@ -31,6 +31,7 @@ const LABELS = {
 const errorLabel = code => ({
   'owner-session-required': 'An owner browser session is required to approve this exact plan.',
   'missing-configuration': 'Complete the required configuration before approval.',
+  'plan-expired': 'This plan has expired. Close it and request a fresh plan.',
   'transaction-request-timeout': 'The request timed out. Refresh the transaction status before retrying.',
   'transaction-request-unavailable': 'The transaction service is temporarily unavailable.',
 }[code] || `The transaction was rejected (${code || 'unknown-error'}).`)
@@ -198,7 +199,9 @@ export default function ExtensionTransactionPanel({ proposal, extensionName, onC
   const [busy, setBusy] = useState('loading')
   const [error, setError] = useState(null)
   const formRef = useRef(null)
+  const dialogRef = useRef(null)
   const mounted = useRef(true)
+  const actionInFlight = useRef(null)
 
   const refresh = async () => {
     const next = await getExtensionTransaction(proposal.transactionId, proposal.planHash)
@@ -230,12 +233,15 @@ export default function ExtensionTransactionPanel({ proposal, extensionName, onC
 
   const submitConfiguration = async event => {
     event.preventDefault()
+    if (actionInFlight.current) return
+    actionInFlight.current = 'configuration'
     setBusy('configuration')
     setError(null)
     const form = formRef.current
     const values = {}
     const secretValues = {}
     try {
+      if (!form) throw new Error('configuration-form-unavailable')
       for (const field of configuration.fields) {
         if (field.source !== 'user') continue
         const input = form.elements.namedItem(field.key)
@@ -266,11 +272,18 @@ export default function ExtensionTransactionPanel({ proposal, extensionName, onC
       if (mounted.current) setError(errorLabel(caught.code))
     } finally {
       Object.keys(secretValues).forEach(key => { secretValues[key] = '' })
+      actionInFlight.current = null
       if (mounted.current) setBusy(null)
     }
   }
 
   const approve = async () => {
+    if (actionInFlight.current) return
+    if (Date.parse(status.plan.validUntil) <= Date.now()) {
+      setError(errorLabel('plan-expired'))
+      return
+    }
+    actionInFlight.current = 'approval'
     setBusy('approval')
     setError(null)
     try {
@@ -279,11 +292,18 @@ export default function ExtensionTransactionPanel({ proposal, extensionName, onC
     } catch (caught) {
       if (mounted.current) setError(errorLabel(caught.code))
     } finally {
+      actionInFlight.current = null
       if (mounted.current) setBusy(null)
     }
   }
 
   const execute = async () => {
+    if (actionInFlight.current) return
+    if (Date.parse(status.plan.validUntil) <= Date.now()) {
+      setError(errorLabel('plan-expired'))
+      return
+    }
+    actionInFlight.current = 'execution'
     setBusy('execution')
     setError(null)
     try {
@@ -298,15 +318,35 @@ export default function ExtensionTransactionPanel({ proposal, extensionName, onC
         await refresh().catch(() => {})
       }
     } finally {
+      actionInFlight.current = null
       if (mounted.current) setBusy(null)
     }
   }
 
   const configured = configuration?.configured === true
-  const canClose = busy !== 'execution' && !WORKING_STATES.has(status.state)
+  const canClose = !busy && !WORKING_STATES.has(status.state)
+  const handleDialogKeyDown = event => {
+    if (event.key === 'Escape' && canClose) {
+      event.preventDefault()
+      onClose()
+      return
+    }
+    if (event.key !== 'Tab') return
+    const focusable = [...(dialogRef.current?.querySelectorAll('button:not([disabled]), input:not([disabled]), select:not([disabled]), summary, [tabindex]:not([tabindex="-1"])') || [])]
+    if (!focusable.length) return
+    const first = focusable[0]
+    const last = focusable[focusable.length - 1]
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault()
+      last.focus()
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault()
+      first.focus()
+    }
+  }
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-3" role="presentation">
-      <div className="max-h-[94vh] w-full max-w-3xl overflow-y-auto rounded-2xl border border-theme-border bg-theme-card p-5 shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="extension-transaction-title">
+      <div ref={dialogRef} onKeyDown={handleDialogKeyDown} className="max-h-[94vh] w-full max-w-3xl overflow-y-auto rounded-2xl border border-theme-border bg-theme-card p-5 shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="extension-transaction-title">
         <div className="mb-5 flex items-start justify-between gap-3">
           <div>
             <h2 id="extension-transaction-title" className="text-lg font-semibold text-theme-text">{extensionName} change</h2>
@@ -314,7 +354,7 @@ export default function ExtensionTransactionPanel({ proposal, extensionName, onC
               <StateIcon state={status.state} />{LABELS[status.state] || status.state}
             </div>
           </div>
-          <button type="button" onClick={onClose} disabled={!canClose} aria-label="Close extension plan" className="rounded-lg p-2 text-theme-text-muted hover:bg-theme-surface-hover hover:text-theme-text disabled:opacity-40"><X size={18} /></button>
+          <button type="button" onClick={onClose} disabled={!canClose} autoFocus aria-label="Close extension plan" className="rounded-lg p-2 text-theme-text-muted hover:bg-theme-surface-hover hover:text-theme-text disabled:opacity-40"><X size={18} /></button>
         </div>
 
         {error && <div className="mb-4 rounded-lg border border-red-500/25 bg-red-500/10 p-3 text-[11px] text-red-200" role="alert">{error}</div>}

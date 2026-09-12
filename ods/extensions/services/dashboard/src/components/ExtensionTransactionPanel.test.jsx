@@ -21,7 +21,7 @@ const HASH = 'a'.repeat(64)
 const TX_ID = `txn-${'b'.repeat(24)}`
 const plan = {
   schema: 'ods.assistant-first.plan.v1',
-  validUntil: '2026-09-13T00:00:00Z',
+  validUntil: '2099-09-13T00:00:00Z',
   requestedServices: ['notes'],
   selectedServices: ['database', 'notes'],
   operations: [
@@ -176,5 +176,39 @@ describe('ExtensionTransactionPanel', () => {
       { ENABLE_REMOTE: false },
       {},
     ))
+  })
+
+  it('guards execution synchronously against a double click', async () => {
+    const approved = status('approved')
+    getExtensionTransaction.mockResolvedValue(approved)
+    getExtensionTransactionConfiguration.mockResolvedValue({ ...configuration(), fields: [] })
+    let finishExecution
+    executeExtensionTransaction.mockReturnValue(new Promise(resolve => { finishExecution = resolve }))
+    render(<ExtensionTransactionPanel proposal={{...proposal,state:'approved'}} extensionName="Notes" onClose={() => {}} />)
+    const apply = await screen.findByRole('button', { name: 'Apply approved plan' })
+    fireEvent.click(apply)
+    fireEvent.click(apply)
+    expect(executeExtensionTransaction).toHaveBeenCalledTimes(1)
+    getExtensionTransaction.mockResolvedValue(status('committed'))
+    finishExecution({ transactionId: TX_ID, planHash: HASH, finalState: 'committed', sequence: 10, appliedServices: ['notes'], error: null })
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Succeeded'))
+  })
+
+  it('blocks expired approval in the browser while the server remains authoritative', async () => {
+    const expiredPlan = { ...plan, validUntil: '2020-01-01T00:00:00Z', requiredConfigKeys: [], requiredSecretKeys: [] }
+    getExtensionTransaction.mockResolvedValue({ ...status(), plan: expiredPlan })
+    getExtensionTransactionConfiguration.mockResolvedValue({ ...configuration(), fields: [] })
+    render(<ExtensionTransactionPanel proposal={{...proposal,envelope:{plan:expiredPlan}}} extensionName="Notes" onClose={() => {}} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Approve exact plan' }))
+    expect(approveExtensionTransaction).not.toHaveBeenCalled()
+    expect(screen.getByRole('alert')).toHaveTextContent('plan has expired')
+  })
+
+  it('closes with Escape only while no operation is in flight', async () => {
+    const onClose = vi.fn()
+    render(<ExtensionTransactionPanel proposal={proposal} extensionName="Notes" onClose={onClose} />)
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.keyDown(dialog, { key: 'Escape' })
+    expect(onClose).toHaveBeenCalledTimes(1)
   })
 })

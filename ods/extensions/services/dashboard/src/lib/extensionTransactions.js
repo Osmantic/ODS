@@ -72,6 +72,9 @@ const validatePlan = plan => {
   if (!isObject(plan) || plan.schema !== 'ods.assistant-first.plan.v1') fail('invalid-transaction-plan')
   if (!Array.isArray(plan.selectedServices) || !Array.isArray(plan.operations)) fail('invalid-transaction-plan')
   if (!isObject(plan.resourceDelta) || !Array.isArray(plan.definitions)) fail('invalid-transaction-plan')
+  if (typeof plan.validUntil !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(plan.validUntil) || !Number.isFinite(Date.parse(plan.validUntil))) {
+    fail('invalid-transaction-expiry')
+  }
   return plan
 }
 

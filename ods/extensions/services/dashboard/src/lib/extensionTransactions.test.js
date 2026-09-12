@@ -58,6 +58,7 @@ describe('extension transaction client', () => {
         planHash: HASH,
         plan: {
           schema: 'ods.assistant-first.plan.v1',
+          validUntil: '2099-09-12T12:15:00Z',
           selectedServices: ['notes'],
           operations: [{ serviceId: 'notes', action: 'install' }],
           definitions: [],
