@@ -93,6 +93,43 @@ afterEach(() => {
 })
 
 describe('Extensions page — unhealthy + install derivations', () => {
+  it('routes install through an exact transaction plan only when the full runtime is advertised', async () => {
+    const planHash = 'a'.repeat(64)
+    const transactionId = `txn-${'b'.repeat(24)}`
+    const plan = {
+      schema: 'ods.assistant-first.plan.v1',
+      validUntil: '2026-09-13T00:00:00Z',
+      requestedServices: ['demo'],
+      selectedServices: ['demo'],
+      operations: [{serviceId:'demo',action:'install'}],
+      definitions: [{id:'demo',version:'1.0.0',dependsOn:[],provides:[],requires:[],conflicts:[],resources:{hostPorts:[],volumes:[],networks:[],devices:[],hostPermissions:[],linuxCapabilities:[]},trust:{tier:'bundled',publisher:'ODS'}}],
+      resourceDelta: {downloadBytes:0,diskBytes:0,ramBytes:0,vramBytes:0,cpuMillicores:0,gpuCount:0},
+      requiredConfigKeys: [],
+      requiredSecretKeys: [],
+      dataEffects: [],
+      rollbackEffects: [],
+      warnings: [],
+    }
+    const fetchMock = vi.fn(async (url, options = {}) => {
+      const path = String(url)
+      if (path === '/api/extensions/catalog') return makeJsonResponse({extensions:[{id:'demo',name:'Demo extension',status:'not_installed',source:'user',installable:true,features:[baseFeature]}],summary:baseSummary({not_installed:1}),agent_available:true})
+      if (path === '/api/templates') return makeJsonResponse({templates:[]})
+      if (path === '/api/extensions/transactions/capabilities') return makeJsonResponse({schema:'ods.assistant-first.transaction-capabilities.v1',planning:true,configuration:true,execution:true})
+      if (path === '/api/extensions/transactions' && options.method === 'POST') return makeJsonResponse({schema:'ods.assistant-first.transaction-proposal.v1',transactionId,planHash,state:'awaiting_approval',sequence:2,envelope:{planHash,plan}}, {status:201})
+      if (path === `/api/extensions/transactions/${transactionId}`) return makeJsonResponse({schema:'ods.assistant-first.transaction-status.v1',transactionId,planHash,state:'awaiting_approval',sequence:2,plan,journal:[],approval:{approved:false}})
+      if (path === `/api/extensions/transactions/${transactionId}/configuration`) return makeJsonResponse({schema:'ods.assistant-first.transaction-configuration-view.v1',transactionId,planHash,schemaHash:'c'.repeat(64),fields:[],configured:false,values:{},presentConfigKeys:[],presentSecretKeys:[],appliedDefaultKeys:[]})
+      throw new Error(`Unmocked fetch: ${path}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<Extensions compact />)
+    await screen.findByText('Demo extension')
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/extensions/transactions/capabilities', expect.any(Object)))
+    fireEvent.click(screen.getByRole('button',{name:'Install'}))
+    expect(await screen.findByRole('dialog',{name:'Demo extension change'})).toBeVisible()
+    expect(screen.getByText(planHash)).toBeVisible()
+    expect(fetchMock.mock.calls.some(([url]) => String(url) === '/api/extensions/demo/install')).toBe(false)
+  })
+
   it('shows starter collections as a matching paginated library with an explicit preview', async () => {
     vi.stubGlobal('fetch', vi.fn(async url => String(url).includes('/api/templates')
       ? makeJsonResponse({templates:Array.from({length:8}, (_,index) => ({id:`collection-${index}`,name:`Collection ${index}`,description:'A useful collection',services:['a','b']}))})

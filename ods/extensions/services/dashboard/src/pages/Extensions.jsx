@@ -11,6 +11,8 @@ import { serviceUrl } from '../lib/serviceUrls'
 import { createRecoveryTracker } from '../utils/recoveryTracker'
 import MetalMetricIcon from '../components/MetalMetricIcon'
 import FittedLibraryPage from '../components/FittedLibraryPage'
+import ExtensionTransactionPanel from '../components/ExtensionTransactionPanel'
+import { createExtensionTransaction, getTransactionCapabilities } from '../lib/extensionTransactions'
 import './extensions-refined.css'
 
 // Re-export so existing importers of getTemplateStatus from this module keep working.
@@ -107,6 +109,8 @@ export default function Extensions({ compact = false }) {
   const [depConfirm, setDepConfirm] = useState(null)
   const [templates, setTemplates] = useState([])
   const [pollingLost, setPollingLost] = useState(false)
+  const [transactionsAvailable, setTransactionsAvailable] = useState(false)
+  const [extensionTransaction, setExtensionTransaction] = useState(null)
   const installProgressRef = useRef(null)
   const activePollers = useRef({})
   // Per-service recovery tracker: counts consecutive fetch failures and
@@ -178,6 +182,9 @@ export default function Extensions({ compact = false }) {
 
   useEffect(() => {
     fetchCatalog()
+    getTransactionCapabilities()
+      .then(() => setTransactionsAvailable(true))
+      .catch(() => setTransactionsAvailable(false))
     fetch('/api/templates')
       .then(r => r.ok ? r.json() : { templates: [] })
       .then(d => setTemplates(d.templates || []))
@@ -305,6 +312,15 @@ export default function Extensions({ compact = false }) {
   }
 
   const requestAction = (ext, action) => {
+    if (transactionsAvailable && ['install', 'enable', 'update'].includes(action)) {
+      setMutating(ext.id)
+      setError(null)
+      createExtensionTransaction(ext.id)
+        .then(proposal => setExtensionTransaction({ proposal, extensionName: ext.name }))
+        .catch(caught => setToast({ type: 'error', text: `Could not prepare the extension plan (${caught.code || 'request-failed'}).` }))
+        .finally(() => setMutating(null))
+      return
+    }
     const messages = {
       install: `Install ${ext.name}? This will download and start the service.`,
       enable: `Enable ${ext.name}? The service will be started.`,
@@ -508,6 +524,18 @@ export default function Extensions({ compact = false }) {
       {/* Console modal */}
       {consoleExt && (
         <ConsoleModal ext={consoleExt} onClose={() => setConsoleExt(null)} />
+      )}
+
+      {extensionTransaction && (
+        <ExtensionTransactionPanel
+          proposal={extensionTransaction.proposal}
+          extensionName={extensionTransaction.extensionName}
+          onClose={() => setExtensionTransaction(null)}
+          onCommitted={async () => {
+            await fetchCatalog()
+            setToast({ type: 'success', text: 'The approved extension plan was applied and verified.' })
+          }}
+        />
       )}
 
       {/* Confirmation dialog */}

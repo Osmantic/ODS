@@ -260,6 +260,37 @@ def test_create_requires_api_key_and_uses_only_server_providers(api):
     ]
 
 
+def test_capabilities_advertise_only_the_injected_runtime(api):
+    response = api.client.get(
+        "/api/extensions/transactions/capabilities", headers=api.headers
+    )
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    assert response.json() == {
+        "schema": "ods.assistant-first.transaction-capabilities.v1",
+        "planning": True,
+        "configuration": True,
+        "execution": True,
+    }
+
+    runtime = api.client.app.state.extension_transaction_runtime
+    api.client.app.state.extension_transaction_runtime = TransactionRuntime(
+        store=runtime.store,
+        catalog=runtime.catalog,
+        observed_state=runtime.observed_state,
+        policy=runtime.policy,
+        clock=runtime.clock,
+        executor=None,
+        configuration=None,
+    )
+    unavailable = api.client.get(
+        "/api/extensions/transactions/capabilities", headers=api.headers
+    )
+    assert unavailable.status_code == 200
+    assert unavailable.json()["configuration"] is False
+    assert unavailable.json()["execution"] is False
+
+
 def test_create_retry_reports_duplicate_without_completion(api):
     first = api.client.post(
         "/api/extensions/transactions", json=create_body(), headers=api.headers
