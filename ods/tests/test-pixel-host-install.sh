@@ -2222,6 +2222,7 @@ assert "ods_linux_node_tools_available" in text
 assert "runtime_token_file=\"/run/ods-pixel/openclaw.json\"" in text
 assert "PIXEL_GATEWAY_TOKEN_FILE=$runtime_token_file" in text
 assert "PIXEL_GATEWAY_PORT=$gateway_port" in text
+assert "(( preview_port != gateway_port )) || return 1" in text
 assert "\"http://127.0.0.1:${pixel_gateway_port}/health\"" in text
 assert installer.index("_ods_pixel_existing_gateway_port_matches") < installer.index("_ods_pixel_prepare_attempt_log")
 assert "PIXEL_ODS_VERSION=$ods_version" in text
@@ -2247,6 +2248,13 @@ checkout = phase.index("if ! _ods_pixel_source_checkout", preflight)
 assert phase.index(handoff) < preflight < checkout < phase.index("PIXEL_SOURCE_URL=$(dotenv_quote")
 assert "Pixel source is unavailable. Configure authorized Git access" in phase
 assert "PIXEL_SOURCE_REF \"bbd1d2d62c7260f822ba1e727728a0a02f78895f\"" in phase
+assert "PIXEL_GATEWAY_PORT_VALUE=\"$(_env_get_explicit_first PIXEL_GATEWAY_PORT \"18789\")\"" in phase
+assert "PIXEL_PREVIEW_PORT_VALUE=\"$(_env_get_explicit_first PIXEL_PREVIEW_PORT \"9437\")\"" in phase
+assert "export PIXEL_GATEWAY_PORT=\"$PIXEL_GATEWAY_PORT_VALUE\"" in phase
+assert "export PIXEL_PREVIEW_PORT=\"$PIXEL_PREVIEW_PORT_VALUE\"" in phase
+assert "PIXEL_GATEWAY_PORT=${PIXEL_GATEWAY_PORT_VALUE}" in phase
+assert "PIXEL_PREVIEW_PORT=${PIXEL_PREVIEW_PORT_VALUE}" in phase
+assert "PIXEL_GATEWAY_PORT and PIXEL_PREVIEW_PORT must be different" in phase
 ' "$ROOT/installers/phases/06-directories.sh"
 check python3 -c '
 import pathlib,sys

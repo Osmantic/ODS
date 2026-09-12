@@ -664,6 +664,8 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
     PIXEL_SOURCE_URL_VALUE=""
     PIXEL_SOURCE_REF_VALUE=""
     PIXEL_SOURCE_DIR_VALUE=""
+    PIXEL_GATEWAY_PORT_VALUE=""
+    PIXEL_PREVIEW_PORT_VALUE=""
     if [[ "${ENABLE_PIXEL_RUNTIME:-false}" == "true" ]]; then
         PIXEL_OPENWEBUI_KEY_VALUE="$(_env_get PIXEL_OPENWEBUI_KEY "")"
         if [[ -z "$PIXEL_OPENWEBUI_KEY_VALUE" ]]; then
@@ -679,6 +681,17 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
 
         PIXEL_SOURCE_URL_VALUE="$(_env_get_explicit_first PIXEL_SOURCE_URL "https://github.com/Osmantic/Pixel.git")"
         PIXEL_SOURCE_REF_VALUE="$(_env_get_explicit_first PIXEL_SOURCE_REF "bbd1d2d62c7260f822ba1e727728a0a02f78895f")"
+        PIXEL_GATEWAY_PORT_VALUE="$(_env_get_explicit_first PIXEL_GATEWAY_PORT "18789")"
+        PIXEL_PREVIEW_PORT_VALUE="$(_env_get_explicit_first PIXEL_PREVIEW_PORT "9437")"
+        [[ "$PIXEL_GATEWAY_PORT_VALUE" =~ ^[1-9][0-9]{0,4}$ \
+            && "$PIXEL_PREVIEW_PORT_VALUE" =~ ^[1-9][0-9]{0,4}$ \
+            && "$PIXEL_GATEWAY_PORT_VALUE" -le 65535 \
+            && "$PIXEL_PREVIEW_PORT_VALUE" -le 65535 ]] || \
+            error "Pixel gateway and preview ports must be integers from 1 to 65535"
+        [[ "$PIXEL_GATEWAY_PORT_VALUE" != "$PIXEL_PREVIEW_PORT_VALUE" ]] || \
+            error "PIXEL_GATEWAY_PORT and PIXEL_PREVIEW_PORT must be different"
+        export PIXEL_GATEWAY_PORT="$PIXEL_GATEWAY_PORT_VALUE"
+        export PIXEL_PREVIEW_PORT="$PIXEL_PREVIEW_PORT_VALUE"
         PIXEL_WEB_SEARCH_PROVIDER_VALUE="$(_env_get_explicit_first PIXEL_WEB_SEARCH_PROVIDER "")"
         case "$PIXEL_WEB_SEARCH_PROVIDER_VALUE" in
             ""|parallel-free|searxng) ;;
@@ -1252,6 +1265,8 @@ PIXEL_OPENWEBUI_KEY=${PIXEL_OPENWEBUI_KEY_VALUE}
 PIXEL_INGRESS_RUNTIME_DIR=/run/ods-pixel
 PIXEL_PREVIEW_RUNTIME_DIR=/run/ods-pixel-preview
 PIXEL_INGRESS_GID=${PIXEL_INGRESS_GID_VALUE}
+PIXEL_GATEWAY_PORT=${PIXEL_GATEWAY_PORT_VALUE}
+PIXEL_PREVIEW_PORT=${PIXEL_PREVIEW_PORT_VALUE}
 PIXEL_ENV
 fi)
 SHIELD_API_KEY=${SHIELD_API_KEY}

@@ -3966,6 +3966,7 @@ _ods_pixel_install_ingress() {
     gateway_port="$(_ods_pixel_gateway_port)" || return 1
     [[ "$preview_port" =~ ^[0-9]+$ ]] || return 1
     (( preview_port >= 1 && preview_port <= 65535 )) || return 1
+    (( preview_port != gateway_port )) || return 1
     local app_port
     for app_port in \
         "${DASHBOARD_PORT:-3001}" "${WEBUI_PORT:-3000}" "${SEARXNG_PORT:-8888}" \
