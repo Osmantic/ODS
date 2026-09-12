@@ -1740,3 +1740,16 @@ def test_flatten_bounds_cycles_and_large_depth_without_losing_empty_leaves():
         nested = {"child": nested}
     result = dict_flatten_nested_safe(nested, max_depth=100000)
     assert len(next(iter(result)).split(".")) == 128
+
+
+class TestNumericClampSafe:
+    def test_valid_clamping(self):
+        from helpers import numeric_clamp_safe
+        assert numeric_clamp_safe(150, 0, 100) == 100.0
+        assert numeric_clamp_safe(-20, 0, 100) == 0.0
+        assert numeric_clamp_safe(42, 0, 100) == 42.0
+
+    def test_invalid_inputs(self):
+        from helpers import numeric_clamp_safe
+        assert numeric_clamp_safe(None, 10, 50) == 10.0
+        assert numeric_clamp_safe("100", 0, 50) == 0.0
