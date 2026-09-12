@@ -16,7 +16,7 @@ import pytest
 import threading
 from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 
-from test_provider_session import saved  # shared private provider fixture
+from test_provider_session import saved as saved  # shared private provider fixture
 from pixel_provider.advice_frames import encode_frame,read_frame
 from pixel_provider.advice_process import worker_environment
 from pixel_provider.lease_claim import LeaseClaim
@@ -37,7 +37,8 @@ def launch(root,body):
     child = subprocess.Popen([sys.executable,'-I','-B',str(BIN/'pixel_provider/route_worker.py'),
         '--provider-directory',str(root)],stdin=subprocess.PIPE,stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,bufsize=0,env=worker_environment())
-    child.stdin.write(encode_frame(body)); child.stdin.flush()
+    child.stdin.write(encode_frame(body))
+    child.stdin.flush()
     return child
 
 
@@ -53,8 +54,12 @@ def close(child):
     if child.stdin and not child.stdin.closed:
         child.stdin.close()
     try: child.wait(timeout=5)
-    except subprocess.TimeoutExpired: child.kill(); child.wait(timeout=3); raise
-    child.stdout.close(); child.stderr.close()
+    except subprocess.TimeoutExpired:
+        child.kill()
+        child.wait(timeout=3)
+        raise
+    child.stdout.close()
+    child.stderr.close()
 
 
 def port_closed(lease):
@@ -70,7 +75,8 @@ def process_live(pid):
 
 
 def test_claim_consumed_and_live_slot_released(saved):
-    root,_=saved; body=request()
+    root,_=saved
+    body=request()
     with LeaseClaim(root,body['runId'],body['sessionId'],1) as claim:
         claim.finish('closed')
     with pytest.raises(StoreError,match='provider-run-replayed'):
@@ -78,7 +84,8 @@ def test_claim_consumed_and_live_slot_released(saved):
 
 
 def test_incomplete_claim_denies_replay_without_consuming_a_live_slot(saved,monkeypatch):
-    root,_=saved; body=request()
+    root,_=saved
+    body=request()
     with monkeypatch.context() as patch:
         patch.setattr(lease_claim,'_write_private',lambda *_: (_ for _ in ()).throw(OSError('write fault')))
         with pytest.raises(StoreError):
@@ -94,30 +101,39 @@ def test_unsafe_slot_fails_closed_instead_of_using_another_slot(saved):
     root,_=saved
     with LeaseClaim(root,str(uuid.uuid4()),'initialize',1): pass
     slot=root/'route-leases'/'slot-0.lock'
-    target=root/'provider-config.json'; original=target.read_bytes()
-    slot.unlink(); slot.symlink_to(target)
+    target=root/'provider-config.json'
+    original=target.read_bytes()
+    slot.unlink()
+    slot.symlink_to(target)
     with pytest.raises(StoreError,match='unsafe-file'):
         with LeaseClaim(root,str(uuid.uuid4()),'denied',1): pass
     assert target.read_bytes()==original
 
 
 def test_concurrent_duplicate_processes_emit_exactly_one_lease(saved):
-    root,_=saved; body=request(); children=[launch(root,body),launch(root,body)]; leases=[]
+    root,_=saved
+    body=request()
+    children=[launch(root,body),launch(root,body)]
+    leases=[]
     try:
         for child in children:
             assert select.select([child.stdout],[],[],6)[0]
             try: leases.append(read_frame(child.stdout)['lease'])
             except StoreError:
-                child.wait(timeout=3); assert child.returncode!=0
+                child.wait(timeout=3)
+                assert child.returncode!=0
         assert len(leases)==1
     finally:
         for child in children: close(child)
 
 
 def test_lease_refuses_wrong_token_then_closes_and_cannot_replay(saved):
-    root,_ = saved; body=request(); child=launch(root,body)
+    root,_ = saved
+    body=request()
+    child=launch(root,body)
     try:
-        lease=ready(child)['lease']; assert not port_closed(lease)
+        lease=ready(child)['lease']
+        assert not port_closed(lease)
         response=httpx.post(lease['baseUrl']+'/chat/completions',json={},headers={'Authorization':'Bearer wrong'})
         assert response.status_code==401
         if sys.platform=='linux':
@@ -129,18 +145,23 @@ def test_lease_refuses_wrong_token_then_closes_and_cannot_replay(saved):
     assert json.loads(metadata)['status']=='closed' and lease['token'] not in metadata
     replay=launch(root,body)
     try:
-        replay.wait(timeout=4); assert replay.returncode!=0 and replay.stdout.read()==b''
+        replay.wait(timeout=4)
+        assert replay.returncode!=0 and replay.stdout.read()==b''
     finally: close(replay)
 
 
 @pytest.mark.parametrize('loss',['eof','extra','sigkill','sigterm','sigint','deadline'])
 def test_process_loss_closes_listener_releases_slots_and_keeps_claim(saved,loss):
-    root,_=saved; body=request(); body['timeoutSeconds']=1 if loss=='deadline' else 30
+    root,_=saved
+    body=request()
+    body['timeoutSeconds']=1 if loss=='deadline' else 30
     child=launch(root,body)
     try:
         lease=ready(child)['lease']
         if loss=='eof': child.stdin.close()
-        elif loss=='extra': child.stdin.write(b'x'); child.stdin.flush()
+        elif loss=='extra':
+            child.stdin.write(b'x')
+            child.stdin.flush()
         elif loss=='sigkill': child.kill()
         elif loss in ('sigterm','sigint'): child.send_signal(signal.SIGTERM if loss=='sigterm' else signal.SIGINT)
         child.wait(timeout=5)
@@ -156,12 +177,16 @@ def test_process_loss_closes_listener_releases_slots_and_keeps_claim(saved,loss)
 
 
 def test_two_live_slots_and_busy_refusal_cannot_replay(saved):
-    root,_=saved; a=launch(root,request()); b=launch(root,request()); denied=request()
+    root,_=saved
+    a=launch(root,request())
+    b=launch(root,request())
+    denied=request()
     c=None
     try:
         la,lb=ready(a)['lease'],ready(b)['lease']
         assert la['baseUrl']!=lb['baseUrl'] and la['token']!=lb['token']
-        c=launch(root,denied); c.wait(timeout=4)
+        c=launch(root,denied)
+        c.wait(timeout=4)
         assert c.returncode!=0 and c.stdout.read()==b''
     finally:
         for child in (a,b,c):
@@ -173,15 +198,22 @@ def test_two_live_slots_and_busy_refusal_cannot_replay(saved):
 @pytest.mark.parametrize('change',[{'expectedRevision':0},{'confirmed':False},{'allowCloud':'false'},
     {'timeoutSeconds':0},{'runId':'../unsafe'},{'sessionId':''}])
 def test_invalid_or_stale_requests_have_no_listener(saved,change):
-    root,_=saved; body=request(); body.update(change); child=launch(root,body)
+    root,_=saved
+    body=request()
+    body.update(change)
+    child=launch(root,body)
     try:
-        child.wait(timeout=5); assert child.returncode!=0 and child.stdout.read()==b''
+        child.wait(timeout=5)
+        assert child.returncode!=0 and child.stdout.read()==b''
     finally: close(child)
 
 
 @pytest.mark.parametrize('loss',['eof','sigkill'])
 def test_inflight_upstream_disconnect_and_replay_denial(saved,loss):
-    root,config=saved; received=threading.Event(); disconnected=threading.Event(); finish=threading.Event()
+    root,config=saved
+    received=threading.Event()
+    disconnected=threading.Event()
+    finish=threading.Event()
     calls=[]
     class Handler(BaseHTTPRequestHandler):
         def log_message(self,*_): pass
@@ -190,14 +222,19 @@ def test_inflight_upstream_disconnect_and_replay_denial(saved,loss):
             received.set()
             while not finish.is_set():
                 if select.select([self.connection],[],[],.05)[0] and self.connection.recv(1,socket.MSG_PEEK)==b'':
-                    disconnected.set(); return
+                    disconnected.set()
+                    return
     upstream=ThreadingHTTPServer(('127.0.0.1',0),Handler)
-    server_thread=threading.Thread(target=upstream.serve_forever,daemon=True); server_thread.start()
+    server_thread=threading.Thread(target=upstream.serve_forever,daemon=True)
+    server_thread.start()
     config['providers'][0]['baseUrl']=f'http://127.0.0.1:{upstream.server_port}/v1'
     config['roles']['backups']=[]
     CredentialStore(root).save_public(dict(document=config,expectedRevision=1,
         credentialChanges={'primary':dict(action='set',value='fixture-upstream-secret')}))
-    body=request(); body['expectedRevision']=2; child=launch(root,body); client_thread=None
+    body=request()
+    body['expectedRevision']=2
+    child=launch(root,body)
+    client_thread=None
     try:
         lease=ready(child)['lease']
         def call():
@@ -206,26 +243,35 @@ def test_inflight_upstream_disconnect_and_replay_denial(saved,loss):
                     messages=[dict(role='user',content='hold')]),
                     headers={'Authorization':'Bearer '+lease['token']},timeout=8)
             except httpx.HTTPError: pass
-        client_thread=threading.Thread(target=call); client_thread.start()
+        client_thread=threading.Thread(target=call)
+        client_thread.start()
         assert received.wait(3)
         if loss=='sigkill': child.kill()
         else: child.stdin.close()
         child.wait(timeout=5)
         assert disconnected.wait(3) and port_closed(lease)
-        client_thread.join(timeout=3); assert not client_thread.is_alive()
+        client_thread.join(timeout=3)
+        assert not client_thread.is_alive()
         replay=launch(root,body)
         try:
-            replay.wait(timeout=4); assert replay.returncode!=0 and replay.stdout.read()==b''
+            replay.wait(timeout=4)
+            assert replay.returncode!=0 and replay.stdout.read()==b''
         finally: close(replay)
         assert len(calls)==1
     finally:
-        close(child); finish.set(); upstream.shutdown(); upstream.server_close(); server_thread.join(2)
+        close(child)
+        finish.set()
+        upstream.shutdown()
+        upstream.server_close()
+        server_thread.join(2)
         if client_thread: client_thread.join(9)
 
 
 @pytest.mark.skipif(sys.platform!='linux',reason='Linux orphan process state')
 def test_supervisor_sigkill_closes_orphan_listener(saved,tmp_path):
-    root,_=saved; body=request(); supervisor=tmp_path/'supervisor.py'
+    root,_=saved
+    body=request()
+    supervisor=tmp_path/'supervisor.py'
     supervisor.write_text('''
 import os,subprocess,sys,time
 sys.path.insert(0,sys.argv[1])
@@ -244,8 +290,12 @@ time.sleep(60)
         stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,env=worker_environment())
     worker_pid=None
     try:
-        parent.stdin.write(encode_frame(body)); parent.stdin.flush(); value=ready(parent)
-        worker_pid=value['pid']; parent.kill(); parent.wait(timeout=2)
+        parent.stdin.write(encode_frame(body))
+        parent.stdin.flush()
+        value=ready(parent)
+        worker_pid=value['pid']
+        parent.kill()
+        parent.wait(timeout=2)
         deadline=time.monotonic()+5
         while process_live(worker_pid) and time.monotonic()<deadline: time.sleep(.02)
         assert not process_live(worker_pid) and port_closed(value['lease'])
@@ -253,7 +303,8 @@ time.sleep(60)
             with LeaseClaim(root,str(uuid.uuid4()),'replacement-b',1): pass
         replay=launch(root,body)
         try:
-            replay.wait(timeout=4); assert replay.returncode!=0 and replay.stdout.read()==b''
+            replay.wait(timeout=4)
+            assert replay.returncode!=0 and replay.stdout.read()==b''
         finally: close(replay)
     finally:
         if parent.poll() is None: parent.kill()

@@ -160,7 +160,8 @@ def test_agent_inherits_admission_if_supervisor_closes_its_handle(client_dir):
             pass
     finally:
         if child.poll() is None:
-            child.kill(); child.wait()
+            child.kill()
+            child.wait()
 
 
 def test_ambient_profile_not_inherited(client_dir,monkeypatch):
@@ -252,7 +253,8 @@ time.sleep(120)
         assert record['status'] == 'interrupted'
     finally:
         if owner.poll() is None:
-            owner.kill(); owner.wait()
+            owner.kill()
+            owner.wait()
         for pid in pids:
             try:
                 os.kill(pid,signal.SIGKILL)

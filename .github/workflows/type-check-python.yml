@@ -2,12 +2,12 @@ name: Python Type Check
 
 on:
   push:
-    branches: [main]
+    branches: [main, public-beta]
     paths:
       - "ods/**/*.py"
       - ".github/workflows/type-check-python.yml"
   pull_request:
-    branches: [main]
+    branches: [main, public-beta]
     paths:
       - "ods/**/*.py"
       - ".github/workflows/type-check-python.yml"

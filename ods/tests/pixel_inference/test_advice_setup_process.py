@@ -33,7 +33,8 @@ def until(check,seconds=5):
 @pytest.mark.parametrize('loss',['eof','eof-staggered-kill','supervisor-sigkill','worker-exit','supervisor-success','supervisor-error'])
 def test_parent_loss_reaps_installer_descendants_and_keeps_slot_until_exit(tmp_path,loss):
     import fcntl
-    group_marker=tmp_path/'group'; descendant_marker=tmp_path/'descendant'
+    group_marker=tmp_path/'group'
+    descendant_marker=tmp_path/'descendant'
     wrapper=tmp_path/'worker.py'
     grandchild=f"import os,signal,time; from pathlib import Path; signal.signal(signal.SIGTERM,signal.SIG_IGN); Path({str(descendant_marker)!r}).write_text(str(os.getpid())); time.sleep(60)"
     wrapper.write_text(f'''
@@ -79,15 +80,18 @@ run_worker({command!r},{request!r},cancelled=lambda:False,deadline_seconds=40,lo
         command=[sys.executable,'-I','-S','-B',str(supervisor)]
     process=subprocess.Popen(command,stdin=subprocess.PIPE,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
                              start_new_session=True,pass_fds=tuple(locks))
-    group=None; descendant=None
+    group=None
+    descendant=None
     probe=os.open(tmp_path/'slot',os.O_RDWR)
     try:
         if not loss.startswith('supervisor-'):
-            process.stdin.write(encode_frame(request)); process.stdin.flush()
+            process.stdin.write(encode_frame(request))
+            process.stdin.flush()
         for fd in locks: os.close(fd)
         locks=[]
         until(lambda:descendant_marker.exists() and descendant_marker.stat().st_size>0)
-        group=int(group_marker.read_text()); descendant=int(descendant_marker.read_text())
+        group=int(group_marker.read_text())
+        descendant=int(descendant_marker.read_text())
         assert live(group) and live(descendant)
         with pytest.raises(BlockingIOError): fcntl.flock(probe,fcntl.LOCK_EX|fcntl.LOCK_NB)
         if loss=='worker-exit':
@@ -115,4 +119,5 @@ run_worker({command!r},{request!r},cancelled=lambda:False,deadline_seconds=40,lo
             with contextlib.suppress(ProcessLookupError): os.killpg(group,signal.SIGKILL)
         if process.poll() is None: process.kill()
         process.wait(timeout=3)
-        process.stdin.close(); os.close(probe)
+        process.stdin.close()
+        os.close(probe)

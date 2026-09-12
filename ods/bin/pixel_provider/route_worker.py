@@ -73,7 +73,9 @@ def main():
         while not done.is_set() and not stopped.is_set():
             remaining = deadline-time.monotonic()
             if remaining<=0:
-                reason[0]='deadline'; stopped.set(); break
+                reason[0]='deadline'
+                stopped.set()
+                break
             try:
                 if select.select([0],[],[],min(.05,remaining))[0]:
                     extra = os.read(0,1)
@@ -95,7 +97,8 @@ def main():
         claim = LeaseClaim(sys.argv[2],value['runId'],value['sessionId'],value['expectedRevision'])
         if select.select([0],[],[],0)[0]:
             raise StoreError('provider-parent-disconnected')
-        duration[0]=value['timeoutSeconds']; armed.set()
+        duration[0]=value['timeoutSeconds']
+        armed.set()
         phase = 'snapshot'
         value = scoped_request(sys.argv[2], value)
         session = ProviderSession(sys.argv[2],expected_revision=value['expectedRevision'],
@@ -126,7 +129,8 @@ def main():
         sys.stderr.write('provider-lease-worker-failed:'+phase+'\n')
         return 1
     finally:
-        done.set(); armed.set()
+        done.set()
+        armed.set()
 
 
 if __name__=='__main__':

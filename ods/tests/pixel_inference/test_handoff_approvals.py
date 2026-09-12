@@ -24,7 +24,8 @@ WORKER=Path(__file__).resolve().parents[2]/'bin/pixel_provider/handoff_worker.py
 
 @pytest.fixture
 def manager(tmp_path):
-    providers=tmp_path/'providers'; providers.mkdir(mode=0o700)
+    providers=tmp_path/'providers'
+    providers.mkdir(mode=0o700)
     return HandoffApprovals(providers)
 
 
@@ -39,7 +40,8 @@ def decide(manager,value,digest,approved=True,cloud=False,cost=False):
 
 
 def test_large_exact_preview_and_custody(manager):
-    value,_,_=checkpoint(); value['prompt']='Private unicode ★ '*30000
+    value,_,_=checkpoint()
+    value['prompt']='Private unicode ★ '*30000
     raw,digest=encode(value)
     assert 256*1024<len(raw.encode())<CHECKPOINT_LIMIT
     with manager.publish(raw,digest,60) as pending:
@@ -57,7 +59,8 @@ def test_large_exact_preview_and_custody(manager):
 
 @pytest.mark.parametrize('cloud,cost',[(False,False),(True,False),(False,True),(True,True)])
 def test_cloud_requires_both_consents(manager,cloud,cost):
-    value,_,_=checkpoint(); value['recipient'].update(kind='cloud',baseUrl='https://api.example/v1')
+    value,_,_=checkpoint()
+    value['recipient'].update(kind='cloud',baseUrl='https://api.example/v1')
     raw,digest=encode(value)
     with manager.publish(raw,digest,60) as pending:
         if cloud and cost:
@@ -69,7 +72,8 @@ def test_cloud_requires_both_consents(manager,cloud,cost):
 
 
 def test_expiry_and_immutable_replay_claim(manager):
-    clock=[1000000]; manager.clock=lambda:clock[0]
+    clock=[1000000]
+    manager.clock=lambda:clock[0]
     value,raw,digest=checkpoint()
     with manager.publish(raw,digest,1) as pending:
         clock[0]+=2
@@ -96,7 +100,8 @@ def test_final_approval_requires_real_matching_decision(manager):
     with manager.publish(raw,digest,60) as pending:
         with pytest.raises(StoreError): pending.finish('approved')
         path=manager.root/value['runId']/'result.json'
-        path.write_text('{"status":"approved"}'); path.chmod(0o600)
+        path.write_text('{"status":"approved"}')
+        path.chmod(0o600)
         with pytest.raises(StoreError): manager.status(value['runId'])
 
 
@@ -120,7 +125,8 @@ def test_polling_retained_terminal_claims_does_not_read_transcripts(manager,monk
 def test_partial_abandoned_publication_does_not_hide_valid_pending_run(manager):
     value,raw,digest=checkpoint()
     with manager.publish(raw,digest,60):
-        partial=manager.root/str(uuid.uuid4()); partial.mkdir(mode=0o700)
+        partial=manager.root/str(uuid.uuid4())
+        partial.mkdir(mode=0o700)
         result=manager.pending()
         assert result['unavailableCount']==1
         assert [row['runId'] for row in result['items']]==[value['runId']]
@@ -128,7 +134,8 @@ def test_partial_abandoned_publication_does_not_hide_valid_pending_run(manager):
 
 
 def test_concurrent_conflicting_owner_decisions_have_one_immutable_winner(manager):
-    value,raw,digest=checkpoint(); barrier=threading.Barrier(2)
+    value,raw,digest=checkpoint()
+    barrier=threading.Barrier(2)
     with manager.publish(raw,digest,60) as pending:
         def attempt(approved):
             barrier.wait(timeout=3)
@@ -150,7 +157,9 @@ def test_concurrent_conflicting_owner_decisions_have_one_immutable_winner(manage
     {'messages':[{'role':'assistant','content':[{'type':'toolCall','id':'missing'}]}]},
     {'prompt':'x'*CHECKPOINT_LIMIT}])
 def test_incomplete_history_and_oversize_rejected(manager,change):
-    value,_,_=checkpoint(); value.update(change); raw,digest=encode(value)
+    value,_,_=checkpoint()
+    value.update(change)
+    raw,digest=encode(value)
     with pytest.raises(StoreError): manager.publish(raw,digest,60)
 
 
@@ -165,13 +174,16 @@ def start_worker(manager,timeout=3):
     body=json.dumps(dict(schemaVersion=1,checkpointJson=raw,checkpointDigest=digest,timeoutSeconds=timeout)).encode()
     process=subprocess.Popen([sys.executable,'-I','-B',str(WORKER),'--provider-directory',str(manager.providers)],
         stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
-    process.stdin.write(struct.pack('!I',len(body))+body); process.stdin.flush()
+    process.stdin.write(struct.pack('!I',len(body))+body)
+    process.stdin.flush()
     deadline=time.monotonic()+3
     while time.monotonic()<deadline:
         if (manager.root/value['runId']/'claim.json').exists(): return process,value,digest
         assert process.poll() is None
         time.sleep(.02)
-    process.kill(); process.wait(); pytest.fail('publication did not appear')
+    process.kill()
+    process.wait()
+    pytest.fail('publication did not appear')
 
 
 @pytest.mark.parametrize('approved',[True,False])
@@ -186,7 +198,9 @@ def test_actual_private_worker_returns_exact_receipt_and_exits(manager,approved)
         assert process.stdout.read()==b''
         assert manager.status(value['runId'])['status']==('approved' if approved else 'declined')
     finally:
-        if process.poll() is None: process.kill(); process.wait()
+        if process.poll() is None:
+            process.kill()
+            process.wait()
         for stream in (process.stdin,process.stdout,process.stderr): stream.close()
 
 
@@ -195,7 +209,9 @@ def test_actual_worker_loss_and_deadline_never_authorize(manager,mode):
     process,value,digest=start_worker(manager,1 if mode=='deadline' else 3)
     try:
         if mode=='eof': process.stdin.close()
-        elif mode=='extra-frame': process.stdin.write(b'x'); process.stdin.flush()
+        elif mode=='extra-frame':
+            process.stdin.write(b'x')
+            process.stdin.flush()
         elif mode=='sigkill': process.kill()
         assert process.wait(timeout=5)!=0
         assert process.stdout.read()==b''
@@ -205,5 +221,7 @@ def test_actual_worker_loss_and_deadline_never_authorize(manager,mode):
             raw,_=encode(dict(checkpoint()[0],runId=value['runId']))
             with manager.publish(raw,hashlib.sha256(raw.encode()).hexdigest(),60): pass
     finally:
-        if process.poll() is None: process.kill(); process.wait()
+        if process.poll() is None:
+            process.kill()
+            process.wait()
         for stream in (process.stdin,process.stdout,process.stderr): stream.close()

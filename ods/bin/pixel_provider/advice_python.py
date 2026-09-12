@@ -21,7 +21,8 @@ def candidates():
     paths=[Path(sys.executable)]
     for prefix in ('/usr/bin','/usr/local/bin','/opt/homebrew/bin'):
         paths.extend(Path(prefix)/('python'+version) for version in ('3.14','3.13','3.12','3.11'))
-    result=[]; seen=set()
+    result=[]
+    seen=set()
     for path in paths:
         try:
             binary=path.resolve(strict=True)

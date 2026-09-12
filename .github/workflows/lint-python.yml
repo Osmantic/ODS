@@ -2,9 +2,9 @@ name: Python Lint
 
 on:
   push:
-    branches: [main]
+    branches: [main, public-beta]
   pull_request:
-    branches: [main]
+    branches: [main, public-beta]
 
 permissions:
   contents: read

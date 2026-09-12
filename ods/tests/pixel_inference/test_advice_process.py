@@ -110,10 +110,12 @@ def test_no_ambient_secrets_and_request_not_in_argv(tmp_path,monkeypatch):
 
 def test_inherited_lock_survives_parent_descriptor_close(tmp_path):
     import fcntl
-    lock=tmp_path/'lock'; ready=tmp_path/'ready'
+    lock=tmp_path/'lock'
+    ready=tmp_path/'ready'
     fd=os.open(lock,os.O_CREAT|os.O_RDWR,0o600)
     fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
-    stop=threading.Event(); errors=[]
+    stop=threading.Event()
+    errors=[]
     cmd=command(tmp_path,f"open({str(ready)!r},'w').write('ready')\ntime.sleep(20)\n")
     def run():
         try:
@@ -122,24 +124,28 @@ def test_inherited_lock_survives_parent_descriptor_close(tmp_path):
             pass
         except BaseException as error:
             errors.append(error)
-    thread=threading.Thread(target=run); thread.start()
+    thread=threading.Thread(target=run)
+    thread.start()
     try:
         deadline=time.monotonic()+3
         while not ready.exists() and time.monotonic()<deadline:
             time.sleep(.01)
         assert ready.exists()
-        os.close(fd); fd=None
+        os.close(fd)
+        fd=None
         probe=os.open(lock,os.O_RDWR)
         try:
             with pytest.raises(BlockingIOError):
                 fcntl.flock(probe,fcntl.LOCK_EX|fcntl.LOCK_NB)
-            stop.set(); thread.join(3)
+            stop.set()
+            thread.join(3)
             assert not thread.is_alive() and not errors
             fcntl.flock(probe,fcntl.LOCK_EX|fcntl.LOCK_NB)
         finally:
             os.close(probe)
     finally:
-        stop.set(); thread.join(3)
+        stop.set()
+        thread.join(3)
         if fd is not None:
             os.close(fd)
 

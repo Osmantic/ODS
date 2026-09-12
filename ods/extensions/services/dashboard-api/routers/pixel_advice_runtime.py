@@ -66,7 +66,8 @@ async def request_body(request,action):
             raise HTTPException(413,'Setup request exceeds size limit')
         raw.extend(part)
     try:
-        text=bytes(raw).decode(); _check_depth(text)
+        text=bytes(raw).decode()
+        _check_depth(text)
         value=json.loads(text,object_pairs_hook=_pairs,parse_float=_float,parse_constant=_constant)
         if not isinstance(value,dict) or set(value)!=(FIELDS if action=='prepare' else {'jobId'}):
             raise ValueError()

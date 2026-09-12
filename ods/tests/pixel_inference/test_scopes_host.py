@@ -4,7 +4,7 @@ import os
 import uuid
 
 import pytest
-from test_handoff_host import host  # shared real stdlib host fixture
+from test_handoff_host import host as host  # shared real stdlib host fixture
 
 pytestmark = pytest.mark.skipif(os.name != 'posix', reason='POSIX scope storage')
 

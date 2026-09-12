@@ -65,7 +65,8 @@ def test_one_request_no_save_no_key_response_preserves_tools_false(owner):
     lambda body: body.update(bundle='x' * 32769), lambda body: body.update(confirmedEndpoint=[]),
 ])
 def test_bad_requests_do_not_reach_host(owner, change):
-    body, _ = fixture(); change(body)
+    body, _ = fixture()
+    change(body)
     response = post(owner, json=body)
     assert response.status_code == 400 and KEY not in response.text
     owner[1].assert_not_called()
@@ -85,7 +86,9 @@ def test_body_cap_before_host(owner):
     lambda value: value['metadata'].update(maxOutputTokens=True),
 ])
 def test_bad_host_results_are_not_forwarded(owner, change):
-    body, value = fixture(); value = deepcopy(value); change(value)
+    body, value = fixture()
+    value = deepcopy(value)
+    change(value)
     owner[1].return_value = value
     response = post(owner, json=body)
     assert response.status_code == 502 and KEY not in response.text

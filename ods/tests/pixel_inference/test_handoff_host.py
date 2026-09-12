@@ -26,7 +26,8 @@ def checkpoint():
 
 @pytest.fixture
 def host(tmp_path):
-    fixture.HostHTTP.setUpClass(); fixture.HostHTTP.agent.DATA_DIR=tmp_path
+    fixture.HostHTTP.setUpClass()
+    fixture.HostHTTP.agent.DATA_DIR=tmp_path
     try: yield fixture.HostHTTP,tmp_path
     finally: fixture.HostHTTP.tearDownClass()
 
@@ -55,7 +56,8 @@ def test_pristine_list_no_state_or_public_publish(host):
 
 def test_real_owner_preview_decision_and_conflict(host):
     (host[1]/'pixel-providers').mkdir(mode=0o700)
-    manager=get_manager(host[1]); value,raw,digest=checkpoint()
+    manager=get_manager(host[1])
+    value,raw,digest=checkpoint()
     with manager.publish(raw,digest,60) as pending:
         assert request(host,'list',{})[1]['items'][0]['runId']==value['runId']
         status,result,cache=request(host,'status',{'runId':value['runId']})
@@ -82,7 +84,8 @@ def test_strict_and_bounded_json(host):
 
 def test_interrupted_cannot_be_approved(host):
     (host[1]/'pixel-providers').mkdir(mode=0o700)
-    manager=get_manager(host[1]); value,raw,digest=checkpoint()
+    manager=get_manager(host[1])
+    value,raw,digest=checkpoint()
     with manager.publish(raw,digest,60): pass
     assert request(host,'status',{'runId':value['runId']})[1]['status']=='interrupted'
     decision=dict(runId=value['runId'],checkpointDigest=digest,approved=True,allowCloud=False,acceptUnknownCost=False)

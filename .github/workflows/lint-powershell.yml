@@ -6,6 +6,7 @@ on:
     branches:
       - main
       - master
+      - public-beta
 
 jobs:
   powershell-lint:

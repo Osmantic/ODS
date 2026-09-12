@@ -4,7 +4,7 @@ import time
 
 import httpx
 import pytest
-from test_router import router  # noqa: F401
+from test_router import router as router
 
 
 def _make_pins(catalog=None, model=None, route=None):

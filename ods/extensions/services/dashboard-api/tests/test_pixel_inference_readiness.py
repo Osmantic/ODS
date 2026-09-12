@@ -3,7 +3,7 @@ import json
 from unittest.mock import patch
 
 import pytest
-from test_pixel import FakeClient, FakeResponse, pixel, pixel_env
+from test_pixel import FakeClient, FakeResponse, pixel, pixel_env as pixel_env
 
 
 @pytest.fixture(autouse=True)

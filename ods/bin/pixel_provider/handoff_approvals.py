@@ -24,7 +24,8 @@ def decode_large(raw,limit=FRAME_LIMIT):
     if type(raw) is not bytes or not raw or len(raw)>limit:
         raise StoreError('invalid-handoff-document')
     try:
-        text=raw.decode('utf-8'); _check_depth(text)
+        text=raw.decode('utf-8')
+        _check_depth(text)
         return json.loads(text,object_pairs_hook=_pairs,parse_float=_float,parse_constant=_constant)
     except (ValueError,RecursionError):
         raise StoreError('invalid-handoff-document') from None
@@ -146,7 +147,9 @@ class HandoffApprovals:
         import fcntl
         lock=ProviderStore(path)._open_file(fd,'running.lock')
         try:
-            try: fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB); return False
+            try:
+                fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+                return False
             except BlockingIOError: return True
         finally: os.close(lock)
 
@@ -194,10 +197,13 @@ class HandoffApprovals:
                     for entry in entries:
                         if RUN_ID.fullmatch(entry.name): names.append(entry.name)
                         if len(names)>4096: raise StoreError('handoff-history-limit')
-        items=[]; unavailable=0
+        items=[]
+        unavailable=0
         for name in names:
             try: result=self.status(name)
-            except (StoreError,OSError): unavailable+=1; continue
+            except (StoreError,OSError):
+                unavailable+=1
+                continue
             if result['status']=='pending': items.append(result)
         return {'items':sorted(items,key=lambda row:row['expiresAt']),'unavailableCount':unavailable}
 
@@ -214,13 +220,15 @@ class HandoffApprovals:
         path=self._path(body.get('runId'))
         with ProviderStore(self.providers)._locked(False),ProviderStore(self.root)._locked(False):
             with ProviderStore(path)._locked(True) as fd:
-                claim,_=self._read(path,fd); self._validate_decision(body,claim)
+                claim,_=self._read(path,fd)
+                self._validate_decision(body,claim)
                 previous=self._optional(path,fd,'decision.json')
                 if previous is not None:
                     if previous!=body: raise StoreError('handoff-decision-conflict')
                 else:
                     if self._state(path,fd,claim)!='pending': raise StoreError('handoff-no-longer-pending')
-                    _write_private(path/'decision.json',_json(body)); os.fsync(fd)
+                    _write_private(path/'decision.json',_json(body))
+                    os.fsync(fd)
         return self.status(body['runId'],checkpoint=True)
 
     def publish(self,checkpoint_json,digest,timeout_seconds):
@@ -233,7 +241,9 @@ class PendingHandoff:
             raise StoreError('invalid-handoff-publication')
         self.raw=checkpoint_json.encode('utf-8')
         checkpoint=validate_checkpoint(self.raw,digest)
-        self.manager=manager; self.path=manager._path(checkpoint['runId']); self.lock=None
+        self.manager=manager
+        self.path=manager._path(checkpoint['runId'])
+        self.lock=None
         self.claim={'runId':checkpoint['runId'],'checkpointDigest':digest,'checkpointBytes':len(self.raw),
                     'recipient':checkpoint['recipient'],'expiresAt':int(manager.clock())+timeout_seconds}
 
@@ -249,15 +259,19 @@ class PendingHandoff:
                     if self.path.exists() or self.path.is_symlink(): raise StoreError('handoff-run-replayed')
                     if sum(1 for item in manager.root.iterdir() if RUN_ID.fullmatch(item.name))>=4096:
                         raise StoreError('handoff-history-limit')
-                    self.path.mkdir(mode=0o700); os.fsync(root_fd)
+                    self.path.mkdir(mode=0o700)
+                    os.fsync(root_fd)
                     with ProviderStore(self.path)._locked(True) as fd:
                         self.lock=ProviderStore(self.path)._open_file(fd,'running.lock',create=True)
                         fcntl.flock(self.lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
                         _write_private(self.path/'checkpoint.json',self.raw)
-                        _write_private(self.path/'claim.json',_json(self.claim)); os.fsync(fd)
+                        _write_private(self.path/'claim.json',_json(self.claim))
+                        os.fsync(fd)
             return self
         except BaseException:
-            if self.lock is not None: os.close(self.lock); self.lock=None
+            if self.lock is not None:
+                os.close(self.lock)
+                self.lock=None
             raise
 
     def receipt(self):
@@ -285,10 +299,13 @@ class PendingHandoff:
                 decision=self.manager._optional(self.path,fd,'decision.json')
                 self.manager._validate_decision(decision,claim)
                 if decision['approved']!=(status=='approved'): raise StoreError('invalid-handoff-result')
-            _write_private(self.path/'result.json',_json({'status':status})); os.fsync(fd)
+            _write_private(self.path/'result.json',_json({'status':status}))
+            os.fsync(fd)
 
     def __exit__(self,*_args):
-        if self.lock is not None: os.close(self.lock); self.lock=None
+        if self.lock is not None:
+            os.close(self.lock)
+            self.lock=None
 
 
 def get_manager(data_dir):

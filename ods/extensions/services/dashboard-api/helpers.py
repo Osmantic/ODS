@@ -1201,14 +1201,14 @@ def dict_key_path_setter_safe(d: dict, path_keys: list, value: any) -> dict:
     if (not isinstance(path_keys, (list, tuple)) or not 1 <= len(path_keys) <= 128
             or any(type(key) not in (str, int) for key in path_keys)):
         return d
-    
+
     current = d
     for key in path_keys[:-1]:
         k_str = key
         if k_str not in current or not isinstance(current[k_str], dict):
             current[k_str] = {}
         current = current[k_str]
-    
+
     final_key = path_keys[-1]
     current[final_key] = value
     return d
@@ -1256,7 +1256,7 @@ def list_deduplicate_by_key_safe(items: list, key_or_attr: any) -> list:
         return []
     if key_or_attr is None or not isinstance(key_or_attr, (str, int)):
         return list(items)
-    
+
     seen = set()
     structured = []
     missing = object()
@@ -1287,7 +1287,7 @@ def list_deduplicate_by_key_safe(items: list, key_or_attr: any) -> list:
                 structured.append(val)
                 result.append(item)
             continue
-        
+
         if key_val not in seen:
             seen.add(key_val)
             result.append(item)
@@ -1321,9 +1321,9 @@ def dict_flatten_nested_safe(d: dict, separator: str = '.', max_depth: int = 10)
     if type(max_depth) is not int or max_depth < 1:
         max_depth = 10
     max_depth = min(max_depth, 128)
-    
+
     result = {}
-    
+
     # Iterative traversal avoids Python recursion limits. Cycles and depth
     # boundaries remain leaf values, just like other unflattened dictionaries.
     pending = [(d, '', 0, frozenset({id(d)}))]
@@ -1336,7 +1336,7 @@ def dict_flatten_nested_safe(d: dict, separator: str = '.', max_depth: int = 10)
                 pending.append((v, new_key, depth + 1, ancestors | {id(v)}))
             else:
                 result[new_key] = v
-    
+
     return result
 
 
@@ -1352,7 +1352,7 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         alpha = 0.2
     if alpha <= 0 or alpha > 1:
         alpha = 0.2
-    
+
     valid_vals = []
     for v in values:
         if isinstance(v, (int, float)) and not isinstance(v, bool):
@@ -1364,7 +1364,7 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
                 valid_vals.append(number)
     if not valid_vals:
         return []
-    
+
     ema = []
     current = valid_vals[0]
     ema.append(current)

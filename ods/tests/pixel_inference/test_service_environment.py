@@ -180,7 +180,9 @@ def test_unsafe_service_files_refused(participant, tmp_path, kind):
     target.chmod(0o600)
     if kind == 'symlink': p.environment.symlink_to(target)
     if kind == 'hardlink': os.link(target, p.environment)
-    if kind == 'writable': p.environment.write_bytes(b'x'); p.environment.chmod(0o666)
+    if kind == 'writable':
+        p.environment.write_bytes(b'x')
+        p.environment.chmod(0o666)
     if kind == 'directory': p.environment.mkdir()
     if kind == 'parent': p.environment.parent.chmod(0o777)
     with pytest.raises(AccessError): p.apply(b.record)
