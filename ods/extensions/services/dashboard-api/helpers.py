@@ -1372,3 +1372,20 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def string_mask_email_safe(email: str | None, mask_char: str = "*") -> str:
+    """Safely mask email addresses preserving domain and head/tail username chars.
+    Returns "" on None or invalid email formats without @.
+    """
+    if not isinstance(email, str) or "@" not in email:
+        return ""
+    if not isinstance(mask_char, str) or not mask_char:
+        mask_char = "*"
+    parts = email.split("@", 1)
+    user, domain = parts[0], parts[1]
+    if len(user) <= 2:
+        masked_user = user[0] + mask_char[0] if len(user) == 2 else mask_char[0]
+    else:
+        masked_user = user[0] + (mask_char[0] * (len(user) - 2)) + user[-1]
+    return masked_user + "@" + domain
