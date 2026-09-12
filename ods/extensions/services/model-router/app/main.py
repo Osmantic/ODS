@@ -630,8 +630,13 @@ def _verify_probe_marker(body_text: str) -> str | None:
 
 def _sanitize_headers(request: Request) -> dict[str, str]:
     headers: dict[str, str] = {}
+    connection_fields = {
+        token.strip().lower()
+        for value in request.headers.getlist("connection")
+        for token in value.split(",")
+    }
     for name, value in request.headers.items():
-        if name.lower() in _HOP_BY_HOP:
+        if name.lower() in _HOP_BY_HOP or name.lower() in connection_fields:
             continue
         headers[name] = value
     headers["content-type"] = "application/json"
