@@ -98,6 +98,11 @@ except Exception:  # pragma: no cover - import environment dependent
     _AssistantFirstSecretStore = None
     _AssistantFirstSecretStoreError = RuntimeError
 
+try:
+    import extension_operation_leases as _extension_leases
+except Exception:  # pragma: no cover - import environment dependent
+    _extension_leases = None
+
 _MODEL_MEMORY_PATH = (
     Path(__file__).resolve().parent.parent
     / "extensions"
@@ -129,6 +134,7 @@ PIXEL_OPS_STATUS_KIND = "ods-pixel-operations-status"
 BACKUP_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 MAX_BODY = 16384
 _ASSISTANT_SECRET_MAX_BODY = 64 * 1024
+_ASSISTANT_LEASE_MAX_BODY = 32 * 1024
 MAX_TELEMETRY_RESPONSE_BYTES = 1024 * 1024
 SUBPROCESS_TIMEOUT_START = 600  # 10 min — image pulls can be slow
 SUBPROCESS_TIMEOUT_STOP = 120   # 2 min — stop should be fast
@@ -226,6 +232,8 @@ _MIN_MANAGED_PIXEL_CONTEXT = 4096
 
 # Per-service locks to prevent concurrent start+stop races on the same service
 _service_locks: dict[str, threading.Lock] = collections.defaultdict(threading.Lock)
+_extension_lease_manager = None
+_extension_lease_manager_lock = threading.Lock()
 _ALLOWED_CORE_RECREATE_IDS = frozenset({
     "llama-server", "open-webui", "litellm", "langfuse", "n8n",
     "hermes", "hermes-proxy", "openclaw", "opencode", "perplexica", "searxng", "qdrant",
@@ -6117,7 +6125,7 @@ def read_optional_json_body(handler) -> dict | None:
     return data
 
 
-def _assistant_secret_pairs(pairs: list[tuple[str, object]]) -> dict:
+def _strict_json_pairs(pairs: list[tuple[str, object]]) -> dict:
     value = {}
     for key, item in pairs:
         if key in value:
@@ -6126,11 +6134,19 @@ def _assistant_secret_pairs(pairs: list[tuple[str, object]]) -> dict:
     return value
 
 
-def _reject_assistant_secret_number(_value: str) -> None:
+def _reject_non_integer_json_number(_value: str) -> None:
     raise ValueError("non-integer-number")
 
 
-def _read_assistant_secret_body(handler) -> dict | None:
+def _read_bounded_json_object(
+    handler,
+    *,
+    max_body: int,
+    framing_code: str,
+    size_code: str,
+    incomplete_code: str,
+    invalid_code: str,
+) -> dict | None:
     """Read one unambiguous bounded JSON object without echoing its values."""
     lengths = handler.headers.get_all("Content-Length", [])
     transfer = handler.headers.get_all("Transfer-Encoding", [])
@@ -6142,16 +6158,16 @@ def _read_assistant_secret_body(handler) -> dict | None:
         json_response(
             handler,
             400,
-            {"error": {"code": "invalid-secret-request-framing"}},
+            {"error": {"code": framing_code}},
             no_store=True,
         )
         return None
     length = int(lengths[0])
-    if length <= 0 or length > _ASSISTANT_SECRET_MAX_BODY:
+    if length <= 0 or length > max_body:
         json_response(
             handler,
-            413 if length > _ASSISTANT_SECRET_MAX_BODY else 400,
-            {"error": {"code": "secret-request-size"}},
+            413 if length > max_body else 400,
+            {"error": {"code": size_code}},
             no_store=True,
         )
         return None
@@ -6160,22 +6176,22 @@ def _read_assistant_secret_body(handler) -> dict | None:
         json_response(
             handler,
             400,
-            {"error": {"code": "incomplete-secret-request"}},
+            {"error": {"code": incomplete_code}},
             no_store=True,
         )
         return None
     try:
         value = json.loads(
             raw.decode("utf-8", errors="strict"),
-            object_pairs_hook=_assistant_secret_pairs,
-            parse_float=_reject_assistant_secret_number,
-            parse_constant=_reject_assistant_secret_number,
+            object_pairs_hook=_strict_json_pairs,
+            parse_float=_reject_non_integer_json_number,
+            parse_constant=_reject_non_integer_json_number,
         )
     except (UnicodeError, json.JSONDecodeError, TypeError, ValueError):
         json_response(
             handler,
             400,
-            {"error": {"code": "invalid-secret-request"}},
+            {"error": {"code": invalid_code}},
             no_store=True,
         )
         return None
@@ -6183,11 +6199,33 @@ def _read_assistant_secret_body(handler) -> dict | None:
         json_response(
             handler,
             400,
-            {"error": {"code": "invalid-secret-request"}},
+            {"error": {"code": invalid_code}},
             no_store=True,
         )
         return None
     return value
+
+
+def _read_assistant_secret_body(handler) -> dict | None:
+    return _read_bounded_json_object(
+        handler,
+        max_body=_ASSISTANT_SECRET_MAX_BODY,
+        framing_code="invalid-secret-request-framing",
+        size_code="secret-request-size",
+        incomplete_code="incomplete-secret-request",
+        invalid_code="invalid-secret-request",
+    )
+
+
+def _read_extension_lease_body(handler) -> dict | None:
+    return _read_bounded_json_object(
+        handler,
+        max_body=_ASSISTANT_LEASE_MAX_BODY,
+        framing_code="invalid-lease-request-framing",
+        size_code="lease-request-size",
+        incomplete_code="incomplete-lease-request",
+        invalid_code="invalid-lease-request",
+    )
 
 
 def validate_service_id(handler, body: dict) -> str | None:
@@ -6324,6 +6362,39 @@ def _find_ext_dir(service_id: str) -> Path | None:
     if builtin_dir.is_dir():
         return builtin_dir
     return None
+
+
+def _extension_lease_lock_provider(service_id: str):
+    """Return the existing host lock only for an installed manageable service."""
+    if (
+        _extension_leases is None
+        or not isinstance(service_id, str)
+        or SERVICE_ID_RE.fullmatch(service_id) is None
+    ):
+        raise RuntimeError("extension-lease-manager-unavailable")
+    ext_dir = _find_ext_dir(service_id)
+    has_manifest = ext_dir is not None and any(
+        (ext_dir / name).is_file()
+        for name in ("manifest.yaml", "manifest.yml", "manifest.json")
+    )
+    if service_id in ALWAYS_ON_SERVICES or not has_manifest:
+        raise _extension_leases.LeaseAuthorizationError(
+            "lease-service-not-manageable"
+        )
+    return _service_locks[service_id]
+
+
+def _get_extension_lease_manager():
+    """Create one process-local manager lazily after the feature gate passes."""
+    global _extension_lease_manager
+    if _extension_leases is None:
+        return None
+    with _extension_lease_manager_lock:
+        if _extension_lease_manager is None:
+            _extension_lease_manager = _extension_leases.ExtensionLeaseManager(
+                _extension_lease_lock_provider
+            )
+        return _extension_lease_manager
 
 
 def _service_has_docker_container(service_id: str) -> tuple[bool, str]:
@@ -6610,6 +6681,135 @@ class AgentHandler(BaseHTTPRequestHandler):
             json_response(self, 503, {"error": "access-transition-unavailable"})
         finally:
             _end_model_lifecycle("pixel_access_mode")
+
+    def _handle_extension_lease(self, action: str) -> None:
+        """Expose lease custody without granting any lifecycle mutation."""
+        if not check_auth(self):
+            return
+        if not ASSISTANT_TRANSACTIONS_ENABLED:
+            json_response(
+                self,
+                404,
+                {"error": {"code": "not-found"}},
+                no_store=True,
+            )
+            return
+        if _extension_leases is None:
+            json_response(
+                self,
+                503,
+                {"error": {"code": "extension-lease-manager-unavailable"}},
+                no_store=True,
+            )
+            return
+        body = _read_extension_lease_body(self)
+        if body is None:
+            return
+        required = {
+            "acquire": {"schema", "transactionId", "planHash", "serviceIds"},
+            "renew": {
+                "schema",
+                "leaseId",
+                "leaseToken",
+                "transactionId",
+                "planHash",
+            },
+            "status": {
+                "schema",
+                "leaseId",
+                "leaseToken",
+                "transactionId",
+                "planHash",
+            },
+            "release": {
+                "schema",
+                "leaseId",
+                "leaseToken",
+                "transactionId",
+                "planHash",
+            },
+        }[action]
+        optional = {"ttlSeconds"} if action in {"acquire", "renew"} else set()
+        if (
+            body.get("schema") != _extension_leases.LEASE_SCHEMA
+            or not required.issubset(body)
+            or not set(body).issubset(required | optional)
+        ):
+            json_response(
+                self,
+                422,
+                {"error": {"code": "invalid-lease-request"}},
+                no_store=True,
+            )
+            return
+        try:
+            manager = _get_extension_lease_manager()
+        except Exception:
+            logger.exception("Extension lease manager initialization failed")
+            manager = None
+        if manager is None:
+            json_response(
+                self,
+                503,
+                {"error": {"code": "extension-lease-manager-unavailable"}},
+                no_store=True,
+            )
+            return
+        try:
+            transaction_id = body["transactionId"]
+            plan_hash = body["planHash"]
+            ttl = (
+                {"ttl_seconds": body["ttlSeconds"]}
+                if "ttlSeconds" in body
+                else {}
+            )
+            if action == "acquire":
+                result = manager.acquire(
+                    transaction_id,
+                    plan_hash,
+                    body["serviceIds"],
+                    **ttl,
+                )
+            else:
+                lease_args = (
+                    body["leaseId"],
+                    body["leaseToken"],
+                    transaction_id,
+                    plan_hash,
+                )
+                if action == "renew":
+                    result = manager.renew(*lease_args, **ttl)
+                elif action == "status":
+                    result = manager.status(*lease_args)
+                else:
+                    result = manager.release(*lease_args)
+        except Exception as exc:
+            if isinstance(exc, _extension_leases.LeaseExpired):
+                status_code = 410
+                code = exc.code
+            elif isinstance(
+                exc, (_extension_leases.LeaseBusy, _extension_leases.LeaseConflict)
+            ):
+                status_code = 409
+                code = exc.code
+            elif isinstance(exc, _extension_leases.LeaseAuthorizationError):
+                status_code = 403
+                code = exc.code
+            elif isinstance(exc, _extension_leases.LeaseError):
+                status_code = 422
+                code = exc.code
+            else:
+                logger.exception("Extension lease request failed")
+                status_code = 503
+                code = "extension-lease-manager-unavailable"
+            json_response(
+                self,
+                status_code,
+                {"error": {"code": code}},
+                no_store=True,
+            )
+            return
+        json_response(self, 200, result, no_store=True)
 
     def _handle_assistant_first_secrets(self, action: str) -> None:
         """Keep configuration secrets inside the authenticated host boundary."""
@@ -7117,7 +7317,24 @@ class AgentHandler(BaseHTTPRequestHandler):
         # parsed as the next request on an HTTP/1.1 keep-alive connection. GET
         # polling remains reusable, which is where connection churn matters.
         self.close_connection = True
-        if self.path in {
+        lease_routes = {
+            "/v1/extension/lease/acquire": "acquire",
+            "/v1/extension/lease/renew": "renew",
+            "/v1/extension/lease/status": "status",
+            "/v1/extension/lease/release": "release",
+        }
+        lease_path = self.path.partition("?")[0]
+        if lease_path in lease_routes:
+            if self.path != lease_path:
+                json_response(
+                    self,
+                    404,
+                    {"error": {"code": "not-found"}},
+                    no_store=True,
+                )
+            else:
+                self._handle_extension_lease(lease_routes[lease_path])
+        elif self.path in {
             "/v1/assistant-first/secrets/stage",
             "/v1/assistant-first/secrets/status",
             "/v1/assistant-first/secrets/delete",
@@ -15635,6 +15852,17 @@ class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
     # Dashboard model discovery can issue bursts larger than HTTPServer's
     # default backlog of 5; keep action requests from being dropped behind polls.
     request_queue_size = 128
+
+    def service_actions(self):
+        """Release abandoned idle leases during the normal server poll cycle."""
+        super().service_actions()
+        manager = _extension_lease_manager
+        if manager is None:
+            return
+        try:
+            manager.sweep()
+        except Exception:
+            logger.exception("Extension lease sweep failed")
 
 
 def _create_host_agent_server(env: dict, bind_addr: str, port: int):

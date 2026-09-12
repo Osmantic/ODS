@@ -233,6 +233,26 @@ def test_token_and_binding_mismatch_cannot_use_or_release_lease():
         manager.release(grant["leaseId"], TOKEN, TRANSACTION_ID, PLAN_HASH)
 
 
+def test_status_requires_the_exact_token_and_immutable_binding():
+    manager, _lock_map, _events = make_manager()
+    grant = acquire(manager, ("documents",))
+
+    status = manager.status(
+        grant["leaseId"], TOKEN, TRANSACTION_ID, PLAN_HASH
+    )
+    assert status["active"] is False
+    assert status["serviceIds"] == ["documents"]
+    assert "leaseToken" not in status
+    with pytest.raises(leases.LeaseAuthorizationError, match="lease-token-mismatch"):
+        manager.status(
+            grant["leaseId"], "wrong-" + "x" * 32, TRANSACTION_ID, PLAN_HASH
+        )
+    with pytest.raises(leases.LeaseAuthorizationError, match="lease-binding-mismatch"):
+        manager.status(grant["leaseId"], TOKEN, TRANSACTION_ID, OTHER_PLAN_HASH)
+
+    manager.release(grant["leaseId"], TOKEN, TRANSACTION_ID, PLAN_HASH)
+
+
 def test_renew_extends_but_never_changes_the_binding_or_services():
     clock = FakeClock()
     manager, lock_map, _events = make_manager(clock=clock)

@@ -91,17 +91,24 @@ until that mutation exits; expired lease IDs cannot be renewed or replayed.
 Only one mutation may be active under a lease at a time, and it may address
 only services covered by the exact grant.
 
-The lease core is not imported by the host agent, exposed over HTTP, or wired
-into the production runtime in this phase. Those integrations require a
-fail-closed header/body protocol, renewal supervision, legacy direct-caller
-tests, and crash/restart recovery evidence before use.
+The host agent now exposes authenticated, transaction-feature-gated POST
+operations to acquire, renew, inspect, and release this lease. Requests use a
+dedicated bounded strict-JSON parser; reject duplicate keys, floating-point
+values, constants, coercion, unknown fields, and query data; and return only
+`Cache-Control: no-store` responses. Status is token- and binding-protected.
+Service existence and manageability are validated before the host agent's
+`defaultdict` is indexed, so an arbitrary name cannot mint a private lock.
+The server's existing maintenance cycle releases abandoned idle leases after
+expiry, while the lease core continues to pin an active mutation until exit.
 
-This source foundation does not yet make the host agent a second lock owner.
-The current Dashboard routes call host-agent lifecycle endpoints while holding
-their operation lock, so making the callee acquire the same lock would
-self-deadlock. Production execution remains disabled until a host-owned lease
-or equivalent non-reentrant cross-process protocol binds caller and callee to
-the same transaction.
+This is still a custody boundary, not a lifecycle adapter. No existing host
+mutation route accepts a lease token or calls `use`, no Dashboard client or
+renewer is present, and the production runtime still has `executor=None`.
+Legacy direct extension requests contend on the exact same host lock objects,
+but a future lease-bearing mutation call must validate and enter `use` instead
+of trying to re-acquire its already-held lock. Production execution remains
+disabled until that non-reentrant protocol, renewal supervision, and
+crash/restart recovery evidence are implemented and qualified.
 
 ## Why disabled by default
 
