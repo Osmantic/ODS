@@ -20,33 +20,26 @@ except ImportError:
 SCRIPT_DIR = Path(__file__).resolve().parent
 ROOT_DIR = SCRIPT_DIR.parent.parent
 MANIFEST_FILE = ROOT_DIR / "manifest.json"
-LOCAL_SCHEMA_PATH = SCRIPT_DIR / "schema" / "service-manifest.v1.json"
+LOCAL_SCHEMA_PATHS = {
+    "ods.services.v1": SCRIPT_DIR / "schema" / "service-manifest.v1.json",
+    "ods.services.v2": SCRIPT_DIR / "schema" / "service-manifest.v2.json",
+}
 SERVICES_DIR = SCRIPT_DIR / "services"
 
 
-def schema_path():
+def schema_path(schema_version="ods.services.v1"):
     """Use the repository contract when available, with a standalone fallback."""
+    if schema_version not in LOCAL_SCHEMA_PATHS:
+        raise ValueError(f"Unsupported manifest schema: {schema_version}")
     if not MANIFEST_FILE.is_file():
-        return LOCAL_SCHEMA_PATH
+        return LOCAL_SCHEMA_PATHS[schema_version]
 
     manifest = json.loads(MANIFEST_FILE.read_text(encoding="utf-8"))
-    return ROOT_DIR / manifest["contracts"]["extensions"]["serviceManifestSchema"]
+    configured = manifest["contracts"]["extensions"]["serviceManifestSchemas"]
+    return ROOT_DIR / configured[schema_version]
 
 
 def main():
-    # Load schema
-    try:
-        schema_path_value = schema_path()
-    except (KeyError, OSError, TypeError, json.JSONDecodeError) as exc:
-        print(f"ERROR: Cannot resolve canonical schema from {MANIFEST_FILE}: {exc}")
-        sys.exit(2)
-    if not schema_path_value.exists():
-        print(f"ERROR: Schema not found at {schema_path_value}")
-        sys.exit(2)
-
-    with open(schema_path_value, encoding="utf-8") as f:
-        schema = json.load(f)
-
     if not SERVICES_DIR.is_dir():
         print(f"ERROR: Services directory not found: {SERVICES_DIR}")
         sys.exit(2)
@@ -78,8 +71,17 @@ def main():
             failed += 1
             continue
 
-        validator_cls = jsonschema.validators.validator_for(schema)
-        validator_cls.check_schema(schema)
+        schema_version = data.get("schema_version") if isinstance(data, dict) else None
+        try:
+            schema_path_value = schema_path(schema_version)
+            with open(schema_path_value, encoding="utf-8") as schema_file:
+                schema = json.load(schema_file)
+            validator_cls = jsonschema.validators.validator_for(schema)
+            validator_cls.check_schema(schema)
+        except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            print(f"FAIL  {service_name}: Cannot resolve manifest schema: {exc}")
+            failed += 1
+            continue
         errors = list(validator_cls(schema).iter_errors(data))
         if errors:
             failed += 1

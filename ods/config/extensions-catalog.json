@@ -1,9 +1,24 @@
 {
-  "generated_at": "2026-09-07T23:19:10Z",
+  "generated_at": "2026-09-12T01:11:05Z",
   "schema_version": "1.0.0",
+  "catalog_revision": "b056b5822b921e08cc395dcc22dfbe95d48f6466a01d555fbd7350b4b97295b8",
   "extensions": [
     {
       "id": "aider",
+      "manifest_schema_version": "ods.services.v1",
+      "planning": {
+        "serviceType": "docker",
+        "version": "0.0.0-legacy",
+        "dataSchemaVersion": "legacy",
+        "odsCompatibility": {
+          "minimum": "",
+          "maximum": ""
+        },
+        "definitionSha256": "sha256:b6c18e319a57bdaa318f8dbbc4fa9e141345445a94dc2646208f58eb9310c1bb",
+        "composeSha256": "sha256:306acc4a72d2090c88b3c9da0424d0fe42da2d11edc4770395124d1fdb0722e0",
+        "dependsOn": [],
+        "legacy": true
+      },
       "name": "Aider",
       "description": "AI pair programming tool that lets you edit code in your terminal using GPT-4 and Claude.",
       "category": "optional",
@@ -57,6 +72,22 @@
     },
     {
       "id": "anythingllm",
+      "manifest_schema_version": "ods.services.v1",
+      "planning": {
+        "serviceType": "docker",
+        "version": "0.0.0-legacy",
+        "dataSchemaVersion": "legacy",
+        "odsCompatibility": {
+          "minimum": "",
+          "maximum": ""
+        },
+        "definitionSha256": "sha256:8ff51677619dc17cb9eead83d709f4ce416f0a95058b9ca600d306e457accbae",
+        "composeSha256": "sha256:f70d9e66fbc0322a45cceab60d2a31c0a511993399c2909a5f9dc742d3e138f7",
+        "dependsOn": [
+          "ollama"
+        ],
+        "legacy": true
+      },
       "name": "AnythingLLM",
       "description": "All-in-one AI productivity tool for RAG chat with documents.\nBuilt-in vector database, supports multiple LLM providers,\nand runs entirely on-device for privacy.\n",
       "category": "optional",
@@ -141,6 +172,20 @@
     },
     {
       "id": "ape",
+      "manifest_schema_version": "ods.services.v1",
+      "planning": {
+        "serviceType": "docker",
+        "version": "0.0.0-legacy",
+        "dataSchemaVersion": "legacy",
+        "odsCompatibility": {
+          "minimum": "2.0.0",
+          "maximum": ""
+        },
+        "definitionSha256": "sha256:f4750207260b6f4700f3696be4beddab9d914bee5a77ab6e3504ec95f215d0fc",
+        "composeSha256": "sha256:34b3f9d740d234b5d35541623d126de210970d9b748345a23a8ea401fb34a641",
+        "dependsOn": [],
+        "legacy": true
+      },
       "name": "APE (Agent Policy Engine)",
       "description": "Lightweight policy engine that intercepts and audits agent tool calls before execution. Enforces configurable allow/deny rules (command allowlists, path guards, rate limits) and maintains a tamper-evident audit log of every decision. Drop-in governance layer for OpenClaw and any OpenAI-compatible agent framework.\n",
       "category": "optional",
@@ -182,6 +227,20 @@
     },
     {
       "id": "audiocraft",
+      "manifest_schema_version": "ods.services.v1",
+      "planning": {
+        "serviceType": "docker",
+        "version": "0.0.0-legacy",
+        "dataSchemaVersion": "legacy",
+        "odsCompatibility": {
+          "minimum": "",
+          "maximum": ""
+        },
+        "definitionSha256": "sha256:e4c846c9e1844dc6eb7030f5619a2996e67fe1cfed8cd67ebbff3c1282931b91",
+        "composeSha256": "sha256:f798738235ba8eb5f9e4c1e4af51dcefdfa9765f3582c991eda24ff8112923dc",
+        "dependsOn": [],
+        "legacy": true
+      },
       "name": "AudioCraft",
       "description": "Meta's AudioCraft is a generative AI for audio. Features MusicGen for\ntext-to-music generation and AudioGen for text-to-sound effects.\nCreate royalty-free music and sound effects from text descriptions.\n",
       "category": "optional",
@@ -251,6 +310,20 @@
     },
     {
       "id": "bark",
+      "manifest_schema_version": "ods.services.v1",
+      "planning": {
+        "serviceType": "docker",
+        "version": "0.0.0-legacy",
+        "dataSchemaVersion": "legacy",
+        "odsCompatibility": {
+          "minimum": "",
+          "maximum": ""
+        },
+        "definitionSha256": "sha256:dfdd80d22ce523b331dd27d1bc0263e8647297f9fb4b507188579b08b850e674",
+        "composeSha256": "sha256:a54952bfb336c3961a06a2d9f77f069ad1eaac80f1eacaee93b6bd7201ca1d3a",
+        "dependsOn": [],
+        "legacy": true
+      },
       "name": "Bark TTS",
       "description": "Bark is a transformer-based text-to-audio model by Suno AI. Unlike\ntraditional TTS, Bark generates highly expressive, realistic speech including\nlaughter, sighs, hesitation, and non-verbal sounds. Supports 13 languages\nwith multiple voice presets per language. Can also generate music and sound\neffects. Ideal when you need natural, emotionally-expressive voice output\nbeyond what rule-based TTS can deliver.\n\nNote: First startup downloads ~5GB of models. Subsequent starts are fast.\n",
       "category": "optional",
@@ -357,6 +430,20 @@
     },
     {
       "id": "baserow",
+      "manifest_schema_version": "ods.services.v1",
+      "planning": {
+        "serviceType": "docker",
+        "version": "0.0.0-legacy",
+        "dataSchemaVersion": "legacy",
+        "odsCompatibility": {
+          "minimum": "",
+          "maximum": ""
+        },
+        "definitionSha256": "sha256:6fc054778f4282713a96779c859517f2d88015b2c036351766548a58da15f8ef",
+        "composeSha256": "sha256:3efbe7b106862440a3aeb30f7c14c6a1ca6e6abd99e43639359fbeedb9e66e9d",
+        "dependsOn": [],
+        "legacy": true
+      },
       "name": "Baserow",
       "description": "Open-source no-code database tool and Airtable alternative.\nCreate databases, tables, and views with a spreadsheet-like interface.\nSelf-hosted with no storage restrictions. MIT licensed.\n",
       "category": "optional",
@@ -455,6 +542,20 @@
     },
     {
       "id": "brave-search",
+      "manifest_schema_version": "ods.services.v1",
+      "planning": {
+        "serviceType": "docker",
+        "version": "0.0.0-legacy",
+        "dataSchemaVersion": "legacy",
+        "odsCompatibility": {
+          "minimum": "2.0.0",
+          "maximum": ""
+        },
+        "definitionSha256": "sha256:bd4a384ddc5828512b0e6eee3a8a03577c9bcf756d35821af0aa14706180e562",
+        "composeSha256": "sha256:cbd8cfefbf2b1c72ba5e988615f95a42d9e23b5f3631acec815018805f805751",
+        "dependsOn": [],
+        "legacy": true
+      },
       "name": "Brave Search (Paid API)",
       "description": "Web search backed by Brave's independent crawler index",
       "category": "optional",
@@ -517,6 +618,20 @@
     },
     {
       "id": "chromadb",
+      "manifest_schema_version": "ods.services.v1",
+      "planning": {
+        "serviceType": "docker",
+        "version": "0.0.0-legacy",
+        "dataSchemaVersion": "legacy",
+        "odsCompatibility": {
+          "minimum": "",
+          "maximum": ""
+        },
+        "definitionSha256": "sha256:8e73845bc6342fc3e7bd21e978d1f7156348fe416698b2c4460b55a2aae01b51",
+        "composeSha256": "sha256:ef9d9e5a6a0953a65acb7ea2b63412cdebfb50dbfa6cbc72742ed4996321469c",
+        "dependsOn": [],
+        "legacy": true
+      },
       "name": "ChromaDB",
       "description": "AI-native open-source vector database for storing and querying embeddings.",
       "category": "optional",
@@ -556,6 +671,20 @@
     },
     {
       "id": "comfyui",
+      "manifest_schema_version": "ods.services.v1",
+      "planning": {
+        "serviceType": "docker",
+        "version": "0.0.0-legacy",
+        "dataSchemaVersion": "legacy",
+        "odsCompatibility": {
+          "minimum": "2.0.0",
+          "maximum": ""
+        },
+        "definitionSha256": "sha256:58defd65c97378ea02752cafe131f21ae93a7e553cff15c9b60d9eb28f501d0a",
+        "composeSha256": "sha256:1ac91cc3745b578410c7b067c249faaeae535bb4afd8568e5c31d961112e4513",
+        "dependsOn": [],
+        "legacy": true
+      },
       "name": "ComfyUI (Image Generation)",
       "description": "Generate images with FLUX.1 via ComfyUI",
       "category": "optional",
@@ -603,6 +732,22 @@
     },
     {
       "id": "continue",
+      "manifest_schema_version": "ods.services.v1",
+      "planning": {
+        "serviceType": "docker",
+        "version": "0.0.0-legacy",
+        "dataSchemaVersion": "legacy",
+        "odsCompatibility": {
+          "minimum": "",
+          "maximum": ""
+        },
+        "definitionSha256": "sha256:55a2c957e9f01ba52e84cc51a5e00daad353aad9b6d156fca5f7b6d72d1e3633",
+        "composeSha256": "sha256:8401aa2bc0a627ac4154450d03bc4c798c2f2bf7d151f24437a40b9d284a9779",
+        "dependsOn": [
+          "llama-server"
+        ],
+        "legacy": true
+      },
       "name": "Continue (AI Coding Assistant)",
       "description": "Open-source AI coding assistant for VS Code and JetBrains with local LLM support.",
       "category": "optional",
@@ -651,6 +796,20 @@
     },
     {
       "id": "crewai",
+      "manifest_schema_version": "ods.services.v1",
+      "planning": {
+        "serviceType": "docker",
+        "version": "0.0.0-legacy",
+        "dataSchemaVersion": "legacy",
+        "odsCompatibility": {
+          "minimum": "",
+          "maximum": ""
+        },
+        "definitionSha256": "sha256:73686097666badbcb5c622bacf0b325cfc0fd8dcd0b2a1a6dde038bcbb343b75",
+        "composeSha256": "sha256:fcb12b4d02e1c34c303a8031e2890713c4fd9574779c5cd108db2e54f1997ef4",
+        "dependsOn": [],
+        "legacy": true
+      },
       "name": "CrewAI",
       "description": "CrewAI is a multi-agent framework for AI workflows. It enables autonomous\nAI agents to collaborate, delegate tasks, and work together to solve\ncomplex problems. Perfect for building agent teams that simulate real-world\ncollaboration and decision-making.\n",
       "category": "optional",
@@ -767,6 +926,22 @@
     },
     {
       "id": "dashboard",
+      "manifest_schema_version": "ods.services.v1",
+      "planning": {
+        "serviceType": "docker",
+        "version": "0.0.0-legacy",
+        "dataSchemaVersion": "legacy",
+        "odsCompatibility": {
+          "minimum": "2.0.0",
+          "maximum": ""
+        },
+        "definitionSha256": "sha256:3bc33972d1f4a2917748bc71acccad6267da31d53414ae771e2a75cc07010197",
+        "composeSha256": "",
+        "dependsOn": [
+          "dashboard-api"
+        ],
+        "legacy": true
+      },
       "name": "Dashboard (Control Center)",
       "description": "Dashboard (Control Center)",
       "category": "core",
@@ -789,6 +964,20 @@
     },
     {
       "id": "dashboard-api",
+      "manifest_schema_version": "ods.services.v1",
+      "planning": {
+        "serviceType": "docker",
+        "version": "0.0.0-legacy",
+        "dataSchemaVersion": "legacy",
+        "odsCompatibility": {
+          "minimum": "2.0.0",
+          "maximum": ""
+        },
+        "definitionSha256": "sha256:d15ebeade6da9df99d12b5585edbfb0f2dd0212ad228919e5fe3656aec01d2d7",
+        "composeSha256": "",
+        "dependsOn": [],
+        "legacy": true
+      },
       "name": "Dashboard API (System Status)",
       "description": "Dashboard API (System Status)",
       "category": "core",
@@ -809,6 +998,20 @@
     },
     {
       "id": "dify",
+      "manifest_schema_version": "ods.services.v1",
+      "planning": {
+        "serviceType": "docker",
+        "version": "0.0.0-legacy",
+        "dataSchemaVersion": "legacy",
+        "odsCompatibility": {
+          "minimum": "",
+          "maximum": ""
+        },
+        "definitionSha256": "sha256:226d0de57cfd46eca0cf84936941d9f0cfd3f07e8037283900caf74423999e4e",
+        "composeSha256": "",
+        "dependsOn": [],
+        "legacy": true
+      },
       "name": "Dify",
       "description": "LLMOps platform for building AI workflows, RAG pipelines, and autonomous agents.",
       "category": "optional",
@@ -881,6 +1084,20 @@
     },
     {
       "id": "embeddings",
+      "manifest_schema_version": "ods.services.v1",
+      "planning": {
+        "serviceType": "docker",
+        "version": "0.0.0-legacy",
+        "dataSchemaVersion": "legacy",
+        "odsCompatibility": {
+          "minimum": "2.0.0",
+          "maximum": ""
+        },
+        "definitionSha256": "sha256:238154201d116a2bf2e4efdf6bceabf761b08d4deb576433e01a6cb822b926b0",
+        "composeSha256": "sha256:11347a8be487ef81d99683984f56a9aa48b4765cc2799b2759525cb8adb6bd0f",
+        "dependsOn": [],
+        "legacy": true
+      },
       "name": "TEI (Embeddings)",
       "description": "TEI (Embeddings)",
       "category": "optional",
@@ -900,6 +1117,20 @@
     },
     {
       "id": "flowise",
+      "manifest_schema_version": "ods.services.v1",
+      "planning": {
+        "serviceType": "docker",
+        "version": "0.0.0-legacy",
+        "dataSchemaVersion": "legacy",
+        "odsCompatibility": {
+          "minimum": "",
+          "maximum": ""
+        },
+        "definitionSha256": "sha256:4b80fb5df3257138b6b794cc62d6eb80730fa77cc4f251b16005f8c051386242",
+        "composeSha256": "sha256:ddc0e47fab1aa78147725fbeee5f4ba9f7f1f49d188678adf5f4d1b8031ed59a",
+        "dependsOn": [],
+        "legacy": true
+      },
       "name": "Flowise",
       "description": "Visual LLM workflow builder with drag-and-drop interface.\nBuild AI agents, chatbots, and automation flows without code.\nIntegrates with OpenAI, Anthropic, local models, and 100+ tools.\n",
       "category": "optional",
@@ -986,6 +1217,20 @@
     },
     {
       "id": "fooocus",
+      "manifest_schema_version": "ods.services.v1",
+      "planning": {
+        "serviceType": "docker",
+        "version": "0.0.0-legacy",
+        "dataSchemaVersion": "legacy",
+        "odsCompatibility": {
+          "minimum": "",
+          "maximum": ""
+        },
+        "definitionSha256": "sha256:6adb1834c59dbe8d80a6b067524439008ea47aa77a83e89667c157298950e577",
+        "composeSha256": "",
+        "dependsOn": [],
+        "legacy": true
+      },
       "name": "Fooocus",
       "description": "Simplified Stable Diffusion interface inspired by Midjourney's ease of use. Not yet supported for local deployment — requires RunPod cloud platform.",
       "category": "optional",
@@ -1026,6 +1271,20 @@
     },
     {
       "id": "forge",
+      "manifest_schema_version": "ods.services.v1",
+      "planning": {
+        "serviceType": "docker",
+        "version": "0.0.0-legacy",
+        "dataSchemaVersion": "legacy",
+        "odsCompatibility": {
+          "minimum": "",
+          "maximum": ""
+        },
+        "definitionSha256": "sha256:f05f1b1f8860c8879ac78853da4fc23b4ba44a23feb0c73f179c328726ef4b7f",
+        "composeSha256": "sha256:32638f9052c013acb31ce00b863d02eded27700bfcf313179820e991ad4d7924",
+        "dependsOn": [],
+        "legacy": true
+      },
       "name": "Forge / A1111",
       "description": "Forge (based on Automatic1111) is the original Stable Diffusion web UI.\nFeatures extensive model support, extensions, inpainting, outpainting,\nand professional-grade image generation capabilities. GPU required.\n",
       "category": "optional",
@@ -1135,6 +1394,20 @@
     },
     {
       "id": "frigate",
+      "manifest_schema_version": "ods.services.v1",
+      "planning": {
+        "serviceType": "docker",
+        "version": "0.0.0-legacy",
+        "dataSchemaVersion": "legacy",
+        "odsCompatibility": {
+          "minimum": "",
+          "maximum": ""
+        },
+        "definitionSha256": "sha256:83dce498dd1c237e174574518cb9b84c0aa29a814f39885e634b968b7879a9cb",
+        "composeSha256": "sha256:a1f47b8cadea987efd4185146aaa758282c0bea160cffa423f84041677cb5cb1",
+        "dependsOn": [],
+        "legacy": true
+      },
       "name": "Frigate",
       "description": "Frigate is an open-source NVR (Network Video Recorder) with realtime\nlocal object detection for IP cameras. It uses AI to detect people,\nvehicles, and other objects without sending video to the cloud.\n",
       "category": "optional",
@@ -1251,6 +1524,20 @@
     },
     {
       "id": "gaia",
+      "manifest_schema_version": "ods.services.v1",
+      "planning": {
+        "serviceType": "docker",
+        "version": "0.0.0-legacy",
+        "dataSchemaVersion": "legacy",
+        "odsCompatibility": {
+          "minimum": "",
+          "maximum": ""
+        },
+        "definitionSha256": "sha256:f8512fe32cad74366d625a6635923096a1956d5400ef06bf8ac9912fd03b16ed",
+        "composeSha256": "sha256:36085c1a557d5b99552946e8ac264d9fd7286c130c16dce6f958de1b4d734085",
+        "dependsOn": [],
+        "legacy": true
+      },
       "name": "AMD GAIA",
       "description": "Experimental AMD GAIA Agent UI recipe for local agent workflows.",
       "category": "optional",
@@ -1336,6 +1623,20 @@
     },
     {
       "id": "gitea",
+      "manifest_schema_version": "ods.services.v1",
+      "planning": {
+        "serviceType": "docker",
+        "version": "0.0.0-legacy",
+        "dataSchemaVersion": "legacy",
+        "odsCompatibility": {
+          "minimum": "",
+          "maximum": ""
+        },
+        "definitionSha256": "sha256:9bd8410497299ba59f2668771155083e4423f220db3da9f6c43a60166997cfec",
+        "composeSha256": "sha256:6eaea94977f0e9a0c597971d8e39dc2bc73793c9c3b969c2443ee4327625f6cd",
+        "dependsOn": [],
+        "legacy": true
+      },
       "name": "Gitea (Git Hosting)",
       "description": "Lightweight self-hosted Git service for managing repositories and CI/CD.",
       "category": "optional",
@@ -1375,6 +1676,23 @@
     },
     {
       "id": "hermes",
+      "manifest_schema_version": "ods.services.v1",
+      "planning": {
+        "serviceType": "docker",
+        "version": "0.0.0-legacy",
+        "dataSchemaVersion": "legacy",
+        "odsCompatibility": {
+          "minimum": "2.0.0",
+          "maximum": ""
+        },
+        "definitionSha256": "sha256:504155543f6ba810329c06ff509c9a9aa07af84e2425c7aa45cbf92499187425",
+        "composeSha256": "sha256:a607713df21dc5129e0e69e20a039b85e69b014777d50681c60ecd3a1fbf0155",
+        "dependsOn": [
+          "llama-server",
+          "searxng"
+        ],
+        "legacy": true
+      },
       "name": "Hermes Agent",
       "description": "Hermes Agent (Nous Research) — a self-improving generalist agent with persistent memory, autonomous skill creation, and 70+ built-in tools. ODS runs the upstream image pinned by version, points it at the local LLM (llama-server), and ships no messaging-platform adapters (Telegram / Discord / Slack / etc.) since the web dashboard is the surface we ship. The container runs `hermes gateway run` with the dashboard embedded (HERMES_DASHBOARD=1) so the scheduler that fires cron jobs actually runs.\n",
       "category": "recommended",
@@ -1462,6 +1780,23 @@
     },
     {
       "id": "hermes-proxy",
+      "manifest_schema_version": "ods.services.v1",
+      "planning": {
+        "serviceType": "docker",
+        "version": "0.0.0-legacy",
+        "dataSchemaVersion": "legacy",
+        "odsCompatibility": {
+          "minimum": "2.0.0",
+          "maximum": ""
+        },
+        "definitionSha256": "sha256:4f2b0309fba797eaebf53ca7a239231ffbe04300ede05326e4f242518234cd2c",
+        "composeSha256": "sha256:f8a0c61b9eac5ca197fd2ee120b6eafa1a48ce7423f0a6d8f6b738fbf352f1b5",
+        "dependsOn": [
+          "dashboard-api",
+          "hermes"
+        ],
+        "legacy": true
+      },
       "name": "Hermes Auth Proxy",
       "description": "Caddy-based reverse proxy that fronts the Hermes Agent extension. Verifies the `ods-session` cookie against dashboard-api's /api/auth/verify-session endpoint (Caddy forward_auth) — which HMAC-validates the cookie's signature against ODS_SESSION_SECRET. Without a valid cookie, requests are bounced to a static \"you need an invite\" page. With one, traffic is forwarded to ods-hermes:9119 and Hermes's own session-token model handles per-request auth. Native streaming + WebSocket support via Caddy's `reverse_proxy`.\n",
       "category": "recommended",
@@ -1535,6 +1870,20 @@
     },
     {
       "id": "immich",
+      "manifest_schema_version": "ods.services.v1",
+      "planning": {
+        "serviceType": "docker",
+        "version": "0.0.0-legacy",
+        "dataSchemaVersion": "legacy",
+        "odsCompatibility": {
+          "minimum": "",
+          "maximum": ""
+        },
+        "definitionSha256": "sha256:cbd708d6a60c046b9a027913594fdcd879c01be21b349bcc0c0468c6923bb60d",
+        "composeSha256": "sha256:2a7e2caa5e576ed72400d25e45b86eaaaab47e035c108075d2de8cc4f3ebe552",
+        "dependsOn": [],
+        "legacy": true
+      },
       "name": "Immich",
       "description": "Self-hosted Google Photos alternative with AI-powered face and object detection.",
       "category": "optional",
@@ -1583,6 +1932,20 @@
     },
     {
       "id": "invokeai",
+      "manifest_schema_version": "ods.services.v1",
+      "planning": {
+        "serviceType": "docker",
+        "version": "0.0.0-legacy",
+        "dataSchemaVersion": "legacy",
+        "odsCompatibility": {
+          "minimum": "",
+          "maximum": ""
+        },
+        "definitionSha256": "sha256:8c7e4f76c11c84835bd2c158c47c6b164b2b26fc5cfd9f1c689f3d69798a21c2",
+        "composeSha256": "sha256:2b6e6fc96349ec4dc0f259b74b17219671d0338f09f1dd702e03ca1104fc34c6",
+        "dependsOn": [],
+        "legacy": true
+      },
       "name": "InvokeAI",
       "description": "InvokeAI is a leading creative engine for Stable Diffusion models. \nProfessional-grade image generation with a node-based canvas, layer support,\nand FLUX model compatibility. Best-in-class UI for serious creators.\n",
       "category": "optional",
@@ -1678,6 +2041,20 @@
     },
     {
       "id": "jan",
+      "manifest_schema_version": "ods.services.v1",
+      "planning": {
+        "serviceType": "docker",
+        "version": "0.0.0-legacy",
+        "dataSchemaVersion": "legacy",
+        "odsCompatibility": {
+          "minimum": "",
+          "maximum": ""
+        },
+        "definitionSha256": "sha256:c052a25d0e2db045d0bcabf505237dbf1fb18c6c02823e3ec74fd909f3264a2b",
+        "composeSha256": "",
+        "dependsOn": [],
+        "legacy": true
+      },
       "name": "Jan",
       "description": "Jan is a ChatGPT alternative that runs 100% offline on your computer.\nMulti-engine support (llama.cpp, TensorRT-LLM). Local-first, privacy-focused.\n",
       "category": "optional",
@@ -1726,6 +2103,20 @@
     },
     {
       "id": "jupyter",
+      "manifest_schema_version": "ods.services.v1",
+      "planning": {
+        "serviceType": "docker",
+        "version": "0.0.0-legacy",
+        "dataSchemaVersion": "legacy",
+        "odsCompatibility": {
+          "minimum": "",
+          "maximum": ""
+        },
+        "definitionSha256": "sha256:3c7b6302b591371cd570e52c7555a43e99e44df0d5310d51beab98ca328ee0b8",
+        "composeSha256": "sha256:05c4de6060c0b30a0ee13c6503eff6f14c1de39378b34dd19ffb611592e8f8c0",
+        "dependsOn": [],
+        "legacy": true
+      },
       "name": "Jupyter",
       "description": "Interactive notebook environment for data science and machine learning with local LLM kernel support.",
       "category": "optional",
@@ -1774,6 +2165,20 @@
     },
     {
       "id": "label-studio",
+      "manifest_schema_version": "ods.services.v1",
+      "planning": {
+        "serviceType": "docker",
+        "version": "0.0.0-legacy",
+        "dataSchemaVersion": "legacy",
+        "odsCompatibility": {
+          "minimum": "",
+          "maximum": ""
+        },
+        "definitionSha256": "sha256:47281e88bd72e3e75fd11368a9fcc70688fea6410ccaf661656c885c12f3d07b",
+        "composeSha256": "sha256:2791aa975493c2684d6eb801f48d07ac5088424601d111d60cc3476289d5d08c",
+        "dependsOn": [],
+        "legacy": true
+      },
       "name": "Label Studio",
       "description": "Label Studio is an open source data labeling tool.\nLabel images, audio, text, time series, and more for ML model training.\n",
       "category": "optional",
@@ -1817,6 +2222,20 @@
     },
     {
       "id": "langflow",
+      "manifest_schema_version": "ods.services.v1",
+      "planning": {
+        "serviceType": "docker",
+        "version": "0.0.0-legacy",
+        "dataSchemaVersion": "legacy",
+        "odsCompatibility": {
+          "minimum": "",
+          "maximum": ""
+        },
+        "definitionSha256": "sha256:d19dc324959a54d71a61474fe8b0268613dd5cfdeb96258f96a1ca3187680277",
+        "composeSha256": "sha256:b299a145245f29949901fca13aee71731906a1151eaa8879c2539765ee117ad4",
+        "dependsOn": [],
+        "legacy": true
+      },
       "name": "Langflow",
       "description": "Langflow is a visual LLM workflow builder that lets you create\ncomplex AI workflows with a drag-and-drop interface. Supports\nLangChain components, custom components, and real-time testing.\n",
       "category": "optional",
@@ -1891,6 +2310,20 @@
     },
     {
       "id": "langfuse",
+      "manifest_schema_version": "ods.services.v1",
+      "planning": {
+        "serviceType": "docker",
+        "version": "0.0.0-legacy",
+        "dataSchemaVersion": "legacy",
+        "odsCompatibility": {
+          "minimum": "2.0.0",
+          "maximum": ""
+        },
+        "definitionSha256": "sha256:692d845ff84e20a13de8ea18bb586d0dc0c5af06058472b3d2885a838801c58c",
+        "composeSha256": "",
+        "dependsOn": [],
+        "legacy": true
+      },
       "name": "Langfuse (LLM Observability)",
       "description": "Full traces, evaluations, and prompt management for all LLM calls",
       "category": "optional",
@@ -1939,6 +2372,20 @@
     },
     {
       "id": "librechat",
+      "manifest_schema_version": "ods.services.v1",
+      "planning": {
+        "serviceType": "docker",
+        "version": "0.0.0-legacy",
+        "dataSchemaVersion": "legacy",
+        "odsCompatibility": {
+          "minimum": "",
+          "maximum": ""
+        },
+        "definitionSha256": "sha256:cf3691b34e2320821ac231b5eefe031040030f7138e66b1ebce4471dfb56f3ee",
+        "composeSha256": "sha256:b7bf317342f960862b2220700821cecbe57a5d153f8975847f4fbed97835b943",
+        "dependsOn": [],
+        "legacy": true
+      },
       "name": "LibreChat",
       "description": "LibreChat is an enhanced ChatGPT clone with multi-LLM support,\nagents, RAG, and file uploads. Supports OpenAI, Anthropic, Google,\nAzure, Groq, Mistral, OpenRouter, and custom endpoints.\n",
       "category": "optional",
@@ -2069,6 +2516,22 @@
     },
     {
       "id": "litellm",
+      "manifest_schema_version": "ods.services.v1",
+      "planning": {
+        "serviceType": "docker",
+        "version": "0.0.0-legacy",
+        "dataSchemaVersion": "legacy",
+        "odsCompatibility": {
+          "minimum": "2.0.0",
+          "maximum": ""
+        },
+        "definitionSha256": "sha256:336f1337179f211cdc3673af2f219c03ad23dc0f72cfece3349b28aca0bf0f7b",
+        "composeSha256": "sha256:b22bf0f3110d4b45bc3ae39da780f6ea4f6a689b8f218f42d0364b683f9aa53e",
+        "dependsOn": [
+          "llama-server"
+        ],
+        "legacy": true
+      },
       "name": "LiteLLM (API Gateway)",
       "description": "LiteLLM (API Gateway)",
       "category": "recommended",
@@ -2107,6 +2570,20 @@
     },
     {
       "id": "llama-server",
+      "manifest_schema_version": "ods.services.v1",
+      "planning": {
+        "serviceType": "docker",
+        "version": "0.0.0-legacy",
+        "dataSchemaVersion": "legacy",
+        "odsCompatibility": {
+          "minimum": "2.0.0",
+          "maximum": ""
+        },
+        "definitionSha256": "sha256:b7f60c654a9163dedf83bd330a0e9685331400db4a960f10ba9b3d83003970e4",
+        "composeSha256": "",
+        "dependsOn": [],
+        "legacy": true
+      },
       "name": "llama-server (LLM Inference)",
       "description": "Chat with your local AI model",
       "category": "core",
@@ -2187,6 +2664,22 @@
     },
     {
       "id": "localai",
+      "manifest_schema_version": "ods.services.v1",
+      "planning": {
+        "serviceType": "docker",
+        "version": "0.0.0-legacy",
+        "dataSchemaVersion": "legacy",
+        "odsCompatibility": {
+          "minimum": "",
+          "maximum": ""
+        },
+        "definitionSha256": "sha256:54fb7d03361125626732afec24d499aa6d855ce3b5a517b83bd83cae6a977986",
+        "composeSha256": "sha256:7fcda4eacbdbbcff348c10986d3f2f5b2dace06d09ba8355ac71953ddf845ad4",
+        "dependsOn": [
+          "llama-server"
+        ],
+        "legacy": true
+      },
       "name": "LocalAI (OpenAI-compatible API)",
       "description": "OpenAI-compatible API server for running open-source models locally.",
       "category": "optional",
@@ -2294,6 +2787,20 @@
     },
     {
       "id": "milvus",
+      "manifest_schema_version": "ods.services.v1",
+      "planning": {
+        "serviceType": "docker",
+        "version": "0.0.0-legacy",
+        "dataSchemaVersion": "legacy",
+        "odsCompatibility": {
+          "minimum": "",
+          "maximum": ""
+        },
+        "definitionSha256": "sha256:d6bea4f96a0e2f1b3d25e3f5ff81ea9dee418158f70fa76d091fa1d95acbe50b",
+        "composeSha256": "sha256:89edb843c12b57cd1f9b341f099ece5abd1e5c63388459fd99422d77a30f7014",
+        "dependsOn": [],
+        "legacy": true
+      },
       "name": "Milvus (Vector Database)",
       "description": "Production-grade open-source vector database for scalable similarity search.",
       "category": "recommended",
@@ -2312,6 +2819,20 @@
     },
     {
       "id": "model-router",
+      "manifest_schema_version": "ods.services.v1",
+      "planning": {
+        "serviceType": "docker",
+        "version": "0.0.0-legacy",
+        "dataSchemaVersion": "legacy",
+        "odsCompatibility": {
+          "minimum": "2.0.0",
+          "maximum": ""
+        },
+        "definitionSha256": "sha256:255e7e09a82edd99a213fb7eb0a6acebd099eec270392b57b361e1bf7b6be919",
+        "composeSha256": "",
+        "dependsOn": [],
+        "legacy": true
+      },
       "name": "ODS Model Router",
       "description": "ODS Model Router",
       "category": "core",
@@ -2332,6 +2853,20 @@
     },
     {
       "id": "n8n",
+      "manifest_schema_version": "ods.services.v1",
+      "planning": {
+        "serviceType": "docker",
+        "version": "0.0.0-legacy",
+        "dataSchemaVersion": "legacy",
+        "odsCompatibility": {
+          "minimum": "2.0.0",
+          "maximum": ""
+        },
+        "definitionSha256": "sha256:3af64a1ad525703d8149846cd038eee09050b95eae8ed931a2e6f574d8b9ea24",
+        "composeSha256": "sha256:0f209e0e39fe3fbf3b861a1015998c46c4fc07792fcab9c5a82a3326e9030877",
+        "dependsOn": [],
+        "legacy": true
+      },
       "name": "n8n (Workflows)",
       "description": "Automate tasks with AI-powered workflows",
       "category": "optional",
@@ -2398,6 +2933,24 @@
     },
     {
       "id": "ods-proxy",
+      "manifest_schema_version": "ods.services.v1",
+      "planning": {
+        "serviceType": "docker",
+        "version": "0.0.0-legacy",
+        "dataSchemaVersion": "legacy",
+        "odsCompatibility": {
+          "minimum": "2.0.0",
+          "maximum": ""
+        },
+        "definitionSha256": "sha256:1ed2054064b7be1d8176ba0f8eb57dac40ff3d8a3a40a4b56103f1baf83d7d8b",
+        "composeSha256": "sha256:3204def2e1bf147cd358c6c1aa5440c7d676775174c4b8fa4e0ab95bbbb0dea3",
+        "dependsOn": [
+          "dashboard",
+          "dashboard-api",
+          "open-webui"
+        ],
+        "legacy": true
+      },
       "name": "ODS (Web)",
       "description": "Caddy reverse proxy fronting ODS's web surface on port 80 with host-based routing. Without this extension, the dashboard / chat / API services bind to 127.0.0.1 by default, so `http://<device>.local` doesn't resolve to anything. With it, each surface gets its own subdomain on the mDNS hostname:\n    <device>.local           → 302 redirect to chat\n    chat.<device>.local      → Open WebUI (root-mounted)\n    dashboard.<device>.local → ODS Dashboard (operator UI)\n    auth.<device>.local      → dashboard-api (magic-link redemption)\n    api.<device>.local       → dashboard-api (admin /api/*)\n    hermes.<device>.local    → hermes-proxy (when enabled)\n    talk.<device>.local      → dashboard /talk (mobile owner portal)\nPer-subdomain routing means every backend stays root-mounted (no subpath gymnastics) and the ods-session cookie can be Domain-scoped to <device>.local so SSO works across all of them.\n",
       "category": "optional",
@@ -2463,6 +3016,20 @@
     },
     {
       "id": "ollama",
+      "manifest_schema_version": "ods.services.v1",
+      "planning": {
+        "serviceType": "docker",
+        "version": "0.0.0-legacy",
+        "dataSchemaVersion": "legacy",
+        "odsCompatibility": {
+          "minimum": "",
+          "maximum": ""
+        },
+        "definitionSha256": "sha256:68d81fb9aa89e0076527e0ea2fcf3fb3d1f072635cc14b971dad8be4296dd801",
+        "composeSha256": "sha256:1a1070be311a2b54c5be2c03dbbd62031d2b5a3c16311d3f99782a93aaf57377",
+        "dependsOn": [],
+        "legacy": true
+      },
       "name": "Ollama",
       "description": "Pull-and-run server for open-source large language models with simple model management.",
       "category": "optional",
@@ -2512,6 +3079,20 @@
     },
     {
       "id": "open-interpreter",
+      "manifest_schema_version": "ods.services.v1",
+      "planning": {
+        "serviceType": "docker",
+        "version": "0.0.0-legacy",
+        "dataSchemaVersion": "legacy",
+        "odsCompatibility": {
+          "minimum": "",
+          "maximum": ""
+        },
+        "definitionSha256": "sha256:c44781f9c7d9b88dd09c485bc6ed04329e3750ccbd4ed621d2935955f5107f90",
+        "composeSha256": "sha256:08166f4723210f062005645fba351b7716a083347b75451a6e0ce3d991f04c75",
+        "dependsOn": [],
+        "legacy": true
+      },
       "name": "Open Interpreter",
       "description": "Open Interpreter lets LLMs run code locally (Python, JavaScript, Shell, etc.).\nIt provides a ChatGPT-like interface in your terminal and can control Chrome,\ncreate/edit files, analyze datasets, and more. Fully local, no API costs.\nRequires OPEN_INTERPRETER_API_KEY for authentication. Auto-run is disabled\nby default (set OPEN_INTERPRETER_AUTO_RUN=true to enable).\n",
       "category": "optional",
@@ -2580,14 +3161,29 @@
     },
     {
       "id": "open-webui",
+      "manifest_schema_version": "ods.services.v1",
+      "planning": {
+        "serviceType": "docker",
+        "version": "0.0.0-legacy",
+        "dataSchemaVersion": "legacy",
+        "odsCompatibility": {
+          "minimum": "2.0.0",
+          "maximum": ""
+        },
+        "definitionSha256": "sha256:8ff7908048601585dfc784be2cdc95dd287ac3423d380f956eb083c72b9a893e",
+        "composeSha256": "sha256:8cbade005e1987688853116b49c157a2240fff6c0b538b61d8fed1ab89fd6734",
+        "dependsOn": [
+          "llama-server"
+        ],
+        "legacy": true
+      },
       "name": "Open WebUI (Chat)",
       "description": "Open WebUI (Chat)",
       "category": "core",
       "gpu_backends": [
-        "amd",
-        "nvidia"
+        "all"
       ],
-      "compose_file": "",
+      "compose_file": "compose.yaml",
       "depends_on": [
         "llama-server"
       ],
@@ -2613,6 +3209,23 @@
     },
     {
       "id": "openclaw",
+      "manifest_schema_version": "ods.services.v1",
+      "planning": {
+        "serviceType": "docker",
+        "version": "0.0.0-legacy",
+        "dataSchemaVersion": "legacy",
+        "odsCompatibility": {
+          "minimum": "2.0.0",
+          "maximum": ""
+        },
+        "definitionSha256": "sha256:69144aaef0015e51e54e51543a3b48959e62b2fb0ffb5bf07ddd6b2da62ccba1",
+        "composeSha256": "sha256:61f3e96d70744ac0a8a08e82e25b00e892f386b686c331150901d6c8d824ccc0",
+        "dependsOn": [
+          "llama-server",
+          "searxng"
+        ],
+        "legacy": true
+      },
       "name": "OpenClaw (Agents — DEPRECATED)",
       "description": "OpenClaw (Agents — DEPRECATED)",
       "category": "optional",
@@ -2652,6 +3265,20 @@
     },
     {
       "id": "opencode",
+      "manifest_schema_version": "ods.services.v1",
+      "planning": {
+        "serviceType": "host-systemd",
+        "version": "0.0.0-legacy",
+        "dataSchemaVersion": "legacy",
+        "odsCompatibility": {
+          "minimum": "2.0.0",
+          "maximum": ""
+        },
+        "definitionSha256": "sha256:48d340fb94f1ae568620e3834c610d10bc398b45280b6590a8ee5d794d297901",
+        "composeSha256": "",
+        "dependsOn": [],
+        "legacy": true
+      },
       "name": "OpenCode (IDE)",
       "description": "AI-powered code editor in your browser",
       "category": "optional",
@@ -2707,6 +3334,20 @@
     },
     {
       "id": "paperless-ngx",
+      "manifest_schema_version": "ods.services.v1",
+      "planning": {
+        "serviceType": "docker",
+        "version": "0.0.0-legacy",
+        "dataSchemaVersion": "legacy",
+        "odsCompatibility": {
+          "minimum": "",
+          "maximum": ""
+        },
+        "definitionSha256": "sha256:641ebc8f1037d25feb5fdaf593af8d99ee35e4f7519c06d7d5fe4de4a44b0615",
+        "composeSha256": "sha256:d40e6613870d21c7ffeabc8336d1160ce8d6b040364a7c6ac3b9520d9602636c",
+        "dependsOn": [],
+        "legacy": true
+      },
       "name": "Paperless-ngx",
       "description": "Paperless-ngx is a document management system that transforms your physical\ndocuments into a searchable online archive. OCR, tagging, automatic\nclassification, and full-text search for PDFs and images.\n",
       "category": "optional",
@@ -2811,6 +3452,23 @@
     },
     {
       "id": "perplexica",
+      "manifest_schema_version": "ods.services.v1",
+      "planning": {
+        "serviceType": "docker",
+        "version": "0.0.0-legacy",
+        "dataSchemaVersion": "legacy",
+        "odsCompatibility": {
+          "minimum": "2.0.0",
+          "maximum": ""
+        },
+        "definitionSha256": "sha256:1a722cb8d362bae7177c4bbfec22b0c56ed6dccd41a3f855daae826d8ad9c2b6",
+        "composeSha256": "sha256:4c21e2d5a883fff81f3f024de95b6e0ca314c41a9c694b4b591cc18a453b93ef",
+        "dependsOn": [
+          "llama-server",
+          "searxng"
+        ],
+        "legacy": true
+      },
       "name": "Perplexica (Deep Research)",
       "description": "Perplexica (Deep Research)",
       "category": "optional",
@@ -2851,6 +3509,20 @@
     },
     {
       "id": "piper-audio",
+      "manifest_schema_version": "ods.services.v1",
+      "planning": {
+        "serviceType": "docker",
+        "version": "0.0.0-legacy",
+        "dataSchemaVersion": "legacy",
+        "odsCompatibility": {
+          "minimum": "",
+          "maximum": ""
+        },
+        "definitionSha256": "sha256:705fd06fad4c8e02211e5b82d6a5f6b1d8b38ac1a67c787a57437c3b7ee85ad4",
+        "composeSha256": "sha256:c34c197ee193280f2d82e8e23fb3b4e343c56ac39763175a665252f5286e06a3",
+        "dependsOn": [],
+        "legacy": true
+      },
       "name": "Piper TTS",
       "description": "Fast and lightweight text-to-speech engine optimized for edge and low-resource devices.",
       "category": "optional",
@@ -2897,6 +3569,20 @@
     },
     {
       "id": "pixel-agent",
+      "manifest_schema_version": "ods.services.v1",
+      "planning": {
+        "serviceType": "host-systemd",
+        "version": "0.0.0-legacy",
+        "dataSchemaVersion": "legacy",
+        "odsCompatibility": {
+          "minimum": "2.0.0",
+          "maximum": ""
+        },
+        "definitionSha256": "sha256:8e27cefae4c578eb130769be7079bdb2ef1b7923cda08e50a1ad830415348995",
+        "composeSha256": "",
+        "dependsOn": [],
+        "legacy": true
+      },
       "name": "Pixel Agent (host ingress)",
       "description": "Host ingress for the Pixel gateway. Serves GET /health and POST /v1/chat/completions over a Unix-domain socket only (never TCP), reads the Pixel gateway token from a restricted PIXEL_GATEWAY_TOKEN_FILE, and forwards a sanitized, allowlisted OpenAI-compatible request to the fixed loopback gateway. No inbound headers are forwarded, unknown fields are dropped, and only type-valid fields reach the gateway. The systemd unit runs as the unprivileged Pixel owner, hardens with NoNewPrivileges/ProtectSystem=strict/ProtectHome=true, and keeps the socket readable/writable only by PIXEL_INGRESS_GID.\n",
       "category": "core",
@@ -2904,10 +3590,7 @@
         "all"
       ],
       "compose_file": "",
-      "depends_on": [
-        "litellm",
-        "searxng"
-      ],
+      "depends_on": [],
       "port": 0,
       "external_port_default": 0,
       "health_endpoint": "/health",
@@ -2953,16 +3636,12 @@
           "category": "agent",
           "requirements": {
             "services": [
-              "pixel-agent",
-              "litellm",
-              "searxng"
+              "pixel-agent"
             ],
             "vram_gb": 0
           },
           "enabled_services_all": [
-            "pixel-agent",
-            "litellm",
-            "searxng"
+            "pixel-agent"
           ],
           "setup_time": "~1 minute",
           "priority": 60,
@@ -2981,6 +3660,20 @@
     },
     {
       "id": "pixel-edge",
+      "manifest_schema_version": "ods.services.v1",
+      "planning": {
+        "serviceType": "docker",
+        "version": "0.0.0-legacy",
+        "dataSchemaVersion": "legacy",
+        "odsCompatibility": {
+          "minimum": "2.0.0",
+          "maximum": ""
+        },
+        "definitionSha256": "sha256:53eae5eec4828ea325d5adf247708ec005a032d5085657b97766afd9328ad95e",
+        "composeSha256": "",
+        "dependsOn": [],
+        "legacy": true
+      },
       "name": "Pixel Edge (Open WebUI → Pixel proxy)",
       "description": "Internal OpenAI-compatible edge proxy from Open WebUI to a host Pixel ingress Unix socket. Scoped auth, model rewriting, SSE streaming, and strict container hardening.",
       "category": "core",
@@ -3035,7 +3728,59 @@
       "configuration_scope": "declared-environment-keys"
     },
     {
+      "id": "pixel-inference",
+      "manifest_schema_version": "ods.services.v1",
+      "planning": {
+        "serviceType": "docker",
+        "version": "0.0.0-legacy",
+        "dataSchemaVersion": "legacy",
+        "odsCompatibility": {
+          "minimum": "2.0.0",
+          "maximum": ""
+        },
+        "definitionSha256": "sha256:1999351baa0259bdf3f123aba18d124e508b2c8724d1e3e62f9b0aa5a94d2b24",
+        "composeSha256": "",
+        "dependsOn": [
+          "model-router"
+        ],
+        "legacy": true
+      },
+      "name": "Pixel inference sharing (development)",
+      "description": "Disabled by default. Owner-provisioned, inference-only device credentials; loopback transport only. Does not provide Pixel agent or computer access. Private state must be provisioned before service activation. Native Windows private-state support and guided setup are not yet implemented.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [
+        "model-router"
+      ],
+      "port": 8093,
+      "external_port_default": 4005,
+      "health_endpoint": "/health",
+      "env_vars": [],
+      "tags": [],
+      "features": [],
+      "startup_check": false,
+      "catalog_source": "builtin",
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
       "id": "qdrant",
+      "manifest_schema_version": "ods.services.v1",
+      "planning": {
+        "serviceType": "docker",
+        "version": "0.0.0-legacy",
+        "dataSchemaVersion": "legacy",
+        "odsCompatibility": {
+          "minimum": "2.0.0",
+          "maximum": ""
+        },
+        "definitionSha256": "sha256:1e0ee550089578e28c433eba45ca014080d5c84858b6dcfb5e47ba3c2f099ba6",
+        "composeSha256": "sha256:b6f89a8b54524280d114b8369cf98e7254d289eba0a3491d077b9dd80564961a",
+        "dependsOn": [],
+        "legacy": true
+      },
       "name": "Qdrant (Vector DB)",
       "description": "Qdrant (Vector DB)",
       "category": "optional",
@@ -3055,13 +3800,27 @@
     },
     {
       "id": "remote-provider-egress",
+      "manifest_schema_version": "ods.services.v1",
+      "planning": {
+        "serviceType": "docker",
+        "version": "0.0.0-legacy",
+        "dataSchemaVersion": "legacy",
+        "odsCompatibility": {
+          "minimum": "2.0.0",
+          "maximum": ""
+        },
+        "definitionSha256": "sha256:abecc137127837ac353faeb24cea552e608918064ddfaac00af2049d3c652784",
+        "composeSha256": "sha256:63e7aa05dd83d9625c62aa84f3c0befc8c8e2b511125b77d60d581856c1e7df4",
+        "dependsOn": [],
+        "legacy": true
+      },
       "name": "Remote Provider Egress",
       "description": "Internal-only OpenAI-compatible egress boundary for optional remote LLM providers. It reads generated remote routing state and a private provider secret file, enforces the remote-provider egress policy, and exposes no host port.\n",
       "category": "core",
       "gpu_backends": [
         "all"
       ],
-      "compose_file": "",
+      "compose_file": "compose.yaml",
       "depends_on": [],
       "port": 8091,
       "external_port_default": 0,
@@ -3101,13 +3860,27 @@
     },
     {
       "id": "remote-provider-ssh-tunnel",
+      "manifest_schema_version": "ods.services.v1",
+      "planning": {
+        "serviceType": "docker",
+        "version": "0.0.0-legacy",
+        "dataSchemaVersion": "legacy",
+        "odsCompatibility": {
+          "minimum": "2.0.0",
+          "maximum": ""
+        },
+        "definitionSha256": "sha256:c7c380ab9d0dcf8679d90a2a47bc779b7077f1513f2a1e19bf6dcb01035d147a",
+        "composeSha256": "sha256:4758ca52a4d137abe856ded87a61b4e6f15e0af58b0c8d116f5f5bf2e5e2a3c8",
+        "dependsOn": [],
+        "legacy": true
+      },
       "name": "Remote Provider SSH Tunnel",
       "description": "Internal-only SSH transport supervisor scaffold for optional remote LLM providers. It reads generated remote routing state and private SSH custody files, reports a redacted fail-closed plan, and exposes no host port.\n",
       "category": "core",
       "gpu_backends": [
         "all"
       ],
-      "compose_file": "",
+      "compose_file": "compose.yaml",
       "depends_on": [],
       "port": 18090,
       "external_port_default": 0,
@@ -3157,6 +3930,20 @@
     },
     {
       "id": "rvc",
+      "manifest_schema_version": "ods.services.v1",
+      "planning": {
+        "serviceType": "docker",
+        "version": "0.0.0-legacy",
+        "dataSchemaVersion": "legacy",
+        "odsCompatibility": {
+          "minimum": "",
+          "maximum": ""
+        },
+        "definitionSha256": "sha256:a19c384822cd56403ac7fab3cf2c0c6aab1634dabbc4c87c22ad145f81760dfd",
+        "composeSha256": "sha256:116b59a0af392a9dcfa5ef511884cb047d31333b3534448f35bd6d401b847f99",
+        "dependsOn": [],
+        "legacy": true
+      },
       "name": "RVC",
       "description": "Real-time voice conversion and cloning engine for transforming vocal characteristics.",
       "category": "optional",
@@ -3205,6 +3992,20 @@
     },
     {
       "id": "searxng",
+      "manifest_schema_version": "ods.services.v1",
+      "planning": {
+        "serviceType": "docker",
+        "version": "0.0.0-legacy",
+        "dataSchemaVersion": "legacy",
+        "odsCompatibility": {
+          "minimum": "2.0.0",
+          "maximum": ""
+        },
+        "definitionSha256": "sha256:acb62db8b86503c01793525dc25fe3f3d562b6ec3821bddb4f75a9fabfda5197",
+        "composeSha256": "sha256:af6b1ddf0e0bddf58d5e9bc3568453e146a4eb2ecf58e9f24cfd78a55aec23e3",
+        "dependsOn": [],
+        "legacy": true
+      },
       "name": "SearXNG (Web Search)",
       "description": "SearXNG (Web Search)",
       "category": "recommended",
@@ -3224,6 +4025,20 @@
     },
     {
       "id": "sillytavern",
+      "manifest_schema_version": "ods.services.v1",
+      "planning": {
+        "serviceType": "docker",
+        "version": "0.0.0-legacy",
+        "dataSchemaVersion": "legacy",
+        "odsCompatibility": {
+          "minimum": "",
+          "maximum": ""
+        },
+        "definitionSha256": "sha256:3f5018171bffa775f10dbb3ade31ad5428e155bd3885e96878eaf547240eb28c",
+        "composeSha256": "sha256:6a387c59c0824bc5099bef5888980db8f55c04949d2568d15114b23f8807ad4b",
+        "dependsOn": [],
+        "legacy": true
+      },
       "name": "SillyTavern",
       "description": "Advanced character-based roleplay and chat frontend with extensive customization.",
       "category": "optional",
@@ -3263,6 +4078,20 @@
     },
     {
       "id": "tailscale",
+      "manifest_schema_version": "ods.services.v1",
+      "planning": {
+        "serviceType": "docker",
+        "version": "0.0.0-legacy",
+        "dataSchemaVersion": "legacy",
+        "odsCompatibility": {
+          "minimum": "2.0.0",
+          "maximum": ""
+        },
+        "definitionSha256": "sha256:04abc449c1a0c26349db610f2e4d773a80885301e9ad5b1867cdd18111774a68",
+        "composeSha256": "sha256:3548fcc9abe58cf411b57275590adc1f096d298873becf3ae9aaf57908793dc0",
+        "dependsOn": [],
+        "legacy": true
+      },
       "name": "Tailscale (Remote Access)",
       "description": "Reach ODS from any device, anywhere via Tailscale VPN.",
       "category": "optional",
@@ -3323,6 +4152,20 @@
     },
     {
       "id": "text-generation-webui",
+      "manifest_schema_version": "ods.services.v1",
+      "planning": {
+        "serviceType": "docker",
+        "version": "0.0.0-legacy",
+        "dataSchemaVersion": "legacy",
+        "odsCompatibility": {
+          "minimum": "",
+          "maximum": ""
+        },
+        "definitionSha256": "sha256:4c61b76cd9869fdb013de165e0469e778cf39789c19eef1404e4ea0bbab5cdbf",
+        "composeSha256": "sha256:ad7c2607fdda362129f564e9465b1d17f78dafe403e79fc3c054b5fca9bd5540",
+        "dependsOn": [],
+        "legacy": true
+      },
       "name": "Text Generation WebUI",
       "description": "Text Generation WebUI (Oobabooga) is the most feature-complete local LLM\ninference interface. Supports GPTQ, GGUF, AWQ, EXL2, and HF transformer\nformats. Includes a chat UI, API server, extensions marketplace, LoRA\nloading, and advanced generation parameters. The goto tool for power users\nwho need full control over inference settings.\n",
       "category": "optional",
@@ -3417,6 +4260,20 @@
     },
     {
       "id": "token-spy",
+      "manifest_schema_version": "ods.services.v1",
+      "planning": {
+        "serviceType": "docker",
+        "version": "0.0.0-legacy",
+        "dataSchemaVersion": "legacy",
+        "odsCompatibility": {
+          "minimum": "2.0.0",
+          "maximum": ""
+        },
+        "definitionSha256": "sha256:8d572b1414b68551a7a95d35c2f7cf622c31e88a49d0ebdf19d71a549f51678d",
+        "composeSha256": "sha256:72427e1974d2dd3205e2cf74da72224a518b08d875216a2fedc6da0d882f58f2",
+        "dependsOn": [],
+        "legacy": true
+      },
       "name": "Token Spy (Usage Monitor)",
       "description": "Token Spy (Usage Monitor)",
       "category": "recommended",
@@ -3449,6 +4306,20 @@
     },
     {
       "id": "tts",
+      "manifest_schema_version": "ods.services.v1",
+      "planning": {
+        "serviceType": "docker",
+        "version": "0.0.0-legacy",
+        "dataSchemaVersion": "legacy",
+        "odsCompatibility": {
+          "minimum": "2.0.0",
+          "maximum": ""
+        },
+        "definitionSha256": "sha256:762040a9ebe4c4be6cb2e219c9ef023626b9f57d706e7f4a143591fe7e42e20b",
+        "composeSha256": "sha256:18cb1ba1b278e769a0a06ad0f4646b5270510cf08a454531e44f24433240d32f",
+        "dependsOn": [],
+        "legacy": true
+      },
       "name": "Kokoro (TTS)",
       "description": "Kokoro (TTS)",
       "category": "optional",
@@ -3468,6 +4339,20 @@
     },
     {
       "id": "weaviate",
+      "manifest_schema_version": "ods.services.v1",
+      "planning": {
+        "serviceType": "docker",
+        "version": "0.0.0-legacy",
+        "dataSchemaVersion": "legacy",
+        "odsCompatibility": {
+          "minimum": "",
+          "maximum": ""
+        },
+        "definitionSha256": "sha256:2ee818b7683714b758242155060af339310b83c148f1dbc92789ed6d99dd0f90",
+        "composeSha256": "sha256:afe7361bcb2c4f8d762f640b8ebec029c1285d835424c3527ab37da44d34df4b",
+        "dependsOn": [],
+        "legacy": true
+      },
       "name": "Weaviate",
       "description": "Weaviate is an open-source vector database that stores both objects and vectors.\nSupports semantic search, hybrid search, structured filtering, and multi-tenancy.\nA cloud-native alternative to ChromaDB with gRPC support and horizontal scaling.\n",
       "category": "optional",
@@ -3554,6 +4439,20 @@
     },
     {
       "id": "whisper",
+      "manifest_schema_version": "ods.services.v1",
+      "planning": {
+        "serviceType": "docker",
+        "version": "0.0.0-legacy",
+        "dataSchemaVersion": "legacy",
+        "odsCompatibility": {
+          "minimum": "2.0.0",
+          "maximum": ""
+        },
+        "definitionSha256": "sha256:333ce180bc0ff6f97936684b71e07e810b124e06d7addf101a7291e589dee1c0",
+        "composeSha256": "sha256:6c4c731c4ce19eead7e7b850c97026688fab5e251d6b5fb727d24ccd5582dd46",
+        "dependsOn": [],
+        "legacy": true
+      },
       "name": "Whisper (STT)",
       "description": "Talk to your AI with your voice",
       "category": "optional",
@@ -3601,6 +4500,20 @@
     },
     {
       "id": "xtts",
+      "manifest_schema_version": "ods.services.v1",
+      "planning": {
+        "serviceType": "docker",
+        "version": "0.0.0-legacy",
+        "dataSchemaVersion": "legacy",
+        "odsCompatibility": {
+          "minimum": "",
+          "maximum": ""
+        },
+        "definitionSha256": "sha256:434754d2e4c6d94ee177b868234199ee9673a34a7e75ba35f66fd29c5a040014",
+        "composeSha256": "sha256:aa2069f4d76edd3949f402c875659d744df8f59202ad287b9a55477a4a1f357e",
+        "dependsOn": [],
+        "legacy": true
+      },
       "name": "XTTS (Coqui TTS)",
       "description": "Coqui XTTS voice cloning and multilingual text-to-speech server.",
       "category": "recommended",

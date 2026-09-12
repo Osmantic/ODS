@@ -7,6 +7,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VALIDATOR="$ROOT_DIR/scripts/validate-manifest-schema.sh"
 SCHEMA="$ROOT_DIR/extensions/schema/service-manifest.v1.json"
 MIRROR="$ROOT_DIR/extensions/library/schema/service-manifest.v1.json"
+SCHEMA_V2="$ROOT_DIR/extensions/schema/service-manifest.v2.json"
+MIRROR_V2="$ROOT_DIR/extensions/library/schema/service-manifest.v2.json"
 TMP_DIR="$(mktemp -d)"
 CASE_ROOT="$TMP_DIR/manifests"
 trap 'rm -rf "$TMP_DIR"' EXIT
@@ -38,7 +40,7 @@ assert_success "bundled and library manifests validate together" \
 assert_success "standalone library validator accepts all library manifests" \
     python3 "$ROOT_DIR/extensions/library/validate-manifests.py"
 
-python3 - "$ROOT_DIR" "$MIRROR" <<'PY'
+python3 - "$ROOT_DIR" "$MIRROR" "$MIRROR_V2" <<'PY'
 import importlib.util
 import json
 import sys
@@ -46,18 +48,23 @@ from pathlib import Path
 
 root = Path(sys.argv[1])
 mirror = Path(sys.argv[2])
+mirror_v2 = Path(sys.argv[3])
 manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
 canonical = root / manifest["contracts"]["extensions"]["serviceManifestSchema"]
+canonical_v2 = root / manifest["contracts"]["extensions"]["serviceManifestSchemas"]["ods.services.v2"]
 assert canonical.read_bytes() == mirror.read_bytes()
+assert canonical_v2.read_bytes() == mirror_v2.read_bytes()
 
 module_path = root / "extensions" / "library" / "validate-manifests.py"
 spec = importlib.util.spec_from_file_location("library_manifest_validator", module_path)
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 assert module.schema_path().resolve() == canonical.resolve()
+assert module.schema_path("ods.services.v2").resolve() == canonical_v2.resolve()
 
 module.MANIFEST_FILE = root / "does-not-exist.json"
 assert module.schema_path().resolve() == mirror.resolve()
+assert module.schema_path("ods.services.v2").resolve() == mirror_v2.resolve()
 print("[PASS] library validator prefers the canonical contract and retains standalone fallback")
 PY
 
@@ -174,6 +181,98 @@ PY
 write_base_manifest
 check_case "minimal docker manifest" valid
 
+cat > "$CASE_ROOT/case/manifest.yaml" <<'YAML'
+schema_version: ods.services.v2
+compatibility:
+  ods_min: "2.0.0"
+service:
+  id: test-service
+  name: Test Service
+  version: "1.0.0"
+  data_schema_version: "1"
+  port: 8080
+  health: /health
+  type: docker
+  category: optional
+  gpu_backends: [cpu]
+  planning:
+    provides: [test-capability@1]
+    requires: []
+    optional: []
+    conflicts: []
+    provider_priority: 0
+    requirements:
+      platforms: [linux]
+      architectures: [amd64]
+      container_runtimes: [docker]
+      gpu_backends: [cpu]
+      min_driver_version: null
+    estimates:
+      download_bytes: 0
+      disk_bytes: 0
+      cpu_millicores: 100
+      ram_bytes: 1048576
+      vram_bytes: 0
+      gpu_count: 0
+    resources:
+      host_ports:
+        - port: 18080
+          protocol: tcp
+      container_ports: [8080]
+      networks: [ods-network]
+      volumes: []
+      devices: []
+      exclusive: []
+      linux_capabilities: []
+      host_permissions: [network]
+    configuration:
+      - key: TEST_MODE
+        type: string
+        required: true
+        secret: false
+        source: user
+        restart_behavior: service
+      - key: TEST_TOKEN
+        type: string
+        required: true
+        secret: true
+        source: user
+        restart_behavior: service
+    artifacts:
+      images: []
+      builds: []
+    lifecycle:
+      health_checks: ["http:/health"]
+      readiness: [healthy]
+      setup_hook: null
+      migration_hook: null
+      rollback: definition
+      timeout_seconds: 120
+    data: []
+    trust:
+      tier: bundled
+      publisher: ODS
+      definition_signature: null
+    support:
+      status: supported
+      url: null
+YAML
+assert_success "v2 planning manifest routes to the v2 schema" \
+    env ODS_MANIFEST_DIRS="$CASE_ROOT" bash "$VALIDATOR"
+
+cat >> "$CASE_ROOT/case/manifest.yaml" <<'YAML'
+    secret_values:
+      TEST_TOKEN: forbidden
+YAML
+if env ODS_MANIFEST_DIRS="$CASE_ROOT" bash "$VALIDATOR" \
+    >"$TMP_DIR/v2-secret-values.log" 2>&1; then
+    fail "v2 planning schema accepted undeclared secret values"
+fi
+grep -q "secret_values" "$TMP_DIR/v2-secret-values.log" ||
+    fail "v2 unknown-field failure did not identify the rejected field"
+pass "v2 planning schema rejects secret values and unknown fields"
+
+write_base_manifest
 mutate_manifest host-systemd
 check_case "host-systemd service type" valid
 

@@ -12,7 +12,7 @@ ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 MANIFEST_FILE="${ROOT_DIR}/manifest.json"
 DEFAULT_MANIFEST_DIRS="${ROOT_DIR}/extensions/services:${ROOT_DIR}/extensions/library/services"
 MANIFEST_DIRS="${ODS_MANIFEST_DIRS:-$DEFAULT_MANIFEST_DIRS}"
-SCHEMA_PATH=""
+SCHEMA_PATHS_JSON=""
 
 STRICT_MODE=false
 VERBOSE=false
@@ -39,7 +39,7 @@ OPTIONS:
 
 DESCRIPTION:
     Validates bundled and library extension manifests against the schema
-    declared by manifest.json at contracts.extensions.serviceManifestSchema.
+    declared by manifest.json at contracts.extensions.serviceManifestSchemas.
     JSON Schema is the single source of truth for manifest validity.
 
 ENVIRONMENT:
@@ -84,7 +84,7 @@ PYEOF
     fi
 }
 
-resolve_schema_path() {
+resolve_schema_paths() {
     python3 - "$MANIFEST_FILE" "$ROOT_DIR" <<'PYEOF'
 import json
 import sys
@@ -94,21 +94,34 @@ manifest_file = Path(sys.argv[1])
 root_dir = Path(sys.argv[2])
 try:
     manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
-    schema_rel = manifest["contracts"]["extensions"]["serviceManifestSchema"]
-except (OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
+    extensions = manifest["contracts"]["extensions"]
+    configured = extensions["serviceManifestSchemas"]
+    if not isinstance(configured, dict) or set(configured) != {
+        "ods.services.v1", "ods.services.v2"
+    }:
+        raise ValueError("serviceManifestSchemas must declare exactly v1 and v2")
+    if extensions["serviceManifestSchema"] != configured["ods.services.v1"]:
+        raise ValueError("legacy serviceManifestSchema must remain the v1 contract")
+except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
     print(
-        "Cannot resolve contracts.extensions.serviceManifestSchema "
+        "Cannot resolve contracts.extensions.serviceManifestSchemas "
         f"from {manifest_file}: {exc}",
         file=sys.stderr,
     )
     raise SystemExit(1)
 
-schema_path = root_dir / schema_rel
-if not schema_path.is_file():
-    print(f"Declared service manifest schema not found: {schema_rel}", file=sys.stderr)
-    raise SystemExit(1)
+resolved = {}
+for version, schema_rel in configured.items():
+    if not isinstance(schema_rel, str):
+        print("Declared service manifest schema path is not a string", file=sys.stderr)
+        raise SystemExit(1)
+    schema_path = (root_dir / schema_rel).resolve()
+    if not schema_path.is_file():
+        print(f"Declared service manifest schema not found: {schema_rel}", file=sys.stderr)
+        raise SystemExit(1)
+    resolved[version] = str(schema_path)
 
-print(schema_path)
+print(json.dumps(resolved, sort_keys=True, separators=(",", ":")))
 PYEOF
 }
 
@@ -120,7 +133,7 @@ validate_manifest() {
 
     info "Validating: $service_name"
 
-    python3 - "$manifest_path" "$SCHEMA_PATH" "$service_name" "$VERBOSE" <<'PYEOF'
+    python3 - "$manifest_path" "$SCHEMA_PATHS_JSON" "$service_name" "$VERBOSE" <<'PYEOF'
 import json
 import os
 import sys
@@ -128,7 +141,7 @@ import sys
 import jsonschema
 import yaml
 
-manifest_path, schema_path, service_name, verbose = sys.argv[1:5]
+manifest_path, schema_paths_json, service_name, verbose = sys.argv[1:5]
 errors = []
 warnings = []
 
@@ -158,11 +171,16 @@ except OSError as exc:
     raise SystemExit(1)
 
 try:
+    schema_paths = json.loads(schema_paths_json)
+    schema_version = manifest.get("schema_version") if isinstance(manifest, dict) else None
+    schema_path = schema_paths.get(schema_version)
+    if schema_path is None:
+        raise ValueError(f"unsupported schema_version: {schema_version}")
     with open(schema_path, encoding="utf-8") as schema_file:
         schema = json.load(schema_file)
     validator_cls = jsonschema.validators.validator_for(schema)
     validator_cls.check_schema(schema)
-except (OSError, json.JSONDecodeError, jsonschema.exceptions.SchemaError) as exc:
+except (OSError, TypeError, ValueError, json.JSONDecodeError, jsonschema.exceptions.SchemaError) as exc:
     report_error(f"Cannot load JSON schema: {exc}")
     raise SystemExit(1)
 
@@ -213,11 +231,11 @@ while [[ $# -gt 0 ]]; do
 done
 
 check_python_deps
-SCHEMA_PATH="$(resolve_schema_path)"
+SCHEMA_PATHS_JSON="$(resolve_schema_paths)"
 
 # Main
 echo "Validating manifests in: $MANIFEST_DIRS"
-echo "Schema: ${SCHEMA_PATH#"$ROOT_DIR/"}"
+echo "Schemas: extensions/schema/service-manifest.v1.json, extensions/schema/service-manifest.v2.json"
 echo ""
 
 TOTAL=0 VALID=0

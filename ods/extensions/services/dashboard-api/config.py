@@ -526,6 +526,8 @@ CATALOG_PATH = Path(os.environ.get(
     str(Path(INSTALL_DIR) / "config" / "extensions-catalog.json")
 ))
 
+EXTENSION_PLANNING_POLICY_PATH = Path(INSTALL_DIR) / "config" / "extension-planning-policy.json"
+
 EXTENSIONS_LIBRARY_DIR = Path(os.environ.get(
     "ODS_EXTENSIONS_LIBRARY_DIR",
     str(Path(DATA_DIR) / "extensions-library")
@@ -578,20 +580,54 @@ def _load_base_owned_services() -> frozenset:
 ALWAYS_ON_SERVICES: frozenset = _load_base_owned_services()
 
 
-def load_extension_catalog() -> list[dict]:
-    """Load the static extensions catalog JSON. Returns empty list on failure."""
+def load_extension_catalog_document() -> dict:
+    """Load the immutable catalog document without observing runtime state."""
     if not CATALOG_PATH.exists():
         logger.info("Extensions catalog not found at %s", CATALOG_PATH)
-        return []
+        return {}
     try:
         data = json.loads(CATALOG_PATH.read_text(encoding="utf-8"))
-        return data.get("extensions", [])
+        if not isinstance(data, dict):
+            logger.warning("Extensions catalog root is not an object")
+            return {}
+        return data
     except (json.JSONDecodeError, OSError) as e:
         logger.warning("Failed to load extensions catalog: %s", e)
-        return []
+        return {}
 
 
-EXTENSION_CATALOG = load_extension_catalog()
+def load_extension_catalog() -> list[dict]:
+    """Load catalog entries with the legacy list-returning API."""
+    entries = load_extension_catalog_document().get("extensions", [])
+    return entries if isinstance(entries, list) else []
+
+
+EXTENSION_CATALOG_DOCUMENT = load_extension_catalog_document()
+_catalog_entries = EXTENSION_CATALOG_DOCUMENT.get("extensions", [])
+EXTENSION_CATALOG = _catalog_entries if isinstance(_catalog_entries, list) else []
+_catalog_revision = EXTENSION_CATALOG_DOCUMENT.get("catalog_revision", "")
+EXTENSION_CATALOG_REVISION = _catalog_revision if isinstance(_catalog_revision, str) else ""
+
+
+def load_extension_planning_policy() -> dict[str, Any]:
+    """Load the product-owned policy used by the authoritative planner route."""
+    try:
+        document = json.loads(EXTENSION_PLANNING_POLICY_PATH.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.warning("Failed to load extension planning policy: %s", exc)
+        return {}
+    if (
+        not isinstance(document, dict)
+        or document.get("schema") != "ods.extensions.planning-policy.v1"
+        or not isinstance(document.get("policy"), dict)
+        or set(document) != {"schema", "policy"}
+    ):
+        logger.warning("Extension planning policy is invalid")
+        return {}
+    return document["policy"]
+
+
+EXTENSION_PLANNING_POLICY = load_extension_planning_policy()
 
 # --- Host Agent ---
 

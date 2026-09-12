@@ -9,6 +9,8 @@ to ods/config/extensions-catalog.json.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import importlib.util
 import json
 import re
 import sys
@@ -18,10 +20,20 @@ from pathlib import Path
 import yaml
 
 
-SCHEMA_VERSION = "ods.services.v1"
+SCHEMA_VERSIONS = {"ods.services.v1", "ods.services.v2"}
 CATALOG_SCHEMA_VERSION = "1.0.0"
 EXCLUDED_IDS = {"privacy-shield"}
 SERVICE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+
+PLANNER_PATH = (
+    Path(__file__).resolve().parent.parent
+    / "extensions/services/dashboard-api/assistant_first_planner.py"
+)
+PLANNER_SPEC = importlib.util.spec_from_file_location("assistant_first_planner", PLANNER_PATH)
+if PLANNER_SPEC is None or PLANNER_SPEC.loader is None:
+    raise RuntimeError("Assistant First planner module is unavailable")
+PLANNER = importlib.util.module_from_spec(PLANNER_SPEC)
+PLANNER_SPEC.loader.exec_module(PLANNER)
 
 
 def parse_args() -> argparse.Namespace:
@@ -58,6 +70,20 @@ def strip_secrets(env_vars: list[dict]) -> list[dict]:
     return cleaned
 
 
+def canonical_document_sha256(path: Path) -> str:
+    """Hash parsed YAML/JSON semantics so checkout newline policy cannot drift plans."""
+
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    serialized = json.dumps(
+        data,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return "sha256:" + hashlib.sha256((serialized + "\n").encode("utf-8")).hexdigest()
+
+
 def load_manifest(manifest_path: Path) -> dict | None:
     """Load and validate a single manifest file. Returns None on failure."""
     try:
@@ -70,10 +96,10 @@ def load_manifest(manifest_path: Path) -> dict | None:
         print(f"WARNING: Skipping {manifest_path}: root is not a mapping", file=sys.stderr)
         return None
 
-    if data.get("schema_version") != SCHEMA_VERSION:
+    if data.get("schema_version") not in SCHEMA_VERSIONS:
         print(
             f"WARNING: Skipping {manifest_path}: "
-            f"schema_version is '{data.get('schema_version')}', expected '{SCHEMA_VERSION}'",
+            f"unsupported schema_version '{data.get('schema_version')}'",
             file=sys.stderr,
         )
         return None
@@ -81,7 +107,7 @@ def load_manifest(manifest_path: Path) -> dict | None:
     return data
 
 
-def extract_entry(manifest: dict) -> dict | None:
+def extract_entry(manifest: dict, manifest_path: Path | None = None) -> dict | None:
     """Extract a catalog entry from a validated manifest dict."""
     service = manifest.get("service")
     if not isinstance(service, dict):
@@ -98,8 +124,67 @@ def extract_entry(manifest: dict) -> dict | None:
     if not isinstance(env_vars, list):
         env_vars = []
 
+    definition_sha256 = ""
+    compose_sha256 = ""
+    if manifest_path is not None:
+        definition_sha256 = canonical_document_sha256(manifest_path)
+        compose_name = service.get("compose_file")
+        if isinstance(compose_name, str) and compose_name:
+            compose_path = manifest_path.parent / compose_name
+            if compose_path.is_file() and not compose_path.is_symlink():
+                compose_sha256 = canonical_document_sha256(compose_path)
+    planning_record = PLANNER.adapt_manifest(
+        {
+            **manifest,
+            "_catalog": {
+                "definition_sha256": definition_sha256,
+                "compose_sha256": compose_sha256,
+            },
+        }
+    )
+    planning = {
+        "serviceType": planning_record["serviceType"],
+        "version": planning_record["version"],
+        "dataSchemaVersion": planning_record["dataSchemaVersion"],
+        "odsCompatibility": planning_record["odsCompatibility"],
+        "definitionSha256": planning_record["definitionSha256"],
+        "composeSha256": planning_record["composeSha256"],
+        "dependsOn": list(planning_record["dependsOn"]),
+        "provides": list(planning_record["provides"]),
+        "requires": list(planning_record["requires"]),
+        "optional": list(planning_record["optional"]),
+        "conflicts": list(planning_record["conflicts"]),
+        "providerPriority": planning_record["providerPriority"],
+        "requirements": PLANNER.public_json_value(planning_record["requirements"]),
+        "estimates": PLANNER.public_json_value(planning_record["estimates"]),
+        "resources": PLANNER.public_json_value(planning_record["resources"]),
+        "configuration": PLANNER.public_json_value(planning_record["configuration"]),
+        "artifacts": PLANNER.public_json_value(planning_record["artifacts"]),
+        "lifecycle": PLANNER.public_json_value(planning_record["lifecycle"]),
+        "data": PLANNER.public_json_value(planning_record["data"]),
+        "trust": PLANNER.public_json_value(planning_record["trust"]),
+        "support": PLANNER.public_json_value(planning_record["support"]),
+        "legacy": planning_record["legacy"],
+    }
+    if planning_record["legacy"]:
+        planning = {
+            key: planning[key]
+            for key in (
+                "serviceType",
+                "version",
+                "dataSchemaVersion",
+                "odsCompatibility",
+                "definitionSha256",
+                "composeSha256",
+                "dependsOn",
+                "legacy",
+            )
+        }
+
     entry = {
         "id": service_id,
+        "manifest_schema_version": manifest["schema_version"],
+        "planning": planning,
         "name": service.get("name", service_id),
         "description": service.get("description", ""),
         "category": service.get("category", ""),
@@ -125,6 +210,23 @@ def extract_entry(manifest: dict) -> dict | None:
     return entry
 
 
+def catalog_revision(entries: list[dict]) -> str:
+    """Hash only deterministic planning material, never display timestamps."""
+
+    material = {
+        "schema": "ods.extensions.planning-catalog.v1",
+        "extensions": [
+            {
+                "id": entry["id"],
+                "manifestSchemaVersion": entry["manifest_schema_version"],
+                "planning": entry["planning"],
+            }
+            for entry in sorted(entries, key=lambda item: item["id"])
+        ],
+    }
+    return hashlib.sha256(PLANNER.canonical_json_bytes(material)).hexdigest()
+
+
 def generate_catalog(library_dir: Path, services_dir: Path | None = None) -> list[dict]:
     """Scan manifest files and return sorted catalog entries."""
     if not library_dir.is_dir():
@@ -147,7 +249,7 @@ def generate_catalog(library_dir: Path, services_dir: Path | None = None) -> lis
             manifest = load_manifest(manifest_path)
             if manifest is None:
                 continue
-            entry = extract_entry(manifest)
+            entry = extract_entry(manifest, manifest_path)
             if entry is None or entry["id"] != service_dir.name:
                 continue
             if source == "builtin":
@@ -179,6 +281,7 @@ def main() -> None:
     catalog = {
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "schema_version": CATALOG_SCHEMA_VERSION,
+        "catalog_revision": catalog_revision(entries),
         "extensions": entries,
     }
 

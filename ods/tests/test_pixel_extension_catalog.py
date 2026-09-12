@@ -30,14 +30,41 @@ class CatalogTests(unittest.TestCase):
         self.library.mkdir(parents=True)
         self.services.mkdir(parents=True)
 
-    def manifest(self, root, service_id, *, disabled=False, compose=True):
+    def manifest(self, root, service_id, *, disabled=False, compose=True, schema="ods.services.v1"):
         directory = root / service_id
         directory.mkdir()
-        value = {"schema_version": "ods.services.v1", "service": {
+        value = {"schema_version": schema, "compatibility": {"ods_min": "2.0.0"}, "service": {
             "id": service_id, "name": service_id.title(), "type": "docker" if compose else "host-systemd",
             "compose_file": "compose.yaml" if compose else "",
             "env_vars": [{"key": "APP_TOKEN", "required": True}],
         }, "features": [{"name": "Image Generation", "description": "Create images locally."}]}
+        if schema == "ods.services.v2":
+            value["service"].update({"version": "1.0.0", "data_schema_version": "1"})
+            value["service"]["planning"] = {
+                "provides": ["notebook@1"], "requires": [], "optional": [],
+                "conflicts": [], "provider_priority": 7,
+                "requirements": {"platforms": ["linux"], "architectures": ["amd64"],
+                    "container_runtimes": ["docker"], "gpu_backends": ["cpu"],
+                    "min_driver_version": None},
+                "estimates": {"download_bytes": 10, "disk_bytes": 20,
+                    "cpu_millicores": 100, "ram_bytes": 30, "vram_bytes": 0, "gpu_count": 0},
+                "resources": {"host_ports": [{"port": 9000, "protocol": "tcp"}],
+                    "container_ports": [], "networks": [], "volumes": [], "devices": [],
+                    "exclusive": ["gpu:0"], "linux_capabilities": [], "host_permissions": ["network"]},
+                "configuration": [
+                    {"key": "APP_MODE", "type": "string", "required": True, "secret": False,
+                     "source": "user", "restart_behavior": "service"},
+                    {"key": "APP_TOKEN", "type": "string", "required": True, "secret": True,
+                     "source": "user", "restart_behavior": "service"},
+                ],
+                "artifacts": {"images": [], "builds": []},
+                "lifecycle": {"health_checks": ["http:/health"], "readiness": ["healthy"],
+                    "setup_hook": None, "migration_hook": None, "rollback": "definition",
+                    "timeout_seconds": 120},
+                "data": [],
+                "trust": {"tier": "bundled", "publisher": "ODS", "definition_signature": None},
+                "support": {"status": "supported", "url": None},
+            }
         (directory / "manifest.yaml").write_text(json.dumps(value))
         if compose:
             (directory / ("compose.yaml.disabled" if disabled else "compose.yaml")).write_text("services: {}\n")
@@ -78,6 +105,30 @@ class CatalogTests(unittest.TestCase):
         self.assertNotIn("catalog_source", old[0])
         merged = {entry["id"]: entry for entry in generator.generate_catalog(self.library, self.services)}
         self.assertEqual(merged["same"]["catalog_source"], "builtin")
+
+    def test_v2_planning_projection_and_revision_are_deterministic(self):
+        self.manifest(self.services, "notebook", schema="ods.services.v2")
+        entries = generator.generate_catalog(self.library, self.services)
+        self.assertEqual(entries[0]["manifest_schema_version"], "ods.services.v2")
+        self.assertEqual(entries[0]["planning"]["provides"], ["notebook@1"])
+        self.assertEqual(
+            [item["key"] for item in entries[0]["planning"]["configuration"] if item["secret"]],
+            ["APP_TOKEN"],
+        )
+        first = generator.catalog_revision(entries)
+        reordered = list(reversed(entries))
+        reordered[0] = dict(reordered[0], description="display text does not affect planning")
+        self.assertEqual(first, generator.catalog_revision(reordered))
+        changed = json.loads(json.dumps(entries))
+        changed[0]["planning"]["providerPriority"] = 8
+        self.assertNotEqual(first, generator.catalog_revision(changed))
+
+    def test_definition_digest_is_independent_of_checkout_newlines(self):
+        document = self.root / "definition.yaml"
+        document.write_bytes(b"service:\n  id: stable\n  enabled: true\n")
+        first = generator.canonical_document_sha256(document)
+        document.write_bytes(b"service:\r\n  id: stable\r\n  enabled: true\r\n")
+        self.assertEqual(first, generator.canonical_document_sha256(document))
 
     def test_shipped_comfyui_manifest_reaches_pixel_catalog(self):
         function = (ROOT / "installers/lib/pixel-host-install.sh").read_text().split("_ods_pixel_write_extension_catalog() {", 1)[1]
