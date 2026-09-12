@@ -668,7 +668,7 @@ def _classify_attachment(file: UploadFile) -> str:
     application/octet-stream. We deliberately keep the accept-set narrow on
     this v1 surface — chat, not document ingestion.
     """
-    ct = (file.content_type or "").lower()
+    ct = (file.content_type or "").split(";", 1)[0].strip().lower()
     name = (file.filename or "").lower()
     ext = "." + name.rsplit(".", 1)[-1] if "." in name else ""
 
@@ -695,6 +695,20 @@ def _image_content_type(file: UploadFile) -> str:
     name = (file.filename or "").lower()
     ext = "." + name.rsplit(".", 1)[-1] if "." in name else ""
     return _IMAGE_EXTENSION_MIMES.get(ext, "image/png")
+
+
+def _decode_text_attachment(data: bytes) -> str:
+    encoding = "utf-16" if data.startswith((b"\xff\xfe", b"\xfe\xff")) else "utf-8-sig"
+    try:
+        content = data.decode(encoding)
+    except UnicodeDecodeError:
+        raise HTTPException(
+            status_code=422,
+            detail="Text attachments must be valid UTF-8 or BOM-marked UTF-16.",
+        ) from None
+    if "\0" in content:
+        raise HTTPException(status_code=422, detail="Text attachments must not contain binary NUL bytes.")
+    return content
 
 
 @router.post("/api/talk/attachment")
@@ -746,10 +760,7 @@ async def talk_attachment(
     data = await file.read(MAX_DOC_BYTES + 1)
     if len(data) > MAX_DOC_BYTES:
         raise HTTPException(status_code=413, detail=f"File is too large (max {MAX_DOC_BYTES // (1024 * 1024)} MB).")
-    try:
-        content = data.decode("utf-8")
-    except UnicodeDecodeError:
-        content = data.decode("utf-8", errors="replace")
+    content = _decode_text_attachment(data)
     if len(content) > MAX_DOC_CHARS:
         content = content[:MAX_DOC_CHARS] + f"\n\n[Truncated — file was {len(data):,} bytes, showing first {MAX_DOC_CHARS:,} chars]"
 
