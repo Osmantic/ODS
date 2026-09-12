@@ -1,6 +1,7 @@
 """Security-focused tests for the Settings environment editor."""
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -1348,6 +1349,122 @@ def test_render_env_preserves_commented_key_absent_from_values(commented_example
     lines = rendered.splitlines()
     assert "LLAMA_ARG_TENSOR_SPLIT=" not in lines
     assert any(line.lstrip().startswith("# LLAMA_ARG_TENSOR_SPLIT=") for line in lines)
+
+
+@pytest.fixture()
+def repeated_key_template(tmp_path, monkeypatch):
+    """A template that repeats keys the way the real .env.example does: the
+    same commented default offered in two sections (VIDEO_GID, LLAMA_CPU_LIMIT),
+    and a prose comment that happens to start with ``# KEY=`` (ODS_MODE)."""
+    example_path = tmp_path / ".env.example"
+    example_path.write_text(
+        "ODS_MODE=local\n"
+        "# ODS_MODE=cloud and REMOTE_LLM_ENABLED=true. Provider API keys, peer tokens,\n"
+        "# and routing state live elsewhere.\n"
+        "# VIDEO_GID=44                       # Host 'video' group GID (AMD)\n"
+        "# LLAMA_CPU_LIMIT=12.0       # Auto-generated\n"
+        "# --- Strix Halo ---\n"
+        "# VIDEO_GID=44               # `getent group video | cut -d: -f3`\n"
+        "# LLAMA_CPU_LIMIT=8.0\n",
+        encoding="utf-8",
+    )
+
+    def fake_resolve_template(name: str):
+        if name == ".env.example":
+            return example_path
+        return tmp_path / name
+
+    monkeypatch.setattr("main._resolve_template_path", fake_resolve_template)
+    return example_path
+
+
+def _assignment_lines(rendered: str, key: str) -> list[str]:
+    return [line for line in rendered.splitlines() if line.startswith(f"{key}=")]
+
+
+def test_render_env_assigns_repeated_template_key_once(repeated_key_template):
+    """Every commented occurrence of a key used to be rewritten into an
+    assignment, so a value for VIDEO_GID came out twice and validate-env.sh
+    rejected the saved file. Only the first occurrence may become the
+    assignment; later ones stay comments."""
+    from main import _render_env_from_values
+
+    rendered = _render_env_from_values({"ODS_MODE": "local", "VIDEO_GID": "44", "LLAMA_CPU_LIMIT": "1.0"})
+    lines = rendered.splitlines()
+
+    assert _assignment_lines(rendered, "VIDEO_GID") == ["VIDEO_GID=44"]
+    assert _assignment_lines(rendered, "LLAMA_CPU_LIMIT") == ["LLAMA_CPU_LIMIT=1.0"]
+    assert _assignment_lines(rendered, "ODS_MODE") == ["ODS_MODE=local"]
+    # The second offers of the same default survive as comments, in place.
+    assert "# VIDEO_GID=44               # `getent group video | cut -d: -f3`" in lines
+    assert "# LLAMA_CPU_LIMIT=8.0" in lines
+    # Prose that merely starts with "# KEY=" is not an assignment site.
+    assert "# ODS_MODE=cloud and REMOTE_LLM_ENABLED=true. Provider API keys, peer tokens," in lines
+
+
+def test_render_env_repeated_key_absent_from_values_stays_commented(repeated_key_template):
+    from main import _render_env_from_values
+
+    rendered = _render_env_from_values({"ODS_MODE": "local"})
+    assert _assignment_lines(rendered, "VIDEO_GID") == []
+    assert sum(line.startswith("# VIDEO_GID=") for line in rendered.splitlines()) == 2
+
+
+def test_render_env_real_template_never_duplicates_a_key(monkeypatch):
+    """Against the repository's own .env.example: give every key it mentions a
+    value and make sure no key is assigned twice. Guards the template as much
+    as the renderer, since a new repeated section would trip validate-env.sh."""
+    import re
+
+    from main import _render_env_from_values
+
+    example_path = Path(__file__).resolve().parents[4] / ".env.example"
+    assert example_path.exists(), example_path
+
+    def fake_resolve_template(name: str):
+        if name == ".env.example":
+            return example_path
+        return example_path.parent / name
+
+    monkeypatch.setattr("main._resolve_template_path", fake_resolve_template)
+    mentioned = re.findall(r"^\s*#?\s*([A-Za-z_][A-Za-z0-9_]*)=", example_path.read_text(encoding="utf-8"), re.M)
+    rendered = _render_env_from_values({key: "x" for key in mentioned})
+
+    assigned = [line.split("=", 1)[0] for line in rendered.splitlines() if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", line)]
+    duplicates = sorted({key for key in assigned if assigned.count(key) > 1})
+    assert duplicates == [], f"rendered .env assigns keys more than once: {duplicates}"
+    assert set(assigned) == set(mentioned)
+
+
+def test_settings_env_save_assigns_repeated_template_key_once(test_client, settings_env_fixture):
+    """End to end through PUT /api/settings/env: a key that .env.example offers
+    twice (VIDEO_GID in the AMD and Strix Halo sections) must land in .env as
+    one assignment, so the saved file keeps passing validate-env.sh."""
+    example_path = settings_env_fixture["example_path"]
+    schema_path = settings_env_fixture["schema_path"]
+
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    schema["properties"]["VIDEO_GID"] = {"type": "integer", "description": "video group GID"}
+    schema_path.write_text(json.dumps(schema), encoding="utf-8")
+    example_path.write_text(
+        example_path.read_text(encoding="utf-8")
+        + "# VIDEO_GID=44                       # Host 'video' group GID (AMD)\n"
+        + "# --- Strix Halo ---\n"
+        + "# VIDEO_GID=44               # `getent group video | cut -d: -f3`\n",
+        encoding="utf-8",
+    )
+
+    response = test_client.put(
+        "/api/settings/env",
+        headers=test_client.auth_headers,
+        json={"mode": "form", "values": {"VIDEO_GID": "44"}},
+    )
+    assert response.status_code == 200, response.text
+
+    saved = settings_env_fixture["env_path"].read_text(encoding="utf-8")
+    assert _assignment_lines(saved, "VIDEO_GID") == ["VIDEO_GID=44"]
+    assigned = [line.split("=", 1)[0] for line in saved.splitlines() if line and line[0] not in "#" and "=" in line]
+    assert len(assigned) == len(set(assigned)), f"duplicate assignments in saved .env: {assigned}"
 
 
 # --- Production schema secret-flag coverage ---

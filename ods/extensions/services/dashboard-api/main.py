@@ -833,6 +833,14 @@ def _render_env_from_values(values: dict[str, str]) -> str:
 
         if commented_assignment:
             key = commented_assignment.group(1)
+            # Only the first occurrence of a key becomes the assignment.
+            # .env.example repeats some keys as alternatives (VIDEO_GID,
+            # LLAMA_CPU_LIMIT, WHISPER_ACCELERATION, ...) and a prose comment
+            # can look like "# ODS_MODE=cloud and ..."; rewriting every match
+            # produced duplicate assignments that validate-env.sh rejects.
+            if key in seen:
+                output_lines.append(line)
+                continue
             seen.add(key)
             if key in values:
                 output_lines.append(f"{key}={values[key]}")
