@@ -10,6 +10,8 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
+import subprocess
 from pathlib import Path
 import tarfile
 import tempfile
@@ -83,6 +85,34 @@ class NativeSearchTests(unittest.TestCase):
         with self.assertRaises(OSError):
             ns.select_provider(link)
         self.assertEqual(answers.read_text(), '{}')
+
+    def test_cli_rejects_fifo_answers_and_cache_without_waiting_for_a_writer(self):
+        for mode in ("answers", "cache"):
+            with self.subTest(mode=mode):
+                base = self.root / mode
+                base.mkdir(mode=0o700)
+                special = base / ("answers.json" if mode == "answers" else f"parallel-{ns.VERSION}.tgz")
+                os.mkfifo(special, 0o600)
+                before = special.lstat()
+                args = ["--answers-file", str(special)] if mode == "answers" else ["--base-dir", str(base)]
+                try:
+                    result = subprocess.run([sys.executable, ns.__file__, *args],
+                                            capture_output=True, text=True, timeout=3)
+                except subprocess.TimeoutExpired:
+                    self.fail("native search CLI blocked opening a FIFO before checking its type")
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("owner-private regular file", result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
+                self.assertEqual(result.stdout, "")
+                self.assertEqual(special.lstat().st_ino, before.st_ino)
+                self.assertFalse((base / f"parallel-{ns.VERSION}").exists())
+
+        answers = self.root / "regular.json"
+        answers.write_text('{"webSearchProvider":"parallel-free"}')
+        answers.chmod(0o600)
+        result = subprocess.run([sys.executable, ns.__file__, "--answers-file", str(answers)],
+                                capture_output=True, text=True, timeout=3, check=True)
+        self.assertEqual(result.stdout, "parallel-free\n")
 
     def test_archive_rejects_unsafe_names_and_duplicates(self):
         for name in ["package/../escape", "/escape", "package//empty", "package/./dot",

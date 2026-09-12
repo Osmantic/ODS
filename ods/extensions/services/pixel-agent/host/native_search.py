@@ -38,7 +38,9 @@ def checked(path, *, directory=False, private=False):
 
 
 def read_private(path):
-    flags = os.O_RDONLY | os.O_NOFOLLOW
+    # Open without waiting for a FIFO peer, then enforce the regular-file
+    # contract on the descriptor before reading. O_NONBLOCK is inert on files.
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
     fd = os.open(path, flags)
     try:
         info = os.fstat(fd)
