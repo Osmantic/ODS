@@ -1740,3 +1740,15 @@ def test_flatten_bounds_cycles_and_large_depth_without_losing_empty_leaves():
         nested = {"child": nested}
     result = dict_flatten_nested_safe(nested, max_depth=100000)
     assert len(next(iter(result)).split(".")) == 128
+
+
+class TestStringTruncateWordsSafe:
+    def test_valid_truncation(self):
+        from helpers import string_truncate_words_safe
+        s = "The quick brown fox jumps over the lazy dog"
+        assert string_truncate_words_safe(s, 4) == "The quick brown fox..."
+
+    def test_invalid_inputs(self):
+        from helpers import string_truncate_words_safe
+        assert string_truncate_words_safe(None) == ""
+        assert string_truncate_words_safe("short text", -5) == "short text"
