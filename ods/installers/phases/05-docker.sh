@@ -132,6 +132,28 @@ if [[ "$SKIP_DOCKER" == "true" ]]; then
     log "Skipping Docker installation (--skip-docker)"
 elif command -v docker &> /dev/null; then
     ai_ok "Docker already installed: $(docker --version)"
+elif command -v podman &> /dev/null; then
+    # Podman is installed but its docker-compatible CLI is not (Fedora ships
+    # them as separate packages). ODS drives Podman through that shim, so
+    # install the shim rather than putting Docker CE next to an existing Podman.
+    ods_progress 31 "docker" "Enabling Podman docker-compatible CLI"
+    ai "Podman found without a docker-compatible CLI; installing the podman-docker shim..."
+    if $DRY_RUN; then
+        log "[DRY RUN] Would install podman-docker (Podman present, docker CLI missing)"
+    else
+        if ! ods_sudo_available; then
+            error "Podman is installed but its docker-compatible CLI is missing, and privileged package installation is unavailable. Install the podman-docker package, then re-run ODS."
+        fi
+        pkg_update
+        # shellcheck disable=SC2046
+        pkg_install $(pkg_resolve podman-docker) || true
+        hash -r
+        if command -v docker &> /dev/null; then
+            ai_ok "Podman docker-compatible CLI installed: $(docker --version 2>/dev/null | head -1)"
+        else
+            error "Could not install the podman-docker shim. Install the podman-docker package manually, then re-run ODS."
+        fi
+    fi
 else
     ods_progress 31 "docker" "Installing Docker engine"
     ai "Installing Docker..."
@@ -278,10 +300,33 @@ elif command -v docker-compose &> /dev/null; then
     fi
     ai_ok "Docker Compose v1 available (using docker-compose)"
 else
+    # Podman's `docker compose` delegates to an external provider, and the
+    # docker-compose-plugin package only exists in Docker's repositories, so a
+    # Podman host gets podman-compose instead. In a dry run the shim may not be
+    # installed yet, so a podman-only host counts as Podman too.
+    _compose_provider_is_podman() {
+        # No pipeline here: under pipefail, `docker --version | grep -q` can
+        # report the SIGPIPE'd left side even when it matched.
+        local cli_version=""
+        cli_version="$(docker --version 2>/dev/null || true)"
+        case "$cli_version" in
+            *[Pp]odman*) return 0 ;;
+        esac
+        ! command -v docker &> /dev/null && command -v podman &> /dev/null
+    }
     if [[ "$SKIP_DOCKER" == "true" ]]; then
         warn "Docker Compose not found (docker compose / docker-compose). Install manually or re-run without --skip-docker."
     elif $DRY_RUN; then
-        log "[DRY RUN] Would install Docker Compose plugin"
+        if _compose_provider_is_podman; then
+            log "[DRY RUN] Would install podman-compose (compose provider for Podman's docker-compatible CLI)"
+        else
+            log "[DRY RUN] Would install Docker Compose plugin"
+        fi
+    elif _compose_provider_is_podman; then
+        ai "Installing podman-compose (compose provider for Podman)..."
+        pkg_update
+        # shellcheck disable=SC2046
+        pkg_install $(pkg_resolve podman-compose)
     else
         ai "Installing Docker Compose plugin..."
         pkg_update

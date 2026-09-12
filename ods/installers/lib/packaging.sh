@@ -249,6 +249,7 @@ pkg_resolve() {
         apt)
             case "$canonical" in
                 docker-compose-plugin) echo "docker-compose-plugin" ;;
+                podman-compose)        echo "podman-compose" ;;
                 python3-pyyaml)        echo "python3-yaml" ;;
                 python3-pip)           echo "python3-pip" ;;
                 *) echo "$canonical" ;;
@@ -264,6 +265,7 @@ pkg_resolve() {
                     fi
                     ;;
                 docker-compose-plugin) echo "docker-compose-plugin" ;;
+                podman-compose)        echo "podman-compose" ;;
                 python3-pyyaml)        echo "python3-pyyaml" ;;
                 python3-pip)           echo "python3-pip" ;;
                 build-essential)       echo "gcc gcc-c++ make" ;;
@@ -273,6 +275,7 @@ pkg_resolve() {
         pacman)
             case "$canonical" in
                 docker-compose-plugin) echo "docker-compose" ;;
+                podman-compose)        echo "podman-compose" ;;
                 python3-pyyaml)        echo "python-yaml" ;;
                 python3-pip)           echo "python-pip" ;;
                 build-essential)       echo "base-devel" ;;
@@ -282,6 +285,7 @@ pkg_resolve() {
         zypper)
             case "$canonical" in
                 docker-compose-plugin) echo "docker-compose" ;;
+                podman-compose)        echo "docker-compose" ;;
                 python3-pyyaml)        echo "python3-PyYAML" ;;
                 python3-pip)           echo "python3-pip" ;;
                 build-essential)       echo "devel_basis" ;;
@@ -291,6 +295,7 @@ pkg_resolve() {
         xbps)
             case "$canonical" in
                 docker-compose-plugin) echo "docker-compose" ;;
+                podman-compose)        echo "podman-compose" ;;
                 python3-pyyaml)        echo "python3-yaml" ;;
                 python3-pip)           echo "python3-pip" ;;
                 build-essential)       echo "base-devel" ;;
@@ -300,6 +305,7 @@ pkg_resolve() {
         apk)
             case "$canonical" in
                 docker-compose-plugin) echo "docker-cli-compose" ;;
+                podman-compose)        echo "podman-compose" ;;
                 python3-pyyaml)        echo "py3-yaml" ;;
                 python3-pip)           echo "py3-pip" ;;
                 build-essential)       echo "build-base" ;;
