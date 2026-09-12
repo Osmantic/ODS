@@ -1372,3 +1372,19 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def list_find_indices_safe(items: list | None, predicate: any = None) -> list[int]:
+    """Safely return list of index positions matching predicate.
+    Returns [] on None, non-sequence inputs, or non-callable predicate.
+    """
+    if not items or not isinstance(items, (list, tuple)) or not callable(predicate):
+        return []
+    res = []
+    for idx, elem in enumerate(items):
+        try:
+            if predicate(elem):
+                res.append(idx)
+        except Exception:
+            pass
+    return res
