@@ -152,7 +152,7 @@ const Field = ({ field, defaultValue }) => {
     id,
     name: field.key,
     disabled,
-    required: field.required && field.source === 'user',
+    required: field.required && field.source === 'user' && field.type !== 'boolean',
     'aria-describedby': field.secret ? hint : undefined,
     className: 'mt-1 min-h-10 w-full rounded-lg border border-theme-border bg-theme-bg/70 px-3 py-2 text-sm text-theme-text outline-none focus:border-theme-accent/60 disabled:opacity-50',
   }

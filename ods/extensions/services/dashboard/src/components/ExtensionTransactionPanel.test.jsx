@@ -151,4 +151,30 @@ describe('ExtensionTransactionPanel', () => {
     await waitFor(() => expect(onCommitted).toHaveBeenCalledTimes(1))
     expect(screen.getByRole('status')).toHaveTextContent('Succeeded')
   })
+
+  it('allows a required boolean field to be explicitly submitted as false', async () => {
+    const booleanConfiguration = {
+      ...configuration(),
+      fields: [{ key: 'ENABLE_REMOTE', type: 'boolean', required: true, secret: false, source: 'user', restartBehavior: 'service' }],
+    }
+    getExtensionTransactionConfiguration.mockResolvedValue(booleanConfiguration)
+    configureExtensionTransaction.mockResolvedValue({
+      ...booleanConfiguration,
+      configured: true,
+      values: { ENABLE_REMOTE: false },
+      presentConfigKeys: ['ENABLE_REMOTE'],
+    })
+    render(<ExtensionTransactionPanel proposal={{...proposal,envelope:{plan:{...plan,requiredConfigKeys:['ENABLE_REMOTE'],requiredSecretKeys:[]}}}} extensionName="Notes" onClose={() => {}} />)
+    const checkbox = await screen.findByLabelText(/ENABLE_REMOTE/)
+    expect(checkbox).not.toBeChecked()
+    expect(checkbox).not.toHaveAttribute('required')
+    fireEvent.click(screen.getByRole('button', { name: 'Validate and secure configuration' }))
+    await waitFor(() => expect(configureExtensionTransaction).toHaveBeenCalledWith(
+      TX_ID,
+      HASH,
+      'c'.repeat(64),
+      { ENABLE_REMOTE: false },
+      {},
+    ))
+  })
 })
