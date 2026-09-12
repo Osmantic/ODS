@@ -41,6 +41,7 @@ const installFetchMock = (catalogFixture, templates = []) => {
     const u = String(url)
     if (u.includes('/api/extensions/catalog')) return makeJsonResponse(catalogFixture)
     if (u.includes('/api/templates')) return makeJsonResponse({ templates })
+    if (u.includes('/api/extensions/transactions/capabilities')) return makeJsonResponse({}, { ok: false, status: 404 })
     throw new Error(`Unmocked fetch: ${u}`)
   })
   vi.stubGlobal('fetch', fetchMock)
@@ -127,6 +128,24 @@ describe('Extensions page — unhealthy + install derivations', () => {
     fireEvent.click(screen.getByRole('button',{name:'Install'}))
     expect(await screen.findByRole('dialog',{name:'Demo extension change'})).toBeVisible()
     expect(screen.getByText(planHash)).toBeVisible()
+    expect(fetchMock.mock.calls.some(([url]) => String(url) === '/api/extensions/demo/install')).toBe(false)
+  })
+
+  it('never falls back to a legacy install when the opted-in transaction runtime is unavailable', async () => {
+    const fetchMock = vi.fn(async (url) => {
+      const path = String(url)
+      if (path === '/api/extensions/catalog') return makeJsonResponse({extensions:[{id:'demo',name:'Demo extension',status:'not_installed',source:'user',installable:true,features:[baseFeature]}],summary:baseSummary({not_installed:1}),agent_available:true})
+      if (path === '/api/templates') return makeJsonResponse({templates:[]})
+      if (path === '/api/extensions/transactions/capabilities') return makeJsonResponse({detail:'runtime unavailable'}, {ok:false,status:503})
+      throw new Error(`Unmocked fetch: ${path}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<Extensions compact />)
+    await screen.findByText('Demo extension')
+    expect(await screen.findByRole('alert')).toHaveTextContent('will not fall back')
+    fireEvent.click(screen.getByRole('button',{name:'Install'}))
+    expect(await screen.findByText(/No legacy change was attempted/)).toBeVisible()
+    expect(screen.queryByRole('dialog')).toBeNull()
     expect(fetchMock.mock.calls.some(([url]) => String(url) === '/api/extensions/demo/install')).toBe(false)
   })
 
@@ -432,6 +451,7 @@ describe('Extensions page — unhealthy + install derivations', () => {
       const target = String(url)
       if (target.includes('/api/extensions/catalog')) return makeJsonResponse(catalog)
       if (target.includes('/api/templates')) return makeJsonResponse({ templates: [] })
+      if (target.includes('/api/extensions/transactions/capabilities')) return makeJsonResponse({}, { ok: false, status: 404 })
       if (target === '/api/extensions/tracked-ext/update?force=true') {
         return makeJsonResponse({ action: 'updated', message: 'Extension updated.' })
       }

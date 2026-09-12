@@ -109,7 +109,7 @@ export default function Extensions({ compact = false }) {
   const [depConfirm, setDepConfirm] = useState(null)
   const [templates, setTemplates] = useState([])
   const [pollingLost, setPollingLost] = useState(false)
-  const [transactionsAvailable, setTransactionsAvailable] = useState(false)
+  const [transactionMode, setTransactionMode] = useState('checking')
   const [extensionTransaction, setExtensionTransaction] = useState(null)
   const installProgressRef = useRef(null)
   const activePollers = useRef({})
@@ -183,8 +183,8 @@ export default function Extensions({ compact = false }) {
   useEffect(() => {
     fetchCatalog()
     getTransactionCapabilities()
-      .then(() => setTransactionsAvailable(true))
-      .catch(() => setTransactionsAvailable(false))
+      .then(() => setTransactionMode('ready'))
+      .catch(caught => setTransactionMode(caught.status === 404 ? 'legacy' : 'blocked'))
     fetch('/api/templates')
       .then(r => r.ok ? r.json() : { templates: [] })
       .then(d => setTemplates(d.templates || []))
@@ -312,13 +312,21 @@ export default function Extensions({ compact = false }) {
   }
 
   const requestAction = (ext, action) => {
-    if (transactionsAvailable && ['install', 'enable', 'update'].includes(action)) {
+    const plannedAction = ['install', 'enable', 'update'].includes(action)
+    if (plannedAction && transactionMode === 'ready') {
       setMutating(ext.id)
       setError(null)
       createExtensionTransaction(ext.id)
         .then(proposal => setExtensionTransaction({ proposal, extensionName: ext.name }))
         .catch(caught => setToast({ type: 'error', text: `Could not prepare the extension plan (${caught.code || 'request-failed'}).` }))
         .finally(() => setMutating(null))
+      return
+    }
+    if (plannedAction && transactionMode !== 'legacy') {
+      const text = transactionMode === 'checking'
+        ? 'Checking the extension transaction runtime. Try again in a moment.'
+        : 'The extension transaction runtime is unavailable. No legacy change was attempted.'
+      setToast({ type: 'error', text })
       return
     }
     const messages = {
@@ -524,6 +532,12 @@ export default function Extensions({ compact = false }) {
       {/* Console modal */}
       {consoleExt && (
         <ConsoleModal ext={consoleExt} onClose={() => setConsoleExt(null)} />
+      )}
+
+      {transactionMode === 'blocked' && (
+        <div className="mb-4 rounded-xl border border-red-500/20 bg-red-500/[0.06] px-4 py-3 text-[11px] text-red-200" role="alert">
+          Extension planning is unavailable. Install, enable, and update actions are paused; ODS will not fall back to an unreviewed legacy change.
+        </div>
       )}
 
       {extensionTransaction && (

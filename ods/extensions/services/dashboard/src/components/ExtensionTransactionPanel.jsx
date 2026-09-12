@@ -324,7 +324,7 @@ export default function ExtensionTransactionPanel({ proposal, extensionName, onC
   }
 
   const configured = configuration?.configured === true
-  const canClose = !busy && !WORKING_STATES.has(status.state)
+  const canClose = !['configuration', 'approval', 'execution'].includes(busy) && !WORKING_STATES.has(status.state)
   const handleDialogKeyDown = event => {
     if (event.key === 'Escape' && canClose) {
       event.preventDefault()
