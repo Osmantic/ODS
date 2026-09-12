@@ -470,12 +470,15 @@ if (
     }
     ods_sudo_available() { return 0; }
     ods_sudo() { [[ "$*" == "systemctl restart openclaw-gateway.service" ]]; }
-    curl() { printf '%s\n' '{"ok":true,"status":"live"}'; }
+    curl() {
+        [[ "$*" == *"http://127.0.0.1:18790/health"* ]] || return 1
+        printf '%s\n' '{"ok":true,"status":"live"}'
+    }
     ods_pixel_run_as_owner() {
         [[ "$1" == "$owner" && "$2" == "$home" \
             && "$3" == "$restart_probe/pixel-root/pixel" && "$4" == verify ]]
     }
-    _ods_pixel_restart_gateway_and_verify "$owner" "$home" "$restart_probe/pixel-root"
+    PIXEL_GATEWAY_PORT=18790 _ods_pixel_restart_gateway_and_verify "$owner" "$home" "$restart_probe/pixel-root"
 ); then
     pass "privileged Pixel restart tolerates transient MainPID zero"
 else
@@ -803,7 +806,21 @@ else
     pass "symlink Operations policy rejected"
 fi
 _ods_pixel_write_onboarding "$owner" "$home" "$answers" /usr/bin/openclaw /opt/ods/pixel-plugin "$digest"
-check python3 -c 'import json,sys; v=json.load(open(sys.argv[1])); assert v["webSearchProvider"] == "searxng"; assert not any(e["id"] == "parallel" for e in v["gatewayExtensions"])' "$answers"
+check python3 -c 'import json,sys; v=json.load(open(sys.argv[1])); assert v["gatewayPort"] == 18789; assert v["webSearchProvider"] == "searxng"; assert not any(e["id"] == "parallel" for e in v["gatewayExtensions"])' "$answers"
+alternate_gateway_answers="$TEST_ROOT/alternate-gateway-onboarding.json"
+PIXEL_GATEWAY_PORT=18790 _ods_pixel_write_onboarding "$owner" "$home" \
+    "$alternate_gateway_answers" /usr/bin/openclaw /opt/ods/pixel-plugin "$digest"
+check python3 -c 'import json,sys; v=json.load(open(sys.argv[1])); assert v["gatewayPort"] == 18790' \
+    "$alternate_gateway_answers"
+for invalid_gateway_port in 0 65536 invalid; do
+    if PIXEL_GATEWAY_PORT="$invalid_gateway_port" _ods_pixel_write_onboarding "$owner" "$home" \
+        "$TEST_ROOT/invalid-gateway-onboarding.json" /usr/bin/openclaw \
+        /opt/ods/pixel-plugin "$digest" >/dev/null 2>&1; then
+        fail "invalid Pixel gateway port rejected: $invalid_gateway_port"
+    else
+        pass "invalid Pixel gateway port rejected: $invalid_gateway_port"
+    fi
+done
 native_answers="$TEST_ROOT/native-search-onboarding.json"
 _ods_pixel_write_onboarding "$owner" "$home" "$native_answers" /usr/bin/openclaw \
     /opt/ods/pixel-plugin "$digest" parallel-free /opt/ods/native-search/parallel-2026.6.33 "$digest"
@@ -2067,6 +2084,8 @@ assert installer.index("_ods_pixel_refresh_plugin_registry") < installer.index("
 assert "ods_linux_node_tools_available" in text
 assert "runtime_token_file=\"/run/ods-pixel/openclaw.json\"" in text
 assert "PIXEL_GATEWAY_TOKEN_FILE=$runtime_token_file" in text
+assert "PIXEL_GATEWAY_PORT=$gateway_port" in text
+assert "\"http://127.0.0.1:${pixel_gateway_port}/health\"" in text
 assert "PIXEL_ODS_VERSION=$ods_version" in text
 assert "PIXEL_ODS_N8N_PORT=${N8N_PORT:-5678}" in text
 assert "PIXEL_ODS_WHISPER_PORT=${WHISPER_PORT:-9000}" in text

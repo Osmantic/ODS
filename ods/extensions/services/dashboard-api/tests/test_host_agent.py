@@ -314,15 +314,21 @@ class TestResolveAgentBindAddr:
 
         assert _resolve_agent_bind_addr({}, "Linux") == "172.18.0.1"
 
-    def test_wsl_uses_loopback_instead_of_unbindable_compose_gateway(self, monkeypatch):
+    def test_wsl_native_docker_uses_locally_owned_bridge_gateway(self, monkeypatch):
+        monkeypatch.setattr(_mod, "_running_under_wsl", lambda *_args, **_kwargs: True)
+        monkeypatch.setattr(_mod, "_detect_docker_bridge_gateway", lambda: "172.17.0.1")
+        monkeypatch.setattr(_mod, "_local_bind_address_available", lambda address: address == "172.17.0.1")
+
+        assert _resolve_agent_bind_addr({}, "Linux") == "172.17.0.1"
+
+    def test_wsl_docker_desktop_uses_loopback_for_unbindable_bridge(self, monkeypatch):
         monkeypatch.setattr(_mod, "_running_under_wsl", lambda *_args, **_kwargs: True)
         monkeypatch.setattr(
             _mod,
-            "_detect_docker_network_gateway",
-            lambda _network: (_ for _ in ()).throw(
-                AssertionError("WSL must not select Docker Desktop's compose gateway")
-            ),
+            "_detect_docker_bridge_gateway",
+            lambda: "172.17.0.1",
         )
+        monkeypatch.setattr(_mod, "_local_bind_address_available", lambda _address: False)
 
         assert _resolve_agent_bind_addr({}, "Linux") == "127.0.0.1"
 

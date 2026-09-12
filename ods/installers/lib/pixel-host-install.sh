@@ -14,6 +14,13 @@ _ods_pixel_default_output_tokens() {
     printf '%s\n' "$max_tokens"
 }
 
+_ods_pixel_gateway_port() {
+    local port="${PIXEL_GATEWAY_PORT:-18789}"
+    [[ "$port" =~ ^[1-9][0-9]{0,4}$ ]] || return 1
+    (( 10#$port <= 65535 )) || return 1
+    printf '%s\n' "$port"
+}
+
 ods_pixel_install_owner() {
     local owner="${INSTALL_USER:-${SUDO_USER:-${USER:-}}}"
     [[ -n "$owner" && "$owner" != root && "$owner" =~ ^[A-Za-z_][A-Za-z0-9_.-]{0,63}$ ]] || {
@@ -1961,7 +1968,8 @@ PY
 }
 
 _ods_pixel_restart_gateway_and_verify() {
-    local owner="$1" home="$2" pixel_root="$3" attempt ready=false previous_pid current_pid
+    local owner="$1" home="$2" pixel_root="$3" attempt ready=false previous_pid current_pid gateway_port
+    gateway_port="$(_ods_pixel_gateway_port)" || return 1
     previous_pid="$(systemctl show openclaw-gateway.service -p MainPID --value 2>/dev/null || true)"
     if ods_sudo_available; then
         # Writing the final ODS runtime overlay can make OpenClaw begin its own
@@ -2004,7 +2012,7 @@ _ods_pixel_restart_gateway_and_verify() {
     [[ "$current_pid" =~ ^[1-9][0-9]*$ \
         && ( ! "$previous_pid" =~ ^[1-9][0-9]*$ || "$current_pid" != "$previous_pid" ) ]] || return 1
     for attempt in {1..60}; do
-        if curl --fail --silent --show-error --max-time 5 http://127.0.0.1:18789/health 2>/dev/null \
+        if curl --fail --silent --show-error --max-time 5 "http://127.0.0.1:${gateway_port}/health" 2>/dev/null \
             | jq -e '.ok == true and .status == "live"' >/dev/null 2>&1; then
             ready=true
             break
@@ -3424,7 +3432,7 @@ _ods_pixel_write_onboarding() {
     local owner="$1" home="$2" answers="$3" openclaw_bin="$4" plugin_path="$5" plugin_digest="$6"
     local web_search_provider="${7:-searxng}" parallel_path="${8:-}" parallel_digest="${9:-}"
     local context="${MAX_CONTEXT:-16384}" max_tokens reasoning=false
-    local gateway_alias gateway_label runtime_model gateway_port="${LITELLM_PORT:-4000}" gateway_key="${LITELLM_KEY:-}"
+    local gateway_alias gateway_label runtime_model model_gateway_port="${LITELLM_PORT:-4000}" pixel_gateway_port gateway_key="${LITELLM_KEY:-}"
     local gateway_key_file write_status=0
     if [[ "$context" =~ ^[0-9]+$ && "$context" -ge 4096 ]]; then
         :
@@ -3450,10 +3458,14 @@ _ods_pixel_write_onboarding() {
     gateway_label="Default"
     [[ "$gateway_alias" == "ods/current" ]] && gateway_label="Current"
     runtime_model="$(_ods_pixel_runtime_model_identity)" || return 1
-    if [[ ! "$gateway_port" =~ ^[0-9]+$ ]] || (( gateway_port < 1 || gateway_port > 65535 )); then
+    if [[ ! "$model_gateway_port" =~ ^[0-9]+$ ]] || (( model_gateway_port < 1 || model_gateway_port > 65535 )); then
         ai_bad "Pixel requires a valid loopback LiteLLM port."
         return 1
     fi
+    pixel_gateway_port="$(_ods_pixel_gateway_port)" || {
+        ai_bad "Pixel requires a valid loopback gateway port."
+        return 1
+    }
     [[ -n "$gateway_key" && ${#gateway_key} -le 4096 ]] || {
         ai_bad "Pixel requires the generated LiteLLM gateway key."
         return 1
@@ -3470,13 +3482,13 @@ _ods_pixel_write_onboarding() {
     fi
     ods_pixel_run_as_owner "$owner" "$home" python3 - "$answers" \
         "$openclaw_bin" "$home" "$runtime_model" "$context" "$max_tokens" "$reasoning" \
-        "$gateway_alias" "$gateway_label" "$gateway_port" "$gateway_key_file" \
+        "$gateway_alias" "$gateway_label" "$model_gateway_port" "$pixel_gateway_port" "$gateway_key_file" \
         "${SEARXNG_PORT:-8888}" "$plugin_path" "$plugin_digest" \
         "$web_search_provider" "$parallel_path" "$parallel_digest" <<'PY' || write_status=$?
 import json, os, pathlib, re, stat, sys, tempfile
 
 (out, openclaw_bin, home, model, context, max_tokens, reasoning,
- gateway_alias, gateway_label, gateway_port, gateway_key_path,
+ gateway_alias, gateway_label, model_gateway_port, pixel_gateway_port, gateway_key_path,
  search_port, plugin_path, plugin_digest, web_search_provider, parallel_path, parallel_digest) = sys.argv[1:]
 if web_search_provider not in {"searxng", "parallel-free"}:
     raise SystemExit("invalid native search provider")
@@ -3497,7 +3509,8 @@ if gateway_label not in {"Default", "Current"}:
     raise SystemExit("invalid ODS Pixel gateway label")
 if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+:/ @(),=-]{0,255}", model):
     raise SystemExit("invalid ODS Pixel model id")
-if (not gateway_port.isdigit() or not 1 <= int(gateway_port) <= 65535
+if (not model_gateway_port.isdigit() or not 1 <= int(model_gateway_port) <= 65535
+        or not pixel_gateway_port.isdigit() or not 1 <= int(pixel_gateway_port) <= 65535
         or not gateway_key or len(gateway_key) > 4096
         or any(ord(character) < 32 or ord(character) == 127 for character in gateway_key)):
     raise SystemExit("invalid ODS Pixel gateway route")
@@ -3533,7 +3546,7 @@ else:
     same_model = {
         "modelProvider": "ods-gateway", "modelId": gateway_alias,
         "modelName": f"ODS {gateway_label} ({model})",
-        "modelBaseUrl": f"http://127.0.0.1:{gateway_port}/v1",
+        "modelBaseUrl": f"http://127.0.0.1:{model_gateway_port}/v1",
         "modelContextWindow": int(context), "modelReasoning": reasoning == "true",
     }
     if all(previous.get(key) == value for key, value in same_model.items()):
@@ -3554,7 +3567,7 @@ payload = {
     "modelProvider": "ods-gateway",
     "modelId": gateway_alias,
     "modelName": f"ODS {gateway_label} ({model})",
-    "modelBaseUrl": f"http://127.0.0.1:{gateway_port}/v1",
+    "modelBaseUrl": f"http://127.0.0.1:{model_gateway_port}/v1",
     "modelApiKey": gateway_key,
     "modelReasoning": reasoning == "true",
     "modelContextWindow": int(context),
@@ -3566,7 +3579,7 @@ payload = {
     "embeddingCache": str(home / ".cache" / "openclaw" / "embeddings"),
     "googleAccount": "ods@localhost.local",
     "calendarId": "primary",
-    "gatewayPort": 18789,
+    "gatewayPort": int(pixel_gateway_port),
     "gatewayExtensions": [{
         "id": "pixel-ods",
         "path": plugin_path,
@@ -3700,7 +3713,7 @@ _ods_pixel_wait_workspace_preview_probe() {
 _ods_pixel_install_ingress() {
     local owner="$1" home="$2" plugin_root="$3" extension_catalog="$4"
     local rendered_extension_manager_unit="$5" rendered_artifact_promoter_unit="$6"
-    local rendered_workspace_preview_unit="$7" preview_port="${PIXEL_PREVIEW_PORT:-9437}"
+    local rendered_workspace_preview_unit="$7" preview_port="${PIXEL_PREVIEW_PORT:-9437}" gateway_port
     local token_file="$home/.openclaw/openclaw.json"
     local runtime_token_file="/run/ods-pixel/openclaw.json"
     local extension_helper="$plugin_root/host/extension_search.py"
@@ -3738,6 +3751,7 @@ _ods_pixel_install_ingress() {
     done
     (( (8#$(stat -c '%a' -- "$extension_catalog") & 0077) == 0 )) || return 1
 
+    gateway_port="$(_ods_pixel_gateway_port)" || return 1
     [[ "$preview_port" =~ ^[0-9]+$ ]] || return 1
     (( preview_port >= 1 && preview_port <= 65535 )) || return 1
     local app_port
@@ -3772,7 +3786,7 @@ PY
 PIXEL_INGRESS_SOCKET=/run/ods-pixel/pixel-ingress.sock
 PIXEL_INGRESS_GID=${PIXEL_INGRESS_GID:?}
 PIXEL_GATEWAY_TOKEN_FILE=$runtime_token_file
-PIXEL_GATEWAY_PORT=18789
+PIXEL_GATEWAY_PORT=$gateway_port
 PIXEL_STATUS_FILE=/run/ods-pixel/ods-status.json
 PIXEL_STATUS_INTERVAL_MS=30000
 PIXEL_ODS_VERSION=$ods_version
@@ -3994,11 +4008,15 @@ PY
 ods_pixel_install_default_agent() {
     [[ "${ENABLE_PIXEL_RUNTIME:-false}" == true ]] || return 0
     local owner home source_root pixel_root plugin_root answers operations_policy extension_catalog extension_manager_unit artifact_promoter_unit workspace_preview_unit openclaw_bin plugin_digest contract_sha256 runtime_budget_status gateway_alias pixel_log
-    local candidate_runtime_status reuse_active=false same_verified_source=false same_source_resume=false
+    local candidate_runtime_status reuse_active=false same_verified_source=false same_source_resume=false pixel_gateway_port
     local web_search_provider parallel_path="" parallel_digest=""
     local -a pixel_prerequisites=(litellm dashboard-api)
     owner="${PIXEL_SERVICE_USER:-$(ods_pixel_install_owner)}" || return 1
     home="$(ods_pixel_owner_home "$owner")" || return 1
+    pixel_gateway_port="$(_ods_pixel_gateway_port)" || {
+        ai_bad "Pixel requires a valid loopback gateway port."
+        return 1
+    }
     _ods_pixel_assert_managed_state "$owner" "$home" || return 1
     pixel_log="$(_ods_pixel_prepare_attempt_log "$owner" "$home" "$INSTALL_DIR/logs/pixel-install.log")" || {
         ai_bad "Could not create Pixel's owner-private persistent install log."
@@ -4233,7 +4251,7 @@ ods_pixel_install_default_agent() {
                     ai_bad "The ODS-managed Pixel gateway could not restart after sandbox recovery. See $pixel_log."
                     return 1
                 fi
-                if ! _ods_pixel_wait_http "Pixel gateway" "http://127.0.0.1:18789/health" \
+                if ! _ods_pixel_wait_http "Pixel gateway" "http://127.0.0.1:${pixel_gateway_port}/health" \
                     60 '.ok == true and .status == "live"'; then
                     ai_bad "The ODS-managed Pixel gateway did not become healthy after sandbox recovery. See $pixel_log."
                     return 1

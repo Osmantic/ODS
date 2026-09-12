@@ -4630,6 +4630,19 @@ def _detect_docker_bridge_gateway() -> str:
     return _detect_docker_network_gateway("bridge")
 
 
+def _local_bind_address_available(address: str) -> bool:
+    """Return whether an address belongs to this host network namespace."""
+    if not address:
+        return False
+    family = socket.AF_INET6 if ":" in address else socket.AF_INET
+    try:
+        with socket.socket(family, socket.SOCK_STREAM) as probe:
+            probe.bind((address, 0))
+    except OSError:
+        return False
+    return True
+
+
 def _running_under_wsl(
     system_name: str | None = None,
     kernel_release: str | None = None,
@@ -4650,7 +4663,19 @@ def _resolve_agent_bind_addr(env: dict, system_name: str | None = None) -> str:
             return "0.0.0.0"
         return explicit
 
-    if system_name in ("Darwin", "Windows") or _running_under_wsl(system_name):
+    if system_name in ("Darwin", "Windows"):
+        return "127.0.0.1"
+
+    if _running_under_wsl(system_name):
+        # A native Docker daemon inside WSL owns its default bridge locally,
+        # and Compose's host-gateway mapping resolves to that address. Bind
+        # only that scoped bridge so dashboard-api can reach the agent without
+        # exposing it on WSL's LAN-facing interface. Docker Desktop reports a
+        # bridge gateway from a different network namespace; the bindability
+        # check preserves its existing loopback-forwarding path.
+        bridge_gateway = _detect_docker_bridge_gateway()
+        if _local_bind_address_available(bridge_gateway):
+            return bridge_gateway
         return "127.0.0.1"
 
     if system_name == "Linux":
@@ -15578,9 +15603,9 @@ def main():
 
     # Determine bind address: explicit env override, or a platform-aware safe
     # default. Native Linux prefers the ods-network gateway so dashboard-api
-    # containers can reach the agent without exposing it to the LAN. WSL uses
-    # loopback because Docker Desktop forwards host.docker.internal there; its
-    # compose gateway belongs to Docker Desktop and is not locally bindable.
+    # containers can reach the agent without exposing it to the LAN. Native
+    # Docker inside WSL binds its locally owned default bridge; Docker Desktop
+    # keeps the loopback path because its reported bridge is not locally bindable.
     # The bridge gateway fallback keeps partial/older native-Linux installs
     # reachable until phase 11 can restart the service after ods-network exists.
     bind_addr = _resolve_agent_bind_addr(env)
