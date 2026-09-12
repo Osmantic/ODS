@@ -156,6 +156,7 @@ class FakeExecutor:
         self.calls.append((transaction_id, plan_hash))
         return SimpleNamespace(
             transaction_id=transaction_id,
+            plan_hash=plan_hash,
             final_state="committed",
             sequence=10,
             applied_services=["notes"],

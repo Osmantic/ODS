@@ -59,6 +59,13 @@ profiles remain disabled unless an operator explicitly enables it.
 Execution provenance is rechecked inside the executor's service locks against
 the current catalog revision, policy revision, normalized observed-state
 revision, canonical stored plan hash, and selected definition digests.
+After the exact stored hash is validated, the executor creates one immutable
+binding from the transaction ID and SHA-256 plan hash. Every lifecycle adapter
+call receives that binding, and every synchronous completion result and durable
+host observation must echo both values exactly. Missing or mismatched binding
+evidence fails closed and enters the existing reconciliation path. Execution
+receipts return the stored plan hash from the executor result rather than
+independently reflecting request input.
 
 ## Why disabled by default
 
