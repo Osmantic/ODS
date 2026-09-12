@@ -663,7 +663,7 @@ _check_version_compat() {
         if [[ "$force" == "true" ]]; then
             warn "--force specified: proceeding with downgrade."
         else
-            read -p "  Proceed with downgrade? [y/N] " -n 1 -r
+            read -p "  Proceed with downgrade? [y/N] " -n 1 -r || REPLY=""
             echo ""
             if [[ ! $REPLY =~ ^[Yy]$ ]]; then
                 log "Update cancelled."
@@ -716,7 +716,7 @@ _check_version_compat() {
         if [[ "$force" == "true" ]]; then
             warn "--force specified: skipping confirmation."
         else
-            read -p "  Proceed with v${_COMPAT_INSTALLED_VER} → v${_COMPAT_TARGET_VER} anyway? [y/N] " -n 1 -r
+            read -p "  Proceed with v${_COMPAT_INSTALLED_VER} → v${_COMPAT_TARGET_VER} anyway? [y/N] " -n 1 -r || REPLY=""
             echo ""
             if [[ ! $REPLY =~ ^[Yy]$ ]]; then
                 log "Update cancelled."
@@ -2820,7 +2820,7 @@ cmd_enable() {
             warn "$service_id may not work with GPU backend: $current_backend"
             warn "  Supported backends: $gpu_backends"
             warn "  Current backend: $current_backend"
-            read -p "  Continue anyway? [y/N] " -n 1 -r
+            read -p "  Continue anyway? [y/N] " -n 1 -r || REPLY=""
             echo
             if [[ ! $REPLY =~ ^[Yy]$ ]]; then
                 log "Cancelled."
@@ -2845,7 +2845,7 @@ cmd_enable() {
         done
         if [[ ${#missing[@]} -gt 0 ]]; then
             warn "$service_id depends on disabled services: ${missing[*]}"
-            read -p "  Enable them too? [Y/n] " -n 1 -r
+            read -p "  Enable them too? [Y/n] " -n 1 -r || REPLY=""
             echo
             if [[ ! $REPLY =~ ^[Nn]$ ]]; then
                 for dep in "${missing[@]}"; do
@@ -2923,7 +2923,7 @@ cmd_disable() {
     done
     if [[ ${#dependents[@]} -gt 0 ]]; then
         warn "These enabled extensions depend on $service_id: ${dependents[*]}"
-        read -p "  Continue anyway? [y/N] " -n 1 -r
+        read -p "  Continue anyway? [y/N] " -n 1 -r || REPLY=""
         echo
         [[ ! $REPLY =~ ^[Yy]$ ]] && { log "Cancelled."; return 1; }
     fi
@@ -3004,7 +3004,7 @@ cmd_purge() {
     log ""
 
     local _confirm
-    read -p "  Type '$service_id' to confirm deletion: " -r _confirm
+    read -p "  Type '$service_id' to confirm deletion: " -r _confirm || _confirm=""
     if [[ "$_confirm" != "$service_id" ]]; then
         log "Purge cancelled."
         return 0
@@ -3195,7 +3195,7 @@ META
                 echo ""
             fi
 
-            read -p "Restore this preset? This will overwrite current .env. [y/N] " -n 1 -r
+            read -p "Restore this preset? This will overwrite current .env. [y/N] " -n 1 -r || REPLY=""
             echo ""
             [[ $REPLY =~ ^[Yy]$ ]] || { log "Cancelled."; return 0; }
 
@@ -3272,7 +3272,7 @@ META
             local preset_dir="${PRESETS_DIR}/${name}"
             [[ -d "$preset_dir" ]] || error "Preset not found: $name"
 
-            read -p "Delete preset '${name}'? [y/N] " -n 1 -r
+            read -p "Delete preset '${name}'? [y/N] " -n 1 -r || REPLY=""
             echo ""
             [[ $REPLY =~ ^[Yy]$ ]] || { log "Cancelled."; return 0; }
 
@@ -3330,7 +3330,7 @@ META
             # Check if preset already exists
             if [[ -d "${PRESETS_DIR}/${archive_name}" ]]; then
                 warn "Preset '${archive_name}' already exists"
-                read -p "Overwrite? [y/N] " -n 1 -r
+                read -p "Overwrite? [y/N] " -n 1 -r || REPLY=""
                 echo ""
                 [[ $REPLY =~ ^[Yy]$ ]] || { log "Cancelled."; return 0; }
                 rm -rf "${PRESETS_DIR}/${archive_name}"
@@ -4859,7 +4859,7 @@ cmd_rollback() {
     log "Rolling back to pre-update state${target:+ (snapshot: $target)}..."
     echo ""
     warn "This will restore configuration from before the last update."
-    read -p "Continue with rollback? [y/N] " -n 1 -r
+    read -p "Continue with rollback? [y/N] " -n 1 -r || REPLY=""
     echo ""
 
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
