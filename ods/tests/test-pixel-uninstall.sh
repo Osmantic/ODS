@@ -531,14 +531,42 @@ JSON
 chmod 0600 "$HOME_DIR/.config/ods/pixel-managed.json" "$HOME_DIR/.openclaw/openclaw.json"
 pre_apply_config_sha="$(sha256sum "$HOME_DIR/.openclaw/openclaw.json" | awk '{print $1}')"
 if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME_DIR"; then
+    retired_config="$(find "$HOME_DIR/.openclaw/retired-ods-configs" -mindepth 2 -maxdepth 2 \
+        -type f -name openclaw.json -print -quit 2>/dev/null)"
     [[ ! -e "$HOME_DIR/.config/ods/pixel-managed.json" \
-        && -e "$HOME_DIR/.openclaw/openclaw.json" \
-        && "$(sha256sum "$HOME_DIR/.openclaw/openclaw.json" | awk '{print $1}')" == "$pre_apply_config_sha" \
+        && ! -e "$HOME_DIR/.openclaw/openclaw.json" \
+        && -n "$retired_config" && -f "$retired_config" && ! -L "$retired_config" \
+        && "$(sha256sum "$retired_config" | awk '{print $1}')" == "$pre_apply_config_sha" \
+        && "$(stat -c '%a' "$HOME_DIR/.openclaw/retired-ods-configs")" == 700 \
         && ! -s "$SYSTEMCTL_LOG" ]] \
-        && pass "modified pre-apply OpenClaw config is preserved while inert ODS state is removed" \
-        || fail "modified pre-apply cleanup mutated unbound OpenClaw config"
+        && pass "modified pre-apply OpenClaw config is privately retired while inert ODS state is removed" \
+        || fail "modified pre-apply cleanup did not preserve unbound OpenClaw config exactly"
 else
     fail "modified pre-apply OpenClaw config blocked inert ODS state cleanup"
+fi
+
+write_fixture
+rm -f -- "$SYSTEMD_DIR/openclaw-gateway.service" "$SYSTEMD_DIR/pixel-ingress.service" \
+    "$ETC_DIR/pixel-agent.env" "$LIBEXEC_DIR/ods-pixel-ingress.mjs" \
+    "$HOME_DIR/.config/pixel-agent/gateway.env"
+cat >"$HOME_DIR/.config/ods/pixel-managed.json" <<JSON
+{"schema_version":2,"manager":"ods","state":"installing","initial_active_state":"absent","install_dir":"$INSTALL_DIR","pixel_source_ref":"d2a2b6be552126f294fb30ee5fb46872acf82c89"}
+JSON
+cat >"$HOME_DIR/.openclaw/openclaw.json" <<'JSON'
+{"gateway":{"http":{"endpoints":{"chatCompletions":{"enabled":true}}}},"ambient":true}
+JSON
+chmod 0600 "$HOME_DIR/.config/ods/pixel-managed.json" "$HOME_DIR/.openclaw/openclaw.json"
+mkdir -m 0700 "$TEST_ROOT/foreign-config-archive"
+ln -s "$TEST_ROOT/foreign-config-archive" "$HOME_DIR/.openclaw/retired-ods-configs"
+if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME_DIR"; then
+    fail "symlinked OpenClaw config recovery root was accepted"
+else
+    [[ -e "$HOME_DIR/.config/ods/pixel-managed.json" \
+        && -e "$HOME_DIR/.openclaw/openclaw.json" \
+        && -L "$HOME_DIR/.openclaw/retired-ods-configs" \
+        && ! -s "$SYSTEMCTL_LOG" ]] \
+        && pass "unsafe OpenClaw config recovery root fails before mutation" \
+        || fail "unsafe OpenClaw config recovery root caused mutation"
 fi
 
 write_fixture

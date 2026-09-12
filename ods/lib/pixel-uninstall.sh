@@ -73,8 +73,9 @@ ods_pixel_uninstall_managed() {
     local staged_attestation="$pixel_install/.ods-uninstall-runtime-attestation"
     local deployment_lock="$pixel_install/.deployment.lock"
     local retired_releases="$pixel_install/retired-ods-releases"
+    local retired_configs="$owner_home/.openclaw/retired-ods-configs"
     local cleanup_plan cleanup_state release_version sandbox_image sandbox_image_id release_path marker_state pixel_source_ref
-    local preserve_openclaw_config
+    local retire_openclaw_config openclaw_config_sha256
     local release_identity_sha256 install_manifest_sha256 retired_release_path
     local ops_plan="absent||||" ops_state_status ops_uid ops_gid ops_user_present ops_group_present
     local ops_passwd_entry="" ops_group_entry="" ops_user_group_ids="" ops_user_group_names="" ops_artifacts_present=false
@@ -142,7 +143,7 @@ ods_pixel_uninstall_managed() {
         "$openclaw_config" "$gateway_env" "$onboarding" "$exec_control" "$ops_owner_policy" \
         "$ops_owner_extension_catalog" "$ops_extension_source_program" "$ops_dropin_source" \
         "$current" "$runtime_attestation" "$staged_current" "$staged_attestation" "$deployment_lock" \
-        "$retired_releases" <<'PY'
+        "$retired_releases" "$retired_configs" <<'PY'
 import hashlib
 import json
 import os
@@ -192,6 +193,7 @@ import sys
     staged_attestation_raw,
     deployment_lock_raw,
     retired_releases_raw,
+    retired_configs_raw,
 ) = sys.argv[1:]
 
 marker = pathlib.Path(marker_raw)
@@ -419,9 +421,12 @@ if exec_control.exists() or exec_control.is_symlink():
     if not wrapper.exists() or not sudo_adapter.exists():
         raise SystemExit("ODS-managed Pixel execution control is incomplete")
 
-preserve_openclaw_config = False
+retire_openclaw_config = False
+openclaw_config_sha256 = "absent"
 if openclaw_config.exists():
-    config = json.loads(openclaw_config.read_text(encoding="utf-8"))
+    config_payload = openclaw_config.read_bytes()
+    openclaw_config_sha256 = hashlib.sha256(config_payload).hexdigest()
+    config = json.loads(config_payload.decode("utf-8"))
     serialized_config = json.dumps(config, sort_keys=True, separators=(",", ":"))
     bootstrap_config = {
         "gateway": {
@@ -444,12 +449,13 @@ if openclaw_config.exists():
     # A fail-closed apply can therefore leave the exact bootstrap config or a
     # later, unbound OpenClaw config with no active release. The minimal marker
     # proves ownership of the inert ODS attempt, not of arbitrary config drift:
-    # remove the exact bootstrap config, but preserve every other unbound shape.
+    # remove the exact bootstrap config, but atomically retire every other
+    # unbound shape to an owner-private recovery archive before retrying.
     if cleanup[0] == "none":
         if str(install_dir) not in serialized_config:
             if value != bootstrap_marker:
                 raise SystemExit("inactive ODS marker is not the original pre-apply marker")
-            preserve_openclaw_config = config != bootstrap_config
+            retire_openclaw_config = config != bootstrap_config
     else:
         if str(install_dir) not in serialized_config:
             raise SystemExit("OpenClaw configuration is not bound to this ODS install")
@@ -459,6 +465,17 @@ if openclaw_config.exists():
             raise SystemExit("OpenClaw configuration drifted from its ODS marker")
 elif cleanup[0] != "none" and state != "deactivating":
     raise SystemExit("ODS-managed active Pixel configuration is missing")
+
+retired_configs = pathlib.Path(retired_configs_raw)
+if retired_configs.exists() or retired_configs.is_symlink():
+    retired_info = retired_configs.lstat()
+    if (
+        not stat.S_ISDIR(retired_info.st_mode)
+        or stat.S_ISLNK(retired_info.st_mode)
+        or retired_info.st_uid != owner_uid
+        or (retired_info.st_mode & 0o777) != 0o700
+    ):
+        raise SystemExit("unsafe ODS-managed OpenClaw config recovery root")
 
 ops_policy_present = ops_owner_policy.exists() or ops_owner_policy.is_symlink()
 if ops_policy_present:
@@ -839,7 +856,13 @@ if ingress_program.exists():
         raise SystemExit("ODS Pixel ingress source is unavailable for cleanup verification")
     if ingress_program.read_bytes() != source_program.read_bytes():
         raise SystemExit("installed Pixel ingress program drifted from this ODS install")
-print("|".join((*cleanup, state, source_ref, "true" if preserve_openclaw_config else "false")))
+print("|".join((
+    *cleanup,
+    state,
+    source_ref,
+    "true" if retire_openclaw_config else "false",
+    openclaw_config_sha256,
+)))
 PY
     )"; then
         log_error "ODS-managed Pixel validation failed; leaving every Pixel artifact untouched"
@@ -847,7 +870,7 @@ PY
     fi
     IFS='|' read -r cleanup_state release_version sandbox_image sandbox_image_id release_path \
         release_identity_sha256 install_manifest_sha256 retired_release_path marker_state pixel_source_ref \
-        preserve_openclaw_config <<<"$cleanup_plan"
+        retire_openclaw_config openclaw_config_sha256 <<<"$cleanup_plan"
     [[ "$cleanup_state" == none || "$cleanup_state" == active || "$cleanup_state" == staged \
         || "$cleanup_state" == staging-attestation || "$cleanup_state" == staging-link \
         || "$cleanup_state" == retiring || "$cleanup_state" == retired ]] || {
@@ -862,8 +885,12 @@ PY
         log_error "ODS-managed Pixel source binding is invalid"
         return 1
     }
-    [[ "$preserve_openclaw_config" == true || "$preserve_openclaw_config" == false ]] || {
+    [[ "$retire_openclaw_config" == true || "$retire_openclaw_config" == false ]] || {
         log_error "ODS-managed Pixel OpenClaw cleanup plan is invalid"
+        return 1
+    }
+    [[ "$openclaw_config_sha256" == absent || "$openclaw_config_sha256" =~ ^[0-9a-f]{64}$ ]] || {
+        log_error "ODS-managed Pixel OpenClaw config checksum is invalid"
         return 1
     }
 
@@ -1227,8 +1254,33 @@ PY
 
     (
     local candidate_image observed_image shared_image_present=true sandbox_container_list
-    local retired_container
+    local retired_container retired_config_container="" retired_config_path=""
     local -a sandbox_containers=()
+    if [[ "$retire_openclaw_config" == true ]]; then
+        for required_command in mktemp sha256sum; do
+            command -v "$required_command" >/dev/null 2>&1 || {
+                log_error "Cannot safely archive the unbound OpenClaw config without $required_command"
+                return 1
+            }
+        done
+        python3 - "$openclaw_config" "$owner_uid" "$openclaw_config_sha256" <<'PY'
+import hashlib, os, pathlib, stat, sys
+
+path = pathlib.Path(sys.argv[1])
+owner_uid = int(sys.argv[2])
+expected_sha256 = sys.argv[3]
+info = path.lstat()
+if (
+    not stat.S_ISREG(info.st_mode)
+    or stat.S_ISLNK(info.st_mode)
+    or info.st_nlink != 1
+    or info.st_uid != owner_uid
+    or info.st_mode & 0o077
+    or hashlib.sha256(path.read_bytes()).hexdigest() != expected_sha256
+):
+    raise SystemExit("unbound OpenClaw config changed before recovery archive creation")
+PY
+    fi
     if [[ "$cleanup_state" != none ]]; then
         for required_command in docker flock sha256sum timeout mktemp; do
             command -v "$required_command" >/dev/null 2>&1 || {
@@ -1718,13 +1770,49 @@ for item in root.iterdir():
 root.rmdir()
 PY
     fi
-    if [[ "$preserve_openclaw_config" == false ]]; then
+    if [[ "$retire_openclaw_config" == true ]]; then
+        if [[ ! -e "$retired_configs" && ! -L "$retired_configs" ]]; then
+            mkdir -m 0700 -- "$retired_configs" || {
+                log_error "Could not create the private OpenClaw config recovery root"
+                return 1
+            }
+        fi
+        python3 - "$retired_configs" "$owner_uid" <<'PY'
+import pathlib, stat, sys
+
+path = pathlib.Path(sys.argv[1])
+owner_uid = int(sys.argv[2])
+info = path.lstat()
+if (
+    not stat.S_ISDIR(info.st_mode)
+    or stat.S_ISLNK(info.st_mode)
+    or info.st_uid != owner_uid
+    or (info.st_mode & 0o777) != 0o700
+):
+    raise SystemExit("unsafe ODS-managed OpenClaw config recovery root")
+PY
+        retired_config_container="$(mktemp -d "$retired_configs/pre-apply.XXXXXXXX")" || {
+            log_error "Could not reserve an OpenClaw config recovery archive"
+            return 1
+        }
+        retired_config_path="$retired_config_container/openclaw.json"
+        if ! mv -T -- "$openclaw_config" "$retired_config_path"; then
+            rmdir -- "$retired_config_container" 2>/dev/null || true
+            log_error "Could not retire the unbound OpenClaw config"
+            return 1
+        fi
+        if [[ "$(sha256sum "$retired_config_path" | awk '{print $1}')" != "$openclaw_config_sha256" ]]; then
+            log_error "The retired OpenClaw config failed exact-byte verification"
+            return 1
+        fi
+        log_info "Preserved the unbound OpenClaw config at $retired_config_path"
+    else
         rm -f -- "$openclaw_config"
     fi
     rm -f -- "$gateway_env" "$onboarding" "$ops_owner_policy" \
         "$ops_owner_extension_catalog" "$extension_manager_owner_unit" \
         "$artifact_promoter_owner_unit" "$workspace_preview_owner_unit"
-    if [[ ( "$preserve_openclaw_config" == false && ( -e "$openclaw_config" || -L "$openclaw_config" ) ) \
+    if [[ -e "$openclaw_config" || -L "$openclaw_config" \
         || -e "$gateway_env" || -e "$onboarding" \
         || -e "$ops_owner_policy" || -L "$ops_owner_policy" \
         || -e "$ops_owner_extension_catalog" || -L "$ops_owner_extension_catalog" \
