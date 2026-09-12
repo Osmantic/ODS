@@ -212,6 +212,10 @@ def test_utf8_is_unescaped_and_has_one_trailing_lf() -> None:
     assert encoded.endswith(b"\n") and not encoded.endswith(b"\n\n")
 
 
+def test_canonicalizer_rejects_lone_surrogates_as_a_domain_error() -> None:
+    error("invalid-unicode", lambda: planner.canonical_json_bytes({"label": "\ud800"}))
+
+
 def test_build_does_not_mutate_inputs() -> None:
     records = [manifest("app")]
     before = copy.deepcopy(records)
@@ -252,6 +256,58 @@ def test_unique_highest_priority_provider_wins() -> None:
         requested_capabilities=["route@1"],
     )
     assert result["plan"]["selectedServices"] == ["high"]
+
+
+def test_semver_prerelease_does_not_satisfy_final_ods_minimum() -> None:
+    state = copy.deepcopy(HOST_STATE)
+    state["odsVersion"] = "2.0.0-rc.1"
+    revision = hashlib.sha256(planner.canonical_json_bytes(state)).hexdigest()
+    error(
+        "incompatible-ods-version",
+        lambda: build(
+            [manifest("app")],
+            requested_services=["app"],
+            observed_state=state,
+            observed_state_revision=revision,
+        ),
+    )
+
+
+def test_driver_versions_use_deterministic_vendor_aware_natural_order() -> None:
+    record = manifest("app")
+    record["service"]["planning"]["requirements"]["gpu_backends"] = ["nvidia"]
+    record["service"]["planning"]["requirements"]["min_driver_version"] = "550.54.14"
+    state = copy.deepcopy(HOST_STATE)
+    state["gpuBackend"] = "nvidia"
+    state["driverVersion"] = "550.54.9"
+    revision = hashlib.sha256(planner.canonical_json_bytes(state)).hexdigest()
+    error(
+        "incompatible-driver-version",
+        lambda: build(
+            [record],
+            requested_services=["app"],
+            observed_state=state,
+            observed_state_revision=revision,
+        ),
+    )
+
+
+def test_provider_selection_filters_incompatible_alternatives_before_priority() -> None:
+    incompatible = manifest("high", provides=["route@1"], priority=9)
+    incompatible["service"]["planning"]["requirements"]["platforms"] = ["darwin"]
+    result = build(
+        [incompatible, manifest("low", provides=["route@1"], priority=1)],
+        requested_capabilities=["route@1"],
+    )
+    assert result["plan"]["selectedServices"] == ["low"]
+    error(
+        "incompatible-provider-preference",
+        lambda: build(
+            [incompatible, manifest("low", provides=["route@1"], priority=1)],
+            requested_capabilities=["route@1"],
+            provider_preferences={"route@1": "high"},
+        ),
+    )
 
 
 def test_equal_priority_provider_is_ambiguous() -> None:
@@ -515,3 +571,84 @@ def test_docker_v2_requires_immutable_artifacts_and_consistent_download_estimate
     mismatched = manifest("app")
     mismatched["service"]["planning"]["estimates"]["download_bytes"] = 101
     error("artifact-estimate-mismatch", lambda: build([mismatched], requested_services=["app"]))
+
+
+def test_manifest_rejects_wrong_typed_defaults_and_duplicate_artifact_outputs() -> None:
+    wrong_default = manifest("app")
+    wrong_default["service"]["planning"]["configuration"] = [
+        {
+            "key": "WORKERS",
+            "type": "integer",
+            "required": False,
+            "secret": False,
+            "source": "user",
+            "restart_behavior": "service",
+            "default": "four",
+        }
+    ]
+    error("invalid-config-default", lambda: planner.adapt_manifest(wrong_default))
+
+    duplicate_image = manifest("app")
+    image = copy.deepcopy(duplicate_image["service"]["planning"]["artifacts"]["images"][0])
+    image["digest"] = "sha256:" + "f" * 64
+    duplicate_image["service"]["planning"]["artifacts"]["images"].append(image)
+    error("duplicate-artifact", lambda: planner.adapt_manifest(duplicate_image))
+
+    duplicate_data = manifest("app")
+    entry = {
+        "path": "data/app",
+        "backup_class": "required",
+        "owner": "extension",
+        "uninstall": "preserve",
+        "purge": "separate-approval",
+    }
+    duplicate_data["service"]["planning"]["data"] = [entry, copy.deepcopy(entry)]
+    error("duplicate-value", lambda: planner.adapt_manifest(duplicate_data))
+
+
+def test_all_shared_configuration_keys_must_have_identical_contracts() -> None:
+    first = manifest("first", config=["MODE"])
+    second = manifest("second", config=["MODE"])
+    second["service"]["planning"]["configuration"][0]["required"] = False
+    error(
+        "configuration-contract-conflict",
+        lambda: build([first, second], requested_services=["first", "second"]),
+    )
+
+
+@pytest.mark.parametrize(
+    ("status", "action", "download"),
+    [
+        ("enabled", "noop", 0),
+        ("disabled", "enable", 100),
+        ("stopped", "enable", 100),
+        ("unhealthy", "repair", 100),
+        ("error", "repair", 100),
+    ],
+)
+def test_installed_state_drives_exact_operation_and_resource_delta(
+    status: str, action: str, download: int
+) -> None:
+    state = copy.deepcopy(HOST_STATE)
+    state["installedServices"] = [
+        {
+            "id": "app",
+            "version": "1.2.3",
+            "definitionSha256": "sha256:" + "d" * 64,
+            "status": status,
+        }
+    ]
+    revision = hashlib.sha256(planner.canonical_json_bytes(state)).hexdigest()
+    result = build(
+        [manifest("app")],
+        requested_services=["app"],
+        observed_state=state,
+        observed_state_revision=revision,
+    )
+    assert result["plan"]["operations"] == [{"serviceId": "app", "action": action}]
+    assert result["plan"]["resourceDelta"]["downloadBytes"] == download
+
+
+@pytest.mark.parametrize("expiry", ["2026-99-01T00:00:00Z", "2026-10-01 00:00:00Z", ""])
+def test_expiry_must_be_a_real_canonical_utc_timestamp(expiry: str) -> None:
+    error("invalid-plan-expiry", lambda: build([], valid_until=expiry))

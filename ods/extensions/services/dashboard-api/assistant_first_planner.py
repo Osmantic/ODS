@@ -11,6 +11,7 @@ import hashlib
 import json
 import re
 from collections.abc import Mapping, Sequence
+from datetime import datetime
 from typing import Any
 
 
@@ -18,13 +19,18 @@ _ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 _CAPABILITY_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}@[1-9][0-9]{0,8}$")
 _RESOURCE_RE = re.compile(r"^[a-z0-9][a-z0-9._:-]{0,63}$")
 _CONFIG_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,127}$")
-_REVISION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _UTC_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
 _SEMVER_RE = re.compile(
-    r"^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$"
+    r"^(0|[1-9][0-9]*)\."
+    r"(0|[1-9][0-9]*)\."
+    r"(0|[1-9][0-9]*)"
+    r"(?:-((?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)"
+    r"(?:\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?"
+    r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
 )
+_DRIVER_VERSION_RE = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._-]{0,63}$")
 
 _PLANNING_FIELDS = frozenset(
     {
@@ -174,7 +180,12 @@ def _text(value: Any, field: str, *, maximum: int, allow_empty: bool = False) ->
         not isinstance(value, str)
         or (not allow_empty and not value)
         or len(value) > maximum
-        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+        or any(
+            ord(character) < 32
+            or ord(character) == 127
+            or 0xD800 <= ord(character) <= 0xDFFF
+            for character in value
+        )
     ):
         _fail("invalid-text", field=field)
     return value
@@ -357,6 +368,9 @@ def adapt_manifest(manifest: Any) -> dict[str, Any]:
     maximum = compatibility.get("ods_max")
     if maximum is not None:
         maximum = _text(maximum, "compatibility.ods_max", maximum=32)
+    minimum_release = _semver(minimum, "compatibility.ods_min")
+    if maximum is not None and _semver(maximum, "compatibility.ods_max") < minimum_release:
+        _fail("invalid-version-range", field="compatibility")
 
     planning = _exact_mapping(service.get("planning"), "service.planning", _PLANNING_FIELDS)
     requirements = _exact_mapping(
@@ -432,6 +446,14 @@ def adapt_manifest(manifest: Any) -> dict[str, Any]:
             default = spec.get("default")
             if type(default) not in {str, int, bool}:
                 _fail("invalid-config-default", field=field)
+            expected_type = normalized["type"]
+            valid_default = (
+                (expected_type == "integer" and type(default) is int)
+                or (expected_type == "boolean" and type(default) is bool)
+                or (expected_type in {"string", "url", "enum"} and type(default) is str)
+            )
+            if not valid_default:
+                _fail("invalid-config-default", field=field)
             normalized["default"] = default
         configuration.append(normalized)
     configuration.sort(key=lambda item: item["key"])
@@ -440,44 +462,55 @@ def adapt_manifest(manifest: Any) -> dict[str, Any]:
         planning.get("artifacts"), "service.planning.artifacts", _ARTIFACT_FIELDS
     )
     images: list[dict[str, Any]] = []
+    seen_images: set[str] = set()
     for index, item in enumerate(_sequence(artifacts.get("images"), "artifacts.images")):
         image = _exact_mapping(item, f"artifacts.images[{index}]", _IMAGE_FIELDS)
-        images.append(
-            {
-                "reference": _text(image.get("reference"), f"images[{index}].reference", maximum=512),
-                "digest": _digest(image.get("digest"), f"images[{index}].digest"),
-                "downloadBytes": _integer(
-                    image.get("download_bytes"), f"images[{index}].download_bytes", 0, 2**63 - 1
-                ),
-            }
-        )
+        normalized_image = {
+            "reference": _text(image.get("reference"), f"images[{index}].reference", maximum=512),
+            "digest": _digest(image.get("digest"), f"images[{index}].digest"),
+            "downloadBytes": _integer(
+                image.get("download_bytes"), f"images[{index}].download_bytes", 0, 2**63 - 1
+            ),
+        }
+        if normalized_image["reference"] in seen_images:
+            _fail("duplicate-artifact", field="artifacts.images", reference=normalized_image["reference"])
+        seen_images.add(normalized_image["reference"])
+        images.append(normalized_image)
     images.sort(key=lambda item: (item["reference"], item["digest"]))
     builds: list[dict[str, Any]] = []
+    seen_builds: set[str] = set()
     for index, item in enumerate(_sequence(artifacts.get("builds"), "artifacts.builds")):
         build = _exact_mapping(item, f"artifacts.builds[{index}]", _BUILD_FIELDS)
-        builds.append(
-            {
-                "source": _text(build.get("source"), f"builds[{index}].source", maximum=512),
-                "revision": _text(build.get("revision"), f"builds[{index}].revision", maximum=128),
-                "contextDigest": _digest(build.get("context_digest"), f"builds[{index}].context_digest"),
-                "output": _text(build.get("output"), f"builds[{index}].output", maximum=512),
-                "downloadBytes": _integer(
-                    build.get("download_bytes"), f"builds[{index}].download_bytes", 0, 2**63 - 1
-                ),
-            }
-        )
+        normalized_build = {
+            "source": _text(build.get("source"), f"builds[{index}].source", maximum=512),
+            "revision": _text(build.get("revision"), f"builds[{index}].revision", maximum=128),
+            "contextDigest": _digest(build.get("context_digest"), f"builds[{index}].context_digest"),
+            "output": _text(build.get("output"), f"builds[{index}].output", maximum=512),
+            "downloadBytes": _integer(
+                build.get("download_bytes"), f"builds[{index}].download_bytes", 0, 2**63 - 1
+            ),
+        }
+        if normalized_build["output"] in seen_builds:
+            _fail("duplicate-artifact", field="artifacts.builds", output=normalized_build["output"])
+        seen_builds.add(normalized_build["output"])
+        builds.append(normalized_build)
     builds.sort(key=lambda item: (item["output"], item["revision"]))
 
     lifecycle = _exact_mapping(
         planning.get("lifecycle"), "service.planning.lifecycle", _LIFECYCLE_FIELDS
     )
     data: list[dict[str, Any]] = []
+    seen_data_paths: set[str] = set()
     for index, item in enumerate(_sequence(planning.get("data"), "service.planning.data")):
         field = f"service.planning.data[{index}]"
         value = _exact_mapping(item, field, _DATA_FIELDS)
+        data_path = _relative_path(value.get("path"), f"{field}.path", 256)
+        if data_path in seen_data_paths:
+            _fail("duplicate-value", field="service.planning.data", value=data_path)
+        seen_data_paths.add(data_path)
         data.append(
             {
-                "path": _relative_path(value.get("path"), f"{field}.path", 256),
+                "path": data_path,
                 "backupClass": _enum(
                     value.get("backup_class"), f"{field}.backup_class", frozenset({"required", "recommended", "ephemeral"})
                 ),
@@ -520,8 +553,8 @@ def adapt_manifest(manifest: Any) -> dict[str, Any]:
             "gpuBackends": _token_list(
                 requirements.get("gpu_backends"), "requirements.gpu_backends", frozenset({"amd", "nvidia", "apple", "cpu", "none"}), require_one=True
             ),
-            "minDriverVersion": _nullable_text(
-                requirements.get("min_driver_version"), "requirements.min_driver_version", 64
+            "minDriverVersion": _nullable_driver_version(
+                requirements.get("min_driver_version"), "requirements.min_driver_version"
             ),
         },
         "estimates": {
@@ -594,7 +627,11 @@ def adapt_manifest(manifest: Any) -> dict[str, Any]:
 def _json_safe(value: Any, seen: set[int] | None = None) -> None:
     if seen is None:
         seen = set()
-    if value is None or isinstance(value, (str, bool)) or type(value) is int:
+    if value is None or isinstance(value, bool) or type(value) is int:
+        return
+    if isinstance(value, str):
+        if any(0xD800 <= ord(character) <= 0xDFFF for character in value):
+            _fail("invalid-unicode")
         return
     if isinstance(value, float):
         _fail("float-not-canonical")
@@ -639,21 +676,39 @@ def _provider_for(
     capability: str,
     records: Mapping[str, Mapping[str, Any]],
     preferences: Mapping[str, str],
+    eligible_provider_ids: set[str] | None = None,
 ) -> str:
-    candidates = [
+    all_candidates = [
         record for record in records.values() if capability in record["provides"]
     ]
-    if not candidates:
+    if not all_candidates:
         _fail("missing-capability", capability=capability)
     preferred = preferences.get(capability)
     if preferred is not None:
-        if preferred not in {record["id"] for record in candidates}:
+        if preferred not in {record["id"] for record in all_candidates}:
             _fail(
                 "invalid-provider-preference",
                 capability=capability,
                 serviceId=preferred,
             )
+        if eligible_provider_ids is not None and preferred not in eligible_provider_ids:
+            _fail(
+                "incompatible-provider-preference",
+                capability=capability,
+                serviceId=preferred,
+            )
         return preferred
+    candidates = [
+        record
+        for record in all_candidates
+        if eligible_provider_ids is None or record["id"] in eligible_provider_ids
+    ]
+    if not candidates:
+        _fail(
+            "no-compatible-provider",
+            capability=capability,
+            candidates=sorted(record["id"] for record in all_candidates),
+        )
     highest = max(record["providerPriority"] for record in candidates)
     winners = sorted(
         record["id"] for record in candidates if record["providerPriority"] == highest
@@ -661,6 +716,53 @@ def _provider_for(
     if len(winners) != 1:
         _fail("ambiguous-provider", capability=capability, candidates=winners)
     return winners[0]
+
+
+def _provider_is_eligible(
+    record: Mapping[str, Any],
+    state: Mapping[str, Any],
+    policy: Mapping[str, Any],
+    current_ods: tuple[int, int, int, int, tuple[tuple[int, int, str], ...]],
+) -> bool:
+    if record["legacy"]:
+        return False
+    minimum = record["odsCompatibility"]["minimum"]
+    maximum = record["odsCompatibility"]["maximum"]
+    if minimum and current_ods < _semver(minimum, f"{record['id']}.compatibility.minimum"):
+        return False
+    if maximum and current_ods > _semver(maximum, f"{record['id']}.compatibility.maximum"):
+        return False
+    requirements = record["requirements"]
+    if (
+        state["platform"] not in requirements["platforms"]
+        or state["architecture"] not in requirements["architectures"]
+        or state["containerRuntime"] not in requirements["containerRuntimes"]
+        or state["gpuBackend"] not in requirements["gpuBackends"]
+    ):
+        return False
+    minimum_driver = requirements["minDriverVersion"]
+    if minimum_driver is not None:
+        if state["driverVersion"] is None:
+            return False
+        if _driver_version(state["driverVersion"], "observed_state.driverVersion") < _driver_version(
+            minimum_driver, f"{record['id']}.requirements.minDriverVersion"
+        ):
+            return False
+    if record["trust"]["tier"] not in policy["allowedTrustTiers"]:
+        return False
+    if set(record["resources"]["hostPermissions"]) & set(policy["forbiddenHostPermissions"]):
+        return False
+    if record["support"]["status"] == "unsupported":
+        return False
+    if record["support"]["status"] == "experimental" and not policy["allowExperimental"]:
+        return False
+    if (
+        record["serviceType"] == "docker"
+        and not record["artifacts"]["images"]
+        and not record["artifacts"]["builds"]
+    ):
+        return False
+    return True
 
 
 def _topological_order(
@@ -692,11 +794,49 @@ def _topological_order(
     return result
 
 
-def _release(value: Any, field: str) -> tuple[int, int, int]:
-    if not isinstance(value, str) or _SEMVER_RE.fullmatch(value) is None:
+def _semver(
+    value: Any, field: str
+) -> tuple[int, int, int, int, tuple[tuple[int, int, str], ...]]:
+    """Return a key with SemVer 2.0.0 precedence; build metadata is ignored."""
+
+    if not isinstance(value, str):
         _fail("invalid-version", field=field)
-    core = value.split("-", 1)[0].split("+", 1)[0]
-    return tuple(int(part) for part in core.split("."))
+    match = _SEMVER_RE.fullmatch(value)
+    if match is None:
+        _fail("invalid-version", field=field)
+    prerelease = match.group(4)
+    identifiers = () if prerelease is None else tuple(prerelease.split("."))
+    precedence = tuple(
+        (0, int(identifier), "")
+        if identifier.isdigit()
+        else (1, 0, identifier)
+        for identifier in identifiers
+    )
+    return (
+        int(match.group(1)),
+        int(match.group(2)),
+        int(match.group(3)),
+        1 if prerelease is None else 0,
+        precedence,
+    )
+
+
+def _driver_version(value: Any, field: str) -> tuple[tuple[int, int, str], ...]:
+    """Return a stable natural-sort key for vendor-specific driver versions."""
+
+    if not isinstance(value, str) or _DRIVER_VERSION_RE.fullmatch(value) is None:
+        _fail("invalid-driver-version", field=field)
+    return tuple(
+        (0, int(token), "") if token.isdigit() else (1, 0, token.lower())
+        for token in re.findall(r"[0-9]+|[A-Za-z]+", value)
+    )
+
+
+def _nullable_driver_version(value: Any, field: str) -> str | None:
+    if value is None:
+        return None
+    _driver_version(value, field)
+    return value
 
 
 def normalize_host_state(value: Any) -> dict[str, Any]:
@@ -783,8 +923,11 @@ def normalize_host_state(value: Any) -> dict[str, Any]:
     installed.sort(key=lambda item: item["id"])
 
     driver = state.get("driverVersion")
+    ods_version = _text(state.get("odsVersion"), "observed_state.odsVersion", maximum=64)
+    _semver(ods_version, "observed_state.odsVersion")
+    normalized_driver = _nullable_driver_version(driver, "observed_state.driverVersion")
     return {
-        "odsVersion": _text(state.get("odsVersion"), "observed_state.odsVersion", maximum=64),
+        "odsVersion": ods_version,
         "platform": _enum(
             state.get("platform"), "observed_state.platform", frozenset({"linux", "darwin", "windows"})
         ),
@@ -801,7 +944,7 @@ def normalize_host_state(value: Any) -> dict[str, Any]:
             "observed_state.gpuBackend",
             frozenset({"amd", "nvidia", "apple", "cpu", "none"}),
         ),
-        "driverVersion": None if driver is None else _text(driver, "observed_state.driverVersion", maximum=64),
+        "driverVersion": normalized_driver,
         "available": {
             name: _integer(available.get(name), f"observed_state.available.{name}", 0, 2**63 - 1)
             for name in sorted(available_fields)
@@ -874,6 +1017,10 @@ def build_plan(
         _fail("invalid-policy-revision")
     if not isinstance(valid_until, str) or _UTC_RE.fullmatch(valid_until) is None:
         _fail("invalid-plan-expiry")
+    try:
+        datetime.strptime(valid_until, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError as exc:
+        raise PlanningError("invalid-plan-expiry") from exc
     action = _enum(requested_action, "requested_action", frozenset({"ensure"}))
     state = normalize_host_state(observed_state)
     normalized_policy = normalize_policy(policy)
@@ -883,6 +1030,7 @@ def build_plan(
     computed_policy_revision = hashlib.sha256(canonical_json_bytes(normalized_policy)).hexdigest()
     if computed_policy_revision != policy_revision:
         _fail("stale-policy", currentRevision=computed_policy_revision)
+    current_ods = _semver(state["odsVersion"], "observed_state.odsVersion")
 
     records: dict[str, dict[str, Any]] = {}
     for index, manifest in enumerate(_sequence(manifests, "manifests")):
@@ -891,6 +1039,11 @@ def build_plan(
         if service_id in records:
             _fail("duplicate-service", serviceId=service_id)
         records[service_id] = record
+    eligible_provider_ids = {
+        service_id
+        for service_id, record in records.items()
+        if _provider_is_eligible(record, state, normalized_policy, current_ods)
+    }
 
     services = _unique_strings(requested_services, "requested_services", _identifier)
     capabilities = _unique_strings(
@@ -926,7 +1079,9 @@ def build_plan(
 
     provider_bindings: dict[str, str] = {}
     for capability in capabilities:
-        provider = _provider_for(capability, records, preferences)
+        provider = _provider_for(
+            capability, records, preferences, eligible_provider_ids
+        )
         provider_bindings[capability] = provider
         selected.add(provider)
 
@@ -946,7 +1101,9 @@ def build_plan(
             selected.add(dependency)
             edges.add((dependency, service_id))
         for capability in record["requires"]:
-            provider = _provider_for(capability, records, preferences)
+            provider = _provider_for(
+                capability, records, preferences, eligible_provider_ids
+            )
             existing = provider_bindings.get(capability)
             if existing is not None and existing != provider:
                 _fail("inconsistent-provider", capability=capability)
@@ -1023,6 +1180,7 @@ def build_plan(
     definitions: list[dict[str, Any]] = []
     operations: list[dict[str, Any]] = []
     warnings: list[dict[str, Any]] = []
+    configuration_contracts: dict[str, dict[str, Any]] = {}
     required_configuration: dict[str, dict[str, Any]] = {}
     totals = {
         "downloadBytes": 0,
@@ -1032,7 +1190,6 @@ def build_plan(
         "vramBytes": 0,
         "gpuCount": 0,
     }
-    current_ods = _release(state["odsVersion"], "observed_state.odsVersion")
     for service_id in order:
         record = records[service_id]
         if not record["definitionSha256"]:
@@ -1058,9 +1215,9 @@ def build_plan(
             )
         minimum = record["odsCompatibility"]["minimum"]
         maximum = record["odsCompatibility"]["maximum"]
-        if minimum and current_ods < _release(minimum, f"{service_id}.compatibility.minimum"):
+        if minimum and current_ods < _semver(minimum, f"{service_id}.compatibility.minimum"):
             _fail("incompatible-ods-version", serviceId=service_id)
-        if maximum and current_ods > _release(maximum, f"{service_id}.compatibility.maximum"):
+        if maximum and current_ods > _semver(maximum, f"{service_id}.compatibility.maximum"):
             _fail("incompatible-ods-version", serviceId=service_id)
         if record["legacy"]:
             warnings.append({"code": "legacy-manifest", "serviceId": service_id})
@@ -1079,7 +1236,7 @@ def build_plan(
             if minimum_driver is not None:
                 if state["driverVersion"] is None:
                     _fail("missing-driver-version", serviceId=service_id)
-                if _release(state["driverVersion"], "observed_state.driverVersion") < _release(
+                if _driver_version(state["driverVersion"], "observed_state.driverVersion") < _driver_version(
                     minimum_driver, f"{service_id}.requirements.minDriverVersion"
                 ):
                     _fail("incompatible-driver-version", serviceId=service_id)
@@ -1099,24 +1256,32 @@ def build_plan(
                     _fail("experimental-service-blocked", serviceId=service_id)
                 warnings.append({"code": f"{status}-service", "serviceId": service_id})
         for item in record["configuration"]:
+            previous = configuration_contracts.get(item["key"])
+            if previous is not None and previous != item:
+                _fail("configuration-contract-conflict", key=item["key"])
+            configuration_contracts[item["key"]] = item
             if item["required"]:
-                previous = required_configuration.get(item["key"])
-                if previous is not None and previous != item:
-                    _fail("configuration-contract-conflict", key=item["key"])
                 required_configuration[item["key"]] = item
-        for name in totals:
-            totals[name] += record["estimates"][name]
         observed = installed.get(service_id)
         if (
             observed is not None
             and observed["version"] == record["version"]
             and observed["definitionSha256"] == record["definitionSha256"]
         ):
-            operation = "noop"
+            operation = {
+                "enabled": "noop",
+                "disabled": "enable",
+                "stopped": "enable",
+                "unhealthy": "repair",
+                "error": "repair",
+            }[observed["status"]]
         elif observed is None:
             operation = "install"
         else:
             operation = "update"
+        if operation != "noop":
+            for name in totals:
+                totals[name] += record["estimates"][name]
         operations.append({"serviceId": service_id, "action": operation})
         definitions.append(
             {
