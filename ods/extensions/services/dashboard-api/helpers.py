@@ -1372,3 +1372,16 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def numeric_safe_percentage_precision_safe(part: int | float | None, total: int | float | None, precision: int = 2) -> float:
+    """Safely calculate percentage (part / total * 100) rounded to precision.
+    Returns 0.0 on None, non-numeric, or ZeroDivisionError inputs.
+    """
+    if part is None or total is None or not isinstance(part, (int, float)) or not isinstance(total, (int, float)):
+        return 0.0
+    if isinstance(part, bool) or isinstance(total, bool) or total == 0:
+        return 0.0
+    if not isinstance(precision, int) or isinstance(precision, bool) or precision < 0:
+        precision = 2
+    return round((float(part) / float(total)) * 100.0, precision)
