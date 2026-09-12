@@ -1,5 +1,11 @@
 const HASH_PATTERN = /^[0-9a-f]{64}$/
 const TRANSACTION_PATTERN = /^txn-[0-9a-f]{24}$/
+const CONFIG_KEY_PATTERN = /^[A-Z][A-Z0-9_]{0,127}$/
+const TRANSACTION_STATES = new Set([
+  'planned', 'awaiting_approval', 'approved', 'reserved', 'downloading', 'staged',
+  'configuring', 'applying', 'verifying', 'committed', 'failed', 'reconciling',
+  'rolled_back', 'manual_recovery_required',
+])
 
 export class ExtensionTransactionError extends Error {
   constructor(code, status = 0) {
@@ -73,7 +79,7 @@ const validateConfiguration = (body, transactionId, planHash = null) => {
   if (!isObject(body) || body.schema !== 'ods.assistant-first.transaction-configuration-view.v1') {
     fail('invalid-transaction-configuration')
   }
-  if (body.transactionId !== transactionId || !Array.isArray(body.fields) || !isObject(body.values)) {
+  if (body.transactionId !== transactionId || !Array.isArray(body.fields) || !isObject(body.values) || typeof body.configured !== 'boolean') {
     fail('invalid-transaction-configuration')
   }
   assertHash(body.planHash, 'plan-hash')
@@ -82,7 +88,25 @@ const validateConfiguration = (body, transactionId, planHash = null) => {
   if (!Array.isArray(body.presentConfigKeys) || !Array.isArray(body.presentSecretKeys)) {
     fail('invalid-transaction-configuration')
   }
-  if (body.presentSecretKeys.some(key => Object.hasOwn(body.values, key))) {
+  const secretKeys = []
+  for (const field of body.fields) {
+    if (
+      !isObject(field)
+      || !CONFIG_KEY_PATTERN.test(field.key)
+      || !['string', 'url', 'integer', 'boolean', 'enum'].includes(field.type)
+      || typeof field.required !== 'boolean'
+      || typeof field.secret !== 'boolean'
+      || !['user', 'generated', 'system', 'provider'].includes(field.source)
+    ) fail('invalid-transaction-configuration-field')
+    if (field.secret) {
+      if (Object.hasOwn(field, 'default')) fail('secret-default-in-configuration-projection')
+      secretKeys.push(field.key)
+    }
+  }
+  if ([...body.presentConfigKeys, ...body.presentSecretKeys].some(key => typeof key !== 'string' || !CONFIG_KEY_PATTERN.test(key))) {
+    fail('invalid-transaction-configuration')
+  }
+  if (secretKeys.some(key => Object.hasOwn(body.values, key))) {
     fail('secret-value-in-configuration-projection')
   }
   return body
@@ -137,23 +161,28 @@ export const createExtensionTransaction = async (serviceId, now = new Date()) =>
   return body
 }
 
-export const getExtensionTransaction = async transactionId => {
+export const getExtensionTransaction = async (transactionId, expectedPlanHash = null) => {
   assertTransactionId(transactionId)
   const body = await requestJson(`/api/extensions/transactions/${transactionId}`)
   if (!isObject(body) || body.schema !== 'ods.assistant-first.transaction-status.v1') fail('invalid-transaction-status')
   if (body.transactionId !== transactionId) fail('transaction-identity-mismatch')
   assertHash(body.planHash, 'plan-hash')
+  if (expectedPlanHash !== null && body.planHash !== expectedPlanHash) fail('transaction-plan-hash-mismatch')
   validatePlan(body.plan)
-  if (typeof body.state !== 'string' || !Array.isArray(body.journal) || !isObject(body.approval)) {
+  if (!TRANSACTION_STATES.has(body.state) || !Number.isSafeInteger(body.sequence) || !Array.isArray(body.journal) || !isObject(body.approval)) {
     fail('invalid-transaction-status')
+  }
+  if (typeof body.approval.approved !== 'boolean') fail('invalid-transaction-status')
+  for (const entry of body.journal) {
+    if (!isObject(entry) || !Number.isSafeInteger(entry.sequence) || !TRANSACTION_STATES.has(entry.state)) fail('invalid-transaction-journal')
   }
   return body
 }
 
-export const getExtensionTransactionConfiguration = async transactionId => {
+export const getExtensionTransactionConfiguration = async (transactionId, expectedPlanHash = null) => {
   assertTransactionId(transactionId)
   const body = await requestJson(`/api/extensions/transactions/${transactionId}/configuration`)
-  return validateConfiguration(body, transactionId)
+  return validateConfiguration(body, transactionId, expectedPlanHash)
 }
 
 export const configureExtensionTransaction = async (transactionId, planHash, schemaHash, values, secretValues) => {

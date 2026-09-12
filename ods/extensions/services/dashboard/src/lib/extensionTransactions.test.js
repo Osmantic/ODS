@@ -92,11 +92,27 @@ describe('extension transaction client', () => {
       planHash: HASH,
       schemaHash: 'c'.repeat(64),
       fields: [],
+      configured: false,
       values: {},
       presentConfigKeys: [],
       presentSecretKeys: 'TOKEN',
     })))
     await expect(getExtensionTransactionConfiguration(TX_ID)).rejects.toMatchObject({ code: 'invalid-transaction-configuration' })
+  })
+
+  it('rejects a configuration response rebound to another plan hash', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response({
+      schema: 'ods.assistant-first.transaction-configuration-view.v1',
+      transactionId: TX_ID,
+      planHash: 'd'.repeat(64),
+      schemaHash: 'c'.repeat(64),
+      fields: [],
+      configured: false,
+      values: {},
+      presentConfigKeys: [],
+      presentSecretKeys: [],
+    })))
+    await expect(getExtensionTransactionConfiguration(TX_ID, HASH)).rejects.toMatchObject({ code: 'transaction-plan-hash-mismatch' })
   })
 
   it('maps only stable API error codes into client failures', async () => {

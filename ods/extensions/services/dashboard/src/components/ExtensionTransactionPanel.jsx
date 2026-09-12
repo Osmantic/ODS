@@ -201,14 +201,14 @@ export default function ExtensionTransactionPanel({ proposal, extensionName, onC
   const mounted = useRef(true)
 
   const refresh = async () => {
-    const next = await getExtensionTransaction(proposal.transactionId)
+    const next = await getExtensionTransaction(proposal.transactionId, proposal.planHash)
     if (mounted.current) setStatus(next)
     return next
   }
 
   useEffect(() => {
     mounted.current = true
-    Promise.all([refresh(), getExtensionTransactionConfiguration(proposal.transactionId)])
+    Promise.all([refresh(), getExtensionTransactionConfiguration(proposal.transactionId, proposal.planHash)])
       .then(([, nextConfiguration]) => {
         if (mounted.current) setConfiguration(nextConfiguration)
       })
