@@ -1372,3 +1372,20 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def numeric_exponential_decay_safe(initial: float | int | None, rate: float | int | None, time_steps: float | int | None, default: float = 0.0) -> float:
+    """Safely calculate exponential decay (initial * e^(-rate * time)).
+    Returns default on None, boolean, or non-finite inputs.
+    """
+    if any(x is None or isinstance(x, bool) or not isinstance(x, (int, float)) for x in (initial, rate, time_steps)):
+        return default
+    if any(math.isnan(x) or math.isinf(x) for x in (initial, rate, time_steps)):
+        return default
+    try:
+        val = float(initial) * math.exp(-float(rate) * float(time_steps))
+        if math.isnan(val) or math.isinf(val):
+            return default
+        return round(val, 4)
+    except Exception:
+        return default
