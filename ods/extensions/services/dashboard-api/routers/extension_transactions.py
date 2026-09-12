@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from typing import Any, TypeVar
-
-from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from assistant_first_planner import PlanningError
 from extension_transaction_runtime import TransactionRuntime
@@ -20,10 +17,13 @@ from extension_transactions import (
     TransitionError,
     ValidationRejected,
 )
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import JSONResponse
 from plan_provenance import authorize_plan
-from routers.auth import require_owner_approval_session
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from security import verify_api_key
 
+from routers.auth import require_owner_approval_session
 
 router = APIRouter(prefix="/api/extensions/transactions", tags=["extensions"])
 MAX_REQUEST_BYTES = 64 * 1024
@@ -46,6 +46,19 @@ class ExactHashRequest(BaseModel):
     planHash: str = Field(
         min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"
     )
+
+
+class ConfigurationSubmissionRequest(ExactHashRequest):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    schemaHash: str = Field(
+        min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"
+    )
+    idempotencyKey: str = Field(
+        min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"
+    )
+    values: dict[str, Any]
+    secretValues: dict[str, Any]
 
 
 def _feature_enabled() -> bool:
@@ -71,6 +84,17 @@ def get_transaction_runtime(request: Request) -> TransactionRuntime:
             headers={"Cache-Control": "no-store"},
         )
     return runtime
+
+
+def _configuration_manager(runtime: TransactionRuntime) -> Any:
+    manager = runtime.configuration
+    if manager is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Extension transaction configuration is unavailable",
+            headers={"Cache-Control": "no-store"},
+        )
+    return manager
 
 
 def _pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -110,12 +134,12 @@ async def _request_model(request: Request, model_type: type[_Model]) -> _Model:
         TypeError,
         ValueError,
         ValidationError,
-    ) as exc:
+    ):
         raise HTTPException(
             status_code=422,
             detail="Invalid transaction request",
             headers={"Cache-Control": "no-store"},
-        ) from exc
+        ) from None
 
 
 def _error_response(exc: Exception) -> JSONResponse:
@@ -216,8 +240,13 @@ async def approve_transaction(
 ) -> JSONResponse:
     """Bind one owner browser session to one exact stored plan hash."""
     model = await _request_model(request, ExactHashRequest)
-    timestamp = runtime.clock()
     try:
+        await asyncio.to_thread(
+            _configuration_manager(runtime).require_ready,
+            transaction_id,
+            model.planHash,
+        )
+        timestamp = runtime.clock()
         result = runtime.store.approve_exact(
             transaction_id,
             model.planHash,
@@ -228,6 +257,54 @@ async def approve_transaction(
     except TransactionError as exc:
         return _error_response(exc)
     return JSONResponse(content=result, headers={"Cache-Control": "no-store"})
+
+
+@router.get("/{transaction_id}/configuration")
+async def transaction_configuration(
+    transaction_id: str,
+    runtime: TransactionRuntime = Depends(get_transaction_runtime),
+    _api_key: str = Depends(verify_api_key),
+) -> JSONResponse:
+    """Return the stored-plan-derived schema and value-safe configuration."""
+    try:
+        result = await asyncio.to_thread(
+            _configuration_manager(runtime).view, transaction_id
+        )
+    except TransactionError as exc:
+        return _error_response(exc)
+    except Exception:
+        return _error_response(IntegrityError("configuration-unavailable"))
+    return JSONResponse(content=result, headers={"Cache-Control": "no-store"})
+
+
+@router.post("/{transaction_id}/configuration")
+async def configure_transaction(
+    transaction_id: str,
+    request: Request,
+    runtime: TransactionRuntime = Depends(get_transaction_runtime),
+    _api_key: str = Depends(verify_api_key),
+) -> JSONResponse:
+    """Validate configuration and send secret values directly to host custody."""
+    model = await _request_model(request, ConfigurationSubmissionRequest)
+    try:
+        result = await asyncio.to_thread(
+            _configuration_manager(runtime).submit,
+            transaction_id,
+            plan_hash=model.planHash,
+            schema_hash=model.schemaHash,
+            idempotency_key=model.idempotencyKey,
+            values=model.values,
+            secret_values=model.secretValues,
+        )
+    except TransactionError as exc:
+        return _error_response(exc)
+    except Exception:
+        return _error_response(IntegrityError("configuration-unavailable"))
+    return JSONResponse(
+        status_code=200 if result.get("duplicate") is True else 201,
+        content=result,
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @router.get("/{transaction_id}")
@@ -282,6 +359,11 @@ async def execute_transaction(
             headers={"Cache-Control": "no-store"},
         )
     try:
+        await asyncio.to_thread(
+            _configuration_manager(runtime).require_ready,
+            transaction_id,
+            model.planHash,
+        )
         result = runtime.executor.execute(transaction_id, model.planHash)
     except TransactionError as exc:
         return _error_response(exc)

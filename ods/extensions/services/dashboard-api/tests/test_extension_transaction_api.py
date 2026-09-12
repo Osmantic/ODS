@@ -3,15 +3,13 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
-
 import routers.extension_transactions as transaction_api
 import security
 import session_signer
 from extension_transaction_runtime import TransactionRuntime
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 from plan_provenance import validate_request_intent
-
 
 API_KEY = "transaction-test-key"
 NOW = "2026-09-11T12:00:00Z"
@@ -108,6 +106,42 @@ class FakeExecutor:
         )
 
 
+class FakeConfiguration:
+    def __init__(self) -> None:
+        self.ready_calls = []
+        self.submit_calls = []
+
+    def require_ready(self, transaction_id, plan_hash):
+        self.ready_calls.append((transaction_id, plan_hash))
+        return {"configured": True}
+
+    def view(self, transaction_id):
+        return {
+            "schema": "ods.assistant-first.transaction-configuration-view.v1",
+            "transactionId": transaction_id,
+            "planHash": PLAN_HASH,
+            "schemaHash": "9" * 64,
+            "fields": [],
+            "configured": False,
+            "values": {},
+            "presentConfigKeys": [],
+            "presentSecretKeys": [],
+            "appliedDefaultKeys": [],
+        }
+
+    def submit(self, transaction_id, **submission):
+        self.submit_calls.append((transaction_id, submission))
+        return {
+            **self.view(transaction_id),
+            "schemaHash": submission["schema_hash"],
+            "configured": True,
+            "values": dict(submission["values"]),
+            "presentConfigKeys": sorted(submission["values"]),
+            "presentSecretKeys": sorted(submission["secret_values"]),
+            "duplicate": False,
+        }
+
+
 def create_body(**intent_changes) -> dict:
     intent = {
         "requestedServices": ["notes"],
@@ -128,6 +162,7 @@ def api(monkeypatch):
     session_signer._set_secret_for_tests("phase3c-session-secret")
     store = FakeStore()
     executor = FakeExecutor()
+    configuration = FakeConfiguration()
     calls = []
 
     def catalog():
@@ -161,12 +196,14 @@ def api(monkeypatch):
         policy=policy,
         clock=lambda: NOW,
         executor=executor,
+        configuration=configuration,
     )
     with TestClient(app) as client:
         yield SimpleNamespace(
             client=client,
             store=store,
             executor=executor,
+            configuration=configuration,
             authorize_calls=calls,
             headers={"Authorization": f"Bearer {API_KEY}"},
         )
@@ -326,6 +363,7 @@ def test_owner_approval_passes_only_exact_hash_and_hashed_identity(api):
     )
     assert response.status_code == 200
     assert api.store.approved == [(TX_ID, PLAN_HASH, approved_by, NOW, NOW)]
+    assert api.configuration.ready_calls == [(TX_ID, PLAN_HASH)]
     assert "approval" not in response.request.content.decode("utf-8")
 
 
@@ -363,6 +401,97 @@ def test_status_is_no_store_and_redacts_approval_binding(api):
     assert response.json()["plan"]["requiredSecretKeys"] == ["NOTES_API_KEY"]
 
 
+def test_configuration_routes_are_authenticated_bounded_and_value_safe(api):
+    path = f"/api/extensions/transactions/{TX_ID}/configuration"
+    assert api.client.get(path).status_code == 401
+    viewed = api.client.get(path, headers=api.headers)
+    assert viewed.status_code == 200
+    assert viewed.headers["cache-control"] == "no-store"
+
+    secret = "do-not-echo-configuration-secret"
+    body = {
+        "planHash": PLAN_HASH,
+        "schemaHash": "9" * 64,
+        "idempotencyKey": "8" * 64,
+        "values": {"NOTES_PATH": "/notes"},
+        "secretValues": {"NOTES_API_KEY": secret},
+    }
+    assert api.client.post(path, json=body).status_code == 401
+    response = api.client.post(path, json=body, headers=api.headers)
+    assert response.status_code == 201
+    assert response.headers["cache-control"] == "no-store"
+    assert secret not in response.text
+    assert response.json()["presentSecretKeys"] == ["NOTES_API_KEY"]
+    assert api.configuration.submit_calls == [
+        (
+            TX_ID,
+            {
+                "plan_hash": PLAN_HASH,
+                "schema_hash": "9" * 64,
+                "idempotency_key": "8" * 64,
+                "values": {"NOTES_PATH": "/notes"},
+                "secret_values": {"NOTES_API_KEY": secret},
+            },
+        )
+    ]
+
+
+def test_configuration_submission_rejects_extra_authority(api):
+    response = api.client.post(
+        f"/api/extensions/transactions/{TX_ID}/configuration",
+        json={
+            "planHash": PLAN_HASH,
+            "schemaHash": "9" * 64,
+            "idempotencyKey": "8" * 64,
+            "values": {},
+            "secretValues": {},
+            "envelope": envelope(),
+        },
+        headers=api.headers,
+    )
+    assert response.status_code == 422
+    assert api.configuration.submit_calls == []
+
+
+def test_configuration_parser_and_internal_failures_never_echo_secret(api):
+    path = f"/api/extensions/transactions/{TX_ID}/configuration"
+    secret = "do-not-echo-parser-secret"
+    schema_hash = "9" * 64
+    idempotency_key = "8" * 64
+    duplicate = (
+        f'{{"planHash":"{PLAN_HASH}","schemaHash":"{schema_hash}",'
+        f'"idempotencyKey":"{idempotency_key}","values":{{}},'
+        f'"secretValues":{{"NOTES_API_KEY":"{secret}",'
+        f'"NOTES_API_KEY":"{secret}"}}}}'
+    )
+    rejected = api.client.post(
+        path,
+        content=duplicate,
+        headers={**api.headers, "Content-Type": "application/json"},
+    )
+    assert rejected.status_code == 422
+    assert secret not in rejected.text
+
+    def fail_with_secret(*_args, **_kwargs):
+        raise RuntimeError(secret)
+
+    api.configuration.submit = fail_with_secret
+    failed = api.client.post(
+        path,
+        json={
+            "planHash": PLAN_HASH,
+            "schemaHash": "9" * 64,
+            "idempotencyKey": "8" * 64,
+            "values": {},
+            "secretValues": {"NOTES_API_KEY": secret},
+        },
+        headers=api.headers,
+    )
+    assert failed.status_code == 503
+    assert failed.json() == {"error": {"code": "configuration-unavailable"}}
+    assert secret not in failed.text
+
+
 def test_execute_requires_api_key_and_passes_only_id_and_hash(api):
     path = f"/api/extensions/transactions/{TX_ID}/execute"
     assert api.client.post(path, json={"planHash": PLAN_HASH}).status_code == 401
@@ -371,6 +500,7 @@ def test_execute_requires_api_key_and_passes_only_id_and_hash(api):
     )
     assert response.status_code == 200
     assert api.executor.calls == [(TX_ID, PLAN_HASH)]
+    assert api.configuration.ready_calls == [(TX_ID, PLAN_HASH)]
     assert response.json()["finalState"] == "committed"
 
     rejected = api.client.post(
@@ -391,6 +521,7 @@ def test_execute_is_unavailable_without_injected_executor(api):
         policy=runtime.policy,
         clock=runtime.clock,
         executor=None,
+        configuration=runtime.configuration,
     )
     response = api.client.post(
         f"/api/extensions/transactions/{TX_ID}/execute",
@@ -407,6 +538,7 @@ def test_main_registers_transaction_routes():
     paths = {route.path for route in app.routes}
     assert "/api/extensions/transactions" in paths
     assert "/api/extensions/transactions/{transaction_id}/approval" in paths
+    assert "/api/extensions/transactions/{transaction_id}/configuration" in paths
     assert "/api/extensions/transactions/{transaction_id}" in paths
     assert "/api/extensions/transactions/{transaction_id}/execute" in paths
 

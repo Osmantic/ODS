@@ -16,7 +16,6 @@ from collections.abc import Mapping
 from typing import Any
 from urllib.parse import urlsplit
 
-
 _PLAN_SCHEMA = "ods.assistant-first.plan.v1"
 _SCHEMA = "ods.assistant-first.configuration-schema.v1"
 _RECEIPT_SCHEMA = "ods.assistant-first.configuration-validation.v1"
@@ -440,20 +439,12 @@ def configuration_schema(
     }
 
 
-def validate_configuration_submission(
-    envelope: Any,
-    values: Any,
-    secret_values: Any,
-    *,
-    expected_plan_hash: str,
-) -> dict[str, Any]:
-    """Validate user input and return only redacted presence/default metadata."""
-    plan, plan_hash = _verified_plan(envelope, expected_plan_hash)
-    contracts = _configuration_contracts(plan)
-    value_map = _mapping(values, "values")
-    secret_map = _mapping(secret_values, "secretValues")
+def _validate_configuration_presence(
+    contracts: Mapping[str, Mapping[str, Any]],
+    value_map: Mapping[str, Any],
+    secret_keys: set[str],
+) -> dict[str, list[str]]:
     value_keys = set(value_map)
-    secret_keys = set(secret_map)
     if value_keys & secret_keys:
         _fail("duplicate-submission-key", keys=sorted(value_keys & secret_keys))
     unknown = (value_keys | secret_keys) - set(contracts)
@@ -496,15 +487,7 @@ def validate_configuration_submission(
 
     for key in sorted(value_keys):
         _validate_value(value_map[key], contracts[key], f"values.{key}")
-    for key in sorted(secret_keys):
-        _validate_value(secret_map[key], contracts[key], f"secretValues.{key}")
-
-    schema_document = _configuration_schema_document(contracts)
-    schema_hash = hashlib.sha256(_canonical_json_bytes(schema_document)).hexdigest()
     return {
-        "schema": _RECEIPT_SCHEMA,
-        "planHash": plan_hash,
-        "schemaHash": schema_hash,
         "presentConfigKeys": sorted(value_keys),
         "presentSecretKeys": sorted(secret_keys),
         "appliedDefaultKeys": sorted(
@@ -515,4 +498,62 @@ def validate_configuration_submission(
             and "default" in item
             and key not in value_keys
         ),
+    }
+
+
+def validate_configuration_submission(
+    envelope: Any,
+    values: Any,
+    secret_values: Any,
+    *,
+    expected_plan_hash: str,
+) -> dict[str, Any]:
+    """Validate user input and return only redacted presence/default metadata."""
+    plan, plan_hash = _verified_plan(envelope, expected_plan_hash)
+    contracts = _configuration_contracts(plan)
+    value_map = _mapping(values, "values")
+    secret_map = _mapping(secret_values, "secretValues")
+    presence = _validate_configuration_presence(
+        contracts, value_map, set(secret_map)
+    )
+    for key in sorted(secret_map):
+        _validate_value(secret_map[key], contracts[key], f"secretValues.{key}")
+
+    schema_document = _configuration_schema_document(contracts)
+    schema_hash = hashlib.sha256(_canonical_json_bytes(schema_document)).hexdigest()
+    return {
+        "schema": _RECEIPT_SCHEMA,
+        "planHash": plan_hash,
+        "schemaHash": schema_hash,
+        **presence,
+    }
+
+
+def validate_stored_configuration(
+    envelope: Any,
+    values: Any,
+    present_secret_keys: Any,
+    *,
+    expected_plan_hash: str,
+    expected_schema_hash: str,
+) -> dict[str, Any]:
+    """Revalidate durable non-secret values and secret presence without values."""
+    plan, plan_hash = _verified_plan(envelope, expected_plan_hash)
+    contracts = _configuration_contracts(plan)
+    value_map = _mapping(values, "values")
+    secret_keys = _safe_key_list(present_secret_keys, "presentSecretKeys")
+    if secret_keys != sorted(secret_keys):
+        _fail("invalid-secret-presence-order")
+    schema_document = _configuration_schema_document(contracts)
+    schema_hash = hashlib.sha256(_canonical_json_bytes(schema_document)).hexdigest()
+    if expected_schema_hash != schema_hash:
+        _fail("stored-schema-hash-mismatch")
+    presence = _validate_configuration_presence(
+        contracts, value_map, set(secret_keys)
+    )
+    return {
+        "schema": _RECEIPT_SCHEMA,
+        "planHash": plan_hash,
+        "schemaHash": schema_hash,
+        **presence,
     }

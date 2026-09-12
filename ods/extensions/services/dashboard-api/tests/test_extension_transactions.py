@@ -5,11 +5,10 @@ import json
 import os
 import threading
 
-import pytest
-
 import assistant_first_planner as planner
+import extension_configuration as configuration
 import extension_transactions as transactions
-
+import pytest
 
 pytestmark = pytest.mark.skipif(
     os.name != "posix", reason="the durable transaction store is Linux-qualified"
@@ -135,6 +134,52 @@ def build_envelope(service_id: str = "notes") -> dict:
         provider_preferences={},
         missing_config_keys=[],
         missing_secret_keys=[],
+        catalog_revision=CATALOG_REVISION,
+        observed_state_revision=STATE_REVISION,
+        observed_state=HOST_STATE,
+        policy_revision=POLICY_REVISION,
+        policy=POLICY,
+        valid_until=VALID_UNTIL,
+    )
+
+
+def build_configured_envelope() -> dict:
+    entry = catalog_entry("provider")
+    entry["service"]["planning"]["configuration"] = [
+        {
+            "key": "ENDPOINT",
+            "type": "url",
+            "required": True,
+            "secret": False,
+            "source": "user",
+            "restart_behavior": "service",
+        },
+        {
+            "key": "OFFSET",
+            "type": "integer",
+            "required": True,
+            "secret": False,
+            "source": "user",
+            "restart_behavior": "service",
+            "validation": {"minimum": -5, "maximum": 5},
+        },
+        {
+            "key": "TOKEN",
+            "type": "string",
+            "required": True,
+            "secret": True,
+            "source": "user",
+            "restart_behavior": "service",
+        },
+    ]
+    return planner.build_plan(
+        [entry],
+        requested_action="ensure",
+        requested_services=["provider"],
+        requested_capabilities=[],
+        provider_preferences={},
+        missing_config_keys=["ENDPOINT", "OFFSET"],
+        missing_secret_keys=["TOKEN"],
         catalog_revision=CATALOG_REVISION,
         observed_state_revision=STATE_REVISION,
         observed_state=HOST_STATE,
@@ -882,3 +927,219 @@ def test_exact_owner_approval_serializes_concurrent_calls(tmp_path):
 
     assert all(not thread.is_alive() for thread in threads)
     assert sorted(result["noop"] for result in results) == [False, True]
+
+
+def test_configuration_intent_and_record_are_immutable_value_safe_and_required(
+    tmp_path,
+):
+    store = transactions.TransactionStore(tmp_path / "transactions")
+    envelope = build_configured_envelope()
+    descriptor = create(store, envelope)
+    transaction_id = descriptor["transactionId"]
+    schema_hash = configuration.configuration_schema(
+        envelope, expected_plan_hash=envelope["planHash"]
+    )["schemaHash"]
+
+    with pytest.raises(transactions.ApprovalError) as caught:
+        store.approve_exact(
+            transaction_id,
+            envelope["planHash"],
+            "owner-" + "a" * 16,
+            APPROVED_AT,
+            NOW,
+        )
+    assert caught.value.code == "missing-configuration"
+
+    values = {"ENDPOINT": "https://example.invalid/v1", "OFFSET": -1}
+    intent = store.begin_configuration_exact(
+        transaction_id,
+        envelope["planHash"],
+        schema_hash,
+        "2" * 64,
+        values,
+        ["TOKEN"],
+        [],
+        CREATED_AT,
+        NOW,
+    )
+    transaction_dir = store._tx_dir / transaction_id
+    intent_path = transaction_dir / "configuration-intent.json"
+    intent_bytes = intent_path.read_bytes()
+    assert intent["duplicate"] is False
+    assert intent["values"]["OFFSET"] == -1
+    assert b"secretReference" not in intent_bytes
+    assert b"secretValues" not in intent_bytes
+    assert "private-do-not-write" not in intent_bytes.decode()
+    assert (intent_path.stat().st_mode & 0o777) == 0o600
+
+    reference = "secret-v1-" + "3" * 48
+    record = store.finish_configuration_exact(
+        transaction_id,
+        envelope["planHash"],
+        "2" * 64,
+        reference,
+    )
+    record_path = transaction_dir / "configuration.json"
+    record_bytes = record_path.read_bytes()
+    assert record["duplicate"] is False
+    assert record["secretReference"] == reference
+    assert b"secretValues" not in record_bytes
+    assert (record_path.stat().st_mode & 0o777) == 0o600
+    assert store.read(transaction_id)["configuration"]["values"] == values
+
+    approved = store.approve_exact(
+        transaction_id,
+        envelope["planHash"],
+        "owner-" + "a" * 16,
+        APPROVED_AT,
+        NOW,
+    )
+    assert approved["state"] == "approved"
+
+
+def test_configuration_exact_retry_and_conflict_do_not_replace_intent(tmp_path):
+    store = transactions.TransactionStore(tmp_path / "transactions")
+    envelope = build_configured_envelope()
+    descriptor = create(store, envelope)
+    transaction_id = descriptor["transactionId"]
+    schema_hash = configuration.configuration_schema(
+        envelope, expected_plan_hash=envelope["planHash"]
+    )["schemaHash"]
+    arguments = (
+        transaction_id,
+        envelope["planHash"],
+        schema_hash,
+        "4" * 64,
+        {"ENDPOINT": "https://example.invalid/v1", "OFFSET": -1},
+        ["TOKEN"],
+        [],
+        CREATED_AT,
+        NOW,
+    )
+    first = store.begin_configuration_exact(*arguments)
+    replay = store.begin_configuration_exact(*arguments)
+    assert first["duplicate"] is False
+    assert replay["duplicate"] is True
+
+    changed = list(arguments)
+    changed[4] = {"ENDPOINT": "https://other.invalid/v1", "OFFSET": -1}
+    with pytest.raises(transactions.IdempotencyConflict) as caught:
+        store.begin_configuration_exact(*changed)
+    assert caught.value.code == "configuration-conflict"
+    assert store.read(transaction_id)["configuration"] is None
+
+
+def test_configuration_intent_serializes_competing_store_instances(tmp_path):
+    root = tmp_path / "transactions"
+    first_store = transactions.TransactionStore(root)
+    second_store = transactions.TransactionStore(root)
+    envelope = build_configured_envelope()
+    descriptor = create(first_store, envelope)
+    transaction_id = descriptor["transactionId"]
+    schema_hash = configuration.configuration_schema(
+        envelope, expected_plan_hash=envelope["planHash"]
+    )["schemaHash"]
+    results = []
+    errors = []
+
+    def reserve(store, suffix: str) -> None:
+        try:
+            results.append(
+                store.begin_configuration_exact(
+                    transaction_id,
+                    envelope["planHash"],
+                    schema_hash,
+                    suffix * 64,
+                    {
+                        "ENDPOINT": f"https://{suffix}.example.invalid/v1",
+                        "OFFSET": -1,
+                    },
+                    ["TOKEN"],
+                    [],
+                    CREATED_AT,
+                    NOW,
+                )
+            )
+        except transactions.TransactionError as exc:
+            errors.append(exc)
+
+    threads = [
+        threading.Thread(target=reserve, args=(first_store, "5")),
+        threading.Thread(target=reserve, args=(second_store, "6")),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert len(results) == 1
+    assert len(errors) == 1
+    assert errors[0].code == "configuration-conflict"
+
+
+def test_configuration_record_must_match_its_durable_intent(tmp_path):
+    store = transactions.TransactionStore(tmp_path / "transactions")
+    envelope = build_configured_envelope()
+    descriptor = create(store, envelope)
+    transaction_id = descriptor["transactionId"]
+    schema_hash = configuration.configuration_schema(
+        envelope, expected_plan_hash=envelope["planHash"]
+    )["schemaHash"]
+    store.begin_configuration_exact(
+        transaction_id,
+        envelope["planHash"],
+        schema_hash,
+        "7" * 64,
+        {"ENDPOINT": "https://example.invalid/v1", "OFFSET": -1},
+        ["TOKEN"],
+        [],
+        CREATED_AT,
+        NOW,
+    )
+    store.finish_configuration_exact(
+        transaction_id,
+        envelope["planHash"],
+        "7" * 64,
+        "secret-v1-" + "8" * 48,
+    )
+    record_path = store._tx_dir / transaction_id / "configuration.json"
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    record["values"]["OFFSET"] = -2
+    record_path.write_bytes(transactions.canonical_json_bytes(record))
+
+    with pytest.raises(transactions.IntegrityError) as caught:
+        store.read(transaction_id)
+    assert caught.value.code == "configuration-intent-mismatch"
+
+
+@pytest.mark.parametrize(
+    ("values", "secret_keys", "default_keys", "code"),
+    [
+        ([], ["TOKEN"], [], "invalid-configuration-values"),
+        ({"OFFSET": -1}, "TOKEN", [], "invalid-configuration-keys"),
+        ({"OFFSET": -1}, ["TOKEN", "TOKEN"], [], "invalid-configuration-keys"),
+    ],
+)
+def test_configuration_reservation_rejects_malformed_direct_inputs(
+    tmp_path, values, secret_keys, default_keys, code
+):
+    store = transactions.TransactionStore(tmp_path / "transactions")
+    envelope = build_configured_envelope()
+    descriptor = create(store, envelope)
+    schema_hash = configuration.configuration_schema(
+        envelope, expected_plan_hash=envelope["planHash"]
+    )["schemaHash"]
+    with pytest.raises(transactions.ValidationRejected) as caught:
+        store.begin_configuration_exact(
+            descriptor["transactionId"],
+            envelope["planHash"],
+            schema_hash,
+            "9" * 64,
+            values,
+            secret_keys,
+            default_keys,
+            CREATED_AT,
+            NOW,
+        )
+    assert caught.value.code == code

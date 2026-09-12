@@ -4,9 +4,8 @@ import copy
 import hashlib
 import json
 
-import pytest
-
 import extension_configuration as configuration
+import pytest
 
 
 def contract(
@@ -548,4 +547,110 @@ def test_unknown_and_duplicate_submission_keys_fail_closed() -> None:
     error(
         "duplicate-submission-key",
         lambda: submit(stored, {"PATH": "one"}, {"PATH": "two"}),
+    )
+
+
+def test_stored_configuration_revalidates_values_and_secret_presence() -> None:
+    stored = envelope(
+        (
+            "provider",
+            [
+                contract("ENDPOINT", config_type="url"),
+                contract("TOKEN", secret=True),
+            ],
+        )
+    )
+    schema_hash = schema(stored)["schemaHash"]
+    receipt = configuration.validate_stored_configuration(
+        stored,
+        {"ENDPOINT": "https://example.invalid/v1"},
+        ["TOKEN"],
+        expected_plan_hash=stored["planHash"],
+        expected_schema_hash=schema_hash,
+    )
+    assert receipt["presentConfigKeys"] == ["ENDPOINT"]
+    assert receipt["presentSecretKeys"] == ["TOKEN"]
+
+
+def test_stored_configuration_rejects_stale_schema_or_missing_secret() -> None:
+    stored = envelope(
+        (
+            "provider",
+            [contract("ENDPOINT"), contract("TOKEN", secret=True)],
+        )
+    )
+    values = {"ENDPOINT": "configured"}
+    error(
+        "stored-schema-hash-mismatch",
+        lambda: configuration.validate_stored_configuration(
+            stored,
+            values,
+            ["TOKEN"],
+            expected_plan_hash=stored["planHash"],
+            expected_schema_hash="0" * 64,
+        ),
+    )
+    error(
+        "missing-required-configuration",
+        lambda: configuration.validate_stored_configuration(
+            stored,
+            values,
+            [],
+            expected_plan_hash=stored["planHash"],
+            expected_schema_hash=schema(stored)["schemaHash"],
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("present_keys", "code"),
+    [
+        (["TOKEN", "API_KEY"], "invalid-secret-presence-order"),
+        (["TOKEN", "TOKEN"], "duplicate-configuration-key"),
+    ],
+)
+def test_stored_secret_presence_is_canonical(present_keys, code: str) -> None:
+    stored = envelope(
+        (
+            "provider",
+            [
+                contract("API_KEY", secret=True, required=False),
+                contract("TOKEN", secret=True),
+            ],
+        )
+    )
+    error(
+        code,
+        lambda: configuration.validate_stored_configuration(
+            stored,
+            {},
+            present_keys,
+            expected_plan_hash=stored["planHash"],
+            expected_schema_hash=schema(stored)["schemaHash"],
+        ),
+    )
+
+
+def test_stored_configuration_rejects_invalid_persisted_value() -> None:
+    stored = envelope(
+        (
+            "notes",
+            [
+                contract(
+                    "WORKERS",
+                    config_type="integer",
+                    validation={"minimum": 1, "maximum": 8},
+                )
+            ],
+        )
+    )
+    error(
+        "configuration-value-too-large",
+        lambda: configuration.validate_stored_configuration(
+            stored,
+            {"WORKERS": 9},
+            [],
+            expected_plan_hash=stored["planHash"],
+            expected_schema_hash=schema(stored)["schemaHash"],
+        ),
     )
