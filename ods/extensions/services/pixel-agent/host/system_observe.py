@@ -56,7 +56,7 @@ def _run(
             timeout=timeout,
             env=environment,
         )
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
         return None
     if (
         len(result.stdout.encode("utf-8", "replace")) > MAX_OUTPUT
@@ -136,6 +136,8 @@ def _native_tailscale_state() -> tuple[bool, str, bool] | None:
     try:
         value = json.loads(result.stdout)
     except json.JSONDecodeError:
+        return True, "unknown", False
+    if not isinstance(value, dict):
         return True, "unknown", False
     raw = str(value.get("BackendState", "")).strip().casefold()
     states = {

@@ -4,6 +4,9 @@ if sys.platform == "win32":
     raise SkipTest("Requires POSIX host ownership, file locks, or Unix sockets; run under Linux/WSL")
 
 import importlib.util
+import contextlib
+import io
+import json
 import socket
 import pathlib
 import stat
@@ -20,6 +23,41 @@ SPEC.loader.exec_module(system_observe)
 
 
 class SystemObserveTests(unittest.TestCase):
+    def test_cli_keeps_invalid_command_bytes_out_of_observation_receipts(self):
+        for action in ("gpu", "tailscale"):
+            for descriptor in (1, 2):
+                with self.subTest(action=action, descriptor=descriptor), tempfile.TemporaryDirectory() as directory:
+                    executable = pathlib.Path(directory) / "observer"
+                    executable.write_text(
+                        f"#!{sys.executable}\nimport os\nos.write({descriptor}, bytes([255]))\n",
+                        encoding="utf-8",
+                    )
+                    executable.chmod(0o700)
+                    output = io.StringIO()
+                    with mock.patch.object(system_observe, "_trusted_executable", return_value=str(executable)), \
+                         contextlib.redirect_stdout(output):
+                        self.assertEqual(system_observe.main(["observer", action]), 0)
+                    value = json.loads(output.getvalue())
+                    if action == "gpu":
+                        self.assertFalse(value["available"])
+                        self.assertEqual(value["devices"], [])
+                    else:
+                        self.assertEqual(value["state"], "unknown")
+                        self.assertFalse(value["serviceRunning"])
+
+    def test_tailscale_cli_rejects_non_object_status_without_crashing(self):
+        for payload in ("null", "[]", "42", '"running"'):
+            with self.subTest(payload=payload):
+                result = mock.Mock(returncode=0, stdout=payload, stderr="")
+                output = io.StringIO()
+                with mock.patch.object(system_observe, "_trusted_executable", return_value="/usr/bin/tailscale"), \
+                     mock.patch.object(system_observe, "_run", return_value=result), \
+                     contextlib.redirect_stdout(output):
+                    self.assertEqual(system_observe.main(["observer", "tailscale"]), 0)
+                value = json.loads(output.getvalue())
+                self.assertEqual(value["state"], "unknown")
+                self.assertFalse(value["serviceRunning"])
+
     def test_gpu_output_is_bounded_and_omits_device_identifiers(self):
         result = mock.Mock(
             returncode=0,
