@@ -1740,3 +1740,16 @@ def test_flatten_bounds_cycles_and_large_depth_without_losing_empty_leaves():
         nested = {"child": nested}
     result = dict_flatten_nested_safe(nested, max_depth=100000)
     assert len(next(iter(result)).split(".")) == 128
+
+
+class TestNumericSafeLog10Safe:
+    def test_valid_log(self):
+        from helpers import numeric_safe_log10_safe
+        assert numeric_safe_log10_safe(100) == 2.0
+        assert numeric_safe_log10_safe(1000) == 3.0
+
+    def test_invalid_inputs(self):
+        from helpers import numeric_safe_log10_safe
+        assert numeric_safe_log10_safe(0) == 0.0
+        assert numeric_safe_log10_safe(-10) == 0.0
+        assert numeric_safe_log10_safe(None) == 0.0

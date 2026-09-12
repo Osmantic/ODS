@@ -1372,3 +1372,17 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def numeric_safe_log10_safe(val: float | int | None, default: float = 0.0) -> float:
+    """Safely calculate base-10 logarithm.
+    Returns default on val <= 0, None, boolean, or NaN/Inf floats.
+    """
+    if val is None or isinstance(val, bool) or not isinstance(val, (int, float)):
+        return default
+    if math.isnan(val) or math.isinf(val) or val <= 0:
+        return default
+    try:
+        return round(math.log10(float(val)), 4)
+    except Exception:
+        return default
