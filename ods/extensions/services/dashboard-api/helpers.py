@@ -1372,3 +1372,25 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def numeric_moving_average_window_safe(values: list | None, window_size: int = 3) -> list[float]:
+    """Safely compute simple moving average of a numeric sequence given window_size.
+    Returns [] on None or non-list inputs.
+    """
+    if not values or not isinstance(values, (list, tuple)):
+        return []
+    if not isinstance(window_size, int) or isinstance(window_size, bool) or window_size <= 0:
+        window_size = 3
+    cleaned = []
+    for v in values:
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            cleaned.append(float(v))
+    if not cleaned:
+        return []
+    result = []
+    for i in range(len(cleaned)):
+        start_idx = max(0, i - window_size + 1)
+        sub = cleaned[start_idx:i + 1]
+        result.append(round(sum(sub) / len(sub), 4))
+    return result
