@@ -34,7 +34,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 # --- Local modules ---
-from env_values import strip_matching_quotes
+from env_values import quote_env_value, strip_matching_quotes
 from config import (
     SERVICES, DATA_DIR, INSTALL_DIR, SIDEBAR_ICONS, MANIFEST_ERRORS, ALWAYS_ON_SERVICES,
     AGENT_HOST, AGENT_PORT, AGENT_URL, ODS_AGENT_KEY,
@@ -827,7 +827,7 @@ def _render_env_from_values(values: dict[str, str]) -> str:
 
         if assignment:
             key = assignment.group(1)
-            output_lines.append(f"{key}={values.get(key, '')}")
+            output_lines.append(f"{key}={quote_env_value(values.get(key, ''))}")
             seen.add(key)
             continue
 
@@ -835,7 +835,7 @@ def _render_env_from_values(values: dict[str, str]) -> str:
             key = commented_assignment.group(1)
             seen.add(key)
             if key in values:
-                output_lines.append(f"{key}={values[key]}")
+                output_lines.append(f"{key}={quote_env_value(values[key])}")
             else:
                 output_lines.append(line)
             continue
@@ -851,7 +851,7 @@ def _render_env_from_values(values: dict[str, str]) -> str:
             "# Values below were preserved because they are not part of .env.example.",
         ])
         for key, value in extras:
-            output_lines.append(f"{key}={value}")
+            output_lines.append(f"{key}={quote_env_value(value)}")
 
     return "\n".join(output_lines).rstrip() + "\n"
 

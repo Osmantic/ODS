@@ -1420,3 +1420,136 @@ def test_env_example_keys_are_present_in_schema():
     schema_keys = set(schema.get("properties", {}))
 
     assert documented_keys - schema_keys == set()
+
+
+# --- Render quoting: values Compose would interpolate or truncate ---
+
+
+def test_render_env_quotes_values_compose_would_rewrite(commented_example_template):
+    """Values the dashboard writes back must read the same for Compose and ODS.
+
+    Docker Compose interpolates ``$NAME`` in unquoted values and cuts them at
+    the first `` #``; a password saved as ``hunter$two`` used to reach the
+    container as ``hunter``. Such values are written single-quoted (literal
+    for Compose, ``lib/safe-env.sh`` and ``strip_matching_quotes``); plain
+    values keep their bare form so existing files stay byte-identical.
+    """
+    from main import _render_env_from_values
+    from settings import _parse_env_text
+
+    values = {
+        "LLM_BACKEND": "local",
+        "N8N_PASS": "hunter$two",
+        "OPENCLAW_TOKEN": "token #1",
+        "LLM_MODEL": "it's $5",
+    }
+    rendered = _render_env_from_values(values)
+    lines = rendered.splitlines()
+    assert "LLM_BACKEND=local" in lines
+    assert "N8N_PASS='hunter$two'" in lines
+    assert "OPENCLAW_TOKEN='token #1'" in lines
+    assert 'LLM_MODEL="it\'s \\$5"' in lines
+
+    reparsed, issues = _parse_env_text(rendered)
+    assert issues == []
+    assert reparsed["N8N_PASS"] == "hunter$two"
+    assert reparsed["OPENCLAW_TOKEN"] == "token #1"
+
+
+def test_api_settings_env_save_quotes_interpolation_sensitive_secret(test_client, settings_env_fixture):
+    env_path = settings_env_fixture["env_path"]
+
+    response = test_client.put(
+        "/api/settings/env",
+        headers=test_client.auth_headers,
+        json={
+            "mode": "form",
+            "values": {"OPENAI_API_KEY": "sk-live $ecret #1"},
+        },
+    )
+
+    assert response.status_code == 200
+    updated_env = env_path.read_text(encoding="utf-8")
+    assert "OPENAI_API_KEY='sk-live $ecret #1'" in updated_env.splitlines()
+
+    from settings import _parse_env_text
+
+    saved_values, _ = _parse_env_text(updated_env)
+    assert saved_values["OPENAI_API_KEY"] == "sk-live $ecret #1"
+    assert response.json()["fields"]["OPENAI_API_KEY"]["hasValue"] is True
+
+
+def test_rendered_env_values_match_bash_reader(tmp_path):
+    """``lib/safe-env.sh`` (ods-cli) must decode what the dashboard writes."""
+    import shutil
+    import subprocess
+    from pathlib import Path
+
+    safe_env = Path(__file__).resolve().parents[4] / "lib" / "safe-env.sh"
+    if not safe_env.is_file() or shutil.which("bash") is None:
+        pytest.skip("lib/safe-env.sh or bash not available in this checkout")
+
+    from main import _render_env_from_values
+
+    values = {
+        "PLAIN": "value",
+        "DOLLAR": "hunter$two",
+        "HASH": "token #1",
+        "PADDED": "  padded  ",
+        "MIXED": "it's $5 \"q\" back\\slash",
+    }
+    env_file = tmp_path / ".env"
+    env_file.write_text(_render_env_from_values(values), encoding="utf-8")
+
+    script = (
+        f". '{safe_env}'; load_env_file '{env_file}'; "
+        + " ".join(f"printf '%s\\0' \"${key}\";" for key in values)
+    )
+    out = subprocess.run(["bash", "-c", script], capture_output=True, check=True)
+    decoded = out.stdout.decode("utf-8").split("\0")[: len(values)]
+    assert decoded == list(values.values())
+
+
+def test_api_settings_env_save_keeps_compose_comment_semantics(test_client, settings_env_fixture):
+    """A hand-written inline comment must not be frozen into the value on save.
+
+    Compose reads ``OPENAI_API_KEY=sk-live-secret   # rotate me`` as
+    ``sk-live-secret``; the Settings page must read and write back the same.
+    """
+    env_path = settings_env_fixture["env_path"]
+    env_path.write_text(
+        "OPENAI_API_KEY=sk-live-secret   # rotate me\n"
+        "RAG_OPENAI_API_KEY=\"rag-live-secret\" # trailing note\n"
+        "LLM_BACKEND=local\n"
+        "WEBUI_AUTH=true\n",
+        encoding="utf-8",
+    )
+
+    response = test_client.put(
+        "/api/settings/env",
+        headers=test_client.auth_headers,
+        json={"mode": "form", "values": {"LLM_BACKEND": "cloud"}},
+    )
+
+    assert response.status_code == 200
+    lines = env_path.read_text(encoding="utf-8").splitlines()
+    assert "OPENAI_API_KEY=sk-live-secret" in lines
+    assert "RAG_OPENAI_API_KEY=rag-live-secret" in lines
+    assert "LLM_BACKEND=cloud" in lines
+
+
+def test_api_settings_env_second_save_does_not_double_escape(test_client, settings_env_fixture):
+    """Saving twice must be idempotent for values that use the escape set."""
+    env_path = settings_env_fixture["env_path"]
+    from settings import _parse_env_text
+
+    for _ in range(2):
+        response = test_client.put(
+            "/api/settings/env",
+            headers=test_client.auth_headers,
+            json={"mode": "form", "values": {"OPENAI_API_KEY": "it's $5 \"q\""}},
+        )
+        assert response.status_code == 200
+        saved, _issues = _parse_env_text(env_path.read_text(encoding="utf-8"))
+        assert saved["OPENAI_API_KEY"] == "it's $5 \"q\""
+    assert 'OPENAI_API_KEY="it\'s \\$5 \\"q\\""' in env_path.read_text(encoding="utf-8").splitlines()

@@ -13,7 +13,7 @@ from urllib.parse import urlsplit
 
 from fastapi import HTTPException
 
-from env_values import strip_matching_quotes
+from env_values import parse_env_value
 from host_agent_client import AgentClientError, request_json as request_agent_json
 
 # ── Regex constants ────────────────────────────────────────────────────────────
@@ -123,7 +123,9 @@ def _parse_env_text(raw_text: str) -> tuple[dict[str, str], list[dict[str, Any]]
             continue
 
         key, value = match.groups()
-        values[key] = strip_matching_quotes(value)
+        # Compose grammar: comments, quotes and the writer's escape set, so a
+        # save writes back exactly the value the containers already see.
+        values[key] = parse_env_value(value)
 
     return values, issues
 
