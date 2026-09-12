@@ -231,6 +231,23 @@ async def create_transaction(
     )
 
 
+@router.get("/capabilities")
+async def transaction_capabilities(
+    runtime: TransactionRuntime = Depends(get_transaction_runtime),
+    _api_key: str = Depends(verify_api_key),
+) -> JSONResponse:
+    """Advertise only a fully wired, opt-in browser transaction surface."""
+    return JSONResponse(
+        content={
+            "schema": "ods.assistant-first.transaction-capabilities.v1",
+            "planning": True,
+            "configuration": runtime.configuration is not None,
+            "execution": runtime.executor is not None,
+        },
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @router.post("/{transaction_id}/approval")
 async def approve_transaction(
     transaction_id: str,

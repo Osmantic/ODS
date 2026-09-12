@@ -206,6 +206,11 @@ def test_shuffled_inputs_have_byte_identical_plan_and_hash() -> None:
     assert planner.canonical_json_bytes(first) == planner.canonical_json_bytes(second)
     assert first["planHash"] == second["planHash"]
     assert first["plan"]["selectedServices"] == ["db", "provider", "app"]
+    definitions = {item["id"]: item for item in first["plan"]["definitions"]}
+    assert definitions["app"]["dependsOn"] == ["db"]
+    assert definitions["app"]["requires"] == ["route@1"]
+    assert definitions["provider"]["provides"] == ["route@1"]
+    assert definitions["db"]["conflicts"] == []
 
 
 def test_utf8_is_unescaped_and_has_one_trailing_lf() -> None:
