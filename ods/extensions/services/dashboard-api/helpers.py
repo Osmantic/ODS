@@ -1372,3 +1372,20 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def dict_map_values_safe(d: dict | None, fn: any = None) -> dict:
+    """Safely apply transformer function across dictionary values.
+    Returns {} on None or non-dict inputs.
+    """
+    if not isinstance(d, dict) or d is None:
+        return {}
+    if not callable(fn):
+        return dict(d)
+    res = {}
+    for k, v in d.items():
+        try:
+            res[k] = fn(v)
+        except Exception:
+            res[k] = v
+    return res
