@@ -289,7 +289,7 @@ class AlwaysTrueVerifier:
 def create_and_approve(store, envelope: dict):
     """Create a transaction and approve it, returning (descriptor, txn_id)."""
     descriptor = store.create(envelope, ACTOR, IDEMPOTENCY_KEY, CREATED_AT, NOW)
-    store.approve(descriptor["transactionId"], approval_for(descriptor, envelope), NOW)
+    store._approve_record(descriptor["transactionId"], approval_for(descriptor, envelope), NOW)
     return descriptor
 
 

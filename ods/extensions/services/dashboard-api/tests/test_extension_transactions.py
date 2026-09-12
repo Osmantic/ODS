@@ -282,7 +282,7 @@ def test_operational_assistant_actor_is_allowed_but_cannot_approve(tmp_path):
         approvedBy="assistant-manager",
     )
     with pytest.raises(transactions.ApprovalError) as caught:
-        store.approve(descriptor["transactionId"], approval, NOW)
+        store._approve_record(descriptor["transactionId"], approval, NOW)
     assert caught.value.code == "invalid-approval-data"
 
 
@@ -362,8 +362,8 @@ def test_approval_is_exact_bound_and_idempotent(tmp_path):
     descriptor = create(store, envelope)
     approval = approval_for(descriptor, envelope)
 
-    accepted = store.approve(descriptor["transactionId"], approval, NOW)
-    duplicate = store.approve(descriptor["transactionId"], approval, NOW)
+    accepted = store._approve_record(descriptor["transactionId"], approval, NOW)
+    duplicate = store._approve_record(descriptor["transactionId"], approval, NOW)
     assert accepted["state"] == "approved"
     assert duplicate["noop"] is True
     assert store.read(descriptor["transactionId"])["approval"] == approval
@@ -389,7 +389,7 @@ def test_approval_rejects_binding_drift_and_assistant_actors(tmp_path, changes, 
     envelope = build_envelope()
     descriptor = create(store, envelope)
     with pytest.raises(transactions.ApprovalError) as caught:
-        store.approve(
+        store._approve_record(
             descriptor["transactionId"],
             approval_for(descriptor, envelope, **changes),
             NOW,
@@ -411,10 +411,10 @@ def test_approval_replay_repairs_crash_between_record_and_journal(
 
     monkeypatch.setattr(transactions, "_journal_append", fail_before_journal)
     with pytest.raises(transactions.TransactionError, match="injected-crash"):
-        store.approve(descriptor["transactionId"], approval, NOW)
+        store._approve_record(descriptor["transactionId"], approval, NOW)
     monkeypatch.setattr(transactions, "_journal_append", original)
 
-    repaired = store.approve(descriptor["transactionId"], approval, NOW)
+    repaired = store._approve_record(descriptor["transactionId"], approval, NOW)
     assert repaired["state"] == "approved"
     assert store.read(descriptor["transactionId"])["sequence"] == 3
 
@@ -423,7 +423,7 @@ def test_reserve_requires_unexpired_exact_approval(tmp_path):
     store = transactions.TransactionStore(tmp_path / "transactions")
     envelope = build_envelope()
     descriptor = create(store, envelope)
-    store.approve(descriptor["transactionId"], approval_for(descriptor), NOW)
+    store._approve_record(descriptor["transactionId"], approval_for(descriptor), NOW)
 
     with pytest.raises(transactions.TransitionError) as caught:
         store.transition(
@@ -561,7 +561,7 @@ def test_transition_persists_exact_bounded_step_metadata(tmp_path):
     store = transactions.TransactionStore(tmp_path / "transactions")
     envelope = build_envelope()
     descriptor = create(store, envelope)
-    store.approve(descriptor["transactionId"], approval_for(descriptor), NOW)
+    store._approve_record(descriptor["transactionId"], approval_for(descriptor), NOW)
 
     metadata = {
         "step": {
@@ -581,7 +581,7 @@ def test_transition_persists_exact_bounded_step_metadata(tmp_path):
 def test_transition_rejects_non_step_or_secret_metadata(tmp_path):
     store = transactions.TransactionStore(tmp_path / "transactions")
     descriptor = create(store)
-    store.approve(descriptor["transactionId"], approval_for(descriptor), NOW)
+    store._approve_record(descriptor["transactionId"], approval_for(descriptor), NOW)
 
     with pytest.raises(transactions.ValidationRejected, match="invalid-metadata-keys"):
         store.transition(

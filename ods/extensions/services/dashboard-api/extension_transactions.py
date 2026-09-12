@@ -1606,7 +1606,13 @@ class TransactionStore:
                 "sequence": next_seq,
             }
 
-    def approve(self, transaction_id, approval_data, current_time):
+    def _approve_record(self, transaction_id, approval_data, current_time):
+        """Replay a complete trusted approval record for low-level recovery tests.
+
+        Production callers must use ``approve_exact`` so the HTTP authentication
+        boundary supplies the owner identity while this store derives every
+        other approval field from its immutable transaction data.
+        """
         _validate_timestamp(current_time)
         if not isinstance(approval_data, dict):
             raise ApprovalError("invalid-approval-data")
