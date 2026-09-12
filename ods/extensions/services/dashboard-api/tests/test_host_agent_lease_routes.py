@@ -755,7 +755,7 @@ def test_retry_start_transfers_active_lease_window_to_worker(
 
 
 def test_retry_thread_start_failure_returns_admission_to_handler(
-    host_server, host_request, monkeypatch
+    host_server, host_request, monkeypatch, caplog
 ):
     agent, _listener = host_server
     agent._service_locks = collections.defaultdict(CountingLock)
@@ -787,20 +787,22 @@ def test_retry_thread_start_failure_returns_admission_to_handler(
     )
     monkeypatch.setattr(agent.threading, "Thread", selective_thread)
 
-    status, result = host_request(
-        "/v1/extension/start",
-        {
-            "service_id": "documents",
-            "lease": mutation_lease(agent, grant),
-        },
-        expect_no_store=False,
-    )
+    with caplog.at_level("ERROR", logger="ods-host-agent"):
+        status, result = host_request(
+            "/v1/extension/start",
+            {
+                "service_id": "documents",
+                "lease": mutation_lease(agent, grant),
+            },
+            expect_no_store=False,
+        )
 
     assert status == 202
     assert result["status"] == "retrying"
     assert progress_written.wait(5)
     assert progress[-1][0][:3] == ("documents", "error", "Retry failed")
-    assert progress[-1][1]["error"] == "Failed to start retry thread"
+    assert progress[-1][1]["error_code"] == "extension_retry_failed"
+    assert "synthetic retry thread failure" not in caplog.text
     for _ in range(100):
         if not agent._extension_lease_manager.describe(grant["leaseId"])["active"]:
             break
@@ -841,7 +843,10 @@ def test_start_compose_exception_clears_active_lease_window(
     )
 
     assert status == 500
-    assert result == {"error": "synthetic compose failure"}
+    assert result == {
+        "error": agent._public_process_failure("compose_action_failed"),
+        "error_code": "compose_action_failed",
+    }
     assert state_at_response == [(False, True)]
     assert agent._extension_lease_manager.describe(grant["leaseId"])["active"] is False
     assert lock.acquire_calls == 1

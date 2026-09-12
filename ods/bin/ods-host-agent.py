@@ -2110,8 +2110,12 @@ def _start_pixel_sharing_change(action, body, route):
                         pass
                 code = safe_failure_code(error)
                 logger.warning('Inference sharing %s failed: %s', action, code)
-                _write_progress('pixel-inference', 'error', f'Inference sharing operation failed ({code})',
-                                error=f'Sharing operation failed ({code}); reload state before retrying.')
+                _write_progress(
+                    'pixel-inference',
+                    'error',
+                    _public_process_failure('inference_sharing_failed'),
+                    error_code='inference_sharing_failed',
+                )
             finally:
                 lock.release()
         threading.Thread(target=work, daemon=True, name='ods-pixel-sharing-lifecycle').start()
@@ -4999,19 +5003,22 @@ def docker_compose_action(service_id: str, action: str) -> tuple:
     compose_env = os.environ.copy()
     if action == "start":
         if service_id == "ods-proxy":
-            ok, error = _prepare_proxy_auth_start(flags)
+            ok, _ = _prepare_proxy_auth_start(flags)
             if not ok:
-                return False, error
+                logger.warning("Proxy authentication preparation failed for %s", service_id)
+                return False, _public_process_failure("compose_action_failed")
         elif service_id == "open-webui" and _proxy_compose_enabled():
-            ok, error = _persist_proxy_auth_required()
+            ok, _ = _persist_proxy_auth_required()
             if not ok:
-                return False, error
+                logger.warning("Proxy authentication persistence failed for %s", service_id)
+                return False, _public_process_failure("compose_action_failed")
             compose_env["WEBUI_AUTH"] = "true"
         _precreate_data_dirs(service_id)
         try:
             _repair_rootless_data_ownership(service_id)
-        except RuntimeError as exc:
-            return False, str(exc)
+        except RuntimeError:
+            logger.warning("Rootless ownership repair failed for %s", service_id)
+            return False, _public_process_failure("compose_action_failed")
         cmd = ["docker", "compose"] + flags + ["up", "-d", service_id]
     elif action == "stop":
         cmd = ["docker", "compose"] + flags + ["stop", service_id]
@@ -5023,7 +5030,15 @@ def docker_compose_action(service_id: str, action: str) -> tuple:
             cmd, cwd=str(INSTALL_DIR),
             capture_output=True, text=True, timeout=timeout, env=compose_env,
         )
-        return (True, "") if result.returncode == 0 else (False, result.stderr[:500])
+        if result.returncode == 0:
+            return True, ""
+        logger.warning(
+            "Docker Compose %s failed for %s (exit %d)",
+            action,
+            service_id,
+            result.returncode,
+        )
+        return False, _public_process_failure("compose_action_failed")
     except subprocess.TimeoutExpired:
         return False, f"Docker compose operation timed out ({timeout}s)"
 
@@ -5120,7 +5135,14 @@ def docker_compose_recreate(service_ids: list[str]) -> tuple:
             capture_output=True, text=True, timeout=SUBPROCESS_TIMEOUT_START,
             env=compose_env,
         )
-        return (True, "") if result.returncode == 0 else (False, result.stderr[:500] or result.stdout[:500])
+        if result.returncode == 0:
+            return True, ""
+        logger.warning(
+            "Docker Compose recreate failed for %s (exit %d)",
+            ", ".join(service_ids),
+            result.returncode,
+        )
+        return False, _public_process_failure("compose_recreate_failed")
     except subprocess.TimeoutExpired:
         return False, f"Docker compose operation timed out ({SUBPROCESS_TIMEOUT_START}s)"
 
@@ -5652,8 +5674,34 @@ def _iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-_BEARER_RE = re.compile(r"Bearer\s+[A-Za-z0-9._\-=+/]+", re.IGNORECASE)
 _HTTP_QUERY_COMPONENT_RE = re.compile(r"\?\S*")
+
+_PUBLIC_PROCESS_FAILURES = {
+    "compose_action_failed": "Container operation failed; review host logs",
+    "compose_recreate_failed": "Container recreation failed; review host logs",
+    "service_restart_failed": "Service restart failed; review host logs",
+    "extension_hook_failed": "Extension hook failed; review host logs",
+    "extension_install_failed": "Extension installation failed; review host logs",
+    "extension_retry_failed": "Extension retry failed; review host logs",
+    "extension_hook_runtime_missing": "Extension hook requires a supported Bash runtime",
+    "extension_not_found": "Extension files are unavailable; review installed extension state",
+    "inference_sharing_failed": "Inference sharing operation failed; reload state before retrying",
+    "container_readiness_failed": "Container did not reach running state; review host logs",
+}
+
+
+def _public_process_failure(error_code: str) -> str:
+    """Return a fixed public message without projecting process output.
+
+    Process stderr is untrusted and can contain credentials, host paths,
+    control sequences, or runtime-specific implementation details.  Public
+    lifecycle APIs expose only allowlisted operation categories; callers may
+    log bounded structural metadata such as the service and exit code.
+    """
+    try:
+        return _PUBLIC_PROCESS_FAILURES[error_code]
+    except KeyError as exc:
+        raise ValueError(f"Unknown public process failure code: {error_code}") from exc
 
 
 def _redact_http_request_target(value):
@@ -5664,7 +5712,8 @@ def _redact_http_request_target(value):
 
 
 def _write_progress(service_id: str, status: str, phase_label: str = "",
-                    error: str | None = None) -> None:
+                    error: str | None = None,
+                    error_code: str | None = None) -> None:
     """Atomically write install progress file."""
     progress_dir = DATA_DIR / "extension-progress"
     progress_dir.mkdir(parents=True, exist_ok=True)
@@ -5680,7 +5729,14 @@ def _write_progress(service_id: str, status: str, phase_label: str = "",
         except (json.JSONDecodeError, OSError):
             pass
 
-    sanitized_error = _BEARER_RE.sub("Bearer [REDACTED]", error) if error else None
+    if status == "error":
+        if error_code is None:
+            raise ValueError("Error progress requires an allowlisted error_code")
+        sanitized_error = _public_process_failure(error_code)
+    else:
+        if error is not None or error_code is not None:
+            raise ValueError("Non-error progress cannot include error details")
+        sanitized_error = None
 
     data = {
         "service_id": service_id,
@@ -5690,6 +5746,8 @@ def _write_progress(service_id: str, status: str, phase_label: str = "",
         "started_at": started_at,
         "updated_at": _iso_now(),
     }
+    if error_code is not None:
+        data["error_code"] = error_code
     tmp_file.write_text(json.dumps(data), encoding="utf-8")
     # os.replace (not os.rename) — Windows os.rename raises FileExistsError
     # when the destination exists; os.replace always overwrites atomically.
@@ -5839,8 +5897,8 @@ def _run_post_install_hook(service_id: str, ext_dir: Path) -> tuple[bool, str]:
     - On success the helper writes nothing further; the caller proceeds.
 
     The 8-key env allowlist mirrors ``_execute_hook`` (L1488-1498) to
-    keep host-agent secrets out of extension scripts. Stderr is sliced
-    tail-500 so the actionable end of the output reaches the dashboard.
+    keep host-agent secrets out of extension scripts. Process output stays
+    off public progress surfaces; operators receive a stable error category.
     """
     hook_path = _resolve_hook(ext_dir, "post_install")
     if not hook_path:
@@ -5870,7 +5928,12 @@ def _run_post_install_hook(service_id: str, ext_dir: Path) -> tuple[bool, str]:
     bash = _find_usable_bash()
     if not bash:
         msg = "post_install hook requires a usable Bash runtime. Install Git Bash or run ODS through WSL/Linux."
-        _write_progress(service_id, "error", "Setup failed", error=msg)
+        _write_progress(
+            service_id,
+            "error",
+            "Setup failed",
+            error_code="extension_hook_runtime_missing",
+        )
         return (False, msg)
     try:
         result = subprocess.run(
@@ -5881,12 +5944,29 @@ def _run_post_install_hook(service_id: str, ext_dir: Path) -> tuple[bool, str]:
         )
     except subprocess.TimeoutExpired:
         msg = f"post_install hook timed out ({SUBPROCESS_TIMEOUT_START}s)"
-        _write_progress(service_id, "error", "Setup failed", error=msg)
+        _write_progress(
+            service_id,
+            "error",
+            "Setup failed",
+            error=msg,
+            error_code="extension_hook_failed",
+        )
         return (False, msg)
 
     if result.returncode != 0:
-        msg = (result.stderr or "")[-500:]
-        _write_progress(service_id, "error", "Setup failed", error=msg)
+        logger.error(
+            "post_install hook failed for %s (exit %d)",
+            service_id,
+            result.returncode,
+        )
+        msg = _public_process_failure("extension_hook_failed")
+        _write_progress(
+            service_id,
+            "error",
+            "Setup failed",
+            error=msg,
+            error_code="extension_hook_failed",
+        )
         return (False, msg)
 
     return (True, "")
@@ -5903,8 +5983,12 @@ def _enable_retry_work(service_id: str) -> None:
 
         ext_dir = _find_ext_dir(service_id)
         if ext_dir is None:
-            _write_progress(service_id, "error", "Retry failed",
-                            error=f"Extension directory not found for {service_id}")
+            _write_progress(
+                service_id,
+                "error",
+                "Retry failed",
+                error_code="extension_not_found",
+            )
             return
 
         # Re-run the post_install hook when declared. Setup hooks are
@@ -5918,7 +6002,13 @@ def _enable_retry_work(service_id: str) -> None:
         _write_progress(service_id, "starting", "Starting container...")
         ok, err = docker_compose_action(service_id, "start")
         if not ok:
-            _write_progress(service_id, "error", "Start failed", error=err)
+            _write_progress(
+                service_id,
+                "error",
+                "Start failed",
+                error=err,
+                error_code="compose_action_failed",
+            )
             return
 
         retry_manifest = _read_manifest(ext_dir)
@@ -5951,17 +6041,35 @@ def _enable_retry_work(service_id: str) -> None:
                 time.sleep(1)
 
             if state != "running":
-                msg = f"Container did not reach running state within {startup_timeout}s (state={state or 'unknown'})"
-                if state_error:
-                    msg += f": {state_error}"
-                _write_progress(service_id, "error", "Start failed", error=msg)
+                logger.warning(
+                    "Extension retry did not reach running state for %s "
+                    "within %ss (state=%s, detail_present=%s)",
+                    service_id,
+                    startup_timeout,
+                    state or "unknown",
+                    bool(state_error),
+                )
+                _write_progress(
+                    service_id,
+                    "error",
+                    "Start failed",
+                    error_code="container_readiness_failed",
+                )
                 return
 
         _write_progress(service_id, "started", "Service started")
     except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
-        logger.exception("Enable-retry failed for %s", service_id)
-        _write_progress(service_id, "error", "Retry failed",
-                        error=str(exc)[:500])
+        logger.error(
+            "Enable-retry failed for %s (%s)",
+            service_id,
+            type(exc).__name__,
+        )
+        _write_progress(
+            service_id,
+            "error",
+            "Retry failed",
+            error_code="extension_retry_failed",
+        )
 
 
 def _start_enable_retry(
@@ -5988,15 +6096,23 @@ def _start_enable_retry(
                                      "service_id": service_id,
                                      "action": "start"})
         threading.Thread(target=_thread_target, daemon=True).start()
-    except Exception:
-        logger.exception("Failed to dispatch enable-retry for %s", service_id)
+    except Exception as exc:
+        logger.error(
+            "Failed to dispatch enable-retry for %s (%s)",
+            service_id,
+            type(exc).__name__,
+        )
         # If 202 was already sent, the dashboard expects a progress
         # transition. Without this, the stale "error" from the prior
         # failed install stays visible. Best-effort write — if progress
         # itself fails, prefer the original exception.
         try:
-            _write_progress(service_id, "error", "Retry failed",
-                            error="Failed to start retry thread")
+            _write_progress(
+                service_id,
+                "error",
+                "Retry failed",
+                error_code="extension_retry_failed",
+            )
         except Exception:
             pass
         return False
@@ -8924,11 +9040,23 @@ class AgentHandler(BaseHTTPRequestHandler):
                     "service_ids": unique_service_ids,
                 })
             else:
-                json_response(self, 503 if "timed out" in err else 500, {"error": err})
-        except RuntimeError as exc:
-            json_response(self, 500, {"error": str(exc)})
-        except subprocess.CalledProcessError as exc:
-            json_response(self, 500, {"error": f"Compose resolution failed: {exc.stderr[:300]}"})
+                json_response(
+                    self,
+                    503 if "timed out" in err else 500,
+                    {
+                        "error": _public_process_failure("compose_recreate_failed"),
+                        "error_code": "compose_recreate_failed",
+                    },
+                )
+        except (RuntimeError, subprocess.CalledProcessError) as exc:
+            logger.warning(
+                "Core recreation failed before completion (%s)",
+                type(exc).__name__,
+            )
+            json_response(self, 500, {
+                "error": _public_process_failure("compose_recreate_failed"),
+                "error_code": "compose_recreate_failed",
+            })
         finally:
             for lock in reversed(locks):
                 lock.release()
@@ -8972,11 +9100,15 @@ class AgentHandler(BaseHTTPRequestHandler):
 
             try:
                 ok, err = docker_compose_action(service_id, action)
-            except RuntimeError as exc:
-                response_status, response_body = 500, {"error": str(exc)}
-            except subprocess.CalledProcessError as exc:
+            except RuntimeError:
                 response_status, response_body = 500, {
-                    "error": f"Compose resolution failed: {exc.stderr[:300]}"
+                    "error": _public_process_failure("compose_action_failed"),
+                    "error_code": "compose_action_failed",
+                }
+            except subprocess.CalledProcessError:
+                response_status, response_body = 500, {
+                    "error": _public_process_failure("compose_action_failed"),
+                    "error_code": "compose_action_failed",
                 }
             else:
                 if ok:
@@ -8987,7 +9119,10 @@ class AgentHandler(BaseHTTPRequestHandler):
                     }
                 else:
                     response_status = 503 if "timed out" in err else 500
-                    response_body = {"error": err}
+                    response_body = {
+                        "error": _public_process_failure("compose_action_failed"),
+                        "error_code": "compose_action_failed",
+                    }
         finally:
             if not admission_handed_off:
                 admission.__exit__(None, None, None)
@@ -9399,8 +9534,15 @@ class AgentHandler(BaseHTTPRequestHandler):
             if result.returncode != 0:
                 stderr = (result.stderr or result.stdout or "").strip()
                 status = 404 if "no such container" in stderr.lower() else 500
+                logger.warning(
+                    "Docker restart failed for %s (%s) with exit %d",
+                    sid,
+                    container_name,
+                    result.returncode,
+                )
                 json_response(self, status, {
-                    "error": f"docker restart failed: {stderr[:500]}",
+                    "error": _public_process_failure("service_restart_failed"),
+                    "error_code": "service_restart_failed",
                     "service_id": sid,
                     "container_name": container_name,
                 })
@@ -9421,10 +9563,19 @@ class AgentHandler(BaseHTTPRequestHandler):
                     capture_output=True, text=True, timeout=60,
                 )
                 if result.returncode != 0:
-                    stderr = (result.stderr or result.stdout or "").strip()
-                    logger.warning("Delayed restart failed for %s (%s): %s", sid, container_name, stderr[:500])
+                    logger.warning(
+                        "Delayed restart failed for %s (%s) with exit %d",
+                        sid,
+                        container_name,
+                        result.returncode,
+                    )
             except Exception as exc:
-                logger.warning("Delayed restart failed for %s (%s): %s", sid, container_name, exc)
+                logger.warning(
+                    "Delayed restart failed for %s (%s) (%s)",
+                    sid,
+                    container_name,
+                    type(exc).__name__,
+                )
             finally:
                 lock.release()
 
@@ -9444,7 +9595,15 @@ class AgentHandler(BaseHTTPRequestHandler):
         except subprocess.TimeoutExpired:
             json_response(self, 503, {"error": "Service restart timed out"})
         except Exception as exc:
-            json_response(self, 500, {"error": f"Failed to restart service: {exc}"})
+            logger.warning(
+                "Service restart raised for %s (%s)",
+                sid,
+                type(exc).__name__,
+            )
+            json_response(self, 500, {
+                "error": _public_process_failure("service_restart_failed"),
+                "error_code": "service_restart_failed",
+            })
         finally:
             lock.release()
 
@@ -9558,7 +9717,7 @@ class AgentHandler(BaseHTTPRequestHandler):
                 **popen_kwargs,
             )
             try:
-                stdout, stderr = proc.communicate(timeout=HOOK_TIMEOUT)
+                proc.communicate(timeout=HOOK_TIMEOUT)
             except subprocess.TimeoutExpired:
                 if platform.system() == "Windows":
                     proc.kill()
@@ -9569,8 +9728,12 @@ class AgentHandler(BaseHTTPRequestHandler):
                 return
 
             if proc.returncode != 0:
-                logger.error("%s hook failed for %s (exit %d): %s",
-                             hook_name, service_id, proc.returncode, (stderr or b"").decode()[:500])
+                logger.error(
+                    "%s hook failed for %s (exit %d)",
+                    hook_name,
+                    service_id,
+                    proc.returncode,
+                )
                 # post_start failure is non-terminal
                 if hook_name == "post_start":
                     json_response(self, 200, {
@@ -9578,16 +9741,27 @@ class AgentHandler(BaseHTTPRequestHandler):
                         "service_id": service_id,
                         "hook": hook_name,
                         "warning": f"post_start hook exited with code {proc.returncode}",
-                        "stderr": (stderr or b"").decode()[:500],
+                        "stderr": _public_process_failure("extension_hook_failed"),
+                        "error_code": "extension_hook_failed",
                     })
                     return
                 json_response(self, 500, {
                     "error": f"{hook_name} hook exited with code {proc.returncode}",
-                    "stderr": (stderr or b"").decode()[:500],
+                    "stderr": _public_process_failure("extension_hook_failed"),
+                    "error_code": "extension_hook_failed",
                 })
                 return
         except OSError as exc:
-            json_response(self, 500, {"error": f"Failed to execute hook: {exc}"})
+            logger.warning(
+                "Failed to execute %s hook for %s (%s)",
+                hook_name,
+                service_id,
+                type(exc).__name__,
+            )
+            json_response(self, 500, {
+                "error": _public_process_failure("extension_hook_failed"),
+                "error_code": "extension_hook_failed",
+            })
             return
 
         logger.info("%s hook completed for %s", hook_name, service_id)
@@ -9616,8 +9790,12 @@ class AgentHandler(BaseHTTPRequestHandler):
 
                 ext_dir = _find_ext_dir(service_id)
                 if ext_dir is None:
-                    _write_progress(service_id, "error", "Installation failed",
-                                    error=f"Extension directory not found for {service_id}")
+                    _write_progress(
+                        service_id,
+                        "error",
+                        "Installation failed",
+                        error_code="extension_not_found",
+                    )
                     return
 
                 # Step 1: Setup hook (if requested). The helper is a no-op
@@ -9664,20 +9842,23 @@ class AgentHandler(BaseHTTPRequestHandler):
                     timeout=SUBPROCESS_TIMEOUT_START,
                 )
                 if pull_result.returncode != 0:
-                    logger.warning("Pull failed for %s (rc=%d), proceeding to start: %s",
-                                   service_id, pull_result.returncode, pull_result.stderr[-200:])
+                    logger.warning(
+                        "Pull failed for %s (exit %d); proceeding to cached start",
+                        service_id,
+                        pull_result.returncode,
+                    )
 
                 # Step 3: Start
                 _write_progress(service_id, "starting", "Starting container...")
                 _precreate_data_dirs(service_id)
                 try:
                     _repair_rootless_data_ownership(service_id)
-                except RuntimeError as exc:
+                except RuntimeError:
                     _write_progress(
                         service_id,
                         "error",
                         "Installation failed",
-                        error=str(exc),
+                        error_code="extension_install_failed",
                     )
                     return
                 start_result = subprocess.run(
@@ -9686,8 +9867,17 @@ class AgentHandler(BaseHTTPRequestHandler):
                     timeout=SUBPROCESS_TIMEOUT_START,
                 )
                 if start_result.returncode != 0:
-                    _write_progress(service_id, "error", "Installation failed",
-                                    error=start_result.stderr[-500:])
+                    logger.error(
+                        "Docker Compose start failed for %s (exit %d)",
+                        service_id,
+                        start_result.returncode,
+                    )
+                    _write_progress(
+                        service_id,
+                        "error",
+                        "Installation failed",
+                        error_code="extension_install_failed",
+                    )
                     return
 
                 # By default, poll for running state: compose `up -d`
@@ -9738,11 +9928,20 @@ class AgentHandler(BaseHTTPRequestHandler):
                         time.sleep(1)
 
                     if state != "running":
-                        msg = f"Container did not reach running state within {startup_timeout}s (state={state or 'unknown'})"
-                        if state_error:
-                            msg += f": {state_error}"
-                        _write_progress(service_id, "error", "Installation failed",
-                                        error=msg)
+                        logger.warning(
+                            "Installed extension %s did not reach running state "
+                            "within %ss (state=%s, detail_present=%s)",
+                            service_id,
+                            startup_timeout,
+                            state or "unknown",
+                            bool(state_error),
+                        )
+                        _write_progress(
+                            service_id,
+                            "error",
+                            "Installation failed",
+                            error_code="container_readiness_failed",
+                        )
                         return
 
                 # Step 4: Success
@@ -9754,19 +9953,32 @@ class AgentHandler(BaseHTTPRequestHandler):
                 # won't apply those changes. Failure here must not fail the install.
                 try:
                     _post_install_core_recreate(service_id)
-                except Exception:
-                    logger.exception(
-                        "Post-install core recreate raised for %s (ignored)",
+                except Exception as exc:
+                    logger.error(
+                        "Post-install core recreate raised for %s (ignored; %s)",
                         service_id,
+                        type(exc).__name__,
                     )
 
             except subprocess.TimeoutExpired:
-                _write_progress(service_id, "error", "Installation failed",
-                                error=f"timed out ({SUBPROCESS_TIMEOUT_START}s)")
+                _write_progress(
+                    service_id,
+                    "error",
+                    "Installation failed",
+                    error_code="extension_install_failed",
+                )
             except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
-                logger.exception("Install failed for %s", service_id)
-                _write_progress(service_id, "error", "Installation failed",
-                                error=str(exc)[:500])
+                logger.error(
+                    "Install failed for %s (%s)",
+                    service_id,
+                    type(exc).__name__,
+                )
+                _write_progress(
+                    service_id,
+                    "error",
+                    "Installation failed",
+                    error_code="extension_install_failed",
+                )
             finally:
                 lock.release()
 
