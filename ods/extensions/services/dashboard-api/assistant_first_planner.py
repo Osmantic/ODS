@@ -34,6 +34,13 @@ _SEMVER_RE = re.compile(
 _DRIVER_VERSION_RE = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._-]{0,63}$")
 _ENCODED_CONTROL_RE = re.compile(r"%(?:0[0-9a-f]|1[0-9a-f]|7f)", re.IGNORECASE)
 
+# These are the host values emitted by the supported installers.  A manifest
+# still has to opt into a backend explicitly; accepting the host fact here does
+# not imply that every extension is compatible with it.
+SUPPORTED_GPU_BACKENDS = frozenset(
+    {"amd", "nvidia", "apple", "cpu", "intel", "sycl", "jetson", "none"}
+)
+
 _PLANNING_FIELDS = frozenset(
     {
         "provides",
@@ -680,7 +687,10 @@ def adapt_manifest(manifest: Any) -> dict[str, Any]:
                 requirements.get("container_runtimes"), "requirements.container_runtimes", frozenset({"docker", "podman", "none"}), require_one=True
             ),
             "gpuBackends": _token_list(
-                requirements.get("gpu_backends"), "requirements.gpu_backends", frozenset({"amd", "nvidia", "apple", "cpu", "none"}), require_one=True
+                requirements.get("gpu_backends"),
+                "requirements.gpu_backends",
+                SUPPORTED_GPU_BACKENDS,
+                require_one=True,
             ),
             "minDriverVersion": _nullable_driver_version(
                 requirements.get("min_driver_version"), "requirements.min_driver_version"
@@ -1071,7 +1081,7 @@ def normalize_host_state(value: Any) -> dict[str, Any]:
         "gpuBackend": _enum(
             state.get("gpuBackend"),
             "observed_state.gpuBackend",
-            frozenset({"amd", "nvidia", "apple", "cpu", "none"}),
+            SUPPORTED_GPU_BACKENDS,
         ),
         "driverVersion": normalized_driver,
         "available": {

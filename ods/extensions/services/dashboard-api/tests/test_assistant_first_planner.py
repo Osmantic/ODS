@@ -46,6 +46,14 @@ STATE = hashlib.sha256(planner.canonical_json_bytes(HOST_STATE)).hexdigest()
 POLICY_REVISION = hashlib.sha256(planner.canonical_json_bytes(POLICY)).hexdigest()
 
 
+@pytest.mark.parametrize("backend", ["intel", "sycl", "jetson"])
+def test_normalize_host_state_accepts_supported_installer_gpu_backends(backend):
+    state = copy.deepcopy(HOST_STATE)
+    state["gpuBackend"] = backend
+
+    assert planner.normalize_host_state(state)["gpuBackend"] == backend
+
+
 def manifest(
     service_id: str,
     *,

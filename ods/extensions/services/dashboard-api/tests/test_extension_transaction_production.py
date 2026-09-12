@@ -98,6 +98,27 @@ def test_observed_state_uses_injected_paths_and_cached_health(
     assert failed["installedServices"][0]["status"] == "error"
 
 
+@pytest.mark.parametrize("backend", ["intel", "sycl", "jetson"])
+def test_observed_state_accepts_supported_installer_gpu_backends(
+    monkeypatch, tmp_path, backend
+):
+    monkeypatch.setattr(production.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(production.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(production, "GPU_BACKEND", backend)
+    monkeypatch.setenv("ODS_CONTAINER_RUNTIME", "docker")
+
+    state = production.production_observed_state(
+        install_dir=tmp_path,
+        data_dir=tmp_path,
+        user_extensions_dir=tmp_path / "user",
+        builtin_extensions_dir=tmp_path / "builtin",
+        catalog_entries=[],
+        cached_statuses={},
+    )
+
+    assert state["gpuBackend"] == backend
+
+
 @pytest.mark.parametrize(
     ("system", "machine", "runtime", "gpu", "code"),
     [

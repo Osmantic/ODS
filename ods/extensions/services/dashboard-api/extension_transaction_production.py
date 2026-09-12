@@ -17,7 +17,11 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from assistant_first_planner import PlanningError, canonical_json_bytes
+from assistant_first_planner import (
+    SUPPORTED_GPU_BACKENDS,
+    PlanningError,
+    canonical_json_bytes,
+)
 from assistant_first_secret_client import HostSecretCustodian
 from config import (
     DATA_DIR,
@@ -50,7 +54,6 @@ _ARCHITECTURES = {
     "aarch64": "arm64",
 }
 _CONTAINER_RUNTIMES = frozenset({"docker", "podman", "none"})
-_GPU_BACKENDS = frozenset({"amd", "nvidia", "apple", "cpu", "none"})
 _ENABLED_VALUES = frozenset({"1", "true", "yes", "on"})
 
 
@@ -226,7 +229,7 @@ def _container_runtime() -> str:
 
 def _gpu_backend() -> str:
     value = str(GPU_BACKEND or "none").strip().casefold()
-    if value not in _GPU_BACKENDS:
+    if value not in SUPPORTED_GPU_BACKENDS:
         raise PlanningError("unsupported-gpu-backend")
     return value
 
