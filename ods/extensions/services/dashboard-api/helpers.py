@@ -1372,3 +1372,24 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def string_mask_sensitive_safe(text: str | None, visible_head: int = 4, visible_tail: int = 4, mask_char: str = "*") -> str:
+    """Safely mask sensitive strings preserving head and tail characters.
+    Returns "" on None or invalid string inputs.
+    """
+    if text is None or not isinstance(text, str):
+        return ""
+    if not isinstance(visible_head, int) or isinstance(visible_head, bool) or visible_head < 0:
+        visible_head = 0
+    if not isinstance(visible_tail, int) or isinstance(visible_tail, bool) or visible_tail < 0:
+        visible_tail = 0
+    if not isinstance(mask_char, str) or not mask_char:
+        mask_char = "*"
+    n = len(text)
+    if n <= visible_head + visible_tail:
+        return mask_char[0] * n
+    middle_len = n - (visible_head + visible_tail)
+    head = text[:visible_head]
+    tail = text[n - visible_tail:] if visible_tail > 0 else ""
+    return head + (mask_char[0] * middle_len) + tail
