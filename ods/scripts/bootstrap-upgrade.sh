@@ -2684,8 +2684,11 @@ elif [[ -n "$DOCKER_CMD" ]]; then
 fi
 
 if [[ "$_windows_lemonade_swap_applies" == "true" || "$_windows_native_llama_swap_applies" == "true" || "$_docker_llama_swap_applies" == "true" ]]; then
-    acquire_model_router_swap_gate \
-        || fail "Could not safely drain model traffic before full-model activation."
+    if ! acquire_model_router_swap_gate; then
+        write_status "failed" 100 "$TOTAL_BYTES" "$TOTAL_BYTES" 0 \
+            "Full model downloaded and verified, but ODS could not safely drain model traffic before activation. The current model was left unchanged; re-run to retry."
+        fail "Could not safely drain model traffic before full-model activation."
+    fi
 fi
 
 if [[ "$_windows_lemonade_swap_applies" == "true" || "$_windows_native_llama_swap_applies" == "true" || "$_docker_llama_swap_applies" == "true" ]]; then

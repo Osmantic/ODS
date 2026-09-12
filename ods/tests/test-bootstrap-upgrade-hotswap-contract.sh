@@ -61,8 +61,10 @@ top_level_swap="$(awk '
 assert_in_order "$top_level_swap" "bootstrap swap drain boundary" \
     'acquire_model_lifecycle_lock ||' \
     'acquire_model_router_swap_gate' \
+    'write_status "failed" 100 "$TOTAL_BYTES" "$TOTAL_BYTES"' \
+    'Could not safely drain model traffic before full-model activation.' \
     'Snapshotting active model config before full-model swap'
-pass "bootstrap promotion closes, drains, and releases router admission"
+pass "bootstrap promotion closes, drains, reports gate failure, and releases router admission"
 
 yaml_scalar_block="$(function_block yaml_double_quoted_scalar_content | grep -v '^[[:space:]]*#')"
 sed_escape_block="$(function_block sed_replacement_escape | grep -v '^[[:space:]]*#')"
