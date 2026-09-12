@@ -1372,3 +1372,27 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def safe_float_parse_default(val: any, default: float = 0.0) -> float:
+    """Safely convert value to float with fallback default.
+    Returns default on None, boolean, invalid string, or NaN/Inf floats.
+    """
+    if val is None or isinstance(val, bool):
+        return default
+    if isinstance(val, (int, float)):
+        if math.isnan(val) or math.isinf(val):
+            return default
+        return float(val)
+    if isinstance(val, str):
+        s = val.strip()
+        if not s:
+            return default
+        try:
+            res = float(s)
+            if math.isnan(res) or math.isinf(res):
+                return default
+            return res
+        except (ValueError, TypeError, OverflowError):
+            return default
+    return default
