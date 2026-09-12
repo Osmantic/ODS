@@ -1372,3 +1372,15 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def dict_filter_by_keys_safe(d: dict | None, allowed_keys: list | set | None) -> dict:
+    """Safely extract a subset dictionary containing only specified allowed keys.
+    Returns {} on None or non-dict inputs.
+    """
+    if not isinstance(d, dict) or d is None:
+        return {}
+    if not allowed_keys or not isinstance(allowed_keys, (list, tuple, set)):
+        return {}
+    allowed_set = set(allowed_keys)
+    return {k: v for k, v in d.items() if k in allowed_set}
