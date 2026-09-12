@@ -1048,7 +1048,7 @@ _compose_run_with_summary() {
             _compose_remove_conflicting_ods_containers "$_compose_log" || break
             sleep "${ODS_COMPOSE_NAME_CONFLICT_RETRY_DELAY:-3}"
         elif (( _startup_attempt < _startup_max_attempts )) \
-           && grep -Eiq 'dependency failed to start|No such container|container .* (exited|is unhealthy)|service .* failed to start|failed to start.*container' "$_compose_log"; then
+           && grep -Eiq 'dependency failed to start|No such container|container .* (exited|is unhealthy)|service .* failed to start|failed to start.*container|failed to create task.*OCI runtime create failed|OCI runtime create failed.*message recipient disconnected from message bus' "$_compose_log"; then
             warn "Docker reported a transient service startup failure; waiting briefly and retrying (${_startup_attempt}/${_startup_retries})."
             sleep "${ODS_COMPOSE_STARTUP_RETRY_DELAY:-15}"
             _startup_attempt=$(( _startup_attempt + 1 ))
