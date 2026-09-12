@@ -8,6 +8,7 @@ import socket
 import pathlib
 import stat
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
@@ -114,6 +115,54 @@ class SystemObserveTests(unittest.TestCase):
             root = pathlib.Path(directory)
             with mock.patch.object(pathlib.Path, "lstat", return_value=mock.Mock(st_mode=stat.S_IFDIR | 0o777, st_uid=0)):
                 self.assertEqual(system_observe._trusted_interop_sockets(root), [])
+
+    def test_peer_probes_overlap_with_a_bounded_pool_and_preserve_receipt_order(self):
+        addresses = [f"192.168.1.{index}" for index in range(10, 14)]
+        ports = list(range(8000, 8008))
+        ready = threading.Event()
+        lock = threading.Lock()
+        active = 0
+        maximum = 0
+        calls = []
+
+        def probe(family, address, port=None):
+            nonlocal active, maximum
+            with lock:
+                active += 1
+                maximum = max(maximum, active)
+                calls.append((family, address, port))
+                if active == 8:
+                    ready.set()
+            try:
+                self.assertTrue(ready.wait(2), "peer probes ran serially")
+                return port == 8003 if port is not None else None
+            finally:
+                with lock:
+                    active -= 1
+
+        tailscale = {"available": False, "found": False, "online": None, "addresses": []}
+        with mock.patch.object(system_observe, "_resolve_peer",
+                               return_value=[(socket.AF_INET, address, "lan") for address in addresses]), \
+             mock.patch.object(system_observe, "_tailscale_peer_status", return_value=tailscale), \
+             mock.patch.object(system_observe, "_probe_icmp", side_effect=probe), \
+             mock.patch.object(system_observe, "_probe_tcp", side_effect=probe):
+            value = system_observe.observe_network_peer("peer", ",".join(map(str, ports)))
+        self.assertEqual(maximum, 8)
+        self.assertEqual(len(calls), 36)
+        self.assertTrue(value["reachable"])
+        self.assertEqual([item["address"] for item in value["addresses"]], addresses)
+        for item in value["addresses"]:
+            self.assertIsNone(item["icmpReachable"])
+            self.assertEqual(item["tcp"], [{"port": port, "open": port == 8003} for port in ports])
+
+    def test_rejected_resolution_starts_no_peer_probes(self):
+        with mock.patch.object(system_observe, "_resolve_peer", side_effect=ValueError("private network boundary")), \
+             mock.patch.object(system_observe, "_probe_tcp") as tcp, \
+             mock.patch.object(system_observe, "_probe_icmp") as icmp, \
+             self.assertRaisesRegex(ValueError, "private network boundary"):
+            system_observe.observe_network_peer("public.example", "443")
+        tcp.assert_not_called()
+        icmp.assert_not_called()
 
     def test_private_network_peer_reports_only_bounded_exact_peer_evidence(self):
         records = [
