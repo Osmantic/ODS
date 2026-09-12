@@ -243,13 +243,23 @@ def _edge_container_request(container_id, path, key, payload, timeout=20):
                     stream.close()
 
 class SystemdAccessBridge:
-    def __init__(self, install_dir, edge_key, *, state=STATE, dropin=DROPIN, installed_binary=None, gateway_owner=None, settings_data_dir=None):
+    def __init__(self, install_dir, edge_key, *, state=STATE, dropin=DROPIN, installed_binary=None,
+                 gateway_owner=None, gateway_port=None, settings_data_dir=None):
         self.install = Path(install_dir).resolve()
         self.edge_key = edge_key
         self.state = Path(state)
         self.dropin = Path(dropin)
         self.installed_binary, self.gateway_owner = installed_binary, gateway_owner
+        if gateway_port is not None and (type(gateway_port) is not int or not 1 <= gateway_port <= 65535):
+            raise AccessError("gateway-port-unavailable")
+        self.gateway_port = gateway_port
         self.settings_data_dir = settings_data_dir
+
+    def configured_gateway_port(self, config):
+        port = self.gateway_port if self.gateway_port is not None else config.get("gateway", {}).get("port", 18789)
+        if type(port) is not int or not 1 <= port <= 65535:
+            raise AccessError("gateway-auth-unavailable")
+        return port
 
     @contextlib.contextmanager
     def bounded(self, seconds):
@@ -359,9 +369,13 @@ class SystemdAccessBridge:
         binary = self.installed_binary
         if not isinstance(binary, str) or not Path(binary).is_absolute() or not os.access(binary, os.X_OK):
             raise AccessError("installed-validator-unavailable")
-        port = config.get("gateway", {}).get("port", 18789)
+        # The root-owned deployment record is authoritative. The owner config
+        # may omit gateway.port even when systemd intentionally runs a custom
+        # port, and using the default in that case disconnects the access plane
+        # from the live gateway it is supposed to prove.
+        port = self.configured_gateway_port(config)
         token = config.get("gateway", {}).get("auth", {}).get("token")
-        if type(port) is not int or not 1 <= port <= 65535 or not isinstance(token, str) or not 16 <= len(token) <= 4096:
+        if not isinstance(token, str) or not 16 <= len(token) <= 4096:
             raise AccessError("gateway-auth-unavailable")
         self.owner, self.home, self.binary = owner, home, binary
         self.native_origin, self.native_key = "http://127.0.0.1:%d" % port, token

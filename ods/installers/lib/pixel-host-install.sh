@@ -2058,6 +2058,19 @@ _ods_pixel_restart_gateway_and_verify() {
     ods_pixel_run_as_owner "$owner" "$home" "$pixel_root/pixel" verify
 }
 
+_ods_pixel_reverify_access_after_gateway_restart() {
+    local owner="$1" home="$2" required="${3:-false}"
+    local helper=/usr/local/libexec/ods-pixel-access/pixel_access_reconcile.py
+    if [[ ! -f "$helper" || -L "$helper" ]]; then
+        # Upgrades from an older access coordinator reach model reconciliation
+        # before the new protected bundle is installed. The mandatory final
+        # reproof below covers that one compatibility window.
+        [[ "$required" == false ]]
+        return
+    fi
+    ods_pixel_run_as_owner "$owner" "$home" python3 -I "$helper"
+}
+
 _ods_pixel_restore_model_reconciliation() {
     local owner="$1" home="$2" pixel_root="$3" answers="$4" backup="$5"
     local old_contract openclaw_bin
@@ -2070,6 +2083,7 @@ _ods_pixel_restore_model_reconciliation() {
         || ! ods_pixel_run_as_owner "$owner" "$home" "$pixel_root/pixel" plan \
         || ! _ods_pixel_recreate_agent_sandbox "$owner" "$home" "$openclaw_bin" \
         || ! _ods_pixel_restart_gateway_and_verify "$owner" "$home" "$pixel_root" \
+        || ! _ods_pixel_reverify_access_after_gateway_restart "$owner" "$home" \
         || ! _ods_pixel_restart_ingress_and_verify "$owner" "$home" "$answers"; then
         if [[ -f "$backup/runtime-attestation.json" && ! -L "$backup/runtime-attestation.json" ]]; then
             _ods_pixel_atomic_replace_managed_file "$owner" "$home" "$backup/runtime-attestation.json" \
@@ -2199,6 +2213,11 @@ ods_pixel_reconcile_promoted_model() {
         failure_phase="gateway-restart-verify"
     fi
     if [[ "$failed" == false ]] \
+        && ! _ods_pixel_reverify_access_after_gateway_restart "$owner" "$home"; then
+        failed=true
+        failure_phase="access-runtime-reproof"
+    fi
+    if [[ "$failed" == false ]] \
         && ! _ods_pixel_restart_ingress_and_verify "$owner" "$home" "$answers"; then
         failed=true
         failure_phase="ingress-runtime-refresh"
@@ -2244,10 +2263,11 @@ ods_pixel_reconcile_promoted_model() {
 }
 
 _ods_pixel_install_access_service() {
-    local owner="$1" openclaw_bin="$2"
+    local owner="$1" openclaw_bin="$2" gateway_port
+    gateway_port="$(_ods_pixel_gateway_port)" || return 1
     # This coordinator is privileged. Never run or import its implementation
     # from the owner's mutable checkout, even when the host agent is unprivileged.
-    ods_sudo python3 - "${INSTALL_DIR:?}" "$owner" "$openclaw_bin" <<'PY'
+    ods_sudo python3 - "${INSTALL_DIR:?}" "$owner" "$openclaw_bin" "$gateway_port" <<'PY'
 import fcntl, json, os, pathlib, pwd, stat, subprocess, sys, tempfile
 source = pathlib.Path(sys.argv[1])
 owner = pwd.getpwnam(sys.argv[2])
@@ -2290,6 +2310,8 @@ host = source / 'extensions/services/pixel-agent/host'
 for name in ('access_mode_server.py', 'access_mode_worker.py', 'pixel_access_mode.py', 'access_mode_config.py', 'settings_transaction.py', 'provider_transaction.py'):
     write(target / name, (host / name).read_bytes(), 0o644)
 write(target / 'pixel_access_bridge.py', (source / 'bin/pixel_access_bridge.py').read_bytes(), 0o644)
+write(target / 'pixel_access_client.py', (source / 'bin/pixel_access_client.py').read_bytes(), 0o644)
+write(target / 'pixel_access_reconcile.py', (source / 'bin/pixel_access_reconcile.py').read_bytes(), 0o644)
 write(target / 'pixel_access_protocol.py', (source / 'bin/pixel_access_protocol.py').read_bytes(), 0o644)
 settings_package = target / 'pixel_settings'
 settings_package.mkdir(mode=0o755, exist_ok=True)
@@ -2315,13 +2337,20 @@ if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
 binary = pathlib.Path(sys.argv[3])
 if not binary.is_absolute() or not os.access(binary, os.X_OK):
     raise SystemExit("The installed OpenClaw validator is unavailable")
+try:
+    gateway_port = int(sys.argv[4])
+except (TypeError, ValueError):
+    raise SystemExit("The installed Pixel gateway port is invalid") from None
+if not 1 <= gateway_port <= 65535 or str(gateway_port) != sys.argv[4]:
+    raise SystemExit("The installed Pixel gateway port is invalid")
 sys.path.insert(0, str(target))  # Import only the freshly root-protected bundle.
 from pixel_settings.runtime import settings_data_directory
 settings_data_dir = settings_data_directory(source.resolve(), (source / '.env').read_text(encoding='utf-8'))
 if settings_data_dir is None:
     print('Warning: custom ODS_DATA_DIR is not absolute; Pixel settings Apply remains unavailable', file=sys.stderr)
 write(config_dir / 'pixel-access.json', json.dumps({'install_dir': str(source.resolve()), 'owner': owner.pw_name,
-    'openclaw_bin': str(binary), 'settings_data_dir': settings_data_dir}).encode(), 0o600)
+    'openclaw_bin': str(binary), 'gateway_port': gateway_port,
+    'settings_data_dir': settings_data_dir}).encode(), 0o600)
 write(pathlib.Path('/etc/systemd/system/ods-pixel-access.service'), (host / 'ods-pixel-access.service').read_bytes(), 0o644)
 # Hold the same transition lock through activation, so a Settings request cannot
 # begin between code replacement and coordinator restart.
@@ -4659,6 +4688,11 @@ ods_pixel_install_default_agent() {
     fi
     if ! _ods_pixel_install_access_service "$owner" "$openclaw_bin"; then
         ai_bad "Pixel access coordinator installation failed; access mode changes remain unavailable."
+        return 1
+    fi
+    if ! _ods_pixel_reverify_access_after_gateway_restart "$owner" "$home" true \
+        >>"$pixel_log" 2>&1; then
+        ai_bad "Pixel access coordinator could not verify the live gateway after installation. See $pixel_log."
         return 1
     fi
     ai_ok "Pixel is installed, verified, and ready on the private ODS ingress"
