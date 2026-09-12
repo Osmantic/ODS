@@ -1372,3 +1372,20 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def dict_deep_merge_recursive_safe(dict1: dict | None, dict2: dict | None) -> dict:
+    """Safely deep merge two dictionaries recursively.
+    Returns merged dict or empty dict on None/invalid inputs.
+    """
+    if not isinstance(dict1, dict):
+        dict1 = {}
+    if not isinstance(dict2, dict):
+        dict2 = {}
+    result = dict(dict1)
+    for k, v in dict2.items():
+        if k in result and isinstance(result[k], dict) and isinstance(v, dict):
+            result[k] = dict_deep_merge_recursive_safe(result[k], v)
+        else:
+            result[k] = v
+    return result
