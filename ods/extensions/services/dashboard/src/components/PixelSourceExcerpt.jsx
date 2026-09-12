@@ -31,7 +31,7 @@ export default function PixelSourceExcerpt({source}) {
     <div className="flex flex-wrap items-center gap-2 text-xs">
       <label>Start line<input className="ml-2 w-20 bg-theme-bg" type="number" min="1" max={lines.length} value={start} onChange={e=>change(setStart,e.target.value)}/></label>
       <label>End line<input className="ml-2 w-20 bg-theme-bg" type="number" min="1" max={lines.length} value={end} onChange={e=>change(setEnd,e.target.value)}/></label>
-      <button type="button" disabled={!valid||!bounded||busy} onClick={copy}>{busy?'Copying excerpt?':'Copy excerpt'}</button>
+      <button type="button" disabled={!valid||!bounded||busy} onClick={copy}>{busy?'Copying excerpt...':'Copy excerpt'}</button>
     </div>
     {!valid&&<p role="alert">Choose an inclusive range between 1 and {lines.length}.</p>}
     {valid&&!bounded&&<p role="alert">Choose fewer lines to keep the excerpt within 64 KiB.</p>}

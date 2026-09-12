@@ -34,7 +34,7 @@ it('rejects invalid ranges and offers manual selection when clipboard fails',asy
 })
 
 it.each([32768,32769])('enforces the 64 KiB limit in UTF-8 bytes (%s multibyte characters)',async count=>{
-  const value='?'.repeat(count)
+  const value='\u00e9'.repeat(count)
   fetch.mockResolvedValue({ok:true,arrayBuffer:async()=>new TextEncoder().encode(value).buffer})
   setup(value)
   fireEvent.click(await screen.findByText('Extract lines'))
