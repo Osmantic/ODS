@@ -1372,3 +1372,20 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def dict_invert_safe(d: dict | None) -> dict:
+    """Safely invert keys and values of a dictionary, grouping duplicate values into lists.
+    Returns {} on None or non-dict inputs.
+    """
+    if not isinstance(d, dict) or d is None:
+        return {}
+    result = {}
+    for k, v in d.items():
+        try:
+            if v not in result:
+                result[v] = []
+            result[v].append(k)
+        except TypeError:
+            pass
+    return result
