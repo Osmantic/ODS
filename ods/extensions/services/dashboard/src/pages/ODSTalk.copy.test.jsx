@@ -1,4 +1,4 @@
-import {fireEvent,screen} from '@testing-library/react'
+import {act,fireEvent,screen} from '@testing-library/react'
 import {render} from '../test/test-utils'
 import ODSTalk from './ODSTalk'
 const reply='Run **diagnostics** with `ods doctor`.\n\n```sh\nods status\n```'
@@ -7,7 +7,7 @@ beforeEach(()=>{
   const frames=[{type:'complete',text:reply,status:'ok'},{type:'done'}]
   vi.stubGlobal('fetch',vi.fn(async url=>url==='/api/talk/status'?{ok:true,json:async()=>({capabilities:{text_chat:true}})}:{ok:true,body:{getReader:()=>({read:async()=>frames.length?{done:false,value:new TextEncoder().encode(`data: ${JSON.stringify(frames.shift())}\n\n`)}:{done:true},cancel:async()=>{},releaseLock:()=>{}})}}))
 })
-afterEach(()=>vi.unstubAllGlobals())
+afterEach(()=>{vi.useRealTimers();vi.unstubAllGlobals()})
 async function answer(){render(<ODSTalk/>);await screen.findByText('Ready');fireEvent.change(screen.getByPlaceholderText('Message ODS'),{target:{value:'Help'}});fireEvent.click(screen.getByRole('button',{name:'Send message'}));return screen.findByRole('button',{name:'Copy reply'})}
 it('copies original Markdown rather than flattened rendered text',async()=>{
   fireEvent.click(await answer())
@@ -19,5 +19,19 @@ it('offers the exact source for manual copying when clipboard permission is deni
   fireEvent.click(await answer())
   expect(await screen.findByRole('alert')).toHaveTextContent('Clipboard unavailable')
   expect(screen.getByLabelText('Reply Markdown for manual copying')).toHaveValue(reply)
+  expect(screen.queryByText('Reply copied.')).toBeNull()
+})
+
+it('recovers from a clipboard request that never confirms without accepting its late receipt',async()=>{
+  const button=await answer()
+  let resolve
+  navigator.clipboard.writeText.mockReturnValue(new Promise(done=>{resolve=done}))
+  vi.useFakeTimers()
+  fireEvent.click(button)
+  expect(button).toBeDisabled()
+  await act(async()=>vi.advanceTimersByTimeAsync(10000))
+  expect(screen.getByRole('alert')).toHaveTextContent('unconfirmed')
+  expect(screen.getByRole('button',{name:'Copy reply'})).toBeEnabled()
+  await act(async()=>resolve())
   expect(screen.queryByText('Reply copied.')).toBeNull()
 })
