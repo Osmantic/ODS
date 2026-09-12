@@ -1372,3 +1372,27 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def list_deduplicate_preserve_order_safe(items: list | None, key: callable | None = None) -> list:
+    """Safely deduplicate list preserving insertion order with optional key function.
+    Returns [] on None or non-sequence inputs.
+    """
+    if not items or not isinstance(items, (list, tuple)):
+        return []
+    seen = set()
+    result = []
+    for item in items:
+        try:
+            val = key(item) if callable(key) else item
+            if val not in seen:
+                seen.add(val)
+                result.append(item)
+        except Exception:
+            if item not in seen:
+                try:
+                    seen.add(item)
+                except Exception:
+                    pass
+                result.append(item)
+    return result
