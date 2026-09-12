@@ -7,6 +7,7 @@ export default function PanelSelect({ label, value, onChange, options, disabled 
   const id = useId(), root = useRef(null), trigger = useRef(null)
   const [open, setOpen] = useState(false)
   const [active, setActive] = useState(0)
+  const typed = useRef({text:'', time:0})
   const selected = options.findIndex(option => option.value === value)
   const choose = index => {
     if (!options[index]) return
@@ -24,6 +25,24 @@ export default function PanelSelect({ label, value, onChange, options, disabled 
     if (open) root.current?.querySelector(`[id="${id}-option-${active}"]`)?.scrollIntoView?.({ block: 'nearest' })
   }, [open, active, id])
   const keyDown = event => {
+    if (disabled || !options.length || event.nativeEvent.isComposing || event.ctrlKey || event.metaKey || event.altKey) return
+    if (event.key.length === 1 && event.key !== ' ') {
+      event.preventDefault()
+      const time = Date.now()
+      const text = (open && time - typed.current.time < 700 ? typed.current.text : '') + event.key.toLocaleLowerCase()
+      typed.current = {text:text.slice(0, 256), time}
+      const repeated = [...text].every(char => char === text[0])
+      const prefix = repeated ? text[0] : text
+      const from = open ? active : Math.max(0, selected)
+      for (let step = repeated ? 1 : 0; step < options.length + (repeated ? 1 : 0); step++) {
+        const index = (from + step) % options.length
+        if (options[index].label.toLocaleLowerCase().startsWith(prefix)) {
+          setActive(index); setOpen(true); break
+        }
+      }
+      return
+    }
+    typed.current = {text:'', time:0}
     if (event.key === 'Escape' && open) { event.preventDefault(); event.stopPropagation(); setOpen(false); return }
     if (event.key === 'Tab') { setOpen(false); return }
     if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
