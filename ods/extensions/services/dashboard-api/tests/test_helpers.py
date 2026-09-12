@@ -1740,3 +1740,14 @@ def test_flatten_bounds_cycles_and_large_depth_without_losing_empty_leaves():
         nested = {"child": nested}
     result = dict_flatten_nested_safe(nested, max_depth=100000)
     assert len(next(iter(result)).split(".")) == 128
+
+
+class TestStringTitlecaseCapitalizerSafe:
+    def test_valid_capitalization(self):
+        from helpers import string_titlecase_capitalizer_safe
+        assert string_titlecase_capitalizer_safe("hello world") == "Hello World"
+
+    def test_invalid_inputs(self):
+        from helpers import string_titlecase_capitalizer_safe
+        assert string_titlecase_capitalizer_safe(None) == ""
+        assert string_titlecase_capitalizer_safe(12345) == ""
