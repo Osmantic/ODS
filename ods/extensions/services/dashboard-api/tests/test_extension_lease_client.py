@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import traceback
 from dataclasses import asdict
 from pathlib import Path
 
@@ -233,6 +234,7 @@ def test_http_failures_have_stable_classification(
     assert caught.value.ambiguous is ambiguous
     assert LEASE_TOKEN not in str(caught.value)
     assert LEASE_TOKEN not in repr(caught.value)
+    assert LEASE_TOKEN not in "".join(traceback.format_exception(caught.value))
 
 
 @pytest.mark.parametrize(

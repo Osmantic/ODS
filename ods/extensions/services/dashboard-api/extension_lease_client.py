@@ -142,7 +142,7 @@ class LeaseGrant:
     lease_id: str
     service_ids: tuple[str, ...]
     ttl_seconds: int
-    _token: _LeaseToken = field(repr=False, compare=False)
+    _token: _LeaseToken = field(repr=False)
 
     def __repr__(self) -> str:
         return (
@@ -169,7 +169,7 @@ class LeaseRelease:
 
 
 def _fail(code: str, *, retryable: bool = False, ambiguous: bool = False) -> None:
-    raise ExtensionLeaseError(code, retryable=retryable, ambiguous=ambiguous)
+    raise ExtensionLeaseError(code, retryable=retryable, ambiguous=ambiguous) from None
 
 
 def _validate_binding(binding: ExecutionBinding) -> None:
