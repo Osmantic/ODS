@@ -105,6 +105,8 @@ _CONNECT_TIMEOUT = 5
 _TOTAL_TIMEOUT = 1980
 _SOCK_READ_TIMEOUT = 1980
 _MAX_SSE_LINE = 1024 * 1024
+_MAX_SSE_PENDING_BYTES = 1024 * 1024
+_MAX_SSE_PENDING_LINES = 4096
 
 _UPSTREAM_REWRITE = "openclaw/default"
 _PIXEL_REWRITE = "pixel/default"
@@ -940,17 +942,29 @@ async def _stream_upstream(
     await response.prepare(request)
     buffered = bytearray()
     pending = []
+    pending_bytes = 0
     pending_text = ""
     passthrough = False
 
+    def queue_pending(line, event, content, finish_reason):
+        nonlocal pending_bytes
+        # The line cap alone does not bound many small reasoning/empty frames.
+        size = len(line) + 1
+        if (pending_bytes + size > _MAX_SSE_PENDING_BYTES
+                or len(pending) >= _MAX_SSE_PENDING_LINES):
+            raise ValueError("SSE prelude exceeded limit")
+        pending.append((line, event, content, finish_reason))
+        pending_bytes += size
+
     async def flush_pending():
-        nonlocal pending
+        nonlocal pending, pending_bytes
         for item in pending:
             await response.write(item[0] + b"\n")
         pending = []
+        pending_bytes = 0
 
     async def replace_pending(template: dict, *, synthesize_finish: bool):
-        nonlocal pending
+        nonlocal pending, pending_bytes
         # Preserve role/metadata events, but never expose the reserved text.
         for line, _event, content, finish_reason in pending:
             if content is None and finish_reason is None:
@@ -963,6 +977,7 @@ async def _stream_upstream(
                 _fallback_sse_line(template, empty_reply_fallback, finished=True) + b"\n"
             )
         pending = []
+        pending_bytes = 0
 
     try:
         async for chunk in resp.content.iter_any():
@@ -1027,7 +1042,7 @@ async def _stream_upstream(
                     passthrough = True
                     continue
 
-                pending.append((line, event, content, finish_reason))
+                queue_pending(line, event, content, finish_reason)
                 if content is not None:
                     pending_text += content
                     normalized = pending_text.strip()
@@ -1053,7 +1068,7 @@ async def _stream_upstream(
                 await response.write(line)
             else:
                 event, content, finish_reason = _sse_event(line)
-                pending.append((line, event, content, finish_reason))
+                queue_pending(line, event, content, finish_reason)
         if not passthrough and pending:
             normalized = pending_text.strip()
             if not normalized or normalized in _RESERVED_ASSISTANT_REPLIES:

@@ -19,6 +19,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 import warnings
 
 warnings.filterwarnings("ignore", message=".*Sending a large body.*")
@@ -75,6 +76,18 @@ async def _upstream_chat(request):
 
     if stream:
         async def generate():
+            if data.get("prelude_kind"):
+                kind = data["prelude_kind"]
+                line = {
+                    "reasoning": b'data: {"choices":[{"delta":{"reasoning_content":"private reasoning"}}]}',
+                    "whitespace": b'data: {"choices":[{"delta":{"content":" "}}]}',
+                    "blank": b"",
+                }[kind]
+                for _ in range(data.get("prelude_count", 100)):
+                    yield line + b"\n\n"
+                if data.get("prelude_tail"):
+                    yield line
+                    return
             if data.get("trigger_cancel_wait"):
                 yield b'data: {"id":"1","model":"openclaw/default","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}\n\n'
                 request.app["stream_started"].set()
@@ -1680,3 +1693,39 @@ class TestChatActivity(BaseEdgeTest):
 if __name__ == "__main__":
     unittest.main()
 
+
+class TestSSEPreludeBudget(BaseEdgeTest):
+    async def test_many_small_prelude_frames_fail_without_leaking_or_fallback(self):
+        for kind in ("reasoning", "whitespace", "blank"):
+            with self.subTest(kind=kind), patch.object(self.pe, "_MAX_SSE_PENDING_BYTES", 1024, create=True), patch.object(self.pe, "_MAX_SSE_PENDING_LINES", 32, create=True):
+                async with self.client.post(
+                    "http://localhost/v1/chat/completions", headers=self.auth(),
+                    json={"model": "pixel/default", "messages": [], "stream": True,
+                          "prelude_kind": kind},
+                ) as response:
+                    self.assertEqual(response.status, 200)
+                    self.assertEqual(await response.text(),
+                        'data: {"error":"upstream error"}\n\ndata: [DONE]\n\n')
+
+    async def test_eof_tail_counts_toward_pending_budget(self):
+        with patch.object(self.pe, "_MAX_SSE_PENDING_BYTES", 100, create=True):
+            async with self.client.post(
+                "http://localhost/v1/chat/completions", headers=self.auth(),
+                json={"model": "pixel/default", "messages": [], "stream": True,
+                      "prelude_kind": "reasoning", "prelude_count": 1, "prelude_tail": True},
+            ) as response:
+                self.assertEqual(await response.text(),
+                    'data: {"error":"upstream error"}\n\ndata: [DONE]\n\n')
+
+    async def test_short_reasoning_prelude_still_streams_normal_answer(self):
+        with patch.object(self.pe, "_MAX_SSE_PENDING_BYTES", 1024, create=True):
+            async with self.client.post(
+                "http://localhost/v1/chat/completions", headers=self.auth(),
+                json={"model": "pixel/default", "messages": [], "stream": True,
+                      "prelude_kind": "reasoning", "prelude_count": 2},
+            ) as response:
+                body = await response.text()
+                self.assertIn("private reasoning", body)
+                self.assertIn("openclaw/default is assistant text", body)
+                self.assertNotIn('"error"', body)
+                self.assertTrue(body.endswith("data: [DONE]\n\n"))
