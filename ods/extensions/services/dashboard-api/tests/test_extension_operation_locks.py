@@ -72,7 +72,7 @@ def test_factory_resolves_parent_once_per_acquisition(tmp_path):
         return tmp_path
 
     factory = locks.FileServiceLockFactory(parent_provider, timeout=1)
-    with factory.lock_services(["documents"]):
+    with factory.lock_services(object(), ["documents"]):
         pass
 
     assert calls == [True]
@@ -93,7 +93,7 @@ def test_timeout_releases_already_acquired_composite_prefix(tmp_path):
 
     with locks.exclusive_file_lock(blocked_path):
         with pytest.raises(locks.ServiceLockTimeout):
-            with factory.lock_services(["voice", "documents"]):
+            with factory.lock_services(object(), ["voice", "documents"]):
                 pytest.fail("caller must not run without the complete lock set")
 
     # "documents" sorts first and was acquired before "voice" timed out.  It

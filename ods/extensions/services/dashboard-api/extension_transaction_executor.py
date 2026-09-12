@@ -64,9 +64,16 @@ class ServiceLock(Protocol):
 
 
 class ServiceLockFactory(Protocol):
-    """Return a cross-process lock over all supplied service IDs."""
+    """Return a transaction-bound lock over all supplied service IDs.
 
-    def lock_services(self, service_ids: list[str]) -> ServiceLock: ...
+    The binding is mandatory even for local file-lock implementations that do
+    not consume it. Host-owned lease factories must bind exclusion to the same
+    immutable transaction ID and plan hash as every lifecycle side effect.
+    """
+
+    def lock_services(
+        self, binding: ExecutionBinding, service_ids: list[str]
+    ) -> ServiceLock: ...
 
 
 class LifecycleAdapter(Protocol):
@@ -179,7 +186,7 @@ class TransactionExecutor:
             # Lock all services before the final state/provenance check so a
             # concurrent single-service workflow cannot invalidate the plan
             # between verification and the first mutation.
-            with self._lock_factory.lock_services(service_ids):
+            with self._lock_factory.lock_services(binding, service_ids):
                 loaded = self._load_exact(transaction_id, plan_hash)
                 state = loaded["state"]
                 if state in TERMINAL_STATES:

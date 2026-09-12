@@ -75,6 +75,12 @@ fail closed, and composite lock sets are deduplicated and acquired in lexical
 service-ID order before caller code can run. A bounded composite acquisition
 unwinds every already-held lock if any later lock times out.
 
+`ServiceLockFactory` receives the same immutable `(transaction ID, plan hash)`
+binding as lifecycle adapters and observations. The local file-lock factory
+accepts but does not need those fields; a future host-owned lease factory must
+bind its grant, renewal, mutation calls, and evidence to both values. A lock
+factory that sees only service IDs is not sufficient for transaction custody.
+
 This source foundation does not yet make the host agent a second lock owner.
 The current Dashboard routes call host-agent lifecycle endpoints while holding
 their operation lock, so making the callee acquire the same lock would

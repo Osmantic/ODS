@@ -281,8 +281,10 @@ class NoOpLockFactory:
 
     def __init__(self) -> None:
         self.locked_services: list[str] | None = None
+        self.binding = None
 
-    def lock_services(self, service_ids: list[str]) -> "NoOpLock":
+    def lock_services(self, binding, service_ids: list[str]) -> "NoOpLock":
+        self.binding = binding
         self.locked_services = list(service_ids)
         return NoOpLock()
 
@@ -956,8 +958,8 @@ def test_locks_are_canonical_and_provenance_is_checked_inside_lock(tmp_path):
             events.append("lock-exit")
 
     class OrderedLockFactory:
-        def lock_services(self, service_ids):
-            events.append(("lock-services", service_ids))
+        def lock_services(self, binding, service_ids):
+            events.append(("lock-services", binding, service_ids))
             return OrderedLock()
 
     class OrderedVerifier:
@@ -978,7 +980,13 @@ def test_locks_are_canonical_and_provenance_is_checked_inside_lock(tmp_path):
 
     assert result.final_state == "committed"
     assert events[:3] == [
-        ("lock-services", ["calendar", "notes"]),
+        (
+            "lock-services",
+            executor_mod.ExecutionBinding(
+                descriptor["transactionId"], envelope["planHash"]
+            ),
+            ["calendar", "notes"],
+        ),
         "lock-enter",
         "verify-provenance",
     ]
