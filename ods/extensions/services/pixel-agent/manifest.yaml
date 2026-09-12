@@ -50,7 +50,7 @@ service:
       description: Restricted owner-private OpenClaw config containing the gateway token.
     - key: PIXEL_GATEWAY_PORT
       default: "18789"
-      description: Loopback port of the Pixel gateway (127.0.0.1 only); override when another trusted local Pixel already owns the default.
+      description: Fresh-install loopback port of the Pixel gateway (127.0.0.1 only); override when another trusted local Pixel already owns the default, then retain that value on reinstall.
     - key: PIXEL_STATUS_FILE
       default: "/run/ods-pixel/ods-status.json"
       description: Sanitized status projection path written on startup and interval.

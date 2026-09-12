@@ -821,6 +821,21 @@ for invalid_gateway_port in 0 65536 invalid; do
         pass "invalid Pixel gateway port rejected: $invalid_gateway_port"
     fi
 done
+gateway_port_home="$TEST_ROOT/gateway-port-home"
+mkdir -p "$gateway_port_home/.config/pixel-deployment"
+chmod 0700 "$gateway_port_home/.config" "$gateway_port_home/.config/pixel-deployment"
+cp "$answers" "$gateway_port_home/.config/pixel-deployment/onboarding.json"
+chmod 0600 "$gateway_port_home/.config/pixel-deployment/onboarding.json"
+check _ods_pixel_existing_gateway_port_matches "$owner" "$gateway_port_home" 18789
+if _ods_pixel_existing_gateway_port_matches "$owner" "$gateway_port_home" 18790 \
+    >/dev/null 2>&1; then
+    fail "installed Pixel gateway port change rejected before reconciliation"
+else
+    check test "$?" = 2
+fi
+fresh_gateway_port_home="$TEST_ROOT/fresh-gateway-port-home"
+mkdir -p "$fresh_gateway_port_home"
+check _ods_pixel_existing_gateway_port_matches "$owner" "$fresh_gateway_port_home" 18790
 native_answers="$TEST_ROOT/native-search-onboarding.json"
 _ods_pixel_write_onboarding "$owner" "$home" "$native_answers" /usr/bin/openclaw \
     /opt/ods/pixel-plugin "$digest" parallel-free /opt/ods/native-search/parallel-2026.6.33 "$digest"
@@ -2086,6 +2101,7 @@ assert "runtime_token_file=\"/run/ods-pixel/openclaw.json\"" in text
 assert "PIXEL_GATEWAY_TOKEN_FILE=$runtime_token_file" in text
 assert "PIXEL_GATEWAY_PORT=$gateway_port" in text
 assert "\"http://127.0.0.1:${pixel_gateway_port}/health\"" in text
+assert installer.index("_ods_pixel_existing_gateway_port_matches") < installer.index("_ods_pixel_prepare_attempt_log")
 assert "PIXEL_ODS_VERSION=$ods_version" in text
 assert "PIXEL_ODS_N8N_PORT=${N8N_PORT:-5678}" in text
 assert "PIXEL_ODS_WHISPER_PORT=${WHISPER_PORT:-9000}" in text

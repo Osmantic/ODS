@@ -21,6 +21,41 @@ _ods_pixel_gateway_port() {
     printf '%s\n' "$port"
 }
 
+# Pixel 4.3.27 renders the gateway port into its privileged systemd unit.
+# Its same-release reconciliation transaction can update model/runtime JSON,
+# but it cannot safely replace that unit. Refuse a port change before the ODS
+# installer writes a new onboarding contract or marks the deployment installing.
+_ods_pixel_existing_gateway_port_matches() {
+    local owner="$1" home="$2" requested="$3" installed_answers existing
+    [[ "$requested" =~ ^[1-9][0-9]{0,4}$ ]] || return 1
+    (( 10#$requested <= 65535 )) || return 1
+    installed_answers="$home/.config/pixel-deployment/onboarding.json"
+    if [[ ! -e "$installed_answers" && ! -L "$installed_answers" ]]; then
+        return 0
+    fi
+    existing="$(ods_pixel_run_as_owner "$owner" "$home" python3 - \
+        "$installed_answers" <<'PY'
+import json, os, pathlib, stat, sys
+
+path = pathlib.Path(sys.argv[1])
+info = path.lstat()
+parent = path.parent.lstat()
+if (not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode)
+        or info.st_nlink != 1 or info.st_uid != os.getuid()
+        or info.st_mode & 0o077 or info.st_size > 2 * 1024 * 1024
+        or not stat.S_ISDIR(parent.st_mode) or stat.S_ISLNK(parent.st_mode)
+        or parent.st_uid != os.getuid() or parent.st_mode & 0o022):
+    raise SystemExit("unsafe installed Pixel onboarding contract")
+value = json.loads(path.read_text(encoding="utf-8"))
+port = value.get("gatewayPort") if isinstance(value, dict) else None
+if type(port) is not int or not 1 <= port <= 65535:
+    raise SystemExit("invalid installed Pixel gateway port")
+print(port)
+PY
+)" || return 1
+    [[ "$existing" == "$requested" ]] || return 2
+}
+
 ods_pixel_install_owner() {
     local owner="${INSTALL_USER:-${SUDO_USER:-${USER:-}}}"
     [[ -n "$owner" && "$owner" != root && "$owner" =~ ^[A-Za-z_][A-Za-z0-9_.-]{0,63}$ ]] || {
@@ -4008,7 +4043,7 @@ PY
 ods_pixel_install_default_agent() {
     [[ "${ENABLE_PIXEL_RUNTIME:-false}" == true ]] || return 0
     local owner home source_root pixel_root plugin_root answers operations_policy extension_catalog extension_manager_unit artifact_promoter_unit workspace_preview_unit openclaw_bin plugin_digest contract_sha256 runtime_budget_status gateway_alias pixel_log
-    local candidate_runtime_status reuse_active=false same_verified_source=false same_source_resume=false pixel_gateway_port
+    local candidate_runtime_status reuse_active=false same_verified_source=false same_source_resume=false pixel_gateway_port gateway_port_status
     local web_search_provider parallel_path="" parallel_digest=""
     local -a pixel_prerequisites=(litellm dashboard-api)
     owner="${PIXEL_SERVICE_USER:-$(ods_pixel_install_owner)}" || return 1
@@ -4018,6 +4053,20 @@ ods_pixel_install_default_agent() {
         return 1
     }
     _ods_pixel_assert_managed_state "$owner" "$home" || return 1
+    gateway_port_status=0
+    _ods_pixel_existing_gateway_port_matches "$owner" "$home" "$pixel_gateway_port" \
+        || gateway_port_status=$?
+    case "$gateway_port_status" in
+        0) ;;
+        2)
+            ai_bad "An installed ODS-managed Pixel uses a different gateway port. Keep its existing PIXEL_GATEWAY_PORT value or uninstall that managed Pixel before choosing a new port."
+            return 1
+            ;;
+        *)
+            ai_bad "The installed ODS-managed Pixel gateway-port contract is unsafe or invalid."
+            return 1
+            ;;
+    esac
     pixel_log="$(_ods_pixel_prepare_attempt_log "$owner" "$home" "$INSTALL_DIR/logs/pixel-install.log")" || {
         ai_bad "Could not create Pixel's owner-private persistent install log."
         return 1

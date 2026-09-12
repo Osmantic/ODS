@@ -142,7 +142,7 @@ upstream default. Other agents and existing jobs are unaffected.
 | `PIXEL_INGRESS_SOCKET` | `/run/ods-pixel/pixel-ingress.sock` | Unix socket path (UDS only) |
 | `PIXEL_INGRESS_GID` | unset | Numeric GID allowed to connect to the socket |
 | `PIXEL_GATEWAY_TOKEN_FILE` | `/etc/pixel/openclaw.json` | Restricted owner-private OpenClaw config containing the gateway token |
-| `PIXEL_GATEWAY_PORT` | `18789` | Validated loopback gateway port; override when another trusted local Pixel owns the default |
+| `PIXEL_GATEWAY_PORT` | `18789` | Validated fresh-install loopback gateway port; override when another trusted local Pixel owns the default, then retain that value on reinstall |
 | `PIXEL_STATUS_FILE` | `/run/ods-pixel/ods-status.json` | Status projection path |
 | `PIXEL_STATUS_INTERVAL_MS` | `30000` | Status write interval |
 | `PIXEL_ODS_VERSION` | `unknown` | Nonsecret ODS version exposed in the bounded status projection |
