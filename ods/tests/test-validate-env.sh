@@ -503,6 +503,52 @@ else
 ' ' ')"
 fi
 
+# Inline-comment rule must match Docker Compose (checked with `docker compose
+# config`): a '#' without a leading space is part of the value, a " #..." note
+# after a closing quote is not. Uses a small schema so both directions show:
+# a valid value must not be truncated into a false error, and an invalid value
+# must not be truncated into a false pass.
+cat > "$TMP_DIR/comment-schema.json" <<'EOF'
+{
+  "type": "object",
+  "required": [],
+  "properties": {
+    "SECRET_WITH_HASH": {"type": "string", "minLength": 10},
+    "QUOTED_THEN_NOTE": {"type": "string", "minLength": 10},
+    "PLAIN_THEN_NOTE":  {"type": "string", "enum": ["value"]},
+    "BACKEND":          {"type": "string", "enum": ["nvidia", "amd"]}
+  }
+}
+EOF
+cat > "$TMP_DIR/comment-ok.env" <<'EOF'
+SECRET_WITH_HASH=abcdefgh#ijklmnop
+QUOTED_THEN_NOTE="sk-abcdefghij-valid" # rotate me
+PLAIN_THEN_NOTE=value # a note
+BACKEND=nvidia   # picked by installer
+EOF
+set +e
+out=$("$VALIDATE_ENV_BASH" "$ROOT_DIR/scripts/validate-env.sh" "$TMP_DIR/comment-ok.env" "$TMP_DIR/comment-schema.json" 2>&1)
+r=$?
+set -e
+if [[ $r -eq 0 ]]; then
+    pass "Inline-comment rule matches Compose (no false errors on '#' inside values or notes after quotes)"
+else
+    fail "Compose-valid values were rejected (exit $r): $(echo "$out" | grep -E 'SECRET_WITH_HASH|QUOTED_THEN_NOTE|PLAIN_THEN_NOTE|BACKEND' | head -3 | tr '\n' ' ')"
+fi
+
+cat > "$TMP_DIR/comment-bad.env" <<'EOF'
+BACKEND=nvidia#x
+EOF
+set +e
+out=$("$VALIDATE_ENV_BASH" "$ROOT_DIR/scripts/validate-env.sh" "$TMP_DIR/comment-bad.env" "$TMP_DIR/comment-schema.json" 2>&1)
+r=$?
+set -e
+if [[ $r -ne 0 ]] && echo "$out" | grep -q "BACKEND"; then
+    pass "A '#' glued to a value is validated as data (BACKEND=nvidia#x fails the enum, as it would in Compose)"
+else
+    fail "BACKEND=nvidia#x should fail the enum check (Compose passes 'nvidia#x' to the container), got exit $r"
+fi
+
 echo ""
 echo "Result: $PASSED passed, $FAILED failed"
 [[ $FAILED -eq 0 ]]
