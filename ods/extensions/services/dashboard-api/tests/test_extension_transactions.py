@@ -654,3 +654,231 @@ def test_hardlinked_binding_fails_closed(tmp_path):
     os.link(binding, tmp_path / "binding-copy")
     with pytest.raises(transactions.IntegrityError, match="link-count"):
         store.read(descriptor["transactionId"])
+
+
+def test_http_retry_reuses_first_created_at(tmp_path):
+    store = transactions.TransactionStore(tmp_path / "transactions")
+    envelope = build_envelope()
+    first = create(store, envelope)
+    later = "2026-09-11T13:00:00Z"
+
+    replay = store.create(envelope, ACTOR, IDEMPOTENCY_KEY, later, later)
+
+    assert replay == {**first, "duplicate": True}
+    loaded = store.read(first["transactionId"])
+    assert loaded["journal"][0]["timestamp"] == CREATED_AT
+
+
+def test_http_retry_recovers_prefix_without_idempotency_index(
+    tmp_path, monkeypatch
+):
+    store = transactions.TransactionStore(tmp_path / "transactions")
+    envelope = build_envelope()
+    original = transactions._journal_append
+    calls = 0
+
+    def fail_after_first(path, line, expected_actor=None):
+        nonlocal calls
+        calls += 1
+        result = original(path, line, expected_actor)
+        if calls == 1:
+            raise transactions.TransactionError("injected-crash")
+        return result
+
+    monkeypatch.setattr(transactions, "_journal_append", fail_after_first)
+    with pytest.raises(transactions.TransactionError, match="injected-crash"):
+        create(store, envelope)
+    monkeypatch.setattr(transactions, "_journal_append", original)
+
+    later = "2026-09-11T13:00:00Z"
+    replay = store.create(envelope, ACTOR, IDEMPOTENCY_KEY, later, later)
+    assert replay["duplicate"] is True
+    assert store.read(replay["transactionId"])["sequence"] == 2
+    assert store.read(replay["transactionId"])["journal"][0]["timestamp"] == CREATED_AT
+
+
+@pytest.mark.parametrize(
+    ("actor", "envelope"),
+    [
+        ("other-owner", None),
+        (ACTOR, "calendar"),
+    ],
+)
+def test_http_retry_rejects_actor_or_plan_drift(tmp_path, actor, envelope):
+    store = transactions.TransactionStore(tmp_path / "transactions")
+    create(store)
+    candidate = build_envelope(envelope) if envelope else build_envelope()
+    later = "2026-09-11T13:00:00Z"
+
+    with pytest.raises(transactions.IdempotencyConflict) as caught:
+        store.create(candidate, actor, IDEMPOTENCY_KEY, later, later)
+    assert caught.value.code == "idempotency-drift"
+
+
+def test_exact_owner_approval_uses_only_durable_binding(tmp_path):
+    store = transactions.TransactionStore(tmp_path / "transactions")
+    envelope = build_envelope()
+    descriptor = create(store, envelope, actor="assistant-manager")
+    approved_by = "owner-" + "c" * 16
+
+    result = store.approve_exact(
+        descriptor["transactionId"],
+        envelope["planHash"],
+        approved_by,
+        APPROVED_AT,
+        NOW,
+    )
+
+    assert result == {
+        "transactionId": descriptor["transactionId"],
+        "state": "approved",
+        "sequence": 3,
+        "noop": False,
+    }
+    approval = store.read(descriptor["transactionId"])["approval"]
+    assert approval == approval_for(
+        descriptor,
+        envelope,
+        actor="assistant-manager",
+        approvedBy=approved_by,
+    )
+
+
+def test_exact_owner_approval_is_idempotent(tmp_path):
+    store = transactions.TransactionStore(tmp_path / "transactions")
+    envelope = build_envelope()
+    descriptor = create(store, envelope)
+    args = (
+        descriptor["transactionId"],
+        envelope["planHash"],
+        "owner-" + "d" * 16,
+        APPROVED_AT,
+        NOW,
+    )
+    store.approve_exact(*args)
+    replay = store.approve_exact(*args)
+    assert replay["noop"] is True
+    assert replay["sequence"] == 3
+
+
+def test_exact_owner_approval_retry_ignores_later_server_timestamp(tmp_path):
+    store = transactions.TransactionStore(tmp_path / "transactions")
+    envelope = build_envelope()
+    descriptor = create(store, envelope)
+    owner = "owner-" + "d" * 16
+    store.approve_exact(
+        descriptor["transactionId"],
+        envelope["planHash"],
+        owner,
+        APPROVED_AT,
+        NOW,
+    )
+
+    replay = store.approve_exact(
+        descriptor["transactionId"],
+        envelope["planHash"],
+        owner,
+        "2026-09-11T13:00:00Z",
+        "2026-09-11T13:00:00Z",
+    )
+
+    assert replay["noop"] is True
+    loaded = store.read(descriptor["transactionId"])
+    assert loaded["approval"]["approvedAt"] == APPROVED_AT
+    assert loaded["journal"][-1]["timestamp"] == APPROVED_AT
+
+
+@pytest.mark.parametrize(
+    ("plan_hash", "approved_by", "approved_at", "current_time", "code"),
+    [
+        ("f" * 64, "owner-" + "c" * 16, APPROVED_AT, NOW, "plan-hash-mismatch"),
+        (
+            "expected",
+            "assistant-manager",
+            APPROVED_AT,
+            NOW,
+            "invalid-owner-approval-identity",
+        ),
+        ("expected", "owner-" + "c" * 16, VALID_UNTIL, VALID_UNTIL, "approval-expired"),
+    ],
+)
+def test_exact_owner_approval_rejects_invalid_binding(
+    tmp_path, plan_hash, approved_by, approved_at, current_time, code
+):
+    store = transactions.TransactionStore(tmp_path / "transactions")
+    envelope = build_envelope()
+    descriptor = create(store, envelope)
+    selected_hash = envelope["planHash"] if plan_hash == "expected" else plan_hash
+
+    with pytest.raises(transactions.ApprovalError) as caught:
+        store.approve_exact(
+            descriptor["transactionId"],
+            selected_hash,
+            approved_by,
+            approved_at,
+            current_time,
+        )
+    assert caught.value.code == code
+
+
+def test_exact_owner_approval_repairs_write_before_journal_crash(
+    tmp_path, monkeypatch
+):
+    store = transactions.TransactionStore(tmp_path / "transactions")
+    envelope = build_envelope()
+    descriptor = create(store, envelope)
+    original = transactions._journal_append
+
+    def fail_journal(*args, **kwargs):
+        raise transactions.TransactionError("injected-crash")
+
+    monkeypatch.setattr(transactions, "_journal_append", fail_journal)
+    with pytest.raises(transactions.TransactionError, match="injected-crash"):
+        store.approve_exact(
+            descriptor["transactionId"],
+            envelope["planHash"],
+            "owner-" + "e" * 16,
+            APPROVED_AT,
+            NOW,
+        )
+    monkeypatch.setattr(transactions, "_journal_append", original)
+
+    repaired = store.approve_exact(
+        descriptor["transactionId"],
+        envelope["planHash"],
+        "owner-" + "e" * 16,
+        "2026-09-11T13:00:00Z",
+        "2026-09-11T13:00:00Z",
+    )
+    assert repaired["state"] == "approved"
+    loaded = store.read(descriptor["transactionId"])
+    assert loaded["sequence"] == 3
+    assert loaded["approval"]["approvedAt"] == APPROVED_AT
+    assert loaded["journal"][-1]["timestamp"] == APPROVED_AT
+
+
+def test_exact_owner_approval_serializes_concurrent_calls(tmp_path):
+    store = transactions.TransactionStore(tmp_path / "transactions")
+    envelope = build_envelope()
+    descriptor = create(store, envelope)
+    results = []
+
+    def approve():
+        results.append(
+            store.approve_exact(
+                descriptor["transactionId"],
+                envelope["planHash"],
+                "owner-" + "f" * 16,
+                APPROVED_AT,
+                NOW,
+            )
+        )
+
+    threads = [threading.Thread(target=approve) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert sorted(result["noop"] for result in results) == [False, True]
