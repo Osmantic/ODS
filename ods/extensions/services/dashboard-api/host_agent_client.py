@@ -72,6 +72,7 @@ _TRANSIENT_ROUTE_MESSAGES = (
     "network is unreachable",
     "no route to host",
 )
+_MAX_BOUNDED_RESPONSE_BYTES = 1024 * 1024
 
 
 def _is_transient_route_connect_error(exc: BaseException) -> bool:
@@ -275,6 +276,94 @@ async def _async_request(
             raise AgentUnavailable(f"Host agent {method} {path} is unreachable: {exc}") from exc
 
 
+def _validate_response_limit(max_response_bytes: int) -> None:
+    if (
+        isinstance(max_response_bytes, bool)
+        or not isinstance(max_response_bytes, int)
+        or not 1 <= max_response_bytes <= _MAX_BOUNDED_RESPONSE_BYTES
+    ):
+        raise ValueError("invalid max_response_bytes")
+
+
+def _bounded_response(
+    response: httpx.Response, *, max_response_bytes: int
+) -> httpx.Response:
+    length = response.headers.get("content-length")
+    if length is not None:
+        try:
+            if int(length) > max_response_bytes:
+                raise AgentProtocolError("Host agent response exceeded the byte limit")
+        except ValueError:
+            pass
+
+    body = bytearray()
+    for chunk in response.iter_bytes():
+        if len(body) + len(chunk) > max_response_bytes:
+            raise AgentProtocolError("Host agent response exceeded the byte limit")
+        body.extend(chunk)
+    # iter_bytes() counts the decoded body, so do not preserve encoding or
+    # framing headers that would make the copied response decode it twice.
+    headers = {
+        key: value
+        for key, value in response.headers.items()
+        if key.casefold()
+        not in {"content-encoding", "content-length", "transfer-encoding"}
+    }
+    return httpx.Response(
+        response.status_code,
+        headers=headers,
+        content=bytes(body),
+        request=response.request,
+    )
+
+
+def _sync_bounded_request(
+    method: str,
+    path: str,
+    *,
+    payload: Any = None,
+    params: dict[str, Any] | None = None,
+    timeout: float,
+    max_response_bytes: int,
+) -> httpx.Response:
+    _validate_response_limit(max_response_bytes)
+    method = method.upper()
+    stale_connection_retries = 1 if method == "GET" else 0
+    connect_retry_index = 0
+    while True:
+        try:
+            with _get_sync_client().stream(
+                method,
+                path,
+                json=payload if payload is not None else None,
+                params=params,
+                timeout=_timeout(timeout),
+            ) as response:
+                return _bounded_response(
+                    response, max_response_bytes=max_response_bytes
+                )
+        except AgentProtocolError:
+            raise
+        except httpx.TimeoutException as exc:
+            raise AgentTimeout(f"Host agent {method} {path} timed out") from exc
+        except httpx.ConnectError as exc:
+            if (
+                _is_transient_route_connect_error(exc)
+                and connect_retry_index < len(_CONNECT_RETRY_DELAYS_SECONDS)
+            ):
+                time.sleep(_CONNECT_RETRY_DELAYS_SECONDS[connect_retry_index])
+                connect_retry_index += 1
+                continue
+            raise AgentUnavailable(f"Host agent {method} {path} is unreachable: {exc}") from exc
+        except (httpx.NetworkError, httpx.RemoteProtocolError) as exc:
+            if stale_connection_retries:
+                stale_connection_retries -= 1
+                continue
+            raise AgentUnavailable(f"Host agent {method} {path} is unreachable: {exc}") from exc
+        except httpx.RequestError as exc:
+            raise AgentUnavailable(f"Host agent {method} {path} is unreachable: {exc}") from exc
+
+
 def request_json(
     method: str,
     path: str,
@@ -284,6 +373,28 @@ def request_json(
     timeout: float = 5.0,
 ) -> dict[str, Any]:
     response = _sync_request(method, path, payload=payload, params=params, timeout=timeout)
+    _raise_for_status(response)
+    return _decode_json(response)
+
+
+def request_bounded_json(
+    method: str,
+    path: str,
+    *,
+    payload: Any = None,
+    params: dict[str, Any] | None = None,
+    timeout: float = 5.0,
+    max_response_bytes: int,
+) -> dict[str, Any]:
+    """Return an object response without buffering more than the caller's limit."""
+    response = _sync_bounded_request(
+        method,
+        path,
+        payload=payload,
+        params=params,
+        timeout=timeout,
+        max_response_bytes=max_response_bytes,
+    )
     _raise_for_status(response)
     return _decode_json(response)
 
