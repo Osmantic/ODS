@@ -1,8 +1,14 @@
 import test from "node:test";
+import net from "node:net";
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { once } from "node:events";
 import assert from "node:assert/strict";
 import {
   createDownloadPromoteTool,
   normalizePromotionParams,
+  requestPromotion,
 } from "../plugin/download-promote.mjs";
 
 const boundary =
@@ -159,4 +165,47 @@ test("fails closed on transport errors and mismatched service evidence", async (
     assert.equal(result.details.status, "failed");
     assert.doesNotMatch(result.content[0].text, /socket|\/run|authority/);
   }
+});
+
+test("promotion tool enforces a total deadline despite a trickling host response", { skip: process.platform === "win32" }, async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "ods-promote-deadline-"));
+  const socketPath = path.join(directory, "rpc.sock");
+  const connections = new Set();
+  let peerClosed = false;
+  const server = net.createServer((socket) => {
+    connections.add(socket);
+    socket.on("error", () => {});
+    socket.on("data", () => {});
+    // Valid JSON whitespace keeps an idle timeout alive, but must not extend
+    // the tool's total request budget.
+    const drip = setInterval(() => socket.write(" "), 20);
+    const completion = setTimeout(() => socket.end(JSON.stringify(success(normalizePromotionParams(params))) + "\n"), 600);
+    socket.on("close", () => {
+      clearInterval(drip);
+      clearTimeout(completion);
+      connections.delete(socket);
+      peerClosed = true;
+    });
+  });
+  t.after(async () => {
+    for (const socket of connections) socket.destroy();
+    await new Promise(resolve => server.close(resolve));
+    await rm(directory, { recursive: true, force: true });
+  });
+  server.listen(socketPath);
+  await once(server, "listening");
+  let failure;
+  const tool = createDownloadPromoteTool({
+    request: async (request, options) => {
+      try { return await requestPromotion(request, { ...options, socketPath, timeoutMs: 120 }); }
+      catch (error) { failure = error; throw error; }
+    },
+  });
+  const result = await tool.execute("trickling-host", params);
+  assert.equal(result.isError, true);
+  assert.match(failure.message, /timed out/);
+  assert.doesNotMatch(JSON.stringify(result), /rpc.sock|trickling-host/);
+  // The deadline must also tear down the actual Unix connection.
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.equal(peerClosed, true);
 });

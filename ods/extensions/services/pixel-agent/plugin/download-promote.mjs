@@ -158,12 +158,14 @@ export function requestPromotion(
 ) {
   return new Promise((resolve, reject) => {
     let settled = false;
+    let deadline;
     let total = 0;
     const chunks = [];
     const socket = net.createConnection({ path: socketPath });
     const finish = (error, value) => {
       if (settled) return;
       settled = true;
+      clearTimeout(deadline);
       signal?.removeEventListener("abort", onAbort);
       socket.destroy();
       if (error) reject(error);
@@ -175,7 +177,8 @@ export function requestPromotion(
       return;
     }
     signal?.addEventListener("abort", onAbort, { once: true });
-    socket.setTimeout(timeoutMs, () => finish(new Error("exact-download promotion timed out")));
+    // A response that trickles bytes must not renew the total RPC budget.
+    deadline = setTimeout(() => finish(new Error("exact-download promotion timed out")), timeoutMs);
     socket.on("error", (error) => finish(error));
     socket.on("connect", () => {
       socket.write(`${JSON.stringify(request)}\n`);
