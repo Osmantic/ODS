@@ -1740,3 +1740,17 @@ def test_flatten_bounds_cycles_and_large_depth_without_losing_empty_leaves():
         nested = {"child": nested}
     result = dict_flatten_nested_safe(nested, max_depth=100000)
     assert len(next(iter(result)).split(".")) == 128
+
+
+class TestParseMemoryBytesSafe:
+    def test_valid_parsing(self):
+        from helpers import parse_memory_bytes_safe
+        assert parse_memory_bytes_safe("512MB") == 536870912
+        assert parse_memory_bytes_safe("1.5 GB") == 1610612736
+        assert parse_memory_bytes_safe(1024) == 1024
+
+    def test_invalid_inputs(self):
+        from helpers import parse_memory_bytes_safe
+        assert parse_memory_bytes_safe(None) == 0
+        assert parse_memory_bytes_safe("invalid") == 0
+        assert parse_memory_bytes_safe("-500MB") == 0

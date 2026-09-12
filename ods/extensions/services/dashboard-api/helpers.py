@@ -1372,3 +1372,41 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def parse_memory_bytes_safe(size_str: str | int | float | None, default: int = 0) -> int:
+    """Safely parse memory strings (e.g. '512MB', '4GB', '1024KB') to integer byte count.
+    Returns default on invalid strings or negative values.
+    """
+    if size_str is None or isinstance(size_str, bool):
+        return default
+    if isinstance(size_str, (int, float)):
+        if math.isnan(size_str) or math.isinf(size_str) or size_str < 0:
+            return default
+        return int(size_str)
+    if not isinstance(size_str, str) or not size_str.strip():
+        return default
+    s = size_str.strip().upper()
+    units = {
+        "B": 1,
+        "KB": 1024,
+        "MB": 1024**2,
+        "GB": 1024**3,
+        "TB": 1024**4,
+        "KIB": 1024,
+        "MIB": 1024**2,
+        "GIB": 1024**3,
+        "TIB": 1024**4,
+    }
+    match = re.match(r"^([0-9.]+)\s*([A-Z]*)$", s)
+    if not match:
+        return default
+    val_str, unit_str = match.groups()
+    try:
+        val = float(val_str)
+        if math.isnan(val) or math.isinf(val) or val < 0:
+            return default
+        multiplier = units.get(unit_str, 1) if unit_str else 1
+        return int(val * multiplier)
+    except (ValueError, TypeError):
+        return default
