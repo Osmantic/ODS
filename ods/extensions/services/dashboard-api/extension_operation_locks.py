@@ -224,6 +224,10 @@ class FileServiceLockFactory:
         self._lock_parent = lock_parent
         self._timeout = timeout
 
-    def lock_services(self, service_ids: list[str]):
+    def lock_services(self, binding, service_ids: list[str]):
+        # Local file locks do not need the remote lease binding, but accepting
+        # it keeps every TransactionExecutor lock factory on one fail-closed
+        # interface. Host-owned implementations consume both binding fields.
+        del binding
         parent = self._lock_parent() if callable(self._lock_parent) else self._lock_parent
         return lock_services(parent, service_ids, timeout=self._timeout)
