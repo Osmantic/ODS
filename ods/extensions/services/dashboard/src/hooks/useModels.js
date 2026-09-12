@@ -240,7 +240,7 @@ export function useModels() {
       const data = await response.json()
 
       // A slower, older request must not overwrite a newer snapshot.
-      if (requestId < latestSettledModelsRequestRef.current) return data
+      if (requestId < latestSettledModelsRequestRef.current) return null
       latestSettledModelsRequestRef.current = requestId
 
       setModels(data.models)
@@ -432,11 +432,12 @@ export function useModels() {
       // Take one final authoritative snapshot at the deadline or after a POST
       // failure. This cannot turn an unverified 409 into same-target success.
       const finalData = await fetchModels()
-      if (!activationError && activationMatches(finalData)) targetLoaded = true
+      const confirmed = !activationError && activationMatches(finalData)
 
-      if (!targetLoaded) {
-        setMutationError(activationError ||
-          `Timed out after 10 minutes waiting for ${modelId} to activate. The server may still be finishing; refresh before retrying.`)
+      if (!confirmed) {
+        setMutationError(activationError || (targetLoaded
+          ? `Could not confirm activation of ${modelId} against the latest model status. Refresh before retrying.`
+          : `Timed out after 10 minutes waiting for ${modelId} to activate. The server may still be finishing; refresh before retrying.`))
       }
     } finally {
       controller.abort()
