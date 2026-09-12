@@ -46,6 +46,8 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== ods-doctor rootless subordinate IDs ==="
 	@bash tests/test-ods-doctor-rootless-subid.sh
+	@echo "=== pre-download --tier is non-interactive ==="
+	@bash tests/test-pre-download-tier-noninteractive.sh
 	@echo "=== Docker rootless bind-mount ownership ==="
 	@bash tests/test-rootless-docker-ownership.sh
 	@echo ""
