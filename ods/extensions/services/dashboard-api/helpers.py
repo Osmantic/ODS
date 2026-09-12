@@ -1372,3 +1372,43 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def string_word_wrap_safe(text: str | None, width: int = 80, break_long_words: bool = False) -> str:
+    """Safely wrap text to specified line width.
+    Returns "" on None or invalid non-string inputs.
+    """
+    if text is None or not isinstance(text, str):
+        return ""
+    if not isinstance(width, int) or isinstance(width, bool) or width <= 0:
+        width = 80
+    lines = text.splitlines()
+    wrapped_lines = []
+    for line in lines:
+        words = line.split()
+        if not words:
+            wrapped_lines.append("")
+            continue
+        curr_line = []
+        curr_len = 0
+        for w in words:
+            if curr_len + len(w) + (1 if curr_line else 0) <= width:
+                curr_line.append(w)
+                curr_len += len(w) + (1 if len(curr_line) > 1 else 0)
+            else:
+                if curr_line:
+                    wrapped_lines.append(" ".join(curr_line))
+                if len(w) > width and break_long_words:
+                    for i in range(0, len(w), width):
+                        sub = w[i : i + width]
+                        if len(sub) == width:
+                            wrapped_lines.append(sub)
+                        else:
+                            curr_line = [sub]
+                            curr_len = len(sub)
+                else:
+                    curr_line = [w]
+                    curr_len = len(w)
+        if curr_line:
+            wrapped_lines.append(" ".join(curr_line))
+    return "\n".join(wrapped_lines)
