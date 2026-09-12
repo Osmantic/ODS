@@ -534,7 +534,6 @@ ODS_MODE=local
 ODS_MODEL_SWITCHBOARD=${switchboard_mode}
 LLM_BACKEND=llama-server
 LLM_API_URL=${llm_api_url}
-LLM_BACKEND=llama-server
 
 #=== Cloud API Keys ===
 ANTHROPIC_API_KEY=

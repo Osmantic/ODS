@@ -146,6 +146,8 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== macOS CLI .env quote handling ==="
 	@bash tests/test-macos-env-quote-strip.sh
+	@echo "=== macOS generated .env validates against the schema ==="
+	@bash tests/test-macos-env-schema.sh
 	@echo ""
 	@echo "=== macOS uninstall LaunchAgent cleanup ==="
 	@bash tests/test-macos-uninstall-launchagents.sh
