@@ -279,6 +279,8 @@ run_phase06_env_cycle() (
 
     export INSTALL_DIR="$install_dir"
     export SCRIPT_DIR="$install_dir"
+    export HOME="$install_dir/test-home"
+    mkdir -p "$HOME"
     export LOG_FILE="$install_dir/phase06.log"
     export DRY_RUN=false
     export INTERACTIVE=false
@@ -387,6 +389,8 @@ run_phase06_amd_external() (
 
     export INSTALL_DIR="$install_dir"
     export SCRIPT_DIR="$install_dir"
+    export HOME="$install_dir/test-home"
+    mkdir -p "$HOME"
     export LOG_FILE="$install_dir/phase06.log"
     export DRY_RUN=false
     export INTERACTIVE=false

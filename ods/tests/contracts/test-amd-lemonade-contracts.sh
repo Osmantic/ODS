@@ -342,7 +342,22 @@ elif command -v powershell.exe >/dev/null 2>&1; then
 fi
 if ((${#_lemonade_ps_cmd[@]} > 0)); then
     _ps_tmp="${TMPDIR:-/tmp}"
-    if ROOT_DIR="$ROOT_DIR" AMD_LEMONADE_IMAGE="$AMD_LEMONADE_IMAGE" TEMP="$_ps_tmp" ProgramFiles="$_ps_tmp" USERPROFILE="$_ps_tmp" "${_lemonade_ps_cmd[@]}" -Command '
+    _lemonade_ps_env=(
+        "ROOT_DIR=$ROOT_DIR"
+        "AMD_LEMONADE_IMAGE=$AMD_LEMONADE_IMAGE"
+        "TEMP=$_ps_tmp"
+        "ProgramFiles=$_ps_tmp"
+        "USERPROFILE=$_ps_tmp"
+    )
+    if [[ "${_lemonade_ps_cmd[0]}" == "powershell.exe" ]]; then
+        # WSL only forwards and path-translates explicitly listed variables to
+        # native Windows processes. Keep this runtime contract portable when a
+        # Linux pwsh binary is unavailable but Windows PowerShell is present.
+        _wsl_env="ROOT_DIR/p:TEMP/p:ProgramFiles/p:USERPROFILE/p:AMD_LEMONADE_IMAGE"
+        [[ -n "${WSLENV:-}" ]] && _wsl_env="${_wsl_env}:${WSLENV}"
+        _lemonade_ps_env+=("WSLENV=$_wsl_env")
+    fi
+    if env "${_lemonade_ps_env[@]}" "${_lemonade_ps_cmd[@]}" -Command '
         $ErrorActionPreference = "Stop"
         . (Join-Path $env:ROOT_DIR "installers/windows/lib/backend-contract.ps1")
         $runtime = Get-ODSAmdLemonadeRuntime -RootPath $env:ROOT_DIR

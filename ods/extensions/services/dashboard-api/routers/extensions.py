@@ -437,9 +437,9 @@ def _validate_service_id(service_id: str) -> None:
 def _assert_not_core(service_id: str) -> None:
     """Raise 403 if the service_id is an always-on base-compose service.
 
-    Only blocks the 4 services from docker-compose.base.yml (llama-server,
-    open-webui, dashboard, dashboard-api). Built-in extensions (n8n, tts, etc.)
-    are allowed through because they're managed via compose.yaml toggle.
+    The set is derived from docker-compose.base.yml. Manifest-owned built-ins
+    remain protected by the reserved-ID collision policy but can use the
+    ordinary lifecycle surface when their fragment is active.
     """
     if service_id in ALWAYS_ON_SERVICES:
         raise HTTPException(

@@ -1,0 +1,63 @@
+# Assistant First edge fragment. It intentionally contains no Open WebUI
+# service override; the first-party Dashboard talks through dashboard-api.
+services:
+  pixel-edge:
+    build:
+      context: ./extensions/services/pixel-edge
+      dockerfile: Dockerfile
+    image: ods-pixel-edge:local
+    container_name: ods-pixel-edge
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks:
+      - default
+    environment:
+      - PIXEL_OPENWEBUI_KEY=${PIXEL_OPENWEBUI_KEY:?Set PIXEL_OPENWEBUI_KEY in .env}
+      - PIXEL_EDGE_PORT_INTERNAL=9595
+      - PIXEL_INGRESS_SOCKET=/pixel-runtime/pixel-ingress.sock
+      - PIXEL_PREVIEW_PROXY_KEY=${DASHBOARD_API_KEY:?Set DASHBOARD_API_KEY in .env}
+      - PIXEL_PREVIEW_SOCKET=/pixel-preview-runtime/http.sock
+      - PIXEL_TRANSITION_STATE_DIR=/pixel-transition-state
+    group_add:
+      - "${PIXEL_INGRESS_GID:?Set PIXEL_INGRESS_GID in .env}"
+    volumes:
+      - "${PIXEL_INGRESS_RUNTIME_DIR:?Set PIXEL_INGRESS_RUNTIME_DIR in .env}:/pixel-runtime:ro"
+      - "${PIXEL_PREVIEW_RUNTIME_DIR:?Set PIXEL_PREVIEW_RUNTIME_DIR in .env}:/pixel-preview-runtime:ro"
+      - pixel-transition-state:/pixel-transition-state
+    tmpfs:
+      - /tmp:size=1M,noexec,nosuid,nodev,mode=1777
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 128M
+        reservations:
+          cpus: '0.05'
+          memory: 32M
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9595/health')"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  dashboard-api:
+    environment:
+      PIXEL_EDGE_URL: "http://pixel-edge:9595"
+      PIXEL_OPENWEBUI_KEY: "${PIXEL_OPENWEBUI_KEY:?Set PIXEL_OPENWEBUI_KEY in .env}"
+
+volumes:
+  pixel-transition-state:

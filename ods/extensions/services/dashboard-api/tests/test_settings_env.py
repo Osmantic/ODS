@@ -26,6 +26,12 @@ def test_settings_parser_strips_one_pair_and_preserves_unmatched_quotes():
 def settings_env_fixture(tmp_path, monkeypatch):
     install_root = tmp_path / "ods"
     install_root.mkdir()
+    open_webui_dir = install_root / "extensions" / "services" / "open-webui"
+    open_webui_dir.mkdir(parents=True)
+    (open_webui_dir / "compose.yaml").write_text(
+        "services:\n  open-webui:\n    image: example/open-webui\n",
+        encoding="utf-8",
+    )
     data_root = tmp_path / "data"
     data_root.mkdir()
 

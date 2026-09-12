@@ -15,6 +15,9 @@ WINDOWS_HELPER = (
     ROOT / "installers" / "windows" / "lib" / "installed-footprint.ps1"
 )
 LINUX_BOOTSTRAP = ROOT / "get-ods.sh"
+LINUX_INSTALLER = ROOT / "install-core.sh"
+LINUX_IMAGE_PHASE = ROOT / "installers" / "phases" / "08-images.sh"
+LINUX_RESOLVER = ROOT / "scripts" / "resolve-compose-stack.sh"
 
 DEV_ONLY_DIRS = {"tests", "docs", "examples", ".github"}
 DEV_ONLY_FILES = {
@@ -52,6 +55,9 @@ def main() -> None:
     windows_installer = WINDOWS_INSTALLER.read_text(encoding="utf-8")
     windows_helper = WINDOWS_HELPER.read_text(encoding="utf-8")
     linux = LINUX_BOOTSTRAP.read_text(encoding="utf-8")
+    linux_installer = LINUX_INSTALLER.read_text(encoding="utf-8")
+    linux_images = LINUX_IMAGE_PHASE.read_text(encoding="utf-8")
+    linux_resolver = LINUX_RESOLVER.read_text(encoding="utf-8")
 
     assert _bash_array(macos, "_ods_dev_only_dirs") == DEV_ONLY_DIRS
     assert _bash_array(macos, "_ods_dev_only_files") == DEV_ONLY_FILES
@@ -155,6 +161,14 @@ def main() -> None:
     protected = {"data", "models", "config", "extensions", ".env"}
     assert not protected & DEV_ONLY_DIRS
     assert not protected & DEV_ONLY_FILES
+
+    # Assistant First is additive and derives pullable application images from
+    # the selected graph instead of carrying a second unconditional image list.
+    assert "--assistant-first" in linux_installer
+    assert 'INSTALL_PROFILE="${ODS_INSTALL_PROFILE:-legacy}"' in linux_resolver
+    assert "ghcr.io/open-webui/open-webui" not in linux_images
+    assert "itzcrazykns1337/perplexica" not in linux_images
+    assert "ods_compose_external_images" in linux_images
 
     print("[PASS] installed-footprint contract")
 

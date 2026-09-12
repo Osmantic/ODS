@@ -9,6 +9,7 @@ echo "[contract] Windows AMD local compose overlay"
 for f in \
   docker-compose.base.yml \
   docker-compose.amd.yml \
+  extensions/services/open-webui/compose.yaml \
   installers/windows/docker-compose.windows-amd.yml \
   installers/windows/docker-compose.windows-amd.local.yml \
   extensions/services/litellm/compose.yaml \
@@ -96,6 +97,7 @@ rendered="$(
   docker compose \
     --env-file "$tmp_env" \
     -f docker-compose.base.yml \
+    -f extensions/services/open-webui/compose.yaml \
     -f installers/windows/docker-compose.windows-amd.yml \
     -f installers/windows/docker-compose.windows-amd.local.yml \
     config
@@ -120,6 +122,7 @@ custom_port_rendered="$(
   docker compose \
     --env-file "$tmp_custom_port_env" \
     -f docker-compose.base.yml \
+    -f extensions/services/open-webui/compose.yaml \
     -f installers/windows/docker-compose.windows-amd.yml \
     -f installers/windows/docker-compose.windows-amd.local.yml \
     config
@@ -151,6 +154,7 @@ switchboard_webui_rendered="$(
   docker compose \
     --env-file "$tmp_switchboard_env" \
     -f docker-compose.base.yml \
+    -f extensions/services/open-webui/compose.yaml \
     -f installers/windows/docker-compose.windows-amd.yml \
     -f installers/windows/docker-compose.windows-amd.local.yml \
     config open-webui
@@ -174,19 +178,21 @@ grep -q 'ODS_MODE: local' <<<"$switchboard_litellm_rendered" \
 grep -q 'ods-select-config.sh' <<<"$switchboard_litellm_rendered" \
   || { echo "[FAIL] AMD LiteLLM render must keep the mode-aware config selector"; exit 1; }
 
-# Match the Windows installer's precedence: platform overlays are loaded before
-# extension base/GPU overlays. Rendering the complete stack catches a later
-# compose.amd.yaml accidentally restoring the disabled llama-server endpoint.
+# Match the Windows installer's precedence. Open WebUI's extracted base loads
+# before platform overlays; other extension base/GPU overlays load afterward.
+# Rendering the complete stack catches an extension overlay accidentally
+# restoring the disabled llama-server endpoint.
 openclaw_windows_compose_args=(
   --env-file "$tmp_openclaw_windows_env"
   -f docker-compose.base.yml
+  -f extensions/services/open-webui/compose.yaml
   -f installers/windows/docker-compose.windows-amd.yml
   -f installers/windows/docker-compose.windows-amd.local.yml
 )
 for extension_dir in extensions/services/*/; do
-  [[ -f "${extension_dir}compose.yaml" ]] \
+  [[ "$extension_dir" != "extensions/services/open-webui/" && -f "${extension_dir}compose.yaml" ]] \
     && openclaw_windows_compose_args+=(-f "${extension_dir}compose.yaml")
-  [[ -f "${extension_dir}compose.amd.yaml" ]] \
+  [[ "$extension_dir" != "extensions/services/open-webui/" && -f "${extension_dir}compose.amd.yaml" ]] \
     && openclaw_windows_compose_args+=(-f "${extension_dir}compose.amd.yaml")
 done
 

@@ -14,9 +14,9 @@
       "value": "ghcr.io/ggml-org/llama.cpp:server-b9014"
     },
     {
-      "id": "base.open-webui",
+      "id": "open-webui.app",
       "type": "image",
-      "path": "docker-compose.base.yml",
+      "path": "extensions/services/open-webui/compose.yaml",
       "value": "ghcr.io/open-webui/open-webui:v0.7.2"
     },
     {
@@ -316,14 +316,19 @@
       "reason": "Qualified Linux installs enable this fragment and build the internal Pixel edge image from its adjacent Dockerfile."
     },
     {
-      "path": "docker-compose.base.yml",
-      "value": "ods-remote-provider-egress:local",
-      "reason": "Core internal egress service image is built from extensions/services/remote-provider-egress/Dockerfile."
+      "path": "extensions/services/pixel-edge/compose.assistant-first.yaml",
+      "value": "ods-pixel-edge:local",
+      "reason": "Assistant First installs build the internal Pixel edge image from its adjacent Dockerfile."
     },
     {
-      "path": "docker-compose.base.yml",
+      "path": "extensions/services/remote-provider-egress/compose.yaml",
+      "value": "ods-remote-provider-egress:local",
+      "reason": "Optional internal egress service image is built from the adjacent Dockerfile."
+    },
+    {
+      "path": "extensions/services/remote-provider-ssh-tunnel/compose.yaml",
       "value": "ods-remote-provider-ssh-tunnel:local",
-      "reason": "Core internal SSH tunnel service image is built from extensions/services/remote-provider-ssh-tunnel/Dockerfile."
+      "reason": "Optional internal SSH tunnel service image is built from the adjacent Dockerfile."
     }
   ],
   "allow_variable_refs": [

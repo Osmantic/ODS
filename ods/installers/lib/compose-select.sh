@@ -19,6 +19,7 @@
 resolve_compose_config() {
     COMPOSE_FILE="docker-compose.yml"
     COMPOSE_FLAGS=""
+    local _resolver_authoritative=false
 
     if [[ -n "${CAP_COMPOSE_OVERLAYS:-}" ]]; then
         IFS=',' read -r -a profile_overlays <<< "$CAP_COMPOSE_OVERLAYS"
@@ -93,19 +94,22 @@ resolve_compose_config() {
             --profile-overlays "${CAP_COMPOSE_OVERLAYS:-}" \
             --gpu-count "${GPU_COUNT:-1}" \
             --ods-mode "${ODS_MODE:-local}" \
+            --install-profile "${ODS_INSTALL_PROFILE:-legacy}" \
             --env 2>>"$LOG_FILE")"
         load_env_from_output <<< "$COMPOSE_ENV"
+        _resolver_authoritative=true
     fi
 
-    # Layer Tier 0 memory overlay for low-RAM machines
-    if [[ "$TIER" == "0" && -f "$SCRIPT_DIR/docker-compose.tier0.yml" ]]; then
+    # Compatibility fallback for stripped-down fixtures or old source trees
+    # without the authoritative resolver.
+    if [[ "$_resolver_authoritative" != "true" && "$TIER" == "0" && -f "$SCRIPT_DIR/docker-compose.tier0.yml" ]]; then
         COMPOSE_FLAGS="$COMPOSE_FLAGS -f docker-compose.tier0.yml"
         log "Including docker-compose.tier0.yml (Tier 0 memory limits)"
     fi
 
-    # Auto-include docker-compose.override.yml if present (standard Docker convention).
-    # This lets modders add services without editing core compose files.
-    if [[ -f "$SCRIPT_DIR/docker-compose.override.yml" ]]; then
+    if [[ "$_resolver_authoritative" != "true" \
+       && "${ODS_INSTALL_PROFILE:-legacy}" != "assistant-first" \
+       && -f "$SCRIPT_DIR/docker-compose.override.yml" ]]; then
         COMPOSE_FLAGS="$COMPOSE_FLAGS -f docker-compose.override.yml"
         log "Including docker-compose.override.yml (user overrides)"
     fi

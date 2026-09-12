@@ -19,14 +19,20 @@ ods_progress 42 "devtools" "Installing developer tools"
 # shellcheck source=../lib/node-runtime.sh
 . "$SCRIPT_DIR/installers/lib/node-runtime.sh"
 if $DRY_RUN; then
-    log "[DRY RUN] Would install AI developer tools (Claude Code and Codex CLI)"
-    if [[ "${ENABLE_OPENCODE:-false}" == "true" ]]; then
-        log "[DRY RUN] Would install and configure the optional OpenCode browser IDE (user-level systemd service on port 3003)"
+    if [[ "${ODS_INSTALL_PROFILE:-legacy}" == "assistant-first" ]]; then
+        log "[DRY RUN] Optional developer tools and local discovery would remain uninstalled"
     else
-        log "[DRY RUN] OpenCode extension is disabled; it would not be installed or started"
+        log "[DRY RUN] Would install AI developer tools (Claude Code and Codex CLI)"
+        if [[ "${ENABLE_OPENCODE:-false}" == "true" ]]; then
+            log "[DRY RUN] Would install and configure the optional OpenCode browser IDE (user-level systemd service on port 3003)"
+        else
+            log "[DRY RUN] OpenCode extension is disabled; it would not be installed or started"
+        fi
+        log "[DRY RUN] Would install ODS mDNS announcer systemd service (if zeroconf available)"
     fi
     log "[DRY RUN] Would install ODS host agent systemd service (system-mode, port 7710)"
-    log "[DRY RUN] Would install ODS mDNS announcer systemd service (if zeroconf available)"
+elif [[ "${ODS_INSTALL_PROFILE:-legacy}" == "assistant-first" ]]; then
+    log "Assistant First skips optional developer tools; installing the required ODS host agent only"
 else
     ai "Installing AI developer tools..."
 
@@ -482,7 +488,8 @@ fi
 # without typing an IP. See docs/MDNS.md for details. Linux-only; macOS
 # announces hostname.local automatically via Bonjour, the script is a no-op
 # there. Windows support TBD.
-if [[ -f "$INSTALL_DIR/bin/ods-mdns.py" ]] && [[ "$(uname -s)" == "Linux" ]]; then
+if [[ "${ODS_INSTALL_PROFILE:-legacy}" != "assistant-first" ]] \
+    && [[ -f "$INSTALL_DIR/bin/ods-mdns.py" ]] && [[ "$(uname -s)" == "Linux" ]]; then
     # Install python3-zeroconf via the system package manager. Non-fatal —
     # mDNS is a quality-of-life feature; if zeroconf isn't available the
     # device is still reachable by IP.

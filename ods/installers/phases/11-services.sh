@@ -523,7 +523,8 @@ else
         # for the rest of the install AND every subsequent ods-cli invocation.
         _refreshed_flags=$("$INSTALL_DIR/scripts/resolve-compose-stack.sh" \
             --script-dir "$INSTALL_DIR" --tier "${TIER:-1}" --gpu-backend "${GPU_BACKEND:-nvidia}" \
-            --gpu-count "${GPU_COUNT:-1}" --ods-mode "${ODS_MODE:-local}" 2>/dev/null) || true
+            --gpu-count "${GPU_COUNT:-1}" --ods-mode "${ODS_MODE:-local}" \
+            --install-profile "${ODS_INSTALL_PROFILE:-legacy}" 2>/dev/null) || true
         if [[ -n "$_refreshed_flags" ]]; then
             COMPOSE_FLAGS="$_refreshed_flags"
             log "Compose flags refreshed from install directory"
@@ -1245,7 +1246,11 @@ MODELS_INI_EOF
     # launched with Pixel as its default provider. This fails closed: users
     # never receive a selectable but nonfunctional default agent.
     if ! ods_pixel_install_default_agent; then
-        ai_bad "Pixel default-agent setup failed before the ODS stack launch."
+        if [[ "${ODS_INSTALL_PROFILE:-legacy}" == "assistant-first" ]]; then
+            ai_bad "Assistant runtime setup failed before the ODS stack launch."
+        else
+            ai_bad "Pixel default-agent setup failed before the ODS stack launch."
+        fi
         exit 1
     fi
     _phase11_write_compose_launch_record

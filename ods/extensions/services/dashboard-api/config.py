@@ -555,12 +555,27 @@ def _load_core_service_ids() -> frozenset:
 
 CORE_SERVICE_IDS = _load_core_service_ids()
 
-# Always-on services defined in docker-compose.base.yml — never manageable via API.
-# Distinct from CORE_SERVICE_IDS (the full built-in service allowlist).
-ALWAYS_ON_SERVICES: frozenset = frozenset({
-    "llama-server", "model-router", "remote-provider-egress",
-    "remote-provider-ssh-tunnel", "open-webui", "dashboard", "dashboard-api",
-})
+def _load_base_owned_services() -> frozenset:
+    """Return services owned by the immutable base Compose definition.
+
+    This is deliberately distinct from the reserved built-in ID namespace and
+    from manifest-owned extension fragments. Moving a service between those
+    ownership classes must not require a second hand-maintained allowlist.
+    """
+    compose_path = Path(INSTALL_DIR) / "docker-compose.base.yml"
+    try:
+        data = yaml.safe_load(compose_path.read_text(encoding="utf-8"))
+        services = data.get("services") if isinstance(data, dict) else None
+        if isinstance(services, dict):
+            return frozenset(str(service_id) for service_id in services)
+    except (OSError, yaml.YAMLError):
+        pass
+    return frozenset({"llama-server", "model-router", "dashboard", "dashboard-api"})
+
+
+# Base-owned services are not independently lifecycle-managed through the
+# Extensions API. Manifest-owned built-ins remain reserved but manageable.
+ALWAYS_ON_SERVICES: frozenset = _load_base_owned_services()
 
 
 def load_extension_catalog() -> list[dict]:
