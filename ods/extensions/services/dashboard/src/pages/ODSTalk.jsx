@@ -538,7 +538,7 @@ export default function ODSTalk() {
     const assistantId = makeId('assistant')
     setMessages(items => [
       ...items,
-      { id: userId, role: 'user', text: 'Voice message', status: 'pending' },
+      { id: userId, role: 'user', text: 'Voice message', audioFileForRetry: file, status: 'pending' },
       { id: assistantId, role: 'assistant', text: '', status: 'pending' },
     ])
 
@@ -637,7 +637,8 @@ export default function ODSTalk() {
 
   const retryLast = () => {
     const lastUser = [...messages].reverse().find(message => message.role === 'user' && message.status !== 'pending')
-    if (lastUser) sendText(lastUser.text, { attachment: lastUser.attachmentForRetry || null })
+    if (lastUser?.audioFileForRetry) sendAudioFile(lastUser.audioFileForRetry)
+    else if (lastUser) sendText(lastUser.text, { attachment: lastUser.attachmentForRetry || null })
   }
 
   // Send is enabled either with text OR an attachment (an image alone is a
