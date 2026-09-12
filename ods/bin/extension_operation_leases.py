@@ -26,7 +26,6 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any
 
-
 LEASE_SCHEMA = "ods.extension-operation-lease.v1"
 DEFAULT_TTL_SECONDS = 600
 MAX_TTL_SECONDS = 3600

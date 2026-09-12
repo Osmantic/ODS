@@ -10,7 +10,6 @@ from pathlib import Path
 
 import pytest
 
-
 BIN_DIR = Path(__file__).resolve().parents[4] / "bin"
 if str(BIN_DIR) not in sys.path:
     sys.path.insert(0, str(BIN_DIR))
