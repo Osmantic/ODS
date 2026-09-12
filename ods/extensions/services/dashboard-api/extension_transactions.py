@@ -1343,8 +1343,70 @@ class TransactionStore:
             )
 
         idem_path = self._idem_path(binding_data["idempotencyKey"])
-        _write_immutable(idem_path, canonical_json_bytes(index_data), 0o600)
+        if self._entry_exists(idem_path):
+            self._load_index(idem_path, transaction_id, binding_data)
+        else:
+            _write_immutable(idem_path, canonical_json_bytes(index_data), 0o600)
         return self._read_transaction(transaction_id)
+
+    @staticmethod
+    def _request_matches_binding(envelope, actor, idempotency_key, binding):
+        return (
+            binding["actor"] == actor
+            and binding["idempotencyKey"] == idempotency_key
+            and binding["catalogRevision"] == envelope["catalogRevision"]
+            and binding["observedStateRevision"]
+            == envelope["observedStateRevision"]
+            and binding["planHash"] == envelope["planHash"]
+            and binding["policyRevision"] == envelope["policyRevision"]
+        )
+
+    def _recover_by_idempotency_key(
+        self, envelope, actor, idempotency_key
+    ):
+        """Find and finish a durable create prefix whose index was not written."""
+        matches = []
+        try:
+            entries = list(os.scandir(str(self._tx_dir)))
+        except OSError as exc:
+            raise IntegrityError("transaction-dir-read-failed") from exc
+        if len(entries) > MAX_LIST_RESULTS:
+            raise IntegrityError("transaction-list-too-large")
+        for entry in entries:
+            if TXN_ID_RE.fullmatch(entry.name) is None:
+                continue
+            tx_dir = self._tx_path(entry.name)
+            binding_path = tx_dir / "binding.json"
+            if not self._entry_exists(binding_path):
+                continue
+            binding = self._load_binding(tx_dir, entry.name)
+            if binding["idempotencyKey"] == idempotency_key:
+                matches.append((entry.name, tx_dir, binding))
+        if not matches:
+            return None
+        if len(matches) != 1:
+            raise IdempotencyConflict("idempotency-drift")
+
+        transaction_id, tx_dir, binding = matches[0]
+        if not self._request_matches_binding(
+            envelope, actor, idempotency_key, binding
+        ):
+            raise IdempotencyConflict("idempotency-drift")
+        index_data = dict(binding)
+        index_data["transactionId"] = transaction_id
+        try:
+            repaired = self._recover_create(
+                tx_dir,
+                transaction_id,
+                envelope,
+                binding,
+                index_data,
+            )
+        except IdempotencyConflict:
+            raise
+        except TransactionError as exc:
+            raise IntegrityError("incomplete-transaction") from exc
+        return self._existing_descriptor(transaction_id, repaired)
 
     def create(self, envelope, actor, idempotency_key, timestamp, current_time):
         _validate_timestamp(timestamp)
@@ -1360,30 +1422,59 @@ class TransactionStore:
         if vu and vu <= current_time:
             raise ValidationRejected("expired")
 
-        txn_id = _derive_transaction_id(envelope, actor, idempotency_key, timestamp)
-        binding_data = {
-            "actor": actor,
-            "catalogRevision": envelope["catalogRevision"],
-            "createdAt": timestamp,
-            "idempotencyKey": idempotency_key,
-            "observedStateRevision": envelope["observedStateRevision"],
-            "planHash": envelope["planHash"],
-            "policyRevision": envelope["policyRevision"],
-        }
-        index_data = dict(binding_data)
-        index_data["transactionId"] = txn_id
-
         with self._lock:
             idem_path = self._idem_path(idempotency_key)
             if self._entry_exists(idem_path):
                 try:
-                    self._load_index(idem_path, txn_id, binding_data)
-                    existing = self._read_transaction(txn_id)
+                    index = _decode_canonical_object(
+                        idem_path, INDEX_KEYS, "idempotency-index"
+                    )
+                    transaction_id = index["transactionId"]
+                    tx_dir = self._tx_path(transaction_id)
+                    binding = self._load_binding(tx_dir, transaction_id)
+                    self._load_index(idem_path, transaction_id, binding)
+                    if not self._request_matches_binding(
+                        envelope, actor, idempotency_key, binding
+                    ):
+                        raise IdempotencyConflict("idempotency-drift")
+                    try:
+                        existing = self._read_transaction(transaction_id)
+                    except IntegrityError:
+                        index_data = dict(binding)
+                        index_data["transactionId"] = transaction_id
+                        existing = self._recover_create(
+                            tx_dir,
+                            transaction_id,
+                            envelope,
+                            binding,
+                            index_data,
+                        )
                 except (IntegrityError, TransactionError) as exc:
                     raise IdempotencyConflict("idempotency-drift") from exc
                 if existing["envelope"] != envelope:
                     raise IdempotencyConflict("idempotency-drift")
-                return self._existing_descriptor(txn_id, existing)
+                return self._existing_descriptor(transaction_id, existing)
+
+            recovered = self._recover_by_idempotency_key(
+                envelope, actor, idempotency_key
+            )
+            if recovered is not None:
+                return recovered
+
+            txn_id = _derive_transaction_id(
+                envelope, actor, idempotency_key, timestamp
+            )
+            binding_data = {
+                "actor": actor,
+                "catalogRevision": envelope["catalogRevision"],
+                "createdAt": timestamp,
+                "idempotencyKey": idempotency_key,
+                "observedStateRevision": envelope["observedStateRevision"],
+                "planHash": envelope["planHash"],
+                "policyRevision": envelope["policyRevision"],
+            }
+            index_data = dict(binding_data)
+            index_data["transactionId"] = txn_id
 
             tx_dir = self._tx_path(txn_id)
             if self._entry_exists(tx_dir):
@@ -1515,7 +1606,13 @@ class TransactionStore:
                 "sequence": next_seq,
             }
 
-    def approve(self, transaction_id, approval_data, current_time):
+    def _approve_record(self, transaction_id, approval_data, current_time):
+        """Replay a complete trusted approval record for low-level recovery tests.
+
+        Production callers must use ``approve_exact`` so the HTTP authentication
+        boundary supplies the owner identity while this store derives every
+        other approval field from its immutable transaction data.
+        """
         _validate_timestamp(current_time)
         if not isinstance(approval_data, dict):
             raise ApprovalError("invalid-approval-data")
@@ -1629,6 +1726,124 @@ class TransactionStore:
                 "transactionId": transaction_id,
                 "state": "approved",
                 "sequence": next_seq,
+            }
+
+    def approve_exact(
+        self,
+        transaction_id,
+        expected_plan_hash,
+        approved_by,
+        approved_at,
+        current_time,
+    ):
+        """Approve one stored plan from server-owned immutable binding data.
+
+        The HTTP boundary supplies only the path transaction ID, the hash the
+        owner reviewed, the hashed owner-session audit identity, and server
+        timestamps.  Actor, revisions, idempotency key, and expiry always come
+        from the durable transaction itself.
+        """
+        _validate_timestamp(approved_at)
+        _validate_timestamp(current_time)
+        if approved_at > current_time:
+            raise ApprovalError("future-approval")
+        if not isinstance(expected_plan_hash, str) or not HEX64_RE.fullmatch(
+            expected_plan_hash
+        ):
+            raise ApprovalError("invalid-plan-hash")
+        if (
+            not isinstance(approved_by, str)
+            or re.fullmatch(r"owner-[0-9a-f]{16}", approved_by) is None
+        ):
+            raise ApprovalError("invalid-owner-approval-identity")
+        try:
+            _validate_approver_id(approved_by)
+        except ValidationRejected as exc:
+            raise ApprovalError("invalid-approval-data", exc.code) from exc
+
+        with self._lock:
+            try:
+                loaded = self._read_transaction(
+                    transaction_id, allow_unjournaled_approval=True
+                )
+            except TransactionError as exc:
+                raise ApprovalError(exc.code, exc.detail) from exc
+            tx_dir = loaded["txDir"]
+            envelope = loaded["envelope"]
+            binding = loaded["binding"]
+            records = loaded["journal"]
+            if envelope["planHash"] != expected_plan_hash:
+                raise ApprovalError("plan-hash-mismatch")
+
+            current_state = loaded["state"]
+            if current_state == "approved":
+                if loaded["approval"]["approvedBy"] == approved_by:
+                    return {
+                        "transactionId": transaction_id,
+                        "state": "approved",
+                        "sequence": len(records),
+                        "noop": True,
+                    }
+                raise ApprovalError("approval-conflict")
+            if current_state != "awaiting_approval":
+                raise ApprovalError("wrong-state", current_state)
+
+            approval_path = tx_dir / "approval.json"
+            if loaded["approval"] is not None:
+                if loaded["approval"]["approvedBy"] != approved_by:
+                    raise ApprovalError("approval-conflict")
+                approval_record = loaded["approval"]
+            else:
+                approval_record = {
+                    "actor": binding["actor"],
+                    "approvedAt": approved_at,
+                    "approvedBy": approved_by,
+                    "catalogRevision": envelope["catalogRevision"],
+                    "idempotencyKey": binding["idempotencyKey"],
+                    "observedStateRevision": envelope["observedStateRevision"],
+                    "planHash": envelope["planHash"],
+                    "policyRevision": envelope["policyRevision"],
+                    "transactionId": transaction_id,
+                    "validUntil": envelope["plan"]["validUntil"],
+                }
+                if not binding["createdAt"] <= approved_at:
+                    raise ApprovalError("approval-before-transaction")
+                if not approved_at < approval_record["validUntil"]:
+                    raise ApprovalError("approval-expired")
+                if not current_time < approval_record["validUntil"]:
+                    raise ApprovalError("approval-expired")
+                _write_immutable(
+                    approval_path,
+                    canonical_json_bytes(approval_record),
+                    0o600,
+                )
+                if (
+                    self._load_approval(
+                        tx_dir, transaction_id, envelope, binding
+                    )
+                    != approval_record
+                ):
+                    raise IntegrityError("approval-write-verify-failed")
+
+            next_seq = len(records) + 1
+            line = _journal_entry(
+                transaction_id,
+                next_seq,
+                "approved",
+                envelope["planHash"],
+                approval_record["approvedAt"],
+                binding["actor"],
+            )
+            _journal_append(
+                tx_dir / "journal.jsonl",
+                line,
+                expected_actor=binding["actor"],
+            )
+            return {
+                "transactionId": transaction_id,
+                "state": "approved",
+                "sequence": next_seq,
+                "noop": False,
             }
 
     def read(self, transaction_id):
