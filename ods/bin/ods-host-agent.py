@@ -2113,7 +2113,7 @@ def _start_pixel_sharing_change(action, body, route):
                 _write_progress(
                     'pixel-inference',
                     'error',
-                    f'Inference sharing operation failed ({code})',
+                    _public_process_failure('inference_sharing_failed'),
                     error_code='inference_sharing_failed',
                 )
             finally:
