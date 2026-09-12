@@ -16,6 +16,7 @@ const TRANSFERRED_REPO_URL_BYTES: &[u8] = &[
 
 fn repo_url() -> &'static str {
     option_env!("ODS_REPO_URL").unwrap_or(DEFAULT_REPO_URL)
+const CHMOD_CMD: &str = "chmod";
 }
 
 fn install_ref() -> &'static str {
