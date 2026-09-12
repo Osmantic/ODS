@@ -465,6 +465,16 @@ async def _stream_hermes_sse(session_key: str, text: str, request: Request):
     bridge_iter = hermes_bridge.stream_prompt(session_key, text).__aiter__()
     pending: asyncio.Task | None = None
     emit_done = True
+    approval_pending = False
+    approval_denied = False
+
+    async def deny_before_cancel() -> None:
+        nonlocal approval_denied
+        if not approval_pending or approval_denied:
+            return
+        approval_denied = True
+        with contextlib.suppress(Exception):
+            await hermes_bridge.deny_pending_approval(session_key)
 
     async def cancel_pending() -> None:
         nonlocal pending
@@ -482,6 +492,7 @@ async def _stream_hermes_sse(session_key: str, text: str, request: Request):
                 done_set, _ = await asyncio.wait({pending}, timeout=_KEEPALIVE_INTERVAL)
             except asyncio.CancelledError:
                 emit_done = False
+                await deny_before_cancel()
                 await cancel_pending()
                 raise
             if not done_set:
@@ -489,6 +500,7 @@ async def _stream_hermes_sse(session_key: str, text: str, request: Request):
                 # before sending more bytes, then emit a keepalive comment.
                 if await request.is_disconnected():
                     emit_done = False
+                    await deny_before_cancel()
                     await cancel_pending()
                     return
                 yield _SSE_KEEPALIVE
@@ -544,7 +556,15 @@ async def _stream_hermes_sse(session_key: str, text: str, request: Request):
                     "tool": None,
                     "detail": None,
                 })
+            elif et == "approval":
+                approval_pending = True
+                yield _sse_event("approval", {
+                    "command": str(event.get("command") or "")[:500],
+                    "description": str(event.get("description") or "")[:500],
+                    "choices": ["once", "deny"],
+                })
             elif et == "complete":
+                approval_pending = False
                 yield _sse_event("complete", {
                     "session_id": event.get("session_id", ""),
                     "text": event.get("text", ""),
@@ -552,6 +572,7 @@ async def _stream_hermes_sse(session_key: str, text: str, request: Request):
                     "warning": event.get("warning"),
                 })
     finally:
+        await deny_before_cancel()
         await cancel_pending()
         if emit_done:
             yield _sse_event("done", {})
@@ -658,6 +679,22 @@ async def talk_message_stream(payload: dict[str, Any], request: Request) -> Stre
         media_type="text/event-stream",
         headers=headers,
     )
+
+
+@router.post("/api/talk/approval")
+async def talk_approval(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    """Answer the one pending Hermes tool approval for this Talk session."""
+    session_key, _expires_at = _require_session(request)
+    if set(payload) != {"choice"} or payload.get("choice") not in {"once", "deny"}:
+        raise HTTPException(status_code=422, detail="Choice must be 'once' or 'deny'.")
+
+    try:
+        accepted = await hermes_bridge.respond_approval(session_key, payload["choice"])
+    except hermes_bridge.HermesBridgeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    if not accepted:
+        raise HTTPException(status_code=409, detail="No pending approval for this session.")
+    return {"accepted": True, "choice": payload["choice"]}
 
 
 def _classify_attachment(file: UploadFile) -> str:

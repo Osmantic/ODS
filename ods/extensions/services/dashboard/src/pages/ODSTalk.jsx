@@ -83,6 +83,9 @@ export default function ODSTalk() {
   const recorderRef = useRef(null)
   const recordingChunksRef = useRef([])
   const streamControllerRef = useRef(null)
+  // React state disables the buttons visibly; this synchronous guard closes
+  // the smaller window before that state update paints.
+  const approvalRequestsRef = useRef(new Set())
   // Track the currently-playing TTS state so we can shut down whatever
   // is in flight before starting the next reply's audio.
   const activeSpeechRef = useRef(null)
@@ -364,6 +367,52 @@ export default function ODSTalk() {
     }
   }, [spokenReplies, voiceState.tts, stopActiveSpeech])
 
+  const submitApproval = useCallback(async (messageId, choice) => {
+    if (!['once', 'deny'].includes(choice) || approvalRequestsRef.current.has(messageId)) return
+    approvalRequestsRef.current.add(messageId)
+    setMessages(items => items.map(item =>
+      item.id === messageId && item.approval
+        ? { ...item, approval: { ...item.approval, responding: true, error: null } }
+        : item,
+    ))
+
+    try {
+      const resp = await fetch('/api/talk/approval', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ choice }),
+      })
+      if (resp.status === 401) {
+        setStatus('expired')
+        setStatusText('Session expired. Scan the owner card again.')
+        throw new Error('Session expired.')
+      }
+      if (!resp.ok) throw new Error(await parseError(resp, 'Approval response failed.'))
+
+      setMessages(items => items.map(item =>
+        item.id === messageId
+          ? { ...item, approval: null, statusLabel: null, statusTool: null, statusDetail: null }
+          : item,
+      ))
+    } catch (err) {
+      setMessages(items => items.map(item =>
+        item.id === messageId && item.approval
+          ? {
+              ...item,
+              approval: {
+                ...item.approval,
+                responding: false,
+                error: err.message || 'Approval response failed.',
+              },
+            }
+          : item,
+      ))
+    } finally {
+      approvalRequestsRef.current.delete(messageId)
+    }
+  }, [])
+
   const sendText = useCallback(async (text, { transcriptId = null, attachment = null } = {}) => {
     const clean = text.trim()
     // Allow an attachment with no text — the backend supplies a default
@@ -480,7 +529,7 @@ export default function ODSTalk() {
             // render the accumulated text rather than a spinner.
             setMessages(items => items.map(item =>
               item.id === assistantId
-                ? { ...item, text: snapshot, status: 'pending', statusLabel: null, statusTool: null, statusDetail: null }
+                ? { ...item, text: snapshot, status: 'pending', statusLabel: null, statusTool: null, statusDetail: null, approval: null }
                 : item,
             ))
           } else if (payload.type === 'status') {
@@ -500,6 +549,22 @@ export default function ODSTalk() {
             finalWarning = payload.warning || null
           } else if (payload.type === 'error') {
             errorDetail = payload.detail || 'Hermes did not finish the response.'
+          } else if (payload.type === 'approval') {
+            const command = typeof payload.command === 'string' ? payload.command : ''
+            const description = typeof payload.description === 'string' ? payload.description : ''
+            setMessages(items => items.map(item =>
+              item.id === assistantId
+                ? {
+                    ...item,
+                    approval: {
+                      command,
+                      description,
+                      responding: false,
+                      error: null,
+                    },
+                  }
+                : item,
+            ))
           }
         }
       }
@@ -508,7 +573,7 @@ export default function ODSTalk() {
       const reply = assembled || 'I did not get a response back.'
       setMessages(items => items.map(item =>
         item.id === assistantId
-          ? { ...item, text: reply, status: 'done', warning: finalWarning }
+          ? { ...item, text: reply, status: 'done', warning: finalWarning, approval: null }
           : item,
       ))
       speak(reply)
@@ -519,7 +584,7 @@ export default function ODSTalk() {
       } else {
         setMessages(items => items.map(item =>
           item.id === assistantId
-            ? { ...item, text: err.message || 'Something went wrong.', status: 'error' }
+            ? { ...item, text: err.message || 'Something went wrong.', status: 'error', approval: null }
             : item,
         ))
       }
@@ -686,7 +751,11 @@ export default function ODSTalk() {
         <main className="flex-1 overflow-y-auto px-4 py-4">
           <div className="space-y-3">
             {messages.map(message => (
-              <MessageBubble key={message.id} message={message} />
+              <MessageBubble
+                key={message.id}
+                message={message}
+                onApproval={choice => submitApproval(message.id, choice)}
+              />
             ))}
             <div ref={bottomRef} />
           </div>
@@ -801,7 +870,7 @@ export default function ODSTalk() {
   )
 }
 
-function MessageBubble({ message }) {
+function MessageBubble({ message, onApproval }) {
   const user = message.role === 'user'
   return (
     <div className={`flex ${user ? 'justify-end' : 'justify-start'}`}>
@@ -814,7 +883,47 @@ function MessageBubble({ message }) {
               : 'rounded-bl-md border border-zinc-200 bg-white text-zinc-900'
         }`}
       >
-        {message.status === 'pending' && !message.text ? (
+        {message.approval ? (
+          <div className="space-y-3" aria-live="polite">
+            {message.text && (
+              <div className="space-y-0 text-[15px] leading-6">
+                <ReactMarkdown components={MARKDOWN_COMPONENTS}>{message.text}</ReactMarkdown>
+              </div>
+            )}
+            <div>
+              <p className="font-medium text-zinc-900">Permission required</p>
+              {message.approval.description && (
+                <p className="mt-1 text-sm text-zinc-600">{message.approval.description}</p>
+              )}
+              {message.approval.command && (
+                <code className="mt-2 block whitespace-pre-wrap break-all rounded-lg bg-zinc-100 px-2.5 py-2 text-xs text-zinc-800">
+                  {message.approval.command}
+                </code>
+              )}
+            </div>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => onApproval('once')}
+                disabled={message.approval.responding}
+                className="rounded-lg bg-zinc-950 px-3 py-1.5 text-sm font-medium text-white disabled:cursor-wait disabled:opacity-50"
+              >
+                Allow once
+              </button>
+              <button
+                type="button"
+                onClick={() => onApproval('deny')}
+                disabled={message.approval.responding}
+                className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-700 disabled:cursor-wait disabled:opacity-50"
+              >
+                Deny
+              </button>
+            </div>
+            {message.approval.error && (
+              <p className="text-xs text-red-600" role="alert">{message.approval.error}</p>
+            )}
+          </div>
+        ) : message.status === 'pending' && !message.text ? (
           // While the assistant is working but hasn't streamed any tokens
           // yet, the spinner shows a dynamic caption sourced from the
           // bridge's tool events ("Searching the web…", "Running code…",
