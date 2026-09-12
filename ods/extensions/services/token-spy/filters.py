@@ -261,10 +261,17 @@ def _filter_history(body: dict, cfg: dict, result: FilterResult,
                     result.messages_removed += 1
                     continue
                 if msg.get("role") == "assistant" and msg.get("tool_calls"):
-                    # Keep the assistant message but strip tool_calls
                     msg = dict(msg)  # shallow copy
                     del msg["tool_calls"]
                     result.tool_chains_dropped += 1
+                    # Tool-only replies commonly omit content or set it to null.
+                    # Once their calls are retired, they have no payload left.
+                    # Preserve text/parts and non-text assistant payloads.
+                    if msg.get("content") is None and not any(
+                        msg.get(key) for key in ("refusal", "audio", "function_call")
+                    ):
+                        result.messages_removed += 1
+                        continue
                 new_unit.append(msg)
             units[i] = new_unit
 
