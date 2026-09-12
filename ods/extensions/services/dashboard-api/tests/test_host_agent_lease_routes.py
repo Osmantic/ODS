@@ -577,3 +577,272 @@ def test_sync_config_authenticates_lease_before_noop(host_server, host_request):
     assert result == {"error": {"code": "lease-token-mismatch"}}
     assert not (directory / "config").exists()
     assert submitted["leaseToken"] not in json.dumps(result)
+
+
+@pytest.mark.parametrize("action", ["start", "stop"])
+def test_malformed_start_stop_lease_fails_before_lock_or_compose(
+    host_server, host_request, monkeypatch, action
+):
+    agent, _listener = host_server
+    compose_calls = []
+    monkeypatch.setattr(
+        agent,
+        "docker_compose_action",
+        lambda *args: (compose_calls.append(args) or (True, "")),
+    )
+
+    status, result = host_request(
+        f"/v1/extension/{action}",
+        {"service_id": "documents", "lease": {"schema": "wrong"}},
+    )
+
+    assert status == 422
+    assert result == {"error": {"code": "invalid-lease-request"}}
+    assert compose_calls == []
+    assert agent._extension_lease_manager is None
+    assert dict(agent._service_locks) == {}
+
+
+@pytest.mark.parametrize("action", ["start", "stop"])
+def test_start_stop_without_lease_releases_lock_before_response(
+    host_server, host_request, monkeypatch, action
+):
+    agent, _listener = host_server
+    agent._service_locks = collections.defaultdict(CountingLock)
+    lock = agent._service_locks["documents"]
+    original_json_response = agent.json_response
+    locked_at_response = []
+
+    def observed_json_response(handler, code, body, **kwargs):
+        if body.get("service_id") == "documents":
+            locked_at_response.append(lock.locked())
+        return original_json_response(handler, code, body, **kwargs)
+
+    monkeypatch.setattr(agent, "_read_progress_status", lambda _sid: "complete")
+    monkeypatch.setattr(agent, "docker_compose_action", lambda *_args: (True, ""))
+    monkeypatch.setattr(agent, "json_response", observed_json_response)
+    status, result = host_request(
+        f"/v1/extension/{action}",
+        {"service_id": "documents"},
+        expect_no_store=False,
+    )
+
+    assert status == 200
+    assert result == {
+        "status": "ok",
+        "service_id": "documents",
+        "action": action,
+    }
+    assert lock.acquire_calls == 1
+    assert locked_at_response == [False]
+    assert not lock.locked()
+
+
+@pytest.mark.parametrize("action", ["start", "stop"])
+def test_valid_start_stop_lease_covers_compose_without_reacquiring(
+    host_server, host_request, monkeypatch, action
+):
+    agent, _listener = host_server
+    agent._service_locks = collections.defaultdict(CountingLock)
+    grant = acquire_lease(agent, host_request)
+    lock = agent._service_locks["documents"]
+    original_json_response = agent.json_response
+    state_at_response = []
+
+    def observed_compose(service_id, observed_action):
+        state = agent._extension_lease_manager.describe(grant["leaseId"])
+        assert state["active"] is True
+        assert service_id == "documents"
+        assert observed_action == action
+        return True, ""
+
+    def observed_json_response(handler, code, body, **kwargs):
+        if body.get("service_id") == "documents":
+            state = agent._extension_lease_manager.describe(grant["leaseId"])
+            state_at_response.append((state["active"], lock.locked()))
+        return original_json_response(handler, code, body, **kwargs)
+
+    monkeypatch.setattr(agent, "docker_compose_action", observed_compose)
+    monkeypatch.setattr(agent, "json_response", observed_json_response)
+    status, result = host_request(
+        f"/v1/extension/{action}",
+        {
+            "service_id": "documents",
+            "lease": mutation_lease(agent, grant),
+        },
+        expect_no_store=False,
+    )
+
+    assert status == 200
+    assert result == {
+        "status": "ok",
+        "service_id": "documents",
+        "action": action,
+    }
+    assert lock.acquire_calls == 1
+    assert state_at_response == [(False, True)]
+    assert lock.locked()
+    assert agent._extension_lease_manager.describe(grant["leaseId"])["active"] is False
+
+
+def test_retry_start_transfers_active_lease_window_to_worker(
+    host_server, host_request, monkeypatch
+):
+    agent, _listener = host_server
+    agent._service_locks = collections.defaultdict(CountingLock)
+    grant = acquire_lease(agent, host_request)
+    lock = agent._service_locks["documents"]
+    worker_started = threading.Event()
+    allow_worker_exit = threading.Event()
+    spawned = []
+    original_thread = threading.Thread
+
+    def observed_work(service_id):
+        assert service_id == "documents"
+        state = agent._extension_lease_manager.describe(grant["leaseId"])
+        assert state["active"] is True
+        worker_started.set()
+        assert allow_worker_exit.wait(5)
+
+    def recording_thread(*args, **kwargs):
+        thread = original_thread(*args, **kwargs)
+        target = kwargs.get("target")
+        if getattr(target, "__name__", "") == "_thread_target":
+            spawned.append(thread)
+        return thread
+
+    monkeypatch.setattr(agent, "_read_progress_status", lambda _sid: "error")
+    monkeypatch.setattr(agent, "_enable_retry_work", observed_work)
+    monkeypatch.setattr(agent.threading, "Thread", recording_thread)
+
+    status, result = host_request(
+        "/v1/extension/start",
+        {
+            "service_id": "documents",
+            "lease": mutation_lease(agent, grant),
+        },
+        expect_no_store=False,
+    )
+
+    assert status == 202
+    assert result == {
+        "status": "retrying",
+        "service_id": "documents",
+        "action": "start",
+    }
+    assert worker_started.wait(5)
+    assert agent._extension_lease_manager.describe(grant["leaseId"])["active"] is True
+    assert len(spawned) == 1
+    status, busy = host_request(
+        "/v1/extension/lease/release",
+        bound_request(agent._extension_leases.LEASE_SCHEMA, grant),
+    )
+    assert status == 409
+    assert busy == {"error": {"code": "lease-mutation-active"}}
+    allow_worker_exit.set()
+    spawned[0].join(timeout=5)
+    assert not spawned[0].is_alive()
+    assert agent._extension_lease_manager.describe(grant["leaseId"])["active"] is False
+    assert lock.acquire_calls == 1
+    assert lock.locked()
+    status, released = host_request(
+        "/v1/extension/lease/release",
+        bound_request(agent._extension_leases.LEASE_SCHEMA, grant),
+    )
+    assert status == 200
+    assert released["released"] is True
+    assert not lock.locked()
+
+
+def test_retry_thread_start_failure_returns_admission_to_handler(
+    host_server, host_request, monkeypatch
+):
+    agent, _listener = host_server
+    agent._service_locks = collections.defaultdict(CountingLock)
+    grant = acquire_lease(agent, host_request)
+    lock = agent._service_locks["documents"]
+    original_thread = threading.Thread
+    progress = []
+    progress_written = threading.Event()
+
+    class FailingRetryThread:
+        def start(self):
+            raise RuntimeError("synthetic retry thread failure")
+
+    def selective_thread(*args, **kwargs):
+        target = kwargs.get("target")
+        if getattr(target, "__name__", "") == "_thread_target":
+            return FailingRetryThread()
+        return original_thread(*args, **kwargs)
+
+    def record_progress(*args, **kwargs):
+        progress.append((args, kwargs))
+        progress_written.set()
+
+    monkeypatch.setattr(agent, "_read_progress_status", lambda _sid: "error")
+    monkeypatch.setattr(
+        agent,
+        "_write_progress",
+        record_progress,
+    )
+    monkeypatch.setattr(agent.threading, "Thread", selective_thread)
+
+    status, result = host_request(
+        "/v1/extension/start",
+        {
+            "service_id": "documents",
+            "lease": mutation_lease(agent, grant),
+        },
+        expect_no_store=False,
+    )
+
+    assert status == 202
+    assert result["status"] == "retrying"
+    assert progress_written.wait(5)
+    assert progress[-1][0][:3] == ("documents", "error", "Retry failed")
+    assert progress[-1][1]["error"] == "Failed to start retry thread"
+    for _ in range(100):
+        if not agent._extension_lease_manager.describe(grant["leaseId"])["active"]:
+            break
+        threading.Event().wait(0.01)
+    assert agent._extension_lease_manager.describe(grant["leaseId"])["active"] is False
+    assert lock.acquire_calls == 1
+    assert lock.locked()
+
+
+def test_start_compose_exception_clears_active_lease_window(
+    host_server, host_request, monkeypatch
+):
+    agent, _listener = host_server
+    agent._service_locks = collections.defaultdict(CountingLock)
+    grant = acquire_lease(agent, host_request)
+    lock = agent._service_locks["documents"]
+    original_json_response = agent.json_response
+    state_at_response = []
+
+    def fail_compose(*_args):
+        raise RuntimeError("synthetic compose failure")
+
+    def observed_json_response(handler, code, body, **kwargs):
+        if code == 500:
+            state = agent._extension_lease_manager.describe(grant["leaseId"])
+            state_at_response.append((state["active"], lock.locked()))
+        return original_json_response(handler, code, body, **kwargs)
+
+    monkeypatch.setattr(agent, "docker_compose_action", fail_compose)
+    monkeypatch.setattr(agent, "json_response", observed_json_response)
+    status, result = host_request(
+        "/v1/extension/start",
+        {
+            "service_id": "documents",
+            "lease": mutation_lease(agent, grant),
+        },
+        expect_no_store=False,
+    )
+
+    assert status == 500
+    assert result == {"error": "synthetic compose failure"}
+    assert state_at_response == [(False, True)]
+    assert agent._extension_lease_manager.describe(grant["leaseId"])["active"] is False
+    assert lock.acquire_calls == 1
+    assert lock.locked()

@@ -5964,18 +5964,24 @@ def _enable_retry_work(service_id: str) -> None:
                         error=str(exc)[:500])
 
 
-def _start_enable_retry(handler, service_id: str, lock: threading.Lock) -> None:
+def _start_enable_retry(
+    handler,
+    service_id: str,
+    admission: "_ExtensionMutationAdmission",
+) -> bool:
     """Dispatch the enable-retry worker on a daemon thread.
 
-    The caller must hold ``lock``; the thread releases it on exit. Sends
-    the 202 response before spawning the thread so the HTTP request
-    returns promptly (hook + compose start can take minutes).
+    The caller must have entered ``admission``.  Return ``True`` only when
+    a successfully started worker owns its exit; on response or dispatch
+    failure, return ``False`` so ownership remains with the caller.  Sends
+    the 202 response before spawning the thread so the HTTP request returns
+    promptly (hook + compose start can take minutes).
     """
     def _thread_target() -> None:
         try:
             _enable_retry_work(service_id)
         finally:
-            lock.release()
+            admission.__exit__(None, None, None)
 
     try:
         json_response(handler, 202, {"status": "retrying",
@@ -5983,7 +5989,7 @@ def _start_enable_retry(handler, service_id: str, lock: threading.Lock) -> None:
                                      "action": "start"})
         threading.Thread(target=_thread_target, daemon=True).start()
     except Exception:
-        lock.release()
+        logger.exception("Failed to dispatch enable-retry for %s", service_id)
         # If 202 was already sent, the dashboard expects a progress
         # transition. Without this, the stale "error" from the prior
         # failed install stays visible. Best-effort write — if progress
@@ -5993,7 +5999,8 @@ def _start_enable_retry(handler, service_id: str, lock: threading.Lock) -> None:
                             error="Failed to start retry thread")
         except Exception:
             pass
-        raise
+        return False
+    return True
 
 
 def json_response(handler, code: int, body: dict, *, no_store=False):
@@ -8932,39 +8939,59 @@ class AgentHandler(BaseHTTPRequestHandler):
         body = read_json_body(self)
         if body is None:
             return
+        lease_evidence = _parse_extension_mutation_lease(self, body)
+        if lease_evidence is _EXTENSION_MUTATION_LEASE_REJECTED:
+            return
         service_id = validate_service_id(self, body)
         if service_id is None:
             return
         logger.info("%s extension: %s", action, service_id)
-        lock = _service_locks[service_id]
-        if not lock.acquire(blocking=False):
-            json_response(self, 409, {"error": f"Operation already in progress for {service_id}"})
-            return
 
-        # Enable-retry path: if a prior install left progress status=error,
-        # "start" must re-run the post_install hook (if declared) and write
-        # progress updates — otherwise the UI stays stuck on the old error and
-        # env vars populated by the hook never get regenerated. Hook + start
-        # can take minutes, so mirror _handle_install's 202-accept-then-thread
-        # pattern. Non-retry start/stop keeps the existing synchronous path.
-        if action == "start" and _read_progress_status(service_id) == "error":
-            _start_enable_retry(self, service_id, lock)
-            return
-
+        admission = _ExtensionMutationAdmission(
+            self,
+            lease_evidence,
+            (service_id,),
+        )
         try:
-            ok, err = docker_compose_action(service_id, action)
-        except RuntimeError as exc:
-            json_response(self, 500, {"error": str(exc)})
+            admission.__enter__()
+        except _ExtensionMutationAdmissionRejected:
             return
-        except subprocess.CalledProcessError as exc:
-            json_response(self, 500, {"error": f"Compose resolution failed: {exc.stderr[:300]}"})
-            return
+
+        admission_handed_off = False
+        try:
+            # Enable-retry path: if a prior install left progress status=error,
+            # "start" must re-run the post_install hook (if declared) and write
+            # progress updates — otherwise the UI stays stuck on the old error and
+            # env vars populated by the hook never get regenerated. Hook + start
+            # can take minutes, so mirror _handle_install's 202-accept-then-thread
+            # pattern. Non-retry start/stop keeps the existing synchronous path.
+            if action == "start" and _read_progress_status(service_id) == "error":
+                if _start_enable_retry(self, service_id, admission):
+                    admission_handed_off = True
+                return
+
+            try:
+                ok, err = docker_compose_action(service_id, action)
+            except RuntimeError as exc:
+                response_status, response_body = 500, {"error": str(exc)}
+            except subprocess.CalledProcessError as exc:
+                response_status, response_body = 500, {
+                    "error": f"Compose resolution failed: {exc.stderr[:300]}"
+                }
+            else:
+                if ok:
+                    response_status, response_body = 200, {
+                        "status": "ok",
+                        "service_id": service_id,
+                        "action": action,
+                    }
+                else:
+                    response_status = 503 if "timed out" in err else 500
+                    response_body = {"error": err}
         finally:
-            lock.release()
-        if ok:
-            json_response(self, 200, {"status": "ok", "service_id": service_id, "action": action})
-        else:
-            json_response(self, 503 if "timed out" in err else 500, {"error": err})
+            if not admission_handed_off:
+                admission.__exit__(None, None, None)
+        json_response(self, response_status, response_body)
 
     def _handle_extension_compose_toggle(self, activate: bool):
         """Rename compose.yaml.disabled <-> compose.yaml for an extension.
