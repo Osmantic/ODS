@@ -185,28 +185,38 @@ def _strip_markdown_sections(text: str, section_headings: list[str]) -> tuple[st
 
     Returns (modified_text, list_of_stripped_heading_names).
     """
+    selected = {heading.rstrip() for heading in section_headings
+                if re.match(r"^#{1,6}[ \t]+", heading)}
     stripped = []
-    for heading in section_headings:
-        # Determine heading level from the heading string
-        m = re.match(r'^(#{1,6})\s+', heading)
-        if not m:
-            continue
-        level = len(m.group(1))
-        # Pattern: match the heading line, then everything until the next heading
-        # at the same or higher level (fewer or equal #), or end of string
-        escaped = re.escape(heading)
-        pattern = re.compile(
-            rf'^{escaped}\s*\n'       # the heading line
-            rf'(.*?)'                  # content (non-greedy)
-            rf'(?=^#{{1,{level}}}\s|\Z)',  # lookahead: next heading at same/higher level or EOF
-            re.MULTILINE | re.DOTALL
-        )
-        new_text, count = pattern.subn('', text)
-        if count > 0:
-            stripped.append(heading)
-            text = new_text
+    kept = []
+    fence = None
+    skip_level = None
+    # A heading inside a fenced example is literal prompt content.
+    for line in re.findall(r"[^\r\n]*(?:\r\n?|\n|$)", text):
+        content = line.rstrip("\r\n")
+        marker = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", content)
+        if fence is not None:
+            if (marker and marker[1][0] == fence[0]
+                    and len(marker[1]) >= len(fence) and not marker[2].strip()):
+                fence = None
+        elif marker and (marker[1][0] == "~" or "`" not in marker[2]):
+            fence = marker[1]
+        else:
+            heading = re.match(r"^ {0,3}(#{1,6})(?:[ \t]+|$)", content)
+            if heading:
+                level = len(heading[1])
+                if skip_level is not None and level <= skip_level:
+                    skip_level = None
+                name = content.strip()
+                if name in selected:
+                    if skip_level is None:
+                        skip_level = level
+                    if name not in stripped:
+                        stripped.append(name)
+        if skip_level is None:
+            kept.append(line)
+    return "".join(kept), stripped
 
-    return text, stripped
 
 
 # ── Filter 3: Conversation History ───────────────────────────────────────────
