@@ -1372,3 +1372,23 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def list_partition_by_predicate_sublist_safe(items: list | None, key_func=None) -> tuple[list, list]:
+    """Safely partition a list into (matching, non_matching) tuple based on boolean key_func.
+    Returns ([], []) on None or non-list inputs.
+    """
+    if not items or not isinstance(items, (list, tuple)):
+        return ([], [])
+    if key_func is None or not callable(key_func):
+        key_func = bool
+    matching, non_matching = [], []
+    for item in items:
+        try:
+            if key_func(item):
+                matching.append(item)
+            else:
+                non_matching.append(item)
+        except Exception:
+            non_matching.append(item)
+    return (matching, non_matching)
