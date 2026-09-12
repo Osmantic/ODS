@@ -20,6 +20,7 @@ if str(DASHBOARD_API_DIR) not in sys.path:
     sys.path.insert(0, str(DASHBOARD_API_DIR))
 
 import assistant_first_planner as planner  # noqa: E402
+import extension_operation_locks as operation_locks  # noqa: E402
 import extension_transaction_executor as executor_mod  # noqa: E402
 import extension_transactions as transactions  # noqa: E402
 
@@ -309,7 +310,9 @@ def create_and_approve(store, envelope: dict):
     return descriptor
 
 
-def make_executor(store, adapter=None, observer=None, verifier=None):
+def make_executor(
+    store, adapter=None, observer=None, verifier=None, lock_factory=None
+):
     if observer is None:
         observer = RecordingObserver()
     if adapter is None:
@@ -318,10 +321,12 @@ def make_executor(store, adapter=None, observer=None, verifier=None):
         adapter.observer = observer
     if verifier is None:
         verifier = AlwaysTrueVerifier()
+    if lock_factory is None:
+        lock_factory = NoOpLockFactory()
     return executor_mod.TransactionExecutor(
         store=store,
         verifier=verifier,
-        lock_factory=NoOpLockFactory(),
+        lock_factory=lock_factory,
         adapter=adapter,
         observer=observer,
         actor=ACTOR,
@@ -367,6 +372,24 @@ def test_approved_only_execution(tmp_path):
     # Verify terminal state in store
     loaded = store.read(txn_id)
     assert loaded["state"] == "committed"
+
+
+def test_executor_accepts_the_shared_canonical_file_lock_factory(tmp_path):
+    store = transactions.TransactionStore(tmp_path / "store")
+    envelope = build_envelope(service_ids=["voice", "documents"])
+    descriptor = create_and_approve(store, envelope)
+    lock_root = tmp_path / "locks"
+    lock_factory = operation_locks.FileServiceLockFactory(lock_root, timeout=1)
+
+    result = make_executor(store, lock_factory=lock_factory).execute(
+        descriptor["transactionId"], envelope["planHash"]
+    )
+
+    assert result.final_state == "committed"
+    assert [
+        operation_locks.operation_lock_path(lock_root, service_id).is_file()
+        for service_id in ("documents", "voice")
+    ] == [True, True]
 
 
 def test_every_host_call_carries_the_exact_immutable_binding(tmp_path):

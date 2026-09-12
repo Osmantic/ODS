@@ -36,14 +36,7 @@ from host_agent_client import (
     request_text as request_agent_text,
 )
 from security import verify_api_key
-
-try:
-    import fcntl
-except ImportError:  # pragma: no cover - only hit on Windows hosts
-    fcntl = None
-    import msvcrt
-else:  # pragma: no cover - platform branch
-    msvcrt = None
+from extension_operation_locks import exclusive_file_lock, lock_services
 
 logger = logging.getLogger(__name__)
 
@@ -1003,27 +996,8 @@ def _check_agent_health() -> bool:
 @contextlib.contextmanager
 def _exclusive_file_lock(lock_path: Path):
     """Acquire a cross-process exclusive lock for one lock file."""
-    lockfile = open(lock_path, "a+b")
-    try:
-        if fcntl is not None:
-            fcntl.flock(lockfile, fcntl.LOCK_EX)
-        elif msvcrt is not None:
-            lockfile.seek(0, os.SEEK_END)
-            if lockfile.tell() == 0:
-                lockfile.write(b"\0")
-                lockfile.flush()
-            lockfile.seek(0)
-            msvcrt.locking(lockfile.fileno(), msvcrt.LK_LOCK, 1)
+    with exclusive_file_lock(lock_path):
         yield
-    finally:
-        try:
-            if fcntl is not None:
-                fcntl.flock(lockfile, fcntl.LOCK_UN)
-            elif msvcrt is not None:
-                lockfile.seek(0)
-                msvcrt.locking(lockfile.fileno(), msvcrt.LK_UNLCK, 1)
-        finally:
-            lockfile.close()
 
 
 @contextlib.contextmanager
@@ -1037,14 +1011,7 @@ def _extensions_lock():
 def _extension_operation_lock(service_id: str):
     """Serialize the complete lifecycle transaction for one extension."""
     lock_parent = _extensions_lock_path().parent.resolve()
-    lock_dir = lock_parent / ".extension-operation-locks"
-    if lock_dir.is_symlink():
-        raise OSError("Extension operation lock directory is a symlink")
-    lock_dir.mkdir(parents=True, exist_ok=True)
-    if not lock_dir.resolve().is_relative_to(lock_parent):
-        raise OSError("Invalid extension operation lock directory")
-    lock_name = hashlib.sha256(service_id.encode("utf-8")).hexdigest() + ".lock"
-    with _exclusive_file_lock(lock_dir / lock_name):
+    with lock_services(lock_parent, [service_id]):
         yield
 
 

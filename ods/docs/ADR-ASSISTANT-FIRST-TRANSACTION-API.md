@@ -67,6 +67,21 @@ evidence fails closed and enters the existing reconciliation path. Execution
 receipts return the stored plan hash from the executor result rather than
 independently reflecting request input.
 
+Single-extension Dashboard mutations and the composite executor now share one
+file-lock implementation and namespace under
+`<ODS_DATA_DIR>/.extension-operation-locks`. Service IDs are validated before
+path creation, filenames are SHA-256-derived, symlinked directories and files
+fail closed, and composite lock sets are deduplicated and acquired in lexical
+service-ID order before caller code can run. A bounded composite acquisition
+unwinds every already-held lock if any later lock times out.
+
+This source foundation does not yet make the host agent a second lock owner.
+The current Dashboard routes call host-agent lifecycle endpoints while holding
+their operation lock, so making the callee acquire the same lock would
+self-deadlock. Production execution remains disabled until a host-owned lease
+or equivalent non-reentrant cross-process protocol binds caller and callee to
+the same transaction.
+
 ## Why disabled by default
 
 ODS does not yet have production lifecycle adapters with durable, synchronous
@@ -76,7 +91,7 @@ those adapters and cross-path locks are qualified would create false-success
 and collision risks.
 
 Lifecycle execution therefore remains unavailable by default and in the
-production runtime. The next phase must add the host-owned adapter,
-cross-path locking, backup/restore, strict offline behavior, and real Linux
+production runtime. The next phase must add the host-owned adapter and lease
+protocol, backup/restore, strict offline behavior, and real Linux
 qualification before advertising execution. Existing Full, Core, Custom, and
 single-extension routes remain unchanged.
