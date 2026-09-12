@@ -89,6 +89,15 @@ except Exception:  # pragma: no cover - import environment dependent
     _remote_provider_public_probe_receipt = None
     _remote_provider_ssh_supervisor_plan = None
 
+try:
+    from assistant_first_secret_store import (
+        AssistantFirstSecretStore as _AssistantFirstSecretStore,
+        SecretStoreError as _AssistantFirstSecretStoreError,
+    )
+except Exception:  # pragma: no cover - import environment dependent
+    _AssistantFirstSecretStore = None
+    _AssistantFirstSecretStoreError = RuntimeError
+
 _MODEL_MEMORY_PATH = (
     Path(__file__).resolve().parent.parent
     / "extensions"
@@ -119,6 +128,7 @@ PIXEL_OPS_STATUS_KIND = "ods-pixel-operations-status"
 # never contain a path separator or ".." and escape BACKUP_DIR.
 BACKUP_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 MAX_BODY = 16384
+_ASSISTANT_SECRET_MAX_BODY = 64 * 1024
 MAX_TELEMETRY_RESPONSE_BYTES = 1024 * 1024
 SUBPROCESS_TIMEOUT_START = 600  # 10 min — image pulls can be slow
 SUBPROCESS_TIMEOUT_STOP = 120   # 2 min — stop should be fast
@@ -146,6 +156,7 @@ _FALLBACK_CORE_IDS = frozenset({
 INSTALL_DIR: Path = Path()
 DATA_DIR: Path = Path()
 AGENT_API_KEY: str = ""
+ASSISTANT_TRANSACTIONS_ENABLED: bool = False
 GPU_BACKEND: str = "nvidia"
 STARTUP_ODS_MODE: str | None = None
 TIER: str = "1"
@@ -5625,6 +5636,14 @@ def _iso_now() -> str:
 
 
 _BEARER_RE = re.compile(r"Bearer\s+[A-Za-z0-9._\-=+/]+", re.IGNORECASE)
+_HTTP_QUERY_COMPONENT_RE = re.compile(r"\?\S*")
+
+
+def _redact_http_request_target(value):
+    """Remove query data from a BaseHTTPRequestHandler log value."""
+    if not isinstance(value, str):
+        return value
+    return _HTTP_QUERY_COMPONENT_RE.sub("?[REDACTED]", value)
 
 
 def _write_progress(service_id: str, status: str, phase_label: str = "",
@@ -6031,12 +6050,17 @@ def _network_supported(handler) -> bool:
 def check_auth(handler) -> bool:
     auth = handler.headers.get("Authorization", "")
     if not auth.startswith("Bearer "):
-        json_response(handler, 401, {"error": "Authorization header required"})
+        json_response(
+            handler,
+            401,
+            {"error": "Authorization header required"},
+            no_store=True,
+        )
         return False
     # Compared as UTF-8 bytes: compare_digest raises TypeError on non-ASCII
     # str, which would turn an unauthenticated request into a 500 not a 403.
     if not secrets.compare_digest(auth[7:].encode("utf-8"), AGENT_API_KEY.encode("utf-8")):
-        json_response(handler, 403, {"error": "Invalid API key"})
+        json_response(handler, 403, {"error": "Invalid API key"}, no_store=True)
         return False
     return True
 
@@ -6091,6 +6115,79 @@ def read_optional_json_body(handler) -> dict | None:
         json_response(handler, 400, {"error": "JSON body must be an object"})
         return None
     return data
+
+
+def _assistant_secret_pairs(pairs: list[tuple[str, object]]) -> dict:
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("duplicate-key")
+        value[key] = item
+    return value
+
+
+def _reject_assistant_secret_number(_value: str) -> None:
+    raise ValueError("non-integer-number")
+
+
+def _read_assistant_secret_body(handler) -> dict | None:
+    """Read one unambiguous bounded JSON object without echoing its values."""
+    lengths = handler.headers.get_all("Content-Length", [])
+    transfer = handler.headers.get_all("Transfer-Encoding", [])
+    if (
+        len(lengths) != 1
+        or transfer
+        or re.fullmatch(r"[0-9]{1,7}", lengths[0]) is None
+    ):
+        json_response(
+            handler,
+            400,
+            {"error": {"code": "invalid-secret-request-framing"}},
+            no_store=True,
+        )
+        return None
+    length = int(lengths[0])
+    if length <= 0 or length > _ASSISTANT_SECRET_MAX_BODY:
+        json_response(
+            handler,
+            413 if length > _ASSISTANT_SECRET_MAX_BODY else 400,
+            {"error": {"code": "secret-request-size"}},
+            no_store=True,
+        )
+        return None
+    raw = handler.rfile.read(length)
+    if len(raw) != length:
+        json_response(
+            handler,
+            400,
+            {"error": {"code": "incomplete-secret-request"}},
+            no_store=True,
+        )
+        return None
+    try:
+        value = json.loads(
+            raw.decode("utf-8", errors="strict"),
+            object_pairs_hook=_assistant_secret_pairs,
+            parse_float=_reject_assistant_secret_number,
+            parse_constant=_reject_assistant_secret_number,
+        )
+    except (UnicodeError, json.JSONDecodeError, TypeError, ValueError):
+        json_response(
+            handler,
+            400,
+            {"error": {"code": "invalid-secret-request"}},
+            no_store=True,
+        )
+        return None
+    if type(value) is not dict:
+        json_response(
+            handler,
+            400,
+            {"error": {"code": "invalid-secret-request"}},
+            no_store=True,
+        )
+        return None
+    return value
 
 
 def validate_service_id(handler, body: dict) -> str | None:
@@ -6421,7 +6518,10 @@ class AgentHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     def log_message(self, fmt, *args):
-        logger.info(fmt, *args)
+        logger.info(
+            _redact_http_request_target(fmt),
+            *(_redact_http_request_target(value) for value in args),
+        )
 
     def do_GET(self):
         parsed = urlparse(self.path)
@@ -6510,6 +6610,70 @@ class AgentHandler(BaseHTTPRequestHandler):
             json_response(self, 503, {"error": "access-transition-unavailable"})
         finally:
             _end_model_lifecycle("pixel_access_mode")
+
+    def _handle_assistant_first_secrets(self, action: str) -> None:
+        """Keep configuration secrets inside the authenticated host boundary."""
+        if not check_auth(self):
+            return
+        if not ASSISTANT_TRANSACTIONS_ENABLED:
+            json_response(
+                self,
+                404,
+                {"error": {"code": "not-found"}},
+                no_store=True,
+            )
+            return
+        body = _read_assistant_secret_body(self)
+        if body is None:
+            return
+        if _AssistantFirstSecretStore is None:
+            json_response(
+                self,
+                503,
+                {"error": {"code": "secret-store-unavailable"}},
+                no_store=True,
+            )
+            return
+        try:
+            store = _AssistantFirstSecretStore(DATA_DIR)
+            operation = {
+                "stage": store.stage,
+                "status": store.status,
+                "delete": store.delete,
+            }[action]
+            result = operation(body)
+            json_response(self, 200, result, no_store=True)
+        except _AssistantFirstSecretStoreError as exc:
+            code = getattr(exc, "code", "secret-store-unavailable")
+            if not isinstance(code, str):
+                code = "secret-store-unavailable"
+            if code == "secret-record-not-found":
+                status_code = 404
+            elif code == "secret-store-platform-unqualified":
+                status_code = 501
+            elif code in {
+                "secret-binding-mismatch",
+                "secret-reference-mismatch",
+                "secret-idempotency-conflict",
+            }:
+                status_code = 409
+            elif code.startswith("invalid-") or code == "secret-document-too-large":
+                status_code = 400
+            else:
+                status_code = 503
+            json_response(
+                self,
+                status_code,
+                {"error": {"code": code}},
+                no_store=True,
+            )
+        except (KeyError, OSError, TypeError, ValueError):
+            json_response(
+                self,
+                503,
+                {"error": {"code": "secret-store-unavailable"}},
+                no_store=True,
+            )
 
     def _handle_pixel_ops_status(self, query: dict[str, list[str]]):
         """Return one exact, nonsecret Operations result projection.
@@ -6953,7 +7117,13 @@ class AgentHandler(BaseHTTPRequestHandler):
         # parsed as the next request on an HTTP/1.1 keep-alive connection. GET
         # polling remains reusable, which is where connection churn matters.
         self.close_connection = True
-        if self.path == "/v1/pixel/access-mode":
+        if self.path in {
+            "/v1/assistant-first/secrets/stage",
+            "/v1/assistant-first/secrets/status",
+            "/v1/assistant-first/secrets/delete",
+        }:
+            self._handle_assistant_first_secrets(self.path.rsplit("/", 1)[1])
+        elif self.path == "/v1/pixel/access-mode":
             self._handle_pixel_access_mode(True)
         elif self.path in ("/v1/extension/start", "/v1/extension/stop"):
             action = "start" if self.path.endswith("/start") else "stop"
@@ -15494,7 +15664,8 @@ def _request_server_shutdown(server, signum=None):
 
 
 def main():
-    global INSTALL_DIR, DATA_DIR, AGENT_API_KEY, GPU_BACKEND, STARTUP_ODS_MODE
+    global INSTALL_DIR, DATA_DIR, AGENT_API_KEY, ASSISTANT_TRANSACTIONS_ENABLED
+    global GPU_BACKEND, STARTUP_ODS_MODE
     global TIER, GPU_COUNT, CORE_SERVICE_IDS
     global USER_EXTENSIONS_DIR, EXTENSIONS_DIR, ODS_VERSION
 
@@ -15530,6 +15701,9 @@ def main():
     if not AGENT_API_KEY:
         logger.error("Neither ODS_AGENT_KEY nor DASHBOARD_API_KEY set in .env")
         sys.exit(1)
+    ASSISTANT_TRANSACTIONS_ENABLED = _env_value_is_true(
+        env.get("ODS_ASSISTANT_TRANSACTIONS_ENABLED")
+    )
     GPU_BACKEND = env.get("GPU_BACKEND", "nvidia")
     if _switchboard_state is not None:
         try:
