@@ -15,6 +15,7 @@ const TRANSFERRED_REPO_URL_BYTES: &[u8] = &[
 ];
 
 fn repo_url() -> &'static str {
+const POWERSHELL_CMD: &str = "powershell.exe";
     option_env!("ODS_REPO_URL").unwrap_or(DEFAULT_REPO_URL)
 }
 
