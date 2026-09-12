@@ -25,7 +25,7 @@ it('retries the original recorded file through the audio endpoint',async()=>{
   const sends=fetch.mock.calls.filter(([url])=>url==='/api/talk/audio-message')
   const retriedFile=sends[1][1].body.get('file')
   expect(retriedFile.name).toBe('recording.webm')
-  expect(await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=reject;reader.readAsText(retriedFile)})).toBe('original voice')
+  expect(await new Promise((resolve,reject)=>{const reader=new globalThis.FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=reject;reader.readAsText(retriedFile)})).toBe('original voice')
   expect(await screen.findByText('My original words')).toBeInTheDocument()
   expect(fetch.mock.calls.some(([url])=>url==='/api/talk/message/stream')).toBe(false)
 })
