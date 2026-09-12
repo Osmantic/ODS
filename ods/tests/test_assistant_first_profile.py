@@ -180,10 +180,27 @@ class AssistantFirstProfileTests(unittest.TestCase):
     def test_profile_is_opt_in_and_blocks_legacy_conversion(self) -> None:
         installer = (ROOT / "install-core.sh").read_text(encoding="utf-8")
         features = (ROOT / "installers/phases/03-features.sh").read_text(encoding="utf-8")
+        directories = (ROOT / "installers/phases/06-directories.sh").read_text(
+            encoding="utf-8"
+        )
+        base = yaml.safe_load(
+            (ROOT / "docker-compose.base.yml").read_text(encoding="utf-8")
+        )
         self.assertIn("--assistant-first", installer)
         self.assertIn('ODS_INSTALL_PROFILE="${ODS_INSTALL_PROFILE:-legacy}"', installer)
         self.assertIn("fresh installs during public beta", installer)
         self.assertIn("fresh installs during public beta", features)
+        self.assertIn(
+            "ODS_ASSISTANT_TRANSACTIONS_ENABLED_VALUE=true", directories
+        )
+        self.assertIn(
+            "ODS_ASSISTANT_TRANSACTIONS_ENABLED=${ODS_ASSISTANT_TRANSACTIONS_ENABLED_VALUE}",
+            directories,
+        )
+        self.assertIn(
+            "ODS_ASSISTANT_TRANSACTIONS_ENABLED=${ODS_ASSISTANT_TRANSACTIONS_ENABLED:-false}",
+            base["services"]["dashboard-api"]["environment"],
+        )
 
     @unittest.skipUnless(shutil.which("docker"), "Docker CLI is unavailable")
     def test_candidate_minimum_compose_renders_without_optional_services(self) -> None:

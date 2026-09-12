@@ -372,28 +372,29 @@ export function createHostObserveTool({
 }
 
 const EXTENSION_READ_BOUNDARY =
-  "Read-only ODS extension discovery through the external Operations Broker. This receipt grants no authority to install, configure, or change an extension.";
+  "ODS extension discovery and host-authoritative planning through the external Operations Broker. A proposal may persist an awaiting-approval transaction, but this tool grants no authority to approve, execute, configure, or change an extension.";
 
 export function createExtensionReadTool({ requestDir = REQUEST_DIR, resultDir, timeoutMs, pollIntervalMs } = {}) {
   return {
     name: "pixel_ods_extensions",
     description:
-      "Search the ODS catalog of library extensions and built-in services, list their states, or inspect declared environment configuration. Catalog absence does not prove ODS lacks a capability. Empty configuration arrays mean no declared keys, not verified runtime prerequisites. Choose search, list, or inspect as needed. The default target is ods-host; explicit targets are preserved and validated by the broker. This read-only tool waits for a receipt and cannot install, enable, configure, remove, or approve anything.",
+      "Search the ODS catalog, list extension states, inspect declared configuration, or request one host-authoritative exact plan. Planning persists only an awaiting-approval proposal and cannot approve, execute, configure, or change an extension. Catalog absence does not prove ODS lacks a capability. The default target is ods-host; explicit targets are preserved and validated by the broker.",
     parameters: {
       type: "object", additionalProperties: false, required: ["action"],
       properties: {
-        action: { type: "string", enum: ["search", "list", "inspect"] },
+        action: { type: "string", enum: ["search", "list", "inspect", "request-plan"] },
         target: { type: "string", minLength: 2, maxLength: 64 },
         query: { type: "string", minLength: 1, maxLength: 80, pattern: "^[A-Za-z0-9 _/+:#.\\-]{1,80}$", description: "Short catalog keywords; defaults to all when omitted for search." },
         serviceId: { type: "string", pattern: "^[a-z0-9][a-z0-9._-]{0,63}$", description: "Exact catalog extension ID required for inspect." },
+        request: { type: "string", pattern: "^(install|enable|disable|remove):[a-z0-9][a-z0-9-]{0,63}$", description: "Exact requested lifecycle intent required for request-plan." },
       },
     },
     execute: async (_toolCallId, params) => {
       const invalid = (message) => errorResult(message, EXTENSION_READ_BOUNDARY);
       if (!params || typeof params !== "object" || Array.isArray(params) ||
-          Object.keys(params).some((key) => !["action", "target", "query", "serviceId"].includes(key)) ||
-          !["search", "list", "inspect"].includes(params.action)) {
-        return invalid("Choose one read-only extension action: search, list, or inspect.");
+          Object.keys(params).some((key) => !["action", "target", "query", "serviceId", "request"].includes(key)) ||
+          !["search", "list", "inspect", "request-plan"].includes(params.action)) {
+        return invalid("Choose search, list, inspect, or request-plan.");
       }
       const target = params.target === undefined ? "ods-host" : params.target;
       if (typeof target !== "string" || target.length < 2 || target.length > 64) {
@@ -401,20 +402,25 @@ export function createExtensionReadTool({ requestDir = REQUEST_DIR, resultDir, t
       }
       const query = params.query === undefined ? "all" : params.query;
       if (params.action === "search" ?
-          (params.serviceId !== undefined || typeof query !== "string" || !query.trim() || !/^[A-Za-z0-9 _/+:#.\-]{1,80}$/.test(query)) :
+          (params.serviceId !== undefined || params.request !== undefined || typeof query !== "string" || !query.trim() || !/^[A-Za-z0-9 _/+:#.\-]{1,80}$/.test(query)) :
           params.action === "inspect" ?
-            (params.query !== undefined || typeof params.serviceId !== "string" || !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(params.serviceId)) :
-            (params.query !== undefined || params.serviceId !== undefined)) {
-        return invalid("Search accepts query; inspect requires the exact lowercase catalog serviceId; list takes neither field.");
+            (params.query !== undefined || params.request !== undefined || typeof params.serviceId !== "string" || !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(params.serviceId)) :
+          params.action === "request-plan" ?
+            (params.query !== undefined || params.serviceId !== undefined || typeof params.request !== "string" || !/^(?:install|enable|disable|remove):[a-z0-9][a-z0-9-]{0,63}$/.test(params.request)) :
+            (params.query !== undefined || params.serviceId !== undefined || params.request !== undefined)) {
+        return invalid("Search accepts query; inspect requires serviceId; request-plan requires an exact action:service request; list takes no additional field.");
       }
       const parameters = params.action === "search" ? { query }
-        : params.action === "inspect" ? { serviceId: params.serviceId } : {};
+        : params.action === "inspect" ? { serviceId: params.serviceId }
+        : params.action === "request-plan" ? { request: params.request } : {};
       const jobId = `ops-${Date.now()}-${randomBytes(6).toString("hex")}`;
       try {
         await publishRequest(jobId, {
           schemaVersion: 1, jobId, kind: "action", createdAt: new Date().toISOString(), requester: AGENT_ID,
           target, action: `ods.extensions.${params.action}`, parameters,
-          reason: "Read-only ODS extension discovery requested through the assistant.",
+          reason: params.action === "request-plan"
+            ? "Host-authoritative ODS extension proposal requested through the assistant; no lifecycle execution is authorized."
+            : "Read-only ODS extension discovery requested through the assistant.",
           boundary: "Request only. The external broker validates target, parameters, and policy.",
         }, requestDir);
       } catch {

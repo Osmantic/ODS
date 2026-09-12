@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import datetime
 import json
 import os
 from typing import Any, TypeVar
@@ -44,6 +45,22 @@ class ExactHashRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     planHash: str = Field(
+        min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"
+    )
+
+
+class AssistantPlanRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    request: str = Field(
+        min_length=8,
+        max_length=79,
+        pattern=(
+            r"^(?:install|enable|disable|remove):"
+            r"(?:[a-z0-9]|[a-z0-9][a-z0-9._-]{0,62}[a-z0-9])$"
+        ),
+    )
+    idempotencyKey: str = Field(
         min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"
     )
 
@@ -169,6 +186,12 @@ def _planning_error_response(exc: PlanningError) -> JSONResponse:
         "invalid-observed-state-provider",
         "invalid-policy-provider",
         "catalog-revision-mismatch",
+        "extension-catalog-revision-mismatch",
+        "extension-catalog-revision-unavailable",
+        "unsupported-container-runtime",
+        "unsupported-gpu-backend",
+        "unsupported-host-architecture",
+        "unsupported-host-platform",
     }
     if exc.code in provider_errors:
         status_code = 503
@@ -192,6 +215,114 @@ def _planning_error_response(exc: PlanningError) -> JSONResponse:
     )
 
 
+def _persist_authoritative_plan(
+    runtime: TransactionRuntime,
+    intent: dict[str, Any],
+    idempotency_key: str,
+    timestamp: str | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    envelope = authorize_plan(
+        intent,
+        catalog=runtime.catalog,
+        observed_state=runtime.observed_state,
+        policy=runtime.policy,
+    )
+    created_at = runtime.clock() if timestamp is None else timestamp
+    descriptor = runtime.store.create(
+        envelope,
+        "assistant-manager",
+        idempotency_key,
+        created_at,
+        created_at,
+    )
+    return envelope, descriptor
+
+
+def _assistant_expiry(timestamp: str) -> str:
+    try:
+        now = datetime.datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=datetime.timezone.utc
+        )
+    except (TypeError, ValueError):
+        raise IntegrityError("runtime-clock-invalid") from None
+    return (now + datetime.timedelta(minutes=15)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _assistant_projection(
+    request_action: str,
+    service_id: str,
+    envelope: dict[str, Any],
+    descriptor: dict[str, Any],
+    *,
+    execution_available: bool,
+) -> dict[str, Any]:
+    plan = envelope["plan"]
+    direct = set(plan["requestedServices"])
+    providers = {
+        item["serviceId"] for item in plan["providerBindings"]
+    }
+    operations = {
+        item["serviceId"]: item["action"] for item in plan["operations"]
+    }
+    definitions = {
+        item["id"]: item for item in plan["definitions"]
+    }
+    selected = []
+    for selected_id in plan["selectedServices"]:
+        definition = definitions[selected_id]
+        selected.append(
+            {
+                "id": selected_id,
+                "reason": (
+                    "requested"
+                    if selected_id in direct
+                    else "capability-provider"
+                    if selected_id in providers
+                    else "dependency"
+                ),
+                "plannedAction": operations[selected_id],
+                "dependencyCount": len(definition["dependsOn"]),
+            }
+        )
+    host_ports = sum(
+        len(item["resources"]["hostPorts"]) for item in definitions.values()
+    )
+    permissions = sum(
+        len(item["resources"][field])
+        for item in definitions.values()
+        for field in ("devices", "linuxCapabilities", "hostPermissions")
+    )
+    data_paths = sum(len(item["data"]) for item in definitions.values())
+    return {
+        "schema": "ods.assistant-first.assistant-plan-proposal.v1",
+        "transactionId": descriptor["transactionId"],
+        "planHash": envelope["planHash"],
+        "state": descriptor["state"],
+        "validUntil": plan["validUntil"],
+        "requested": {"action": request_action, "serviceId": service_id},
+        "selectedExtensions": selected,
+        "impact": {
+            **plan["resourceDelta"],
+            "hostPortCount": host_ports,
+            "permissionCount": permissions,
+            "dataPathCount": data_paths,
+        },
+        "configuration": {
+            "required": bool(plan["requiredConfigKeys"]),
+            "requiredFieldCount": len(plan["requiredConfigKeys"]),
+            "secretsRequired": bool(plan["requiredSecretKeys"]),
+            "requiredSecretCount": len(plan["requiredSecretKeys"]),
+        },
+        "warningCount": len(plan["warnings"]),
+        "rollbackAvailable": all(
+            item["contract"] != "none" for item in plan["rollbackEffects"]
+        ),
+        "approvalRequired": plan["approval"]["required"],
+        "executionAvailable": execution_available,
+        "duplicate": descriptor.get("duplicate") is True,
+    }
+
+
 @router.post("")
 async def create_transaction(
     request: Request,
@@ -201,25 +332,18 @@ async def create_transaction(
     """Build a server-authoritative plan and persist it awaiting approval."""
     model = await _request_model(request, CreateTransactionRequest)
     try:
-        envelope = authorize_plan(
+        envelope, descriptor = await asyncio.to_thread(
+            _persist_authoritative_plan,
+            runtime,
             model.intent,
-            catalog=runtime.catalog,
-            observed_state=runtime.observed_state,
-            policy=runtime.policy,
+            model.idempotencyKey,
         )
     except PlanningError as exc:
         return _planning_error_response(exc)
-    timestamp = runtime.clock()
-    try:
-        descriptor = runtime.store.create(
-            envelope,
-            "assistant-manager",
-            model.idempotencyKey,
-            timestamp,
-            timestamp,
-        )
     except TransactionError as exc:
         return _error_response(exc)
+    except Exception:
+        return _error_response(IntegrityError("transaction-unavailable"))
     return JSONResponse(
         status_code=200 if descriptor.get("duplicate") is True else 201,
         content={
@@ -227,6 +351,56 @@ async def create_transaction(
             **descriptor,
             "envelope": envelope,
         },
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.post("/assistant-plan")
+async def request_assistant_plan(
+    request: Request,
+    runtime: TransactionRuntime = Depends(get_transaction_runtime),
+    _api_key: str = Depends(verify_api_key),
+) -> JSONResponse:
+    """Persist one narrow assistant request as a host-authoritative proposal."""
+    model = await _request_model(request, AssistantPlanRequest)
+    requested_action, service_id = model.request.split(":", 1)
+    if requested_action not in {"install", "enable"}:
+        return _planning_error_response(
+            PlanningError("unsupported-transaction-action")
+        )
+    try:
+        timestamp = runtime.clock()
+        intent = {
+            "requestedServices": [service_id],
+            "requestedCapabilities": [],
+            "providerPreferences": {},
+            "validUntil": _assistant_expiry(timestamp),
+            "missingConfigKeys": [],
+            "missingSecretKeys": [],
+        }
+        envelope, descriptor = await asyncio.to_thread(
+            _persist_authoritative_plan,
+            runtime,
+            intent,
+            model.idempotencyKey,
+            timestamp,
+        )
+        projection = _assistant_projection(
+            requested_action,
+            service_id,
+            envelope,
+            descriptor,
+            execution_available=runtime.executor is not None,
+        )
+    except PlanningError as exc:
+        return _planning_error_response(exc)
+    except TransactionError as exc:
+        return _error_response(exc)
+    except Exception:
+        return _error_response(IntegrityError("transaction-unavailable"))
+    return JSONResponse(
+        status_code=200 if descriptor.get("duplicate") is True else 201,
+        content=projection,
         headers={"Cache-Control": "no-store"},
     )
 

@@ -91,6 +91,10 @@ test("extension read preserves a queued job after timeout and rejects mutable or
     assert.match(result.details.next, /pixel_ops_job_get/);
     for (const params of [
       { action: "install", serviceId: "comfyui" },
+      { action: "request-plan", request: "install:comfyui", approval: true },
+      { action: "request-plan", request: "inspect:comfyui" },
+      { action: "request-plan", request: "install:bad." },
+      { action: "request-plan", request: "install:vendor.comfyui" },
       { action: "inspect", serviceId: "comfyui", query: "extra" },
       { action: "search", query: "all", serviceId: "comfyui" },
       { action: "list", approval: true },
@@ -101,6 +105,53 @@ test("extension read preserves a queued job after timeout and rejects mutable or
       assert.equal((await tool.execute("invalid", params)).isError, true);
     }
     assert.deepEqual((await readdir(requestDir)).filter((name) => name.endsWith(".json")), names);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("extension planning publishes one exact nonmutating request and returns its receipt", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pixel-extension-plan-"));
+  const requestDir = join(root, "requests");
+  const resultDir = join(root, "results");
+  await mkdir(requestDir);
+  await mkdir(resultDir);
+  try {
+    const tool = createExtensionReadTool({ requestDir, resultDir, timeoutMs: 2_000, pollIntervalMs: 5 });
+    assert.deepEqual(tool.parameters.properties.action.enum, ["search", "list", "inspect", "request-plan"]);
+    const pending = tool.execute("plan", { action: "request-plan", request: "enable:vendor-comfyui" });
+    let names = [];
+    for (let i = 0; i < 200 && names.length === 0; i += 1) {
+      names = (await readdir(requestDir)).filter((name) => name.endsWith(".json"));
+      if (names.length === 0) await delay(5);
+    }
+    assert.equal(names.length, 1);
+    const request = JSON.parse(await readFile(join(requestDir, names[0]), "utf8"));
+    assert.equal(request.kind, "action");
+    assert.equal(request.target, "ods-host");
+    assert.equal(request.action, "ods.extensions.request-plan");
+    assert.deepEqual(request.parameters, { request: "enable:vendor-comfyui" });
+    assert.match(request.reason, /no lifecycle execution is authorized/i);
+    const receipt = {
+      schemaVersion: 2,
+      jobId: request.jobId,
+      status: "succeeded",
+      steps: [{
+        stepId: "action",
+        target: "ods-host",
+        action: "ods.extensions.request-plan",
+        exitCode: 0,
+        stdout: '{"kind":"ods-pixel-extension-plan","outcome":"proposed"}\n',
+        stderr: "",
+        outputTruncated: { stdout: false, stderr: false },
+        riskSignals: [],
+      }],
+    };
+    await publishResult(join(resultDir, names[0]), receipt);
+    const result = await pending;
+    assert.equal(result.details.jobId, request.jobId);
+    assert.deepEqual(result.details.steps, receipt.steps);
+    assert.match(result.details.boundaryNotice, /no authority to approve, execute, configure, or change/i);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
