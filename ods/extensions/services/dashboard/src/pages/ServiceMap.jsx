@@ -320,7 +320,7 @@ function CompactIntegrations({ nodes, edges, refresh, error }) {
 
 export default function ServiceMap({ compact = false }) {
   const [topology, setTopology] = useState({ nodes: [], edges: [] })
-  const [selectedNode, setSelectedNode] = useState(null)
+  const [selectedNodeId, setSelectedNodeId] = useState(null)
   const [loading, setLoading] = useState(true)
   const [actualSize, setActualSize] = useState(false)
   const [error, setError] = useState(null)
@@ -332,7 +332,9 @@ export default function ServiceMap({ compact = false }) {
     try {
       const response = await fetch('/api/status')
       if (!response.ok) throw new Error('Failed to fetch service status')
-      setTopology(buildTopology(await response.json()))
+      const next = buildTopology(await response.json())
+      setTopology(next)
+      setSelectedNodeId(current => next.nodes.some(node => node.id === current) ? current : null)
       setError(null)
     } catch (err) {
       setError(err.message)
@@ -354,6 +356,7 @@ export default function ServiceMap({ compact = false }) {
   }, [fetchTopology])
 
   const { nodes, edges } = topology
+  const selectedNode = nodes.find(node => node.id === selectedNodeId) || null
   const { positions, layerY, svgWidth, svgHeight } = useMemo(() => computeLayout(nodes), [nodes])
   const counts = useMemo(() => ({
     healthy: nodes.filter(node => node.status === 'healthy').length,
@@ -388,6 +391,7 @@ export default function ServiceMap({ compact = false }) {
         <div className="flex items-center gap-2 rounded-lg border border-theme-border bg-theme-card px-3 py-2 font-mono text-xs text-theme-text-muted"><RefreshCw size={12} className="text-theme-accent" />live · 10s</div>
       </div>
 
+      {error && <p role="alert" className="mb-4 text-sm text-red-400">Showing the last successful snapshot. Status could not be refreshed: {error}</p>}
       <div className="mb-4 flex flex-wrap gap-4 text-xs text-theme-text-muted">
         <span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-green-400" />Healthy</span>
         <span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-yellow-400" />Degraded</span>
@@ -417,7 +421,7 @@ export default function ServiceMap({ compact = false }) {
             return <path key={`${edge.source}-${edge.target}`} d={edgePath(source, target)} fill="none" stroke={color} strokeWidth="1.8" strokeOpacity={edge.status === 'healthy' ? 0.72 : 0.32} strokeDasharray={edge.status === 'healthy' ? undefined : '5 4'} markerEnd={`url(#arrow-${edge.label.replaceAll(' ', '-')})`} />
           })}
 
-          {nodes.map(node => positions[node.id] && <ServiceNode key={node.id} node={node} pos={positions[node.id]} selected={selectedNode?.id === node.id} onSelect={setSelectedNode} />)}
+          {nodes.map(node => positions[node.id] && <ServiceNode key={node.id} node={node} pos={positions[node.id]} selected={selectedNode?.id === node.id} onSelect={node => setSelectedNodeId(node.id)} />)}
         </svg>
         </div>
 
@@ -426,7 +430,7 @@ export default function ServiceMap({ compact = false }) {
           {edgeLabels.map(label => <span key={label} className="flex items-center gap-1.5 text-xs text-theme-text-muted"><span className="inline-block h-2 w-2 rounded-full" style={{ background: EDGE_META[label] || '#6b7280' }} />{label}</span>)}
         </div>
 
-        <DetailPanel node={selectedNode} edges={edges} onClose={() => setSelectedNode(null)} />
+        <DetailPanel node={selectedNode} edges={edges} onClose={() => setSelectedNodeId(null)} />
       </div>
     </div>
   )
