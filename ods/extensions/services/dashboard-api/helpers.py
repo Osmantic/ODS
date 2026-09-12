@@ -1372,3 +1372,19 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def string_truncate_words_safe(text: str | None, max_words: int = 10, suffix: str = "...") -> str:
+    """Safely truncate text to max_words followed by suffix if truncated.
+    Returns "" on None or non-string inputs.
+    """
+    if text is None or not isinstance(text, str):
+        return ""
+    if not isinstance(max_words, int) or isinstance(max_words, bool) or max_words <= 0:
+        max_words = 10
+    if not isinstance(suffix, str):
+        suffix = "..."
+    words = text.split()
+    if len(words) <= max_words:
+        return text
+    return " ".join(words[:max_words]) + suffix
