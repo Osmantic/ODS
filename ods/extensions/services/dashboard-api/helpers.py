@@ -1372,3 +1372,22 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def numeric_safe_pow_safe(base: float | int | None, exp: float | int | None, default: float = 0.0) -> float:
+    """Safely calculate exponent power (base ** exp).
+    Returns default on None, boolean, NaN/Inf, or complex number results.
+    """
+    if base is None or exp is None or isinstance(base, bool) or isinstance(exp, bool):
+        return default
+    if not isinstance(base, (int, float)) or not isinstance(exp, (int, float)):
+        return default
+    if math.isnan(base) or math.isinf(base) or math.isnan(exp) or math.isinf(exp):
+        return default
+    try:
+        val = math.pow(float(base), float(exp))
+        if math.isnan(val) or math.isinf(val):
+            return default
+        return round(val, 4)
+    except Exception:
+        return default
