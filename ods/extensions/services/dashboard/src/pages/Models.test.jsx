@@ -1,5 +1,5 @@
 import { createElement } from 'react'
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import Models from './Models'
 
@@ -31,11 +31,16 @@ function baseDownloadState(overrides = {}) {
 }
 
 beforeEach(() => {
+  HTMLDialogElement.prototype.showModal = function () { this.open = true }
+  HTMLDialogElement.prototype.close = function () { this.open = false }
   document.documentElement.dataset.theme = 'light'
   useDownloadProgressMock.mockReturnValue(baseDownloadState())
 })
 
 afterEach(() => {
+  cleanup()
+  delete HTMLDialogElement.prototype.showModal
+  delete HTMLDialogElement.prototype.close
   delete document.documentElement.dataset.theme
 })
 
