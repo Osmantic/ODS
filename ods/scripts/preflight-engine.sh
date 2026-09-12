@@ -56,6 +56,10 @@ while [[ $# -gt 0 ]]; do
             SCRIPT_DIR="${2:-$SCRIPT_DIR}"
             shift 2
             ;;
+        --host-arch)
+            HOST_ARCH="${2:-}"
+            shift 2
+            ;;
         --strict)
             STRICT="true"
             shift
@@ -80,7 +84,8 @@ elif command -v python >/dev/null 2>&1; then
     PYTHON_CMD="python"
 fi
 
-"$PYTHON_CMD" - "$REPORT_FILE" "$TIER" "$RAM_GB" "$DISK_GB" "$GPU_BACKEND" "$GPU_VRAM_MB" "$GPU_NAME" "$PLATFORM_ID" "$COMPOSE_OVERLAYS" "$SCRIPT_DIR" "$ENV_MODE" "$STRICT" <<'PY'
+HOST_ARCH="${HOST_ARCH:-}"
+"$PYTHON_CMD" - "$REPORT_FILE" "$TIER" "$RAM_GB" "$DISK_GB" "$GPU_BACKEND" "$GPU_VRAM_MB" "$GPU_NAME" "$PLATFORM_ID" "$COMPOSE_OVERLAYS" "$SCRIPT_DIR" "$ENV_MODE" "$STRICT" "$HOST_ARCH" <<'PY'
 import json
 import pathlib
 import sys
@@ -99,6 +104,7 @@ from datetime import datetime, timezone
     script_dir,
     env_mode,
     strict_mode,
+    host_arch,
 ) = sys.argv[1:]
 
 env_mode = env_mode == "true"
@@ -197,6 +203,26 @@ else:
         f"Platform '{platform_id}' is not yet supported by install-core.sh.",
         "Use Linux/WSL path for now or run platform-specific installer once implemented.",
     )
+
+# Host architecture check (macOS). The macOS installer requires Apple Silicon.
+# Callers that cannot know the real host architecture (e.g. the Linux CI
+# simulation of installers/macos.sh) pass an empty value and skip this check.
+host_arch = (host_arch or "").strip().lower()
+if platform_id == "macos" and host_arch:
+    if host_arch in {"arm64", "aarch64"}:
+        add_check(
+            "host-arch",
+            "pass",
+            f"Apple Silicon host detected ({host_arch}).",
+            "",
+        )
+    else:
+        add_check(
+            "host-arch",
+            "blocker",
+            f"Intel Mac ({host_arch}) is not supported by the macOS installer; Apple Silicon (arm64) is required.",
+            "Intel Macs have no Metal acceleration for local inference. See docs/COMPATIBILITY-MATRIX.md; use the Linux or Windows+WSL2 path on this hardware.",
+        )
 
 # Compose overlay existence check
 overlays = [o.strip() for o in compose_overlays.split(",") if o.strip()]
@@ -330,6 +356,7 @@ report = {
         "gpu_vram_mb": gpu_vram_mb,
         "gpu_name": gpu_name,
         "platform_id": platform_id,
+        "host_arch": host_arch,
         "compose_overlays": overlays,
         "script_dir": script_dir,
     },

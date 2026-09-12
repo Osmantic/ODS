@@ -137,6 +137,7 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== macOS ods-host-agent bootstrap verification ==="
 	@bash tests/test-macos-host-agent-verification.sh
+	@bash tests/test-macos-intel-preflight-blocker.sh
 	@echo ""
 	@echo "=== desktop host-agent environment contract ==="
 	@bash tests/test-desktop-agent-host-env.sh
