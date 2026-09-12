@@ -2369,6 +2369,183 @@ finally:
 PY
 }
 
+# Pixel deliberately preserves a release that was rolled back after live
+# mutation as audit evidence.  A later ODS retry can render a different plan
+# for the same Pixel version (for example after an ODS-managed route change),
+# and Pixel correctly refuses to overwrite that non-identical release.  When
+# this is the first ODS-managed deployment, archive only the exact inactive,
+# internally verified release that the failed apply named, then allow one
+# clean retry.  The archive remains owner-private evidence; nothing is deleted.
+_ods_pixel_retire_inactive_conflicting_release() {
+    local owner="$1" home="$2" pixel_root="$3" apply_log="$4"
+    local marker install_root version gateway_unit retired_release
+    marker="$home/.config/ods/pixel-managed.json"
+    install_root="$home/.local/share/pixel"
+    gateway_unit="${ODS_PIXEL_GATEWAY_UNIT_PATH:-/etc/systemd/system/openclaw-gateway.service}"
+
+    [[ -f "$pixel_root/VERSION" && ! -L "$pixel_root/VERSION" ]] || return 1
+    version="$(ods_pixel_run_as_owner "$owner" "$home" sed -n '1p' "$pixel_root/VERSION")" || return 1
+    [[ "$version" =~ ^[0-9]{1,6}\.[0-9]{1,6}\.[0-9]{1,6}$ ]] || return 1
+    if [[ -e "$gateway_unit" || -L "$gateway_unit" ]] \
+        || { [[ "$gateway_unit" == /etc/systemd/system/openclaw-gateway.service ]] \
+            && systemctl is-active --quiet openclaw-gateway.service 2>/dev/null; }; then
+        return 1
+    fi
+
+    retired_release="$(ods_pixel_run_as_owner "$owner" "$home" python3 - \
+        "$marker" "${INSTALL_DIR:?}" "${PIXEL_SOURCE_REF:?}" "$install_root" \
+        "$version" "$apply_log" "$home" <<'PY'
+import hashlib
+import json
+import os
+import pathlib
+import re
+import stat
+import sys
+import tempfile
+
+marker, install_dir, source_ref, install_root, version, apply_log, home = sys.argv[1:]
+marker = pathlib.Path(marker)
+install_dir = pathlib.Path(install_dir)
+install_root = pathlib.Path(install_root)
+apply_log = pathlib.Path(apply_log)
+home = pathlib.Path(home)
+uid = os.getuid()
+
+def regular(path, maximum, private=False):
+    info = path.lstat()
+    if (not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode)
+            or info.st_nlink != 1 or info.st_uid != uid
+            or info.st_size > maximum or info.st_mode & 0o022
+            or (private and info.st_mode & 0o077)):
+        raise SystemExit(f"unsafe inactive Pixel recovery file: {path}")
+    return info
+
+def directory(path, private=False):
+    info = path.lstat()
+    if (not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode)
+            or info.st_uid != uid or info.st_mode & 0o022
+            or (private and info.st_mode & 0o077)):
+        raise SystemExit(f"unsafe inactive Pixel recovery directory: {path}")
+    return info
+
+regular(marker, 65536, private=True)
+value = json.loads(marker.read_text(encoding="utf-8"))
+if (value.get("schema_version") != 2 or value.get("manager") != "ods"
+        or value.get("state") != "installing"
+        or value.get("initial_active_state") != "absent"
+        or value.get("install_dir") != str(install_dir)
+        or value.get("pixel_source_ref") != source_ref
+        or value.get("requested_source_ref") not in {None, source_ref}):
+    raise SystemExit("inactive Pixel recovery marker is not bound to this ODS install")
+for key in (
+    "active_release_version", "release_identity_sha256", "install_manifest_sha256",
+    "sandbox_image", "sandbox_image_id", "retired_release_path",
+):
+    if key in value:
+        raise SystemExit("verified or deactivating Pixel state cannot use inactive recovery")
+
+regular(apply_log, 2 * 1024 * 1024, private=True)
+release = install_root / "releases" / version
+expected_error = (
+    "[pixel] ERROR: Release already exists but is not byte-exact to the reviewed plan: "
+    + str(release)
+)
+if expected_error not in apply_log.read_text(encoding="utf-8", errors="strict").splitlines():
+    raise SystemExit("Pixel apply did not report the exact inactive-release conflict")
+
+for path in (
+    install_root / "current",
+    install_root / "runtime-attestation.json",
+    install_root / ".ods-uninstall-current",
+    install_root / ".ods-uninstall-runtime-attestation",
+    home / ".config/systemd/user/openclaw-gateway.service",
+    home / ".config/systemd/system/openclaw-gateway.service",
+    home / ".config/systemd/user/pixel-web-courier.service",
+):
+    if path.exists() or path.is_symlink():
+        raise SystemExit("inactive Pixel recovery found live or staged deployment state")
+
+directory(install_root, private=True)
+releases = install_root / "releases"
+directory(releases, private=True)
+directory(release)
+identity_path = release / "release-identity.json"
+manifest_path = release / "install-manifest.sha256"
+regular(identity_path, 65536)
+regular(manifest_path, 2 * 1024 * 1024)
+identity_bytes = identity_path.read_bytes()
+identity = json.loads(identity_bytes)
+source = identity.get("source") if isinstance(identity, dict) else None
+if (identity.get("pixel") != version or not isinstance(source, dict)
+        or source.get("state") != "git-clean" or source.get("commit") != source_ref
+        or not isinstance(source.get("tree"), str)
+        or not re.fullmatch(r"[0-9a-f]{40}", source["tree"])):
+    raise SystemExit("inactive Pixel release identity is not bound to the requested source")
+
+manifest_entries = {}
+for line in manifest_path.read_text(encoding="utf-8").splitlines():
+    match = re.fullmatch(r"([0-9a-f]{64})  (\./[^\r\n]+)", line)
+    if not match:
+        raise SystemExit("inactive Pixel release manifest is malformed")
+    digest, relative = match.groups()
+    relative_path = pathlib.PurePosixPath(relative[2:])
+    if (not relative_path.parts or relative_path.is_absolute()
+            or any(part in {"", ".", ".."} for part in relative_path.parts)
+            or relative in manifest_entries):
+        raise SystemExit("inactive Pixel release manifest has an unsafe path")
+    manifest_entries[relative] = digest
+
+actual_files = set()
+for root, directories, files in os.walk(release, topdown=True, followlinks=False):
+    root_path = pathlib.Path(root)
+    directory(root_path)
+    for name in directories:
+        directory(root_path / name)
+    for name in files:
+        path = root_path / name
+        regular(path, 64 * 1024 * 1024)
+        relative = "./" + path.relative_to(release).as_posix()
+        actual_files.add(relative)
+        if relative == "./install-manifest.sha256":
+            continue
+        expected = manifest_entries.get(relative)
+        if expected is None or hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+            raise SystemExit("inactive Pixel release bytes do not match their manifest")
+if actual_files != set(manifest_entries) | {"./install-manifest.sha256"}:
+    raise SystemExit("inactive Pixel release manifest does not cover the exact file set")
+if "./release-identity.json" not in manifest_entries or "./VERSION" not in manifest_entries:
+    raise SystemExit("inactive Pixel release manifest lacks identity evidence")
+
+identity_sha256 = hashlib.sha256(identity_bytes).hexdigest()
+archive_root = install_root / "retired-ods-releases"
+if archive_root.exists() or archive_root.is_symlink():
+    directory(archive_root, private=True)
+else:
+    archive_root.mkdir(mode=0o700)
+container = pathlib.Path(tempfile.mkdtemp(
+    prefix=f"{version}-{identity_sha256[:12]}.", dir=archive_root,
+))
+os.chmod(container, 0o700, follow_symlinks=False)
+destination = container / "release"
+try:
+    os.rename(release, destination)
+except BaseException:
+    container.rmdir()
+    raise
+for path in (releases, archive_root, container):
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+print(destination)
+PY
+    )" || return 1
+    [[ "$retired_release" == "$install_root/retired-ods-releases/$version-"*.????????/release ]] || return 1
+    printf '%s\n' "$retired_release"
+}
+
 ods_pixel_prepare_runtime_identity() {
     [[ "${ENABLE_PIXEL_RUNTIME:-false}" == true ]] || return 0
     ods_sudo_available || {
@@ -4044,7 +4221,7 @@ ods_pixel_install_default_agent() {
     [[ "${ENABLE_PIXEL_RUNTIME:-false}" == true ]] || return 0
     local owner home source_root pixel_root plugin_root answers operations_policy extension_catalog extension_manager_unit artifact_promoter_unit workspace_preview_unit openclaw_bin plugin_digest contract_sha256 runtime_budget_status gateway_alias pixel_log
     local candidate_runtime_status reuse_active=false same_verified_source=false same_source_resume=false pixel_gateway_port gateway_port_status
-    local web_search_provider parallel_path="" parallel_digest=""
+    local web_search_provider parallel_path="" parallel_digest="" apply_attempt=""
     local -a pixel_prerequisites=(litellm dashboard-api)
     owner="${PIXEL_SERVICE_USER:-$(ods_pixel_install_owner)}" || return 1
     home="$(ods_pixel_owner_home "$owner")" || return 1
@@ -4318,14 +4495,42 @@ ods_pixel_install_default_agent() {
                     return 1
                 fi
             fi
-        elif ! {
-            ods_pixel_run_as_owner "$owner" "$home" env \
-                PATH="$home/.openclaw/.ods-exec-control:$PATH" \
-                "$pixel_root/pixel" apply --confirm </dev/null &&
-            ods_pixel_run_as_owner "$owner" "$home" "$pixel_root/pixel" verify
-        } >>"$pixel_log" 2>&1; then
-            ai_bad "Pixel apply or verify failed. See $pixel_log for the exact Pixel error."
-            return 1
+        else
+            apply_attempt="$(ods_pixel_run_as_owner "$owner" "$home" \
+                mktemp "$INSTALL_DIR/logs/.pixel-apply.XXXXXXXX")" || return 1
+            ods_pixel_run_as_owner "$owner" "$home" chmod 0600 "$apply_attempt" || return 1
+            if {
+                ods_pixel_run_as_owner "$owner" "$home" env \
+                    PATH="$home/.openclaw/.ods-exec-control:$PATH" \
+                    "$pixel_root/pixel" apply --confirm </dev/null &&
+                ods_pixel_run_as_owner "$owner" "$home" "$pixel_root/pixel" verify
+            } >"$apply_attempt" 2>&1; then
+                ods_pixel_run_as_owner "$owner" "$home" cat "$apply_attempt" >>"$pixel_log" 2>&1 || return 1
+            else
+                ods_pixel_run_as_owner "$owner" "$home" cat "$apply_attempt" >>"$pixel_log" 2>&1 || return 1
+                if _ods_pixel_retire_inactive_conflicting_release \
+                    "$owner" "$home" "$pixel_root" "$apply_attempt" >>"$pixel_log" 2>&1; then
+                    ai "Archived an exact, inactive ODS-owned Pixel release that conflicted with the current reviewed plan; retrying once..."
+                    ods_pixel_run_as_owner "$owner" "$home" truncate -s 0 "$apply_attempt" || return 1
+                    if ! {
+                        ods_pixel_run_as_owner "$owner" "$home" env \
+                            PATH="$home/.openclaw/.ods-exec-control:$PATH" \
+                            "$pixel_root/pixel" apply --confirm </dev/null &&
+                        ods_pixel_run_as_owner "$owner" "$home" "$pixel_root/pixel" verify
+                    } >"$apply_attempt" 2>&1; then
+                        ods_pixel_run_as_owner "$owner" "$home" cat "$apply_attempt" >>"$pixel_log" 2>&1 || true
+                        ods_pixel_run_as_owner "$owner" "$home" rm -f -- "$apply_attempt" || true
+                        ai_bad "Pixel apply or verify failed after the single inactive-release recovery retry. See $pixel_log for the exact Pixel error."
+                        return 1
+                    fi
+                    ods_pixel_run_as_owner "$owner" "$home" cat "$apply_attempt" >>"$pixel_log" 2>&1 || return 1
+                else
+                    ods_pixel_run_as_owner "$owner" "$home" rm -f -- "$apply_attempt" || true
+                    ai_bad "Pixel apply or verify failed. See $pixel_log for the exact Pixel error."
+                    return 1
+                fi
+            fi
+            ods_pixel_run_as_owner "$owner" "$home" rm -f -- "$apply_attempt" || return 1
         fi
     fi
     # Record the verified Pixel release before applying the ODS-owned runtime

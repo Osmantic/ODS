@@ -313,6 +313,66 @@ else
 fi
 check test ! -e "$ambient_active_home/.config/ods/pixel-managed.json"
 
+inactive_home="$TEST_ROOT/inactive-conflict-home"
+inactive_pixel_root="$TEST_ROOT/inactive-conflict-source"
+inactive_release="$inactive_home/.local/share/pixel/releases/4.3.27"
+inactive_log="$TEST_ROOT/inactive-conflict-apply.log"
+mkdir -p "$inactive_home/.config/ods" "$inactive_release" "$inactive_pixel_root"
+chmod 0700 "$inactive_home/.config/ods" "$inactive_home/.local/share/pixel" \
+    "$inactive_home/.local/share/pixel/releases"
+printf '%s\n' 4.3.27 >"$inactive_pixel_root/VERSION"
+cat >"$inactive_home/.config/ods/pixel-managed.json" <<JSON
+{"schema_version":2,"manager":"ods","state":"installing","initial_active_state":"absent","install_dir":"$INSTALL_DIR","pixel_source_ref":"$PIXEL_SOURCE_REF"}
+JSON
+cat >"$inactive_release/release-identity.json" <<JSON
+{"kind":"pixel-release-source-identity","pixel":"4.3.27","source":{"state":"git-clean","commit":"$PIXEL_SOURCE_REF","tree":"$(printf 'a%.0s' {1..40})"}}
+JSON
+printf '%s\n' 'reviewed inactive release' >"$inactive_release/payload.txt"
+printf '%s\n' 4.3.27 >"$inactive_release/VERSION"
+(
+    cd "$inactive_release"
+    sha256sum ./VERSION ./payload.txt ./release-identity.json >install-manifest.sha256
+)
+chmod 0600 "$inactive_home/.config/ods/pixel-managed.json"
+printf '%s\n' '[pixel] ERROR: unrelated apply failure' >"$inactive_log"
+chmod 0600 "$inactive_log"
+if _ods_pixel_retire_inactive_conflicting_release \
+    "$owner" "$inactive_home" "$inactive_pixel_root" "$inactive_log" >/dev/null 2>&1; then
+    fail "unrelated Pixel apply failure triggered inactive-release retirement"
+else
+    check test -d "$inactive_release"
+fi
+printf '[pixel] ERROR: Release already exists but is not byte-exact to the reviewed plan: %s\n' \
+    "$inactive_release" >"$inactive_log"
+printf '%s\n' tampered >>"$inactive_release/payload.txt"
+if _ods_pixel_retire_inactive_conflicting_release \
+    "$owner" "$inactive_home" "$inactive_pixel_root" "$inactive_log" >/dev/null 2>&1; then
+    fail "manifest-drifted inactive Pixel release was retired"
+else
+    check test -d "$inactive_release"
+fi
+printf '%s\n' 'reviewed inactive release' >"$inactive_release/payload.txt"
+(
+    cd "$inactive_release"
+    sha256sum ./VERSION ./payload.txt ./release-identity.json >install-manifest.sha256
+)
+ln -s "$inactive_release" "$inactive_home/.local/share/pixel/current"
+if _ods_pixel_retire_inactive_conflicting_release \
+    "$owner" "$inactive_home" "$inactive_pixel_root" "$inactive_log" >/dev/null 2>&1; then
+    fail "active Pixel release was retired by inactive conflict recovery"
+else
+    check test -d "$inactive_release"
+fi
+rm -f -- "$inactive_home/.local/share/pixel/current"
+inactive_retired="$(_ods_pixel_retire_inactive_conflicting_release \
+    "$owner" "$inactive_home" "$inactive_pixel_root" "$inactive_log")"
+check test -d "$inactive_retired"
+check test ! -e "$inactive_release"
+check test "${inactive_retired%/release}" != "$inactive_retired"
+check test "$(stat -c '%a' "$inactive_home/.local/share/pixel/retired-ods-releases")" = 700
+check test "$(sha256sum "$inactive_retired/payload.txt" | awk '{print $1}')" \
+    = "$(printf '%s\n' 'reviewed inactive release' | sha256sum | awk '{print $1}')"
+
 plugin_tree="$INSTALL_DIR/extensions/services/pixel-agent/plugin"
 mkdir -p "$plugin_tree/nested"
 printf '%s\n' '{"id":"pixel-ods"}' > "$plugin_tree/openclaw.plugin.json"
