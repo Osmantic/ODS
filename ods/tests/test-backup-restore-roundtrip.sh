@@ -29,6 +29,9 @@ mkdir -p "$SRC/data/open-webui" "$SRC/data/hermes/sessions" "$SRC/data/persona"
 mkdir -p "$SRC/data/n8n"
 mkdir -p "$SRC/config"
 mkdir -p "$SRC/models"
+# Cache tier: the directories the compose stack bind-mounts for weights and
+# model caches (./data/models, ./data/whisper, ./data/embeddings).
+mkdir -p "$SRC/data/models" "$SRC/data/whisper/models--Systran--faster-whisper-small" "$SRC/data/embeddings"
 echo "1.0.0" > "$SRC/.version"
 echo "test-env-value" > "$SRC/.env"
 echo "compose-content" > "$SRC/docker-compose.yml"
@@ -38,6 +41,9 @@ echo "hermes-session" > "$SRC/data/hermes/sessions/session.jsonl"
 echo "persona-soul" > "$SRC/data/persona/SOUL.md"
 echo "workflow-data-file" > "$SRC/data/n8n/workflow.txt"
 echo "model-cache-file" > "$SRC/models/model.gguf"
+echo "gguf-weights" > "$SRC/data/models/weights.gguf"
+echo "whisper-hub-cache" > "$SRC/data/whisper/models--Systran--faster-whisper-small/model.bin"
+echo "tei-cache" > "$SRC/data/embeddings/embeddings.bin"
 
 # Both scripts source lib/rsync.sh relative to ODS_DIR
 mkdir -p "$SRC/lib"
@@ -58,6 +64,15 @@ pass "Backup created: $BACKUP_ID"
     || fail "Full backup lost config data"
 [[ -f "$SRC/.backups/$BACKUP_ID/models/model.gguf" ]] \
     || fail "Full backup lost model cache"
+[[ -f "$SRC/.backups/$BACKUP_ID/data/models/weights.gguf" ]] \
+    || fail "Full backup lost the GGUF weights in data/models"
+[[ -f "$SRC/.backups/$BACKUP_ID/data/whisper/models--Systran--faster-whisper-small/model.bin" ]] \
+    || fail "Full backup lost the whisper cache in data/whisper"
+[[ -f "$SRC/.backups/$BACKUP_ID/data/embeddings/embeddings.bin" ]] \
+    || fail "Full backup lost the embeddings cache in data/embeddings"
+jq -e '.contents.cache == true' "$SRC/.backups/$BACKUP_ID/manifest.json" >/dev/null \
+    || fail "Full backup manifest does not flag the cache tier"
+pass "Full backup captures the cache tier (data/models, data/whisper, data/embeddings)"
 [[ -f "$SRC/.backups/$BACKUP_ID/manifest.json" ]] \
     || fail "Full backup lost its manifest"
 [[ -f "$SRC/.backups/$BACKUP_ID/.env" ]] \
@@ -86,6 +101,13 @@ cp -r "$SRC/.backups/$BACKUP_ID" "$DST/.backups/$BACKUP_ID"
 mkdir -p "$DST/data/open-webui"
 echo "created-after-backup" > "$DST/data/open-webui/local-only.txt"
 
+info "Previewing restore (dry run)"
+dry_run_out=$(ODS_DIR="$DST" bash "$ODS_RESTORE" -d "$BACKUP_ID" 2>&1) || fail "Dry run failed"
+echo "$dry_run_out" | grep -q 'data/models' || fail "Dry run does not list data/models from the cache tier"
+echo "$dry_run_out" | grep -q 'data/whisper' || fail "Dry run does not list data/whisper from the cache tier"
+[[ ! -e "$DST/data/models" ]] || fail "Dry run must not restore anything"
+pass "Dry run lists the cache tier without touching the install"
+
 # Restore (force, no interactive prompts)
 ODS_DIR="$DST" bash "$ODS_RESTORE" -f "$BACKUP_ID" >/dev/null 2>&1 || fail "Restore failed"
 pass "Restore completed"
@@ -105,6 +127,11 @@ info "Validating restored contents"
 [[ -f "$DST/data/n8n/workflow.txt" ]] || fail "Missing data/n8n/workflow.txt after restore"
 [[ -f "$DST/data/open-webui/local-only.txt" ]] \
     || fail "Restore deleted a file created after the backup"
+[[ -f "$DST/models/model.gguf" ]] || fail "Missing models/model.gguf after restore"
+[[ -f "$DST/data/models/weights.gguf" ]] || fail "Missing data/models/weights.gguf after restore"
+[[ -f "$DST/data/whisper/models--Systran--faster-whisper-small/model.bin" ]] \
+    || fail "Missing whisper cache after restore"
+[[ -f "$DST/data/embeddings/embeddings.bin" ]] || fail "Missing embeddings cache after restore"
 
 pass "All expected files/dirs present after restore"
 
@@ -118,8 +145,36 @@ pass "All expected files/dirs present after restore"
     || fail "Hermes session content mismatch"
 [[ "$(cat "$DST/data/persona/SOUL.md")" == "persona-soul" ]] \
     || fail "persona SOUL.md content mismatch"
+[[ "$(cat "$DST/data/models/weights.gguf")" == "gguf-weights" ]] \
+    || fail "data/models/weights.gguf content mismatch"
+[[ "$(cat "$DST/data/whisper/models--Systran--faster-whisper-small/model.bin")" == "whisper-hub-cache" ]] \
+    || fail "whisper cache content mismatch"
 
 pass "All file contents match after restore"
+
+# The default user-data type must keep skipping the cache tier: it is the
+# re-downloadable, tens-of-GB part a routine backup deliberately leaves out.
+info "Creating user-data backup (cache tier must be skipped)"
+sleep 1  # backup IDs are second-resolution timestamps
+ODS_DIR="$SRC" bash "$ODS_BACKUP" --type user-data >/dev/null 2>&1 || fail "User-data backup failed"
+UD_BACKUP_ID=""
+for candidate in "$SRC/.backups"/*/; do
+    candidate="$(basename "$candidate")"
+    if [[ "$candidate" != "$BACKUP_ID" ]]; then
+        UD_BACKUP_ID="$candidate"
+        break
+    fi
+done
+[[ -n "$UD_BACKUP_ID" ]] || fail "No user-data backup created"
+[[ -f "$SRC/.backups/$UD_BACKUP_ID/data/open-webui/data.txt" ]] \
+    || fail "User-data backup lost Open WebUI data"
+[[ ! -e "$SRC/.backups/$UD_BACKUP_ID/data/models" ]] \
+    || fail "User-data backup must not capture data/models"
+[[ ! -e "$SRC/.backups/$UD_BACKUP_ID/data/whisper" ]] \
+    || fail "User-data backup must not capture data/whisper"
+[[ ! -e "$SRC/.backups/$UD_BACKUP_ID/models" ]] \
+    || fail "User-data backup must not capture models/"
+pass "User-data backup still skips the cache tier"
 
 # Exercise the older macOS rsync branch, where `--info=progress2` is absent and
 # the helper falls back to `--progress`. The fallback must keep the same

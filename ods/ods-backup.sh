@@ -93,7 +93,7 @@ estimate_backup_bytes() {
             b=$(du -sk "$ODS_DIR/models" 2>/dev/null | awk '{print $1 * 1024}')
             total=$(( total + ${b:-0} ))
         fi
-        local -a cache_paths=("data/whisper/cache" "data/kokoro/cache")
+        local -a cache_paths=("${ODS_BACKUP_CACHE_PATHS[@]}")
         for p in "${cache_paths[@]}"; do
             if [[ -d "$ODS_DIR/$p" ]]; then
                 local b
@@ -414,11 +414,9 @@ backup_cache() {
         log_success "Backed up: models/"
     fi
 
-    # Docker volumes that contain cache data
-    local cache_paths=(
-        "data/whisper/cache"
-        "data/kokoro/cache"
-    )
+    # Bind-mounted cache directories (lib/backup-paths.sh): the GGUF weights
+    # and the STT/embeddings model caches the user-data type deliberately skips.
+    local cache_paths=("${ODS_BACKUP_CACHE_PATHS[@]}")
 
     for path in "${cache_paths[@]}"; do
         if [[ -d "$ODS_DIR/$path" ]]; then

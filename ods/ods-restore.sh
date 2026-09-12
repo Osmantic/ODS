@@ -352,6 +352,25 @@ dry_run_preview() {
             fi
         done
         echo ""
+
+        # Cache tier (full backups only): models and model caches.
+        local -a cache_dirs=("models" "${ODS_BACKUP_CACHE_PATHS[@]}")
+        local cache_listed=false
+        for dir in "${cache_dirs[@]}"; do
+            if [[ -d "$backup_dir/$dir" ]]; then
+                if [[ "$cache_listed" == "false" ]]; then
+                    echo "Cache to Restore (models):"
+                    echo "───────────────────────────────────────────────────────────────────"
+                    cache_listed=true
+                fi
+                local size
+                size=$(du -sh "$backup_dir/$dir" 2>/dev/null | cut -f1)
+                echo "  ✓ $dir ($size)"
+            fi
+        done
+        if [[ "$cache_listed" == "true" ]]; then
+            echo ""
+        fi
     fi
 
     if [[ "$restore_config" == "true" ]]; then
@@ -413,6 +432,25 @@ restore_user_data() {
     if [[ "$restored_any" == "false" ]]; then
         log_warn "No user data directories were found in this backup."
     fi
+}
+
+# Put back the cache tier of a full backup: the top-level models/ directory
+# and ODS_BACKUP_CACHE_PATHS (lib/backup-paths.sh). Only `ods backup -t full`
+# writes these, so every path is optional and a user-data backup restores
+# nothing here.
+restore_cache() {
+    local backup_dir="$1"
+    local -a cache_dirs=("models" "${ODS_BACKUP_CACHE_PATHS[@]}")
+
+    local dir
+    for dir in "${cache_dirs[@]}"; do
+        [[ -d "$backup_dir/$dir" ]] || continue
+        mkdir -p "$ODS_DIR/$(dirname "$dir")"
+        # Additive like restore_user_data: no --delete, files added since the
+        # backup stay in place.
+        rsync_with_progress "$backup_dir/$dir" "$ODS_DIR/$(dirname "$dir")/" "Restoring $dir"
+        log_success "Restored: $dir"
+    done
 }
 
 validate_restore_config_source() {
@@ -551,6 +589,7 @@ do_restore() {
     # Perform restore
     if [[ "$restore_data" == "true" ]]; then
         restore_user_data "$backup_dir"
+        restore_cache "$backup_dir"
     fi
 
     if [[ "$restore_config" == "true" ]]; then

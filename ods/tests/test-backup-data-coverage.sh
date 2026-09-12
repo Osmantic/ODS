@@ -58,12 +58,24 @@ for excluded in "${ODS_BACKUP_EXCLUDED_DATA_PATHS[@]}"; do
 done
 pass "backup and exclusion lists are disjoint"
 
+# The cache tier (`ods backup -t full`) may only hold directories the default
+# backup deliberately skips; anything else would be captured twice or would
+# turn a skipped directory into a silently forgotten one.
+[[ ${#ODS_BACKUP_CACHE_PATHS[@]} -gt 0 ]] || fail "ODS_BACKUP_CACHE_PATHS is empty"
+for cached in "${ODS_BACKUP_CACHE_PATHS[@]}"; do
+    [[ " ${ODS_BACKUP_EXCLUDED_DATA_PATHS[*]} " == *" $cached "* ]] \
+        || fail "$cached is in the cache tier but not in the exclusion list"
+done
+pass "the full-backup cache tier only holds deliberately excluded directories"
+
 # Both scripts must read the shared array rather than re-inlining a copy.
 for script in ods-backup.sh ods-restore.sh; do
     grep -q 'lib/backup-paths.sh' "$ROOT_DIR/$script" \
         || fail "$script does not source lib/backup-paths.sh"
     grep -q 'ODS_USER_DATA_PATHS\[@\]' "$ROOT_DIR/$script" \
         || fail "$script does not use ODS_USER_DATA_PATHS"
+    grep -q 'ODS_BACKUP_CACHE_PATHS\[@\]' "$ROOT_DIR/$script" \
+        || fail "$script does not use ODS_BACKUP_CACHE_PATHS"
     if grep -qE '(local|local -a)[^=]*=\(\s*"data/open-webui"' "$ROOT_DIR/$script"; then
         fail "$script re-inlines a literal user-data path list"
     fi
