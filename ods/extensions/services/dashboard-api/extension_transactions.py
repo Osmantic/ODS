@@ -1,12 +1,12 @@
 """Durable transaction store for assistant-first plans."""
 
-from datetime import datetime
 import hashlib
 import json
 import os
 import re
 import stat
 import threading
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -165,6 +165,29 @@ APPROVAL_KEYS = frozenset(
         "validUntil",
     }
 )
+CONFIGURATION_SCHEMA = "ods.assistant-first.transaction-configuration.v1"
+CONFIGURATION_INTENT_SCHEMA = (
+    "ods.assistant-first.transaction-configuration-intent.v1"
+)
+CONFIGURATION_KEYS = frozenset(
+    {
+        "actor",
+        "appliedDefaultKeys",
+        "configuredAt",
+        "idempotencyKey",
+        "planHash",
+        "presentConfigKeys",
+        "presentSecretKeys",
+        "schema",
+        "schemaHash",
+        "secretReference",
+        "transactionId",
+        "values",
+    }
+)
+CONFIGURATION_INTENT_KEYS = CONFIGURATION_KEYS - {"secretReference"}
+CONFIGURATION_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,127}$")
+SECRET_REFERENCE_RE = re.compile(r"^secret-v1-[0-9a-f]{48}$")
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -179,7 +202,7 @@ def _json_safe(v, depth=0):
     if v is None or isinstance(v, bool):
         return
     if isinstance(v, int):
-        if v < 0 or v > 2**53:
+        if v < -(2**53 - 1) or v > 2**53 - 1:
             raise ValidationRejected("integer-out-of-range")
         return
     if isinstance(v, float):
@@ -220,6 +243,129 @@ def canonical_json_bytes(value: Any) -> bytes:
         separators=(",", ":"),
     )
     return (text + "\n").encode("utf-8", errors="strict")
+
+
+def _configuration_key_list(value, field):
+    if not isinstance(value, list):
+        raise IntegrityError("configuration-invalid", field)
+    result = []
+    for item in value:
+        if not isinstance(item, str) or not CONFIGURATION_KEY_RE.fullmatch(item):
+            raise IntegrityError("configuration-invalid", field)
+        result.append(item)
+    if result != sorted(set(result)):
+        raise IntegrityError("configuration-invalid", field)
+    return result
+
+
+def _configuration_value(value):
+    if type(value) in {bool, int}:
+        if type(value) is int and not -(2**53 - 1) <= value <= 2**53 - 1:
+            raise IntegrityError("configuration-invalid", "values")
+        return
+    if (
+        isinstance(value, str)
+        and len(value) <= MAX_STRING_LEN
+        and not any(
+            ord(character) < 32
+            or ord(character) == 127
+            or 0xD800 <= ord(character) <= 0xDFFF
+            for character in value
+        )
+    ):
+        return
+    raise IntegrityError("configuration-invalid", "values")
+
+
+def _configuration_submission_values(value):
+    if type(value) is not dict or len(value) > MAX_DICT_KEYS:
+        raise ValidationRejected("invalid-configuration-values")
+    result = {}
+    for key, item in value.items():
+        if not isinstance(key, str) or not CONFIGURATION_KEY_RE.fullmatch(key):
+            raise ValidationRejected("invalid-configuration-values")
+        try:
+            _configuration_value(item)
+        except IntegrityError:
+            raise ValidationRejected("invalid-configuration-values") from None
+        result[key] = item
+    return result
+
+
+def _configuration_submission_keys(value, field):
+    if type(value) is not list:
+        raise ValidationRejected("invalid-configuration-keys", field)
+    try:
+        return _configuration_key_list(value, field)
+    except IntegrityError:
+        raise ValidationRejected("invalid-configuration-keys", field) from None
+
+
+def _validate_configuration_record(
+    record, transaction_id, envelope, binding, *, intent=False
+):
+    expected_keys = CONFIGURATION_INTENT_KEYS if intent else CONFIGURATION_KEYS
+    expected_schema = CONFIGURATION_INTENT_SCHEMA if intent else CONFIGURATION_SCHEMA
+    if not isinstance(record, dict) or set(record) != expected_keys:
+        raise IntegrityError("configuration-invalid", "fields")
+    if record["schema"] != expected_schema:
+        raise IntegrityError("configuration-invalid", "schema")
+    if record["transactionId"] != transaction_id:
+        raise IntegrityError("configuration-binding-mismatch", "transaction")
+    if record["actor"] != binding["actor"]:
+        raise IntegrityError("configuration-binding-mismatch", "actor")
+    if record["planHash"] != envelope["planHash"]:
+        raise IntegrityError("configuration-binding-mismatch", "plan")
+    if not isinstance(record["schemaHash"], str) or not HEX64_RE.fullmatch(
+        record["schemaHash"]
+    ):
+        raise IntegrityError("configuration-invalid", "schemaHash")
+    if not isinstance(record["idempotencyKey"], str) or not HEX64_RE.fullmatch(
+        record["idempotencyKey"]
+    ):
+        raise IntegrityError("configuration-invalid", "idempotencyKey")
+    try:
+        _validate_timestamp(record["configuredAt"])
+    except ValidationRejected as exc:
+        raise IntegrityError("configuration-invalid", "configuredAt") from exc
+
+    values = record["values"]
+    if not isinstance(values, dict) or len(values) > MAX_DICT_KEYS:
+        raise IntegrityError("configuration-invalid", "values")
+    for key, value in values.items():
+        if not isinstance(key, str) or not CONFIGURATION_KEY_RE.fullmatch(key):
+            raise IntegrityError("configuration-invalid", "values")
+        _configuration_value(value)
+    present_config = _configuration_key_list(
+        record["presentConfigKeys"], "presentConfigKeys"
+    )
+    present_secrets = _configuration_key_list(
+        record["presentSecretKeys"], "presentSecretKeys"
+    )
+    applied_defaults = _configuration_key_list(
+        record["appliedDefaultKeys"], "appliedDefaultKeys"
+    )
+    if set(values) != set(present_config):
+        raise IntegrityError("configuration-invalid", "presentConfigKeys")
+    if set(present_config) & set(present_secrets):
+        raise IntegrityError("configuration-invalid", "channel-overlap")
+    if set(applied_defaults) & set(present_config):
+        raise IntegrityError("configuration-invalid", "default-overlap")
+    if not intent:
+        reference = record["secretReference"]
+        if present_secrets:
+            if not isinstance(reference, str) or not SECRET_REFERENCE_RE.fullmatch(
+                reference
+            ):
+                raise IntegrityError("configuration-invalid", "secretReference")
+        elif reference is not None:
+            raise IntegrityError("configuration-invalid", "secretReference")
+    return record
+
+
+def _plan_requires_configuration(envelope):
+    plan = envelope["plan"]
+    return bool(plan["requiredConfigKeys"] or plan["requiredSecretKeys"])
 
 
 def _sha256(b: bytes) -> str:
@@ -1219,6 +1365,30 @@ class TransactionStore:
             raise IntegrityError("approval-time-invalid")
         return approval
 
+    def _load_configuration(self, tx_dir, transaction_id, envelope, binding):
+        path = tx_dir / "configuration.json"
+        if not self._entry_exists(path):
+            return None
+        configuration = _decode_canonical_object(
+            path, CONFIGURATION_KEYS, "configuration"
+        )
+        return _validate_configuration_record(
+            configuration, transaction_id, envelope, binding
+        )
+
+    def _load_configuration_intent(
+        self, tx_dir, transaction_id, envelope, binding
+    ):
+        path = tx_dir / "configuration-intent.json"
+        if not self._entry_exists(path):
+            return None
+        intent = _decode_canonical_object(
+            path, CONFIGURATION_INTENT_KEYS, "configuration-intent"
+        )
+        return _validate_configuration_record(
+            intent, transaction_id, envelope, binding, intent=True
+        )
+
     def _read_transaction(
         self,
         transaction_id,
@@ -1249,6 +1419,28 @@ class TransactionStore:
         if require_index or self._entry_exists(index_path):
             self._load_index(index_path, transaction_id, binding)
         has_approved = any(record["state"] == "approved" for record in records)
+        configuration = self._load_configuration(
+            tx_dir, transaction_id, envelope, binding
+        )
+        configuration_intent = self._load_configuration_intent(
+            tx_dir, transaction_id, envelope, binding
+        )
+        if configuration is not None and configuration_intent is None:
+            raise IntegrityError("missing-configuration-intent")
+        if configuration is not None:
+            expected_configuration = dict(configuration_intent)
+            expected_configuration["schema"] = CONFIGURATION_SCHEMA
+            expected_configuration["secretReference"] = configuration[
+                "secretReference"
+            ]
+            if configuration != expected_configuration:
+                raise IntegrityError("configuration-intent-mismatch")
+        if (
+            has_approved
+            and _plan_requires_configuration(envelope)
+            and configuration is None
+        ):
+            raise IntegrityError("missing-configuration")
         approval_path = tx_dir / "approval.json"
         if has_approved:
             approval = self._load_approval(tx_dir, transaction_id, envelope, binding)
@@ -1266,6 +1458,8 @@ class TransactionStore:
             "txDir": tx_dir,
             "envelope": envelope,
             "binding": binding,
+            "configuration": configuration,
+            "configurationIntent": configuration_intent,
             "journal": records,
             "approval": approval,
             "state": records[-1]["state"],
@@ -1527,6 +1721,148 @@ class TransactionStore:
             "duplicate": True,
         }
 
+    def begin_configuration_exact(
+        self,
+        transaction_id,
+        expected_plan_hash,
+        schema_hash,
+        idempotency_key,
+        values,
+        present_secret_keys,
+        applied_default_keys,
+        configured_at,
+        current_time,
+    ):
+        """Reserve one immutable, value-safe configuration intent."""
+        _validate_timestamp(configured_at)
+        _validate_timestamp(current_time)
+        if configured_at > current_time:
+            raise ValidationRejected("future-configuration")
+        if not isinstance(expected_plan_hash, str) or not HEX64_RE.fullmatch(
+            expected_plan_hash
+        ):
+            raise ValidationRejected("invalid-plan-hash")
+        if not isinstance(schema_hash, str) or not HEX64_RE.fullmatch(schema_hash):
+            raise ValidationRejected("invalid-schema-hash")
+        if not isinstance(idempotency_key, str) or not HEX64_RE.fullmatch(
+            idempotency_key
+        ):
+            raise ValidationRejected("invalid-idempotency-key")
+        safe_values = _configuration_submission_values(values)
+        safe_secret_keys = _configuration_submission_keys(
+            present_secret_keys, "presentSecretKeys"
+        )
+        safe_default_keys = _configuration_submission_keys(
+            applied_default_keys, "appliedDefaultKeys"
+        )
+
+        with self._lock:
+            loaded = self._read_transaction(transaction_id)
+            if loaded["envelope"]["planHash"] != expected_plan_hash:
+                raise ValidationRejected("plan-hash-mismatch")
+            if loaded["state"] != "awaiting_approval":
+                raise TransitionError("configuration-locked", loaded["state"])
+            record = {
+                "actor": loaded["binding"]["actor"],
+                "appliedDefaultKeys": safe_default_keys,
+                "configuredAt": configured_at,
+                "idempotencyKey": idempotency_key,
+                "planHash": expected_plan_hash,
+                "presentConfigKeys": sorted(safe_values),
+                "presentSecretKeys": safe_secret_keys,
+                "schema": CONFIGURATION_INTENT_SCHEMA,
+                "schemaHash": schema_hash,
+                "transactionId": transaction_id,
+                "values": safe_values,
+            }
+            _validate_configuration_record(
+                record,
+                transaction_id,
+                loaded["envelope"],
+                loaded["binding"],
+                intent=True,
+            )
+            path = loaded["txDir"] / "configuration-intent.json"
+            if loaded["configurationIntent"] is not None:
+                existing = loaded["configurationIntent"]
+                record["configuredAt"] = existing["configuredAt"]
+                if existing != record:
+                    raise IdempotencyConflict("configuration-conflict")
+                result = dict(existing)
+                result["duplicate"] = True
+                return result
+            _write_immutable(path, canonical_json_bytes(record), 0o600)
+            written = self._load_configuration_intent(
+                loaded["txDir"],
+                transaction_id,
+                loaded["envelope"],
+                loaded["binding"],
+            )
+            if written != record:
+                raise IntegrityError("configuration-intent-write-verify-failed")
+            result = dict(record)
+            result["duplicate"] = False
+            return result
+
+    def finish_configuration_exact(
+        self,
+        transaction_id,
+        expected_plan_hash,
+        idempotency_key,
+        secret_reference,
+    ):
+        """Commit an exact reserved intent with only an opaque secret reference."""
+        if not isinstance(expected_plan_hash, str) or not HEX64_RE.fullmatch(
+            expected_plan_hash
+        ):
+            raise ValidationRejected("invalid-plan-hash")
+        if not isinstance(idempotency_key, str) or not HEX64_RE.fullmatch(
+            idempotency_key
+        ):
+            raise ValidationRejected("invalid-idempotency-key")
+        with self._lock:
+            loaded = self._read_transaction(transaction_id)
+            if loaded["envelope"]["planHash"] != expected_plan_hash:
+                raise ValidationRejected("plan-hash-mismatch")
+            if loaded["state"] != "awaiting_approval":
+                raise TransitionError("configuration-locked", loaded["state"])
+            intent = loaded["configurationIntent"]
+            if intent is None:
+                raise IntegrityError("missing-configuration-intent")
+            if intent["idempotencyKey"] != idempotency_key:
+                raise IdempotencyConflict("configuration-conflict")
+            record = dict(intent)
+            record["schema"] = CONFIGURATION_SCHEMA
+            record["secretReference"] = secret_reference
+            _validate_configuration_record(
+                record,
+                transaction_id,
+                loaded["envelope"],
+                loaded["binding"],
+            )
+            if loaded["configuration"] is not None:
+                if loaded["configuration"] != record:
+                    raise IdempotencyConflict("configuration-conflict")
+                result = dict(record)
+                result["duplicate"] = True
+                return result
+            _write_immutable(
+                loaded["txDir"] / "configuration.json",
+                canonical_json_bytes(record),
+                0o600,
+            )
+            written = self._load_configuration(
+                loaded["txDir"],
+                transaction_id,
+                loaded["envelope"],
+                loaded["binding"],
+            )
+            if written != record:
+                raise IntegrityError("configuration-write-verify-failed")
+            result = dict(record)
+            result["duplicate"] = False
+            return result
+
     def transition(
         self,
         transaction_id,
@@ -1696,6 +2032,11 @@ class TransactionStore:
                 raise ApprovalError("approval-conflict")
             if current_state != "awaiting_approval":
                 raise ApprovalError("wrong-state", current_state)
+            if (
+                _plan_requires_configuration(envelope)
+                and loaded["configuration"] is None
+            ):
+                raise ApprovalError("missing-configuration")
 
             approval_path = tx_dir / "approval.json"
             if loaded["approval"] is not None:
@@ -1787,6 +2128,11 @@ class TransactionStore:
                 raise ApprovalError("approval-conflict")
             if current_state != "awaiting_approval":
                 raise ApprovalError("wrong-state", current_state)
+            if (
+                _plan_requires_configuration(envelope)
+                and loaded["configuration"] is None
+            ):
+                raise ApprovalError("missing-configuration")
 
             approval_path = tx_dir / "approval.json"
             if loaded["approval"] is not None:
@@ -1856,6 +2202,7 @@ class TransactionStore:
                 "sequence": len(loaded["journal"]),
                 "journal": loaded["journal"],
                 "approval": loaded["approval"],
+                "configuration": loaded["configuration"],
             }
 
     def list_transactions(self):

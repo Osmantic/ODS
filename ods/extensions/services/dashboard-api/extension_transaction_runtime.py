@@ -19,7 +19,6 @@ from extension_planning_contract import (
     manifest_from_catalog_entry,
 )
 
-
 CatalogProvider = Callable[[], tuple[list[dict[str, Any]], str]]
 ObservedStateProvider = Callable[[], dict[str, Any]]
 PolicyProvider = Callable[[], dict[str, Any]]
@@ -36,6 +35,7 @@ class TransactionRuntime:
     policy: PolicyProvider
     clock: Clock
     executor: Any | None = None
+    configuration: Any | None = None
 
 
 class CurrentInputsProvenanceVerifier:
