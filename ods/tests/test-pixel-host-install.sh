@@ -1965,6 +1965,31 @@ else
 fi
 eval "$original_run_as_owner"
 
+# The access coordinator restart is asynchronous. Prove the fresh-install
+# helper retries a bounded number of fail-closed attempts and stops immediately
+# after the protected reconciliation succeeds.
+access_reconcile_attempts="$TEST_ROOT/access-reconcile-attempts"
+printf '0\n' > "$access_reconcile_attempts"
+ods_pixel_run_as_owner() {
+    local count
+    read -r count < "$access_reconcile_attempts"
+    count=$((count + 1))
+    printf '%s\n' "$count" > "$access_reconcile_attempts"
+    (( count >= 3 ))
+}
+sleep() { :; }
+check _ods_pixel_wait_access_reconcile "$owner" "$home" /protected/reconcile.py 5 1
+check test "$(cat "$access_reconcile_attempts")" = 3
+printf '0\n' > "$access_reconcile_attempts"
+if _ods_pixel_wait_access_reconcile "$owner" "$home" /protected/reconcile.py 2 1; then
+    fail "Pixel access reconciliation exhausts its bounded retry budget"
+else
+    pass "Pixel access reconciliation exhausts its bounded retry budget"
+fi
+check test "$(cat "$access_reconcile_attempts")" = 2
+unset -f sleep
+eval "$original_run_as_owner"
+
 # The long-lived host agent normally lacks an active sudo credential. Prove
 # its fallback can only terminate the same-owner PID of the exact hardened
 # Restart=always unit, then waits for systemd to replace it before verification.

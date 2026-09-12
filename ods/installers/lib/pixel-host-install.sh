@@ -2058,8 +2058,20 @@ _ods_pixel_restart_gateway_and_verify() {
     ods_pixel_run_as_owner "$owner" "$home" "$pixel_root/pixel" verify
 }
 
+_ods_pixel_wait_access_reconcile() {
+    local owner="$1" home="$2" helper="$3" attempts="$4" delay="$5" attempt
+    [[ "$attempts" =~ ^[1-9][0-9]*$ && "$delay" =~ ^[0-9]+$ ]] || return 1
+    for (( attempt=1; attempt<=attempts; attempt++ )); do
+        if ods_pixel_run_as_owner "$owner" "$home" python3 -I "$helper"; then
+            return 0
+        fi
+        (( attempt < attempts )) && sleep "$delay"
+    done
+    return 1
+}
+
 _ods_pixel_reverify_access_after_gateway_restart() {
-    local owner="$1" home="$2" required="${3:-false}"
+    local owner="$1" home="$2" required="${3:-false}" attempts=1
     local helper=/usr/local/libexec/ods-pixel-access/pixel_access_reconcile.py
     if [[ ! -f "$helper" || -L "$helper" ]]; then
         # Upgrades from an older access coordinator reach model reconciliation
@@ -2068,7 +2080,14 @@ _ods_pixel_reverify_access_after_gateway_restart() {
         [[ "$required" == false ]]
         return
     fi
-    ods_pixel_run_as_owner "$owner" "$home" python3 -I "$helper"
+    # systemctl restart is asynchronous. A fresh coordinator can be active
+    # before its owner socket and runtime dependencies are simultaneously
+    # ready, so the first fail-closed status call can legitimately lose that
+    # activation race. Only the mandatory fresh-install proof waits and
+    # retries; the protected helper still refuses busy, pending, ambiguous, or
+    # mismatched state on every attempt.
+    [[ "$required" == true ]] && attempts=30
+    _ods_pixel_wait_access_reconcile "$owner" "$home" "$helper" "$attempts" 1
 }
 
 _ods_pixel_restore_model_reconciliation() {
