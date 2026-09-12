@@ -80,6 +80,8 @@ export default function ODSTalk() {
 
   const bottomRef = useRef(null)
   const fileInputRef = useRef(null)
+  const talkStatusRequestRef = useRef(null)
+  const talkStatusMountedRef = useRef(false)
   const recorderRef = useRef(null)
   const recordingChunksRef = useRef([])
   const streamControllerRef = useRef(null)
@@ -115,18 +117,34 @@ export default function ODSTalk() {
   }, [])
 
   const refreshStatus = useCallback(async () => {
+    if (!talkStatusMountedRef.current) return
+    talkStatusRequestRef.current?.abort()
+    const controller = new AbortController()
+    talkStatusRequestRef.current = controller
+    let rejectAbort
+    const aborted = new Promise((_, reject) => {
+      rejectAbort = () => reject(new Error('ODS Talk status request timed out.'))
+      controller.signal.addEventListener('abort', rejectAbort, {once:true})
+    })
+    const timer = setTimeout(() => controller.abort(), 30000)
     setRetryStatusRefresh(false)
     setStatus('loading')
     try {
-      const resp = await fetch('/api/talk/status', { credentials: 'same-origin' })
-      if (resp.status === 401) {
+      const read = async () => {
+        const resp = await fetch('/api/talk/status', { credentials: 'same-origin', signal:controller.signal })
+        if (resp.status === 401) return {expired:true}
+        if (!resp.ok) throw new Error(await parseError(resp, 'ODS Talk is not ready.'))
+        return {data:await resp.json()}
+      }
+      const result = await Promise.race([read(), aborted])
+      if (!talkStatusMountedRef.current || talkStatusRequestRef.current !== controller) return
+      if (result.expired) {
         setStatus('expired')
         setStatusText('Session expired. Scan the owner card again.')
         setRetryStatusRefresh(false)
         return
       }
-      if (!resp.ok) throw new Error(await parseError(resp, 'ODS Talk is not ready.'))
-      const data = await resp.json()
+      const data = result.data
       const capabilities = data.capabilities || {}
       const compatibilityReason = data.reason || data.modelCompatibility?.hermesTalk?.reason || ''
       setVoiceState({
@@ -144,13 +162,26 @@ export default function ODSTalk() {
       setStatusText('Ready')
       setRetryStatusRefresh(false)
     } catch (err) {
+      if (!talkStatusMountedRef.current || talkStatusRequestRef.current !== controller) return
       setStatus('offline')
       setStatusText(err.message || 'ODS Talk is offline.')
       setRetryStatusRefresh(true)
+    } finally {
+      clearTimeout(timer)
+      controller.signal.removeEventListener('abort', rejectAbort)
+      if (talkStatusRequestRef.current === controller) talkStatusRequestRef.current = null
     }
   }, [liveMicSupported])
 
-  useEffect(() => { refreshStatus() }, [refreshStatus])
+  useEffect(() => {
+    talkStatusMountedRef.current = true
+    refreshStatus()
+    return () => {
+      talkStatusMountedRef.current = false
+      talkStatusRequestRef.current?.abort()
+      talkStatusRequestRef.current = null
+    }
+  }, [refreshStatus])
 
   // Poll while offline. A one-shot setTimeout does not reschedule here: a
   // failed retry sets `status` and `retryStatusRefresh` to the values they
