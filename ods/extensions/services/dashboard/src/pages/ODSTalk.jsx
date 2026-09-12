@@ -79,6 +79,8 @@ export default function ODSTalk() {
   // caption in the textarea before submitting.
 
   const bottomRef = useRef(null)
+  const followReplyRef = useRef(true)
+  const [readingEarlier, setReadingEarlier] = useState(false)
   const fileInputRef = useRef(null)
   const recorderRef = useRef(null)
   const recordingChunksRef = useRef([])
@@ -173,8 +175,25 @@ export default function ODSTalk() {
   }, [refreshStatus, retryStatusRefresh, status, statusAttempt])
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView?.({ block: 'end' })
+    function trackPosition() {
+      const root = document.scrollingElement || document.documentElement
+      const top = document.scrollingElement ? root.scrollTop : window.scrollY
+      const height = Math.max(root.scrollHeight, document.body.scrollHeight)
+      const nearBottom = height - top - window.innerHeight <= 64
+      followReplyRef.current = nearBottom
+      setReadingEarlier(!nearBottom)
+    }
+    window.addEventListener('scroll', trackPosition, {passive:true})
+    return () => window.removeEventListener('scroll', trackPosition)
+  }, [])
+  useEffect(() => {
+    if (followReplyRef.current) bottomRef.current?.scrollIntoView?.({ block: 'end' })
   }, [messages])
+  function jumpToLatest() {
+    followReplyRef.current = true
+    setReadingEarlier(false)
+    bottomRef.current?.scrollIntoView?.({block:'end'})
+  }
 
   useEffect(() => {
     try {
@@ -711,6 +730,7 @@ export default function ODSTalk() {
         )}
 
         <form onSubmit={submit} className="sticky bottom-0 bg-theme-bg p-3">
+          {readingEarlier && <button type="button" onClick={jumpToLatest} className="mb-2 rounded-full border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-800">Jump to latest reply</button>}
           {/* Attachment preview strip — appears above the input bar between
               pick and send. Shows a thumbnail for images, a generic icon for
               text/code files, with an X to discard. */}
