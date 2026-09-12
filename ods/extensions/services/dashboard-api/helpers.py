@@ -1372,3 +1372,19 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def list_slice_head_tail_safe(items: list | None, head: int = 5, tail: int = 5) -> list:
+    """Safely extract head and tail subsets of long sequence lists.
+    Returns [] on None or non-sequence inputs.
+    """
+    if not items or not isinstance(items, (list, tuple)):
+        return []
+    if not isinstance(head, int) or isinstance(head, bool) or head < 0:
+        head = 0
+    if not isinstance(tail, int) or isinstance(tail, bool) or tail < 0:
+        tail = 0
+    n = len(items)
+    if n <= head + tail:
+        return list(items)
+    return list(items[:head]) + list(items[n - tail:])

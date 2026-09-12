@@ -1740,3 +1740,15 @@ def test_flatten_bounds_cycles_and_large_depth_without_losing_empty_leaves():
         nested = {"child": nested}
     result = dict_flatten_nested_safe(nested, max_depth=100000)
     assert len(next(iter(result)).split(".")) == 128
+
+
+class TestListSliceHeadTailSafe:
+    def test_valid_slicing(self):
+        from helpers import list_slice_head_tail_safe
+        nums = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        assert list_slice_head_tail_safe(nums, 2, 2) == [1, 2, 9, 10]
+
+    def test_invalid_inputs(self):
+        from helpers import list_slice_head_tail_safe
+        assert list_slice_head_tail_safe(None) == []
+        assert list_slice_head_tail_safe([1, 2], -1, -1) == [1, 2]
