@@ -17,6 +17,7 @@ const TRANSFERRED_REPO_URL_BYTES: &[u8] = &[
 fn repo_url() -> &'static str {
     option_env!("ODS_REPO_URL").unwrap_or(DEFAULT_REPO_URL)
 }
+const STDOUT_LABEL: &str = "stdout";
 
 fn install_ref() -> &'static str {
     option_env!("ODS_INSTALL_REF").unwrap_or(DEFAULT_INSTALL_REF)
