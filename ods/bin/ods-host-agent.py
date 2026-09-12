@@ -9064,15 +9064,19 @@ class AgentHandler(BaseHTTPRequestHandler):
         admission = _ExtensionMutationAdmission(self, lease_evidence, (sid,))
         try:
             with admission:
-                self._handle_extension_sync_config_admitted(sid, preserve_existing)
+                status, response = self._handle_extension_sync_config_admitted(
+                    sid,
+                    preserve_existing,
+                )
         except _ExtensionMutationAdmissionRejected:
             return
+        json_response(self, status, response)
 
     def _handle_extension_sync_config_admitted(
         self,
         sid: str,
         preserve_existing: bool,
-    ) -> None:
+    ) -> tuple[int, dict]:
         """Validate and copy one config tree inside its admission boundary."""
 
         # Only user-installed extensions ship a config/ subdir for sync
@@ -9081,13 +9085,11 @@ class AgentHandler(BaseHTTPRequestHandler):
         ext_dir = USER_EXTENSIONS_DIR / sid
         if not ext_dir.is_dir():
             # Not a user extension — no-op (built-ins handled by installer).
-            json_response(self, 200, {"status": "ok", "service_id": sid, "synced": []})
-            return
+            return 200, {"status": "ok", "service_id": sid, "synced": []}
 
         ext_config = ext_dir / "config"
         if not ext_config.is_dir():
-            json_response(self, 200, {"status": "ok", "service_id": sid, "synced": []})
-            return
+            return 200, {"status": "ok", "service_id": sid, "synced": []}
 
         # Reject ANY symlink in the config/ tree (or if config/ itself is a
         # symlink). _copytree_safe (the install-time copier) strips symlinks
@@ -9102,23 +9104,21 @@ class AgentHandler(BaseHTTPRequestHandler):
         # siblings) — a symlink anywhere is treated as tampering, even if the
         # contract restriction below means we wouldn't have copied it anyway.
         if ext_config.is_symlink():
-            json_response(self, 400, {
+            return 400, {
                 "error": (
                     f"config sync refused: {sid}/config is a symlink "
                     f"(symlinks are not permitted in extension configs)"
                 ),
-            })
-            return
+            }
         for root, dirs, files in os.walk(str(ext_config), followlinks=False):
             for name in dirs + files:
                 if (Path(root) / name).is_symlink():
-                    json_response(self, 400, {
+                    return 400, {
                         "error": (
                             f"config sync refused: symlink {name} in "
                             f"{sid}/config (symlinks are not permitted)"
                         ),
-                    })
-                    return
+                    }
 
         # Default copy contract: an extension may only write to its OWN
         # config tree — `<ext>/config/<service_id>/` → `INSTALL_DIR/config/<service_id>/`.
@@ -9143,55 +9143,49 @@ class AgentHandler(BaseHTTPRequestHandler):
 
         # If the extension ships no `config/<sid>/` at all, no-op.
         if not src_svc.exists():
-            json_response(self, 200, {
+            return 200, {
                 "status": "ok",
                 "service_id": sid,
                 "synced": [],
                 "skipped": out_of_scope,
-            })
-            return
+            }
         if not src_svc.is_dir():
-            json_response(self, 400, {
+            return 400, {
                 "error": (
                     f"config sync refused: {sid}/config/{sid} must be a directory"
                 ),
-            })
-            return
+            }
 
         install_config = (INSTALL_DIR / "config").resolve()
         try:
             install_config.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
-            json_response(self, 500, {"error": f"Failed to prepare config dir: {exc}"})
-            return
+            return 500, {"error": f"Failed to prepare config dir: {exc}"}
 
         target_candidate = install_config / sid
         if target_candidate.is_symlink():
-            json_response(self, 400, {
+            return 400, {
                 "error": f"config sync refused: target is a symlink for {sid}",
-            })
-            return
+            }
         target = target_candidate.resolve()
         # Path-traversal guard: target must stay under install_config. Always true
         # because sid is validated against SERVICE_ID_RE above (no slashes / dots),
         # but kept as defense-in-depth in case the regex ever loosens.
         if not target.is_relative_to(install_config):
-            json_response(self, 400, {
+            return 400, {
                 "error": f"config sync refused: target outside install dir for {sid}",
-            })
-            return
+            }
 
         if target.is_dir():
             for root, dirs, files in os.walk(str(target), followlinks=False):
                 for name in dirs + files:
                     if (Path(root) / name).is_symlink():
-                        json_response(self, 400, {
+                        return 400, {
                             "error": (
                                 f"config sync refused: existing target symlink {name} "
                                 f"for {sid}"
                             ),
-                        })
-                        return
+                        }
 
         synced: list[str] = []
         try:
@@ -9211,10 +9205,9 @@ class AgentHandler(BaseHTTPRequestHandler):
                 )
             synced.append(sid)
         except OSError as exc:
-            json_response(self, 500, {
+            return 500, {
                 "error": f"Failed to copy {sid}/config/{sid}: {exc}",
-            })
-            return
+            }
         # Mark .sh files executable in the synced service tree.
         for root, _dirs, files in os.walk(str(target)):
             for fname in files:
@@ -9232,7 +9225,7 @@ class AgentHandler(BaseHTTPRequestHandler):
             "synced config for extension %s (%d in-scope, %d out-of-scope ignored)",
             sid, len(synced), len(out_of_scope),
         )
-        json_response(self, 200, {
+        return 200, {
             "status": "ok",
             "service_id": sid,
             "synced": synced,
@@ -9241,7 +9234,7 @@ class AgentHandler(BaseHTTPRequestHandler):
             # predates preserve_existing instead of silently full-copying
             # over user config during update/rollback.
             "preserve_existing": bool(preserve_existing),
-        })
+        }
 
     def _handle_logs(self):
         if not check_auth(self):

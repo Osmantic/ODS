@@ -378,11 +378,21 @@ def test_malformed_sync_config_lease_fails_before_manager_lock_or_copy(
 
 
 def test_sync_config_without_lease_preserves_legacy_behavior(
-    host_server, host_request
+    host_server, host_request, monkeypatch
 ):
     agent, _listener = host_server
     agent._service_locks = collections.defaultdict(CountingLock)
     _source, target = write_user_config(agent, "documents")
+    lock = agent._service_locks["documents"]
+    original_json_response = agent.json_response
+    locked_at_response = []
+
+    def observed_json_response(handler, code, body, **kwargs):
+        if code == 200 and body.get("service_id") == "documents":
+            locked_at_response.append(lock.locked())
+        return original_json_response(handler, code, body, **kwargs)
+
+    monkeypatch.setattr(agent, "json_response", observed_json_response)
 
     status, result = host_request(
         "/v1/extension/sync_config",
@@ -399,8 +409,9 @@ def test_sync_config_without_lease_preserves_legacy_behavior(
         "preserve_existing": False,
     }
     assert agent._extension_lease_manager is None
-    assert agent._service_locks["documents"].acquire_calls == 1
-    assert not agent._service_locks["documents"].locked()
+    assert lock.acquire_calls == 1
+    assert locked_at_response == [False]
+    assert not lock.locked()
     assert (target / "settings.yaml").read_text(encoding="utf-8") == "enabled: true\n"
 
 
@@ -413,13 +424,22 @@ def test_valid_sync_config_lease_covers_copy_without_reacquiring(
     grant = acquire_lease(agent, host_request)
     lock = agent._service_locks["documents"]
     original_copytree = shutil.copytree
+    original_json_response = agent.json_response
+    state_at_response = []
 
     def observed_copytree(*args, **kwargs):
         state = agent._extension_lease_manager.describe(grant["leaseId"])
         assert state["active"] is True
         return original_copytree(*args, **kwargs)
 
+    def observed_json_response(handler, code, body, **kwargs):
+        if code == 200 and body.get("service_id") == "documents":
+            state = agent._extension_lease_manager.describe(grant["leaseId"])
+            state_at_response.append((state["active"], lock.locked()))
+        return original_json_response(handler, code, body, **kwargs)
+
     monkeypatch.setattr(agent.shutil, "copytree", observed_copytree)
+    monkeypatch.setattr(agent, "json_response", observed_json_response)
     status, result = host_request(
         "/v1/extension/sync_config",
         {
@@ -439,7 +459,79 @@ def test_valid_sync_config_lease_covers_copy_without_reacquiring(
     }
     assert (target / "settings.yaml").read_text(encoding="utf-8") == "enabled: true\n"
     assert lock.acquire_calls == 1
+    assert state_at_response == [(False, True)]
     assert lock.locked()
+    assert agent._extension_lease_manager.describe(grant["leaseId"])["active"] is False
+
+
+def test_sync_config_noop_response_is_written_after_lease_window_closes(
+    host_server, host_request, monkeypatch
+):
+    agent, _listener = host_server
+    directory = agent.USER_EXTENSIONS_DIR / "documents"
+    directory.mkdir()
+    (directory / "manifest.yaml").write_text("service: {}\n", encoding="utf-8")
+    grant = acquire_lease(agent, host_request)
+    original_json_response = agent.json_response
+    active_at_response = []
+
+    def observed_json_response(handler, code, body, **kwargs):
+        if code == 200 and body.get("service_id") == "documents":
+            state = agent._extension_lease_manager.describe(grant["leaseId"])
+            active_at_response.append(state["active"])
+        return original_json_response(handler, code, body, **kwargs)
+
+    monkeypatch.setattr(agent, "json_response", observed_json_response)
+    status, result = host_request(
+        "/v1/extension/sync_config",
+        {
+            "service_id": "documents",
+            "lease": mutation_lease(agent, grant),
+        },
+        expect_no_store=False,
+    )
+
+    assert status == 200
+    assert result == {"status": "ok", "service_id": "documents", "synced": []}
+    assert active_at_response == [False]
+
+
+def test_sync_config_error_response_is_written_after_lease_window_closes(
+    host_server, host_request, monkeypatch
+):
+    agent, _listener = host_server
+    agent._service_locks = collections.defaultdict(CountingLock)
+    write_user_config(agent, "documents")
+    grant = acquire_lease(agent, host_request)
+    lock = agent._service_locks["documents"]
+    original_json_response = agent.json_response
+    state_at_response = []
+
+    def fail_copytree(*_args, **_kwargs):
+        raise OSError("synthetic copy failure")
+
+    def observed_json_response(handler, code, body, **kwargs):
+        if code == 500:
+            state = agent._extension_lease_manager.describe(grant["leaseId"])
+            state_at_response.append((state["active"], lock.locked()))
+        return original_json_response(handler, code, body, **kwargs)
+
+    monkeypatch.setattr(agent.shutil, "copytree", fail_copytree)
+    monkeypatch.setattr(agent, "json_response", observed_json_response)
+    status, result = host_request(
+        "/v1/extension/sync_config",
+        {
+            "service_id": "documents",
+            "lease": mutation_lease(agent, grant),
+        },
+        expect_no_store=False,
+    )
+
+    assert status == 500
+    assert result == {
+        "error": "Failed to copy documents/config/documents: synthetic copy failure"
+    }
+    assert state_at_response == [(False, True)]
     assert agent._extension_lease_manager.describe(grant["leaseId"])["active"] is False
 
 
