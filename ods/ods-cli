@@ -1599,6 +1599,30 @@ _ods_cli_wait_for_hermes_ready() {
     return 1
 }
 
+_ods_cli_wait_for_hermes_ready_with_retry() {
+    local flags=("$@")
+    local state
+
+    if _ods_cli_wait_for_hermes_ready; then
+        return 0
+    fi
+
+    state=$(docker inspect --format \
+        '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' \
+        ods-hermes 2>/dev/null || true)
+    [[ "$state" == "unhealthy" ]] || return 1
+
+    # Repeated fleet restart cycles can occasionally leave Hermes in Docker's
+    # explicit unhealthy state even though a clean recreate recovers it. Retry
+    # only that terminal state once; a second failed readiness check remains a
+    # hard restart failure.
+    log "Hermes was unhealthy after restart; recreating it once..."
+    _compose_run_with_summary "Retrying Hermes" \
+        "${flags[@]}" up -d --force-recreate --no-build --pull never hermes
+    _ods_cli_refresh_soul || true
+    _ods_cli_wait_for_hermes_ready
+}
+
 cmd_restart() {
     check_install
     cd "$INSTALL_DIR"
@@ -1676,7 +1700,7 @@ cmd_restart() {
     # Do not tell users a full/Hermes restart is done while Dream Talk and the
     # default agent path can still return a startup error.
     if [[ -z "$resolved_service" || "$resolved_service" == "hermes" ]]; then
-        _ods_cli_wait_for_hermes_ready
+        _ods_cli_wait_for_hermes_ready_with_retry "${flags[@]}"
     fi
 
     if [[ -z "$resolved_service" || "$resolved_service" == "llama-server" ]]; then

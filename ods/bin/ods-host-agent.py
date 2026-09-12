@@ -11079,7 +11079,25 @@ class AgentHandler(BaseHTTPRequestHandler):
                     container_states["ods-hermes"],
                     recreate=True,
                 ):
-                    _wait_for_container_health("ods-hermes")
+                    try:
+                        _wait_for_container_health("ods-hermes")
+                    except ContainerUnhealthyError:
+                        # Docker health can enter ``unhealthy`` while Hermes is
+                        # still starting after a model swap. A clean recreate
+                        # recovered this exact transient on the fleet. Retry
+                        # only that explicit state once; every other error and
+                        # a second unhealthy start still trigger rollback.
+                        logger.warning(
+                            "Hermes became unhealthy after model activation; "
+                            "recreating it once before rollback"
+                        )
+                        if not _restart_existing_container(
+                            "ods-hermes",
+                            container_states["ods-hermes"],
+                            recreate=True,
+                        ):
+                            raise
+                        _wait_for_container_health("ods-hermes")
                     _verify_running_hermes_route(
                         hermes_model_name,
                         hermes_base_url,
@@ -13459,6 +13477,10 @@ def _capture_container_state(container: str) -> dict[str, bool]:
     return {"exists": True, "running": value == "true"}
 
 
+class ContainerUnhealthyError(RuntimeError):
+    """A running dependent reached Docker's explicit unhealthy state."""
+
+
 def _wait_for_container_health(container: str, attempts: int = 60) -> None:
     """Wait until a restarted dependent is healthy, failing on terminal states."""
     for attempt in range(attempts):
@@ -13484,7 +13506,9 @@ def _wait_for_container_health(container: str, attempts: int = 60) -> None:
                 return
             raise RuntimeError(f"{container} exited while waiting for health")
         if status == "unhealthy":
-            raise RuntimeError(f"{container} became unhealthy after model activation")
+            raise ContainerUnhealthyError(
+                f"{container} became unhealthy after model activation"
+            )
         if status != "starting":
             raise RuntimeError(f"Docker returned invalid health state for {container}: {status!r}")
         if attempt + 1 < attempts:

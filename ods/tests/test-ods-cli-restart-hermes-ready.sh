@@ -13,11 +13,13 @@ extract_function() {
 }
 
 eval "$(extract_function _ods_cli_wait_for_hermes_ready)"
+eval "$(extract_function _ods_cli_wait_for_hermes_ready_with_retry)"
 
 success() { :; }
 log() { :; }
 log_error() { :; }
 sleep() { :; }
+_ods_cli_refresh_soul() { :; }
 
 sequence_file="$(mktemp)"
 trap 'rm -f "$sequence_file" "$sequence_file.next"' EXIT
@@ -59,6 +61,58 @@ if ODS_HERMES_READY_TIMEOUT=2 ODS_HERMES_READY_INTERVAL=1 \
 fi
 
 awk '/cmd_restart\(\)/,/^}/' "$ROOT/ods-cli" \
-    | grep -Fq '_ods_cli_wait_for_hermes_ready'
+    | grep -Fq '_ods_cli_wait_for_hermes_ready_with_retry'
+
+ready_calls=0
+compose_calls=0
+_ods_cli_wait_for_hermes_ready() {
+    ready_calls=$((ready_calls + 1))
+    (( ready_calls > 1 ))
+}
+docker() {
+    [[ "${1:-}" == "inspect" && "${2:-}" == "--format" ]] || return 1
+    printf '%s\n' unhealthy
+}
+_compose_run_with_summary() {
+    compose_calls=$((compose_calls + 1))
+    [[ "$*" == *"up -d --force-recreate --no-build --pull never hermes"* ]]
+}
+_ods_cli_wait_for_hermes_ready_with_retry -f compose.yaml
+[[ "$ready_calls" -eq 2 ]]
+[[ "$compose_calls" -eq 1 ]]
+
+ready_calls=0
+compose_calls=0
+_ods_cli_wait_for_hermes_ready() {
+    ready_calls=$((ready_calls + 1))
+    return 1
+}
+docker() {
+    [[ "${1:-}" == "inspect" && "${2:-}" == "--format" ]] || return 1
+    printf '%s\n' exited
+}
+if _ods_cli_wait_for_hermes_ready_with_retry -f compose.yaml; then
+    echo "Hermes retry accepted a non-unhealthy terminal state" >&2
+    exit 1
+fi
+[[ "$ready_calls" -eq 1 ]]
+[[ "$compose_calls" -eq 0 ]]
+
+ready_calls=0
+compose_calls=0
+_ods_cli_wait_for_hermes_ready() {
+    ready_calls=$((ready_calls + 1))
+    return 1
+}
+docker() {
+    [[ "${1:-}" == "inspect" && "${2:-}" == "--format" ]] || return 1
+    printf '%s\n' unhealthy
+}
+if _ods_cli_wait_for_hermes_ready_with_retry -f compose.yaml; then
+    echo "Hermes retry accepted repeated unhealthy readiness" >&2
+    exit 1
+fi
+[[ "$ready_calls" -eq 2 ]]
+[[ "$compose_calls" -eq 1 ]]
 
 echo "ODS restart Hermes readiness checks passed"
