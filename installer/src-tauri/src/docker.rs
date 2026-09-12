@@ -1,5 +1,6 @@
 use std::process::Command;
 use serde::Serialize;
+use std::time::Duration;
 
 #[derive(Debug, Serialize)]
 pub struct DockerStatus {
@@ -107,5 +108,58 @@ pub async fn install_docker() -> Result<String, String> {
             "For safety, the desktop installer does not install Docker Desktop automatically.\n\nInstall Docker Desktop manually, then open it once from Applications before rerunning prerequisite checks:\n{}",
             download_url()
         ))
+    }
+}
+
+/// Launch the already-installed Docker daemon/app. Does NOT install Docker.
+pub fn start_docker() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .args(["-a", "Docker"])
+            .spawn()
+            .map_err(|e| format!("Failed to launch Docker Desktop: {}", e))?;
+        Ok(())
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let docker_path = format!("{}\\Docker\\Docker\\Docker Desktop.exe",
+            std::env::var("ProgramFiles").unwrap_or_else(|_| "C:\\Program Files".to_string()));
+        if std::path::Path::new(&docker_path).exists() {
+            Command::new(&docker_path)
+                .spawn()
+                .map_err(|e| format!("Failed to launch Docker Desktop: {}", e))?;
+            Ok(())
+        } else {
+            Err("Docker Desktop not found at standard location. Please start it manually from the Start menu.".to_string())
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        Command::new("systemctl")
+            .args(["start", "docker"])
+            .output()
+            .map_err(|e| format!("Failed to start Docker daemon: {}", e))?;
+        Ok(())
+    }
+}
+
+/// Poll `is_docker_running()` until true or timeout elapses.
+pub async fn wait_for_docker_running(timeout_secs: u64) -> bool {
+    let start = std::time::Instant::now();
+    let timeout = Duration::from_secs(timeout_secs);
+
+    loop {
+        if is_docker_running() {
+            return true;
+        }
+
+        if start.elapsed() >= timeout {
+            return false;
+        }
+
+        tokio::time::sleep(Duration::from_millis(500)).await;
     }
 }

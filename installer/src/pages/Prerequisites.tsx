@@ -4,6 +4,7 @@ import StatusIcon from "../components/StatusIcon";
 import {
   checkPrerequisites,
   installPrerequisite,
+  startDocker,
   type PrerequisiteStatus,
 } from "../hooks/useTauri";
 
@@ -17,6 +18,7 @@ type InstallStatus = "idle" | "installing" | "done" | "failed";
 export default function Prerequisites({ onNext, onError }: Props) {
   const [prereqs, setPrereqs] = useState<PrerequisiteStatus | null>(null);
   const [dockerStatus, setDockerStatus] = useState<InstallStatus>("idle");
+  const [dockerStartStatus, setDockerStartStatus] = useState<InstallStatus>("idle");
   const [wslStatus, setWslStatus] = useState<InstallStatus>("idle");
   const [message, setMessage] = useState("");
   const [rebootNeeded, setRebootNeeded] = useState(false);
@@ -106,6 +108,28 @@ export default function Prerequisites({ onNext, onError }: Props) {
     setPrereqs(updated);
   };
 
+  const handleStartDocker = async () => {
+    setDockerStartStatus("installing");
+    setMessage("Starting Docker... this can take up to 30 seconds.");
+    try {
+      const result = await startDocker();
+      if (result.success) {
+        setDockerStartStatus("done");
+        setMessage(result.message);
+        // Auto-recheck prerequisites after Docker starts
+        const updated = await checkPrerequisites();
+        setPrereqs(updated);
+        setDockerStartStatus("idle");
+      } else {
+        setDockerStartStatus("failed");
+        setMessage(result.message);
+      }
+    } catch (e) {
+      setDockerStartStatus("failed");
+      setMessage(String(e));
+    }
+  };
+
   return (
     <div className="flex flex-col items-center justify-center h-full px-8">
       <h2 className="text-2xl font-bold mb-2">Prerequisites Needed</h2>
@@ -157,9 +181,11 @@ export default function Prerequisites({ onNext, onError }: Props) {
               status={
                 prereqs.docker_installed && prereqs.docker_running
                   ? "pass"
-                  : dockerStatus === "installing"
+                  : dockerStartStatus === "installing"
                     ? "loading"
-                    : "fail"
+                    : dockerStatus === "installing"
+                      ? "loading"
+                      : "fail"
               }
             />
             <div>
@@ -176,6 +202,17 @@ export default function Prerequisites({ onNext, onError }: Props) {
               Install
             </Button>
           )}
+          {prereqs.docker_installed &&
+            !prereqs.docker_running &&
+            dockerStartStatus === "idle" && (
+              <Button
+                variant="secondary"
+                onClick={handleStartDocker}
+                disabled={dockerStartStatus === "installing"}
+              >
+                Start Docker
+              </Button>
+            )}
         </div>
       </div>
 
@@ -197,12 +234,17 @@ export default function Prerequisites({ onNext, onError }: Props) {
         </div>
       ) : (
         <div className="flex gap-3">
-          <Button variant="ghost" onClick={handleRecheck}>
+          <Button
+            variant="ghost"
+            onClick={handleRecheck}
+            disabled={dockerStartStatus === "installing"}
+          >
             Re-check
           </Button>
           <Button
             onClick={onNext}
             disabled={
+              dockerStartStatus === "installing" ||
               !prereqs.git_installed ||
               !prereqs.docker_installed ||
               !prereqs.docker_running

@@ -92,6 +92,9 @@ export const checkPrerequisites = () =>
 export const installPrerequisite = (component: string) =>
   invoke<InstallPrereqResult>("install_prerequisites", { component });
 
+export const startDocker = () =>
+  invoke<InstallPrereqResult>("start_docker");
+
 export const detectGpu = () => invoke<GpuResult>("detect_gpu");
 
 export const startInstall = (

@@ -14,6 +14,7 @@ fn main() {
             commands::check_system,
             commands::check_prerequisites,
             commands::install_prerequisites,
+            commands::start_docker,
             commands::detect_gpu,
             commands::start_install,
             commands::get_install_progress,

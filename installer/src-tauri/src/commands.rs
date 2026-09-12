@@ -152,6 +152,33 @@ fn tier_description(tier: u8) -> String {
     }
 }
 
+// ---- Docker Management ----
+
+#[tauri::command]
+pub async fn start_docker() -> InstallPrereqResult {
+    if let Err(msg) = docker::start_docker() {
+        return InstallPrereqResult {
+            success: false,
+            message: msg,
+            reboot_required: false,
+        };
+    }
+
+    if docker::wait_for_docker_running(30).await {
+        InstallPrereqResult {
+            success: true,
+            message: "Docker started successfully.".into(),
+            reboot_required: false,
+        }
+    } else {
+        InstallPrereqResult {
+            success: false,
+            message: "Docker is taking longer than expected to start. Wait a moment and try Re-check, or start it manually.".into(),
+            reboot_required: false,
+        }
+    }
+}
+
 // ---- Installation ----
 
 #[tauri::command]
