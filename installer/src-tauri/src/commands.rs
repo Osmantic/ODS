@@ -243,6 +243,15 @@ pub fn get_install_state() -> InstallState {
     InstallState::default()
 }
 
+// ---- Exit ----
+
+/// Close the installer. The webview's window.close() is inert under Tauri,
+/// so the exit has to come from the Rust side.
+#[tauri::command]
+pub fn close_installer(app: tauri::AppHandle) {
+    app.exit(0);
+}
+
 // ---- Open ODS ----
 
 #[tauri::command]

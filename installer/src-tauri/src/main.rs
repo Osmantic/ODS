@@ -19,6 +19,7 @@ fn main() {
             commands::get_install_progress,
             commands::get_install_state,
             commands::open_ods,
+            commands::close_installer,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

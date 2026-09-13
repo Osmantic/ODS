@@ -112,3 +112,5 @@ export const getInstallState = () =>
   invoke<InstallState>("get_install_state");
 
 export const openODSserver = () => invoke("open_ods");
+
+export const closeInstaller = () => invoke("close_installer");
