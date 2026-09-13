@@ -1372,3 +1372,21 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+import math
+
+def numeric_z_score_normalize_safe(values: list | None) -> list[float]:
+    """Safely standardize numeric sequence using z-score normalization (x - mean) / std_dev.
+    Returns [] on None, non-sequence, empty, or zero std_dev inputs.
+    """
+    if not values or not isinstance(values, (list, tuple)):
+        return []
+    cleaned = [float(v) for v in values if isinstance(v, (int, float)) and not isinstance(v, bool)]
+    if not cleaned:
+        return []
+    mean_val = sum(cleaned) / len(cleaned)
+    variance = sum((x - mean_val) ** 2 for x in cleaned) / len(cleaned)
+    std_dev = math.sqrt(variance)
+    if std_dev == 0:
+        return [0.0] * len(cleaned)
+    return [round((x - mean_val) / std_dev, 4) for x in cleaned]
