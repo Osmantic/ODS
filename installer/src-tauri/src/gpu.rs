@@ -135,7 +135,10 @@ fn detect_linux() -> GpuInfo {
                 if let Some(obj) = val.as_object() {
                     for (_key, card) in obj {
                         if let Some(total) = card["VRAM Total Memory (B)"].as_str() {
-                            let bytes: u64 = total.parse().unwrap_or(0);
+                            let bytes: u64 = total.parse().unwrap_or_else(|_| {
+                                eprintln!("Unrecognized VRAM value from rocm-smi: {total}");
+                                0
+                            });
                             let vram_mb = bytes / (1024 * 1024);
                             // Get card name from rocm-smi --showproductname
                             let name = get_amd_name().unwrap_or_else(|| "AMD GPU".into());
