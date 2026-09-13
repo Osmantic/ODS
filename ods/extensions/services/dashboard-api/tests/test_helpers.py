@@ -1740,3 +1740,14 @@ def test_flatten_bounds_cycles_and_large_depth_without_losing_empty_leaves():
         nested = {"child": nested}
     result = dict_flatten_nested_safe(nested, max_depth=100000)
     assert len(next(iter(result)).split(".")) == 128
+
+
+class TestListReplaceSubsequenceSafe:
+    def test_valid_replacement(self):
+        from helpers import list_replace_subsequence_safe
+        assert list_replace_subsequence_safe([1, 2, 3, 4], [2, 3], [8, 9]) == [1, 8, 9, 4]
+
+    def test_invalid_inputs(self):
+        from helpers import list_replace_subsequence_safe
+        assert list_replace_subsequence_safe(None, [1], [2]) == []
+        assert list_replace_subsequence_safe([1, 2], None, [3]) == [1, 2]
