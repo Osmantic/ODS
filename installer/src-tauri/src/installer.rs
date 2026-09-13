@@ -151,7 +151,7 @@ pub fn run_install(
 
     if output.success() {
         update_progress(&state, "Installation complete!", 100);
-        let mut s = state.lock().unwrap();
+        let mut s = state.lock().map_err(|e| format!("State lock poisoned: {}", e))?;
         s.phase = InstallPhase::Complete;
         let _ = s.save();
         Ok(())
