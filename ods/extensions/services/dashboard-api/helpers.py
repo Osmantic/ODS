@@ -1372,3 +1372,20 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def string_truncate_middle_safe(text: str | None, max_length: int = 20, ellipsis: str = "...") -> str:
+    """Safely truncate text in the middle replacing center characters with ellipsis.
+    Returns "" on None or non-string inputs.
+    """
+    if text is None or not isinstance(text, str):
+        return ""
+    if not isinstance(max_length, int) or isinstance(max_length, bool) or max_length <= len(ellipsis):
+        max_length = 20
+    if not isinstance(ellipsis, str):
+        ellipsis = "..."
+    if len(text) <= max_length:
+        return text
+    rem = max_length - len(ellipsis)
+    half = rem // 2
+    return text[:half] + ellipsis + text[-(rem - half):]
