@@ -1372,3 +1372,14 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+import re
+
+def string_is_valid_email_safe(email: str | None) -> bool:
+    """Safely check if string is a valid email address format.
+    Returns False on None or invalid inputs.
+    """
+    if email is None or not isinstance(email, str):
+        return False
+    email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+    return bool(re.match(email_pattern, email.strip()))
