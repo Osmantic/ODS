@@ -24,7 +24,8 @@ Your data is preserved when disabling. To re-enable later: `ods enable gitea`
 ## First-Time Setup
 
 For a new installation, enable with `ods enable gitea`. A one-shot initializer
-sets only the two mounted directory owners to the image's UID/GID 1000; the
+sets the two mounted directory owners and an existing `app.ini` owner to the
+image's UID/GID 1000; the
 application runs as the image's non-root user. It does not recursively change
 existing files. Custom ownership layouts need operator review.
 
@@ -59,11 +60,12 @@ docker cp -a ods-gitea:/etc/gitea/. ./data/gitea-config/
 ```
 
 Do not overwrite an existing `gitea-config/app.ini` without comparing its origin.
-Verify the copied `app.ini` and its UID/GID 1000 ownership without publishing its
-contents; it contains secrets. Take a cold backup of **both** `data/gitea` and
-`data/gitea-config` together before applying the updated recipe. The `-a` copy
-preserves source ownership on a rootful Linux Docker host; rootless Docker,
-Windows bind mounts and custom UIDs may require host-specific ownership steps.
+Verify the copied `app.ini` without publishing its contents; it contains secrets.
+The initializer normalizes its owner to UID/GID 1000 while preserving its bytes
+and file mode, because host copies can receive the copying user's ownership.
+Take a cold backup of **both** `data/gitea` and `data/gitea-config` together before
+applying the updated recipe. Rootless Docker, Windows bind mounts, symbolic
+configuration files and custom UIDs require host-specific review.
 If the old container is already gone, identify its original anonymous volume
 from your deployment records/backups before proceeding. A new blank configuration
 is not a recovery of the old instance.

@@ -80,6 +80,7 @@ networks:
             "--password", password, "--email", "owner@example.test", "--admin",
             "--must-change-password=false")
         config_hash = run("docker", "exec", name, "sha256sum", "/etc/gitea/app.ini")
+        config_mode = run("docker", "exec", name, "stat", "-c", "%a", "/etc/gitea/app.ini")
         with httpx.Client(base_url=url, timeout=10) as client:
             assert client.get("/api/v1/user").status_code == 403
             created = client.post("/api/v1/user/repos", auth=("owner", password),
@@ -98,6 +99,7 @@ networks:
         run(*command, "down", "--timeout", "10")
         url = start()
         assert run("docker", "exec", name, "sha256sum", "/etc/gitea/app.ini") == config_hash
+        assert run("docker", "exec", name, "stat", "-c", "%a", "/etc/gitea/app.ini") == config_mode
         with httpx.Client(base_url=url, timeout=10) as client:
             restored = client.get("/api/v1/repos/owner/private-receipt", auth=("owner", password))
             assert restored.status_code == 200, restored.text
