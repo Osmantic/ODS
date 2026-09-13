@@ -29,6 +29,16 @@ pub struct ProgressEvent {
     pub message: String,
 }
 
+/// Validate install path for security (no path traversal).
+fn validate_install_path(path: &Path) -> Result<(), String> {
+    if path.components().any(|c| {
+        c.as_os_str() == ".." || c.as_os_str() == "."
+    }) {
+        return Err("Install path contains traversal components (..)".into());
+    }
+    Ok(())
+}
+
 /// Run the full ODS installation.
 /// This clones the repo and delegates to the existing install-core.sh.
 pub fn run_install(
@@ -40,6 +50,7 @@ pub fn run_install(
     // Phase 1: Clone the repo
     update_progress(&state, "Downloading ODS", 5);
 
+    validate_install_path(&install_dir)?;
     ensure_checkout(&install_dir)?;
 
     update_progress(&state, "Configuring installation", 15);
