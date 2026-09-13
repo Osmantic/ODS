@@ -137,7 +137,11 @@ export default function Features({ onNext }: Props) {
         <Button variant="ghost" onClick={selectAll}>
           Select All
         </Button>
-        <Button onClick={() => onNext(Array.from(selected))}>
+        <Button
+          onClick={() =>
+            onNext(Array.from(selected).filter((id) => id !== "chat"))
+          }
+        >
           Install
         </Button>
       </div>
