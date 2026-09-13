@@ -94,7 +94,7 @@ impl InstallState {
     pub fn load() -> Option<InstallState> {
         let path = Self::state_path();
         let data = fs::read_to_string(path).ok()?;
-        serde_json::from_str(&data).ok()
+        serde_json::from_str(&data).map_err(|e| eprintln!("Failed to deserialize state: {}", e)).ok()
     }
 }
 
