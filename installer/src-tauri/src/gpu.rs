@@ -243,7 +243,10 @@ fn parse_vram_string(s: &str) -> u64 {
     // Apple reports like "16 GB" or "8192 MB"
     let parts: Vec<&str> = s.split_whitespace().collect();
     if parts.len() >= 2 {
-        let num: u64 = parts[0].parse().unwrap_or(0);
+        let num: u64 = parts[0].parse().unwrap_or_else(|_| {
+            eprintln!("Unrecognized VRAM quantity from system_profiler: {s}");
+            0
+        });
         match parts[1].to_uppercase().as_str() {
             "GB" => num * 1024,
             "MB" => num,
