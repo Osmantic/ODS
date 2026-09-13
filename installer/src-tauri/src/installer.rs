@@ -166,11 +166,19 @@ pub fn run_install(
             .rev()
             .collect::<Vec<String>>()
             .join("\n");
-        if detail.is_empty() {
-            Err("Installation failed. Check logs for details.".into())
+        let message = if detail.is_empty() {
+            "Installation failed. Check logs for details.".to_string()
         } else {
-            Err(format!("Installation failed:\n{}", detail))
+            format!("Installation failed:\n{}", detail)
+        };
+
+        if let Ok(mut s) = state.lock() {
+            s.phase = InstallPhase::Error;
+            s.error = Some(message.clone());
+            let _ = s.save();
         }
+
+        Err(message)
     }
 }
 
