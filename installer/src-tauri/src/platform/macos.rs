@@ -37,7 +37,7 @@ fn get_ram_gb() -> f64 {
     match out {
         Ok(o) if o.status.success() => {
             let text = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            text.parse::<f64>().unwrap_or(0.0) / (1024.0 * 1024.0 * 1024.0)
+            text.trim().parse::<f64>().unwrap_or(0.0) / (1024.0 * 1024.0 * 1024.0)
         }
         _ => 0.0,
     }
