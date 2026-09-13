@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Button from "../components/Button";
 import StatusIcon from "../components/StatusIcon";
 import { checkSystem, type SystemCheckResult, type RequirementCheck } from "../hooks/useTauri";
@@ -12,6 +12,9 @@ export default function SystemCheck({ onNext, onError }: Props) {
   const [loading, setLoading] = useState(true);
   const [result, setResult] = useState<SystemCheckResult | null>(null);
 
+  const onErrorRef = useRef(onError);
+  onErrorRef.current = onError;
+
   useEffect(() => {
     checkSystem()
       .then((r) => {
@@ -19,9 +22,9 @@ export default function SystemCheck({ onNext, onError }: Props) {
         setLoading(false);
       })
       .catch((e) => {
-        onError(String(e));
+        onErrorRef.current(String(e));
       });
-  }, [onError]);
+  }, []);
 
   if (loading) {
     return (
