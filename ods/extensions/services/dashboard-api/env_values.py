@@ -12,3 +12,10 @@ def strip_matching_quotes(value: str) -> str:
     if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
         return value[1:-1]
     return value
+
+
+def env_default_if_whitespace(value: str, default: str) -> str:
+    """Return default if value is empty or consists entirely of whitespace characters."""
+    if not value or not value.strip():
+        return default
+    return value
