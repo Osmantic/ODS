@@ -1740,3 +1740,14 @@ def test_flatten_bounds_cycles_and_large_depth_without_losing_empty_leaves():
         nested = {"child": nested}
     result = dict_flatten_nested_safe(nested, max_depth=100000)
     assert len(next(iter(result)).split(".")) == 128
+
+
+class TestListTakeEveryNthSafe:
+    def test_valid_sampling(self):
+        from helpers import list_take_every_nth_safe
+        assert list_take_every_nth_safe([10, 20, 30, 40, 50], 2) == [10, 30, 50]
+
+    def test_invalid_inputs(self):
+        from helpers import list_take_every_nth_safe
+        assert list_take_every_nth_safe(None) == []
+        assert list_take_every_nth_safe([1, 2, 3], -5) == [1, 2, 3]
