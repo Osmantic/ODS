@@ -1740,3 +1740,15 @@ def test_flatten_bounds_cycles_and_large_depth_without_losing_empty_leaves():
         nested = {"child": nested}
     result = dict_flatten_nested_safe(nested, max_depth=100000)
     assert len(next(iter(result)).split(".")) == 128
+
+
+class TestStringCleanControlCharactersSafe:
+    def test_valid_cleaning(self):
+        from helpers import string_clean_control_characters_safe
+        dirty = "Hello\x07 World\x1f!\n"
+        assert string_clean_control_characters_safe(dirty) == "Hello World!\n"
+
+    def test_invalid_inputs(self):
+        from helpers import string_clean_control_characters_safe
+        assert string_clean_control_characters_safe(None) == ""
+        assert string_clean_control_characters_safe(555) == ""
