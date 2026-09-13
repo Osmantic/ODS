@@ -736,3 +736,29 @@ def load_templates() -> list[dict]:
 
 
 TEMPLATES = load_templates()
+
+
+# ── config guard: parse_comma_list ────────────────────────────
+def parse_comma_list(value: Any, *, unique: bool = True) -> list[str]:
+    """Split a comma-separated string into a cleaned list of tokens.
+
+    Strips surrounding whitespace from each token and discards empty
+    tokens.  When *unique* is True (default) duplicate tokens are
+    removed while preserving first-occurrence order.
+    """
+    if not value:
+        return []
+    raw_items = str(value).split(",")
+    seen: set[str] = set()
+    result: list[str] = []
+    for item in raw_items:
+        stripped = item.strip()
+        if not stripped:
+            continue
+        if unique:
+            if stripped not in seen:
+                seen.add(stripped)
+                result.append(stripped)
+        else:
+            result.append(stripped)
+    return result
