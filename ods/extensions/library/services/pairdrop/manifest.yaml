@@ -1,0 +1,40 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: pairdrop
+  name: PairDrop (Local File Transfer)
+  description: "Send files directly between nearby browsers with receiver confirmation."
+  aliases: [pair-drop]
+  container_name: ods-pairdrop
+  default_host: pairdrop
+  port: 3000
+  external_port_env: PAIRDROP_PORT
+  external_port_default: 8104
+  health: /
+  ui_path: /
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [files, sharing, local]
+  env_vars:
+    - key: PAIRDROP_PORT
+      description: "Published port for local browser file transfer"
+      default: "8104"
+features:
+  - id: local-file-transfer
+    name: Local File Transfer
+    description: "Transfer files over direct WebRTC connections without external STUN or TURN servers"
+    icon: Send
+    category: productivity
+    requirements:
+      services: [pairdrop]
+      vram_gb: 0
+    enabled_services_all: [pairdrop]
+    setup_time: "~1 minute"
+    priority: 30
+    launch:
+      type: service
+      service: pairdrop
