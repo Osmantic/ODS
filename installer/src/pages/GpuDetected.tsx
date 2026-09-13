@@ -37,7 +37,18 @@ export default function GpuDetected({ onNext }: Props) {
     );
   }
 
-  if (!result) return null;
+  if (!result) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full px-8 text-center">
+        <h2 className="text-2xl font-bold mb-3">GPU Detection Unavailable</h2>
+        <p className="text-gray-400 mb-8 max-w-md">
+          We couldn't read your GPU hardware. You can continue in Cloud Mode,
+          which uses cloud AI providers instead of local inference.
+        </p>
+        <Button onClick={() => onNext(0)}>Continue in Cloud Mode</Button>
+      </div>
+    );
+  }
 
   const { gpu } = result;
   const hasGpu = gpu.vendor !== "none";
