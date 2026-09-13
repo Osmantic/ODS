@@ -1372,3 +1372,18 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+import math
+
+def numeric_safe_sigmoid_safe(val: int | float | None) -> float:
+    """Safely calculate sigmoid function 1 / (1 + e^-x) protecting against overflow.
+    Returns 0.5 on None or non-numeric inputs.
+    """
+    if val is None or not isinstance(val, (int, float)) or isinstance(val, bool):
+        return 0.5
+    x = float(val)
+    if x > 40:
+        return 1.0
+    elif x < -40:
+        return 0.0
+    return round(1.0 / (1.0 + math.exp(-x)), 4)
