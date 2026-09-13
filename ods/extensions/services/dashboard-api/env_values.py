@@ -12,3 +12,15 @@ def strip_matching_quotes(value: str) -> str:
     if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
         return value[1:-1]
     return value
+
+import uuid
+
+def env_is_uuid_format(value: str) -> bool:
+    """Check if the environment string is a valid UUIDv4 format."""
+    if not value or not value.strip():
+        return False
+    try:
+        parsed = uuid.UUID(value.strip())
+        return str(parsed) == value.strip().lower()
+    except ValueError:
+        return False

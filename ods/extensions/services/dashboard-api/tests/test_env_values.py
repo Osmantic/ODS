@@ -24,3 +24,12 @@ from env_values import strip_matching_quotes
 )
 def test_strip_matching_quotes_removes_exactly_one_complete_pair(raw, expected):
     assert strip_matching_quotes(raw) == expected
+
+
+def test_env_is_uuid_format():
+    from env_values import env_is_uuid_format
+    import uuid
+    valid = str(uuid.uuid4())
+    assert env_is_uuid_format(valid) is True
+    assert env_is_uuid_format("not-a-uuid") is False
+    assert env_is_uuid_format("") is False
