@@ -12,3 +12,11 @@ def strip_matching_quotes(value: str) -> str:
     if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
         return value[1:-1]
     return value
+
+
+def parse_env_enum(value: str, allowed: set[str], default: str) -> str:
+    """Parse env string, returning it if it's in the allowed set, otherwise the default."""
+    normalized = value.strip().lower()
+    if normalized in allowed:
+        return normalized
+    return default
