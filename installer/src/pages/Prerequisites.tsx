@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Button from "../components/Button";
 import StatusIcon from "../components/StatusIcon";
 import {
@@ -21,11 +21,14 @@ export default function Prerequisites({ onNext, onError }: Props) {
   const [message, setMessage] = useState("");
   const [rebootNeeded, setRebootNeeded] = useState(false);
 
+  const onErrorRef = useRef(onError);
+  onErrorRef.current = onError;
+
   useEffect(() => {
     checkPrerequisites()
       .then(setPrereqs)
-      .catch((e) => onError(String(e)));
-  }, [onError]);
+      .catch((e) => onErrorRef.current(String(e)));
+  }, []);
 
   if (!prereqs) {
     return (
