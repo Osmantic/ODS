@@ -12,3 +12,14 @@ def strip_matching_quotes(value: str) -> str:
     if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
         return value[1:-1]
     return value
+
+
+def parse_env_port_safe(value: str, default: int = 8080) -> int:
+    """Parse a port number from env, ensuring it falls in the valid 1-65535 range."""
+    try:
+        port = int(value.strip())
+        if 1 <= port <= 65535:
+            return port
+    except (ValueError, TypeError, AttributeError):
+        pass
+    return default
