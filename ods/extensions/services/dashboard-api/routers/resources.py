@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -17,10 +18,12 @@ from host_agent_client import (
     request_json as request_agent_json,
 )
 from security import verify_api_key
+from resource_pressure import parse_pressure
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["resources"])
 _SERVICE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+PRESSURE_DIR = Path('/proc/pressure')
 
 _DATA_DIR_MAP = {
     "models": "llama-server",
@@ -32,6 +35,44 @@ _DATA_DIR_MAP = {
     "tts": "tts",
     "whisper": "whisper",
 }
+
+
+def _read_resource_pressure() -> dict:
+    resources = {}
+    for name in ('cpu', 'memory', 'io'):
+        try:
+            text = (PRESSURE_DIR / name).read_text(encoding='ascii')
+        except FileNotFoundError:
+            resources[name] = {'available': False, 'reason': 'not_available', 'some': None, 'full': None}
+            continue
+        except PermissionError:
+            resources[name] = {'available': False, 'reason': 'permission_denied', 'some': None, 'full': None}
+            continue
+        except UnicodeDecodeError as exc:
+            raise HTTPException(status_code=502, detail=f'Invalid {name} pressure data') from exc
+        try:
+            rows = parse_pressure(text)
+        except ValueError as exc:
+            raise HTTPException(status_code=502, detail=f'Invalid {name} pressure data') from exc
+        resources[name] = {
+            'available': True,
+            'some': rows['some'],
+            # CPU full is undefined at system scope, even on kernels emitting zero.
+            'full': None if name == 'cpu' else rows.get('full'),
+        }
+    return resources
+
+
+@router.get('/api/resources/pressure')
+async def resource_pressure(api_key: str = Depends(verify_api_key)):
+    """Read pressure from the API runtime's kernel; never infer host attribution."""
+    resources = await asyncio.to_thread(_read_resource_pressure)
+    return {
+        'schema_version': 1,
+        'scope': 'api-runtime-kernel',
+        'captured_at': datetime.now(timezone.utc).isoformat(),
+        'resources': resources,
+    }
 
 
 def _service_restartability(config: dict) -> tuple[bool, str | None]:
