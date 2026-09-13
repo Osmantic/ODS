@@ -1381,3 +1381,14 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def list_take_every_nth_safe(items: list | None, n: int = 2) -> list:
+    """Safely extract every nth element from a list starting at index 0.
+    Returns [] on None or non-list inputs.
+    """
+    if not items or not isinstance(items, (list, tuple)):
+        return []
+    if not isinstance(n, int) or isinstance(n, bool) or n <= 0:
+        n = 1
+    return list(items[::n])
