@@ -12,3 +12,13 @@ def strip_matching_quotes(value: str) -> str:
     if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
         return value[1:-1]
     return value
+
+
+def parse_env_int_safe(value: str, default: int = 0) -> int:
+    """Parse env string to int, returning default if parsing fails or value is empty."""
+    if not value or not value.strip():
+        return default
+    try:
+        return int(value.strip())
+    except ValueError:
+        return default
