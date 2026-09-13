@@ -736,3 +736,16 @@ def load_templates() -> list[dict]:
 
 
 TEMPLATES = load_templates()
+
+
+# ── config guard: sanitize_env_key ────────────────────────────
+def sanitize_env_key(key: Any) -> str:
+    """Uppercase and strip *key*, replacing runs of non-alphanumeric
+    chars with underscores so it is safe to use in ``os.environ``.
+
+    Returns an empty string for falsy inputs.
+    """
+    if not key:
+        return ""
+    cleaned = re.sub(r"[^A-Z0-9_]", "_", str(key).strip().upper())
+    return re.sub(r"_+", "_", cleaned).strip("_")
