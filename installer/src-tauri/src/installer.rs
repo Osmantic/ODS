@@ -73,9 +73,10 @@ pub fn run_install(
     // Make sure the script is executable
     #[cfg(not(target_os = "windows"))]
     {
-        let _ = Command::new("chmod")
+        Command::new("chmod")
             .args(["+x", &install_script.to_string_lossy()])
-            .output();
+            .output()
+            .map_err(|e| format!("Failed to chmod install script: {}", e))?;
     }
 
     let mut child = if cfg!(target_os = "windows") {
