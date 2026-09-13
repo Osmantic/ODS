@@ -184,6 +184,9 @@ pub async fn start_install(
 }
 
 fn validate_install_request(tier: u8, features: &[String]) -> Result<(), String> {
+    if features.is_empty() {
+        return Err("At least one feature must be selected".into());
+    }
     if tier > 4 {
         return Err(format!("Unsupported install tier: {}", tier));
     }
