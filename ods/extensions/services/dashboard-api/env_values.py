@@ -12,3 +12,10 @@ def strip_matching_quotes(value: str) -> str:
     if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
         return value[1:-1]
     return value
+
+
+def env_require_non_empty(value: str, var_name: str) -> str:
+    """Ensure the env value is not empty or exclusively whitespace, raising ValueError if it is."""
+    if not value or not value.strip():
+        raise ValueError(f"Environment variable {var_name} cannot be empty or whitespace-only")
+    return value.strip()
