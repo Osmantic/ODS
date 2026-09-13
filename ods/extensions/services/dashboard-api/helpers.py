@@ -1372,3 +1372,13 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+import math
+
+def numeric_safe_ceiling_safe(val: int | float | None) -> int:
+    """Safely calculate math.ceil of numeric value.
+    Returns 0 on None or non-numeric inputs.
+    """
+    if val is None or not isinstance(val, (int, float)) or isinstance(val, bool):
+        return 0
+    return math.ceil(float(val))
