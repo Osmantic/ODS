@@ -136,7 +136,12 @@ pub fn run_install(
         for line in reader.lines() {
             if let Ok(line) = line {
                 if let Some(progress) = parse_progress_line(&line) {
-                    update_progress(&state, &progress.message, progress.percent);
+                    update_progress_phase(
+                        &state,
+                        &progress.message,
+                        progress.percent,
+                        &progress.phase,
+                    );
                 }
             }
         }
@@ -339,9 +344,21 @@ fn parse_progress_line(line: &str) -> Option<ProgressEvent> {
 }
 
 fn update_progress(state: &Arc<Mutex<InstallState>>, message: &str, percent: u8) {
+    update_progress_phase(state, message, percent, "");
+}
+
+fn update_progress_phase(
+    state: &Arc<Mutex<InstallState>>,
+    message: &str,
+    percent: u8,
+    phase: &str,
+) {
     if let Ok(mut s) = state.lock() {
         s.progress_pct = percent;
         s.progress_message = message.to_string();
+        if !phase.is_empty() {
+            s.progress_phase = phase.to_string();
+        }
         s.phase = InstallPhase::Installing;
         let _ = s.save();
     }

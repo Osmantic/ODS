@@ -13,6 +13,10 @@ pub struct InstallState {
     pub error: Option<String>,
     pub progress_pct: u8,
     pub progress_message: String,
+    /// Granular installer phase id (e.g. "images") matching the UI's phase
+    /// labels. Defaulted so state files written before this field stay loadable.
+    #[serde(default)]
+    pub progress_phase: String,
     pub reboot_pending: bool,
 }
 
@@ -58,6 +62,7 @@ impl Default for InstallState {
             error: None,
             progress_pct: 0,
             progress_message: String::new(),
+            progress_phase: String::new(),
             reboot_pending: false,
         }
     }

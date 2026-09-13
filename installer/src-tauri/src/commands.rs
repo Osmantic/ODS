@@ -206,7 +206,7 @@ pub fn get_install_progress() -> ProgressInfo {
     if let Ok(data) = std::fs::read_to_string(&state_path) {
         if let Ok(state) = serde_json::from_str::<InstallState>(&data) {
             return ProgressInfo {
-                phase: format!("{:?}", state.phase),
+                phase: state.progress_phase.clone(),
                 percent: state.progress_pct,
                 message: state.progress_message,
                 error: state.error,
