@@ -12,3 +12,17 @@ def strip_matching_quotes(value: str) -> str:
     if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
         return value[1:-1]
     return value
+
+import json
+
+def parse_env_json_dict(value: str) -> dict:
+    """Parse a JSON string from the environment into a dictionary safely."""
+    if not value or not value.strip():
+        return {}
+    try:
+        parsed = json.loads(value.strip())
+        if isinstance(parsed, dict):
+            return parsed
+    except json.JSONDecodeError:
+        pass
+    return {}
