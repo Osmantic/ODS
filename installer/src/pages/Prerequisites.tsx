@@ -200,14 +200,7 @@ export default function Prerequisites({ onNext, onError }: Props) {
           <Button variant="ghost" onClick={handleRecheck}>
             Re-check
           </Button>
-          <Button
-            onClick={onNext}
-            disabled={
-              !prereqs.git_installed ||
-              !prereqs.docker_installed ||
-              !prereqs.docker_running
-            }
-          >
+          <Button onClick={onNext} disabled={!prereqs.all_met}>
             Continue
           </Button>
         </div>
