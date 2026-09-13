@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { readConversations, saveConversation, SELECT_EVENT, DELETE_EVENT, deleteConversation, isConversationDeleted } from '../lib/pixelConversations'
+import { readConversations, saveConversation, SELECT_EVENT, DELETE_EVENT, LIBRARY_EVENT, deleteConversation, isConversationDeleted } from '../lib/pixelConversations'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeHighlight from 'rehype-highlight'
@@ -1096,6 +1096,26 @@ export default function Pixel({ systemStatus = null }) {
     }
   }, [stopping, interrupted, updateRestoredActivity])
 
+    const forkConversation = useCallback((index) => {
+    if (sending || stopping || restoredActive || restoredChecking) return
+    const newChatId = makeChatId()
+    const forkedMessages = messages.slice(0, index + 1).map(m => ({...m}))
+    const forkedChat = {
+      chatId: newChatId,
+      messages: forkedMessages,
+      draft: '',
+      updatedAt: Date.now(),
+      schema: 1
+    }
+    try {
+      saveConversation(forkedChat)
+      window.dispatchEvent(new Event(LIBRARY_EVENT))
+      window.dispatchEvent(new CustomEvent(SELECT_EVENT, { detail: newChatId }))
+    } catch (e) {
+      console.error(e)
+    }
+  }, [messages, sending, stopping, restoredActive, restoredChecking])
+
   const startNewChat = useCallback(() => {
     if (sending || restoredActive || restoredChecking || stopping) return
     chatIdRef.current = makeChatId()
@@ -1380,6 +1400,7 @@ export default function Pixel({ systemStatus = null }) {
                   </span>
                 </span>
               )}
+              {message.content && <div className="mt-2 text-right"><button type="button" onClick={() => forkConversation(index)} title="Fork the conversation from this point" className="text-xs text-theme-text-muted hover:text-theme-text transition">Rewind &amp; Fork</button></div>}
             </div>
             {message.role === 'user' && <UserAvatar profile={profile} className="pixel-user-character"/>}
           </div>
