@@ -1372,3 +1372,21 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def list_chunk_overlapping_step_safe(items: list | None, size: int = 3, step: int = 2) -> list[list]:
+    """Safely partition list into overlapping window chunks given window size and step.
+    Returns [] on None or non-list inputs.
+    """
+    if not items or not isinstance(items, (list, tuple)):
+        return []
+    if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
+        size = 3
+    if not isinstance(step, int) or isinstance(step, bool) or step <= 0:
+        step = 2
+    result = []
+    for i in range(0, len(items), step):
+        chunk = list(items[i:i + size])
+        if chunk:
+            result.append(chunk)
+    return result
