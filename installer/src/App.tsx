@@ -115,7 +115,10 @@ export default function App() {
         {step === "error" && (
           <ErrorPage
             message={state.error || "An unknown error occurred."}
-            onRetry={() => goTo("system_check")}
+            onRetry={() => {
+              update({ error: undefined });
+              goTo("system_check");
+            }}
           />
         )}
       </div>
