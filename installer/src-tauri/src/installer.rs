@@ -146,7 +146,13 @@ pub fn run_install(
         .wait()
         .map_err(|e| format!("Installer process error: {}", e))?;
     let stderr_lines = stderr_handle
-        .and_then(|handle| handle.join().ok())
+        .and_then(|handle| match handle.join() {
+            Ok(lines) => Some(lines),
+            Err(_) => {
+                eprintln!("stderr collection thread panicked; error detail unavailable");
+                None
+            }
+        })
         .unwrap_or_default();
 
     if output.success() {
