@@ -1372,3 +1372,14 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def dict_key_prefix_adder_safe(d: dict | None, prefix: str | None) -> dict:
+    """Safely prepend a string prefix to all keys in a dictionary.
+    Returns {} on None or non-dict inputs.
+    """
+    if not isinstance(d, dict) or d is None:
+        return {}
+    if not isinstance(prefix, str) or not prefix:
+        return dict(d)
+    return {f"{prefix}{k}": v for k, v in d.items()}
