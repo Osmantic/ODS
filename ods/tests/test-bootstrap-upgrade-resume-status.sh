@@ -130,6 +130,7 @@ lock_dir="$tmp/locks/ods-bootstrap-upgrade-${lock_key}.lock"
 mkdir -p "$lock_dir"
 printf '%s\n' "$existing_pid" > "$lock_dir/pid"
 
+set +e
 PATH="$fakebin:$PATH" TMPDIR="$tmp/locks" bash "$TARGET" \
     "$locked_install_dir" \
     "Full.gguf" \
@@ -139,6 +140,10 @@ PATH="$fakebin:$PATH" TMPDIR="$tmp/locks" bash "$TARGET" \
     "32768" \
     "Bootstrap.gguf" \
     > "$tmp/bootstrap-lock-held.log" 2>&1
+lock_rc=$?
+set -e
+
+[[ $lock_rc -eq 1 ]] || fail "active bootstrap-upgrade lock must return exit 1 (got $lock_rc)"
 
 grep -q '"status": "downloading"' "$locked_install_dir/data/bootstrap-status.json" \
     || fail "lock-held bootstrap-status must remain downloading"
