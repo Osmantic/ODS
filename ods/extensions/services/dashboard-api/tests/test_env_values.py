@@ -24,3 +24,10 @@ from env_values import strip_matching_quotes
 )
 def test_strip_matching_quotes_removes_exactly_one_complete_pair(raw, expected):
     assert strip_matching_quotes(raw) == expected
+
+
+def test_parse_env_url_host():
+    from env_values import parse_env_url_host
+    assert parse_env_url_host("https://api.example.com/v1?test=1") == "api.example.com"
+    assert parse_env_url_host("http://localhost:8080") == "localhost"
+    assert parse_env_url_host("not_a_url") == ""

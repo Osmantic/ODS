@@ -12,3 +12,15 @@ def strip_matching_quotes(value: str) -> str:
     if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
         return value[1:-1]
     return value
+
+from urllib.parse import urlparse
+
+def parse_env_url_host(value: str) -> str:
+    """Extract just the hostname from a full URL env string."""
+    if not value or not value.strip():
+        return ""
+    try:
+        parsed = urlparse(value.strip())
+        return parsed.hostname or ""
+    except Exception:
+        return ""
