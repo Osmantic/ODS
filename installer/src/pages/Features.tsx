@@ -49,13 +49,6 @@ const FEATURES: FeatureOption[] = [
     default: false,
     vramNote: "Requires 8GB+ VRAM",
   },
-  {
-    id: "search",
-    name: "Private Search",
-    description:
-      "Self-hosted search engine (SearXNG) with no tracking or ads.",
-    default: false,
-  },
 ];
 
 export default function Features({ onNext }: Props) {
