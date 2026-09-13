@@ -90,11 +90,12 @@ if (parsedBraveUrl.username || parsedBraveUrl.password || parsedBraveUrl.hash) {
 }
 
 function send(res, status, body) {
+  if (res.destroyed) return;
   res.writeHead(status, { "content-type": "application/json" });
   res.end(JSON.stringify(body));
 }
 
-async function callBrave(query, count, offset) {
+async function callBrave(query, count, offset, signal) {
   const url = new URL(parsedBraveUrl);
   url.searchParams.set("q", query);
   url.searchParams.set("count", String(count));
@@ -116,7 +117,7 @@ async function callBrave(query, count, offset) {
       // redirecting upstream could receive the subscription token. The Brave
       // API never redirects; refuse rather than follow.
       redirect: "error",
-      signal: ctrl.signal,
+      signal: AbortSignal.any([ctrl.signal, signal]),
     });
   } finally {
     clearTimeout(timer);
@@ -126,10 +127,10 @@ async function callBrave(query, count, offset) {
 // Shared upstream call. Maps transport failures to a tagged shape so each
 // route can render them in its own error contract (/v1 as 5xx, searxng
 // compat as unresponsive_engines).
-async function fetchBraveWeb(query, count, offset) {
+async function fetchBraveWeb(query, count, offset, signal) {
   let upstream;
   try {
-    upstream = await callBrave(query, count, offset);
+    upstream = await callBrave(query, count, offset, signal);
   } catch (err) {
     if (err && err.name === "AbortError") {
       return { error: "timeout" };
@@ -152,7 +153,7 @@ async function fetchBraveWeb(query, count, offset) {
   }
 }
 
-async function handleV1Search(res, params) {
+async function handleV1Search(res, params, signal) {
   const query = params.get("q");
   if (!query) {
     send(res, 400, { error: "missing_query_param_q" });
@@ -162,7 +163,7 @@ async function handleV1Search(res, params) {
   const requested = Number(params.get("count") ?? 5);
   const count = Math.min(20, Math.max(1, Number.isFinite(requested) ? Math.trunc(requested) : 5));
 
-  const outcome = await fetchBraveWeb(query, count, 0);
+  const outcome = await fetchBraveWeb(query, count, 0, signal);
   if (outcome.error === "timeout") {
     send(res, 504, { error: "upstream_timeout" });
     return;
@@ -279,7 +280,7 @@ const SEARXNG_ERROR_TEXT = {
   invalid_json: "invalid JSON",
 };
 
-async function handleSearxngSearch(res, params) {
+async function handleSearxngSearch(res, params, signal) {
   const format = params.get("format");
   if (format !== "json") {
     send(res, 400, { error: "unsupported_format", detail: "only format=json is supported" });
@@ -319,7 +320,7 @@ async function handleSearxngSearch(res, params) {
   const pageno = Number.isFinite(requestedPage) ? Math.trunc(requestedPage) : 1;
   const offset = Math.min(9, Math.max(0, pageno - 1));
 
-  const outcome = await fetchBraveWeb(query, SEARXNG_PAGE_SIZE, offset);
+  const outcome = await fetchBraveWeb(query, SEARXNG_PAGE_SIZE, offset, signal);
   if (outcome.error) {
     const reason =
       outcome.error === "http_error"
@@ -336,6 +337,9 @@ async function handleSearxngSearch(res, params) {
 // ── router ──────────────────────────────────────────────────────────────────
 
 const server = http.createServer(async (req, res) => {
+  const disconnected = new AbortController();
+  const onClose = () => { if (!res.writableEnded) disconnected.abort(); };
+  res.on("close", onClose);
   try {
     const parsed = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
 
@@ -345,7 +349,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "GET" && parsed.pathname === "/search" && SEARXNG_COMPAT) {
-      await handleSearxngSearch(res, parsed.searchParams);
+      await handleSearxngSearch(res, parsed.searchParams, disconnected.signal);
       return;
     }
 
@@ -354,14 +358,17 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    await handleV1Search(res, parsed.searchParams);
+    await handleV1Search(res, parsed.searchParams, disconnected.signal);
   } catch (error) {
+    if (disconnected.signal.aborted) return;
     console.error(`brave-search: request failed: ${error instanceof Error ? error.message : "unknown error"}`);
     if (!res.headersSent) {
       send(res, 500, { error: "internal_error" });
     } else {
       res.destroy();
     }
+  } finally {
+    res.removeListener("close", onClose);
   }
 });
 

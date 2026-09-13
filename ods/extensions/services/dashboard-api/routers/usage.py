@@ -46,12 +46,8 @@ def _parse_date(value: str) -> date:
 
 
 def _date_range(start_day: date, end_day: date) -> list[str]:
-    days = []
-    current = start_day
-    while current <= end_day:
-        days.append(current.isoformat())
-        current += timedelta(days=1)
-    return days
+    return [(start_day + timedelta(days=offset)).isoformat()
+            for offset in range((end_day - start_day).days + 1)]
 
 
 def _empty_report(start: str, end: str, status: str = "unavailable", detail: str | None = None) -> dict[str, Any]:

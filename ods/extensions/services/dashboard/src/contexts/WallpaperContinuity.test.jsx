@@ -1,4 +1,4 @@
-import {render, screen, fireEvent, act, cleanup} from '@testing-library/react'
+import {render, screen, fireEvent, act, cleanup, waitFor} from '@testing-library/react'
 import {ThemeProvider, useTheme} from './ThemeContext'
 import WallpaperVideo from '../components/WallpaperVideo'
 import {readCustomWallpapers} from '../lib/customWallpapers'
@@ -24,6 +24,8 @@ afterEach(()=>{cleanup();vi.restoreAllMocks();vi.unstubAllGlobals()})
 it('keeps the playing resource on focus refresh but releases it when storage removes the video',async()=>{
   const {container}=render(<ThemeProvider><Stage/></ThemeProvider>)
   await screen.findByRole('button',{name:'Movie'})
+  // The gallery arrives before WallpaperVideo's object-URL effect commits.
+  await waitFor(()=>expect(container.querySelector('video')).not.toBeNull())
   const video=container.querySelector('video')
   video.currentTime=12
   await act(async()=>window.dispatchEvent(new Event('focus')))
