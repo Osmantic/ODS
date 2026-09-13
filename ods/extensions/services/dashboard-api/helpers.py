@@ -1372,3 +1372,13 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+import math
+
+def numeric_safe_log2_scaled_safe(val: int | float | None, default_val: float = 0.0) -> float:
+    """Safely calculate log2(1 + val) protecting against values <= -1.
+    Returns default_val on None, non-numeric, or val <= -1 inputs.
+    """
+    if val is None or not isinstance(val, (int, float)) or isinstance(val, bool) or val <= -1:
+        return float(default_val)
+    return float(math.log2(1.0 + float(val)))
