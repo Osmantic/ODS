@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-13T16:53:56Z",
+  "generated_at": "2026-09-13T19:11:39Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -1768,6 +1768,62 @@
             "amd",
             "nvidia"
           ]
+        }
+      ],
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
+      "id": "kiwix",
+      "name": "Kiwix (Offline Knowledge)",
+      "description": "Read and search a local ZIM knowledge archive without an external content service.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 8080,
+      "external_port_default": 8105,
+      "health_endpoint": "/",
+      "env_vars": [
+        {
+          "key": "KIWIX_PORT",
+          "description": "Published port for the offline knowledge library",
+          "default": "8105"
+        },
+        {
+          "key": "KIWIX_ZIM_FILE",
+          "description": "Existing ZIM filename inside data/kiwix; required before enabling",
+          "required": true
+        }
+      ],
+      "tags": [
+        "knowledge",
+        "reference",
+        "offline"
+      ],
+      "features": [
+        {
+          "id": "offline-knowledge-library",
+          "name": "Offline Knowledge",
+          "description": "Read and search an operator-provided local ZIM archive",
+          "icon": "BookOpen",
+          "category": "productivity",
+          "requirements": {
+            "services": [
+              "kiwix"
+            ],
+            "vram_gb": 0
+          },
+          "enabled_services_all": [
+            "kiwix"
+          ],
+          "setup_time": "~1 minute",
+          "priority": 30,
+          "launch": {
+            "type": "service",
+            "service": "kiwix"
+          }
         }
       ],
       "configuration_scope": "declared-environment-keys"
