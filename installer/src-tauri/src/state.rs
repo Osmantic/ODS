@@ -66,7 +66,9 @@ impl Default for InstallState {
 impl InstallState {
     fn state_path() -> PathBuf {
         let dir = dirs_next().join("ods");
-        let _ = fs::create_dir_all(&dir);
+        if let Err(e) = fs::create_dir_all(&dir) {
+            eprintln!("Warning: Failed to create state directory: {}", e);
+        }
         dir.join("installer-state.json")
     }
 
