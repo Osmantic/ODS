@@ -1372,3 +1372,14 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def list_safe_intersection(l1: list | None, l2: list | None) -> list:
+    """Safely find common elements between two lists, retaining order of the first.
+    """
+    if not l1 or not isinstance(l1, (list, tuple)):
+        return []
+    if not l2 or not isinstance(l2, (list, tuple)):
+        return []
+    s2 = set(l2)
+    return [x for x in l1 if x in s2]
