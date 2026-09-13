@@ -736,3 +736,19 @@ def load_templates() -> list[dict]:
 
 
 TEMPLATES = load_templates()
+
+
+# ── config guard: require_env_var ─────────────────────────────
+def require_env_var(key: str) -> str:
+    """Return the value of environment variable *key*.
+
+    Raises ``RuntimeError`` with a clear message when the variable is
+    absent or set to an empty string, preventing silent misconfigurations.
+    """
+    value = os.environ.get(key, "").strip()
+    if not value:
+        raise RuntimeError(
+            f"Required environment variable '{key}' is not set or empty. "
+            "Check your deployment configuration."
+        )
+    return value
