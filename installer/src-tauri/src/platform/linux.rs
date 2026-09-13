@@ -64,7 +64,14 @@ fn get_disk_free_gb() -> f64 {
         Ok(o) if o.status.success() => {
             let text = String::from_utf8_lossy(&o.stdout);
             if let Some(line) = text.lines().nth(1) {
-                return line.trim().trim_end_matches('G').parse().unwrap_or(0.0);
+                let value = line.trim().trim_end_matches('G');
+                return match value.parse() {
+                    Ok(avail) => avail,
+                    Err(_) => {
+                        eprintln!("Unrecognized df avail value: {value}");
+                        0.0
+                    }
+                };
             }
             0.0
         }
