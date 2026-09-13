@@ -1372,3 +1372,12 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def numeric_safe_cube_safe(val: int | float | None) -> float:
+    """Safely calculate val^3 protecting against non-numeric types.
+    Returns 0.0 on None or non-numeric inputs.
+    """
+    if val is None or not isinstance(val, (int, float)) or isinstance(val, bool):
+        return 0.0
+    return float(val) ** 3
