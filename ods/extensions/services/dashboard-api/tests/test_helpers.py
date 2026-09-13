@@ -1740,3 +1740,14 @@ def test_flatten_bounds_cycles_and_large_depth_without_losing_empty_leaves():
         nested = {"child": nested}
     result = dict_flatten_nested_safe(nested, max_depth=100000)
     assert len(next(iter(result)).split(".")) == 128
+
+
+class TestNumericPercentileRankSafe:
+    def test_valid_rank(self):
+        from helpers import numeric_percentile_rank_safe
+        assert numeric_percentile_rank_safe([10, 20, 30, 40, 50], 30) == 50.0
+
+    def test_invalid_inputs(self):
+        from helpers import numeric_percentile_rank_safe
+        assert numeric_percentile_rank_safe(None, 30) == 0.0
+        assert numeric_percentile_rank_safe([1, 2], None) == 0.0
