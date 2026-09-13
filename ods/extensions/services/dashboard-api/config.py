@@ -736,3 +736,26 @@ def load_templates() -> list[dict]:
 
 
 TEMPLATES = load_templates()
+
+
+# ── config guard: normalize_log_level ─────────────────────────
+_LOG_LEVELS = {
+    "debug": logging.DEBUG,
+    "info": logging.INFO,
+    "warning": logging.WARNING,
+    "warn": logging.WARNING,
+    "error": logging.ERROR,
+    "critical": logging.CRITICAL,
+    "fatal": logging.CRITICAL,
+}
+
+def normalize_log_level(value: Any, default: int = logging.INFO) -> int:
+    """Map a log-level string (e.g. ``'DEBUG'``, ``'warn'``) to its
+    ``logging`` integer constant.
+
+    Returns *default* for None, empty, or unrecognised values.
+    """
+    if not value:
+        return default
+    key = str(value).strip().lower()
+    return _LOG_LEVELS.get(key, default)
