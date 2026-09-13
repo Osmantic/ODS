@@ -174,6 +174,12 @@ pub async fn start_install(
         ..Default::default()
     }));
 
+    // Overwrite any state left by a previous run before polling begins,
+    // otherwise get_install_progress serves the old percent and error.
+    if let Ok(s) = state.lock() {
+        s.save()?;
+    }
+
     let state_clone = state.clone();
 
     // Run installation in a blocking thread
