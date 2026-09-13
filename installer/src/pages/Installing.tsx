@@ -37,12 +37,13 @@ export default function Installing({
   useEffect(() => {
     if (started.current) return;
     started.current = true;
+    let isMounted = true;
 
     // Start the install
     startInstall(tier, features, installDir).then(() => {
-      onComplete();
+      if (isMounted) onComplete();
     }).catch((e) => {
-      onError(String(e));
+      if (isMounted) onError(String(e));
     });
 
     // Poll for progress
@@ -62,7 +63,10 @@ export default function Installing({
       }
     }, 2000);
 
-    return () => clearInterval(interval);
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
   }, [tier, features, installDir, onComplete, onError]);
 
   const phaseLabel =
