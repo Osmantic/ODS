@@ -1740,3 +1740,14 @@ def test_flatten_bounds_cycles_and_large_depth_without_losing_empty_leaves():
         nested = {"child": nested}
     result = dict_flatten_nested_safe(nested, max_depth=100000)
     assert len(next(iter(result)).split(".")) == 128
+
+
+class TestStringStripNonPrintableCharsSafe:
+    def test_valid_stripping(self):
+        from helpers import string_strip_non_printable_chars_safe
+        assert string_strip_non_printable_chars_safe("Hello\x00 World\x1b!") == "Hello World!"
+
+    def test_invalid_inputs(self):
+        from helpers import string_strip_non_printable_chars_safe
+        assert string_strip_non_printable_chars_safe(None) == ""
+        assert string_strip_non_printable_chars_safe(12345) == ""
