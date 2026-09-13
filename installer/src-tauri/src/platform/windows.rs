@@ -40,7 +40,7 @@ fn get_ram_gb() -> f64 {
     match out {
         Ok(o) if o.status.success() => {
             let text = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            text.parse::<f64>().unwrap_or(0.0) / (1024.0 * 1024.0 * 1024.0)
+            parse_bytes_to_gb(&text, "TotalPhysicalMemory")
         }
         _ => 0.0,
     }
@@ -53,9 +53,19 @@ fn get_disk_free_gb() -> f64 {
     match out {
         Ok(o) if o.status.success() => {
             let text = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            text.parse::<f64>().unwrap_or(0.0) / (1024.0 * 1024.0 * 1024.0)
+            parse_bytes_to_gb(&text, "Get-PSDrive C free space")
         }
         _ => 0.0,
+    }
+}
+
+fn parse_bytes_to_gb(text: &str, source: &str) -> f64 {
+    match text.parse::<f64>() {
+        Ok(bytes) => bytes / (1024.0 * 1024.0 * 1024.0),
+        Err(_) => {
+            eprintln!("Unrecognized {source} value from PowerShell: {text}");
+            0.0
+        }
     }
 }
 
