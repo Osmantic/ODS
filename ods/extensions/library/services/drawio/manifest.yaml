@@ -1,0 +1,40 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: drawio
+  name: draw.io (Local Diagrams)
+  description: "Create, edit and export diagrams locally in your browser."
+  aliases: [draw-io]
+  container_name: ods-drawio
+  default_host: drawio
+  port: 8080
+  external_port_env: DRAWIO_PORT
+  external_port_default: 8106
+  health: /
+  ui_path: /?offline=1&https=0
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [diagrams, design, local]
+  env_vars:
+    - key: DRAWIO_PORT
+      description: "Published port for the local diagram editor"
+      default: "8106"
+features:
+  - id: local-diagram-editor
+    name: Local Diagrams
+    description: "Edit diagram files and export SVG locally without a hosted rendering service"
+    icon: Workflow
+    category: productivity
+    requirements:
+      services: [drawio]
+      vram_gb: 0
+    enabled_services_all: [drawio]
+    setup_time: "~1 minute"
+    priority: 30
+    launch:
+      type: service
+      service: drawio
