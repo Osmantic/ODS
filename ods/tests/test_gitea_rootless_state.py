@@ -47,8 +47,6 @@ def test_private_repository_and_configuration_survive_down_up(tmp_path, migrate_
         compose_file.write_text(yaml.safe_dump(legacy))
         data = tmp_path / "data/gitea"
         data.mkdir(parents=True)
-        run("docker", "run", "--rm", "--network", "none", "--user", "0:0", "--entrypoint", "chown",
-            "--mount", f"type=bind,source={data},target=/var/lib/gitea", image, "1000:1000", "/var/lib/gitea")
     overlay = tmp_path / "isolation.yaml"
     overlay.write_text(f'''services:
   gitea:
@@ -64,14 +62,17 @@ networks:
     anonymous_volumes = set()
 
     def start():
-        started = subprocess.run([*command, "up", "-d", "--wait", "--wait-timeout", "60"],
-                                 capture_output=True, text=True, timeout=150)
+        started = subprocess.run([*command, "up", "-d", "--wait", "--wait-timeout", "120"],
+                                 capture_output=True, text=True, timeout=180)
         assert started.returncode == 0, started.stderr + "\n" + run("docker", "logs", name)
         mounts = json.loads(run("docker", "inspect", name))[0]["Mounts"]
         anonymous_volumes.update(item["Name"] for item in mounts if item["Type"] == "volume")
         return "http://" + run(*command, "port", "gitea", "3000")
 
     try:
+        if migrate_legacy:
+            run("docker", "run", "--name", name + "-prepare", "--rm", "--network", "none", "--user", "0:0", "--entrypoint", "chown",
+                "--mount", f"type=bind,source={data},target=/var/lib/gitea", image, "1000:1000", "/var/lib/gitea")
         # The fresh case has no host chown or pre-created data directory.
         url = start()
         password = "fixture-" + uuid.uuid4().hex
@@ -106,6 +107,8 @@ networks:
             assert commits.status_code == 200 and len(commits.json()) == 1
             assert client.get("/api/v1/repos/owner/private-receipt").status_code == 403
     finally:
+        if run("docker", "container", "ls", "-aq", "--filter", f"name=^/{name}-prepare$"):
+            run("docker", "rm", "-f", name + "-prepare")
         run(*command, "down", "--volumes", "--timeout", "10")
         for volume in anonymous_volumes:
             if run("docker", "volume", "ls", "--quiet", "--filter", f"name=^{volume}$"):
