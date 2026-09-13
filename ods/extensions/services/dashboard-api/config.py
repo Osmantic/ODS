@@ -736,3 +736,19 @@ def load_templates() -> list[dict]:
 
 
 TEMPLATES = load_templates()
+
+
+# ── config guard: validate_json_config ────────────────────────
+def validate_json_config(value: Any) -> dict | None:
+    """Parse *value* as a JSON object string and return the dict.
+
+    Returns ``None`` when *value* is falsy, not a string, not valid
+    JSON, or when the parsed result is not a ``dict``.
+    """
+    if not value or not isinstance(value, str):
+        return None
+    try:
+        parsed = json.loads(value.strip())
+    except (json.JSONDecodeError, ValueError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
