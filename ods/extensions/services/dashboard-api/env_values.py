@@ -12,3 +12,13 @@ def strip_matching_quotes(value: str) -> str:
     if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
         return value[1:-1]
     return value
+
+
+def parse_env_version_tuple(value: str) -> tuple[int, ...]:
+    """Parse a version string (e.g. '1.2.3') into a tuple of integers for easy comparison."""
+    if not value:
+        return ()
+    try:
+        return tuple(int(part) for part in value.strip().split(".") if part.strip())
+    except ValueError:
+        return ()
