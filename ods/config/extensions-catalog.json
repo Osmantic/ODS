@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-13T16:53:56Z",
+  "generated_at": "2026-09-13T18:38:05Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -761,6 +761,57 @@
           ],
           "setup_time": "~1 minute",
           "priority": 20
+        }
+      ],
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
+      "id": "cyberchef",
+      "name": "CyberChef (Data Recipes)",
+      "description": "Compose repeatable encoding, compression and data analysis recipes in your browser.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 8080,
+      "external_port_default": 8103,
+      "health_endpoint": "/",
+      "env_vars": [
+        {
+          "key": "CYBERCHEF_PORT",
+          "description": "Published port for the data recipe workbench",
+          "default": "8103"
+        }
+      ],
+      "tags": [
+        "data",
+        "development",
+        "local"
+      ],
+      "features": [
+        {
+          "id": "local-data-recipes",
+          "name": "Data Recipes",
+          "description": "Chain decoding, decompression and data transformations locally in the browser",
+          "icon": "Wrench",
+          "category": "productivity",
+          "requirements": {
+            "services": [
+              "cyberchef"
+            ],
+            "vram_gb": 0
+          },
+          "enabled_services_all": [
+            "cyberchef"
+          ],
+          "setup_time": "~1 minute",
+          "priority": 30,
+          "launch": {
+            "type": "service",
+            "service": "cyberchef"
+          }
         }
       ],
       "configuration_scope": "declared-environment-keys"
