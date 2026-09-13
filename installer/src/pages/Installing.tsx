@@ -57,8 +57,8 @@ export default function Installing({
         if (p.percent >= 100) {
           clearInterval(interval);
         }
-      } catch {
-        // Ignore polling errors
+      } catch (e) {
+        console.error("Progress polling error:", e);
       }
     }, 2000);
 
