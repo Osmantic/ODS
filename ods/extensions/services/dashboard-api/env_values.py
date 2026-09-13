@@ -12,3 +12,15 @@ def strip_matching_quotes(value: str) -> str:
     if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
         return value[1:-1]
     return value
+
+
+def parse_env_bool_strict(value: str) -> bool:
+    """Parse boolean env value strictly requiring 'true' or 'false' (case-insensitive).
+    Raises ValueError on unrecognized input.
+    """
+    normalized = value.strip().lower()
+    if normalized == "true":
+        return True
+    if normalized == "false":
+        return False
+    raise ValueError(f"Invalid strict boolean env value: {value}")
