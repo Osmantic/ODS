@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-13T16:53:56Z",
+  "generated_at": "2026-09-13T17:20:54Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -3586,6 +3586,57 @@
       "tags": [],
       "features": [],
       "catalog_source": "builtin",
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
+      "id": "uptime-kuma",
+      "name": "Uptime Kuma (Service Monitoring)",
+      "description": "Authenticated service uptime monitoring with local history and operator-configured alerts.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 3001,
+      "external_port_default": 8102,
+      "health_endpoint": "/",
+      "env_vars": [
+        {
+          "key": "UPTIME_KUMA_WEB_PORT",
+          "description": "Published web port; the internal monitor UI listens on 3001",
+          "default": "8102"
+        }
+      ],
+      "tags": [
+        "monitoring",
+        "operations",
+        "local"
+      ],
+      "features": [
+        {
+          "id": "service-uptime-monitoring",
+          "name": "Service Uptime",
+          "description": "Monitor service availability and retain a local incident history",
+          "icon": "Activity",
+          "category": "productivity",
+          "requirements": {
+            "services": [
+              "uptime-kuma"
+            ],
+            "vram_gb": 0
+          },
+          "enabled_services_all": [
+            "uptime-kuma"
+          ],
+          "setup_time": "~1 minute plus account and monitor setup",
+          "priority": 30,
+          "launch": {
+            "type": "service",
+            "service": "uptime-kuma"
+          }
+        }
+      ],
       "configuration_scope": "declared-environment-keys"
     },
     {
