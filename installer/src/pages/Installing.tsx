@@ -46,15 +46,19 @@ export default function Installing({
     });
 
     // Poll for progress
+    let shouldPoll = true;
     const interval = setInterval(async () => {
+      if (!shouldPoll) return;
       try {
         const p = await getInstallProgress();
         setProgress(p);
         if (p.error) {
+          shouldPoll = false;
           clearInterval(interval);
           onError(p.error);
         }
         if (p.percent >= 100) {
+          shouldPoll = false;
           clearInterval(interval);
         }
       } catch {
