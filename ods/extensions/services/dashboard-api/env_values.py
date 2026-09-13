@@ -12,3 +12,14 @@ def strip_matching_quotes(value: str) -> str:
     if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
         return value[1:-1]
     return value
+
+import base64
+
+def parse_env_base64(value: str) -> bytes | None:
+    """Decode a base64 encoded env string, returning None if decoding fails."""
+    if not value or not value.strip():
+        return None
+    try:
+        return base64.b64decode(value.strip(), validate=True)
+    except Exception:
+        return None
