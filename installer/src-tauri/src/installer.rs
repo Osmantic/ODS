@@ -340,7 +340,9 @@ fn parse_progress_line(line: &str) -> Option<ProgressEvent> {
 
 fn update_progress(state: &Arc<Mutex<InstallState>>, message: &str, percent: u8) {
     if let Ok(mut s) = state.lock() {
-        s.progress_pct = percent;
+        // Heuristic phase markers carry fixed percentages, so a late line
+        // matching an early marker (e.g. "download") must not rewind the bar.
+        s.progress_pct = s.progress_pct.max(percent);
         s.progress_message = message.to_string();
         s.phase = InstallPhase::Installing;
         let _ = s.save();
