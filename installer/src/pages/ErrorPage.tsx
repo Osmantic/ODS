@@ -13,7 +13,9 @@ export default function ErrorPage({ message, onRetry }: Props) {
       `Time: ${new Date().toISOString()}`,
       `UserAgent: ${navigator.userAgent}`,
     ].join("\n");
-    navigator.clipboard.writeText(info);
+    navigator.clipboard.writeText(info).catch((e) => {
+      console.error("Failed to copy diagnostics:", e);
+    });
   };
 
   return (
