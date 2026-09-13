@@ -38,11 +38,13 @@ export default function Installing({
     if (started.current) return;
     started.current = true;
 
+    let isMounted = true;
+
     // Start the install
     startInstall(tier, features, installDir).then(() => {
-      onComplete();
+      if (isMounted) onComplete();
     }).catch((e) => {
-      onError(String(e));
+      if (isMounted) onError(String(e));
     });
 
     // Poll for progress
