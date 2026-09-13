@@ -1372,3 +1372,19 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def dict_invert_mapping_safe(d: dict | None) -> dict:
+    """Safely invert a dictionary mapping keys to values and values to keys.
+    Values must be hashable.
+    """
+    if not d or not isinstance(d, dict):
+        return {}
+    inverted = {}
+    for k, v in d.items():
+        try:
+            hash(v)
+            inverted[v] = k
+        except TypeError:
+            continue
+    return inverted
