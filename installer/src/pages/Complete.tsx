@@ -36,7 +36,7 @@ export default function Complete() {
         <Button variant="secondary" onClick={() => window.close()}>
           Close Installer
         </Button>
-        <Button onClick={() => openODSserver()}>Open ODS</Button>
+        <Button onClick={() => openODSserver().catch((e) => console.error("Failed to open ODS:", e))}>Open ODS</Button>
       </div>
 
       <p className="mt-8 text-xs text-gray-600 max-w-sm">
