@@ -1372,3 +1372,16 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def dict_merge_shallow_override_safe(base_dict: dict | None, override_dict: dict | None) -> dict:
+    """Safely merge two dictionaries giving priority to override_dict attributes.
+    Returns merged dict or empty dict on None inputs.
+    """
+    if not isinstance(base_dict, dict):
+        base_dict = {}
+    if not isinstance(override_dict, dict):
+        override_dict = {}
+    result = dict(base_dict)
+    result.update(override_dict)
+    return result
