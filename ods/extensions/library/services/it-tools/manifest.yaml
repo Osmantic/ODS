@@ -1,0 +1,40 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: it-tools
+  name: IT-Tools (Local Developer Utilities)
+  description: "Browser-based text, encoding and data conversion utilities served locally."
+  aliases: [developer-tools]
+  container_name: ods-it-tools
+  default_host: it-tools
+  port: 8080
+  external_port_env: IT_TOOLS_PORT
+  external_port_default: 8101
+  health: /
+  ui_path: /
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [development, utilities, local]
+  env_vars:
+    - key: IT_TOOLS_PORT
+      description: "Published port for the local developer toolbox"
+      default: "8101"
+features:
+  - id: local-developer-utilities
+    name: Developer Utilities
+    description: "Convert text and structured data in the browser without a remote conversion API"
+    icon: Wrench
+    category: productivity
+    requirements:
+      services: [it-tools]
+      vram_gb: 0
+    enabled_services_all: [it-tools]
+    setup_time: "~1 minute"
+    priority: 30
+    launch:
+      type: service
+      service: it-tools

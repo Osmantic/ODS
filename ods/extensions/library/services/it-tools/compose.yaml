@@ -1,0 +1,32 @@
+services:
+  it-tools:
+    image: corentinth/it-tools:2024.10.22-7ca5933@sha256:8b8128748339583ca951af03dfe02a9a4d7363f61a216226fc28030731a5a61f
+    container_name: ods-it-tools
+    restart: unless-stopped
+    user: "101:101"
+    entrypoint: [nginx, -c, /etc/nginx/ods.conf, -g, "daemon off;"]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    volumes:
+      - ./extensions/services/it-tools/nginx.conf:/etc/nginx/ods.conf:ro
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${IT_TOOLS_PORT:-8101}:8080"
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, "http://127.0.0.1:8080/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks: [ods-network]
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 128M
+
+networks:
+  ods-network:
+    external: true

@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-13T16:53:56Z",
+  "generated_at": "2026-09-13T17:12:24Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -1672,6 +1672,57 @@
             "amd",
             "nvidia"
           ]
+        }
+      ],
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
+      "id": "it-tools",
+      "name": "IT-Tools (Local Developer Utilities)",
+      "description": "Browser-based text, encoding and data conversion utilities served locally.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 8080,
+      "external_port_default": 8101,
+      "health_endpoint": "/",
+      "env_vars": [
+        {
+          "key": "IT_TOOLS_PORT",
+          "description": "Published port for the local developer toolbox",
+          "default": "8101"
+        }
+      ],
+      "tags": [
+        "development",
+        "utilities",
+        "local"
+      ],
+      "features": [
+        {
+          "id": "local-developer-utilities",
+          "name": "Developer Utilities",
+          "description": "Convert text and structured data in the browser without a remote conversion API",
+          "icon": "Wrench",
+          "category": "productivity",
+          "requirements": {
+            "services": [
+              "it-tools"
+            ],
+            "vram_gb": 0
+          },
+          "enabled_services_all": [
+            "it-tools"
+          ],
+          "setup_time": "~1 minute",
+          "priority": 30,
+          "launch": {
+            "type": "service",
+            "service": "it-tools"
+          }
         }
       ],
       "configuration_scope": "declared-environment-keys"
