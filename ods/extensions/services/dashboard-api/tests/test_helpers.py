@@ -1740,3 +1740,13 @@ def test_flatten_bounds_cycles_and_large_depth_without_losing_empty_leaves():
         nested = {"child": nested}
     result = dict_flatten_nested_safe(nested, max_depth=100000)
     assert len(next(iter(result)).split(".")) == 128
+
+
+class TestDictSafeKeyFilter:
+    def test_valid(self):
+        from helpers import dict_safe_key_filter
+        assert dict_safe_key_filter({'a': 1, 'b': 2, 'c': 3}, ['a', 'c']) == {'a': 1, 'c': 3}
+
+    def test_invalid(self):
+        from helpers import dict_safe_key_filter
+        assert dict_safe_key_filter(None, ['a']) == {}
