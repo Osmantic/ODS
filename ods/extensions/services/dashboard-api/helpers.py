@@ -1372,3 +1372,15 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def numeric_safe_mean_calc(values: list | None) -> float:
+    """Safely calculate the mean of a list of numbers.
+    Returns 0.0 on empty or invalid inputs.
+    """
+    if not values or not isinstance(values, (list, tuple)):
+        return 0.0
+    valid_nums = [v for v in values if isinstance(v, (int, float)) and not isinstance(v, bool)]
+    if not valid_nums:
+        return 0.0
+    return sum(valid_nums) / float(len(valid_nums))
