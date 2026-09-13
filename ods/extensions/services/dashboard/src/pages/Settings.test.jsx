@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { render } from '../test/test-utils'
 import Settings from './Settings' // eslint-disable-line no-unused-vars
 
@@ -257,4 +257,28 @@ describe('Settings', () => {
     expect(screen.getByDisplayValue('192.168.1.10')).toBeInTheDocument()
     expect(fetchMock.mock.calls.filter(([url]) => url === '/api/settings/env')).toHaveLength(3)
   })
+})
+
+it.each([true,false])('locks the environment draft until its pending save settles (success=%s)', async success => {
+  const {fetchMock} = renderSettings()
+  const field = await screen.findByLabelText('LAN Host IP')
+  fireEvent.change(field,{target:{value:'192.168.1.25'}})
+  let finish
+  const original = fetchMock.getMockImplementation()
+  fetchMock.mockImplementation((url,options) => options?.method === 'PUT'
+    ? new Promise(resolve => {finish = resolve})
+    : original(url,options))
+  fireEvent.click(screen.getByRole('button',{name:'Save .env'}))
+  expect(field).toBeDisabled()
+  const env = screen.getByRole('heading',{name:'Environment Editor'}).closest('section')
+  expect(within(env).getByRole('button',{name:'Reload'})).toBeDisabled()
+  expect(within(env).getByRole('button',{name:'Refresh',exact:true})).toBeDisabled()
+  await act(async () => finish(response(success
+    ? {...editor,values:{...editor.values,HOST_LAN_IP:'192.168.1.25'}}
+    : {detail:'Write failed'}, success ? 200 : 503)))
+  expect(field).toBeEnabled()
+  expect(field).toHaveValue('192.168.1.25')
+  fireEvent.change(field,{target:{value:'192.168.1.26'}})
+  expect(screen.getByRole('button',{name:'Save .env'})).toBeEnabled()
+  expect(fetchMock.mock.calls.filter(([,options]) => options?.method === 'PUT')).toHaveLength(1)
 })

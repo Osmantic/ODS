@@ -35,10 +35,21 @@ export function ThemeProvider({ children }) {
       }).catch(error => { if (active && revision === galleryRevision.current) setWallpaperError(error.message) })
     }
     const sync = event => {
-      if (event.key === 'ods-wallpaper-motion') { setWallpaperMotionState(event.newValue !== 'paused'); return }
-      if (event.key !== STORAGE_KEY) return
-      setThemeState(THEMES.includes(event.newValue) || isCustomWallpaper(event.newValue) ? event.newValue : DEFAULT_THEME)
-      void refresh()
+      if (event.key !== null && event.key !== STORAGE_KEY && event.key !== 'ods-wallpaper-motion') return
+      try {
+        // Storage events can queue behind newer writes from another tab.
+        // Read current storage rather than replaying an obsolete event value.
+        if (event.key === null || event.key === 'ods-wallpaper-motion') {
+          setWallpaperMotionState(localStorage.getItem('ods-wallpaper-motion') !== 'paused')
+        }
+        if (event.key === 'ods-wallpaper-motion') return
+        const stored = localStorage.getItem(STORAGE_KEY)
+        setThemeState(THEMES.includes(stored) || isCustomWallpaper(stored) ? stored : DEFAULT_THEME)
+        void refresh()
+      } catch (error) {
+        if (!(error instanceof globalThis.DOMException)) throw error
+        setWallpaperError('Appearance preferences could not be read from browser storage.')
+      }
     }
     void refresh()
     window.addEventListener(CUSTOM_WALLPAPER_EVENT, refresh)

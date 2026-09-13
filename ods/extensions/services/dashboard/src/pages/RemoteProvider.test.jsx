@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { createElement } from 'react'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import RemoteProvider from './RemoteProvider'
@@ -614,4 +614,37 @@ test('confirms peer model delete before proxying removal', async () => {
   expect(confirmSpy).toHaveBeenCalledWith('Delete Remote Qwen from the remote ODS peer?')
   expect(globalThis.fetch.mock.calls[3][0]).toBe('/api/remote-provider/peer/models/Qwen%2FQwen%203.5%209B')
   expect(globalThis.fetch.mock.calls[3][1].method).toBe('DELETE')
+})
+
+
+test.each(['apply', 'refresh'])('keeps newer edits while configure %s is pending', async pendingStage => {
+  let finishApply
+  let finishRefresh
+  const apply = new Promise(resolve => { finishApply = resolve })
+  const refresh = new Promise(resolve => { finishRefresh = resolve })
+  globalThis.fetch
+    .mockResolvedValueOnce(response(statusPayload))
+    .mockReturnValueOnce(apply)
+    .mockReturnValueOnce(refresh)
+
+  render(createElement(RemoteProvider))
+  await fillConfigureForm()
+  fireEvent.click(screen.getByRole('button', { name: 'Configure', exact: true }))
+  await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledTimes(2))
+  if (pendingStage === 'refresh') {
+    await act(async () => { finishApply(response(configureApplyPayload)) })
+    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledTimes(3))
+  }
+
+  fireEvent.change(screen.getByLabelText('Base URL'), { target: { value: 'https://next.example/v1' } })
+  fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'next-provider-token' } })
+  await act(async () => {
+    finishApply(response(configureApplyPayload))
+    finishRefresh(response(statusPayload))
+  })
+
+  expect(screen.getByLabelText('Base URL')).toHaveValue('https://next.example/v1')
+  expect(screen.getByLabelText('API key')).toHaveValue('next-provider-token')
+  expect(screen.getByRole('button', { name: 'Configure', exact: true })).toBeEnabled()
+  expect(requestBody(1).provider.baseUrl).toBe('https://gpu.example.test/v1')
 })

@@ -73,6 +73,9 @@ export default function HuggingFaceModelBrowser({ gpu, downloadBusy, onImportSta
       const body = await responseJson(response)
       if (!response.ok) throw new Error(errorMessage(body, 'Could not inspect this repository'))
       if (detailsRequestRef.current !== requestId) return
+      if (body?.id !== model.id || !Array.isArray(body.artifacts)) {
+        throw new Error('Could not read repository metadata. Retry details.')
+      }
       setDetails(body)
     } catch (requestError) {
       if (detailsRequestRef.current === requestId) setDetailsError(requestError.message)

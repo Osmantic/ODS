@@ -38,7 +38,7 @@ export default function ProfileSettings() {
   function submit(event) {
     event.preventDefault()
     if (busy) return
-    try {setDraft(saveProfile(draft));setError('');setNotice('Profile saved.')}
+    try {setDraft(saveProfile(draft, saved));setError('');setNotice('Profile saved.')}
     catch {setError('Your profile could not be saved. Browser storage may be full or disabled.');setNotice('')}
   }
   return <form className="profile-settings" aria-label="Your profile" onSubmit={submit}>

@@ -1,4 +1,4 @@
-import { conversationLabels } from './pixelConversationLabels'
+import { conversationLabels, deleteConversationLabels } from './pixelConversationLabels'
 
 export const CHAT_KEY = 'ods.pixel.chat.v1'
 const LIBRARY_KEY = 'ods.pixel.conversations.v1'
@@ -71,12 +71,21 @@ export function conversationTitle(chat) {
 export function deleteConversation(chatId) {
   const entries = loadConversations(true)
   const chat = entries.find(item => valid(item) && item.chatId === chatId)
-  if (!chat) return
+  if (!chat) {
+    // A previous attempt may have removed the chat before metadata cleanup
+    // failed. Retain the tombstone and finish only that explicit deletion.
+    if (deletedIds().includes(chatId)) {
+      deleteConversationLabels(chatId)
+      window.dispatchEvent(new Event(LIBRARY_EVENT))
+    }
+    return
+  }
   if (chat.inFlight || chat.interrupted) throw new Error('Stop or resume this task before deleting its conversation.')
   // Write the deletion marker first: stale open tabs must never resurrect a deleted chat.
   localStorage.setItem(DELETED_KEY, JSON.stringify([...new Set([...deletedIds(), chatId])]))
   localStorage.setItem(LIBRARY_KEY, JSON.stringify(entries.filter(item => !valid(item) || item.chatId !== chatId)))
   const current = currentConversation()
   if (current?.chatId === chatId) localStorage.removeItem(CHAT_KEY)
+  deleteConversationLabels(chatId)
   window.dispatchEvent(new Event(LIBRARY_EVENT))
 }

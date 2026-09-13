@@ -86,3 +86,34 @@ test('preserves unknown records, including null, while updating and deleting val
   deleteConversation('valid')
   expect(JSON.parse(localStorage.getItem('ods.pixel.conversations.v1'))).toEqual(damaged)
 })
+
+test('deleting a conversation also removes its retained name, pin and archive metadata', () => {
+  saveConversation(chat('private','Private conversation'))
+  saveConversation(chat('keep','Other conversation'))
+  localStorage.setItem('ods.pixel.chat-labels.v1.private',JSON.stringify({title:'Private project title',pinned:true,archived:true}))
+  localStorage.setItem('ods.pixel.chat-labels.v1.keep',JSON.stringify({title:'Keep this title',pinned:false,archived:false}))
+  deleteConversation('private')
+  expect(localStorage.getItem('ods.pixel.chat-labels.v1.private')).toBeNull()
+  expect(conversationTitle(readConversations()[0])).toBe('Keep this title')
+  expect(readConversations().map(item => item.chatId)).toEqual(['keep'])
+  expect(() => saveConversation(chat('private','Stale tab'))).toThrow(/deleted/)
+})
+
+test('reports failed metadata cleanup and permits a safe retry after the conversation tombstone is written', () => {
+  saveConversation(chat('private','Private conversation'))
+  const key = 'ods.pixel.chat-labels.v1.private'
+  localStorage.setItem(key,JSON.stringify({title:'Private title',pinned:false,archived:false}))
+  const remove = window.Storage.prototype.removeItem
+  const fail = vi.spyOn(window.Storage.prototype,'removeItem').mockImplementation(function (name) {
+    if (name === key) throw new globalThis.DOMException('Denied','SecurityError')
+    return remove.call(this,name)
+  })
+  try {
+    expect(() => deleteConversation('private')).toThrow()
+    expect(localStorage.getItem(key)).not.toBeNull()
+    expect(readConversations()).toEqual([])
+    expect(() => saveConversation(chat('private','Stale tab'))).toThrow(/deleted/)
+  } finally {fail.mockRestore()}
+  deleteConversation('private')
+  expect(localStorage.getItem(key)).toBeNull()
+})

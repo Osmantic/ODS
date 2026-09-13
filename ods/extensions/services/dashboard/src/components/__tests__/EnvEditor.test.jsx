@@ -210,3 +210,29 @@ describe('EnvEditor', () => {
     expect(screen.getByText(/selected by the installer/i)).toBeInTheDocument()
   })
 })
+
+test.each([
+  ['1','True'],['yes','True'],[' ON ','True'],['TRUE','True'],
+  ['0','False'],['no','False'],[' OFF ','False'],['FALSE','False'],
+  [true,'True'],[false,'False'],['','Default'],
+])('shows the settings API boolean value %j as %s without changing the draft', (value, selected) => {
+  const onFieldChange = vi.fn()
+  const section = {id:'webui',title:'WebUI',keys:['WEBUI_AUTH']}
+  renderEditor({sections:[section],activeSection:section,
+    fields:{WEBUI_AUTH:{key:'WEBUI_AUTH',label:'WebUI Auth',type:'boolean',default:true}},
+    values:{WEBUI_AUTH:value},onFieldChange})
+  expect(screen.getByRole('button',{name:selected,exact:true})).toHaveAttribute('aria-pressed','true')
+  expect(onFieldChange).not.toHaveBeenCalled()
+  fireEvent.click(screen.getByRole('button',{name:'False',exact:true}))
+  expect(onFieldChange).toHaveBeenCalledWith('WEBUI_AUTH','false')
+})
+
+test('does not silently present an invalid boolean as Default or False', () => {
+  const section = {id:'webui',title:'WebUI',keys:['WEBUI_AUTH']}
+  renderEditor({sections:[section],activeSection:section,
+    fields:{WEBUI_AUTH:{key:'WEBUI_AUTH',label:'WebUI Auth',type:'boolean'}},
+    values:{WEBUI_AUTH:'sometimes'},issues:[{key:'WEBUI_AUTH',message:'Must be true or false.'}],
+    issueMap:{WEBUI_AUTH:['Must be true or false.']}})
+  for (const name of ['Default','True','False']) expect(screen.getByRole('button',{name,exact:true})).toHaveAttribute('aria-pressed','false')
+  expect(screen.getAllByText('Must be true or false.')).not.toHaveLength(0)
+})
