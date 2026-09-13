@@ -102,8 +102,12 @@ export default function Prerequisites({ onNext, onError }: Props) {
   };
 
   const handleRecheck = async () => {
-    const updated = await checkPrerequisites();
-    setPrereqs(updated);
+    try {
+      const updated = await checkPrerequisites();
+      setPrereqs(updated);
+    } catch (e) {
+      onError(`Prerequisites check failed: ${String(e)}`);
+    }
   };
 
   return (
