@@ -23,6 +23,9 @@ pub fn check() -> DockerStatus {
 
 fn get_docker_version() -> Option<String> {
     let out = Command::new("docker").args(["--version"]).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
     if out.status.success() {
         Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
     } else {
