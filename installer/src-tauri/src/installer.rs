@@ -58,7 +58,7 @@ pub fn run_install(
         args.push("--rag".into());
     }
     if features.contains(&"image_gen".to_string()) {
-        args.push("--image-gen".into());
+        args.push("--comfyui".into());
     }
     if features.contains(&"all".to_string()) {
         args.push("--all".into());
