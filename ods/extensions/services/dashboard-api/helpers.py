@@ -1372,3 +1372,12 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+from itertools import zip_longest
+
+def list_safe_zip_longest(l1: list | None, l2: list | None, fillvalue=None) -> list:
+    """Safely zip two lists up to the length of the longest list.
+    """
+    lst1 = l1 if l1 and isinstance(l1, (list, tuple)) else []
+    lst2 = l2 if l2 and isinstance(l2, (list, tuple)) else []
+    return list(zip_longest(lst1, lst2, fillvalue=fillvalue))
