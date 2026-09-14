@@ -46,6 +46,7 @@ load_env_safe() {
     local env_file="${1:-$ROOT_DIR/.env}"
     [[ -f "$env_file" ]] || return 0
     while IFS='=' read -r key value; do
+        key="${key#"${key%%[![:space:]]*}"}"
         value="${value%$'\r'}"
         [[ "$key" =~ ^[[:space:]]*# ]] && continue
         [[ -z "$key" ]] && continue
