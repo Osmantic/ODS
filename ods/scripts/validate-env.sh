@@ -122,6 +122,10 @@ unquote() {
 # Split KEY=VALUE where VALUE may contain '='
 split_kv() {
   local line="$1"
+  if [[ "$line" != *"="* ]]; then
+    printf '%s\n' "" ""
+    return 0
+  fi
   local key="${line%%=*}"
   local value="${line#*=}"
   key="$(trim "$key")"
