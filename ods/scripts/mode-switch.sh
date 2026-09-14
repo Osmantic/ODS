@@ -32,7 +32,7 @@ env_set() {
     if grep -q "^${key}=" "$ENV_FILE" 2>/dev/null; then
         awk -v k="$key" -v v="$val" '{
             if (index($0, k "=") == 1) print k "=" v; else print
-        }' "$ENV_FILE" > "${ENV_FILE}.tmp" && cat "${ENV_FILE}.tmp" > "$ENV_FILE" && rm -f "${ENV_FILE}.tmp"
+        }' "$ENV_FILE" > "${ENV_FILE}.tmp" && mv -f "${ENV_FILE}.tmp" "$ENV_FILE"
     else
         echo "${key}=${val}" >> "$ENV_FILE"
     fi
