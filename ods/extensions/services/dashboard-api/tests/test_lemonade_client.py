@@ -1,3 +1,4 @@
+import json
 import httpx
 import pytest
 
@@ -88,8 +89,9 @@ async def test_chat_completion_posts_openai_shape():
 
     assert payload["choices"][0]["message"]["content"] == "ok"
     assert seen["url"] == "http://lemonade:13305/api/v1/chat/completions"
-    assert b'"model":"Qwen3-0.6B-GGUF"' in seen["body"]
-    assert b'"temperature":0' in seen["body"]
+    body_data = json.loads(seen["body"])
+    assert body_data["model"] == "Qwen3-0.6B-GGUF"
+    assert body_data["temperature"] == 0
     await client.aclose()
 
 
