@@ -747,7 +747,7 @@ async def talk_attachment(
     if len(data) > MAX_DOC_BYTES:
         raise HTTPException(status_code=413, detail=f"File is too large (max {MAX_DOC_BYTES // (1024 * 1024)} MB).")
     try:
-        content = data.decode("utf-8")
+        content = data.decode("utf-8", errors="replace")
     except UnicodeDecodeError:
         content = data.decode("utf-8", errors="replace")
     if len(content) > MAX_DOC_CHARS:
