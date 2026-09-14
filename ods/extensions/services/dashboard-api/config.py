@@ -736,3 +736,20 @@ def load_templates() -> list[dict]:
 
 
 TEMPLATES = load_templates()
+
+
+# ── config guard: truncate_label ──────────────────────────────
+def truncate_label(label: Any, max_len: int = 64, ellipsis: str = "…") -> str:
+    """Return *label* truncated to at most *max_len* characters.
+
+    Appends *ellipsis* when truncation occurs.  Returns an empty string
+    for falsy inputs and raises ``ValueError`` for non-positive *max_len*.
+    """
+    if max_len < 1:
+        raise ValueError(f"max_len must be >= 1, got {max_len}")
+    if not label:
+        return ""
+    text = str(label)
+    if len(text) <= max_len:
+        return text
+    return text[: max_len - len(ellipsis)] + ellipsis
