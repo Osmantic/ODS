@@ -427,7 +427,7 @@ def test_factory_is_dormant_and_production_remains_disabled() -> None:
         and "extension_lease_lock_factory" in path.read_text(encoding="utf-8")
     }
 
-    assert importers == set()
+    assert importers == {"extension_receipted_lifecycle_adapter.py"}
     assert "extension_lease_lock_factory" not in production
     assert "executor=None" in production
     for forbidden in (

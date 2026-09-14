@@ -776,7 +776,7 @@ def test_client_module_has_no_production_wiring_or_filesystem_writes() -> None:
         and path != module
         and "extension_lifecycle_receipt_client" in path.read_text(encoding="utf-8")
     }
-    assert importers == set()
+    assert importers == {"extension_receipted_lifecycle_adapter.py"}
 
 
 def test_executor_and_production_modules_do_not_import_the_client() -> None:

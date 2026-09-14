@@ -316,4 +316,5 @@ def test_client_has_no_logging_persistence_or_runtime_wiring() -> None:
     assert importers == {
         "extension_lease_lock_factory.py",
         "extension_lease_renewer.py",
+        "extension_receipted_lifecycle_adapter.py",
     }

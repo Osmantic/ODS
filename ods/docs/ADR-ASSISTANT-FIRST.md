@@ -145,6 +145,24 @@ receipt operation, has no production importer, and leaves the production
 executor disabled. A later receipt-bound host adapter must obtain custody from
 this exact scope rather than reacquiring a per-operation subset.
 
+Phase 5G-E adds that dormant receipt-bound lifecycle seam without supplying a
+production host worker. Each synchronous call first proves exact-binding lease
+coverage, hashes its complete canonical operation payload, reconciles an
+existing receipt snapshot, publishes a started receipt, accepts only a typed
+terminal evidence hash from the injected worker, and publishes the matching
+terminal receipt before reporting completion. A completed terminal receipt is
+replayable without another worker call. A started receipt found at entry is
+never replayed blindly because the prior worker may already have run; it stops
+with explicit recovery-required ambiguity until durable host observation can
+decide the result. Begin and finish ambiguity use bounded snapshot convergence,
+and the worker is never rerun merely because terminal publication was
+uncertain. An ambiguous worker result also leaves the started receipt
+non-terminal for observation instead of publishing a false failed outcome;
+only a proven worker failure publishes a terminal failed receipt. Empty
+mutation batches are receiptless no-ops. Production still has no adapter
+importer and retains `executor=None`; host mutation and observation adapters
+remain required before activation.
+
 All selected services are locked in canonical order before the final
 provenance check and before lifecycle work. Artifacts are downloaded and
 verified before apply. The first pre-transaction backup is replay-safe,
