@@ -654,7 +654,7 @@ describe('Pixel', () => {
     })
   })
 
-  it('shows a model-switching state and keeps the composer disabled', async () => {
+  it('shows a model-switching state and keeps submission disabled', async () => {
     globalThis.fetch.mockResolvedValue(response({
       available: false,
       model: null,
@@ -666,7 +666,8 @@ describe('Pixel', () => {
 
     await waitFor(() => expect(screen.getByText('Switching model...')).toBeInTheDocument())
     expect(screen.getByText('Portal is switching models')).toBeInTheDocument()
-    expect(screen.getByPlaceholderText('Waiting for model switch...')).toBeDisabled()
+    expect(screen.getByPlaceholderText('Draft a message for Portal...')).toBeEnabled()
+    expect(screen.getByTitle('Send')).toBeDisabled()
   })
 
   it('keeps an adaptive model available without presenting a warning gate', async () => {

@@ -1186,7 +1186,10 @@ export default function Pixel({ systemStatus = null }) {
 
   const inputOver = input.length > MAX_INPUT_LEN
   const inputEmpty = !input.trim()
-  const isDisabled = sending || restoredActive || restoredChecking || stopping || status !== 'available'
+  // Editing a local draft does not require inference. Running/restored work
+  // still owns the composer, while submission also requires backend readiness.
+  const composerLocked = sending || restoredActive || restoredChecking || stopping
+  const isDisabled = composerLocked || status !== 'available'
   const workingElapsed = formatElapsed(workingElapsedSeconds)
   const statusLabel = stopping
     ? 'Stopping'
@@ -1420,10 +1423,8 @@ export default function Pixel({ systemStatus = null }) {
             }}
             placeholder={status === 'available'
               ? `Message ${displayName}...`
-              : status === 'switching'
-                ? 'Waiting for model switch...'
-                : `${displayName} is unavailable`}
-            disabled={isDisabled}
+              : `Draft a message for ${displayName}...`}
+            disabled={composerLocked}
             rows={1}
             className={`pixel-composer-input min-h-11 flex-1 resize-none rounded-xl border bg-theme-card px-4 py-2.5 text-sm text-theme-text outline-none transition placeholder:text-theme-text-muted/70 disabled:opacity-50 ${
               inputOver ? 'border-red-400' : 'border-theme-border'
@@ -1454,8 +1455,8 @@ export default function Pixel({ systemStatus = null }) {
           </div>
           {stopError && <p role="alert" className="mt-1.5 px-1 text-xs text-amber-300">{stopError}</p>}
           <div className="pixel-composer-secondary">
-            <PixelComposerTools input={input} disabled={isDisabled} onInsert={insertComposerText}>
-              <PixelTextFileInput key={`file-input-${chatIdRef.current}`} input={input} disabled={isDisabled} limit={MAX_INPUT_LEN} onInsert={insertComposerText}/>
+            <PixelComposerTools input={input} disabled={composerLocked} onInsert={insertComposerText}>
+              <PixelTextFileInput key={`file-input-${chatIdRef.current}`} input={input} disabled={composerLocked} limit={MAX_INPUT_LEN} onInsert={insertComposerText}/>
               <PixelDraftPreview key={`draft-preview-${chatIdRef.current}`} input={input}/>
             </PixelComposerTools>
             <div className="pixel-composer-limits">
