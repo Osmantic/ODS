@@ -91,7 +91,7 @@ load_backend_contract() {
 
 get_host_logical_cpus() {
     local cores
-    cores=$(nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo 2>/dev/null || echo "1")
+    cores=$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo 2>/dev/null || echo "1")
     if [[ "$cores" =~ ^[0-9]+$ ]] && [[ "$cores" -gt 0 ]]; then
         echo "$cores"
     else
