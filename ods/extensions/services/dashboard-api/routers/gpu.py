@@ -556,3 +556,13 @@ async def poll_gpu_history() -> None:
             "gpus": readings,
         })
         await asyncio.sleep(_HISTORY_POLL_INTERVAL)
+
+
+def format_telemetry_outage_response(error_msg: str, fallback_data: dict | None = None) -> dict:
+    """Format a consistent fallback response payload when remote GPU telemetry drops."""
+    return {
+        "status": "degraded",
+        "error": f"Telemetry outage: {error_msg}",
+        "data": fallback_data or {},
+        "timestamp_valid": False
+    }
