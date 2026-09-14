@@ -79,8 +79,14 @@ else
 fi
 
 # Test 8: Phase 05 has explicit cleanup in error path
+# The download/run and its cleanup live inside _docker_install_from_script, so
+# assert on the failure branch of that helper rather than on the call sites of
+# error "Docker installation failed" (which are three levels up and hold no
+# tmpfile of their own).
 printf "  %-50s " "Phase 05 has explicit cleanup in error path..."
-if grep -B 2 'error "Docker installation failed' "$ROOT_DIR/installers/phases/05-docker.sh" | grep -q "rm -f.*tmpfile"; then
+if awk '/^_docker_install_from_script\(\)/{f=1} f' "$ROOT_DIR/installers/phases/05-docker.sh" \
+    | awk '/^\}/{exit} {print}' \
+    | grep -A 2 'if ! curl' | grep -q "rm -f.*tmpfile"; then
     echo -e "${GREEN}✓ PASS${NC}"
     PASSED=$((PASSED + 1))
 else
