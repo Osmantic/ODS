@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-14T15:24:18Z",
+  "generated_at": "2026-09-14T16:10:41Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -518,7 +518,7 @@
     {
       "id": "calibre-web",
       "name": "Calibre-Web",
-      "description": "",
+      "description": "Web application for browsing, reading, and downloading eBooks stored in a Calibre library database.",
       "category": "optional",
       "gpu_backends": [
         "all"

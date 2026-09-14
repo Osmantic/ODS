@@ -4,6 +4,7 @@ compatibility:
 service:
   id: calibre-web
   name: Calibre-Web
+  description: "Web application for browsing, reading, and downloading eBooks stored in a Calibre library database."
   aliases: [books, ebooks, library]
   container_name: ods-calibre-web
   host_env: CALIBRE_WEB_HOST
