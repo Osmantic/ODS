@@ -1,0 +1,40 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: kroki
+  name: Kroki
+  description: "Render text diagrams into SVG or PNG through a local HTTP API."
+  aliases: [diagram-renderer]
+  container_name: ods-kroki
+  container_uid: 1001
+  default_host: kroki
+  port: 8000
+  external_port_env: KROKI_API_PORT
+  external_port_default: 7829
+  health: /health
+  external_link: false
+  startup_timeout: 180
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [diagrams, documentation, graphviz, plantuml, local, api]
+  env_vars:
+    - key: KROKI_API_PORT
+      default: "7829"
+      description: Published port for the local diagram-rendering API
+features:
+  - id: local-diagram-rendering
+    name: Local Diagram Rendering
+    description: "Generate diagrams from text in documents and automation"
+    icon: GitBranch
+    category: productivity
+    requirements:
+      services: [kroki]
+      vram_gb: 0
+      disk_gb: 6
+    enabled_services_all: [kroki]
+    setup_time: "~3-5 minutes"
+    priority: 35

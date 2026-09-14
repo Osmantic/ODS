@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-13T16:53:56Z",
+  "generated_at": "2026-09-14T10:33:17Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -1773,6 +1773,58 @@
       "configuration_scope": "declared-environment-keys"
     },
     {
+      "id": "kroki",
+      "name": "Kroki",
+      "description": "Render text diagrams into SVG or PNG through a local HTTP API.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 8000,
+      "external_port_default": 7829,
+      "health_endpoint": "/health",
+      "env_vars": [
+        {
+          "key": "KROKI_API_PORT",
+          "default": "7829",
+          "description": "Published port for the local diagram-rendering API"
+        }
+      ],
+      "tags": [
+        "diagrams",
+        "documentation",
+        "graphviz",
+        "plantuml",
+        "local",
+        "api"
+      ],
+      "features": [
+        {
+          "id": "local-diagram-rendering",
+          "name": "Local Diagram Rendering",
+          "description": "Generate diagrams from text in documents and automation",
+          "icon": "GitBranch",
+          "category": "productivity",
+          "requirements": {
+            "services": [
+              "kroki"
+            ],
+            "vram_gb": 0,
+            "disk_gb": 6
+          },
+          "enabled_services_all": [
+            "kroki"
+          ],
+          "setup_time": "~3-5 minutes",
+          "priority": 35
+        }
+      ],
+      "startup_timeout": 180,
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
       "id": "label-studio",
       "name": "Label Studio",
       "description": "Label Studio is an open source data labeling tool.\nLabel images, audio, text, time series, and more for ML model training.\n",
@@ -3153,6 +3205,28 @@
           ]
         }
       ],
+      "catalog_source": "builtin",
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
+      "id": "pixel-inference",
+      "name": "Pixel inference sharing (development)",
+      "description": "Disabled by default. Owner-provisioned, inference-only device credentials; loopback transport only. Does not provide Pixel agent or computer access. Private state must be provisioned before service activation. Native Windows private-state support and guided setup are not yet implemented.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [
+        "model-router"
+      ],
+      "port": 8093,
+      "external_port_default": 4005,
+      "health_endpoint": "/health",
+      "env_vars": [],
+      "tags": [],
+      "features": [],
+      "startup_check": false,
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
     },
