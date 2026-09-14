@@ -141,7 +141,7 @@ def _running_services(repo_root: Path) -> set[str]:
             ["docker", "ps", "--format", "{{.Names}}", "--filter", "name=ods-"],
             capture_output=True, text=True, timeout=10,
         )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError, UnicodeDecodeError):
         return set()
 
     cmap = _container_to_service_map(repo_root)
