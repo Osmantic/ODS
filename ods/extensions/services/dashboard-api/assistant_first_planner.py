@@ -960,6 +960,14 @@ def _semver(
     )
 
 
+def semver_precedence(
+    value: Any, field: str = "version"
+) -> tuple[int, int, int, int, tuple[tuple[int, int, str], ...]]:
+    """Expose the planner's single SemVer precedence contract to sibling modules."""
+
+    return _semver(value, field)
+
+
 def _driver_version(value: Any, field: str) -> tuple[tuple[int, int, str], ...]:
     """Return a stable natural-sort key for vendor-specific driver versions."""
 

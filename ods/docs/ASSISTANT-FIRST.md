@@ -69,9 +69,19 @@ under host custody while lockfiles and transaction records carry references
 only. Older pre-v2 rollback snapshots remain readable with an explicit warning,
 but they cannot provide the v2 checksum guarantee.
 
-This snapshot contract does not yet authorize extension upgrades during a core
-update. Candidate-version compatibility solving, mutation quiescence, combined
-core/desired-state commit, and coordinated rollback are later Phase 5 gates.
+The first pre-update gate is also a pure, hash-bound compatibility assessment.
+It binds the exact current lockfile, candidate ODS version, and verified
+candidate catalog revision. Every enabled locked extension must remain present
+in the candidate catalog. Immutable same-version definition drift and catalog
+version regressions fail closed. When the locked compatibility range excludes
+the candidate core, only a newer candidate definition whose range includes that
+core may become a required extension upgrade. Disabled incompatible entries are
+reported without silently enabling or upgrading them.
+
+This assessment performs no mutation and does not itself authorize an extension
+or core update. Candidate checkout resolution, exact composite upgrade planning,
+mutation quiescence, combined core/desired-state commit, health qualification,
+and coordinated rollback remain later Phase 5 gates.
 
 ## Evidence boundary
 
