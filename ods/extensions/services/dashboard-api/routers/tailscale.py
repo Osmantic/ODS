@@ -25,6 +25,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 
 from host_agent_client import (
+    AgentClientError,
     AgentHTTPError,
     AgentProtocolError,
     AgentTimeout,
@@ -39,20 +40,26 @@ router = APIRouter(tags=["tailscale"])
 
 
 def _proxy_agent(path: str, timeout: int = 15) -> dict:
-    """Forward a GET to the host-agent. Translates HTTPError → HTTPException."""
+    """Forward a GET request to the host-agent with HTTP error mapping."""
+    if not isinstance(path, str) or not path.startswith("/"):
+        raise HTTPException(status_code=400, detail=f"Invalid agent proxy path: {path}")
     try:
-        return request_agent_json("GET", path, timeout=timeout)
+        data = request_agent_json("GET", path, timeout=timeout)
+        if isinstance(data, dict):
+            return data
+        return {"data": data}
     except AgentHTTPError as exc:
-        logger.info("host-agent GET %s -> %s", path, exc.status_code)
-        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+        status_code = exc.status_code if 400 <= exc.status_code <= 599 else 500
+        logger.info("host-agent GET %s -> %s", path, status_code)
+        raise HTTPException(status_code=status_code, detail=exc.detail or "Host agent request failed") from exc
     except AgentTimeout as exc:
-        logger.warning("host-agent GET %s timed out", path)
+        logger.warning("host-agent GET %s timed out after %ds", path, timeout)
         raise HTTPException(status_code=504, detail="ODS host agent request timed out.") from exc
     except AgentUnavailable as exc:
         logger.warning("host-agent GET %s unreachable: %s", path, exc)
         raise HTTPException(status_code=503, detail="ODS host agent is not reachable.") from exc
-    except AgentProtocolError as exc:
-        logger.exception("host-agent GET %s failed", path)
+    except (AgentProtocolError, AgentClientError, OSError, ValueError) as exc:
+        logger.warning("host-agent GET %s failed: %s", path, exc, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Host agent call failed: {exc}") from exc
 
 
