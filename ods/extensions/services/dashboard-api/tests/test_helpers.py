@@ -1607,3 +1607,15 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+class TestStringMaskSensitiveSafe:
+    def test_valid_masking(self):
+        from helpers import string_mask_sensitive_safe
+        assert string_mask_sensitive_safe("1234567890", unmasked_suffix_len=4) == "******7890"
+
+    def test_invalid_and_bounds(self):
+        from helpers import string_mask_sensitive_safe
+        assert string_mask_sensitive_safe(None) == ""
+        assert string_mask_sensitive_safe("abc", unmasked_suffix_len=4) == "***"
+
