@@ -33,6 +33,33 @@ Environment variables (set in `.env`):
 | `GET` | `/v1/models` | List available TTS models |
 | `GET` | `/v1/voices` | List available voice presets |
 
+### CLI speech files
+
+The shared Linux/WSL CLI can list voices and create a WAV file without an SDK:
+
+```bash
+ods tts voices
+ods tts speak 'Hello from ODS.' greeting.wav --voice af_heart
+printf 'Read this local report.\n' | ods tts speak - report.wav
+```
+
+Enable the `tts` service first. The CLI reads quoted `TTS_PORT` from the installed
+`.env`, sends text only to the loopback Kokoro endpoint, and preserves paths
+relative to the caller's directory. It does not play audio or start the service.
+`--voice` defaults to `af_heart` and accepts voice combinations supported by Kokoro.
+Text is limited to 10,000 characters and responses to 64 MiB; the HTTP socket
+timeout is five minutes. The client requests Kokoro's 24 kHz mono 16-bit PCM and
+writes a complete WAV header locally: the shipped v0.2.4 WAV writer does not
+finalize its header correctly. HTTP errors, redirects, unexpected content types,
+empty audio, incomplete HTTP bodies or partial samples fail visibly without
+publishing an output file.
+
+The output must be a new path in an existing directory. Completed WAV files are
+published atomically without replacing another writer's file, using a same-directory
+hard link (the destination filesystem must support hard links). Files are private
+to the invoking user by default. This command requires Python 3; the separately
+generated native macOS installer CLI does not gain these subcommands.
+
 ### Example
 
 ```bash

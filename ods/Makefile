@@ -60,6 +60,7 @@ test: ## Run unit and contract tests
 	@echo "=== Docker rootless bind-mount ownership ==="
 	@bash tests/test-rootless-docker-ownership.sh
 	@bash tests/test-cli-status-docker-error.sh
+	@python3 tests/test-cli-tts.py
 	@echo ""
 	@echo "=== AMD/Lemonade contracts ==="
 	@bash tests/contracts/test-amd-lemonade-contracts.sh
