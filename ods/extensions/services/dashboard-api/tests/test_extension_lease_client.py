@@ -292,7 +292,7 @@ def test_default_transport_rejects_http_202_as_ambiguous(monkeypatch) -> None:
         client.close()
 
 
-def test_client_has_no_logging_persistence_or_production_wiring() -> None:
+def test_client_has_no_logging_persistence_or_runtime_wiring() -> None:
     source_root = Path(__file__).resolve().parents[1]
     module = source_root / "extension_lease_client.py"
     text = module.read_text(encoding="utf-8")
@@ -313,4 +313,4 @@ def test_client_has_no_logging_persistence_or_production_wiring() -> None:
         and path != module
         and "extension_lease_client" in path.read_text(encoding="utf-8")
     }
-    assert importers == set()
+    assert importers == {"extension_lease_renewer.py"}

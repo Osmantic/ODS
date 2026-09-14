@@ -120,11 +120,14 @@ expiry, while the lease core continues to pin an active mutation until exit.
 This is still a custody boundary, not a lifecycle adapter. Compose toggles,
 configuration sync, start/stop, and core recreation can enter `use` under an
 exact lease, but the combined install path remains an asynchronous HTTP 202
-operation and no Dashboard renewer or complete lifecycle adapter is present.
-Legacy direct extension requests contend on the exact same host lock objects.
-Production execution remains disabled until every transaction mutation uses the
-non-reentrant lease protocol with synchronous durable evidence, renewal
-supervision, and crash/restart recovery qualification.
+operation and no complete lifecycle adapter is present. An inert Dashboard
+renewer can now keep one in-memory grant alive for a future synchronous
+operation. It calls only `renew`, stops after the first failure, bounds shutdown,
+and surfaces background failures; it has no runtime call sites and cannot
+activate execution. Legacy direct extension requests contend on the exact same
+host lock objects. Production execution remains disabled until every transaction
+mutation uses the non-reentrant lease protocol with synchronous durable evidence,
+renewal supervision, and crash/restart recovery qualification.
 
 ## Why disabled by default
 
@@ -135,7 +138,8 @@ those adapters and installed cross-path lock behavior are qualified would create
 false-success and collision risks.
 
 Lifecycle execution therefore remains unavailable by default and in the
-production runtime. The next phase must add the host-owned adapter and lease
-protocol, backup/restore, strict offline behavior, and real Linux
-qualification before advertising execution. Existing Full, Core, Custom, and
-single-extension routes remain unchanged.
+production runtime. The next phase must add the host-owned synchronous adapter,
+wire the lease client and renewer only around complete operations, add
+backup/restore and strict offline behavior, and pass real Linux qualification
+before advertising execution. Existing Full, Core, Custom, and single-extension
+routes remain unchanged.
