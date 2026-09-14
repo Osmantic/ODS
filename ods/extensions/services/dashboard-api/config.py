@@ -736,3 +736,13 @@ def load_templates() -> list[dict]:
 
 
 TEMPLATES = load_templates()
+
+
+def sanitize_env_encoding(raw_value: bytes | str) -> str:
+    """Safely decode environment variables, dropping corrupted non-printable characters."""
+    if isinstance(raw_value, str):
+        return raw_value
+    try:
+        return raw_value.decode('utf-8', errors='ignore').strip()
+    except Exception:
+        return ""
