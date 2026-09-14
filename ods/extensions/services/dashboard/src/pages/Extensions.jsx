@@ -17,7 +17,7 @@ import './extensions-refined.css'
 export { getTemplateStatus }
 
 // API/backend services with no user-facing web UI — show badge instead of port link.
-const HEADLESS_EXTENSIONS = new Set(['embeddings', 'tts', 'whisper', 'privacy-shield'])
+const HEADLESS_EXTENSIONS = new Set(['embeddings', 'tts', 'whisper', 'privacy-shield', 'languagetool'])
 
 // Auth: nginx injects "Authorization: Bearer ${DASHBOARD_API_KEY}" via
 // proxy_set_header for all /api/ requests (see nginx.conf).  All fetches
