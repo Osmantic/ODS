@@ -1,4 +1,4 @@
-"""Dormant reservation runtime composition tests."""
+"""Resource reservation runtime composition and reachability tests."""
 
 from __future__ import annotations
 
@@ -140,14 +140,16 @@ class ReservationRuntimeTests(unittest.TestCase):
             {"ResourceReservationRuntime", "build_resource_reservation_runtime"},
         )
 
-    def test_production_unreachability(self) -> None:
-        """Production code does not import the reservation runtime or adapter."""
+    def test_production_reachability_is_paired(self) -> None:
+        """The host agent now imports the reservation runtime for lazy
+        composition. Both reserve_dispatcher and release_dispatcher must
+        be equally present (paired), replacing the prior unreachability check.
+        """
         repo = Path(__file__).resolve().parents[5]
 
         agent_path = BIN_DIR / "ods-host-agent.py"
         agent_source = agent_path.read_text(encoding="utf-8")
-        self.assertNotIn("extension_resource_reservation_runtime", agent_source)
-        self.assertNotIn("extension_resource_reservation_adapter", agent_source)
+        self.assertIn("extension_resource_reservation_runtime", agent_source)
 
         dashboard_api = repo / "ods" / "extensions" / "services" / "dashboard-api"
         for path in dashboard_api.rglob("*.py"):
@@ -155,16 +157,22 @@ class ReservationRuntimeTests(unittest.TestCase):
                 continue
             if path.name == "__init__.py":
                 continue
+            if path.name == "extension_resource_reservation_runtime.py":
+                continue
+            if path.name == "extension_resource_reservation_adapter.py":
+                continue
             source = path.read_text(encoding="utf-8")
+            # Non-runtime source files must not import the adapter directly;
+            # only the runtime module composes it.
             self.assertNotIn(
-                "extension_resource_reservation_runtime",
+                "from extension_resource_reservation_adapter",
                 source,
-                f"unexpected production import in {path.relative_to(repo)}",
+                f"direct adapter import in {path.relative_to(repo)}",
             )
             self.assertNotIn(
-                "extension_resource_reservation_adapter",
+                "import extension_resource_reservation_adapter",
                 source,
-                f"unexpected production import in {path.relative_to(repo)}",
+                f"direct adapter import in {path.relative_to(repo)}",
             )
 
 

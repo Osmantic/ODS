@@ -763,3 +763,120 @@ def test_host_core_is_stdlib_only_and_has_no_mutation_primitives():
     assert "pathlib" not in source
     assert "threading" not in source
     assert "urllib" not in source
+
+
+def test_reserve_operation_key_parsed_and_timeout_assigned():
+    """reserve:<serviceId> must parse correctly with a 30s timeout."""
+    request = work_request(
+        "reserve:documents",
+        ["documents"],
+        {"operation": {"serviceId": "documents", "definitionHash": "4" * 64}},
+    )
+    command = host_work.parse_lifecycle_work_request(request)
+    assert command.operation_key == "reserve:documents"
+    assert command.timeout_seconds == 30
+    assert command.service_ids == ("documents",)
+
+
+def test_release_operation_key_parsed_and_timeout_assigned():
+    """release must parse correctly with a 30s timeout."""
+    request = work_request(
+        "release",
+        ["documents", "voice"],
+        {"serviceIds": ["documents", "voice"]},
+    )
+    command = host_work.parse_lifecycle_work_request(request)
+    assert command.operation_key == "release"
+    assert command.timeout_seconds == 30
+    assert command.service_ids == ("documents", "voice")
+
+
+def test_dispatch_for_reserve_uses_provided_dispatcher():
+    """dispatch_lifecycle_work for reserve: must call the provided dispatcher
+    with the parsed command and return its evidence hash."""
+    command = host_work.parse_lifecycle_work_request(
+        work_request(
+            "reserve:documents",
+            ["documents"],
+            {"operation": {"serviceId": "documents", "definitionHash": "4" * 64}},
+        )
+    )
+    bound = replace(command, plan_material=SimpleNamespace(bound=True))
+    seen = []
+
+    result = host_work.dispatch_lifecycle_work(
+        bound, lambda value: seen.append(value) or EVIDENCE_HASH
+    )
+
+    assert len(seen) == 1
+    assert seen[0].operation_key == "reserve:documents"
+    assert result == {
+        "schema": host_work.RESULT_SCHEMA,
+        "transactionId": TRANSACTION_ID,
+        "planHash": PLAN_HASH,
+        "operationKey": "reserve:documents",
+        "requestHash": command.request_hash,
+        "serviceIds": ["documents"],
+        "completed": True,
+        "outcome": "completed",
+        "evidenceHash": EVIDENCE_HASH,
+    }
+
+
+def test_dispatch_for_release_uses_provided_dispatcher():
+    """dispatch_lifecycle_work for release must call the provided dispatcher
+    with the parsed command and return its evidence hash."""
+    command = host_work.parse_lifecycle_work_request(
+        work_request(
+            "release",
+            ["documents", "voice"],
+            {"serviceIds": ["documents", "voice"]},
+        )
+    )
+    bound = replace(command, plan_material=SimpleNamespace(bound=True))
+    seen = []
+
+    result = host_work.dispatch_lifecycle_work(
+        bound, lambda value: seen.append(value) or EVIDENCE_HASH
+    )
+
+    assert len(seen) == 1
+    assert seen[0].operation_key == "release"
+    assert result == {
+        "schema": host_work.RESULT_SCHEMA,
+        "transactionId": TRANSACTION_ID,
+        "planHash": PLAN_HASH,
+        "operationKey": "release",
+        "requestHash": command.request_hash,
+        "serviceIds": ["documents", "voice"],
+        "completed": True,
+        "outcome": "completed",
+        "evidenceHash": EVIDENCE_HASH,
+    }
+
+
+def test_reserve_and_release_dispatch_are_symmetric():
+    """reserve:<id> and release dispatch must behave symmetrically through
+    dispatch_lifecycle_work: both call dispatcher, both return same schema."""
+    for op_key, svc_ids, payload in [
+        ("reserve:documents", ["documents"],
+         {"operation": {"serviceId": "documents", "definitionHash": "4" * 64}}),
+        ("release", ["documents", "voice"],
+         {"serviceIds": ["documents", "voice"]}),
+    ]:
+        command = host_work.parse_lifecycle_work_request(
+            work_request(op_key, svc_ids, payload)
+        )
+        bound = replace(command, plan_material=SimpleNamespace(bound=True))
+        seen = []
+
+        result = host_work.dispatch_lifecycle_work(
+            bound,
+            lambda value: seen.append(value) or EVIDENCE_HASH,  # noqa: B023
+        )
+
+        assert len(seen) == 1
+        assert result["schema"] == host_work.RESULT_SCHEMA
+        assert result["completed"] is True
+        assert result["evidenceHash"] == EVIDENCE_HASH
+        assert result["operationKey"] == op_key

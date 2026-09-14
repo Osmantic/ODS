@@ -241,8 +241,9 @@ root. Composition validates the root without creating or repairing it, caches
 only the exact `DATA_DIR` and extension-root binding, and accepts no request or
 environment override. The host lifecycle handler calls the factory only for
 the exact `stage` operation and passes both callables through the existing
-plan-bound receipt path. Every other lifecycle operation remains unavailable,
-and Dashboard execution remains `None`.
+plan-bound receipt path. Beyond stage and the paired reserve/release boundary
+described below, lifecycle operations remain unavailable. Dashboard execution
+remains `None`.
 
 The installer also provisions an owner-private
 `data/assistant-first/resource-reservations` root for the next host boundary.
@@ -262,7 +263,7 @@ command requires present claims on its targeted definition and fails closed
 with `lifecycle-work-reservation-claims-missing`; every other operation stays
 readable, and valid reserves never depend on unrelated legacy definitions.
 
-A dormant reservation adapter now closes the in-process handoff between the
+A reservation adapter closes the in-process handoff between the
 bound plan material and the immutable reservation store. It re-proves the
 exact command and LifecyclePlanMaterial binding, targets one non-noop
 operation/definition and exact payload, requires claims before effect, converts
@@ -273,13 +274,13 @@ ReservationStoreError to the fixed value-free
 ReservationRecord binding/status/claims/hex evidence, returns `record_sha256`. Invoking it performs only the bound
 reservation-store mutation: it calls `ResourceReservationStore.reserve`, writes
 the owner-private reservation record, and has no process, network, service,
-container, or Compose effect. A frozen fixed-root runtime
-composition joins the store and adapter against the installer-owned root
-without registering a dispatcher or granting lifecycle effect authority.
-The production importer, transaction executor, resource projection, and
-Dashboard executor remain absent.
+container, or Compose effect. A frozen fixed-root runtime composition joins the
+store and adapter against the installer-owned root. The host activation below
+preserves those fixed roots and narrow effects. The Dashboard transaction
+executor and broader resource projection remain absent from production
+composition.
 
-A dormant release adapter provides the atomic batch-release boundary.  It
+A release adapter provides the atomic batch-release boundary. It
 builds typed `ReleaseExpectation` records from plan-bound operations and
 definitions, passing them into `batch_release` so that transaction, plan,
 service, **action**, and claims bindings are all re-proved under a single
@@ -291,13 +292,19 @@ matches; otherwise a single value-free failure is emitted.  A replay where
 every targeted record is already released returns the persisted records with
 `duplicate=True` and deterministic evidence.  Mixed active/released state is
 rejected without another write because it is neither a fresh atomic batch nor
-an exact replay.  The reserve and release adapters must be activated together
-later; neither is registered or reachable from production.  Manual recovery
-and failed lifecycle-receipt retry policy are not solved by this PR.
+an exact replay. The reserve and release adapters are activated together only
+for their exact host lifecycle operations, after authentication, the feature
+gate, request validation, lease binding, and mutation admission. They share one
+cached host-owned reservation runtime; a missing or invalid runtime fails
+closed and cannot fall back to the generic lifecycle dispatcher.
 
-The runtime composition now includes both the reserve and release dispatchers
-as inert dependencies, but neither is wired to any lifecycle handler.
-Composition is inert and production unreachability is enforced.
+Reconciliation now releases a reservation only after compensation and restore
+succeed and a fresh bound observation proves that no mutable service remains
+applied. Any failed or ambiguous recovery terminalizes as
+`manual_recovery_required` while retaining the ACTIVE reservation as collision
+quarantine. Normal verified success still releases exactly once. Dashboard's
+production transaction executor remains disabled, so this host boundary does
+not yet make conversational extension installation live.
 
 ## Evidence boundary
 

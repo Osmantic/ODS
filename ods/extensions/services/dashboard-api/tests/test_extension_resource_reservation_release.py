@@ -1527,26 +1527,26 @@ class ReleaseRuntimeTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Production unreachability
+# Production reachability boundary
 # ---------------------------------------------------------------------------
 
 
 @unittest.skipUnless(SUPPORTED, "requires POSIX descriptor-relative filesystem APIs")
-class ProductionUnreachabilityTests(unittest.TestCase):
-    """Verify release code is not reachable from production paths."""
+class ProductionReachabilityBoundaryTests(unittest.TestCase):
+    """Keep host reachability paired without creating a second authority."""
 
-    def test_production_unreachability(self) -> None:
-        """Production code does not import the release adapter or runtime."""
-        repo = Path(__file__).resolve().parents[4]
+    def test_host_imports_only_the_paired_runtime(self) -> None:
         agent_path = BIN_DIR / "ods-host-agent.py"
         agent_source = agent_path.read_text(encoding="utf-8")
+        self.assertIn("extension_resource_reservation_runtime", agent_source)
         for name in (
             "extension_resource_reservation_release",
-            "extension_resource_reservation_runtime",
             "extension_resource_reservation_adapter",
         ):
             self.assertNotIn(name, agent_source)
 
+    def test_dashboard_has_no_direct_reservation_authority(self) -> None:
+        repo = Path(__file__).resolve().parents[4]
         dashboard_api = repo / "ods" / "extensions" / "services" / "dashboard-api"
         for path in dashboard_api.rglob("*.py"):
             if "tests" in path.parts:

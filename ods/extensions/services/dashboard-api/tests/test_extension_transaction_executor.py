@@ -1685,3 +1685,304 @@ def test_crash_during_compensation_resumes_without_duplicate_compensation(tmp_pa
 
     assert result.final_state == "rolled_back"
     assert adapter.compensation_effects == 1
+
+
+# ── Collision quarantine: release withheld unless recovery is proven ────────
+
+def test_compensation_failure_withholds_release_and_requires_manual_recovery(
+    tmp_path,
+):
+    """When compensation fails, release call count must be 0 and final
+    state must be manual_recovery_required."""
+    store = transactions.TransactionStore(tmp_path / "store")
+    envelope = build_envelope(service_ids=["notes", "calendar"])
+    descriptor = create_and_approve(store, envelope)
+
+    adapter = RecordingAdapter()
+    # calendar (idx 0) succeeds, notes (idx 1) fails
+    adapter.fail_at("apply_one", 1)
+    # compensate for calendar (idx 0) fails
+    adapter.fail_at("compensate_one", 0)
+
+    result = make_executor(store, adapter=adapter).execute(
+        descriptor["transactionId"], envelope["planHash"]
+    )
+
+    assert result.final_state == "manual_recovery_required"
+    release_calls = [c for c in adapter.calls if c[0] == "release"]
+    assert len(release_calls) == 0
+
+
+def test_restore_failure_withholds_release_and_requires_manual_recovery(tmp_path):
+    """When restore_all fails, release call count must be 0 and final
+    state must be manual_recovery_required."""
+    store = transactions.TransactionStore(tmp_path / "store")
+    envelope = build_envelope(service_ids=["notes"])
+    descriptor = create_and_approve(store, envelope)
+
+    adapter = RecordingAdapter()
+    # Fail reserve so we enter reconciliation
+    adapter.fail_at("reserve", 0)
+    adapter.fail_at("restore_all", 0)
+
+    result = make_executor(store, adapter=adapter).execute(
+        descriptor["transactionId"], envelope["planHash"]
+    )
+
+    assert result.final_state == "manual_recovery_required"
+    release_calls = [c for c in adapter.calls if c[0] == "release"]
+    assert len(release_calls) == 0
+
+
+def test_initial_observation_failure_withholds_release(tmp_path):
+    """When the initial observation fails or returns malformed binding,
+    release call count must be 0."""
+    store = transactions.TransactionStore(tmp_path / "store")
+    envelope = build_envelope(service_ids=["notes"])
+    descriptor = create_and_approve(store, envelope)
+
+    adapter = RecordingAdapter()
+    adapter.fail_at("reserve", 0)
+
+    class FailingObserver:
+        def observe(self, binding):
+            raise RuntimeError("observation-unavailable")
+
+    result = make_executor(store, adapter=adapter, observer=FailingObserver()).execute(
+        descriptor["transactionId"], envelope["planHash"]
+    )
+
+    assert result.final_state == "manual_recovery_required"
+    release_calls = [c for c in adapter.calls if c[0] == "release"]
+    assert len(release_calls) == 0
+
+
+def test_initial_malformed_observation_withholds_release(tmp_path):
+    """When initial observation returns a malformed dict (wrong shape),
+    release call count must be 0."""
+    store = transactions.TransactionStore(tmp_path / "store")
+    envelope = build_envelope(service_ids=["notes"])
+    descriptor = create_and_approve(store, envelope)
+
+    adapter = RecordingAdapter()
+    adapter.fail_at("reserve", 0)
+
+    class MalformedObserver:
+        def observe(self, binding):
+            return {"appliedServices": []}  # Missing transactionId, planHash
+
+    result = make_executor(store, adapter=adapter, observer=MalformedObserver()).execute(
+        descriptor["transactionId"], envelope["planHash"]
+    )
+
+    assert result.final_state == "manual_recovery_required"
+    release_calls = [c for c in adapter.calls if c[0] == "release"]
+    assert len(release_calls) == 0
+
+
+def test_final_post_restore_observation_failure_withholds_release(tmp_path):
+    """When the final post-restore observation fails, release call count
+    must be 0 even though compensation and restore succeeded."""
+    store = transactions.TransactionStore(tmp_path / "store")
+    envelope = build_envelope(service_ids=["notes"])
+    descriptor = create_and_approve(store, envelope)
+    observer = RecordingObserver()
+
+    class FailingFinalObserver(RecordingObserver):
+        def __init__(self, base_observer):
+            self.call_count = 0
+            self.base = base_observer
+
+        def observe(self, binding):
+            self.call_count += 1
+            # During reconciliation: initial observe (1), post-compensate (2),
+            # then final post-restore observation (3+). Fail on the third.
+            if self.call_count >= 3:
+                raise RuntimeError("final-observation-failed")
+            return self.base.observe(binding)
+
+    adapter = RecordingAdapter()
+    adapter.fail_at("verify_all", 0)
+
+    result = make_executor(
+        store,
+        adapter=adapter,
+        observer=FailingFinalObserver(observer),
+    ).execute(descriptor["transactionId"], envelope["planHash"])
+
+    assert result.final_state == "manual_recovery_required"
+    release_calls = [c for c in adapter.calls if c[0] == "release"]
+    assert len(release_calls) == 0
+
+
+def test_final_observation_malformed_evidence_withholds_release(tmp_path):
+    """When the final post-restore observation returns malformed evidence,
+    release call count must be 0."""
+    store = transactions.TransactionStore(tmp_path / "store")
+    envelope = build_envelope(service_ids=["notes"])
+    descriptor = create_and_approve(store, envelope)
+    observer = RecordingObserver()
+
+    class MalformedFinalObserver(RecordingObserver):
+        def __init__(self, base_observer):
+            self.call_count = 0
+            self.base = base_observer
+
+        def observe(self, binding):
+            self.call_count += 1
+            # Third observation (post-restore) returns malformed evidence
+            if self.call_count >= 3:
+                return {"appliedServices": []}  # Missing required keys
+            return self.base.observe(binding)
+
+    adapter = RecordingAdapter()
+    adapter.fail_at("verify_all", 0)
+
+    result = make_executor(
+        store,
+        adapter=adapter,
+        observer=MalformedFinalObserver(observer),
+    ).execute(descriptor["transactionId"], envelope["planHash"])
+
+    assert result.final_state == "manual_recovery_required"
+    release_calls = [c for c in adapter.calls if c[0] == "release"]
+    assert len(release_calls) == 0
+
+
+def test_final_observation_nonempty_applied_withholds_release(tmp_path):
+    """When the final post-restore observation shows nonempty applied
+    services, release must NOT be called (mutable state persists)."""
+    store = transactions.TransactionStore(tmp_path / "store")
+    envelope = build_envelope(service_ids=["notes"])
+    descriptor = create_and_approve(store, envelope)
+    observer = RecordingObserver()
+
+    class StaleObserver(RecordingObserver):
+        def __init__(self, base_observer):
+            self.call_count = 0
+            self.base = base_observer
+
+        def observe(self, binding):
+            self.call_count += 1
+            # Third observation (post-restore) reports services still applied
+            if self.call_count >= 3:
+                return {
+                    "transactionId": binding.transaction_id,
+                    "planHash": binding.plan_hash,
+                    "appliedServices": ["notes"],
+                }
+            return self.base.observe(binding)
+
+    adapter = RecordingAdapter()
+    adapter.fail_at("verify_all", 0)
+
+    result = make_executor(
+        store,
+        adapter=adapter,
+        observer=StaleObserver(observer),
+    ).execute(descriptor["transactionId"], envelope["planHash"])
+
+    assert result.final_state == "manual_recovery_required"
+    release_calls = [c for c in adapter.calls if c[0] == "release"]
+    assert len(release_calls) == 0
+
+
+def test_full_recovery_compensation_restore_empty_observation_releases_once(tmp_path):
+    """When compensation, restore, and a fresh empty observation all
+    succeed, release must be called exactly once and final state rolled_back."""
+    store = transactions.TransactionStore(tmp_path / "store")
+    envelope = build_envelope(service_ids=["notes"])
+    descriptor = create_and_approve(store, envelope)
+
+    adapter = RecordingAdapter()
+    adapter.fail_at("verify_all", 0)
+    # Compensation succeeds, restore succeeds, final observation returns []
+
+    result = make_executor(store, adapter=adapter).execute(
+        descriptor["transactionId"], envelope["planHash"]
+    )
+
+    assert result.final_state == "rolled_back"
+    release_calls = [c for c in adapter.calls if c[0] == "release"]
+    assert len(release_calls) == 1
+
+
+def test_release_failure_results_in_manual_recovery(tmp_path):
+    """When release itself fails after compensation+restore+empty observation,
+    final state must be manual_recovery_required."""
+    store = transactions.TransactionStore(tmp_path / "store")
+    envelope = build_envelope(service_ids=["notes"])
+    descriptor = create_and_approve(store, envelope)
+
+    adapter = RecordingAdapter()
+    adapter.fail_at("verify_all", 0)
+    adapter.fail_at("release", 0)
+
+    result = make_executor(store, adapter=adapter).execute(
+        descriptor["transactionId"], envelope["planHash"]
+    )
+
+    assert result.final_state == "manual_recovery_required"
+    release_calls = [c for c in adapter.calls if c[0] == "release"]
+    assert len(release_calls) == 1
+
+
+def test_terminal_manual_recovery_replay_performs_zero_additional_calls(tmp_path):
+    """Re-executing a transaction that ended in manual_recovery_required
+    must perform zero additional adapter calls."""
+    store = transactions.TransactionStore(tmp_path / "store")
+    envelope = build_envelope(service_ids=["notes", "calendar"])
+    descriptor = create_and_approve(store, envelope)
+
+    adapter = RecordingAdapter()
+    adapter.fail_at("apply_one", 1)  # notes fails
+    adapter.fail_at("compensate_one", 0)  # calendar compensation fails
+
+    result = make_executor(store, adapter=adapter).execute(
+        descriptor["transactionId"], envelope["planHash"]
+    )
+    assert result.final_state == "manual_recovery_required"
+
+    # Replay with a fresh adapter — must get zero calls
+    replay_adapter = RecordingAdapter()
+    result2 = make_executor(store, adapter=replay_adapter).execute(
+        descriptor["transactionId"], envelope["planHash"]
+    )
+    assert result2.final_state == "manual_recovery_required"
+    assert len(replay_adapter.calls) == 0
+
+
+def test_normal_verified_success_releases_exactly_once_and_commits(tmp_path):
+    """Normal verified success (all steps pass) must release exactly once
+    and commit the transaction."""
+    store = transactions.TransactionStore(tmp_path / "store")
+    envelope = build_envelope(service_ids=["notes"])
+    descriptor = create_and_approve(store, envelope)
+
+    adapter = RecordingAdapter()
+    result = make_executor(store, adapter=adapter).execute(
+        descriptor["transactionId"], envelope["planHash"]
+    )
+
+    assert result.final_state == "committed"
+    release_calls = [c for c in adapter.calls if c[0] == "release"]
+    assert len(release_calls) == 1
+
+
+def test_normal_two_service_success_releases_exactly_once_and_commits(tmp_path):
+    """Normal two-service success must release exactly once and commit."""
+    store = transactions.TransactionStore(tmp_path / "store")
+    envelope = build_envelope(service_ids=["notes", "calendar"])
+    descriptor = create_and_approve(store, envelope)
+
+    adapter = RecordingAdapter()
+    result = make_executor(store, adapter=adapter).execute(
+        descriptor["transactionId"], envelope["planHash"]
+    )
+
+    assert result.final_state == "committed"
+    release_calls = [c for c in adapter.calls if c[0] == "release"]
+    assert len(release_calls) == 1
+    # Release must cover both service IDs
+    release_svc_ids = release_calls[0][1]["service_ids"]
+    assert set(release_svc_ids) == {"notes", "calendar"}

@@ -446,21 +446,45 @@ class TransactionExecutor:
             except Exception:
                 recovery_ok = False
 
-        for operation_name, call in (
-            (
-                "restore",
-                lambda: self._adapter.restore_all(
+        # Restore must complete before release can be attempted.
+        try:
+            self._require_completed(
+                self._adapter.restore_all(
                     binding, list(mutable_service_ids)
                 ),
-            ),
-            (
-                "release",
-                lambda: self._adapter.release(binding, list(mutable_service_ids)),
-            ),
-        ):
+                "restore",
+                binding,
+            )
+        except Exception:  # noqa: BLE001 - any restore uncertainty quarantines claims
+            recovery_ok = False
+
+        # Release is attempted only when compensation, restore, and all prior
+        # observations succeeded AND a fresh bound observation proves no mutable
+        # service remains applied.  If any of these conditions is not met,
+        # terminalize manual_recovery_required and retain ACTIVE reservations.
+        if recovery_ok:
             try:
-                self._require_completed(call(), operation_name, binding)
-            except Exception:
+                final_applied = self._observed_applied(binding, mutable_ops)
+            except Exception:  # noqa: BLE001 - any observation uncertainty quarantines
+                final_applied = []
+                recovery_ok = False
+
+            # Only attempt release when the final observation is empty
+            # (all mutable services have been compensated/restored).
+            if recovery_ok and not final_applied:
+                try:
+                    self._require_completed(
+                        self._adapter.release(
+                            binding, list(mutable_service_ids)
+                        ),
+                        "release",
+                        binding,
+                    )
+                except Exception:  # noqa: BLE001 - any release uncertainty quarantines
+                    recovery_ok = False
+            elif recovery_ok:
+                # Fresh observation shows applied services remain; release
+                # must not be called because mutable state persists.
                 recovery_ok = False
 
         final_state = "rolled_back" if recovery_ok else "manual_recovery_required"

@@ -289,11 +289,17 @@ def host_server(tmp_path):
 
     builtins = tmp_path / "extensions"
     users = tmp_path / "user-extensions"
-    users.mkdir()
+    builtins.mkdir(mode=0o700)
+    builtins.chmod(0o700)
+    users.mkdir(mode=0o700)
+    users.chmod(0o700)
     for service_id in ("documents", "voice", "dashboard"):
         extension = builtins / service_id
-        extension.mkdir(parents=True)
-        (extension / "manifest.yaml").write_text("service: {}\n", encoding="utf-8")
+        extension.mkdir(mode=0o700)
+        extension.chmod(0o700)
+        manifest = extension / "manifest.yaml"
+        manifest.write_text("service: {}\n", encoding="utf-8")
+        manifest.chmod(0o600)
 
     agent.AGENT_API_KEY = TOKEN
     agent.ASSISTANT_TRANSACTIONS_ENABLED = True
@@ -302,6 +308,9 @@ def host_server(tmp_path):
     stage_root = agent.DATA_DIR / "assistant-first" / "artifact-stage"
     stage_root.mkdir(mode=0o700, parents=True)
     stage_root.chmod(0o700)
+    reservation_root = agent.DATA_DIR / "assistant-first" / "resource-reservations"
+    reservation_root.mkdir(mode=0o700, parents=True)
+    reservation_root.chmod(0o700)
     agent.EXTENSIONS_DIR = builtins
     agent.USER_EXTENSIONS_DIR = users
     agent.ALWAYS_ON_SERVICES = frozenset({"dashboard"})
@@ -317,6 +326,8 @@ def host_server(tmp_path):
     agent._extension_lifecycle_work_dispatcher = None
     agent._artifact_stage_runtime = None
     agent._artifact_stage_runtime_binding = None
+    agent._resource_reservation_runtime = None
+    agent._resource_reservation_runtime_data_dir = None
     agent._extension_lifecycle_plan_loader = lambda command: bind_fixture_plan(
         agent, command
     )
@@ -463,11 +474,6 @@ def test_success_is_exact_synchronous_bound_and_token_free(host_server, host_req
         ("configure", {"serviceIds": ["documents"]}),
         ("verify", {"serviceIds": ["documents"]}),
         ("restore", {"serviceIds": ["documents"]}),
-        ("release", {"serviceIds": ["documents"]}),
-        (
-            "reserve:documents",
-            {"operation": {"serviceId": "documents", "action": "install"}},
-        ),
         (
             "apply:documents",
             {"operation": {"serviceId": "documents", "action": "install"}},
@@ -494,6 +500,40 @@ def test_non_stage_operations_remain_inert_but_authenticate_the_lease(
 
     assert status == 503
     assert result == {"error": {"code": "lifecycle-work-dispatcher-unavailable"}}
+    state = agent._extension_lease_manager.describe(grant["leaseId"])
+    assert state["active"] is False
+    assert grant["leaseToken"] not in json.dumps(result)
+
+
+@pytest.mark.parametrize(
+    "operation_key,payload",
+    [
+        ("release", {"serviceIds": ["documents"]}),
+        (
+            "reserve:documents",
+            {"operation": {"serviceId": "documents", "action": "install"}},
+        ),
+    ],
+)
+def test_reservation_operations_authenticate_lease_and_dispatch_to_runtime(
+    host_server, host_request, operation_key, payload
+):
+    """release and reserve:<id> must authenticate the lease and dispatch
+    to the reservation runtime (not return dispatcher-unavailable)."""
+    agent, _listener = host_server
+    grant = acquire_lease(agent, host_request)
+    request = work_request(
+        agent._extension_lifecycle_work.REQUEST_SCHEMA,
+        lease_evidence(agent, grant),
+        operation_key=operation_key,
+        payload=payload,
+    )
+
+    status, result = host_request("/v1/extension/lifecycle-work", request)
+
+    # Must be 200 (dispatched via reservation runtime) or 409 (receipt issue),
+    # NOT 503 (dispatcher-unavailable) which would mean they're still dormant
+    assert status in (200, 409)
     state = agent._extension_lease_manager.describe(grant["leaseId"])
     assert state["active"] is False
     assert grant["leaseToken"] not in json.dumps(result)
@@ -1188,3 +1228,413 @@ def test_host_agent_source_leaves_production_dispatcher_unwired():
     assert len(assignments) == 1
     assert isinstance(assignments[0], ast.Constant)
     assert assignments[0].value is None
+
+
+# ── Reservation routing tests ──────────────────────────────────────────────
+
+def test_reserve_selects_reserve_dispatcher_from_cached_runtime(host_server, host_request):
+    """reserve:<serviceId> must select reserve_dispatcher from the cached
+    resource_reservation_runtime instance, not the generic dispatcher."""
+    agent, _listener = host_server
+    grant = acquire_lease(agent, host_request)
+    evidence = lease_evidence(agent, grant)
+
+    # Set up the reservation runtime
+    res_runtime = agent._get_extension_resource_reservation_runtime()
+    assert res_runtime is not None
+    seen = []
+
+    def counted_reserve(command):
+        seen.append("reserve")
+        return EVIDENCE_HASH
+
+    agent._resource_reservation_runtime = type(res_runtime)(
+        root=res_runtime.root,
+        store=res_runtime.store,
+        reserve_dispatcher=counted_reserve,
+        release_dispatcher=res_runtime.release_dispatcher,
+    )
+    agent._extension_lifecycle_work_dispatcher = (
+        lambda _c: (_ for _ in ()).throw(AssertionError("generic received reserve"))
+    )
+
+    request = work_request(
+        agent._extension_lifecycle_work.REQUEST_SCHEMA,
+        evidence,
+        operation_key="reserve:documents",
+        payload={"operation": {"serviceId": "documents"}},
+    )
+    begin_receipt(agent, host_request, request)
+    status, result = host_request("/v1/extension/lifecycle-work", request)
+
+    assert status == 200
+    assert result["evidenceHash"] == EVIDENCE_HASH
+    assert seen == ["reserve"]
+
+
+def test_release_selects_release_dispatcher_from_same_cached_runtime(
+    host_server, host_request
+):
+    """release must select release_dispatcher from the same cached runtime
+    instance used by reserve."""
+    agent, _listener = host_server
+    grant = acquire_lease(agent, host_request)
+    evidence = lease_evidence(agent, grant)
+
+    res_runtime = agent._get_extension_resource_reservation_runtime()
+    assert res_runtime is not None
+    seen = []
+
+    def counted_release(command):
+        seen.append("release")
+        return EVIDENCE_HASH
+
+    agent._resource_reservation_runtime = type(res_runtime)(
+        root=res_runtime.root,
+        store=res_runtime.store,
+        reserve_dispatcher=res_runtime.reserve_dispatcher,
+        release_dispatcher=counted_release,
+    )
+    agent._extension_lifecycle_work_dispatcher = (
+        lambda _c: (_ for _ in ()).throw(AssertionError("generic received release"))
+    )
+
+    request = work_request(
+        agent._extension_lifecycle_work.REQUEST_SCHEMA,
+        evidence,
+        operation_key="release",
+        service_ids=["documents"],
+        payload={"serviceIds": ["documents"]},
+    )
+    begin_receipt(agent, host_request, request)
+    status, result = host_request("/v1/extension/lifecycle-work", request)
+
+    assert status == 200
+    assert result["evidenceHash"] == EVIDENCE_HASH
+    assert seen == ["release"]
+
+
+def test_stage_still_selects_artifact_dispatcher(host_server, host_request):
+    """stage must still select the artifact-stage dispatcher/observer,
+    not the reservation runtime."""
+    agent, _listener = host_server
+    grant = acquire_lease(agent, host_request)
+    evidence = lease_evidence(agent, grant)
+
+    res_runtime = agent._get_extension_resource_reservation_runtime()
+    if res_runtime is not None:
+        # Replace the reservation dispatcher so that if it's mistakenly used,
+        # we detect it.
+        agent._resource_reservation_runtime = type(res_runtime)(
+            root=res_runtime.root,
+            store=res_runtime.store,
+            reserve_dispatcher=lambda _c: (_ for _ in ()).throw(
+                AssertionError("reservation used for stage")
+            ),
+            release_dispatcher=lambda _c: (_ for _ in ()).throw(
+                AssertionError("reservation used for stage")
+            ),
+        )
+
+    artifact_runtime = agent._get_extension_artifact_stage_runtime()
+    seen = []
+    original_dispatch = artifact_runtime.dispatcher
+
+    def counted_dispatch(command):
+        seen.append("stage")
+        return original_dispatch(command)
+
+    agent._artifact_stage_runtime = type(artifact_runtime)(
+        root=artifact_runtime.root,
+        store=artifact_runtime.store,
+        dispatcher=counted_dispatch,
+        started_observer=artifact_runtime.started_observer,
+    )
+
+    request = stage_work_request(agent, evidence)
+    begin_receipt(agent, host_request, request)
+    status, result = host_request("/v1/extension/lifecycle-work", request)
+
+    assert status == 200
+    assert result["operationKey"] == "stage"
+    assert seen == ["stage"]
+
+
+def test_unrelated_operations_never_gain_resource_authority(
+    host_server, host_request
+):
+    """Operations that are not reserve:*, release, or stage must not
+    gain access to the reservation runtime's dispatchers."""
+    agent, _listener = host_server
+    grant = acquire_lease(agent, host_request)
+    evidence = lease_evidence(agent, grant)
+
+    res_runtime = agent._get_extension_resource_reservation_runtime()
+    if res_runtime is not None:
+        agent._resource_reservation_runtime = type(res_runtime)(
+            root=res_runtime.root,
+            store=res_runtime.store,
+            reserve_dispatcher=lambda _c: (_ for _ in ()).throw(
+                AssertionError("reservation used for unrelated op")
+            ),
+            release_dispatcher=lambda _c: (_ for _ in ()).throw(
+                AssertionError("reservation used for unrelated op")
+            ),
+        )
+
+    test_cases = [
+        ("verify", {"serviceIds": ["documents"]}),
+        ("download-and-verify", {"operations": [{"serviceId": "documents", "action": "install"}]}),
+        ("backup", {"serviceIds": ["documents"]}),
+        ("configure", {"serviceIds": ["documents"]}),
+    ]
+    for op_key, payload in test_cases:
+        request = work_request(
+            agent._extension_lifecycle_work.REQUEST_SCHEMA,
+            evidence,
+            operation_key=op_key,
+            service_ids=["documents"],
+            payload=payload,
+        )
+        status, result = host_request("/v1/extension/lifecycle-work", request)
+
+        # Must be 503 (dispatcher unavailable) — never 200 via reservation runtime
+        assert status == 503
+        assert result == {"error": {"code": "lifecycle-work-dispatcher-unavailable"}}
+
+
+def test_runtime_not_constructed_before_admission_checks(host_server, host_request):
+    """The reservation runtime must not be constructed before
+    authentication/feature/request/lease admission gates pass."""
+    agent, _listener = host_server
+
+    # Clear cached runtime so we can observe construction
+    agent._resource_reservation_runtime = None
+    agent._resource_reservation_runtime_data_dir = None
+    construction_count = [0]
+    original_module = agent._resource_reservation_runtime_module
+
+    class ConstructionTracker:
+        @staticmethod
+        def build_resource_reservation_runtime(**kwargs):
+            construction_count[0] += 1
+            return original_module.build_resource_reservation_runtime(**kwargs)
+
+    agent._resource_reservation_runtime_module = ConstructionTracker
+
+    # Send a request with wrong auth — construction must NOT happen
+    request = work_request(
+        agent._extension_lifecycle_work.REQUEST_SCHEMA,
+    )
+    status, _ = host_request(
+        "/v1/extension/lifecycle-work", request, token="wrong"
+    )
+    assert status == 403
+    assert construction_count[0] == 0
+
+    # Disable feature flag — construction must NOT happen
+    agent.ASSISTANT_TRANSACTIONS_ENABLED = False
+    status, _ = host_request("/v1/extension/lifecycle-work", request)
+    assert status == 404
+    assert construction_count[0] == 0
+    agent.ASSISTANT_TRANSACTIONS_ENABLED = True
+
+    # Bad request shape — construction must NOT happen
+    status, _ = host_request("/v1/extension/lifecycle-work", raw=b"[]")
+    assert status == 400
+    assert construction_count[0] == 0
+
+    # Missing lease — construction must NOT happen
+    status, _ = host_request("/v1/extension/lifecycle-work", request)
+    assert status == 422
+    assert construction_count[0] == 0
+
+    agent._resource_reservation_runtime_module = original_module
+
+
+def test_missing_runtime_module_returns_failure_not_success(
+    host_server, host_request
+):
+    """When the reservation runtime module is unavailable, reserve/release
+    requests must return a failure, never success via a generic dispatcher."""
+    agent, _listener = host_server
+    grant = acquire_lease(agent, host_request)
+    evidence = lease_evidence(agent, grant)
+
+    # Temporarily disable the module
+    original = agent._resource_reservation_runtime_module
+    agent._resource_reservation_runtime_module = None
+    agent._resource_reservation_runtime = None
+
+    generic_calls = []
+    agent._extension_lifecycle_work_dispatcher = (
+        lambda command: generic_calls.append(command) or EVIDENCE_HASH
+    )
+
+    # Reset the receipt store for this test
+    agent._lifecycle_receipt_store = MemoryReceiptStore(
+        agent.__dict__["_extension_" + "lifecycle_receipts"].StartedReceipt,
+        agent.__dict__["_extension_" + "lifecycle_receipts"].TerminalReceipt,
+        agent.__dict__["_extension_" + "lifecycle_receipts"].LifecycleSnapshot,
+    )
+
+    try:
+        request = work_request(
+            agent._extension_lifecycle_work.REQUEST_SCHEMA,
+            evidence,
+            operation_key="reserve:documents",
+            payload={"operation": {"serviceId": "documents"}},
+        )
+        begin_receipt(agent, host_request, request)
+        status, result = host_request("/v1/extension/lifecycle-work", request)
+
+        assert status == 503
+        assert result == {"error": {"code": "lifecycle-work-dispatcher-unavailable"}}
+
+        # Same for release
+        request2 = work_request(
+            agent._extension_lifecycle_work.REQUEST_SCHEMA,
+            evidence,
+            operation_key="release",
+            service_ids=["documents"],
+            payload={"serviceIds": ["documents"]},
+        )
+        agent._lifecycle_receipt_store = MemoryReceiptStore(
+            agent.__dict__["_extension_" + "lifecycle_receipts"].StartedReceipt,
+            agent.__dict__["_extension_" + "lifecycle_receipts"].TerminalReceipt,
+            agent.__dict__["_extension_" + "lifecycle_receipts"].LifecycleSnapshot,
+        )
+        begin_receipt(agent, host_request, request2)
+        status2, result2 = host_request("/v1/extension/lifecycle-work", request2)
+
+        assert status2 == 503
+        assert result2 == {
+            "error": {"code": "lifecycle-work-dispatcher-unavailable"}
+        }
+        assert generic_calls == []
+    finally:
+        agent._resource_reservation_runtime_module = original
+
+
+@pytest.mark.parametrize(
+    "operation_key,service_ids,payload",
+    [
+        (
+            "reserve:documents",
+            ["documents"],
+            {"operation": {"serviceId": "documents"}},
+        ),
+        ("release", ["documents"], {"serviceIds": ["documents"]}),
+    ],
+)
+def test_runtime_constructor_failure_cannot_fall_back_to_generic_dispatcher(
+    host_server,
+    host_request,
+    operation_key,
+    service_ids,
+    payload,
+):
+    agent, _listener = host_server
+    grant = acquire_lease(agent, host_request)
+    generic_calls = []
+
+    class BrokenRuntimeModule:
+        @staticmethod
+        def build_resource_reservation_runtime(**_kwargs):
+            raise OSError("private-construction-detail")
+
+    agent._resource_reservation_runtime = None
+    agent._resource_reservation_runtime_data_dir = None
+    agent._resource_reservation_runtime_module = BrokenRuntimeModule
+    agent._extension_lifecycle_work_dispatcher = (
+        lambda command: generic_calls.append(command) or EVIDENCE_HASH
+    )
+    request = work_request(
+        agent._extension_lifecycle_work.REQUEST_SCHEMA,
+        lease_evidence(agent, grant),
+        operation_key=operation_key,
+        service_ids=service_ids,
+        payload=payload,
+    )
+    begin_receipt(agent, host_request, request)
+
+    status, result = host_request("/v1/extension/lifecycle-work", request)
+
+    assert status == 503
+    assert result == {"error": {"code": "lifecycle-work-dispatcher-unavailable"}}
+    assert generic_calls == []
+    assert "private-construction-detail" not in json.dumps(result)
+
+
+def test_importing_runtime_performs_no_reservation_write(host_server):
+    """Building the reservation runtime must not write any reservation/release
+    data to disk."""
+    agent, _listener = host_server
+    res_runtime = agent._get_extension_resource_reservation_runtime()
+    assert res_runtime is not None
+    root = res_runtime.root
+
+    assert list(root.iterdir()) == []
+
+
+def test_reserve_and_release_production_reachability_is_paired(
+    host_server, host_request
+):
+    """Both reserve and release must be equally reachable (or equally
+    unreachable) through the reservation runtime, replacing the prior
+    dormant-unreachability assertion."""
+    agent, _listener = host_server
+    grant = acquire_lease(agent, host_request)
+    evidence = lease_evidence(agent, grant)
+
+    res_runtime = agent._get_extension_resource_reservation_runtime()
+    reserve_reachable = res_runtime is not None and res_runtime.reserve_dispatcher is not None
+    release_reachable = res_runtime is not None and res_runtime.release_dispatcher is not None
+
+    if reserve_reachable or release_reachable:
+        # If either is reachable, both must be (paired)
+        assert reserve_reachable == release_reachable, (
+            f"reserve reachable={reserve_reachable}, release reachable={release_reachable}"
+        )
+
+        # Both must NOT be dormant (503 dispatcher-unavailable) when runtime is available.
+        # They may return 200 (success), 409 (plan/receipt), or similar — but never 503
+        # which would indicate the dispatcher is still unwired.
+        for op_key, svc_ids, payload in [
+            ("reserve:documents", ["documents"], {"operation": {"serviceId": "documents"}}),
+            ("release", ["documents"], {"serviceIds": ["documents"]}),
+        ]:
+            request = work_request(
+                agent._extension_lifecycle_work.REQUEST_SCHEMA,
+                evidence,
+                operation_key=op_key,
+                service_ids=svc_ids,
+                payload=payload,
+            )
+            begin_receipt(agent, host_request, request)
+            status, result = host_request("/v1/extension/lifecycle-work", request)
+
+            # Must not be 503 dispatcher-unavailable — that means the runtime
+            # is not properly wired for this operation
+            assert status != 503, (
+                f"{op_key} returned 503 (dormant) — expected reachable via runtime: {result}"
+            )
+    else:
+        # Both unreachable — still paired (both dormant)
+        assert reserve_reachable == release_reachable
+
+
+# Update the production_unreachability test to reflect the candidate
+# (skip the old check that agent source does NOT contain reservation imports;
+# the candidate intentionally imports them now)
+def test_host_agent_source_wires_reservation_runtime_module():
+    """The host agent source must now import the reservation runtime
+    for lazy composition, replacing the prior unreachability assertion."""
+    agent_source = (BIN_DIR / "ods-host-agent.py").read_text(encoding="utf-8")
+    assert "extension_resource_reservation_runtime" in agent_source
+    assert "_resource_reservation_runtime" in agent_source
+    assert "_get_extension_resource_reservation_runtime" in agent_source
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])
