@@ -31,7 +31,9 @@ services:
       paperless-redis:
         condition: service_healthy
     networks:
-      - ods-network
+      ods-network:
+        aliases:
+          - paperless
     deploy:
       resources:
         limits:
