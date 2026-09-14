@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-13T16:53:56Z",
+  "generated_at": "2026-09-14T19:16:17Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -3586,6 +3586,67 @@
       "tags": [],
       "features": [],
       "catalog_source": "builtin",
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
+      "id": "victoriametrics",
+      "name": "VictoriaMetrics (Metric History)",
+      "description": "Authenticated local time-series storage and query UI for explicitly connected metric producers.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 8428,
+      "external_port_default": 8428,
+      "health_endpoint": "/health",
+      "env_vars": [
+        {
+          "key": "VMETRICS_PORT",
+          "description": "Published HTTP port; internal listener remains 8428",
+          "default": "8428"
+        },
+        {
+          "key": "VMETRICS_PASSWORD",
+          "description": "Strong HTTP Basic Auth password for the fixed ods account; protects read and write APIs",
+          "required": true
+        },
+        {
+          "key": "VMETRICS_RETENTION",
+          "description": "Metric retention duration, for example 30d; shortening retention can delete old samples",
+          "default": "30d"
+        }
+      ],
+      "tags": [
+        "metrics",
+        "monitoring",
+        "time-series"
+      ],
+      "features": [
+        {
+          "id": "persistent-metrics",
+          "name": "Persistent Metric History",
+          "description": "Store and query numeric time series from configured local producers",
+          "icon": "Code",
+          "category": "monitoring",
+          "requirements": {
+            "services": [
+              "victoriametrics"
+            ],
+            "vram_gb": 0
+          },
+          "enabled_services_all": [
+            "victoriametrics"
+          ],
+          "setup_time": "~1 minute after setting credentials",
+          "priority": 34,
+          "launch": {
+            "type": "service",
+            "service": "victoriametrics"
+          }
+        }
+      ],
       "configuration_scope": "declared-environment-keys"
     },
     {
