@@ -39,7 +39,7 @@ _version_refresh_task: Optional[asyncio.Task] = None
 
 def _read_utf8(path: Path) -> str:
     """Read repository text files consistently across Windows and Linux."""
-    return path.read_text(encoding="utf-8")
+    return path.read_text(encoding="utf-8", errors="replace")
 
 
 def _read_current_version() -> str:
@@ -50,7 +50,7 @@ def _read_current_version() -> str:
             for line in _read_utf8(env_file).splitlines():
                 if line.startswith("ODS_VERSION="):
                     return strip_matching_quotes(line.split("=", 1)[1])
-        except OSError:
+        except (OSError, UnicodeDecodeError, ValueError):
             pass
     version_file = Path(INSTALL_DIR) / ".version"
     if version_file.exists():
