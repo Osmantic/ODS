@@ -290,7 +290,7 @@ export const OPERATIONS_REQUIRES_WORKFLOW_REASON =
   "The assistant blocked a fragmented host inventory. Submit exactly one pixel_ops_workflow_submit containing every required ods-host action, then call pixel_ops_job_wait once for that workflow job. Do not submit separate pixel_ops_run jobs.";
 
 export const OPERATIONS_EXTENSION_LIFECYCLE_SEQUENCE_REASON =
-  "The assistant blocked an extension lifecycle shortcut. Submit exactly one ods.extensions.inspect action for the owner's extension ID and wait for its terminal receipt before submitting the requested lifecycle action. Do not combine lifecycle actions in a workflow or continue when inspection reports missing configuration.";
+  "The assistant blocked an extension lifecycle shortcut. Submit exactly one ods.extensions.request-plan action for the owner's requested action and extension ID, then wait for its terminal receipt. Do not inspect, mutate, combine lifecycle actions in a workflow, approve, configure, or execute anything from this assistant route.";
 
 export const OPERATIONS_CONTINUATION_REQUIRES_STATUS_REASON =
   "The assistant blocked a new action while checking an existing immutable Operations plan. Query only the exact owner-supplied job with pixel_ops_job_get or pixel_ops_job_wait; do not resubmit, repeat, approve, or widen the operation.";
@@ -1779,13 +1779,14 @@ function synchronousExtensionObservation(event) {
   if (toolCallFailed(event)) return undefined;
   const params = event?.params;
   const jobId = event?.result?.details?.jobId;
-  if (!params || !["search", "list", "inspect"].includes(params.action) ||
+  if (!params || !["search", "list", "inspect", "request-plan"].includes(params.action) ||
       typeof jobId !== "string" || !OPS_JOB_ID.test(jobId)) return undefined;
   const submission = { jobId, actions: [{
     target: params.target === undefined ? "ods-host" : params.target,
     action: `ods.extensions.${params.action}`,
     parameters: params.action === "search" ? { query: params.query === undefined ? "all" : params.query }
-      : params.action === "inspect" ? { serviceId: params.serviceId } : {},
+      : params.action === "inspect" ? { serviceId: params.serviceId }
+      : params.action === "request-plan" ? { request: params.request } : {},
   }] };
   const outcome = operationsTerminalOutcome(
     { params: { jobId }, result: event.result }, new Map([[jobId, submission]])
@@ -3156,6 +3157,8 @@ function extensionCatalogResult(step, submittedAction) {
 
 const EXTENSION_LIFECYCLE_BOUNDARY =
   "Scoped ODS extension lifecycle proxy; it grants no Docker, shell, credential, arbitrary HTTP, or data-purge authority.";
+const EXTENSION_PLAN_BOUNDARY =
+  "Host-authoritative ODS extension proposal; it performs no lifecycle change, contains no secret names or values, and grants no approval, Docker, shell, credential, or execution authority.";
 const EXTENSION_LIFECYCLE_STATUSES = new Set([
   "enabled", "cli_installed", "disabled", "stopped", "unhealthy",
   "installing", "setting_up", "error", "not_installed", "incompatible",
@@ -3287,6 +3290,110 @@ function extensionLifecycleResult(step, submittedAction) {
     return undefined;
   }
   return { ...value, requiredConfiguration: required, optionalConfiguration: optional, missingConfiguration: missing };
+}
+
+function extensionPlanResult(step, submittedAction) {
+  if (
+    !step ||
+    step.target !== submittedAction?.target ||
+    step.action !== "ods.extensions.request-plan" ||
+    step.action !== submittedAction?.action ||
+    step.stderr.trim() ||
+    step.riskSignals.length > 0 ||
+    typeof step.stdout !== "string" ||
+    step.stdout.length > 256 * 1024 ||
+    !exactKeys(submittedAction?.parameters, ["request"]) ||
+    !/^(?:install|enable|disable|remove):[a-z0-9][a-z0-9-]{0,63}$/.test(
+      submittedAction.parameters.request
+    )
+  ) {
+    return undefined;
+  }
+  let value;
+  try {
+    value = JSON.parse(step.stdout);
+  } catch {
+    return undefined;
+  }
+  if (
+    value?.outcome === "failed" &&
+    exactKeys(value, ["schemaVersion", "kind", "outcome", "request", "externalEffectOccurred", "boundary"]) &&
+    value.schemaVersion === 1 &&
+    value.kind === "ods-pixel-extension-plan" &&
+    value.request === submittedAction.parameters.request &&
+    value.externalEffectOccurred === false &&
+    value.boundary === EXTENSION_PLAN_BOUNDARY
+  ) {
+    return value;
+  }
+  const keys = [
+    "schemaVersion", "kind", "outcome", "requestedAction", "extensionId",
+    "transactionId", "planHash", "state", "validUntil", "selectedExtensions",
+    "impact", "configuration", "warningCount", "rollbackAvailable",
+    "approvalRequired", "executionAvailable", "duplicate",
+    "externalEffectOccurred", "boundary",
+  ];
+  const [requestedAction, extensionId] = submittedAction.parameters.request.split(":", 2);
+  if (
+    !exactKeys(value, keys) ||
+    value.schemaVersion !== 1 ||
+    value.kind !== "ods-pixel-extension-plan" ||
+    value.outcome !== "proposed" ||
+    value.requestedAction !== requestedAction ||
+    value.extensionId !== extensionId ||
+    !/^txn-[0-9a-f]{24}$/.test(value.transactionId) ||
+    !SHA256.test(value.planHash) ||
+    value.state !== "awaiting_approval" ||
+    !/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/.test(value.validUntil) ||
+    typeof value.rollbackAvailable !== "boolean" ||
+    value.approvalRequired !== true ||
+    typeof value.executionAvailable !== "boolean" ||
+    typeof value.duplicate !== "boolean" ||
+    value.externalEffectOccurred !== false ||
+    value.boundary !== EXTENSION_PLAN_BOUNDARY ||
+    !Number.isSafeInteger(value.warningCount) || value.warningCount < 0
+  ) {
+    return undefined;
+  }
+  if (!Array.isArray(value.selectedExtensions) || value.selectedExtensions.length < 1 || value.selectedExtensions.length > 128) {
+    return undefined;
+  }
+  const ids = new Set();
+  for (const item of value.selectedExtensions) {
+    if (
+      !exactKeys(item, ["id", "reason", "plannedAction", "dependencyCount"]) ||
+      !/^(?:[a-z0-9]|[a-z0-9][a-z0-9._-]{0,62}[a-z0-9])$/.test(item.id) || ids.has(item.id) ||
+      !["requested", "capability-provider", "dependency"].includes(item.reason) ||
+      !["noop", "install", "enable", "update", "repair"].includes(item.plannedAction) ||
+      !Number.isSafeInteger(item.dependencyCount) || item.dependencyCount < 0
+    ) {
+      return undefined;
+    }
+    ids.add(item.id);
+  }
+  if (!ids.has(extensionId)) return undefined;
+  const impactKeys = [
+    "cpuMillicores", "dataPathCount", "diskBytes", "downloadBytes", "gpuCount",
+    "hostPortCount", "permissionCount", "ramBytes", "vramBytes",
+  ];
+  if (!exactKeys(value.impact, impactKeys) || impactKeys.some((key) =>
+    !Number.isSafeInteger(value.impact[key]) || value.impact[key] < 0)) {
+    return undefined;
+  }
+  if (
+    !exactKeys(value.configuration, ["required", "requiredFieldCount", "secretsRequired", "requiredSecretCount"]) ||
+    typeof value.configuration.required !== "boolean" ||
+    typeof value.configuration.secretsRequired !== "boolean" ||
+    !Number.isSafeInteger(value.configuration.requiredFieldCount) ||
+    value.configuration.requiredFieldCount < 0 ||
+    !Number.isSafeInteger(value.configuration.requiredSecretCount) ||
+    value.configuration.requiredSecretCount < 0 ||
+    value.configuration.required !== (value.configuration.requiredFieldCount > 0) ||
+    value.configuration.secretsRequired !== (value.configuration.requiredSecretCount > 0)
+  ) {
+    return undefined;
+  }
+  return value;
 }
 
 function operationsContinuationTerminalOutcome(event, continuation) {
@@ -3542,7 +3649,60 @@ function extensionDiscoveryVerification(state) {
   return { status: successes > 0 ? "passed" : "failed", text: evidence.join("\n\n") };
 }
 
+function extensionPlanEvidenceText(requiredActions, terminalJobs) {
+  if (
+    requiredActions.size !== 1 ||
+    !requiredActions.has("ods.extensions.request-plan")
+  ) {
+    return undefined;
+  }
+  const proposalOutcome = lifecycleOutcomeForAction(
+    terminalJobs,
+    "ods.extensions.request-plan"
+  );
+  if (!proposalOutcome) return undefined;
+  if (proposalOutcome.status !== "succeeded") {
+    return `The ODS extension planner job reached terminal status ${proposalOutcome.status}. No plan or lifecycle change was accepted. Job: ${proposalOutcome.jobId}.`;
+  }
+  if (proposalOutcome.steps.length !== 1 || proposalOutcome.actions.length !== 1) {
+    return undefined;
+  }
+  const proposal = extensionPlanResult(
+    proposalOutcome.steps[0],
+    proposalOutcome.actions[0]
+  );
+  if (!proposal) return undefined;
+  if (proposal.outcome === "failed") {
+    return [
+      OPERATIONS_EXTENSION_LIFECYCLE_EVIDENCE_PREFIX,
+      `- Request: \`${proposal.request}\`.`,
+      "- ODS did not issue a transaction proposal for this request; no approval or lifecycle change occurred.",
+      `- Authority: ${EXTENSION_PLAN_BOUNDARY}`,
+      `- Planner job: \`${proposalOutcome.jobId}\`.`,
+    ].join("\n");
+  }
+  const selected = proposal.selectedExtensions.map((item) =>
+    `\`${item.id}\` (${item.reason}, ${item.plannedAction})`).join(", ");
+  const impact = proposal.impact;
+  return [
+    OPERATIONS_EXTENSION_LIFECYCLE_EVIDENCE_PREFIX,
+    `- Requested action: \`${proposal.requestedAction}\` for extension \`${proposal.extensionId}\`.`,
+    `- ODS proposal: transaction \`${proposal.transactionId}\`; exact plan SHA-256 \`${proposal.planHash}\`; state \`${proposal.state}\`; expires \`${proposal.validUntil}\`.`,
+    `- Selected extensions: ${selected}.`,
+    `- Estimated impact: download ${impact.downloadBytes} bytes; disk ${impact.diskBytes} bytes; RAM ${impact.ramBytes} bytes; VRAM ${impact.vramBytes} bytes; CPU ${impact.cpuMillicores} millicores; GPUs ${impact.gpuCount}.`,
+    `- Declared surface counts: host ports ${impact.hostPortCount}; privileged resources ${impact.permissionCount}; data paths ${impact.dataPathCount}; warnings ${proposal.warningCount}.`,
+    `- Configuration required: ${proposal.configuration.required ? `yes (${proposal.configuration.requiredFieldCount} nonsecret field(s))` : "no"}; secret input required: ${proposal.configuration.secretsRequired ? `yes (${proposal.configuration.requiredSecretCount} field(s), names and values withheld)` : "no"}.`,
+    `- Rollback declared for every selected extension: ${proposal.rollbackAvailable ? "yes" : "no"}; execution adapter available: ${proposal.executionAvailable ? "yes" : "no"}.`,
+    "- This is awaiting external owner review and exact-hash approval. The assistant did not approve, configure, execute, or change the extension.",
+    `- Authority: ${EXTENSION_PLAN_BOUNDARY}`,
+    `- Planner job: \`${proposalOutcome.jobId}\`.`,
+  ].join("\n");
+}
+
 function extensionLifecycleEvidenceText(requiredActions, terminalJobs) {
+  if (requiredActions.has("ods.extensions.request-plan")) {
+    return extensionPlanEvidenceText(requiredActions, terminalJobs);
+  }
   const mutationActions = [...requiredActions].filter(
     (action) => action.startsWith("ods.extensions.") && action !== "ods.extensions.inspect"
   );
@@ -3751,7 +3911,10 @@ function operationsEvidenceText(
     lines.push(`- Broker job: \`${outcome.jobId}\`.`);
     return lines.join("\n");
   }
-  if (requiredActions.has("ods.extensions.inspect")) {
+  if (
+    requiredActions.has("ods.extensions.inspect") ||
+    requiredActions.has("ods.extensions.request-plan")
+  ) {
     return extensionLifecycleEvidenceText(requiredActions, terminalJobs);
   }
   if (requiredActions.size !== 1 || !requiredActions.has("ods.extensions.search")) {
@@ -4472,9 +4635,9 @@ export function userMessageExtensionLifecycleIntent(messages, prompt = undefined
   const text = currentOwnerIntentText(messages, prompt);
   if (!text) return undefined;
   const match = text.match(
-    /\b(install|enable|disable|remove|uninstall)\s+(?:the\s+)?(?:(?:installed|existing|enabled|disabled)\s+)?(?:ODS\s+)?extension\s+(?:(?:with\s+)?(?:the\s+)?(?:exact\s+)?id\s+)?[`"']?([a-z0-9](?:[a-z0-9_-]|\.(?=[a-z0-9])){0,63})(?![a-z0-9_-]|\.(?=[a-z0-9]))[`"']?/i
+    /\b(install|enable|disable|remove|uninstall)\s+(?:the\s+)?(?:(?:installed|existing|enabled|disabled)\s+)?(?:ODS\s+)?extension\s+(?:(?:with\s+)?(?:the\s+)?(?:exact\s+)?id\s+)?[`"']?([a-z0-9][a-z0-9-]{0,63})(?![a-z0-9_-]|\.(?=[a-z0-9]))[`"']?/i
   ) ?? text.match(
-    /\b(install|enable|disable|remove|uninstall)\s+(?:the\s+)?[`"']?((?!ODS\b|extension\b)[a-z0-9](?:[a-z0-9_-]|\.(?=[a-z0-9])){0,63})[`"']?\s+(?:as\s+(?:an?\s+)?|(?:as\s+)?the\s+)?(?:ODS\s+)?extension\b/i
+    /\b(install|enable|disable|remove|uninstall)\s+(?:the\s+)?[`"']?((?!ODS\b|extension\b)[a-z0-9][a-z0-9-]{0,63})(?![a-z0-9_-]|\.(?=[a-z0-9]))[`"']?\s+(?:as\s+(?:an?\s+)?|(?:as\s+)?the\s+)?(?:ODS\s+)?extension\b/i
   );
   if (!match) return undefined;
   // Naming the extension before its type is ordinary owner language. It
@@ -4834,8 +4997,7 @@ export function userMessageOperationsRequirements(messages, prompt = undefined) 
   if (extensionInventory) actions.push("ods.extensions.list");
   else if (extensionCatalog) actions.push("ods.extensions.search");
   if (extensionLifecycle) {
-    actions.push("ods.extensions.inspect");
-    actions.push(`ods.extensions.${extensionLifecycle.action}`);
+    actions.push("ods.extensions.request-plan");
   }
   if (hostCommand) actions.push("raw-shell");
   const excludesNetworkLocation = explicitlyExcludesHostObservation(
@@ -7254,6 +7416,25 @@ export function createToolLoopGuard({
         : { params };
     }
     if (
+      state?.operationsExpectedExtensionLifecycle &&
+      effectiveToolName === EXTENSION_READ_TOOL
+    ) {
+      if (state.operationsSubmittedJobs.size > 0) {
+        return {
+          block: true,
+          blockReason: OPERATIONS_EXTENSION_LIFECYCLE_SEQUENCE_REASON,
+        };
+      }
+      const lifecycle = state.operationsExpectedExtensionLifecycle;
+      const params = {
+        action: "request-plan",
+        request: `${lifecycle.action}:${lifecycle.serviceId}`,
+      };
+      return toolName === "tool_call"
+        ? { params: { id: EXTENSION_READ_TOOL, args: params } }
+        : { params };
+    }
+    if (
       (state?.operationsRequired || state?.hostObservationUsed) &&
       (effectiveToolName === "pixel_ops_job_get" || effectiveToolName === "pixel_ops_job_wait")
     ) {
@@ -7567,15 +7748,18 @@ export function createToolLoopGuard({
         };
       }
       if (lifecycle && toolName === "pixel_ops_run") {
-        const permittedLifecycleActions = new Set([
-          "ods.extensions.inspect",
-          `ods.extensions.${lifecycle.action}`,
-        ]);
+        const permittedLifecycleActions = new Set(["ods.extensions.request-plan"]);
+        if (!permittedLifecycleActions.has(params?.action)) {
+          return {
+            block: true,
+            blockReason: OPERATIONS_EXTENSION_LIFECYCLE_SEQUENCE_REASON,
+          };
+        }
         if (permittedLifecycleActions.has(params?.action)) {
           params = {
             target: "ods-host",
             action: params.action,
-            parameters: { serviceId: lifecycle.serviceId },
+            parameters: { request: `${lifecycle.action}:${lifecycle.serviceId}` },
           };
           normalizedParams = params;
           const alreadySubmitted = [...state.operationsSubmittedJobs.values()].some(
@@ -7586,22 +7770,6 @@ export function createToolLoopGuard({
               block: true,
               blockReason: OPERATIONS_EXTENSION_LIFECYCLE_SEQUENCE_REASON,
             };
-          }
-          if (params.action !== "ods.extensions.inspect") {
-            const inspection = parsedLifecycleOutcome(
-              state.operationsTerminalJobs,
-              "ods.extensions.inspect"
-            );
-            if (
-              !inspection ||
-              !["ready", "inspected"].includes(inspection.result.outcome) ||
-              inspection.result.extensionId !== lifecycle.serviceId
-            ) {
-              return {
-                block: true,
-                blockReason: OPERATIONS_EXTENSION_LIFECYCLE_SEQUENCE_REASON,
-              };
-            }
           }
         }
       }

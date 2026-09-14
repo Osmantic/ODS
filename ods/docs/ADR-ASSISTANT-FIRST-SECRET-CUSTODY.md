@@ -65,14 +65,15 @@ secret map returns the original reference. Reusing an idempotency key with
 different values fails. A new idempotency key atomically replaces the prior
 record and produces a new reference, invalidating the previous one.
 
-## Deferred integration
+## Dashboard integration
 
-This phase intentionally does not wire Dashboard request bodies to the host
-agent. The next stacked change must load the plan envelope and expected plan
-hash from the durable `TransactionStore`, validate configuration with the full
-Manifest v2 schema, send secret values directly to this host endpoint, and
-persist only non-secret values plus the opaque reference. It must revalidate the
-reference and all hashes immediately before approval and apply.
+The opt-in production transaction runtime now connects Dashboard's typed
+configuration manager to this host custodian. The manager loads the plan
+envelope and exact plan hash from the durable `TransactionStore`, validates the
+full Manifest v2 configuration schema, sends secret values directly to the
+host endpoint, and persists only non-secret values plus the opaque reference.
+It revalidates the reference and all hashes before approval; the future
+lifecycle adapter must repeat that validation immediately before apply.
 
 Windows and macOS require separate platform-secret-provider, service-management,
 backup, update, and rollback qualification before these routes can be enabled on

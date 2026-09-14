@@ -589,18 +589,19 @@ test("distinguishes live extension state while permitting relevant follow-up dia
   assert.match(result.appendSystemContext, /Installation and configuration changes still require their own authority/);
 });
 
-test("adds a sequential approval-aware contract for extension lifecycle requests", () => {
+test("adds a plan-only approval-aware contract for extension lifecycle requests", () => {
   const event = { prompt: "Install the ODS extension crewai." };
   const result = promptContractForAgent({ agentId: "pixel" }, "pixel", event);
   assert.equal(
     result.appendSystemContext,
     `${ODS_CONVERSATION_CONTRACT} ${ODS_EXTENSION_LIFECYCLE_CONTRACT}`
   );
-  assert.match(result.appendSystemContext, /action ods\.extensions\.inspect/);
-  assert.match(result.appendSystemContext, /Do not combine inspection and mutation/);
-  assert.match(result.appendSystemContext, /missing required configuration/);
-  assert.match(result.appendSystemContext, /never approve it yourself/);
-  assert.match(result.appendSystemContext, /later succeeded receipt proves it/);
+  assert.match(result.appendSystemContext, /pixel_ods_extensions with action request-plan/);
+  assert.match(result.appendSystemContext, /ods\.extensions\.request-plan/);
+  assert.match(result.appendSystemContext, /Never call ods\.extensions\.install/);
+  assert.match(result.appendSystemContext, /Never call .*inspect from this assistant route/);
+  assert.match(result.appendSystemContext, /Never approve, configure, or execute it yourself/);
+  assert.match(result.appendSystemContext, /never present a proposal as completed work/);
 });
 
 test("adds a read-only exact-job continuation contract after external approval", () => {

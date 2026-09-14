@@ -1016,6 +1016,12 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
     OPENAI_API_KEY=$(_env_get OPENAI_API_KEY "${OPENAI_API_KEY:-}")
     TOGETHER_API_KEY=$(_env_get TOGETHER_API_KEY "${TOGETHER_API_KEY:-}")
     MINIMAX_API_KEY=$(_env_get MINIMAX_API_KEY "${MINIMAX_API_KEY:-}")
+    ODS_ASSISTANT_TRANSACTIONS_ENABLED_VALUE=$(_env_get \
+        ODS_ASSISTANT_TRANSACTIONS_ENABLED \
+        "${ODS_ASSISTANT_TRANSACTIONS_ENABLED:-false}")
+    if [[ "${ODS_INSTALL_PROFILE:-legacy}" == "assistant-first" ]]; then
+        ODS_ASSISTANT_TRANSACTIONS_ENABLED_VALUE=true
+    fi
     # Base64-encode GPU assignment JSON for safe .env storage
     if [[ -n "${GPU_ASSIGNMENT_JSON:-}" && "${GPU_ASSIGNMENT_JSON:-}" != "{}" ]]; then
         GPU_ASSIGNMENT_JSON_B64=$(echo "$GPU_ASSIGNMENT_JSON" | jq -c '.' | base64 -w0)
@@ -1040,6 +1046,7 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
 #=== ODS Version (used by ods-cli update for version-compat checks) ===
 ODS_VERSION=${VERSION:-2.6.0}
 ODS_INSTALL_PROFILE=${ODS_INSTALL_PROFILE:-legacy}
+ODS_ASSISTANT_TRANSACTIONS_ENABLED=${ODS_ASSISTANT_TRANSACTIONS_ENABLED_VALUE}
 
 #=== Network Binding ===
 # 127.0.0.1 = localhost only (secure default)

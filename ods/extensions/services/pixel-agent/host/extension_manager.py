@@ -14,6 +14,7 @@ import os
 import pathlib
 import pwd
 import re
+import secrets
 import socket
 import stat
 import struct
@@ -27,6 +28,7 @@ SCHEMA_VERSION = 1
 KIND = "ods-pixel-extension-lifecycle"
 INVENTORY_KIND = "ods-pixel-extension-inventory"
 OPS_STATUS_KIND = "ods-pixel-operations-status"
+PLAN_KIND = "ods-pixel-extension-plan"
 BOUNDARY = (
     "Scoped ODS extension lifecycle proxy; it grants no Docker, shell, "
     "credential, arbitrary HTTP, or data-purge authority."
@@ -38,7 +40,18 @@ INVENTORY_BOUNDARY = (
     "Read-only live ODS extension inventory; it exposes only bounded status metadata "
     "and grants no installation, configuration, credential, Docker, or shell authority."
 )
-ALLOWED_ACTIONS = frozenset({"list", "inspect", "install", "enable", "disable", "remove"})
+PLAN_BOUNDARY = (
+    "Host-authoritative ODS extension proposal; it performs no lifecycle change, "
+    "contains no secret names or values, and grants no approval, Docker, shell, "
+    "credential, or execution authority."
+)
+PLAN_REQUEST = re.compile(
+    r"^(?:install|enable|disable|remove):"
+    r"[a-z0-9][a-z0-9-]{0,63}$"
+)
+ALLOWED_ACTIONS = frozenset(
+    {"list", "inspect", "request-plan", "install", "enable", "disable", "remove"}
+)
 OPS_STATUSES = frozenset(
     {
         "awaiting-approval",
@@ -86,9 +99,14 @@ def _parse_request(payload: bytes) -> tuple[str, str]:
     extension_id = value.get("extensionId")
     if value.get("schemaVersion") != SCHEMA_VERSION or action not in ALLOWED_ACTIONS:
         raise ManagerError("invalid lifecycle request")
-    if not isinstance(extension_id, str) or SERVICE_ID.fullmatch(extension_id) is None:
+    if not isinstance(extension_id, str):
         raise ManagerError("invalid extension id")
-    if (action == "list") != (extension_id == "all"):
+    if action == "request-plan":
+        if PLAN_REQUEST.fullmatch(extension_id) is None:
+            raise ManagerError("invalid extension plan request")
+    elif SERVICE_ID.fullmatch(extension_id) is None:
+        raise ManagerError("invalid extension id")
+    if (action == "list") != (extension_id == "all") and action != "request-plan":
         raise ManagerError("invalid extension inventory request")
     return action, extension_id
 
@@ -276,9 +294,27 @@ def _read_env_key(values: dict[str, str], name: str) -> str:
 
 
 def _request_json(
-    *, port: int, credential: str, method: str, path: str, timeout: float
+    *,
+    port: int,
+    credential: str,
+    method: str,
+    path: str,
+    timeout: float,
+    request_body: dict[str, Any] | None = None,
 ) -> tuple[int, dict[str, Any]]:
     if method not in {"GET", "POST", "DELETE"} or not path.startswith("/api/extensions/"):
+        raise ManagerError("invalid internal ODS request")
+    if request_body is not None and method != "POST":
+        raise ManagerError("invalid internal ODS request")
+    try:
+        encoded_body = json.dumps(
+            {} if request_body is None else request_body,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise ManagerError("invalid internal ODS request") from exc
+    if len(encoded_body) > MAX_REQUEST_BYTES:
         raise ManagerError("invalid internal ODS request")
     connection = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
     response: http.client.HTTPResponse | None = None
@@ -286,7 +322,7 @@ def _request_json(
         connection.request(
             method,
             path,
-            body=b"{}" if method == "POST" else None,
+            body=encoded_body if method == "POST" else None,
             headers={
                 "Authorization": f"Bearer {credential}",
                 "Accept": "application/json",
@@ -451,6 +487,154 @@ def _detail(port: int, credential: str, extension_id: str) -> dict[str, Any]:
     return value
 
 
+def _safe_integer(value: Any) -> int:
+    if type(value) is not int or not 0 <= value <= 2**53 - 1:
+        raise ManagerError("extension plan projection is invalid")
+    return value
+
+
+def _assistant_plan(port: int, credential: str, request: str) -> dict[str, Any]:
+    requested_action, extension_id = request.split(":", 1)
+    status, value = _request_json(
+        port=port,
+        credential=credential,
+        method="POST",
+        path="/api/extensions/transactions/assistant-plan",
+        timeout=60,
+        request_body={
+            "request": request,
+            "idempotencyKey": secrets.token_hex(32),
+        },
+    )
+    expected_keys = {
+        "schema",
+        "transactionId",
+        "planHash",
+        "state",
+        "validUntil",
+        "requested",
+        "selectedExtensions",
+        "impact",
+        "configuration",
+        "warningCount",
+        "rollbackAvailable",
+        "approvalRequired",
+        "executionAvailable",
+        "duplicate",
+    }
+    if status not in {200, 201} or not isinstance(value, dict) or set(value) != expected_keys:
+        raise ManagerError("extension plan is unavailable")
+    if (
+        value["schema"] != "ods.assistant-first.assistant-plan-proposal.v1"
+        or not isinstance(value["transactionId"], str)
+        or re.fullmatch(r"txn-[0-9a-f]{24}", value["transactionId"]) is None
+        or not isinstance(value["planHash"], str)
+        or HEX_KEY.fullmatch(value["planHash"]) is None
+        or value["state"] != "awaiting_approval"
+        or not isinstance(value["validUntil"], str)
+        or re.fullmatch(
+            r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z",
+            value["validUntil"],
+        )
+        is None
+        or value["requested"]
+        != {"action": requested_action, "serviceId": extension_id}
+        or type(value["rollbackAvailable"]) is not bool
+        or value["approvalRequired"] is not True
+        or type(value["executionAvailable"]) is not bool
+        or type(value["duplicate"]) is not bool
+    ):
+        raise ManagerError("extension plan projection is invalid")
+    selected = value["selectedExtensions"]
+    if not isinstance(selected, list) or not 1 <= len(selected) <= 128:
+        raise ManagerError("extension plan projection is invalid")
+    projected = []
+    seen: set[str] = set()
+    for item in selected:
+        if not isinstance(item, dict) or set(item) != {
+            "id",
+            "reason",
+            "plannedAction",
+            "dependencyCount",
+        }:
+            raise ManagerError("extension plan projection is invalid")
+        service_id = item["id"]
+        if (
+            not isinstance(service_id, str)
+            or SERVICE_ID.fullmatch(service_id) is None
+            or service_id in seen
+            or item["reason"] not in {"requested", "capability-provider", "dependency"}
+            or item["plannedAction"]
+            not in {"noop", "install", "enable", "update", "repair"}
+        ):
+            raise ManagerError("extension plan projection is invalid")
+        seen.add(service_id)
+        projected.append({**item, "dependencyCount": _safe_integer(item["dependencyCount"])})
+    if extension_id not in seen:
+        raise ManagerError("extension plan projection is invalid")
+    impact_keys = {
+        "downloadBytes",
+        "diskBytes",
+        "cpuMillicores",
+        "ramBytes",
+        "vramBytes",
+        "gpuCount",
+        "hostPortCount",
+        "permissionCount",
+        "dataPathCount",
+    }
+    impact = value["impact"]
+    if not isinstance(impact, dict) or set(impact) != impact_keys:
+        raise ManagerError("extension plan projection is invalid")
+    safe_impact = {key: _safe_integer(impact[key]) for key in sorted(impact_keys)}
+    configuration = value["configuration"]
+    if not isinstance(configuration, dict) or set(configuration) != {
+        "required",
+        "requiredFieldCount",
+        "secretsRequired",
+        "requiredSecretCount",
+    }:
+        raise ManagerError("extension plan projection is invalid")
+    if (
+        type(configuration["required"]) is not bool
+        or type(configuration["secretsRequired"]) is not bool
+    ):
+        raise ManagerError("extension plan projection is invalid")
+    safe_configuration = {
+        **configuration,
+        "requiredFieldCount": _safe_integer(configuration["requiredFieldCount"]),
+        "requiredSecretCount": _safe_integer(configuration["requiredSecretCount"]),
+    }
+    if (
+        safe_configuration["required"]
+        != (safe_configuration["requiredFieldCount"] > 0)
+        or safe_configuration["secretsRequired"]
+        != (safe_configuration["requiredSecretCount"] > 0)
+    ):
+        raise ManagerError("extension plan projection is invalid")
+    return {
+        "schemaVersion": SCHEMA_VERSION,
+        "kind": PLAN_KIND,
+        "outcome": "proposed",
+        "requestedAction": requested_action,
+        "extensionId": extension_id,
+        "transactionId": value["transactionId"],
+        "planHash": value["planHash"],
+        "state": value["state"],
+        "validUntil": value["validUntil"],
+        "selectedExtensions": projected,
+        "impact": safe_impact,
+        "configuration": safe_configuration,
+        "warningCount": _safe_integer(value["warningCount"]),
+        "rollbackAvailable": value["rollbackAvailable"],
+        "approvalRequired": True,
+        "executionAvailable": value["executionAvailable"],
+        "duplicate": value["duplicate"],
+        "externalEffectOccurred": False,
+        "boundary": PLAN_BOUNDARY,
+    }
+
+
 def _public_result(
     *,
     action: str,
@@ -539,6 +723,8 @@ def _execute(
     credential = _read_env_key(values, "DASHBOARD_API_KEY")
     if action == "list":
         return _extension_inventory(port, credential)
+    if action == "request-plan":
+        return _assistant_plan(port, credential, extension_id)
     before = _detail(port, credential, extension_id)
     previous_status = _bounded_status(before.get("status"))
     required, optional = _configuration_keys(before)
@@ -790,6 +976,15 @@ def _error_result(action: str, extension_id: str) -> dict[str, Any]:
             "extensions": [],
             "boundary": INVENTORY_BOUNDARY,
         }
+    if action == "request-plan":
+        return {
+            "schemaVersion": SCHEMA_VERSION,
+            "kind": PLAN_KIND,
+            "outcome": "failed",
+            "request": extension_id if PLAN_REQUEST.fullmatch(extension_id or "") else "invalid",
+            "externalEffectOccurred": False,
+            "boundary": PLAN_BOUNDARY,
+        }
     return _public_result(
         action=action if action in ALLOWED_ACTIONS else "inspect",
         extension_id=extension_id if SERVICE_ID.fullmatch(extension_id or "") else "invalid",
@@ -892,8 +1087,12 @@ def client(socket_path: pathlib.Path, action: str, extension_id: str) -> int:
     if (
         socket_path != pathlib.Path("/run/ods-pixel-manager/extension-manager.sock")
         or action not in ALLOWED_ACTIONS
-        or SERVICE_ID.fullmatch(extension_id) is None
-        or (action == "list") != (extension_id == "all")
+        or (
+            PLAN_REQUEST.fullmatch(extension_id) is None
+            if action == "request-plan"
+            else SERVICE_ID.fullmatch(extension_id) is None
+        )
+        or ((action == "list") != (extension_id == "all") and action != "request-plan")
     ):
         raise ManagerError("invalid lifecycle client request")
     request = {
@@ -920,7 +1119,13 @@ def client(socket_path: pathlib.Path, action: str, extension_id: str) -> int:
         value = json.loads(bytes(chunks[:-1]).decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ManagerError("invalid lifecycle manager response") from exc
-    expected_kind = INVENTORY_KIND if action == "list" else KIND
+    expected_kind = (
+        INVENTORY_KIND
+        if action == "list"
+        else PLAN_KIND
+        if action == "request-plan"
+        else KIND
+    )
     if (
         not isinstance(value, dict)
         or value.get("schemaVersion") != SCHEMA_VERSION
