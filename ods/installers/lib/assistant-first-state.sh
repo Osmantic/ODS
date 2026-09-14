@@ -163,6 +163,9 @@ ods_assistant_first_prepare_state_directories() {
     _ods_assistant_first_preflight_existing_directory \
         "$data_root/assistant-first/resource-reservations" \
         "Assistant First resource reservation directory" || return 1
+    _ods_assistant_first_preflight_existing_directory \
+        "$data_root/assistant-first/application-state" \
+        "Assistant First application state directory" || return 1
 
     _ods_assistant_first_prepare_private_directory \
         "$data_root/assistant-first" \
@@ -175,6 +178,10 @@ ods_assistant_first_prepare_state_directories() {
     _ods_assistant_first_prepare_private_directory \
         "$data_root/assistant-first/resource-reservations" \
         "Assistant First resource reservation directory" \
+        "$expected_uid" || return 1
+    _ods_assistant_first_prepare_private_directory \
+        "$data_root/assistant-first/application-state" \
+        "Assistant First application state directory" \
         "$expected_uid" || return 1
     _ods_assistant_first_prepare_private_directory \
         "$data_root/.extension-operation-locks" \

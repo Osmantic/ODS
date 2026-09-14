@@ -76,7 +76,10 @@ _VALID_STATES = frozenset({
     "exited", "dead",
 })
 _VALID_HEALTH = frozenset({"healthy", "unhealthy", "starting", "no_healthcheck"})
-_VALID_ACTIONS = frozenset({"install", "update"})
+# Every non-noop ensure action reaches the same apply boundary.  Persisting only
+# install/update would make legitimate enable/repair mutations unobservable to
+# restart recovery even though the identity and planner contracts accept them.
+_VALID_ACTIONS = frozenset({"install", "enable", "repair", "update"})
 _SUPPORTED_TOPOLOGY = "docker"
 
 # ---------------------------------------------------------------------------

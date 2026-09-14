@@ -88,7 +88,9 @@ def _definition(service_id: str, compose: str | None = COMPOSE_SHA) -> dict:
     }
 
 
-def _transaction(state: str, definitions: list[dict]) -> dict:
+def _transaction(
+    state: str, definitions: list[dict], action: str = ACTION
+) -> dict:
     return {
         "transactionId": TRANSACTION_ID,
         "state": state,
@@ -102,7 +104,7 @@ def _transaction(state: str, definitions: list[dict]) -> dict:
             "plan": {
                 "selectedServices": [d["id"] for d in definitions],
                 "operations": [
-                    {"serviceId": d["id"], "action": ACTION} for d in definitions
+                    {"serviceId": d["id"], "action": action} for d in definitions
                 ],
                 "definitions": definitions,
             },
@@ -138,13 +140,14 @@ def _bound_command(
     service_ids: list[str] | None = None,
     payload: dict | None = None,
     compose: str | None = COMPOSE_SHA,
+    action: str = ACTION,
 ) -> lifecycle_work.LifecycleWorkCommand:
     if service_ids is None:
         service_ids = [SERVICE_ID]
     if payload is None:
-        payload = {"operation": {"serviceId": service_ids[0], "action": ACTION}}
+        payload = {"operation": {"serviceId": service_ids[0], "action": action}}
     definitions = [_definition(s, compose) for s in service_ids]
-    tx = _transaction("applying", definitions)
+    tx = _transaction("applying", definitions, action)
     cmd = _command(operation_key, service_ids, payload)
     return lifecycle_plan.bind_lifecycle_plan(cmd, tx)
 
@@ -1507,6 +1510,35 @@ def test_every_active_record_identity_field_is_bound(field: str, value: str):
     assert exc.value.code == f"record-binding-mismatch-{field}"
 
 
+def test_complete_canonical_record_from_another_application_is_rejected():
+    cmd = _bound_command()
+    identity = app_id.produce_application_identity(cmd)
+    record = _build_canonical_record(identity)
+    record.update(
+        {
+            "version": "9.9.9",
+            "transaction_id": "txn-" + "f" * 24,
+            "plan_sha256": "f" * 64,
+            "request_sha256": "e" * 64,
+            "identity_sha256": "d" * 64,
+        }
+    )
+    substituted = _recompute_record(record)
+    evidence = _build_evidence(
+        record=substituted,
+        def_digest=identity.definition_sha256,
+        compose_digest=identity.compose_sha256,
+        config_digest=CONFIG_SHA,
+        containers=tuple(_container_observation(name) for name in CONTAINER_NAMES),
+        snapshot=_started_snapshot(identity),
+    )
+
+    with pytest.raises(obs_mod.ApplicationObservationError) as exc:
+        obs_mod.observe_application(cmd, evidence)
+
+    assert exc.value.code == "record-binding-mismatch-version"
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
@@ -1620,6 +1652,29 @@ def test_active_record_bytes_are_canonical_and_duplicate_safe():
     with pytest.raises(obs_mod.ApplicationObservationError) as exc:
         obs_mod.parse_active_record(duplicate)
     assert exc.value.code == "record-duplicate-key"
+
+
+@pytest.mark.parametrize("action", ["install", "enable", "repair", "update"])
+def test_active_record_supports_every_apply_action(action: str):
+    command = _bound_command(action=action)
+    identity = app_id.produce_application_identity(command)
+    raw = obs_mod.produce_active_record(
+        identity,
+        CONFIG_SHA,
+        tuple(sorted(CONTAINER_NAMES)),
+    )
+    assert obs_mod.parse_active_record(raw)["action"] == action
+
+
+def test_active_record_rejects_noop_action():
+    invalid = replace(_get_identity(), action="noop")
+    with pytest.raises(obs_mod.ApplicationObservationError) as exc:
+        obs_mod.produce_active_record(
+            invalid,
+            CONFIG_SHA,
+            tuple(sorted(CONTAINER_NAMES)),
+        )
+    assert exc.value.code == "record-identity-invalid"
 
 
 def test_active_record_parser_rejects_noncanonical_and_nonbytes():

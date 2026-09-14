@@ -333,6 +333,41 @@ noncanonical or oversized bytes. This contract remains pure and dormant: no
 host probe, active-record writer, Docker invocation, transaction observer, or
 production executor is enabled in this phase.
 
+A dormant fixed-root active-application record store now provides the
+owner-private persistence layer for the canonical records produced and parsed
+by the application-observation contract.  One canonical snapshot file lives in
+the pre-created `data/assistant-first/application-state` directory, protected
+by a cross-process exclusive root lock.  Records are bounded in number, sorted
+by `service_id`, and keyed by exact `record_sha256`. Public reads return the
+complete immutable active record, not a digest-only projection. Public
+operations support strict read, create with exact replay,
+compare-and-replace by prior `record_sha256`, and compare-and-delete by exact
+`record_sha256`; deleting an already absent service returns a proven `absent`
+observation rather than claiming another mutation. The primary `publish` path
+accepts the exact plan-bound `LifecycleWorkCommand`
+plus config digest and expected containers and calls existing
+application-identity/active-record producers; it never trusts a caller-
+fabricated dict. It persists all four non-noop apply actions the planner can
+emit: `install`, `enable`, `repair`, and `update`. Divergence, stale compare
+values, malformed state, partial state, and unresolved I/O ambiguity all fail
+closed with stable value-free codes. Results are frozen typed dataclasses with
+explicit created/replayed/replaced/removed/absent outcomes; no paths,
+configuration, or supplied bad values leak through.
+
+The store is Linux/POSIX-only with controlled platform-unsupported failure on
+non-POSIX hosts.  The snapshot file enforces exact euid/mode 0600/nlink 1/
+bounded size, rejects duplicate keys and noncanonical JSON, uses unpredictable
+O_EXCL temp names, complete write with fsync, identity recheck, atomic
+`os.replace` under the held root lock, root fsync, and exact post-replace
+readback.  A crash before replace leaves old state; after replace leaves the
+complete new snapshot.  No fsync or response ambiguity is reported as definite
+success without exact post-state proof and a successful root-directory fsync;
+a replace that completed before an exception is reconciled only when that
+durability and exact-state proof succeeds. Mutating inputs are cloned and
+revalidated before locking. The store does not wire Docker, Compose, host
+probes, the Dashboard transaction executor, installation, or runtime service
+mutation.
+
 ## Evidence boundary
 
 The source contract checks resolver ordering, the exact candidate service set,
