@@ -1607,3 +1607,16 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+class TestNumericExponentialDecaySafe:
+    def test_valid_exponential_decay(self):
+        from helpers import numeric_exponential_decay_safe
+        res = numeric_exponential_decay_safe(100, 0.1, 10)
+        assert 35.0 < res < 37.0
+
+    def test_invalid_and_bounds(self):
+        from helpers import numeric_exponential_decay_safe
+        assert numeric_exponential_decay_safe(None, 0.1, 5) == 0.0
+        assert numeric_exponential_decay_safe(100, float("nan"), 5, min_val=1.0) == 1.0
+
