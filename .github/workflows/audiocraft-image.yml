@@ -1,0 +1,31 @@
+name: AudioCraft image contract
+
+on:
+  pull_request:
+    paths:
+      - 'ods/extensions/library/services/audiocraft/**'
+      - 'ods/tests/test-audiocraft-image.py'
+      - 'ods/tests/test-audiocraft-compose.py'
+      - '.github/workflows/audiocraft-image.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: Verify the resolved application configuration
+        run: |
+          python3 -m pip install PyYAML==6.0.3
+          python3 ods/tests/test-audiocraft-compose.py
+      - name: Build the shipped dependency set
+        run: docker build -t ods-audiocraft-check ods/extensions/library/services/audiocraft
+      - name: Verify imports, Gradio routes and audio output without model weights
+        run: |
+          docker run --rm --network none -e GRADIO_ANALYTICS_ENABLED=False \
+            -v "$PWD/ods/tests/test-audiocraft-image.py:/tmp/smoke.py:ro" \
+            --entrypoint python ods-audiocraft-check /tmp/smoke.py
