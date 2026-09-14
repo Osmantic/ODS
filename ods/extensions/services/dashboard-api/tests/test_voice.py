@@ -95,3 +95,16 @@ class TestVoiceStatus:
         result = await voice_status(api_key="test")
 
         assert result["available"] is True
+
+    @pytest.mark.asyncio
+    async def test_handles_health_check_exception_resilience(self, monkeypatch):
+        async def mock_fail(*args, **kwargs):
+            raise RuntimeError("Check failed")
+
+        monkeypatch.setattr("config.SERVICES", _services("whisper", "tts"))
+        monkeypatch.setattr("helpers.check_service_health", mock_fail)
+
+        result = await voice_status(api_key="test")
+        assert result["available"] is False
+        assert result["services"]["stt"]["status"] == "unavailable"
+

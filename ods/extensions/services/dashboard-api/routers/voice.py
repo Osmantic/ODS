@@ -56,13 +56,14 @@ async def voice_status(api_key: str = Depends(verify_api_key)):
     # An uninstalled optional service is not a failure, so it sits out the
     # verdict. Everything that IS installed still has to be healthy.
     required_healthy = all(
-        services_status.get(name, {}).get("status") == "healthy"
+        isinstance(services_status.get(name), dict)
+        and services_status.get(name, {}).get("status") == "healthy"
         for name in REQUIRED_VOICE_SERVICES
     )
     installed_healthy = all(
-        entry["status"] == "healthy"
+        entry.get("status") == "healthy"
         for entry in services_status.values()
-        if entry["status"] != NOT_CONFIGURED
+        if isinstance(entry, dict) and entry.get("status") != NOT_CONFIGURED
     )
     all_healthy = required_healthy and installed_healthy
 
