@@ -672,7 +672,7 @@ def test_adapter_is_the_only_new_dormant_importer_and_production_stays_disabled(
         in path.read_text(encoding="utf-8")
     }
 
-    assert importers == set()
+    assert importers == {"extension_lifecycle_work_client.py"}
     assert "extension_receipted_lifecycle_adapter" not in production
     assert "executor=None" in production
     for forbidden in (

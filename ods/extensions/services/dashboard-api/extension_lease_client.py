@@ -20,7 +20,7 @@ from host_agent_client import (
     AgentProtocolError,
     AgentTimeout,
     AgentUnavailable,
-    request_bounded_json_200,
+    request_bounded_strict_json_200,
 )
 
 LEASE_SCHEMA = "ods.extension-operation-lease.v1"
@@ -262,6 +262,34 @@ def _validate_grant(
     return grant.binding, lease_id, token, service_ids
 
 
+def _lease_authorization_payload(
+    grant: LeaseGrant,
+    binding: ExecutionBinding,
+    required_service_ids: Iterable[str],
+) -> dict[str, str]:
+    """Return one ephemeral host authorization payload for an exact grant.
+
+    This internal seam is intentionally narrower than exposing the lease token
+    on ``LeaseGrant``.  Lifecycle transports can submit the credential without
+    copying it into a public result, representation, journal, or receipt.
+    """
+
+    _validate_binding(binding)
+    required = _canonical_service_ids(required_service_ids)
+    grant_binding, lease_id, token, granted = _validate_grant(grant)
+    if grant_binding != binding or any(
+        service_id not in granted for service_id in required
+    ):
+        _fail("lease-binding-mismatch")
+    return {
+        "schema": LEASE_SCHEMA,
+        "leaseId": lease_id,
+        "leaseToken": token,
+        "transactionId": binding.transaction_id,
+        "planHash": binding.plan_hash,
+    }
+
+
 def _error_code(error: AgentHTTPError) -> str | None:
     try:
         value = json.loads(error.detail)
@@ -324,7 +352,8 @@ class ExtensionLeaseClient:
     """Call fixed host lease routes without persisting or logging credentials."""
 
     def __init__(
-        self, requester: Callable[..., dict[str, Any]] = request_bounded_json_200
+        self,
+        requester: Callable[..., dict[str, Any]] = request_bounded_strict_json_200,
     ) -> None:
         self._request = requester
 

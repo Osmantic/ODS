@@ -163,6 +163,19 @@ mutation batches are receiptless no-ops. Production still has no adapter
 importer and retains `executor=None`; host mutation and observation adapters
 remain required before activation.
 
+Phase 5G-F adds the dormant synchronous Dashboard-side host-work client that
+can satisfy the receipt-bound adapter's worker seam. It accepts only a typed,
+hash-recomputed request from the closed lifecycle operation set, verifies that
+the in-memory transaction lease covers every requested service, and submits
+the credential only to the fixed `/v1/extension/lifecycle-work` route. The
+transport requires HTTP 200 with bounded, duplicate-free strict JSON and an
+exact terminal binding before returning only the evidence hash; HTTP 202,
+timeouts, protocol failures, unexpected responses, and server failures are
+classified as possible mutation rather than success. Operation timeouts are a
+closed client policy, not caller input. The client has no retry, persistence,
+logging, host route implementation, or production importer, so execution
+remains disabled until the host work and durable observation boundaries exist.
+
 All selected services are locked in canonical order before the final
 provenance check and before lifecycle work. Artifacts are downloaded and
 verified before apply. The first pre-transaction backup is replay-safe,

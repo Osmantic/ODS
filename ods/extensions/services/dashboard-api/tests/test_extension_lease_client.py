@@ -292,6 +292,38 @@ def test_default_transport_rejects_http_202_as_ambiguous(monkeypatch) -> None:
         client.close()
 
 
+@pytest.mark.parametrize(
+    "content,content_type",
+    [
+        (b'{"schema":"x","schema":"y"}', "application/json"),
+        (b'{"schema":"x"} trailing', "application/json"),
+        (b"\xff", "application/json"),
+        (b"{}", "text/plain"),
+    ],
+)
+def test_default_transport_rejects_ambiguous_wire_payloads(
+    monkeypatch, content, content_type
+) -> None:
+    client = httpx.Client(
+        base_url="http://agent",
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(
+                200,
+                content=content,
+                headers={"content-type": content_type},
+            )
+        ),
+    )
+    monkeypatch.setattr(agent_client, "_sync_client", client)
+    try:
+        with pytest.raises(ExtensionLeaseError) as caught:
+            ExtensionLeaseClient().acquire(BINDING, SERVICE_IDS)
+        assert caught.value.code == "lease-operation-ambiguous"
+        assert caught.value.ambiguous is True
+    finally:
+        client.close()
+
+
 def test_client_has_no_logging_persistence_or_runtime_wiring() -> None:
     source_root = Path(__file__).resolve().parents[1]
     module = source_root / "extension_lease_client.py"
@@ -314,6 +346,7 @@ def test_client_has_no_logging_persistence_or_runtime_wiring() -> None:
         and "extension_lease_client" in path.read_text(encoding="utf-8")
     }
     assert importers == {
+        "extension_lifecycle_work_client.py",
         "extension_lease_lock_factory.py",
         "extension_lease_renewer.py",
         "extension_receipted_lifecycle_adapter.py",
