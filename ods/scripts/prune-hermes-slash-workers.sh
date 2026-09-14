@@ -137,9 +137,9 @@ collect_workers() {
     return 1
 }
 
-WORKERS_FILE="$(mktemp)"
-CANDIDATES_FILE="$(mktemp)"
-OVERAGE_FILE="$(mktemp)"
+WORKERS_FILE="$(mktemp -t hermes-workers.XXXXXX 2>/dev/null || mktemp)"
+CANDIDATES_FILE="$(mktemp -t hermes-candidates.XXXXXX 2>/dev/null || mktemp)"
+OVERAGE_FILE="$(mktemp -t hermes-overage.XXXXXX 2>/dev/null || mktemp)"
 trap 'rm -f "$WORKERS_FILE" "$CANDIDATES_FILE" "$OVERAGE_FILE"' EXIT
 
 collect_workers > "$WORKERS_FILE"
