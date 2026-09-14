@@ -118,17 +118,21 @@ volumes:
     command = compose_command(directory, "-p", project, "-f", str(overlay))
 
     def run(*args, **kwargs):
-        return subprocess.run(args, env=environment, capture_output=True, text=True,
-                              check=True, timeout=1000, **kwargs)
+        result = subprocess.run(args, env=environment, capture_output=True, text=True,
+                                stdin=subprocess.DEVNULL, timeout=1000, **kwargs)
+        assert result.returncode == 0, result.stdout + result.stderr
+        return result
 
     try:
         run(*command, "up", "-d", "--no-deps", "--wait", "--wait-timeout", "120", ML_SERVICE)
-        first = run("docker", "exec", "-i", container, "python", "-c", _INFERENCE_PROBE)
+        first = run("docker", "exec", container, "python", "-c", _INFERENCE_PROBE)
         print("CPU inference:", first.stdout.strip())
         run(*command, "up", "-d", "--no-deps", "--force-recreate", "--wait", "--wait-timeout", "120", ML_SERVICE)
         # Docker exec still reaches loopback after external connectivity is removed.
         run("docker", "network", "disconnect", network, container)
-        repeated = run("docker", "exec", "-i", container, "python", "-c", _INFERENCE_PROBE)
+        repeated = run("docker", "exec", container, "python", "-c", _INFERENCE_PROBE)
         print("Offline after recreation:", repeated.stdout.strip())
     finally:
+        logs = subprocess.run(["docker", "logs", container], capture_output=True, text=True, timeout=20)
+        print("Worker diagnostics:", logs.stdout, logs.stderr)
         run(*command, "down", "--volumes", "--timeout", "15")
