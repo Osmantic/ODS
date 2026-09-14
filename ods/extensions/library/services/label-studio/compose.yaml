@@ -1,12 +1,13 @@
 services:
   label-studio:
-    image: heartexlabs/label-studio:1.22.0
+    image: heartexlabs/label-studio:1.22.0@sha256:86b4e8046e83a16290cb2d1046f0fa94a4c98fdb9c8d42711808f18e25d47be2
     container_name: ods-label-studio
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
     environment:
       - LABEL_STUDIO_LOCAL_FILES_SERVING_ENABLED=true
+      - LABEL_STUDIO_LOCAL_FILES_DOCUMENT_ROOT=/label-studio/upload
       - LABEL_STUDIO_DATA_ROOT=/label-studio/data
       - LABEL_STUDIO_STATIC_ASSETS_ROOT=/label-studio/www
       - LABEL_STUDIO_UPLOAD_DIR=/label-studio/upload
