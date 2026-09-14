@@ -1,0 +1,29 @@
+services:
+  vaultwarden:
+    image: vaultwarden/server:1.33.2
+    container_name: ods-vaultwarden
+    restart: unless-stopped
+    security_opt: [no-new-privileges:true]
+    environment:
+      SIGNUPS_ALLOWED: ${SIGNUPS_ALLOWED:-false}
+      WEBSOCKET_ENABLED: "true"
+      DATA_FOLDER: "/data"
+    volumes:
+      - ./data/vaultwarden:/data
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${VAULTWARDEN_PORT:-7840}:80"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:80/alive"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks: [ods-network]
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+networks:
+  ods-network:
+    external: true
