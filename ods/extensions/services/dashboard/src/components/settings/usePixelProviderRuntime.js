@@ -60,7 +60,7 @@ export default function usePixelProviderRuntime({ savedRevision, saving, blocked
     setStale(true)
     setError(null)
     setNotice(null)
-    setStage(operation === 'inspect' ? 'Inspecting current Pixel runtime…' : 'Waiting for the provider controller. Pixel may restart…')
+    setStage(operation === 'inspect' ? 'Inspecting current assistant runtime…' : 'Waiting for the provider controller. The assistant may restart…')
     let controllerReplied = false
     try {
       let outcome

@@ -518,8 +518,8 @@ function AppearanceCard({ theme, themes, labels, onThemeChange, className = '', 
   const {wallpapers = WALLPAPERS} = useTheme()
   return (
     <PremiumCard className={`p-5 lg:p-6 ${className}`}>
-      {showHeading && <CardIntro icon={Palette} title="Appearance" description="Pixel’s minimal interface is shared across ODS." />}
-      <div className="wallpaper-intro"><h3>Make it yours</h3><p>Pixel by default. A different atmosphere when you want it.</p></div>
+      {showHeading && <CardIntro icon={Palette} title="Appearance" description="The assistant’s minimal interface is shared across ODS." />}
+      <div className="wallpaper-intro"><h3>Make it yours</h3><p>ODS by default. A different atmosphere when you want it.</p></div>
       <div className="wallpaper-gallery" aria-label="Workspace themes">
         {themes.map(themeId => (
           <button

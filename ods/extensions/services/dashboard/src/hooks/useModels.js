@@ -396,7 +396,7 @@ export function useModels() {
           if (body?.detail?.code === 'pixel_chat_active') {
             activationError = errorMessageFromPayload(
               body,
-              'Pixel is working. Stop the active response before changing models.'
+              'The assistant is working. Stop the active response before changing models.'
             )
             return
           }

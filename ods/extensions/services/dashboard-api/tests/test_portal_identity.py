@@ -23,12 +23,16 @@ def identity_stack(actual_stack):  # noqa: F811
 
 
 @pytest.mark.parametrize('raw,expected', [
-    ('', 'Portal'), ('   ', 'Portal'), ('\u00a0', 'Portal'), (' Nova ', 'Nova'),
+    ('', 'Assistant'), ('   ', 'Assistant'), ('\u00a0', 'Assistant'), (' Nova ', 'Nova'),
     ('Cafe\u0301', 'Café'), ('👩\u200d💻', '👩\u200d💻'), ('  ' + 'A' * 60 + '  ', 'A' * 60),
     ('<img src=x onerror=alert(1)>', '<img src=x onerror=alert(1)>'),
 ])
 def test_normalizes_display_text_only(raw, expected):
     assert normalize_name(raw) == expected
+
+
+def test_historical_portal_name_remains_valid_owner_data():
+    assert normalize_document({'schemaVersion': 1, 'revision': 4, 'displayName': 'Portal'})['displayName'] == 'Portal'
 
 
 @pytest.mark.parametrize('raw', [None, True, 1, [], {}, 'x' * 61, ' ' * 241,
@@ -76,7 +80,7 @@ def test_actual_save_fresh_read_reset_conflict_and_separate_storage(identity_sta
     assert stale.status_code == 409
     assert client.get('/api/pixel/identity').json() == saved.json()
     reset = client.post('/api/pixel/identity/save', json={'expectedRevision': 1, 'displayName': ''})
-    assert reset.status_code == 200 and reset.json()['displayName'] == 'Portal'
+    assert reset.status_code == 200 and reset.json()['displayName'] == 'Assistant'
     assert reset.json()['revision'] == 2
     assert handler.posts == 3
     assert json.loads((tmp_path / 'pixel-providers/portal-identity.json').read_bytes()) == reset.json()

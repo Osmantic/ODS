@@ -140,7 +140,7 @@ export default function PixelAdviceRuntime({ onReadyChange, title = 'Advisory ru
     <p className="text-xs">This is the ODS service host, not necessarily the device displaying this browser. Setup never changes your leader or execution permissions.</p>
     {error && <p role="alert" className="text-amber-400">{error}</p>}
     <button type="button" className={button} onClick={refresh}>Refresh runtime readiness</button>
-    {readiness?.status === 'not-configured' && <p>Save Pixel provider settings first. No runtime storage has been created.</p>}
+    {readiness?.status === 'not-configured' && <p>Save assistant connection settings first. No runtime storage has been created.</p>}
     {readiness?.status === 'unsupported' && <p>Guided private-runtime setup is not available on this platform. No installation was attempted.</p>}
     {readiness && ['missing', 'drift'].includes(readiness.status) && <>
       <label className="block">Python on {readiness.host}<select className="mt-1 w-full rounded border border-theme-border bg-theme-bg p-2" value={selected} onChange={event => { setSelected(event.target.value); setConsent(false) }} disabled={!!busy}>

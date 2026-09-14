@@ -39,7 +39,7 @@ function transport(phase) {
 async function start() {
   const mounted = render(<Pixel/>)
   await screen.findByText('Available')
-  fireEvent.change(screen.getByPlaceholderText('Message Portal...'), {target:{value:'Keep working until I stop'}})
+  fireEvent.change(screen.getByPlaceholderText('Message Assistant...'), {target:{value:'Keep working until I stop'}})
   fireEvent.click(screen.getByTitle('Send'))
   await screen.findByTitle('Stop')
   return mounted
@@ -53,7 +53,7 @@ it.each(['headers','body'])('makes Stop retryable after a stalled %s without dis
   await act(async()=>{})
   expect(screen.getByTitle('Stopping')).toBeDisabled()
   await act(async()=>{await vi.advanceTimersByTimeAsync(15000)})
-  expect(screen.getByText('Stop was not confirmed. Pixel is still connected; retry Stop.')).toBeInTheDocument()
+  expect(screen.getByText('Stop was not confirmed. The assistant is still connected; retry Stop.')).toBeInTheDocument()
   expect(cancelSignal.aborted).toBe(true)
   expect(streamSignal.aborted).toBe(false)
   expect(screen.queryByText('Response stopped')).toBeNull()

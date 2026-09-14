@@ -200,8 +200,8 @@ async function readVerificationRun(req) {
 
 export default definePluginEntry({
   id: "pixel-ods",
-  name: "Pixel ODS Integration",
-  description: "Read-only ODS status and strictly guarded public-page evidence for Pixel.",
+  name: "ODS Assistant Integration",
+  description: "Read-only ODS status and strictly guarded public-page evidence for the ODS assistant.",
   register(api) {
     execCancellationControl ??= createExecCancellationControl({
       executionHost: executionHostForAgent(api.config, AGENT_ID),

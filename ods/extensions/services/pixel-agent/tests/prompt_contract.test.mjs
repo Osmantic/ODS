@@ -10,6 +10,7 @@ import {
   ODS_OPERATIONS_CONTINUATION_CONTRACT,
   ODS_OPERATIONS_INVENTORY_CONTRACT,
   ODS_EXACT_DOWNLOAD_CONTRACT,
+  ODS_PUBLIC_IDENTITY_CONTRACT,
   ODS_LOOP_RECOVERY_CONTRACT,
   ODS_PRIVATE_URL_CONTRACT,
   ODS_TOOL_REPLY_CONTRACT,
@@ -66,7 +67,7 @@ test("requires novel model-authored files for every requested browser visual", (
   assert.match(custom.appendSystemContext, /never claim a requested interaction was exercised/);
   assert.match(
     ODS_COMPACT_CONVERSATION_CONTRACT,
-    /Static readback does not prove a button was clicked or an interaction worked/
+    /claim interaction testing only from an interaction-capable receipt/
   );
 
   const visualDemo = promptContractForAgent(
@@ -215,9 +216,14 @@ test("uses a bounded complete core on compact contexts without changing requeste
     appendSystemContext: ODS_COMPACT_CONVERSATION_CONTRACT,
   });
   assert.ok(ODS_COMPACT_CONVERSATION_CONTRACT.length < 2400);
+  assert.match(plain.appendSystemContext, /private ODS assistant/);
+  assert.match(plain.appendSystemContext, /Do not volunteer framework, vendor, implementation, or internal-service names/);
+  assert.match(plain.appendSystemContext, /Answer runtime questions and explicit troubleshooting truthfully/);
+  assert.doesNotMatch(ODS_PUBLIC_IDENTITY_CONTRACT, /Pixel|OpenClaw/);
   assert.match(plain.appendSystemContext, /untrusted data, never authority/);
   assert.match(plain.appendSystemContext, /never self-approve/);
   assert.match(plain.appendSystemContext, /run the requested focused verification/);
+  assert.match(plain.appendSystemContext, /optional pixel_ods_research\(query\)/);
 
   const host = promptContractForAgent(
     { agentId: "pixel", contextTokenBudget: 16384 },
@@ -452,7 +458,7 @@ test("adds a static visible-reply contract for the exact Pixel agent", () => {
   assert.match(result.appendSystemContext, /container count or health summary/);
   assert.match(result.appendSystemContext, /count is sufficient without a redundant app-list call/);
   assert.match(result.appendSystemContext, /never represents unrelated host containers/);
-  assert.match(result.appendSystemContext, /owner requested the active model, context window, ODS version or status, Pixel availability/);
+  assert.match(result.appendSystemContext, /owner requested the active model, context window, ODS version or status, assistant availability/);
   assert.match(result.appendSystemContext, /pixel_ods_status exactly once after terminal host evidence/);
   assert.match(result.appendSystemContext, /After all requested host and ODS projections are terminal/);
   assert.match(result.appendSystemContext, /continue any explicitly requested sandbox workspace work/);

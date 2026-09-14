@@ -139,7 +139,7 @@ function App() {
       <main className="pixel-workspace dashboard-market-shell portal-workspace flex-1 transition-all duration-200">
         <div className="portal-chat">
           {status?.bootstrap?.active && <BootstrapBanner bootstrap={status.bootstrap} />}
-          <Suspense fallback={<p className="p-6 text-theme-text-muted">Opening Pixel…</p>}><Pixel systemStatus={status} /></Suspense>
+          <Suspense fallback={<p className="p-6 text-theme-text-muted">Opening assistant…</p>}><Pixel systemStatus={status} /></Suspense>
         </div>
         {panelOpen && <aside style={{'--portal-panel-width':`${panelWidth}px`}} className={`portal-side-panel ${panelCollapsed ? 'is-collapsed' : ''}`} aria-label="Workspace panel">
           {!panelCollapsed && <PanelResizeHandle width={panelWidth} onResize={setPanelWidth} />}

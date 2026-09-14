@@ -74,7 +74,7 @@ test('provider creation fields are protected before Add, and successful save rel
   expect(unloadBlocked()).toBe(false)
 })
 
-test('Pixel preferences keep the warning after a failed save and release it after explicit Cancel', async () => {
+test('Assistant preferences keep the warning after a failed save and release it after explicit Cancel', async () => {
   vi.stubGlobal('fetch', vi.fn(async (_url, options) => options.method === 'POST'
     ? { ok: false, status: 503 }
     : response({ schemaVersion: 1, revision: 0, preferences: {} },
@@ -85,9 +85,9 @@ test('Pixel preferences keep the warning after a failed save and release it afte
   expect(unloadBlocked()).toBe(false)
   fireEvent.change(field, { target: { value: 'stream' } })
   expect(unloadBlocked()).toBe(true)
-  fireEvent.click(screen.getByRole('button', { name: 'Save Pixel preferences' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Save assistant preferences' }))
   await screen.findByRole('alert')
   expect(unloadBlocked()).toBe(true)
-  fireEvent.click(screen.getByRole('button', { name: 'Cancel Pixel edits' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Cancel assistant edits' }))
   expect(unloadBlocked()).toBe(false)
 })

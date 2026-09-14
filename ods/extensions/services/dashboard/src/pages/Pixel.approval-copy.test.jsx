@@ -5,6 +5,7 @@ const jobId='ops-1788127319657-f3262c99a419'
 const planHash='e'.repeat(64)
 const command='/opt/ods/bin/ods-pixel-approve '+jobId+' '+planHash+' --confirm'
 const content='Pixel prepared a protected ODS host command plan, but external approval is required. No command was executed. Job: '+jobId+'. Plan SHA-256: '+planHash+'.'
+const odsContent='ODS prepared a protected ODS host command plan, but external approval is required. No command was executed. Job: '+jobId+'. Plan SHA-256: '+planHash+'.'
 beforeEach(() => {
   vi.stubGlobal('fetch',vi.fn(async () => ({ok:true,json:async () => ({
     schemaVersion:1,kind:'ods-pixel-operations-status',jobId,planHash,status:'awaiting-approval',
@@ -39,4 +40,12 @@ test('waits for clipboard confirmation and prevents repeated writes',async () =>
     await act(async () => resolve())
     await waitFor(() => expect(screen.getByRole('button',{name:'Copied'})).toBeEnabled())
   } finally {if(previous) Object.defineProperty(navigator,'clipboard',previous);else delete navigator.clipboard}
+})
+test('renders the same approval action for a new ODS receipt', async () => {
+  render(<OperationsApprovalCard content={odsContent}/>)
+  expect(await screen.findByRole('button',{name:'Copy secure approval command'})).toBeEnabled()
+  expect(fetch).toHaveBeenCalledWith(
+    `/api/pixel/ops/${jobId}?plan_hash=${planHash}`,
+    expect.objectContaining({signal: expect.any(AbortSignal)}),
+  )
 })

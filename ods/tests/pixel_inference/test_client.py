@@ -127,6 +127,53 @@ def test_existing_directory_preserved(client_dir,monkeypatch):
     assert mod.load_client(client_dir)
 
 
+def test_prepare_client_uses_generic_name_without_changing_compat_payload(tmp_path,monkeypatch):
+    captured = {}
+
+    class EmptyArchive:
+        def getmembers(self):
+            return []
+
+        def close(self):
+            pass
+
+    executable = tmp_path/'openclaw'
+    executable.write_bytes(b'fixture')
+    executable.chmod(0o700)
+
+    def command(args,env=None):
+        if args[-1] == '--version':
+            return f'OpenClaw {mod.OPENCLAW_VERSION} fixture'.encode()
+        source = Path(args[1]).parents[1]
+        if args[1].endswith('configure.mjs'):
+            captured.update(json.loads(Path(args[-1]).read_bytes()))
+            mod._write_private(source/'.env',b'PIXEL_SANDBOX_IMAGE=openclaw-sandbox:bookworm-slim\n')
+        elif args[1].endswith('render-config.mjs'):
+            mod._write_private(Path(args[-1]),mod._json({'agents':{'defaults':{'sandbox':{'mode':'all'}}}}))
+            (source/'.generated/workspace').mkdir(parents=True)
+        return b''
+
+    monkeypatch.setattr(mod,'_command',command)
+    monkeypatch.setattr(mod,'_pixel_archive',lambda _repository: EmptyArchive())
+    monkeypatch.setattr(mod,'normalize_connection',lambda value: deepcopy(value))
+    monkeypatch.setattr(mod,'probe_connection',lambda *args,**kwargs: {
+        'contextLength':32768,'maxOutputTokens':4096,'routedModel':'GLM'})
+
+    mod.prepare_client(deepcopy(BASE_CONN),tmp_path/'client',confirmed_endpoint='127.0.0.1',
+        pixel_repository='unused',openclaw_bin=str(executable),reasoning=False)
+
+    assert captured['agentName'] == 'Assistant'
+    assert captured['agentId'].startswith('pixel-client-')
+    assert {name:captured[name] for name in (
+        'modelProvider','modelId','openclawBin','openclawHome','installDir','workspace')
+    } == {
+        'modelProvider':'ods-peer','modelId':'ods/shared','openclawBin':str(executable),
+        'openclawHome':str(tmp_path/'client/state'),
+        'installDir':str(tmp_path/'client/installation'),
+        'workspace':str(tmp_path/'client/state/workspace'),
+    }
+
+
 def test_revoked_preflight_no_spawn(client_dir,monkeypatch):
     def denied(*a,**kw):
         raise mod.StoreError('connection-denied')

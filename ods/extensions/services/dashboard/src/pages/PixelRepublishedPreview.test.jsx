@@ -26,6 +26,6 @@ it('treats a republished older snapshot as the latest retained publication', asy
   expect(screen.queryByRole('button',{name:'Show latest publication'})).toBeNull()
   fireEvent.change(selector,{target:{value:b.siteId}})
   fireEvent.click(screen.getByRole('button',{name:'Show latest publication'}))
-  expect(screen.getByTitle('Interactive Portal preview')).toHaveAttribute('src',`/pixel-preview/${a.siteId}/__ods_view__.html`)
+  expect(screen.getByTitle('Interactive Assistant preview')).toHaveAttribute('src',`/pixel-preview/${a.siteId}/__ods_view__.html`)
   expect(fetch.mock.calls.some(([url]) => url === '/api/pixel/chat/stream')).toBe(false)
 })

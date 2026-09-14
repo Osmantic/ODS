@@ -7,7 +7,7 @@ import alpine from '../assets/wallpapers/mountaintrees.jpg'
 import nightfall from '../assets/wallpapers/wallpaper13.jpg'
 
 export const WALLPAPERS = [
-  {id:'ods', name:'Pixel', image:null},
+  {id:'ods', name:'ODS', image:null},
   {id:'forest', name:'Forest', image:forest},
   {id:'clouds', name:'Sonoma Clouds', image:clouds},
   {id:'evening', name:'Sonoma Evening', image:evening},

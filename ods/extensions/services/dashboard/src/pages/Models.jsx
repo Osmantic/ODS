@@ -1124,16 +1124,16 @@ function ModelActivationDialog({
   const agentViability = getAgentViabilityCompatibility(model)
   const pixelContextReady = selectedContext >= Number(pixelMinimumContext || 16384)
   const appProfile = isOpenAiChatBlocked(openAiChat)
-    ? { label: 'Pixel adaptive', tone: 'text-theme-accent-light' }
+    ? { label: 'Assistant adaptive', tone: 'text-theme-accent-light' }
     : isAgentViabilityBlocked(pixelAgent)
-    ? { label: 'Pixel adaptive', tone: 'text-theme-accent-light' }
+    ? { label: 'Assistant adaptive', tone: 'text-theme-accent-light' }
     : isAgentViabilityBlocked(agentViability)
-      ? { label: 'Pixel adaptive', tone: 'text-theme-accent-light' }
+      ? { label: 'Assistant adaptive', tone: 'text-theme-accent-light' }
       : !pixelContextReady
-        ? { label: `Pixel compact · ${formatContext(selectedContext)}`, tone: 'text-amber-300' }
+        ? { label: `Assistant compact · ${formatContext(selectedContext)}`, tone: 'text-amber-300' }
         : isPixelAgentVerified(pixelAgent)
-          ? { label: 'Pixel verified', tone: 'text-emerald-400' }
-          : { label: 'Pixel adaptive', tone: 'text-theme-accent-light' }
+          ? { label: 'Assistant verified', tone: 'text-emerald-400' }
+          : { label: 'Assistant adaptive', tone: 'text-theme-accent-light' }
   const memoryCapacity = Number(gpu?.vramTotal || 0)
   const exceedsMemory = selected?.fitsVram === false
   const exceedsDeclaredLimit = declaredLimit > 0 && selectedContext > declaredLimit
@@ -1709,7 +1709,7 @@ function getCompatibilityMeta(model, memory, pixelMinimumContext = 0) {
   const openAiChat = getOpenAiChatCompatibility(model)
   if (isOpenAiChatBlocked(openAiChat)) {
     return {
-      label: 'Pixel adaptive',
+      label: 'Assistant adaptive',
       detail: 'Capability varies',
       tone: 'purple',
     }
@@ -1717,7 +1717,7 @@ function getCompatibilityMeta(model, memory, pixelMinimumContext = 0) {
   const agentViability = getAgentViabilityCompatibility(model)
   if (isAgentViabilityBlocked(agentViability)) {
     return {
-      label: 'Pixel adaptive',
+      label: 'Assistant adaptive',
       detail: 'Capability varies',
       tone: 'purple',
     }
@@ -1733,7 +1733,7 @@ function getCompatibilityMeta(model, memory, pixelMinimumContext = 0) {
   const pixelAgent = getPixelAgentCompatibility(model)
   if (isAgentViabilityBlocked(pixelAgent)) {
     return {
-      label: 'Pixel adaptive',
+      label: 'Assistant adaptive',
       detail: 'Available to use',
       tone: 'purple',
     }
@@ -1742,21 +1742,21 @@ function getCompatibilityMeta(model, memory, pixelMinimumContext = 0) {
   const minimumContext = Number(pixelMinimumContext || 0)
   if (minimumContext > 0 && contextLength > 0 && contextLength < minimumContext) {
     return {
-      label: 'Pixel compact',
+      label: 'Assistant compact',
       detail: `${formatContext(contextLength)} context`,
       tone: 'amber',
     }
   }
   if (!isPixelAgentVerified(pixelAgent)) {
     return {
-      label: 'Pixel adaptive',
+      label: 'Assistant adaptive',
       detail: 'Available to use',
       tone: 'purple',
     }
   }
   const talkCompatibility = getHermesTalkCompatibility(model)
   if (isHermesTalkVerified(talkCompatibility)) {
-    return { label: 'Pixel verified', detail: model.recommended || model.status === 'loaded' ? 'Best' : 'Verified', tone: 'green' }
+    return { label: 'Assistant verified', detail: model.recommended || model.status === 'loaded' ? 'Best' : 'Verified', tone: 'green' }
   }
   if (model.recommended || model.status === 'loaded') {
     return { label: model.fitLabel || 'Fits GPU', detail: 'Best', tone: 'green' }

@@ -53,7 +53,7 @@ export default function PixelTaskActivity({messages, sending, elapsed}) {
       </ul>
       {task.calls === 0 && <p className="pixel-activity-note">{active ? 'The runtime started this turn. No tool calls observed yet.' : 'No tool calls were observed. This turn used the model only.'}</p>}
       {task.truncated && <p className="pixel-activity-warning">Only the first 512 calls are included.</p>}
-      <p className="pixel-activity-note">Recorded by the Pixel runtime. Tool calls show attempts, not proof that the requested result works. Saved with this conversation in this browser.</p>
+      <p className="pixel-activity-note">Recorded by the assistant runtime. Tool calls show attempts, not proof that the requested result works. Saved with this conversation in this browser.</p>
     </> : <p className="pixel-activity-note">{active ? 'Waiting for runtime observations. This runtime may not provide live activity.' : 'Older replies do not contain runtime observations. They are not reconstructed from the assistant’s claims.'}</p>}
   </section>
 }

@@ -3546,7 +3546,7 @@ payload = {
     "deploymentName": "ods-default",
     "timeZone": "UTC",
     "agentId": "pixel",
-    "agentName": "Pixel",
+    "agentName": "Assistant",
     "openclawBin": openclaw_bin,
     "openclawHome": str(home / ".openclaw"),
     "installDir": str(home / ".local" / "share" / "pixel"),

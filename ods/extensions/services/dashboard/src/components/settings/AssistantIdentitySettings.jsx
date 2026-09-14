@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { usePortalIdentity } from '../../contexts/PortalIdentityContext'
+import { DEFAULT_ASSISTANT_NAME } from '../../lib/portalIdentity'
 
 export default function AssistantIdentitySettings() {
   const { document, ready, busy, error, notice, reload, save } = usePortalIdentity()
@@ -15,7 +16,7 @@ export default function AssistantIdentitySettings() {
       </label>
       <div className="profile-settings-actions assistant-identity-actions">
         <button type="submit" disabled={busy || !ready}>Save name</button>
-        <button type="button" disabled={busy || !ready} onClick={() => setDraft('Portal')}>Reset to Portal</button>
+        <button type="button" disabled={busy || !ready} onClick={() => setDraft(DEFAULT_ASSISTANT_NAME)}>Reset to {DEFAULT_ASSISTANT_NAME}</button>
         <button type="button" disabled={busy} onClick={() => { void reload() }}>Refresh saved name</button>
       </div>
     </form>

@@ -292,7 +292,7 @@ async def test_status_is_disabled_without_a_key(monkeypatch):
     assert await pixel.pixel_status() == {
         "available": False,
         "model": None,
-        "detail": "Pixel is not enabled",
+        "detail": "The assistant is not enabled",
     }
 
 
@@ -331,7 +331,7 @@ async def test_status_returns_only_fixed_projection():
     response = FakeResponse(chunks=[body])
     with patch.object(pixel.httpx, "AsyncClient", return_value=FakeClient(response)):
         result = await pixel.pixel_status()
-    assert result == {"available": True, "model": "pixel/default", "detail": "Owner agent ready"}
+    assert result == {"available": True, "model": "pixel/default", "detail": "Assistant ready"}
     assert secret not in json.dumps(result)
 
 
@@ -362,7 +362,7 @@ async def test_status_projects_only_validated_active_remote_runtime(monkeypatch)
     assert result == {
         "available": True,
         "model": "pixel/default",
-        "detail": "Owner agent ready",
+        "detail": "Assistant ready",
         "runtime": {
             "source": "remote-provider",
             "model": "remote-owner-model",
@@ -487,7 +487,7 @@ async def test_status_keeps_adaptive_model_available_with_fixed_advisory(monkeyp
     assert result == {
         "available": True,
         "model": "pixel/default",
-        "detail": "Owner agent ready",
+        "detail": "Assistant ready",
         "modelSupport": {
             "tier": "adaptive",
             "detail": pixel._MODEL_ADAPTIVE_DETAIL,

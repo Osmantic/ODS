@@ -5,6 +5,10 @@ import {saveProfile} from '../lib/localProfile'
 import {saveConversation,readConversations,DELETE_EVENT} from '../lib/pixelConversations'
 import { StrictMode } from 'react'
 
+vi.mock('../contexts/PortalIdentityContext', () => ({
+  usePortalIdentity: () => ({ displayName: 'Portal' }),
+}))
+
 // The repository's base ESLint profile does not mark JSX identifiers as uses.
 // eslint-disable-next-line no-unused-vars
 import Pixel, {
@@ -252,7 +256,7 @@ describe('Pixel', () => {
     fireEvent.click(screen.getByRole('button',{name:'Workspace',exact:true}))
     expect(screen.getByText('No preview published yet')).toBeVisible()
     expect(screen.queryByTitle('Interactive Portal preview')).toBeNull()
-    fireEvent.click(screen.getByRole('button',{name:'Ask Pixel to publish'}))
+    fireEvent.click(screen.getByRole('button',{name:'Ask the assistant to publish'}))
     expect(screen.getByPlaceholderText('Message Portal...').value).toContain('pixel_ods_workspace_preview')
     expect(globalThis.fetch.mock.calls.some(([url]) => url === '/api/pixel/chat/stream')).toBe(false)
     fireEvent.click(screen.getByTitle('Close preview'))
@@ -303,7 +307,7 @@ describe('Pixel', () => {
     expect(column.parentElement).toBe(panel.parentElement)
     expect(column).toContainElement(screen.getByRole('button',{name:'Workspace',exact:true}))
     expect(column).toContainElement(screen.getByRole('link',{name:'Change model'}))
-    expect(column).toContainElement(screen.getByRole('button',{name:'Search Pixel'}))
+    expect(column).toContainElement(screen.getByRole('button',{name:'Search assistant conversations'}))
     expect(panel).not.toContainElement(screen.getByRole('heading',{name:'Portal',exact:true}))
     fireEvent.click(screen.getByTitle('Collapse preview'))
     expect(panel).toHaveClass('is-collapsed')
@@ -1415,7 +1419,7 @@ describe('Pixel', () => {
       throw new Error(`Unexpected request ${url}`)
     })
     render(<Pixel />)
-    expect(await screen.findByText('Pixel did not start this attempt. Send your message again to continue.')).toBeVisible()
+    expect(await screen.findByText('The assistant did not start this attempt. Send your message again to continue.')).toBeVisible()
     expect(screen.queryByText('Completed without a text response.')).toBeNull()
     expect(globalThis.fetch.mock.calls.some(([url]) => url === '/api/pixel/chat/stream')).toBe(false)
   })
@@ -1828,7 +1832,7 @@ describe('Pixel', () => {
     fireEvent.click(screen.getByTitle('Stop'))
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
-      'Stop was not confirmed. Pixel is still connected; retry Stop.'
+      'Stop was not confirmed. The assistant is still connected; retry Stop.'
     )
     expect(screen.queryByText('Response stopped')).not.toBeInTheDocument()
     fireEvent.click(screen.getByTitle('Stop'))
@@ -1873,7 +1877,7 @@ describe('Pixel', () => {
     fireEvent.click(screen.getByTitle('Send'))
 
     await waitFor(() => {
-      expect(screen.getByText('Pixel could not complete the response.')).toBeInTheDocument()
+      expect(screen.getByText('The assistant could not complete the response.')).toBeInTheDocument()
     })
     expect(screen.queryByText(/upstream-secret-value/)).not.toBeInTheDocument()
   })
@@ -1907,7 +1911,7 @@ describe('Pixel', () => {
     await screen.findByText('Available')
     fireEvent.change(screen.getByPlaceholderText('Message Portal...'),{target:{value:'test'}})
     fireEvent.click(screen.getByTitle('Send'))
-    await screen.findByText('Pixel could not complete the response.')
+    await screen.findByText('The assistant could not complete the response.')
     expect(screen.getByText('Work already explained')).toBeInTheDocument()
     expect(screen.queryByText(/False late success|private-upstream-error/)).toBeNull()
     await waitFor(()=>{

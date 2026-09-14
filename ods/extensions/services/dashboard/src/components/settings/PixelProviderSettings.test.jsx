@@ -77,7 +77,7 @@ it('imports a disabled peer without changing old keys or roles and requires a se
   expect(Object.entries(localStorage)).toEqual(storageBeforeImport)
   expect(JSON.stringify(Object.entries(localStorage))).not.toContain(secret)
   fireEvent.click(screen.getByText('Save providers'))
-  await screen.findByText('Settings saved. Pixel runtime has not been changed.')
+  await screen.findByText('Settings saved. The assistant runtime has not been changed.')
   const saves = fetchMock.mock.calls.filter(([url]) => url.endsWith('/save'))
   expect(saves).toHaveLength(1)
   const payload = JSON.parse(saves[0][1].body)
@@ -129,7 +129,7 @@ it('clears the key before POST completes, prevents duplicate saves and preserves
   expect(body.document).toEqual(doc)
   expect(JSON.stringify(body.document)).not.toContain('synthetic-only-key')
   resolve(response({ ...doc, revision: 1 }))
-  expect(await screen.findByText('Settings saved. Pixel runtime has not been changed.')).toBeInTheDocument()
+  expect(await screen.findByText('Settings saved. The assistant runtime has not been changed.')).toBeInTheDocument()
   expect(screen.getByRole('button', { name: 'Save providers' })).toBeDisabled()
 })
 

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import unicodedata
 
-DEFAULT_NAME = "Portal"
+DEFAULT_NAME = "Assistant"
 MAX_REVISION = 2**53 - 1
 MAX_NAME_CODEPOINTS = 60
 MAX_RAW_NAME_CODEPOINTS = 240

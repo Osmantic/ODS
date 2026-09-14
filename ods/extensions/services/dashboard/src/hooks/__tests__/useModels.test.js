@@ -296,7 +296,7 @@ describe('useModels', () => {
           json: () => Promise.resolve({
             detail: {
               code: 'pixel_chat_active',
-              message: 'Pixel is working. Stop the active response before changing models.',
+              message: 'The assistant is working. Stop the active response before changing models.',
               requestedModelId: target,
             },
           }),
@@ -319,7 +319,7 @@ describe('useModels', () => {
       })
 
       expect(result.current.error).toBe(
-        'Pixel is working. Stop the active response before changing models.'
+        'The assistant is working. Stop the active response before changing models.'
       )
       expect(result.current.error).not.toMatch(/active target|server did not identify/i)
     } finally {

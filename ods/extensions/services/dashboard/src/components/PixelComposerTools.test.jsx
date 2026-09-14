@@ -22,7 +22,7 @@ test('does not allow draft changes while work is active', () => {
   render(<MemoryRouter><PixelComposerTools input="/" disabled onInsert={() => {}}/></MemoryRouter>)
   expect(screen.getByRole('button', {name:'Open prompt commands'})).toBeDisabled()
   expect(screen.queryByRole('group', {name:'Prompt commands'})).not.toBeInTheDocument()
-  expect(screen.getByTitle('Pixel access settings')).toHaveAttribute('href','/pixel/settings?section=access')
+  expect(screen.getByTitle('Assistant access settings')).toHaveAttribute('href','/pixel/settings?section=access')
 })
 
 test('opening prompt commands places keyboard focus on the first choice and supports arrows', () => {

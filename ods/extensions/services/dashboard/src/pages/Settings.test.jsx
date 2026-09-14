@@ -189,13 +189,13 @@ describe('Settings', () => {
     expect(screen.getAllByText('Empty')).toHaveLength(3)
   })
 
-  test('migrates a retired theme to the shared Pixel appearance', async () => {
+  test('migrates a retired theme to the shared ODS appearance', async () => {
     localStorage.setItem('ods-theme', 'light')
     const { container } = renderSettings()
     await screen.findByRole('heading', { name: 'System Identity' })
 
     expect(screen.queryByRole('button', { name: 'Light' })).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Pixel', exact: true })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('button', { name: 'ODS', exact: true })).toHaveAttribute('aria-pressed', 'true')
 
     await waitFor(() => expect(document.documentElement).toHaveAttribute('data-theme', 'ods'))
     expect(localStorage.getItem('ods-theme')).toBe('ods')

@@ -54,8 +54,8 @@ describe('Pixel access confirmation and effective status', () => {
   it('ends the inspection message after failure and clears the error on retry', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce({ok: false}).mockResolvedValue({ok: true, json: async () => safe}))
     render(<PixelAccessCard />)
-    expect(await screen.findByRole('alert')).toHaveTextContent('Pixel access status is unavailable')
-    expect(screen.queryByText('Inspecting Pixel access…')).toBeNull()
+    expect(await screen.findByRole('alert')).toHaveTextContent('Assistant access status is unavailable')
+    expect(screen.queryByText('Inspecting assistant access…')).toBeNull()
     fireEvent.click(screen.getByRole('button', {name: 'Refresh status'}))
     await waitFor(() => expect(screen.getByText('Configured')).toBeInTheDocument())
     expect(screen.queryByRole('alert')).toBeNull()

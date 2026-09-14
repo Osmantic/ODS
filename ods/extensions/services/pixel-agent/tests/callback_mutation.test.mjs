@@ -31,8 +31,8 @@ function publish(g,content,{authored=true}={}) {
   before(g,'pixel_ods_workspace_preview','preview',params);
   after(g,'pixel_ods_workspace_preview','preview',params,{details:{schemaVersion:1,kind:'ods-pixel-workspace-preview',status:'succeeded',relativeDirectory:'callback-demo',files:1,bytes:bytes.length,sha256,siteId,port:9437,url:`http://${siteId}.localhost:9437/${siteId}/`,entryFile:'index.html',entrySha256:createHash('sha256').update(bytes).digest('hex'),httpStatus:200,readbackVerified:true,executable:false,overwritten:false}});
   const verification=g.verificationForRun('run');
-  assert.match(verification.text,authored?/Created by Pixel\./:/Published from your workspace\./);
-  if(!authored)assert.doesNotMatch(verification.text,/Created by Pixel\./);
+  assert.match(verification.text,authored?/Created by the assistant\./:/Published from your workspace\./);
+  assert.doesNotMatch(verification.text,/Created by Pixel\./);
   return verification.status;
 }
 function wrapped(g,parent,{inner=true,result=envelope('edit',success)}={}) {

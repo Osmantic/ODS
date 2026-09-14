@@ -20,9 +20,9 @@ function ProviderConfirmation({ confirmation, onCancel, onConfirm }) {
     onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); onCancel() } }}>
     <h4 id="pixel-provider-confirm-title" className="font-medium">Confirm provider {confirmation.operation}</h4>
     <p id="pixel-provider-confirm-description" className="text-sm">{confirmation.operation === 'apply'
-      ? `Apply saved provider revision ${confirmation.savedRevision}? Pixel may restart when idle. Tool access and sandbox mode will not change.`
+      ? `Apply saved provider revision ${confirmation.savedRevision}? The assistant may restart when idle. Tool access and sandbox mode will not change.`
       : confirmation.operation === 'deactivate'
-        ? 'Restore the original inference configuration? Saved provider settings and keys will be retained. Pixel may restart when idle.'
+        ? 'Restore the original inference configuration? Saved provider settings and keys will be retained. The assistant may restart when idle.'
         : 'Recover this interrupted change? The controller will finish a verified change or restore its recorded prior configuration. It may restore an older provider revision; saved edits are retained.'}</p>
     {cloud && <label className="flex items-start gap-2 text-sm"><input type="checkbox" checked={cloudAccepted}
       onChange={event => setCloudAccepted(event.target.checked)} />I understand this saved policy permits requests to configured cloud providers and may incur provider charges.</label>}
@@ -67,7 +67,7 @@ export default function PixelProviderRuntime({ savedRevision, saving, blocked, r
   const descriptions = {
     'not-applied': 'Managed providers have not been applied.',
     inactive: 'Managed providers are inactive. The original inference configuration is restored and registered.',
-    applied: `Saved provider revision ${runtime?.providerRevision} is registered in the current Pixel runtime.`,
+    applied: `Saved provider revision ${runtime?.providerRevision} is registered in the current assistant runtime.`,
     'saved-changes': `Provider revision ${runtime?.binding?.revision} is registered; saved revision ${runtime?.providerRevision} is not applied.`,
     pending: 'A provider change is incomplete. Inspect and recover it before another change.',
     unavailable: runtime?.reason === 'settings-store-not-initialized'

@@ -24,7 +24,7 @@ export default function PixelAccessCard({ showHeading = true }) {
       setStale(false)
       if (!preserveError) setError('')
       return value
-    } catch { if (version === inspection.current) setError('Pixel access status is unavailable. No effective mode has been verified.') }
+    } catch { if (version === inspection.current) setError('Assistant access status is unavailable. No effective mode has been verified.') }
   }, [])
   useEffect(() => { void refresh(); return () => { inspection.current++ } }, [refresh])
   useEffect(() => {
@@ -46,7 +46,7 @@ export default function PixelAccessCard({ showHeading = true }) {
         return
       }
       if (current.busy || (current.pending && mode === 'full-access')) {
-        setError('Pixel is working or recovering an access transition. No change was requested. Wait for it to finish, or restore safer mode when available.')
+        setError('The assistant is working or recovering an access transition. No change was requested. Wait for it to finish, or restore safer mode when available.')
         return
       }
       setStale(true)
@@ -63,20 +63,20 @@ export default function PixelAccessCard({ showHeading = true }) {
   const disabled = changing || stale || !status?.available || status?.busy || !status?.revision
   return <section aria-labelledby="pixel-access-title" className="rounded-xl border border-white/10 bg-white/[0.03] p-5 space-y-3">
     <div className="flex items-center justify-between gap-4">
-      <h2 id="pixel-access-title" className={showHeading ? 'font-semibold' : 'sr-only'}>Pixel access</h2>
+      <h2 id="pixel-access-title" className={showHeading ? 'font-semibold' : 'sr-only'}>Assistant access</h2>
       <button type="button" onClick={() => { setError(''); void refresh() }} disabled={changing} className="text-sm underline">Refresh status</button>
     </div>
-    <p>Safer mode confines Pixel tools to their configured sandbox. Full Access lets Pixel act with the owner account’s filesystem permissions, including outside the workspace.</p>
+    <p>Safer mode confines assistant tools to their configured sandbox. Full Access lets the assistant act with the owner account’s filesystem permissions, including outside the workspace.</p>
     <p className="text-sm text-gray-400">Full Access keeps the owner’s UID and existing group permissions, privilege restrictions, and protected program files. Existing owner permissions may include service administration. Current support: Linux or WSL with systemd.</p>
     {status ? <dl className="grid grid-cols-2 gap-2 text-sm">
       <dt>Configured</dt><dd>{modeName(status.configured_mode)}</dd>
       <dt>Effective</dt><dd>{!stale && status.runtime_verified ? modeName(status.effective_mode) : 'Not verified'}</dd>
       <dt>Platform</dt><dd>{status.surface}</dd>
-    </dl> : !error ? <p role="status">Inspecting Pixel access…</p> : null}
+    </dl> : !error ? <p role="status">Inspecting assistant access…</p> : null}
     {!status?.available && status ? <p role="status">{status.pending
-      ? 'Checking Pixel while the access transition is unfinished. Controls return when the running gateway can be verified.'
+      ? 'Checking the assistant while the access transition is unfinished. Controls return when the running gateway can be verified.'
       : 'The required host adapter or admission gate is unavailable on this installation.'}</p> : null}
-    {status?.busy ? <p role="status">Pixel is working. Access changes wait until its runs and tools finish.</p> : null}
+    {status?.busy ? <p role="status">The assistant is working. Access changes wait until its runs and tools finish.</p> : null}
     {status?.pending ? <p role="alert">The access transition is unfinished and new work is held. Restore safer mode if recovery is required.</p> : null}
     {error ? <p role="alert">{error}</p> : null}
     <div className="flex flex-wrap gap-3">
@@ -87,7 +87,7 @@ export default function PixelAccessCard({ showHeading = true }) {
     </div>
     {confirming ? <div role="dialog" aria-labelledby="pixel-access-confirm-title" className="rounded-lg border border-amber-500/50 p-4 space-y-3">
       <h3 id="pixel-access-confirm-title" className="font-semibold">Confirm Full Access</h3>
-      <p>Pixel can modify or delete files the owner account can access, including files outside its workspace. The gateway restarts to verify access; new requests may need to be retried during the change.</p>
+      <p>The assistant can modify or delete files the owner account can access, including files outside its workspace. The gateway restarts to verify access; new requests may need to be retried during the change.</p>
       <label className="flex items-start gap-2"><input type="checkbox" checked={confirmed} onChange={event => setConfirmed(event.target.checked)} />I understand and authorize Full Access.</label>
       <div className="flex gap-3">
         <button type="button" disabled={disabled || !confirmed} onClick={() => { void change('full-access') }} className="rounded-lg bg-amber-600 px-3 py-2 disabled:opacity-40">Confirm and enable</button>

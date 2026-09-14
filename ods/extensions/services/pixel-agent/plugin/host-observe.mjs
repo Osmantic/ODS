@@ -67,7 +67,7 @@ class BrokerReadbackError extends Error {
 }
 
 function errorResult(
-  text = "Pixel could not complete the read-only ODS host observation.",
+  text = "The assistant could not complete the read-only ODS host observation.",
   boundaryNotice = BOUNDARY,
   jobId
 ) {
@@ -269,7 +269,7 @@ async function observeHost(
         ? { parameters: { peer, ports: ports.join(",") } }
         : {}),
     })),
-    reason: "Read-only ODS host observation requested by the owner through Pixel.",
+    reason: "Read-only ODS host observation requested by the owner through the assistant.",
     boundary:
       "Request only. The external broker compiles policy and decides whether execution is permitted.",
   };
@@ -434,7 +434,7 @@ export function createExtensionReadTool({ requestDir = REQUEST_DIR, resultDir, t
         await publishRequest(jobId, {
           schemaVersion: 1, jobId, kind: "action", createdAt: new Date().toISOString(), requester: AGENT_ID,
           target, action: `ods.extensions.${params.action}`, parameters,
-          reason: "Read-only ODS extension discovery requested through Pixel.",
+          reason: "Read-only ODS extension discovery requested through the assistant.",
           boundary: "Request only. The external broker validates target, parameters, and policy.",
         }, requestDir);
       } catch {
@@ -491,7 +491,7 @@ export function createHostCommandProposeTool({
         return toolResult(receipt);
       } catch (failure) {
         return errorResult(
-          "Pixel could not submit or verify the protected ODS host command proposal.",
+          "The assistant could not submit or verify the protected ODS host command proposal.",
           HOST_COMMAND_BOUNDARY,
           failure instanceof BrokerReadbackError ? failure.jobId : undefined
         );
