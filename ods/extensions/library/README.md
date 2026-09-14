@@ -73,6 +73,7 @@ Each extension is a self-contained directory with a `manifest.yaml` (service met
 | [`frigate/`](services/frigate/) | Frigate — NVR with real-time AI object detection | NVIDIA |
 | [`gitea/`](services/gitea/) | Gitea — lightweight self-hosted Git | CPU |
 | [`baserow/`](services/baserow/) | Baserow — open-source Airtable alternative | CPU |
+| [`vikunja/`](services/vikunja/) | Vikunja — to-do, task lists, and Kanban project workspace | CPU |
 | [`miniflux/`](services/miniflux/) | Miniflux — RSS/Atom reading and research API | CPU |
 | [`ntfy/`](services/ntfy/) | ntfy — authenticated local workflow notifications | CPU |
 | [`sillytavern/`](services/sillytavern/) | SillyTavern — advanced roleplay/chat frontend | AMD, NVIDIA, Apple |
@@ -121,6 +122,7 @@ Quick reference for hardware requirements. Data sourced from each service's `man
 | rvc | ✓ | ✓ | — | — | 6 GB |
 | sillytavern | ✓ | ✓ | ✓ | — | — |
 | text-generation-webui | ✓ | ✓ | — | — | 4 GB |
+| vikunja | — | — | — | ✓ | — |
 | weaviate | — | — | — | ✓ | — |
 | xtts | ✓ | ✓ | — | — | — |
 
