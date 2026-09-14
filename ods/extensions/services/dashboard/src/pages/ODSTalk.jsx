@@ -38,6 +38,7 @@ const welcomeMessage = {
 }
 
 const TALK_STATUS_RETRY_MS = 1000
+const MAX_MESSAGE_CHARS = 8000
 
 function makeId(prefix) {
   if (globalThis.crypto?.randomUUID) return `${prefix}-${globalThis.crypto.randomUUID()}`
@@ -369,7 +370,7 @@ export default function ODSTalk() {
     // Allow an attachment with no text — the backend supplies a default
     // prompt for images ("Describe what you see in this image."). Without
     // either a caption or an attachment, there's nothing to send.
-    if (!clean && !attachment) return
+    if ((!clean && !attachment) || Array.from(clean).length > MAX_MESSAGE_CHARS) return
     if (sending || status !== 'ready') return
     setSending(true)
 
@@ -642,7 +643,8 @@ export default function ODSTalk() {
 
   // Send is enabled either with text OR an attachment (an image alone is a
   // valid message — the model gets a default "describe this" prompt).
-  const canSend = (input.trim().length > 0 || pendingAttachment) && !sending && status === 'ready'
+  const captionTooLong = Array.from(input.trim()).length > MAX_MESSAGE_CHARS
+  const canSend = !captionTooLong && (input.trim().length > 0 || pendingAttachment) && !sending && status === 'ready'
 
   return (
     <div className="pixel-app ods-talk min-h-dvh bg-theme-bg text-theme-text antialiased">
@@ -711,6 +713,7 @@ export default function ODSTalk() {
         )}
 
         <form onSubmit={submit} className="sticky bottom-0 bg-theme-bg p-3">
+          {captionTooLong && <p id="talk-caption-limit" role="alert" className="mb-2 text-sm text-red-600">Shorten the message to 8,000 characters before sending. Your draft and attachment are kept.</p>}
           {/* Attachment preview strip — appears above the input bar between
               pick and send. Shows a thumbnail for images, a generic icon for
               text/code files, with an X to discard. */}
@@ -761,6 +764,8 @@ export default function ODSTalk() {
               }}
               rows={1}
               placeholder="Message ODS"
+              aria-invalid={captionTooLong || undefined}
+              aria-describedby={captionTooLong ? 'talk-caption-limit' : undefined}
               className="max-h-32 min-h-11 flex-1 resize-none bg-transparent px-1 py-2.5 text-[16px] leading-6 text-zinc-950 outline-none placeholder:text-zinc-400"
               disabled={status === 'expired'}
             />
