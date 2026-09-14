@@ -133,14 +133,18 @@ def _get_cached_release_payload(allow_stale: bool = False) -> Optional[dict]:
     return None
 
 
-def _normalize_version(value: Optional[str]) -> str:
+def _normalize_version(value: object) -> str:
     """Normalize a version string for comparison and display.
 
     GitHub release tags are ``vX.Y.Z`` while ``.env``/``.version`` may store
     either form, so strip a leading ``v`` (and surrounding whitespace) to keep
     ``current`` and ``latest`` on the same footing.
     """
-    return (value or "").strip().lstrip("v")
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        value = str(value)
+    return value.strip().lstrip("v")
 
 
 def _build_version_result(current: str, payload: Optional[dict]) -> dict:

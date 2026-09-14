@@ -18,6 +18,15 @@ def test_current_version_reader_preserves_unmatched_quote(monkeypatch, tmp_path)
     assert updates_mod._read_current_version() == "2.6.0'"
 
 
+def test_normalize_version_handles_non_string_types():
+    import routers.updates as updates_mod
+
+    assert updates_mod._normalize_version(None) == ""
+    assert updates_mod._normalize_version(123) == "123"
+    assert updates_mod._normalize_version("v2.5.0") == "2.5.0"
+
+
+
 def test_github_release_urls_use_canonical_repository():
     import routers.updates as updates_mod
 
