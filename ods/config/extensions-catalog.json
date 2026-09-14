@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-14T15:18:53Z",
+  "generated_at": "2026-09-14T16:10:29Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -1376,7 +1376,7 @@
     {
       "id": "gotify",
       "name": "Gotify",
-      "description": "",
+      "description": "Self-hosted push notification server for sending and receiving messages in real time via WebSockets and webhooks.",
       "category": "optional",
       "gpu_backends": [
         "all"

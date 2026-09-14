@@ -4,6 +4,7 @@ compatibility:
 service:
   id: gotify
   name: Gotify
+  description: "Self-hosted push notification server for sending and receiving messages in real time via WebSockets and webhooks."
   aliases: [notifications, push-notifications]
   container_name: ods-gotify
   host_env: GOTIFY_HOST
