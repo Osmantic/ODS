@@ -52,7 +52,7 @@ CLASS_ENV="$("${SCRIPT_DIR}/classify-hardware.sh" \
     --device-id "$("$PYTHON_CMD" -c "import json,sys; print(json.loads(sys.argv[1]).get('gpu',{}).get('device_id',''))" "$HARDWARE_JSON")" \
     --gpu-name "$("$PYTHON_CMD" -c "import json,sys; print(json.loads(sys.argv[1]).get('gpu',{}).get('name',''))" "$HARDWARE_JSON")" \
     --cpu-name "$("$PYTHON_CMD" -c "import json,sys; print(json.loads(sys.argv[1]).get('cpu',''))" "$HARDWARE_JSON")" \
-    --ram-mb "$("$PYTHON_CMD" -c "import json,sys; print(json.loads(sys.argv[1]).get('ram_gb',0) * 1024)" "$HARDWARE_JSON")" \
+    --ram-mb "$("$PYTHON_CMD" -c "import json,sys; print(int(float(json.loads(sys.argv[1]).get('ram_gb',0) or 0) * 1024))" "$HARDWARE_JSON")" \
     --env)"
 load_env_from_output <<< "$CLASS_ENV"
 
