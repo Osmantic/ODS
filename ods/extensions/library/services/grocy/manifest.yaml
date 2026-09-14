@@ -4,6 +4,7 @@ compatibility:
 service:
   id: grocy
   name: Grocy
+  description: "Self-hosted web-based ERP and household inventory management tool for groceries and domestic tasks."
   aliases: [pantry, groceries, chores]
   container_name: ods-grocy
   host_env: GROCY_HOST

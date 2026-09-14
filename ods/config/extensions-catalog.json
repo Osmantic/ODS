@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-14T15:22:52Z",
+  "generated_at": "2026-09-14T16:10:38Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -1376,7 +1376,7 @@
     {
       "id": "grocy",
       "name": "Grocy",
-      "description": "",
+      "description": "Self-hosted web-based ERP and household inventory management tool for groceries and domestic tasks.",
       "category": "optional",
       "gpu_backends": [
         "all"
