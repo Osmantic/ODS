@@ -173,3 +173,14 @@ semantic digest primitive, and returns the exact bytes it checked. Legacy plans
 with unknown origin fail before filesystem access. The verifier has no
 production caller, discovery fallback, dispatcher, or lifecycle authority in
 this phase.
+
+Verified definition bytes can next be sealed as one immutable, ordered staging
+bundle bound to the transaction, plan hash, and complete mutable service set.
+The host staging store accepts only a bound `stage` command, never reopens the
+definition source, includes no source path or timestamp in the durable bundle,
+and publishes create-if-absent without rename or overwrite. Exact replay is
+idempotent; divergent bytes conflict, while corrupt, writable, linked, replaced,
+or non-canonical bundles fail closed. The bundle hash is suitable as terminal
+stage evidence. This remains a dormant storage boundary: it creates no root,
+has no discovery or cleanup API, and does not evaluate Compose or enable the
+production dispatcher.

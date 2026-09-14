@@ -203,6 +203,15 @@ semantic digests. It returns the verified source bytes so a future staging
 boundary need not reopen an unchecked path. It is not wired to a dispatcher or
 executor, and legacy plans with unknown origin fail before any filesystem open.
 
+Those verified in-memory bytes can now be persisted as one immutable ordered
+batch without reopening their source. The staging bundle is bound to the exact
+transaction, plan hash, and mutable service order; contains raw and semantic
+digests; and is published once under an owner-private Linux directory. Replay
+accepts only the exact canonical bundle, while divergent, corrupt, writable,
+linked, replaced, or partially published state fails closed. The store does not
+create or discover its root, delete staging data, evaluate Compose, call a
+service manager, or install a production lifecycle dispatcher in this phase.
+
 ## Evidence boundary
 
 The source contract checks resolver ordering, the exact candidate service set,
