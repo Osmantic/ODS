@@ -253,7 +253,7 @@ def inspect_gguf(path: Path | str, max_metadata_bytes: int = 8 * 1024 * 1024) ->
             "model_name": _first_value(metadata, ("general.name",)),
             "metadata": metadata,
         })
-    except (OSError, UnicodeDecodeError, ValueError, struct.error) as exc:
+    except (OSError, UnicodeDecodeError, ValueError, struct.error, RecursionError, TypeError) as exc:
         logger.debug("Failed to inspect GGUF %s: %s", p, exc)
         result["error"] = str(exc)
     return result
