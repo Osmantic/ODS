@@ -433,3 +433,20 @@ class TestFeatureEnableInstructions:
             headers=test_client.auth_headers,
         )
         assert resp.status_code == 404
+
+
+class TestStrictFeatureSchema:
+    def test_validate_feature_payload(self):
+        try:
+            from routers.features import validate_feature_payload
+        except ImportError:
+            import sys, os
+            sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+            from routers.features import validate_feature_payload
+            
+        allowed = {"beta_ui", "gpu_polling"}
+        dirty_payload = {"beta_ui": "true", "hacked_flag": True, "gpu_polling": 0}
+        clean = validate_feature_payload(dirty_payload, allowed)
+        assert "hacked_flag" not in clean
+        assert clean["beta_ui"] is True
+        assert clean["gpu_polling"] is False
