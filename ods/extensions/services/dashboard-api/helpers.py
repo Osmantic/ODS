@@ -1381,3 +1381,19 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+import re
+
+def dict_select_matching_keys_regex_safe(d: dict | None, pattern: str | None) -> dict:
+    """Safely extract dictionary entries whose keys match regex pattern.
+    Returns {} on None or non-dict inputs.
+    """
+    if not isinstance(d, dict) or d is None:
+        return {}
+    if not isinstance(pattern, str) or not pattern:
+        return dict(d)
+    try:
+        regex = re.compile(pattern)
+        return {k: v for k, v in d.items() if isinstance(k, str) and regex.search(k)}
+    except Exception:
+        return dict(d)
