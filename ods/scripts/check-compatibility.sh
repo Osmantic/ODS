@@ -51,7 +51,9 @@ pass "ports contract"
 
 # Support matrix consistency checks
 if jq -e '.compatibility.os.macos.supported == false' "$MANIFEST_FILE" >/dev/null; then
-  grep -q "macOS.*Tier C" "${ROOT_DIR}/docs/SUPPORT-MATRIX.md" \
-    || warn "manifest says macOS unsupported/preview but docs may be out of sync"
+  if [[ -f "${ROOT_DIR}/docs/SUPPORT-MATRIX.md" ]]; then
+    grep -q "macOS.*Tier C" "${ROOT_DIR}/docs/SUPPORT-MATRIX.md" \
+      || warn "manifest says macOS unsupported/preview but docs may be out of sync"
+  fi
 fi
 pass "compatibility check complete"
