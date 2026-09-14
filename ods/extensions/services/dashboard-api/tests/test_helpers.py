@@ -1740,3 +1740,17 @@ def test_flatten_bounds_cycles_and_large_depth_without_losing_empty_leaves():
         nested = {"child": nested}
     result = dict_flatten_nested_safe(nested, max_depth=100000)
     assert len(next(iter(result)).split(".")) == 128
+
+
+class TestStringMaskSensitiveSafe:
+    def test_valid_masking(self):
+        from helpers import string_mask_sensitive_safe
+        assert string_mask_sensitive_safe("sk-1234567890abcdef", 3, 4) == "sk-************cdef"
+        assert string_mask_sensitive_safe("secret", 1, 1) == "s****t"
+
+    def test_invalid_inputs(self):
+        from helpers import string_mask_sensitive_safe
+        assert string_mask_sensitive_safe(None) == ""
+        assert string_mask_sensitive_safe(12345) == ""
+        assert string_mask_sensitive_safe("key", 5, 5) == "***"
+        assert string_mask_sensitive_safe("key", -1, -1) == "***"
