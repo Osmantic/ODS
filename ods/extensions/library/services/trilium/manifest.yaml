@@ -1,0 +1,39 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: trilium
+  name: Trilium
+  description: "Local hierarchical knowledge notebook with rich notes, attachments and an authenticated automation API."
+  aliases: [knowledge-notebook]
+  container_name: ods-trilium
+  container_uid: 1000
+  default_host: trilium
+  port: 8080
+  external_port_env: TRILIUM_PORT
+  external_port_default: 7832
+  health: /api/health-check
+  startup_timeout: 120
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [notes, knowledge, research, local, api]
+  env_vars:
+    - key: TRILIUM_PORT
+      default: "7832"
+      description: Published notebook port; complete the initial password setup locally
+features:
+  - id: local-knowledge-notebook
+    name: Local Knowledge Notebook
+    description: "Organize research into rich note trees and use the authenticated ETAPI"
+    icon: NotebookPen
+    category: productivity
+    requirements:
+      services: [trilium]
+      vram_gb: 0
+      disk_gb: 1
+    enabled_services_all: [trilium]
+    setup_time: "~2 minutes"
+    priority: 32
