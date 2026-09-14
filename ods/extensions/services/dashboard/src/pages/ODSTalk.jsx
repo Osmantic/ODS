@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
+import TalkReplyCopy from '../components/TalkReplyCopy'
 import {
   AlertCircle, CheckCircle2, Loader2, Mic, Paperclip, RefreshCw,
   Send, Volume2, VolumeX,
@@ -855,6 +856,7 @@ function MessageBubble({ message }) {
             <ReactMarkdown components={MARKDOWN_COMPONENTS}>{message.text}</ReactMarkdown>
           </div>
         )}
+        {!user && message.id !== 'welcome' && message.status === 'done' && message.text && <TalkReplyCopy key={message.text} text={message.text}/>}
         {message.warning && (
           <p className="mt-2 text-xs text-amber-600">{message.warning}</p>
         )}
