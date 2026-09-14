@@ -119,7 +119,7 @@ for endpoint in "$@"; do
     [[ "$presentation" == "script" ]] \
         || fail "$endpoint reports presentation '${presentation:-missing}'; expected script."
 
-    media_type="$(printf '%s' "${content_type%%;*}" | tr '[:upper:]' '[:lower:]')"
+    media_type="$(printf '%s' "${content_type%%;*}" | tr '[:upper:]' '[:lower:]' | xargs)"
     case "$media_type" in
         text/plain) ;;
         *) fail "$endpoint returned content type '${content_type:-missing}'; expected text/plain." ;;
