@@ -336,7 +336,7 @@ def validate_ephemeral_sha_tags(refs: Iterable[ImageRef]) -> list[str]:
 
 
 def load_lock(path: Path = LOCK_PATH) -> dict[str, object]:
-    with path.open(encoding="utf-8") as handle:
+    with path.open(encoding="utf-8", errors="replace") as handle:
         data = json.load(handle)
     if not isinstance(data, dict):
         raise ValueError("dependency-lock.json must contain a JSON object")
