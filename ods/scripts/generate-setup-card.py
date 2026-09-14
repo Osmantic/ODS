@@ -348,7 +348,8 @@ def main(argv: list[str] | None = None) -> int:
         import PIL  # noqa: F401, PLC0415
         import qrcode  # noqa: F401, PLC0415
     except ImportError as exc:
-        print(f"error: missing dependency: {exc.name}. "
+        mod_name = getattr(exc, "name", None) or str(exc)
+        print(f"error: missing dependency: {mod_name}. "
               "Install with: pip install 'qrcode[pil]'", file=sys.stderr)
         return 2
 
