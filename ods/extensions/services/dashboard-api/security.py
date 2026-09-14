@@ -14,12 +14,15 @@ DASHBOARD_API_KEY = os.environ.get("DASHBOARD_API_KEY")
 if not DASHBOARD_API_KEY:
     DASHBOARD_API_KEY = secrets.token_urlsafe(32)
     key_file = Path("/data/dashboard-api-key.txt")
-    key_file.parent.mkdir(parents=True, exist_ok=True)
-    key_file.write_text(DASHBOARD_API_KEY)
-    key_file.chmod(0o600)
+    try:
+        key_file.parent.mkdir(parents=True, exist_ok=True)
+        key_file.write_text(DASHBOARD_API_KEY)
+        key_file.chmod(0o600)
+    except Exception as exc:
+        logger.warning("Could not persist generated API key to %s: %s", key_file, exc)
     logger.warning(
-        "DASHBOARD_API_KEY not set. Generated temporary key and wrote to %s (mode 0600). "
-        "Set DASHBOARD_API_KEY in your .env file for production.", key_file
+        "DASHBOARD_API_KEY not set. Generated temporary key. "
+        "Set DASHBOARD_API_KEY in your .env file for production."
     )
 
 security_scheme = HTTPBearer(auto_error=False)
