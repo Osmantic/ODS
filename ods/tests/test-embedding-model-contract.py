@@ -53,6 +53,7 @@ def render_compose(**overrides: str) -> dict:
         [
             "docker", "compose",
             "-f", "docker-compose.base.yml",
+            "-f", "extensions/services/open-webui/compose.yaml",
             "-f", "extensions/services/embeddings/compose.yaml",
             "config", "--format", "json",
         ],

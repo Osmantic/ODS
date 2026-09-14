@@ -79,8 +79,12 @@ _phase06_env_hex_secret() {
 if $DRY_RUN; then
     log "[DRY RUN] Would create: $INSTALL_DIR/{config,data,models}"
     log "[DRY RUN] Would copy compose files ($COMPOSE_FLAGS) and source tree"
-    log "[DRY RUN] Would generate .env with secrets (WEBUI_SECRET, N8N_PASS, LITELLM_KEY, etc.)"
-    log "[DRY RUN] Would generate SearXNG config with randomized secret key"
+    if [[ "${ODS_INSTALL_PROFILE:-legacy}" == "assistant-first" ]]; then
+        log "[DRY RUN] Would generate only required control-plane and inference configuration"
+    else
+        log "[DRY RUN] Would generate .env with secrets (WEBUI_SECRET, N8N_PASS, LITELLM_KEY, etc.)"
+    fi
+    [[ "${ENABLE_SEARXNG:-false}" == "true" ]] && log "[DRY RUN] Would generate SearXNG config with randomized secret key"
     [[ "$ENABLE_HERMES" == "true" ]] && log "[DRY RUN] Would configure Hermes Agent (LLM endpoint: http://llama-server:8080/v1; data dir: $INSTALL_DIR/data/hermes)"
     [[ "$ENABLE_OPENCLAW" == "true" ]] && log "[DRY RUN] Would configure OpenClaw (model: $LLM_MODEL, config: ${OPENCLAW_CONFIG:-default})"
     log "[DRY RUN] Would validate .env against schema"
@@ -206,11 +210,15 @@ else
     _phase06_step "create-directories"
     ods_progress 38 "directories" "Creating directory structure"
     mkdir -p "$INSTALL_DIR"/{config,data,models}
-    mkdir -p "$INSTALL_DIR"/data/{open-webui,whisper,tts,n8n,qdrant,models,privacy-shield,ape,token-spy,hermes,persona}
-    mkdir -p "$INSTALL_DIR"/data/hermes-proxy/{caddy-data,caddy-config}
-    mkdir -p "$INSTALL_DIR"/data/langfuse/{postgres,clickhouse,redis,minio}
-    mkdir -p "$INSTALL_DIR"/data/remote-provider/secrets
-    mkdir -p "$INSTALL_DIR"/config/{n8n,litellm,openclaw,searxng}
+    mkdir -p "$INSTALL_DIR"/data/{config,models,persona}
+    mkdir -p "$INSTALL_DIR"/config/{litellm,model-router}
+    if [[ "${ODS_INSTALL_PROFILE:-legacy}" != "assistant-first" ]]; then
+        mkdir -p "$INSTALL_DIR"/data/{open-webui,whisper,tts,n8n,qdrant,privacy-shield,ape,token-spy,hermes}
+        mkdir -p "$INSTALL_DIR"/data/hermes-proxy/{caddy-data,caddy-config}
+        mkdir -p "$INSTALL_DIR"/data/langfuse/{postgres,clickhouse,redis,minio}
+        mkdir -p "$INSTALL_DIR"/data/remote-provider/secrets
+        mkdir -p "$INSTALL_DIR"/config/{n8n,openclaw,searxng}
+    fi
 
     _phase06_repair_host_path() {
         local target="$1" description="$2"
@@ -344,11 +352,11 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
     do
         [[ -d "$_installed_code_root" && ! -L "$_installed_code_root" ]] \
             || error "Missing or unsafe installed code tree: $_installed_code_root"
-        find -P "$_installed_code_root" \( -type d -o -type f \) -exec chmod go-w {} + \
+        find -P "$_installed_code_root" \( -type d -o -type f \) -exec chmod go-w -- {} + \
             || error "Could not secure installed code tree: $_installed_code_root"
     done
     find -P "$INSTALL_DIR" -maxdepth 1 -type f \
-        \( -name '*.sh' -o -name 'ods-cli' \) -exec chmod go-w {} + \
+        \( -name '*.sh' -o -name 'ods-cli' \) -exec chmod go-w -- {} + \
         || error "Could not secure installed root executables"
     unset _installed_code_root
 
@@ -361,7 +369,7 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
         _pixel_exec_control_path="$_pixel_exec_control_dir/$_pixel_exec_control"
         [[ -f "$_pixel_exec_control_path" && ! -L "$_pixel_exec_control_path" ]] \
             || error "Missing or unsafe Pixel execution-control helper: $_pixel_exec_control_path"
-        chmod 0755 "$_pixel_exec_control_path" \
+        chmod 0755 -- "$_pixel_exec_control_path" \
             || error "Could not secure Pixel execution-control helper: $_pixel_exec_control_path"
     done
     unset _pixel_exec_control_dir _pixel_exec_control _pixel_exec_control_path
@@ -405,7 +413,7 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
         [[ ! -L "$INSTALL_DIR/data/extensions-library" ]] \
             || error "Installed extension library cannot be a symlink"
         find -P "$INSTALL_DIR/data/extensions-library" \( -type d -o -type f \) \
-            -exec chmod go-w {} + \
+            -exec chmod go-w -- {} + \
             || error "Could not secure the installed extension library"
         ai_ok "Extensions library copied to data/extensions-library/ (from $_ext_lib_src)"
     else
@@ -1031,6 +1039,7 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
 
 #=== ODS Version (used by ods-cli update for version-compat checks) ===
 ODS_VERSION=${VERSION:-2.6.0}
+ODS_INSTALL_PROFILE=${ODS_INSTALL_PROFILE:-legacy}
 
 #=== Network Binding ===
 # 127.0.0.1 = localhost only (secure default)
@@ -1500,14 +1509,15 @@ ENV_EOF
         warn "Skipping .env schema validation (.env.schema.json or scripts/validate-env.sh missing)"
     fi
 
-    # Generate SearXNG config with randomized secret key
-    # Fix ownership from previous container runs (SearXNG writes as uid 977)
-    _phase06_step "generate-searxng-config"
-    mkdir -p "$INSTALL_DIR/config/searxng"
-    if [[ -f "$INSTALL_DIR/config/searxng/settings.yml" ]] && ! [[ -w "$INSTALL_DIR/config/searxng/settings.yml" ]]; then
-        _phase06_repair_host_path "$INSTALL_DIR/config/searxng/settings.yml" "SearXNG configuration" || return 1
-    fi
-    cat > "$INSTALL_DIR/config/searxng/settings.yml" << SEARXNG_EOF
+    if [[ "${ENABLE_SEARXNG:-false}" == "true" ]]; then
+        # Generate SearXNG config only when a selected capability needs it.
+        # Fix ownership from previous container runs (SearXNG runs as uid 977).
+        _phase06_step "generate-searxng-config"
+        mkdir -p "$INSTALL_DIR/config/searxng"
+        if [[ -f "$INSTALL_DIR/config/searxng/settings.yml" ]] && ! [[ -w "$INSTALL_DIR/config/searxng/settings.yml" ]]; then
+            _phase06_repair_host_path "$INSTALL_DIR/config/searxng/settings.yml" "SearXNG configuration" || return 1
+        fi
+        cat > "$INSTALL_DIR/config/searxng/settings.yml" << SEARXNG_EOF
 use_default_settings: true
 server:
   secret_key: "${SEARXNG_SECRET}"
@@ -1536,7 +1546,8 @@ engines:
   - name: stackoverflow
     disabled: false
 SEARXNG_EOF
-    ai_ok "Generated SearXNG config with randomized secret key"
+        ai_ok "Generated SearXNG config with randomized secret key"
+    fi
 fi
 
 # Documentation, CLI tools, and compose variants already copied by rsync/cp block above

@@ -900,7 +900,15 @@ litellm_settings:
         # --env-file is explicit: Docker Compose V2 on Windows may not auto-discover
         # .env from the project directory when multiple -f flags are used. Explicitly
         # passing --env-file removes ambiguity in .env resolution.
-        $composeFlags = @("--env-file", ".env", "-f", "docker-compose.base.yml")
+        # Open WebUI was extracted from the immutable base into a manifest-owned
+        # fragment. It must precede Windows platform overlays so their native
+        # inference route remains authoritative. The extension loop below
+        # records it as enabled but does not append this base fragment twice.
+        $composeFlags = @(
+            "--env-file", ".env",
+            "-f", "docker-compose.base.yml",
+            "-f", "extensions/services/open-webui/compose.yaml"
+        )
 
         if ($cloudMode) {
             $composeFlags += @("-f", "installers/windows/docker-compose.windows-amd.yml")
@@ -1008,7 +1016,9 @@ litellm_settings:
                 }
 
                 $relPath = $composePath.Substring($installDir.Length + 1) -replace "\\", "/"
-                $composeFlags += @("-f", $relPath)
+                if ($svcName -ne "open-webui") {
+                    $composeFlags += @("-f", $relPath)
+                }
                 $enabledExtensionServices += $svcName
 
                 if ($currentBackend -eq "nvidia" -and -not $script:gpuPassthroughFailed) {
@@ -1024,7 +1034,10 @@ litellm_settings:
                             $composeFlags += @("-f", $relOverlay)
                         }
                     }
-                } elseif ($currentBackend -eq "amd") {
+                } elseif ($currentBackend -eq "amd" -and $svcName -ne "open-webui") {
+                    # The Windows AMD platform overlay already owns Open WebUI's
+                    # native inference route. Its Linux AMD fragment would
+                    # otherwise overwrite that route with the LiteLLM default.
                     $gpuOverlay = Join-Path $svcDir.FullName "compose.amd.yaml"
                     if (Test-Path $gpuOverlay) {
                         $relOverlay = $gpuOverlay.Substring($installDir.Length + 1) -replace "\\", "/"

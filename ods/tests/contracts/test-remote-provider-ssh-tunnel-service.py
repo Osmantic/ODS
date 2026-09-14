@@ -19,7 +19,7 @@ sys.path.insert(0, str(ROOT / "extensions" / "services" / "remote-provider-ssh-t
 from remote_provider.ssh_supervisor import SSH_SUPERVISOR_PLAN_SCHEMA  # noqa: E402
 
 
-BASE_COMPOSE = ROOT / "docker-compose.base.yml"
+BASE_COMPOSE = ROOT / "extensions" / "services" / "remote-provider-ssh-tunnel" / "compose.yaml"
 MANIFEST = ROOT / "extensions" / "services" / "remote-provider-ssh-tunnel" / "manifest.yaml"
 DOCKERFILE = ROOT / "extensions" / "services" / "remote-provider-ssh-tunnel" / "Dockerfile"
 APP_MAIN = ROOT / "extensions" / "services" / "remote-provider-ssh-tunnel" / "app" / "main.py"
@@ -139,7 +139,7 @@ def ssh_route_state() -> dict[str, object]:
 
 def _compose_block() -> str:
     compose = read(BASE_COMPOSE)
-    assert_true("  remote-provider-ssh-tunnel:" in compose, "base compose must define remote-provider-ssh-tunnel")
+    assert_true("  remote-provider-ssh-tunnel:" in compose, "service fragment must define remote-provider-ssh-tunnel")
     return compose.split("  remote-provider-ssh-tunnel:", 1)[1].split("\n  # ", 1)[0]
 
 
@@ -215,7 +215,7 @@ def test_manifest_and_network_policy_mark_no_lan_exposure() -> None:
     assert_true("id: remote-provider-ssh-tunnel" in manifest, "manifest must declare service id")
     assert_true("external_port_default: 0" in manifest, "manifest must prevent host URL fallback")
     assert_true("category: core" in manifest, "SSH tunnel service should be a core internal service")
-    assert_true("compose_file:" not in manifest, "base-stack service manifest must not add an extension overlay")
+    assert_true("compose_file: compose.yaml" in manifest, "extracted service manifest must own its Compose fragment")
     entry = exposure["services"]["remote-provider-ssh-tunnel"]
     assert_true(entry["lan_exposure"] == "none", "SSH tunnel service must have no LAN exposure")
     assert_true(entry["auth_required"] is True, "SSH tunnel service must require private SSH custody")

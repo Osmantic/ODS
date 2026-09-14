@@ -27,7 +27,7 @@ from remote_provider.egress_probe import (  # noqa: E402
 )
 
 
-BASE_COMPOSE = ROOT / "docker-compose.base.yml"
+BASE_COMPOSE = ROOT / "extensions" / "services" / "remote-provider-egress" / "compose.yaml"
 MANIFEST = ROOT / "extensions" / "services" / "remote-provider-egress" / "manifest.yaml"
 DOCKERFILE = ROOT / "extensions" / "services" / "remote-provider-egress" / "Dockerfile"
 APP_MAIN = ROOT / "extensions" / "services" / "remote-provider-egress" / "app" / "main.py"
@@ -114,7 +114,7 @@ def resolver_for(*addresses: str):
 
 def test_compose_service_is_internal_only_and_hardened() -> None:
     compose = read(BASE_COMPOSE)
-    assert_true("  remote-provider-egress:" in compose, "base compose must define remote-provider-egress")
+    assert_true("  remote-provider-egress:" in compose, "service fragment must define remote-provider-egress")
     block = compose.split("  remote-provider-egress:", 1)[1].split("\n  # ", 1)[0]
     assert_true("dockerfile: extensions/services/remote-provider-egress/Dockerfile" in block, "service must use its Dockerfile")
     assert_true("image: ods-remote-provider-egress:local" in block, "service image must be local-only")
@@ -141,7 +141,7 @@ def test_manifest_and_network_policy_mark_no_lan_exposure() -> None:
     assert_true("id: remote-provider-egress" in manifest, "manifest must declare service id")
     assert_true("external_port_default: 0" in manifest, "manifest must prevent host URL fallback")
     assert_true("category: core" in manifest, "egress service should be a core internal service")
-    assert_true("compose_file:" not in manifest, "base-stack service manifest must not add an extension overlay")
+    assert_true("compose_file: compose.yaml" in manifest, "extracted service manifest must own its Compose fragment")
     entry = exposure["services"]["remote-provider-egress"]
     assert_true(entry["lan_exposure"] == "none", "egress service must have no LAN exposure")
     assert_true(entry["auth_required"] is True, "egress service must require private provider auth")

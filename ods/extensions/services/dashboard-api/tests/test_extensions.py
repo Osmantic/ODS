@@ -860,7 +860,7 @@ class TestEnableExtension:
 
     def test_enable_allows_core_service_dependency(self, test_client, monkeypatch, tmp_path):
         """Enable succeeds when depends_on includes a core service."""
-        manifest = {"service": {"depends_on": ["open-webui"]}}
+        manifest = {"service": {"depends_on": ["dashboard"]}}
         user_dir = _setup_user_ext(tmp_path, "my-ext", enabled=False,
                                    manifest=manifest)
         _patch_mutation_config(monkeypatch, tmp_path, user_dir=user_dir)
@@ -894,7 +894,7 @@ class TestEnableExtension:
         _patch_mutation_config(monkeypatch, tmp_path)
 
         resp = test_client.post(
-            "/api/extensions/open-webui/enable",
+            "/api/extensions/dashboard/enable",
             headers=test_client.auth_headers,
         )
         assert resp.status_code == 403
@@ -1415,7 +1415,7 @@ class TestUninstallExtension:
         _patch_mutation_config(monkeypatch, tmp_path)
 
         resp = test_client.delete(
-            "/api/extensions/open-webui",
+            "/api/extensions/dashboard",
             headers=test_client.auth_headers,
         )
         assert resp.status_code == 403
@@ -2924,7 +2924,7 @@ class TestPurgeExtensionData:
         _patch_mutation_config(monkeypatch, tmp_path)
 
         resp = test_client.request(
-            "DELETE", "/api/extensions/open-webui/data",
+            "DELETE", "/api/extensions/dashboard/data",
             headers=test_client.auth_headers,
             json={"confirm": True},
         )
@@ -4110,7 +4110,7 @@ class TestAssertNotCoreAllowsBuiltins:
     """_assert_not_core blocks only the 4 always-on base-compose services."""
 
     @pytest.mark.parametrize("service_id", [
-        "n8n", "tts", "whisper", "comfyui", "litellm", "openclaw",
+        "n8n", "tts", "whisper", "comfyui", "litellm", "openclaw", "open-webui",
         "perplexica", "searxng", "privacy-shield", "token-spy", "qdrant",
         "embeddings", "ape", "langfuse", "opencode", "hermes", "hermes-proxy",
     ])
@@ -4119,7 +4119,7 @@ class TestAssertNotCoreAllowsBuiltins:
         _assert_not_core(service_id)
 
     @pytest.mark.parametrize("service_id", [
-        "llama-server", "open-webui", "dashboard", "dashboard-api",
+        "llama-server", "model-router", "dashboard", "dashboard-api",
     ])
     def test_assert_not_core_blocks_always_on(self, service_id):
         """Always-on base-compose services must raise 403."""

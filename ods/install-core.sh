@@ -148,6 +148,9 @@ EXTERNAL_LLM_MODEL="${EXTERNAL_LLM_MODEL:-}"
 EXTERNAL_LLM_AUTO_REUSE="${EXTERNAL_LLM_AUTO_REUSE:-false}"
 EXTERNAL_LLM_DISABLE=false
 ODS_RESELECT_MODEL="${ODS_RESELECT_MODEL:-false}"
+ODS_INSTALL_PROFILE_EXPLICIT=false
+[[ -n "${ODS_INSTALL_PROFILE:-}" ]] && ODS_INSTALL_PROFILE_EXPLICIT=true
+ODS_INSTALL_PROFILE="${ODS_INSTALL_PROFILE:-legacy}"
 
 usage() {
     cat << EOF
@@ -205,6 +208,8 @@ Options:
     --offline         M1 mode: Configure for fully offline/air-gapped operation
     --lan             Bind services to 0.0.0.0 for LAN access (headless servers)
     --no-bootstrap    Skip bootstrap fast-start (download full model in foreground)
+    --assistant-first Opt in to the Linux public-beta minimal assistant profile
+                      (fresh installs only; Full/Core/Custom remain unchanged)
     --summary-json P  Write machine-readable install summary JSON to path P
     -h, --help        Show this help
 
@@ -237,6 +242,7 @@ while [[ $# -gt 0 ]]; do
         --skip-docker) SKIP_DOCKER=true; shift ;;
         --force) FORCE=true; shift ;;
         --tier) TIER="$2"; shift 2 ;;
+        --assistant-first) ODS_INSTALL_PROFILE="assistant-first"; ODS_INSTALL_PROFILE_EXPLICIT=true; shift ;;
         --cloud) ODS_MODE="cloud"; ODS_MODE_EXPLICIT=true; shift ;;
         --use-existing-lemonade) LEMONADE_EXTERNAL=true; ODS_MODE="lemonade"; ODS_MODE_EXPLICIT=true; shift ;;
         --lemonade-url) LEMONADE_EXTERNAL=true; ODS_MODE="lemonade"; ODS_MODE_EXPLICIT=true; LEMONADE_BASE_URL="$2"; shift 2 ;;
@@ -290,6 +296,47 @@ while [[ $# -gt 0 ]]; do
         *) error "Unknown option: $1" ;;
     esac
 done
+
+if [[ "$ODS_INSTALL_PROFILE_EXPLICIT" != "true" ]] \
+   && [[ -f "$INSTALL_DIR/.env" ]] \
+   && grep -qx 'ODS_INSTALL_PROFILE=assistant-first' "$INSTALL_DIR/.env" 2>/dev/null; then
+    ODS_INSTALL_PROFILE="assistant-first"
+    log "Existing Assistant First profile detected; preserving its minimal graph"
+fi
+
+if [[ "$ODS_INSTALL_PROFILE" != "legacy" && "$ODS_INSTALL_PROFILE" != "assistant-first" ]]; then
+    error "Unsupported ODS_INSTALL_PROFILE: $ODS_INSTALL_PROFILE"
+fi
+
+if [[ "$ODS_INSTALL_PROFILE" == "assistant-first" ]]; then
+    # Phase 1 is intentionally fresh-install only. Silently switching an
+    # existing Full/Core/Custom install would make its optional applications
+    # disappear from the active graph and --remove-orphans could stop them.
+    if [[ -f "$INSTALL_DIR/.env" ]] \
+       && ! grep -qx 'ODS_INSTALL_PROFILE=assistant-first' "$INSTALL_DIR/.env" 2>/dev/null; then
+        error "Assistant First is limited to fresh installs during public beta; existing installs remain unchanged."
+    fi
+    ENABLE_VOICE=false
+    ENABLE_WORKFLOWS=false
+    ENABLE_RAG=false
+    ENABLE_RECOMMENDED=false
+    ENABLE_HERMES=false
+    ENABLE_OPENCLAW=false
+    ENABLE_OPENCODE=false
+    ENABLE_COMFYUI=false
+    ENABLE_APE=false
+    ENABLE_PERPLEXICA=false
+    ENABLE_PRIVACY_SHIELD=false
+    ENABLE_LANGFUSE=false
+    ENABLE_ODS_PROXY=false
+    ENABLE_TAILSCALE=false
+    ENABLE_BRAVE_SEARCH=false
+    ENABLE_PIXEL=true
+    PIXEL_EXPLICIT=true
+    INTERACTIVE=false
+fi
+
+export ODS_INSTALL_PROFILE
 
 _requested_ods_mode="$ODS_MODE"
 ODS_MODE="$(ods_preserve_existing_install_mode "$ODS_MODE" "$ODS_MODE_EXPLICIT" "$INSTALL_DIR/.env")"

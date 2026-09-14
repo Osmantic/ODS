@@ -25,7 +25,11 @@ service:
   macos_host_supported: false
   gpu_backends: [all]
   category: core
-  depends_on: [litellm, searxng]
+  depends_on: []
+  capabilities:
+    provides: [assistant@1]
+    requires: [inference-route@1]
+    optional: [web-search@1]
   startup_check: false
   description: >
     Host ingress for the Pixel gateway. Serves GET /health and
@@ -69,9 +73,9 @@ features:
     icon: Shield
     category: agent
     requirements:
-      services: [pixel-agent, litellm, searxng]
+      services: [pixel-agent]
       vram_gb: 0
-    enabled_services_all: [pixel-agent, litellm, searxng]
+    enabled_services_all: [pixel-agent]
     setup_time: ~1 minute
     priority: 60
     launch:

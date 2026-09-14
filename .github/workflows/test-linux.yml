@@ -124,6 +124,9 @@ jobs:
       - name: Assistant-First Baseline Receipt Contract
         run: python3 tests/test_capture_assistant_first_baseline.py
 
+      - name: Assistant-First Profile Contract
+        run: python3 tests/test_assistant_first_profile.py
+
       - name: Fleet Host Lock Contract
         run: bash tests/test-fleet-host-lock.sh
 

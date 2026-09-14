@@ -1,0 +1,6 @@
+services:
+  open-webui:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      OPENAI_API_KEY: "${OPEN_WEBUI_LLM_API_KEY:-}"

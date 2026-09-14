@@ -12,8 +12,9 @@
 #           pull_with_progress()
 # Provides: (Docker images pulled locally)
 #
-# Modder notes:
-#   Add new container images or change image tags here.
+# Image ownership lives in the resolved Compose graph. The small seed list
+# below is limited to inference build inputs that Compose intentionally omits
+# because the resulting service image is built locally.
 # ============================================================================
 
 ods_progress 48 "images" "Downloading container images"
@@ -30,7 +31,7 @@ case "${LEMONADE_EXTERNAL:-false}" in
     true|TRUE|1|yes|YES|on|ON) _lemonade_external=true ;;
     *) _lemonade_external=false ;;
 esac
-if [[ "$_lemonade_external" == "true" ]]; then
+if [[ "$_lemonade_external" == "true" || "${ODS_MODE:-local}" == "cloud" || -n "${EXTERNAL_LLM_URL:-}" ]]; then
     # The external host owns inference. In WSL the Linux capability probe can
     # legitimately fall back to CPU even though Windows Lemonade has full NPU/
     # GPU access; pulling a dormant llama.cpp image wastes time and disk and
@@ -45,33 +46,35 @@ elif [[ "$GPU_BACKEND" == "cpu" ]]; then
 else
     PULL_LIST+=("${LLAMA_SERVER_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-cuda-b9014}|LLAMA-SERVER — downloading the brain (NVIDIA CUDA)")
 fi
-PULL_LIST+=("ghcr.io/open-webui/open-webui:v0.7.2|OPEN WEBUI — interface module")
-PULL_LIST+=("itzcrazykns1337/perplexica:slim-latest@sha256:6e399abf4ff587822b0ef0df11f36088fb928e17ac61556fe89beb68d48c378e|PERPLEXICA — deep research engine")
-if [[ "$ENABLE_VOICE" == "true" ]]; then
-    if [[ "$GPU_BACKEND" == "nvidia" && "${WHISPER_ACCELERATION:-cuda}" == "cuda" ]]; then
-        PULL_LIST+=("ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cuda|WHISPER — ears online (Speaches STT, CUDA)")
-    else
-        PULL_LIST+=("${WHISPER_IMAGE:-ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cpu}|WHISPER — ears online (Speaches STT, CPU)")
-    fi
-    PULL_LIST+=("ghcr.io/remsky/kokoro-fastapi-cpu:v0.2.4|KOKORO — voice module")
-fi
-[[ "$ENABLE_WORKFLOWS" == "true" ]] && PULL_LIST+=("n8nio/n8n:2.6.4|N8N — automation engine")
-[[ "${ENABLE_QDRANT:-${ENABLE_RAG:-false}}" == "true" ]] && PULL_LIST+=("qdrant/qdrant:v1.16.3|QDRANT — memory vault")
+# Hermes retains an explicit entry only because its tag undergoes a dedicated
+# registry-validation/fallback check below. Compose discovery de-duplicates it.
 if [[ "$ENABLE_HERMES" == "true" ]]; then
-    # Version-pinned upstream image. See extensions/services/hermes/compose.yaml
-    # and docs/HERMES.md for the bump process. Hermes-proxy is the auth gate
-    # (Caddy) and is pulled alongside Hermes.
     PULL_LIST+=("${HERMES_AGENT_IMAGE:-nousresearch/hermes-agent:v2026.6.5}|HERMES — default agent (Nous Research)")
-    PULL_LIST+=("caddy:2.11.3-alpine|HERMES PROXY — magic-link auth gate (Caddy)")
 fi
-[[ "$ENABLE_OPENCLAW" == "true" ]] && PULL_LIST+=("ghcr.io/openclaw/openclaw:2026.3.8|OPENCLAW — agent framework")
-[[ "${ENABLE_EMBEDDINGS:-${ENABLE_RAG:-false}}" == "true" ]] && PULL_LIST+=("ghcr.io/huggingface/text-embeddings-inference:cpu-1.9.1|TEI — embedding engine")
 
+# Discover every other pullable image from the exact active Compose graph.
 if command -v ods_compose_external_images >/dev/null 2>&1 && [[ -n "${COMPOSE_FLAGS:-}" ]]; then
     read -ra _phase08_compose_flags_arr <<< "$COMPOSE_FLAGS"
     _phase08_compose_images=()
     _phase08_compose_image_output=""
-    if _phase08_compose_image_output="$(ods_compose_external_images "${DOCKER_COMPOSE_CMD:-docker compose}" "${_phase08_compose_flags_arr[@]}" 2>>"$LOG_FILE")"; then
+    _phase08_discover_compose_images() {
+        if [[ "${ODS_INSTALL_PROFILE:-legacy}" == "assistant-first" && "$DRY_RUN" == "true" ]]; then
+        # The assistant edge fragment correctly requires generated runtime
+        # credentials and socket locations. Supply non-secret, in-memory
+        # placeholders only while rendering a dry-run plan; never persist them.
+            PIXEL_OPENWEBUI_KEY=assistant-plan-placeholder \
+            DASHBOARD_API_KEY=assistant-plan-placeholder \
+            PIXEL_INGRESS_GID=0 \
+            PIXEL_INGRESS_RUNTIME_DIR=/run/ods-assistant-plan/ingress \
+            PIXEL_PREVIEW_RUNTIME_DIR=/run/ods-assistant-plan/preview \
+            ods_compose_external_images "${DOCKER_COMPOSE_CMD:-docker compose}" \
+                "${_phase08_compose_flags_arr[@]}" 2>>"$LOG_FILE"
+        else
+            ods_compose_external_images "${DOCKER_COMPOSE_CMD:-docker compose}" \
+                "${_phase08_compose_flags_arr[@]}" 2>>"$LOG_FILE"
+        fi
+    }
+    if _phase08_compose_image_output="$(_phase08_discover_compose_images)"; then
         if [[ -n "$_phase08_compose_image_output" ]]; then
             mapfile -t _phase08_compose_images <<< "$_phase08_compose_image_output"
         fi
@@ -88,12 +91,28 @@ if command -v ods_compose_external_images >/dev/null 2>&1 && [[ -n "${COMPOSE_FL
             fi
         done
     else
-        ai_warn "Could not audit Docker Compose image list during Phase 4; Phase 5 will re-check before launch."
+        ai_warn "Could not audit the resolved Docker Compose image list; launch will re-check it."
     fi
+    unset -f _phase08_discover_compose_images
 fi
+
+_phase08_report_resolved_image_size() {
+    command -v ods_docker_known_image_bytes >/dev/null 2>&1 || return 0
+    local -a images=()
+    local entry known_bytes unknown_count known_gib
+    for entry in "${PULL_LIST[@]}"; do
+        images+=("${entry%%|*}")
+    done
+    read -r known_bytes unknown_count < <(
+        ods_docker_known_image_bytes "${DOCKER_CMD:-docker}" "${images[@]}"
+    )
+    known_gib="$(awk -v bytes="${known_bytes:-0}" 'BEGIN { printf "%.2f", bytes / 1073741824 }')"
+    ai "Resolved pullable image footprint: ${known_gib} GiB known locally; ${unknown_count:-0} image size(s) unavailable."
+}
 
 if $DRY_RUN; then
     ai "[DRY RUN] I would download ${#PULL_LIST[@]} modules."
+    _phase08_report_resolved_image_size
 else
     if [[ "${ODS_MODE:-local}" != "cloud" && ( "$GPU_BACKEND" == "nvidia" || "$GPU_BACKEND" == "cpu" || "$GPU_BACKEND" == "intel" || "$GPU_BACKEND" == "sycl" ) ]]; then
         _llama_image=""
@@ -215,6 +234,7 @@ else
     echo ""
     if [[ $pull_failed -eq 0 ]]; then
         ai_ok "All $pull_total modules downloaded"
+        _phase08_report_resolved_image_size
     else
         ai_bad "$pull_failed of $pull_total modules failed to download"
         ai "Phase 5 will not perform unprotected Docker pulls during compose up."

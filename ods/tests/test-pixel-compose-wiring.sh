@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 EDGE="$ROOT/extensions/services/pixel-edge/compose.yaml.disabled"
 BASE="$ROOT/docker-compose.base.yml"
+OPEN_WEBUI="$ROOT/extensions/services/open-webui/compose.yaml"
 
 [[ -f "$EDGE" && ! -e "$ROOT/extensions/services/pixel-edge/compose.yaml" ]] || {
     echo "Pixel Edge must ship disabled until the qualified Linux installer enables it" >&2
@@ -59,7 +60,7 @@ if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; 
     PIXEL_PREVIEW_RUNTIME_DIR="$runtime" \
     DASHBOARD_API_KEY="$(printf 'c%.0s' {1..64})" \
     WEBUI_SECRET="$(printf 'b%.0s' {1..64})" \
-        docker compose -f "$BASE" -f "$EDGE" config --quiet
+        docker compose -f "$BASE" -f "$OPEN_WEBUI" -f "$EDGE" config --quiet
     PIXEL_OPENWEBUI_KEY="$(printf 'a%.0s' {1..64})" \
     PIXEL_INGRESS_GID=1234 \
     PIXEL_INGRESS_RUNTIME_DIR="$runtime" \
@@ -68,7 +69,7 @@ if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; 
     WEBUI_SECRET="$(printf 'b%.0s' {1..64})" \
     GGUF_FILE="Qwen-Test-Q4_K_M.gguf" \
     LLM_MODEL="qwen-test" \
-        docker compose -f "$BASE" -f "$EDGE" config --format json > "$runtime/config.json"
+        docker compose -f "$BASE" -f "$OPEN_WEBUI" -f "$EDGE" config --format json > "$runtime/config.json"
     python3 - "$runtime/config.json" <<'PY'
 import json, sys
 value = json.load(open(sys.argv[1], encoding="utf-8"))
@@ -106,7 +107,7 @@ PY
     GGUF_FILE="Qwen-Test-Q4_K_M.gguf" \
     LLM_MODEL="qwen-test" \
     OPEN_WEBUI_TASK_MODEL="ods/current" \
-        docker compose -f "$BASE" -f "$EDGE" config --format json > "$runtime/config-explicit.json"
+        docker compose -f "$BASE" -f "$OPEN_WEBUI" -f "$EDGE" config --format json > "$runtime/config-explicit.json"
     python3 - "$runtime/config-explicit.json" <<'PY'
 import json, sys
 value = json.load(open(sys.argv[1], encoding="utf-8"))

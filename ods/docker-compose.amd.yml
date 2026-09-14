@@ -1,7 +1,7 @@
 # ODS — AMD GPU Overlay (Lemonade inference backend)
 # Lemonade provides optimized local AI inference with Vulkan, ROCm, and NPU support.
 # ComfyUI GPU config moved to extensions/services/comfyui/compose.amd.yaml
-# Use with: docker compose -f docker-compose.base.yml -f docker-compose.amd.yml up -d
+# Use scripts/resolve-compose-stack.sh so enabled service fragments are included.
 
 services:
   llama-server:
@@ -90,11 +90,6 @@ services:
   # Services route through LiteLLM (ODS_MODE=lemonade sets LLM_API_URL=http://litellm:4000).
   # LiteLLM handles the /api/v1 translation to Lemonade internally.
   # LiteLLM enforces auth via LITELLM_MASTER_KEY=${LITELLM_KEY}; clients must present LITELLM_KEY.
-
-  open-webui:
-    environment:
-      - OPENAI_API_KEY=${LITELLM_KEY}
-      - ENABLE_IMAGE_GENERATION=${ENABLE_IMAGE_GENERATION:-true}
 
   dashboard-api:
     environment:

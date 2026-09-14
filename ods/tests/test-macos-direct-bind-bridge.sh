@@ -207,6 +207,7 @@ if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; 
         docker compose --project-directory "$ROOT_DIR" \
             -f "$ROOT_DIR/docker-compose.base.yml" \
             -f "$ROOT_DIR/docker-compose.cloud.yml" \
+            -f "$ROOT_DIR/extensions/services/open-webui/compose.yaml" \
             -f "$ROOT_DIR/extensions/services/litellm/compose.yaml" \
             -f "$ROOT_DIR/extensions/services/hermes/compose.yaml" \
             -f "$cloud_auth_overlay" \
@@ -231,6 +232,7 @@ assert services["hermes"]["environment"]["OPENAI_API_KEY"] == key
         HERMES_LLM_BASE_URL=http://llama-server:8080/v1 \
         docker compose --project-directory "$ROOT_DIR" \
             -f "$ROOT_DIR/docker-compose.base.yml" \
+            -f "$ROOT_DIR/extensions/services/open-webui/compose.yaml" \
             -f "$ROOT_DIR/extensions/services/litellm/compose.yaml" \
             -f "$ROOT_DIR/extensions/services/hermes/compose.yaml" \
             config --format json

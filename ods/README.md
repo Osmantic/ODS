@@ -64,6 +64,21 @@ cd ODS
 
 The installer auto-detects your GPU, picks the right model, generates secure passwords, and starts everything. Open **http://localhost:3000** and start chatting.
 
+### Assistant First public beta
+
+Qualified Ubuntu 24.04 and Debian 12 hosts can opt in to the thin installation:
+
+```bash
+./install.sh --assistant-first
+```
+
+This fresh-install-only profile starts the named assistant, its ODS control
+plane, and one selected inference route. Open WebUI, search, workflows, voice,
+RAG, image generation, and the other catalog applications are left unselected;
+their images and containers are not created. Existing Full, Core, and Custom
+installs remain unchanged. See [Assistant First](docs/ASSISTANT-FIRST.md) for
+the exact current graph and public-beta boundaries.
+
 On Linux Docker installs, llama-server is exposed to the host on **http://localhost:11434** (`OLLAMA_PORT`) and runs on `8080` inside Docker. Use `llama-server:8080` only from other containers on the ODS network. macOS native Metal and Windows native/Lemonade paths use **http://localhost:8080** unless overridden.
 
 On Linux AMD hosts already running Lemonade SDK, install ODS around it with

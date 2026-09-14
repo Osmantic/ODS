@@ -40,7 +40,7 @@ check 'Test-ODSWindowsServiceEnabled' "$PLAN_LIB" "service-plan enabled helper e
 check 'Set-ODSWindowsExtensionComposeState' "$PLAN_LIB" "service-plan compose-state helper exists"
 check 'OpenClaw is deprecated' "$PLAN_LIB" "OpenClaw is documented as opt-in legacy"
 check 'Pixel requires the ODS Linux installer in Ubuntu 24.04 WSL2' "$PLAN_LIB" "native Windows install explains the supported Pixel path"
-check 'elseif ($currentBackend -eq "amd")' "$INSTALL_PS1" "Windows installer has AMD extension overlay branch"
+check 'elseif ($currentBackend -eq "amd"' "$INSTALL_PS1" "Windows installer has AMD extension overlay branch"
 check 'compose.amd.yaml' "$INSTALL_PS1" "Windows installer includes AMD extension overlays"
 check 'function Test-ODSWindowsDockerCredentialHelperFailure' "$INSTALL_PS1" "Windows installer detects Docker credential-helper failures"
 check '$text = $text.Replace([string][char]0, "")' "$INSTALL_PS1" "Windows installer normalizes null-separated Docker output"

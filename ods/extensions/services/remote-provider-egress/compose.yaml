@@ -1,0 +1,44 @@
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  remote-provider-egress:
+    build:
+      context: .
+      dockerfile: extensions/services/remote-provider-egress/Dockerfile
+    image: ods-remote-provider-egress:local
+    container_name: ods-remote-provider-egress
+    restart: unless-stopped
+    expose: ["8091"]
+    security_opt: [no-new-privileges:true]
+    cap_drop:
+      - ALL
+    group_add: ["${REMOTE_PROVIDER_DATA_GID:-1000}"]
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    logging: *default-logging
+    environment:
+      - ODS_REMOTE_PROVIDER_ROUTE_PATH=/state/remote-provider/routing-state.json
+      - ODS_REMOTE_PROVIDER_POLICY_PATH=/config/remote-provider-egress-policy.json
+      - ODS_REMOTE_PROVIDER_API_KEY_FILE=/state/remote-provider/secrets/provider-api-key
+      - ODS_REMOTE_PROVIDER_MAX_BODY_BYTES=${ODS_REMOTE_PROVIDER_MAX_BODY_BYTES:-4194304}
+      - ODS_REMOTE_PROVIDER_UPSTREAM_TIMEOUT=${ODS_REMOTE_PROVIDER_UPSTREAM_TIMEOUT:-600}
+      - ODS_REMOTE_PROVIDER_SSH_TUNNEL_HEALTH_URL=${ODS_REMOTE_PROVIDER_SSH_TUNNEL_HEALTH_URL:-http://remote-provider-ssh-tunnel:18090/health}
+      - ODS_REMOTE_PROVIDER_SSH_TUNNEL_HEALTH_TIMEOUT=${ODS_REMOTE_PROVIDER_SSH_TUNNEL_HEALTH_TIMEOUT:-2}
+    volumes:
+      - ${ODS_DATA_DIR:-./data}/remote-provider:/state/remote-provider:ro
+      - ${ODS_CONFIG_DIR:-./config}/remote-provider-egress-policy.json:/config/remote-provider-egress-policy.json:ro
+    deploy:
+      resources:
+        limits: {cpus: '0.5', memory: 256M}
+        reservations: {cpus: '0.1', memory: 64M}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8091/health',timeout=4).status==200 else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

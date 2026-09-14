@@ -1,0 +1,5 @@
+services:
+  open-webui:
+    environment:
+      - OPENAI_API_KEY=${LITELLM_KEY}
+      - ENABLE_IMAGE_GENERATION=${ENABLE_IMAGE_GENERATION:-true}

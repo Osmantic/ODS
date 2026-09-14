@@ -306,7 +306,7 @@ def test_openclaw_stays_deprecated_optional_and_token_gated() -> None:
 
 def test_litellm_gateway_auth_is_enforced() -> None:
     compose = read(SERVICES / "litellm" / "compose.yaml")
-    amd_compose = read(ROOT / "docker-compose.amd.yml")
+    amd_compose = read(SERVICES / "open-webui" / "compose.amd.yaml")
     policy = json.loads(read(POLICY))["services"]["litellm"]
 
     assert_true("LITELLM_MASTER_KEY=${LITELLM_KEY:-}" in compose, "LiteLLM must keep master-key auth")

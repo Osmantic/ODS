@@ -592,7 +592,11 @@ if [[ "${ODS_DISABLE_CATALOG_MODEL_SELECTOR:-false}" != "true" && "${TIER:-}" !=
             }
             _selector_env="$(_run_catalog_selector 2>>"$LOG_FILE" || true)"
             if [[ "$_pixel_default_selector" == true && -n "$_selector_env" ]]; then
-                log "Pixel default selected the strongest installable hardware-fit model; catalog qualification remains advisory"
+                if [[ "${ODS_INSTALL_PROFILE:-legacy}" == "assistant-first" ]]; then
+                    log "The assistant selected the strongest installable hardware-fit model; catalog qualification remains advisory"
+                else
+                    log "Pixel default selected the strongest installable hardware-fit model; catalog qualification remains advisory"
+                fi
             fi
             export PIXEL_AGENT_MODEL_READY
             unset -f _run_catalog_selector

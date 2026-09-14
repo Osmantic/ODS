@@ -138,12 +138,21 @@ fi
 
 if [[ -z "${EXTERNAL_LLM_URL:-}" && "${LLM_MODEL_SIZE_MB:-0}" =~ ^[0-9]+$ && "${LLM_MODEL_SIZE_MB:-0}" -gt 0 && "${TIER:-}" != "CLOUD" ]]; then
     _model_disk_gb=$(( (LLM_MODEL_SIZE_MB + 1023) / 1024 ))
-    _model_needed_gb=$(( _model_disk_gb + 15 ))
+    _runtime_image_headroom_gb=15
+    if [[ "${ODS_INSTALL_PROFILE:-legacy}" == "assistant-first" ]]; then
+        # The minimal graph has four small control-plane images plus one
+        # inference image. Phase 08 reports exact locally-known bytes and the
+        # number of images whose registry size is unavailable. This value is
+        # only conservative pre-pull headroom, not an exact footprint claim.
+        _runtime_image_headroom_gb="${ODS_ASSISTANT_FIRST_IMAGE_HEADROOM_GB:-5}"
+        [[ "$_runtime_image_headroom_gb" =~ ^[1-9][0-9]*$ ]] || _runtime_image_headroom_gb=5
+    fi
+    _model_needed_gb=$(( _model_disk_gb + _runtime_image_headroom_gb ))
     if [[ "${DISK_AVAIL:-0}" -lt "$_model_needed_gb" ]]; then
-        warn "Disk: ${DISK_AVAIL}GB available, ${_model_needed_gb}GB required for selected model (${_model_disk_gb}GB model + Docker images)"
+        warn "Disk: ${DISK_AVAIL}GB available, ${_model_needed_gb}GB required for selected model (${_model_disk_gb}GB model + ${_runtime_image_headroom_gb}GB runtime image headroom)"
         REQUIREMENTS_MET=false
     else
-        ai_ok "Disk: ${DISK_AVAIL}GB available (selected model needs ~${_model_needed_gb}GB)"
+        ai_ok "Disk: ${DISK_AVAIL}GB available (selected model plus runtime image headroom needs ~${_model_needed_gb}GB)"
     fi
 fi
 

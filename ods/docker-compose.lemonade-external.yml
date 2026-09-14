@@ -22,11 +22,6 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
-  open-webui:
-    environment:
-      OPENAI_API_BASE_URL: "http://litellm:4000/v1"
-      OPENAI_API_KEY: "${LITELLM_KEY}"
-
   dashboard-api:
     environment:
       - GPU_BACKEND=${GPU_BACKEND:-amd}

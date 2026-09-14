@@ -1,7 +1,7 @@
 # ODS — NVIDIA GPU Overlay (Core Services Only)
 # ComfyUI GPU config moved to extensions/services/comfyui/compose.nvidia.yaml
 # Whisper GPU config moved to extensions/services/whisper/compose.nvidia.yaml
-# Use with: docker compose -f docker-compose.base.yml -f docker-compose.nvidia.yml up -d
+# Use scripts/resolve-compose-stack.sh so enabled service fragments are included.
 
 services:
   llama-server:
@@ -25,8 +25,3 @@ services:
             - driver: nvidia
               count: all  # nvidia-smi needs visibility into all GPUs for monitoring
               capabilities: [utility]
-
-  open-webui:
-    environment:
-      AUDIO_STT_MODEL: "${AUDIO_STT_MODEL:-deepdml/faster-whisper-large-v3-turbo-ct2}"
-      ENABLE_IMAGE_GENERATION: "${ENABLE_IMAGE_GENERATION:-true}"

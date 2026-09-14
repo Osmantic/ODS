@@ -1,8 +1,9 @@
 # ODS — Core Service Definitions
 # Extension services live in extensions/services/*/compose.yaml
 # GPU overlays layered on top:
-#   docker compose -f docker-compose.base.yml -f docker-compose.amd.yml up -d
-#   docker compose -f docker-compose.base.yml -f docker-compose.nvidia.yml up -d
+# The installer and CLI use scripts/resolve-compose-stack.sh to append enabled
+# service fragments. Directly layering only this file and a GPU overlay starts
+# the four base-owned control/inference services, not the legacy full stack.
 
 name: ods
 
@@ -75,115 +76,6 @@ services:
       # 70B-class GGUFs cold-load in 60-120s; thermal throttling and first-touch
       # page faults push Tier 4 past 180s. Override via LLAMA_START_PERIOD in .env.
       start_period: ${LLAMA_START_PERIOD:-240s}
-
-  # ============================================
-  # Chat UI
-  # ============================================
-  open-webui:
-    image: ghcr.io/open-webui/open-webui:v0.7.2
-    container_name: ods-webui
-    restart: unless-stopped
-    logging: *default-logging
-    security_opt:
-      - no-new-privileges:true
-    environment:
-      ENABLE_OLLAMA_API: "false"
-      # Switchboard: OPEN_WEBUI_LLM_BASE_URL overrides to the LiteLLM gateway
-      # (ods/current) in enabled mode; default is byte-identical to the prior
-      # direct llama-server route for legacy/observe.
-      OPENAI_API_BASE_URL: "${OPEN_WEBUI_LLM_BASE_URL:-${LLM_API_URL:-http://llama-server:8080}/v1}"
-      OPENAI_API_KEY: "${OPEN_WEBUI_LLM_API_KEY:-}"
-      # PWA / branding — surfaces as the app title, page title, and PWA install name.
-      # When a user adds ODS to their home screen, this is the label they see
-      # next to the ODS icon. Defaults to "ODS"; users can override per-install.
-      WEBUI_NAME: "${WEBUI_NAME:-ODS}"
-      # Public URL Open WebUI uses for share links, OAuth callbacks, and PWA
-      # install metadata. This value is persistent inside Open WebUI's config
-      # database (https://docs.openwebui.com/getting-started/env-configuration/#webui_url),
-      # so seeding a URL that doesn't actually resolve will bake bad share
-      # links into the install.
-      #
-      # Optional public URL Open WebUI uses for share links, OAuth callbacks,
-      # and PWA install metadata. Leave empty for traditional localhost usage.
-      # Headless/proxy installs should set WEBUI_URL to the real reachable chat
-      # origin, usually http://chat.${ODS_DEVICE_NAME:-ods}.local once
-      # ods-proxy and mDNS are enabled. Tailscale/Cloudflare/custom domains
-      # should set this to the tunnel URL instead.
-      WEBUI_URL: "${WEBUI_URL:-}"
-      WEBUI_AUTH: "${WEBUI_AUTH:-true}"
-      WEBUI_SECRET_KEY: "${WEBUI_SECRET:?WEBUI_SECRET must be set — run the installer or add it to .env}"
-      ENABLE_WEB_SEARCH: "${ENABLE_WEB_SEARCH:-false}"
-      WEB_SEARCH_ENGINE: "searxng"
-      SEARXNG_QUERY_URL: "http://searxng:8080/search?q=<query>&format=json"
-      ENABLE_SEARCH_QUERY_GENERATION: "${ENABLE_WEB_SEARCH:-false}"
-      WEB_SEARCH_RESULT_COUNT: "5"
-      # Route Open WebUI retrieval embeddings through ODS's TEI service.
-      # Otherwise Open WebUI downloads sentence-transformers/all-MiniLM-L6-v2
-      # during app startup, which can block fresh installs before port 8080 binds.
-      RAG_EMBEDDING_ENGINE: "${RAG_EMBEDDING_ENGINE:-openai}"
-      # Use the exact model served by bundled TEI as Open WebUI's first-boot
-      # default. Existing Open WebUI ConfigVars remain database-backed.
-      RAG_EMBEDDING_MODEL: "${RAG_EMBEDDING_MODEL:-${EMBEDDING_MODEL:-BAAI/bge-base-en-v1.5}}"
-      RAG_OPENAI_API_BASE_URL: "${RAG_OPENAI_API_BASE_URL:-http://embeddings:80/v1}"
-      RAG_OPENAI_API_KEY: "${RAG_OPENAI_API_KEY:-}"
-      RAG_EMBEDDING_MODEL_AUTO_UPDATE: "${RAG_EMBEDDING_MODEL_AUTO_UPDATE:-false}"
-      # ── ComfyUI Image Generation (SDXL Lightning 4-step) ──
-      # Default OFF in base: ComfyUI ships only on GPU backends (amd/nvidia per
-      # comfyui/manifest.yaml). The amd and nvidia overlays re-assert this as
-      # ${...:-true} so image-gen is on for GPU users by default. CPU/Apple
-      # users would otherwise hit a missing-engine error from Open WebUI.
-      ENABLE_IMAGE_GENERATION: "${ENABLE_IMAGE_GENERATION:-false}"
-      IMAGE_GENERATION_ENGINE: "comfyui"
-      COMFYUI_BASE_URL: "http://comfyui:8188"
-      IMAGE_SIZE: "1024x1024"
-      IMAGE_STEPS: "4"
-      IMAGE_GENERATION_MODEL: "sdxl_lightning_4step.safetensors"
-      COMFYUI_WORKFLOW: >-
-        {"3":{"inputs":{"seed":42,"steps":4,"cfg":1.5,"sampler_name":"euler","scheduler":"sgm_uniform","denoise":1.0,"model":["4",0],"positive":["6",0],"negative":["7",0],"latent_image":["5",0]},"class_type":"KSampler"},
-        "4":{"inputs":{"ckpt_name":"sdxl_lightning_4step.safetensors"},"class_type":"CheckpointLoaderSimple"},
-        "5":{"inputs":{"width":1024,"height":1024,"batch_size":1},"class_type":"EmptyLatentImage"},
-        "6":{"inputs":{"text":"placeholder","clip":["4",1]},"class_type":"CLIPTextEncode"},
-        "7":{"inputs":{"text":"","clip":["4",1]},"class_type":"CLIPTextEncode"},
-        "8":{"inputs":{"samples":["3",0],"vae":["4",2]},"class_type":"VAEDecode"},
-        "9":{"inputs":{"filename_prefix":"openwebui","images":["8",0]},"class_type":"SaveImage"}}
-      COMFYUI_WORKFLOW_NODES: >-
-        [{"type":"prompt","key":"text","node_ids":["6"]},
-        {"type":"model","key":"ckpt_name","node_ids":["4"]},
-        {"type":"width","key":"width","node_ids":["5"]},
-        {"type":"height","key":"height","node_ids":["5"]},
-        {"type":"steps","key":"steps","node_ids":["3"]},
-        {"type":"seed","key":"seed","node_ids":["3"]},
-        {"type":"n","key":"batch_size","node_ids":["5"]}]
-      # ── Speech-to-Text (Whisper) ──
-      AUDIO_STT_ENGINE: "${AUDIO_STT_ENGINE:-openai}"
-      AUDIO_STT_OPENAI_API_BASE_URL: "${AUDIO_STT_OPENAI_API_BASE_URL:-http://whisper:8000/v1}"
-      AUDIO_STT_OPENAI_API_KEY: "${AUDIO_STT_OPENAI_API_KEY:-}"
-      AUDIO_STT_MODEL: "${AUDIO_STT_MODEL:-Systran/faster-whisper-base}"
-      # ── Text-to-Speech (Kokoro) ──
-      AUDIO_TTS_ENGINE: "${AUDIO_TTS_ENGINE:-openai}"
-      AUDIO_TTS_OPENAI_API_BASE_URL: "${AUDIO_TTS_OPENAI_API_BASE_URL:-http://tts:8880/v1}"
-      AUDIO_TTS_OPENAI_API_KEY: "${AUDIO_TTS_OPENAI_API_KEY:-}"
-      AUDIO_TTS_MODEL: "${AUDIO_TTS_MODEL:-kokoro}"
-      AUDIO_TTS_VOICE: "${AUDIO_TTS_VOICE:-af_heart}"
-      TZ: "${TIMEZONE:-UTC}"
-    volumes:
-      - ./data/open-webui:/app/backend/data:z
-    ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${WEBUI_PORT:-3000}:8080"
-    deploy:
-      resources:
-        limits:
-          cpus: '2.0'
-          memory: 4G
-        reservations:
-          cpus: '0.25'
-          memory: 512M
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://127.0.0.1:8080/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 60s
 
   # ============================================
   # Dashboard API (System Status Backend)
@@ -343,105 +235,6 @@ services:
           memory: 64M
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:9099/health',timeout=4).status==200 else 1)"]
-      interval: 15s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
-
-  # ============================================
-  # Remote Provider Egress (remote LLM boundary)
-  # ============================================
-  remote-provider-egress:
-    build:
-      context: .
-      dockerfile: extensions/services/remote-provider-egress/Dockerfile
-    image: ods-remote-provider-egress:local
-    container_name: ods-remote-provider-egress
-    restart: unless-stopped
-    expose:
-      - "8091"
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
-    # Lifecycle secrets stay owner-written on the host and group-readable only
-    # to the two dedicated, read-only remote-provider containers.
-    group_add:
-      - "${REMOTE_PROVIDER_DATA_GID:-1000}"
-    read_only: true
-    tmpfs:
-      - /tmp:size=16m,mode=1777
-    logging: *default-logging
-    environment:
-      - ODS_REMOTE_PROVIDER_ROUTE_PATH=/state/remote-provider/routing-state.json
-      - ODS_REMOTE_PROVIDER_POLICY_PATH=/config/remote-provider-egress-policy.json
-      - ODS_REMOTE_PROVIDER_API_KEY_FILE=/state/remote-provider/secrets/provider-api-key
-      - ODS_REMOTE_PROVIDER_MAX_BODY_BYTES=${ODS_REMOTE_PROVIDER_MAX_BODY_BYTES:-4194304}
-      - ODS_REMOTE_PROVIDER_UPSTREAM_TIMEOUT=${ODS_REMOTE_PROVIDER_UPSTREAM_TIMEOUT:-600}
-      - ODS_REMOTE_PROVIDER_SSH_TUNNEL_HEALTH_URL=${ODS_REMOTE_PROVIDER_SSH_TUNNEL_HEALTH_URL:-http://remote-provider-ssh-tunnel:18090/health}
-      - ODS_REMOTE_PROVIDER_SSH_TUNNEL_HEALTH_TIMEOUT=${ODS_REMOTE_PROVIDER_SSH_TUNNEL_HEALTH_TIMEOUT:-2}
-    volumes:
-      - ${ODS_DATA_DIR:-./data}/remote-provider:/state/remote-provider:ro
-      - ${ODS_CONFIG_DIR:-./config}/remote-provider-egress-policy.json:/config/remote-provider-egress-policy.json:ro
-    deploy:
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 256M
-        reservations:
-          cpus: '0.1'
-          memory: 64M
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8091/health',timeout=4).status==200 else 1)"]
-      interval: 15s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
-
-  # ============================================
-  # Remote Provider SSH Tunnel (remote LLM SSH transport)
-  # ============================================
-  remote-provider-ssh-tunnel:
-    build:
-      context: .
-      dockerfile: extensions/services/remote-provider-ssh-tunnel/Dockerfile
-    image: ods-remote-provider-ssh-tunnel:local
-    container_name: ods-remote-provider-ssh-tunnel
-    restart: unless-stopped
-    expose:
-      - "18090"
-      - "18091"
-      - "18092"
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
-    group_add:
-      - "${REMOTE_PROVIDER_DATA_GID:-1000}"
-    read_only: true
-    tmpfs:
-      - /tmp:size=16m,mode=1777
-    logging: *default-logging
-    environment:
-      - ODS_REMOTE_PROVIDER_ROUTE_PATH=/state/remote-provider/routing-state.json
-      - ODS_REMOTE_PROVIDER_SECRET_DIR=/state/remote-provider/secrets
-      - ODS_REMOTE_PROVIDER_SSH_STATUS_PORT=18090
-      - ODS_REMOTE_PROVIDER_SSH_RECONCILE_INTERVAL=${ODS_REMOTE_PROVIDER_SSH_RECONCILE_INTERVAL:-5}
-      - ODS_REMOTE_PROVIDER_SSH_START_GRACE=${ODS_REMOTE_PROVIDER_SSH_START_GRACE:-1}
-      - ODS_REMOTE_PROVIDER_SSH_RESTART_COOLDOWN=${ODS_REMOTE_PROVIDER_SSH_RESTART_COOLDOWN:-5}
-      - ODS_REMOTE_PROVIDER_SSH_STOP_TIMEOUT=${ODS_REMOTE_PROVIDER_SSH_STOP_TIMEOUT:-5}
-    volumes:
-      - ${ODS_DATA_DIR:-./data}/remote-provider:/state/remote-provider:ro
-    deploy:
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 128M
-        reservations:
-          cpus: '0.05'
-          memory: 32M
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:18090/health',timeout=4).status==200 else 1)"]
       interval: 15s
       timeout: 5s
       retries: 3

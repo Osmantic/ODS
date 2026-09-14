@@ -1,47 +1,47 @@
-# Docker Compose Service Architecture
+# Docker Compose service architecture
 
-## Current Architecture
+ODS uses `scripts/resolve-compose-stack.sh` as the authority for the active
+Compose files and their order. The base file owns the small common control and
+inference substrate. Each optional built-in owns its definition under
+`extensions/services/<service-id>/compose.yaml`; a `.disabled` suffix keeps
+that definition out of the graph.
 
-All 16 services are defined as core in `docker-compose.base.yml` — there are no Docker Compose profiles. All services start together. To disable a service, comment it out in the compose file or use `docker-compose.override.yml` to override it.
+Do not infer the active runtime from `config/core-service-ids.json`. That file
+is the reserved built-in ID namespace used for collision protection.
 
-### Starting Services
-
-```bash
-# NVIDIA
-docker compose -f docker-compose.base.yml -f docker-compose.nvidia.yml up -d
-
-# AMD
-docker compose -f docker-compose.base.yml -f docker-compose.amd.yml up -d
-```
-
-### Disabling Individual Services
-
-To skip a service, create `docker-compose.override.yml`:
-
-```yaml
-services:
-  n8n:
-    profiles: [disabled]    # Prevents this service from starting
-  openclaw:
-    profiles: [disabled]
-```
-
-### Checking What's Running
+## Resolve the active graph
 
 ```bash
-# See all services and their status
+flags=$(./scripts/resolve-compose-stack.sh \
+  --script-dir "$PWD" \
+  --tier 1 \
+  --gpu-backend nvidia \
+  --ods-mode local)
+
+docker compose $flags config --services
+docker compose $flags up -d
+```
+
+Normal installations persist the exact flags in `.compose-flags`; the ODS CLI
+reuses that file for lifecycle operations.
+
+## Installation profiles
+
+- Full, Core, and Custom retain their existing feature-selection behavior.
+- Assistant First is a fresh-install-only, opt-in public-beta profile on
+  qualified Linux hosts: `./install.sh --assistant-first`.
+- Assistant First uses an explicit allowlist and ignores user-extension and
+  operator override fragments during first boot, preventing optional services
+  from entering the graph accidentally.
+
+See [Assistant First](ASSISTANT-FIRST.md) for its current candidate minimum and
+qualification boundary, and [Extensions](EXTENSIONS.md) for service ownership
+and lifecycle details.
+
+## Inspect the running stack
+
+```bash
+ods status
 docker compose ps
-
-# Check resource usage
 docker stats --format "table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}"
 ```
-
-## Historical Reference
-
-ODS previously used Docker Compose profiles (`voice`, `workflows`, `rag`, `openclaw`, `monitoring`, `full`) to selectively start services. These were removed in favor of the current all-core architecture for simplicity. The installer automatically starts all services.
-
-## See Also
-
-- [EXTENSIONS.md](EXTENSIONS.md) — Adding new services
-- [../QUICKSTART.md](../QUICKSTART.md) — Installation guide
-- [../.env.example](../.env.example) — Configuration reference

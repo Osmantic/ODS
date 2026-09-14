@@ -2889,7 +2889,7 @@ function Update-ComposeFlags {
 
         Only the toggled service's -f entries are rewritten. Every other token
         is preserved verbatim and in order: --env-file, docker-compose.base.yml,
-        the backend overlay, installers/windows/docker-compose.windows-amd.yml,
+        the extracted Open WebUI base fragment, the backend/platform overlays,
         docker-compose.tier0.yml, docker-compose.override.yml, and the compose
         fragments of every other extension.
 

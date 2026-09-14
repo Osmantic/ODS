@@ -74,7 +74,10 @@ disable_service() {
 }
 
 enable_service litellm
+enable_service open-webui
 enable_service qdrant
+enable_service remote-provider-egress
+enable_service remote-provider-ssh-tunnel
 
 # A disabled base must suppress every specialized fragment, even when those
 # fragments would otherwise match the current backend, mode, and GPU count.
@@ -170,6 +173,7 @@ write_valid_auth_overlay
 
 # Even an otherwise valid generated overlay must not introduce Open WebUI when
 # the selected base stack does not define it.
+disable_service open-webui
 mv "$FIXTURE/docker-compose.base.yml" "$TMP_DIR/docker-compose.base.yml"
 cat > "$FIXTURE/docker-compose.base.yml" <<'YAML'
 services:
@@ -182,13 +186,14 @@ fi
 grep -Fq 'would create partial service(s): open-webui' "$TMP_DIR/missing-base.err" \
     || fail "resolver did not identify the missing generated-overlay target"
 mv "$TMP_DIR/docker-compose.base.yml" "$FIXTURE/docker-compose.base.yml"
+enable_service open-webui
 pass "generated overlays require their target service in the base stack"
 
 disabled_env="$(resolve_env 2)"
 disabled_files="$(file_list_from_env <<< "$disabled_env")"
 assert_auth_last_once "$disabled_files"
 assert_selected_bases "$disabled_files" \
-    'extensions/services/litellm/compose.yaml,extensions/services/qdrant/compose.yaml'
+    'extensions/services/litellm/compose.yaml,extensions/services/open-webui/compose.yaml,extensions/services/qdrant/compose.yaml,extensions/services/remote-provider-egress/compose.yaml,extensions/services/remote-provider-ssh-tunnel/compose.yaml'
 if grep -Fq 'extensions/services/openclaw/compose.' <<< "$disabled_files"; then
     fail "disabled OpenClaw contributed a specialized overlay: $disabled_files"
 fi
@@ -307,7 +312,7 @@ enabled_env="$(resolve_env)"
 enabled_files="$(file_list_from_env <<< "$enabled_env")"
 assert_auth_last_once "$enabled_files"
 assert_selected_bases "$enabled_files" \
-    'extensions/services/hermes/compose.yaml,extensions/services/litellm/compose.yaml,extensions/services/qdrant/compose.yaml'
+    'extensions/services/hermes/compose.yaml,extensions/services/litellm/compose.yaml,extensions/services/open-webui/compose.yaml,extensions/services/qdrant/compose.yaml,extensions/services/remote-provider-egress/compose.yaml,extensions/services/remote-provider-ssh-tunnel/compose.yaml'
 if $DOCKER_COMPOSE_AVAILABLE; then
     render_state enabled \
         'dashboard,dashboard-api,hermes,litellm,open-webui,qdrant,remote-provider-egress,remote-provider-ssh-tunnel' true
@@ -318,7 +323,7 @@ disable_service hermes
 reenabled_env="$(resolve_env)"
 reenabled_files="$(file_list_from_env <<< "$reenabled_env")"
 assert_selected_bases "$reenabled_files" \
-    'extensions/services/litellm/compose.yaml,extensions/services/qdrant/compose.yaml'
+    'extensions/services/litellm/compose.yaml,extensions/services/open-webui/compose.yaml,extensions/services/qdrant/compose.yaml,extensions/services/remote-provider-egress/compose.yaml,extensions/services/remote-provider-ssh-tunnel/compose.yaml'
 if $DOCKER_COMPOSE_AVAILABLE; then
     render_state redisabled \
         'dashboard,dashboard-api,litellm,open-webui,qdrant,remote-provider-egress,remote-provider-ssh-tunnel' false
