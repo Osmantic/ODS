@@ -286,6 +286,8 @@ jobs:
 
       - name: Perplexica Entrypoint Contract Tests
         run: python3 tests/test-perplexica-entrypoint.py
+      - name: First Boot Demo Streaming Tests
+        run: python3 tests/test_first_boot_demo_stream.py
 
       - name: CPU-Only Path Tests
         run: bash tests/test-cpu-only-path.sh
