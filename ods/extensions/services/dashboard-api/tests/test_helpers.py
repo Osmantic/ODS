@@ -1740,3 +1740,14 @@ def test_flatten_bounds_cycles_and_large_depth_without_losing_empty_leaves():
         nested = {"child": nested}
     result = dict_flatten_nested_safe(nested, max_depth=100000)
     assert len(next(iter(result)).split(".")) == 128
+
+
+class TestListBatchWindowSlidingSafe:
+    def test_valid_sliding_window(self):
+        from helpers import list_batch_window_sliding_safe
+        assert list_batch_window_sliding_safe([1, 2, 3, 4, 5], 3, 1) == [[1, 2, 3], [2, 3, 4], [3, 4, 5]]
+
+    def test_invalid_inputs(self):
+        from helpers import list_batch_window_sliding_safe
+        assert list_batch_window_sliding_safe(None) == []
+        assert list_batch_window_sliding_safe([1, 2], 5) == []
