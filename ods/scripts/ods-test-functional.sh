@@ -86,9 +86,11 @@ test_llm_functional() {
         model_id=""
     fi
     model_id="${model_id:-local}"
+    local safe_model_id="${model_id//\\/\\\\}"
+    safe_model_id="${safe_model_id//\"/\\\"}"
 
     local prompt="What is 2+2? Answer with just the number."
-    local payload="{\"model\": \"$model_id\", \"messages\": [{\"role\": \"user\", \"content\": \"$prompt\"}], \"max_tokens\": 10, \"temperature\": 0.1}"
+    local payload="{\"model\": \"$safe_model_id\", \"messages\": [{\"role\": \"user\", \"content\": \"$prompt\"}], \"max_tokens\": 10, \"temperature\": 0.1}"
 
     local response
     response=$(curl -s --max-time 30 \
