@@ -142,7 +142,9 @@ CANDIDATES_FILE="$(mktemp)"
 OVERAGE_FILE="$(mktemp)"
 trap 'rm -f "$WORKERS_FILE" "$CANDIDATES_FILE" "$OVERAGE_FILE"' EXIT
 
-collect_workers > "$WORKERS_FILE"
+_workers_tmp="$(mktemp "${WORKERS_FILE}.XXXXXX.tmp")"
+collect_workers > "$_workers_tmp"
+mv -f "$_workers_tmp" "$WORKERS_FILE"
 
 WORKER_COUNT="$(wc -l < "$WORKERS_FILE" | tr -d ' ')"
 if [[ "$WORKER_COUNT" -eq 0 ]]; then
