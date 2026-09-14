@@ -4,6 +4,7 @@ compatibility:
 service:
   id: shlink
   name: Shlink
+  description: "Self-hosted URL shortener with REST API, QR code generator, and detailed link analytics."
   aliases: [url-shortener, shortener, links]
   container_name: ods-shlink
   host_env: SHLINK_HOST

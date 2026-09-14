@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-14T15:29:52Z",
+  "generated_at": "2026-09-14T16:10:55Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -3369,7 +3369,7 @@
     {
       "id": "shlink",
       "name": "Shlink",
-      "description": "",
+      "description": "Self-hosted URL shortener with REST API, QR code generator, and detailed link analytics.",
       "category": "optional",
       "gpu_backends": [
         "all"
