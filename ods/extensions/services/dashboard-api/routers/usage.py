@@ -611,3 +611,10 @@ async def usage_timeline(api_key: str = Depends(verify_api_key)):
         return await asyncio.to_thread(_request_token_timeline)
     except (ValueError, TypeError, OSError, urllib.error.URLError):
         raise HTTPException(status_code=503, detail="Minute-level token telemetry unavailable") from None
+
+
+def validate_pagination_bounds(skip: int, limit: int, max_limit: int = 1000) -> tuple[int, int]:
+    """Ensure pagination limits are strictly enforced to prevent memory exhaustion on large history exports."""
+    safe_skip = max(0, skip if isinstance(skip, int) else 0)
+    safe_limit = max(1, min(max_limit, limit if isinstance(limit, int) else 50))
+    return safe_skip, safe_limit

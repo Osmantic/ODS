@@ -541,3 +541,11 @@ def test_token_spy_api_key_preserves_opaque_secret_and_handles_unicode_error(tmp
     bad_key_file.write_bytes(b"\x80\x81\x82")
     monkeypatch.setattr(usage_router, "TOKEN_SPY_KEY_FILE", bad_key_file)
     assert usage_router._token_spy_api_key() == ""
+
+
+class TestUsagePaginationBounds:
+    def test_validate_pagination_bounds(self):
+        from routers.usage import validate_pagination_bounds
+        assert validate_pagination_bounds(-10, 5000) == (0, 1000)
+        assert validate_pagination_bounds(10, 25) == (10, 25)
+        assert validate_pagination_bounds(None, None) == (0, 50)
