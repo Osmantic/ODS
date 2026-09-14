@@ -6431,8 +6431,9 @@ ${CYAN}Commands:${NC}
   chat "<message>"    Quick chat with the LLM
   benchmark           Run a quick performance test
   doctor [report|--json]   Run diagnostics (--json writes JSON to stdout)
-  repair|fix [voice|hermes-workers]
-                      Repair voice services or prune leaked Hermes slash workers
+  repair|fix [voice|hermes-workers|rootless-ownership]
+                      Repair voice services, prune leaked Hermes slash workers,
+                      or fix bind-mount ownership under rootless Docker
   template [action]   Apply pre-built service templates (list|preview|apply)
   audit [extensions]  Audit extension manifests and compose contracts
   agent [action]      Manage ods host agent (status|start|stop|restart|logs)

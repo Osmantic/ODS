@@ -30,7 +30,10 @@ grep -q '^cmd_repair()' "$ODS_CLI" && pass "ods-cli defines cmd_repair" || fail 
 grep -q 'cmd_stt download' "$ODS_CLI" && pass "repair reuses STT download command" || fail "repair does not cache STT model"
 grep -q 'Starting voice services' "$ODS_CLI" && pass "repair starts voice services" || fail "repair does not start voice services"
 grep -q 'Voice Readiness' "$ODS_CLI" && pass "doctor displays voice readiness" || fail "doctor voice readiness missing"
-grep -q 'repair|fix \[voice\]' "$ODS_CLI" && pass "help documents repair voice" || fail "help missing repair voice"
+# Match the `voice` target inside the bracketed list rather than requiring it
+# to be the only entry — the list has grown (hermes-workers, rootless-ownership)
+# and an exact `[voice]` match went stale the first time a target was added.
+grep -qE 'repair\|fix \[[^]]*\bvoice\b[^]]*\]' "$ODS_CLI" && pass "help documents repair voice" || fail "help missing repair voice"
 
 grep -q '"tts_http"' "$ODS_DOCTOR" && pass "doctor report includes TTS status" || fail "doctor missing TTS status"
 grep -q 'ods repair voice' "$ODS_DOCTOR" && pass "doctor suggests repair voice" || fail "doctor missing repair hint"
