@@ -73,6 +73,7 @@ Each extension is a self-contained directory with a `manifest.yaml` (service met
 | [`frigate/`](services/frigate/) | Frigate — NVR with real-time AI object detection | NVIDIA |
 | [`gitea/`](services/gitea/) | Gitea — lightweight self-hosted Git | CPU |
 | [`baserow/`](services/baserow/) | Baserow — open-source Airtable alternative | CPU |
+| [`beszel/`](services/beszel/) | Beszel — lightweight server and Docker monitoring hub | CPU |
 | [`miniflux/`](services/miniflux/) | Miniflux — RSS/Atom reading and research API | CPU |
 | [`ntfy/`](services/ntfy/) | ntfy — authenticated local workflow notifications | CPU |
 | [`sillytavern/`](services/sillytavern/) | SillyTavern — advanced roleplay/chat frontend | AMD, NVIDIA, Apple |
@@ -95,6 +96,7 @@ Quick reference for hardware requirements. Data sourced from each service's `man
 | audiocraft | ✓ | — | — | — | 6 GB |
 | bark | ✓ | — | — | — | 4 GB |
 | baserow | — | — | — | ✓ | — |
+| beszel | — | — | — | ✓ | — |
 | chromadb | ✓ | ✓ | ✓ | — | — |
 | continue | ✓ | ✓ | ✓ | — | 4 GB |
 | crewai | — | — | — | ✓ | — |
