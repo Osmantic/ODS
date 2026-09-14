@@ -150,3 +150,10 @@ root is rejected before child writes when it is a symlink or wrong type, while
 the private state and mutation-lock directories require the installing owner and
 exact mode `0700`. This closes the fresh-install bootstrap gap but does not
 enable the dormant production executor or constitute installed qualification.
+
+Manifest and Compose provenance now share one host-importable canonical document
+digest primitive with catalog generation. It rejects duplicate mapping keys,
+non-portable YAML values, cycles, non-string keys, invalid Unicode, and non-finite
+numbers before emitting sorted compact JSON plus one newline for SHA-256. This
+refactor must reproduce the shipped catalog byte-for-byte; it adds no artifact
+reader, dispatcher call site, lifecycle effect, or execution authority.

@@ -12,7 +12,6 @@ import argparse
 import hashlib
 import importlib.util
 import json
-import math
 import re
 import sys
 from datetime import datetime, timezone
@@ -36,6 +35,15 @@ if PLANNER_SPEC is None or PLANNER_SPEC.loader is None:
     raise RuntimeError("Assistant First planner module is unavailable")
 PLANNER = importlib.util.module_from_spec(PLANNER_SPEC)
 PLANNER_SPEC.loader.exec_module(PLANNER)
+
+DOCUMENT_DIGEST_PATH = Path(__file__).resolve().parent.parent / "bin/extension_document_digest.py"
+DOCUMENT_DIGEST_SPEC = importlib.util.spec_from_file_location(
+    "extension_document_digest", DOCUMENT_DIGEST_PATH
+)
+if DOCUMENT_DIGEST_SPEC is None or DOCUMENT_DIGEST_SPEC.loader is None:
+    raise RuntimeError("Extension document digest module is unavailable")
+DOCUMENT_DIGEST = importlib.util.module_from_spec(DOCUMENT_DIGEST_SPEC)
+DOCUMENT_DIGEST_SPEC.loader.exec_module(DOCUMENT_DIGEST)
 
 
 class _UniqueKeyLoader(yaml.SafeLoader):
@@ -112,55 +120,17 @@ def strip_secrets(env_vars: list[dict]) -> list[dict]:
     return cleaned
 
 
-def _validate_json_document(value: object, active: set[int] | None = None) -> None:
-    """Reject YAML-only values that cannot have one portable JSON identity."""
-
-    if active is None:
-        active = set()
-    if value is None or type(value) in {str, bool, int}:
-        if isinstance(value, str) and any(
-            0xD800 <= ord(character) <= 0xDFFF for character in value
-        ):
-            raise ValueError("document contains invalid Unicode")
-        return
-    if type(value) is float:
-        if not math.isfinite(value):
-            raise ValueError("document contains a non-finite number")
-        return
-    if isinstance(value, (list, dict)):
-        identity = id(value)
-        if identity in active:
-            raise ValueError("document contains a cyclic YAML alias")
-        active.add(identity)
-        if isinstance(value, dict):
-            if any(not isinstance(key, str) for key in value):
-                raise ValueError("document contains a non-string object key")
-            children = value.values()
-        else:
-            children = value
-        for child in children:
-            _validate_json_document(child, active)
-        active.remove(identity)
-        return
-    raise ValueError(f"document contains unsupported YAML value: {type(value).__name__}")
-
-
 def canonical_document_sha256(path: Path) -> str:
     """Hash parsed YAML/JSON semantics so checkout newline policy cannot drift plans."""
 
     try:
-        data = _load_yaml(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, yaml.YAMLError) as exc:
+        return DOCUMENT_DIGEST.canonical_document_sha256(path.read_bytes())
+    except OSError as exc:
         raise ValueError(f"cannot parse document: {path}") from exc
-    _validate_json_document(data)
-    serialized = json.dumps(
-        data,
-        ensure_ascii=False,
-        allow_nan=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    return "sha256:" + hashlib.sha256((serialized + "\n").encode("utf-8")).hexdigest()
+    except DOCUMENT_DIGEST.CanonicalDocumentError as exc:
+        if exc.code == "canonical-document-parse-error":
+            raise ValueError(f"cannot parse document: {path}") from exc
+        raise ValueError(str(exc)) from exc
 
 
 def _compose_path(manifest_path: Path, compose_name: str) -> Path | None:

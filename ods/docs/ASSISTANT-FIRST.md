@@ -181,6 +181,13 @@ and transaction executor remain disabled until host-side artifact verification,
 real installed-state observation, idempotent effects, and crash recovery have
 been implemented and qualified.
 
+The catalog's manifest and Compose hashes are now produced through one shared,
+host-importable canonical document digest. YAML/JSON spelling and checkout line
+endings cannot change semantic identity, while duplicate keys and non-portable
+values fail closed. The shipped catalog is regenerated in tests to prove the
+refactor did not alter existing provenance. No host artifact path is opened and
+no lifecycle dispatcher is enabled by this prerequisite boundary.
+
 ## Evidence boundary
 
 The source contract checks resolver ordering, the exact candidate service set,

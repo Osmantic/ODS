@@ -19,6 +19,12 @@ SPEC = importlib.util.spec_from_file_location("catalog_generator", ROOT / "scrip
 generator = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(generator)
 
+DIGEST_SPEC = importlib.util.spec_from_file_location(
+    "extension_document_digest", ROOT / "bin/extension_document_digest.py"
+)
+document_digest = importlib.util.module_from_spec(DIGEST_SPEC)
+DIGEST_SPEC.loader.exec_module(document_digest)
+
 
 class CatalogTests(unittest.TestCase):
     def setUp(self):
@@ -148,6 +154,44 @@ class CatalogTests(unittest.TestCase):
         first = generator.canonical_document_sha256(document)
         document.write_bytes(b"service:\r\n  id: stable\r\n  enabled: true\r\n")
         self.assertEqual(first, generator.canonical_document_sha256(document))
+
+    def test_shared_document_digest_matches_catalog_generation_without_drift(self):
+        document = self.root / "definition.yaml"
+        document.write_bytes(b"service:\r\n  id: stable\r\n  weight: 1.5\r\n")
+
+        self.assertEqual(
+            generator.canonical_document_sha256(document),
+            document_digest.canonical_document_sha256(document.read_bytes()),
+        )
+        generated = generator.generate_catalog(
+            ROOT / "extensions/library/services",
+            ROOT / "extensions/services",
+        )
+        shipped = json.loads(
+            (ROOT / "config/extensions-catalog.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(generated, shipped["extensions"])
+
+    def test_shared_document_digest_fails_closed_with_stable_codes(self):
+        cases = [
+            (b"service: one\nservice: two\n", "canonical-document-parse-error"),
+            (b"released: 2026-09-12\n", "canonical-document-unsupported-value"),
+            (b"1: value\n", "canonical-document-non-string-key"),
+            (b"value: .nan\n", "canonical-document-non-finite-number"),
+            (b"value: &cycle [*cycle]\n", "canonical-document-cyclic-alias"),
+            (b'"\\uD800": value\n', "canonical-document-invalid-unicode"),
+            (b"\xff", "canonical-document-parse-error"),
+        ]
+        for source, code in cases:
+            with self.subTest(code=code):
+                with self.assertRaises(document_digest.CanonicalDocumentError) as caught:
+                    document_digest.canonical_document_sha256(source)
+                self.assertEqual(caught.exception.code, code)
+
+        deeply_nested = b"[" * 2000 + b"0" + b"]" * 2000
+        with self.assertRaises(document_digest.CanonicalDocumentError) as caught:
+            document_digest.canonical_document_sha256(deeply_nested)
+        self.assertEqual(caught.exception.code, "canonical-document-too-deep")
 
     def test_definition_digest_rejects_yaml_only_values_with_controlled_errors(self):
         timestamp = self.root / "timestamp.yaml"
