@@ -1381,3 +1381,16 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+import math
+
+def numeric_safe_cube_root_safe(val: int | float | None) -> float:
+    """Safely calculate real cube root preserving negative signs.
+    Returns 0.0 on None or non-numeric inputs.
+    """
+    if val is None or not isinstance(val, (int, float)) or isinstance(val, bool):
+        return 0.0
+    val = float(val)
+    if val < 0:
+        return -math.pow(-val, 1.0 / 3.0)
+    return math.pow(val, 1.0 / 3.0)
