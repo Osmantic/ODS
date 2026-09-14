@@ -4,6 +4,7 @@ compatibility:
 service:
   id: beszel
   name: Beszel
+  description: "Lightweight self-hosted server monitoring hub with real-time docker container metrics and historical graphs."
   aliases: [monitoring, server-metrics]
   container_name: ods-beszel
   host_env: BESZEL_HOST
