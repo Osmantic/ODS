@@ -1146,3 +1146,20 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def calculate_ratio_percentage_safe(numerator: object, denominator: object, precision: int = 2) -> float:
+    """Calculate percentage ratio (numerator / denominator * 100) safely.
+
+    Returns 0.0 if denominator is 0, None, non-numeric, or if numerator/denominator are NaN/Inf.
+    """
+    try:
+        num = float(numerator)
+        den = float(denominator)
+        if den == 0.0 or math.isnan(num) or math.isnan(den) or math.isinf(num) or math.isinf(den):
+            return 0.0
+        ratio = (num / den) * 100.0
+        return round(ratio, max(0, int(precision)))
+    except (ValueError, TypeError, ZeroDivisionError):
+        return 0.0
+
