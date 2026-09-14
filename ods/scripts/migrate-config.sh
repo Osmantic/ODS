@@ -45,7 +45,7 @@ get_current_version() {
         if jq -e '.version' "$VERSION_FILE" >/dev/null 2>&1; then
             jq -r '.version' "$VERSION_FILE"
         else
-            cat "$VERSION_FILE" | tr -d '[:space:]'
+            tr -d '[:space:]' < "$VERSION_FILE"
         fi
     else
         echo "0.0.0"
@@ -55,7 +55,7 @@ get_current_version() {
 # Get last migrated version
 get_last_migrated_version() {
     if [[ -f "$MIGRATION_STATE" ]]; then
-        cat "$MIGRATION_STATE" | tr -d '[:space:]'
+        tr -d '[:space:]' < "$MIGRATION_STATE"
     else
         echo "0.0.0"
     fi
