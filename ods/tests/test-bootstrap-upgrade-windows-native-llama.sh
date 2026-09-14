@@ -50,9 +50,35 @@ exit 22
 EOF_CURL
 chmod +x "$fakebin/curl"
 
+# The fake uname reports MINGW, so bootstrap-upgrade takes its Git Bash paths.
+# Those call cygpath to translate to Windows form; with no cygpath on PATH the
+# .env ACL copy and atomic replace both bail out and the full-model promotion
+# fails before any of the llama-server assertions below are reached. Paths stay
+# POSIX here so the PowerShell stub can operate on them directly.
+cat > "$fakebin/cygpath" <<'EOF_CYGPATH'
+#!/usr/bin/env bash
+printf '%s\n' "${!#}"
+EOF_CYGPATH
+chmod +x "$fakebin/cygpath"
+
 cat > "$fakebin/powershell.exe" <<'EOF_PS'
 #!/usr/bin/env bash
 set -euo pipefail
+
+# bootstrap-upgrade drives PowerShell for three distinct jobs on Windows. The
+# llama-server restart is the one under test; the .env ACL copy and the atomic
+# File.Replace are plumbing that must still succeed or promotion never happens.
+if [[ -n "${ODS_ENV_ACL_SOURCE:-}" && -n "${ODS_ENV_ACL_TARGET:-}" ]]; then
+    # NTFS DACL propagation has no POSIX equivalent; the temp file already
+    # carries the umask 077 mode bootstrap-upgrade created it with.
+    exit 0
+fi
+if [[ -n "${ODS_ENV_REPLACE_SOURCE:-}" && -n "${ODS_ENV_REPLACE_TARGET:-}" ]]; then
+    cp -p "$ODS_ENV_REPLACE_TARGET" "${ODS_ENV_REPLACE_BACKUP:?}"
+    mv -f "$ODS_ENV_REPLACE_SOURCE" "$ODS_ENV_REPLACE_TARGET"
+    exit 0
+fi
+
 : "${ODS_WIN_PID_FILE:?}"
 : "${ODS_WIN_LLAMA_EXE:?}"
 : "${ODS_WIN_MODEL_PATH:?}"
