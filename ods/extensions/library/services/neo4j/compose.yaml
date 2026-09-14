@@ -30,7 +30,7 @@ services:
       - "${BIND_ADDRESS:-127.0.0.1}:${NEO4J_PORT:-7474}:7474"
       - "${BIND_ADDRESS:-127.0.0.1}:${NEO4J_BOLT_PORT:-7687}:7687"
     healthcheck:
-      test: [CMD, curl, --fail, --silent, --max-time, "3", --output, /dev/null, "http://127.0.0.1:7474/"]
+      test: [CMD, wget, --quiet, --timeout=3, --output-document=/dev/null, "http://127.0.0.1:7474/"]
       interval: 15s
       timeout: 5s
       retries: 8
