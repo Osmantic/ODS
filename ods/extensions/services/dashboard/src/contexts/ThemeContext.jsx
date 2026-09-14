@@ -12,15 +12,38 @@ const DEFAULT_THEME = 'ods'
 
 const ThemeContext = createContext(null)
 
+// ThemeProvider wraps the whole app, so an unguarded storage access here takes
+// the entire dashboard down to the error boundary rather than degrading to the
+// default theme. Browsers throw on localStorage in more cases than "quota
+// exceeded" — blocking site data raises SecurityError on the property access
+// itself, before getItem is ever called. Same shape as App.jsx's
+// getStorageValue / setStorageValue.
+function readStoredTheme() {
+  try {
+    return globalThis.localStorage?.getItem(STORAGE_KEY)
+  } catch {
+    return null
+  }
+}
+
+function writeStoredTheme(theme) {
+  try {
+    globalThis.localStorage?.setItem(STORAGE_KEY, theme)
+  } catch {
+    // Private windows and restricted environments: the theme still applies for
+    // this session, it just will not be remembered across reloads.
+  }
+}
+
 export function ThemeProvider({ children }) {
   const [theme, setThemeState] = useState(() => {
-    const stored = localStorage.getItem(STORAGE_KEY)
+    const stored = readStoredTheme()
     return THEMES.includes(stored) ? stored : DEFAULT_THEME
   })
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme)
-    localStorage.setItem(STORAGE_KEY, theme)
+    writeStoredTheme(theme)
   }, [theme])
 
   const setTheme = useCallback((t) => {
