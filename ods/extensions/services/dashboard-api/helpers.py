@@ -1381,3 +1381,17 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+import re
+
+def string_mask_ip_address_safe(ip: str | None, mask_char: str = "x") -> str:
+    """Safely mask the last 2 octets of an IPv4 address string (e.g. 192.168.x.x).
+    Returns "" on None or invalid IP inputs.
+    """
+    if ip is None or not isinstance(ip, str):
+        return ""
+    pattern = r'^(\d{1,3}\.\d{1,3})\.\d{1,3}\.\d{1,3}$'
+    match = re.match(pattern, ip.strip())
+    if not match:
+        return ip
+    return f"{match.group(1)}.{mask_char}.{mask_char}"
