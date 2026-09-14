@@ -21,7 +21,7 @@ if (( BASH_VERSINFO[0] < 4 )); then
     echo "ERROR: service-registry.sh requires Bash 4.0+ (current: $BASH_VERSION)" >&2
     echo "  macOS ships Bash 3.2 due to licensing. Install a modern version:" >&2
     echo "    brew install bash" >&2
-    echo "  Then re-run with:  /opt/homebrew/bin/bash $0 \$*" >&2
+    echo "  Then re-run with:  /opt/homebrew/bin/bash ${BASH_SOURCE[1]:-$0} $*" >&2
     return 1 2>/dev/null || exit 1
 fi
 
