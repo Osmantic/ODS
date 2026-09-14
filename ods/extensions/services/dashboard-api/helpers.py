@@ -1146,3 +1146,18 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def filter_string_allowed_chars(text: object, allowed: str = "") -> str:
+    """Filter string characters keeping only those in allowed set safely.
+
+    Handles None, non-string text, or empty allowed set without exception.
+    """
+    if text is None:
+        return ""
+    val = str(text)
+    if not allowed:
+        return val
+    allowed_set = set(allowed)
+    return "".join(ch for ch in val if ch in allowed_set)
+

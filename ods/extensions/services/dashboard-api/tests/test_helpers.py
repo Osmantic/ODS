@@ -1607,3 +1607,16 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+class TestFilterStringAllowedChars:
+
+    def test_filters_allowed_chars(self):
+        from helpers import filter_string_allowed_chars
+        assert filter_string_allowed_chars("hello-world_123!", allowed="abcdefghijklmnopqrstuvwxyz") == "helloworld"
+
+    def test_handles_none_and_empty_allowed(self):
+        from helpers import filter_string_allowed_chars
+        assert filter_string_allowed_chars(None) == ""
+        assert filter_string_allowed_chars("test") == "test"
+
