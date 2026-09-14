@@ -37,10 +37,16 @@ async def get_agent_metrics_html(api_key: str = Depends(verify_api_key)):
     active_gpus = esc(cluster.get("active_gpus", 0))
     total_gpus = esc(cluster.get("total_gpus", 0))
     failover_safe = esc(failover_text)
+    def safe_float(val, default=0.0):
+        try:
+            return float(val) if val is not None else default
+        except (ValueError, TypeError):
+            return default
+
     sessions = esc(agent.get("session_count", 0))
     last_update_safe = esc(last_update_time)
-    tp_current = esc(f"{tp.get('current', 0):.1f}")
-    tp_average = esc(f"{tp.get('average', 0):.1f}")
+    tp_current = esc(f"{safe_float(tp.get('current')):.1f}")
+    tp_average = esc(f"{safe_float(tp.get('average')):.1f}")
 
     html = f"""
     <div class="grid">
