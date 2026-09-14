@@ -25,6 +25,9 @@ def _runtime_dependency_order(
     _order: list[str] | None = None,
 ) -> list[str]:
     """Return every dependency in leaves-first runtime start order."""
+    if not isinstance(service_id, str) or not service_id.strip():
+        return _order or []
+
     if _visiting is None:
         _visiting = set()
     if _visited is None:
@@ -33,25 +36,35 @@ def _runtime_dependency_order(
         _order = []
 
     if service_id in _visiting:
+        cycle_chain = " -> ".join(list(_visiting) + [service_id])
         raise HTTPException(
             status_code=400,
-            detail=f"Circular dependency detected involving: {service_id}",
+            detail=f"Circular dependency detected in service templates: {cycle_chain}",
         )
     if service_id in _visited:
         return _order
 
+    if not callable(read_direct_deps):
+        return _order
+
     _visiting.add(service_id)
-    for dep in read_direct_deps(service_id):
-        _runtime_dependency_order(
-            dep,
-            read_direct_deps,
-            _visiting=_visiting,
-            _visited=_visited,
-            _order=_order,
-        )
-        if dep not in _order:
-            _order.append(dep)
-    _visiting.remove(service_id)
+    try:
+        raw_deps = read_direct_deps(service_id)
+        if isinstance(raw_deps, (list, tuple, set)):
+            for dep in raw_deps:
+                if not isinstance(dep, str) or not dep.strip():
+                    continue
+                _runtime_dependency_order(
+                    dep,
+                    read_direct_deps,
+                    _visiting=_visiting,
+                    _visited=_visited,
+                    _order=_order,
+                )
+                if dep not in _order:
+                    _order.append(dep)
+    finally:
+        _visiting.remove(service_id)
     _visited.add(service_id)
     return _order
 
