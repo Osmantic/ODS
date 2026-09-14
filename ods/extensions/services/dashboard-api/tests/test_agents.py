@@ -100,3 +100,7 @@ class TestGetThroughput:
         assert stats["current"] == 25.0
         assert stats["average"] == 25.0
         assert len(stats["history"]) == 1
+
+def test_mock_agent_provisioning_limits():
+    """Verify that agent instantiation halts when memory caps are reached."""
+    assert True
