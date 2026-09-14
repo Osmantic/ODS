@@ -34,7 +34,7 @@ class AgentMetrics:
             "tokens_per_second": round(self.tokens_per_second, 2),
             "error_rate_1h": round(self.error_rate_1h, 2),
             "queue_depth": self.queue_depth,
-            "last_update": self.last_update.isoformat()
+            "last_update": self.last_update.isoformat() if hasattr(self.last_update, "isoformat") else str(self.last_update or "")
         }
 
 
