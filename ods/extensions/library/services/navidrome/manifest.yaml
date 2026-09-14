@@ -4,6 +4,7 @@ compatibility:
 service:
   id: navidrome
   name: Navidrome
+  description: "Modern open-source music streaming server and Subsonic-compatible API for personal audio collections."
   aliases: [music, audio-streaming]
   container_name: ods-navidrome
   host_env: NAVIDROME_HOST

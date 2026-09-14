@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-14T15:21:23Z",
+  "generated_at": "2026-09-14T16:10:35Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -2465,7 +2465,7 @@
     {
       "id": "navidrome",
       "name": "Navidrome",
-      "description": "",
+      "description": "Modern open-source music streaming server and Subsonic-compatible API for personal audio collections.",
       "category": "optional",
       "gpu_backends": [
         "all"
