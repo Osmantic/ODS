@@ -48,17 +48,10 @@ SESSION_TTL_SECONDS = 12 * 3600
 
 
 def _cookie_domain() -> Optional[str]:
-    """Cookie ``Domain`` attribute. Empty/None = host-only cookie.
-
-    ODS_COOKIE_DOMAIN is set by the installer to ``<ODS_DEVICE_NAME>.local``
-    when ods-proxy + mDNS are wired so a single redemption authenticates
-    across chat.<name>.local, hermes.<name>.local, and the rest. With it
-    empty, the cookie is host-only — functional for single-host setups
-    but breaks subdomain SSO. Same logic as routers/magic_link.py;
-    duplicated here intentionally so the two cookie-issuing paths stay
-    coupled without one depending on the other.
-    """
+    """Cookie ``Domain`` attribute. Empty/None = host-only cookie."""
     raw = (os.environ.get("ODS_COOKIE_DOMAIN") or "").strip()
+    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in {"'", '"'}:
+        raw = raw[1:-1].strip()
     return raw or None
 
 
