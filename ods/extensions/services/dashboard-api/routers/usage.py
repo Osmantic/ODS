@@ -41,7 +41,9 @@ _LOCAL_RUNTIME_REQUEST_STATE: dict[str, dict[str, Any]] = {}
 
 
 def _parse_date(value: str) -> date:
-    return date.fromisoformat(value)
+    if not isinstance(value, str) or not value:
+        raise ValueError("Date string required")
+    return date.fromisoformat(value.strip())
 
 
 def _date_range(start_day: date, end_day: date) -> list[str]:

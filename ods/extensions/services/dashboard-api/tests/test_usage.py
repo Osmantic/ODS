@@ -32,6 +32,17 @@ def _usage_payload():
     }
 
 
+def test_parse_date_handles_invalid_formats():
+    from routers.usage import _parse_date
+    from datetime import date
+    import pytest
+    assert _parse_date("2026-05-01") == date(2026, 5, 1)
+    with pytest.raises(ValueError):
+        _parse_date("invalid-date")
+    with pytest.raises(ValueError):
+        _parse_date(None)
+
+
 def test_usage_report_requires_auth(test_client):
     resp = test_client.get("/api/usage/report?start=2026-05-01&end=2026-05-31")
     assert resp.status_code == 401
