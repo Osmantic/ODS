@@ -56,8 +56,10 @@ configured proxy/origin handling before deliberately exposing it remotely.
 The UI account controls all mounted data and is not a tenant boundary. Remote
 gRPC clients and the separate control API are disabled in this profile.
 
-The public `/metrics` endpoint is used for process health and can expose
-operational metadata; it does not prove a repository is connected, snapshots
+The unauthenticated `/metrics` listener on internal port 51516 is used for
+process health and can expose operational metadata to other containers on
+`ods-network`; that port is not published to the host. The UI listener on
+51515 remains authenticated. Metrics do not prove a repository is connected, snapshots
 are fresh, or restoration works. Monitor the authenticated repository status
 and perform restore drills. Resource limits are 2 CPUs and 2 GiB RAM; source
 size, repository, cache, logs and retention still require disk planning.

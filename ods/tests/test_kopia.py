@@ -57,6 +57,8 @@ def test_catalog_installs_a_scoped_persistent_snapshot_service(tmp_path, compose
     manifest = yaml.safe_load((EXTENSION / "manifest.yaml").read_text())
     assert manifest["service"]["default_host"] == "kopia"
     assert manifest["service"]["health"] == "/metrics"
+    assert manifest["service"]["health_port"] == 51516
+    assert all(item["target"] != 51516 for item in service["ports"])
     catalog = json.loads((ROOT / "config/extensions-catalog.json").read_text())
     entry = next(item for item in catalog["extensions"] if item["id"] == "kopia")
     assert entry["features"][0]["launch"]["service"] == "kopia"
@@ -148,7 +150,9 @@ def test_live_authenticated_creation_snapshot_and_restore_after_recreation(tmp_p
             "printf 'ODS synthetic restore fixture\\n' > /fixture/sample.txt")
         run(*command, "up", "-d", "--wait", "--wait-timeout", "90")
         base = base_url()
-        request(base, "/metrics")
+        request(base, "/metrics", expected=401)
+        run("docker", "exec", project, "curl", "--fail", "--silent", "--output", "/dev/null",
+            "http://127.0.0.1:51516/metrics")
         request(base, "/", expected=401)
         request(base, "/api/v1/repo/status", expected=401)
         token = login(base)

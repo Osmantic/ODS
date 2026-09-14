@@ -4,6 +4,7 @@ services:
     container_name: ods-kopia
     hostname: ods-kopia
     command:
+      - --metrics-listen-addr=0.0.0.0:51516
       - server
       - start
       - --address=0.0.0.0:51515
@@ -32,7 +33,7 @@ services:
     ports:
       - "${BIND_ADDRESS:-127.0.0.1}:${KOPIA_PORT:-51515}:51515"
     healthcheck:
-      test: [CMD, curl, --fail, --silent, --max-time, "3", --output, /dev/null, "http://127.0.0.1:51515/metrics"]
+      test: [CMD, curl, --fail, --silent, --max-time, "3", --output, /dev/null, "http://127.0.0.1:51516/metrics"]
       interval: 30s
       timeout: 5s
       retries: 3

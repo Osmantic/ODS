@@ -12,6 +12,7 @@ service:
   external_port_env: KOPIA_PORT
   external_port_default: 51515
   health: /metrics
+  health_port: 51516
   type: docker
   gpu_backends: [all]
   compose_file: compose.yaml
