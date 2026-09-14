@@ -2,7 +2,10 @@
 # Service Registry — loads extension manifests and provides lookup functions.
 # Source this file: . "$SCRIPT_DIR/lib/service-registry.sh"
 
-EXTENSIONS_DIR="${SCRIPT_DIR:-$(pwd)}/extensions/services"
+# Respect a caller-supplied override the same way SCRIPT_DIR does just below:
+# an unconditional assignment silently discards an exported EXTENSIONS_DIR,
+# so tests that point the registry at a fixture tree get the real one instead.
+EXTENSIONS_DIR="${EXTENSIONS_DIR:-${SCRIPT_DIR:-$(pwd)}/extensions/services}"
 _SR_LOADED=false
 _SR_FAILED=false
 # Created on demand in sr_load() via mktemp. Its contents are sourced as bash,
