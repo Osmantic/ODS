@@ -55,7 +55,7 @@ def _stage_method(store: Any) -> Callable[..., Any]:
     return method
 
 
-def _validate_batch(
+def validate_staged_batch(
     batch: Any,
     command: LifecycleWorkCommand,
 ) -> StagedArtifactBatch:
@@ -128,7 +128,11 @@ class ArtifactStageAdapter:
             _execution_error("lifecycle-work-artifact-stage-failed", exc)
         except Exception as exc:
             _execution_error("lifecycle-work-artifact-stage-failed", exc)
-        return _validate_batch(batch, command).bundle_sha256
+        return validate_staged_batch(batch, command).bundle_sha256
 
 
-__all__ = ["ArtifactStageAdapter", "ArtifactStageAdapterError"]
+__all__ = [
+    "ArtifactStageAdapter",
+    "ArtifactStageAdapterError",
+    "validate_staged_batch",
+]

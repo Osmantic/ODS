@@ -194,3 +194,13 @@ SHA-256 expected by the receipted lifecycle-work boundary. Binding,
 verification, staging, and post-write evidence failures remain distinct,
 value-free protocol outcomes. The adapter is not imported by production code
 and adds no dispatcher, installed-state observer, retry loop, or effect.
+
+A separate dormant started-receipt observation seam now permits one narrowly
+proven recovery: when an exact immutable stage bundle already exists for the
+transaction, plan hash, and ordered service IDs, its validated digest may
+terminalize the matching `started` receipt without invoking the dispatcher.
+Only an explicit missing-bundle result permits the normal dispatch path.
+Corrupt, conflicting, malformed, or unavailable observations fail closed and
+leave the receipt started for later inspection. The host agent does not inject
+this observer yet, and no other lifecycle operation receives recovery
+authority in this phase.

@@ -434,6 +434,139 @@ def test_receipted_dispatch_terminalizes_before_success_and_replays():
     assert snapshot.terminal_receipt.evidence_hash == EVIDENCE_HASH
 
 
+def test_started_observer_terminalizes_exact_completion_without_dispatch():
+    command = host_work.parse_lifecycle_work_request(
+        work_request("stage", ["documents"], payload_for("stage", ["documents"]))
+    )
+    store = _begun_store(command)
+    observed = []
+    dispatched = []
+    loaded = []
+
+    result = host_work.dispatch_receipted_lifecycle_work(
+        command,
+        lambda value: dispatched.append(value) or EVIDENCE_HASH,
+        store,
+        lambda value: loaded.append(value) or _load_plan(value),
+        lambda value: observed.append(value)
+        or host_work.LifecycleWorkStartedObservation(
+            state="completed", evidence_hash=EVIDENCE_HASH
+        ),
+    )
+
+    assert result["evidenceHash"] == EVIDENCE_HASH
+    assert observed == [command]
+    assert dispatched == []
+    assert loaded == []
+    snapshot = store.snapshot(command.transaction_id, command.operation_key)
+    assert snapshot.state == "completed"
+    assert snapshot.terminal_receipt.evidence_hash == EVIDENCE_HASH
+
+
+def test_started_observer_missing_evidence_dispatches_once():
+    command = host_work.parse_lifecycle_work_request(
+        work_request("stage", ["documents"], payload_for("stage", ["documents"]))
+    )
+    store = _begun_store(command)
+    dispatched = []
+    loaded = []
+
+    result = host_work.dispatch_receipted_lifecycle_work(
+        command,
+        lambda value: dispatched.append(value) or EVIDENCE_HASH,
+        store,
+        lambda value: loaded.append(value) or _load_plan(value),
+        lambda _value: host_work.LifecycleWorkStartedObservation(state="missing"),
+    )
+
+    assert result["evidenceHash"] == EVIDENCE_HASH
+    assert len(dispatched) == 1
+    assert dispatched[0].plan_material.bound is True
+    assert loaded == [command]
+
+
+@pytest.mark.parametrize(
+    "observation",
+    [
+        object(),
+        host_work.LifecycleWorkStartedObservation(
+            state="missing", evidence_hash=EVIDENCE_HASH
+        ),
+        host_work.LifecycleWorkStartedObservation(state="completed"),
+        host_work.LifecycleWorkStartedObservation(
+            state="unknown", evidence_hash=EVIDENCE_HASH
+        ),
+    ],
+)
+def test_started_observer_rejects_invalid_typed_evidence(observation):
+    command = host_work.parse_lifecycle_work_request(
+        work_request("stage", ["documents"], payload_for("stage", ["documents"]))
+    )
+    store = _begun_store(command)
+    dispatched = []
+
+    with pytest.raises(host_work.LifecycleWorkValidationError) as rejected:
+        host_work.dispatch_receipted_lifecycle_work(
+            command,
+            lambda value: dispatched.append(value) or EVIDENCE_HASH,
+            store,
+            _load_plan,
+            lambda _value: observation,
+        )
+
+    assert rejected.value.code == "lifecycle-work-started-observation-mismatch"
+    assert dispatched == []
+    assert store.snapshot(command.transaction_id, command.operation_key).state == (
+        "started"
+    )
+
+
+def test_started_observer_failure_is_value_safe_and_does_not_terminalize():
+    command = host_work.parse_lifecycle_work_request(
+        work_request("stage", ["documents"], payload_for("stage", ["documents"]))
+    )
+    store = _begun_store(command)
+    dispatched = []
+
+    def fail_observation(_command):
+        raise RuntimeError("private-observer-detail")
+
+    with pytest.raises(host_work.LifecycleWorkExecutionError) as rejected:
+        host_work.dispatch_receipted_lifecycle_work(
+            command,
+            lambda value: dispatched.append(value) or EVIDENCE_HASH,
+            store,
+            _load_plan,
+            fail_observation,
+        )
+
+    assert rejected.value.code == "lifecycle-work-started-observer-unavailable"
+    assert "private-observer-detail" not in str(rejected.value)
+    assert dispatched == []
+    assert store.snapshot(command.transaction_id, command.operation_key).state == (
+        "started"
+    )
+
+
+def test_terminal_replay_bypasses_started_observer():
+    command = host_work.parse_lifecycle_work_request(
+        work_request("stage", ["documents"], payload_for("stage", ["documents"]))
+    )
+    store = _begun_store(command)
+    first = host_work.dispatch_receipted_lifecycle_work(
+        command, lambda _value: EVIDENCE_HASH, store, _load_plan
+    )
+    replay = host_work.dispatch_receipted_lifecycle_work(
+        command,
+        lambda _value: (_ for _ in ()).throw(AssertionError("dispatched")),
+        store,
+        _load_plan,
+        lambda _value: (_ for _ in ()).throw(AssertionError("observed")),
+    )
+
+    assert replay == first
+
+
 def test_receipted_dispatch_requires_plan_binding_before_the_worker():
     command = host_work.parse_lifecycle_work_request(
         work_request("verify", ["documents"], {"serviceIds": ["documents"]})

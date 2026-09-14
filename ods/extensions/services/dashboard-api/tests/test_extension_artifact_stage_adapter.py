@@ -443,12 +443,13 @@ class ArtifactStageAdapterTests(unittest.TestCase):
         ):
             self.assertNotIn(primitive, source)
 
-    def test_no_production_module_imports_the_dormant_adapter(self) -> None:
+    def test_only_dormant_recovery_observer_imports_the_adapter(self) -> None:
         repo = Path(__file__).resolve().parents[5]
         adapter_path = BIN_DIR / "extension_artifact_stage_adapter.py"
+        recovery_path = BIN_DIR / "extension_artifact_stage_recovery.py"
         hits: list[str] = []
         for path in (repo / "ods").rglob("*.py"):
-            if path in {adapter_path, Path(__file__).resolve()}:
+            if path in {adapter_path, recovery_path, Path(__file__).resolve()}:
                 continue
             if "extension_artifact_stage_adapter" in path.read_text(
                 encoding="utf-8"

@@ -90,6 +90,14 @@ class LifecycleWorkCommand:
     plan_material: Any = field(default=None, repr=False, compare=False)
 
 
+@dataclass(frozen=True)
+class LifecycleWorkStartedObservation:
+    """Typed durable-effect observation for one started-only receipt."""
+
+    state: str  # "missing" | "completed"
+    evidence_hash: str | None = None
+
+
 def _invalid(code: str = "invalid-lifecycle-work-request") -> None:
     raise LifecycleWorkValidationError(code) from None
 
@@ -364,18 +372,45 @@ def _require_terminal_receipt(
     return terminal
 
 
+def _require_started_observation(value: Any) -> LifecycleWorkStartedObservation:
+    if type(value) is not LifecycleWorkStartedObservation:
+        raise LifecycleWorkValidationError(
+            "lifecycle-work-started-observation-mismatch"
+        )
+    if value.state == "missing":
+        if value.evidence_hash is not None:
+            raise LifecycleWorkValidationError(
+                "lifecycle-work-started-observation-mismatch"
+            )
+        return value
+    if (
+        value.state != "completed"
+        or not isinstance(value.evidence_hash, str)
+        or _HASH_RE.fullmatch(value.evidence_hash) is None
+    ):
+        raise LifecycleWorkValidationError(
+            "lifecycle-work-started-observation-mismatch"
+        )
+    return value
+
+
 def dispatch_receipted_lifecycle_work(
     command: LifecycleWorkCommand,
     dispatcher: Callable[[LifecycleWorkCommand], str] | None,
     receipt_store: Any,
     plan_loader: Callable[[LifecycleWorkCommand], LifecycleWorkCommand] | None,
+    started_observer: (
+        Callable[[LifecycleWorkCommand], LifecycleWorkStartedObservation] | None
+    ) = None,
 ) -> dict[str, Any]:
     """Run at most one host operation and durably terminalize its receipt.
 
     The Dashboard publishes the immutable started receipt before submitting
     host work.  The host verifies that exact binding and publishes the matching
     terminal receipt before returning.  A completed terminal is replayed
-    without another dispatcher call; a failed terminal is never retried.
+    without another dispatcher call; a failed terminal is never retried.  An
+    optional typed observer may recover exact durable completion from a
+    started-only receipt before the dispatcher is invoked.
     """
 
     if not isinstance(command, LifecycleWorkCommand):
@@ -384,6 +419,10 @@ def dispatch_receipted_lifecycle_work(
         raise LifecycleWorkUnavailable("lifecycle-work-dispatcher-unavailable")
     if not callable(plan_loader):
         raise LifecycleWorkUnavailable("lifecycle-work-plan-loader-unavailable")
+    if started_observer is not None and not callable(started_observer):
+        raise LifecycleWorkUnavailable(
+            "lifecycle-work-started-observer-unavailable"
+        )
     if receipt_store is None or not callable(getattr(receipt_store, "snapshot", None)):
         raise LifecycleWorkUnavailable("lifecycle-work-receipt-store-unavailable")
     if not callable(getattr(receipt_store, "finish", None)):
@@ -400,6 +439,42 @@ def dispatch_receipted_lifecycle_work(
         if terminal.outcome == "completed":
             return _completed_result(command, terminal.evidence_hash)
         raise LifecycleWorkExecutionError("lifecycle-work-terminal-failed")
+
+    if started_observer is not None:
+        try:
+            observation = _require_started_observation(
+                started_observer(command)
+            )
+        except LifecycleWorkError:
+            raise
+        except Exception as exc:
+            raise LifecycleWorkExecutionError(
+                "lifecycle-work-started-observer-unavailable"
+            ) from exc
+        if observation.state == "completed":
+            try:
+                recovered = receipt_store.finish(
+                    command.transaction_id,
+                    command.plan_hash,
+                    command.operation_key,
+                    command.request_hash,
+                    command.service_ids,
+                    "completed",
+                    observation.evidence_hash,
+                )
+                validated = _require_terminal_receipt(
+                    snapshot.started_receipt,
+                    recovered,
+                    "completed",
+                    command,
+                )
+            except LifecycleWorkError:
+                raise
+            except Exception as exc:
+                raise LifecycleWorkExecutionError(
+                    "lifecycle-work-receipt-store-unavailable"
+                ) from exc
+            return _completed_result(command, validated.evidence_hash)
 
     try:
         bound_command = plan_loader(command)
@@ -477,6 +552,7 @@ __all__ = [
     "LifecycleWorkCommand",
     "LifecycleWorkError",
     "LifecycleWorkExecutionError",
+    "LifecycleWorkStartedObservation",
     "LifecycleWorkUnavailable",
     "LifecycleWorkValidationError",
     "FAILURE_SCHEMA",

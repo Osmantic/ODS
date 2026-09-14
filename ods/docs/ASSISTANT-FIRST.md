@@ -222,6 +222,15 @@ partial batch, and a post-publication evidence mismatch is distinguished from
 pre-read plan rejection. No production module imports the adapter, so this
 still does not enable lifecycle execution or installed-state recovery.
 
+The lifecycle receipt boundary also accepts an optional typed observer for a
+`started` receipt. The first observer implementation is intentionally limited
+to staged artifact bundles: an exact validated bundle recovers completion with
+its digest, while an explicit missing result continues to the ordinary
+dispatcher path. Invalid, corrupt, conflicting, or unavailable observations
+cannot dispatch or terminalize the receipt. The production host path does not
+provide this observer yet, so the seam remains dormant and grants no recovery
+authority for configuration, apply, verification, rollback, or removal.
+
 ## Evidence boundary
 
 The source contract checks resolver ordering, the exact candidate service set,
