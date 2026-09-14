@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-13T16:53:56Z",
+  "generated_at": "2026-09-14T08:46:27Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -3157,6 +3157,28 @@
       "configuration_scope": "declared-environment-keys"
     },
     {
+      "id": "pixel-inference",
+      "name": "Pixel inference sharing (development)",
+      "description": "Disabled by default. Owner-provisioned, inference-only device credentials; loopback transport only. Does not provide Pixel agent or computer access. Private state must be provisioned before service activation. Native Windows private-state support and guided setup are not yet implemented.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [
+        "model-router"
+      ],
+      "port": 8093,
+      "external_port_default": 4005,
+      "health_endpoint": "/health",
+      "env_vars": [],
+      "tags": [],
+      "features": [],
+      "startup_check": false,
+      "catalog_source": "builtin",
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
       "id": "qdrant",
       "name": "Qdrant (Vector DB)",
       "description": "Qdrant (Vector DB)",
@@ -3381,6 +3403,70 @@
           "priority": 6
         }
       ],
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
+      "id": "stirling-pdf",
+      "name": "Stirling-PDF",
+      "description": "Self-hosted PDF rotation, merging, splitting and conversion with local accounts.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 8080,
+      "external_port_default": 7823,
+      "health_endpoint": "/api/v1/info/status",
+      "env_vars": [
+        {
+          "key": "STIRLING_PDF_PORT",
+          "default": "7823",
+          "description": "Published port for the local PDF application"
+        },
+        {
+          "key": "STIRLING_PDF_ADMIN_USER",
+          "default": "admin",
+          "description": "Initial administrator username, used only when the account database is new"
+        },
+        {
+          "key": "STIRLING_PDF_ADMIN_PASSWORD",
+          "required": true,
+          "description": "Initial administrator password; change existing passwords inside Stirling-PDF"
+        }
+      ],
+      "tags": [
+        "documents",
+        "pdf",
+        "productivity",
+        "local"
+      ],
+      "features": [
+        {
+          "id": "local-pdf-tools",
+          "name": "PDF Tools",
+          "description": "Rotate, merge, split and convert PDFs on the local server",
+          "icon": "FileText",
+          "category": "productivity",
+          "requirements": {
+            "services": [
+              "stirling-pdf"
+            ],
+            "vram_gb": 0,
+            "disk_gb": 8
+          },
+          "enabled_services_all": [
+            "stirling-pdf"
+          ],
+          "setup_time": "~3-10 minutes",
+          "priority": 32,
+          "launch": {
+            "type": "service",
+            "service": "stirling-pdf"
+          }
+        }
+      ],
+      "startup_timeout": 600,
       "configuration_scope": "declared-environment-keys"
     },
     {
