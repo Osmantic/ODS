@@ -1980,6 +1980,25 @@ def load_env(env_path: Path) -> dict:
         if "=" in line:
             key, _, val = line.partition("=")
             raw_value = val.strip()
+            # Match the dashboard's single-line dotenv writer without shell
+            # expansion. shlex drops bare Windows path backslashes and keeps
+            # a backslash before $ inside double quotes.
+            quoted = re.fullmatch(r'"((?:\\.|[^"\\])*)"(?:\s+#.*)?', raw_value)
+            if quoted:
+                env[key.strip()] = (
+                    quoted.group(1).replace('\\"', '"')
+                    .replace('\\$', '$').replace('\\\\', '\\')
+                )
+                continue
+            quoted = re.fullmatch(r"'([^']*)'(?:\s+#.*)?", raw_value)
+            if quoted:
+                env[key.strip()] = quoted.group(1)
+                continue
+            if raw_value[:1] not in {"'", '"'}:
+                env[key.strip()] = raw_value.split(" #", 1)[0].rstrip()
+                continue
+            # Preserve legacy concatenated shell quotes emitted by the host
+            # agent's own writer. Never evaluate substitutions or commands.
             try:
                 parsed = shlex.split(raw_value, comments=False, posix=True)
             except ValueError:

@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 
 import yaml
 
-from env_values import strip_matching_quotes
+from env_values import parse_env_value
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +100,7 @@ def _find_env_file_value(key: str) -> tuple[bool, str]:
         for line in env_path.read_text(encoding="utf-8").splitlines():
             if line.startswith(f"{key}="):
                 found = True
-                value = strip_matching_quotes(line.split("=", 1)[1])
+                value = parse_env_value(line.split("=", 1)[1])
     except (OSError, UnicodeError):
         pass
     return found, value

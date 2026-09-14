@@ -17,9 +17,10 @@ const sourceDescription = {
   local_zero_cost:'Local inference has no external API bill. Hardware and electricity costs are not included.',
   untracked:'No reliable pricing or billing source. Cost is unknown, not zero.',
 }
+const pricedCostAvailable = row => ['actual_billed','priced_from_tokens'].includes(row.cost_source) && row.cost_usd != null && row.cost_usd !== '' && Number.isFinite(Number(row.cost_usd))
 const costLabel = row => {
   if (row.cost_source === 'local_zero_cost') return 'Local'
-  if (!['actual_billed','priced_from_tokens'].includes(row.cost_source) || row.cost_usd == null || row.cost_usd === '' || !Number.isFinite(Number(row.cost_usd))) return '—'
+  if (!pricedCostAvailable(row)) return '—'
   return money(row.cost_usd)
 }
 const metadataValue = value => value || 'unknown'
@@ -27,10 +28,14 @@ const requestCountAvailable = (row, source) => row.requests != null && Number.is
 const requestLabel = (row, source) => requestCountAvailable(row,source) ? integer(row.requests) : '—'
 const seriesInfo = {input:{field:'input_tokens',label:'Input',color:'#dce1e5'},output:{field:'output_tokens',label:'Output',color:'#909ba8'},cache:{label:'Cache',color:'#66717d'}}
 
-export function csvForRows(rows) {
+export function csvForRows(rows, telemetrySource) {
   const fields=['model','provider','service','input_tokens','output_tokens','cache_read_tokens','cache_write_tokens','requests','cost_usd','cost_source']
   const cell=value=>`"${String(value ?? '').replace(/^[=+@\-\t\r\n＝＋－＠]/,"'$&").replaceAll('"','""')}"`
-  return [fields.join(','),...rows.map(row=>fields.map(key=>cell(row[key])).join(','))].join('\r\n')
+  return [fields.join(','),...rows.map(row => {
+    const values = {...row, requests:requestCountAvailable(row,telemetrySource) ? row.requests : null,
+      cost_usd:row.cost_source === 'local_zero_cost' ? 0 : pricedCostAvailable(row) ? row.cost_usd : null}
+    return fields.map(key=>cell(values[key])).join(',')
+  })].join('\r\n')
 }
 
 export default function UsageView({compact=false,report,readiness,loading,error,range,onPrevious,onNext,onRefresh,actionState,onAction}) {
@@ -121,7 +126,7 @@ function ModelView({rows,telemetrySource}) {
     let url, link
     setExportError(false)
     try {
-      url = URL.createObjectURL(new Blob([csvForRows(filtered)], {type:'text/csv;charset=utf-8'}))
+      url = URL.createObjectURL(new Blob([csvForRows(filtered,telemetrySource)], {type:'text/csv;charset=utf-8'}))
       link = document.createElement('a')
       link.href = url
       link.download = 'ods-usage-by-model.csv'

@@ -18,7 +18,7 @@ import re
 from pathlib import Path
 from typing import Any, Optional
 
-from env_values import strip_matching_quotes
+from env_values import parse_env_value, strip_matching_quotes
 from gguf_inspector import inspect_gguf
 from context_policy import HERMES_MIN_CONTEXT, HERMES_TARGET_CONTEXT, PIXEL_MIN_CONTEXT
 from helpers import (
@@ -143,7 +143,7 @@ def read_env_file_value(key: str, install_dir: str | Path) -> str:
     try:
         for line in env_path.read_text(encoding="utf-8").splitlines():
             if line.startswith(f"{key}="):
-                return strip_matching_quotes(line.split("=", 1)[1])
+                return parse_env_value(line.split("=", 1)[1])
     except OSError:
         pass
     return ""

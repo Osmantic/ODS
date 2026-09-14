@@ -148,7 +148,7 @@ fi
 
 if [[ "$FORCE" != "true" ]]; then
     echo -e "${YELLOW}This will permanently remove ODS and its components.${NC}"
-    read -rp "Are you sure? Type 'yes' to confirm: " confirm
+    read -rp "Are you sure? Type 'yes' to confirm: " confirm || confirm=""
     if [[ "$confirm" != "yes" ]]; then
         log_info "Uninstall cancelled."
         exit 0

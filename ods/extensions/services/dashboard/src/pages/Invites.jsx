@@ -15,7 +15,13 @@ const fetchJson = async (url, init = {}, ms = 8000) => {
   const c = new AbortController()
   const t = setTimeout(() => c.abort(), ms)
   try {
-    return await fetch(url, { ...init, signal: c.signal })
+    const response = await fetch(url, { ...init, signal: c.signal })
+    // The deadline includes reading JSON, not just receiving HTTP headers.
+    // Keep parsing failures lazy so existing status/error handlers still apply.
+    const body = await response.json().then(value => ({ value }), error => ({ error }))
+    if (c.signal.aborted) throw new Error('Access request timed out. Refresh the list before trying another action.')
+    return { ok: response.ok, status: response.status,
+      json: () => body.error ? Promise.reject(body.error) : Promise.resolve(body.value) }
   } finally {
     clearTimeout(t)
   }

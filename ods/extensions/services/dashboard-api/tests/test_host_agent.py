@@ -37,6 +37,24 @@ _split_nmcli_terse = _mod._split_nmcli_terse
 _request_server_shutdown = _mod._request_server_shutdown
 
 
+@pytest.mark.parametrize("value", [
+    "it's $5 \"q\" back\\slash", "  model #1  ", r"C:\models\file.gguf", "ordinary",
+])
+def test_load_env_reads_dashboard_writer(tmp_path, value):
+    from env_values import quote_env_value
+
+    path = tmp_path / ".env"
+    path.write_text("VALUE=" + quote_env_value(value) + "\n", encoding="utf-8")
+    assert _mod.load_env(path)["VALUE"] == value
+
+
+def test_load_env_retains_legacy_shell_quoted_values(tmp_path):
+    path = tmp_path / ".env"
+    value = "it's $5"
+    path.write_text(_mod._env_assignment("VALUE", value) + "\n", encoding="utf-8")
+    assert _mod.load_env(path)["VALUE"] == value
+
+
 @pytest.fixture(autouse=True)
 def _isolate_opencode_config(monkeypatch, tmp_path):
     """Keep host-agent integration tests out of the user's OpenCode config."""

@@ -18,7 +18,7 @@ import aiohttp
 import httpx
 
 from config import SERVICES, INSTALL_DIR, DATA_DIR, LLM_BACKEND, read_live_env_value
-from env_values import strip_matching_quotes
+from env_values import parse_env_value
 from host_agent_client import AgentClientError, async_request_json as request_agent_json
 from models import ServiceStatus, DiskUsage, ModelInfo, BootstrapStatus
 from service_health_dns import ServiceHealthResolver
@@ -853,7 +853,7 @@ def get_model_info() -> Optional[ModelInfo]:
                     key = key.strip()
                     if not key:
                         continue
-                    value = strip_matching_quotes(value)
+                    value = parse_env_value(value)
                     env_values[key] = value
 
             model_name = env_values.get("LLM_MODEL")

@@ -20,7 +20,7 @@ import httpx
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.responses import RedirectResponse
 
-from env_values import strip_matching_quotes
+from env_values import parse_env_value
 from config import (
     DATA_DIR,
     INSTALL_DIR,
@@ -335,7 +335,7 @@ def _read_active_model() -> Optional[str]:
     try:
         for line in _ENV_PATH.read_text(encoding="utf-8").splitlines():
             if line.startswith("GGUF_FILE="):
-                return strip_matching_quotes(line.split("=", 1)[1])
+                return parse_env_value(line.split("=", 1)[1])
     except OSError:
         pass
     return None

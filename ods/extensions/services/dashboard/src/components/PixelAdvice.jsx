@@ -7,6 +7,7 @@ const jobPattern = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f
 const terminal = new Set(['completed', 'failed', 'cancelled', 'interrupted'])
 const button = 'rounded border border-theme-border px-3 py-2 text-xs disabled:opacity-40'
 const field = 'w-full rounded border border-theme-border bg-theme-bg p-2 text-sm'
+const PROVIDER_LOAD_ERROR = 'Provider settings unavailable. Reload before submitting.'
 
 function trackedJob() {
   try {
@@ -30,6 +31,7 @@ export default function PixelAdvice({ onInsert, canInsert = true }) {
   const inFlight = useRef(false)
   const polling = useRef(false)
   const jobVersion = useRef(0)
+  const providerVersion = useRef(0)
   const controllers = useRef(new Set())
   const panel = useRef(null)
   const trigger = useRef(null)
@@ -53,16 +55,19 @@ export default function PixelAdvice({ onInsert, canInsert = true }) {
 
   useEffect(() => {
     const pending = controllers.current
-    return () => { for (const controller of pending) controller.abort() }
+    return () => { providerVersion.current++; for (const controller of pending) controller.abort() }
   }, [])
 
   const load = useCallback(async () => {
+    const version = ++providerVersion.current
     setConfig(null); setCloud(false); setCost(false)
     try {
       const response = await request('/api/pixel/providers')
       if (configurationError(response.configuration)) throw new Error('Invalid settings')
+      if (version !== providerVersion.current) return
       setConfig(response.configuration)
-    } catch { setError('Provider settings unavailable. Reload before submitting.') }
+      setError(current => current === PROVIDER_LOAD_ERROR ? '' : current)
+    } catch { if (version === providerVersion.current) setError(PROVIDER_LOAD_ERROR) }
   }, [request])
 
   useEffect(() => { if (open) void load() }, [open, load])
@@ -70,7 +75,7 @@ export default function PixelAdvice({ onInsert, canInsert = true }) {
     if (open) panel.current?.querySelector('button')?.focus()
   }, [open])
 
-  function close() { setOpen(false); setRuntimeReady(false); trigger.current?.focus() }
+  function close() { providerVersion.current++; setOpen(false); setRuntimeReady(false); trigger.current?.focus() }
   function dialogKey(event) {
     if (event.key === 'Escape') { event.stopPropagation(); close(); return }
     if (event.key !== 'Tab') return
