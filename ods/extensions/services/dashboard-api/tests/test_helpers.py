@@ -1607,3 +1607,18 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+class TestListChunkerBatchSafe:
+    def test_valid_chunking(self):
+        from helpers import list_chunker_batch_safe
+        assert list_chunker_batch_safe([1, 2, 3, 4, 5], 2) == [[1, 2], [3, 4], [5]]
+        assert list_chunker_batch_safe([1, 2, 3], 5) == [[1, 2, 3]]
+
+    def test_invalid_inputs(self):
+        from helpers import list_chunker_batch_safe
+        assert list_chunker_batch_safe(None) == []
+        assert list_chunker_batch_safe([]) == []
+        assert list_chunker_batch_safe("not list") == []
+        assert list_chunker_batch_safe([1, 2, 3], 0) == [[1, 2, 3]]
+

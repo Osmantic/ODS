@@ -1146,3 +1146,18 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def list_chunker_batch_safe(items: list | None, chunk_size: int = 100) -> list[list]:
+    """Safely partition list into chunks of fixed max size.
+    Returns [] on empty/invalid list or invalid chunk size <= 0.
+    """
+    if not items or not isinstance(items, (list, tuple)):
+        return []
+    if not isinstance(chunk_size, int) or isinstance(chunk_size, bool) or chunk_size <= 0:
+        return [list(items)]
+    try:
+        return [list(items[i : i + chunk_size]) for i in range(0, len(items), chunk_size)]
+    except Exception:
+        return []
+
