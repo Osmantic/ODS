@@ -267,6 +267,11 @@ def request_json(
     params: dict[str, Any] | None = None,
     timeout: float = 5.0,
 ) -> dict[str, Any]:
+    try:
+        t_val = float(timeout)
+        timeout = t_val if t_val > 0 else 5.0
+    except (TypeError, ValueError):
+        timeout = 5.0
     response = _sync_request(method, path, payload=payload, params=params, timeout=timeout)
     _raise_for_status(response)
     return _decode_json(response)

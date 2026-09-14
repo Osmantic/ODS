@@ -21,6 +21,21 @@ def test_host_agent_url_usage_is_centralized():
     assert users == {"config.py", "host_agent_client.py", "main.py"}
 
 
+def test_request_json_sanitizes_invalid_timeout(monkeypatch):
+    captured = {}
+    def mock_sync_req(method, path, payload=None, params=None, timeout=5.0):
+        captured["timeout"] = timeout
+        resp = agent_client.httpx.Response(200, json={"ok": True})
+        return resp
+
+    monkeypatch.setattr(agent_client, "_sync_request", mock_sync_req)
+    agent_client.request_json("GET", "/v1/test", timeout=-1.0)
+    assert captured["timeout"] == 5.0
+
+    agent_client.request_json("GET", "/v1/test", timeout="invalid")
+    assert captured["timeout"] == 5.0
+
+
 def test_sync_client_is_singleton_with_bounded_limits(monkeypatch):
     created = []
 
