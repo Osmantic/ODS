@@ -1156,12 +1156,38 @@ class TestGetLlamaMetricsTPS:
         mock_client.get = AsyncMock(return_value=mock_response)
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
-
         monkeypatch.setattr("helpers.httpx.AsyncClient", lambda **kw: mock_client)
 
         result = await get_llama_metrics(model_hint="test")
         # 100 tokens / 5 seconds = 20.0 tps
         assert result["tokens_per_second"] == 20.0
+
+    @pytest.mark.asyncio
+    async def test_implausible_tps_falls_back_to_zero(self, monkeypatch):
+        import helpers
+        import time as _time
+
+        fake_services = {
+            "llama-server": {"host": "localhost", "port": 8080, "health": "/health", "name": "llama-server"},
+        }
+        monkeypatch.setattr("helpers.SERVICES", fake_services)
+        helpers._prev_tokens.update({"count": 100, "time": _time.time() - 1, "tps": 0.0, "gen_secs": 5.0})
+
+        mock_response = MagicMock()
+        mock_response.text = (
+            "tokens_predicted_total 500000\n"
+            "tokens_predicted_seconds_total 5.001\n"
+        )
+        mock_response.status_code = 200
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        monkeypatch.setattr("helpers.httpx.AsyncClient", lambda **kw: mock_client)
+
+        result = await get_llama_metrics(model_hint="test")
+        assert result["tokens_per_second"] == 0.0
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
