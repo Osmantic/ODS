@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-13T16:53:56Z",
+  "generated_at": "2026-09-14T15:28:32Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -3157,6 +3157,28 @@
       "configuration_scope": "declared-environment-keys"
     },
     {
+      "id": "pixel-inference",
+      "name": "Pixel inference sharing (development)",
+      "description": "Disabled by default. Owner-provisioned, inference-only device credentials; loopback transport only. Does not provide Pixel agent or computer access. Private state must be provisioned before service activation. Native Windows private-state support and guided setup are not yet implemented.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [
+        "model-router"
+      ],
+      "port": 8093,
+      "external_port_default": 4005,
+      "health_endpoint": "/health",
+      "env_vars": [],
+      "tags": [],
+      "features": [],
+      "startup_check": false,
+      "catalog_source": "builtin",
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
       "id": "qdrant",
       "name": "Qdrant (Vector DB)",
       "description": "Qdrant (Vector DB)",
@@ -3586,6 +3608,62 @@
       "tags": [],
       "features": [],
       "catalog_source": "builtin",
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
+      "id": "vikunja",
+      "name": "Vikunja",
+      "description": "",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 3456,
+      "external_port_default": 7855,
+      "health_endpoint": "/api/v1/info",
+      "env_vars": [
+        {
+          "key": "VIKUNJA_PORT",
+          "default": "7855",
+          "description": "Published Vikunja web interface and API port"
+        },
+        {
+          "key": "VIKUNJA_SERVICE_JWTSECRET",
+          "default": "vikunja-change-me-to-a-secure-secret-token",
+          "description": "Random secret key for signing user authentication tokens"
+        }
+      ],
+      "tags": [
+        "tasks",
+        "todo",
+        "kanban",
+        "productivity",
+        "projects",
+        "local"
+      ],
+      "features": [
+        {
+          "id": "task-management",
+          "name": "Task & Project Management",
+          "description": "Organize todos, projects, kanban boards, and task deadlines in a private workspace",
+          "icon": "CheckSquare",
+          "category": "productivity",
+          "requirements": {
+            "services": [
+              "vikunja"
+            ],
+            "vram_gb": 0,
+            "disk_gb": 1
+          },
+          "enabled_services_all": [
+            "vikunja"
+          ],
+          "setup_time": "~1 minute",
+          "priority": 42
+        }
+      ],
       "configuration_scope": "declared-environment-keys"
     },
     {

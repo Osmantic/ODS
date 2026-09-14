@@ -1,0 +1,40 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: vikunja
+  name: Vikunja
+  aliases: [tasks, todo, projects, kanban]
+  container_name: ods-vikunja
+  host_env: VIKUNJA_HOST
+  default_host: vikunja
+  port: 3456
+  external_port_env: VIKUNJA_PORT
+  external_port_default: 7855
+  health: /api/v1/info
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [tasks, todo, kanban, productivity, projects, local]
+  env_vars:
+    - key: VIKUNJA_PORT
+      default: "7855"
+      description: Published Vikunja web interface and API port
+    - key: VIKUNJA_SERVICE_JWTSECRET
+      default: "vikunja-change-me-to-a-secure-secret-token"
+      description: Random secret key for signing user authentication tokens
+features:
+  - id: task-management
+    name: Task & Project Management
+    description: "Organize todos, projects, kanban boards, and task deadlines in a private workspace"
+    icon: CheckSquare
+    category: productivity
+    requirements:
+      services: [vikunja]
+      vram_gb: 0
+      disk_gb: 1
+    enabled_services_all: [vikunja]
+    setup_time: "~1 minute"
+    priority: 42
