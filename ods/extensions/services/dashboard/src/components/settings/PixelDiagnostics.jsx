@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Activity, Cpu, ShieldCheck, RefreshCw } from 'lucide-react'
 import MetalMetricIcon from '../MetalMetricIcon'
+import PixelDiagnosticsDownload from './PixelDiagnosticsDownload'
 
 const checks = [
   { id: 'agent', label: 'Agent connection', path: '/api/pixel/status', icon: Activity },
@@ -77,6 +78,7 @@ export default function PixelDiagnostics() {
       <button type="button" onClick={refresh} disabled={busy}><MetalMetricIcon icon={RefreshCw} size={14}/>{busy ? 'Checking…' : 'Refresh checks'}</button>
     </div>
     <p role="status" className="pixel-diagnostics-time">{busy ? 'Reading current host status…' : checkedAt ? `Checked ${checkedAt.toLocaleTimeString()}` : 'Not checked'}</p>
+    <PixelDiagnosticsDownload results={results} checkedAt={checkedAt} busy={busy}/>
     {checks.map(check => {
       const result = results[check.id]
       return <section key={check.id} aria-labelledby={`pixel-check-${check.id}`} className="pixel-diagnostic-check">
