@@ -779,7 +779,7 @@ collect_docker
 write_evidence
 write_manifest
 
-tar -czf "$ARCHIVE_PATH" -C "$OUTPUT_DIR" "$BUNDLE_NAME"
+tar -czf "${ARCHIVE_PATH}.tmp" -C "$OUTPUT_DIR" "$BUNDLE_NAME" && mv -f "${ARCHIVE_PATH}.tmp" "$ARCHIVE_PATH"
 
 if [[ "$JSON_OUTPUT" == "true" ]]; then
     write_summary_json
