@@ -1381,3 +1381,14 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+import re
+
+def string_clean_control_characters_safe(text: str | None) -> str:
+    """Safely strip non-printable ASCII control characters from text string.
+    Returns "" on None or non-string inputs.
+    """
+    if text is None or not isinstance(text, str):
+        return ""
+    # Strip non-printable control characters except newline and tab
+    return re.sub(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]', '', text)
