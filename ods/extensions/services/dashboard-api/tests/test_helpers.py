@@ -1607,3 +1607,20 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+class TestCalculatePercentageSafe:
+    def test_valid_percentage(self):
+        from helpers import calculate_percentage_safe
+        assert calculate_percentage_safe(25, 100) == 25.0
+        assert calculate_percentage_safe(1, 3, decimal_places=2) == 33.33
+
+    def test_edge_cases_and_bounds(self):
+        from helpers import calculate_percentage_safe
+        assert calculate_percentage_safe(None, 100) == 0.0
+        assert calculate_percentage_safe(50, 0) == 0.0
+        assert calculate_percentage_safe(float("nan"), 100) == 0.0
+        assert calculate_percentage_safe(150, 100) == 100.0
+        assert calculate_percentage_safe(-10, 100) == 0.0
+        assert calculate_percentage_safe("50", 100, default=-1.0) == -1.0
+

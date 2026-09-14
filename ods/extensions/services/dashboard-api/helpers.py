@@ -1146,3 +1146,23 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def calculate_percentage_safe(part: float, total: float, decimal_places: int = 1, default: float = 0.0) -> float:
+    """Safely calculate percentage (part / total * 100) with bounds checking."""
+    if part is None or total is None:
+        return default
+    if not isinstance(part, (int, float)) or not isinstance(total, (int, float)):
+        return default
+    if math.isnan(part) or math.isinf(part) or math.isnan(total) or math.isinf(total):
+        return default
+    if total <= 0:
+        return default
+    if part <= 0:
+        return 0.0
+    val = (part / total) * 100.0
+    val = min(100.0, max(0.0, val))
+    if isinstance(decimal_places, int) and decimal_places >= 0:
+        return round(val, decimal_places)
+    return val
+
