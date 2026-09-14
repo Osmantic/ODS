@@ -109,10 +109,17 @@ export function TroubleshootingAssistant({ serviceStatus }) {
   const [copied, setCopied] = useState(null)
   const [search, setSearch] = useState('')
 
+  // ODS is reached over plain HTTP on the LAN (http://<device>.local), where
+  // navigator.clipboard is undefined — an unguarded .writeText() throws rather
+  // than failing quietly. Match the guarded shape used by Extensions/Invites,
+  // and only flash "copied" once the write actually resolves.
   const copyToClipboard = (text, id) => {
-    navigator.clipboard.writeText(text)
-    setCopied(id)
-    setTimeout(() => setCopied(null), 2000)
+    navigator.clipboard?.writeText(text)
+      .then(() => {
+        setCopied(id)
+        setTimeout(() => setCopied(null), 2000)
+      })
+      .catch(() => {})
   }
 
   const filteredIssues = search 
