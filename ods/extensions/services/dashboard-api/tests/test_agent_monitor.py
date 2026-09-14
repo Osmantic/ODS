@@ -12,6 +12,32 @@ import agent_monitor
 
 class TestThroughputMetrics:
 
+    @pytest.mark.parametrize('invalid', [
+        float('nan'), float('inf'), float('-inf'), -1, None,
+        'bad', {}, [], True, False, 10 ** 400,
+    ], ids=['nan', 'inf', '-inf', 'negative', 'none', 'text', 'dict',
+            'list', 'true', 'false', 'overflow'])
+    def test_invalid_samples_do_not_invent_zero_measurements(self, invalid):
+        tm = ThroughputMetrics()
+        tm.add_sample(10)
+        before = tm.get_stats()
+        tm.add_sample(invalid)
+        assert tm.get_stats() == before
+
+    def test_real_zero_and_numeric_strings_remain_valid(self):
+        tm = ThroughputMetrics()
+        tm.add_sample('10.5')
+        tm.add_sample(0)
+        assert tm.get_stats()['current'] == 0
+        assert tm.get_stats()['average'] == 5.25
+        assert len(tm.get_stats()['history']) == 2
+
+    def test_large_finite_samples_have_a_finite_average(self):
+        tm = ThroughputMetrics()
+        tm.add_sample(1e308)
+        tm.add_sample(1e308)
+        assert tm.get_stats()['average'] == 1e308
+
     def test_empty_stats(self):
         tm = ThroughputMetrics()
         stats = tm.get_stats()

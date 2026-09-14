@@ -8,6 +8,54 @@ on:
       - master
 
 jobs:
+  pixel-advice-host-stdlib:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ['3.9', '3.11', '3.12']
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Host import and runtime status require no optional dependencies
+        working-directory: ods
+        run: python -I -S tests/pixel_inference/check_advice_stdlib.py
+
+  pixel-inference-contracts:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ['3.11', '3.12']
+    defaults:
+      run:
+        working-directory: ods
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install isolated inference test dependencies
+        run: python -m pip install -r extensions/services/pixel-inference/requirements.txt 'pytest>=8,<9'
+      - name: Sharing credential and owner control tests
+        run: python -m pytest tests/pixel_inference -q
+      - name: Inference perimeter and cancellation tests
+        run: python -m pytest extensions/services/pixel-inference/tests -q
+      - name: Model router compatibility and route pins
+        run: python -m pytest extensions/services/model-router/tests -q
+      - name: Settings transaction and access preservation contracts
+        run: |
+          python -m pytest -q tests/pixel_settings/test_contract.py tests/pixel_settings/test_projection.py \
+            tests/pixel_settings/test_runtime.py tests/pixel_settings/test_coordinator.py \
+            tests/pixel_settings/test_public_runtime.py tests/pixel_settings/test_host_http.py \
+            extensions/services/pixel-agent/tests/test_settings_transaction.py \
+            extensions/services/pixel-agent/tests/test_settings_worker_protocol.py \
+            extensions/services/pixel-agent/tests/test_access_bridge.py \
+            extensions/services/pixel-agent/tests/test_access_deadlines.py \
+            extensions/services/pixel-agent/tests/test_settings_control_transport.py \
+            extensions/services/pixel-agent/tests/test_pixel_access_mode.py \
+            extensions/services/pixel-agent/tests/test_access_mode_config.py
+
   token-spy-postgres:
     runs-on: ubuntu-latest
     services:
@@ -101,6 +149,15 @@ jobs:
       - name: Tier Map Unit Tests
         run: bash tests/test-tier-map.sh
 
+      - name: Active Model Preservation Tests
+        run: python3 tests/test-preserve-active-model.py
+
+      - name: Pixel Agent Model Selection Tests
+        run: python3 tests/test-pixel-model-selector.py
+
+      - name: Pixel Provider and Access Contracts
+        run: python3 -m unittest discover -s tests -p 'test_pixel_*.py' -v
+
       - name: Service Registry Tests
         run: bash tests/test-service-registry.sh
 
@@ -147,6 +204,12 @@ jobs:
 
       - name: CLI Enable Compose Reconciliation Tests
         run: bash tests/test-cli-enable-compose-reconciliation.sh
+
+      - name: CLI Link Refresh Tests
+        run: bash tests/test-cli-link-refresh.sh
+
+      - name: Installer Mode Preservation Tests
+        run: bash tests/test-installer-mode-preservation.sh
 
       - name: Windows Missing Service Hint Tests
         run: bash tests/test-windows-missing-service-hints.sh
@@ -219,9 +282,20 @@ jobs:
           bash tests/contracts/test-preflight-fixtures.sh
           bash tests/test-preflight-resolver-bug.sh
           bash tests/test-desktop-agent-host-env.sh
+          bash tests/test-pixel-uninstall.sh
           python3 tests/contracts/test-network-exposure-contracts.py
           python3 tests/contracts/test-remote-provider-egress-policy.py
           python3 tests/contracts/test-remote-provider-egress-service.py
+
+      - name: Pixel Default Agent Contract Tests
+        run: |
+          bash tests/test-pixel-integration.sh
+          bash tests/test-pixel-host-install.sh
+          python3 -m unittest -v tests/test_pixel_native_search.py
+          bash tests/test-pixel-compose-wiring.sh
+          python3 tests/test_pixel_timeout_contract.py
+          python3 -m unittest -v extensions/services/pixel-agent/tests/test_artifact_promoter.py
+          node --test extensions/services/pixel-agent/tests/*.test.mjs
 
       - name: Linux install preflight tests
         run: |

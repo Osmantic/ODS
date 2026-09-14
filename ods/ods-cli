@@ -1270,6 +1270,36 @@ _ods_cli_pull_external_images() {
 # Commands
 #=============================================================================
 
+_ods_cli_service_health() {
+    local sid="$1" port="$2" health_path="$3"
+    shift 3
+
+    if [[ "${SERVICE_HEALTH_SOURCES[$sid]:-http}" == "container" ]]; then
+        local container_id="" inspect="" state="" container_health=""
+        container_id=$(docker compose "$@" ps -q "$sid" 2>/dev/null || true)
+        if [[ -n "$container_id" ]]; then
+            inspect=$(docker inspect \
+                --format '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' \
+                "$container_id" 2>/dev/null || true)
+            read -r state container_health <<<"$inspect"
+        fi
+        if [[ "$state" == "running" && "$container_health" == "healthy" ]]; then
+            printf 'healthy\n'
+        else
+            printf 'unhealthy\n'
+        fi
+        return 0
+    fi
+
+    local url="http://127.0.0.1:${port}${health_path}"
+    local timeout="${SERVICE_HEALTH_TIMEOUTS[$sid]:-5}"
+    if curl -sf --max-time "$timeout" "$url" >/dev/null 2>&1; then
+        printf 'healthy\n'
+    else
+        printf 'unhealthy\n'
+    fi
+}
+
 cmd_status() {
     local json_mode="false"
     while [[ $# -gt 0 ]]; do
@@ -1323,8 +1353,10 @@ cmd_status() {
         local name="${SERVICE_NAMES[$sid]:-$sid}"
         local cat="${SERVICE_CATEGORIES[$sid]}"
 
-        # Skip services with no health endpoint or port
-        [[ -z "$health" || "$default_port" == "0" ]] && continue
+        # Container-authoritative internal services have no host port but are
+        # still part of operator status.
+        [[ -z "$health" ]] && continue
+        [[ "$default_port" == "0" && "${SERVICE_HEALTH_SOURCES[$sid]:-http}" != "container" ]] && continue
 
         # Resolve port from env var or default
         local port="$default_port"
@@ -1341,9 +1373,7 @@ cmd_status() {
 
         # Launch health check in background
         (
-            url="http://127.0.0.1:${port}${health}"
-            timeout="${SERVICE_HEALTH_TIMEOUTS[$sid]:-5}"
-            if curl -sf --max-time "$timeout" "$url" > /dev/null 2>&1; then
+            if [[ "$(_ods_cli_service_health "$sid" "$port" "$health" "${flags[@]}")" == "healthy" ]]; then
                 echo "healthy|$name" > "$tmpdir/$sid"
             else
                 echo "unhealthy|$name" > "$tmpdir/$sid"
@@ -1430,8 +1460,10 @@ cmd_status_json() {
         local default_port="${SERVICE_PORTS[$sid]}"
         local name="${SERVICE_NAMES[$sid]:-$sid}"
 
-        # Skip services with no health endpoint or port configured
-        [[ -z "$health" || "$default_port" == "0" ]] && continue
+        # Container-authoritative internal services have no host port but are
+        # still part of operator status.
+        [[ -z "$health" ]] && continue
+        [[ "$default_port" == "0" && "${SERVICE_HEALTH_SOURCES[$sid]:-http}" != "container" ]] && continue
 
         # Resolve port from env var or default
         local port="$default_port"
@@ -1454,12 +1486,7 @@ cmd_status_json() {
         if [[ "$cat" != "core" && "$container_status" == "stopped" ]]; then
             status="stopped"
         else
-            local url="http://127.0.0.1:${port}${health}"
-            if curl -sf --max-time 5 "$url" > /dev/null 2>&1; then
-                status="healthy"
-            else
-                status="unhealthy"
-            fi
+            status="$(_ods_cli_service_health "$sid" "$port" "$health" "${flags[@]}")"
         fi
 
         jq -n \
@@ -3713,22 +3740,30 @@ cmd_model() {
 }
 
 _agent_probe_host() {
-    local bind_addr="" gateway=""
+    local bind_addr="" gateway="" kernel_release=""
     bind_addr="$(_env_get_raw ODS_AGENT_BIND)"
     bind_addr="${bind_addr#\"}"; bind_addr="${bind_addr%\"}"
     bind_addr="${bind_addr#\'}"; bind_addr="${bind_addr%\'}"
     bind_addr="$(printf '%s' "$bind_addr" | tr -d '[:space:]')"
 
-    if [[ -z "$bind_addr" && "$(uname -s)" == "Linux" ]] && command -v docker >/dev/null 2>&1; then
-        gateway="$(docker network inspect ods-network \
-            --format '{{range .IPAM.Config}}{{if .Gateway}}{{println .Gateway}}{{end}}{{end}}' \
-            2>/dev/null | sed '/^[[:space:]]*$/d' | head -n1 | tr -d '[:space:]' || true)"
-        if [[ -z "$gateway" ]]; then
-            gateway="$(docker network inspect bridge \
+    if [[ -z "$bind_addr" && "$(uname -s)" == "Linux" ]]; then
+        kernel_release="$(uname -r 2>/dev/null | tr '[:upper:]' '[:lower:]' || true)"
+        if [[ "$kernel_release" == *microsoft* ]]; then
+            # The host agent deliberately binds loopback under WSL because
+            # Docker Desktop forwards host.docker.internal there; its compose
+            # gateway is not a locally bindable host-agent address.
+            bind_addr="127.0.0.1"
+        elif command -v docker >/dev/null 2>&1; then
+            gateway="$(docker network inspect ods-network \
                 --format '{{range .IPAM.Config}}{{if .Gateway}}{{println .Gateway}}{{end}}{{end}}' \
                 2>/dev/null | sed '/^[[:space:]]*$/d' | head -n1 | tr -d '[:space:]' || true)"
+            if [[ -z "$gateway" ]]; then
+                gateway="$(docker network inspect bridge \
+                    --format '{{range .IPAM.Config}}{{if .Gateway}}{{println .Gateway}}{{end}}{{end}}' \
+                    2>/dev/null | sed '/^[[:space:]]*$/d' | head -n1 | tr -d '[:space:]' || true)"
+            fi
+            bind_addr="$gateway"
         fi
-        bind_addr="$gateway"
     fi
 
     case "$bind_addr" in
@@ -3783,7 +3818,7 @@ Usage: ods remote-provider <command> [options]
 Commands:
   status [--json]
       Show sanitized remote-provider route, egress, and action status.
-  plan <configure|test|disable|remove> [options]
+  plan <configure|test|enable|disable|remove> [options]
       Print the redacted lifecycle plan without mutating state.
   configure --base-url URL --model MODEL [secret options]
       Persist an OpenAI-compatible provider route and provider API key.
@@ -3791,8 +3826,10 @@ Commands:
       Probe the configured provider route through the internal egress service.
   test --base-url URL --model MODEL [secret options]
       Probe a provider without writing route state or secrets.
+  enable [--json]
+      Re-prove and reactivate the saved route without re-entering secrets.
   disable
-      Disable the remote-provider route while keeping stored secrets.
+      Pause the remote-provider route while keeping its profile and secrets.
   remove
       Delete remote-provider route state and stored secrets.
   peer-models list [--json]
@@ -3812,6 +3849,9 @@ Provider options for configure/test/plan configure/plan test:
   --transport direct|ssh  Provider transport (default direct)
   --base-url URL          OpenAI-compatible base URL, for example https://gpu.example/v1
   --model MODEL           Provider model id
+  --context-length TOKENS Exact provider context window (default 32768)
+  --max-tokens TOKENS     Exact provider output limit (default 4096)
+  --reasoning true|false  Whether the provider route supports reasoning (default false)
   --ssh-host HOST         SSH server host for ssh transport
   --ssh-user USER         SSH server user for ssh transport
   --ssh-port PORT         SSH server port for ssh transport (default 22)
@@ -3940,6 +3980,7 @@ _remote_provider_write_payload() {
     local action="$1" payload_file="$2"
     shift 2
     local transport="direct" base_url="" model="" json_mode="false"
+    local context_length="32768" max_tokens="4096" reasoning="false"
     local api_key_env="REMOTE_LLM_API_KEY" api_key_env_explicit="false" api_key_file="" api_key_stdin="false"
     local ssh_host="" ssh_user="" ssh_port="22" ssh_inference_host="" ssh_inference_port=""
     local ssh_control_host="" ssh_control_port="" ssh_option_seen="false"
@@ -3961,6 +4002,18 @@ _remote_provider_write_payload() {
                 [[ $# -ge 2 ]] || error "--model requires a value"
                 provider_option_seen="true"
                 model="${2:-}"; shift 2 ;;
+            --context-length)
+                [[ $# -ge 2 ]] || error "--context-length requires a value"
+                provider_option_seen="true"
+                context_length="${2:-}"; shift 2 ;;
+            --max-tokens)
+                [[ $# -ge 2 ]] || error "--max-tokens requires a value"
+                provider_option_seen="true"
+                max_tokens="${2:-}"; shift 2 ;;
+            --reasoning)
+                [[ $# -ge 2 ]] || error "--reasoning requires true or false"
+                provider_option_seen="true"
+                reasoning="${2:-}"; shift 2 ;;
             --ssh-host)
                 [[ $# -ge 2 ]] || error "--ssh-host requires a value"
                 provider_option_seen="true"; ssh_option_seen="true"
@@ -4032,7 +4085,7 @@ _remote_provider_write_payload() {
     done
 
     REMOTE_PROVIDER_JSON_MODE="$json_mode"
-    if [[ "$action" == "disable" || "$action" == "remove" ]]; then
+    if [[ "$action" == "enable" || "$action" == "disable" || "$action" == "remove" ]]; then
         [[ "$provider_option_seen" == "false" && "$secret_option_seen" == "false" ]] || \
             error "remote-provider $action does not accept provider or secret options"
         jq -nc --arg action "$action" '{action: $action}' > "$payload_file" || \
@@ -4047,6 +4100,19 @@ _remote_provider_write_payload() {
     esac
     [[ -n "$base_url" ]] || error "--base-url is required"
     [[ -n "$model" ]] || error "--model is required"
+    [[ "$context_length" =~ ^[1-9][0-9]{0,7}$ ]] || \
+        error "--context-length must be an integer from 16384 to 10000000"
+    (( context_length >= 16384 && context_length <= 10000000 )) || \
+        error "--context-length must be an integer from 16384 to 10000000"
+    [[ "$max_tokens" =~ ^[1-9][0-9]{0,7}$ ]] || \
+        error "--max-tokens must be a positive integer within the context window"
+    (( max_tokens <= context_length )) || \
+        error "--max-tokens must be a positive integer within the context window"
+    reasoning="$(printf '%s' "$reasoning" | tr '[:upper:]' '[:lower:]')"
+    case "$reasoning" in
+        true|false) ;;
+        *) error "--reasoning must be true or false" ;;
+    esac
     if [[ "$transport" == "direct" && "$ssh_option_seen" == "true" ]]; then
         error "direct remote-provider transport does not accept SSH options"
     fi
@@ -4084,6 +4150,9 @@ _remote_provider_write_payload() {
             --arg transport "$transport" \
             --arg base_url "$base_url" \
             --arg model "$model" \
+            --arg context_length "$context_length" \
+            --arg max_tokens "$max_tokens" \
+            --argjson reasoning "$reasoning" \
             --arg ssh_host "$ssh_host" \
             --arg ssh_user "$ssh_user" \
             --arg ssh_port "$ssh_port" \
@@ -4097,7 +4166,10 @@ _remote_provider_write_payload() {
                 provider: {
                     transport: $transport,
                     baseUrl: $base_url,
-                    model: $model
+                    model: $model,
+                    contextLength: ($context_length | tonumber),
+                    maxTokens: ($max_tokens | tonumber),
+                    reasoning: $reasoning
                 },
                 ssh: {
                     host: $ssh_host,
@@ -4125,12 +4197,18 @@ _remote_provider_write_payload() {
         --arg transport "$transport" \
         --arg base_url "$base_url" \
         --arg model "$model" \
+        --arg context_length "$context_length" \
+        --arg max_tokens "$max_tokens" \
+        --argjson reasoning "$reasoning" \
         '{
             action: $action,
             provider: {
                 transport: $transport,
                 baseUrl: $base_url,
-                model: $model
+                model: $model,
+                contextLength: ($context_length | tonumber),
+                maxTokens: ($max_tokens | tonumber),
+                reasoning: $reasoning
             },
             secrets: {
                 apiKey: .
@@ -4143,6 +4221,7 @@ _remote_provider_print_status() {
     jq -r '
         "Remote provider: \(.status // "unknown")",
         "Route: " + (if .routeState.enabled == true then "enabled" else "disabled" end),
+        "Saved route: " + (if .routeState.resumeAvailable == true then "available" else "none" end),
         (if .routeState.enabled == true and .routeState.provider then
             "Provider: \(.routeState.provider.model // "unknown") via \(.routeState.provider.transport // "unknown") at \(.routeState.provider.baseUrl // "unknown")"
          else empty end),
@@ -4319,7 +4398,10 @@ _remote_provider_probe_configured() {
         error "Could not create a remote-provider response file"
     chmod 600 "$response_file"
     trap 'rm -f "$response_file"' INT TERM HUP
-    if http_code="$(_remote_provider_request POST /api/remote-provider/probe "$response_file" "" 20)"; then
+    # A configured probe can activate and reconcile all downstream consumers.
+    # Stay beyond the Dashboard API's 1800-second lifecycle deadline instead
+    # of reporting a false failure while the host transaction is still live.
+    if http_code="$(_remote_provider_request POST /api/remote-provider/probe "$response_file" "" 1860)"; then
         curl_status=0
     else
         curl_status=$?
@@ -4517,11 +4599,11 @@ cmd_remote_provider() {
             ;;
         plan)
             local action="${1:-}"
-            [[ -n "$action" ]] || error "Usage: ods remote-provider plan <configure|test|disable|remove> [options]"
+            [[ -n "$action" ]] || error "Usage: ods remote-provider plan <configure|test|enable|disable|remove> [options]"
             shift || true
             case "$action" in
-                configure|test|disable|remove) ;;
-                *) error "Usage: ods remote-provider plan <configure|test|disable|remove> [options]" ;;
+                configure|test|enable|disable|remove) ;;
+                *) error "Usage: ods remote-provider plan <configure|test|enable|disable|remove> [options]" ;;
             esac
             local payload_file response_file http_code curl_status
             payload_file=$(mktemp "${TMPDIR:-/tmp}/ods-remote-provider-payload.XXXXXX") || \
@@ -4550,12 +4632,51 @@ cmd_remote_provider() {
             jq . "$response_file"
             rm -f "$response_file"; trap - INT TERM HUP
             ;;
+        enable)
+            local json_mode="false" response_file http_code curl_status
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --json) json_mode="true"; shift ;;
+                    --help|-h) _remote_provider_usage; return 0 ;;
+                    *) error "Unknown remote-provider enable option: $1" ;;
+                esac
+            done
+            response_file=$(mktemp "${TMPDIR:-/tmp}/ods-remote-provider-enable.XXXXXX") || \
+                error "Could not create a remote-provider response file"
+            chmod 600 "$response_file"
+            trap 'rm -f "$response_file"' INT TERM HUP
+            if http_code="$(_remote_provider_request POST /api/remote-provider/enable "$response_file" "" 1860)"; then
+                curl_status=0
+            else
+                curl_status=$?
+            fi
+            if [[ $curl_status -ne 0 ]]; then
+                rm -f "$response_file"; trap - INT TERM HUP
+                error "Remote-provider enable request failed before Dashboard API completed"
+            fi
+            if [[ "$http_code" != "200" ]]; then
+                local detail
+                detail="$(_remote_provider_response_error "$response_file")"
+                rm -f "$response_file"; trap - INT TERM HUP
+                error "Remote-provider enable failed (HTTP $http_code): $detail"
+            fi
+            if [[ "$json_mode" == "true" ]]; then
+                jq . "$response_file"
+            else
+                _remote_provider_print_apply_result "$response_file"
+            fi
+            rm -f "$response_file"; trap - INT TERM HUP
+            ;;
         configure|test|disable|remove)
             if [[ "$subcmd" == "test" ]]; then
                 local use_configured_probe="true" arg
                 for arg in "$@"; do
                     case "$arg" in
-                        --transport|--base-url|--model|--api-key|--api-key-stdin|--api-key-file|--api-key-env)
+                        --transport|--base-url|--model|--context-length|--max-tokens|--reasoning)
+                            use_configured_probe="false"
+                            break
+                            ;;
+                        --api-key|--api-key-stdin|--api-key-file|--api-key-env)
                             use_configured_probe="false"
                             break
                             ;;
@@ -4587,7 +4708,7 @@ cmd_remote_provider() {
             trap 'rm -f "$payload_file" "$response_file"' INT TERM HUP
             REMOTE_PROVIDER_JSON_MODE="false"
             _remote_provider_write_payload "$subcmd" "$payload_file" "$@"
-            if http_code="$(_remote_provider_request POST /api/remote-provider/apply "$response_file" "$payload_file" 20)"; then
+            if http_code="$(_remote_provider_request POST /api/remote-provider/apply "$response_file" "$payload_file" 1860)"; then
                 curl_status=0
             else
                 curl_status=$?
@@ -4614,7 +4735,7 @@ cmd_remote_provider() {
             _remote_provider_usage
             ;;
         *)
-            error "Usage: ods remote-provider <status|plan|configure|test|disable|remove|peer-models>"
+            error "Usage: ods remote-provider <status|plan|configure|test|enable|disable|remove|peer-models>"
             ;;
     esac
 }
@@ -6408,7 +6529,7 @@ ${CYAN}Commands:${NC}
                       Switch between local/cloud/hybrid modes
   model [current|list|swap]
                       View or change the local LLM model tier
-  remote-provider [status|plan|configure|test|disable|remove|peer-models]
+  remote-provider [status|plan|configure|test|enable|disable|remove|peer-models]
                       Configure, test, disable, or inspect remote GPU provider routing
   stt [current|status|download] [MODEL]
                       View Whisper STT model, check cache, or trigger download

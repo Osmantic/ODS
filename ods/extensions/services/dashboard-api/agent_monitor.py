@@ -6,6 +6,7 @@ Collects real-time metrics on agent swarms, sessions, and throughput.
 import asyncio
 import json
 import logging
+import math
 from datetime import datetime, timedelta, timezone
 from typing import List
 import os
@@ -94,10 +95,19 @@ class ThroughputMetrics:
         self.data_points: List[dict] = []
 
     def add_sample(self, tokens_per_sec: float):
-        """Add a new throughput sample"""
+        """Record finite nonnegative measurements; invalid data is not zero usage."""
+        if isinstance(tokens_per_sec, bool):
+            return
+        try:
+            val = float(tokens_per_sec)
+        except (TypeError, ValueError, OverflowError):
+            return
+        if not math.isfinite(val) or val < 0:
+            return
+
         self.data_points.append({
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "tokens_per_sec": tokens_per_sec
+            "tokens_per_sec": val
         })
 
         # Prune old data
@@ -113,9 +123,12 @@ class ThroughputMetrics:
             return {"current": 0, "average": 0, "peak": 0, "history": []}
 
         values = [p["tokens_per_sec"] for p in self.data_points]
+        total = sum(values)
+        average = (total / len(values) if math.isfinite(total)
+                   else sum(value / len(values) for value in values))
         return {
             "current": values[-1] if values else 0,
-            "average": sum(values) / len(values),
+            "average": average,
             "peak": max(values) if values else 0,
             "history": self.data_points[-30:]  # Last 30 points
         }

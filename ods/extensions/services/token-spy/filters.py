@@ -104,7 +104,10 @@ def _filter_tools(body: dict, cfg: dict, result: FilterResult,
     removed_names = []
 
     for tool in tools:
-        name = tool.get("function", {}).get("name", "")
+        if not isinstance(tool, dict):
+            continue
+        func = tool.get("function")
+        name = func.get("name", "") if isinstance(func, dict) else ""
         if mode == "allowlist":
             if name in allowlist:
                 kept.append(tool)
@@ -334,6 +337,8 @@ def _group_into_units(messages: list[dict]) -> list[list[dict]]:
     current_unit = []
 
     for msg in messages:
+        if not isinstance(msg, dict):
+            continue
         role = msg.get("role", "")
         if role == "user" and current_unit:
             units.append(current_unit)

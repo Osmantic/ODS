@@ -213,6 +213,7 @@ export default function HuggingFaceModelBrowser({ gpu, downloadBusy, onImportSta
 
       {selectedRepo && (
         <ArtifactDialog
+          key={selectedRepo.id}
           model={selectedRepo}
           details={details}
           loading={detailsLoading}
@@ -233,7 +234,7 @@ function RepositoryRow({ model, onInspect }) {
   const [avatarFailed, setAvatarFailed] = useState(false)
   const fallbackStyle = authorFallbackStyle(model.author)
   return (
-    <div className="grid grid-cols-2 gap-3 px-4 py-4 transition-colors hover:bg-white/[0.025] sm:grid-cols-[minmax(0,1fr)_auto] lg:grid-cols-[minmax(280px,1.5fr)_120px_100px_110px_140px] lg:items-center lg:gap-4 lg:px-5 lg:py-3.5">
+    <div className="hf-repository-row grid grid-cols-2 gap-3 px-4 py-4 transition-colors hover:bg-white/[0.025] sm:grid-cols-[minmax(0,1fr)_auto] lg:grid-cols-[minmax(280px,1.5fr)_120px_100px_110px_140px] lg:items-center lg:gap-4 lg:px-5 lg:py-3.5">
       <div className="col-span-2 flex min-w-0 items-start gap-3 sm:col-span-1">
         <div className="relative flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-lg border text-xs font-bold" style={fallbackStyle}>
           <span>{model.author?.slice(0, 2).toUpperCase() || 'HF'}</span>
@@ -289,6 +290,14 @@ function RepositoryRow({ model, onInspect }) {
 }
 
 function ArtifactDialog({ model, details, loading, error, gpu, downloadBusy, importingArtifact, onClose, onImport, onRetry }) {
+  const [artifactFilter, setArtifactFilter] = useState('')
+  const filteredArtifacts = useMemo(() => {
+    const query = artifactFilter.trim().toLowerCase()
+    return (details?.artifacts || []).filter(artifact => (
+      artifact.label.toLowerCase().includes(query)
+      || (artifact.quantization || '').toLowerCase().includes(query)
+    ))
+  }, [details, artifactFilter])
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label={`Choose a GGUF from ${model.id}`}>
       <div className="max-h-[88vh] w-full max-w-5xl overflow-hidden rounded-lg border border-white/[0.1] bg-[#090910] shadow-2xl">
@@ -345,11 +354,27 @@ function ArtifactDialog({ model, details, loading, error, gpu, downloadBusy, imp
                 </div>
               ) : (
                 <div className="overflow-hidden rounded-lg border border-white/[0.08]">
+                  <div className="flex flex-wrap items-center gap-3 border-b border-white/[0.06] px-4 py-3">
+                    <input
+                      type="search"
+                      aria-label="Filter GGUF artifacts"
+                      placeholder="Filename or quantization"
+                      maxLength={200}
+                      value={artifactFilter}
+                      onChange={event => setArtifactFilter(event.target.value)}
+                      className="min-w-0 flex-1 rounded-md border border-white/[0.12] bg-black/20 px-3 py-2 text-sm text-theme-text focus:border-theme-accent focus:outline-none"
+                    />
+                    <span role="status" className="text-xs text-theme-text-muted">{filteredArtifacts.length} of {details.artifacts.length} artifacts</span>
+                    {artifactFilter && (
+                      <button type="button" onClick={() => setArtifactFilter('')} className="text-xs text-amber-300 hover:text-amber-200" aria-label="Clear artifact filter">Clear</button>
+                    )}
+                  </div>
                   <div className="hidden grid-cols-[minmax(220px,1fr)_100px_120px_130px_130px] gap-4 border-b border-white/[0.06] bg-black/20 px-4 py-2.5 text-[9px] font-semibold uppercase tracking-[0.15em] text-theme-text-muted/60 lg:grid">
                     <span>Artifact</span><span>Quant</span><span>Download</span><span>Memory estimate</span><span>Action</span>
                   </div>
                   <div className="divide-y divide-white/[0.05]">
-                    {details.artifacts.map(artifact => (
+                    {filteredArtifacts.length === 0 && <p className="px-4 py-8 text-center text-sm text-theme-text-muted">No artifacts match this filter.</p>}
+                    {filteredArtifacts.map(artifact => (
                       <ArtifactRow
                         key={artifact.id}
                         artifact={artifact}

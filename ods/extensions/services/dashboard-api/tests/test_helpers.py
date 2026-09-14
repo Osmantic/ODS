@@ -10,6 +10,13 @@ import httpx
 import pytest
 
 from helpers import (
+    string_extract_domain_names_safe,
+    dict_key_path_setter_safe,
+    numeric_safe_geometric_mean,
+    list_deduplicate_by_key_safe,
+    string_snake_to_pascal_case_safe,
+    dict_flatten_nested_safe,
+    numeric_exponential_moving_average_safe,
     get_model_info, get_bootstrap_status, _update_lifetime_tokens,
     get_uptime, get_cpu_metrics, get_ram_metrics,
     check_service_health, get_all_services,
@@ -1607,3 +1614,129 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+
+class TestStringExtractDomainNamesSafe:
+    def test_extract_valid_domains(self):
+        text = "Check https://api.example.com/v1 and http://test.org for updates"
+        res = string_extract_domain_names_safe(text)
+        assert res == ["api.example.com", "test.org"]
+
+    def test_invalid_types_and_none(self):
+        assert string_extract_domain_names_safe(None) == []
+        assert string_extract_domain_names_safe(12345) == []
+        assert string_extract_domain_names_safe("") == []
+
+
+class TestDictKeyPathSetterSafe:
+    def test_set_nested_key_success(self):
+        d = {"a": {"b": 1}}
+        res = dict_key_path_setter_safe(d, ["a", "c"], 2)
+        assert res == {"a": {"b": 1, "c": 2}}
+
+    def test_none_dict_and_invalid_path(self):
+        assert dict_key_path_setter_safe(None, ["x", "y"], 10) == {"x": {"y": 10}}
+        d = {"a": 1}
+        assert dict_key_path_setter_safe(d, [], 5) == {"a": 1}
+
+
+class TestNumericSafeGeometricMean:
+    def test_valid_geometric_mean(self):
+        assert abs(numeric_safe_geometric_mean([4, 9]) - 6.0) < 1e-6
+
+    def test_invalid_types_negatives_none(self):
+        assert numeric_safe_geometric_mean(None) == 0.0
+        assert numeric_safe_geometric_mean([-1, -5, 0]) == 0.0
+        assert numeric_safe_geometric_mean(["a", None, float('nan')]) == 0.0
+
+
+class TestListDeduplicateByKeySafe:
+    def test_dedup_dicts_by_key(self):
+        items = [{"id": 1, "v": "a"}, {"id": 2, "v": "b"}, {"id": 1, "v": "c"}]
+        res = list_deduplicate_by_key_safe(items, "id")
+        assert res == [{"id": 1, "v": "a"}, {"id": 2, "v": "b"}]
+
+    def test_invalid_inputs(self):
+        assert list_deduplicate_by_key_safe(None, "id") == []
+        assert list_deduplicate_by_key_safe([{"a": [1, 2]}, {"a": [1, 2]}], "a") == [{"a": [1, 2]}]
+
+
+class TestStringSnakeToPascalCaseSafe:
+    def test_valid_snake_and_kebab(self):
+        assert string_snake_to_pascal_case_safe("dashboard_api_service") == "DashboardApiService"
+        assert string_snake_to_pascal_case_safe("kebab-case-string") == "KebabCaseString"
+
+    def test_invalid_types_and_empty(self):
+        assert string_snake_to_pascal_case_safe(None) == ""
+        assert string_snake_to_pascal_case_safe(123) == ""
+        assert string_snake_to_pascal_case_safe("__double___underscores__") == "DoubleUnderscores"
+
+
+class TestDictFlattenNestedSafe:
+    def test_flatten_success(self):
+        d = {"a": {"b": {"c": 1}}}
+        res = dict_flatten_nested_safe(d)
+        assert res == {"a.b.c": 1}
+
+    def test_max_depth_and_none(self):
+        assert dict_flatten_nested_safe(None) == {}
+        d = {"a": {"b": {"c": 1}}}
+        res = dict_flatten_nested_safe(d, max_depth=1)
+        assert res == {"a": {"b": {"c": 1}}}
+
+
+class TestNumericExponentialMovingAverageSafe:
+    def test_ema_computation(self):
+        vals = [10.0, 20.0, 30.0]
+        res = numeric_exponential_moving_average_safe(vals, alpha=0.5)
+        assert len(res) == 3
+        assert res[0] == 10.0
+        assert res[1] == 15.0
+
+    def test_invalid_types_and_alpha(self):
+        assert numeric_exponential_moving_average_safe(None) == []
+        assert numeric_exponential_moving_average_safe([1, 2, 3], alpha=-1) != []
+def test_numeric_helpers_bound_nonfinite_and_huge_integers():
+    import math
+    import sys
+    huge = 10 ** 1000
+    assert numeric_safe_geometric_mean([huge, 4, 9, True, float("inf")]) == pytest.approx(6)
+    assert numeric_safe_geometric_mean([sys.float_info.max] * 4) == sys.float_info.max
+    assert numeric_safe_geometric_mean([sys.float_info.max] + [5e-324] * 1000) > 0
+    result = numeric_exponential_moving_average_safe(
+        [huge, sys.float_info.max, -sys.float_info.max, float("nan")], alpha=0.5)
+    assert result == [sys.float_info.max, 0.0]
+    assert all(math.isfinite(item) for item in result)
+    assert numeric_exponential_moving_average_safe([1, 2], alpha=huge) == pytest.approx([1, 1.2])
+
+
+def test_domain_extractor_does_not_accept_partial_invalid_labels():
+    assert string_extract_domain_names_safe("a" * 64 + ".com -bad.org good.example.com.") == ["good.example.com"]
+    assert string_extract_domain_names_safe("x" * 65537) == []
+
+
+def test_invalid_dictionary_path_is_atomic():
+    value = {"existing": 1}
+    assert dict_key_path_setter_safe(value, ["new", []], 2) == {"existing": 1}
+    assert dict_key_path_setter_safe(value, ["x"] * 129, 2) == {"existing": 1}
+
+
+def test_deduplication_preserves_missing_and_different_value_types():
+    records = [{"id": [1]}, {"id": "[1]"}, {"id": [1]}, {"a": 1}, {"b": 2}]
+    assert list_deduplicate_by_key_safe(records, "id") == [records[0], records[1], records[3], records[4]]
+    assert list_deduplicate_by_key_safe(records, []) == records
+
+
+def test_flatten_bounds_cycles_and_large_depth_without_losing_empty_leaves():
+    cycle = {}
+    cycle["self"] = cycle
+    result = dict_flatten_nested_safe(cycle, max_depth=100000)
+    assert list(result) == ["self"]
+    assert result["self"] is cycle
+    assert dict_flatten_nested_safe({"empty": {}}) == {"empty": {}}
+    nested = {"leaf": 1}
+    for _ in range(1500):
+        nested = {"child": nested}
+    result = dict_flatten_nested_safe(nested, max_depth=100000)
+    assert len(next(iter(result)).split(".")) == 128

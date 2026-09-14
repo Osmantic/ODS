@@ -501,7 +501,7 @@ collect_docker() {
     while IFS= read -r container; do
         [[ -n "$container" ]] || continue
         case "$container" in
-            ods-*|*ods*)
+            ods-*)
                 ;;
             *)
                 continue

@@ -245,139 +245,101 @@ function installFetchMock({
 
 describe('Usage page', () => {
   beforeEach(() => {
-    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.useFakeTimers({toFake:['Date']})
     vi.setSystemTime(new Date('2026-05-16T12:00:00Z'))
   })
+  afterEach(()=>{vi.restoreAllMocks();vi.useRealTimers();vi.unstubAllGlobals()})
+  async function ready() { await screen.findByText('Recorded activity · refreshes every 10s') }
+  function tab(name) { fireEvent.click(screen.getByRole('button',{name,exact:true})) }
 
-  afterEach(() => {
-    vi.restoreAllMocks()
-    vi.useRealTimers()
-    vi.unstubAllGlobals()
+  it('puts token activity first and separates the detailed views',async()=>{
+    installFetchMock();render(<Usage compact/>);await ready()
+    expect(screen.queryByRole('heading',{name:'Usage',exact:true})).not.toBeInTheDocument()
+    expect(screen.getByText('Total tokens')).toBeVisible()
+    expect(screen.getByText('16.4K')).toBeVisible()
+    expect(screen.getByRole('region',{name:'Tokens per day'})).toBeVisible()
+    expect(screen.queryByText('Cost Estimate')).not.toBeInTheDocument()
+    tab('Models');expect(screen.getByText('gpt-4o')).toBeVisible()
+    tab('Services');expect(screen.getByText('Tokens by Service')).toBeVisible()
+    tab('Costs');expect(screen.getByText('Cost Estimate')).toBeVisible()
+    expect(screen.getByText('$3.75')).toBeVisible()
+    expect(screen.getByText('Tracking Source Guide')).toBeVisible()
   })
-
-  it('renders the full usage dashboard from real Token Spy data', async () => {
-    installFetchMock()
-    render(<Usage status={{ tier: 'Minimal', version: '2.0.0', inference: { loadedModel: 'qwen3.5-9b' } }} />)
-
-    expect(await screen.findByRole('heading', { name: 'Usage' })).toBeInTheDocument()
-    expect(screen.getByText('Cost Estimate')).toBeInTheDocument()
-    expect(screen.getByText('Tokens')).toBeInTheDocument()
-    expect(screen.getAllByText('Requests')[0]).toBeInTheDocument()
-    expect(screen.getByText('Tracked Providers')).toBeInTheDocument()
-    expect(screen.getByText('Daily Cost Estimate')).toBeInTheDocument()
-    expect(screen.getByText('Tokens per Day')).toBeInTheDocument()
-    expect(screen.getByText('Cost Confidence')).toBeInTheDocument()
-    expect(screen.getByText('Tracking Source Guide')).toBeInTheDocument()
-    expect(screen.getByText('Usage by Model')).toBeInTheDocument()
-    expect(screen.getByText('Top Consumers by Tokens')).toBeInTheDocument()
-    expect(screen.getByText('Tokens by Service')).toBeInTheDocument()
-    expect(screen.getAllByText('$3.75')[0]).toBeInTheDocument()
-    expect(screen.getByText('gpt-4o')).toBeInTheDocument()
-    expect(screen.getAllByText('qwen3.5-9b')[0]).toBeInTheDocument()
+  it('shows unavailable rather than invented zero consumption',async()=>{
+    installFetchMock({current:makeEmptyReport(),readiness:disabledReadiness})
+    render(<Usage/>)
+    expect(await screen.findByText(disabledReadiness.message)).toBeVisible()
+    expect(screen.getByText('Usage data unavailable')).toBeVisible()
+    expect(screen.queryByText('0.00')).not.toBeInTheDocument()
+    expect(screen.getAllByText('No verified data for this period')).toHaveLength(2)
+    tab('Models');expect(screen.getByText('No tracked usage for this period')).toBeVisible()
   })
-
-  it('keeps the layout honest when Token Spy has no data', async () => {
-    installFetchMock({
-      current: makeEmptyReport(),
-      previous: makeEmptyReport('2026-04-01', '2026-04-30'),
-      readiness: disabledReadiness,
-    })
-    render(<Usage status={{}} />)
-
-    expect(await screen.findByText('Usage tracking is not enabled for this stack.')).toBeInTheDocument()
-    expect(screen.getAllByText('$0.00')[0]).toBeInTheDocument()
-    expect(screen.getAllByText('No tracked usage for this period')[0]).toBeInTheDocument()
-    expect(screen.queryByText('$77.67')).not.toBeInTheDocument()
-    expect(screen.queryByText('359,573,723')).not.toBeInTheDocument()
-  })
-
-  it('filters the model table locally by query, provider, service, and source', async () => {
-    installFetchMock()
-    render(<Usage status={{}} />)
-    await screen.findByText('gpt-4o')
-
-    fireEvent.change(screen.getByPlaceholderText('Search models...'), { target: { value: 'qwen' } })
-    expect(screen.getByText('qwen3.5-9b')).toBeInTheDocument()
+  it('filters by query, provider, service and source',async()=>{
+    installFetchMock();render(<Usage/>);await ready();tab('Models')
+    fireEvent.change(screen.getByPlaceholderText('Search models...'),{target:{value:'qwen'}})
+    expect(screen.getByText('qwen3.5-9b')).toBeVisible()
     expect(screen.queryByText('gpt-4o')).not.toBeInTheDocument()
-
-    fireEvent.change(screen.getByPlaceholderText('Search models...'), { target: { value: '' } })
-    fireEvent.change(screen.getByLabelText('All Providers'), { target: { value: 'local' } })
-    expect(screen.getByText('qwen3.5-9b')).toBeInTheDocument()
+    fireEvent.change(screen.getByPlaceholderText('Search models...'),{target:{value:''}})
+    fireEvent.click(screen.getByText('Filters'))
+    fireEvent.change(screen.getByLabelText('All Providers'),{target:{value:'local'}})
     expect(screen.queryByText('gpt-4o')).not.toBeInTheDocument()
-
-    fireEvent.change(screen.getByLabelText('All Providers'), { target: { value: 'all' } })
-    fireEvent.change(screen.getByLabelText('All Services'), { target: { value: 'Perplexica' } })
-    expect(screen.getByText('unknown-model')).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('All Providers'),{target:{value:'all'}})
+    fireEvent.change(screen.getByLabelText('All Services'),{target:{value:'Perplexica'}})
+    expect(screen.getByText('unknown-model')).toBeVisible()
     expect(screen.queryByText('qwen3.5-9b')).not.toBeInTheDocument()
-
-    fireEvent.change(screen.getByLabelText('All Services'), { target: { value: 'all' } })
-    fireEvent.change(screen.getByLabelText('All Sources'), { target: { value: 'priced_from_tokens' } })
-    expect(screen.getByText('gpt-4o')).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('All Services'),{target:{value:'all'}})
+    fireEvent.change(screen.getByLabelText('All Sources'),{target:{value:'priced_from_tokens'}})
+    expect(screen.getByText('gpt-4o')).toBeVisible()
     expect(screen.queryByText('unknown-model')).not.toBeInTheDocument()
   })
-
-  it('switches estimate chart modes and exports the filtered real rows', async () => {
+  it('switches cost modes and exports only the filtered rows',async()=>{
     installFetchMock()
-    const clickSpy = vi.spyOn(globalThis.HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
-    vi.stubGlobal('URL', {
-      createObjectURL: vi.fn(() => 'blob:usage-csv'),
-      revokeObjectURL: vi.fn(),
-    })
-
-    render(<Usage status={{}} />)
-    await screen.findByText('gpt-4o')
-
-    fireEvent.click(screen.getByRole('button', { name: 'weekly' }))
-    expect(screen.getByRole('button', { name: 'weekly' })).toHaveClass('bg-theme-accent/25')
-
-    fireEvent.change(screen.getByPlaceholderText('Search models...'), { target: { value: 'gpt-4o' } })
-    fireEvent.click(screen.getByRole('button', { name: /Export CSV/i }))
-
-    expect(URL.createObjectURL).toHaveBeenCalledTimes(1)
-    expect(clickSpy).toHaveBeenCalledTimes(1)
+    const click=vi.spyOn(HTMLAnchorElement.prototype,'click').mockImplementation(()=>{})
+    vi.stubGlobal('URL',{createObjectURL:vi.fn(()=>'blob:test'),revokeObjectURL:vi.fn()})
+    render(<Usage/>);await ready();tab('Costs');tab('weekly')
+    expect(screen.getByRole('button',{name:'weekly'})).toHaveAttribute('aria-pressed','true')
+    tab('Models');fireEvent.change(screen.getByPlaceholderText('Search models...'),{target:{value:'gpt-4o'}})
+    tab('Export CSV');expect(URL.createObjectURL).toHaveBeenCalledTimes(1);expect(click).toHaveBeenCalledTimes(1)
   })
-
-  it('renders untracked model rows with unknown cost rather than zeroing them as paid', async () => {
-    installFetchMock()
-    render(<Usage status={{}} />)
-    await screen.findByText('unknown-model')
-
-    const row = screen.getByText('unknown-model').closest('div.grid')
-    expect(within(row).getByText('untracked')).toBeInTheDocument()
-    expect(within(row).getByText('-')).toBeInTheDocument()
+  it('shows unknown cost without treating it as zero',async()=>{
+    installFetchMock();render(<Usage/>);await ready();tab('Models')
+    fireEvent.click(screen.getByText('unknown-model'))
+    const row=screen.getByText('unknown-model').closest('details')
+    expect(within(row).getByText('Unknown cost')).toBeVisible()
+    expect(within(row).getByText('—')).toBeVisible()
   })
-
-  it('offers a safe enable action when Token Spy is installed but disabled', async () => {
-    installFetchMock({
-      current: makeEmptyReport(),
-      previous: makeEmptyReport('2026-04-01', '2026-04-30'),
-      readiness: disabledReadiness,
-    })
-    render(<Usage status={{}} />)
-
-    fireEvent.click(await screen.findByRole('button', { name: /Enable Usage Tracking/i }))
-
-    await waitFor(() => {
-      expect(fetch).toHaveBeenCalledWith(
-        '/api/extensions/token-spy/enable?auto_enable_deps=true',
-        { method: 'POST' },
-      )
-    })
-    expect(await screen.findByText('Action accepted')).toBeInTheDocument()
+  it('can enable tracking and restart unhealthy tracking',async()=>{
+    installFetchMock({current:makeEmptyReport(),readiness:disabledReadiness})
+    const mounted=render(<Usage/>)
+    fireEvent.click(await screen.findByRole('button',{name:'Enable Usage Tracking'}))
+    await waitFor(()=>expect(fetch).toHaveBeenCalledWith('/api/extensions/token-spy/enable?auto_enable_deps=true',{method:'POST'}))
+    expect(await screen.findByText('Action accepted')).toBeVisible()
+    mounted.unmount()
+    installFetchMock({current:makeEmptyReport(),readiness:offlineReadiness})
+    render(<Usage/>)
+    fireEvent.click(await screen.findByRole('button',{name:'Restart Token Spy'}))
+    await waitFor(()=>expect(fetch).toHaveBeenCalledWith('/api/services/token-spy/restart',{method:'POST'}))
   })
-
-  it('offers a restart action when Token Spy is enabled but unhealthy', async () => {
-    installFetchMock({
-      current: makeEmptyReport(),
-      previous: makeEmptyReport('2026-04-01', '2026-04-30'),
-      readiness: offlineReadiness,
-    })
-    render(<Usage status={{}} />)
-
-    fireEvent.click(await screen.findByRole('button', { name: /Restart Token Spy/i }))
-
-    await waitFor(() => {
-      expect(fetch).toHaveBeenCalledWith('/api/services/token-spy/restart', { method: 'POST' })
-    })
+  it('includes cache writes and recalculates the visible series scale',async()=>{
+    installFetchMock();render(<Usage/>);await ready();tab('Cache')
+    const plot=screen.getByRole('region',{name:'Tokens per day'})
+    expect(within(plot).getByRole('button',{name:'May 1: Cache 400'})).toBeVisible()
+    expect(within(plot).getByRole('button',{name:'May 2: Cache 600'})).toBeVisible()
+  })
+  it('paginates model rows and resets pagination after a filter',async()=>{
+    const models=Array.from({length:17},(_,index)=>({...currentReport.models[0],model:'model-'+index}))
+    installFetchMock({current:{...currentReport,models}})
+    render(<Usage/>);await ready();tab('Models')
+    expect(screen.getByRole('button',{name:'Previous models page'})).toBeDisabled()
+    tab('Next models page');expect(screen.getByText('2 / 3')).toBeVisible()
+    fireEvent.change(screen.getByPlaceholderText('Search models...'),{target:{value:'model-16'}})
+    expect(screen.getByText('1 / 1')).toBeVisible()
+    expect(screen.getByRole('button',{name:'Next models page'})).toBeDisabled()
+  })
+  it('does not draw an empty dollar chart for local-only inference',async()=>{
+    installFetchMock({current:{...currentReport,summary:{...currentReport.summary,spend_usd:0,billing_providers:0,untracked_providers:0,local_providers:1}}})
+    render(<Usage/>);await ready();tab('Costs')
+    expect(screen.getByText(/Local inference · no external API charges/)).toBeVisible()
+    expect(screen.queryByRole('region',{name:'Recorded cost'})).not.toBeInTheDocument()
   })
 })

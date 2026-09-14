@@ -27,8 +27,9 @@ router = APIRouter(tags=["privacy"])
 async def get_privacy_shield_status(api_key: str = Depends(verify_api_key)):
     """Get Privacy Shield status and configuration."""
     _ps = SERVICES.get("privacy-shield", {})
-    shield_port = int(os.environ.get("SHIELD_PORT", str(_ps.get("port", 0))))
-    shield_url = f"http://{_ps.get('host', 'privacy-shield')}:{shield_port}"
+    shield_port = _ps.get("external_port", _ps.get("port", 0))
+    # SHIELD_PORT changes the published host port, not the container listener.
+    shield_url = f"http://{_ps.get('host', 'privacy-shield')}:{_ps.get('port', 0)}"
 
     # Check health directly — no Docker socket needed
     service_healthy = False
@@ -94,8 +95,7 @@ async def toggle_privacy_shield(request: PrivacyShieldToggle, api_key: str = Dep
 async def get_privacy_shield_stats(api_key: str = Depends(verify_api_key)):
     """Get Privacy Shield usage statistics."""
     _ps = SERVICES.get("privacy-shield", {})
-    shield_port = int(os.environ.get("SHIELD_PORT", str(_ps.get("port", 0))))
-    shield_url = f"http://{_ps.get('host', 'privacy-shield')}:{shield_port}"
+    shield_url = f"http://{_ps.get('host', 'privacy-shield')}:{_ps.get('port', 0)}"
     shield_api_key = os.environ.get("SHIELD_API_KEY", "")
     if not shield_api_key:
         return {"error": "SHIELD_API_KEY not configured", "enabled": False}
