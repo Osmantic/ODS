@@ -1740,3 +1740,16 @@ def test_flatten_bounds_cycles_and_large_depth_without_losing_empty_leaves():
         nested = {"child": nested}
     result = dict_flatten_nested_safe(nested, max_depth=100000)
     assert len(next(iter(result)).split(".")) == 128
+
+
+class TestStringWordWrapSafe:
+    def test_valid_wrapping(self):
+        from helpers import string_word_wrap_safe
+        text = "The quick brown fox jumps over the lazy dog"
+        wrapped = string_word_wrap_safe(text, 15)
+        assert len(wrapped.splitlines()) > 1
+
+    def test_invalid_inputs(self):
+        from helpers import string_word_wrap_safe
+        assert string_word_wrap_safe(None) == ""
+        assert string_word_wrap_safe("short text", -10) == "short text"
