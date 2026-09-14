@@ -110,7 +110,15 @@ get_remote_size() {
 write_status() {
     local status="$1" percent="${2:-}" downloaded="${3:-0}" total="${4:-0}" speed="${5:-0}" eta="${6:-}"
     local _safe_model="${FULL_GGUF_FILE//\"/\\\"}"
-    cat > "$STATUS_FILE.tmp" << STATUSEOF
+    local _dir
+    _dir="$(dirname "$STATUS_FILE")"
+    mkdir -p "$_dir"
+    local tmp_file
+    tmp_file="$(mktemp "$_dir/bootstrap-status.XXXXXX.tmp" 2>/dev/null || echo "")"
+    if [[ -z "$tmp_file" ]]; then
+        return 0
+    fi
+    cat > "$tmp_file" << STATUSEOF
 {
   "status": "$status",
   "model": "$_safe_model",
@@ -122,7 +130,7 @@ write_status() {
   "updatedAt": "$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date '+%Y-%m-%dT%H:%M:%SZ')"
 }
 STATUSEOF
-    mv "$STATUS_FILE.tmp" "$STATUS_FILE"
+    mv -f "$tmp_file" "$STATUS_FILE" 2>/dev/null || rm -f "$tmp_file"
 }
 
 status_percent() {
