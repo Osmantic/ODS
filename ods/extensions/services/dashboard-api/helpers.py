@@ -1381,3 +1381,20 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def list_chunk_exact_size_safe(items: list | None, size: int = 5, fillvalue=None) -> list[list]:
+    """Safely split sequence into exact size chunks padding last chunk with fillvalue if needed.
+    Returns [] on None or non-list inputs.
+    """
+    if not items or not isinstance(items, (list, tuple)):
+        return []
+    if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
+        size = 5
+    result = []
+    for i in range(0, len(items), size):
+        chunk = list(items[i:i + size])
+        if len(chunk) < size:
+            chunk.extend([fillvalue] * (size - len(chunk)))
+        result.append(chunk)
+    return result
