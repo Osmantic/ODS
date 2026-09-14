@@ -1420,3 +1420,32 @@ def test_env_example_keys_are_present_in_schema():
     schema_keys = set(schema.get("properties", {}))
 
     assert documented_keys - schema_keys == set()
+
+
+@pytest.mark.parametrize(
+    "key,expected",
+    [
+        ("CREDS_KEY", True),
+        ("LIBRECHAT_MEILI_KEY", True),
+        ("GOOGLE_KEY", True),
+        ("OPENROUTER_KEY", True),
+        ("ODS_ROUTER_INTERNAL_KEY", True),
+        ("LITELLM_KEY", True),
+        ("KEY", True),
+        ("OPENAI_API_KEY", True),
+        ("LANGFUSE_PROJECT_PUBLIC_KEY", False),
+        ("ODS_FLEET_PROBE_KEY_PATH", False),
+        ("REMOTE_LLM_SSH_KEY_FILE", False),
+        ("MAX_KEY_LENGTH", False),
+    ],
+)
+def test_is_secret_field_masks_trailing_key_overrides(key, expected):
+    """Un-schematized local overrides ending in _KEY must be marked secret.
+
+    Regression test for issue #3881: GET /api/settings/env exposed extension
+    credentials in cleartext because the sensitive regex heuristic ignored
+    trailing _KEY names.
+    """
+    from settings import _is_secret_field
+
+    assert _is_secret_field(key) is expected
