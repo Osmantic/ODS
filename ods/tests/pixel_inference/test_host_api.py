@@ -189,7 +189,9 @@ def test_failed_start_reports_safe_template_reason_without_changing_response_sch
     status, value, _ = request(owner)
     assert status == 200 and value['runtime'] == {'status': 'error'}
     assert not value['configuration']['enabled'] and value['configuration']['revision'] == 3
-    assert 'unsafe-sharing-compose' in progress[-1][1]['error']
+    assert progress[-1][0][2] == 'Inference sharing operation failed; reload state before retrying'
+    assert progress[-1][1] == {'error_code': 'inference_sharing_failed'}
+    assert 'unsafe-sharing-compose' not in json.dumps(progress)
     assert 'Inference sharing start failed: unsafe-sharing-compose' in caplog.text
 
 
