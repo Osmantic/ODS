@@ -1740,3 +1740,15 @@ def test_flatten_bounds_cycles_and_large_depth_without_losing_empty_leaves():
         nested = {"child": nested}
     result = dict_flatten_nested_safe(nested, max_depth=100000)
     assert len(next(iter(result)).split(".")) == 128
+
+
+class TestStringCamelToSnakeSafe:
+    def test_valid_conversion(self):
+        from helpers import string_camel_to_snake_safe
+        assert string_camel_to_snake_safe("camelCaseString") == "camel_case_string"
+        assert string_camel_to_snake_safe("PascalCaseString") == "pascal_case_string"
+
+    def test_invalid_inputs(self):
+        from helpers import string_camel_to_snake_safe
+        assert string_camel_to_snake_safe(None) == ""
+        assert string_camel_to_snake_safe(100) == ""
