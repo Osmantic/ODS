@@ -99,7 +99,7 @@ _READ_ONLY_ENV_FIELDS = {
 
 def _read_env_map_from_path(path: Path) -> tuple[dict[str, str], list[dict[str, Any]]]:
     try:
-        return _parse_env_text(path.read_text(encoding="utf-8"))
+        return _parse_env_text(path.read_text(encoding="utf-8", errors="replace"))
     except OSError:
         return {}, []
 
