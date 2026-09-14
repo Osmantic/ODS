@@ -1,0 +1,25 @@
+name: Navidrome music server contract
+
+on:
+  pull_request:
+    paths:
+      - 'ods/extensions/library/services/navidrome/**'
+      - 'ods/tests/test_navidrome_extension.py'
+      - '.github/workflows/navidrome-extension.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  navidrome-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install pytest PyYAML
+      - name: Verify Navidrome extension contract
+        run: python -m pytest -q ods/tests/test_navidrome_extension.py

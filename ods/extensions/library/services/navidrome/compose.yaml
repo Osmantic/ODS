@@ -1,0 +1,32 @@
+services:
+  navidrome:
+    image: deluan/navidrome:0.54.5
+    container_name: ods-navidrome
+    restart: unless-stopped
+    user: "1000:1000"
+    security_opt: [no-new-privileges:true]
+    environment:
+      ND_SCANSCHEDULE: 1h
+      ND_LOGLEVEL: info
+      ND_SESSIONTIMEOUT: 24h
+      ND_BASEURL: ""
+    volumes:
+      - ./data/navidrome/data:/data
+      - ./data/navidrome/music:/music:ro
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${NAVIDROME_PORT:-7849}:4533"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:4533/ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks: [ods-network]
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+networks:
+  ods-network:
+    external: true
