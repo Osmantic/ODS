@@ -414,6 +414,26 @@ def test_pending_approval_persists_across_restart(make_client):
     assert g.json()["granted"] is True
 
 
+def test_expired_pending_approval_is_pruned(make_client):
+    """Pending approvals older than the TTL cannot be approved."""
+    client, main = make_client(policy_yaml=LOW_LIMIT_POLICY)
+    for _ in range(3):
+        _verify(client, tool="web_fetch", args={"url": "http://x"}, session="ttl")
+    token = _verify(client, tool="web_fetch", args={"url": "http://x"},
+                    session="ttl").json()["approval_token"]
+    assert token in main._state["approvals"]
+
+    main._state["approvals"][token]["issued_at"] = (
+        main.time.time() - main.APPROVAL_TTL_SECONDS - 1
+    )
+    main._prune_state(main.time.time())
+
+    assert token not in main._state["approvals"]
+    expired = client.post("/approve", json={"approval_token": token})
+    assert expired.status_code == 200
+    assert expired.json()["granted"] is False
+
+
 # ── Concurrency safety ──────────────────────────────────────────────────────
 
 
