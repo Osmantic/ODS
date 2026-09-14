@@ -273,7 +273,9 @@ bring_up_interface() {
 
 write_state() {
   local status="$1"
-  cat > "${STATE_FILE}" <<HEREDOC
+  local tmp_state
+  tmp_state="$(mktemp "${STATE_FILE}.XXXXXX.tmp")"
+  cat > "${tmp_state}" <<HEREDOC
 {
   "status": "${status}",
   "ssid": "${ODS_AP_SSID}",
@@ -282,7 +284,8 @@ write_state() {
   "since": "$(date -Iseconds)"
 }
 HEREDOC
-  chmod 0644 "${STATE_FILE}"
+  chmod 0644 "${tmp_state}"
+  mv -f "${tmp_state}" "${STATE_FILE}"
 }
 
 cmd_up() {
