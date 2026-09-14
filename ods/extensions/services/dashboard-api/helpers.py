@@ -1381,3 +1381,26 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def list_replace_subsequence_safe(items: list | None, target: list | None, replacement: list | None) -> list:
+    """Safely replace contiguous target subsequence with replacement list.
+    Returns [] on None or non-sequence inputs.
+    """
+    if not isinstance(items, (list, tuple)):
+        return []
+    if not isinstance(target, (list, tuple)) or not target:
+        return list(items)
+    if not isinstance(replacement, (list, tuple)):
+        replacement = []
+    result = []
+    n, m = len(items), len(target)
+    i = 0
+    while i < n:
+        if i <= n - m and list(items[i:i + m]) == list(target):
+            result.extend(replacement)
+            i += m
+        else:
+            result.append(items[i])
+            i += 1
+    return result
