@@ -232,14 +232,12 @@ def _planned_by_service(
     return planned
 
 
-def _validate_stage_input(
+def _validate_stage_command(
     command: Any,
-    artifacts: Any,
 ) -> tuple[
     str,
     str,
     tuple[str, ...],
-    tuple[VerifiedDefinitionArtifacts, ...],
     tuple[PlannedDefinition, ...],
 ]:
     if not isinstance(command, LifecycleWorkCommand):
@@ -266,12 +264,39 @@ def _validate_stage_input(
     )
     if mutable_ids != service_ids:
         _fail("artifact-stage-binding-invalid", field="serviceIds")
+    return (
+        transaction_id,
+        plan_hash,
+        service_ids,
+        tuple(planned[service_id] for service_id in service_ids),
+    )
+
+
+def select_stage_definitions(command: Any) -> tuple[PlannedDefinition, ...]:
+    """Purely select the exact mutable plan definitions for staging."""
+
+    return _validate_stage_command(command)[3]
+
+
+def _validate_stage_input(
+    command: Any,
+    artifacts: Any,
+) -> tuple[
+    str,
+    str,
+    tuple[str, ...],
+    tuple[VerifiedDefinitionArtifacts, ...],
+    tuple[PlannedDefinition, ...],
+]:
+    transaction_id, plan_hash, service_ids, selected = _validate_stage_command(
+        command
+    )
     if not isinstance(artifacts, tuple) or len(artifacts) != len(service_ids):
         _fail("artifact-stage-binding-invalid", field="artifacts")
 
-    selected: list[PlannedDefinition] = []
-    for service_id, verified in zip(service_ids, artifacts, strict=True):
-        definition = planned[service_id]
+    for service_id, definition, verified in zip(
+        service_ids, selected, artifacts, strict=True
+    ):
         if (
             not isinstance(verified, VerifiedDefinitionArtifacts)
             or verified.service_id != service_id
@@ -299,8 +324,7 @@ def _validate_stage_input(
                 expected_path=definition.compose_file,
                 expected_digest=definition.compose_sha256,
             )
-        selected.append(definition)
-    return transaction_id, plan_hash, service_ids, artifacts, tuple(selected)
+    return transaction_id, plan_hash, service_ids, artifacts, selected
 
 
 def _canonical_json(value: Any) -> bytes:
@@ -941,4 +965,5 @@ __all__ = [
     "StagedArtifactBatch",
     "StagedArtifactFile",
     "StagedDefinitionArtifacts",
+    "select_stage_definitions",
 ]

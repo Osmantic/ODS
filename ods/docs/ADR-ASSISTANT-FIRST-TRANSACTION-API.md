@@ -184,3 +184,13 @@ or non-canonical bundles fail closed. The bundle hash is suitable as terminal
 stage evidence. This remains a dormant storage boundary: it creates no root,
 has no discovery or cleanup API, and does not evaluate Compose or enable the
 production dispatcher.
+
+The verifier and immutable store are now joined by a dormant callable adapter
+for the exact `stage` command. A pure selector validates the plan material,
+state, transaction, hash, and full mutable service order before filesystem
+access. Every selected definition must verify successfully before the adapter
+passes one ordered tuple to the store; it returns only the validated bundle
+SHA-256 expected by the receipted lifecycle-work boundary. Binding,
+verification, staging, and post-write evidence failures remain distinct,
+value-free protocol outcomes. The adapter is not imported by production code
+and adds no dispatcher, installed-state observer, retry loop, or effect.

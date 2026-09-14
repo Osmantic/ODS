@@ -212,6 +212,16 @@ linked, replaced, or partially published state fails closed. The store does not
 create or discover its root, delete staging data, evaluate Compose, call a
 service manager, or install a production lifecycle dispatcher in this phase.
 
+A dormant staging adapter now closes the in-process handoff between those two
+boundaries. It validates the complete `stage` command before any definition is
+opened, verifies every mutable plan definition in its exact approved order,
+and only then makes one batch call with the returned in-memory bytes. The
+adapter returns the staged bundle hash as terminal lifecycle evidence and adds
+no retry or persistence of its own. Verification failure cannot publish a
+partial batch, and a post-publication evidence mismatch is distinguished from
+pre-read plan rejection. No production module imports the adapter, so this
+still does not enable lifecycle execution or installed-state recovery.
+
 ## Evidence boundary
 
 The source contract checks resolver ordering, the exact candidate service set,
