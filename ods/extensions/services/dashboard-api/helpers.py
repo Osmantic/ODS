@@ -1146,3 +1146,18 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def find_list_element_indices(items: object, target: object) -> list:
+    """Locate all 0-based indices of target element in sequence safely.
+
+    Handles None, target missing, or non-sequence inputs without exception.
+    """
+    if not isinstance(items, (list, tuple)):
+        return []
+    res = []
+    for idx, item in enumerate(items):
+        if item == target:
+            res.append(idx)
+    return res
+

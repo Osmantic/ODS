@@ -1607,3 +1607,16 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+class TestFindListElementIndices:
+
+    def test_finds_element_indices(self):
+        from helpers import find_list_element_indices
+        assert find_list_element_indices(["a", "b", "a", "c", "a"], "a") == [0, 2, 4]
+
+    def test_handles_none_and_missing_target(self):
+        from helpers import find_list_element_indices
+        assert find_list_element_indices(None, "a") == []
+        assert find_list_element_indices([1, 2, 3], 99) == []
+
