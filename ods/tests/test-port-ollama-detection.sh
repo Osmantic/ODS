@@ -28,8 +28,23 @@ echo "╚═══════════════════════�
 echo ""
 
 # Source only the functions under test (phase scripts expect installer env).
-source <(sed -n '/^check_port_conflict\s*()\s*{/,/^}/p;/^check_ollama_conflict\s*()\s*{/,/^}/p' \
-  "$ROOT_DIR/installers/phases/04-requirements.sh") || {
+# Use POSIX character classes, not GNU \s: BSD sed on macOS treats \s as a
+# literal 's', so both ranges match nothing and the extraction silently
+# produces an empty script.
+extracted_funcs="$(sed -n \
+  '/^check_port_conflict[[:space:]]*()[[:space:]]*{/,/^}/p;/^check_ollama_conflict[[:space:]]*()[[:space:]]*{/,/^}/p' \
+  "$ROOT_DIR/installers/phases/04-requirements.sh")"
+
+# `source <(...)` of an empty script succeeds, so an empty extraction would
+# otherwise sail past the guard and fail later as "command not found".
+for _fn in check_port_conflict check_ollama_conflict; do
+    if ! printf '%s\n' "$extracted_funcs" | grep -q "^${_fn}[[:space:]]*()"; then
+        echo -e "${RED}✗ FAIL${NC} - Cannot load ${_fn} from 04-requirements.sh"
+        exit 1
+    fi
+done
+
+source <(printf '%s\n' "$extracted_funcs") || {
     echo -e "${RED}✗ FAIL${NC} - Cannot load functions from 04-requirements.sh"
     exit 1
 }
