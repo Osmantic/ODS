@@ -10,6 +10,7 @@ services:
       - PORT=3080
       - MONGO_URI=mongodb://librechat:${LIBRECHAT_MONGO_PASSWORD:?LIBRECHAT_MONGO_PASSWORD must be set}@librechat-mongodb:27017/LibreChat?authSource=admin
       - MEILI_HOST=http://librechat-meilisearch:7700
+      - MEILI_MASTER_KEY=${LIBRECHAT_MEILI_KEY:?LIBRECHAT_MEILI_KEY must be set}
       - MEILI_HTTP_ADDR=librechat-meilisearch:7700
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - OPENAI_MODELS=${OPENAI_MODELS:-}
