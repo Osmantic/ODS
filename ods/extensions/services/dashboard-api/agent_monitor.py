@@ -175,14 +175,10 @@ async def collect_metrics():
 
             agent_metrics.last_update = datetime.now(timezone.utc)
 
-        except FileNotFoundError as e:
-            logger.debug("Metrics collection failed: command not found - %s", e)
-        except asyncio.TimeoutError:
-            logger.debug("Metrics collection timed out")
-        except OSError as e:
-            logger.debug("Metrics collection OS error: %s", e)
-        except json.JSONDecodeError as e:
-            logger.warning("Metrics collection JSON decode error: %s", e)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # Broad catch: background task must survive transient failures
+            logger.exception("Metrics collection failed")
 
         await asyncio.sleep(5)  # Update every 5 seconds
 
