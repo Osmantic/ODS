@@ -62,7 +62,7 @@ def main(argv: list[str]) -> int:
             revision=args.revision,
             allow_patterns=args.allow_patterns,
         )
-    except Exception as exc:
+    except (RuntimeError, OSError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 
