@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-14T15:28:32Z",
+  "generated_at": "2026-09-14T16:10:52Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -3613,7 +3613,7 @@
     {
       "id": "vikunja",
       "name": "Vikunja",
-      "description": "",
+      "description": "Self-hosted end-to-end task management and planning system with kanban boards, lists, and reminders.",
       "category": "optional",
       "gpu_backends": [
         "all"

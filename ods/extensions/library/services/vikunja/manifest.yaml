@@ -4,6 +4,7 @@ compatibility:
 service:
   id: vikunja
   name: Vikunja
+  description: "Self-hosted end-to-end task management and planning system with kanban boards, lists, and reminders."
   aliases: [tasks, todo, projects, kanban]
   container_name: ods-vikunja
   host_env: VIKUNJA_HOST
