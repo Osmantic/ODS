@@ -1607,3 +1607,17 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+class TestFilterDictNumericValuesRange:
+
+    def test_filters_numeric_range(self):
+        from helpers import filter_dict_numeric_values_range
+        raw = {"k1": 10, "k2": 50, "k3": 100, "k4": "invalid"}
+        assert filter_dict_numeric_values_range(raw, min_val=20, max_val=80) == {"k2": 50}
+
+    def test_handles_none_and_non_dict_inputs(self):
+        from helpers import filter_dict_numeric_values_range
+        assert filter_dict_numeric_values_range(None) == {}
+        assert filter_dict_numeric_values_range("not_dict") == {}
+

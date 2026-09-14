@@ -1146,3 +1146,31 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def filter_dict_numeric_values_range(
+    data: object, min_val: float | None = None, max_val: float | None = None
+) -> dict:
+    """Filter dictionary keys whose numeric values lie within [min_val, max_val] range safely.
+
+    Handles non-numeric values, None inputs, or non-dict objects without exception.
+    """
+    if not isinstance(data, dict):
+        return {}
+    res = {}
+    for k, v in data.items():
+        if k is None or v is None:
+            continue
+        try:
+            val = float(v)
+            if math.isnan(val) or math.isinf(val):
+                continue
+            if min_val is not None and val < min_val:
+                continue
+            if max_val is not None and val > max_val:
+                continue
+            res[str(k)] = v
+        except (ValueError, TypeError):
+            continue
+    return res
+
