@@ -100,3 +100,33 @@ export function deleteConversation(chatId) {
   deleteConversationLabels(chatId)
   window.dispatchEvent(new Event(LIBRARY_EVENT))
 }
+
+export function deleteAllConversations() {
+  const entries = loadConversations(true)
+  const validEntries = entries.filter(valid)
+  if (validEntries.some(chat => chat.inFlight || chat.interrupted)) throw new Error('Stop all active tasks before clearing history.')
+  const ids = validEntries.map(chat => chat.chatId)
+  if (!ids.length) return
+  localStorage.setItem(DELETED_KEY, JSON.stringify([...new Set([...deletedIds(), ...ids])]))
+  localStorage.setItem(LIBRARY_KEY, JSON.stringify(entries.filter(item => !valid(item))))
+  localStorage.removeItem(CHAT_KEY)
+  window.dispatchEvent(new Event(LIBRARY_EVENT))
+  window.dispatchEvent(new CustomEvent(DELETE_EVENT, { detail: 'all' }))
+}
+
+export function exportAllConversations() {
+  const entries = loadConversations(true).filter(valid)
+  if (!entries.length) return
+  const data = JSON.stringify(entries, null, 2)
+  const url = URL.createObjectURL(new Blob([data], {type: 'application/json'}))
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = `ods-pixel-all-chats-${Date.now()}.json`
+  try {
+    document.body.append(anchor)
+    anchor.click()
+  } finally {
+    anchor.remove()
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+  }
+}
