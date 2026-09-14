@@ -1146,3 +1146,22 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def list_unique_sorted_safe(items: list | None, reverse: bool = False) -> list:
+    """Safely return sorted unique elements of list.
+    Returns [] on invalid/empty inputs.
+    """
+    if not items or not isinstance(items, (list, tuple)):
+        return []
+    if not isinstance(reverse, bool):
+        reverse = False
+    try:
+        unique_items = list(dict.fromkeys(items))
+        return sorted(unique_items, reverse=reverse)
+    except (TypeError, ValueError):
+        try:
+            return sorted(list(set(items)), key=str, reverse=reverse)
+        except Exception:
+            return []
+
