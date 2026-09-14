@@ -1146,3 +1146,20 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def chunk_list_safe(items, chunk_size: int, fill_value=None) -> list:
+    """Safely divide a list/sequence into sublists of fixed chunk_size."""
+    if items is None:
+        return []
+    if not isinstance(items, (list, tuple, set)):
+        try:
+            items = list(items)
+        except TypeError:
+            return []
+    else:
+        items = list(items)
+    if not isinstance(chunk_size, int) or chunk_size <= 0:
+        return [items] if items else []
+    return [items[i:i + chunk_size] for i in range(0, len(items), chunk_size)]
+
