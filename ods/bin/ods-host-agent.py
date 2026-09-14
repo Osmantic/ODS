@@ -7479,10 +7479,28 @@ class AgentHandler(BaseHTTPRequestHandler):
             with _ExtensionMutationAdmission(
                 self, lease_evidence, command.service_ids
             ):
-                result = _extension_lifecycle_work.dispatch_lifecycle_work(
-                    command,
-                    _extension_lifecycle_work_dispatcher,
-                )
+                if _extension_lifecycle_work_dispatcher is None:
+                    # Preserve the dormant production boundary without creating
+                    # receipt storage merely because an unavailable route was
+                    # probed with a valid lease.
+                    result = _extension_lifecycle_work.dispatch_lifecycle_work(
+                        command,
+                        None,
+                    )
+                else:
+                    try:
+                        receipt_store = _get_lifecycle_receipt_store()
+                    except Exception as exc:
+                        raise _extension_lifecycle_work.LifecycleWorkExecutionError(
+                            "lifecycle-work-receipt-store-unavailable"
+                        ) from exc
+                    result = (
+                        _extension_lifecycle_work.dispatch_receipted_lifecycle_work(
+                            command,
+                            _extension_lifecycle_work_dispatcher,
+                            receipt_store,
+                        )
+                    )
         except _ExtensionMutationAdmissionRejected:
             return
         except _extension_lifecycle_work.LifecycleWorkUnavailable:
@@ -7490,6 +7508,23 @@ class AgentHandler(BaseHTTPRequestHandler):
                 self,
                 503,
                 {"error": {"code": "lifecycle-work-dispatcher-unavailable"}},
+                no_store=True,
+            )
+            return
+        except _extension_lifecycle_work.LifecycleWorkValidationError as exc:
+            code = (
+                exc.code
+                if exc.code
+                in {
+                    "lifecycle-work-receipt-mismatch",
+                    "lifecycle-work-started-receipt-required",
+                }
+                else "lifecycle-work-receipt-mismatch"
+            )
+            json_response(
+                self,
+                409,
+                {"error": {"code": code}},
                 no_store=True,
             )
             return

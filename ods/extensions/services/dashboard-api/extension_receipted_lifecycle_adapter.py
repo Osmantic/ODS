@@ -363,11 +363,30 @@ class ReceiptedLifecycleAdapter:
         except Exception as worker_error:
             code, retryable, ambiguous = _worker_failure(worker_error)
             if ambiguous:
-                _fail(
-                    f"lifecycle-{code}",
-                    retryable=retryable,
-                    ambiguous=True,
+                observed = self._snapshot_after_ambiguity(
+                    binding, operation_key
                 )
+                if observed.state == "absent":
+                    _fail("lifecycle-receipt-ambiguous", ambiguous=True)
+                self._require_snapshot_binding(
+                    observed, request_hash, service_ids
+                )
+                if observed.state == "completed":
+                    terminal = observed.terminal_receipt
+                    if terminal is None:
+                        _fail(
+                            "lifecycle-receipt-invalid-snapshot",
+                            ambiguous=True,
+                        )
+                    return self._from_terminal(binding, terminal)
+                if observed.state == "failed":
+                    _fail("lifecycle-receipt-terminal-failed")
+                if observed.state == "started":
+                    _fail(
+                        "lifecycle-receipt-recovery-required",
+                        ambiguous=True,
+                    )
+                _fail("lifecycle-receipt-invalid-snapshot", ambiguous=True)
             evidence_hash = _hash(
                 {
                     "schema": FAILURE_SCHEMA,

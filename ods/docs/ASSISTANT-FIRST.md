@@ -152,6 +152,14 @@ Exact composite upgrade execution, combined core/desired-state commit, candidate
 health qualification, adoption, and strict offline artifact custody remain later
 Phase 5 gates.
 
+The dormant lifecycle-work boundary now uses the existing host receipt store as
+its exact response-loss recovery anchor. A started receipt must already exist;
+the host publishes the matching completed or failed terminal before replying,
+and an exact completed replay never dispatches work again. A started-only
+receipt still requires durable side-effect observation and cannot be replayed
+or declared failed by inference. Concrete host operations and the production
+executor therefore remain disabled.
+
 ## Evidence boundary
 
 The source contract checks resolver ordering, the exact candidate service set,

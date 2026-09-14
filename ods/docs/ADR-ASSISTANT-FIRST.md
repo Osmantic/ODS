@@ -189,6 +189,22 @@ results fail closed without private details. Production intentionally injects
 no dispatcher, so the route returns unavailable and cannot perform lifecycle
 work until concrete operations and durable observation are reviewed.
 
+Phase 5G-H binds that dormant host boundary to the existing two-receipt chain
+without adding a second host transaction journal. The Dashboard must publish
+the exact started receipt before submitting work. The host verifies that
+durable transaction, plan, operation, request, and ordered-service binding,
+runs at most one injected dispatcher call, and publishes the matching terminal
+receipt before returning. A matching completed terminal is replayed without
+redispatch; a matching failed terminal is never retried. If transport becomes
+ambiguous, the Dashboard reads the same receipt snapshot: a host-published
+completed or failed terminal decides the result, while a started-only snapshot
+remains explicitly recovery-required and is not overwritten with a guessed
+failure. This closes the response-lost-after-terminal-publication window but
+does not claim that a crash inside future concrete host work is observable.
+Production still injects no dispatcher and retains `executor=None`; concrete
+idempotent operations plus durable observation of their side effects remain
+required before activation.
+
 All selected services are locked in canonical order before the final
 provenance check and before lifecycle work. Artifacts are downloaded and
 verified before apply. The first pre-transaction backup is replay-safe,

@@ -20,6 +20,7 @@ if str(BIN_DIR) not in sys.path:
     sys.path.insert(0, str(BIN_DIR))
 
 import extension_lifecycle_receipts as receipts  # noqa: E402
+import extension_lifecycle_work as host_work  # noqa: E402
 
 
 TRANSACTION_ID = "txn-" + "1" * 24
@@ -837,3 +838,54 @@ def test_module_is_stdlib_only_and_has_only_the_guarded_host_importer():
             "test_extension_lifecycle_receipt_host_api.py"
         ),
     ]
+
+
+@pytest.mark.skipif(os.name != "posix", reason="durable publication is POSIX-only")
+def test_receipted_host_dispatch_uses_the_real_durable_store(tmp_path):
+    store = _store(tmp_path)
+    unsigned = {
+        "schema": host_work.REQUEST_SCHEMA,
+        "transactionId": TRANSACTION_ID,
+        "planHash": PLAN_HASH,
+        "operationKey": "verify",
+        "serviceIds": list(SERVICE_IDS),
+        "payload": {"serviceIds": list(SERVICE_IDS)},
+    }
+    request = {
+        **unsigned,
+        "requestHash": hashlib.sha256(
+            json.dumps(
+                unsigned,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            ).encode("utf-8")
+        ).hexdigest(),
+    }
+    command = host_work.parse_lifecycle_work_request(request)
+    store.begin(
+        command.transaction_id,
+        command.plan_hash,
+        command.operation_key,
+        command.request_hash,
+        command.service_ids,
+    )
+    calls = []
+
+    first = host_work.dispatch_receipted_lifecycle_work(
+        command,
+        lambda value: calls.append(value) or EVIDENCE_HASH,
+        store,
+    )
+    second = host_work.dispatch_receipted_lifecycle_work(
+        command,
+        lambda _value: (_ for _ in ()).throw(AssertionError("replayed work")),
+        store,
+    )
+    snapshot = store.snapshot(command.transaction_id, command.operation_key)
+
+    assert first == second
+    assert calls == [command]
+    assert snapshot.state == "completed"
+    assert snapshot.terminal_receipt is not None
+    assert snapshot.terminal_receipt.evidence_hash == EVIDENCE_HASH

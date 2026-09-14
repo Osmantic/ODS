@@ -19,6 +19,7 @@ from typing import Any
 
 REQUEST_SCHEMA = "ods.extension-lifecycle-work-request.v1"
 RESULT_SCHEMA = "ods.extension-lifecycle-work-result.v1"
+FAILURE_SCHEMA = "ods.extension-lifecycle-work-failure.v1"
 MAX_WORK_REQUEST_BYTES = 32 * 1024
 MAX_HTTP_REQUEST_BYTES = 40 * 1024
 MAX_SERVICE_IDS = 64
@@ -38,6 +39,7 @@ REQUEST_KEYS = frozenset(
 _TRANSACTION_ID_RE = re.compile(r"^txn-[0-9a-f]{24}$")
 _HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 _SERVICE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+_SAFE_CODE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,95}$")
 _BATCH_OPERATION_TIMEOUTS = {
     "download-and-verify": 1800,
     "stage": 600,
@@ -259,6 +261,15 @@ def dispatch_lifecycle_work(
         raise LifecycleWorkExecutionError("lifecycle-work-operation-failed") from exc
     if not isinstance(evidence_hash, str) or _HASH_RE.fullmatch(evidence_hash) is None:
         raise LifecycleWorkExecutionError("lifecycle-work-invalid-result")
+    return _completed_result(command, evidence_hash)
+
+
+def _completed_result(
+    command: LifecycleWorkCommand,
+    evidence_hash: str,
+) -> dict[str, Any]:
+    if not isinstance(evidence_hash, str) or _HASH_RE.fullmatch(evidence_hash) is None:
+        raise LifecycleWorkExecutionError("lifecycle-work-invalid-result")
     return {
         "schema": RESULT_SCHEMA,
         "transactionId": command.transaction_id,
@@ -272,12 +283,179 @@ def dispatch_lifecycle_work(
     }
 
 
+def _failure_evidence_hash(command: LifecycleWorkCommand, code: Any) -> str:
+    safe_code = code if isinstance(code, str) else "lifecycle-work-operation-failed"
+    if _SAFE_CODE_RE.fullmatch(safe_code) is None:
+        safe_code = "lifecycle-work-operation-failed"
+    return hashlib.sha256(
+        _canonical_bytes(
+            {
+                "schema": FAILURE_SCHEMA,
+                "transactionId": command.transaction_id,
+                "planHash": command.plan_hash,
+                "operationKey": command.operation_key,
+                "requestHash": command.request_hash,
+                "serviceIds": list(command.service_ids),
+                "outcome": "failed",
+                "code": safe_code,
+            }
+        )
+    ).hexdigest()
+
+
+def _require_receipt_binding(receipt: Any, command: LifecycleWorkCommand) -> None:
+    if (
+        receipt is None
+        or getattr(receipt, "transaction_id", None) != command.transaction_id
+        or getattr(receipt, "plan_hash", None) != command.plan_hash
+        or getattr(receipt, "operation_key", None) != command.operation_key
+        or getattr(receipt, "request_hash", None) != command.request_hash
+        or getattr(receipt, "service_ids", None) != command.service_ids
+        or not isinstance(getattr(receipt, "event_hash", None), str)
+        or _HASH_RE.fullmatch(receipt.event_hash) is None
+    ):
+        raise LifecycleWorkValidationError("lifecycle-work-receipt-mismatch")
+
+
+def _terminal_from_snapshot(snapshot: Any, command: LifecycleWorkCommand) -> Any:
+    if (
+        snapshot is None
+        or getattr(snapshot, "transaction_id", None) != command.transaction_id
+        or getattr(snapshot, "operation_key", None) != command.operation_key
+    ):
+        raise LifecycleWorkValidationError("lifecycle-work-receipt-mismatch")
+    state = getattr(snapshot, "state", None)
+    started = getattr(snapshot, "started_receipt", None)
+    terminal = getattr(snapshot, "terminal_receipt", None)
+    if state == "absent":
+        if started is not None or terminal is not None:
+            raise LifecycleWorkValidationError("lifecycle-work-receipt-mismatch")
+        raise LifecycleWorkValidationError(
+            "lifecycle-work-started-receipt-required"
+        )
+    _require_receipt_binding(started, command)
+    if state == "started":
+        if terminal is not None:
+            raise LifecycleWorkValidationError("lifecycle-work-receipt-mismatch")
+        return None
+    if state not in {"completed", "failed"}:
+        raise LifecycleWorkValidationError("lifecycle-work-receipt-mismatch")
+    return _require_terminal_receipt(started, terminal, state, command)
+
+
+def _require_terminal_receipt(
+    started: Any,
+    terminal: Any,
+    state: str,
+    command: LifecycleWorkCommand,
+) -> Any:
+    _require_receipt_binding(started, command)
+    _require_receipt_binding(terminal, command)
+    if (
+        getattr(terminal, "outcome", None) != state
+        or getattr(terminal, "started_event_hash", None) != started.event_hash
+        or not isinstance(getattr(terminal, "evidence_hash", None), str)
+        or _HASH_RE.fullmatch(terminal.evidence_hash) is None
+    ):
+        raise LifecycleWorkValidationError("lifecycle-work-receipt-mismatch")
+    return terminal
+
+
+def dispatch_receipted_lifecycle_work(
+    command: LifecycleWorkCommand,
+    dispatcher: Callable[[LifecycleWorkCommand], str] | None,
+    receipt_store: Any,
+) -> dict[str, Any]:
+    """Run at most one host operation and durably terminalize its receipt.
+
+    The Dashboard publishes the immutable started receipt before submitting
+    host work.  The host verifies that exact binding and publishes the matching
+    terminal receipt before returning.  A completed terminal is replayed
+    without another dispatcher call; a failed terminal is never retried.
+    """
+
+    if not isinstance(command, LifecycleWorkCommand):
+        _invalid()
+    if not callable(dispatcher):
+        raise LifecycleWorkUnavailable("lifecycle-work-dispatcher-unavailable")
+    if receipt_store is None or not callable(getattr(receipt_store, "snapshot", None)):
+        raise LifecycleWorkUnavailable("lifecycle-work-receipt-store-unavailable")
+    if not callable(getattr(receipt_store, "finish", None)):
+        raise LifecycleWorkUnavailable("lifecycle-work-receipt-store-unavailable")
+
+    try:
+        snapshot = receipt_store.snapshot(command.transaction_id, command.operation_key)
+    except Exception as exc:
+        raise LifecycleWorkExecutionError(
+            "lifecycle-work-receipt-store-unavailable"
+        ) from exc
+    terminal = _terminal_from_snapshot(snapshot, command)
+    if terminal is not None:
+        if terminal.outcome == "completed":
+            return _completed_result(command, terminal.evidence_hash)
+        raise LifecycleWorkExecutionError("lifecycle-work-terminal-failed")
+
+    try:
+        result = dispatch_lifecycle_work(command, dispatcher)
+    except LifecycleWorkError as dispatch_error:
+        evidence_hash = _failure_evidence_hash(command, dispatch_error.code)
+        try:
+            terminal = receipt_store.finish(
+                command.transaction_id,
+                command.plan_hash,
+                command.operation_key,
+                command.request_hash,
+                command.service_ids,
+                "failed",
+                evidence_hash,
+            )
+            _require_terminal_receipt(
+                snapshot.started_receipt,
+                terminal,
+                "failed",
+                command,
+            )
+        except LifecycleWorkError:
+            raise
+        except Exception as exc:
+            raise LifecycleWorkExecutionError(
+                "lifecycle-work-receipt-store-unavailable"
+            ) from exc
+        raise dispatch_error
+
+    evidence_hash = result["evidenceHash"]
+    try:
+        terminal = receipt_store.finish(
+            command.transaction_id,
+            command.plan_hash,
+            command.operation_key,
+            command.request_hash,
+            command.service_ids,
+            "completed",
+            evidence_hash,
+        )
+        validated = _require_terminal_receipt(
+            snapshot.started_receipt,
+            terminal,
+            "completed",
+            command,
+        )
+    except LifecycleWorkError:
+        raise
+    except Exception as exc:
+        raise LifecycleWorkExecutionError(
+            "lifecycle-work-receipt-store-unavailable"
+        ) from exc
+    return _completed_result(command, validated.evidence_hash)
+
+
 __all__ = [
     "LifecycleWorkCommand",
     "LifecycleWorkError",
     "LifecycleWorkExecutionError",
     "LifecycleWorkUnavailable",
     "LifecycleWorkValidationError",
+    "FAILURE_SCHEMA",
     "MAX_HTTP_REQUEST_BYTES",
     "MAX_SERVICE_IDS",
     "MAX_WORK_REQUEST_BYTES",
@@ -285,5 +463,6 @@ __all__ = [
     "REQUEST_SCHEMA",
     "RESULT_SCHEMA",
     "dispatch_lifecycle_work",
+    "dispatch_receipted_lifecycle_work",
     "parse_lifecycle_work_request",
 ]

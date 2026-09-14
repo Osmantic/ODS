@@ -7,6 +7,7 @@ import hashlib
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -24,6 +25,68 @@ from extension_receipted_lifecycle_adapter import (  # noqa: E402
 TRANSACTION_ID = "txn-" + "1" * 24
 PLAN_HASH = "2" * 64
 EVIDENCE_HASH = "3" * 64
+
+
+class MemoryReceiptStore:
+    def __init__(self):
+        self.started = None
+        self.terminal = None
+
+    def begin(
+        self,
+        transaction_id,
+        plan_hash,
+        operation_key,
+        request_hash,
+        service_ids,
+    ):
+        self.started = SimpleNamespace(
+            transaction_id=transaction_id,
+            plan_hash=plan_hash,
+            operation_key=operation_key,
+            request_hash=request_hash,
+            service_ids=tuple(service_ids),
+            event_hash="a" * 64,
+        )
+        return self.started
+
+    def finish(
+        self,
+        transaction_id,
+        plan_hash,
+        operation_key,
+        request_hash,
+        service_ids,
+        outcome,
+        evidence_hash,
+    ):
+        assert self.started is not None
+        self.terminal = SimpleNamespace(
+            transaction_id=transaction_id,
+            plan_hash=plan_hash,
+            operation_key=operation_key,
+            request_hash=request_hash,
+            service_ids=tuple(service_ids),
+            outcome=outcome,
+            evidence_hash=evidence_hash,
+            started_event_hash=self.started.event_hash,
+            event_hash="b" * 64,
+        )
+        return self.terminal
+
+    def snapshot(self, transaction_id, operation_key):
+        state = (
+            self.terminal.outcome
+            if self.terminal is not None
+            else "started" if self.started is not None else "absent"
+        )
+        return SimpleNamespace(
+            transaction_id=transaction_id,
+            operation_key=operation_key,
+            state=state,
+            started_receipt=self.started,
+            terminal_receipt=self.terminal,
+        )
 
 
 def work_request(operation_key, service_ids, payload, **changes):
@@ -309,6 +372,150 @@ def test_dispatch_maps_private_exception_without_embedding_it():
 
     assert raised.value.code == "lifecycle-work-operation-failed"
     assert "private-dispatch-detail" not in str(raised.value)
+
+
+def _begun_store(command):
+    store = MemoryReceiptStore()
+    store.begin(
+        command.transaction_id,
+        command.plan_hash,
+        command.operation_key,
+        command.request_hash,
+        command.service_ids,
+    )
+    return store
+
+
+def test_receipted_dispatch_terminalizes_before_success_and_replays():
+    command = host_work.parse_lifecycle_work_request(
+        work_request("verify", ["documents"], {"serviceIds": ["documents"]})
+    )
+    store = _begun_store(command)
+    seen = []
+
+    first = host_work.dispatch_receipted_lifecycle_work(
+        command, lambda value: seen.append(value) or EVIDENCE_HASH, store
+    )
+    snapshot = store.snapshot(command.transaction_id, command.operation_key)
+    second = host_work.dispatch_receipted_lifecycle_work(
+        command,
+        lambda _value: (_ for _ in ()).throw(AssertionError("replayed work")),
+        store,
+    )
+
+    assert first == second
+    assert seen == [command]
+    assert snapshot.state == "completed"
+    assert snapshot.terminal_receipt is not None
+    assert snapshot.terminal_receipt.evidence_hash == EVIDENCE_HASH
+
+
+def test_receipted_dispatch_requires_the_exact_started_binding():
+    command = host_work.parse_lifecycle_work_request(
+        work_request("verify", ["documents"], {"serviceIds": ["documents"]})
+    )
+    store = MemoryReceiptStore()
+    called = []
+
+    with pytest.raises(host_work.LifecycleWorkValidationError) as absent:
+        host_work.dispatch_receipted_lifecycle_work(
+            command, lambda value: called.append(value) or EVIDENCE_HASH, store
+        )
+    assert absent.value.code == "lifecycle-work-started-receipt-required"
+
+    store.begin(
+        command.transaction_id,
+        "9" * 64,
+        command.operation_key,
+        command.request_hash,
+        command.service_ids,
+    )
+    with pytest.raises(host_work.LifecycleWorkValidationError) as mismatch:
+        host_work.dispatch_receipted_lifecycle_work(
+            command, lambda value: called.append(value) or EVIDENCE_HASH, store
+        )
+    assert mismatch.value.code == "lifecycle-work-receipt-mismatch"
+    assert called == []
+
+
+@pytest.mark.parametrize(
+    ("failure", "failure_code"),
+    [
+        (RuntimeError("private"), "lifecycle-work-operation-failed"),
+        (None, "lifecycle-work-invalid-result"),
+    ],
+)
+def test_receipted_dispatch_durably_fails_and_never_replays(
+    failure, failure_code
+):
+    command = host_work.parse_lifecycle_work_request(
+        work_request("verify", ["documents"], {"serviceIds": ["documents"]})
+    )
+    store = _begun_store(command)
+    calls = 0
+
+    def dispatch(_command):
+        nonlocal calls
+        calls += 1
+        if failure is not None:
+            raise failure
+        return "invalid"
+
+    with pytest.raises(host_work.LifecycleWorkExecutionError):
+        host_work.dispatch_receipted_lifecycle_work(command, dispatch, store)
+    snapshot = store.snapshot(command.transaction_id, command.operation_key)
+    assert snapshot.state == "failed"
+    assert snapshot.terminal_receipt is not None
+    expected_failure_hash = hashlib.sha256(
+        json.dumps(
+            {
+                "schema": host_work.FAILURE_SCHEMA,
+                "transactionId": command.transaction_id,
+                "planHash": command.plan_hash,
+                "operationKey": command.operation_key,
+                "requestHash": command.request_hash,
+                "serviceIds": list(command.service_ids),
+                "outcome": "failed",
+                "code": failure_code,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+    ).hexdigest()
+    assert snapshot.terminal_receipt.evidence_hash == expected_failure_hash
+
+    with pytest.raises(host_work.LifecycleWorkExecutionError) as replay:
+        host_work.dispatch_receipted_lifecycle_work(command, dispatch, store)
+    assert replay.value.code == "lifecycle-work-terminal-failed"
+    assert calls == 1
+
+
+def test_receipted_dispatch_never_reports_success_if_terminal_publish_fails():
+    command = host_work.parse_lifecycle_work_request(
+        work_request("verify", ["documents"], {"serviceIds": ["documents"]})
+    )
+    store = _begun_store(command)
+    calls = []
+
+    def fail_finish(*_args):
+        raise OSError("private-store-detail")
+
+    store.finish = fail_finish
+
+    with pytest.raises(host_work.LifecycleWorkExecutionError) as caught:
+        host_work.dispatch_receipted_lifecycle_work(
+            command,
+            lambda value: calls.append(value) or EVIDENCE_HASH,
+            store,
+        )
+
+    assert caught.value.code == "lifecycle-work-receipt-store-unavailable"
+    assert "private-store-detail" not in str(caught.value)
+    assert calls == [command]
+    assert store.snapshot(command.transaction_id, command.operation_key).state == (
+        "started"
+    )
 
 
 def test_host_core_is_stdlib_only_and_has_no_mutation_primitives():

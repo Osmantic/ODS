@@ -43,6 +43,76 @@ class CountingLock:
         return self._lock.locked()
 
 
+class MemoryReceiptStore:
+    def __init__(self, started_type, terminal_type, snapshot_type) -> None:
+        self.started_type = started_type
+        self.terminal_type = terminal_type
+        self.snapshot_type = snapshot_type
+        self.states = {}
+
+    def begin(
+        self,
+        transaction_id,
+        plan_hash,
+        operation_key,
+        request_hash,
+        service_ids,
+    ):
+        prior = self.states.get((transaction_id, operation_key))
+        if prior is not None:
+            started, terminal = prior
+            return terminal or started
+        started = self.started_type(
+            transaction_id,
+            plan_hash,
+            operation_key,
+            request_hash,
+            tuple(service_ids),
+            "a" * 64,
+        )
+        self.states[(transaction_id, operation_key)] = (started, None)
+        return started
+
+    def finish(
+        self,
+        transaction_id,
+        plan_hash,
+        operation_key,
+        request_hash,
+        service_ids,
+        outcome,
+        evidence_hash,
+    ):
+        started, prior = self.states[(transaction_id, operation_key)]
+        if prior is not None:
+            return prior
+        terminal = self.terminal_type(
+            transaction_id,
+            plan_hash,
+            operation_key,
+            request_hash,
+            tuple(service_ids),
+            outcome,
+            evidence_hash,
+            started.event_hash,
+            "b" * 64,
+        )
+        self.states[(transaction_id, operation_key)] = (started, terminal)
+        return terminal
+
+    def snapshot(self, transaction_id, operation_key):
+        prior = self.states.get((transaction_id, operation_key))
+        if prior is None:
+            return self.snapshot_type(
+                transaction_id, operation_key, "absent", None, None
+            )
+        started, terminal = prior
+        state = terminal.outcome if terminal is not None else "started"
+        return self.snapshot_type(
+            transaction_id, operation_key, state, started, terminal
+        )
+
+
 def work_request(
     schema,
     lease=None,
@@ -108,6 +178,35 @@ def lease_evidence(agent, grant, **changes):
     return value
 
 
+def begin_receipt(agent, host_request, request):
+    status, receipt = host_request(
+        "/v1/extension/lifecycle-receipt/begin",
+        {
+            "schema": agent._LIFECYCLE_RECEIPT_SCHEMA,
+            "transactionId": request["transactionId"],
+            "planHash": request["planHash"],
+            "operationKey": request["operationKey"],
+            "requestHash": request["requestHash"],
+            "serviceIds": request["serviceIds"],
+        },
+    )
+    assert status == 200
+    assert receipt["kind"] == "started"
+    return receipt
+
+
+def receipt_snapshot(agent, host_request, request):
+    return host_request(
+        "/v1/extension/lifecycle-receipt/snapshot",
+        {
+            "schema": agent._LIFECYCLE_RECEIPT_SCHEMA,
+            "transactionId": request["transactionId"],
+            "planHash": request["planHash"],
+            "operationKey": request["operationKey"],
+        },
+    )
+
+
 @pytest.fixture()
 def host_server(tmp_path):
     agent_path = BIN_DIR / "ods-host-agent.py"
@@ -128,11 +227,20 @@ def host_server(tmp_path):
 
     agent.AGENT_API_KEY = TOKEN
     agent.ASSISTANT_TRANSACTIONS_ENABLED = True
+    agent.DATA_DIR = tmp_path / "data"
+    agent.DATA_DIR.mkdir()
     agent.EXTENSIONS_DIR = builtins
     agent.USER_EXTENSIONS_DIR = users
     agent.ALWAYS_ON_SERVICES = frozenset({"dashboard"})
     agent._service_locks = collections.defaultdict(CountingLock)
     agent._extension_lease_manager = None
+    receipt_module = agent.__dict__["_extension_" + "lifecycle_receipts"]
+    agent._lifecycle_receipt_store = MemoryReceiptStore(
+        receipt_module.StartedReceipt,
+        receipt_module.TerminalReceipt,
+        receipt_module.LifecycleSnapshot,
+    )
+    agent._lifecycle_receipt_store_data_dir = agent.DATA_DIR
     agent._extension_lifecycle_work_dispatcher = None
 
     listener = agent.ThreadedHTTPServer(("127.0.0.1", 0), agent.AgentHandler)
@@ -227,6 +335,7 @@ def test_success_is_exact_synchronous_bound_and_token_free(host_server, host_req
     agent._extension_lifecycle_work_dispatcher = dispatch
     agent.json_response = observed_json_response
     request = work_request(agent._extension_lifecycle_work.REQUEST_SCHEMA, evidence)
+    begin_receipt(agent, host_request, request)
 
     status, result = host_request("/v1/extension/lifecycle-work", request)
 
@@ -253,6 +362,15 @@ def test_success_is_exact_synchronous_bound_and_token_free(host_server, host_req
     assert lock.acquire_calls == 1
     assert lock.locked()
     assert grant["leaseToken"] not in json.dumps(result)
+    snapshot_status, snapshot = receipt_snapshot(agent, host_request, request)
+    assert snapshot_status == 200
+    assert snapshot["state"] == "completed"
+    assert snapshot["terminalReceipt"]["evidenceHash"] == EVIDENCE_HASH
+
+    replay_status, replay = host_request("/v1/extension/lifecycle-work", request)
+    assert replay_status == 200
+    assert replay == result
+    assert len(seen) == 1
 
 
 def test_default_dispatcher_is_inert_but_authenticates_the_lease(
@@ -519,6 +637,7 @@ def test_concurrent_work_under_one_lease_is_rejected_as_busy(host_server, host_r
         agent._extension_lifecycle_work.REQUEST_SCHEMA,
         lease_evidence(agent, grant),
     )
+    begin_receipt(agent, host_request, request)
     entered = threading.Event()
     release = threading.Event()
 
@@ -556,6 +675,7 @@ def test_dispatch_failure_is_generic_and_releases_active_window(
 
     agent._extension_lifecycle_work_dispatcher = dispatch
     request = work_request(agent._extension_lifecycle_work.REQUEST_SCHEMA, evidence)
+    begin_receipt(agent, host_request, request)
 
     with caplog.at_level("ERROR", logger="ods-host-agent"):
         status, result = host_request("/v1/extension/lifecycle-work", request)
@@ -567,6 +687,62 @@ def test_dispatch_failure_is_generic_and_releases_active_window(
     assert grant["leaseToken"] not in json.dumps(result)
     assert grant["leaseToken"] not in caplog.text
     assert agent._extension_lease_manager.describe(grant["leaseId"])["active"] is False
+    snapshot_status, snapshot = receipt_snapshot(agent, host_request, request)
+    assert snapshot_status == 200
+    assert snapshot["state"] == "failed"
+    assert snapshot["terminalReceipt"]["outcome"] == "failed"
+    assert private_detail not in json.dumps(snapshot)
+
+
+def test_dispatch_requires_preexisting_exact_started_receipt(
+    host_server, host_request
+):
+    agent, _listener = host_server
+    grant = acquire_lease(agent, host_request)
+    request = work_request(
+        agent._extension_lifecycle_work.REQUEST_SCHEMA,
+        lease_evidence(agent, grant),
+    )
+    called = []
+    agent._extension_lifecycle_work_dispatcher = lambda command: (
+        called.append(command) or EVIDENCE_HASH
+    )
+
+    status, result = host_request("/v1/extension/lifecycle-work", request)
+
+    assert status == 409
+    assert result == {
+        "error": {"code": "lifecycle-work-started-receipt-required"}
+    }
+    assert called == []
+
+
+def test_dispatch_rejects_misbound_started_receipt_at_http_boundary(
+    host_server, host_request
+):
+    agent, _listener = host_server
+    grant = acquire_lease(agent, host_request)
+    request = work_request(
+        agent._extension_lifecycle_work.REQUEST_SCHEMA,
+        lease_evidence(agent, grant),
+    )
+    agent._lifecycle_receipt_store.begin(
+        request["transactionId"],
+        "9" * 64,
+        request["operationKey"],
+        request["requestHash"],
+        request["serviceIds"],
+    )
+    called = []
+    agent._extension_lifecycle_work_dispatcher = lambda command: (
+        called.append(command) or EVIDENCE_HASH
+    )
+
+    status, result = host_request("/v1/extension/lifecycle-work", request)
+
+    assert status == 409
+    assert result == {"error": {"code": "lifecycle-work-receipt-mismatch"}}
+    assert called == []
 
 
 def test_host_agent_source_leaves_production_dispatcher_unwired():
