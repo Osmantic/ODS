@@ -1,0 +1,46 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: homebox
+  name: Homebox
+  description: "Keep a local inventory of household equipment, locations, manuals and receipts."
+  aliases: [inventory]
+  container_name: ods-homebox
+  container_uid: 65532
+  default_host: homebox
+  port: 7745
+  external_port_env: HOMEBOX_PORT
+  external_port_default: 7834
+  health: /api/v1/status
+  startup_timeout: 120
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [inventory, household, equipment, local]
+  env_vars:
+    - key: HOMEBOX_API_KEY_PEPPER
+      required: true
+      secret: true
+      description: Stable random secret of at least 32 bytes; changing it invalidates issued API keys
+    - key: HOMEBOX_PORT
+      default: "7834"
+      description: Published household inventory port
+    - key: HOMEBOX_ALLOW_REGISTRATION
+      default: "false"
+      description: Temporarily enable on loopback to create an account, then disable and recreate
+features:
+  - id: household-inventory
+    name: Household Inventory
+    description: "Track equipment and its locations with private manuals and receipts"
+    icon: Package
+    category: productivity
+    requirements:
+      services: [homebox]
+      vram_gb: 0
+      disk_gb: 1
+    enabled_services_all: [homebox]
+    setup_time: "~2 minutes"
+    priority: 32
