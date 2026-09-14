@@ -101,6 +101,8 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual(entry["configurationScope"], "declared-environment-keys")
             self.assertEqual(entry["requiredConfiguration"], ["APP_TOKEN"])
             self.assertNotIn("runtimeReady", entry)
+        self.assertIsNone(entries[0]["planning"]["composeFile"])
+        self.assertIsNone(entries[1]["planning"]["composeFile"])
 
     def test_library_only_call_and_native_collision_precedence(self):
         self.manifest(self.library, "same")
@@ -109,14 +111,17 @@ class CatalogTests(unittest.TestCase):
         old = generator.generate_catalog(self.library)
         self.assertEqual([entry["id"] for entry in old], ["same"])
         self.assertNotIn("catalog_source", old[0])
+        self.assertEqual(old[0]["planning"]["definitionSource"], "library")
         merged = {entry["id"]: entry for entry in generator.generate_catalog(self.library, self.services)}
         self.assertEqual(merged["same"]["catalog_source"], "builtin")
+        self.assertEqual(merged["same"]["planning"]["definitionSource"], "builtin")
 
     def test_v2_planning_projection_and_revision_are_deterministic(self):
         self.manifest(self.services, "notebook", schema="ods.services.v2")
         entries = generator.generate_catalog(self.library, self.services)
         self.assertEqual(entries[0]["manifest_schema_version"], "ods.services.v2")
         self.assertEqual(entries[0]["planning"]["provides"], ["notebook@1"])
+        self.assertEqual(entries[0]["planning"]["composeFile"], "compose.yaml")
         self.assertEqual(
             [item["key"] for item in entries[0]["planning"]["configuration"] if item["secret"]],
             ["APP_TOKEN"],
@@ -127,6 +132,9 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(first, generator.catalog_revision(reordered))
         changed = json.loads(json.dumps(entries))
         changed[0]["planning"]["providerPriority"] = 8
+        self.assertNotEqual(first, generator.catalog_revision(changed))
+        changed = json.loads(json.dumps(entries))
+        changed[0]["planning"]["definitionSource"] = "library"
         self.assertNotEqual(first, generator.catalog_revision(changed))
 
     def test_v1_planning_projection_is_restricted_to_legacy_fields(self):
@@ -142,10 +150,14 @@ class CatalogTests(unittest.TestCase):
                 "odsCompatibility",
                 "definitionSha256",
                 "composeSha256",
+                "definitionSource",
+                "composeFile",
                 "dependsOn",
                 "legacy",
             },
         )
+        self.assertEqual(entry["planning"]["definitionSource"], "builtin")
+        self.assertEqual(entry["planning"]["composeFile"], "compose.yaml")
         self.assertTrue(entry["planning"]["legacy"])
 
     def test_definition_digest_is_independent_of_checkout_newlines(self):

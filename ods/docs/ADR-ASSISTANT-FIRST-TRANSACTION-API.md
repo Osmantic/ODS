@@ -157,3 +157,11 @@ non-portable YAML values, cycles, non-string keys, invalid Unicode, and non-fini
 numbers before emitting sorted compact JSON plus one newline for SHA-256. This
 refactor must reproduce the shipped catalog byte-for-byte; it adds no artifact
 reader, dispatcher call site, lifecycle effect, or execution authority.
+
+Every newly generated catalog and approved plan also binds the definition
+origin (`builtin`, `library`, or future `user`) and the exact relative Compose
+filename into its canonical planning material. Host plan binding carries those
+values without consulting filesystem precedence, while older stored plans keep
+them explicitly unknown instead of receiving an unhashed inference. This is a
+provenance prerequisite only; no host artifact is opened and the production
+executor remains disabled.

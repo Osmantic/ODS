@@ -71,10 +71,12 @@ def catalog_entry(
     secrets: list[str] | None = None,
     definition_sha: str | None = None,
     depends_on: list[str] | None = None,
+    definition_source: str = "library",
 ) -> dict[str, Any]:
     """A v2 catalog entry with the exact planning key set the router accepts."""
     return {
         "id": service_id,
+        "catalog_source": definition_source,
         "manifest_schema_version": "ods.services.v2",
         "planning": {
             "serviceType": "docker",
@@ -83,6 +85,8 @@ def catalog_entry(
             "odsCompatibility": {"minimum": "2.0.0", "maximum": None},
             "definitionSha256": definition_sha or ("sha256:" + "d" * 64),
             "composeSha256": "",
+            "definitionSource": definition_source,
+            "composeFile": None,
             "dependsOn": depends_on or [],
             "provides": provides or [],
             "requires": requires or [],
@@ -651,9 +655,20 @@ def test_catalog_compose_hash_change_changes_plan_hash() -> None:
     entries_a = [catalog_entry("app")]
     entries_b = [catalog_entry("app")]
     entries_b[0]["planning"]["composeSha256"] = "sha256:" + "8" * 64
+    entries_b[0]["planning"]["composeFile"] = "compose.yaml"
     base = authorize(entries=entries_a)
     changed = authorize(entries=entries_b)
     assert base["planHash"] != changed["planHash"]
+
+
+def test_catalog_definition_source_change_changes_plan_and_catalog_hashes() -> None:
+    base = authorize(entries=[catalog_entry("app", definition_source="library")])
+    changed = authorize(entries=[catalog_entry("app", definition_source="builtin")])
+
+    assert base["catalogRevision"] != changed["catalogRevision"]
+    assert base["planHash"] != changed["planHash"]
+    assert base["plan"]["definitions"][0]["definitionSource"] == "library"
+    assert changed["plan"]["definitions"][0]["definitionSource"] == "builtin"
 
 
 def test_server_computed_catalog_revision_must_match_injected_revision() -> None:

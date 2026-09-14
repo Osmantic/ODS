@@ -55,6 +55,8 @@ def catalog_entry(
             "odsCompatibility": {"minimum": "2.0.0", "maximum": None},
             "definitionSha256": "sha256:" + "d" * 64,
             "composeSha256": "",
+            "definitionSource": "library",
+            "composeFile": None,
             "dependsOn": [],
             "provides": provides or [],
             "requires": requires or [],
@@ -193,9 +195,52 @@ def test_plan_is_deterministic_revision_bound_and_secret_name_only(client) -> No
     assert first.headers["cache-control"] == "no-store"
     plan = first.json()["plan"]
     assert plan["selectedServices"] == ["provider", "app"]
+    assert all(
+        definition["definitionSource"] == "library"
+        and definition["composeFile"] is None
+        for definition in plan["definitions"]
+    )
     assert plan["missingRequiredSecretKeys"] == ["APP_TOKEN"]
     assert "UNRELATED_TOKEN" not in first.text
     assert "=" not in first.text
+
+
+def test_legacy_catalog_origin_is_derived_before_new_plan_hashing() -> None:
+    entry = catalog_entry("legacy")
+    entry["planning"].pop("definitionSource")
+    entry["planning"].pop("composeFile")
+    entry["planning"]["composeSha256"] = "sha256:" + "c" * 64
+    entry["catalog_source"] = "builtin"
+    entry["compose_file"] = "compose.yaml"
+
+    record = api.adapt_manifest(api._manifest_from_catalog_entry(entry))
+
+    assert record["definitionSource"] == "builtin"
+    assert record["composeFile"] == "compose.yaml"
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"definitionSource": None},
+        {"definitionSource": "unknown"},
+        {"composeFile": "compose.yaml"},
+    ],
+)
+def test_new_catalog_origin_contract_fails_closed(change) -> None:
+    entry = catalog_entry("invalid")
+    entry["planning"].update(change)
+
+    with pytest.raises(api.PlanningError):
+        api.adapt_manifest(api._manifest_from_catalog_entry(entry))
+
+
+def test_new_catalog_rejects_disagreement_with_projection_source() -> None:
+    entry = catalog_entry("invalid")
+    entry["catalog_source"] = "builtin"
+
+    with pytest.raises(api.PlanningError, match="invalid-catalog-entry"):
+        api._manifest_from_catalog_entry(entry)
 
 
 def test_stale_catalog_revision_fails_with_current_revision(client) -> None:

@@ -32,6 +32,8 @@ def definition(service_id: str) -> dict:
         "odsCompatibility": {"minimum": "2.0.0", "maximum": "3.0.0"},
         "definitionSha256": "sha256:" + "3" * 64,
         "composeSha256": "sha256:" + "4" * 64,
+        "definitionSource": "library",
+        "composeFile": "compose.yaml",
         "dependsOn": [],
         "provides": [],
         "requires": [],
@@ -182,6 +184,8 @@ def test_bind_accepts_only_the_exact_operation_for_the_current_phase(
     assert bound.plan_material.definitions[0].images[0].digest == (
         "sha256:" + "5" * 64
     )
+    assert bound.plan_material.definitions[0].definition_source == "library"
+    assert bound.plan_material.definitions[0].compose_file == "compose.yaml"
 
 
 def test_bind_copies_exact_definition_material_out_of_the_mutable_store_result():
@@ -215,6 +219,24 @@ def test_bind_copies_exact_definition_material_out_of_the_mutable_store_result()
         lambda value: value["envelope"]["plan"]["definitions"].reverse(),
         lambda value: value["envelope"]["plan"]["definitions"][0].update(
             definitionSha256="not-a-digest"
+        ),
+        lambda value: value["envelope"]["plan"]["definitions"][0].update(
+            definitionSource="unknown"
+        ),
+        lambda value: value["envelope"]["plan"]["definitions"][0].update(
+            definitionSource=[]
+        ),
+        lambda value: value["envelope"]["plan"]["definitions"][0].update(
+            definitionSource={}
+        ),
+        lambda value: value["envelope"]["plan"]["definitions"][0].update(
+            composeFile="../compose.yaml"
+        ),
+        lambda value: value["envelope"]["plan"]["definitions"][0].update(
+            composeFile=None
+        ),
+        lambda value: value["envelope"]["plan"]["definitions"][0].update(
+            composeSha256=None
         ),
         lambda value: value["envelope"]["plan"]["definitions"][0][
             "artifacts"
@@ -269,6 +291,22 @@ def test_bind_rejects_a_command_that_already_contains_plan_material():
         lifecycle_plan.bind_lifecycle_plan(first, transaction("applying"))
 
     assert raised.value.code == "lifecycle-work-plan-mismatch"
+
+
+def test_bind_preserves_legacy_plan_without_unhashed_origin_inference():
+    stored = transaction("applying")
+    legacy = stored["envelope"]["plan"]["definitions"][0]
+    legacy.pop("definitionSource")
+    legacy.pop("composeFile")
+
+    bound = lifecycle_plan.bind_lifecycle_plan(
+        command("apply:documents", ["documents"], {"operation": INSTALL}),
+        stored,
+    )
+
+    material = bound.plan_material.definitions[0]
+    assert material.definition_source is None
+    assert material.compose_file is None
 
 
 def test_plan_binding_is_stdlib_only_and_has_no_effect_primitives():

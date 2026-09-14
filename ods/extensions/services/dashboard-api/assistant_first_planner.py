@@ -33,6 +33,7 @@ _SEMVER_RE = re.compile(
 )
 _DRIVER_VERSION_RE = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._-]{0,63}$")
 _ENCODED_CONTROL_RE = re.compile(r"%(?:0[0-9a-f]|1[0-9a-f]|7f)", re.IGNORECASE)
+_DEFINITION_SOURCES = frozenset({"builtin", "library", "user"})
 
 # These are the host values emitted by the supported installers.  A manifest
 # still has to opt into a backend explicitly; accepting the host fact here does
@@ -414,15 +415,41 @@ def adapt_manifest(manifest: Any) -> dict[str, Any]:
     )
     catalog = root.get("_catalog", {})
     catalog = _mapping(catalog, "_catalog")
-    unknown_catalog = sorted(set(catalog) - {"definition_sha256", "compose_sha256"})
+    unknown_catalog = sorted(
+        set(catalog)
+        - {
+            "definition_sha256",
+            "compose_sha256",
+            "definition_source",
+            "compose_file",
+        }
+    )
     if unknown_catalog:
         _fail("invalid-object-fields", field="_catalog", fields=unknown_catalog)
+    origin_keys = set(catalog) & {"definition_source", "compose_file"}
+    if origin_keys and origin_keys != {"definition_source", "compose_file"}:
+        _fail("invalid-object-fields", field="_catalog", fields=sorted(origin_keys))
     definition_sha = _digest(
         catalog.get("definition_sha256", ""), "_catalog.definition_sha256", optional=True
     )
     compose_sha = _digest(
         catalog.get("compose_sha256", ""), "_catalog.compose_sha256", optional=True
     )
+    definition_source = _enum(
+        catalog.get("definition_source", "library"),
+        "_catalog.definition_source",
+        _DEFINITION_SOURCES,
+    )
+    raw_compose_file = catalog.get("compose_file")
+    if (raw_compose_file is None or raw_compose_file == "") and compose_sha:
+        raw_compose_file = "compose.yaml"
+    compose_file = (
+        None
+        if raw_compose_file is None or raw_compose_file == ""
+        else _relative_path(raw_compose_file, "_catalog.compose_file", 256)
+    )
+    if (compose_file is None) != (compose_sha == ""):
+        _fail("invalid-compose-provenance", field="_catalog")
 
     empty: tuple[str, ...] = ()
     empty_resources = {
@@ -458,6 +485,8 @@ def adapt_manifest(manifest: Any) -> dict[str, Any]:
             },
             "definitionSha256": definition_sha,
             "composeSha256": compose_sha,
+            "definitionSource": definition_source,
+            "composeFile": compose_file,
             "dependsOn": depends_on,
             "provides": empty,
             "requires": empty,
@@ -668,6 +697,8 @@ def adapt_manifest(manifest: Any) -> dict[str, Any]:
         "odsCompatibility": {"minimum": minimum, "maximum": maximum},
         "definitionSha256": definition_sha,
         "composeSha256": compose_sha,
+        "definitionSource": definition_source,
+        "composeFile": compose_file,
         "dependsOn": depends_on,
         "provides": _unique_strings(planning.get("provides"), "service.planning.provides", _capability),
         "requires": _unique_strings(planning.get("requires"), "service.planning.requires", _capability),
@@ -1440,6 +1471,8 @@ def build_plan(
                 "odsCompatibility": public_json_value(record["odsCompatibility"]),
                 "definitionSha256": record["definitionSha256"],
                 "composeSha256": record["composeSha256"] or None,
+                "definitionSource": record["definitionSource"],
+                "composeFile": record["composeFile"],
                 "dependsOn": list(record["dependsOn"]),
                 "provides": list(record["provides"]),
                 "requires": list(record["requires"]),

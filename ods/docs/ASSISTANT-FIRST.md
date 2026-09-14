@@ -188,6 +188,13 @@ values fail closed. The shipped catalog is regenerated in tests to prove the
 refactor did not alter existing provenance. No host artifact path is opened and
 no lifecycle dispatcher is enabled by this prerequisite boundary.
 
+New catalog revisions and approved plans bind each definition's origin and
+exact relative Compose filename. Library and installed user copies may
+legitimately share a service ID, so execution must not choose between them with
+an implicit precedence rule. Legacy stored plans remain readable with unknown
+origin rather than being relabeled after approval. Artifact opening and
+lifecycle execution remain disabled until the next reviewed boundaries.
+
 ## Evidence boundary
 
 The source contract checks resolver ordering, the exact candidate service set,

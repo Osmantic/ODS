@@ -184,8 +184,15 @@ def load_manifest(manifest_path: Path) -> dict | None:
     return data
 
 
-def extract_entry(manifest: dict, manifest_path: Path | None = None) -> dict | None:
+def extract_entry(
+    manifest: dict,
+    manifest_path: Path | None = None,
+    *,
+    definition_source: str = "library",
+) -> dict | None:
     """Extract a catalog entry from a validated manifest dict."""
+    if definition_source not in {"builtin", "library"}:
+        raise ValueError("invalid definition source")
     service = manifest.get("service")
     if not isinstance(service, dict):
         return None
@@ -203,12 +210,19 @@ def extract_entry(manifest: dict, manifest_path: Path | None = None) -> dict | N
 
     definition_sha256 = ""
     compose_sha256 = ""
+    compose_file = None
+    raw_compose_name = service.get("compose_file")
+    compose_name = (
+        raw_compose_name
+        if isinstance(raw_compose_name, str) and raw_compose_name
+        else None
+    )
     if manifest_path is not None:
         definition_sha256 = canonical_document_sha256(manifest_path)
-        compose_name = service.get("compose_file")
-        if isinstance(compose_name, str) and compose_name:
+        if compose_name is not None:
             compose_path = _compose_path(manifest_path, compose_name)
             if compose_path is not None:
+                compose_file = compose_name
                 compose_sha256 = canonical_document_sha256(compose_path)
     planning_record = PLANNER.adapt_manifest(
         {
@@ -216,6 +230,8 @@ def extract_entry(manifest: dict, manifest_path: Path | None = None) -> dict | N
             "_catalog": {
                 "definition_sha256": definition_sha256,
                 "compose_sha256": compose_sha256,
+                "definition_source": definition_source,
+                "compose_file": compose_file,
             },
         }
     )
@@ -226,6 +242,8 @@ def extract_entry(manifest: dict, manifest_path: Path | None = None) -> dict | N
         "odsCompatibility": planning_record["odsCompatibility"],
         "definitionSha256": planning_record["definitionSha256"],
         "composeSha256": planning_record["composeSha256"],
+        "definitionSource": planning_record["definitionSource"],
+        "composeFile": planning_record["composeFile"],
         "dependsOn": list(planning_record["dependsOn"]),
         "provides": list(planning_record["provides"]),
         "requires": list(planning_record["requires"]),
@@ -253,6 +271,8 @@ def extract_entry(manifest: dict, manifest_path: Path | None = None) -> dict | N
                 "odsCompatibility",
                 "definitionSha256",
                 "composeSha256",
+                "definitionSource",
+                "composeFile",
                 "dependsOn",
                 "legacy",
             )
@@ -326,7 +346,11 @@ def generate_catalog(library_dir: Path, services_dir: Path | None = None) -> lis
             manifest = load_manifest(manifest_path)
             if manifest is None:
                 continue
-            entry = extract_entry(manifest, manifest_path)
+            entry = extract_entry(
+                manifest,
+                manifest_path,
+                definition_source=source,
+            )
             if entry is None or entry["id"] != service_dir.name:
                 continue
             if source == "builtin":

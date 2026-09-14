@@ -18,7 +18,7 @@ from assistant_first_planner import (
 )
 
 
-_V1_PLANNING_KEYS = {
+_V1_LEGACY_PLANNING_KEYS = {
     "serviceType",
     "version",
     "dataSchemaVersion",
@@ -28,7 +28,9 @@ _V1_PLANNING_KEYS = {
     "dependsOn",
     "legacy",
 }
-_V2_PLANNING_KEYS = _V1_PLANNING_KEYS | {
+_ORIGIN_PLANNING_KEYS = {"definitionSource", "composeFile"}
+_V1_PLANNING_KEYS = _V1_LEGACY_PLANNING_KEYS | _ORIGIN_PLANNING_KEYS
+_V2_LEGACY_PLANNING_KEYS = _V1_LEGACY_PLANNING_KEYS | {
     "provides",
     "requires",
     "optional",
@@ -44,6 +46,7 @@ _V2_PLANNING_KEYS = _V1_PLANNING_KEYS | {
     "trust",
     "support",
 }
+_V2_PLANNING_KEYS = _V2_LEGACY_PLANNING_KEYS | _ORIGIN_PLANNING_KEYS
 
 
 def manifest_from_catalog_entry(entry: Mapping[str, Any]) -> dict[str, Any]:
@@ -60,7 +63,18 @@ def manifest_from_catalog_entry(entry: Mapping[str, Any]) -> dict[str, Any]:
         if schema_version == "ods.services.v2"
         else frozenset()
     )
-    if not isinstance(planning, dict) or set(planning) != expected:
+    legacy_expected = (
+        _V1_LEGACY_PLANNING_KEYS
+        if schema_version == "ods.services.v1"
+        else _V2_LEGACY_PLANNING_KEYS
+        if schema_version == "ods.services.v2"
+        else frozenset()
+    )
+    planning_keys = frozenset(planning) if isinstance(planning, dict) else frozenset()
+    if not isinstance(planning, dict) or planning_keys not in {
+        frozenset(expected),
+        frozenset(legacy_expected),
+    }:
         raise PlanningError("invalid-catalog-entry", serviceId=service_id)
 
     def section(name: str) -> dict[str, Any]:
@@ -182,6 +196,25 @@ def manifest_from_catalog_entry(entry: Mapping[str, Any]) -> dict[str, Any]:
             "support": {"status": support.get("status"), "url": support.get("url")},
         }
     compatibility = section("odsCompatibility")
+    if planning_keys == frozenset(expected):
+        definition_source = planning.get("definitionSource")
+        compose_file = planning.get("composeFile")
+        catalog_source = entry.get("catalog_source", "library")
+        if (
+            catalog_source not in {"builtin", "library"}
+            or definition_source != catalog_source
+        ):
+            raise PlanningError("invalid-catalog-entry", serviceId=service_id)
+    else:
+        catalog_source = entry.get("catalog_source", "library")
+        if catalog_source not in {"builtin", "library"}:
+            raise PlanningError("invalid-catalog-entry", serviceId=service_id)
+        definition_source = catalog_source
+        compose_file = (
+            entry.get("compose_file") or "compose.yaml"
+            if planning.get("composeSha256")
+            else None
+        )
     return {
         "schema_version": schema_version,
         "compatibility": {
@@ -196,6 +229,8 @@ def manifest_from_catalog_entry(entry: Mapping[str, Any]) -> dict[str, Any]:
         "_catalog": {
             "definition_sha256": planning.get("definitionSha256"),
             "compose_sha256": planning.get("composeSha256"),
+            "definition_source": definition_source,
+            "compose_file": compose_file,
         },
     }
 

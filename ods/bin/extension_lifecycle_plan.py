@@ -29,7 +29,8 @@ PLAN_MATERIAL_SCHEMA = "ods.extension-lifecycle-plan-material.v1"
 _DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _SERVICE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 _ACTIONS = frozenset({"install", "enable", "repair", "update", "noop"})
-_DEFINITION_KEYS = frozenset(
+_DEFINITION_SOURCES = frozenset({"builtin", "library", "user"})
+_LEGACY_DEFINITION_KEYS = frozenset(
     {
         "id",
         "serviceType",
@@ -54,6 +55,8 @@ _DEFINITION_KEYS = frozenset(
         "support",
     }
 )
+_ORIGIN_DEFINITION_KEYS = frozenset({"definitionSource", "composeFile"})
+_DEFINITION_KEYS = _LEGACY_DEFINITION_KEYS | _ORIGIN_DEFINITION_KEYS
 _IMAGE_KEYS = frozenset({"reference", "digest", "downloadBytes"})
 _BUILD_KEYS = frozenset(
     {"source", "revision", "contextDigest", "output", "downloadBytes"}
@@ -103,6 +106,8 @@ class PlannedDefinition:
     data_schema_version: str
     definition_sha256: str
     compose_sha256: str | None
+    definition_source: str | None
+    compose_file: str | None
     images: tuple[PlannedImage, ...]
     builds: tuple[PlannedBuild, ...]
     canonical_document: bytes
@@ -151,6 +156,20 @@ def _bytes(value: Any) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         _reject()
     return value
+
+
+def _compose_file(value: Any) -> str | None:
+    if value is None:
+        return None
+    result = _text(value, maximum=256)
+    if (
+        result.startswith("/")
+        or "\\" in result
+        or any(part in {"", ".", ".."} for part in result.split("/"))
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,255}", result) is None
+    ):
+        _reject()
+    return result
 
 
 def _canonical_document(value: dict[str, Any]) -> bytes:
@@ -206,7 +225,11 @@ def _build(value: Any) -> PlannedBuild:
 
 
 def _definition(value: Any) -> PlannedDefinition:
-    if not isinstance(value, dict) or set(value) != _DEFINITION_KEYS:
+    value_keys = frozenset(value) if isinstance(value, dict) else frozenset()
+    if not isinstance(value, dict) or value_keys not in {
+        _LEGACY_DEFINITION_KEYS,
+        _DEFINITION_KEYS,
+    }:
         _reject()
     service_id = _service_id(value["id"])
     artifacts = value["artifacts"]
@@ -226,6 +249,19 @@ def _definition(value: Any) -> PlannedDefinition:
         _reject()
     definition_sha256 = _digest(value["definitionSha256"])
     compose_sha256 = _digest(value["composeSha256"], optional=True)
+    definition_source = value.get("definitionSource")
+    compose_file = _compose_file(value.get("composeFile"))
+    if value_keys == _DEFINITION_KEYS:
+        if (
+            not isinstance(definition_source, str)
+            or definition_source not in _DEFINITION_SOURCES
+        ):
+            _reject()
+        if (compose_file is None) != (compose_sha256 is None):
+            _reject()
+    else:
+        definition_source = None
+        compose_file = None
     assert isinstance(definition_sha256, str)
     return PlannedDefinition(
         service_id=service_id,
@@ -235,6 +271,8 @@ def _definition(value: Any) -> PlannedDefinition:
         data_schema_version=_text(value["dataSchemaVersion"], maximum=128),
         definition_sha256=definition_sha256,
         compose_sha256=compose_sha256,
+        definition_source=definition_source,
+        compose_file=compose_file,
         images=images,
         builds=builds,
         canonical_document=_canonical_document(value),
