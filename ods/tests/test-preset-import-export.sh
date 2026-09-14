@@ -149,7 +149,13 @@ test_import_validation() {
 # Test 10: Verify export creates relative paths
 test_export_relative_paths() {
     info "Test 10: Checking if export avoids absolute paths"
-    if grep -A15 "export|e)" "$ODS_CLI" 2>/dev/null | grep -q "cd.*PRESETS_DIR"; then
+    # Scan the whole `export|e)` case arm rather than a fixed -A15 window: the
+    # `cd "$PRESETS_DIR"` that makes tar store relative paths sits 18 lines in,
+    # so the old window stopped three lines short and the assertion failed
+    # against correct code. Ending at the arm terminator keeps it honest if the
+    # cd is ever dropped.
+    if awk '/^[[:space:]]*export\|e\)/{f=1} f{print; if (/^[[:space:]]*;;/) exit}' "$ODS_CLI" 2>/dev/null \
+        | grep -q "cd.*PRESETS_DIR"; then
         pass "Export creates relative paths"
         return 0
     else
