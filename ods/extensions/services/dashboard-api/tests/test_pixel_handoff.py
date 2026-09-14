@@ -32,7 +32,8 @@ def decision():
 def client(monkeypatch):
     import security
     monkeypatch.setattr(security,'DASHBOARD_API_KEY','test-key-12345')
-    app=FastAPI(); app.include_router(api.router)
+    app=FastAPI()
+    app.include_router(api.router)
     with TestClient(app) as client: yield client
 
 
@@ -63,7 +64,8 @@ def test_decision_exact_once(client,host):
 
 
 def test_list_never_contains_checkpoint(client,host):
-    metadata=result(); metadata.pop('checkpointJson')
+    metadata=result()
+    metadata.pop('checkpointJson')
     host.return_value=dict(items=[metadata],unavailableCount=0)
     assert client.post('/api/pixel/handoff/list',headers=KEY,json={}).json()==host.return_value
     host.return_value=dict(items=[result()],unavailableCount=0)

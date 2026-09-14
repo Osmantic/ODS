@@ -2,7 +2,7 @@ name: Validate Docker Compose
 
 on:
   push:
-    branches: [main]
+    branches: [main, public-beta]
     paths:
       - "ods/docker-compose*.yml"
       - "ods/installers/**/*compose*.yml"
@@ -10,7 +10,7 @@ on:
       - "ods/scripts/resolve-compose-stack.sh"
       - ".github/workflows/validate-compose.yml"
   pull_request:
-    branches: [main]
+    branches: [main, public-beta]
     paths:
       - "ods/docker-compose*.yml"
       - "ods/installers/**/*compose*.yml"

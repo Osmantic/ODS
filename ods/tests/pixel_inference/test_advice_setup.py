@@ -33,8 +33,11 @@ def wait(jobs,job_id):
 
 @pytest.fixture
 def harness(tmp_path,monkeypatch):
-    root=tmp_path/'providers'; root.mkdir(mode=0o700)
-    entered=threading.Event(); release=threading.Event(); calls=[]
+    root=tmp_path/'providers'
+    root.mkdir(mode=0o700)
+    entered=threading.Event()
+    release=threading.Event()
+    calls=[]
     control={'publish':True,'cancelAfterPublish':False,'lie':False}
     monkeypatch.setattr(setup,'source_digest',lambda:'a'*64)
     def candidate(identity):
@@ -47,12 +50,14 @@ def harness(tmp_path,monkeypatch):
                     runtimeId=receipt['runtime']['id'] if receipt['runtime'] else None)
     monkeypatch.setattr(setup,'runtime_status',status)
     def runner(command,value,*,cancelled,deadline_seconds,lock_fds):
-        calls.append(copy.deepcopy(value)); entered.set()
+        calls.append(copy.deepcopy(value))
+        entered.set()
         assert len(lock_fds)==2 and value['lockFds']==list(lock_fds)
         while not release.wait(.01):
             if cancelled(): raise asyncio.CancelledError()
         if control['publish']:
-            store=RuntimeStore(root); receipt=store.load()
+            store=RuntimeStore(root)
+            receipt=store.load()
             store.save(dict(revision=receipt['revision'],schemaVersion=1,runtime=dict(
                 id='runtime-'+value['requestId'].replace('-',''),sourceSha256='a'*64,treeSha256='c'*64,
                 interpreter='/fixture/python',interpreterSha256='d'*64)),expected_revision=receipt['revision'])
@@ -63,22 +68,27 @@ def harness(tmp_path,monkeypatch):
 
 
 def test_durable_idempotent_setup_and_conflicting_uuid(harness):
-    jobs,entered,release,calls,_=harness; request=body()
-    jobs.start(request); assert entered.wait(2)
+    jobs,entered,release,calls,_=harness
+    request=body()
+    jobs.start(request)
+    assert entered.wait(2)
     assert jobs.start(request)['status']=='running'
     with pytest.raises(StoreError,match='conflict'):
         jobs.start(dict(request,expectedRevision=1))
     assert jobs.latest()['jobId']==request['requestId']
-    release.set(); result=wait(jobs,request['requestId'])
+    release.set()
+    result=wait(jobs,request['requestId'])
     assert result['status']=='completed' and len(calls)==1
     assert jobs.start(request)==result
     assert not (jobs.providers/'provider-config.json').exists()
 
 
 def test_global_single_installer_slot_and_cancellation(harness):
-    jobs,entered,release,calls,_=harness; request=body()
+    jobs,entered,release,calls,_=harness
+    request=body()
     try:
-        jobs.start(request); assert entered.wait(2)
+        jobs.start(request)
+        assert entered.wait(2)
         other=setup.SetupJobs(jobs.providers,runner=jobs.runner)
         with pytest.raises(StoreError,match='setup-busy'): other.start(body())
         other.cancel(request['requestId'])
@@ -88,20 +98,29 @@ def test_global_single_installer_slot_and_cancellation(harness):
 
 
 def test_late_cancel_reports_actual_publication(harness):
-    jobs,_,release,_,control=harness; control['cancelAfterPublish']=True
-    request=body(); jobs.start(request); release.set()
+    jobs,_,release,_,control=harness
+    control['cancelAfterPublish']=True
+    request=body()
+    jobs.start(request)
+    release.set()
     assert wait(jobs,request['requestId'])['status']=='completed'
     assert jobs.cancel(request['requestId'])['status']=='completed'
 
 
 def test_child_reply_without_pointer_never_means_installed(harness):
-    jobs,_,release,_,control=harness; control.update(publish=False,lie=True)
-    request=body(); jobs.start(request); release.set()
+    jobs,_,release,_,control=harness
+    control.update(publish=False,lie=True)
+    request=body()
+    jobs.start(request)
+    release.set()
     assert wait(jobs,request['requestId'])['status']=='failed'
 
 
 def test_lost_terminal_receipt_reconciles_without_replay(harness):
-    jobs,_,release,calls,_=harness; request=body(); jobs.start(request); release.set()
+    jobs,_,release,calls,_=harness
+    request=body()
+    jobs.start(request)
+    release.set()
     assert wait(jobs,request['requestId'])['status']=='completed'
     jobs.threads[request['requestId']].join(2)
     (jobs.root/request['requestId']/'result.json').unlink()
@@ -110,8 +129,12 @@ def test_lost_terminal_receipt_reconciles_without_replay(harness):
 
 
 def test_interrupted_without_pointer_is_not_replayed(harness):
-    jobs,_,release,calls,control=harness; control['publish']=False
-    request=body(); jobs.start(request); release.set(); wait(jobs,request['requestId'])
+    jobs,_,release,calls,control=harness
+    control['publish']=False
+    request=body()
+    jobs.start(request)
+    release.set()
+    wait(jobs,request['requestId'])
     jobs.threads[request['requestId']].join(2)
     (jobs.root/request['requestId']/'result.json').unlink()
     assert jobs.start(request)['status']=='interrupted' and len(calls)==1
@@ -127,7 +150,8 @@ def test_no_arbitrary_path_and_validation_before_claim(harness,change):
 
 @pytest.mark.parametrize('change',[dict(expectedRevision=1),dict(sourceSha256='c'*64),dict(candidateId='c'*64)])
 def test_stale_source_revision_or_candidate_before_claim(harness,change):
-    jobs,_,_,calls,_=harness; request=body(**change)
+    jobs,_,_,calls,_=harness
+    request=body(**change)
     with pytest.raises(StoreError): jobs.start(request)
     assert not calls and not (jobs.root/request['requestId']).exists()
 

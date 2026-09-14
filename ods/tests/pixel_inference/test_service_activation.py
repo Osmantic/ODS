@@ -59,7 +59,9 @@ def lifecycle(participant):  # noqa: F811 - imported pytest fixture
                 self.stopped = True
                 raise AccessError('host-command-failed')
             self.stopped = False
-            if self.failure != 'same-identity': self.pid += 1; self.started += 1000
+            if self.failure != 'same-identity':
+                self.pid += 1
+                self.started += 1000
             self.live_binding = json.loads(self.config.read_bytes())['plugins']['entries']['pixel-ods'].get('config', {}).get('managedProvider')
             return ''
         if 'daemon-reload' in args:
@@ -164,7 +166,9 @@ def test_previously_stopped_unit_is_not_started_or_service_files_written(lifecyc
 def test_drift_refuses_before_service_write(lifecycle, drift):
     p, b = lifecycle, lifecycle.bridge
     b.config.write_bytes(b.after)
-    if drift == 'custody': b.record['runtimeCustody'] = 'a' * 64; atomic_json(b.state / 'transition.json', b.record)
+    if drift == 'custody':
+        b.record['runtimeCustody'] = 'a' * 64
+        atomic_json(b.state / 'transition.json', b.record)
     if drift == 'boundary': b.boundary += '\nNoNewPrivileges=no'
     if drift == 'definition': b.definition = '/tmp/unreviewed'
     with pytest.raises(AccessError): callback(p)

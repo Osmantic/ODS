@@ -16,8 +16,10 @@ pytestmark = pytest.mark.skipif(os.name != 'posix', reason='private POSIX scope 
 
 @pytest.fixture
 def store(tmp_path):
-    root = tmp_path / 'pixel-providers'; root.mkdir(mode=0o700)
-    config = default_config(); config['enabled'] = True
+    root = tmp_path / 'pixel-providers'
+    root.mkdir(mode=0o700)
+    config = default_config()
+    config['enabled'] = True
     config['providers'] = [dict(id=name, label=name, kind='local', baseUrl='http://127.0.0.1:10001/v1',
         model=name, contextTokens=32768, maxOutputTokens=4096, supportsTools=True,
         supportsVision=False, reasoning=False, credentialRef=None, enabled=True) for name in ('leader', 'stronger')]
@@ -63,7 +65,9 @@ def test_explicit_task_lives_across_runs_until_owner_end(store):
 
 
 def test_conversation_survives_task_end_and_explicit_return(store):
-    begin(store); select(store, 'conversation'); select(store, 'task')
+    begin(store)
+    select(store, 'conversation')
+    select(store, 'task')
     assert change(store, 'return', scope='task')['effectiveScope'] == 'conversation'
     assert change(store, 'end')['effectiveScope'] == 'conversation'
     assert begin(store)['effectiveScope'] == 'conversation'
@@ -80,7 +84,9 @@ def test_task_uuid_replay_is_global_and_survives_new_store_instance(store):
 
 
 def test_conversation_override_beats_new_task_default_after_end(store):
-    begin(store); select(store, 'conversation'); select(store, 'default')
+    begin(store)
+    select(store, 'conversation')
+    select(store, 'default')
     change(store, 'end')
     state = begin(ScopeStore(store.directory))
     assert state['defaultSnapshot'] is not None and state['effectiveScope'] == 'conversation'
@@ -100,7 +106,8 @@ def test_default_applies_only_to_new_explicit_tasks(store):
 
 def test_ingress_case_sensitive_hash_binding_and_other_sessions(store):
     import hashlib
-    begin(store); select(store, 'task')
+    begin(store)
+    select(store, 'task')
     assert native_key('Chat_A') == 'agent:pixel:openai-user:ods-' + hashlib.sha256(b'Chat_A').hexdigest()
     assert store.resolve(native_key('chat_a'), 1) is None
     for key in ('Chat_A', 'agent:pixel:openai-user:Chat_A', 'agent:other:openai-user:ods-'+'a'*64, None):
@@ -108,7 +115,8 @@ def test_ingress_case_sensitive_hash_binding_and_other_sessions(store):
 
 
 def test_stale_scope_and_provider_revisions_fail_closed(store):
-    begin(store); select(store, 'task')
+    begin(store)
+    select(store, 'task')
     with pytest.raises(StoreError, match='stale-revision'):
         store.change('return', dict(chatId='Chat_A', taskId=store.status('Chat_A')['taskId'], scope='task', expectedRevision=0))
     config = ProviderStore(store.directory).load()
@@ -138,7 +146,9 @@ def test_concurrent_writers_have_one_winner_and_unchanged_provider_config(store)
     initial = begin(store)
     body = dict(chatId='Chat_A', taskId=initial['taskId'], expectedRevision=initial['revision'], scope='conversation')
     def attempt():
-        try: store.change('return', body); return 'saved'
+        try:
+            store.change('return', body)
+            return 'saved'
         except StoreError as error: return error.code
     with ThreadPoolExecutor(max_workers=2) as pool:
         assert sorted(pool.map(lambda _: attempt(), range(2))) == ['saved', 'stale-revision']
@@ -151,7 +161,8 @@ def test_private_storage_and_corruption_are_not_silently_reset(store):
     assert path.stat().st_mode & 0o777 == 0o600
     path.chmod(0o644)
     with pytest.raises(StoreError, match='unsafe-file'): store.status('Chat_A')
-    path.chmod(0o600); path.write_text('{"revision":1,"revision":0}')
+    path.chmod(0o600)
+    path.write_text('{"revision":1,"revision":0}')
     with pytest.raises(StoreError, match='malformed-json'): store.status('Chat_A')
 
 
@@ -173,7 +184,8 @@ def test_wrong_task_cannot_end_or_change_selection(store):
 
 def test_native_worker_freezes_selection_without_granting_checkpoint_approval(store):
     from pixel_provider.route_worker import scoped_request, validate_request
-    begin(store); select(store, 'task')
+    begin(store)
+    select(store, 'task')
     request = dict(schemaVersion=1, runId=str(uuid.uuid4()), sessionId=str(uuid.uuid4()),
         expectedRevision=1, confirmed=True, allowCloud=False, timeoutSeconds=60, scopeSessionKey=native_key('Chat_A'))
     frozen = scoped_request(store.directory, validate_request(request))

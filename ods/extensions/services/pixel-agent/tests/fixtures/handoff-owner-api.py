@@ -75,7 +75,9 @@ if args.dashboard:
     def page(path):
         return FileResponse(dashboard/'index.html',headers={'Cache-Control':'no-store'})
 
-sock=socket.socket(); sock.bind(('127.0.0.1',0)); sock.listen(64)
+sock=socket.socket()
+sock.bind(('127.0.0.1',0))
+sock.listen(64)
 ready=Path(args.ready)
 fd=os.open(ready,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
 with os.fdopen(fd,'w') as stream:

@@ -210,7 +210,8 @@ def create_app(config,credentials,token,*,events=None,client_factory=None):
             attempts = 0
             for provider in candidates:
                 if cooldown.get(provider['id'],0)>time.monotonic():
-                    event(provider,'cooldown'); continue
+                    event(provider,'cooldown')
+                    continue
                 attempts += 1
                 event(provider,'attempt',attempt=attempts)
                 try:
@@ -230,8 +231,10 @@ def create_app(config,credentials,token,*,events=None,client_factory=None):
                     if upstream.status_code in TRANSIENT:
                         event(provider,'transient-failure',upstreamStatus=upstream.status_code)
                         cooldown[provider['id']] = time.monotonic()+30
-                        await upstream.aclose(); upstream = None
-                        await client.aclose(); client = None
+                        await upstream.aclose()
+                        upstream = None
+                        await client.aclose()
+                        client = None
                         await guarded(asyncio.sleep(min(.1*attempts,1)))
                         continue
                     if upstream.status_code != 200:
@@ -306,9 +309,11 @@ def create_app(config,credentials,token,*,events=None,client_factory=None):
                     event(provider,'transient-transport-failure')
                     cooldown[provider['id']] = time.monotonic()+30
                     if upstream:
-                        await upstream.aclose(); upstream = None
+                        await upstream.aclose()
+                        upstream = None
                     if client:
-                        await client.aclose(); client = None
+                        await client.aclose()
+                        client = None
                     await guarded(asyncio.sleep(min(.1*attempts,1)))
                     continue
             raise RuntimeErrorCode('provider-attempts-exhausted')

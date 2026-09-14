@@ -40,7 +40,9 @@ def server(status=200,body=None):
     try:
         yield conn,calls
     finally:
-        service.shutdown(); thread.join(timeout=3); service.server_close()
+        service.shutdown()
+        thread.join(timeout=3)
+        service.server_close()
 
 
 def test_probe_success_ignores_proxy_environment(monkeypatch):

@@ -10,14 +10,15 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[2]/'bin'))
 from pixel_provider import advice_runtime as runtime
 from pixel_provider.advice_jobs import AdvisoryJobs
 from pixel_provider.store import StoreError
-from test_advice import request,saved
+from test_advice import request, saved as saved
 
 pytestmark=pytest.mark.skipif(os.name != 'posix',reason='POSIX private runtime')
 
 
 @pytest.fixture
 def provision(tmp_path,monkeypatch):
-    root=tmp_path/'providers'; root.mkdir(mode=0o700)
+    root=tmp_path/'providers'
+    root.mkdir(mode=0o700)
     # This is a simulated provisioner, not interpreter qualification. Hosted
     # tool-cache ownership/modes are outside our control; never relax production
     # custody or chmod a shared Python installation to make this fixture pass.
@@ -28,7 +29,9 @@ def provision(tmp_path,monkeypatch):
     def install(command,**kwargs):
         calls.append(command)
         if 'venv' in command:
-            target=Path(command[-1]); target.mkdir(mode=0o700); (target/'bin').mkdir(mode=0o700)
+            target=Path(command[-1])
+            target.mkdir(mode=0o700)
+            (target/'bin').mkdir(mode=0o700)
             (target/'bin'/'python').symlink_to(binary)
         if '--report' in command:
             report=Path(command[command.index('--report')+1])
@@ -91,9 +94,11 @@ def test_install_requires_confirmation_and_exact_revision(provision,changes,code
 
 
 def test_mtime_preserving_runtime_tamper_fails_closed_and_can_reprepare(provision):
-    root,_=provision; first=prepare(root)
+    root,_=provision
+    first=prepare(root)
     path=root/'advice-runtimes'/first['runtimeId']/'source'/'pixel_provider'/'advice.py'
-    old=path.stat(); path.write_bytes(path.read_bytes()+b'\n#tampered\n')
+    old=path.stat()
+    path.write_bytes(path.read_bytes()+b'\n#tampered\n')
     os.utime(path,ns=(old.st_atime_ns,old.st_mtime_ns))
     assert runtime.runtime_status(root)['status']=='drift'
     with pytest.raises(StoreError,match='drift'):
@@ -104,16 +109,19 @@ def test_mtime_preserving_runtime_tamper_fails_closed_and_can_reprepare(provisio
 
 
 def test_foreign_symlink_and_public_runtime_fail_closed(provision,tmp_path):
-    root,_=provision; first=prepare(root)
+    root,_=provision
+    first=prepare(root)
     leaf=root/'advice-runtimes'/first['runtimeId']
     (leaf/'foreign').symlink_to('/etc/passwd')
     assert runtime.runtime_status(root)['status']=='drift'
-    (leaf/'foreign').unlink(); leaf.chmod(0o755)
+    (leaf/'foreign').unlink()
+    leaf.chmod(0o755)
     assert runtime.runtime_status(root)['status']=='drift'
 
 
 def test_failed_repair_keeps_pointer_and_inactive_evidence(provision,monkeypatch):
-    root,_=provision; first=prepare(root)
+    root,_=provision
+    first=prepare(root)
     leaf=root/'advice-runtimes'/first['runtimeId']
     (leaf/'requirements.txt').write_text('changed')
     old=(root/'advice-runtime.json').read_bytes()
@@ -127,14 +135,16 @@ def test_failed_repair_keeps_pointer_and_inactive_evidence(provision,monkeypatch
 
 
 def test_missing_runtime_does_not_claim_or_read_capsule(saved):
-    root,_=saved; body=request()
+    root,_=saved
+    body=request()
     with pytest.raises(StoreError,match='advice-runtime-missing'):
         AdvisoryJobs(root).start(body)
     assert not (root/'advice-jobs'/body['requestId']).exists()
 
 
 def test_interpreter_custody_drift_before_credential_pass(provision,monkeypatch):
-    root,_=provision; prepare(root)
+    root,_=provision
+    prepare(root)
     original=runtime.digest_file
     binary=root/'fixture-python'
     monkeypatch.setattr(runtime,'digest_file',lambda path:'f'*64 if path==binary else original(path))
@@ -145,7 +155,8 @@ def test_interpreter_custody_drift_before_credential_pass(provision,monkeypatch)
 
 @pytest.mark.parametrize('unsafe',['group-write','other-write','hardlink'])
 def test_unsafe_interpreter_rejected_before_provision(provision,unsafe):
-    root,calls=provision; binary=root/'fixture-python'
+    root,calls=provision
+    binary=root/'fixture-python'
     if unsafe=='hardlink':
         os.link(binary,root/'second-name')
     else:

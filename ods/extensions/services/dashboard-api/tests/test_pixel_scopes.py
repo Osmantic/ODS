@@ -20,7 +20,8 @@ def result():
 def client(monkeypatch):
     import security
     monkeypatch.setattr(security, 'DASHBOARD_API_KEY', 'test-key-12345')
-    app = FastAPI(); app.include_router(api.router)
+    app = FastAPI()
+    app.include_router(api.router)
     with TestClient(app) as client: yield client
 
 
@@ -53,7 +54,8 @@ def test_invalid_host_projection_rejected(client, host, field, value):
 
 
 def test_preserves_exact_case_and_task_identity(client, host):
-    task = str(uuid.uuid4()); host.return_value.update(taskId=task, revision=1)
+    task = str(uuid.uuid4())
+    host.return_value.update(taskId=task, revision=1)
     body = dict(chatId='Chat_A', taskId=task, expectedRevision=0)
     assert client.post('/api/pixel/provider-scopes/begin', json=body, headers=KEY).status_code == 200
     assert host.call_args.kwargs['payload'] == body

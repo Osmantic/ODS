@@ -59,7 +59,8 @@ async def body_for(request,action):
             raise HTTPException(413,'Advisory request exceeds size limit')
         raw.extend(chunk)
     try:
-        text=bytes(raw).decode('utf-8'); _check_depth(text)
+        text=bytes(raw).decode('utf-8')
+        _check_depth(text)
         body=json.loads(text,object_pairs_hook=_pairs,parse_float=_float,parse_constant=_constant)
         if not isinstance(body,dict) or set(body) != (FIELDS if action == 'start' else {'jobId'}):
             raise ValueError()

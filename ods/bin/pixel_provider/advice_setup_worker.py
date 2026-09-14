@@ -41,7 +41,8 @@ def main():
         # Close output descriptors so it cannot prevent normal result EOF.
         group=os.getpgrp()
         if os.fork()==0:
-            os.close(1); os.close(2)
+            os.close(1)
+            os.close(2)
             try:
                 os.read(0,1)
             finally:

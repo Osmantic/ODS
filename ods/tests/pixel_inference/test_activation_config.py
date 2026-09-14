@@ -75,7 +75,8 @@ def test_restore_preserves_unrelated_changes_and_new_parent_contents(config):
 
 @pytest.mark.parametrize('leaf', ['model', 'provider', 'binding'])
 def test_restore_refuses_drift_without_echoing_config(config, leaf):
-    plan = make(config); current = copy.deepcopy(plan['document'])
+    plan = make(config)
+    current = copy.deepcopy(plan['document'])
     if leaf == 'model': current['agents']['list'][0]['model'] = 'never-echo-secret'
     elif leaf == 'provider': current['models']['providers']['ods-policy']['apiKey'] = 'never-echo-secret'
     else: current['plugins']['entries']['pixel-ods']['config']['managedProvider']['revision'] += 1
@@ -114,7 +115,8 @@ def test_collision_and_unqualified_config_refused(config, kind):
 def test_restore_rejects_malformed_private_plan(config):
     plan = make(config)
     for key, value in [('schemaVersion', True), ('fields', {}), ('parents', {'bad': True})]:
-        bad = copy.deepcopy(plan); bad[key] = value
+        bad = copy.deepcopy(plan)
+        bad[key] = value
         with pytest.raises(StoreError): restore_activation(plan['document'], bad)
 
 
@@ -185,7 +187,8 @@ def test_preexisting_empty_parents_are_preserved(config, parent):
                                   'parent-order', 'present-provider', 'wrong-after', 'binding-version',
                                   'preview-drift', 'extra-plan-key'])
 def test_private_plan_schema_and_fixed_projection_are_validated(config, tamper):
-    plan = make(config); current = copy.deepcopy(plan['document'])
+    plan = make(config)
+    current = copy.deepcopy(plan['document'])
     if tamper == 'unknown-field': plan['fields']['arbitrary.path'] = plan['fields']['model']
     elif tamper == 'missing-field': del plan['fields']['model']
     elif tamper == 'false-presence': plan['fields']['model']['present'] = False
@@ -213,7 +216,8 @@ def test_result_has_no_mutable_aliases_to_config_plan_or_module_constants(config
 
 @pytest.mark.parametrize('kind', ['agents', 'missing-agent', 'duplicate-agent', 'models', 'plugin'])
 def test_restore_rejects_structural_corruption_before_mutation(config, kind):
-    plan = make(config); current = copy.deepcopy(plan['document'])
+    plan = make(config)
+    current = copy.deepcopy(plan['document'])
     if kind == 'agents': current['agents'] = None
     elif kind == 'missing-agent': current['agents']['list'] = [{'id': 'other'}]
     elif kind == 'duplicate-agent': current['agents']['list'].append({'id': 'pixel'})
@@ -267,7 +271,8 @@ def test_update_preserves_original_absence_and_unrelated_owner_edits(config, mis
 
 @pytest.mark.parametrize('revision', [True, 5.0, -1, 3, 4, 2**53])
 def test_update_requires_a_strictly_newer_valid_revision(config, revision):
-    plan = make(config); before = copy.deepcopy(plan)
+    plan = make(config)
+    before = copy.deepcopy(plan)
     with pytest.raises(StoreError): update(plan['document'], plan, revision=revision)
     assert plan == before
 
@@ -280,7 +285,8 @@ def test_update_refuses_reusing_activation_identity(config):
 
 @pytest.mark.parametrize('leaf', ['model', 'provider', 'binding'])
 def test_update_refuses_managed_drift_without_mutation(config, leaf):
-    plan = make(config); current = copy.deepcopy(plan['document'])
+    plan = make(config)
+    current = copy.deepcopy(plan['document'])
     if leaf == 'model': current['agents']['list'][0]['model'] = 'never-echo-secret'
     elif leaf == 'provider': current['models']['providers']['ods-policy']['apiKey'] = 'never-echo-secret'
     else: current['plugins']['entries']['pixel-ods']['config']['managedProvider']['revision'] = 99
@@ -291,7 +297,8 @@ def test_update_refuses_managed_drift_without_mutation(config, leaf):
 
 @pytest.mark.parametrize('kind', ['disabled', 'conversation-denied', 'global-tools', 'pixel-tools'])
 def test_update_rechecks_current_activation_eligibility(config, kind):
-    plan = make(config); current = copy.deepcopy(plan['document'])
+    plan = make(config)
+    current = copy.deepcopy(plan['document'])
     if kind == 'disabled': current['plugins']['entries']['pixel-ods']['enabled'] = False
     elif kind == 'conversation-denied': current['plugins']['entries']['pixel-ods']['hooks']['allowConversationAccess'] = False
     else:

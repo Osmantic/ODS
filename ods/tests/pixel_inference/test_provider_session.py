@@ -17,8 +17,10 @@ pytestmark = pytest.mark.skipif(os.name != 'posix',reason='POSIX adapter')
 
 @pytest.fixture
 def saved(tmp_path):
-    root = tmp_path/'providers'; root.mkdir(mode=0o700)
-    config = configuration(); config['revision']=0
+    root = tmp_path/'providers'
+    root.mkdir(mode=0o700)
+    config = configuration()
+    config['revision']=0
     result = CredentialStore(root).save_public({'document':public_config(config),'expectedRevision':0,
         'credentialChanges':{'backup':{'action':'set','value':'test-private-backup-key'}}})
     return root,result
@@ -32,7 +34,8 @@ def test_confirmation_revision_and_credential_snapshot(saved):
         ProviderSession(root,expected_revision=0,confirmed=True)
     session = ProviderSession(root,expected_revision=1,confirmed=True)
     assert session.credentials['backup']=='test-private-backup-key'
-    edited = dict(config); edited['roles']=dict(config['roles'],leader='backup',backups=['primary'])
+    edited = dict(config)
+    edited['roles']=dict(config['roles'],leader='backup',backups=['primary'])
     CredentialStore(root).save_public({'document':edited,'expectedRevision':1})
     assert session.config['roles']['leader']=='primary'
     assert session.config['revision']==1
@@ -97,8 +100,10 @@ def test_run_overlay_preserves_tools_and_original_and_stops_listener(saved,tmp_p
     session = ProviderSession(root,expected_revision=1,confirmed=True)
     config = {'models':{'providers':{}},'agents':{'defaults':{'sandbox':{'mode':'all'}},'list':[{'id':'fixture'}]},
         'tools':{'exec':{'host':'sandbox'},'fs':{'workspaceOnly':True}}}
-    source = tmp_path/'openclaw.json'; _write_private(source,_json(config))
-    run = tmp_path/'run'; run.mkdir(mode=0o700)
+    source = tmp_path/'openclaw.json'
+    _write_private(source,_json(config))
+    run = tmp_path/'run'
+    run.mkdir(mode=0o700)
     with session.activate(run,{'OPENCLAW_CONFIG_PATH':str(source)},'fixture') as env:
         effective = json.loads(read_private(Path(env['OPENCLAW_CONFIG_PATH'])))
         assert effective['tools']==config['tools']

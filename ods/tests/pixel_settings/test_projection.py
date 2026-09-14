@@ -27,7 +27,8 @@ def caps(**changes):
 
 
 def test_context_output_projection_preserves_provider_routing_auth_access_and_input():
-    source = config(); before = copy.deepcopy(source)
+    source = config()
+    before = copy.deepcopy(source)
     plan = plan_preferences(source, {"contextTokens": 65536, "maxOutputTokens": 8192}, caps())
     result = plan["document"]
     assert source == before
@@ -57,7 +58,8 @@ def test_rollback_keeps_unrelated_concurrent_edits_and_created_siblings():
 
 
 def test_repeated_changes_and_reset_restore_original_not_last_override():
-    original = config(); original["agents"]["list"][0]["contextTokens"] = 32768
+    original = config()
+    original["agents"]["list"][0]["contextTokens"] = 32768
     preferences = {"contextTokens": 65536, "maxOutputTokens": 8192, "verbosity": "full"}
     first = plan_preferences(original, preferences, caps())
     changes = merge_preferences(preferences, {"contextTokens": 49152})
@@ -86,7 +88,8 @@ def test_empty_preferences_do_not_create_containers_or_change_owner_values():
 
 
 def test_agent_order_changes_do_not_retarget_preferences():
-    source = config(); source["agents"]["list"].append({"id": "other", "verboseDefault": "on"})
+    source = config()
+    source["agents"]["list"].append({"id": "other", "verboseDefault": "on"})
     plan = plan_preferences(source, {"verbosity": "full"}, caps(pixelOnlyRuntime=False))
     plan["document"]["agents"]["list"].reverse()
     restored = restore_preferences(plan["document"], plan["state"])
@@ -95,7 +98,8 @@ def test_agent_order_changes_do_not_retarget_preferences():
 
 
 def test_actual_multiagent_config_overrules_false_isolation_claim():
-    source = config(); source["agents"]["list"].append({"id": "other"})
+    source = config()
+    source["agents"]["list"].append({"id": "other"})
     with pytest.raises(SettingsError, match="pixel-isolation"):
         plan_preferences(source, {"contextTokens": 65536}, caps())
 
@@ -138,7 +142,8 @@ def test_unowned_context_change_is_not_replaced_by_stale_baseline_budget():
 ])
 def test_drift_refuses_without_partial_mutation(change):
     plan = plan_preferences(config(), {"verbosity": "full"}, caps())
-    change(plan["document"]); before = copy.deepcopy(plan["document"])
+    change(plan["document"])
+    before = copy.deepcopy(plan["document"])
     with pytest.raises(SettingsError, match="drift"):
         restore_preferences(plan["document"], plan["state"])
     assert plan["document"] == before
@@ -155,6 +160,7 @@ def test_drift_refuses_without_partial_mutation(change):
     lambda s: s["baseBudgets"].update(contextTokens=True),
 ])
 def test_malformed_state_cannot_target_unowned_policy(corrupt):
-    plan = plan_preferences(config(), {"verbosity": "full"}, caps()); corrupt(plan["state"])
+    plan = plan_preferences(config(), {"verbosity": "full"}, caps())
+    corrupt(plan["state"])
     with pytest.raises(SettingsError):
         restore_preferences(plan["document"], plan["state"])
