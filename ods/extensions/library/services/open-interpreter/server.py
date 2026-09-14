@@ -9,6 +9,7 @@ import re
 import subprocess
 import tempfile
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
@@ -17,7 +18,9 @@ from pydantic import BaseModel, field_validator
 
 app = FastAPI(title="Open Interpreter API")
 
-LLM_API_URL = os.environ.get("LLM_API_URL", "http://localhost:8000")
+LLM_API_URL = os.environ.get("LLM_API_URL", "http://llama-server:8080")
+LLM_MODEL = os.environ.get("OPEN_INTERPRETER_MODEL", "openai/x")
+LLM_API_KEY = os.environ.get("OPEN_INTERPRETER_LLM_API_KEY", "fake_key")
 API_KEY = os.environ.get("OPEN_INTERPRETER_API_KEY", "")
 AUTO_RUN = os.environ.get("OPEN_INTERPRETER_AUTO_RUN", "false").lower() == "true"
 DATA_DIR = Path("/app/data")
@@ -26,6 +29,15 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 MAX_MESSAGE_LENGTH = 32000
 
 security = HTTPBearer()
+
+
+def openai_base_url() -> str:
+    """Complete an ODS runtime origin; preserve an explicit provider API path."""
+    parsed = urlsplit(LLM_API_URL)
+    path = parsed.path.rstrip("/")
+    if not path:
+        path = "/" + os.environ.get("LLM_API_BASE_PATH", "/v1").strip("/")
+    return urlunsplit(parsed._replace(path=path))
 
 
 def verify_api_key(
@@ -74,8 +86,8 @@ config = json.loads(sys.stdin.read())
 
 from interpreter import interpreter
 
-interpreter.llm.model = "openai/x"
-interpreter.llm.api_key = "fake_key"
+interpreter.llm.model = config["llm_model"]
+interpreter.llm.api_key = config["llm_api_key"]
 interpreter.llm.api_base = config["llm_api_url"]
 interpreter.auto_run = config["auto_run"]
 interpreter.offline = True
@@ -97,8 +109,8 @@ config = json.loads(sys.stdin.read())
 
 from interpreter import interpreter
 
-interpreter.llm.model = "openai/x"
-interpreter.llm.api_key = "fake_key"
+interpreter.llm.model = config["llm_model"]
+interpreter.llm.api_key = config["llm_api_key"]
 interpreter.llm.api_base = config["llm_api_url"]
 interpreter.auto_run = config["auto_run"]
 interpreter.offline = True
@@ -118,7 +130,9 @@ def chat(req: ChatRequest, _auth=Depends(verify_api_key)):
     """Run Open Interpreter with a message and return output."""
     config = json.dumps({
         "message": req.message,
-        "llm_api_url": LLM_API_URL,
+        "llm_api_url": openai_base_url(),
+        "llm_model": LLM_MODEL,
+        "llm_api_key": LLM_API_KEY,
         "auto_run": AUTO_RUN,
     })
 
@@ -156,7 +170,9 @@ def chat_stream(req: ChatRequest, _auth=Depends(verify_api_key)):
     """Stream Open Interpreter output."""
     config = json.dumps({
         "message": req.message,
-        "llm_api_url": LLM_API_URL,
+        "llm_api_url": openai_base_url(),
+        "llm_model": LLM_MODEL,
+        "llm_api_key": LLM_API_KEY,
         "auto_run": AUTO_RUN,
     })
 
