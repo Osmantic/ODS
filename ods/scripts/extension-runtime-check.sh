@@ -111,7 +111,7 @@ for sid in "${SERVICE_IDS[@]}"; do
     fi
 
     url="http://127.0.0.1:${port}${health}"
-    if curl -sf --max-time "$timeout_sec" "$url" >/dev/null; then
+    if curl -sf --connect-timeout 3 --max-time "$timeout_sec" "$url" >/dev/null; then
         ok_line "[$sid] $disp — running, health OK ($url)"
     else
         bad_line "[$sid] $disp — running but health failed ($url) — try: docker compose logs $sid"
