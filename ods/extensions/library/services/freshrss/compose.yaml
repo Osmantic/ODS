@@ -1,0 +1,23 @@
+services:
+  freshrss:
+    image: freshrss/freshrss:latest
+    container_name: ods-freshrss
+    restart: unless-stopped
+    ports:
+      - "${FRESHRSS_PORT:-7858}:80"
+    environment:
+      - TZ=UTC
+      - CRON_MIN=*/20
+    volumes:
+      - ./data/freshrss/data:/var/www/FreshRSS/data
+      - ./data/freshrss/extensions:/var/www/FreshRSS/extensions
+    networks:
+      - ods-network
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+
+networks:
+  ods-network:
+    external: true
