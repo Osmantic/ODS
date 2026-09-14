@@ -275,7 +275,7 @@ def patch_config(
     request_timeout_seconds: int = 180,
     max_tokens: int = 1024,
 ) -> bool:
-    original = path.read_text(encoding="utf-8")
+    original = path.read_text(encoding="utf-8", errors="replace")
     trailing_newline = original.endswith("\n")
     lines = original.splitlines()
 
@@ -290,7 +290,14 @@ def patch_config(
         updated += "\n"
     if updated == original:
         return False
-    path.write_text(updated, encoding="utf-8")
+
+    import os
+    import tempfile
+
+    fd, tmp_file = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(updated)
+    os.replace(tmp_file, str(path))
     return True
 
 
