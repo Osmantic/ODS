@@ -1607,3 +1607,16 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+class TestNumericSafePow:
+    def test_valid_pow(self):
+        from helpers import numeric_safe_pow
+        assert numeric_safe_pow(2, 3) == 8.0
+        assert numeric_safe_pow(10, 2) == 100.0
+
+    def test_invalid_and_bounds(self):
+        from helpers import numeric_safe_pow
+        assert numeric_safe_pow(None, 2) == 0.0
+        assert numeric_safe_pow(10, 100, max_val=1000) == 0.0
+
