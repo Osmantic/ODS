@@ -22,8 +22,7 @@ NOT_CONFIGURED = "not_configured"
 async def voice_status(api_key: str = Depends(verify_api_key)):
     """Return voice services availability status.
 
-    Stub implementation — returns service health based on the existing
-    service health infrastructure. Full voice API is not yet implemented.
+    Returns service health based on the existing service health infrastructure.
     """
     from helpers import check_service_health
     from config import SERVICES
@@ -31,38 +30,40 @@ async def voice_status(api_key: str = Depends(verify_api_key)):
     services_status = {}
     for svc_key, display_name in [("whisper", "stt"), ("tts", "tts")]:
         cfg = SERVICES.get(svc_key)
-        if cfg:
+        if cfg and isinstance(cfg, dict):
             try:
                 result = await check_service_health(svc_key, cfg)
-                services_status[display_name] = {"status": result.status}
-            except Exception:
-                logger.warning("Health check failed for %s", svc_key, exc_info=True)
-                services_status[display_name] = {"status": "unavailable"}
+                status_str = getattr(result, "status", "unknown")
+                services_status[display_name] = {"status": status_str, "configured": True}
+            except Exception as exc:
+                logger.warning("Voice service health check failed for %s: %s", svc_key, exc, exc_info=True)
+                services_status[display_name] = {"status": "unavailable", "configured": True}
         else:
-            services_status[display_name] = {"status": NOT_CONFIGURED}
+            services_status[display_name] = {"status": NOT_CONFIGURED, "configured": False}
 
     # LiveKit is optional and not in SERVICES by default
     livekit_cfg = SERVICES.get("livekit")
-    if livekit_cfg:
+    if livekit_cfg and isinstance(livekit_cfg, dict):
         try:
             result = await check_service_health("livekit", livekit_cfg)
-            services_status["livekit"] = {"status": result.status}
-        except Exception:
-            logger.warning("Health check failed for livekit", exc_info=True)
-            services_status["livekit"] = {"status": "unavailable"}
+            status_str = getattr(result, "status", "unknown")
+            services_status["livekit"] = {"status": status_str, "configured": True}
+        except Exception as exc:
+            logger.warning("Voice service health check failed for livekit: %s", exc, exc_info=True)
+            services_status["livekit"] = {"status": "unavailable", "configured": True}
     else:
-        services_status["livekit"] = {"status": NOT_CONFIGURED}
+        services_status["livekit"] = {"status": NOT_CONFIGURED, "configured": False}
 
     # An uninstalled optional service is not a failure, so it sits out the
     # verdict. Everything that IS installed still has to be healthy.
     required_healthy = all(
-        services_status.get(name, {}).get("status") == "healthy"
+        isinstance(services_status.get(name), dict) and services_status.get(name, {}).get("status") == "healthy"
         for name in REQUIRED_VOICE_SERVICES
     )
     installed_healthy = all(
-        entry["status"] == "healthy"
+        entry.get("status") == "healthy"
         for entry in services_status.values()
-        if entry["status"] != NOT_CONFIGURED
+        if isinstance(entry, dict) and entry.get("status") != NOT_CONFIGURED
     )
     all_healthy = required_healthy and installed_healthy
 
