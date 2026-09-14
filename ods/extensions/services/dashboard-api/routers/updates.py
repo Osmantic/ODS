@@ -48,6 +48,9 @@ def _read_current_version() -> str:
     if env_file.exists():
         try:
             for line in _read_utf8(env_file).splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
                 if line.startswith("ODS_VERSION="):
                     return strip_matching_quotes(line.split("=", 1)[1])
         except OSError:
