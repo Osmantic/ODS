@@ -145,14 +145,27 @@ async def _fetch_token_spy_metrics() -> None:
             ) as resp:
                 if resp.status == 200:
                     data = await resp.json()
-                    agent_metrics.session_count = len(data)
+                    sessions = []
+                    if isinstance(data, list):
+                        sessions = data
+                    elif isinstance(data, dict):
+                        raw = data.get("sessions") or data.get("summary") or data.get("data")
+                        if isinstance(raw, list):
+                            sessions = raw
+
+                    agent_metrics.session_count = len(sessions)
                     # Token Spy's /api/summary defaults to a 24 h window, so
                     # total_output_tokens is a 24 h aggregate; divide by the
                     # seconds in that window to get an average tokens/sec.
-                    total_out = sum(r.get("total_output_tokens", 0) or 0 for r in data)
+                    total_out = sum(
+                        (r.get("total_output_tokens", 0) or 0)
+                        for r in sessions
+                        if isinstance(r, dict)
+                    )
                     throughput.add_sample(total_out / 86400.0)
+                    agent_metrics.tokens_per_second = float(throughput.get_stats().get("current", 0.0))
                     logger.debug("Token Spy metrics: %d sessions, %d total output tokens",
-                               len(data), total_out)
+                               len(sessions), total_out)
                 else:
                     logger.debug("Token Spy returned status %d", resp.status)
     except aiohttp.ClientError as e:
