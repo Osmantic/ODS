@@ -522,7 +522,7 @@ def _already_active_model(model_id: str, model: dict) -> tuple[bool, str | None]
 def _requested_activation_context(
     body: dict[str, Any] | None,
 ) -> int | None:
-    if body is None or "context_length" not in body:
+    if not isinstance(body, dict) or "context_length" not in body:
         return None
     value = body.get("context_length")
     if isinstance(value, bool) or not isinstance(value, int):

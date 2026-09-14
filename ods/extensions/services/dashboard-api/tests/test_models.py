@@ -37,6 +37,14 @@ def test_active_model_reader_preserves_unmatched_quote(monkeypatch, tmp_path):
     assert models_router._read_active_model() == "model-v2.gguf'"
 
 
+def test_requested_activation_context_handles_non_dict_body():
+    import routers.models as models_router
+
+    assert models_router._requested_activation_context(None) is None
+    assert models_router._requested_activation_context("not-a-dict") is None
+    assert models_router._requested_activation_context([1, 2, 3]) is None
+
+
 def test_huggingface_artifacts_group_complete_shards_and_require_integrity():
     import routers.models as models_router
 
