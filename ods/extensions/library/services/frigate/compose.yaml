@@ -1,13 +1,13 @@
 services:
   frigate:
-    image: ghcr.io/blakeblackshear/frigate:0.15.0
+    image: ghcr.io/blakeblackshear/frigate:0.15.0@sha256:dc77295ccc5a7258510ab6b1d9d5b7a339027305e2d29224338534febc4d1e89
     container_name: ods-frigate
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
     shm_size: "128mb"
     ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${FRIGATE_PORT:-8971}:5000"
+      - "${BIND_ADDRESS:-127.0.0.1}:${FRIGATE_PORT:-8971}:8971"
       - "${BIND_ADDRESS:-127.0.0.1}:${FRIGATE_RTSP_PORT:-8554}:8554"
       - "${BIND_ADDRESS:-127.0.0.1}:${FRIGATE_WEBRTC_PORT:-8555}:8555/tcp"
       - "${BIND_ADDRESS:-127.0.0.1}:${FRIGATE_WEBRTC_PORT:-8555}:8555/udp"

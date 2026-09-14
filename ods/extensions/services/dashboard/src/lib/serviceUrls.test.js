@@ -25,4 +25,11 @@ describe('service URL helpers', () => {
     expect(appendPath('https://svc.example.test/', '/')).toBe('https://svc.example.test/')
     expect(fallbackServiceUrl(8080, '/')).toBe('http://localhost:8080')
   })
+
+  it('uses HTTPS browser metadata while preserving explicit public URL precedence', () => {
+    expect(serviceUrl({ port: 8971, ui_scheme: 'https' })).toBe('https://localhost:8971')
+    expect(serviceUrl({ port: 8971, ui_scheme: 'https', public_url: 'http://proxy.test/notes' }))
+      .toBe('http://proxy.test/notes')
+    expect(serviceUrl({ port: 8971, ui_scheme: 'javascript' })).toBe('http://localhost:8971')
+  })
 })

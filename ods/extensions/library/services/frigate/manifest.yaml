@@ -10,6 +10,7 @@ service:
   port: 5000
   external_port_env: FRIGATE_PORT
   external_port_default: 8971
+  ui_scheme: https
   health: /api/version
   type: docker
   gpu_backends: [nvidia]

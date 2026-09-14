@@ -643,7 +643,8 @@ def _service_public_url(service_id: str, port: int | None) -> Optional[str]:
     path = str(config.get("ui_path") or "/").strip() or "/"
     if not path.startswith("/"):
         path = f"/{path}"
-    return f"http://127.0.0.1:{port}{path}"
+    scheme = "https" if config.get("ui_scheme") == "https" else "http"
+    return f"{scheme}://127.0.0.1:{port}{path}"
 
 
 
@@ -667,6 +668,8 @@ def _serialize_services(service_statuses: list[ServiceStatus], uptime: int) -> l
             item["public_url"] = config["public_url"]
         if config.get("ui_path"):
             item["ui_path"] = config["ui_path"]
+        if config.get("ui_scheme") == "https":
+            item["ui_scheme"] = "https"
         llm_contract = config.get("llm")
         if isinstance(llm_contract, dict):
             item["llm"] = llm_contract
@@ -696,6 +699,8 @@ def _fallback_services() -> list[dict]:
             item["public_url"] = config["public_url"]
         if config.get("ui_path"):
             item["ui_path"] = config["ui_path"]
+        if config.get("ui_scheme") == "https":
+            item["ui_scheme"] = "https"
         llm_contract = config.get("llm")
         if isinstance(llm_contract, dict):
             item["llm"] = llm_contract
@@ -1614,6 +1619,7 @@ async def get_external_links(api_key: str = Depends(verify_api_key)):
         links.append({
             "id": sid, "label": cfg.get("name", sid), "port": ext_port,
             "ui_path": cfg.get("ui_path", "/"),
+            **({"ui_scheme": "https"} if cfg.get("ui_scheme") == "https" else {}),
             "public_url": cfg.get("public_url", ""),
             "icon": SIDEBAR_ICONS.get(sid, "ExternalLink"),
             "healthNeedles": [sid, cfg.get("name", sid).lower()],
