@@ -95,7 +95,7 @@ root_dir = Path(sys.argv[2])
 try:
     manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
     schema_rel = manifest["contracts"]["extensions"]["serviceManifestSchema"]
-except (OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
+except (OSError, KeyError, TypeError, json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
     print(
         "Cannot resolve contracts.extensions.serviceManifestSchema "
         f"from {manifest_file}: {exc}",
