@@ -1740,3 +1740,15 @@ def test_flatten_bounds_cycles_and_large_depth_without_losing_empty_leaves():
         nested = {"child": nested}
     result = dict_flatten_nested_safe(nested, max_depth=100000)
     assert len(next(iter(result)).split(".")) == 128
+
+
+class TestStringStripAnsiCodesSafe:
+    def test_valid_ansi_stripping(self):
+        from helpers import string_strip_ansi_codes_safe
+        ansi_text = "\x1b[31mHello\x1b[0m \x1b[1mWorld\x1b[0m"
+        assert string_strip_ansi_codes_safe(ansi_text) == "Hello World"
+
+    def test_invalid_inputs(self):
+        from helpers import string_strip_ansi_codes_safe
+        assert string_strip_ansi_codes_safe(None) == ""
+        assert string_strip_ansi_codes_safe(12345) == ""
