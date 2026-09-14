@@ -22,7 +22,7 @@ Your data is preserved when disabling. To re-enable later: `ods enable continue`
 
 ## First-Time Setup
 
-1. Set `CONTINUE_API_BASE` in ODS's `.env` (or the extension setup form) to
+1. Set `CONTINUE_API_BASE` in ODS's `.env` to
    the **complete API base reachable from the computer running your IDE**.
    For example, `http://127.0.0.1:11434/v1` for Linux's same-host published
    llama.cpp endpoint, `http://127.0.0.1:8080/v1` for native macOS, or
