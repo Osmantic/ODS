@@ -218,6 +218,26 @@ def test_exact_candidate_tree_is_bound_and_deterministic(tmp_path: Path) -> None
     )
 
 
+def test_exact_candidate_accepts_canonical_empty_bootstrap_lockfile(
+    tmp_path: Path,
+) -> None:
+    install_dir, candidate_dir, _, _ = _fixture(tmp_path)
+    document = _lockfile_envelope()["lockfile"]
+    document["lastCommittedTransaction"] = None
+    document["backupReference"] = None
+    bootstrap = lockfile.lockfile_envelope(document)
+    path = install_dir / "data/assistant-first/desired-state/extensions.lock.json"
+    path.write_bytes(lockfile.canonical_lockfile_bytes(bootstrap))
+
+    result = preflight.assess_candidate_tree(install_dir, candidate_dir, REVISION)
+
+    assert result["assessmentEnvelope"]["assessment"]["canUpdate"] is True
+    assert (
+        result["assessmentEnvelope"]["assessment"]["requiresExtensionPlan"]
+        is False
+    )
+
+
 def test_preflight_reads_without_mutating_either_tree(tmp_path: Path) -> None:
     install_dir, candidate_dir, _, _ = _fixture(tmp_path)
 

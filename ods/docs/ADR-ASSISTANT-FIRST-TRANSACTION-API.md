@@ -56,6 +56,15 @@ discovery reports `execution: false`, and the execute route fails with 503.
 Assistant First fresh installs enable the proposal/configuration gate; other
 profiles remain disabled unless an operator explicitly enables it.
 
+On first production-runtime startup, an absent desired-state lockfile is
+initialized as one canonical empty baseline. `lastCommittedTransaction` is null
+only on this zero-extension, zero-history record; a sentinel transaction is not
+invented. Initialization is serialized, owner-private, and idempotent, and it
+never replaces an existing lockfile. The first committed extension transaction
+links its `priorLockfileHash` to that baseline. A missing baseline therefore no
+longer makes the first real transaction a special or unchained commit, while the
+bootstrap record still adopts or claims no ambient extension state.
+
 Execution provenance is rechecked inside the executor's service locks against
 the current catalog revision, policy revision, normalized observed-state
 revision, canonical stored plan hash, and selected definition digests.
@@ -108,14 +117,14 @@ Service existence and manageability are validated before the host agent's
 The server's existing maintenance cycle releases abandoned idle leases after
 expiry, while the lease core continues to pin an active mutation until exit.
 
-This is still a custody boundary, not a lifecycle adapter. No existing host
-mutation route accepts a lease token or calls `use`, no Dashboard client or
-renewer is present, and the production runtime still has `executor=None`.
-Legacy direct extension requests contend on the exact same host lock objects,
-but a future lease-bearing mutation call must validate and enter `use` instead
-of trying to re-acquire its already-held lock. Production execution remains
-disabled until that non-reentrant protocol, renewal supervision, and
-crash/restart recovery evidence are implemented and qualified.
+This is still a custody boundary, not a lifecycle adapter. Compose toggles,
+configuration sync, start/stop, and core recreation can enter `use` under an
+exact lease, but the combined install path remains an asynchronous HTTP 202
+operation and no Dashboard renewer or complete lifecycle adapter is present.
+Legacy direct extension requests contend on the exact same host lock objects.
+Production execution remains disabled until every transaction mutation uses the
+non-reentrant lease protocol with synchronous durable evidence, renewal
+supervision, and crash/restart recovery qualification.
 
 ## Why disabled by default
 

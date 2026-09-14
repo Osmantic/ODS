@@ -1,10 +1,12 @@
 """Canonical desired-state lockfile custody for Assistant First extensions.
 
-The lockfile is written only from a durable, committed transaction. It records
-immutable definitions, resolved dependency edges, configuration schema hashes,
-and opaque secret references without copying configuration or secret values.
-The store serializes writers, verifies the prior-hash chain, and replaces the
-canonical record atomically.
+A fresh Assistant First runtime first writes a canonical empty bootstrap record
+that claims no extension ownership.  Every later lockfile is derived from a
+durable, committed transaction and hash-chains from the active record.  The
+lockfile records immutable definitions, resolved dependency edges,
+configuration schema hashes, and opaque secret references without copying
+configuration or secret values.  The store serializes writers, verifies the
+prior-hash chain, and replaces the canonical record atomically.
 """
 
 from __future__ import annotations
@@ -381,23 +383,25 @@ def validate_lockfile_document(value: Any) -> dict[str, Any]:
             if edge["target"] not in known_ids:
                 _fail("dependency-target-not-locked")
 
-    transaction = _object(
-        document["lastCommittedTransaction"],
-        _TRANSACTION_FIELDS,
-        "transaction-fields",
-    )
-    if (
-        not isinstance(transaction["transactionId"], str)
-        or _TRANSACTION_RE.fullmatch(transaction["transactionId"]) is None
-    ):
-        _fail("invalid-transaction-id")
-    _hash(transaction["planHash"], "invalid-plan-hash")
-    _hash(
-        transaction["plannedObservedStateRevision"],
-        "invalid-planned-observed-state-revision",
-    )
-    if type(transaction["sequence"]) is not int or transaction["sequence"] < 0:
-        _fail("invalid-transaction-sequence")
+    transaction_value = document["lastCommittedTransaction"]
+    if transaction_value is not None:
+        transaction = _object(
+            transaction_value,
+            _TRANSACTION_FIELDS,
+            "transaction-fields",
+        )
+        if (
+            not isinstance(transaction["transactionId"], str)
+            or _TRANSACTION_RE.fullmatch(transaction["transactionId"]) is None
+        ):
+            _fail("invalid-transaction-id")
+        _hash(transaction["planHash"], "invalid-plan-hash")
+        _hash(
+            transaction["plannedObservedStateRevision"],
+            "invalid-planned-observed-state-revision",
+        )
+        if type(transaction["sequence"]) is not int or transaction["sequence"] < 0:
+            _fail("invalid-transaction-sequence")
     prior_hash = document["priorLockfileHash"]
     if prior_hash is not None:
         _hash(prior_hash, "invalid-prior-lockfile-hash")
@@ -408,6 +412,10 @@ def validate_lockfile_document(value: Any) -> dict[str, Any]:
         or _BACKUP_REFERENCE_RE.fullmatch(backup_reference) is None
     ):
         _fail("invalid-backup-reference")
+    if transaction_value is None and (
+        extensions or prior_hash is not None or backup_reference is not None
+    ):
+        _fail("invalid-bootstrap-lockfile")
 
     return json.loads(canonical_lockfile_bytes(document))
 
@@ -794,6 +802,42 @@ def build_lockfile(
     return lockfile_envelope(document)
 
 
+def build_empty_lockfile(
+    *,
+    catalog_revision: str,
+    observed_state: Mapping[str, Any],
+    runtime_mode: str,
+) -> dict[str, Any]:
+    """Build the sole transaction-free lockfile for an unowned fresh state."""
+
+    _hash(catalog_revision, "invalid-catalog-revision")
+    if runtime_mode not in _RUNTIME_MODES:
+        _fail("invalid-runtime-mode")
+    try:
+        normalized_state = normalize_host_state(observed_state)
+    except PlanningError as exc:
+        raise ExtensionLockfileError("invalid-observed-state") from exc
+    observed_revision = hashlib.sha256(
+        canonical_lockfile_bytes(normalized_state)
+    ).hexdigest()
+    return lockfile_envelope(
+        {
+            "schema": LOCKFILE_SCHEMA,
+            "odsVersion": normalized_state["odsVersion"],
+            "catalogRevision": catalog_revision,
+            "platform": normalized_state["platform"],
+            "architecture": normalized_state["architecture"],
+            "containerRuntime": normalized_state["containerRuntime"],
+            "runtimeMode": runtime_mode,
+            "postCommitObservedStateRevision": observed_revision,
+            "extensions": [],
+            "lastCommittedTransaction": None,
+            "priorLockfileHash": None,
+            "backupReference": None,
+        }
+    )
+
+
 def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in pairs:
@@ -832,8 +876,15 @@ class ExtensionLockfileStore:
         created = False
         try:
             if not self.root.exists():
-                self.root.mkdir(mode=0o700, parents=True, exist_ok=False)
-                created = True
+                try:
+                    self.root.mkdir(mode=0o700, parents=True, exist_ok=False)
+                    created = True
+                except FileExistsError:
+                    # Another process may have created the exact root after the
+                    # absence check.  Treat that as a concurrent contender and
+                    # validate the resulting inode below instead of failing a
+                    # safe, serialized first-start bootstrap.
+                    pass
         except OSError as exc:
             raise ExtensionLockfileError("lockfile-root-unavailable") from exc
         self._reject_symlink_components()
@@ -1016,8 +1067,32 @@ class ExtensionLockfileStore:
         except ServiceLockError as exc:
             raise ExtensionLockfileError("lockfile-lock-failed") from exc
 
+    def bootstrap(self, document: Mapping[str, Any]) -> dict[str, Any]:
+        """Write one empty baseline, preserving any already-active lockfile."""
+
+        candidate = lockfile_envelope(document)
+        bootstrap = candidate["lockfile"]
+        if bootstrap["lastCommittedTransaction"] is not None or bootstrap["extensions"]:
+            _fail("not-bootstrap-lockfile")
+        self._prepare_root()
+        try:
+            with exclusive_file_lock(self._lock_path):
+                self._validate_lock_path()
+                current = self._read_unlocked()
+                if current is not None:
+                    return copy.deepcopy(current)
+                self._atomic_write(canonical_lockfile_bytes(candidate))
+                written = self._read_unlocked()
+                if written != candidate:
+                    _fail("lockfile-write-verify-failed")
+                return copy.deepcopy(candidate)
+        except ServiceLockError as exc:
+            raise ExtensionLockfileError("lockfile-lock-failed") from exc
+
     def commit(self, document: Mapping[str, Any]) -> dict[str, Any]:
         candidate = lockfile_envelope(document)
+        if candidate["lockfile"]["lastCommittedTransaction"] is None:
+            _fail("transaction-derived-lockfile-required")
         self._prepare_root()
         try:
             with exclusive_file_lock(self._lock_path):
@@ -1028,9 +1103,19 @@ class ExtensionLockfileStore:
                 current_hash = None if current is None else current["lockfileHash"]
                 if candidate["lockfile"]["priorLockfileHash"] != current_hash:
                     _fail("prior-lockfile-mismatch")
-                if current is not None and (
-                    candidate["lockfile"]["lastCommittedTransaction"]["transactionId"]
-                    == current["lockfile"]["lastCommittedTransaction"]["transactionId"]
+                current_transaction = (
+                    None
+                    if current is None
+                    else current["lockfile"]["lastCommittedTransaction"]
+                )
+                candidate_transaction = candidate["lockfile"][
+                    "lastCommittedTransaction"
+                ]
+                if (
+                    current_transaction is not None
+                    and candidate_transaction is not None
+                    and candidate_transaction["transactionId"]
+                    == current_transaction["transactionId"]
                 ):
                     _fail("transaction-already-recorded")
                 self._atomic_write(canonical_lockfile_bytes(candidate))
@@ -1048,6 +1133,7 @@ __all__ = [
     "LOCKFILE_ENVELOPE_SCHEMA",
     "LOCKFILE_FILENAME",
     "LOCKFILE_SCHEMA",
+    "build_empty_lockfile",
     "build_lockfile",
     "canonical_lockfile_bytes",
     "lockfile_envelope",

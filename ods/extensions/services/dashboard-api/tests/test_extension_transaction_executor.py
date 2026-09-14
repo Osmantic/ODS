@@ -510,6 +510,37 @@ def test_real_lockfile_finalizer_commits_and_receipts_desired_state(tmp_path):
     assert "secret" not in str(receipt).casefold()
 
 
+def test_first_committed_transaction_hash_chains_from_empty_bootstrap(tmp_path):
+    store = transactions.TransactionStore(tmp_path / "store")
+    lockfiles = lockfile_mod.ExtensionLockfileStore(tmp_path / "desired-state")
+    bootstrap = lockfiles.bootstrap(
+        lockfile_mod.build_empty_lockfile(
+            catalog_revision=CATALOG_REVISION,
+            observed_state=HOST_STATE,
+            runtime_mode="assistant-first",
+        )["lockfile"]
+    )
+    envelope = build_envelope(service_ids=["notes"])
+    descriptor = create_and_approve(store, envelope)
+    finalizer = finalizer_mod.TransactionLockfileFinalizer(
+        transactions=store,
+        lockfiles=lockfiles,
+        observed_state=lambda: installed_host_state(envelope),
+        runtime_mode="assistant-first",
+        clock=lambda: NOW,
+    )
+
+    result = make_executor(store, finalizer=finalizer).execute(
+        descriptor["transactionId"], envelope["planHash"]
+    )
+
+    committed = lockfiles.read()
+    assert committed is not None
+    assert committed["lockfile"]["priorLockfileHash"] == bootstrap["lockfileHash"]
+    assert result.lockfile_hash == committed["lockfileHash"]
+    assert store.read(descriptor["transactionId"])["finalization"] is not None
+
+
 def test_recorded_receipt_does_not_hide_a_missing_active_lockfile(tmp_path):
     store = transactions.TransactionStore(tmp_path / "store")
     lockfiles = lockfile_mod.ExtensionLockfileStore(tmp_path / "desired-state")

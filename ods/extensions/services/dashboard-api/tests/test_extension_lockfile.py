@@ -197,6 +197,52 @@ def build(**overrides) -> dict:
     return lockfile.build_lockfile(**values)
 
 
+def empty(**overrides) -> dict:
+    values = {
+        "catalog_revision": CATALOG_REVISION,
+        "observed_state": HOST_STATE,
+        "runtime_mode": "assistant-first",
+    }
+    values.update(overrides)
+    return lockfile.build_empty_lockfile(**values)
+
+
+def test_builds_canonical_transaction_free_bootstrap_lockfile() -> None:
+    envelope = empty()
+    document = envelope["lockfile"]
+
+    assert envelope["lockfileHash"] == hashlib.sha256(
+        lockfile.canonical_lockfile_bytes(document)
+    ).hexdigest()
+    assert document["extensions"] == []
+    assert document["lastCommittedTransaction"] is None
+    assert document["priorLockfileHash"] is None
+    assert document["backupReference"] is None
+    assert document["postCommitObservedStateRevision"] == hashlib.sha256(
+        planner.canonical_json_bytes(HOST_STATE)
+    ).hexdigest()
+    assert lockfile.validate_lockfile_envelope(envelope) == envelope
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda document: document.update(
+            extensions=build()["lockfile"]["extensions"]
+        ),
+        lambda document: document.update(priorLockfileHash="1" * 64),
+        lambda document: document.update(backupReference="backup-v1-invalid"),
+    ],
+)
+def test_bootstrap_provenance_cannot_describe_owned_or_historical_state(
+    mutation,
+) -> None:
+    document = empty()["lockfile"]
+    mutation(document)
+    with pytest.raises(lockfile.ExtensionLockfileError, match="invalid-bootstrap-lockfile"):
+        lockfile.lockfile_envelope(document)
+
+
 def test_builds_complete_canonical_lockfile_without_secret_values() -> None:
     envelope = build()
     document = envelope["lockfile"]
@@ -327,6 +373,63 @@ def test_store_commits_atomically_and_enforces_hash_chain(tmp_path: Path) -> Non
     assert raw == lockfile.canonical_lockfile_bytes(second)
     if os.name == "posix":
         assert store.path.stat().st_mode & 0o777 == 0o600
+
+
+def test_store_bootstrap_is_idempotent_and_first_commit_hash_chains_from_it(
+    tmp_path: Path,
+) -> None:
+    store = lockfile.ExtensionLockfileStore(tmp_path / "assistant-first")
+    first = store.bootstrap(empty()["lockfile"])
+    drifted_state = copy.deepcopy(HOST_STATE)
+    drifted_state["available"]["diskBytes"] -= 1
+    different_candidate = empty(observed_state=drifted_state)
+
+    assert store.bootstrap(different_candidate["lockfile"]) == first
+    assert store.read() == first
+
+    committed = build(previous_lockfile=first)
+    written = store.commit(committed["lockfile"])
+    assert written["lockfile"]["priorLockfileHash"] == first["lockfileHash"]
+    assert written["lockfile"]["lastCommittedTransaction"] is not None
+
+
+def test_store_bootstrap_accepts_safe_concurrent_root_creation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    parent = tmp_path / "assistant-first"
+    parent.mkdir()
+    store = lockfile.ExtensionLockfileStore(parent / "desired-state")
+    real_mkdir = Path.mkdir
+    raced = False
+
+    def mkdir_after_concurrent_creator(path: Path, *args, **kwargs) -> None:
+        nonlocal raced
+        if path == store.root and not raced:
+            raced = True
+            real_mkdir(path, *args, **kwargs)
+            raise FileExistsError(path)
+        real_mkdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", mkdir_after_concurrent_creator)
+
+    assert store.bootstrap(empty()["lockfile"]) == empty()
+    assert raced is True
+    assert store.read() == empty()
+
+
+def test_store_bootstrap_rejects_transaction_derived_candidate(tmp_path: Path) -> None:
+    store = lockfile.ExtensionLockfileStore(tmp_path / "assistant-first")
+    with pytest.raises(lockfile.ExtensionLockfileError, match="not-bootstrap-lockfile"):
+        store.bootstrap(build()["lockfile"])
+
+
+def test_store_commit_rejects_transaction_free_candidate(tmp_path: Path) -> None:
+    store = lockfile.ExtensionLockfileStore(tmp_path / "assistant-first")
+    with pytest.raises(
+        lockfile.ExtensionLockfileError,
+        match="transaction-derived-lockfile-required",
+    ):
+        store.commit(empty()["lockfile"])
 
 
 def test_store_rejects_conflicting_replay_of_recorded_transaction(tmp_path: Path) -> None:

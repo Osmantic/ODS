@@ -141,9 +141,16 @@ group/world write access so another account cannot replace the guarded inode.
 Native Windows source update/rollback currently fails closed as unqualified
 rather than claiming equivalent descriptor-lock semantics.
 
-Canonical empty-lockfile bootstrap, exact composite upgrade execution, combined
-core/desired-state commit, candidate health qualification, adoption, and strict
-offline artifact custody remain later Phase 5 gates.
+When the opt-in transaction runtime first starts without an active desired-state
+lockfile, it writes one canonical owner-private bootstrap record. That record
+contains the verified catalog and observed-state revisions, claims no extension
+ownership, has no fabricated last transaction or backup, and is never allowed to
+replace an existing lockfile. The first real committed transaction hash-chains
+from this baseline; later starts preserve the active record unchanged.
+
+Exact composite upgrade execution, combined core/desired-state commit, candidate
+health qualification, adoption, and strict offline artifact custody remain later
+Phase 5 gates.
 
 ## Evidence boundary
 

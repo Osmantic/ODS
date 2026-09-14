@@ -227,6 +227,26 @@ def test_observed_state_fails_closed_for_unknown_host_facts(
 
 def test_production_runtime_wires_configuration_but_not_execution(monkeypatch):
     captured = {}
+    entries = [catalog_entry()]
+    revision = computed_catalog_revision(entries)
+    observed = {
+        "odsVersion": "2.6.0",
+        "platform": "linux",
+        "architecture": "amd64",
+        "containerRuntime": "docker",
+        "gpuBackend": "cpu",
+        "driverVersion": None,
+        "available": {
+            "diskBytes": 1,
+            "ramBytes": 1,
+            "vramBytes": 0,
+            "cpuMillicores": 1,
+            "gpuCount": 0,
+        },
+        "occupiedPorts": [],
+        "reservedResources": [],
+        "installedServices": [],
+    }
 
     class Store:
         def __init__(self, root):
@@ -239,9 +259,28 @@ def test_production_runtime_wires_configuration_but_not_execution(monkeypatch):
         def __init__(self, store, custodian, clock):
             captured["configuration"] = (store, custodian, clock)
 
+    class Lockfiles:
+        def __init__(self, root):
+            self.root = root
+            captured["lockfiles"] = self
+
+        def read(self):
+            return None
+
+        def bootstrap(self, document):
+            captured["bootstrap"] = document
+            return {"lockfile": document}
+
     monkeypatch.setattr(production, "TransactionStore", Store)
     monkeypatch.setattr(production, "HostSecretCustodian", Custodian)
     monkeypatch.setattr(production, "TransactionConfigurationManager", Configuration)
+    monkeypatch.setattr(production, "ExtensionLockfileStore", Lockfiles)
+    monkeypatch.setattr(production, "production_catalog", lambda: (entries, revision))
+    monkeypatch.setattr(
+        production,
+        "production_observed_state",
+        lambda **_kwargs: observed,
+    )
     monkeypatch.setattr(production, "DATA_DIR", "/var/lib/ods-test")
 
     runtime = production.create_production_runtime()
@@ -253,6 +292,8 @@ def test_production_runtime_wires_configuration_but_not_execution(monkeypatch):
     assert runtime.executor is None
     assert runtime.finalizer is not None
     assert runtime.finalizer._transactions is runtime.store
+    assert captured["bootstrap"]["extensions"] == []
+    assert captured["bootstrap"]["lastCommittedTransaction"] is None
     assert (
         runtime.finalizer._lockfiles.root.as_posix()
         == "/var/lib/ods-test/assistant-first/desired-state"

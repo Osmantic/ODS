@@ -55,8 +55,11 @@ class TransactionLockfileFinalizer:
         self._clock = clock or _utc_now
 
     @staticmethod
-    def _last_transaction(lockfile: Mapping[str, Any]) -> Mapping[str, Any]:
-        return lockfile["lockfile"]["lastCommittedTransaction"]
+    def _last_transaction(
+        lockfile: Mapping[str, Any],
+    ) -> Mapping[str, Any] | None:
+        value = lockfile["lockfile"]["lastCommittedTransaction"]
+        return value if isinstance(value, Mapping) else None
 
     @staticmethod
     def _receipt(
@@ -65,6 +68,8 @@ class TransactionLockfileFinalizer:
         recorded_at: str,
     ) -> dict[str, Any]:
         last = TransactionLockfileFinalizer._last_transaction(lockfile)
+        if last is None:
+            raise IntegrityError("lockfile-finalization-binding-mismatch")
         envelope = transaction.get("envelope")
         if not isinstance(envelope, Mapping):
             raise IntegrityError("finalization-transaction-envelope")
@@ -124,6 +129,8 @@ class TransactionLockfileFinalizer:
         if active is None:
             return None
         last = self._last_transaction(active)
+        if last is None:
+            return None
         try:
             prior = self._transactions.read(last["transactionId"])
         except TransactionError as exc:
@@ -161,6 +168,8 @@ class TransactionLockfileFinalizer:
         if active is None:
             raise IntegrityError("lockfile-missing-for-finalized-transaction")
         last = TransactionLockfileFinalizer._last_transaction(active)
+        if last is None:
+            raise IntegrityError("lockfile-finalization-history-conflict")
         if last["transactionId"] == transaction["transactionId"] and (
             active["lockfileHash"] != receipt["lockfileHash"]
             or last["planHash"] != receipt["planHash"]
