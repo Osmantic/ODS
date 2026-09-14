@@ -1,0 +1,37 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: navidrome
+  name: Navidrome
+  aliases: [music, audio-streaming]
+  container_name: ods-navidrome
+  host_env: NAVIDROME_HOST
+  default_host: navidrome
+  port: 4533
+  external_port_env: NAVIDROME_PORT
+  external_port_default: 7849
+  health: /ping
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [music, audio, streaming, subsonic, media, local]
+  env_vars:
+    - key: NAVIDROME_PORT
+      default: "7849"
+      description: Published Navidrome web player and Subsonic API port
+features:
+  - id: music-streaming
+    name: Music Streaming
+    description: "Stream local audio files and personal music collections to web and mobile apps"
+    icon: Music
+    category: productivity
+    requirements:
+      services: [navidrome]
+      vram_gb: 0
+      disk_gb: 2
+    enabled_services_all: [navidrome]
+    setup_time: "~1 minute"
+    priority: 37

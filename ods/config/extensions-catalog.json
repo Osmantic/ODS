@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-13T16:53:56Z",
+  "generated_at": "2026-09-14T15:21:23Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -2463,6 +2463,57 @@
       "configuration_scope": "declared-environment-keys"
     },
     {
+      "id": "navidrome",
+      "name": "Navidrome",
+      "description": "",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 4533,
+      "external_port_default": 7849,
+      "health_endpoint": "/ping",
+      "env_vars": [
+        {
+          "key": "NAVIDROME_PORT",
+          "default": "7849",
+          "description": "Published Navidrome web player and Subsonic API port"
+        }
+      ],
+      "tags": [
+        "music",
+        "audio",
+        "streaming",
+        "subsonic",
+        "media",
+        "local"
+      ],
+      "features": [
+        {
+          "id": "music-streaming",
+          "name": "Music Streaming",
+          "description": "Stream local audio files and personal music collections to web and mobile apps",
+          "icon": "Music",
+          "category": "productivity",
+          "requirements": {
+            "services": [
+              "navidrome"
+            ],
+            "vram_gb": 0,
+            "disk_gb": 2
+          },
+          "enabled_services_all": [
+            "navidrome"
+          ],
+          "setup_time": "~1 minute",
+          "priority": 37
+        }
+      ],
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
       "id": "ntfy",
       "name": "ntfy (Local Notifications)",
       "description": "Authenticated local HTTP notifications for workflows and operator alerts.",
@@ -3153,6 +3204,28 @@
           ]
         }
       ],
+      "catalog_source": "builtin",
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
+      "id": "pixel-inference",
+      "name": "Pixel inference sharing (development)",
+      "description": "Disabled by default. Owner-provisioned, inference-only device credentials; loopback transport only. Does not provide Pixel agent or computer access. Private state must be provisioned before service activation. Native Windows private-state support and guided setup are not yet implemented.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [
+        "model-router"
+      ],
+      "port": 8093,
+      "external_port_default": 4005,
+      "health_endpoint": "/health",
+      "env_vars": [],
+      "tags": [],
+      "features": [],
+      "startup_check": false,
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
     },
