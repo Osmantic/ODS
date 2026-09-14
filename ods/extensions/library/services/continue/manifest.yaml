@@ -17,6 +17,10 @@ service:
   compose_file: compose.yaml
   category: optional
   depends_on: [llama-server]
+  env_vars:
+    - key: CONTINUE_API_BASE
+      required: true
+      description: Full API base reachable from the IDE, including /v1 or /api/v1; no credentials
   description: "Open-source AI coding assistant for VS Code and JetBrains with local LLM support."
 
 features:
@@ -24,8 +28,8 @@ features:
     name: Continue Coding Assistant
     description: >
       AI-powered coding assistant for VS Code and JetBrains.
-      Installs the Continue extension in your IDE and points it at
-      ODS's local LLM — no cloud required.
+      Serves a configuration for the Continue extension in your IDE
+      pointing at ODS's local LLM — no cloud required.
     icon: Code
     category: development
     requirements:
