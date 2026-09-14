@@ -15,18 +15,19 @@ def _positive_number(value: object) -> float:
     return number if math.isfinite(number) and number > 0 else 0.0
 
 
-def estimated_param_billions(model: dict[str, Any]) -> float:
+def estimated_param_billions(model: dict[str, Any] | str) -> float:
     """Best-effort model scale from explicit metadata, name, then file size."""
+    if isinstance(model, str):
+        model = {"id": model, "name": model}
+    elif not isinstance(model, dict):
+        model = {}
+
     for key in ("total_params_b", "params_b"):
-        value = _positive_number(model.get(key))
-        if value:
-            return value
+        val = _positive_number(model.get(key))
+        if val > 0:
+            return val
 
     numbers: list[float] = []
-    # config/model-library.json spells the filename `gguf_file`; the oracle's
-    # normalized shape carries `gguf`. Read both — the filename is the only
-    # place some entries state their scale, and losing it drops the estimate
-    # onto the size heuristic, which disagrees with scripts/select-model.py.
     for text in (
         model.get("id"),
         model.get("name"),
@@ -34,15 +35,15 @@ def estimated_param_billions(model: dict[str, Any]) -> float:
         model.get("gguf"),
         model.get("gguf_file"),
     ):
-        numbers.extend(
-            float(match)
-            for match in re.findall(r"(\d+(?:\.\d+)?)\s*b", str(text or ""), re.I)
-        )
+        for match in re.findall(r"(\d+(?:\.\d+)?)\s*b", str(text or ""), re.I):
+            parsed = _positive_number(match)
+            if parsed > 0:
+                numbers.append(parsed)
     if numbers:
         return max(numbers)
 
     size_mb = _positive_number(model.get("size_mb"))
-    if size_mb:
+    if size_mb > 0:
         # Q4_K_M GGUFs are roughly 0.55-0.65 GiB per billion parameters.
         return max(size_mb / 600.0, 1.0)
     return 4.0
