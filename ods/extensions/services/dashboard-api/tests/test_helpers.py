@@ -1740,3 +1740,14 @@ def test_flatten_bounds_cycles_and_large_depth_without_losing_empty_leaves():
         nested = {"child": nested}
     result = dict_flatten_nested_safe(nested, max_depth=100000)
     assert len(next(iter(result)).split(".")) == 128
+
+
+class TestListDeduplicatePreserveOrderSafe:
+    def test_valid_deduplicate(self):
+        from helpers import list_deduplicate_preserve_order_safe
+        assert list_deduplicate_preserve_order_safe([3, 1, 2, 1, 3]) == [3, 1, 2]
+
+    def test_invalid_inputs(self):
+        from helpers import list_deduplicate_preserve_order_safe
+        assert list_deduplicate_preserve_order_safe(None) == []
+        assert list_deduplicate_preserve_order_safe("not a list") == []
