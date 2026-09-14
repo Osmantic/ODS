@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-13T16:53:56Z",
+  "generated_at": "2026-09-14T19:25:19Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -1768,6 +1768,67 @@
             "amd",
             "nvidia"
           ]
+        }
+      ],
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
+      "id": "kopia",
+      "name": "Kopia (Encrypted Snapshots)",
+      "description": "Create encrypted snapshots of selected local exports and restore them to a separate directory.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 51515,
+      "external_port_default": 51515,
+      "health_endpoint": "/metrics",
+      "env_vars": [
+        {
+          "key": "KOPIA_PORT",
+          "description": "Published local UI port",
+          "default": "51515"
+        },
+        {
+          "key": "KOPIA_PASSWORD",
+          "description": "Repository encryption password; use this exact value when creating the repository and keep an offline recovery copy",
+          "required": true
+        },
+        {
+          "key": "KOPIA_SERVER_PASSWORD",
+          "description": "Separate password for the ods UI administrator",
+          "required": true
+        }
+      ],
+      "tags": [
+        "backup",
+        "snapshots",
+        "encryption"
+      ],
+      "features": [
+        {
+          "id": "encrypted-snapshots",
+          "name": "Encrypted Local Snapshots",
+          "description": "Snapshot selected exports and restore files through Kopia",
+          "icon": "FileText",
+          "category": "productivity",
+          "requirements": {
+            "services": [
+              "kopia"
+            ],
+            "vram_gb": 0
+          },
+          "enabled_services_all": [
+            "kopia"
+          ],
+          "setup_time": "~5 minutes plus first snapshot",
+          "priority": 32,
+          "launch": {
+            "type": "service",
+            "service": "kopia"
+          }
         }
       ],
       "configuration_scope": "declared-environment-keys"
