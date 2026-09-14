@@ -1,0 +1,73 @@
+services:
+  hedgedoc:
+    image: quay.io/hedgedoc/hedgedoc:1.12.0@sha256:89bd85d7817fb3e3a4aafdd85aefb0fbb20b848f6dbf1d9ee0d72fdcb76710cc
+    container_name: ods-hedgedoc
+    restart: unless-stopped
+    security_opt: [no-new-privileges:true]
+    environment:
+      CMD_DB_DIALECT: postgres
+      CMD_DB_HOST: hedgedoc-db
+      CMD_DB_PORT: "5432"
+      CMD_DB_DATABASE: hedgedoc
+      CMD_DB_USERNAME: hedgedoc
+      CMD_DB_PASSWORD: "${HEDGEDOC_DB_PASSWORD:?Set HEDGEDOC_DB_PASSWORD before enabling HedgeDoc}"
+      CMD_SESSION_SECRET: "${HEDGEDOC_SESSION_SECRET:?Set HEDGEDOC_SESSION_SECRET before enabling HedgeDoc}"
+      CMD_DOMAIN: "${HEDGEDOC_PUBLIC_HOST:-localhost:${HEDGEDOC_PORT:-7824}}"
+      CMD_URL_ADDPORT: "false"
+      CMD_PROTOCOL_USESSL: "${HEDGEDOC_USE_SSL:-false}"
+      CMD_EMAIL: "true"
+      CMD_ALLOW_EMAIL_REGISTER: "false"
+      CMD_ALLOW_ANONYMOUS: "false"
+      CMD_ALLOW_ANONYMOUS_EDITS: "false"
+      CMD_ALLOW_FREEURL: "false"
+      CMD_DEFAULT_PERMISSION: private
+      CMD_ENABLE_UPLOADS: none
+      CMD_IMAGE_UPLOAD_TYPE: filesystem
+      CMD_ALLOW_GRAVATAR: "false"
+    depends_on:
+      hedgedoc-db:
+        condition: service_healthy
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${HEDGEDOC_PORT:-7824}:3000"
+    volumes:
+      - ./data/hedgedoc/uploads:/hedgedoc/public/uploads
+    healthcheck:
+      test: [CMD, node, /hedgedoc/healthcheck.mjs]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    networks: [ods-network, hedgedoc-private]
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1G
+  hedgedoc-db:
+    image: postgres:17.11-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
+    container_name: ods-hedgedoc-db
+    restart: unless-stopped
+    security_opt: [no-new-privileges:true]
+    environment:
+      POSTGRES_USER: hedgedoc
+      POSTGRES_DB: hedgedoc
+      POSTGRES_PASSWORD: "${HEDGEDOC_DB_PASSWORD:?Set HEDGEDOC_DB_PASSWORD before enabling HedgeDoc}"
+    volumes:
+      - ./data/hedgedoc/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD, pg_isready, -U, hedgedoc, -d, hedgedoc]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks: [hedgedoc-private]
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+networks:
+  ods-network:
+    external: true
+  hedgedoc-private:
+    internal: true
