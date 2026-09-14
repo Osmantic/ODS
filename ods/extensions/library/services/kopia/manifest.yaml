@@ -1,0 +1,48 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: kopia
+  name: Kopia (Encrypted Snapshots)
+  description: "Create encrypted snapshots of selected local exports and restore them to a separate directory."
+  aliases: [encrypted-snapshots]
+  container_name: ods-kopia
+  default_host: kopia
+  port: 51515
+  external_port_env: KOPIA_PORT
+  external_port_default: 51515
+  health: /metrics
+  health_port: 51516
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [backup, snapshots, encryption]
+  env_vars:
+    - key: KOPIA_PORT
+      description: "Published local UI port"
+      default: "51515"
+    - key: KOPIA_PASSWORD
+      description: "Repository encryption password; use this exact value when creating the repository and keep an offline recovery copy"
+      required: true
+      secret: true
+    - key: KOPIA_SERVER_PASSWORD
+      description: "Separate password for the ods UI administrator"
+      required: true
+      secret: true
+features:
+  - id: encrypted-snapshots
+    name: Encrypted Local Snapshots
+    description: "Snapshot selected exports and restore files through Kopia"
+    icon: FileText
+    category: productivity
+    requirements:
+      services: [kopia]
+      vram_gb: 0
+    enabled_services_all: [kopia]
+    setup_time: "~5 minutes plus first snapshot"
+    priority: 32
+    launch:
+      type: service
+      service: kopia

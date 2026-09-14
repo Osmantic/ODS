@@ -1,0 +1,21 @@
+name: Kopia extension
+on:
+  pull_request:
+    paths:
+      - 'ods/extensions/library/services/kopia/**'
+      - 'ods/config/extensions-catalog.json'
+      - 'ods/tests/test_kopia.py'
+      - '.github/workflows/kopia-extension.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install pytest PyYAML
+      - run: python -m pytest ods/tests/test_kopia.py -q
