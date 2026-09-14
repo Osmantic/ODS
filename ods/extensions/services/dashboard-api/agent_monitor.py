@@ -155,12 +155,14 @@ async def _fetch_token_spy_metrics() -> None:
                                len(data), total_out)
                 else:
                     logger.debug("Token Spy returned status %d", resp.status)
+    except aiohttp.ContentTypeError as e:
+        # Must precede ClientError: ContentTypeError subclasses ClientResponseError,
+        # which subclasses ClientError, so the broader handler would shadow it.
+        logger.warning("Token Spy returned unexpected content type: %s", e)
     except aiohttp.ClientError as e:
         logger.debug("Token Spy unavailable: %s", e)
     except asyncio.TimeoutError:
         logger.debug("Token Spy request timed out after 5s")
-    except aiohttp.ContentTypeError as e:
-        logger.warning("Token Spy returned unexpected content type: %s", e)
 
 
 async def collect_metrics():
