@@ -49,7 +49,7 @@ def _read_ods_version(fallback: str) -> str:
 
     version_file = root / ".version"
     try:
-        raw = version_file.read_text().strip()
+        raw = version_file.read_text(encoding="utf-8").strip()
         if raw:
             if raw.startswith("{"):
                 data = json.loads(raw)
@@ -57,7 +57,7 @@ def _read_ods_version(fallback: str) -> str:
                     return str(data["version"])
             else:
                 return raw
-    except (OSError, json.JSONDecodeError, ValueError):
+    except (OSError, json.JSONDecodeError, ValueError, UnicodeError):
         pass
 
     return fallback
