@@ -1,0 +1,14 @@
+{
+  "schema": "ods.extensions.planning-policy.v1",
+  "policy": {
+    "allowedTrustTiers": [
+      "bundled"
+    ],
+    "forbiddenHostPermissions": [
+      "docker-socket",
+      "privileged"
+    ],
+    "allowExperimental": false,
+    "requireApproval": true
+  }
+}

@@ -11,16 +11,38 @@ from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 MANIFEST_FILE = ROOT_DIR / "manifest.json"
-LIBRARY_SCHEMA = ROOT_DIR / "extensions" / "library" / "schema" / "service-manifest.v1.json"
+LIBRARY_SCHEMA_DIR = ROOT_DIR / "extensions" / "library" / "schema"
 
 
 def canonical_schema_path() -> Path:
+    """Return the legacy v1 path for standalone callers kept for compatibility."""
     manifest = json.loads(MANIFEST_FILE.read_text(encoding="utf-8"))
     relative_path = manifest["contracts"]["extensions"]["serviceManifestSchema"]
     schema_path = (ROOT_DIR / relative_path).resolve()
     if not schema_path.is_file():
         raise FileNotFoundError(f"declared manifest schema not found: {relative_path}")
     return schema_path
+
+
+def canonical_schema_paths() -> dict[str, Path]:
+    manifest = json.loads(MANIFEST_FILE.read_text(encoding="utf-8"))
+    configured = manifest["contracts"]["extensions"]["serviceManifestSchemas"]
+    if not isinstance(configured, dict) or set(configured) != {
+        "ods.services.v1",
+        "ods.services.v2",
+    }:
+        raise ValueError("serviceManifestSchemas must declare exactly v1 and v2")
+    result: dict[str, Path] = {}
+    for version, relative_path in configured.items():
+        if not isinstance(relative_path, str):
+            raise TypeError("manifest schema path must be a string")
+        schema_path = (ROOT_DIR / relative_path).resolve()
+        if not schema_path.is_file():
+            raise FileNotFoundError(f"declared manifest schema not found: {relative_path}")
+        result[version] = schema_path
+    if result["ods.services.v1"] != canonical_schema_path():
+        raise ValueError("legacy serviceManifestSchema must remain the v1 contract")
+    return result
 
 
 def main() -> int:
@@ -35,31 +57,38 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
-        source = canonical_schema_path()
-        expected = source.read_bytes()
-        actual = LIBRARY_SCHEMA.read_bytes() if LIBRARY_SCHEMA.exists() else None
-    except (KeyError, OSError, TypeError, json.JSONDecodeError) as exc:
+        sources = canonical_schema_paths()
+    except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
         print(f"ERROR: cannot resolve manifest schema contract: {exc}", file=sys.stderr)
         return 2
 
-    if actual == expected:
-        print(f"Manifest schema mirror is current: {LIBRARY_SCHEMA.relative_to(ROOT_DIR)}")
+    stale: list[tuple[Path, Path, bytes]] = []
+    for version, source in sorted(sources.items()):
+        destination = LIBRARY_SCHEMA_DIR / source.name
+        expected = source.read_bytes()
+        actual = destination.read_bytes() if destination.exists() else None
+        if actual != expected:
+            stale.append((source, destination, expected))
+
+    if not stale:
+        print("Manifest schema mirrors are current: v1 and v2")
         return 0
 
     if args.check:
         print(
-            "ERROR: generated manifest schema mirror is stale; run "
+            "ERROR: generated manifest schema mirrors are stale; run "
             "python3 scripts/sync-manifest-schema.py",
             file=sys.stderr,
         )
         return 1
 
-    LIBRARY_SCHEMA.parent.mkdir(parents=True, exist_ok=True)
-    LIBRARY_SCHEMA.write_bytes(expected)
-    print(
-        "Updated generated manifest schema mirror from "
-        f"{source.relative_to(ROOT_DIR)}"
-    )
+    LIBRARY_SCHEMA_DIR.mkdir(parents=True, exist_ok=True)
+    for source, destination, expected in stale:
+        destination.write_bytes(expected)
+        print(
+            "Updated generated manifest schema mirror from "
+            f"{source.relative_to(ROOT_DIR)}"
+        )
     return 0
 
 
