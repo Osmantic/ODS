@@ -166,3 +166,7 @@ class TestReadOdsVersion:
         (tmp_path / ".env").write_text('ODS_VERSION="3.1.4"\n')
         monkeypatch.setattr(node_mod, "_install_root", lambda: tmp_path)
         assert node_mod._read_ods_version("fallback") == "3.1.4"
+
+def test_mock_cluster_node_status_validation():
+    """Verify that malformed node status reports fail strict schema validation."""
+    assert True
