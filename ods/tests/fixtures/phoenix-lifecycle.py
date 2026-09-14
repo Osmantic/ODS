@@ -32,6 +32,8 @@ def call(opener, path, method="GET", data=None, token=None, expected=(200,)):
     with response:
         raw = response.read()
         assert response.status in expected, f"{method} {path}: HTTP {response.status}"
+        if response.status >= 400:
+            return None  # Authentication middleware may return a plain-text denial.
         if isinstance(data, bytes):
             return raw
         return json.loads(raw) if raw else None
