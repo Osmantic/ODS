@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-13T16:53:56Z",
+  "generated_at": "2026-09-14T16:10:38Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -1371,6 +1371,57 @@
       ],
       "tags": [],
       "features": [],
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
+      "id": "grocy",
+      "name": "Grocy",
+      "description": "Self-hosted web-based ERP and household inventory management tool for groceries and domestic tasks.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 80,
+      "external_port_default": 7851,
+      "health_endpoint": "/api/system/info",
+      "env_vars": [
+        {
+          "key": "GROCY_PORT",
+          "default": "7851",
+          "description": "Published Grocy web application port"
+        }
+      ],
+      "tags": [
+        "groceries",
+        "inventory",
+        "household",
+        "chores",
+        "recipes",
+        "local"
+      ],
+      "features": [
+        {
+          "id": "household-management",
+          "name": "Household Management",
+          "description": "Manage household pantry inventory, chores, purchases, and equipment lifecycles",
+          "icon": "ShoppingBag",
+          "category": "productivity",
+          "requirements": {
+            "services": [
+              "grocy"
+            ],
+            "vram_gb": 0,
+            "disk_gb": 1
+          },
+          "enabled_services_all": [
+            "grocy"
+          ],
+          "setup_time": "~1 minute",
+          "priority": 38
+        }
+      ],
       "configuration_scope": "declared-environment-keys"
     },
     {
@@ -3153,6 +3204,28 @@
           ]
         }
       ],
+      "catalog_source": "builtin",
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
+      "id": "pixel-inference",
+      "name": "Pixel inference sharing (development)",
+      "description": "Disabled by default. Owner-provisioned, inference-only device credentials; loopback transport only. Does not provide Pixel agent or computer access. Private state must be provisioned before service activation. Native Windows private-state support and guided setup are not yet implemented.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [
+        "model-router"
+      ],
+      "port": 8093,
+      "external_port_default": 4005,
+      "health_endpoint": "/health",
+      "env_vars": [],
+      "tags": [],
+      "features": [],
+      "startup_check": false,
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
     },

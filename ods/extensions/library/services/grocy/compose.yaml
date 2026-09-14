@@ -1,0 +1,29 @@
+services:
+  grocy:
+    image: lscr.io/linuxserver/grocy:v4.4.2-ls28
+    container_name: ods-grocy
+    restart: unless-stopped
+    security_opt: [no-new-privileges:true]
+    environment:
+      PUID: "1000"
+      PGID: "1000"
+      TZ: ${TZ:-UTC}
+    volumes:
+      - ./data/grocy:/config
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${GROCY_PORT:-7851}:80"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:80/api/system/info"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    networks: [ods-network]
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+networks:
+  ods-network:
+    external: true
