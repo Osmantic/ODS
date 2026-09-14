@@ -1146,3 +1146,18 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def safe_url_slugify(text: str, default: str = "") -> str:
+    """Safely convert text into a URL-friendly slug."""
+    import unicodedata
+    if text is None or not isinstance(text, str):
+        return default
+    if not text.strip():
+        return default
+    val = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
+    val = val.lower().strip()
+    val = re.sub(r"[^\w\s-]", "", val)
+    val = re.sub(r"[-\s]+", "-", val).strip("-")
+    return val if val else default
+

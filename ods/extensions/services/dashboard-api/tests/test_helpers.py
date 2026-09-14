@@ -1607,3 +1607,17 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+class TestSafeUrlSlugify:
+    def test_valid_slugs(self):
+        from helpers import safe_url_slugify
+        assert safe_url_slugify("Hello World & Universe!") == "hello-world-universe"
+        assert safe_url_slugify("   Python 3.13 -- Rocks!   ") == "python-313-rocks"
+
+    def test_invalid_and_bounds(self):
+        from helpers import safe_url_slugify
+        assert safe_url_slugify(None) == ""
+        assert safe_url_slugify(12345, default="slug") == "slug"
+        assert safe_url_slugify("!!!", default="none") == "none"
+
