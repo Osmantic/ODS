@@ -142,6 +142,10 @@ patterns = [
     (re.compile(r"(?i)(Bearer\s+)[A-Za-z0-9._~+/=-]+"), r"\1[REDACTED]"),
     (re.compile(r"(?i)((?:authorization|x-api-key|api-key|apikey)\s*[:=]\s*)([\"']?)[^\"'\s,}]+"), r"\1\2[REDACTED]"),
     (re.compile(r"(?i)(https?://)([^/\s:@]+):([^@\s/]+)@"), r"\1[REDACTED]@"),
+    (re.compile(r"sk-[A-Za-z0-9_-]{20,}"), "[REDACTED_API_KEY]"),
+    (re.compile(r"tskey-auth-[A-Za-z0-9_-]+"), "[REDACTED_TAILSCALE_KEY]"),
+    (re.compile(r"hf_[A-Za-z0-9]{30,}"), "[REDACTED_HF_TOKEN]"),
+    (re.compile(r"-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----[\s\S]*?-----END (?:[A-Z ]+ )?PRIVATE KEY-----"), "[REDACTED_PRIVATE_KEY]"),
     (
         re.compile(rf"(?im)^([ \t]*(?:export[ \t]+)?[A-Za-z_][A-Za-z0-9_]*{secret_word}[A-Za-z0-9_]*[ \t]*=[ \t]*).*$"),
         r"\1[REDACTED]",
