@@ -450,61 +450,70 @@ export default function ODSTalk() {
       const reader = resp.body.getReader()
       const decoder = new TextDecoder()
       let buffer = ''
+      let completed = false
       // SSE frames are separated by a blank line (\n\n). Buffer partial frames
       // across reads — chunked transport can split mid-frame. Lines starting
       // with ``:`` are SSE comments (keepalives); we discard them by filtering
       // for ``data:`` only below.
-      while (true) {
-        const { value, done } = await reader.read()
-        if (done) break
-        buffer += decoder.decode(value, { stream: true })
-        let sepIdx
-        while ((sepIdx = buffer.indexOf('\n\n')) !== -1) {
-          const frame = buffer.slice(0, sepIdx)
-          buffer = buffer.slice(sepIdx + 2)
-          const dataLines = frame.split('\n').filter(line => line.startsWith('data:'))
-          if (dataLines.length === 0) continue
-          const json = dataLines.map(l => l.slice(5).trimStart()).join('\n')
-          let payload
-          try {
-            payload = JSON.parse(json)
-          } catch {
-            continue
-          }
-          if (payload.type === 'delta' && typeof payload.text === 'string') {
-            assembled += payload.text
-            const snapshot = assembled
-            // Once token deltas start arriving the spinner caption is no
-            // longer useful — clear it so the assistant bubble shows the
-            // live text instead. `status: null` signals MessageBubble to
-            // render the accumulated text rather than a spinner.
-            setMessages(items => items.map(item =>
-              item.id === assistantId
-                ? { ...item, text: snapshot, status: 'pending', statusLabel: null, statusTool: null, statusDetail: null }
-                : item,
-            ))
-          } else if (payload.type === 'status') {
-            // Friendly progress caption from the bridge (e.g. "Searching the
-            // web…"). Replaces the default "Thinking…" while a tool is in
-            // flight. label=null means "tool done; flip back to default."
-            const label = typeof payload.label === 'string' ? payload.label : null
-            const tool = typeof payload.tool === 'string' ? payload.tool : null
-            const detail = typeof payload.detail === 'string' ? payload.detail : null
-            setMessages(items => items.map(item =>
-              item.id === assistantId
-                ? { ...item, statusLabel: label, statusTool: tool, statusDetail: detail }
-                : item,
-            ))
-          } else if (payload.type === 'complete') {
-            if (typeof payload.text === 'string' && payload.text) assembled = payload.text
-            finalWarning = payload.warning || null
-          } else if (payload.type === 'error') {
-            errorDetail = payload.detail || 'Hermes did not finish the response.'
+      try {
+        streamLoop: while (true) {
+          const { value, done } = await reader.read()
+          if (done) break
+          buffer += decoder.decode(value, { stream: true })
+          let sepIdx
+          while ((sepIdx = buffer.indexOf('\n\n')) !== -1) {
+            const frame = buffer.slice(0, sepIdx)
+            buffer = buffer.slice(sepIdx + 2)
+            const dataLines = frame.split('\n').filter(line => line.startsWith('data:'))
+            if (dataLines.length === 0) continue
+            const json = dataLines.map(l => l.slice(5).trimStart()).join('\n')
+            let payload
+            try {
+              payload = JSON.parse(json)
+            } catch {
+              continue
+            }
+            if (payload.type === 'delta' && typeof payload.text === 'string') {
+              assembled += payload.text
+              const snapshot = assembled
+              // Once token deltas start arriving the spinner caption is no
+              // longer useful — clear it so the assistant bubble shows the
+              // live text instead. `status: null` signals MessageBubble to
+              // render the accumulated text rather than a spinner.
+              setMessages(items => items.map(item =>
+                item.id === assistantId
+                  ? { ...item, text: snapshot, status: 'pending', statusLabel: null, statusTool: null, statusDetail: null }
+                  : item,
+              ))
+            } else if (payload.type === 'status') {
+              // Friendly progress caption from the bridge (e.g. "Searching the
+              // web…"). Replaces the default "Thinking…" while a tool is in
+              // flight. label=null means "tool done; flip back to default."
+              const label = typeof payload.label === 'string' ? payload.label : null
+              const tool = typeof payload.tool === 'string' ? payload.tool : null
+              const detail = typeof payload.detail === 'string' ? payload.detail : null
+              setMessages(items => items.map(item =>
+                item.id === assistantId
+                  ? { ...item, statusLabel: label, statusTool: tool, statusDetail: detail }
+                  : item,
+              ))
+            } else if (payload.type === 'done') {
+              break streamLoop
+            } else if (payload.type === 'complete') {
+              completed = true
+              if (typeof payload.text === 'string' && payload.text) assembled = payload.text
+              finalWarning = payload.warning || null
+            } else if (payload.type === 'error') {
+              errorDetail = payload.detail || 'Hermes did not finish the response.'
+            }
           }
         }
-      }
 
+      } finally {
+        try { await reader.cancel() } finally { reader.releaseLock() }
+      }
       if (errorDetail) throw new Error(errorDetail)
+      if (!completed) throw new Error('The response ended before completion. You can retry this message.')
       const reply = assembled || 'I did not get a response back.'
       setMessages(items => items.map(item =>
         item.id === assistantId
@@ -519,7 +528,7 @@ export default function ODSTalk() {
       } else {
         setMessages(items => items.map(item =>
           item.id === assistantId
-            ? { ...item, text: err.message || 'Something went wrong.', status: 'error' }
+            ? { ...item, text: assembled || err.message || 'Something went wrong.', status: 'error', warning: assembled ? err.message : null }
             : item,
         ))
       }

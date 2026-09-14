@@ -30,6 +30,8 @@ const sseResponse = (frames, { status = 200, chunks, holdOpen = false } = {}) =>
     : frameBytes
   let idx = 0
   const reader = {
+    cancel: async () => {},
+    releaseLock: () => {},
     read: async () => {
       if (idx >= chunkGroups.length) {
         // ``holdOpen`` keeps the reader awaiting indefinitely after the final
