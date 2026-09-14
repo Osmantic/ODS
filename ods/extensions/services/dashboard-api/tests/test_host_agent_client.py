@@ -284,6 +284,48 @@ def test_bounded_json_preserves_status_mapping(monkeypatch):
         client.close()
 
 
+@pytest.mark.parametrize("status_code", [201, 202, 204])
+def test_bounded_json_200_rejects_other_success_statuses(
+    monkeypatch, status_code
+):
+    client = httpx.Client(
+        base_url="http://agent",
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(status_code, json={"status": "accepted"})
+        ),
+    )
+    monkeypatch.setattr(agent_client, "_sync_client", client)
+    try:
+        with pytest.raises(
+            agent_client.AgentProtocolError,
+            match=rf"HTTP {status_code} instead of 200",
+        ):
+            agent_client.request_bounded_json_200(
+                "POST", "/v1/test", max_response_bytes=1024
+            )
+    finally:
+        client.close()
+
+
+def test_bounded_json_200_preserves_http_error_mapping(monkeypatch):
+    client = httpx.Client(
+        base_url="http://agent",
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(409, json={"error": {"code": "busy"}})
+        ),
+    )
+    monkeypatch.setattr(agent_client, "_sync_client", client)
+    try:
+        with pytest.raises(agent_client.AgentHTTPError) as caught:
+            agent_client.request_bounded_json_200(
+                "POST", "/v1/test", max_response_bytes=1024
+            )
+        assert caught.value.status_code == 409
+        assert caught.value.detail == '{"code":"busy"}'
+    finally:
+        client.close()
+
+
 def test_bounded_json_counts_decoded_body_without_double_decoding(monkeypatch):
     compressed = gzip.compress(b'{"status":"ok"}')
     client = httpx.Client(

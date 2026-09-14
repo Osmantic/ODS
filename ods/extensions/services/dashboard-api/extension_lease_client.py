@@ -20,7 +20,7 @@ from host_agent_client import (
     AgentProtocolError,
     AgentTimeout,
     AgentUnavailable,
-    request_bounded_json,
+    request_bounded_json_200,
 )
 
 LEASE_SCHEMA = "ods.extension-operation-lease.v1"
@@ -324,7 +324,7 @@ class ExtensionLeaseClient:
     """Call fixed host lease routes without persisting or logging credentials."""
 
     def __init__(
-        self, requester: Callable[..., dict[str, Any]] = request_bounded_json
+        self, requester: Callable[..., dict[str, Any]] = request_bounded_json_200
     ) -> None:
         self._request = requester
 

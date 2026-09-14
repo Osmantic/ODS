@@ -185,6 +185,19 @@ def _raise_for_status(response: httpx.Response) -> None:
     raise AgentHTTPError(response.status_code, detail, text)
 
 
+def _raise_for_status_200(response: httpx.Response) -> None:
+    """Require exactly HTTP 200, rejecting other successful statuses."""
+
+    if response.status_code == 200:
+        return
+    detail, text = _error_detail(response)
+    if response.is_success:
+        raise AgentProtocolError(
+            f"Host agent returned HTTP {response.status_code} instead of 200"
+        )
+    raise AgentHTTPError(response.status_code, detail, text)
+
+
 def _decode_json(response: httpx.Response) -> dict[str, Any]:
     try:
         payload = response.json()
@@ -396,6 +409,29 @@ def request_bounded_json(
         max_response_bytes=max_response_bytes,
     )
     _raise_for_status(response)
+    return _decode_json(response)
+
+
+def request_bounded_json_200(
+    method: str,
+    path: str,
+    *,
+    payload: Any = None,
+    params: dict[str, Any] | None = None,
+    timeout: float = 5.0,
+    max_response_bytes: int,
+) -> dict[str, Any]:
+    """Return bounded JSON only when the host responds with exactly HTTP 200."""
+
+    response = _sync_bounded_request(
+        method,
+        path,
+        payload=payload,
+        params=params,
+        timeout=timeout,
+        max_response_bytes=max_response_bytes,
+    )
+    _raise_for_status_200(response)
     return _decode_json(response)
 
 

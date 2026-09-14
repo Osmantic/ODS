@@ -5,7 +5,10 @@ import traceback
 from dataclasses import asdict
 from pathlib import Path
 
+import httpx
 import pytest
+
+import host_agent_client as agent_client
 from extension_lease_client import (
     MAX_RESPONSE_BYTES,
     ExtensionLeaseClient,
@@ -269,6 +272,24 @@ def test_status_transport_failure_is_retryable() -> None:
     assert caught.value.code == "lease-unavailable"
     assert caught.value.retryable is True
     assert caught.value.ambiguous is False
+
+
+def test_default_transport_rejects_http_202_as_ambiguous(monkeypatch) -> None:
+    client = httpx.Client(
+        base_url="http://agent",
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(202, json=acquire_response())
+        ),
+    )
+    monkeypatch.setattr(agent_client, "_sync_client", client)
+    try:
+        with pytest.raises(ExtensionLeaseError) as caught:
+            ExtensionLeaseClient().acquire(BINDING, SERVICE_IDS)
+        assert caught.value.code == "lease-operation-ambiguous"
+        assert caught.value.ambiguous is True
+        assert caught.value.retryable is False
+    finally:
+        client.close()
 
 
 def test_client_has_no_logging_persistence_or_production_wiring() -> None:
