@@ -15,13 +15,6 @@ interface FeatureOption {
 
 const FEATURES: FeatureOption[] = [
   {
-    id: "chat",
-    name: "Chat & LLM",
-    description:
-      "AI chat interface with a powerful language model running locally.",
-    default: true,
-  },
-  {
     id: "voice",
     name: "Voice",
     description: "Speech-to-text and text-to-speech for voice conversations.",
@@ -64,8 +57,6 @@ export default function Features({ onNext }: Props) {
   );
 
   const toggle = (id: string) => {
-    // Chat is always enabled
-    if (id === "chat") return;
     setSelected((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
@@ -88,7 +79,6 @@ export default function Features({ onNext }: Props) {
       <div className="w-full max-w-md space-y-2 mb-6">
         {FEATURES.map((feature) => {
           const isSelected = selected.has(feature.id);
-          const isRequired = feature.id === "chat";
           return (
             <button
               key={feature.id}
@@ -105,18 +95,13 @@ export default function Features({ onNext }: Props) {
                     isSelected
                       ? "bg-ods-600 border-ods-600 text-white"
                       : "border-gray-600"
-                  } ${isRequired ? "opacity-50" : ""}`}
+                  }`}
                 >
                   {isSelected && "&#10003;"}
                 </div>
                 <div className="flex-1">
                   <p className="text-sm font-medium text-white">
                     {feature.name}
-                    {isRequired && (
-                      <span className="ml-2 text-xs text-gray-500">
-                        (always included)
-                      </span>
-                    )}
                   </p>
                   <p className="text-xs text-gray-500 mt-0.5">
                     {feature.description}
