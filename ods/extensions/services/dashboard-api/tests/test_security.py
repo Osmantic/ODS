@@ -1,5 +1,11 @@
 """Tests for security.py — API key authentication."""
 
+import os
+import secrets
+import stat
+import tempfile
+from pathlib import Path
+
 import pytest
 
 from fastapi import HTTPException
@@ -44,3 +50,28 @@ class TestVerifyApiKey:
         with pytest.raises(HTTPException) as exc_info:
             await security.verify_api_key(creds)
         assert exc_info.value.status_code == 403
+
+
+class TestGeneratedApiKeyFile:
+
+    def test_generated_key_written_atomically_with_restricted_permissions(self, tmp_path):
+        key_file = tmp_path / "dashboard-api-key.txt"
+        orig_key = os.environ.pop("DASHBOARD_API_KEY", None)
+        try:
+            fd, tmp_str = tempfile.mkstemp(dir=str(tmp_path), prefix=".dashboard-api-key.", suffix=".tmp")
+            os.close(fd)
+            os.unlink(tmp_str)
+            # Pre-populate key file location
+            key = secrets.token_urlsafe(32)
+            fd, tmp_str = tempfile.mkstemp(dir=str(tmp_path), prefix=".dashboard-api-key.", suffix=".tmp")
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(key)
+            tmp_path_obj = Path(tmp_str)
+            tmp_path_obj.chmod(0o600)
+            os.replace(tmp_path_obj, key_file)
+            assert key_file.exists()
+            assert key_file.read_text(encoding="utf-8") == key
+            assert stat.S_IMODE(key_file.stat().st_mode) == 0o600
+        finally:
+            if orig_key is not None:
+                os.environ["DASHBOARD_API_KEY"] = orig_key
