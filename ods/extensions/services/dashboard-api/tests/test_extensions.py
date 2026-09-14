@@ -4255,6 +4255,7 @@ def test_transaction_factory_contends_with_single_extension_route_lock(
 ):
     """Composite and legacy mutations must use the exact same lock inode."""
     from extension_operation_locks import FileServiceLockFactory, ServiceLockTimeout
+    from extension_transaction_executor import ExecutionBinding
     from routers import extensions as ext_module
 
     data_dir = tmp_path / "data"
@@ -4266,13 +4267,14 @@ def test_transaction_factory_contends_with_single_extension_route_lock(
         lambda: [primary_lock],
     )
     factory = FileServiceLockFactory(data_dir, timeout=0.05)
+    binding = ExecutionBinding("txn-cross-path", "a" * 64)
 
     with ext_module._extension_operation_lock("aider"):
         with pytest.raises(ServiceLockTimeout):
-            with factory.lock_services(["aider"]):
+            with factory.lock_services(binding, ["aider"]):
                 pytest.fail("transaction lock bypassed the route lock")
 
-    with factory.lock_services(["aider"]):
+    with factory.lock_services(binding, ["aider"]):
         pass
 
 

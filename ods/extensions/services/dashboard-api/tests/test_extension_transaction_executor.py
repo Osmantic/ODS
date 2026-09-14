@@ -282,8 +282,10 @@ class NoOpLockFactory:
 
     def __init__(self) -> None:
         self.locked_services: list[str] | None = None
+        self.binding = None
 
-    def lock_services(self, service_ids: list[str]) -> "NoOpLock":
+    def lock_services(self, binding, service_ids: list[str]) -> "NoOpLock":
+        self.binding = binding
         self.locked_services = list(service_ids)
         return NoOpLock()
 
@@ -341,6 +343,23 @@ EXEC_STEPS = executor_mod.EXECUTION_STEPS
 # ── Tests ────────────────────────────────────────────────────────────────────
 
 # 1. Happy path: approved-only execution succeeds
+
+
+@pytest.mark.parametrize(
+    ("transaction_id", "plan_hash", "code"),
+    [
+        ("", "a" * 64, "invalid-transaction-id"),
+        ("txn-valid", "a" * 63, "invalid-plan-hash"),
+        ("txn-valid", "g" * 64, "invalid-plan-hash"),
+    ],
+)
+def test_execution_binding_rejects_invalid_identity(
+    transaction_id, plan_hash, code
+):
+    with pytest.raises(transactions.ValidationRejected) as caught:
+        executor_mod.ExecutionBinding(transaction_id, plan_hash)
+
+    assert caught.value.code == code
 
 def test_approved_only_execution(tmp_path):
     """Full happy path: approved → reserved → downloading → ... → committed."""
@@ -866,10 +885,20 @@ def test_provenance_mismatch_rejection(tmp_path):
         def verify(self, plan_hash, envelope):
             return False
 
-    executor = make_executor(store, verifier=FailingVerifier())
+    lock_root = tmp_path / "locks"
+    lock_factory = operation_locks.FileServiceLockFactory(lock_root, timeout=0.1)
+    executor = make_executor(
+        store, verifier=FailingVerifier(), lock_factory=lock_factory
+    )
 
     with pytest.raises(transactions.TransitionError, match="provenance-mismatch"):
         executor.execute(descriptor["transactionId"], envelope["planHash"])
+
+    binding = executor_mod.ExecutionBinding(
+        descriptor["transactionId"], envelope["planHash"]
+    )
+    with lock_factory.lock_services(binding, ["notes"]):
+        pass
 
 
 def test_provenance_requires_literal_true(tmp_path):
@@ -997,8 +1026,8 @@ def test_locks_are_canonical_and_provenance_is_checked_inside_lock(tmp_path):
             events.append("lock-exit")
 
     class OrderedLockFactory:
-        def lock_services(self, service_ids):
-            events.append(("lock-services", service_ids))
+        def lock_services(self, binding, service_ids):
+            events.append(("lock-services", binding, service_ids))
             return OrderedLock()
 
     class OrderedVerifier:
@@ -1019,7 +1048,13 @@ def test_locks_are_canonical_and_provenance_is_checked_inside_lock(tmp_path):
 
     assert result.final_state == "committed"
     assert events[:3] == [
-        ("lock-services", ["calendar", "notes"]),
+        (
+            "lock-services",
+            executor_mod.ExecutionBinding(
+                descriptor["transactionId"], envelope["planHash"]
+            ),
+            ["calendar", "notes"],
+        ),
         "lock-enter",
         "verify-provenance",
     ]
