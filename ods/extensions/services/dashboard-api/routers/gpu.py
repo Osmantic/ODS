@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import socket
 import time
 import urllib.error
 import urllib.request
@@ -264,7 +265,7 @@ def _probe_amd_health(health_url: str) -> tuple[str, str, Optional[str]]:
             body = response.read(4096).decode("utf-8", errors="replace")
     except urllib.error.HTTPError as exc:
         return "unhealthy", "unknown", f"health_http_{exc.code}"
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+    except (urllib.error.URLError, TimeoutError, socket.timeout, OSError) as exc:
         logger.debug("AMD runtime health probe failed for %s: %s", health_url, exc)
         return "unreachable", "unknown", "health_unreachable"
 
