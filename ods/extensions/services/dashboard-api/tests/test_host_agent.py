@@ -2319,6 +2319,14 @@ class TestRunInstallCallsPostInstallRecreate:
 # --- _handle_env_update ---
 
 
+class _FakeHeaders(dict):
+    """Single-value test headers with the HTTPMessage lookup surface."""
+
+    def get_all(self, name, failobj=None):
+        value = self.get(name)
+        return failobj if value is None else [value]
+
+
 class _FakeHandler:
     """Minimal stand-in for BaseHTTPRequestHandler used by _handle_env_update."""
 
@@ -2329,7 +2337,7 @@ class _FakeHandler:
         }
         if headers:
             merged.update(headers)
-        self.headers = merged
+        self.headers = _FakeHeaders(merged)
         self.rfile = io.BytesIO(body)
         self.wfile = io.BytesIO()
         self.client_address = ("127.0.0.1", 12345)
