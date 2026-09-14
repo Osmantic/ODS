@@ -319,6 +319,20 @@ current Docker-inspect labels with fixed-root active definition/config
 evidence and lifecycle receipts; receipts alone are historical evidence and
 cannot prove present state.
 
+A dormant application-observation contract now defines that correlation
+boundary. It accepts only one plan-bound `apply:<serviceId>` command, a strict
+canonical active record, current definition/Compose/configuration byte
+digests, the exact expected container set and labels, and receipts re-bound to
+the same command. It returns `ABSENT` only when every current mutation source
+is absent and `APPLIED` only when all present evidence agrees; partial,
+drifted, unavailable, unsupported, or contradictory evidence fails closed.
+Container health does not gate `APPLIED`: an exited, restarting, or unhealthy
+but exactly identified container remains a mutation that recovery must find
+and compensate. Canonical record parsing rejects duplicate keys and
+noncanonical or oversized bytes. This contract remains pure and dormant: no
+host probe, active-record writer, Docker invocation, transaction observer, or
+production executor is enabled in this phase.
+
 ## Evidence boundary
 
 The source contract checks resolver ordering, the exact candidate service set,

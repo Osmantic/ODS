@@ -832,7 +832,12 @@ def test_module_is_stdlib_only_and_has_only_the_guarded_host_importer():
         ):
             importers.append(path.relative_to(repo_root).as_posix())
     assert sorted(importers) == [
+        "ods/bin/extension_application_observation.py",
         "ods/bin/ods-host-agent.py",
+        (
+            "ods/extensions/services/dashboard-api/tests/"
+            "test_extension_application_observation.py"
+        ),
         (
             "ods/extensions/services/dashboard-api/tests/"
             "test_extension_lifecycle_receipt_host_api.py"
