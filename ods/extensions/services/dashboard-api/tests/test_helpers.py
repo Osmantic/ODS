@@ -1740,3 +1740,14 @@ def test_flatten_bounds_cycles_and_large_depth_without_losing_empty_leaves():
         nested = {"child": nested}
     result = dict_flatten_nested_safe(nested, max_depth=100000)
     assert len(next(iter(result)).split(".")) == 128
+
+
+class TestListChunkBySizeSafe:
+    def test_valid_chunking(self):
+        from helpers import list_chunk_by_size_safe
+        assert list_chunk_by_size_safe([1, 2, 3, 4, 5], 2) == [[1, 2], [3, 4], [5]]
+
+    def test_invalid_inputs(self):
+        from helpers import list_chunk_by_size_safe
+        assert list_chunk_by_size_safe(None) == []
+        assert list_chunk_by_size_safe([1, 2, 3], -5) == [[1, 2, 3]]
