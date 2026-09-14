@@ -95,35 +95,47 @@ def _compose_image_refs(path: Path, root: Path = ROOT) -> list[ImageRef]:
     return refs
 
 
-def _dockerfile_from_value(line: str) -> str | None:
-    line = _strip_inline_comment(line).strip()
-    if not line.upper().startswith("FROM "):
+def _dockerfile_from(line: str) -> tuple[str, str | None] | None:
+    tokens = _strip_inline_comment(line).split()
+    if not tokens or tokens.pop(0).upper() != "FROM":
         return None
-    tokens = line.split()[1:]
     while tokens and tokens[0].startswith("--"):
         tokens.pop(0)
     if not tokens:
         return None
-    return _clean_value(tokens[0])
+    stage = None
+    if len(tokens) == 3 and tokens[1].upper() == "AS":
+        name = tokens[2].lower()
+        if re.fullmatch(r"[a-z][a-z0-9-_.]*", name):
+            stage = name
+    return _clean_value(tokens[0]), stage
 
 
 def _dockerfile_image_refs(path: Path, root: Path = ROOT) -> list[ImageRef]:
     refs: list[ImageRef] = []
     defaults: dict[str, str] = {}
+    stages: set[str] = set()
     for line_no, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
         arg_match = ARG_RE.match(_strip_inline_comment(line))
         if arg_match and arg_match.group("value") is not None:
             defaults[arg_match.group("name")] = _clean_value(arg_match.group("value"))
 
-        raw = _dockerfile_from_value(line)
-        if raw is None:
+        instruction = _dockerfile_from(line)
+        if instruction is None:
+            continue
+        raw, stage = instruction
+        value = _resolve_vars(raw, defaults)
+        internal = value == "scratch" or value in stages
+        if stage is not None:
+            stages.add(stage)
+        if internal:
             continue
         refs.append(
             ImageRef(
                 path=_rel(path, root),
                 line=line_no,
                 raw=raw,
-                value=_resolve_vars(raw, defaults),
+                value=value,
                 source="dockerfile from",
             )
         )
