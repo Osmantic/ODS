@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-14T15:17:36Z",
+  "generated_at": "2026-09-14T16:04:59Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -3613,7 +3613,7 @@
     {
       "id": "vaultwarden",
       "name": "Vaultwarden",
-      "description": "",
+      "description": "Self-hosted Bitwarden-compatible password vault server written in Rust for private credential management.",
       "category": "optional",
       "gpu_backends": [
         "all"

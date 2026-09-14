@@ -4,6 +4,7 @@ compatibility:
 service:
   id: vaultwarden
   name: Vaultwarden
+  description: "Self-hosted Bitwarden-compatible password vault server written in Rust for private credential management."
   aliases: [bitwarden, passwords]
   container_name: ods-vaultwarden
   host_env: VAULTWARDEN_HOST
