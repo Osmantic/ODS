@@ -18,6 +18,17 @@ import extension_lifecycle_plan as lifecycle_plan  # noqa: E402
 import extension_lifecycle_work as lifecycle_work  # noqa: E402
 
 
+def claims(ports: list | None = None, exclusive: list | None = None) -> dict:
+    return {
+        "hostPorts": [] if ports is None else ports,
+        "exclusive": [] if exclusive is None else exclusive,
+    }
+
+
+def port_entry(port: int, protocol: str = "tcp") -> dict:
+    return {"port": port, "protocol": protocol}
+
+
 TRANSACTION_ID = "txn-" + "1" * 24
 PLAN_HASH = "2" * 64
 
@@ -64,6 +75,10 @@ def transaction(state: str) -> dict:
         {"serviceId": "documents", "action": "install"},
         {"serviceId": "voice", "action": "noop"},
     ]
+    documents = definition("documents")
+    documents["resources"] = claims(
+        [port_entry(8080), port_entry(8081, "udp")], ["gpu:0"]
+    )
     return {
         "transactionId": TRANSACTION_ID,
         "state": state,
@@ -77,7 +92,7 @@ def transaction(state: str) -> dict:
             "plan": {
                 "selectedServices": ["documents", "voice"],
                 "operations": operations,
-                "definitions": [definition("documents"), definition("voice")],
+                "definitions": [documents, definition("voice")],
             },
         },
     }
@@ -186,6 +201,315 @@ def test_bind_accepts_only_the_exact_operation_for_the_current_phase(
     )
     assert bound.plan_material.definitions[0].definition_source == "library"
     assert bound.plan_material.definitions[0].compose_file == "compose.yaml"
+    assert bound.plan_material.definitions[0].host_ports == (
+        lifecycle_plan.PlannedHostPort(protocol="tcp", port=8080),
+        lifecycle_plan.PlannedHostPort(protocol="udp", port=8081),
+    )
+    assert bound.plan_material.definitions[0].exclusive == ("gpu:0",)
+    assert bound.plan_material.definitions[1].host_ports is None
+    assert bound.plan_material.definitions[1].exclusive is None
+
+
+def test_bind_accepts_empty_present_reservation_claims():
+    stored = transaction("applying")
+    stored["envelope"]["plan"]["definitions"][0]["resources"] = claims()
+
+    bound = lifecycle_plan.bind_lifecycle_plan(
+        command("apply:documents", ["documents"], {"operation": INSTALL}),
+        stored,
+    )
+
+    material = bound.plan_material.definitions[0]
+    assert material.host_ports == ()
+    assert material.exclusive == ()
+
+
+def test_bind_accepts_reserve_for_present_empty_claims():
+    stored = transaction("reserved")
+    stored["envelope"]["plan"]["definitions"][0]["resources"] = claims()
+
+    bound = lifecycle_plan.bind_lifecycle_plan(
+        command("reserve:documents", ["documents"], {"operation": INSTALL}),
+        stored,
+    )
+
+    assert [item.host_ports for item in bound.plan_material.definitions] == [(), None]
+
+
+def test_bind_accepts_reserve_when_the_targeted_definition_has_claims():
+    bound = lifecycle_plan.bind_lifecycle_plan(
+        command("reserve:documents", ["documents"], {"operation": INSTALL}),
+        transaction("reserved"),
+    )
+
+    material = bound.plan_material.definitions[0]
+    assert material.host_ports == (
+        lifecycle_plan.PlannedHostPort(protocol="tcp", port=8080),
+        lifecycle_plan.PlannedHostPort(protocol="udp", port=8081),
+    )
+    assert material.exclusive == ("gpu:0",)
+
+
+def test_bind_accepts_the_reservation_store_exclusive_token_grammar():
+    stored = transaction("reserved")
+    stored["envelope"]["plan"]["definitions"][0]["resources"] = claims(
+        exclusive=["gpu/slot-0", "x" * 128]
+    )
+
+    bound = lifecycle_plan.bind_lifecycle_plan(
+        command("reserve:documents", ["documents"], {"operation": INSTALL}),
+        stored,
+    )
+
+    assert bound.plan_material.definitions[0].exclusive == (
+        "gpu/slot-0",
+        "x" * 128,
+    )
+
+
+def test_bind_rejects_reserve_when_only_the_targeted_definition_lacks_claims():
+    stored = transaction("reserved")
+    stored["envelope"]["plan"]["definitions"][0]["resources"] = {}
+
+    with pytest.raises(lifecycle_work.LifecycleWorkValidationError) as raised:
+        lifecycle_plan.bind_lifecycle_plan(
+            command("reserve:documents", ["documents"], {"operation": INSTALL}),
+            stored,
+        )
+
+    assert raised.value.code == "lifecycle-work-reservation-claims-missing"
+
+
+def test_bind_rejects_reserve_when_all_definitions_lack_claims():
+    stored = transaction("reserved")
+    for entry in stored["envelope"]["plan"]["definitions"]:
+        entry["resources"] = {}
+
+    with pytest.raises(lifecycle_work.LifecycleWorkValidationError) as raised:
+        lifecycle_plan.bind_lifecycle_plan(
+            command("reserve:documents", ["documents"], {"operation": INSTALL}),
+            stored,
+        )
+
+    assert raised.value.code == "lifecycle-work-reservation-claims-missing"
+
+
+def test_bind_keeps_non_reserve_operations_readable_for_legacy_definitions():
+    stored = transaction("downloading")
+    for entry in stored["envelope"]["plan"]["definitions"]:
+        entry["resources"] = {}
+
+    bound = lifecycle_plan.bind_lifecycle_plan(
+        command("download-and-verify", ["documents"], {"operations": [INSTALL]}),
+        stored,
+    )
+
+    assert [item.host_ports for item in bound.plan_material.definitions] == [
+        None,
+        None,
+    ]
+    assert [item.exclusive for item in bound.plan_material.definitions] == [
+        None,
+        None,
+    ]
+
+
+def test_bind_keeps_reserve_readable_when_only_unrelated_definitions_lack_claims():
+    bound = lifecycle_plan.bind_lifecycle_plan(
+        command("reserve:documents", ["documents"], {"operation": INSTALL}),
+        transaction("reserved"),
+    )
+
+    legacy = bound.plan_material.definitions[1]
+    assert legacy.service_id == "voice"
+    assert legacy.host_ports is None
+    assert legacy.exclusive is None
+
+
+@pytest.mark.parametrize(
+    "resource_mutate",
+    [
+        lambda resources: resources.update(exclusive=claims([port_entry(8080)])),
+        lambda resources: resources.update(exclusive=claims(exclusive=["gpu:0"])),
+        lambda resources: resources.update(
+            claims([port_entry(8080), port_entry(8080)])
+        ),
+        lambda resources: resources.update(
+            claims([port_entry(8081), port_entry(8080)])
+        ),
+        lambda resources: resources.update(claims([port_entry(65536)])),
+        lambda resources: resources.update(claims([port_entry(True)])),
+        lambda resources: resources.update(claims([port_entry("8080")])),
+        lambda resources: resources.update(claims([port_entry(8080, "sctp")])),
+        lambda resources: resources.update(
+            claims([{"port": 8080, "protocol": "tcp", "owner": "x"}])
+        ),
+        lambda resources: resources.update(claims(exclusive=["GPU:0"])),
+        lambda resources: resources.update(claims(exclusive=["gpu:0", "gpu:0"])),
+        lambda resources: resources.update(claims(exclusive=[""])),
+        lambda resources: resources.update(claims(exclusive=["-gpu"])),
+        lambda resources: resources.update(claims(exclusive=["x" * 129])),
+        lambda resources: resources.update(claims(exclusive=["gpu:0 "])),
+    ],
+)
+def test_bind_rejects_invalid_reservation_claim_material(resource_mutate):
+    parsed = command("apply:documents", ["documents"], {"operation": INSTALL})
+    stored = transaction("applying")
+    resource_mutate(stored["envelope"]["plan"]["definitions"][0]["resources"])
+
+    with pytest.raises(lifecycle_work.LifecycleWorkValidationError) as raised:
+        lifecycle_plan.bind_lifecycle_plan(parsed, stored)
+
+    assert raised.value.code == "lifecycle-work-plan-mismatch"
+
+
+def test_bind_rejects_non_mapping_reservation_resources():
+    parsed = command("apply:documents", ["documents"], {"operation": INSTALL})
+    stored = transaction("applying")
+    stored["envelope"]["plan"]["definitions"][0]["resources"] = []
+
+    with pytest.raises(lifecycle_work.LifecycleWorkValidationError) as raised:
+        lifecycle_plan.bind_lifecycle_plan(parsed, stored)
+
+    assert raised.value.code == "lifecycle-work-plan-mismatch"
+
+
+@pytest.mark.parametrize(
+    "partial_resources",
+    [
+        lambda: {"hostPorts": [port_entry(8080)]},
+        lambda: {"exclusive": ["gpu:0"]},
+        lambda: {
+            "hostPorts": [port_entry(8080)],
+            "containerPorts": (),
+            "networks": (),
+            "volumes": (),
+            "devices": (),
+        },
+        lambda: {
+            "exclusive": ["gpu:0"],
+            "containerPorts": (),
+            "networks": (),
+            "volumes": (),
+            "devices": (),
+        },
+    ],
+    ids=[
+        "hostports-without-exclusive",
+        "exclusive-without-hostports",
+        "hostports-without-exclusive-among-ordinary-keys",
+        "exclusive-without-hostports-among-ordinary-keys",
+    ],
+)
+def test_bind_rejects_partial_reservation_claims_with_plan_mismatch(
+    partial_resources
+):
+    parsed = command("apply:documents", ["documents"], {"operation": INSTALL})
+    stored = transaction("applying")
+    stored["envelope"]["plan"]["definitions"][0]["resources"] = partial_resources()
+
+    with pytest.raises(lifecycle_work.LifecycleWorkValidationError) as raised:
+        lifecycle_plan.bind_lifecycle_plan(parsed, stored)
+
+    assert raised.value.code == "lifecycle-work-plan-mismatch"
+
+
+@pytest.mark.parametrize(
+    "partial_resources",
+    [
+        lambda: {"hostPorts": [port_entry(8080)]},
+        lambda: {"exclusive": ["gpu:0"]},
+    ],
+    ids=["hostports-without-exclusive", "exclusive-without-hostports"],
+)
+def test_bind_rejects_partial_reservation_claims_for_non_reserve_operations(
+    partial_resources
+):
+    stored = transaction("downloading")
+    for entry in stored["envelope"]["plan"]["definitions"]:
+        entry["resources"] = partial_resources()
+
+    with pytest.raises(lifecycle_work.LifecycleWorkValidationError) as raised:
+        lifecycle_plan.bind_lifecycle_plan(
+            command("download-and-verify", ["documents"], {"operations": [INSTALL]}),
+            stored,
+        )
+
+    assert raised.value.code == "lifecycle-work-plan-mismatch"
+
+
+@pytest.mark.parametrize(
+    "partial_resources",
+    [
+        lambda: {"hostPorts": [port_entry(8080)]},
+        lambda: {"exclusive": ["gpu:0"]},
+        lambda: {
+            "hostPorts": [port_entry(8080)],
+            "containerPorts": (),
+            "networks": (),
+            "volumes": (),
+            "devices": (),
+        },
+    ],
+    ids=[
+        "hostports-without-exclusive",
+        "exclusive-without-hostports",
+        "hostports-without-exclusive-among-ordinary-keys",
+    ],
+)
+def test_bind_rejects_partial_reservation_claims_for_reserve(partial_resources):
+    stored = transaction("reserved")
+    stored["envelope"]["plan"]["definitions"][0]["resources"] = partial_resources()
+
+    with pytest.raises(lifecycle_work.LifecycleWorkValidationError) as raised:
+        lifecycle_plan.bind_lifecycle_plan(
+            command("reserve:documents", ["documents"], {"operation": INSTALL}),
+            stored,
+        )
+
+    assert raised.value.code == "lifecycle-work-plan-mismatch"
+
+
+def test_bind_accepts_claim_material_once_the_missing_sibling_key_is_present():
+    stored = transaction("applying")
+    stored["envelope"]["plan"]["definitions"][0]["resources"] = {
+        "hostPorts": [port_entry(8080)],
+        "exclusive": ["gpu:0"],
+        "containerPorts": (),
+        "networks": (),
+        "volumes": (),
+        "devices": (),
+    }
+
+    bound = lifecycle_plan.bind_lifecycle_plan(
+        command("apply:documents", ["documents"], {"operation": INSTALL}),
+        stored,
+    )
+
+    material = bound.plan_material.definitions[0]
+    assert material.host_ports == (
+        lifecycle_plan.PlannedHostPort(protocol="tcp", port=8080),
+    )
+    assert material.exclusive == ("gpu:0",)
+
+
+def test_reservation_claims_come_from_the_canonical_plan_document_only():
+    stored = transaction("applying")
+
+    bound = lifecycle_plan.bind_lifecycle_plan(
+        command("apply:documents", ["documents"], {"operation": INSTALL}),
+        stored,
+    )
+    before = bound.plan_material.definitions[0].host_ports
+    stored["envelope"]["plan"]["definitions"][0]["resources"]["hostPorts"].append(
+        port_entry(9999)
+    )
+
+    assert bound.plan_material.definitions[0].host_ports == before
+    assert bound.plan_material.definitions[0].host_ports == (
+        lifecycle_plan.PlannedHostPort(protocol="tcp", port=8080),
+        lifecycle_plan.PlannedHostPort(protocol="udp", port=8081),
+    )
 
 
 def test_bind_copies_exact_definition_material_out_of_the_mutable_store_result():

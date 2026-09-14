@@ -28,6 +28,9 @@ PLAN_MATERIAL_SCHEMA = "ods.extension-lifecycle-plan-material.v1"
 
 _DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _SERVICE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+_EXCLUSIVE_RE = re.compile(r"^[a-z0-9][a-z0-9._:/-]{0,127}$")
+_HOST_PORT_KEYS = frozenset({"port", "protocol"})
+_CLAIM_KEYS = frozenset({"hostPorts", "exclusive"})
 _ACTIONS = frozenset({"install", "enable", "repair", "update", "noop"})
 _DEFINITION_SOURCES = frozenset({"builtin", "library", "user"})
 _LEGACY_DEFINITION_KEYS = frozenset(
@@ -98,6 +101,12 @@ class PlannedBuild:
 
 
 @dataclass(frozen=True)
+class PlannedHostPort:
+    protocol: str
+    port: int
+
+
+@dataclass(frozen=True)
 class PlannedDefinition:
     service_id: str
     service_type: str
@@ -111,6 +120,8 @@ class PlannedDefinition:
     images: tuple[PlannedImage, ...]
     builds: tuple[PlannedBuild, ...]
     canonical_document: bytes
+    host_ports: tuple[PlannedHostPort, ...] | None = None
+    exclusive: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -224,6 +235,60 @@ def _build(value: Any) -> PlannedBuild:
     )
 
 
+def _host_ports(value: Any) -> tuple[PlannedHostPort, ...]:
+    if not isinstance(value, list):
+        _reject()
+    ports: list[PlannedHostPort] = []
+    previous: tuple[str, int] | None = None
+    for item in value:
+        if not isinstance(item, dict) or frozenset(item) != _HOST_PORT_KEYS:
+            _reject()
+        port = item["port"]
+        protocol = item["protocol"]
+        if (
+            isinstance(port, bool)
+            or not isinstance(port, int)
+            or not 1 <= port <= 65535
+        ):
+            _reject()
+        if protocol not in ("tcp", "udp"):
+            _reject()
+        identity = (protocol, port)
+        if previous is not None and identity <= previous:
+            _reject()
+        previous = identity
+        ports.append(PlannedHostPort(protocol=protocol, port=port))
+    return tuple(ports)
+
+
+def _exclusive(value: Any) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        _reject()
+    tokens: list[str] = []
+    previous: str | None = None
+    for item in value:
+        if not isinstance(item, str) or _EXCLUSIVE_RE.fullmatch(item) is None:
+            _reject()
+        if previous is not None and item <= previous:
+            _reject()
+        previous = item
+        tokens.append(item)
+    return tuple(tokens)
+
+
+def _reservation_claims(
+    value: Any,
+) -> tuple[tuple[PlannedHostPort, ...], tuple[str, ...]] | None:
+    if not isinstance(value, dict):
+        _reject()
+    present = _CLAIM_KEYS & frozenset(value)
+    if not present:
+        return None
+    if present != _CLAIM_KEYS:
+        _reject()
+    return _host_ports(value["hostPorts"]), _exclusive(value["exclusive"])
+
+
 def _definition(value: Any) -> PlannedDefinition:
     value_keys = frozenset(value) if isinstance(value, dict) else frozenset()
     if not isinstance(value, dict) or value_keys not in {
@@ -251,6 +316,7 @@ def _definition(value: Any) -> PlannedDefinition:
     compose_sha256 = _digest(value["composeSha256"], optional=True)
     definition_source = value.get("definitionSource")
     compose_file = _compose_file(value.get("composeFile"))
+    claims = _reservation_claims(value["resources"])
     if value_keys == _DEFINITION_KEYS:
         if (
             not isinstance(definition_source, str)
@@ -273,6 +339,8 @@ def _definition(value: Any) -> PlannedDefinition:
         compose_sha256=compose_sha256,
         definition_source=definition_source,
         compose_file=compose_file,
+        host_ports=claims[0] if claims is not None else None,
+        exclusive=claims[1] if claims is not None else None,
         images=images,
         builds=builds,
         canonical_document=_canonical_document(value),
@@ -373,6 +441,18 @@ def bind_lifecycle_plan(
         _reject()
     _expected_request(command, operations)
 
+    if prefix == "reserve":
+        targeted = (
+            item for item in definitions if item.service_id == command.service_ids[0]
+        )
+        if not any(
+            item.host_ports is not None and item.exclusive is not None
+            for item in targeted
+        ):
+            raise LifecycleWorkValidationError(
+                "lifecycle-work-reservation-claims-missing"
+            ) from None
+
     material = LifecyclePlanMaterial(
         schema=PLAN_MATERIAL_SCHEMA,
         transaction_id=command.transaction_id,
@@ -389,6 +469,7 @@ __all__ = [
     "PLAN_MATERIAL_SCHEMA",
     "PlannedBuild",
     "PlannedDefinition",
+    "PlannedHostPort",
     "PlannedImage",
     "PlannedOperation",
     "bind_lifecycle_plan",

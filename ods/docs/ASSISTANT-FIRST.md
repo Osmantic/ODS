@@ -254,6 +254,15 @@ retained, and malformed, noncanonical, linked, replaced, or unsafe state fails
 closed. This phase deliberately adds no production importer, transaction
 adapter, resource projection, dispatcher, or Dashboard executor.
 
+Consumed plan material now binds reservation claims. Plan-bound definitions
+parse `resources.hostPorts` and `resources.exclusive` in their planner-canonical
+form and carry them on the frozen `PlannedDefinition`; legacy definitions
+without claim keys stay readable with explicit `None`. A `reserve:<serviceId>`
+command requires present claims on its targeted definition and fails closed
+with `lifecycle-work-reservation-claims-missing`; every other operation stays
+readable, and valid reserves never depend on unrelated legacy definitions. The
+reservation adapter, importer, dispatcher, and Dashboard executor remain absent.
+
 ## Evidence boundary
 
 The source contract checks resolver ordering, the exact candidate service set,
