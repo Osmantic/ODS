@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-13T16:53:56Z",
+  "generated_at": "2026-09-14T14:08:38Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -2293,6 +2293,61 @@
       "configuration_scope": "declared-environment-keys"
     },
     {
+      "id": "mealie",
+      "name": "Mealie",
+      "description": "Store local recipes and plan household meals through an authenticated API.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 9000,
+      "external_port_default": 7835,
+      "health_endpoint": "/api/app/about",
+      "env_vars": [
+        {
+          "key": "MEALIE_PORT",
+          "default": "7835",
+          "description": "Published recipe port; change the upstream initial password locally"
+        },
+        {
+          "key": "MEALIE_BASE_URL",
+          "default": "http://localhost:7835",
+          "description": "Public browser URL used in notifications; update when changing the port"
+        }
+      ],
+      "tags": [
+        "recipes",
+        "household",
+        "planning",
+        "local"
+      ],
+      "features": [
+        {
+          "id": "recipe-meal-planning",
+          "name": "Recipes and Meal Planning",
+          "description": "Keep recipes and their scheduled meals in a local household library",
+          "icon": "Utensils",
+          "category": "productivity",
+          "requirements": {
+            "services": [
+              "mealie"
+            ],
+            "vram_gb": 0,
+            "disk_gb": 2
+          },
+          "enabled_services_all": [
+            "mealie"
+          ],
+          "setup_time": "~3 minutes",
+          "priority": 33
+        }
+      ],
+      "startup_timeout": 180,
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
       "id": "milvus",
       "name": "Milvus (Vector Database)",
       "description": "Production-grade open-source vector database for scalable similarity search.",
@@ -3153,6 +3208,28 @@
           ]
         }
       ],
+      "catalog_source": "builtin",
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
+      "id": "pixel-inference",
+      "name": "Pixel inference sharing (development)",
+      "description": "Disabled by default. Owner-provisioned, inference-only device credentials; loopback transport only. Does not provide Pixel agent or computer access. Private state must be provisioned before service activation. Native Windows private-state support and guided setup are not yet implemented.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [
+        "model-router"
+      ],
+      "port": 8093,
+      "external_port_default": 4005,
+      "health_endpoint": "/health",
+      "env_vars": [],
+      "tags": [],
+      "features": [],
+      "startup_check": false,
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
     },

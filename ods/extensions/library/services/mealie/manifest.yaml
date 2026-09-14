@@ -1,0 +1,42 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: mealie
+  name: Mealie
+  description: "Store local recipes and plan household meals through an authenticated API."
+  aliases: [recipes]
+  container_name: ods-mealie
+  container_uid: 1000
+  default_host: mealie
+  port: 9000
+  external_port_env: MEALIE_PORT
+  external_port_default: 7835
+  health: /api/app/about
+  startup_timeout: 180
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [recipes, household, planning, local]
+  env_vars:
+    - key: MEALIE_PORT
+      default: "7835"
+      description: Published recipe port; change the upstream initial password locally
+    - key: MEALIE_BASE_URL
+      default: "http://localhost:7835"
+      description: Public browser URL used in notifications; update when changing the port
+features:
+  - id: recipe-meal-planning
+    name: Recipes and Meal Planning
+    description: "Keep recipes and their scheduled meals in a local household library"
+    icon: Utensils
+    category: productivity
+    requirements:
+      services: [mealie]
+      vram_gb: 0
+      disk_gb: 2
+    enabled_services_all: [mealie]
+    setup_time: "~3 minutes"
+    priority: 33
