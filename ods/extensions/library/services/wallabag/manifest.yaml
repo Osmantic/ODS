@@ -1,0 +1,40 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: wallabag
+  name: Wallabag
+  aliases: [read-it-later, bookmarks, articles]
+  container_name: ods-wallabag
+  host_env: WALLABAG_HOST
+  default_host: wallabag
+  port: 80
+  external_port_env: WALLABAG_PORT
+  external_port_default: 7853
+  health: /api/version
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [articles, read-it-later, archive, reading, local]
+  env_vars:
+    - key: WALLABAG_PORT
+      default: "7853"
+      description: Published Wallabag web reader and API port
+    - key: SYMFONY__ENV__DOMAIN_NAME
+      default: "http://localhost:7853"
+      description: Base URL for article assets and browser callbacks
+features:
+  - id: article-archiving
+    name: Article Archiving
+    description: "Extract, save, and read web articles and documentation offline in distraction-free format"
+    icon: Bookmark
+    category: productivity
+    requirements:
+      services: [wallabag]
+      vram_gb: 0
+      disk_gb: 2
+    enabled_services_all: [wallabag]
+    setup_time: "~1 minute"
+    priority: 40
