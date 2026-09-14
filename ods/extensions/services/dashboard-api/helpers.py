@@ -1146,3 +1146,44 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def parse_memory_string_bytes_safe(mem_str, default: int = 0) -> int:
+    """Safely parse human memory unit strings (e.g. 512MB, 4GB, 1024K) into raw byte counts."""
+    if mem_str is None:
+        return default
+    if isinstance(mem_str, (int, float)):
+        try:
+            if math.isnan(mem_str) or math.isinf(mem_str) or mem_str < 0:
+                return default
+            return int(mem_str)
+        except (ValueError, TypeError, OverflowError):
+            return default
+    if not isinstance(mem_str, str) or not mem_str.strip():
+        return default
+    s = mem_str.strip().upper()
+    units = {
+        "B": 1,
+        "K": 1024, "KB": 1024, "KIB": 1024,
+        "M": 1024**2, "MB": 1024**2, "MIB": 1024**2,
+        "G": 1024**3, "GB": 1024**3, "GIB": 1024**3,
+        "T": 1024**4, "TB": 1024**4, "TIB": 1024**4,
+    }
+    num_part = ""
+    unit_part = ""
+    for char in s:
+        if char.isdigit() or char == ".":
+            num_part += char
+        else:
+            unit_part += char
+    if not num_part:
+        return default
+    try:
+        val = float(num_part)
+        unit = unit_part.strip()
+        mult = units.get(unit, 1)
+        res = int(val * mult)
+        return max(0, res)
+    except (ValueError, TypeError, OverflowError):
+        return default
+
