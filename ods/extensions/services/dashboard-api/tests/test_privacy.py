@@ -291,3 +291,13 @@ def test_privacy_shield_stats_empty_shield_api_key(test_client, monkeypatch):
     assert resp.status_code == 200
     assert resp.json() == {"error": "SHIELD_API_KEY not configured", "enabled": False}
     session_factory.assert_not_called()
+
+
+def test_get_shield_port_invalid_env_fallback(monkeypatch):
+    """_get_shield_port falls back cleanly to default service port when SHIELD_PORT is invalid."""
+    from routers.privacy import _get_shield_port
+    monkeypatch.setenv("SHIELD_PORT", "invalid")
+    assert _get_shield_port() == 0
+
+    monkeypatch.setenv("SHIELD_PORT", '"8080"')
+    assert _get_shield_port() == 8080
