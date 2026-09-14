@@ -1607,3 +1607,19 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+class TestSafeParseBoolean:
+    def test_valid_booleans(self):
+        from helpers import safe_parse_boolean
+        assert safe_parse_boolean("true") is True
+        assert safe_parse_boolean("YES") is True
+        assert safe_parse_boolean("0") is False
+        assert safe_parse_boolean(1) is True
+
+    def test_invalid_and_bounds(self):
+        from helpers import safe_parse_boolean
+        assert safe_parse_boolean(None) is False
+        assert safe_parse_boolean(float("nan"), default=True) is True
+        assert safe_parse_boolean("unknown", default=True) is True
+

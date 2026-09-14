@@ -1146,3 +1146,24 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def safe_parse_boolean(val, default: bool = False) -> bool:
+    """Safely parse truthy or falsy boolean representations."""
+    if val is None:
+        return default
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, (int, float)):
+        if math.isnan(val) or math.isinf(val):
+            return default
+        return bool(val)
+    if isinstance(val, str):
+        cleaned = val.strip().lower()
+        if cleaned in ("true", "1", "yes", "y", "on", "t", "enable", "enabled"):
+            return True
+        if cleaned in ("false", "0", "no", "n", "off", "f", "disable", "disabled"):
+            return False
+        return default
+    return default
+
