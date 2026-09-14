@@ -121,6 +121,17 @@ def test_callback_bounds_provider_counters_to_ingest_contract(monkeypatch):
     assert event["output_tokens"] == 0
 
 
+def test_callback_handles_nan_duration_without_exception(monkeypatch):
+    callback = load_callback(monkeypatch)
+    event = callback.build_event(
+        {},
+        {"model": "model"},
+        float("nan"),
+        1.0,
+    )
+    assert event["duration_ms"] == 0
+
+
 def test_callback_enqueues_without_waiting_for_token_spy(monkeypatch):
     monkeypatch.setenv("TOKEN_SPY_URL", "http://token-spy:8080")
     monkeypatch.setenv("TOKEN_SPY_API_KEY", "shared-secret")

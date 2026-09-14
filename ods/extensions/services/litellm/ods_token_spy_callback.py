@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import os
 import time
 from datetime import datetime
@@ -53,7 +54,9 @@ def _duration_ms(start_time: Any, end_time: Any) -> int:
         try:
             seconds = float(end_time) - float(start_time)
         except (TypeError, ValueError):
-            seconds = 0
+            seconds = 0.0
+    if not math.isfinite(seconds):
+        seconds = 0.0
     return min(max(int(seconds * 1000), 0), 86_400_000)
 
 
