@@ -1,8 +1,16 @@
-"""HMAC-signed session cookies for ODS's ods-session.
+"""HMAC-signed, scope-aware session cookies for ODS's ods-session.
 
-The cookie value format is:
+The legacy cookie value format is:
 
     <random-id>.<expiry-epoch>.<signature>
+
+New cookies use a versioned, HMAC-covered scope:
+
+    v2.<scope>.<random-id>.<expiry-epoch>.<signature>
+
+Supported scopes are ``owner``, ``guest``, and ``admin``. Legacy cookies
+continue to validate as scope ``legacy`` for compatibility, but neither
+legacy nor API-key-minted admin cookies can authorize owner approval.
 
 Where:
   * random-id is `secrets.token_urlsafe(24)` — opaque per-redemption ID
@@ -51,8 +59,10 @@ import hashlib
 import hmac
 import logging
 import os
+import re
 import secrets
 import time
+from dataclasses import dataclass
 from typing import Tuple
 
 logger = logging.getLogger(__name__)
@@ -64,6 +74,20 @@ logger = logging.getLogger(__name__)
 # unsignable cookies that look valid because they pass an empty-key
 # HMAC check.
 _SECRET: bytes = (os.environ.get("ODS_SESSION_SECRET", "")).encode("utf-8")
+SCOPED_VERSION = "v2"
+SCOPES = frozenset({"owner", "guest", "admin"})
+SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
+MAX_COOKIE_CHARS = 1024
+
+
+@dataclass(frozen=True)
+class SessionClaims:
+    """Verified server-side claims; never serialize ``session_id`` to clients."""
+
+    scope: str
+    session_id: str
+    expires_at: int
+    version: str
 
 
 def is_configured() -> bool:
@@ -122,6 +146,25 @@ def issue(ttl_seconds: int = 12 * 3600) -> str:
     return f"{payload}.{signature}"
 
 
+def issue_scoped(scope: str, ttl_seconds: int = 12 * 3600) -> str:
+    """Mint a versioned cookie whose exact scope is covered by the HMAC."""
+    if not _SECRET:
+        raise RuntimeError(
+            "ODS_SESSION_SECRET is not configured; refusing to issue an "
+            "unsignable session cookie. Set it in .env (32+ random bytes) "
+            "and restart dashboard-api."
+        )
+    if scope not in SCOPES:
+        raise ValueError(f"unsupported session scope: {scope!r}")
+    if ttl_seconds < 1:
+        raise ValueError(f"ttl_seconds must be positive, got {ttl_seconds}")
+
+    random_id = secrets.token_urlsafe(24)
+    expiry = int(time.time()) + ttl_seconds
+    payload = f"{SCOPED_VERSION}.{scope}.{random_id}.{expiry}"
+    return f"{payload}.{_sign(payload)}"
+
+
 def verify(cookie_value: str) -> Tuple[bool, str]:
     """Validate a signed cookie. Returns (ok, reason).
 
@@ -134,36 +177,72 @@ def verify(cookie_value: str) -> Tuple[bool, str]:
 
     Always returns (True, "ok") when validation succeeds; never raises.
     """
+    ok, reason, _ = verify_scoped(cookie_value)
+    return ok, reason
+
+
+def verify_scoped(
+    cookie_value: str,
+) -> tuple[bool, str, SessionClaims | None]:
+    """Validate either cookie format and return verified scope claims."""
     if not _SECRET:
-        return False, "no-secret"
-    if not cookie_value or not isinstance(cookie_value, str):
-        return False, "malformed"
+        return False, "no-secret", None
+    if (
+        not cookie_value
+        or not isinstance(cookie_value, str)
+        or len(cookie_value) > MAX_COOKIE_CHARS
+    ):
+        return False, "malformed", None
 
     parts = cookie_value.split(".")
-    if len(parts) != 3:
-        return False, "malformed"
+    if len(parts) == 3:
+        random_id, expiry_str, claimed_sig = parts
+        scope, version = "legacy", "v1"
+        payload = f"{random_id}.{expiry_str}"
+    elif len(parts) == 5:
+        version, scope, random_id, expiry_str, claimed_sig = parts
+        if version != SCOPED_VERSION or scope not in SCOPES:
+            return False, "malformed", None
+        payload = f"{version}.{scope}.{random_id}.{expiry_str}"
+    else:
+        return False, "malformed", None
 
-    random_id, expiry_str, claimed_sig = parts
-    if not random_id or not expiry_str or not claimed_sig:
-        return False, "malformed"
-
-    # Verify expiry format first before computing HMAC.
+    if (
+        not random_id
+        or not expiry_str
+        or not claimed_sig
+        or len(random_id) > 128
+        or len(claimed_sig) > 128
+        or (version == SCOPED_VERSION and not SESSION_ID_RE.fullmatch(random_id))
+    ):
+        return False, "malformed", None
     try:
         expiry = int(expiry_str)
     except (ValueError, TypeError):
-        return False, "malformed"
+        return False, "malformed", None
+    if expiry < 0 or len(expiry_str) > 12:
+        return False, "malformed", None
 
-    payload = f"{random_id}.{expiry_str}"
     expected_sig = _sign(payload)
-    # Constant-time compare to defeat signature timing oracles. Encoded to
-    # UTF-8 first because compare_digest raises TypeError on non-ASCII str,
-    # and claimed_sig comes straight off an attacker-controlled cookie —
-    # verify() must return a reason, never raise.
-    if not hmac.compare_digest(expected_sig.encode("utf-8"), claimed_sig.encode("utf-8")):
-        return False, "bad-signature"
-
-    # Signature is good — check expiry timestamp.
+    if not hmac.compare_digest(
+        expected_sig.encode("utf-8"), claimed_sig.encode("utf-8")
+    ):
+        return False, "bad-signature", None
     if expiry <= int(time.time()):
-        return False, "expired"
+        return False, "expired", None
 
-    return True, "ok"
+    return True, "ok", SessionClaims(
+        scope=scope,
+        session_id=random_id,
+        expires_at=expiry,
+        version=version,
+    )
+
+
+def owner_approval_identity(cookie_value: str) -> str | None:
+    """Return a non-secret audit identity only for a valid owner cookie."""
+    ok, _, claims = verify_scoped(cookie_value)
+    if not ok or claims is None or claims.scope != "owner":
+        return None
+    digest = hashlib.sha256(claims.session_id.encode("ascii")).hexdigest()[:16]
+    return f"owner-{digest}"

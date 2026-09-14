@@ -48,6 +48,20 @@ class TestIssue:
         c2 = session_signer.issue(ttl_seconds=60)
         assert c1.split(".")[0] != c2.split(".")[0]
 
+    @pytest.mark.parametrize("scope", ["owner", "guest", "admin"])
+    def test_scoped_cookie_roundtrip(self, scope):
+        cookie = session_signer.issue_scoped(scope, ttl_seconds=60)
+        assert len(cookie.split(".")) == 5
+        ok, reason, claims = session_signer.verify_scoped(cookie)
+        assert (ok, reason) == (True, "ok")
+        assert claims is not None
+        assert claims.scope == scope
+        assert claims.version == "v2"
+
+    def test_issue_scoped_rejects_unknown_scope(self):
+        with pytest.raises(ValueError, match="unsupported session scope"):
+            session_signer.issue_scoped("superuser", ttl_seconds=60)
+
 
 # ---------------------------------------------------------------------------
 # is_configured()
@@ -96,6 +110,33 @@ class TestVerify:
         assert ok is True
         assert reason == "ok"
 
+    def test_legacy_cookie_is_compatible_but_not_owner(self):
+        cookie = session_signer.issue(ttl_seconds=60)
+        ok, reason, claims = session_signer.verify_scoped(cookie)
+        assert (ok, reason) == (True, "ok")
+        assert claims is not None and claims.scope == "legacy"
+        assert session_signer.owner_approval_identity(cookie) is None
+
+    def test_scope_tampering_invalidates_signature(self):
+        cookie = session_signer.issue_scoped("owner", ttl_seconds=60)
+        version, _, random_id, expiry, signature = cookie.split(".")
+        tampered = f"{version}.admin.{random_id}.{expiry}.{signature}"
+        ok, reason, claims = session_signer.verify_scoped(tampered)
+        assert (ok, reason, claims) == (False, "bad-signature", None)
+
+    def test_only_owner_scope_yields_hashed_approval_identity(self):
+        owner = session_signer.issue_scoped("owner", ttl_seconds=60)
+        guest = session_signer.issue_scoped("guest", ttl_seconds=60)
+        admin = session_signer.issue_scoped("admin", ttl_seconds=60)
+        owner_id = session_signer.owner_approval_identity(owner)
+        raw_session_id = owner.split(".")[2]
+
+        assert owner_id is not None and owner_id.startswith("owner-")
+        assert raw_session_id not in owner_id
+        assert session_signer.owner_approval_identity(owner) == owner_id
+        assert session_signer.owner_approval_identity(guest) is None
+        assert session_signer.owner_approval_identity(admin) is None
+
     def test_empty_string(self):
         ok, reason = session_signer.verify("")
         assert ok is False
@@ -111,6 +152,14 @@ class TestVerify:
             ok, reason = session_signer.verify(bad)
             assert ok is False, f"expected reject for {bad!r}"
             assert reason == "malformed"
+
+    def test_oversized_cookie_is_rejected_before_hmac(self, monkeypatch):
+        def unexpected_sign(_payload):
+            raise AssertionError("Oversized cookie reached HMAC")
+
+        monkeypatch.setattr(session_signer, "_sign", unexpected_sign)
+        ok, reason = session_signer.verify("a" * 1025)
+        assert (ok, reason) == (False, "malformed")
 
     def test_empty_subpart(self):
         ok, reason = session_signer.verify("..")

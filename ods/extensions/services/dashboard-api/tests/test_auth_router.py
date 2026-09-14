@@ -42,6 +42,7 @@ def test_valid_cookie_returns_200(test_client):
         assert body["valid"] is True
         assert isinstance(body["expires_at"], int)
         assert body["expires_at"] > 0
+        assert body["scope"] == "legacy"
     finally:
         test_client.cookies.clear()
 
@@ -175,6 +176,10 @@ class TestAdminSession:
         # Roundtrip the cookie through verify-session directly.
         ok, reason = session_signer.verify(cookie)
         assert ok is True, f"admin-session cookie did not verify: {reason}"
+        ok, _, claims = session_signer.verify_scoped(cookie)
+        assert ok is True and claims is not None
+        assert claims.scope == "admin"
+        assert session_signer.owner_approval_identity(cookie) is None
 
     def test_503_when_signing_unconfigured(self, test_client):
         """If ODS_SESSION_SECRET is empty, the endpoint refuses to mint."""

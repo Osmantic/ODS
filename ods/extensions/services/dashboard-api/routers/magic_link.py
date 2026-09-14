@@ -781,7 +781,9 @@ def redeem_magic_link(token: str, request: Request, response: Response) -> Redir
     # Build the response. The session cookie is HMAC-signed via
     # session_signer.issue() — guarded by is_configured() above so we
     # don't reach this line without a usable secret.
-    session_token = session_signer.issue(ttl_seconds=SESSION_TTL_SECONDS)
+    session_token = session_signer.issue_scoped(
+        record["token_type"], ttl_seconds=SESSION_TTL_SECONDS
+    )
     secure_cookie = request.url.scheme == "https"
     cookie_domain = _cookie_domain(record.get("url_mode", "auto"))
 
