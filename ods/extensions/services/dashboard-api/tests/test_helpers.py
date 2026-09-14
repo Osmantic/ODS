@@ -1740,3 +1740,14 @@ def test_flatten_bounds_cycles_and_large_depth_without_losing_empty_leaves():
         nested = {"child": nested}
     result = dict_flatten_nested_safe(nested, max_depth=100000)
     assert len(next(iter(result)).split(".")) == 128
+
+
+class TestListChunkOverlappingSafe:
+    def test_valid_sliding_chunk(self):
+        from helpers import list_chunk_overlapping_safe
+        assert list_chunk_overlapping_safe([1, 2, 3, 4, 5], 3, 1) == [[1, 2, 3], [3, 4, 5]]
+
+    def test_invalid_inputs(self):
+        from helpers import list_chunk_overlapping_safe
+        assert list_chunk_overlapping_safe(None) == []
+        assert list_chunk_overlapping_safe([1, 2], 0, 0) == [[1, 2]]
