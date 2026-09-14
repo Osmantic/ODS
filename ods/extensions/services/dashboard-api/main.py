@@ -150,7 +150,10 @@ def _read_installed_version() -> str:
     env_file = install_root / ".env"
     if env_file.exists():
         try:
-            for line in env_file.read_text().splitlines():
+            for line in env_file.read_text(encoding="utf-8", errors="replace").splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
                 if line.startswith("ODS_VERSION="):
                     env_version = strip_matching_quotes(line.split("=", 1)[1])
                     if env_version:
