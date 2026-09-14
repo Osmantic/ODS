@@ -1740,3 +1740,14 @@ def test_flatten_bounds_cycles_and_large_depth_without_losing_empty_leaves():
         nested = {"child": nested}
     result = dict_flatten_nested_safe(nested, max_depth=100000)
     assert len(next(iter(result)).split(".")) == 128
+
+
+class TestNumericGeometricMeanSafe:
+    def test_valid_geometric_mean(self):
+        from helpers import numeric_geometric_mean_safe
+        assert numeric_geometric_mean_safe([2, 8]) == 4.0
+
+    def test_invalid_inputs(self):
+        from helpers import numeric_geometric_mean_safe
+        assert numeric_geometric_mean_safe(None) == 0.0
+        assert numeric_geometric_mean_safe([-1, 0, "a"]) == 0.0
