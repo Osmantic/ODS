@@ -1,0 +1,25 @@
+name: Beszel monitoring hub contract
+
+on:
+  pull_request:
+    paths:
+      - 'ods/extensions/library/services/beszel/**'
+      - 'ods/tests/test_beszel_extension.py'
+      - '.github/workflows/beszel-extension.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  beszel-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install pytest PyYAML
+      - name: Verify Beszel extension contract
+        run: python -m pytest -q ods/tests/test_beszel_extension.py
