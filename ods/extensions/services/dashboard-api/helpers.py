@@ -1146,3 +1146,32 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def calculate_numeric_list_stats(data: object) -> dict:
+    """Calculate count, sum, min, max, average of numeric list elements safely.
+
+    Filters non-numeric values, NaN, and Inf. Returns default zeroed dict for empty/None inputs.
+    """
+    default = {"count": 0, "sum": 0.0, "min": 0.0, "max": 0.0, "average": 0.0}
+    if not isinstance(data, (list, tuple)) or not data:
+        return default
+    valid = []
+    for item in data:
+        try:
+            val = float(item)
+            if not math.isnan(val) and not math.isinf(val):
+                valid.append(val)
+        except (ValueError, TypeError):
+            continue
+    if not valid:
+        return default
+    total = sum(valid)
+    return {
+        "count": len(valid),
+        "sum": round(total, 4),
+        "min": round(min(valid), 4),
+        "max": round(max(valid), 4),
+        "average": round(total / len(valid), 4),
+    }
+

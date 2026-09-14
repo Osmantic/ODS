@@ -1607,3 +1607,23 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+class TestCalculateNumericListStats:
+
+    def test_calculates_numeric_stats(self):
+        from helpers import calculate_numeric_list_stats
+        assert calculate_numeric_list_stats([10, 20, 30]) == {
+            "count": 3,
+            "sum": 60.0,
+            "min": 10.0,
+            "max": 30.0,
+            "average": 20.0,
+        }
+
+    def test_handles_none_and_non_numeric_inputs(self):
+        from helpers import calculate_numeric_list_stats
+        default = {"count": 0, "sum": 0.0, "min": 0.0, "max": 0.0, "average": 0.0}
+        assert calculate_numeric_list_stats(None) == default
+        assert calculate_numeric_list_stats(["abc", None]) == default
+
