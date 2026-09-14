@@ -447,9 +447,15 @@ class ArtifactStageAdapterTests(unittest.TestCase):
         repo = Path(__file__).resolve().parents[5]
         adapter_path = BIN_DIR / "extension_artifact_stage_adapter.py"
         recovery_path = BIN_DIR / "extension_artifact_stage_recovery.py"
+        runtime_path = BIN_DIR / "extension_artifact_stage_runtime.py"
         hits: list[str] = []
         for path in (repo / "ods").rglob("*.py"):
-            if path in {adapter_path, recovery_path, Path(__file__).resolve()}:
+            if path in {
+                adapter_path,
+                recovery_path,
+                runtime_path,
+                Path(__file__).resolve(),
+            } or "tests" in path.parts:
                 continue
             if "extension_artifact_stage_adapter" in path.read_text(
                 encoding="utf-8"

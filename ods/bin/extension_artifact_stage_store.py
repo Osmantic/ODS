@@ -651,6 +651,20 @@ def _open_root(root: Path) -> int:
         raise
 
 
+def validate_artifact_stage_root(
+    root: str | os.PathLike[str],
+) -> Path:
+    """Prove one existing owner-private stage root without creating it."""
+
+    _validate_platform()
+    validated = _validate_root_value(root)
+    descriptor = _open_root(validated)
+    try:
+        return validated
+    finally:
+        os.close(descriptor)
+
+
 def _identity(info: os.stat_result) -> tuple[int, ...]:
     return (
         info.st_dev,
@@ -966,4 +980,5 @@ __all__ = [
     "StagedArtifactFile",
     "StagedDefinitionArtifacts",
     "select_stage_definitions",
+    "validate_artifact_stage_root",
 ]

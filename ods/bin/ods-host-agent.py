@@ -117,6 +117,11 @@ try:
 except Exception:  # pragma: no cover - import environment dependent
     _extension_lifecycle_plan = None
 
+try:
+    import extension_artifact_stage_runtime as _artifact_stage_runtime_module
+except Exception:  # pragma: no cover - import environment dependent
+    _artifact_stage_runtime_module = None
+
 _EXTENSION_TRANSACTION_STORE_PATH = (
     Path(__file__).resolve().parent.parent
     / "extensions"
@@ -173,6 +178,13 @@ _extension_transaction_store = None
 _extension_transaction_store_data_dir: Path | None = None
 _extension_transaction_store_lock = threading.Lock()
 _extension_lifecycle_plan_loader = None
+
+# Exact artifact-stage dependencies are composed lazily from fixed host roots.
+# They remain unregistered in this phase: neither the lifecycle handler nor the
+# Dashboard transaction runtime calls this factory during production startup.
+_artifact_stage_runtime = None
+_artifact_stage_runtime_binding: tuple[Path, Path, Path] | None = None
+_artifact_stage_runtime_lock = threading.Lock()
 
 # Production lifecycle dispatch remains deliberately unwired.  A later phase
 # will install one reviewed host-owned dispatcher after each concrete operation
@@ -6516,6 +6528,30 @@ def _get_lifecycle_receipt_store() -> "_extension_lifecycle_receipts.LifecycleRe
             )
             _lifecycle_receipt_store_data_dir = DATA_DIR
         return _lifecycle_receipt_store
+
+
+def _get_extension_artifact_stage_runtime():
+    """Compose, but do not register, the fixed host artifact-stage runtime."""
+
+    global _artifact_stage_runtime, _artifact_stage_runtime_binding
+    if _artifact_stage_runtime_module is None:
+        return None
+    binding = (DATA_DIR, EXTENSIONS_DIR, USER_EXTENSIONS_DIR)
+    with _artifact_stage_runtime_lock:
+        if (
+            _artifact_stage_runtime is None
+            or _artifact_stage_runtime_binding != binding
+        ):
+            _artifact_stage_runtime = (
+                _artifact_stage_runtime_module.build_artifact_stage_runtime(
+                    data_dir=DATA_DIR,
+                    builtin_root=EXTENSIONS_DIR,
+                    library_root=EXTENSIONS_DIR,
+                    user_root=USER_EXTENSIONS_DIR,
+                )
+            )
+            _artifact_stage_runtime_binding = binding
+        return _artifact_stage_runtime
 
 
 def _get_extension_transaction_store():

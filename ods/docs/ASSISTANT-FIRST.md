@@ -137,13 +137,14 @@ The Assistant First Compose fragment runs Dashboard API with the persisted host
 UID/GID so the container and updater address the same owner-private inode. Before
 writing any data child, the installer rejects a symlinked or wrong-type data
 root, requires the installing host UID, and removes group/world write access.
-It creates both `data/assistant-first` and
+It creates `data/assistant-first`, its `artifact-stage` child, and
 `data/.extension-operation-locks` as real owner-private mode `0700`
 directories, repairs mode only for the matching owner, and rejects a stale
-`ODS_UID`. The first transaction-store initialization can therefore create its
-own private child without weakening the parent contract. Native Windows source
-update/rollback currently fails closed as unqualified rather than claiming
-equivalent descriptor-lock semantics.
+`ODS_UID`. The transaction store can therefore initialize its own private child
+while immutable artifact staging receives the pre-existing root required by its
+descriptor-relative store. Native Windows source update/rollback currently
+fails closed as unqualified rather than claiming equivalent descriptor-lock
+semantics.
 
 When the opt-in transaction runtime first starts without an active desired-state
 lockfile, it writes one canonical owner-private bootstrap record. That record
@@ -219,8 +220,9 @@ and only then makes one batch call with the returned in-memory bytes. The
 adapter returns the staged bundle hash as terminal lifecycle evidence and adds
 no retry or persistence of its own. Verification failure cannot publish a
 partial batch, and a post-publication evidence mismatch is distinguished from
-pre-read plan rejection. No production module imports the adapter, so this
-still does not enable lifecycle execution or installed-state recovery.
+pre-read plan rejection. Only the dormant host composition module imports the
+adapter, and no lifecycle handler calls or registers it, so this still does not
+enable lifecycle execution or installed-state recovery.
 
 The lifecycle receipt boundary also accepts an optional typed observer for a
 `started` receipt. The first observer implementation is intentionally limited
@@ -230,6 +232,14 @@ dispatcher path. Invalid, corrupt, conflicting, or unavailable observations
 cannot dispatch or terminalize the receipt. The production host path does not
 provide this observer yet, so the seam remains dormant and grants no recovery
 authority for configuration, apply, verification, rollback, or removal.
+
+Production code can now compose the exact verifier roots, immutable stage
+store, stage dispatcher, and started-receipt observer against that fixed
+installer-owned root. Composition validates the root without creating or
+repairing it, caches only the exact `DATA_DIR` and extension-root binding, and
+accepts no request or environment override. The host lifecycle handler does not
+call the factory, register either callable, or change its unavailable response;
+Dashboard execution also remains `None`.
 
 ## Evidence boundary
 

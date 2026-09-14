@@ -334,9 +334,11 @@ ods_assistant_first_prepare_state_directories "$2" "$3"
             result = self._run(data)
             self.assertEqual(result.returncode, 0, result.stderr)
             private = data / "assistant-first"
+            stage = private / "artifact-stage"
             locks = data / ".extension-operation-locks"
             self.assertEqual(self._mode(data), 0o755)
             self.assertEqual(self._mode(private), 0o700)
+            self.assertEqual(self._mode(stage), 0o700)
             self.assertEqual(self._mode(locks), 0o700)
             for child_name in ("config", "models", "persona"):
                 self.assertEqual(self._mode(data / child_name), 0o755)
@@ -420,6 +422,38 @@ ods_assistant_first_prepare_state_directories "$2" "$3"
             self.assertTrue(private.is_symlink())
             self.assertFalse((data / ".extension-operation-locks").exists())
 
+    def test_artifact_stage_symlink_is_rejected_before_sibling_writes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            data = root / "data"
+            private = data / "assistant-first"
+            target = root / "redirect-target"
+            private.mkdir(mode=0o700, parents=True)
+            target.mkdir()
+            (private / "artifact-stage").symlink_to(
+                target, target_is_directory=True
+            )
+
+            result = self._run(data)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("must not be a symlink", result.stderr)
+            self.assertEqual(list(target.iterdir()), [])
+            self.assertFalse((data / ".extension-operation-locks").exists())
+
+    def test_artifact_stage_wrong_type_is_rejected_before_sibling_writes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            data = pathlib.Path(temp) / "data"
+            private = data / "assistant-first"
+            private.mkdir(mode=0o700, parents=True)
+            (private / "artifact-stage").write_text(
+                "not-a-directory", encoding="utf-8"
+            )
+
+            result = self._run(data)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("path is not a directory", result.stderr)
+            self.assertFalse((data / ".extension-operation-locks").exists())
+
     def test_wrong_types_and_unexpected_owner_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = pathlib.Path(temp)
@@ -456,14 +490,17 @@ ods_assistant_first_prepare_state_directories "$2" "$3"
         with tempfile.TemporaryDirectory() as temp:
             data = pathlib.Path(temp) / "data"
             private = data / "assistant-first"
+            stage = private / "artifact-stage"
             locks = data / ".extension-operation-locks"
             data.mkdir(mode=0o777)
             private.mkdir(mode=0o755)
+            stage.mkdir(mode=0o755)
             locks.mkdir(mode=0o755)
             marker = private / "preserved"
             marker.write_text("state", encoding="utf-8")
             data.chmod(0o777)
             private.chmod(0o755)
+            stage.chmod(0o755)
             locks.chmod(0o755)
 
             first = self._run(data)
@@ -472,6 +509,7 @@ ods_assistant_first_prepare_state_directories "$2" "$3"
             self.assertEqual(second.returncode, 0, second.stderr)
             self.assertEqual(self._mode(data) & 0o022, 0)
             self.assertEqual(self._mode(private), 0o700)
+            self.assertEqual(self._mode(stage), 0o700)
             self.assertEqual(self._mode(locks), 0o700)
             self.assertEqual(marker.read_text(encoding="utf-8"), "state")
 
@@ -501,6 +539,10 @@ ods_assistant_first_prepare_state_directories "$2" "$3"
             self.assertEqual(repaired.returncode, 0, repaired.stderr)
             self.assertEqual(self._mode(data), 0o755)
             self.assertEqual(self._mode(data / "assistant-first"), 0o700)
+            self.assertEqual(
+                self._mode(data / "assistant-first" / "artifact-stage"),
+                0o700,
+            )
             self.assertEqual(self._mode(data / ".extension-operation-locks"), 0o700)
             for child_name in ("config", "models", "persona"):
                 self.assertEqual(self._mode(data / child_name), 0o755)

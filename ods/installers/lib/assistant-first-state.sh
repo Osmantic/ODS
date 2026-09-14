@@ -157,10 +157,17 @@ ods_assistant_first_prepare_state_directories() {
         _ods_assistant_first_preflight_existing_directory \
             "$child_path" "Assistant First data child" || return 1
     done
+    _ods_assistant_first_preflight_existing_directory \
+        "$data_root/assistant-first/artifact-stage" \
+        "Assistant First artifact stage directory" || return 1
 
     _ods_assistant_first_prepare_private_directory \
         "$data_root/assistant-first" \
         "Assistant First private state directory" \
+        "$expected_uid" || return 1
+    _ods_assistant_first_prepare_private_directory \
+        "$data_root/assistant-first/artifact-stage" \
+        "Assistant First artifact stage directory" \
         "$expected_uid" || return 1
     _ods_assistant_first_prepare_private_directory \
         "$data_root/.extension-operation-locks" \

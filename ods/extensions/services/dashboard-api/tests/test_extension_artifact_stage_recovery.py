@@ -161,12 +161,13 @@ class ArtifactStageRecoveryTests(unittest.TestCase):
             )
         )
 
-    def test_no_production_module_imports_the_dormant_observer(self) -> None:
+    def test_only_dormant_runtime_composition_imports_the_observer(self) -> None:
         repo = Path(__file__).resolve().parents[5]
         observer_path = BIN_DIR / "extension_artifact_stage_recovery.py"
+        runtime_path = BIN_DIR / "extension_artifact_stage_runtime.py"
         hits: list[str] = []
         for path in (repo / "ods").rglob("*.py"):
-            if path == observer_path or "tests" in path.parts:
+            if path in {observer_path, runtime_path} or "tests" in path.parts:
                 continue
             if "extension_artifact_stage_recovery" in path.read_text(
                 encoding="utf-8"
