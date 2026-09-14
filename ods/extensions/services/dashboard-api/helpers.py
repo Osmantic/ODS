@@ -244,8 +244,8 @@ def is_plausible_single_request_tps(value) -> bool:
 def _read_json_file(path: Path, default):
     try:
         if path.exists():
-            return json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as e:
+            return json.loads(path.read_text(encoding="utf-8", errors="replace"))
+    except (json.JSONDecodeError, OSError, UnicodeError, ValueError) as e:
         logger.debug("Failed to read JSON file %s: %s", path, e)
     return default
 
