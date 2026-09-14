@@ -673,10 +673,22 @@ promote_full_model_env() {
     [[ -f "$ENV_FILE" ]] || return 1
 
     log "Promoting .env to full model (${reason})..."
-    write_env_value GGUF_FILE "$FULL_GGUF_FILE" || return 1
-    write_env_value LLM_MODEL "$FULL_LLM_MODEL" || return 1
-    write_env_value MAX_CONTEXT "$FULL_MAX_CONTEXT" || return 1
-    write_env_value CTX_SIZE "$FULL_MAX_CONTEXT" || return 1
+    write_env_value GGUF_FILE "$FULL_GGUF_FILE" || {
+        log "ERROR: write_env_value GGUF_FILE failed"
+        return 1
+    }
+    write_env_value LLM_MODEL "$FULL_LLM_MODEL" || {
+        log "ERROR: write_env_value LLM_MODEL failed"
+        return 1
+    }
+    write_env_value MAX_CONTEXT "$FULL_MAX_CONTEXT" || {
+        log "ERROR: write_env_value MAX_CONTEXT failed"
+        return 1
+    }
+    write_env_value CTX_SIZE "$FULL_MAX_CONTEXT" || {
+        log "ERROR: write_env_value CTX_SIZE failed"
+        return 1
+    }
 
     if full_model_env_matches; then
         return 0

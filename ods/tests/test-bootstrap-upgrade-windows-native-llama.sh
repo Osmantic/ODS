@@ -160,7 +160,13 @@ PATH="$fakebin:$PATH" ODS_FAKE_PS_TRACE="$trace" ODS_FAKE_DOCKER_TRACE="$docker_
     "full-model" \
     "32768" \
     "Bootstrap.gguf" \
-    > "$tmp/bootstrap.log" 2>&1
+    > "$tmp/bootstrap.log" 2>&1 || {
+    _bootstrap_rc=$?
+    echo "[FAIL] bootstrap-upgrade exited with code $_bootstrap_rc" >&2
+    echo "--- Bootstrap log excerpt ---" >&2
+    tail -40 "$tmp/bootstrap.log" >&2 || true
+    exit 1
+}
 
 grep -q 'Restarting native Windows llama-server with full model' "$tmp/bootstrap.log" \
     || fail "bootstrap-upgrade should restart the native Windows llama-server fallback"
