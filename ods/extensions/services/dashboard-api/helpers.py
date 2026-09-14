@@ -1146,3 +1146,23 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def convert_bytes_to_gb_bounds(bytes_val: object, precision: int = 2) -> float:
+    """Convert bytes count safely to gigabytes (GB) rounded to precision.
+
+    Returns 0.0 for negative values, None, or non-numeric inputs.
+    Handles float overflow/NaN/Inf without raising ValueError.
+    """
+    if bytes_val is None:
+        return 0.0
+    try:
+        val = float(bytes_val)
+        if math.isnan(val) or math.isinf(val) or val < 0:
+            return 0.0
+    except (ValueError, TypeError):
+        return 0.0
+
+    gb = val / (1024 ** 3)
+    return round(gb, max(0, precision))
+

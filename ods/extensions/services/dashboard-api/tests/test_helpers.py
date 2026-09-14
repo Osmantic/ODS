@@ -1607,3 +1607,18 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+class TestConvertBytesToGbBounds:
+
+    def test_converts_bytes_to_gb(self):
+        from helpers import convert_bytes_to_gb_bounds
+        assert convert_bytes_to_gb_bounds(1073741824) == 1.0
+        assert convert_bytes_to_gb_bounds(2147483648, precision=1) == 2.0
+
+    def test_handles_none_negative_and_invalid_inputs(self):
+        from helpers import convert_bytes_to_gb_bounds
+        assert convert_bytes_to_gb_bounds(None) == 0.0
+        assert convert_bytes_to_gb_bounds(-100) == 0.0
+        assert convert_bytes_to_gb_bounds("invalid") == 0.0
+
