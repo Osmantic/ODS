@@ -14,7 +14,7 @@ SEMVER = re.compile(r"^\d+\.\d+\.\d+$")
 
 
 def read_text(path: Path) -> str:
-    return path.read_text(encoding="utf-8")
+    return path.read_text(encoding="utf-8", errors="replace")
 
 
 def first_match(path: Path, pattern: str, label: str) -> str:
