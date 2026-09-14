@@ -19,7 +19,7 @@ it('opens only supported actions on right click, supports keyboard navigation an
   const button=screen.getByRole('button',{name:'My chat',exact:true})
   fireEvent.contextMenu(button,{clientX:900,clientY:700})
   const menu=screen.getByRole('menu')
-  expect(within(menu).getAllByRole('menuitem').map(item=>item.textContent)).toEqual(['Rename','Pin','Archive','Export conversation','Delete chat'])
+  expect(within(menu).getAllByRole('menuitem').map(item=>item.textContent)).toEqual(['Rename','Pin','Archive','Duplicate / Fork','Export conversation','Delete chat'])
   expect(screen.getByRole('menuitem',{name:'Rename'})).toHaveFocus()
   fireEvent.keyDown(menu,{key:'ArrowDown'})
   expect(screen.getByRole('menuitem',{name:'Pin'})).toHaveFocus()
