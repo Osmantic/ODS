@@ -1146,3 +1146,19 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def sanitize_email_address_safe(email: str, default: str = "") -> str:
+    """Safely sanitize and validate email address string."""
+    if email is None or not isinstance(email, str):
+        return default
+    cleaned = email.strip()
+    if not cleaned or cleaned.count("@") != 1:
+        return default
+    local_part, domain_part = cleaned.split("@")
+    if not local_part or not domain_part:
+        return default
+    if "." not in domain_part or domain_part.startswith(".") or domain_part.endswith("."):
+        return default
+    return f"{local_part}@{domain_part.lower()}"
+

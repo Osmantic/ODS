@@ -1607,3 +1607,21 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+class TestSanitizeEmailAddressSafe:
+    def test_valid_emails(self):
+        from helpers import sanitize_email_address_safe
+        assert sanitize_email_address_safe("user@EXAMPLE.COM") == "user@example.com"
+        assert sanitize_email_address_safe("  admin@test.org  ") == "admin@test.org"
+
+    def test_invalid_and_bounds(self):
+        from helpers import sanitize_email_address_safe
+        assert sanitize_email_address_safe(None) == ""
+        assert sanitize_email_address_safe(123) == ""
+        assert sanitize_email_address_safe("no_at_sign.com") == ""
+        assert sanitize_email_address_safe("two@@at.com") == ""
+        assert sanitize_email_address_safe("@domain.com") == ""
+        assert sanitize_email_address_safe("user@") == ""
+        assert sanitize_email_address_safe("user@domain", default="invalid") == "invalid"
+
