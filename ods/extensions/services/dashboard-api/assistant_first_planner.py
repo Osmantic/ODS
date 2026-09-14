@@ -13,6 +13,7 @@ import re
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Any
+from urllib.parse import urlsplit
 
 
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
@@ -31,6 +32,7 @@ _SEMVER_RE = re.compile(
     r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
 )
 _DRIVER_VERSION_RE = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._-]{0,63}$")
+_ENCODED_CONTROL_RE = re.compile(r"%(?:0[0-9a-f]|1[0-9a-f]|7f)", re.IGNORECASE)
 
 _PLANNING_FIELDS = frozenset(
     {
@@ -72,6 +74,12 @@ _RESOURCE_FIELDS = frozenset(
 _CONFIG_FIELDS = frozenset(
     {"key", "type", "required", "secret", "source", "restart_behavior", "validation", "default"}
 )
+_CONFIG_VALIDATION_FIELDS = frozenset(
+    {"choices", "minLength", "maxLength", "minimum", "maximum"}
+)
+_MAX_CONFIG_STRING_LENGTH = 65_536
+_MAX_ENUM_CHOICES = 128
+_MAX_SAFE_INTEGER = (1 << 53) - 1
 _ARTIFACT_FIELDS = frozenset({"images", "builds"})
 _IMAGE_FIELDS = frozenset({"reference", "digest", "download_bytes"})
 _BUILD_FIELDS = frozenset({"source", "revision", "context_digest", "output", "download_bytes"})
@@ -194,6 +202,126 @@ def _text(value: Any, field: str, *, maximum: int, allow_empty: bool = False) ->
 def _enum(value: Any, field: str, allowed: frozenset[str]) -> str:
     if not isinstance(value, str) or value not in allowed:
         _fail("invalid-enum", field=field)
+    return value
+
+
+def _configuration_validation(
+    value: Any,
+    config_type: str,
+    field: str,
+) -> dict[str, Any]:
+    """Normalize the bounded, non-executable Manifest v2 validation contract."""
+    spec = _mapping(value, field)
+    keys = set(spec)
+    if not keys or not keys <= _CONFIG_VALIDATION_FIELDS:
+        _fail("invalid-config-validation-fields", field=field, fields=sorted(keys))
+
+    allowed = {
+        "string": frozenset({"minLength", "maxLength"}),
+        "url": frozenset({"minLength", "maxLength"}),
+        "integer": frozenset({"minimum", "maximum"}),
+        "enum": frozenset({"choices"}),
+        "boolean": frozenset(),
+    }[config_type]
+    if not keys <= allowed:
+        _fail("incompatible-config-validation", field=field, configType=config_type)
+
+    normalized: dict[str, Any] = {}
+    if "choices" in spec:
+        choices = list(
+            _unique_strings(
+                spec.get("choices"),
+                f"{field}.choices",
+                lambda item, item_field: _text(item, item_field, maximum=256),
+            )
+        )
+        if not choices or len(choices) > _MAX_ENUM_CHOICES:
+            _fail("invalid-config-choices", field=f"{field}.choices")
+        normalized["choices"] = choices
+
+    for key in ("minLength", "maxLength"):
+        if key in spec:
+            normalized[key] = _integer(
+                spec.get(key), f"{field}.{key}", 0, _MAX_CONFIG_STRING_LENGTH
+            )
+    for key in ("minimum", "maximum"):
+        if key in spec:
+            normalized[key] = _integer(
+                spec.get(key), f"{field}.{key}", -_MAX_SAFE_INTEGER, _MAX_SAFE_INTEGER
+            )
+
+    if normalized.get("minLength", 0) > normalized.get(
+        "maxLength", _MAX_CONFIG_STRING_LENGTH
+    ):
+        _fail("invalid-config-validation-range", field=field)
+    if normalized.get("minimum", -_MAX_SAFE_INTEGER) > normalized.get(
+        "maximum", _MAX_SAFE_INTEGER
+    ):
+        _fail("invalid-config-validation-range", field=field)
+    return normalized
+
+
+def _configuration_value(
+    value: Any,
+    config_type: str,
+    validation: Mapping[str, Any] | None,
+    field: str,
+) -> Any:
+    """Validate one non-secret manifest default without executing manifest code."""
+    if config_type == "integer":
+        if type(value) is not int:
+            _fail("invalid-config-default", field=field)
+    elif config_type == "boolean":
+        if type(value) is not bool:
+            _fail("invalid-config-default", field=field)
+    elif config_type in {"string", "url", "enum"}:
+        if not isinstance(value, str) or len(value) > _MAX_CONFIG_STRING_LENGTH:
+            _fail("invalid-config-default", field=field)
+        if any(
+            ord(character) < 32
+            or ord(character) == 127
+            or 0xD800 <= ord(character) <= 0xDFFF
+            for character in value
+        ):
+            _fail("invalid-config-default", field=field)
+    else:  # pragma: no cover - the caller has already normalized the enum
+        _fail("invalid-config-default", field=field)
+
+    rules = validation or {}
+    if config_type in {"string", "url"}:
+        if len(value) < rules.get("minLength", 0) or len(value) > rules.get(
+            "maxLength", _MAX_CONFIG_STRING_LENGTH
+        ):
+            _fail("invalid-config-default", field=field)
+    if config_type == "integer" and (
+        value < rules.get("minimum", -_MAX_SAFE_INTEGER)
+        or value > rules.get("maximum", _MAX_SAFE_INTEGER)
+    ):
+        _fail("invalid-config-default", field=field)
+    if config_type == "enum" and value not in rules.get("choices", ()):
+        _fail("invalid-config-default", field=field)
+    if config_type == "url":
+        if (
+            any(character.isspace() for character in value)
+            or "\\" in value
+            or _ENCODED_CONTROL_RE.search(value) is not None
+        ):
+            _fail("invalid-config-default", field=field)
+        try:
+            parsed = urlsplit(value)
+            port = parsed.port
+        except ValueError:
+            _fail("invalid-config-default", field=field)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or not parsed.hostname.isascii()
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.fragment
+            or port is not None and not 1 <= port <= 65535
+        ):
+            _fail("invalid-config-default", field=field)
     return value
 
 
@@ -439,22 +567,20 @@ def adapt_manifest(manifest: Any) -> dict[str, Any]:
             ),
         }
         if "validation" in spec:
-            normalized["validation"] = _text(
-                spec.get("validation"), f"{field}.validation", maximum=256, allow_empty=True
+            normalized["validation"] = _configuration_validation(
+                spec.get("validation"),
+                normalized["type"],
+                f"{field}.validation",
             )
+        if normalized["type"] == "enum" and "validation" not in normalized:
+            _fail("missing-config-validation", field=f"{field}.validation")
         if "default" in spec:
-            default = spec.get("default")
-            if type(default) not in {str, int, bool}:
-                _fail("invalid-config-default", field=field)
-            expected_type = normalized["type"]
-            valid_default = (
-                (expected_type == "integer" and type(default) is int)
-                or (expected_type == "boolean" and type(default) is bool)
-                or (expected_type in {"string", "url", "enum"} and type(default) is str)
+            normalized["default"] = _configuration_value(
+                spec.get("default"),
+                normalized["type"],
+                normalized.get("validation"),
+                f"{field}.default",
             )
-            if not valid_default:
-                _fail("invalid-config-default", field=field)
-            normalized["default"] = default
         configuration.append(normalized)
     configuration.sort(key=lambda item: item["key"])
 

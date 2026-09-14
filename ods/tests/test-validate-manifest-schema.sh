@@ -271,6 +271,37 @@ YAML
 assert_success "v2 planning manifest routes to the v2 schema" \
     env ODS_MANIFEST_DIRS="$CASE_ROOT" bash "$VALIDATOR"
 
+python3 - "$SCHEMA_V2" "$CASE_ROOT/case/manifest.yaml" <<'PY'
+import copy
+import json
+import sys
+
+import jsonschema
+import yaml
+
+schema = json.loads(open(sys.argv[1], encoding="utf-8").read())
+manifest = yaml.safe_load(open(sys.argv[2], encoding="utf-8"))
+validator = jsonschema.validators.validator_for(schema)(schema)
+
+structured = copy.deepcopy(manifest)
+structured["service"]["planning"]["configuration"][0]["validation"] = {
+    "minLength": 1,
+    "maxLength": 64,
+}
+assert not list(validator.iter_errors(structured))
+
+legacy_string = copy.deepcopy(manifest)
+legacy_string["service"]["planning"]["configuration"][0]["validation"] = "^[a-z]+$"
+assert list(validator.iter_errors(legacy_string))
+
+executable_pattern = copy.deepcopy(manifest)
+executable_pattern["service"]["planning"]["configuration"][0]["validation"] = {
+    "pattern": "^[a-z]+$"
+}
+assert list(validator.iter_errors(executable_pattern))
+PY
+pass "v2 configuration validation is structured and non-executable"
+
 cat >> "$CASE_ROOT/case/manifest.yaml" <<'YAML'
     secret_values:
       TEST_TOKEN: forbidden
