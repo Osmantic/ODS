@@ -260,6 +260,8 @@ _MAX_SAMPLES_PER_WINDOW = 20000
 _MAX_BREAKER_SAMPLES = 5000
 _MAX_PENDING_APPROVALS = 1000
 _MAX_PENDING_GRANTS = 1000
+# Approval TTL: automatically expire approvals after this duration (7 days)
+APPROVAL_TTL_SECONDS = 7 * 24 * 60 * 60
 
 
 def _empty_state() -> dict[str, Any]:
@@ -386,6 +388,16 @@ def _prune_state(now: float) -> None:
         )
         for gkey, _ in gitems[:-_MAX_PENDING_GRANTS]:
             grants.pop(gkey, None)
+
+    # Remove expired approvals based on TTL
+    now = time.time()
+    approvals = _state.get("approvals", {})
+    expired_approvals = [
+        tok for tok, rec in approvals.items()
+        if now - rec.get("issued_at", 0) > APPROVAL_TTL_SECONDS
+    ]
+    for tok in expired_approvals:
+        approvals.pop(tok, None)
 
 
 def load_state() -> None:
