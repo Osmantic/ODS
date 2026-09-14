@@ -146,46 +146,63 @@ def _resolve_install_root() -> Path:
 
 
 def _read_installed_version() -> str:
+    """Read the current ODS version from .env, .version, or manifest.json."""
     install_root = _resolve_install_root()
+
+    def _clean_ver(ver: Any) -> str | None:
+        if not ver:
+            return None
+        cleaned = str(ver).strip()
+        cleaned = strip_matching_quotes(cleaned)
+        return cleaned if cleaned and len(cleaned) <= 64 else None
+
     env_file = install_root / ".env"
     if env_file.exists():
         try:
-            for line in env_file.read_text().splitlines():
-                if line.startswith("ODS_VERSION="):
-                    env_version = strip_matching_quotes(line.split("=", 1)[1])
-                    if env_version:
-                        return env_version
-        except OSError:
-            pass
+            for line in env_file.read_text(encoding="utf-8", errors="replace").splitlines():
+                line_str = line.strip()
+                if line_str.startswith("ODS_VERSION="):
+                    val = _clean_ver(line_str.split("=", 1)[1])
+                    if val:
+                        return val
+        except (OSError, UnicodeError) as exc:
+            logger.warning("Failed to read ODS_VERSION from .env: %s", exc)
 
     version_file = install_root / ".version"
     if version_file.exists():
         try:
-            raw = version_file.read_text().strip()
+            raw = version_file.read_text(encoding="utf-8", errors="replace").strip()
             if raw:
                 if raw.startswith("{"):
                     data = json.loads(raw)
-                    if isinstance(data, dict) and data.get("version"):
-                        return str(data["version"])
-                return raw
-        except (OSError, json.JSONDecodeError, ValueError):
-            pass
+                    if isinstance(data, dict):
+                        val = _clean_ver(data.get("version"))
+                        if val:
+                            return val
+                else:
+                    val = _clean_ver(raw)
+                    if val:
+                        return val
+        except (OSError, json.JSONDecodeError, ValueError, UnicodeError) as exc:
+            logger.warning("Failed to read version from .version: %s", exc)
 
     manifest_file = install_root / "manifest.json"
     if manifest_file.exists():
         try:
-            data = json.loads(manifest_file.read_text())
-            version = (
-                data.get("release", {}).get("version")
-                or data.get("ods_version")
-                or data.get("manifestVersion")
-            )
-            if version:
-                return str(version)
-        except (OSError, json.JSONDecodeError, ValueError, AttributeError):
-            pass
+            data = json.loads(manifest_file.read_text(encoding="utf-8", errors="replace"))
+            if isinstance(data, dict):
+                release = data.get("release") if isinstance(data.get("release"), dict) else {}
+                val = (
+                    _clean_ver(release.get("version"))
+                    or _clean_ver(data.get("ods_version"))
+                    or _clean_ver(data.get("manifestVersion"))
+                )
+                if val:
+                    return val
+        except (OSError, json.JSONDecodeError, ValueError, UnicodeError) as exc:
+            logger.warning("Failed to read version from manifest.json: %s", exc)
 
-    return app.version
+    return getattr(app, "version", "0.0.0")
 
 
 def _probe_host_agent_health() -> dict[str, Any]:
