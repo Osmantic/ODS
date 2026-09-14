@@ -89,10 +89,23 @@ plan, a compatibility blocker, and invalid input. The adapter creates no lock,
 snapshot, receipt, directory, or output file.
 
 This assessment performs no mutation and does not itself authorize an extension
-or core update. The update caller must still materialize the candidate tree from
-the exact object ID it supplies. Candidate source resolution, exact composite
-upgrade planning, mutation quiescence, combined core/desired-state commit,
-health qualification, and coordinated rollback remain later Phase 5 gates.
+or core update. For Assistant First source checkouts, `ods-update.sh update`
+fetches the configured `origin/*` upstream branch into a private disposable Git
+repository. An unconfigured or detached checkout falls back to `main`, then
+`master`; a configured branch never silently crosses channels. The updater
+materializes the assessed manifest and catalog from their exact Git blob bytes,
+runs this gate against the exact fetched object, and stops before a rollback
+snapshot, installed Git-object import, checkout, migration, image, or service
+change unless the result is ready. A ready candidate is imported from the
+disposable repository after the snapshot and applied with a verified
+fast-forward; there is no archive substitution or second network fetch that
+could change the assessed candidate bytes.
+Full, Core, and Custom retain their established source-update path.
+
+A result requiring extension changes still stops for a separately generated and
+approved composite plan. Exact composite upgrade execution, mutation quiescence,
+combined core/desired-state commit, candidate health qualification, and
+coordinated rollback remain later Phase 5 gates.
 
 ## Evidence boundary
 

@@ -186,6 +186,294 @@ ensure_source_checkout_for_update() {
     fi
 }
 
+is_assistant_first_install() {
+    [[ "$(env_file_value ODS_INSTALL_PROFILE)" == "assistant-first" ]]
+}
+
+# Assistant First source updates are resolved in a disposable repository so
+# fetching and inspecting a candidate cannot mutate the installed checkout.
+# The exact object is imported into the installed repository only after the
+# compatibility gate succeeds and the rollback snapshot is complete.
+UPDATE_CANDIDATE_ROOT=""
+UPDATE_CANDIDATE_TEMP_BASE=""
+UPDATE_CANDIDATE_REPOSITORY=""
+UPDATE_CANDIDATE_TREE=""
+UPDATE_CANDIDATE_REVISION=""
+UPDATE_CANDIDATE_BRANCH=""
+UPDATE_CANDIDATE_PREFLIGHT=""
+UPDATE_CANDIDATE_PREFLIGHT_HASH=""
+
+_cleanup_update_candidate() {
+    local root="${UPDATE_CANDIDATE_ROOT:-}"
+    local temp_base="${UPDATE_CANDIDATE_TEMP_BASE:-}"
+
+    UPDATE_CANDIDATE_ROOT=""
+    UPDATE_CANDIDATE_TEMP_BASE=""
+    UPDATE_CANDIDATE_REPOSITORY=""
+    UPDATE_CANDIDATE_TREE=""
+    UPDATE_CANDIDATE_REVISION=""
+    UPDATE_CANDIDATE_BRANCH=""
+    UPDATE_CANDIDATE_PREFLIGHT=""
+    UPDATE_CANDIDATE_PREFLIGHT_HASH=""
+
+    [[ -n "$root" && -n "$temp_base" ]] || return 0
+    case "$root" in
+        "$temp_base"/ods-update-candidate.*)
+            rm -rf -- "$root"
+            ;;
+        *)
+            log_warn "Refusing to remove an unexpected candidate workspace."
+            ;;
+    esac
+}
+
+_assistant_first_source_branch() {
+    local upstream="" branch=""
+    upstream=$(git -C "$INSTALL_DIR" rev-parse \
+        --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || true)
+    case "$upstream" in
+        origin/*)
+            branch="${upstream#origin/}"
+            if git -C "$INSTALL_DIR" check-ref-format --branch "$branch" \
+                >/dev/null 2>&1; then
+                printf '%s\n' "$branch"
+                return 0
+            fi
+            ;;
+    esac
+    return 1
+}
+
+_prepare_assistant_first_update_candidate() {
+    local temp_base origin_url object_format python_cmd source_prefix source_root
+    local manifest_object catalog_object current_revision branch status error_code
+    local preflight_hash
+    local -a branch_candidates=()
+
+    [[ -f "${INSTALL_DIR}/scripts/assess-extension-update.py" \
+        && ! -L "${INSTALL_DIR}/scripts/assess-extension-update.py" ]] || {
+        log_error "Assistant First update compatibility support is unavailable."
+        return 1
+    }
+    [[ -f "${INSTALL_DIR}/lib/python-cmd.sh" \
+        && ! -L "${INSTALL_DIR}/lib/python-cmd.sh" ]] || {
+        log_error "Python command resolution is unavailable for update compatibility."
+        return 1
+    }
+
+    # shellcheck source=lib/python-cmd.sh
+    if ! . "${INSTALL_DIR}/lib/python-cmd.sh"; then
+        log_error "Python command resolution could not be loaded."
+        return 1
+    fi
+    python_cmd=$(ods_detect_python_cmd 2>/dev/null || true)
+    [[ -n "$python_cmd" ]] || {
+        log_error "A runnable Python interpreter is required for update compatibility."
+        return 1
+    }
+
+    origin_url=$(git -C "$INSTALL_DIR" remote get-url origin 2>/dev/null || true)
+    [[ -n "$origin_url" ]] || {
+        log_error "The installed checkout has no usable origin remote."
+        return 1
+    }
+
+    temp_base=$(cd "${TMPDIR:-/tmp}" 2>/dev/null && pwd -P) || {
+        log_error "The temporary directory is unavailable for candidate inspection."
+        return 1
+    }
+    UPDATE_CANDIDATE_TEMP_BASE="$temp_base"
+    UPDATE_CANDIDATE_ROOT=$(mktemp -d \
+        "${temp_base}/ods-update-candidate.XXXXXXXX") || {
+        log_error "Could not create a private candidate workspace."
+        return 1
+    }
+    chmod 700 "$UPDATE_CANDIDATE_ROOT" || {
+        _cleanup_update_candidate
+        log_error "Could not secure the candidate workspace."
+        return 1
+    }
+    trap '_cleanup_update_candidate' EXIT
+    trap '_cleanup_update_candidate; exit 130' HUP INT TERM
+
+    UPDATE_CANDIDATE_REPOSITORY="${UPDATE_CANDIDATE_ROOT}/repository.git"
+    UPDATE_CANDIDATE_TREE="${UPDATE_CANDIDATE_ROOT}/tree"
+    UPDATE_CANDIDATE_PREFLIGHT="${UPDATE_CANDIDATE_ROOT}/preflight.json"
+    if ! mkdir "$UPDATE_CANDIDATE_TREE" || ! chmod 700 "$UPDATE_CANDIDATE_TREE"; then
+        _cleanup_update_candidate
+        log_error "Could not secure the materialized candidate tree."
+        return 1
+    fi
+
+    object_format=$(git -C "$INSTALL_DIR" rev-parse --show-object-format \
+        2>/dev/null || printf '%s' sha1)
+    case "$object_format" in
+        sha1)
+            if ! git init -q --bare "$UPDATE_CANDIDATE_REPOSITORY"; then
+                _cleanup_update_candidate
+                log_error "Could not initialize the candidate repository."
+                return 1
+            fi
+            ;;
+        sha256)
+            if ! git init -q --bare --object-format=sha256 \
+                "$UPDATE_CANDIDATE_REPOSITORY"; then
+                _cleanup_update_candidate
+                log_error "Could not initialize the candidate repository."
+                return 1
+            fi
+            ;;
+        *)
+            _cleanup_update_candidate
+            log_error "The checkout uses an unsupported Git object format."
+            return 1
+            ;;
+    esac
+
+    if branch=$(_assistant_first_source_branch); then
+        branch_candidates+=("$branch")
+    else
+        branch_candidates+=(main master)
+    fi
+
+    for branch in "${branch_candidates[@]}"; do
+        if git -C "$UPDATE_CANDIDATE_REPOSITORY" fetch -q --no-tags \
+            -- "$origin_url" \
+            "+refs/heads/${branch}:refs/heads/candidate" \
+            2>"${UPDATE_CANDIDATE_ROOT}/fetch-error.log"; then
+            UPDATE_CANDIDATE_BRANCH="$branch"
+            break
+        fi
+    done
+    if [[ -z "$UPDATE_CANDIDATE_BRANCH" ]]; then
+        _cleanup_update_candidate
+        log_error "Could not fetch the configured source branch, main, or master."
+        return 1
+    fi
+
+    UPDATE_CANDIDATE_REVISION=$(git -C "$UPDATE_CANDIDATE_REPOSITORY" \
+        rev-parse --verify 'refs/heads/candidate^{commit}' 2>/dev/null || true)
+    if [[ ! "$UPDATE_CANDIDATE_REVISION" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]]; then
+        _cleanup_update_candidate
+        log_error "The fetched update candidate has no exact Git object ID."
+        return 1
+    fi
+
+    current_revision=$(git -C "$INSTALL_DIR" rev-parse --verify 'HEAD^{commit}' \
+        2>/dev/null || true)
+    if ! git -C "$UPDATE_CANDIDATE_REPOSITORY" merge-base --is-ancestor \
+        "$current_revision" "$UPDATE_CANDIDATE_REVISION" 2>/dev/null; then
+        _cleanup_update_candidate
+        log_error "The candidate is not a fast-forward of the installed checkout."
+        log_info "Resolve local commits or branch divergence before retrying."
+        return 1
+    fi
+
+    source_prefix=$(git -C "$INSTALL_DIR" rev-parse --show-prefix 2>/dev/null || true)
+    source_prefix="${source_prefix%/}"
+    source_root=""
+    if [[ -n "$source_prefix" ]]; then
+        source_root="${source_prefix}/"
+    fi
+    manifest_object="${UPDATE_CANDIDATE_REVISION}:${source_root}manifest.json"
+    catalog_object="${UPDATE_CANDIDATE_REVISION}:${source_root}config/extensions-catalog.json"
+
+    # Read the exact committed blob bytes. `git archive` is intentionally not
+    # used here because a candidate-controlled `export-subst` attribute can
+    # transform archive output so it differs from the later checked-out commit.
+    if ! mkdir "${UPDATE_CANDIDATE_TREE}/config" || \
+       ! chmod 700 "${UPDATE_CANDIDATE_TREE}/config" || \
+       [[ "$(git -C "$UPDATE_CANDIDATE_REPOSITORY" cat-file -t \
+            "$manifest_object" 2>/dev/null || true)" != blob ]] || \
+       [[ "$(git -C "$UPDATE_CANDIDATE_REPOSITORY" cat-file -t \
+            "$catalog_object" 2>/dev/null || true)" != blob ]] || \
+       ! git -C "$UPDATE_CANDIDATE_REPOSITORY" cat-file blob \
+            "$manifest_object" > "${UPDATE_CANDIDATE_TREE}/manifest.json" || \
+       ! git -C "$UPDATE_CANDIDATE_REPOSITORY" cat-file blob \
+            "$catalog_object" > \
+            "${UPDATE_CANDIDATE_TREE}/config/extensions-catalog.json" || \
+       ! chmod 600 "${UPDATE_CANDIDATE_TREE}/manifest.json" \
+            "${UPDATE_CANDIDATE_TREE}/config/extensions-catalog.json"; then
+        _cleanup_update_candidate
+        log_error "Could not materialize the exact candidate metadata."
+        return 1
+    fi
+
+    log_info "Assessing Assistant First update candidate ${UPDATE_CANDIDATE_REVISION}..."
+    set +e
+    "$python_cmd" "${INSTALL_DIR}/scripts/assess-extension-update.py" \
+        --install-dir "$INSTALL_DIR" \
+        --candidate-dir "$UPDATE_CANDIDATE_TREE" \
+        --candidate-revision "$UPDATE_CANDIDATE_REVISION" \
+        > "$UPDATE_CANDIDATE_PREFLIGHT"
+    status=$?
+    set -e
+
+    case "$status" in
+        0)
+            preflight_hash=$(jq -r '.preflightHash // empty' \
+                "$UPDATE_CANDIDATE_PREFLIGHT" 2>/dev/null || true)
+            if [[ "$(jq -r '.schema // empty' "$UPDATE_CANDIDATE_PREFLIGHT" \
+                    2>/dev/null || true)" != \
+                    "ods.extensions.update-preflight.v1" ]] || \
+               [[ "$(jq -r '.candidateSourceRevision // empty' \
+                    "$UPDATE_CANDIDATE_PREFLIGHT" 2>/dev/null || true)" != \
+                    "$UPDATE_CANDIDATE_REVISION" ]] || \
+               [[ ! "$preflight_hash" =~ ^[0-9a-f]{64}$ ]]; then
+                _cleanup_update_candidate
+                log_error "The compatibility gate returned an invalid success result."
+                return 1
+            fi
+            UPDATE_CANDIDATE_PREFLIGHT_HASH="$preflight_hash"
+            log_ok "Compatibility preflight accepted the exact candidate."
+            log_info "Preflight hash: ${UPDATE_CANDIDATE_PREFLIGHT_HASH}"
+            ;;
+        10)
+            _cleanup_update_candidate
+            log_error "The core update requires a separately approved extension plan."
+            log_info "Review and approve the exact extension upgrade plan, then retry."
+            return 1
+            ;;
+        11)
+            _cleanup_update_candidate
+            log_error "Installed extension compatibility blocks this core update."
+            log_info "Resolve the reported extension compatibility blockers before retrying."
+            return 1
+            ;;
+        12)
+            error_code=$(jq -r '.error.code // "invalid-input"' \
+                "$UPDATE_CANDIDATE_PREFLIGHT" 2>/dev/null || printf '%s' invalid-input)
+            _cleanup_update_candidate
+            log_error "Assistant First update preflight failed closed (${error_code})."
+            log_info "Verify the owner-private desired-state lockfile and candidate metadata."
+            return 1
+            ;;
+        *)
+            _cleanup_update_candidate
+            log_error "Assistant First update preflight returned an unsupported status."
+            return 1
+            ;;
+    esac
+}
+
+_apply_assistant_first_update_candidate() {
+    local fetched_revision head_revision
+
+    if ! git -C "$INSTALL_DIR" fetch -q --no-tags \
+        -- "$UPDATE_CANDIDATE_REPOSITORY" refs/heads/candidate; then
+        return 1
+    fi
+    fetched_revision=$(git -C "$INSTALL_DIR" rev-parse --verify \
+        'FETCH_HEAD^{commit}' 2>/dev/null || true)
+    [[ "$fetched_revision" == "$UPDATE_CANDIDATE_REVISION" ]] || return 1
+
+    git -C "$INSTALL_DIR" merge --ff-only "$UPDATE_CANDIDATE_REVISION" \
+        >/dev/null 2>&1 || return 1
+    head_revision=$(git -C "$INSTALL_DIR" rev-parse --verify 'HEAD^{commit}' \
+        2>/dev/null || true)
+    [[ "$head_revision" == "$UPDATE_CANDIDATE_REVISION" ]]
+}
+
 # Semver compare: returns 0 if equal, 1 if v1 > v2, 2 if v1 < v2
 semver_compare() {
     local v1="${1#v}"
@@ -532,7 +820,7 @@ cmd_snapshot() {
 cmd_update() {
     log_info "Starting ODS update..."
 
-    local current_version
+    local current_version assistant_first_update=false
     current_version=$(get_current_version)
 
     if ! ensure_source_checkout_for_update; then
@@ -540,23 +828,48 @@ cmd_update() {
     fi
     _load_update_snapshot_contract || return 1
 
+    # Assistant First resolves, materializes, and assesses an exact candidate in
+    # a private disposable repository. Nothing below this point has changed the
+    # installed checkout, rollback state, services, images, or extension state.
+    if is_assistant_first_install; then
+        assistant_first_update=true
+        if ! _prepare_assistant_first_update_candidate; then
+            return 1
+        fi
+    fi
+
     # ── Step 1: rollback snapshot ─────────────────────────────────────────────
     local timestamp
     timestamp=$(date +%Y%m%d-%H%M%S)
     local snap_dir
-    snap_dir=$(snapshot_pre_update "$timestamp")
+    if ! snap_dir=$(snapshot_pre_update "$timestamp"); then
+        _cleanup_update_candidate
+        return 1
+    fi
 
     # Resolve compose flags once — used in restart and rollback paths.
     local compose_flags=""
     compose_flags=$(resolve_compose_flags 2>/dev/null || true)
 
-    # ── Step 2: pull latest changes ───────────────────────────────────────────
-    log_info "Pulling latest changes..."
+    # ── Step 2: apply the already assessed source candidate ───────────────────
     cd "$INSTALL_DIR"
-    git fetch origin
-    if ! git pull origin main && ! git pull origin master; then
-        _update_rollback "Git pull failed." "$snap_dir" "$compose_flags"
-        return 1
+    if $assistant_first_update; then
+        log_info "Applying exact source candidate ${UPDATE_CANDIDATE_REVISION}..."
+        if ! _apply_assistant_first_update_candidate; then
+            _cleanup_update_candidate
+            _update_rollback "Exact candidate checkout failed." \
+                "$snap_dir" "$compose_flags"
+            return 1
+        fi
+        _cleanup_update_candidate
+    else
+        # Preserve the established Full/Core/Custom source-update path.
+        log_info "Pulling latest changes..."
+        git fetch origin
+        if ! git pull origin main && ! git pull origin master; then
+            _update_rollback "Git pull failed." "$snap_dir" "$compose_flags"
+            return 1
+        fi
     fi
 
     # ── Step 3: migrations ────────────────────────────────────────────────────
@@ -933,8 +1246,9 @@ Commands:
   backup [name]  Create a named general backup of current configuration
   snapshot [ts]  Create an integrity-checked pre-update rollback snapshot
                  (optional timestamp format: YYYYMMDD-HHMMSS)
-  update         Source-checkout only: pull latest source, run migrations,
-                 restart, health-check, and auto-restore on failure
+  update         Source-checkout only: update source, run migrations, restart,
+                 health-check, and auto-restore on failure. Assistant First
+                 verifies an exact candidate before snapshot or checkout.
   rollback [id]  Restore from a rollback snapshot or general backup
                  (default: most recent pre-update snapshot)
   changelog [v]  Show changelog (optional: specific version)
