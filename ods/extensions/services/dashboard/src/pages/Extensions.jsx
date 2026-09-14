@@ -78,7 +78,7 @@ const STATUS_STYLES = {
 
 const STATUS_DESCRIPTIONS = {
   enabled:       'Service is running and healthy',
-  cli_installed: 'CLI tool installed \u2014 invoke via `docker compose run --rm <service>`',
+  cli_installed: 'CLI tool installed \u2014 launch it from the ODS terminal',
   disabled:      'Installed but turned off \u2014 won\u2019t start on restart',
   stopped:       'Enabled but container is not running',
   unhealthy:     'Container is running but health check is failing \u2014 check logs',
@@ -158,7 +158,9 @@ export default function Extensions({ compact = false }) {
             delete activePollers.current[serviceId]
             delete recoveryTrackers.current[serviceId]
             const successText = ext.status === 'cli_installed'
-              ? `${ext.name || 'Extension'} installed — run via \`docker compose run --rm ${serviceId}\`.`
+              ? serviceId === 'aider'
+                ? 'Aider installed — from your ODS directory, run: bash data/user-extensions/aider/run.sh'
+                : `${ext.name || 'Extension'} installed — see its terminal launch instructions.`
               : 'Extension installed and started.'
             setToast({ type: 'success', text: successText })
             setProgressMap(prev => { const next = { ...prev }; delete next[serviceId]; return next })

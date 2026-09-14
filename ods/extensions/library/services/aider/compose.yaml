@@ -28,7 +28,7 @@ services:
     networks:
       - ods-network
     entrypoint: ["echo"]
-    command: ["Aider is a CLI tool. Run: docker compose run --rm aider <files>"]
+    command: ["Aider is a CLI tool. Run: bash data/user-extensions/aider/run.sh <files>"]
 
 # Named volumes removed — using bind mounts only
 
