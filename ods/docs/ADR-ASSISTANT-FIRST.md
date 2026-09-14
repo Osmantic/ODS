@@ -100,6 +100,22 @@ in-progress state is already durable. Restart recovery combines the journal
 with strict host observation and never treats a queued request or HTTP 202 as
 completion.
 
+The host observation boundary uses small immutable lifecycle receipts rather
+than a second transaction state machine. A started receipt binds the exact
+transaction, plan, request, ordered service set, and closed operation key; a
+terminal receipt adds a completed/failed outcome, evidence hash, and the exact
+started-event hash. Receipts are canonical JSON with content hashes, bounded to
+4096 bytes, and published create-if-absent through a same-directory hard-link
+race. Divergent writers conflict, corrupt or path-rebound files fail closed,
+and a terminal without its matching started receipt is never trusted.
+
+The initial receipt-store phase is deliberately inert: it has no route,
+startup hook, lifecycle or lease call, replay loop, cleanup, or production
+importer. The Dashboard production executor remains disabled until a later
+adapter can bind each durable transaction transition to lease custody, one
+synchronous host mutation, terminal receipt publication, and strict
+observation without treating HTTP 202 as completion.
+
 All selected services are locked in canonical order before the final
 provenance check and before lifecycle work. Artifacts are downloaded and
 verified before apply. The first pre-transaction backup is replay-safe,
