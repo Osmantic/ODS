@@ -137,7 +137,7 @@ detect_nvidia() {
     # on AMD-only systems).
     local _has_nvidia=false
     for _v in /sys/class/drm/card*/device/vendor; do
-        [[ "$(cat "$_v" 2>/dev/null)" == "0x10de" ]] && _has_nvidia=true && break
+        [[ -f "$_v" ]] && [[ "$(cat "$_v" 2>/dev/null)" == "0x10de" ]] && _has_nvidia=true && break
     done
     $_has_nvidia || return 1
 
