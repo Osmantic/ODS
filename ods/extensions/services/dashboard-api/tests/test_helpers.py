@@ -1607,3 +1607,17 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+class TestSearchDictByValueSubstring:
+
+    def test_searches_by_value_substring(self):
+        from helpers import search_dict_by_value_substring
+        raw = {"k1": "apple pie", "k2": "banana split", "k3": "pineapple"}
+        assert search_dict_by_value_substring(raw, target="apple") == {"k1": "apple pie", "k3": "pineapple"}
+
+    def test_handles_none_and_non_dict_inputs(self):
+        from helpers import search_dict_by_value_substring
+        assert search_dict_by_value_substring(None) == {}
+        assert search_dict_by_value_substring("not_dict") == {}
+

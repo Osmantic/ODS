@@ -1146,3 +1146,21 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def search_dict_by_value_substring(data: object, target: str = "") -> dict:
+    """Search dictionary keys whose string values contain target substring safely.
+
+    Handles non-dict inputs, None values, or empty target strings without exception.
+    """
+    if not isinstance(data, dict) or not target:
+        return {}
+    target_str = str(target).lower()
+    res = {}
+    for k, v in data.items():
+        if k is None or v is None:
+            continue
+        if target_str in str(v).lower():
+            res[str(k)] = v
+    return res
+
