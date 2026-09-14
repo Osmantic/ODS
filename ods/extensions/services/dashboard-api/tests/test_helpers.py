@@ -1740,3 +1740,16 @@ def test_flatten_bounds_cycles_and_large_depth_without_losing_empty_leaves():
         nested = {"child": nested}
     result = dict_flatten_nested_safe(nested, max_depth=100000)
     assert len(next(iter(result)).split(".")) == 128
+
+
+class TestDictDeepMergeRecursiveSafe:
+    def test_valid_deep_merge(self):
+        from helpers import dict_deep_merge_recursive_safe
+        d1 = {"a": 1, "b": {"c": 2}}
+        d2 = {"b": {"d": 3}, "e": 4}
+        assert dict_deep_merge_recursive_safe(d1, d2) == {"a": 1, "b": {"c": 2, "d": 3}, "e": 4}
+
+    def test_invalid_inputs(self):
+        from helpers import dict_deep_merge_recursive_safe
+        assert dict_deep_merge_recursive_safe(None, {"a": 1}) == {"a": 1}
+        assert dict_deep_merge_recursive_safe({"a": 1}, None) == {"a": 1}
