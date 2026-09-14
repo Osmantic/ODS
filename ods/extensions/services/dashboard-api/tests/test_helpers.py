@@ -1740,3 +1740,15 @@ def test_flatten_bounds_cycles_and_large_depth_without_losing_empty_leaves():
         nested = {"child": nested}
     result = dict_flatten_nested_safe(nested, max_depth=100000)
     assert len(next(iter(result)).split(".")) == 128
+
+
+class TestDictPickNonNoneValuesSafe:
+    def test_valid_picking(self):
+        from helpers import dict_pick_non_none_values_safe
+        d = {"a": 1, "b": None, "c": 0, "d": False}
+        assert dict_pick_non_none_values_safe(d) == {"a": 1, "c": 0, "d": False}
+
+    def test_invalid_inputs(self):
+        from helpers import dict_pick_non_none_values_safe
+        assert dict_pick_non_none_values_safe(None) == {}
+        assert dict_pick_non_none_values_safe(100) == {}
