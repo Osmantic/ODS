@@ -24,6 +24,10 @@ PORTS_FILE = ROOT_DIR / "config" / "ports.json"
 SCHEMA_FILE = ROOT_DIR / ".env.schema.json"
 ENV_EXAMPLE_FILE = ROOT_DIR / ".env.example"
 SERVICES_DIR = ROOT_DIR / "extensions" / "services"
+# validate-env.yml builds a synthetic .env per tier and validates it. Nothing
+# kept those values tied to config/ports.json, so the fixture could drift into
+# validating a port layout no install ever uses.
+CI_ENV_WORKFLOW = ROOT_DIR.parent / ".github" / "workflows" / "validate-env.yml"
 
 
 def fail(message: str) -> None:
@@ -91,6 +95,34 @@ def collect_compose_port_map() -> dict[str, tuple[int, int, str]]:
                     str(compose_path.relative_to(ROOT_DIR)),
                 )
     return compose_map
+
+
+def collect_ci_env_fixture_ports() -> dict[str, int]:
+    """Numeric assignments from validate-env.yml's synthetic .env heredoc."""
+    if not CI_ENV_WORKFLOW.exists():
+        fail(f"Missing CI env workflow: {CI_ENV_WORKFLOW}")
+
+    workflow = yaml.safe_load(CI_ENV_WORKFLOW.read_text(encoding="utf-8"))
+    steps = workflow.get("jobs", {}).get("env-schema", {}).get("steps")
+    if not isinstance(steps, list):
+        fail("validate-env.yml no longer defines an env-schema job with steps")
+
+    bodies: list[str] = []
+    for step in steps:
+        run = step.get("run")
+        if not isinstance(run, str) or "cat > .env << ENVEOF" not in run:
+            continue
+        after = run.split("cat > .env << ENVEOF", 1)[1]
+        bodies.append(after.split("ENVEOF", 1)[0])
+
+    if not bodies:
+        fail("validate-env.yml no longer generates a synthetic .env heredoc")
+
+    fixture: dict[str, int] = {}
+    for body in bodies:
+        for match in re.finditer(r"^([A-Z][A-Z0-9_]*)=([0-9]+)\s*$", body, re.M):
+            fixture[match.group(1)] = int(match.group(2))
+    return fixture
 
 
 def main() -> int:
@@ -191,6 +223,33 @@ def main() -> int:
                     f"expected {external_default}:{internal_port}, "
                     f"found {compose_default}:{compose_internal}"
                 )
+
+    # The CI fixture must describe the real port layout. Compare against the
+    # schema defaults rather than config/ports.json alone: the checks above
+    # already hold the two in parity, and the schema additionally covers
+    # extension ports (Langfuse, LiveKit, ...) that the canonical core
+    # contract does not list. Only *_PORT keys the fixture actually sets and
+    # the schema actually defaults are compared, so a deliberately minimal
+    # fixture — and non-port values like MAX_CONTEXT — stay valid.
+    fixture_ports = collect_ci_env_fixture_ports()
+    drifted = []
+    for env_var, found in sorted(fixture_ports.items()):
+        if not env_var.endswith("_PORT"):
+            continue
+        expected = schema_props.get(env_var, {}).get("default")
+        if expected is None:
+            continue
+        if int(expected) != found:
+            drifted.append((env_var, found, int(expected)))
+    if drifted:
+        details = "; ".join(
+            f"{env_var}: fixture {found}, expected {expected}"
+            for env_var, found, expected in drifted
+        )
+        fail(
+            "validate-env.yml synthetic .env drifted from the declared port "
+            f"defaults ({len(drifted)} key(s)): {details}"
+        )
 
     print("[PASS] canonical port contract parity")
     return 0
