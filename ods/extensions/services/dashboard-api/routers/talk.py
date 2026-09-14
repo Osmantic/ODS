@@ -256,8 +256,11 @@ def _require_session(request: Request) -> tuple[str, int]:
     if not ok:
         logger.info("ods-talk session denied: reason=%s", reason)
         raise HTTPException(status_code=401, detail="Scan the owner card again to start a ODS Talk session.")
+    parts = cookie_value.split(".")
+    if len(parts) != 3:
+        raise HTTPException(status_code=401, detail="Invalid session format.")
+    _, expiry_str, _ = parts
     try:
-        _, expiry_str, _ = cookie_value.split(".")
         expires_at = int(expiry_str)
     except (ValueError, TypeError):
         expires_at = 0
