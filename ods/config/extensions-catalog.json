@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-13T16:53:56Z",
+  "generated_at": "2026-09-14T18:33:37Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -1566,7 +1566,7 @@
             "services": [
               "immich"
             ],
-            "vram_gb": 2
+            "vram_gb": 0
           },
           "enabled_services_all": [
             "immich"
