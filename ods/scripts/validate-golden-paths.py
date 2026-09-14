@@ -184,9 +184,9 @@ def main(argv: list[str]) -> int:
         print(f"[FAIL] golden path file not found: {path}")
         return 1
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        print(f"[FAIL] invalid JSON in {path}: {exc}")
+        data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
+        print(f"[FAIL] invalid or unreadable JSON in {path}: {exc}")
         return 1
 
     issues = Issues()
