@@ -40,7 +40,7 @@ def nonempty_string(value: Any) -> bool:
 
 
 def load_json(path: Path) -> Any:
-    return json.loads(path.read_text(encoding="utf-8"))
+    return json.loads(path.read_text(encoding="utf-8", errors="replace"))
 
 
 def resolve_json_path(data: Any, dotted_path: str) -> Any:
