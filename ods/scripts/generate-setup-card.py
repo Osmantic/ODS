@@ -82,9 +82,13 @@ def build_wifi_qr_payload(ssid: str, password: str, security: str = "WPA") -> st
 
 def render_qr(text: str, target_px: int):
     """Return a Pillow Image of the QR sized to ~target_px x target_px."""
-    import qrcode  # noqa: PLC0415 — lazy import keeps --help fast
-    from PIL import Image  # noqa: PLC0415
-    from qrcode.constants import ERROR_CORRECT_M
+    try:
+        import qrcode  # noqa: PLC0415 — lazy import keeps --help fast
+        from PIL import Image  # noqa: PLC0415
+        from qrcode.constants import ERROR_CORRECT_M
+    except (ImportError, ModuleNotFoundError) as exc:
+        print(f"error: required image library missing ({exc}). Install with: pip install Pillow qrcode", file=sys.stderr)
+        sys.exit(1)
 
     # ERROR_CORRECT_M handles ~15% damage which is fine for a printed card.
     # box_size is the pixel size of each "module" (QR cell); we scale up.
