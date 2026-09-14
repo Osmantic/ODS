@@ -6,7 +6,7 @@ Set DB_BACKEND=postgres to use this module.
 
 import os
 import logging
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Optional, Tuple
 from uuid import UUID, uuid4
@@ -366,11 +366,15 @@ def _normalize_cost_source(row: dict) -> str:
 
 
 def query_report(start: str, end: str) -> dict:
-    """Aggregate real usage/cost data for an inclusive date range."""
+    """Aggregate real usage/cost data for an inclusive UTC date range."""
     if _tenant_id is None:
         init_db()
 
     start_day, end_day, end_exclusive = _parse_report_dates(start, end)
+    # PostgreSQL interprets a date against timestamptz in the session timezone.
+    # Bind explicit UTC instants to match the dashboard's UTC calendar labels.
+    start_stamp = datetime.combine(start_day, datetime.min.time(), tzinfo=timezone.utc)
+    end_stamp = datetime.combine(end_exclusive, datetime.min.time(), tzinfo=timezone.utc)
     report = _empty_report(start, end)
     daily = {row["date"]: row for row in report["daily"]}
     models: dict[tuple[str, str, str, str], dict] = {}
@@ -400,7 +404,7 @@ def query_report(start: str, end: str) -> dict:
                 AND r.timestamp < %s
                 ORDER BY r.timestamp ASC
                 """,
-                (_tenant_id, start_day, end_exclusive),
+                (_tenant_id, start_stamp, end_stamp),
             )
             rows = cur.fetchall()
     finally:
@@ -408,7 +412,7 @@ def query_report(start: str, end: str) -> dict:
 
     for row in rows:
         row = dict(row)
-        day = row["timestamp"].date().isoformat() if row.get("timestamp") else ""
+        day = row["timestamp"].astimezone(timezone.utc).date().isoformat() if row.get("timestamp") else ""
         if day not in daily:
             continue
         service = row.get("agent") or "unknown"
