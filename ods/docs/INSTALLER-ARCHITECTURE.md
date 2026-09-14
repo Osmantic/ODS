@@ -206,3 +206,5 @@ bash tests/integration-test.sh
 - [BACKEND-CONTRACT.md](BACKEND-CONTRACT.md) — Backend runtime contract format
 - [INSTALLER_PHASE_CONTRACTS.md](INSTALLER_PHASE_CONTRACTS.md) - Phase
   ownership, idempotency, and validation expectations
+- [ADR-ASSISTANT-FIRST.md](ADR-ASSISTANT-FIRST.md) - Assistant-First profile,
+  authority, capability resolution, and qualification decisions
