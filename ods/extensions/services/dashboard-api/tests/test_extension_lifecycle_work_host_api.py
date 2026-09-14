@@ -220,6 +220,56 @@ def receipt_snapshot(agent, host_request, request):
 
 
 def bind_fixture_plan(agent, command):
+    if command.operation_key in {"backup", "restore"}:
+        plan = agent._extension_lifecycle_plan
+        runtime = agent._data_backup_runtime_module
+        canonical = (
+            json.dumps(
+                {"data": [runtime.CANARY_DATA_RECORD]},
+                ensure_ascii=False,
+                allow_nan=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n"
+        ).encode("utf-8")
+        operation = plan.PlannedOperation(runtime.CANARY_SERVICE_ID, "install")
+        definition = plan.PlannedDefinition(
+            service_id=runtime.CANARY_SERVICE_ID,
+            service_type="docker",
+            manifest_schema_version=runtime.CANARY_MANIFEST_SCHEMA,
+            version=runtime.CANARY_VERSION,
+            data_schema_version=runtime.CANARY_DATA_SCHEMA_VERSION,
+            definition_sha256=runtime.CANARY_DEFINITION_SHA256,
+            compose_sha256=runtime.CANARY_COMPOSE_SHA256,
+            definition_source="builtin",
+            compose_file="compose.yaml",
+            images=(
+                plan.PlannedImage(
+                    reference=runtime.CANARY_IMAGE_REFERENCE,
+                    digest=runtime.CANARY_IMAGE_DIGEST,
+                    download_bytes=runtime.CANARY_IMAGE_DOWNLOAD_BYTES,
+                ),
+            ),
+            builds=(),
+            canonical_document=canonical,
+            host_ports=(),
+            exclusive=(),
+        )
+        state = (
+            "configuring" if command.operation_key == "backup" else "reconciling"
+        )
+        return replace(
+            command,
+            plan_material=plan.LifecyclePlanMaterial(
+                schema=plan.PLAN_MATERIAL_SCHEMA,
+                transaction_id=command.transaction_id,
+                plan_hash=command.plan_hash,
+                state=state,
+                operations=(operation,),
+                definitions=(definition,),
+            ),
+        )
     if command.operation_key != "stage":
         return replace(command, plan_material={"bound": True})
 
@@ -277,6 +327,17 @@ def stage_work_request(agent, lease):
     )
 
 
+def data_work_request(agent, lease, operation_key):
+    runtime = agent._data_backup_runtime_module
+    return work_request(
+        agent._extension_lifecycle_work.REQUEST_SCHEMA,
+        lease,
+        operation_key=operation_key,
+        service_ids=[runtime.CANARY_SERVICE_ID],
+        payload={"serviceIds": [runtime.CANARY_SERVICE_ID]},
+    )
+
+
 @pytest.fixture()
 def host_server(tmp_path):
     agent_path = BIN_DIR / "ods-host-agent.py"
@@ -303,14 +364,24 @@ def host_server(tmp_path):
 
     agent.AGENT_API_KEY = TOKEN
     agent.ASSISTANT_TRANSACTIONS_ENABLED = True
-    agent.DATA_DIR = tmp_path / "data"
-    agent.DATA_DIR.mkdir()
+    agent.INSTALL_DIR = tmp_path / "install"
+    agent.INSTALL_DIR.mkdir(mode=0o700)
+    agent.INSTALL_DIR.chmod(0o700)
+    agent.DATA_DIR = agent.INSTALL_DIR / "data"
+    agent.DATA_DIR.mkdir(mode=0o700)
+    agent.DATA_DIR.chmod(0o700)
+    config_root = agent.INSTALL_DIR / "config"
+    config_root.mkdir(mode=0o700)
+    config_root.chmod(0o700)
     stage_root = agent.DATA_DIR / "assistant-first" / "artifact-stage"
     stage_root.mkdir(mode=0o700, parents=True)
     stage_root.chmod(0o700)
     reservation_root = agent.DATA_DIR / "assistant-first" / "resource-reservations"
     reservation_root.mkdir(mode=0o700, parents=True)
     reservation_root.chmod(0o700)
+    data_backup_root = agent.DATA_DIR / "assistant-first" / "data-backups"
+    data_backup_root.mkdir(mode=0o700, parents=True)
+    data_backup_root.chmod(0o700)
     agent.EXTENSIONS_DIR = builtins
     agent.USER_EXTENSIONS_DIR = users
     agent.ALWAYS_ON_SERVICES = frozenset({"dashboard"})
@@ -328,6 +399,8 @@ def host_server(tmp_path):
     agent._artifact_stage_runtime_binding = None
     agent._image_artifact_runtime = None
     agent._image_artifact_runtime_plan_loader = None
+    agent._data_backup_runtime = None
+    agent._data_backup_runtime_binding = None
     agent._resource_reservation_runtime = None
     agent._resource_reservation_runtime_data_dir = None
     agent._extension_lifecycle_plan_loader = lambda command: bind_fixture_plan(
@@ -468,10 +541,8 @@ def test_success_is_exact_synchronous_bound_and_token_free(host_server, host_req
 @pytest.mark.parametrize(
     "operation_key,payload",
     [
-        ("backup", {"serviceIds": ["documents"]}),
         ("configure", {"serviceIds": ["documents"]}),
         ("verify", {"serviceIds": ["documents"]}),
-        ("restore", {"serviceIds": ["documents"]}),
         (
             "apply:documents",
             {"operation": {"serviceId": "documents", "action": "install"}},
@@ -1512,11 +1583,10 @@ def test_unrelated_operations_never_gain_resource_authority(
             ),
         )
 
-    test_cases = [
-        ("verify", {"serviceIds": ["documents"]}),
-        ("backup", {"serviceIds": ["documents"]}),
-        ("configure", {"serviceIds": ["documents"]}),
-    ]
+        test_cases = [
+            ("verify", {"serviceIds": ["documents"]}),
+            ("configure", {"serviceIds": ["documents"]}),
+        ]
     for op_key, payload in test_cases:
         request = work_request(
             agent._extension_lifecycle_work.REQUEST_SCHEMA,
@@ -1770,6 +1840,252 @@ def test_host_agent_source_wires_closed_image_runtime_module():
     assert "extension_image_artifact_runtime" in agent_source
     assert "_image_artifact_runtime" in agent_source
     assert "_get_extension_image_artifact_runtime" in agent_source
+
+
+@pytest.mark.skipif(not STAGE_SUPPORTED, reason="requires Linux dir_fd semantics")
+def test_backup_and_restore_use_one_closed_runtime_and_replay_once(
+    host_server, host_request
+):
+    agent, _listener = host_server
+    runtime_module = agent._data_backup_runtime_module
+    source = agent.INSTALL_DIR / "config" / "searxng"
+    source.mkdir(mode=0o700)
+    settings = source / "settings.yml"
+    settings.write_bytes(b"original")
+    settings.chmod(0o600)
+    grant = acquire_lease(agent, host_request, [runtime_module.CANARY_SERVICE_ID])
+    evidence = lease_evidence(agent, grant)
+    runtime = agent._get_extension_data_backup_runtime()
+    assert runtime is not None
+    calls = []
+
+    def backup_dispatch(command):
+        calls.append("backup")
+        return runtime.backup_dispatcher(command)
+
+    def restore_dispatch(command):
+        calls.append("restore")
+        return runtime.restore_dispatcher(command)
+
+    agent._data_backup_runtime = replace(
+        runtime,
+        backup_dispatcher=backup_dispatch,
+        restore_dispatcher=restore_dispatch,
+    )
+    agent._extension_lifecycle_work_dispatcher = lambda _command: (
+        (_ for _ in ()).throw(AssertionError("generic received data work"))
+    )
+
+    backup_request = data_work_request(agent, evidence, "backup")
+    begin_receipt(agent, host_request, backup_request)
+    status, result = host_request("/v1/extension/lifecycle-work", backup_request)
+    assert status == 200
+    assert result["operationKey"] == "backup"
+    assert result["completed"] is True
+    assert calls == ["backup"]
+
+    replay_status, replay = host_request(
+        "/v1/extension/lifecycle-work", backup_request
+    )
+    assert replay_status == 200
+    assert replay == result
+    assert calls == ["backup"]
+
+    settings.write_bytes(b"changed")
+    settings.chmod(0o600)
+    restore_request = data_work_request(agent, evidence, "restore")
+    begin_receipt(agent, host_request, restore_request)
+    status, restored = host_request(
+        "/v1/extension/lifecycle-work", restore_request
+    )
+    assert status == 200
+    assert restored["operationKey"] == "restore"
+    assert restored["completed"] is True
+    assert calls == ["backup", "restore"]
+    assert settings.read_bytes() == b"original"
+
+
+@pytest.mark.skipif(not STAGE_SUPPORTED, reason="requires Linux dir_fd semantics")
+def test_backup_started_receipt_recovers_snapshot_without_redispatch(
+    host_server, host_request
+):
+    agent, _listener = host_server
+    runtime_module = agent._data_backup_runtime_module
+    source = agent.INSTALL_DIR / "config" / "searxng"
+    source.mkdir(mode=0o700)
+    settings = source / "settings.yml"
+    settings.write_bytes(b"original")
+    settings.chmod(0o600)
+    grant = acquire_lease(agent, host_request, [runtime_module.CANARY_SERVICE_ID])
+    request = data_work_request(agent, lease_evidence(agent, grant), "backup")
+    command = agent._extension_lifecycle_work.parse_lifecycle_work_request(
+        {key: request[key] for key in agent._extension_lifecycle_work.REQUEST_KEYS}
+    )
+    bound = bind_fixture_plan(agent, command)
+    runtime = agent._get_extension_data_backup_runtime()
+    assert runtime is not None
+    begin_receipt(agent, host_request, request)
+    expected = runtime.backup_dispatcher(bound)
+    calls = []
+    agent._data_backup_runtime = replace(
+        runtime,
+        backup_dispatcher=lambda value: calls.append(value) or EVIDENCE_HASH,
+    )
+
+    status, result = host_request("/v1/extension/lifecycle-work", request)
+
+    assert status == 200
+    assert result["evidenceHash"] == expected
+    assert calls == []
+    snapshot_status, snapshot = receipt_snapshot(agent, host_request, request)
+    assert snapshot_status == 200
+    assert snapshot["state"] == "completed"
+
+
+@pytest.mark.parametrize("operation_key", ["backup", "restore"])
+def test_missing_data_runtime_never_falls_back_to_generic_dispatcher(
+    host_server, host_request, operation_key
+):
+    agent, _listener = host_server
+    runtime_module = agent._data_backup_runtime_module
+    grant = acquire_lease(agent, host_request, [runtime_module.CANARY_SERVICE_ID])
+    request = data_work_request(
+        agent, lease_evidence(agent, grant), operation_key
+    )
+    begin_receipt(agent, host_request, request)
+    calls = []
+    agent._data_backup_runtime_module = None
+    agent._data_backup_runtime = None
+    agent._data_backup_runtime_binding = None
+    agent._extension_lifecycle_work_dispatcher = (
+        lambda value: calls.append(value) or EVIDENCE_HASH
+    )
+
+    status, result = host_request("/v1/extension/lifecycle-work", request)
+
+    assert status == 503
+    assert result == {"error": {"code": "lifecycle-work-dispatcher-unavailable"}}
+    assert calls == []
+
+
+@pytest.mark.parametrize("operation_key", ["backup", "restore"])
+def test_data_runtime_constructor_failure_cannot_fall_back(
+    host_server, host_request, operation_key
+):
+    agent, _listener = host_server
+    original_module = agent._data_backup_runtime_module
+    grant = acquire_lease(agent, host_request, [original_module.CANARY_SERVICE_ID])
+    request = data_work_request(
+        agent, lease_evidence(agent, grant), operation_key
+    )
+    begin_receipt(agent, host_request, request)
+    calls = []
+
+    class BrokenRuntimeModule:
+        @staticmethod
+        def build_data_backup_runtime(**_kwargs):
+            raise OSError("private-construction-detail")
+
+    agent._data_backup_runtime_module = BrokenRuntimeModule
+    agent._data_backup_runtime = None
+    agent._data_backup_runtime_binding = None
+    agent._extension_lifecycle_work_dispatcher = (
+        lambda value: calls.append(value) or EVIDENCE_HASH
+    )
+
+    status, result = host_request("/v1/extension/lifecycle-work", request)
+
+    assert status == 503
+    assert result == {"error": {"code": "lifecycle-work-dispatcher-unavailable"}}
+    assert calls == []
+    assert "private-construction-detail" not in json.dumps(result)
+
+
+def test_data_runtime_not_constructed_before_admission_gates(
+    host_server, host_request
+):
+    agent, _listener = host_server
+    original_module = agent._data_backup_runtime_module
+    constructed = []
+
+    class ConstructionTracker:
+        CANARY_SERVICE_ID = original_module.CANARY_SERVICE_ID
+
+        @staticmethod
+        def build_data_backup_runtime(**_kwargs):
+            constructed.append(True)
+            raise AssertionError("must not construct before admission")
+
+    agent._data_backup_runtime_module = ConstructionTracker
+    agent._data_backup_runtime = None
+    agent._data_backup_runtime_binding = None
+    request = work_request(
+        agent._extension_lifecycle_work.REQUEST_SCHEMA,
+        operation_key="backup",
+        service_ids=[original_module.CANARY_SERVICE_ID],
+        payload={"serviceIds": [original_module.CANARY_SERVICE_ID]},
+    )
+
+    assert host_request(
+        "/v1/extension/lifecycle-work", request, token="wrong"
+    )[0] == 403
+    assert constructed == []
+    agent.ASSISTANT_TRANSACTIONS_ENABLED = False
+    assert host_request("/v1/extension/lifecycle-work", request)[0] == 404
+    assert constructed == []
+    agent.ASSISTANT_TRANSACTIONS_ENABLED = True
+    assert host_request("/v1/extension/lifecycle-work", request)[0] == 422
+    assert constructed == []
+
+
+def test_unrelated_operations_never_gain_data_runtime_authority(
+    host_server, host_request
+):
+    agent, _listener = host_server
+    calls = []
+    agent._data_backup_runtime = SimpleNamespace(
+        backup_dispatcher=lambda value: calls.append(("backup", value)),
+        backup_started_observer=lambda value: calls.append(("observe-backup", value)),
+        restore_dispatcher=lambda value: calls.append(("restore", value)),
+        restore_started_observer=lambda value: calls.append(("observe-restore", value)),
+    )
+    agent._data_backup_runtime_binding = (
+        agent.INSTALL_DIR,
+        agent.DATA_DIR,
+        agent._extension_lifecycle_plan_loader,
+    )
+    grant = acquire_lease(agent, host_request)
+    for operation_key in ("configure", "verify"):
+        request = work_request(
+            agent._extension_lifecycle_work.REQUEST_SCHEMA,
+            lease_evidence(agent, grant),
+            operation_key=operation_key,
+        )
+        status, result = host_request("/v1/extension/lifecycle-work", request)
+        assert status == 503
+        assert result == {
+            "error": {"code": "lifecycle-work-dispatcher-unavailable"}
+        }
+    assert calls == []
+
+
+@pytest.mark.skipif(not STAGE_SUPPORTED, reason="requires Linux dir_fd semantics")
+def test_backup_and_restore_production_reachability_is_paired(host_server):
+    agent, _listener = host_server
+    runtime = agent._get_extension_data_backup_runtime()
+    assert runtime is not None
+    assert callable(runtime.backup_dispatcher)
+    assert callable(runtime.backup_started_observer)
+    assert callable(runtime.restore_dispatcher)
+    assert callable(runtime.restore_started_observer)
+    assert list(runtime.root.iterdir()) == []
+
+
+def test_host_agent_source_wires_closed_data_runtime_module():
+    agent_source = (BIN_DIR / "ods-host-agent.py").read_text(encoding="utf-8")
+    assert "extension_data_backup_runtime" in agent_source
+    assert "_data_backup_runtime" in agent_source
+    assert "_get_extension_data_backup_runtime" in agent_source
 
 
 if __name__ == "__main__":

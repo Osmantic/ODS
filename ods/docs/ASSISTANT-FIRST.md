@@ -162,9 +162,10 @@ its exact response-loss recovery anchor. A started receipt must already exist;
 the host publishes the matching completed or failed terminal before replying,
 and an exact completed replay never dispatches work again. A started-only
 receipt still requires durable side-effect observation and cannot be replayed
-or declared failed by inference. Apply, configuration, backup, health
-verification, and compensation operations and the production executor therefore
-remain disabled.
+or declared failed by inference. General apply, configuration, health
+verification, and composite compensation operations and the production executor
+therefore remain disabled; the exact canary operations activated below are the
+only exceptions.
 
 Future host work is also bound to the exact approved transaction before a
 dispatcher can run. The host loads the owner-private transaction store shared
@@ -242,9 +243,10 @@ root. Composition validates the root without creating or repairing it, caches
 only the exact `DATA_DIR` and extension-root binding, and accepts no request or
 environment override. The host lifecycle handler calls the factory only for
 the exact `stage` operation and passes both callables through the existing
-plan-bound receipt path. Beyond stage, the exact immutable-image canary, and the
-paired reserve/release boundary described below, lifecycle operations remain
-unavailable. Dashboard execution remains `None`.
+plan-bound receipt path. Beyond stage, the exact immutable-image canary, the
+paired reserve/release boundary described below, and the paired data
+backup/restore canary, lifecycle operations remain unavailable. Dashboard
+execution remains `None`.
 
 The installer also provisions an owner-private
 `data/assistant-first/resource-reservations` root for the next host boundary.
@@ -317,6 +319,28 @@ observer can recover a started receipt after response loss without another
 pull. Missing, changed, non-canary, build-based, or unpinned material fails
 before a subprocess call. This does not stage configuration, start a container,
 enable Dashboard execution, or alter Full/Core/Custom behavior.
+
+The paired `backup` and `restore` host operations are now activated only for
+the exact bundled SearXNG Manifest v2 canary and its declared
+`config/searxng` required-data record. Before configuration, backup captures
+either the exact present tree or its exact absence in one canonical,
+owner-private, first-write-wins snapshot bound to the transaction, plan,
+definition, data schema, and lifecycle contract. Descriptor-relative walks
+reject symlinks, special files, hard links, foreign ownership, unsafe modes,
+concurrent changes, excessive depth or entry count, and per-file or aggregate
+size excess. Publication uses an owner-private sealed temporary inode and a
+hard-link no-replace step; recovery stabilizes a published link, removes only
+sealed transaction-named crash orphans, and rejects external links.
+
+Restore reads and validates the complete snapshot before touching the live
+tree, then changes only `config/searxng`, preserving recorded ownership, modes,
+and bytes. An absent snapshot state removes only that exact canary path.
+Repeated restore is idempotent, and paired read-only observers recover exact
+backup or restore completion after response loss without repeating a completed
+effect. Receipts expose only bound evidence hashes, never backed-up bytes. The
+runtime has no process, network, container, Docker, Compose, or secret-store
+authority, and it cannot make conversational extension installation live by
+itself.
 
 A dormant application-identity contract defines the labels a future apply
 adapter must place on managed services. It re-proves one exact

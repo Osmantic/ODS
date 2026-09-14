@@ -128,6 +128,11 @@ except Exception:  # pragma: no cover - import environment dependent
     _image_artifact_runtime_module = None
 
 try:
+    import extension_data_backup_runtime as _data_backup_runtime_module
+except Exception:  # pragma: no cover - import environment dependent
+    _data_backup_runtime_module = None
+
+try:
     import extension_resource_reservation_runtime
 except Exception:  # pragma: no cover - import environment dependent
     _resource_reservation_runtime_module = None
@@ -205,6 +210,13 @@ _image_artifact_runtime = None
 _image_artifact_runtime_plan_loader = None
 _image_artifact_runtime_lock = threading.Lock()
 
+# Exact extension-data backup and restore dependencies are composed lazily from
+# fixed host roots. Only the paired ``backup`` and ``restore`` branches select
+# them. Construction validates custody but performs no snapshot or restore.
+_data_backup_runtime = None
+_data_backup_runtime_binding: tuple[Path, Path, object] | None = None
+_data_backup_runtime_lock = threading.Lock()
+
 # Exact resource-reservation dependencies are composed lazily from fixed host
 # roots. Only the ``reserve:<serviceId>`` and ``release`` lifecycle-work
 # branches select them. Construction performs no reservation/release mutation.
@@ -213,10 +225,11 @@ _resource_reservation_runtime_data_dir: Path | None = None
 _resource_reservation_runtime_lock = threading.Lock()
 
 # General production lifecycle dispatch remains deliberately unwired.  The
-# exact ``download-and-verify`` canary, ``stage``, ``reserve:<serviceId>``, and
-# ``release`` operations select fixed host-owned runtimes after lease admission;
-# every other operation remains unavailable. Tests may inject a callable for
-# the still-dormant operation contracts.
+# exact ``download-and-verify`` canary, paired ``backup``/``restore`` canary,
+# ``stage``, ``reserve:<serviceId>``, and ``release`` operations select fixed
+# host-owned runtimes after lease admission; every other operation remains
+# unavailable. Tests may inject a callable for the still-dormant operation
+# contracts.
 _extension_lifecycle_work_dispatcher = None
 
 _MODEL_MEMORY_PATH = (
@@ -6610,6 +6623,33 @@ def _get_extension_image_artifact_runtime():
         return _image_artifact_runtime
 
 
+def _get_extension_data_backup_runtime():
+    """Compose, but do not run, the exact paired data backup/restore runtime."""
+
+    global _data_backup_runtime, _data_backup_runtime_binding
+    if _data_backup_runtime_module is None or not callable(
+        _extension_lifecycle_plan_loader
+    ):
+        return None
+    binding = (INSTALL_DIR, DATA_DIR, _extension_lifecycle_plan_loader)
+    with _data_backup_runtime_lock:
+        if _data_backup_runtime is None or _data_backup_runtime_binding != binding:
+            try:
+                _data_backup_runtime = (
+                    _data_backup_runtime_module.build_data_backup_runtime(
+                        install_dir=INSTALL_DIR,
+                        data_dir=DATA_DIR,
+                        plan_loader=_extension_lifecycle_plan_loader,
+                    )
+                )
+            except Exception:
+                _data_backup_runtime = None
+                _data_backup_runtime_binding = None
+                return None
+            _data_backup_runtime_binding = binding
+        return _data_backup_runtime
+
+
 def _get_extension_resource_reservation_runtime():
     """Compose, but do not register, the fixed host resource-reservation runtime.
 
@@ -7693,6 +7733,19 @@ class AgentHandler(BaseHTTPRequestHandler):
                         started_observer = runtime.started_observer
                     else:
                         dispatcher = None
+                elif command.operation_key in {"backup", "restore"}:
+                    # These paired destructive-data boundaries can never fall
+                    # back to the generic dispatcher when their closed canary
+                    # runtime is missing or fails construction.
+                    dispatcher = None
+                    runtime = _get_extension_data_backup_runtime()
+                    if runtime is not None:
+                        if command.operation_key == "backup":
+                            dispatcher = runtime.backup_dispatcher
+                            started_observer = runtime.backup_started_observer
+                        else:
+                            dispatcher = runtime.restore_dispatcher
+                            started_observer = runtime.restore_started_observer
                 elif command.operation_key == "stage":
                     runtime = _get_extension_artifact_stage_runtime()
                     if runtime is not None:
