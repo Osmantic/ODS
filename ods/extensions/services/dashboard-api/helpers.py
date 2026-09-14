@@ -1381,3 +1381,20 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def numeric_safe_variance_safe(values: list | None) -> float:
+    """Safely compute population variance of a numeric sequence.
+    Returns 0.0 on None, non-sequence, or empty inputs.
+    """
+    if not values or not isinstance(values, (list, tuple)):
+        return 0.0
+    cleaned = []
+    for v in values:
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            cleaned.append(float(v))
+    if not cleaned:
+        return 0.0
+    mean_val = sum(cleaned) / len(cleaned)
+    variance = sum((x - mean_val) ** 2 for x in cleaned) / len(cleaned)
+    return round(variance, 4)
