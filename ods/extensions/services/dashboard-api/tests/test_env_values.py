@@ -20,6 +20,7 @@ from env_values import strip_matching_quotes
         ('"value\'', '"value\''),
         ("''value''", "'value'"),
         ('""value""', '"value"'),
+        (None, ""),
     ],
 )
 def test_strip_matching_quotes_removes_exactly_one_complete_pair(raw, expected):
