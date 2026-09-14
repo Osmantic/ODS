@@ -1607,3 +1607,16 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+class TestStripStringWhitespaceBounds:
+
+    def test_strips_whitespace(self):
+        from helpers import strip_string_whitespace_bounds
+        assert strip_string_whitespace_bounds("  hello   world  ") == "hello world"
+
+    def test_handles_none_and_non_string_inputs(self):
+        from helpers import strip_string_whitespace_bounds
+        assert strip_string_whitespace_bounds(None) == ""
+        assert strip_string_whitespace_bounds(12345) == "12345"
+

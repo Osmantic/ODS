@@ -1146,3 +1146,17 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def strip_string_whitespace_bounds(text: object) -> str:
+    """Strip leading, trailing, and internal multi-spaces from text string safely.
+
+    Returns empty string for None or non-string inputs.
+    """
+    if text is None:
+        return ""
+    val = str(text).strip()
+    if not val:
+        return ""
+    return " ".join(val.split())
+
