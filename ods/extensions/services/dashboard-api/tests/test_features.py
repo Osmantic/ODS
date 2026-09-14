@@ -26,6 +26,12 @@ class TestCalculateFeatureStatusDefaults:
         assert result["setupTime"] == "Unknown"
         assert result["priority"] == 99
 
+    def test_missing_requirements_dict_uses_default(self):
+        """A feature missing requirements dictionary should handle gracefully."""
+        feature_without_req = {"id": "noreq", "name": "No Req"}
+        result = calculate_feature_status(feature_without_req, [], None)
+        assert result["id"] == "noreq"
+
 
 class TestCalculateFeatureStatusAppleFallback:
 
