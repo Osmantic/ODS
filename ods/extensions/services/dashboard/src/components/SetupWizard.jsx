@@ -149,8 +149,15 @@ export default function SetupWizard({ onComplete }) {
   const saveConfig = async () => {
     // localStorage retains the wizard's *answers* (voice / userName etc.)
     // for the dashboard to consult later, but is no longer the source of
-    // truth for "have we onboarded?" — that lives on the server now.
-    localStorage.setItem('ods-config', JSON.stringify(config))
+    // truth for "have we onboarded?" — that lives on the server now. Since
+    // it is only a convenience cache, a browser that refuses storage must
+    // not stop the wizard: an unguarded setItem throws before the POST and
+    // before onComplete(), trapping the user on this screen permanently.
+    try {
+      globalThis.localStorage?.setItem('ods-config', JSON.stringify(config))
+    } catch (err) {
+      console.warn('Could not cache wizard answers locally:', err)
+    }
     try {
       // The server endpoint writes setup-complete.json which the
       // useFirstRun hook reads. Best-effort: if it fails (e.g. dashboard-api
