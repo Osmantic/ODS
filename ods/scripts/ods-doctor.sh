@@ -1677,7 +1677,8 @@ import sys
 
 path = sys.argv[1]
 try:
-    data = json.load(open(path, "r", encoding="utf-8"))
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
+        data = json.load(f)
 except Exception:
     raise SystemExit(0)
 
