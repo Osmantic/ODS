@@ -4250,6 +4250,32 @@ def test_extension_operation_lock_falls_back_when_primary_lock_parent_cannot_cre
         assert (fallback_lock.parent / ".extension-operation-locks").is_dir()
 
 
+def test_transaction_factory_contends_with_single_extension_route_lock(
+    tmp_path, monkeypatch,
+):
+    """Composite and legacy mutations must use the exact same lock inode."""
+    from extension_operation_locks import FileServiceLockFactory, ServiceLockTimeout
+    from routers import extensions as ext_module
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    primary_lock = data_dir / ".extensions-lock"
+    monkeypatch.setattr(
+        ext_module,
+        "_extensions_lock_candidates",
+        lambda: [primary_lock],
+    )
+    factory = FileServiceLockFactory(data_dir, timeout=0.05)
+
+    with ext_module._extension_operation_lock("aider"):
+        with pytest.raises(ServiceLockTimeout):
+            with factory.lock_services(["aider"]):
+                pytest.fail("transaction lock bypassed the route lock")
+
+    with factory.lock_services(["aider"]):
+        pass
+
+
 class TestUpdateHardening(TestUpdateExtension):
     """Gates and sync-echo hardening for the transactional update path."""
 
