@@ -47,7 +47,8 @@ if [[ "$ENV_MODE" == "true" ]]; then
 import json
 import sys
 
-contract = json.load(open(sys.argv[1], "r", encoding="utf-8"))
+with open(sys.argv[1], "r", encoding="utf-8", errors="replace") as f:
+    contract = json.load(f)
 
 def out(key, value):
     safe = str(value).replace("\\", "\\\\").replace('"', '\\"')
