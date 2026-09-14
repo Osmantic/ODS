@@ -208,6 +208,50 @@ def _decode_json(response: httpx.Response) -> dict[str, Any]:
     return payload
 
 
+def _reject_duplicate_json_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON key")
+        result[key] = value
+    return result
+
+
+def _reject_json_number(_value: str) -> None:
+    raise ValueError("non-integer JSON number")
+
+
+def _decode_strict_json_object(response: httpx.Response) -> dict[str, Any]:
+    """Decode one duplicate-free JSON object from strict UTF-8 bytes.
+
+    This deliberately does not use ``Response.json()``: the standard decoder
+    accepts duplicate keys and non-standard numeric constants, while lifecycle
+    custody responses must be unambiguous before their binding is trusted.
+    """
+
+    content_type = response.headers.get("content-type", "")
+    if content_type.split(";", 1)[0].strip().casefold() != "application/json":
+        raise AgentProtocolError("Host agent returned a non-JSON content type")
+    try:
+        text = response.content.decode("utf-8", errors="strict")
+        start = 0
+        while start < len(text) and text[start] in " \t\r\n":
+            start += 1
+        decoder = json.JSONDecoder(
+            object_pairs_hook=_reject_duplicate_json_pairs,
+            parse_float=_reject_json_number,
+            parse_constant=_reject_json_number,
+        )
+        payload, end = decoder.raw_decode(text, start)
+        if text[end:].strip():
+            raise ValueError("trailing JSON data")
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise AgentProtocolError("Host agent returned invalid JSON") from exc
+    if not isinstance(payload, dict):
+        raise AgentProtocolError("Host agent returned non-object JSON")
+    return payload
+
+
 def _sync_request(
     method: str,
     path: str,
@@ -433,6 +477,29 @@ def request_bounded_json_200(
     )
     _raise_for_status_200(response)
     return _decode_json(response)
+
+
+def request_bounded_strict_json_200(
+    method: str,
+    path: str,
+    *,
+    payload: Any = None,
+    params: dict[str, Any] | None = None,
+    timeout: float = 5.0,
+    max_response_bytes: int,
+) -> dict[str, Any]:
+    """Return one strict bounded JSON object only for exactly HTTP 200."""
+
+    response = _sync_bounded_request(
+        method,
+        path,
+        payload=payload,
+        params=params,
+        timeout=timeout,
+        max_response_bytes=max_response_bytes,
+    )
+    _raise_for_status_200(response)
+    return _decode_strict_json_object(response)
 
 
 def request_text(

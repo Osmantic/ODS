@@ -124,6 +124,17 @@ disabled until a later adapter can bind each durable transaction transition to
 lease custody, one synchronous host mutation, terminal receipt publication, and
 strict observation without treating HTTP 202 as completion.
 
+Phase 5G-C adds a dormant Dashboard-side client for those fixed receipt routes.
+Its shared transport accepts only HTTP 200 with bounded `application/json`,
+strict UTF-8, one object root, unique keys, integer-only numbers, and no trailing
+data. The client then requires exact response shapes and revalidates every
+transaction, plan, operation, request, ordered service, outcome, evidence, and
+started-event binding, including the complete snapshot receipt chain. It does
+not retry. An uncertain `begin` or `finish` is explicitly ambiguous and must be
+reconciled through `snapshot`; read-only snapshot unavailability is retryable
+and never reported as a possible mutation. No production module imports the
+client, and the production executor remains disabled.
+
 All selected services are locked in canonical order before the final
 provenance check and before lifecycle work. Artifacts are downloaded and
 verified before apply. The first pre-transaction backup is replay-safe,

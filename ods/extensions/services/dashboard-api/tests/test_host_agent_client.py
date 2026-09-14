@@ -326,6 +326,80 @@ def test_bounded_json_200_preserves_http_error_mapping(monkeypatch):
         client.close()
 
 
+def test_bounded_strict_json_200_accepts_one_exact_object(monkeypatch):
+    client = httpx.Client(
+        base_url="http://agent",
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(
+                200,
+                headers={"content-type": "application/json; charset=utf-8"},
+                content=b' {"status":"ok"}\n',
+            )
+        ),
+    )
+    monkeypatch.setattr(agent_client, "_sync_client", client)
+    try:
+        assert agent_client.request_bounded_strict_json_200(
+            "POST", "/v1/test", max_response_bytes=64
+        ) == {"status": "ok"}
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        b'{"status":"ok","status":"changed"}',
+        b'{"status":"ok"}{}',
+        b'\xff{"status":"ok"}',
+        b'[]',
+        b'null',
+        b'{"value":NaN}',
+        b'{"value":1.5}',
+    ],
+)
+def test_bounded_strict_json_200_rejects_ambiguous_bodies(monkeypatch, body):
+    client = httpx.Client(
+        base_url="http://agent",
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(
+                200,
+                headers={"content-type": "application/json"},
+                content=body,
+            )
+        ),
+    )
+    monkeypatch.setattr(agent_client, "_sync_client", client)
+    try:
+        with pytest.raises(agent_client.AgentProtocolError):
+            agent_client.request_bounded_strict_json_200(
+                "POST", "/v1/test", max_response_bytes=64
+            )
+    finally:
+        client.close()
+
+
+def test_bounded_strict_json_200_requires_json_content_type(monkeypatch):
+    client = httpx.Client(
+        base_url="http://agent",
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(
+                200,
+                headers={"content-type": "text/plain"},
+                content=b'{"status":"ok"}',
+            )
+        ),
+    )
+    monkeypatch.setattr(agent_client, "_sync_client", client)
+    try:
+        with pytest.raises(agent_client.AgentProtocolError):
+            agent_client.request_bounded_strict_json_200(
+                "POST", "/v1/test", max_response_bytes=64
+            )
+    finally:
+        client.close()
+
+
 def test_bounded_json_counts_decoded_body_without_double_decoding(monkeypatch):
     compressed = gzip.compress(b'{"status":"ok"}')
     client = httpx.Client(
