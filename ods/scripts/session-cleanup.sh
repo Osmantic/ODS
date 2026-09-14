@@ -236,7 +236,7 @@ finally:
 PY
 
     for f in "${WIPE_FILES[@]}"; do
-        if [[ -f "$f" ]]; then
+        if [[ -f "$f" || -L "$f" ]]; then
             rm -f "$f"
             REMOVED_BLOATED=$((REMOVED_BLOATED + 1))
         fi
