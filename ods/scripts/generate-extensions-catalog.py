@@ -56,8 +56,8 @@ def strip_secrets(env_vars: list[dict]) -> list[dict]:
 def load_manifest(manifest_path: Path) -> dict | None:
     """Load and validate a single manifest file. Returns None on failure."""
     try:
-        data = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
-    except (yaml.YAMLError, OSError) as e:
+        data = yaml.safe_load(manifest_path.read_text(encoding="utf-8", errors="replace"))
+    except (yaml.YAMLError, OSError, UnicodeDecodeError, ValueError) as e:
         print(f"WARNING: Failed to read {manifest_path}: {e}", file=sys.stderr)
         return None
 
