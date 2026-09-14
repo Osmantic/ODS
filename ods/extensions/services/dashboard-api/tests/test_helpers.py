@@ -1607,3 +1607,19 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+class TestNumericClampRangeSafe:
+    def test_valid_clamping(self):
+        from helpers import numeric_clamp_range_safe
+        assert numeric_clamp_range_safe(15, 0, 10) == 10
+        assert numeric_clamp_range_safe(-5, 0, 10) == 0
+        assert numeric_clamp_range_safe(5, 0, 10) == 5
+
+    def test_invalid_inputs(self):
+        from helpers import numeric_clamp_range_safe
+        assert numeric_clamp_range_safe(None, 0, 10, default=-1) == -1
+        assert numeric_clamp_range_safe("5", 0, 10, default=-1) == -1
+        assert numeric_clamp_range_safe(5, 10, 0, default=-1) == -1
+        assert numeric_clamp_range_safe(float("nan"), 0, 10, default=-1) == -1
+
