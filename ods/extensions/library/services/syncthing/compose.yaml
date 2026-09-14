@@ -1,0 +1,39 @@
+services:
+  syncthing:
+    image: syncthing/syncthing:2.1.5@sha256:397aa00b92b48d65540ea3ae3cbf271b87bdccbe07a0b7bd7d2debc3a7b29138
+    container_name: ods-syncthing
+    restart: unless-stopped
+    user: "1000:1000"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    entrypoint: [/bin/sh, /ods/entrypoint.sh]
+    environment:
+      SYNCTHING_ADMIN_USER: ${SYNCTHING_ADMIN_USER:-admin}
+      SYNCTHING_ADMIN_PASSWORD: ${SYNCTHING_ADMIN_PASSWORD:?Set SYNCTHING_ADMIN_PASSWORD before installation}
+      STGUIADDRESS: 0.0.0.0:8384
+      STHOMEDIR: /var/syncthing/config
+      STNOUPGRADE: "1"
+    volumes:
+      - ./data/syncthing:/var/syncthing
+      - ./extensions/services/syncthing/entrypoint.sh:/ods/entrypoint.sh:ro
+      - ./extensions/services/syncthing/config.xml:/ods/config.xml:ro
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=64m"]
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${SYNCTHING_PORT:-7831}:8384"
+      - "${BIND_ADDRESS:-127.0.0.1}:${SYNCTHING_SYNC_PORT:-22000}:22000"
+    healthcheck:
+      test: [CMD, curl, --fail, --silent, --show-error, --max-time, "5", http://127.0.0.1:8384/rest/noauth/health]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks: [ods-network]
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1G
+networks:
+  ods-network:
+    external: true

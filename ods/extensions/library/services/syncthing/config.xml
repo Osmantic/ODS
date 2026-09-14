@@ -1,0 +1,16 @@
+<configuration version="52">
+    <gui enabled="true" tls="false">
+        <address>0.0.0.0:8384</address>
+    </gui>
+    <options>
+        <listenAddress>tcp://0.0.0.0:22000</listenAddress>
+        <globalAnnounceEnabled>false</globalAnnounceEnabled>
+        <localAnnounceEnabled>false</localAnnounceEnabled>
+        <relaysEnabled>false</relaysEnabled>
+        <natEnabled>false</natEnabled>
+        <startBrowser>false</startBrowser>
+        <urAccepted>-1</urAccepted>
+        <autoUpgradeIntervalH>0</autoUpgradeIntervalH>
+        <crashReportingEnabled>false</crashReportingEnabled>
+    </options>
+</configuration>

@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-13T16:53:56Z",
+  "generated_at": "2026-09-14T13:16:03Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -3157,6 +3157,28 @@
       "configuration_scope": "declared-environment-keys"
     },
     {
+      "id": "pixel-inference",
+      "name": "Pixel inference sharing (development)",
+      "description": "Disabled by default. Owner-provisioned, inference-only device credentials; loopback transport only. Does not provide Pixel agent or computer access. Private state must be provisioned before service activation. Native Windows private-state support and guided setup are not yet implemented.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [
+        "model-router"
+      ],
+      "port": 8093,
+      "external_port_default": 4005,
+      "health_endpoint": "/health",
+      "env_vars": [],
+      "tags": [],
+      "features": [],
+      "startup_check": false,
+      "catalog_source": "builtin",
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
       "id": "qdrant",
       "name": "Qdrant (Vector DB)",
       "description": "Qdrant (Vector DB)",
@@ -3381,6 +3403,72 @@
           "priority": 6
         }
       ],
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
+      "id": "syncthing",
+      "name": "Syncthing",
+      "description": "Continuous folder synchronization between explicitly paired devices, with public discovery and relays off.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 8384,
+      "external_port_default": 7831,
+      "health_endpoint": "/rest/noauth/health",
+      "env_vars": [
+        {
+          "key": "SYNCTHING_PORT",
+          "default": "7831",
+          "description": "Published port for the authenticated device and folder management UI"
+        },
+        {
+          "key": "SYNCTHING_SYNC_PORT",
+          "default": "22000",
+          "description": "Published TCP port for explicitly paired remote devices"
+        },
+        {
+          "key": "SYNCTHING_ADMIN_USER",
+          "default": "admin",
+          "description": "Initial GUI administrator username"
+        },
+        {
+          "key": "SYNCTHING_ADMIN_PASSWORD",
+          "required": true,
+          "description": "Initial GUI password (existing configuration remains authoritative)"
+        }
+      ],
+      "tags": [
+        "files",
+        "sync",
+        "datasets",
+        "local",
+        "devices"
+      ],
+      "features": [
+        {
+          "id": "private-device-sync",
+          "name": "Private Device Sync",
+          "description": "Continuously synchronize selected folders with explicitly paired devices",
+          "icon": "FolderSync",
+          "category": "productivity",
+          "requirements": {
+            "services": [
+              "syncthing"
+            ],
+            "vram_gb": 0,
+            "disk_gb": 1
+          },
+          "enabled_services_all": [
+            "syncthing"
+          ],
+          "setup_time": "~2 minutes",
+          "priority": 33
+        }
+      ],
+      "startup_timeout": 120,
       "configuration_scope": "declared-environment-keys"
     },
     {
