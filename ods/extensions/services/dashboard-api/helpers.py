@@ -1146,3 +1146,23 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def rename_dict_keys_safe(data: object, mapping: object = None) -> dict:
+    """Rename dictionary keys according to mapping dict safely.
+
+    Handles non-dict data/mapping, missing keys, or None inputs without exception.
+    """
+    if not isinstance(data, dict):
+        return {}
+    if not isinstance(mapping, dict) or not mapping:
+        return dict(data)
+    res = {}
+    for k, v in data.items():
+        if k is None:
+            continue
+        new_key = mapping.get(k, k)
+        if new_key is not None:
+            res[str(new_key)] = v
+    return res
+
