@@ -8,6 +8,7 @@ import hashlib
 import http.client
 import importlib.util
 import json
+import os
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -21,12 +22,21 @@ BIN_DIR = Path(__file__).resolve().parents[4] / "bin"
 if str(BIN_DIR) not in sys.path:
     sys.path.insert(0, str(BIN_DIR))
 
+from extension_document_digest import canonical_document_sha256  # noqa: E402
+
 TRANSACTION_ID = "txn-" + "1" * 24
 OTHER_TRANSACTION_ID = "txn-" + "2" * 24
 PLAN_HASH = "3" * 64
 OTHER_PLAN_HASH = "4" * 64
 EVIDENCE_HASH = "5" * 64
 TOKEN = "synthetic-lifecycle-work-host-key"
+
+STAGE_SUPPORTED = (
+    os.name == "posix"
+    and hasattr(os, "O_DIRECTORY")
+    and hasattr(os, "O_NOFOLLOW")
+    and os.open in os.supports_dir_fd
+)
 
 
 class CountingLock:
@@ -209,6 +219,64 @@ def receipt_snapshot(agent, host_request, request):
     )
 
 
+def bind_fixture_plan(agent, command):
+    if command.operation_key != "stage":
+        return replace(command, plan_material={"bound": True})
+
+    plan = agent._extension_lifecycle_plan
+    operations = tuple(
+        plan.PlannedOperation(item["serviceId"], item["action"])
+        for item in command.payload["operations"]
+    )
+    definitions = tuple(
+        plan.PlannedDefinition(
+            service_id=operation.service_id,
+            service_type="docker",
+            manifest_schema_version="ods.services.v2",
+            version="1.0.0",
+            data_schema_version="1",
+            definition_sha256=canonical_document_sha256(
+                (
+                    agent.EXTENSIONS_DIR
+                    / operation.service_id
+                    / "manifest.yaml"
+                ).read_bytes()
+            ),
+            compose_sha256=None,
+            definition_source="library",
+            compose_file=None,
+            images=(),
+            builds=(),
+            canonical_document=b"fixture-only\n",
+        )
+        for operation in operations
+    )
+    return replace(
+        command,
+        plan_material=plan.LifecyclePlanMaterial(
+            schema=plan.PLAN_MATERIAL_SCHEMA,
+            transaction_id=command.transaction_id,
+            plan_hash=command.plan_hash,
+            state="staged",
+            operations=operations,
+            definitions=definitions,
+        ),
+    )
+
+
+def stage_work_request(agent, lease):
+    return work_request(
+        agent._extension_lifecycle_work.REQUEST_SCHEMA,
+        lease,
+        operation_key="stage",
+        payload={
+            "operations": [
+                {"serviceId": "documents", "action": "install"},
+            ]
+        },
+    )
+
+
 @pytest.fixture()
 def host_server(tmp_path):
     agent_path = BIN_DIR / "ods-host-agent.py"
@@ -231,6 +299,9 @@ def host_server(tmp_path):
     agent.ASSISTANT_TRANSACTIONS_ENABLED = True
     agent.DATA_DIR = tmp_path / "data"
     agent.DATA_DIR.mkdir()
+    stage_root = agent.DATA_DIR / "assistant-first" / "artifact-stage"
+    stage_root.mkdir(mode=0o700, parents=True)
+    stage_root.chmod(0o700)
     agent.EXTENSIONS_DIR = builtins
     agent.USER_EXTENSIONS_DIR = users
     agent.ALWAYS_ON_SERVICES = frozenset({"dashboard"})
@@ -244,9 +315,10 @@ def host_server(tmp_path):
     )
     agent._lifecycle_receipt_store_data_dir = agent.DATA_DIR
     agent._extension_lifecycle_work_dispatcher = None
-    agent._extension_lifecycle_plan_loader = lambda command: replace(
-        command,
-        plan_material={"bound": True},
+    agent._artifact_stage_runtime = None
+    agent._artifact_stage_runtime_binding = None
+    agent._extension_lifecycle_plan_loader = lambda command: bind_fixture_plan(
+        agent, command
     )
 
     listener = agent.ThreadedHTTPServer(("127.0.0.1", 0), agent.AgentHandler)
@@ -380,14 +452,42 @@ def test_success_is_exact_synchronous_bound_and_token_free(host_server, host_req
     assert len(seen) == 1
 
 
-def test_default_dispatcher_is_inert_but_authenticates_the_lease(
-    host_server, host_request
+@pytest.mark.parametrize(
+    "operation_key,payload",
+    [
+        (
+            "download-and-verify",
+            {"operations": [{"serviceId": "documents", "action": "install"}]},
+        ),
+        ("backup", {"serviceIds": ["documents"]}),
+        ("configure", {"serviceIds": ["documents"]}),
+        ("verify", {"serviceIds": ["documents"]}),
+        ("restore", {"serviceIds": ["documents"]}),
+        ("release", {"serviceIds": ["documents"]}),
+        (
+            "reserve:documents",
+            {"operation": {"serviceId": "documents", "action": "install"}},
+        ),
+        (
+            "apply:documents",
+            {"operation": {"serviceId": "documents", "action": "install"}},
+        ),
+        (
+            "compensate:documents",
+            {"operation": {"serviceId": "documents", "action": "install"}},
+        ),
+    ],
+)
+def test_non_stage_operations_remain_inert_but_authenticate_the_lease(
+    host_server, host_request, operation_key, payload
 ):
     agent, _listener = host_server
     grant = acquire_lease(agent, host_request)
     request = work_request(
         agent._extension_lifecycle_work.REQUEST_SCHEMA,
         lease_evidence(agent, grant),
+        operation_key=operation_key,
+        payload=payload,
     )
 
     status, result = host_request("/v1/extension/lifecycle-work", request)
@@ -397,6 +497,174 @@ def test_default_dispatcher_is_inert_but_authenticates_the_lease(
     state = agent._extension_lease_manager.describe(grant["leaseId"])
     assert state["active"] is False
     assert grant["leaseToken"] not in json.dumps(result)
+
+
+@pytest.mark.skipif(not STAGE_SUPPORTED, reason="requires Linux dir_fd semantics")
+def test_stage_uses_fixed_runtime_terminalizes_and_replays_once(
+    host_server, host_request
+):
+    agent, _listener = host_server
+    grant = acquire_lease(agent, host_request)
+    request = stage_work_request(agent, lease_evidence(agent, grant))
+    begin_receipt(agent, host_request, request)
+
+    runtime = agent._get_extension_artifact_stage_runtime()
+    original_dispatch = runtime.dispatcher
+    calls = []
+
+    def counted_dispatch(command):
+        calls.append(command)
+        return original_dispatch(command)
+
+    agent._artifact_stage_runtime = replace(
+        runtime,
+        dispatcher=counted_dispatch,
+    )
+    agent._extension_lifecycle_work_dispatcher = lambda _command: (_ for _ in ()).throw(
+        AssertionError("generic dispatcher received stage work")
+    )
+
+    status, result = host_request("/v1/extension/lifecycle-work", request)
+
+    assert status == 200
+    assert result["completed"] is True
+    assert result["outcome"] == "completed"
+    assert result["operationKey"] == "stage"
+    assert len(calls) == 1
+    stage_root = agent.DATA_DIR / "assistant-first" / "artifact-stage"
+    bundles = list(stage_root.iterdir())
+    assert len(bundles) == 1
+    assert hashlib.sha256(bundles[0].read_bytes()).hexdigest() == result[
+        "evidenceHash"
+    ]
+
+    snapshot_status, snapshot = receipt_snapshot(agent, host_request, request)
+    assert snapshot_status == 200
+    assert snapshot["state"] == "completed"
+    assert snapshot["terminalReceipt"]["evidenceHash"] == result["evidenceHash"]
+
+    replay_status, replay = host_request("/v1/extension/lifecycle-work", request)
+    assert replay_status == 200
+    assert replay == result
+    assert len(calls) == 1
+    assert list(stage_root.iterdir()) == bundles
+
+
+@pytest.mark.skipif(not STAGE_SUPPORTED, reason="requires Linux dir_fd semantics")
+def test_stage_recovers_exact_started_bundle_without_dispatch(
+    host_server, host_request
+):
+    agent, _listener = host_server
+    grant = acquire_lease(agent, host_request)
+    request = stage_work_request(agent, lease_evidence(agent, grant))
+    command = agent._extension_lifecycle_work.parse_lifecycle_work_request(
+        {
+            key: request[key]
+            for key in agent._extension_lifecycle_work.REQUEST_KEYS
+        }
+    )
+    bound = bind_fixture_plan(agent, command)
+    runtime = agent._get_extension_artifact_stage_runtime()
+    begin_receipt(agent, host_request, request)
+    expected_hash = runtime.dispatcher(bound)
+    calls = []
+    agent._artifact_stage_runtime = replace(
+        runtime,
+        dispatcher=lambda command: calls.append(command) or EVIDENCE_HASH,
+    )
+
+    status, result = host_request("/v1/extension/lifecycle-work", request)
+
+    assert status == 200
+    assert result["evidenceHash"] == expected_hash
+    assert calls == []
+    snapshot_status, snapshot = receipt_snapshot(agent, host_request, request)
+    assert snapshot_status == 200
+    assert snapshot["state"] == "completed"
+
+
+@pytest.mark.skipif(not STAGE_SUPPORTED, reason="requires Linux dir_fd semantics")
+def test_stage_corrupt_started_bundle_fails_closed_without_dispatch(
+    host_server, host_request
+):
+    agent, _listener = host_server
+    grant = acquire_lease(agent, host_request)
+    request = stage_work_request(agent, lease_evidence(agent, grant))
+    command = agent._extension_lifecycle_work.parse_lifecycle_work_request(
+        {
+            key: request[key]
+            for key in agent._extension_lifecycle_work.REQUEST_KEYS
+        }
+    )
+    runtime = agent._get_extension_artifact_stage_runtime()
+    begin_receipt(agent, host_request, request)
+    runtime.dispatcher(bind_fixture_plan(agent, command))
+    bundle = next(runtime.root.iterdir())
+    bundle.chmod(0o600)
+    bundle.write_bytes(b"corrupt\n")
+    bundle.chmod(0o400)
+    calls = []
+    agent._artifact_stage_runtime = replace(
+        runtime,
+        dispatcher=lambda command: calls.append(command) or EVIDENCE_HASH,
+    )
+
+    status, result = host_request("/v1/extension/lifecycle-work", request)
+
+    assert status == 503
+    assert result == {"error": {"code": "lifecycle-work-operation-failed"}}
+    assert calls == []
+    snapshot_status, snapshot = receipt_snapshot(agent, host_request, request)
+    assert snapshot_status == 200
+    assert snapshot["state"] == "started"
+
+
+@pytest.mark.skipif(not STAGE_SUPPORTED, reason="requires Linux dir_fd semantics")
+def test_stage_unsafe_root_preserves_started_receipt_and_ignores_generic_dispatch(
+    host_server, host_request
+):
+    agent, _listener = host_server
+    grant = acquire_lease(agent, host_request)
+    request = stage_work_request(agent, lease_evidence(agent, grant))
+    begin_receipt(agent, host_request, request)
+    calls = []
+    agent._extension_lifecycle_work_dispatcher = lambda command: (
+        calls.append(command) or EVIDENCE_HASH
+    )
+    (agent.DATA_DIR / "assistant-first" / "artifact-stage").chmod(0o755)
+
+    status, result = host_request("/v1/extension/lifecycle-work", request)
+
+    assert status == 503
+    assert result == {"error": {"code": "lifecycle-work-operation-failed"}}
+    assert calls == []
+    snapshot_status, snapshot = receipt_snapshot(agent, host_request, request)
+    assert snapshot_status == 200
+    assert snapshot["state"] == "started"
+
+
+@pytest.mark.skipif(not STAGE_SUPPORTED, reason="requires Linux dir_fd semantics")
+def test_stage_plan_mismatch_terminalizes_failure_without_writing(
+    host_server, host_request
+):
+    agent, _listener = host_server
+    grant = acquire_lease(agent, host_request)
+    request = stage_work_request(agent, lease_evidence(agent, grant))
+    begin_receipt(agent, host_request, request)
+    agent._extension_lifecycle_plan_loader = lambda command: replace(
+        command,
+        plan_material={"wrong": True},
+    )
+
+    status, result = host_request("/v1/extension/lifecycle-work", request)
+
+    assert status == 409
+    assert result == {"error": {"code": "lifecycle-work-plan-mismatch"}}
+    stage_root = agent.DATA_DIR / "assistant-first" / "artifact-stage"
+    assert list(stage_root.iterdir()) == []
+    snapshot_status, snapshot = receipt_snapshot(agent, host_request, request)
+    assert snapshot_status == 200
+    assert snapshot["state"] == "failed"
 
 
 def test_missing_plan_loader_fails_before_worker_and_preserves_started_receipt(

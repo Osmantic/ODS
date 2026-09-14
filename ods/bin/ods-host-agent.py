@@ -180,15 +180,16 @@ _extension_transaction_store_lock = threading.Lock()
 _extension_lifecycle_plan_loader = None
 
 # Exact artifact-stage dependencies are composed lazily from fixed host roots.
-# They remain unregistered in this phase: neither the lifecycle handler nor the
-# Dashboard transaction runtime calls this factory during production startup.
+# Only the exact ``stage`` host-work branch selects them; production startup and
+# the Dashboard transaction runtime do not call this factory.
 _artifact_stage_runtime = None
 _artifact_stage_runtime_binding: tuple[Path, Path, Path] | None = None
 _artifact_stage_runtime_lock = threading.Lock()
 
-# Production lifecycle dispatch remains deliberately unwired.  A later phase
-# will install one reviewed host-owned dispatcher after each concrete operation
-# has durable observation and recovery evidence.  Tests may inject a callable.
+# General production lifecycle dispatch remains deliberately unwired.  The
+# exact ``stage`` operation selects its fixed runtime separately after lease
+# admission; every other operation remains unavailable. Tests may inject a
+# callable for the still-dormant operation contracts.
 _extension_lifecycle_work_dispatcher = None
 
 _MODEL_MEMORY_PATH = (
@@ -7599,7 +7600,15 @@ class AgentHandler(BaseHTTPRequestHandler):
             with _ExtensionMutationAdmission(
                 self, lease_evidence, command.service_ids
             ):
-                if _extension_lifecycle_work_dispatcher is None:
+                dispatcher = _extension_lifecycle_work_dispatcher
+                started_observer = None
+                if command.operation_key == "stage":
+                    runtime = _get_extension_artifact_stage_runtime()
+                    if runtime is not None:
+                        dispatcher = runtime.dispatcher
+                        started_observer = runtime.started_observer
+
+                if dispatcher is None:
                     # Preserve the dormant production boundary without creating
                     # receipt storage merely because an unavailable route was
                     # probed with a valid lease.
@@ -7617,9 +7626,10 @@ class AgentHandler(BaseHTTPRequestHandler):
                     result = (
                         _extension_lifecycle_work.dispatch_receipted_lifecycle_work(
                             command,
-                            _extension_lifecycle_work_dispatcher,
+                            dispatcher,
                             receipt_store,
                             _extension_lifecycle_plan_loader,
+                            started_observer,
                         )
                     )
         except _ExtensionMutationAdmissionRejected:

@@ -192,25 +192,28 @@ access. Every selected definition must verify successfully before the adapter
 passes one ordered tuple to the store; it returns only the validated bundle
 SHA-256 expected by the receipted lifecycle-work boundary. Binding,
 verification, staging, and post-write evidence failures remain distinct,
-value-free protocol outcomes. Only the dormant host composition module imports
-the adapter; no lifecycle handler calls or registers it, and it adds no active
-dispatcher, installed-state observer, retry loop, or effect.
+value-free protocol outcomes. Only the host composition module imports the
+adapter. The lifecycle handler selects it solely for exact receipted `stage`
+work after lease admission; it adds no configuration, apply, service,
+container, retry-loop, or installed-state effect.
 
-A separate dormant started-receipt observation seam now permits one narrowly
+A separate typed started-receipt observation seam now permits one narrowly
 proven recovery: when an exact immutable stage bundle already exists for the
 transaction, plan hash, and ordered service IDs, its validated digest may
 terminalize the matching `started` receipt without invoking the dispatcher.
 Only an explicit missing-bundle result permits the normal dispatch path.
 Corrupt, conflicting, malformed, or unavailable observations fail closed and
-leave the receipt started for later inspection. The host agent does not inject
-this observer yet, and no other lifecycle operation receives recovery
-authority in this phase.
+leave the receipt started for later inspection. The host agent injects this
+observer only for exact `stage` work, and no other lifecycle operation receives
+recovery authority in this phase.
 
 The Assistant First installer now prepares the fixed owner-private
 `data/assistant-first/artifact-stage` root before services start. A host-owned
 factory validates that exact root and composes the verifier, immutable store,
 stage dispatcher, and started-receipt observer from fixed `DATA_DIR`, shipped
 extension, and user-extension roots. It accepts no request path and creates no
-state. The lifecycle handler has no call to the factory, the dispatcher global
-remains `None`, and Dashboard production execution remains unavailable; this is
-composition evidence, not activation.
+state. After lease admission, the lifecycle handler selects that fixed runtime
+only for `stage`, binds the exact approved plan, writes or recovers one
+immutable bundle, and terminalizes the receipt. The general dispatcher global
+remains `None`, every non-stage operation remains unavailable, and Dashboard
+production execution remains unavailable.

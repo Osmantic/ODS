@@ -165,9 +165,9 @@ class ArtifactStageRuntimeTests(unittest.TestCase):
             finally:
                 sys.modules.pop(spec.name, None)
 
-    def test_host_factory_has_no_production_caller(self) -> None:
+    def test_host_factory_has_only_reviewed_stage_caller(self) -> None:
         repo = Path(__file__).resolve().parents[5]
-        callers: list[str] = []
+        callers: list[tuple[Path, int]] = []
         for path in (repo / "ods").rglob("*.py"):
             if "tests" in path.parts:
                 continue
@@ -184,9 +184,10 @@ class ArtifactStageRuntimeTests(unittest.TestCase):
                     isinstance(function, ast.Attribute)
                     and function.attr == "_get_extension_artifact_stage_runtime"
                 ):
-                    callers.append(f"{path.relative_to(repo)}:{node.lineno}")
+                    callers.append((path.relative_to(repo), node.lineno))
 
-        self.assertEqual(callers, [])
+        self.assertEqual(len(callers), 1)
+        self.assertEqual(callers[0][0], Path("ods/bin/ods-host-agent.py"))
         host_source = (BIN_DIR / "ods-host-agent.py").read_text(encoding="utf-8")
         self.assertIn("_extension_lifecycle_work_dispatcher = None", host_source)
 

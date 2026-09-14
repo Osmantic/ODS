@@ -220,26 +220,29 @@ and only then makes one batch call with the returned in-memory bytes. The
 adapter returns the staged bundle hash as terminal lifecycle evidence and adds
 no retry or persistence of its own. Verification failure cannot publish a
 partial batch, and a post-publication evidence mismatch is distinguished from
-pre-read plan rejection. Only the dormant host composition module imports the
-adapter, and no lifecycle handler calls or registers it, so this still does not
-enable lifecycle execution or installed-state recovery.
+pre-read plan rejection. The host composition module is the only production
+importer, and the lifecycle handler selects it only for the exact receipted
+`stage` operation after lease admission. Staging writes one immutable verified
+bundle; it does not configure, apply, inspect, or operate services.
 
 The lifecycle receipt boundary also accepts an optional typed observer for a
 `started` receipt. The first observer implementation is intentionally limited
 to staged artifact bundles: an exact validated bundle recovers completion with
 its digest, while an explicit missing result continues to the ordinary
 dispatcher path. Invalid, corrupt, conflicting, or unavailable observations
-cannot dispatch or terminalize the receipt. The production host path does not
-provide this observer yet, so the seam remains dormant and grants no recovery
+cannot dispatch or terminalize the receipt. The production host supplies this
+observer only for exact `stage` work, so a matching immutable bundle can
+terminalize a started receipt without a second write. It grants no recovery
 authority for configuration, apply, verification, rollback, or removal.
 
-Production code can now compose the exact verifier roots, immutable stage
-store, stage dispatcher, and started-receipt observer against that fixed
-installer-owned root. Composition validates the root without creating or
-repairing it, caches only the exact `DATA_DIR` and extension-root binding, and
-accepts no request or environment override. The host lifecycle handler does not
-call the factory, register either callable, or change its unavailable response;
-Dashboard execution also remains `None`.
+Production code composes the exact verifier roots, immutable stage store, stage
+dispatcher, and started-receipt observer against that fixed installer-owned
+root. Composition validates the root without creating or repairing it, caches
+only the exact `DATA_DIR` and extension-root binding, and accepts no request or
+environment override. The host lifecycle handler calls the factory only for
+the exact `stage` operation and passes both callables through the existing
+plan-bound receipt path. Every other lifecycle operation remains unavailable,
+and Dashboard execution remains `None`.
 
 ## Evidence boundary
 
