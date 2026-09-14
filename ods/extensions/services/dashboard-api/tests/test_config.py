@@ -652,3 +652,11 @@ class TestLoadExtensionManifests:
         assert "service.id is required" in errors[0]["error"]
         assert "no-id-svc" in errors[0]["file"]
         assert services == {}
+
+
+class TestConfigSanitizeEnv:
+    def test_sanitize_env_encoding(self):
+        from config import sanitize_env_encoding
+        assert sanitize_env_encoding(b'hello\xffworld') == 'helloworld'
+        assert sanitize_env_encoding('already_string') == 'already_string'
+        assert sanitize_env_encoding(b' clean ') == 'clean'
