@@ -1740,3 +1740,15 @@ def test_flatten_bounds_cycles_and_large_depth_without_losing_empty_leaves():
         nested = {"child": nested}
     result = dict_flatten_nested_safe(nested, max_depth=100000)
     assert len(next(iter(result)).split(".")) == 128
+
+
+class TestStringExtractUrlsSafe:
+    def test_valid_extraction(self):
+        from helpers import string_extract_urls_safe
+        s = "Check out https://example.com and http://test.org/page for details."
+        assert string_extract_urls_safe(s) == ["https://example.com", "http://test.org/page"]
+
+    def test_invalid_inputs(self):
+        from helpers import string_extract_urls_safe
+        assert string_extract_urls_safe(None) == []
+        assert string_extract_urls_safe(12345) == []
