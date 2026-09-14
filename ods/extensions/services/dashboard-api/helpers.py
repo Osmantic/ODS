@@ -1146,3 +1146,17 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def validate_dict_required_keys(data: object, required_keys: object = ()) -> bool:
+    """Verify dictionary contains all non-None required key specifications safely.
+
+    Returns False if data is non-dict, required_keys is non-sequence, or any required key is missing/None.
+    """
+    if not isinstance(data, dict) or not isinstance(required_keys, (list, tuple, set)):
+        return False
+    for key in required_keys:
+        if key not in data or data[key] is None:
+            return False
+    return True
+

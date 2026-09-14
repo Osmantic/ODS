@@ -1607,3 +1607,19 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+class TestValidateDictRequiredKeys:
+
+    def test_validates_required_keys(self):
+        from helpers import validate_dict_required_keys
+        raw = {"host": "localhost", "port": 8080, "name": "service"}
+        assert validate_dict_required_keys(raw, ["host", "port"]) is True
+        assert validate_dict_required_keys(raw, ["host", "missing"]) is False
+
+    def test_handles_none_and_non_dict_inputs(self):
+        from helpers import validate_dict_required_keys
+        assert validate_dict_required_keys(None, ["host"]) is False
+        assert validate_dict_required_keys({"host": None}, ["host"]) is False
+        assert validate_dict_required_keys("not_dict", ["host"]) is False
+
