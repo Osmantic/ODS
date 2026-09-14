@@ -14,6 +14,7 @@ def test_normalize_base_url_strips_api_suffixes():
     assert normalize_base_url("http://localhost:13305/api/v1") == "http://localhost:13305"
     assert normalize_base_url("http://engine:8080/v1") == "http://engine:8080"
     assert normalize_base_url("http://engine:8080") == "http://engine:8080"
+    assert normalize_base_url('"http://localhost:13305/api/v1"') == "http://localhost:13305"
 
 
 def test_settings_from_env_prefers_container_base_url_and_key():
@@ -88,8 +89,8 @@ async def test_chat_completion_posts_openai_shape():
 
     assert payload["choices"][0]["message"]["content"] == "ok"
     assert seen["url"] == "http://lemonade:13305/api/v1/chat/completions"
-    assert b'"model":"Qwen3-0.6B-GGUF"' in seen["body"]
-    assert b'"temperature":0' in seen["body"]
+    assert b'"model": "Qwen3-0.6B-GGUF"' in seen["body"] or b'"model":"Qwen3-0.6B-GGUF"' in seen["body"]
+    assert b'"temperature": 0' in seen["body"] or b'"temperature":0' in seen["body"]
     await client.aclose()
 
 
