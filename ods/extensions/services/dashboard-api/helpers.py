@@ -1146,3 +1146,23 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def convert_dict_keys_to_lowercase(data: object) -> dict:
+    """Convert dictionary keys recursively to lowercase string format safely.
+
+    Handles non-string keys, None values, nested dictionaries, or non-dict inputs without exception.
+    """
+    if not isinstance(data, dict):
+        return {}
+    res = {}
+    for k, v in data.items():
+        if k is None:
+            continue
+        key_str = str(k).lower()
+        if isinstance(v, dict):
+            res[key_str] = convert_dict_keys_to_lowercase(v)
+        else:
+            res[key_str] = v
+    return res
+

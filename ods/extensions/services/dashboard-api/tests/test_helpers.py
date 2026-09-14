@@ -1607,3 +1607,17 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+class TestConvertDictKeysToLowercase:
+
+    def test_converts_dict_keys_lowercase(self):
+        from helpers import convert_dict_keys_to_lowercase
+        raw = {"PORT": 8080, "Nested": {"HOST": "localhost"}}
+        assert convert_dict_keys_to_lowercase(raw) == {"port": 8080, "nested": {"host": "localhost"}}
+
+    def test_handles_none_and_non_dict_inputs(self):
+        from helpers import convert_dict_keys_to_lowercase
+        assert convert_dict_keys_to_lowercase(None) == {}
+        assert convert_dict_keys_to_lowercase("not_dict") == {}
+
