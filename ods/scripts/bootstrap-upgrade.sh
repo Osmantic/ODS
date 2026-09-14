@@ -210,7 +210,7 @@ release_upgrade_lock() {
 acquire_upgrade_lock() {
     local tmp_root="${TMPDIR:-/tmp}"
     local lock_key
-    lock_key="$(printf '%s\0%s' "$INSTALL_DIR" "$FULL_GGUF_FILE" | cksum | awk '{print $1}')"
+    lock_key="$(printf '%s\0%s' "$INSTALL_DIR" "$FULL_GGUF_FILE" | cksum | awk '{print $1}' | tr -dc '0-9')"
     local lock_dir="$tmp_root/ods-bootstrap-upgrade-${lock_key}.lock"
     local pid_file="$lock_dir/pid"
     local existing_pid=""
