@@ -1,0 +1,43 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: openspeedtest
+  name: OpenSpeedTest
+  description: "Measure browser-to-ODS network throughput with a local test server."
+  aliases: [network-speedtest]
+  container_name: ods-openspeedtest
+  container_uid: 101
+  default_host: openspeedtest
+  port: 3000
+  external_port_env: OPENSPEEDTEST_PORT
+  external_port_default: 7825
+  health: /
+  ui_path: /
+  startup_timeout: 120
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [network, diagnostics, local]
+  env_vars:
+    - key: OPENSPEEDTEST_PORT
+      default: "7825"
+      description: Published port for the local network speed test
+features:
+  - id: local-network-speedtest
+    name: Network Speed Test
+    description: "Estimate upload, download and latency between your browser and ODS"
+    icon: Activity
+    category: productivity
+    requirements:
+      services: [openspeedtest]
+      vram_gb: 0
+      disk_gb: 1
+    enabled_services_all: [openspeedtest]
+    setup_time: "~1-2 minutes"
+    priority: 32
+    launch:
+      type: service
+      service: openspeedtest
