@@ -26,6 +26,29 @@ class TestCalculateFeatureStatusDefaults:
         assert result["setupTime"] == "Unknown"
         assert result["priority"] == 99
 
+    def test_missing_and_non_dict_requirements_use_defaults(self):
+        """Features with missing requirements, requirements=None, or non-dict requirements default safely."""
+        # 1. Missing requirements key
+        f_missing = {"id": "f_missing", "name": "Missing Req"}
+        res1 = calculate_feature_status(f_missing, [], None)
+        assert res1["id"] == "f_missing"
+        assert res1["status"] == "enabled"
+        assert res1["requirements"]["vramOk"] is True
+
+        # 2. requirements = None
+        f_none = {"id": "f_none", "name": "None Req", "requirements": None}
+        res2 = calculate_feature_status(f_none, [], None)
+        assert res2["id"] == "f_none"
+        assert res2["status"] == "enabled"
+        assert res2["requirements"]["vramOk"] is True
+
+        # 3. requirements = "invalid string"
+        f_str = {"id": "f_str", "name": "String Req", "requirements": "invalid"}
+        res3 = calculate_feature_status(f_str, [], None)
+        assert res3["id"] == "f_str"
+        assert res3["status"] == "enabled"
+        assert res3["requirements"]["vramOk"] is True
+
 
 class TestCalculateFeatureStatusAppleFallback:
 
