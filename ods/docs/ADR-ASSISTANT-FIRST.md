@@ -176,6 +176,19 @@ closed client policy, not caller input. The client has no retry, persistence,
 logging, host route implementation, or production importer, so execution
 remains disabled until the host work and durable observation boundaries exist.
 
+Phase 5G-G adds the matching dormant host boundary and its pure validation
+core. The authenticated, feature-gated route accepts one strictly framed,
+bounded JSON object, recomputes the canonical request hash, enforces the same
+closed operation and ordered-service grammar, requires the request binding to
+match an exact active lease, and holds that lease's mutation window around one
+injected synchronous dispatcher call. The dispatcher receives no lease token
+and success exposes only the exact terminal evidence hash and immutable request
+echoes. Queries, duplicate keys, fractional numbers, malformed UTF-8, stale or
+mis-scoped leases, concurrent use, dispatcher exceptions, and unverifiable
+results fail closed without private details. Production intentionally injects
+no dispatcher, so the route returns unavailable and cannot perform lifecycle
+work until concrete operations and durable observation are reviewed.
+
 All selected services are locked in canonical order before the final
 provenance check and before lifecycle work. Artifacts are downloaded and
 verified before apply. The first pre-transaction backup is replay-safe,

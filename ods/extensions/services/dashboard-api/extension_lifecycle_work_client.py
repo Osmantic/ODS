@@ -277,7 +277,7 @@ def _translate_transport_error(error: AgentClientError) -> None:
             _fail("host-work-conflict")
         if error.status_code == 410:
             _fail("lease-not-active")
-        if error.status_code in {400, 413, 422}:
+        if error.status_code in {400, 413, 415, 422}:
             _fail("host-work-invalid-request")
         if error.status_code >= 500:
             _fail("host-work-operation-ambiguous", ambiguous=True)

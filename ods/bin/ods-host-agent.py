@@ -108,6 +108,11 @@ try:
 except Exception:  # pragma: no cover - import environment dependent
     _extension_lifecycle_receipts = None
 
+try:
+    import extension_lifecycle_work as _extension_lifecycle_work
+except Exception:  # pragma: no cover - import environment dependent
+    _extension_lifecycle_work = None
+
 # ---------------------------------------------------------------------------
 # Lifecycle-receipt API constants (Phase 5G-B host boundary)
 # ---------------------------------------------------------------------------
@@ -131,6 +136,11 @@ _SNAPSHOT_RECEIPT_KEYS = frozenset({
 _lifecycle_receipt_store = None
 _lifecycle_receipt_store_data_dir: Path | None = None
 _lifecycle_receipt_store_lock = threading.Lock()
+
+# Production lifecycle dispatch remains deliberately unwired.  A later phase
+# will install one reviewed host-owned dispatcher after each concrete operation
+# has durable observation and recovery evidence.  Tests may inject a callable.
+_extension_lifecycle_work_dispatcher = None
 
 _MODEL_MEMORY_PATH = (
     Path(__file__).resolve().parent.parent
@@ -164,6 +174,7 @@ BACKUP_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 MAX_BODY = 16384
 _ASSISTANT_SECRET_MAX_BODY = 64 * 1024
 _ASSISTANT_LEASE_MAX_BODY = 32 * 1024
+_LIFECYCLE_WORK_MAX_BODY = 40 * 1024
 _EXTENSION_MUTATION_LEASE_SCHEMA = "ods.extension-operation-lease.v1"
 _EXTENSION_MUTATION_LEASE_KEYS = frozenset({
     "schema", "leaseId", "leaseToken", "transactionId", "planHash",
@@ -6422,6 +6433,31 @@ def _read_lifecycle_receipt_body(handler) -> dict | None:
     )
 
 
+def _read_lifecycle_work_body(handler) -> dict | None:
+    """Read one strictly framed lifecycle-work request without value echoes."""
+    content_types = handler.headers.get_all("Content-Type", [])
+    if (
+        len(content_types) != 1
+        or content_types[0].split(";", 1)[0].strip().casefold()
+        != "application/json"
+    ):
+        json_response(
+            handler,
+            415,
+            {"error": {"code": "invalid-lifecycle-work-content-type"}},
+            no_store=True,
+        )
+        return None
+    return _read_bounded_json_object(
+        handler,
+        max_body=_LIFECYCLE_WORK_MAX_BODY,
+        framing_code="invalid-lifecycle-work-request-framing",
+        size_code="lifecycle-work-request-size",
+        incomplete_code="incomplete-lifecycle-work-request",
+        invalid_code="invalid-lifecycle-work-request",
+    )
+
+
 def _get_lifecycle_receipt_store() -> "_extension_lifecycle_receipts.LifecycleReceiptStore" | None:
     """Create one process-local store lazily after gate passes.
 
@@ -7344,6 +7380,146 @@ class AgentHandler(BaseHTTPRequestHandler):
             return
         json_response(self, 200, result, no_store=True)
 
+    def _handle_lifecycle_work(self) -> None:
+        """Authorize one exact synchronous command for an injected dispatcher."""
+        if not check_auth(self):
+            return
+        if not ASSISTANT_TRANSACTIONS_ENABLED:
+            json_response(
+                self,
+                404,
+                {"error": {"code": "not-found"}},
+                no_store=True,
+            )
+            return
+        if _extension_lifecycle_work is None:
+            json_response(
+                self,
+                503,
+                {"error": {"code": "lifecycle-work-boundary-unavailable"}},
+                no_store=True,
+            )
+            return
+
+        body = _read_lifecycle_work_body(self)
+        if body is None:
+            return
+        if set(body) != _extension_lifecycle_work.REQUEST_KEYS | {"lease"}:
+            json_response(
+                self,
+                422,
+                {"error": {"code": "invalid-lifecycle-work-request"}},
+                no_store=True,
+            )
+            return
+
+        lease_evidence = _parse_extension_mutation_lease(self, body)
+        if lease_evidence is _EXTENSION_MUTATION_LEASE_REJECTED:
+            return
+        if lease_evidence is _EXTENSION_MUTATION_LEASE_ABSENT:
+            json_response(
+                self,
+                422,
+                {"error": {"code": "invalid-lease-request"}},
+                no_store=True,
+            )
+            return
+
+        request_body = {
+            key: body[key] for key in _extension_lifecycle_work.REQUEST_KEYS
+        }
+        try:
+            command = _extension_lifecycle_work.parse_lifecycle_work_request(
+                request_body
+            )
+        except _extension_lifecycle_work.LifecycleWorkValidationError as exc:
+            code = (
+                exc.code
+                if exc.code
+                in {
+                    "invalid-lifecycle-work-request",
+                    "lifecycle-work-request-hash-mismatch",
+                    "lifecycle-work-request-size",
+                }
+                else "invalid-lifecycle-work-request"
+            )
+            json_response(
+                self,
+                422,
+                {"error": {"code": code}},
+                no_store=True,
+            )
+            return
+        except Exception as exc:
+            logger.error(
+                "Lifecycle work request validation failed (%s)",
+                type(exc).__name__,
+            )
+            json_response(
+                self,
+                503,
+                {"error": {"code": "lifecycle-work-boundary-unavailable"}},
+                no_store=True,
+            )
+            return
+
+        if (
+            command.transaction_id != lease_evidence.transaction_id
+            or command.plan_hash != lease_evidence.plan_hash
+        ):
+            json_response(
+                self,
+                403,
+                {"error": {"code": "lease-binding-mismatch"}},
+                no_store=True,
+            )
+            return
+
+        try:
+            with _ExtensionMutationAdmission(
+                self, lease_evidence, command.service_ids
+            ):
+                result = _extension_lifecycle_work.dispatch_lifecycle_work(
+                    command,
+                    _extension_lifecycle_work_dispatcher,
+                )
+        except _ExtensionMutationAdmissionRejected:
+            return
+        except _extension_lifecycle_work.LifecycleWorkUnavailable:
+            json_response(
+                self,
+                503,
+                {"error": {"code": "lifecycle-work-dispatcher-unavailable"}},
+                no_store=True,
+            )
+            return
+        except _extension_lifecycle_work.LifecycleWorkError as exc:
+            logger.error(
+                "Lifecycle work dispatcher failed (%s)",
+                type(exc).__name__,
+            )
+            json_response(
+                self,
+                503,
+                {"error": {"code": "lifecycle-work-operation-failed"}},
+                no_store=True,
+            )
+            return
+        except Exception as exc:
+            logger.error(
+                "Lifecycle work boundary failed (%s)",
+                type(exc).__name__,
+            )
+            json_response(
+                self,
+                503,
+                {"error": {"code": "lifecycle-work-operation-failed"}},
+                no_store=True,
+            )
+            return
+
+        json_response(self, 200, result, no_store=True)
+
     def _handle_assistant_first_secrets(self, action: str) -> None:
         """Keep configuration secrets inside the authenticated host boundary."""
         if not check_auth(self):
@@ -8036,6 +8212,16 @@ class AgentHandler(BaseHTTPRequestHandler):
                 )
             else:
                 self._handle_lifecycle_receipt(receipt_path.rsplit("/", 1)[1])
+        elif lease_path == "/v1/extension/lifecycle-work":
+            if self.path != lease_path:
+                json_response(
+                    self,
+                    404,
+                    {"error": {"code": "not-found"}},
+                    no_store=True,
+                )
+            else:
+                self._handle_lifecycle_work()
         elif self.path in {
             "/v1/assistant-first/secrets/stage",
             "/v1/assistant-first/secrets/status",

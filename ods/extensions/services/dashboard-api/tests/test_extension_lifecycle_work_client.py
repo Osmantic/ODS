@@ -438,6 +438,7 @@ def test_non_object_success_is_ambiguous(response) -> None:
         (409, "service-lock-busy", "service-lock-busy", True, False),
         (409, "private-conflict", "host-work-conflict", False, False),
         (410, "lease-not-active", "lease-not-active", False, False),
+        (415, "private-validation", "host-work-invalid-request", False, False),
         (422, "private-validation", "host-work-invalid-request", False, False),
         (500, "private-failure", "host-work-operation-ambiguous", False, True),
         (503, None, "host-work-operation-ambiguous", False, True),
