@@ -74,6 +74,7 @@ export default function ODSTalk() {
   })
 
   const [pendingAttachment, setPendingAttachment] = useState(null)
+  const [attachmentError, setAttachmentError] = useState('')
   // {file: File, previewUrl: string|null, kind: 'image'|'text', name: string}
   // Held in state between picking a file and sending — lets the user add a
   // caption in the textarea before submitting.
@@ -609,7 +610,15 @@ export default function ODSTalk() {
 
   const handleAttachmentPicked = useCallback((file) => {
     if (!file || sending || status === 'expired') return
-    const isImage = (file.type || '').startsWith('image/')
+    const mime = (file.type || '').split(';', 1)[0].toLowerCase().trim()
+    const extension = (file.name || '').split('.').pop().toLowerCase()
+    const isImage = mime.startsWith('image/') || ['avif','bmp','gif','heic','heif','jpeg','jpg','png','webp'].includes(extension)
+    const isText = ['text/plain','text/markdown','text/csv','text/x-markdown','application/json','application/xml','text/xml','application/x-yaml','text/yaml','text/x-yaml'].includes(mime)
+      || ['txt','md','markdown','csv','json','yaml','yml','log','py','js','ts','tsx','jsx','html','css','sh'].includes(extension)
+    if (!isImage && !isText) { setAttachmentError('This file type is not supported. Choose an image, text or code file.'); return }
+    const limit = (isImage ? 10 : 5) * 1024 * 1024
+    if (file.size > limit) { setAttachmentError(`Choose ${isImage ? 'an image up to 10' : 'a text file up to 5'} MiB.`); return }
+    setAttachmentError('')
     const previewUrl = isImage ? URL.createObjectURL(file) : null
     setPendingAttachment(prev => {
       // Revoke a previous blob URL before swapping in a new one so the
@@ -714,6 +723,7 @@ export default function ODSTalk() {
           {/* Attachment preview strip — appears above the input bar between
               pick and send. Shows a thumbnail for images, a generic icon for
               text/code files, with an X to discard. */}
+          {attachmentError && <p role="alert" className="mb-2 text-sm text-red-700">{attachmentError}</p>}
           {pendingAttachment && (
             <AttachmentPreview
               attachment={pendingAttachment}
