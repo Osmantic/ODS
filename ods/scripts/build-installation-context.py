@@ -405,7 +405,9 @@ def build_soul(
     previous = output_path.read_text(encoding="utf-8") if output_path.is_file() else ""
     if previous == assembled:
         return False
-    output_path.write_text(assembled, encoding="utf-8")
+    temp_path = output_path.with_name(f".{output_path.name}.{os.getpid()}.tmp")
+    temp_path.write_text(assembled, encoding="utf-8")
+    temp_path.replace(output_path)
     return True
 
 
