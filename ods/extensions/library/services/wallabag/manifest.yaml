@@ -4,6 +4,7 @@ compatibility:
 service:
   id: wallabag
   name: Wallabag
+  description: "Self-hosted read-it-later web application for saving, tagging, and archiving online articles."
   aliases: [read-it-later, bookmarks, articles]
   container_name: ods-wallabag
   host_env: WALLABAG_HOST

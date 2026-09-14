@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-14T15:25:45Z",
+  "generated_at": "2026-09-14T16:10:44Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -3613,7 +3613,7 @@
     {
       "id": "wallabag",
       "name": "Wallabag",
-      "description": "",
+      "description": "Self-hosted read-it-later web application for saving, tagging, and archiving online articles.",
       "category": "optional",
       "gpu_backends": [
         "all"
