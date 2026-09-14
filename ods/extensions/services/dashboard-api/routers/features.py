@@ -18,8 +18,8 @@ router = APIRouter(tags=["features"])
 
 def calculate_feature_status(feature: dict, services: list, gpu_info: Optional[GPUInfo]) -> dict:
     """Calculate whether a feature can be enabled and its status."""
-    gpu_vram_gb = (gpu_info.memory_total_mb / 1024) if gpu_info else 0
-    gpu_vram_used_gb = (gpu_info.memory_used_mb / 1024) if gpu_info else 0
+    gpu_vram_gb = ((gpu_info.memory_total_mb or 0) / 1024) if gpu_info else 0
+    gpu_vram_used_gb = ((gpu_info.memory_used_mb or 0) / 1024) if gpu_info else 0
     gpu_vram_free_gb = gpu_vram_gb - gpu_vram_used_gb
 
     # On Apple Silicon, when HOST_CHIP is missing (get_gpu_info_apple returned None),
