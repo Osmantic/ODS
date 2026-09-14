@@ -83,7 +83,18 @@ result_get() {
     done
 }
 
-log() { $QUIET || echo -e "$1"; }
+# Under --json, stdout must carry only the JSON document — otherwise the human
+# report is interleaved with it and no parser can read it. Keep the report, but
+# send it to stderr so `health-check.sh --json | jq` works while operators
+# running it interactively still see the detail.
+log() {
+    $QUIET && return 0
+    if $JSON_OUTPUT; then
+        echo -e "$1" >&2
+    else
+        echo -e "$1"
+    fi
+}
 
 # Portable millisecond timestamp (macOS BSD date lacks %N)
 _now_ms() {
