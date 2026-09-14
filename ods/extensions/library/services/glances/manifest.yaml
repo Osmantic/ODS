@@ -4,6 +4,7 @@ compatibility:
 service:
   id: glances
   name: Glances
+  description: "Cross-platform system monitoring API and web dashboard for real-time CPU, GPU, memory, and disk diagnostics."
   aliases: [system-monitor, htop, node-telemetry]
   container_name: ods-glances
   host_env: GLANCES_HOST

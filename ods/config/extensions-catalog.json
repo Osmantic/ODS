@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-14T15:27:07Z",
+  "generated_at": "2026-09-14T16:10:48Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -1376,7 +1376,7 @@
     {
       "id": "glances",
       "name": "Glances",
-      "description": "",
+      "description": "Cross-platform system monitoring API and web dashboard for real-time CPU, GPU, memory, and disk diagnostics.",
       "category": "optional",
       "gpu_backends": [
         "all"
