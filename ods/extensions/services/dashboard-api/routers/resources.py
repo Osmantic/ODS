@@ -164,9 +164,9 @@ async def service_resources(api_key: str = Depends(verify_api_key)):
                 "disk": disk,
             })
 
-    total_cpu = sum(s.get("cpu_percent", 0) for s in container_stats)
-    total_mem = sum(s.get("memory_used_mb", 0) for s in container_stats)
-    total_disk = sum(d.get("data_gb", 0) for d in disk_usage.values())
+    total_cpu = sum(s.get("cpu_percent") or 0 for s in container_stats)
+    total_mem = sum(s.get("memory_used_mb") or 0 for s in container_stats)
+    total_disk = sum(d.get("data_gb") or 0 for d in disk_usage.values())
 
     return {
         "services": services,
