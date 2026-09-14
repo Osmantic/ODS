@@ -198,7 +198,11 @@ def check_hf_model(
     found = hf_model_path(root / cache_dir, repo_id)
     if found is None:
         return False, f"Not found or incomplete: {cache_dir}/ ({repo_id})"
-    return True, f"OK: {found.relative_to(root)}"
+    try:
+        rel_path = found.relative_to(root)
+    except ValueError:
+        rel_path = found
+    return True, f"OK: {rel_path}"
 
 
 def installer_command(platform_name: str | None = None) -> str:
