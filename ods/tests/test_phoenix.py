@@ -97,13 +97,13 @@ def test_live_auth_trace_persistence_and_key_revocation(tmp_path, compose_env):
     probe = ROOT / "tests/fixtures/phoenix-lifecycle.py"
     try:
         run(*command, "up", "-d", "--wait", "--wait-timeout", "150")
-        run("docker", "cp", str(probe), f"{project}:/tmp/phoenix-lifecycle.py")
-        print(run("docker", "exec", project, "/usr/bin/python3.13", "/tmp/phoenix-lifecycle.py", "write"))
+        run("docker", "network", "disconnect", project + "-network", project)
+        print(run("docker", "exec", project, "/usr/bin/python3.13", "-c", probe.read_text(), "write"))
         # Graceful stop flushes the collector queue before the old container is removed.
         run(*command, "stop", "--timeout", "30")
         run(*command, "up", "-d", "--force-recreate", "--wait", "--wait-timeout", "150")
-        run("docker", "cp", str(probe), f"{project}:/tmp/phoenix-lifecycle.py")
-        print(run("docker", "exec", project, "/usr/bin/python3.13", "/tmp/phoenix-lifecycle.py", "read"))
+        run("docker", "network", "disconnect", project + "-network", project)
+        print(run("docker", "exec", project, "/usr/bin/python3.13", "-c", probe.read_text(), "read"))
     finally:
         logs = subprocess.run(["docker", "logs", "--tail", "50", project], capture_output=True, text=True, timeout=20)
         print("Worker diagnostics:", logs.stdout, logs.stderr)
