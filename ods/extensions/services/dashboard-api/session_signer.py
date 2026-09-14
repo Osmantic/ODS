@@ -63,7 +63,23 @@ logger = logging.getLogger(__name__)
 # This prevents an unconfigured ODS from silently issuing
 # unsignable cookies that look valid because they pass an empty-key
 # HMAC check.
-_SECRET: bytes = (os.environ.get("ODS_SESSION_SECRET", "")).encode("utf-8")
+_SECRET: bytes | None = (
+    os.environ["ODS_SESSION_SECRET"].encode("utf-8")
+    if "ODS_SESSION_SECRET" in os.environ
+    else None
+)
+
+
+def _get_secret() -> bytes:
+    if _SECRET is not None:
+        return _SECRET
+    try:
+        from config import INSTALL_DIR
+        from performance_oracle import read_env_value
+        val = read_env_value("ODS_SESSION_SECRET", INSTALL_DIR)
+        return val.encode("utf-8")
+    except Exception:
+        return b""
 
 
 def is_configured() -> bool:
@@ -73,7 +89,7 @@ def is_configured() -> bool:
     state (e.g., marking a single-use magic-link as redeemed) so the
     operation fails BEFORE the side effect lands, not after.
     """
-    return bool(_SECRET)
+    return bool(_get_secret())
 
 
 def _set_secret_for_tests(value: str) -> None:
@@ -96,7 +112,7 @@ def _b64u_decode(text: str) -> bytes:
 
 def _sign(payload: str) -> str:
     """HMAC-SHA256 of ``payload`` with ``_SECRET``. Returns base64-url."""
-    mac = hmac.new(_SECRET, payload.encode("utf-8"), hashlib.sha256).digest()
+    mac = hmac.new(_get_secret(), payload.encode("utf-8"), hashlib.sha256).digest()
     return _b64u(mac)
 
 
@@ -106,7 +122,7 @@ def issue(ttl_seconds: int = 12 * 3600) -> str:
     Raises ``RuntimeError`` if ODS_SESSION_SECRET is not configured —
     we refuse to issue cookies that can't be verified.
     """
-    if not _SECRET:
+    if not _get_secret():
         raise RuntimeError(
             "ODS_SESSION_SECRET is not configured; refusing to issue an "
             "unsignable session cookie. Set it in .env (32+ random bytes) "
