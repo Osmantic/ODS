@@ -28,9 +28,11 @@ log_success() { echo -e "${GREEN}[SUCCESS]${NC} $*"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $*"; }
 
-# Source shared rsync utilities
-. "$ODS_DIR/lib/rsync.sh"
-. "$ODS_DIR/lib/backup-paths.sh"
+# Source shared rsync utilities. These live next to this script, so resolve
+# them from SCRIPT_DIR — ODS_DIR is the install root being backed up and may
+# be pointed elsewhere, in which case it has no lib/ of its own.
+. "$SCRIPT_DIR/lib/rsync.sh"
+. "$SCRIPT_DIR/lib/backup-paths.sh"
 
 # Convert bytes to a human-friendly string (best-effort)
 fmt_bytes() {

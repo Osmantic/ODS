@@ -25,9 +25,12 @@ log_warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $*"; }
 log_step() { echo -e "${CYAN}[STEP]${NC} $*"; }
 
-# Source shared rsync utilities
-. "$ODS_DIR/lib/rsync.sh"
-. "$ODS_DIR/lib/backup-paths.sh"
+# Source shared rsync utilities. These live next to this script, so resolve
+# them from SCRIPT_DIR — ODS_DIR is the restore *destination* and may point
+# anywhere ("restore to a different location (set ODS_DIR)", below), in which
+# case it has no lib/ and the script dies here before doing anything.
+. "$SCRIPT_DIR/lib/rsync.sh"
+. "$SCRIPT_DIR/lib/backup-paths.sh"
 
 # Convert bytes to a human-friendly string (best-effort)
 fmt_bytes() {
