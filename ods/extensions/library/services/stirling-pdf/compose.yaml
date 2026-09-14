@@ -1,0 +1,47 @@
+services:
+  stirling-pdf:
+    image: docker.stirlingpdf.com/stirlingtools/stirling-pdf:2.14.3@sha256:3b3670fce70b396ec56ba380a3cc7858e0abf83fe13f31c88f7737847763a396
+    container_name: ods-stirling-pdf
+    restart: unless-stopped
+    security_opt: [no-new-privileges:true]
+    environment:
+      - SECURITY_ENABLELOGIN=true
+      - DISABLE_ADDITIONAL_FEATURES=false
+      - SECURITY_INITIALLOGIN_USERNAME=${STIRLING_PDF_ADMIN_USER:-admin}
+      - SECURITY_INITIALLOGIN_PASSWORD=${STIRLING_PDF_ADMIN_PASSWORD:?Set STIRLING_PDF_ADMIN_PASSWORD before enabling Stirling-PDF}
+      - SYSTEM_ENABLEANALYTICS=false
+      - SYSTEM_ENABLEPOSTHOG=false
+      - SYSTEM_ENABLESCARF=false
+      - SYSTEM_SHOWUPDATE=false
+      - SYSTEM_GOOGLEVISIBILITY=false
+      - SHOW_SURVEY=false
+      - METRICS_ENABLED=false
+      - SYSTEM_MAXFILESIZE=100
+      - PUID=1000
+      - PGID=1000
+    volumes:
+      - ./data/stirling-pdf/configs:/configs
+      - ./data/stirling-pdf/logs:/logs
+      - ./data/stirling-pdf/storage:/storage
+      - ./data/stirling-pdf/customFiles:/customFiles
+      - ./data/stirling-pdf/pipeline:/pipeline
+      - ./data/stirling-pdf/tessdata:/usr/share/tessdata
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${STIRLING_PDF_PORT:-7823}:8080"
+    healthcheck:
+      test: [CMD, curl, -fsS, --max-time, "10", "http://127.0.0.1:8080/api/v1/info/status"]
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      # The full image initializes fonts and office tools before starting Java.
+      start_period: 300s
+    networks: [ods-network]
+    deploy:
+      resources:
+        limits:
+          cpus: "4.0"
+          memory: 2G
+
+networks:
+  ods-network:
+    external: true
