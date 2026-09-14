@@ -135,6 +135,16 @@ reconciled through `snapshot`; read-only snapshot unavailability is retryable
 and never reported as a possible mutation. No production module imports the
 client, and the production executor remains disabled.
 
+Phase 5G-D adds the dormant `ServiceLockFactory` seam for host lease custody.
+The context acquires one lease over the executor's complete canonical service
+set, supervises renewal in memory, and exposes the latest redacted grant only
+to the exact binding and owner thread. Exit stops the renewer before release;
+an ambiguous shutdown poisons the factory so a possibly live renewal worker
+cannot overlap another client call. The factory performs no lifecycle or
+receipt operation, has no production importer, and leaves the production
+executor disabled. A later receipt-bound host adapter must obtain custody from
+this exact scope rather than reacquiring a per-operation subset.
+
 All selected services are locked in canonical order before the final
 provenance check and before lifecycle work. Artifacts are downloaded and
 verified before apply. The first pre-transaction backup is replay-safe,

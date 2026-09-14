@@ -360,7 +360,7 @@ def test_renewer_has_no_runtime_wiring_or_other_lease_operations() -> None:
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
     }
 
-    assert importers == set()
+    assert importers == {"extension_lease_lock_factory.py"}
     assert "renew" in method_calls
     assert method_calls.isdisjoint({"acquire", "release", "status"})
     for forbidden in ("import logging", "logging.", "logger =", "print(", "open("):
