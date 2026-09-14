@@ -385,6 +385,7 @@ class ResourceReservationStoreTests(unittest.TestCase):
                         offenders.append(str(path.relative_to(ODS_ROOT)))
         allowed = {
             "bin/extension_resource_reservation_adapter.py",
+            "bin/extension_resource_reservation_release.py",
             "bin/extension_resource_reservation_runtime.py",
         }
         self.assertEqual(set(offenders), allowed)

@@ -279,6 +279,26 @@ without registering a dispatcher or granting lifecycle effect authority.
 The production importer, transaction executor, resource projection, and
 Dashboard executor remain absent.
 
+A dormant release adapter provides the atomic batch-release boundary.  It
+builds typed `ReleaseExpectation` records from plan-bound operations and
+definitions, passing them into `batch_release` so that transaction, plan,
+service, **action**, and claims bindings are all re-proved under a single
+store lock and snapshot.  One atomic snapshot write transitions the exact
+batch; a mid-batch failure cannot strand an untracked partial release.  If
+the atomic publish may have succeeded before an error, the handler re-observes
+the exact post-state and returns success only if every released record exactly
+matches; otherwise a single value-free failure is emitted.  A replay where
+every targeted record is already released returns the persisted records with
+`duplicate=True` and deterministic evidence.  Mixed active/released state is
+rejected without another write because it is neither a fresh atomic batch nor
+an exact replay.  The reserve and release adapters must be activated together
+later; neither is registered or reachable from production.  Manual recovery
+and failed lifecycle-receipt retry policy are not solved by this PR.
+
+The runtime composition now includes both the reserve and release dispatchers
+as inert dependencies, but neither is wired to any lifecycle handler.
+Composition is inert and production unreachability is enforced.
+
 ## Evidence boundary
 
 The source contract checks resolver ordering, the exact candidate service set,

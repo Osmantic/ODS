@@ -31,8 +31,26 @@ from typing import Any
 
 SCHEMA = "ods.extension-resource-reservation.v1"
 STORE_SCHEMA = "ods.extension-resource-reservations.v1"
+BATCH_RELEASE_SCHEMA = "ods.extension-resource-batch-release.v1"
 MAX_FILE_BYTES = 2 * 1024 * 1024  # 2 MiB
 MAX_RECORDS = 1024
+
+# ---------------------------------------------------------------------------
+# Typed batch-release expectation
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ReleaseExpectation:
+    """Exact pre-validated expectation for one service in a batch release.
+
+    All fields come from the adapter's plan-bound proof and are re-validated
+    atomically inside ``batch_release`` under the store lock.
+    """
+
+    service_id: str
+    action: str
+    claims: ReservationClaims
 
 TXN_RE = re.compile(r"^txn-[0-9a-f]{24}$")
 HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -204,6 +222,43 @@ def _validate_claims(value: Any) -> ReservationClaims:
     if not isinstance(value, ReservationClaims):
         _fail("binding-invalid")
     return value
+
+
+def _release_claims_dict(value: Any) -> dict[str, Any]:
+    """Re-prove exact release claims and return a detached canonical value."""
+    if type(value) is not ReservationClaims:
+        _fail("binding-invalid")
+    if type(value.host_ports) is not tuple or type(value.exclusive) is not tuple:
+        _fail("binding-invalid")
+
+    host_ports: list[dict[str, Any]] = []
+    previous_port: tuple[int, str] | None = None
+    for host_port in value.host_ports:
+        if type(host_port) is not HostPort:
+            _fail("binding-invalid")
+        if type(host_port.port) is not int or type(host_port.protocol) is not str:
+            _fail("binding-invalid")
+        if host_port.port < 1 or host_port.port > 65535:
+            _fail("binding-invalid")
+        if host_port.protocol not in ("tcp", "udp"):
+            _fail("binding-invalid")
+        key = (host_port.port, host_port.protocol)
+        if previous_port is not None and key <= previous_port:
+            _fail("binding-invalid")
+        previous_port = key
+        host_ports.append({"port": host_port.port, "protocol": host_port.protocol})
+
+    exclusive: list[str] = []
+    previous_token: str | None = None
+    for token in value.exclusive:
+        if type(token) is not str or EXCLUSIVE_RE.fullmatch(token) is None:
+            _fail("binding-invalid")
+        if previous_token is not None and token <= previous_token:
+            _fail("binding-invalid")
+        previous_token = token
+        exclusive.append(token)
+
+    return {"hostPorts": host_ports, "exclusive": exclusive}
 
 
 # ---------------------------------------------------------------------------
@@ -1036,6 +1091,167 @@ class ResourceReservationStore:
 
         return self._run_locked(operation)
 
+    def batch_release(
+        self,
+        transaction_id: str,
+        plan_hash: str,
+        expectations: tuple[ReleaseExpectation, ...],
+        now: str,
+    ) -> tuple[ReservationRecord, ...]:
+        """Atomically transition a batch of active reservations to released.
+
+        Every record in ``expectations`` is re-proved against the *same*
+        snapshot read under the store's exclusive lock: transaction/plan/
+        service binding, action, claims, status, and timestamp ordering.
+
+        If any expectation cannot be matched or validated, the entire batch
+        fails before effect.  A post-write readback failure is handled by
+        re-observing the persisted state: success only if every targeted
+        record exactly matches the released state; otherwise a single
+        value-free failure is emitted.
+
+        A replay where every targeted record is already released returns the
+        persisted records with ``duplicate=True``.  Mixed active/released
+        state is rejected without a write because an atomic batch cannot
+        produce it.
+        """
+        if type(transaction_id) is not str or type(plan_hash) is not str:
+            _fail("binding-invalid")
+        if type(now) is not str:
+            _fail("timestamp-invalid")
+        transaction_id = _validate_transaction_id(transaction_id)
+        plan_hash = _validate_plan_hash(plan_hash)
+        _validate_timestamp(now)
+
+        def operation(root_fd: int) -> tuple[ReservationRecord, ...]:
+            # Re-prove and detach every caller-controlled expectation while
+            # holding the same lock used for the authoritative snapshot.
+            if type(expectations) is not tuple or not expectations:
+                _fail("binding-invalid")
+            service_ids: list[str] = []
+            expectation_map: dict[str, tuple[str, dict[str, Any]]] = {}
+            for expectation in expectations:
+                if type(expectation) is not ReleaseExpectation:
+                    _fail("binding-invalid")
+                if type(expectation.service_id) is not str:
+                    _fail("binding-invalid")
+                service_id = _validate_service_id(expectation.service_id)
+                if type(expectation.action) is not str:
+                    _fail("binding-invalid")
+                action = _validate_action(expectation.action)
+                claims = _release_claims_dict(expectation.claims)
+                if service_id in expectation_map:
+                    _fail("binding-invalid")
+                expectation_map[service_id] = (action, claims)
+                service_ids.append(service_id)
+
+            service_ids_tuple = tuple(service_ids)
+            service_set = frozenset(service_ids_tuple)
+            now_value = _validate_timestamp_field(now)
+            records = _read_records(root_fd)
+
+            # Locate every target under one snapshot read
+            targets: dict[str, int] = {}
+            for position, record in enumerate(records):
+                if (
+                    record["transactionId"] == transaction_id
+                    and record["planHash"] == plan_hash
+                    and record["serviceId"] in service_set
+                ):
+                    if record["serviceId"] in targets:
+                        _fail("corrupt-duplicate-binding")
+                    targets[record["serviceId"]] = position
+
+            if len(targets) != len(service_ids_tuple):
+                _fail("transition-invalid")
+
+            # Validate every target, including already-released replay records,
+            # against its exact detached expectation before any effect.
+            statuses: list[str] = []
+            for service_id in service_ids_tuple:
+                record = records[targets[service_id]]
+                status = record["status"]
+                if status not in (ACTIVE, RELEASED):
+                    _fail("transition-invalid")
+                action, claims = expectation_map[service_id]
+                if record["action"] != action or record["claims"] != claims:
+                    _fail("transition-invalid")
+                created_value = _validate_timestamp_field(record["createdAt"])
+                updated_value = _validate_timestamp_field(record["updatedAt"])
+                if now_value < created_value or now_value < updated_value:
+                    _fail("timestamp-invalid")
+                statuses.append(status)
+
+            # Exact replay: all targets already released
+            if all(status == RELEASED for status in statuses):
+                return tuple(
+                    _dict_to_record(records[targets[sid]], duplicate=True)
+                    for sid in service_ids_tuple
+                )
+
+            # An atomic batch can be either wholly active or wholly released.
+            # Mixed state proves this is not an exact replay of this batch.
+            if any(status == RELEASED for status in statuses):
+                _fail("transition-invalid")
+
+            # Transition active records to released
+            for sid in service_ids_tuple:
+                idx = targets[sid]
+                rec = records[idx]
+                if rec["status"] == RELEASED:
+                    continue
+                finished = dict(rec)
+                finished["status"] = RELEASED
+                finished["updatedAt"] = now
+                finished["recordSha256"] = _sha256hex(
+                    _canonical_json_bytes(
+                        {k: v for k, v in finished.items() if k != "recordSha256"}
+                    )
+                )
+                records[idx] = finished
+
+            try:
+                _write_snapshot(root_fd, records)
+            except Exception:  # noqa: BLE001 -- reconcile an ambiguous publish
+                # Post-write ambiguity: the atomic rename may have succeeded
+                # before the error was raised.  Re-observe the exact persisted
+                # state and return success only if every targeted record
+                # exactly matches the expected released state.
+                try:
+                    post_records = _read_records(root_fd)
+                except ReservationStoreError:
+                    _fail("snapshot-integrity")
+                post_targets: dict[str, int] = {}
+                for position, record in enumerate(post_records):
+                    if (
+                        record["transactionId"] == transaction_id
+                        and record["planHash"] == plan_hash
+                        and record["serviceId"] in service_set
+                    ):
+                        service_id = record["serviceId"]
+                        if service_id in post_targets:
+                            _fail("snapshot-integrity")
+                        post_targets[service_id] = position
+
+                if len(post_targets) != len(service_ids_tuple):
+                    _fail("snapshot-integrity")
+
+                for sid in service_ids_tuple:
+                    expected = records[targets[sid]]
+                    observed = post_records[post_targets[sid]]
+                    if observed != expected:
+                        _fail("snapshot-integrity")
+                return tuple(
+                    _dict_to_record(post_records[post_targets[sid]])
+                    for sid in service_ids_tuple
+                )
+
+            return tuple(
+                _dict_to_record(records[targets[sid]]) for sid in service_ids_tuple
+            )
+
+        return self._run_locked(operation)
+
 
 # ---------------------------------------------------------------------------
 # Public surface
@@ -1043,13 +1259,15 @@ class ResourceReservationStore:
 
 __all__ = [
     "ACTIVE",
+    "BATCH_RELEASE_SCHEMA",
     "FAILED",
-    "HostPort",
     "RELEASED",
+    "SCHEMA",
+    "STORE_SCHEMA",
+    "HostPort",
+    "ReleaseExpectation",
     "ReservationClaims",
     "ReservationRecord",
     "ReservationStoreError",
     "ResourceReservationStore",
-    "SCHEMA",
-    "STORE_SCHEMA",
 ]

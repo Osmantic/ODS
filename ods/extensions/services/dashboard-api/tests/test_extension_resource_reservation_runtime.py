@@ -14,6 +14,7 @@ if str(BIN_DIR) not in sys.path:
     sys.path.insert(0, str(BIN_DIR))
 
 import extension_resource_reservation_adapter as reservation_adapter  # noqa: E402, RUF100
+import extension_resource_reservation_release as reservation_release  # noqa: E402, RUF100
 import extension_resource_reservation_runtime as reservation_runtime  # noqa: E402, RUF100
 import extension_resource_reservation_store as reservations  # noqa: E402, RUF100
 
@@ -49,8 +50,12 @@ class ReservationRuntimeTests(unittest.TestCase):
             self.assertEqual(composed.root, reservation_root)
             self.assertIs(type(composed.store), reservations.ResourceReservationStore)
             self.assertIs(
-                type(composed.dispatcher),
+                type(composed.reserve_dispatcher),
                 reservation_adapter.ResourceReservationAdapter,
+            )
+            self.assertIs(
+                type(composed.release_dispatcher),
+                reservation_release.ResourceReleaseAdapter,
             )
             self.assertEqual(list(reservation_root.iterdir()), [])
 

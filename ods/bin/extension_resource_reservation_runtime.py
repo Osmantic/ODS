@@ -15,6 +15,9 @@ from pathlib import Path
 from extension_resource_reservation_adapter import (
     ResourceReservationAdapter,
 )
+from extension_resource_reservation_release import (
+    ResourceReleaseAdapter,
+)
 from extension_resource_reservation_store import (
     ResourceReservationStore,
 )
@@ -26,7 +29,8 @@ class ResourceReservationRuntime:
 
     root: Path
     store: ResourceReservationStore
-    dispatcher: ResourceReservationAdapter
+    reserve_dispatcher: ResourceReservationAdapter
+    release_dispatcher: ResourceReleaseAdapter
 
 
 def build_resource_reservation_runtime(
@@ -37,11 +41,13 @@ def build_resource_reservation_runtime(
 
     reservation_root = Path(data_dir) / "assistant-first" / "resource-reservations"
     store = ResourceReservationStore(reservation_root)
-    dispatcher = ResourceReservationAdapter(store)
+    reserve_dispatcher = ResourceReservationAdapter(store)
+    release_dispatcher = ResourceReleaseAdapter(store)
     return ResourceReservationRuntime(
         root=reservation_root,
         store=store,
-        dispatcher=dispatcher,
+        reserve_dispatcher=reserve_dispatcher,
+        release_dispatcher=release_dispatcher,
     )
 
 
