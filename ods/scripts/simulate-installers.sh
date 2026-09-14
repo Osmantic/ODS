@@ -230,8 +230,26 @@ summary["golden_paths"] = {
     "pass_count": sum(1 for item in golden_evidence.get("scenarios", []) if item.get("status") == "pass"),
 }
 
-pathlib.Path(summary_json_path).write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
-pathlib.Path(golden_evidence_json_path).write_text(json.dumps(golden_evidence, indent=2) + "\n", encoding="utf-8")
+import os
+import pathlib
+import tempfile
+
+def write_atomic_json(target_str, data):
+    target = pathlib.Path(target_str)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_str = tempfile.mkstemp(dir=str(target.parent), prefix=f".{target.name}.", suffix=".tmp")
+    tmp_path = pathlib.Path(tmp_str)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(data, indent=2) + "\n")
+        os.replace(tmp_path, target)
+    except Exception:
+        if tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
+        raise
+
+write_atomic_json(summary_json_path, summary)
+write_atomic_json(golden_evidence_json_path, golden_evidence)
 
 lines = []
 lines.append("# Installer Simulation Summary")
