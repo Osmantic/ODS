@@ -1146,3 +1146,15 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def partition_list_into_chunks_bounds(items: object, chunk_size: int = 5) -> list:
+    """Partition sequence items into list of sub-lists of specified chunk_size safely.
+
+    Enforces minimum chunk_size of 1. Handles None and non-sequence inputs safely.
+    """
+    if not isinstance(items, (list, tuple)):
+        return []
+    size = max(1, int(chunk_size))
+    return [list(items[i:i + size]) for i in range(0, len(items), size)]
+
