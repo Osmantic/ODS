@@ -1740,3 +1740,15 @@ def test_flatten_bounds_cycles_and_large_depth_without_losing_empty_leaves():
         nested = {"child": nested}
     result = dict_flatten_nested_safe(nested, max_depth=100000)
     assert len(next(iter(result)).split(".")) == 128
+
+
+class TestStringIsValidEmailSafe:
+    def test_valid_email(self):
+        from helpers import string_is_valid_email_safe
+        assert string_is_valid_email_safe("user@example.com") is True
+        assert string_is_valid_email_safe("invalid_email") is False
+
+    def test_invalid_inputs(self):
+        from helpers import string_is_valid_email_safe
+        assert string_is_valid_email_safe(None) is False
+        assert string_is_valid_email_safe(12345) is False
