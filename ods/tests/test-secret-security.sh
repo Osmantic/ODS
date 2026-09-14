@@ -131,7 +131,7 @@ while IFS= read -r -d '' pyfile; do
     service_name=$(basename "$(dirname "$(dirname "$pyfile")")")
 
     if grep -q "os\.environ\|getenv\|ENV\[" "$pyfile"; then
-        if [[ ! " ${services_using_env[*]} " =~ " ${service_name} " ]]; then
+        if [[ ! " ${services_using_env[*]:-} " =~ " ${service_name} " ]]; then
             services_using_env+=("$service_name")
             env_usage=$((env_usage + 1))
             pass "Service '$service_name' uses environment variables"
@@ -171,7 +171,7 @@ while IFS= read -r -d '' pyfile; do
 
     # Check for authentication/authorization patterns
     if grep -q "verify.*key\|validate.*token\|check.*auth\|@.*auth\|require.*auth" "$pyfile"; then
-        if [[ ! " ${services_with_auth[*]} " =~ " ${service_name} " ]]; then
+        if [[ ! " ${services_with_auth[*]:-} " =~ " ${service_name} " ]]; then
             services_with_auth+=("$service_name")
             api_key_validation=$((api_key_validation + 1))
             pass "Service '$service_name' implements API key validation"
