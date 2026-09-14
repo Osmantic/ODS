@@ -44,9 +44,10 @@ clear_screen() {
 }
 
 pause() {
+    [[ -t 0 ]] || return 0
     echo ""
     echo -e "${DIM}Press Enter to continue...${NC}"
-    read -r
+    read -r || true
 }
 
 print_header() {
