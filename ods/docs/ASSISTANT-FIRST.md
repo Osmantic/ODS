@@ -260,8 +260,24 @@ form and carry them on the frozen `PlannedDefinition`; legacy definitions
 without claim keys stay readable with explicit `None`. A `reserve:<serviceId>`
 command requires present claims on its targeted definition and fails closed
 with `lifecycle-work-reservation-claims-missing`; every other operation stays
-readable, and valid reserves never depend on unrelated legacy definitions. The
-reservation adapter, importer, dispatcher, and Dashboard executor remain absent.
+readable, and valid reserves never depend on unrelated legacy definitions.
+
+A dormant reservation adapter now closes the in-process handoff between the
+bound plan material and the immutable reservation store. It re-proves the
+exact command and LifecyclePlanMaterial binding, targets one non-noop
+operation/definition and exact payload, requires claims before effect, converts
+plan ports to store form and sorts them by (port, protocol), preserves
+exclusive token order, owns a strict UTC-second clock, maps all
+ReservationStoreError to the fixed value-free
+`lifecycle-work-reservation-failed`, validates the exact returned
+ReservationRecord binding/status/claims/hex evidence, returns `record_sha256`. Invoking it performs only the bound
+reservation-store mutation: it calls `ResourceReservationStore.reserve`, writes
+the owner-private reservation record, and has no process, network, service,
+container, or Compose effect. A frozen fixed-root runtime
+composition joins the store and adapter against the installer-owned root
+without registering a dispatcher or granting lifecycle effect authority.
+The production importer, transaction executor, resource projection, and
+Dashboard executor remain absent.
 
 ## Evidence boundary
 

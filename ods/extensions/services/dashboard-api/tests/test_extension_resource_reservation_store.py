@@ -13,7 +13,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-
 BIN_DIR = Path(__file__).resolve().parents[4] / "bin"
 ODS_ROOT = Path(__file__).resolve().parents[4]
 if str(BIN_DIR) not in sys.path:
@@ -28,7 +27,7 @@ SUPPORTED = (
     and os.unlink in os.supports_dir_fd
 )
 if SUPPORTED:
-    import extension_resource_reservation_store as reservations  # noqa: E402
+    import extension_resource_reservation_store as reservations
 else:
     reservations = None  # type: ignore[assignment]
 
@@ -384,7 +383,11 @@ class ResourceReservationStoreTests(unittest.TestCase):
                         and node.module == "extension_resource_reservation_store"
                     ):
                         offenders.append(str(path.relative_to(ODS_ROOT)))
-        self.assertEqual(offenders, [])
+        allowed = {
+            "bin/extension_resource_reservation_adapter.py",
+            "bin/extension_resource_reservation_runtime.py",
+        }
+        self.assertEqual(set(offenders), allowed)
 
 
 if __name__ == "__main__":
