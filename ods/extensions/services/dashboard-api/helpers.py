@@ -1381,3 +1381,12 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def numeric_safe_reciprocal_safe(val: int | float | None, default_val: float = 0.0) -> float:
+    """Safely calculate 1 / val protecting against zero division and non-numeric inputs.
+    Returns default_val on None, non-numeric, or val == 0 inputs.
+    """
+    if val is None or not isinstance(val, (int, float)) or isinstance(val, bool) or val == 0:
+        return float(default_val)
+    return 1.0 / float(val)
