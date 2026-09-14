@@ -1607,3 +1607,17 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+class TestDictFilterByKeysSafe:
+    def test_valid_filter(self):
+        from helpers import dict_filter_by_keys_safe
+        d = {"a": 1, "b": 2, "c": 3}
+        assert dict_filter_by_keys_safe(d, ["a", "b"]) == {"a": 1, "b": 2}
+        assert dict_filter_by_keys_safe(d, ["a"], exclude=True) == {"b": 2, "c": 3}
+
+    def test_invalid_inputs(self):
+        from helpers import dict_filter_by_keys_safe
+        assert dict_filter_by_keys_safe(None, ["a"]) == {}
+        assert dict_filter_by_keys_safe({"a": 1}, None) == {"a": 1}
+
