@@ -107,14 +107,22 @@ terminal receipt adds a completed/failed outcome, evidence hash, and the exact
 started-event hash. Receipts are canonical JSON with content hashes, bounded to
 4096 bytes, and published create-if-absent through a same-directory hard-link
 race. Divergent writers conflict, corrupt or path-rebound files fail closed,
-and a terminal without its matching started receipt is never trusted.
+and a terminal without its matching started receipt is never trusted. The
+store root is a private `.assistant-lifecycle-receipts` directory created
+directly under the host-agent data directory with POSIX mode 0700.
 
-The initial receipt-store phase is deliberately inert: it has no route,
-startup hook, lifecycle or lease call, replay loop, cleanup, or production
-importer. The Dashboard production executor remains disabled until a later
-adapter can bind each durable transaction transition to lease custody, one
-synchronous host mutation, terminal receipt publication, and strict
-observation without treating HTTP 202 as completion.
+The initial receipt-store phase is deliberately inert: it has no startup hook,
+lifecycle or lease call, replay loop, cleanup, or production importer. Phase
+5G-B exposes the store only through authenticated host-agent routes
+(`/v1/extension/lifecycle-receipt/begin`, `/finish`, `/snapshot`) gated by
+`ODS_ASSISTANT_TRANSACTIONS_ENABLED`; the routes publish and observe receipts
+and perform no lifecycle mutation. Snapshot requests and responses carry the
+exact requested transaction and plan hash. An absent snapshot is a negative
+lookup before the first durable binding; once any receipt exists, a different
+plan hash fails closed. The Dashboard production executor remains
+disabled until a later adapter can bind each durable transaction transition to
+lease custody, one synchronous host mutation, terminal receipt publication, and
+strict observation without treating HTTP 202 as completion.
 
 All selected services are locked in canonical order before the final
 provenance check and before lifecycle work. Artifacts are downloaded and

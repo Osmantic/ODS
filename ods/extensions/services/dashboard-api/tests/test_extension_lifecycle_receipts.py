@@ -798,7 +798,7 @@ def test_mixed_begin_finish_race_is_safe_and_retryable(tmp_path):
     assert store.health()["tempCount"] == 0
 
 
-def test_module_is_stdlib_only_and_has_no_production_importers():
+def test_module_is_stdlib_only_and_has_only_the_guarded_host_importer():
     module_path = BIN_DIR / "extension_lifecycle_receipts.py"
     tree = ast.parse(module_path.read_text(encoding="utf-8"))
     imports = set()
@@ -822,12 +822,18 @@ def test_module_is_stdlib_only_and_has_no_production_importers():
 
     repo_root = Path(__file__).resolve().parents[5]
     this_test = Path(__file__).resolve()
-    unexpected = []
+    importers = []
     for path in (repo_root / "ods").rglob("*.py"):
         if path.resolve() in {this_test, module_path.resolve()}:
             continue
         if "extension_lifecycle_receipts" in path.read_text(
             encoding="utf-8", errors="ignore"
         ):
-            unexpected.append(path.relative_to(repo_root).as_posix())
-    assert unexpected == []
+            importers.append(path.relative_to(repo_root).as_posix())
+    assert sorted(importers) == [
+        "ods/bin/ods-host-agent.py",
+        (
+            "ods/extensions/services/dashboard-api/tests/"
+            "test_extension_lifecycle_receipt_host_api.py"
+        ),
+    ]

@@ -103,6 +103,35 @@ try:
 except Exception:  # pragma: no cover - import environment dependent
     _extension_leases = None
 
+try:
+    import extension_lifecycle_receipts as _extension_lifecycle_receipts
+except Exception:  # pragma: no cover - import environment dependent
+    _extension_lifecycle_receipts = None
+
+# ---------------------------------------------------------------------------
+# Lifecycle-receipt API constants (Phase 5G-B host boundary)
+# ---------------------------------------------------------------------------
+
+_LIFECYCLE_RECEIPT_SCHEMA = "ods.extension-lifecycle-receipt-api.v1"
+_LIFECYCLE_RECEIPT_MAX_BODY = 32 * 1024
+_LIFECYCLE_RECEIPT_ROOT_NAME = ".assistant-lifecycle-receipts"
+_LIFECYCLE_RECEIPT_PLAN_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
+
+_BEGIN_RECEIPT_KEYS = frozenset({
+    "schema", "transactionId", "planHash", "operationKey",
+    "requestHash", "serviceIds",
+})
+_FINISH_RECEIPT_KEYS = _BEGIN_RECEIPT_KEYS | frozenset({"outcome", "evidenceHash"})
+_SNAPSHOT_RECEIPT_KEYS = frozenset({
+    "schema", "transactionId", "planHash", "operationKey",
+})
+
+# Lazy store state — only instantiated inside an authenticated,
+# gate-enabled receipt call.
+_lifecycle_receipt_store = None
+_lifecycle_receipt_store_data_dir: Path | None = None
+_lifecycle_receipt_store_lock = threading.Lock()
+
 _MODEL_MEMORY_PATH = (
     Path(__file__).resolve().parent.parent
     / "extensions"
@@ -6381,6 +6410,145 @@ def _read_extension_lease_body(handler) -> dict | None:
     )
 
 
+def _read_lifecycle_receipt_body(handler) -> dict | None:
+    """Read a lifecycle-receipt body with strict framing and size limits."""
+    return _read_bounded_json_object(
+        handler,
+        max_body=_LIFECYCLE_RECEIPT_MAX_BODY,
+        framing_code="invalid-lifecycle-receipt-request-framing",
+        size_code="lifecycle-receipt-request-size",
+        incomplete_code="incomplete-lifecycle-receipt-request",
+        invalid_code="invalid-lifecycle-receipt-request",
+    )
+
+
+def _get_lifecycle_receipt_store() -> "_extension_lifecycle_receipts.LifecycleReceiptStore" | None:
+    """Create one process-local store lazily after gate passes.
+
+    The root is always ``DATA_DIR / _LIFECYCLE_RECEIPT_ROOT_NAME``; no caller
+    path is accepted.  If ``DATA_DIR`` changes (only tests do that; the host
+    agent fixes it once at startup), the store is rebuilt safely.
+    """
+    global _lifecycle_receipt_store, _lifecycle_receipt_store_data_dir
+    if _extension_lifecycle_receipts is None:
+        return None
+    with _lifecycle_receipt_store_lock:
+        if (
+            _lifecycle_receipt_store is None
+            or _lifecycle_receipt_store_data_dir != DATA_DIR
+        ):
+            root = DATA_DIR / _LIFECYCLE_RECEIPT_ROOT_NAME
+            _lifecycle_receipt_store = (
+                _extension_lifecycle_receipts.LifecycleReceiptStore(root)
+            )
+            _lifecycle_receipt_store_data_dir = DATA_DIR
+        return _lifecycle_receipt_store
+
+
+def _receipt_store_response(handler, status_code: int, body: dict) -> None:
+    """Send a JSON response with no-store on every receipt call."""
+    json_response(handler, status_code, body, no_store=True)
+
+
+def _map_receipt_error(handler, exc: Exception) -> None:
+    """Map store exceptions to HTTP status + error code."""
+    if isinstance(exc, _extension_lifecycle_receipts.LifecycleConflictError):
+        _receipt_store_response(
+            handler, 409,
+            {"error": {"code": "lifecycle-receipt-conflict"}},
+        )
+    elif isinstance(exc, _extension_lifecycle_receipts.LifecycleIntegrityError):
+        _receipt_store_response(
+            handler, 409,
+            {"error": {"code": "lifecycle-receipt-integrity"}},
+        )
+    elif isinstance(exc, _extension_lifecycle_receipts.LifecycleLinkUnsupportedError):
+        _receipt_store_response(
+            handler, 503,
+            {"error": {"code": "lifecycle-receipt-durability-unavailable"}},
+        )
+    elif (
+        isinstance(exc, _extension_lifecycle_receipts.LifecycleReceiptError)
+        and exc.code == "invalid-receipt-root"
+    ):
+        # The root is fixed by the host agent, never by the caller. A broken
+        # root therefore represents host receipt integrity, not bad input.
+        _receipt_store_response(
+            handler, 409,
+            {"error": {"code": "lifecycle-receipt-integrity"}},
+        )
+    elif isinstance(exc, _extension_lifecycle_receipts.LifecycleReceiptError):
+        _receipt_store_response(
+            handler, 422,
+            {"error": {"code": "invalid-lifecycle-receipt"}},
+        )
+    elif isinstance(exc, OSError):
+        _receipt_store_response(
+            handler, 503,
+            {"error": {"code": "lifecycle-receipt-store-unavailable"}},
+        )
+    else:
+        logger.error(
+            "lifecycle-receipt-store-unavailable exception=%s",
+            type(exc).__name__,
+        )
+        _receipt_store_response(
+            handler, 503,
+            {"error": {"code": "lifecycle-receipt-store-unavailable"}},
+        )
+
+
+def _receipt_dict_from_started(
+    receipt: "_extension_lifecycle_receipts.StartedReceipt",
+) -> dict:
+    """Build the canonical response dict from a started receipt.
+
+    Fields not applicable (outcome, evidenceHash, startedEventHash) are
+    JSON null.
+    """
+    return {
+        "schema": _LIFECYCLE_RECEIPT_SCHEMA,
+        "kind": "started",
+        "transactionId": receipt.transaction_id,
+        "planHash": receipt.plan_hash,
+        "operationKey": receipt.operation_key,
+        "requestHash": receipt.request_hash,
+        "serviceIds": list(receipt.service_ids),
+        "eventHash": receipt.event_hash,
+        "outcome": None,
+        "evidenceHash": None,
+        "startedEventHash": None,
+    }
+
+
+def _receipt_dict_from_terminal(
+    receipt: "_extension_lifecycle_receipts.TerminalReceipt",
+) -> dict:
+    """Build the canonical response dict from a terminal receipt."""
+    return {
+        "schema": _LIFECYCLE_RECEIPT_SCHEMA,
+        "kind": "terminal",
+        "transactionId": receipt.transaction_id,
+        "planHash": receipt.plan_hash,
+        "operationKey": receipt.operation_key,
+        "requestHash": receipt.request_hash,
+        "serviceIds": list(receipt.service_ids),
+        "eventHash": receipt.event_hash,
+        "outcome": receipt.outcome,
+        "evidenceHash": receipt.evidence_hash,
+        "startedEventHash": receipt.started_event_hash,
+    }
+
+
+def _snapshot_receipt_dict(receipt) -> dict | None:
+    """Build the exact nested receipt shape for a snapshot response."""
+    if receipt is None:
+        return None
+    if isinstance(receipt, _extension_lifecycle_receipts.TerminalReceipt):
+        return _receipt_dict_from_terminal(receipt)
+    return _receipt_dict_from_started(receipt)
+
+
 def _read_extension_mutation_body(handler) -> dict | None:
     """Read one strict bounded object before inspecting optional lease evidence."""
     return _read_bounded_json_object(
@@ -7240,6 +7408,160 @@ class AgentHandler(BaseHTTPRequestHandler):
                 no_store=True,
             )
 
+    def _handle_lifecycle_receipt(self, action: str) -> None:
+        """Expose durable receipt publication without any lifecycle mutation."""
+        if not check_auth(self):
+            return
+        if not ASSISTANT_TRANSACTIONS_ENABLED:
+            json_response(
+                self,
+                404,
+                {"error": {"code": "not-found"}},
+                no_store=True,
+            )
+            return
+        if _extension_lifecycle_receipts is None:
+            _receipt_store_response(
+                self,
+                503,
+                {"error": {"code": "lifecycle-receipt-store-unavailable"}},
+            )
+            return
+        body = _read_lifecycle_receipt_body(self)
+        if body is None:
+            return
+        required = {
+            "begin": _BEGIN_RECEIPT_KEYS,
+            "finish": _FINISH_RECEIPT_KEYS,
+            "snapshot": _SNAPSHOT_RECEIPT_KEYS,
+        }[action]
+        if (
+            body.get("schema") != _LIFECYCLE_RECEIPT_SCHEMA
+            or set(body) != required
+        ):
+            _receipt_store_response(
+                self,
+                422,
+                {"error": {"code": "invalid-lifecycle-receipt-request"}},
+            )
+            return
+        plan_hash = body["planHash"]
+        if (
+            not isinstance(plan_hash, str)
+            or _LIFECYCLE_RECEIPT_PLAN_HASH_RE.fullmatch(plan_hash) is None
+        ):
+            _receipt_store_response(
+                self,
+                422,
+                {"error": {"code": "invalid-lifecycle-receipt-request"}},
+            )
+            return
+        try:
+            store = _get_lifecycle_receipt_store()
+        except (
+            _extension_lifecycle_receipts.LifecycleReceiptError,
+            OSError,
+        ) as exc:
+            _map_receipt_error(self, exc)
+            return
+        except Exception as exc:
+            logger.error(
+                "lifecycle-receipt-store-unavailable exception=%s",
+                type(exc).__name__,
+            )
+            _receipt_store_response(
+                self,
+                503,
+                {"error": {"code": "lifecycle-receipt-store-unavailable"}},
+            )
+            return
+        if store is None:
+            _receipt_store_response(
+                self,
+                503,
+                {"error": {"code": "lifecycle-receipt-store-unavailable"}},
+            )
+            return
+
+        try:
+            if action == "begin":
+                receipt = store.begin(
+                    body["transactionId"],
+                    body["planHash"],
+                    body["operationKey"],
+                    body["requestHash"],
+                    body["serviceIds"],
+                )
+                _receipt_store_response(
+                    self, 200, _snapshot_receipt_dict(receipt)
+                )
+            elif action == "finish":
+                receipt = store.finish(
+                    body["transactionId"],
+                    body["planHash"],
+                    body["operationKey"],
+                    body["requestHash"],
+                    body["serviceIds"],
+                    body["outcome"],
+                    body["evidenceHash"],
+                )
+                _receipt_store_response(
+                    self, 200, _receipt_dict_from_terminal(receipt)
+                )
+            else:
+                snapshot = store.snapshot(
+                    body["transactionId"],
+                    body["operationKey"],
+                )
+                bound_receipts = (
+                    snapshot.started_receipt,
+                    snapshot.terminal_receipt,
+                )
+                if any(
+                    receipt is not None
+                    and receipt.plan_hash != body["planHash"]
+                    for receipt in bound_receipts
+                ):
+                    raise _extension_lifecycle_receipts.LifecycleConflictError(
+                        "snapshot is bound to a different plan hash"
+                    )
+                _receipt_store_response(
+                    self,
+                    200,
+                    {
+                        "schema": _LIFECYCLE_RECEIPT_SCHEMA,
+                        "transactionId": snapshot.transaction_id,
+                        # For a present receipt this equals the durable plan
+                        # hash checked above. For an absent receipt it denotes
+                        # the exact negative lookup; begin() establishes the
+                        # first durable binding for this transaction/operation.
+                        "planHash": body["planHash"],
+                        "operationKey": snapshot.operation_key,
+                        "state": snapshot.state,
+                        "startedReceipt": _snapshot_receipt_dict(
+                            snapshot.started_receipt,
+                        ),
+                        "terminalReceipt": _snapshot_receipt_dict(
+                            snapshot.terminal_receipt,
+                        ),
+                    },
+                )
+        except (
+            _extension_lifecycle_receipts.LifecycleReceiptError,
+            OSError,
+        ) as exc:
+            _map_receipt_error(self, exc)
+        except Exception as exc:
+            logger.error(
+                "lifecycle-receipt-store-unavailable exception=%s",
+                type(exc).__name__,
+            )
+            _receipt_store_response(
+                self,
+                503,
+                {"error": {"code": "lifecycle-receipt-store-unavailable"}},
+            )
+
     def _handle_pixel_ops_status(self, query: dict[str, list[str]]):
         """Return one exact, nonsecret Operations result projection.
 
@@ -7689,6 +8011,7 @@ class AgentHandler(BaseHTTPRequestHandler):
             "/v1/extension/lease/release": "release",
         }
         lease_path = self.path.partition("?")[0]
+        receipt_path = lease_path
         if lease_path in lease_routes:
             if self.path != lease_path:
                 json_response(
@@ -7699,6 +8022,20 @@ class AgentHandler(BaseHTTPRequestHandler):
                 )
             else:
                 self._handle_extension_lease(lease_routes[lease_path])
+        elif receipt_path in {
+            "/v1/extension/lifecycle-receipt/begin",
+            "/v1/extension/lifecycle-receipt/finish",
+            "/v1/extension/lifecycle-receipt/snapshot",
+        }:
+            if self.path != receipt_path:
+                json_response(
+                    self,
+                    404,
+                    {"error": {"code": "not-found"}},
+                    no_store=True,
+                )
+            else:
+                self._handle_lifecycle_receipt(receipt_path.rsplit("/", 1)[1])
         elif self.path in {
             "/v1/assistant-first/secrets/stage",
             "/v1/assistant-first/secrets/status",
