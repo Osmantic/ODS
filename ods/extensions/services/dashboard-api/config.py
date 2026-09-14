@@ -736,3 +736,14 @@ def load_templates() -> list[dict]:
 
 
 TEMPLATES = load_templates()
+
+
+# ── config guard: strip_trailing_slash ────────────────────────
+def strip_trailing_slash(url: Any) -> str:
+    """Return *url* with all trailing ``/`` characters removed.
+
+    Returns an empty string for None or non-string inputs.
+    """
+    if not url or not isinstance(url, str):
+        return ""
+    return url.rstrip("/")
