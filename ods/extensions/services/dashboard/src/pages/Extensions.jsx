@@ -973,7 +973,7 @@ function DetailModal({ ext, gpuBackend, onClose }) {
               </div>
             </div>
           </div>
-          <button onClick={onClose} autoFocus className="text-theme-text-muted hover:text-theme-text-secondary transition-colors p-1">
+          <button onClick={onClose} autoFocus aria-label="Close" className="text-theme-text-muted hover:text-theme-text-secondary transition-colors p-1">
             <X size={18} />
           </button>
         </div>
@@ -1234,7 +1234,7 @@ function ConsoleModal({ ext, onClose }) {
               <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" title="Live" />
             )}
           </div>
-          <button onClick={onClose} autoFocus className="text-theme-text-muted hover:text-theme-text-secondary transition-colors p-1">
+          <button onClick={onClose} autoFocus aria-label="Close" className="text-theme-text-muted hover:text-theme-text-secondary transition-colors p-1">
             <X size={16} />
           </button>
         </div>

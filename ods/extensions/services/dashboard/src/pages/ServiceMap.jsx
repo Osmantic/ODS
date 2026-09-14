@@ -231,7 +231,7 @@ function DetailPanel({ node, edges, onClose }) {
           <span className={`h-2.5 w-2.5 rounded-full ${meta.dot}`} />
           <span className="text-sm font-semibold text-theme-text">{node.name}</span>
         </div>
-        <button onClick={onClose} className="text-theme-text-muted hover:text-theme-text"><X size={16} /></button>
+        <button onClick={onClose} aria-label="Close" className="text-theme-text-muted hover:text-theme-text"><X size={16} /></button>
       </div>
       <div className="space-y-3 px-4 py-3 text-xs">
         <div className="flex justify-between"><span className="text-theme-text-muted">Status</span><span className={meta.text}>{node.status}</span></div>
