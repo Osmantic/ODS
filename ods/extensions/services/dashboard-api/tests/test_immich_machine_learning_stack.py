@@ -52,11 +52,9 @@ def test_normal_immich_install_includes_default_ml_endpoint(compose_environment,
 
 
 _INFERENCE_PROBE = r'''
-import base64
 import io
 import json
 import math
-import struct
 import requests
 from PIL import Image
 
@@ -78,9 +76,10 @@ for entries, payload in requests_to_run:
     response.raise_for_status()
     value = response.json()
     if "clip" in value:
-        vector = base64.b64decode(value["clip"])
-        assert len(vector) == 512 * 4
-        assert all(math.isfinite(number) for number in struct.unpack("<512f", vector))
+        # v1.131.3 serializes the vector as a JSON array inside a string.
+        vector = json.loads(value["clip"])
+        assert len(vector) == 512
+        assert all(math.isfinite(number) for number in vector)
         results.append({"embedding_dimensions": 512})
     else:
         assert value["facial-recognition"] == []
