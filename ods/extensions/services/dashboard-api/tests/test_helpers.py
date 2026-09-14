@@ -1740,3 +1740,14 @@ def test_flatten_bounds_cycles_and_large_depth_without_losing_empty_leaves():
         nested = {"child": nested}
     result = dict_flatten_nested_safe(nested, max_depth=100000)
     assert len(next(iter(result)).split(".")) == 128
+
+
+class TestListRemoveAllInstancesSafe:
+    def test_valid_removal(self):
+        from helpers import list_remove_all_instances_safe
+        assert list_remove_all_instances_safe([1, 2, 3, 2, 4], 2) == [1, 3, 4]
+
+    def test_invalid_inputs(self):
+        from helpers import list_remove_all_instances_safe
+        assert list_remove_all_instances_safe(None, 2) == []
+        assert list_remove_all_instances_safe([1, 2], None) == [1, 2]
