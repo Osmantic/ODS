@@ -9,6 +9,22 @@ services:
   crewai:
     image: tham0nk/crewai-studio@sha256:5438b8fbedc5bf98481de10e8fa9be13672c88a2bc9981f30b3747e99eec1e4e
     container_name: ods-crewai
+    # The pinned Studio stores crewai.db relative to /CrewAI-Studio. Keep that
+    # working directory (its logo also uses a relative path), but persist SQLite.
+    command:
+      - bash
+      - -c
+      - |
+        set -euo pipefail
+        if [[ -L crewai.db ]]; then
+          [[ "$$(readlink crewai.db)" == /app/crewai.db ]]
+        elif [[ -e crewai.db ]]; then
+          echo 'Existing unmounted crewai.db: back it up before recreating this container.' >&2
+          exit 1
+        else
+          ln -s /app/crewai.db crewai.db
+        fi
+        exec streamlit run ./app/app.py --server.headless true
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -37,7 +53,7 @@ services:
       - AGENTOPS_ENABLED=${AGENTOPS_ENABLED:-False}
       - AGENTOPS_API_KEY=${AGENTOPS_API_KEY:-}
     volumes:
-      # App data (SQLite DB, crew configs, history) lives under /app in the container
+      # SQLite is linked here by the startup command; application code stays in the image.
       - ./data/crewai:/app:rw
     ports:
       - "${BIND_ADDRESS:-127.0.0.1}:${CREWAI_PORT:-8501}:8501"
