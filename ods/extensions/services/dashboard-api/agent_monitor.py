@@ -47,6 +47,13 @@ class ClusterStatus:
         self.total_gpus = 0
         self.active_gpus = 0
 
+    def _clear(self):
+        """Drop cached node data so a dead proxy is not reported as a live cluster."""
+        self.nodes = []
+        self.failover_ready = False
+        self.total_gpus = 0
+        self.active_gpus = 0
+
     async def refresh(self):
         """Query cluster status from smart proxy"""
         logger.debug("Refreshing cluster status from proxy")
@@ -66,15 +73,22 @@ class ClusterStatus:
                 self.failover_ready = self.active_gpus > 1
                 logger.debug("Cluster status: %d/%d GPUs active, failover_ready=%s",
                            self.active_gpus, self.total_gpus, self.failover_ready)
+            else:
+                self._clear()
+                logger.debug("Cluster proxy query failed with exit code %d", proc.returncode)
         except FileNotFoundError:
+            self._clear()
             logger.debug("Cluster proxy not available: curl command not found")
         except asyncio.TimeoutError:
+            self._clear()
             proc.kill()
             await proc.wait()
             logger.debug("Cluster proxy health check timed out after 5s")
         except OSError as e:
+            self._clear()
             logger.debug("Cluster proxy connection failed: %s", e)
         except json.JSONDecodeError as e:
+            self._clear()
             logger.warning("Cluster proxy returned invalid JSON: %s", e)
 
     def to_dict(self) -> dict:
