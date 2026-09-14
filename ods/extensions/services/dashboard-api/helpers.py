@@ -123,9 +123,22 @@ async def _get_httpx_client() -> httpx.AsyncClient:
 
 
 def _service_status_from_config(service_id: str, config: dict, status: str) -> ServiceStatus:
+    if not isinstance(config, dict):
+        config = {}
+    name = str(config.get("name") or service_id)
+    try:
+        port = int(config.get("port") or 0)
+    except (TypeError, ValueError):
+        port = 0
+
+    try:
+        external_port = int(config.get("external_port") or port)
+    except (TypeError, ValueError):
+        external_port = port
+
     return ServiceStatus(
-        id=service_id, name=config["name"], port=config["port"],
-        external_port=config.get("external_port", config["port"]),
+        id=service_id, name=name, port=port,
+        external_port=external_port,
         status=status, response_time_ms=None,
     )
 
@@ -139,7 +152,9 @@ async def _check_tailscale_health(service_id: str, config: dict) -> ServiceStatu
     """
     try:
         payload = await request_agent_json("GET", "/v1/tailscale/status", timeout=5)
-    except AgentClientError:
+        if not isinstance(payload, dict):
+            return _service_status_from_config(service_id, config, "not_deployed")
+    except (AgentClientError, OSError, ValueError):
         return _service_status_from_config(service_id, config, "not_deployed")
 
     if not payload.get("running"):
@@ -158,7 +173,13 @@ async def _check_host_systemd_health(service_id: str, config: dict) -> ServiceSt
     open. If the proof is unavailable, fail closed so the dashboard does not
     launch users into a dead localhost URL.
     """
-    port = int(config.get("health_port") or config.get("external_port") or config.get("port") or 0)
+    if not isinstance(config, dict):
+        config = {}
+    try:
+        port = int(config.get("health_port") or config.get("external_port") or config.get("port") or 0)
+    except (TypeError, ValueError):
+        port = 0
+
     if port <= 0:
         return _service_status_from_config(service_id, config, "not_deployed")
 
@@ -169,17 +190,29 @@ async def _check_host_systemd_health(service_id: str, config: dict) -> ServiceSt
             params={"host": "127.0.0.1", "port": port},
             timeout=5,
         )
-    except AgentClientError:
+        if not isinstance(payload, dict):
+            return _service_status_from_config(service_id, config, "down")
+    except (AgentClientError, OSError, ValueError):
         return _service_status_from_config(service_id, config, "down")
 
     status = "healthy" if payload.get("reachable") else "not_deployed"
+    name = str(config.get("name") or service_id)
+    service_port = int(config.get("port") or port)
+    external_port = int(config.get("external_port") or service_port)
+    response_time = payload.get("response_time_ms")
+    if response_time is not None:
+        try:
+            response_time = float(response_time)
+        except (TypeError, ValueError):
+            response_time = None
+
     return ServiceStatus(
         id=service_id,
-        name=config["name"],
-        port=config["port"],
-        external_port=config.get("external_port", config["port"]),
+        name=name,
+        port=service_port,
+        external_port=external_port,
         status=status,
-        response_time_ms=payload.get("response_time_ms"),
+        response_time_ms=response_time,
     )
 
 
