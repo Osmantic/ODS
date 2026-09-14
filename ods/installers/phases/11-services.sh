@@ -56,7 +56,8 @@ _phase11_build_local_images() {
                     | python3 -c "
 import json, sys
 try:
-    d = json.load(sys.stdin)
+    raw = sys.stdin.buffer.read().decode('utf-8', errors='replace')
+    d = json.loads(raw)
     svc_name = '$svc'
     svc_config = d.get('services', {}).get(svc_name, {})
     image = svc_config.get('image', '') or ''
