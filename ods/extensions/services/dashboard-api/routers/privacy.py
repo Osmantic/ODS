@@ -27,7 +27,10 @@ router = APIRouter(tags=["privacy"])
 async def get_privacy_shield_status(api_key: str = Depends(verify_api_key)):
     """Get Privacy Shield status and configuration."""
     _ps = SERVICES.get("privacy-shield", {})
-    shield_port = int(os.environ.get("SHIELD_PORT", str(_ps.get("port", 0))))
+    try:
+        shield_port = int(os.environ.get("SHIELD_PORT") or _ps.get("port", 0))
+    except (ValueError, TypeError):
+        shield_port = int(_ps.get("port", 0))
     shield_url = f"http://{_ps.get('host', 'privacy-shield')}:{shield_port}"
 
     # Check health directly — no Docker socket needed
