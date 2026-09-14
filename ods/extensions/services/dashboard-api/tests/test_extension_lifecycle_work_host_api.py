@@ -293,7 +293,7 @@ def host_server(tmp_path):
     builtins.chmod(0o700)
     users.mkdir(mode=0o700)
     users.chmod(0o700)
-    for service_id in ("documents", "voice", "dashboard"):
+    for service_id in ("documents", "voice", "dashboard", "searxng"):
         extension = builtins / service_id
         extension.mkdir(mode=0o700)
         extension.chmod(0o700)
@@ -326,6 +326,8 @@ def host_server(tmp_path):
     agent._extension_lifecycle_work_dispatcher = None
     agent._artifact_stage_runtime = None
     agent._artifact_stage_runtime_binding = None
+    agent._image_artifact_runtime = None
+    agent._image_artifact_runtime_plan_loader = None
     agent._resource_reservation_runtime = None
     agent._resource_reservation_runtime_data_dir = None
     agent._extension_lifecycle_plan_loader = lambda command: bind_fixture_plan(
@@ -466,10 +468,6 @@ def test_success_is_exact_synchronous_bound_and_token_free(host_server, host_req
 @pytest.mark.parametrize(
     "operation_key,payload",
     [
-        (
-            "download-and-verify",
-            {"operations": [{"serviceId": "documents", "action": "install"}]},
-        ),
         ("backup", {"serviceIds": ["documents"]}),
         ("configure", {"serviceIds": ["documents"]}),
         ("verify", {"serviceIds": ["documents"]}),
@@ -484,7 +482,7 @@ def test_success_is_exact_synchronous_bound_and_token_free(host_server, host_req
         ),
     ],
 )
-def test_non_stage_operations_remain_inert_but_authenticate_the_lease(
+def test_still_dormant_operations_remain_inert_but_authenticate_the_lease(
     host_server, host_request, operation_key, payload
 ):
     agent, _listener = host_server
@@ -1360,10 +1358,142 @@ def test_stage_still_selects_artifact_dispatcher(host_server, host_request):
     assert seen == ["stage"]
 
 
+def test_download_selects_image_dispatcher_and_started_observer(
+    host_server, host_request
+):
+    """download-and-verify must use its closed image runtime, not generic work."""
+
+    agent, _listener = host_server
+    grant = acquire_lease(agent, host_request)
+    evidence = lease_evidence(agent, grant)
+    seen = []
+
+    def observe(_command):
+        seen.append("observe")
+        return agent._extension_lifecycle_work.LifecycleWorkStartedObservation(
+            state="missing"
+        )
+
+    def dispatch(command):
+        seen.append(("dispatch", command.plan_material is not None))
+        return EVIDENCE_HASH
+
+    agent._image_artifact_runtime = SimpleNamespace(
+        dispatcher=dispatch,
+        started_observer=observe,
+    )
+    agent._image_artifact_runtime_plan_loader = (
+        agent._extension_lifecycle_plan_loader
+    )
+    agent._extension_lifecycle_work_dispatcher = lambda _command: (
+        (_ for _ in ()).throw(AssertionError("generic received image work"))
+    )
+
+    request = work_request(
+        agent._extension_lifecycle_work.REQUEST_SCHEMA,
+        evidence,
+        operation_key="download-and-verify",
+        service_ids=["documents"],
+        payload={
+            "operations": [{"serviceId": "documents", "action": "install"}]
+        },
+    )
+    begin_receipt(agent, host_request, request)
+    status, result = host_request("/v1/extension/lifecycle-work", request)
+
+    assert status == 200
+    assert result["evidenceHash"] == EVIDENCE_HASH
+    assert seen == ["observe", ("dispatch", True)]
+
+
+def test_real_image_runtime_recovers_then_dispatches_once(host_server, host_request):
+    agent, _listener = host_server
+    image_module = agent._image_artifact_runtime_module
+    image_id = "sha256:" + "9" * 64
+    calls = []
+    responses = [
+        SimpleNamespace(returncode=1, stdout="", stderr="missing"),
+        SimpleNamespace(returncode=0, stdout="", stderr=""),
+        SimpleNamespace(returncode=0, stdout=image_id + "\n", stderr=""),
+    ]
+
+    def runner(argv, **kwargs):
+        calls.append((list(argv), dict(kwargs)))
+        return responses.pop(0)
+
+    def load(command):
+        plan = agent._extension_lifecycle_plan
+        operation = plan.PlannedOperation("searxng", "install")
+        definition = plan.PlannedDefinition(
+            service_id="searxng",
+            service_type="docker",
+            manifest_schema_version=image_module.CANARY_MANIFEST_SCHEMA,
+            version=image_module.CANARY_VERSION,
+            data_schema_version=image_module.CANARY_DATA_SCHEMA_VERSION,
+            definition_sha256=image_module.CANARY_DEFINITION_SHA256,
+            compose_sha256=image_module.CANARY_COMPOSE_SHA256,
+            definition_source="builtin",
+            compose_file="compose.yaml",
+            images=(
+                plan.PlannedImage(
+                    image_module.CANARY_IMAGE_REFERENCE,
+                    image_module.CANARY_IMAGE_DIGEST,
+                    image_module.CANARY_IMAGE_DOWNLOAD_BYTES,
+                ),
+            ),
+            builds=(),
+            canonical_document=b"fixture-only\n",
+            host_ports=(),
+            exclusive=(),
+        )
+        return replace(
+            command,
+            plan_material=plan.LifecyclePlanMaterial(
+                schema=plan.PLAN_MATERIAL_SCHEMA,
+                transaction_id=command.transaction_id,
+                plan_hash=command.plan_hash,
+                state="downloading",
+                operations=(operation,),
+                definitions=(definition,),
+            ),
+        )
+
+    agent._extension_lifecycle_plan_loader = load
+    agent._image_artifact_runtime = image_module.build_image_artifact_runtime(
+        plan_loader=load,
+        runner=runner,
+    )
+    agent._image_artifact_runtime_plan_loader = load
+    agent._extension_lifecycle_work_dispatcher = lambda _command: (
+        (_ for _ in ()).throw(AssertionError("generic received image work"))
+    )
+    grant = acquire_lease(agent, host_request, ["searxng"])
+    request = work_request(
+        agent._extension_lifecycle_work.REQUEST_SCHEMA,
+        lease_evidence(agent, grant),
+        operation_key="download-and-verify",
+        service_ids=["searxng"],
+        payload={
+            "operations": [{"serviceId": "searxng", "action": "install"}]
+        },
+    )
+    begin_receipt(agent, host_request, request)
+
+    status, result = host_request("/v1/extension/lifecycle-work", request)
+    assert status == 200
+    assert len(result["evidenceHash"]) == 64
+    assert [call[0][2] for call in calls] == ["inspect", "pull", "inspect"]
+
+    replay_status, replay = host_request("/v1/extension/lifecycle-work", request)
+    assert replay_status == 200
+    assert replay == result
+    assert len(calls) == 3
+
+
 def test_unrelated_operations_never_gain_resource_authority(
     host_server, host_request
 ):
-    """Operations that are not reserve:*, release, or stage must not
+    """Operations outside reserve/release/stage/image work must not
     gain access to the reservation runtime's dispatchers."""
     agent, _listener = host_server
     grant = acquire_lease(agent, host_request)
@@ -1384,7 +1514,6 @@ def test_unrelated_operations_never_gain_resource_authority(
 
     test_cases = [
         ("verify", {"serviceIds": ["documents"]}),
-        ("download-and-verify", {"operations": [{"serviceId": "documents", "action": "install"}]}),
         ("backup", {"serviceIds": ["documents"]}),
         ("configure", {"serviceIds": ["documents"]}),
     ]
@@ -1634,6 +1763,13 @@ def test_host_agent_source_wires_reservation_runtime_module():
     assert "extension_resource_reservation_runtime" in agent_source
     assert "_resource_reservation_runtime" in agent_source
     assert "_get_extension_resource_reservation_runtime" in agent_source
+
+
+def test_host_agent_source_wires_closed_image_runtime_module():
+    agent_source = (BIN_DIR / "ods-host-agent.py").read_text(encoding="utf-8")
+    assert "extension_image_artifact_runtime" in agent_source
+    assert "_image_artifact_runtime" in agent_source
+    assert "_get_extension_image_artifact_runtime" in agent_source
 
 
 if __name__ == "__main__":

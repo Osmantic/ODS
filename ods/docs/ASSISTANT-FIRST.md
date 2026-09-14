@@ -162,8 +162,9 @@ its exact response-loss recovery anchor. A started receipt must already exist;
 the host publishes the matching completed or failed terminal before replying,
 and an exact completed replay never dispatches work again. A started-only
 receipt still requires durable side-effect observation and cannot be replayed
-or declared failed by inference. Concrete host operations and the production
-executor therefore remain disabled.
+or declared failed by inference. Apply, configuration, backup, health
+verification, and compensation operations and the production executor therefore
+remain disabled.
 
 Future host work is also bound to the exact approved transaction before a
 dispatcher can run. The host loads the owner-private transaction store shared
@@ -177,10 +178,10 @@ plan mismatch is terminalized as failed, while an unavailable loader leaves a
 started receipt for explicit recovery. The bound material remains in process
 and contains no lease credential or secret.
 
-This plan binding is still an inert safety boundary. The production dispatcher
-and transaction executor remain disabled until host-side artifact verification,
-real installed-state observation, idempotent effects, and crash recovery have
-been implemented and qualified.
+The general production dispatcher and transaction executor remain disabled
+until real installed-state observation, idempotent apply effects, and crash
+recovery have been implemented and qualified. Exact operations may be activated
+individually only with their own durable side-effect observation.
 
 The catalog's manifest and Compose hashes are now produced through one shared,
 host-importable canonical document digest. YAML/JSON spelling and checkout line
@@ -241,9 +242,9 @@ root. Composition validates the root without creating or repairing it, caches
 only the exact `DATA_DIR` and extension-root binding, and accepts no request or
 environment override. The host lifecycle handler calls the factory only for
 the exact `stage` operation and passes both callables through the existing
-plan-bound receipt path. Beyond stage and the paired reserve/release boundary
-described below, lifecycle operations remain unavailable. Dashboard execution
-remains `None`.
+plan-bound receipt path. Beyond stage, the exact immutable-image canary, and the
+paired reserve/release boundary described below, lifecycle operations remain
+unavailable. Dashboard execution remains `None`.
 
 The installer also provisions an owner-private
 `data/assistant-first/resource-reservations` root for the next host boundary.
@@ -305,6 +306,17 @@ applied. Any failed or ambiguous recovery terminalizes as
 quarantine. Normal verified success still releases exactly once. Dashboard's
 production transaction executor remains disabled, so this host boundary does
 not yet make conversational extension installation live.
+
+The first network-bearing host operation is now a closed
+`download-and-verify` canary for the exact bundled SearXNG Manifest v2
+definition. It accepts only that service, schema, built-in origin, definition
+digest, image reference, and image digest from the owner-approved plan, invokes
+Docker without a shell using only `reference@digest`, then reopens that exact
+local reference before returning bound evidence. A paired read-only image
+observer can recover a started receipt after response loss without another
+pull. Missing, changed, non-canary, build-based, or unpinned material fails
+before a subprocess call. This does not stage configuration, start a container,
+enable Dashboard execution, or alter Full/Core/Custom behavior.
 
 A dormant application-identity contract defines the labels a future apply
 adapter must place on managed services. It re-proves one exact
