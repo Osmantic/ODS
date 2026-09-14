@@ -99,30 +99,34 @@ def test_status_when_fully_joined(test_client):
 # ---------------------------------------------------------------------------
 
 
-def test_status_returns_503_when_agent_unreachable(test_client):
+def test_status_returns_200_offline_when_agent_unreachable(test_client):
     with patch(
         "routers.tailscale.request_agent_json",
         side_effect=AgentUnavailable("connection refused"),
     ):
         resp = test_client.get("/api/tailscale/status", headers=test_client.auth_headers)
-    assert resp.status_code == 503
+    assert resp.status_code == 200
+    assert resp.json()["running"] is False
+    assert resp.json()["authenticated"] is False
 
 
-def test_status_returns_504_when_agent_request_times_out(test_client):
+def test_status_returns_200_offline_when_agent_request_times_out(test_client):
     with patch(
         "routers.tailscale.request_agent_json",
         side_effect=AgentTimeout("timed out"),
     ):
         resp = test_client.get("/api/tailscale/status", headers=test_client.auth_headers)
-    assert resp.status_code == 504
+    assert resp.status_code == 200
+    assert resp.json()["running"] is False
+    assert resp.json()["authenticated"] is False
 
 
 def test_status_passes_through_504_timeout(test_client):
     err = _mock_agent_http_error(504, {"error": "docker exec timed out"})
     with patch("routers.tailscale.request_agent_json", side_effect=err):
         resp = test_client.get("/api/tailscale/status", headers=test_client.auth_headers)
-    assert resp.status_code == 504
-    assert "timed out" in resp.json()["detail"]
+    assert resp.status_code == 200
+    assert resp.json()["running"] is False
 
 
 def test_status_passes_through_500_when_agent_errors(test_client):
