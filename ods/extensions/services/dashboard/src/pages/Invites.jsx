@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import './invites.css'
 import {
   UserPlus, Copy, Check, Trash2, RefreshCw, QrCode, Share2, X,
@@ -86,6 +86,7 @@ export default function Invites() {
   const [generated, setGenerated] = useState(null)
   const [refreshing, setRefreshing] = useState(false)
   const [ownerCardStatus, setOwnerCardStatus] = useState(null)
+  const dialogOpener = useRef(null)
 
   const refresh = useCallback(async () => {
     setRefreshing(true)
@@ -192,7 +193,7 @@ export default function Invites() {
             </p>
           </div>
           <button
-            onClick={() => setShowOwnerCreate(true)}
+            onClick={event => { dialogOpener.current = event.currentTarget; setShowOwnerCreate(true) }}
             disabled={ownerCardUnavailable}
             className="owner-access-action"
           >
@@ -231,7 +232,7 @@ export default function Invites() {
             </p>
           </div>
           <button
-            onClick={() => setShowGuestCreate(true)}
+            onClick={event => { dialogOpener.current = event.currentTarget; setShowGuestCreate(true) }}
             className="owner-access-action"
           >
             <UserPlus size={18} />
@@ -257,6 +258,7 @@ export default function Invites() {
 
       {showOwnerCreate && (
         <CreateOwnerModal
+          returnFocus={dialogOpener}
           ownerCardStatus={ownerCardStatus}
           onClose={() => setShowOwnerCreate(false)}
           onCreated={(record) => {
@@ -269,6 +271,7 @@ export default function Invites() {
 
       {showGuestCreate && (
         <CreateGuestModal
+          returnFocus={dialogOpener}
           onClose={() => setShowGuestCreate(false)}
           onCreated={(record) => {
             setShowGuestCreate(false)
@@ -280,6 +283,7 @@ export default function Invites() {
 
       {generated && (
         <GeneratedTokenModal
+          returnFocus={dialogOpener}
           record={generated}
           onClose={() => setGenerated(null)}
         />
@@ -368,7 +372,7 @@ function TokenRow({ token, onRevoke }) {
   )
 }
 
-function CreateOwnerModal({ ownerCardStatus, onClose, onCreated }) {
+function CreateOwnerModal({ ownerCardStatus, onClose, onCreated, returnFocus }) {
   const [username, setUsername] = useState('')
   const [note, setNote] = useState('Factory owner card')
   const [submitting, setSubmitting] = useState(false)
@@ -409,7 +413,7 @@ function CreateOwnerModal({ ownerCardStatus, onClose, onCreated }) {
   }
 
   return (
-    <Modal title="Create owner card" label="Create owner card" onClose={onClose}>
+    <Modal title="Create owner card" label="Create owner card" onClose={onClose} returnFocus={returnFocus}>
       <form onSubmit={handleSubmit}>
         <UsernameInput value={username} onChange={setUsername} autoFocus />
         <label className="block mb-4">
@@ -443,7 +447,7 @@ function CreateOwnerModal({ ownerCardStatus, onClose, onCreated }) {
   )
 }
 
-function CreateGuestModal({ onClose, onCreated }) {
+function CreateGuestModal({ onClose, onCreated, returnFocus }) {
   const [username, setUsername] = useState('')
   const [scope, setScope] = useState('chat')
   const [expiresIn, setExpiresIn] = useState(3600)
@@ -483,7 +487,7 @@ function CreateGuestModal({ onClose, onCreated }) {
   }
 
   return (
-    <Modal title="Create guest invite" label="Create guest invite" onClose={onClose}>
+    <Modal title="Create guest invite" label="Create guest invite" onClose={onClose} returnFocus={returnFocus}>
       <form onSubmit={handleSubmit}>
         <UsernameInput value={username} onChange={setUsername} autoFocus />
         <label className="block mb-3">
@@ -532,22 +536,30 @@ function CreateGuestModal({ onClose, onCreated }) {
   )
 }
 
-function Modal({ title, label, onClose, children }) {
+function AccessDialog({ label, onClose, returnFocus, children, wide = false }) {
+  const dialog = useRef(null)
   useEffect(() => {
-    const handleKey = (e) => { if (e.key === 'Escape') onClose() }
-    document.addEventListener('keydown', handleKey)
-    return () => document.removeEventListener('keydown', handleKey)
-  }, [onClose])
+    const node = dialog.current
+    const opener = returnFocus.current
+    node.showModal()
+    return () => {
+      node.close()
+      if (opener?.isConnected) opener.focus()
+    }
+  }, [returnFocus])
 
+  return <dialog ref={dialog} aria-label={label} aria-modal="true"
+    onCancel={event => { event.preventDefault(); onClose() }}
+    className="fixed inset-0 m-0 h-dvh max-h-none w-screen max-w-none border-0 bg-transparent p-4 text-theme-text backdrop:bg-black/50 open:flex items-center justify-center"
+    onClick={onClose}>
+    <div className={`access-dialog-panel bg-theme-card border border-theme-border rounded-xl p-6 w-full max-h-[calc(100dvh-2rem)] overflow-y-auto ${wide ? 'max-w-lg' : 'max-w-md'}`}
+      onClick={event => event.stopPropagation()}>{children}</div>
+  </dialog>
+}
+
+function Modal({ title, label, onClose, children, returnFocus }) {
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={onClose}>
-      <div
-        className="bg-theme-card border border-theme-border rounded-xl p-6 w-full max-w-md"
-        onClick={e => e.stopPropagation()}
-        role="dialog"
-        aria-modal="true"
-        aria-label={label}
-      >
+    <AccessDialog label={label} onClose={onClose} returnFocus={returnFocus}>
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-semibold text-theme-text">{title}</h2>
           <button type="button" onClick={onClose} className="text-theme-text-muted hover:text-theme-text" aria-label="Close">
@@ -555,8 +567,7 @@ function Modal({ title, label, onClose, children }) {
           </button>
         </div>
         {children}
-      </div>
-    </div>
+    </AccessDialog>
   )
 }
 
@@ -613,7 +624,7 @@ async function responseError(resp, label) {
   return new Error(detail || `${label} failed: ${resp.status}`)
 }
 
-function GeneratedTokenModal({ record, onClose }) {
+function GeneratedTokenModal({ record, onClose, returnFocus }) {
   const [copied, setCopied] = useState(false)
   const [qrDataUrl, setQrDataUrl] = useState(null)
   const [qrError, setQrError] = useState(null)
@@ -669,14 +680,7 @@ function GeneratedTokenModal({ record, onClose }) {
   }
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={onClose}>
-      <div
-        className="bg-theme-card border border-theme-border rounded-xl p-6 w-full max-w-lg"
-        onClick={e => e.stopPropagation()}
-        role="dialog"
-        aria-modal="true"
-        aria-label={owner ? 'Owner card created' : 'Invite created'}
-      >
+    <AccessDialog label={owner ? 'Owner card created' : 'Invite created'} onClose={onClose} returnFocus={returnFocus} wide>
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-semibold text-theme-text">
             {owner ? 'Owner card ready' : 'Invite ready'} for {record.target_username}
@@ -711,7 +715,7 @@ function GeneratedTokenModal({ record, onClose }) {
               readOnly
               value={record.url}
               onFocus={e => e.target.select()}
-              className="flex-1 bg-theme-bg border border-theme-border rounded-lg px-3 py-2 text-theme-text font-mono text-xs"
+              className="min-w-0 flex-1 bg-theme-bg border border-theme-border rounded-lg px-3 py-2 text-theme-text font-mono text-xs"
             />
             <button
               onClick={copy}
@@ -752,7 +756,6 @@ function GeneratedTokenModal({ record, onClose }) {
             </button>
           </div>
         </div>
-      </div>
-    </div>
+    </AccessDialog>
   )
 }

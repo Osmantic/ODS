@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, screen, waitFor } from '@testing-library/react'
 import { render } from '../test/test-utils'
 import Invites from './Invites' // eslint-disable-line no-unused-vars
 
@@ -19,8 +19,34 @@ const ownerCardPublicReady = {
 }
 
 describe('Invites', () => {
+  // jsdom does not implement the dialog API. Real focus/inert behavior is
+  // covered by scripts/check-invite-dialogs.mjs in Chromium.
+  const originalShow = Object.getOwnPropertyDescriptor(HTMLDialogElement.prototype, 'showModal')
+  const originalClose = Object.getOwnPropertyDescriptor(HTMLDialogElement.prototype, 'close')
+  beforeEach(() => {
+    HTMLDialogElement.prototype.showModal = function () { this.open = true }
+    HTMLDialogElement.prototype.close = function () { this.open = false }
+  })
   afterEach(() => {
+    cleanup()
     vi.restoreAllMocks()
+    for (const [name, descriptor] of [['showModal', originalShow], ['close', originalClose]]) {
+      if (descriptor) Object.defineProperty(HTMLDialogElement.prototype, name, descriptor)
+      else delete HTMLDialogElement.prototype[name]
+    }
+  })
+
+  test.each(['Print owner card', 'New guest invite'])('returns focus after cancelling %s', async name => {
+    vi.stubGlobal('fetch', vi.fn(async url => response(String(url).endsWith('/list') ? {tokens:[]} : ownerCardReady)))
+    render(<Invites />)
+    const opener = await screen.findByRole('button', {name})
+    fireEvent.click(opener)
+    const dialog = screen.getByRole('dialog')
+    expect(dialog.tagName).toBe('DIALOG')
+    expect(dialog).toHaveAttribute('open')
+    fireEvent(dialog, new Event('cancel', {bubbles:false,cancelable:true}))
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(opener).toHaveFocus()
   })
 
   test('renders Owner access and revokes active owner cards', async () => {

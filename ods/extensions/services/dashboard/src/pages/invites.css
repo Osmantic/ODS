@@ -26,6 +26,6 @@
 .owner-access-help > p { margin-top:14px; }
 .owner-access-voice { display:flex; gap:10px; margin-top:18px; }
 .owner-access-voice > svg { flex-shrink:0; }
-.owner-access [role=dialog] { font-size:13px; max-height:calc(100dvh - 40px); overflow:auto; }
-.owner-access [role=dialog] input { min-width:0; }
-.owner-access [role=dialog] h2 { font-size:16px; }
+.owner-access .access-dialog-panel { font-size:13px; max-height:calc(100dvh - 40px); overflow:auto; }
+.owner-access .access-dialog-panel input { min-width:0; }
+.owner-access .access-dialog-panel h2 { font-size:16px; }
