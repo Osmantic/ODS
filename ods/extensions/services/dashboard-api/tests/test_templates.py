@@ -1328,3 +1328,19 @@ def test_apply_template_blocking_calls_run_in_to_thread():
             f"{callee}() is called directly (without asyncio.to_thread). "
             f"All blocking helpers must run in the thread pool."
         )
+
+
+def test_runtime_dependency_order_cleans_up_visiting_set_on_exception():
+    from routers.templates import _runtime_dependency_order
+
+    visiting = set()
+
+    def failing_deps(sid):
+        if sid == "svc-a":
+            return ["svc-b"]
+        raise RuntimeError("dependency read failure")
+
+    with pytest.raises(RuntimeError):
+        _runtime_dependency_order("svc-a", failing_deps, _visiting=visiting)
+
+    assert "svc-a" not in visiting
