@@ -1,0 +1,27 @@
+services:
+  glances:
+    image: nicolargo/glances:4.3.0.8
+    container_name: ods-glances
+    restart: unless-stopped
+    security_opt: [no-new-privileges:true]
+    environment:
+      GLANCES_OPT: "-w"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${GLANCES_PORT:-7854}:61208"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:61208/api/3/quicklook"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks: [ods-network]
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+networks:
+  ods-network:
+    external: true

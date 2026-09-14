@@ -72,6 +72,7 @@ Each extension is a self-contained directory with a `manifest.yaml` (service met
 | [`paperless-ngx/`](services/paperless-ngx/) | Paperless-ngx — document management with OCR | CPU |
 | [`frigate/`](services/frigate/) | Frigate — NVR with real-time AI object detection | NVIDIA |
 | [`gitea/`](services/gitea/) | Gitea — lightweight self-hosted Git | CPU |
+| [`glances/`](services/glances/) | Glances — real-time web-based system and process monitor | CPU |
 | [`baserow/`](services/baserow/) | Baserow — open-source Airtable alternative | CPU |
 | [`miniflux/`](services/miniflux/) | Miniflux — RSS/Atom reading and research API | CPU |
 | [`ntfy/`](services/ntfy/) | ntfy — authenticated local workflow notifications | CPU |
@@ -105,6 +106,7 @@ Quick reference for hardware requirements. Data sourced from each service's `man
 | frigate | ✓ | — | — | — | 1 GB |
 | gaia | — | — | — | ✓ | — |
 | gitea | — | — | — | ✓ | — |
+| glances | — | — | — | ✓ | — |
 | immich | ✓ | ✓ | — | — | 2 GB |
 | invokeai | ✓ | ✓ | — | — | 8 GB |
 | jan | ✓ | ✓ | — | — | — |

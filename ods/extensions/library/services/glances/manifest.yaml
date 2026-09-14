@@ -1,0 +1,37 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: glances
+  name: Glances
+  aliases: [system-monitor, htop, node-telemetry]
+  container_name: ods-glances
+  host_env: GLANCES_HOST
+  default_host: glances
+  port: 61208
+  external_port_env: GLANCES_PORT
+  external_port_default: 7854
+  health: /api/3/quicklook
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [monitoring, metrics, system, htop, telemetry, local]
+  env_vars:
+    - key: GLANCES_PORT
+      default: "7854"
+      description: Published Glances web console and REST telemetry API port
+features:
+  - id: system-telemetry
+    name: System Telemetry
+    description: "Real-time system diagnostics, process trees, and container resource telemetry via web and REST API"
+    icon: Cpu
+    category: productivity
+    requirements:
+      services: [glances]
+      vram_gb: 0
+      disk_gb: 1
+    enabled_services_all: [glances]
+    setup_time: "~1 minute"
+    priority: 41
