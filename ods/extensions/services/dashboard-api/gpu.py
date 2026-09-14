@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 def run_command(cmd: list[str], timeout: int = 5) -> tuple[bool, str]:
     """Run a shell command and return (success, output)."""
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        result = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=timeout)
         return result.returncode == 0, result.stdout.strip()
     except subprocess.TimeoutExpired:
         return False, "timeout"
@@ -30,7 +30,7 @@ def run_command(cmd: list[str], timeout: int = 5) -> tuple[bool, str]:
 def _read_sysfs(path: str) -> Optional[str]:
     """Read a sysfs file, returning None on failure."""
     try:
-        with open(path, "r") as f:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
             return f.read().strip()
     except (OSError, IOError):
         return None
