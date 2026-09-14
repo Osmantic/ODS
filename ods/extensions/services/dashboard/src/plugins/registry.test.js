@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { getInternalRoutes, getSidebarExternalLinks } from './registry'
+import { fallbackServiceUrl } from '../lib/serviceUrls'
 
 describe('getInternalRoutes', () => {
   it('passes the polled system runtime to the Pixel page', () => {
@@ -10,6 +11,14 @@ describe('getInternalRoutes', () => {
 })
 
 describe('getSidebarExternalLinks', () => {
+  it('retains Frigate HTTPS metadata in the sidebar host-port link', () => {
+    const links = getSidebarExternalLinks({
+      getExternalUrl: fallbackServiceUrl,
+      apiLinks: [{ id: 'frigate', label: 'Frigate', port: 8971, ui_scheme: 'https' }],
+    })
+    expect(links.find(link => link.key === 'frigate').url).toBe('https://localhost:8971')
+  })
+
   it('uses API-provided public URLs before host-port fallback', () => {
     const links = getSidebarExternalLinks({
       status: { services: [{ name: 'Open WebUI', status: 'healthy' }] },

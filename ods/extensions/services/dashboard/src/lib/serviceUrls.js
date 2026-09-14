@@ -8,12 +8,13 @@ export function dashboardHost() {
   return typeof window !== 'undefined' ? window.location.hostname : 'localhost'
 }
 
-export function fallbackServiceUrl(port, path = '') {
-  return port ? appendPath(`http://${dashboardHost()}:${port}`, path) : null
+export function fallbackServiceUrl(port, path = '', scheme = 'http') {
+  const protocol = scheme === 'https' ? 'https' : 'http'
+  return port ? appendPath(`${protocol}://${dashboardHost()}:${port}`, path) : null
 }
 
 export function serviceUrl(service, path = '') {
   if (!service) return null
   if (service.public_url) return path ? appendPath(service.public_url, path) : service.public_url
-  return fallbackServiceUrl(service.external_port || service.port, path || service.ui_path)
+  return fallbackServiceUrl(service.external_port || service.port, path || service.ui_path, service.ui_scheme)
 }
