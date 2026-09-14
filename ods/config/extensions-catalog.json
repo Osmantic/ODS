@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-13T16:53:56Z",
+  "generated_at": "2026-09-14T13:29:17Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -3157,6 +3157,28 @@
       "configuration_scope": "declared-environment-keys"
     },
     {
+      "id": "pixel-inference",
+      "name": "Pixel inference sharing (development)",
+      "description": "Disabled by default. Owner-provisioned, inference-only device credentials; loopback transport only. Does not provide Pixel agent or computer access. Private state must be provisioned before service activation. Native Windows private-state support and guided setup are not yet implemented.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [
+        "model-router"
+      ],
+      "port": 8093,
+      "external_port_default": 4005,
+      "health_endpoint": "/health",
+      "env_vars": [],
+      "tags": [],
+      "features": [],
+      "startup_check": false,
+      "catalog_source": "builtin",
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
       "id": "qdrant",
       "name": "Qdrant (Vector DB)",
       "description": "Qdrant (Vector DB)",
@@ -3567,6 +3589,57 @@
         }
       },
       "catalog_source": "builtin",
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
+      "id": "trilium",
+      "name": "Trilium",
+      "description": "Local hierarchical knowledge notebook with rich notes, attachments and an authenticated automation API.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 8080,
+      "external_port_default": 7832,
+      "health_endpoint": "/api/health-check",
+      "env_vars": [
+        {
+          "key": "TRILIUM_PORT",
+          "default": "7832",
+          "description": "Published notebook port; complete the initial password setup locally"
+        }
+      ],
+      "tags": [
+        "notes",
+        "knowledge",
+        "research",
+        "local",
+        "api"
+      ],
+      "features": [
+        {
+          "id": "local-knowledge-notebook",
+          "name": "Local Knowledge Notebook",
+          "description": "Organize research into rich note trees and use the authenticated ETAPI",
+          "icon": "NotebookPen",
+          "category": "productivity",
+          "requirements": {
+            "services": [
+              "trilium"
+            ],
+            "vram_gb": 0,
+            "disk_gb": 1
+          },
+          "enabled_services_all": [
+            "trilium"
+          ],
+          "setup_time": "~2 minutes",
+          "priority": 32
+        }
+      ],
+      "startup_timeout": 120,
       "configuration_scope": "declared-environment-keys"
     },
     {
