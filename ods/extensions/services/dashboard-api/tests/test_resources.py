@@ -20,6 +20,12 @@ class TestScanServiceDisk:
         result = _scan_service_disk()
         assert result == {}
 
+    def test_service_restartability_handles_non_dict(self):
+        from routers.resources import _service_restartability
+        ok, msg = _service_restartability(None)
+        assert ok is False
+        assert "Invalid" in msg
+
     def test_empty_data_dir(self, tmp_path, monkeypatch):
         """Empty DATA_DIR returns empty dict."""
         monkeypatch.setattr("routers.resources.DATA_DIR", str(tmp_path))

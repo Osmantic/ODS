@@ -36,6 +36,8 @@ _DATA_DIR_MAP = {
 
 def _service_restartability(config: dict) -> tuple[bool, str | None]:
     """Return whether a service can be restarted with docker restart."""
+    if not isinstance(config, dict):
+        return False, "Invalid service configuration"
     service_type = config.get("type", "docker") or "docker"
     if service_type == "host-systemd":
         return False, "Host-level service; restart outside Docker"
