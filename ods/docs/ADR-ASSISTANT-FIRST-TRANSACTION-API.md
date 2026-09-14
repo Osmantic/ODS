@@ -165,3 +165,11 @@ values without consulting filesystem precedence, while older stored plans keep
 them explicitly unknown instead of receiving an unhashed inference. This is a
 provenance prerequisite only; no host artifact is opened and the production
 executor remains disabled.
+
+The next boundary provides a standalone Linux host artifact verifier. It opens
+only the plan-bound definition root through `dir_fd` and `O_NOFOLLOW`, verifies
+`manifest.yaml` and the exact optional Compose filename against the shared
+semantic digest primitive, and returns the exact bytes it checked. Legacy plans
+with unknown origin fail before filesystem access. The verifier has no
+production caller, discovery fallback, dispatcher, or lifecycle authority in
+this phase.

@@ -195,6 +195,14 @@ an implicit precedence rule. Legacy stored plans remain readable with unknown
 origin rather than being relabeled after approval. Artifact opening and
 lifecycle execution remain disabled until the next reviewed boundaries.
 
+A standalone Linux verifier can now read the exact plan-bound definition
+snapshot without enabling execution. It selects only the named built-in,
+library, or user root; performs descriptor-relative, symlink-safe, bounded
+reads; enforces file custody; and verifies the manifest and optional Compose
+semantic digests. It returns the verified source bytes so a future staging
+boundary need not reopen an unchecked path. It is not wired to a dispatcher or
+executor, and legacy plans with unknown origin fail before any filesystem open.
+
 ## Evidence boundary
 
 The source contract checks resolver ordering, the exact candidate service set,
