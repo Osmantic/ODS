@@ -1,0 +1,194 @@
+name: Build Installer
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    name: Build
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: ods-installer-windows
+          - platform: macos-latest
+            target: aarch64-apple-darwin
+            artifact: ods-installer-macos-arm64
+          - platform: macos-13
+            target: x86_64-apple-darwin
+            artifact: ods-installer-macos-x64
+          - platform: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            artifact: ods-installer-linux
+
+    runs-on: ${{ matrix.platform }}
+    defaults:
+      run:
+        working-directory: installer
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: installer/package-lock.json
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ODS_REPO_URL: https://github.com/${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name || github.repository }}.git
+          ODS_INSTALL_REF: ${{ github.ref_type == 'tag' && github.ref_name || github.event_name == 'pull_request' && github.event.pull_request.head.ref || github.ref_name }}
+        with:
+          projectPath: installer
+          args: --target ${{ matrix.target }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            installer/src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*.exe
+            installer/src-tauri/target/${{ matrix.target }}/release/bundle/msi/*.msi
+            installer/src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+            installer/src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app
+            installer/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
+            installer/src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb
+          if-no-files-found: ignore
+
+  release:
+    name: Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: ods-installer-windows
+          - platform: macos-latest
+            target: aarch64-apple-darwin
+            artifact: ods-installer-macos-arm64
+          - platform: macos-13
+            target: x86_64-apple-darwin
+            artifact: ods-installer-macos-x64
+          - platform: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            artifact: ods-installer-linux
+
+    runs-on: ${{ matrix.platform }}
+    defaults:
+      run:
+        working-directory: installer
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: installer/package-lock.json
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          ODS_REPO_URL: https://github.com/${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name || github.repository }}.git
+          ODS_INSTALL_REF: ${{ github.ref_type == 'tag' && github.ref_name || github.event_name == 'pull_request' && github.event.pull_request.head.ref || github.ref_name }}
+        with:
+          projectPath: installer
+          tagName: ${{ github.ref_name }}
+          releaseName: "ODS Installer ${{ github.ref_name }}"
+          releaseBody: "Cross-platform installer for ODS."
+          releaseDraft: true
+          prerelease: false
+          args: --target ${{ matrix.target }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            installer/src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*.exe
+            installer/src-tauri/target/${{ matrix.target }}/release/bundle/msi/*.msi
+            installer/src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+            installer/src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app
+            installer/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
+            installer/src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb
+          if-no-files-found: ignore
+
+      - name: Generate SHA256 checksums
+        shell: bash
+        run: |
+          artifact_name="${{ matrix.artifact }}"
+          platform="${artifact_name#ods-installer-}"
+          mkdir -p release-assets
+          if command -v sha256sum >/dev/null 2>&1; then
+            find src-tauri/target/${{ matrix.target }}/release/bundle -type f \( -name "*.exe" -o -name "*.msi" -o -name "*.dmg" -o -name "*.AppImage" -o -name "*.deb" \) -exec sha256sum {} + > "release-assets/SHA256SUMS-${platform}.txt"
+          else
+            find src-tauri/target/${{ matrix.target }}/release/bundle -type f \( -name "*.exe" -o -name "*.msi" -o -name "*.dmg" -o -name "*.AppImage" -o -name "*.deb" \) -exec shasum -a 256 {} + > "release-assets/SHA256SUMS-${platform}.txt"
+          fi
+
+      - name: Upload checksums
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}-checksum
+          path: installer/release-assets/SHA256SUMS-*.txt
+          if-no-files-found: ignore
