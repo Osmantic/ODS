@@ -1607,3 +1607,15 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+class TestDictDeepMergeSafe:
+    def test_valid_merge(self):
+        from helpers import dict_deep_merge_safe
+        a = {"x": {"a": 1}}
+        b = {"x": {"b": 2}, "y": 3}
+        assert dict_deep_merge_safe(a, b) == {"x": {"a": 1, "b": 2}, "y": 3}
+
+    def test_invalid_and_bounds(self):
+        from helpers import dict_deep_merge_safe
+        assert dict_deep_merge_safe(None, {"a": 1}) == {"a": 1}

@@ -1146,3 +1146,18 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def dict_deep_merge_safe(d1: dict, d2: dict) -> dict:
+    """Safely perform recursive deep merge of dictionary objects."""
+    if not isinstance(d1, dict):
+        d1 = {}
+    if not isinstance(d2, dict):
+        d2 = {}
+    res = dict(d1)
+    for k, v in d2.items():
+        if k in res and isinstance(res[k], dict) and isinstance(v, dict):
+            res[k] = dict_deep_merge_safe(res[k], v)
+        else:
+            res[k] = v
+    return res
