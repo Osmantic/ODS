@@ -163,8 +163,10 @@ function Sync-WindowsOpenCodeConfig {
 
     if ($_existingConfigFile) {
         try {
-            $_configObject = Get-Content $_existingConfigFile -Raw | ConvertFrom-Json -ErrorAction Stop
+            $_configObject = Get-Content $_existingConfigFile -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
             $_configStatus = "updated"
+            $_bakFile = "$_existingConfigFile.bak"
+            Copy-Item -Path $_existingConfigFile -Destination $_bakFile -Force -ErrorAction SilentlyContinue
         } catch {
             $_configStatus = "regenerated"
         }
@@ -179,7 +181,19 @@ function Sync-WindowsOpenCodeConfig {
         -ApiKey $ApiKey `
         -ProviderName $ProviderName
 
-    $_configJson = $_configObject | ConvertTo-Json -Depth 12
+    try {
+        $_configJson = $_configObject | ConvertTo-Json -Depth 12 -ErrorAction Stop
+    } catch {
+        $_configObject = New-WindowsOpenCodeConfigObject `
+            -LlmEndpoint $LlmEndpoint `
+            -ModelId $ModelId `
+            -ModelName $ModelName `
+            -ContextLimit $ContextLimit `
+            -ApiKey $ApiKey `
+            -ProviderName $ProviderName
+        $_configJson = $_configObject | ConvertTo-Json -Depth 12
+    }
+
     $_utf8NoBom = New-Object System.Text.UTF8Encoding($false)
     [System.IO.File]::WriteAllText($_ocConfigFile, $_configJson, $_utf8NoBom)
     [System.IO.File]::WriteAllText($_ocCompatConfigFile, $_configJson, $_utf8NoBom)
