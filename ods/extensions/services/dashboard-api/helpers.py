@@ -1146,3 +1146,24 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def safe_format_template_replacer(template: object, kwargs: object) -> str:
+    """Safely replace {key} placeholders in template string with kwargs dict.
+
+    Ignores missing keys or formatting errors without raising KeyError or ValueError.
+    """
+    if template is None:
+        return ""
+    tpl = str(template)
+    if not tpl or not isinstance(kwargs, dict):
+        return tpl
+    res = tpl
+    for k, v in kwargs.items():
+        if k is None or v is None:
+            continue
+        placeholder = f"{{{k}}}"
+        if placeholder in res:
+            res = res.replace(placeholder, str(v))
+    return res
+

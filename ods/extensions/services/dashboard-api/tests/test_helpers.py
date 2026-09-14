@@ -1607,3 +1607,16 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+class TestSafeFormatTemplateReplacer:
+
+    def test_replaces_placeholders(self):
+        from helpers import safe_format_template_replacer
+        assert safe_format_template_replacer("Hello {name}, welcome to {place}!", {"name": "Alice", "place": "ODS"}) == "Hello Alice, welcome to ODS!"
+
+    def test_handles_none_and_non_dict_kwargs(self):
+        from helpers import safe_format_template_replacer
+        assert safe_format_template_replacer(None, {"name": "Alice"}) == ""
+        assert safe_format_template_replacer("Hello {name}", None) == "Hello {name}"
+
