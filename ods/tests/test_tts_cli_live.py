@@ -30,6 +30,10 @@ def test_cli_creates_complete_audible_wav(tmp_path):
     image: {IMAGE}
     container_name: {name}
     ports: !override ["127.0.0.1:0:8880"]
+    # Loading two CPU workers on a contended test host exceeds the shipped
+    # thirty-second grace. This fixture tests the client, not startup timing.
+    healthcheck:
+      start_period: 300s
 ''')
     compose = ["docker", "compose", "--project-name", name, "--project-directory", str(install),
                "-f", str(recipe), "-f", str(overlay)]

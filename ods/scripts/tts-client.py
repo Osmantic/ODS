@@ -15,7 +15,7 @@ MAX_RESPONSE_BYTES = 64 * 1024 * 1024
 MAX_TEXT_CHARACTERS = 10000
 
 
-def request(port, path, payload=None):
+def request(port, path, payload=None, content_type=None):
     connection = http.client.HTTPConnection("127.0.0.1", port, timeout=300)
     try:
         body = None if payload is None else json.dumps(payload).encode("utf-8")
@@ -24,20 +24,29 @@ def request(port, path, payload=None):
         response = connection.getresponse()
         if response.status != 200:
             raise RuntimeError(f"Local TTS service returned HTTP {response.status}: {response.reason}")
+        if content_type and response.getheader("Content-Type", "").split(";", 1)[0].strip().lower() != content_type:
+            raise ValueError(f"TTS service did not return {content_type}")
         content = response.read(MAX_RESPONSE_BYTES + 1)
         if len(content) > MAX_RESPONSE_BYTES:
             raise ValueError("TTS response exceeds the 64 MiB output limit")
+        if response.length not in (None, 0):
+            raise http.client.IncompleteRead(content, response.length)
         return content
     finally:
         connection.close()
 
 
-def validate_wav(content):
-    with wave.open(io.BytesIO(content), "rb") as audio:
-        frames = audio.getnframes()
-        expected = frames * audio.getnchannels() * audio.getsampwidth()
-        if frames == 0 or len(audio.readframes(frames)) != expected:
-            raise ValueError("TTS service returned an empty or truncated WAV file")
+def pcm_to_wav(content):
+    # Kokoro v0.2.4 returns 24 kHz mono signed 16-bit little-endian PCM.
+    # Its WAV writer reads the buffer before closing/finalizing the header,
+    # including for stream=false. Build the final WAV header locally instead.
+    if not content or len(content) % 2:
+        raise ValueError("TTS service returned empty PCM or an incomplete 16-bit sample")
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as audio:
+        audio.setparams((1, 2, 24000, 0, "NONE", "not compressed"))
+        audio.writeframes(content)
+    return buffer.getvalue()
 
 
 def publish_wav(output, content):
@@ -79,10 +88,9 @@ def main():
         raise FileExistsError(f"Refusing to replace existing output: {args.output}")
     content = request(args.port, "/v1/audio/speech", {
         "model": "kokoro", "input": text, "voice": args.voice,
-        "response_format": "wav", "stream": False,
-    })
-    validate_wav(content)
-    publish_wav(args.output, content)
+        "response_format": "pcm", "stream": False,
+    }, content_type="audio/pcm")
+    publish_wav(args.output, pcm_to_wav(content))
     print(args.output)
 
 

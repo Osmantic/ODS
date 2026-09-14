@@ -48,8 +48,11 @@ Enable the `tts` service first. The CLI reads quoted `TTS_PORT` from the install
 relative to the caller's directory. It does not play audio or start the service.
 `--voice` defaults to `af_heart` and accepts voice combinations supported by Kokoro.
 Text is limited to 10,000 characters and responses to 64 MiB; the HTTP socket
-timeout is five minutes. HTTP errors, redirects, invalid or truncated WAV data
-fail visibly without publishing an output file.
+timeout is five minutes. The client requests Kokoro's 24 kHz mono 16-bit PCM and
+writes a complete WAV header locally: the shipped v0.2.4 WAV writer does not
+finalize its header correctly. HTTP errors, redirects, unexpected content types,
+empty audio, incomplete HTTP bodies or partial samples fail visibly without
+publishing an output file.
 
 The output must be a new path in an existing directory. Completed WAV files are
 published atomically without replacing another writer's file, using a same-directory

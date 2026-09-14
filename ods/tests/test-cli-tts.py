@@ -24,12 +24,15 @@ class SpeechTests(unittest.TestCase):
         (self.install / "docker-compose.base.yml").write_text("services: {}\n")
         self.requests = []
         self.status = 200
+        self.content_type = "audio/pcm"
+        self.declared_length = None
         self.before_reply = None
         buffer = io.BytesIO()
         with wave.open(buffer, "wb") as audio:
             audio.setparams((1, 2, 24000, 0, "NONE", "not compressed"))
             audio.writeframes(b"\x01\x00\xff\xff" * 120)
-        self.audio = buffer.getvalue()
+        self.wav = buffer.getvalue()
+        self.audio = b"\x01\x00\xff\xff" * 120
         fixture = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -49,7 +52,9 @@ class SpeechTests(unittest.TestCase):
                 if fixture.before_reply is not None:
                     fixture.before_reply()
                 self.send_response(fixture.status)
-                self.send_header("Content-Type", "audio/wav")
+                self.send_header("Content-Type", fixture.content_type)
+                if fixture.declared_length is not None:
+                    self.send_header("Content-Length", str(fixture.declared_length))
                 if fixture.status == 302:
                     self.send_header("Location", "/unexpected-redirect")
                 self.end_headers()
@@ -82,10 +87,10 @@ class SpeechTests(unittest.TestCase):
         output = self.root / 'âm "quoted" output.wav'
         result = self.command("speak", text, output.name, "--voice", "af_sky+af_bella")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(output.read_bytes(), self.audio)
+        self.assertEqual(output.read_bytes(), self.wav)
         self.assertEqual(self.requests, [("/v1/audio/speech", {
             "model": "kokoro", "input": text, "voice": "af_sky+af_bella",
-            "response_format": "wav", "stream": False,
+            "response_format": "pcm", "stream": False,
         })])
         self.assertEqual(list(self.root.glob(".ods-speech-*")), [])
 
@@ -94,7 +99,7 @@ class SpeechTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.requests[0][1]["input"], "A local report.\n")
         self.assertEqual(self.requests[0][1]["voice"], "af_heart")
-        self.assertEqual((self.root / "stdin.wav").read_bytes(), self.audio)
+        self.assertEqual((self.root / "stdin.wav").read_bytes(), self.wav)
 
     def test_existing_output_is_never_replaced(self):
         output = self.root / "existing.wav"
@@ -113,8 +118,7 @@ class SpeechTests(unittest.TestCase):
         self.assertEqual(list(self.root.glob(".ods-speech-*")), [])
 
     def test_failed_or_invalid_audio_does_not_publish_a_file(self):
-        for status, body in ((503, self.audio), (302, self.audio), (200, b'{"error":"not audio"}'),
-                             (200, self.audio[:-10])):
+        for status, body in ((503, self.audio), (302, self.audio), (200, b""), (200, self.audio[:-1])):
             with self.subTest(status=status, length=len(body)):
                 self.status, self.audio = status, body
                 self.requests.clear()
@@ -123,6 +127,15 @@ class SpeechTests(unittest.TestCase):
                 self.assertFalse((self.root / "failed.wav").exists())
                 self.assertEqual(list(self.root.glob(".ods-speech-*")), [])
                 self.assertEqual(len(self.requests), 1)
+
+    def test_wrong_content_type_and_incomplete_http_body_are_rejected(self):
+        self.content_type = "application/json"
+        self.assertNotEqual(self.command("speak", "Hello", "failed.wav").returncode, 0)
+        self.content_type = "audio/pcm"
+        self.declared_length = len(self.audio) + 100
+        self.assertNotEqual(self.command("speak", "Hello", "failed.wav").returncode, 0)
+        self.assertFalse((self.root / "failed.wav").exists())
+        self.assertEqual(list(self.root.glob(".ods-speech-*")), [])
 
     def test_invalid_arguments_do_not_contact_the_service(self):
         for args in (("speak",), ("speak", " ", "blank.wav"), ("speak", "Hello", "missing/output.wav")):
