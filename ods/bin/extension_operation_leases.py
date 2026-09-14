@@ -245,6 +245,21 @@ class ExtensionLeaseManager:
             lease.deadline = now + ttl
             return self._public_record(lease, ttl_seconds=ttl)
 
+    def status(
+        self,
+        lease_id: str,
+        token: str,
+        transaction_id: str,
+        plan_hash: str,
+    ) -> dict[str, Any]:
+        """Return a non-secret record only to the exact lease holder."""
+        _validate_binding(transaction_id, plan_hash)
+        with self._guard:
+            lease = self._authorize_locked(
+                lease_id, token, transaction_id, plan_hash, self._clock()
+            )
+            return self._public_record(lease)
+
     def release(
         self,
         lease_id: str,
