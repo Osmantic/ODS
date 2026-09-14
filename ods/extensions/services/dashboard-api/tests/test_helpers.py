@@ -1740,3 +1740,14 @@ def test_flatten_bounds_cycles_and_large_depth_without_losing_empty_leaves():
         nested = {"child": nested}
     result = dict_flatten_nested_safe(nested, max_depth=100000)
     assert len(next(iter(result)).split(".")) == 128
+
+
+class TestNumericExponentialDecaySafe:
+    def test_valid_decay(self):
+        from helpers import numeric_exponential_decay_safe
+        assert numeric_exponential_decay_safe(100, 0.1, 10) == 36.7879
+
+    def test_invalid_inputs(self):
+        from helpers import numeric_exponential_decay_safe
+        assert numeric_exponential_decay_safe(None, 0.1, 10) == 0.0
+        assert numeric_exponential_decay_safe(100, float("nan"), 10) == 0.0
