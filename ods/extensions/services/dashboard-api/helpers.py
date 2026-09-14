@@ -1146,3 +1146,29 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def safe_list_deduplicate_preserve_order(items) -> list:
+    """Safely deduplicate elements in a sequence while preserving insertion order."""
+    if items is None:
+        return []
+    if not isinstance(items, (list, tuple, set)):
+        try:
+            items = list(items)
+        except TypeError:
+            return []
+    seen = set()
+    result = []
+    for item in items:
+        try:
+            key = item
+            if key not in seen:
+                seen.add(key)
+                result.append(item)
+        except TypeError:
+            key = str(item)
+            if key not in seen:
+                seen.add(key)
+                result.append(item)
+    return result
+
