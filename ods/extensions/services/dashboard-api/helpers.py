@@ -1146,3 +1146,21 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def filter_dictionary_by_keys_safe(d: dict, keys, allow_none: bool = True) -> dict:
+    """Safely extract specified keys from a dictionary with optional None filtering."""
+    if d is None or not isinstance(d, dict):
+        return {}
+    if keys is None:
+        return {}
+    if not isinstance(keys, (list, tuple, set)):
+        keys = [keys]
+    result = {}
+    for k in keys:
+        if k in d:
+            val = d[k]
+            if allow_none or val is not None:
+                result[k] = val
+    return result
+
