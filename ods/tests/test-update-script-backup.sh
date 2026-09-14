@@ -6,10 +6,9 @@
 # post-increment evaluates to the old value, so the first increment
 # (0 -> 1) returns status 1 and set -e killed the script right after
 # copying the first compose file: no metadata.json, no "Backup created",
-# exit 1. Since ods-cli's cmd_update delegates its pre-update snapshot to
-# `ods-update.sh backup`, the safety net always failed with
-# "Pre-update snapshot failed; proceeding without safety net."
-# The rotation loop's ((count++)) had the same defect.
+# exit 1. The legacy operator-facing backup command retains this regression
+# coverage even though updates now use the separate fail-closed v2 snapshot
+# command. The rotation loop's ((count++)) had the same defect.
 #
 # Strategy: run the real script from a throwaway install dir with HOME
 # pointed at a fixture so BACKUP_DIR ($HOME/.ods/backups) is isolated.

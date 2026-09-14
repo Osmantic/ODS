@@ -27,6 +27,15 @@ trap 'rm -rf "$TMP"' EXIT
 SRC="$TMP/src"
 mkdir -p "$SRC/data/open-webui" "$SRC/data/hermes/sessions" "$SRC/data/persona"
 mkdir -p "$SRC/data/n8n"
+mkdir -p "$SRC/data/assistant-first/desired-state"
+mkdir -p "$SRC/data/assistant-first/transaction-store/txn-test"
+mkdir -p "$SRC/data/assistant-first/secrets"
+mkdir -p "$SRC/data/user-extensions/documents"
+mkdir -p "$SRC/data/user-extensions/.backups/documents"
+mkdir -p "$SRC/data/user-extensions/.tmp/in-flight"
+mkdir -p "$SRC/data/remote-provider/secrets"
+mkdir -p "$SRC/data/pixel-inference"
+mkdir -p "$SRC/data/config-backups"
 mkdir -p "$SRC/config"
 mkdir -p "$SRC/models"
 echo "1.0.0" > "$SRC/.version"
@@ -37,6 +46,19 @@ echo "user-data-file" > "$SRC/data/open-webui/data.txt"
 echo "hermes-session" > "$SRC/data/hermes/sessions/session.jsonl"
 echo "persona-soul" > "$SRC/data/persona/SOUL.md"
 echo "workflow-data-file" > "$SRC/data/n8n/workflow.txt"
+echo '{"schema":"ods.extensions.lockfile.v1"}' > "$SRC/data/assistant-first/desired-state/extensions.lock.json"
+echo '{"sequence":1,"state":"committed"}' > "$SRC/data/assistant-first/transaction-store/txn-test/journal.jsonl"
+echo '{"schema":"ods.extensions.finalization.v1"}' > "$SRC/data/assistant-first/transaction-store/txn-test/finalization.json"
+echo "must-not-enter-backup" > "$SRC/data/assistant-first/secrets/txn-test.json"
+echo "schema_version: ods.services.v2" > "$SRC/data/user-extensions/documents/manifest.yaml"
+echo '{"source_digest":"abc","installed_digest":"abc"}' > "$SRC/data/user-extensions/documents/.ods-library-receipt.json"
+echo 'previous-definition' > "$SRC/data/user-extensions/.backups/documents/manifest.yaml"
+echo 'transient-staging' > "$SRC/data/user-extensions/.tmp/in-flight/manifest.yaml"
+echo '{"enabled":true}' > "$SRC/data/remote-provider/routing-state.json"
+echo 'must-not-enter-backup' > "$SRC/data/remote-provider/secrets/provider-api-key"
+echo '{"enabled":true}' > "$SRC/data/pixel-inference/inference-sharing.json"
+echo 'must-not-enter-backup' > "$SRC/data/dashboard-api-key.txt"
+echo 'must-not-enter-backup' > "$SRC/data/config-backups/.env.backup.test"
 echo "model-cache-file" > "$SRC/models/model.gguf"
 
 # Both scripts source lib/rsync.sh relative to ODS_DIR
@@ -56,6 +78,30 @@ pass "Backup created: $BACKUP_ID"
     || fail "Full backup lost n8n data"
 [[ -f "$SRC/.backups/$BACKUP_ID/config/settings.json" ]] \
     || fail "Full backup lost config data"
+[[ -f "$SRC/.backups/$BACKUP_ID/data/assistant-first/desired-state/extensions.lock.json" ]] \
+    || fail "Full backup lost the Assistant First lockfile"
+[[ -f "$SRC/.backups/$BACKUP_ID/data/assistant-first/transaction-store/txn-test/journal.jsonl" ]] \
+    || fail "Full backup lost the Assistant First transaction journal"
+[[ -f "$SRC/.backups/$BACKUP_ID/data/assistant-first/transaction-store/txn-test/finalization.json" ]] \
+    || fail "Full backup lost the Assistant First finalization receipt"
+[[ -f "$SRC/.backups/$BACKUP_ID/data/user-extensions/documents/.ods-library-receipt.json" ]] \
+    || fail "Full backup lost the user-extension definition receipt"
+[[ -f "$SRC/.backups/$BACKUP_ID/data/user-extensions/.backups/documents/manifest.yaml" ]] \
+    || fail "Full backup lost the user-extension rollback definition"
+[[ ! -e "$SRC/.backups/$BACKUP_ID/data/user-extensions/.tmp" ]] \
+    || fail "Full backup copied transient user-extension staging"
+[[ -f "$SRC/.backups/$BACKUP_ID/data/remote-provider/routing-state.json" ]] \
+    || fail "Full backup lost nonsecret remote-provider routing state"
+[[ -f "$SRC/.backups/$BACKUP_ID/data/pixel-inference/inference-sharing.json" ]] \
+    || fail "Full backup lost pixel-inference owner state"
+[[ ! -e "$SRC/.backups/$BACKUP_ID/data/remote-provider/secrets" ]] \
+    || fail "Full backup copied remote-provider secret custody"
+[[ ! -e "$SRC/.backups/$BACKUP_ID/data/dashboard-api-key.txt" ]] \
+    || fail "Full backup copied the generated dashboard API key"
+[[ ! -e "$SRC/.backups/$BACKUP_ID/data/config-backups" ]] \
+    || fail "Full backup copied secret-bearing environment backup history"
+[[ ! -e "$SRC/.backups/$BACKUP_ID/data/assistant-first/secrets" ]] \
+    || fail "Full backup copied the host-owned Assistant First secret store"
 [[ -f "$SRC/.backups/$BACKUP_ID/models/model.gguf" ]] \
     || fail "Full backup lost model cache"
 [[ -f "$SRC/.backups/$BACKUP_ID/manifest.json" ]] \
@@ -71,6 +117,13 @@ BACKUP_DIR="$SRC/.backups/$BACKUP_ID"
 jq -e '.paths.data_hermes == "data/hermes" and .paths.data_persona == "data/persona"' \
     "$BACKUP_DIR/manifest.json" >/dev/null \
     || fail "Manifest omitted Hermes or persona backup paths"
+route_key="data_remote_provider_routing_state_json"
+jq -e --arg key "$route_key" \
+    '.paths[$key] == "data/remote-provider/routing-state.json" and
+     (.exclusions.secret_paths | index("data/remote-provider/secrets")) != null and
+     (.exclusions.transient_paths | index("data/user-extensions/.tmp")) != null' \
+    "$BACKUP_DIR/manifest.json" >/dev/null \
+    || fail "Manifest omitted the split remote-provider or transient-path policy"
 pass "Hermes and persona data are present in the backup and manifest"
 
 # Create destination ODS directory (empty)
@@ -103,6 +156,30 @@ info "Validating restored contents"
 [[ -f "$DST/data/hermes/sessions/session.jsonl" ]] || fail "Missing Hermes session after restore"
 [[ -f "$DST/data/persona/SOUL.md" ]] || fail "Missing persona SOUL.md after restore"
 [[ -f "$DST/data/n8n/workflow.txt" ]] || fail "Missing data/n8n/workflow.txt after restore"
+[[ -f "$DST/data/assistant-first/desired-state/extensions.lock.json" ]] \
+    || fail "Missing Assistant First lockfile after restore"
+[[ -f "$DST/data/assistant-first/transaction-store/txn-test/journal.jsonl" ]] \
+    || fail "Missing Assistant First journal after restore"
+[[ -f "$DST/data/assistant-first/transaction-store/txn-test/finalization.json" ]] \
+    || fail "Missing Assistant First finalization receipt after restore"
+[[ -f "$DST/data/user-extensions/documents/manifest.yaml" ]] \
+    || fail "Missing user-extension definition after restore"
+[[ -f "$DST/data/user-extensions/documents/.ods-library-receipt.json" ]] \
+    || fail "Missing user-extension receipt after restore"
+[[ -f "$DST/data/user-extensions/.backups/documents/manifest.yaml" ]] \
+    || fail "Missing user-extension rollback definition after restore"
+[[ ! -e "$DST/data/user-extensions/.tmp" ]] \
+    || fail "Restore materialized transient user-extension staging"
+[[ -f "$DST/data/remote-provider/routing-state.json" ]] \
+    || fail "Missing nonsecret remote-provider routing state after restore"
+[[ -f "$DST/data/pixel-inference/inference-sharing.json" ]] \
+    || fail "Missing pixel-inference owner state after restore"
+[[ ! -e "$DST/data/remote-provider/secrets" ]] \
+    || fail "Restore materialized remote-provider secret custody"
+[[ ! -e "$DST/data/dashboard-api-key.txt" && ! -e "$DST/data/config-backups" ]] \
+    || fail "Restore materialized excluded secret-bearing data"
+[[ ! -e "$DST/data/assistant-first/secrets" ]] \
+    || fail "Restore materialized a host-owned Assistant First secret store"
 [[ -f "$DST/data/open-webui/local-only.txt" ]] \
     || fail "Restore deleted a file created after the backup"
 

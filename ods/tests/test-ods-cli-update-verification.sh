@@ -21,6 +21,7 @@ install_dir="$tmp_dir/install"
 bin_dir="$tmp_dir/bin"
 docker_log="$tmp_dir/docker.log"
 pull_count_file="$tmp_dir/pull-count"
+update_log="$tmp_dir/update.log"
 trap 'rm -rf "$tmp_dir"' EXIT
 
 mkdir -p "$install_dir/data" "$bin_dir"
@@ -43,9 +44,15 @@ ENV
 
 cat > "$install_dir/ods-update.sh" <<'UPDATE'
 #!/usr/bin/env bash
+printf '%s\n' "$*" >> "${TEST_UPDATE_LOG:?}"
+if [[ "${1:-}" == "snapshot" && "${TEST_UPDATE_SNAPSHOT_FAIL:-}" == "1" ]]; then
+    exit 1
+fi
 exit 0
 UPDATE
 chmod +x "$install_dir/ods-update.sh"
+: > "$update_log"
+export TEST_UPDATE_LOG="$update_log"
 
 cat > "$bin_dir/docker" <<'DOCKER'
 #!/usr/bin/env bash
@@ -146,6 +153,7 @@ chmod +x "$bin_dir/docker" "$bin_dir/sleep"
 
 PATH="$bin_dir:$PATH" \
 ODS_HOME="$install_dir" \
+ODS_AGENT_FORCE_SESSION=true \
 NO_COLOR=1 \
 TEST_DOCKER_LOG="$docker_log" \
 TEST_DOCKER_PULL_COUNT="$pull_count_file" \
@@ -163,6 +171,27 @@ grep -q 'Update complete' "$tmp_dir/update.out" || {
     printf '[FAIL] update did not reach completion\n' >&2
     exit 1
 }
+
+# This focused fixture intentionally omits the host-agent script.  Updating the
+# container stack must still complete because host-agent restart is documented
+# as non-fatal, while the standalone `ods agent start` command retains a
+# non-zero result for the missing runtime.
+grep -q 'Host agent restart failed (non-fatal)' "$tmp_dir/update.out" || {
+    cat "$tmp_dir/update.out" >&2
+    printf '[FAIL] missing host agent was not contained as a non-fatal update warning\n' >&2
+    exit 1
+}
+
+grep -Eq '^snapshot [0-9]{8}-[0-9]{6}$' "$update_log" || {
+    cat "$update_log" >&2
+    printf '[FAIL] ods update did not delegate to the shared v2 snapshot command\n' >&2
+    exit 1
+}
+if grep -q '^backup ' "$update_log"; then
+    cat "$update_log" >&2
+    printf '[FAIL] ods update still delegated to the legacy general backup command\n' >&2
+    exit 1
+fi
 
 grep -q -- 'pull ghcr.io/open-webui/open-webui:main' "$docker_log" || {
     cat "$docker_log" >&2
@@ -220,6 +249,33 @@ TEST_DOCKER_LOG="$docker_log" \
 token_after="$(awk -F= '/^HERMES_DASHBOARD_SESSION_TOKEN=/{print $2}' "$install_dir/.env")"
 [[ "$token_after" == "$token_before" ]] || {
     printf '[FAIL] later Compose lifecycle command rotated the Hermes dashboard session token\n' >&2
+    exit 1
+}
+
+: > "$docker_log"
+set +e
+PATH="$bin_dir:$PATH" \
+ODS_HOME="$install_dir" \
+NO_COLOR=1 \
+TEST_DOCKER_LOG="$docker_log" \
+TEST_UPDATE_SNAPSHOT_FAIL=1 \
+    "$BASH" "$ods_cli" update --force > "$tmp_dir/snapshot-failure.out" 2>&1
+snapshot_failure_exit=$?
+set -e
+
+[[ "$snapshot_failure_exit" -ne 0 ]] || {
+    cat "$tmp_dir/snapshot-failure.out" >&2
+    printf '[FAIL] ods update proceeded after snapshot failure\n' >&2
+    exit 1
+}
+grep -q 'update aborted before environment or image changes' "$tmp_dir/snapshot-failure.out" || {
+    cat "$tmp_dir/snapshot-failure.out" >&2
+    printf '[FAIL] snapshot failure did not report a fail-closed update\n' >&2
+    exit 1
+}
+[[ ! -s "$docker_log" ]] || {
+    cat "$docker_log" >&2
+    printf '[FAIL] snapshot failure reached Docker mutation\n' >&2
     exit 1
 }
 

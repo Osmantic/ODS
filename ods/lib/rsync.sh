@@ -18,10 +18,18 @@
 #   $1 - source path
 #   $2 - destination path
 #   $3 - optional label (default: "Copying")
+#   $4... - optional trusted rsync arguments supplied by ODS callers
 rsync_with_progress() {
     local src="$1"
     local dest="$2"
     local label="${3:-Copying}"
+    local supplied_count=$#
+    if (( supplied_count >= 3 )); then
+        shift 3
+    else
+        shift "$supplied_count"
+    fi
+    local -a extra_args=("$@")
 
     # Prefer the caller's styled logger when it exists. log_info is a *function*
     # in the scripts that source this lib (ods-backup.sh, ods-restore.sh), so it
@@ -36,9 +44,10 @@ rsync_with_progress() {
     # Use --info=progress2 for compact single-line progress updates
     # Fallback to basic rsync if progress2 not supported
     if rsync --help 2>/dev/null | grep -q "info=progress2"; then
-        rsync -a --info=progress2 "$src" "$dest"
+        rsync -a --info=progress2 "${extra_args[@]}" "$src" "$dest"
     else
         # Fallback: use --progress for older rsync versions
-        rsync -a --progress "$src" "$dest" 2>/dev/null || rsync -a "$src" "$dest"
+        rsync -a --progress "${extra_args[@]}" "$src" "$dest" 2>/dev/null \
+            || rsync -a "${extra_args[@]}" "$src" "$dest"
     fi
 }

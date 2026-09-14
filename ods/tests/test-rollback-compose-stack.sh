@@ -68,8 +68,9 @@ chmod +x "$BIN_DIR/curl"
 # make_install <dir> — install dir with an active nvidia stack
 make_install() {
     local dir="$1"
-    mkdir -p "$dir/data/backups" "$dir/data"
+    mkdir -p "$dir/data/backups" "$dir/data" "$dir/lib"
     cp "$UPDATE_SCRIPT" "$dir/ods-update.sh"
+    cp "$ROOT_DIR/lib/update-snapshots.sh" "$dir/lib/update-snapshots.sh"
     chmod +x "$dir/ods-update.sh"
 
     cat > "$dir/.env" <<'EOF'
@@ -183,14 +184,46 @@ make_install "$INSTALL_C"
 # `main help` prints usage and returns, leaving the functions loaded
 snap_dir="$(cd "$INSTALL_C" && PATH="$BIN_DIR:$PATH" bash -c '
     source ./ods-update.sh help >/dev/null
+    _load_update_snapshot_contract
     snapshot_pre_update 20260103-000000
 ' 2>/dev/null | tail -1)"
 
 [[ -n "$snap_dir" && -d "$snap_dir" ]] || fail "snapshot_pre_update did not return a snapshot dir"
-[[ -f "$snap_dir/.compose-flags" ]] || fail "snapshot should include .compose-flags"
-grep -qF -- '-f docker-compose.nvidia.yml' "$snap_dir/.compose-flags" \
+[[ -f "$snap_dir/payload/.compose-flags" ]] || fail "snapshot should include .compose-flags"
+grep -qF -- '-f docker-compose.nvidia.yml' "$snap_dir/payload/.compose-flags" \
     || fail "snapshotted .compose-flags should record the active nvidia stack"
 pass "snapshot_pre_update saved .compose-flags"
+
+# The v2 snapshot keeps .compose-flags under payload/. Manual rollback must
+# retain it and use the restored stack for the restart.
+cat > "$INSTALL_C/.env" <<'EOF'
+ODS_MODE=local
+GPU_BACKEND=cpu
+GPU_COUNT=1
+TIER=1
+EOF
+printf '%s\n' '-f docker-compose.base.yml -f docker-compose.cpu.yml' > "$INSTALL_C/.compose-flags"
+cat > "$INSTALL_C/docker-compose.cpu.yml" <<'EOF'
+services:
+  placeholder-cpu:
+    image: busybox:1.36
+EOF
+echo 'services: {later: {}}' > "$INSTALL_C/docker-compose.later.yml"
+DOCKER_LOG="$TMP_DIR/docker-c.log"
+: > "$DOCKER_LOG"
+PATH="$BIN_DIR:$PATH" HEALTH_TIMEOUT=30 \
+    bash "$INSTALL_C/ods-update.sh" rollback 20260103-000000 \
+    > "$TMP_DIR/rollback-c.out" 2>&1 \
+    || { cat "$TMP_DIR/rollback-c.out"; fail "v2 rollback should succeed"; }
+grep -qxF 'compose -f docker-compose.base.yml -f docker-compose.cpu.yml down' "$DOCKER_LOG" \
+    || { cat "$DOCKER_LOG"; fail "v2 down should use the active cpu stack"; }
+grep -qxF 'compose -f docker-compose.base.yml -f docker-compose.nvidia.yml up -d' "$DOCKER_LOG" \
+    || { cat "$DOCKER_LOG"; fail "v2 up should use the restored nvidia stack"; }
+grep -qF -- '-f docker-compose.nvidia.yml' "$INSTALL_C/.compose-flags" \
+    || fail "v2 rollback cleared the restored .compose-flags"
+[[ ! -e "$INSTALL_C/docker-compose.later.yml" ]] \
+    || fail "v2 rollback retained an overlay introduced after the snapshot"
+pass "v2 rollback restores exact Compose selection and removes later overlays"
 
 echo ""
 echo "All rollback compose stack tests passed."

@@ -5,6 +5,7 @@
 #   check      - Check for updates against GitHub releases
 #   status     - Show current version, install path, last check
 #   backup     - Backup compose files, .env, and version state
+#   snapshot   - Create an integrity-checked pre-update rollback snapshot
 #   update     - Pull new version, run migrations, restart services
 #   rollback   - Restore from last backup
 #   changelog  - Show version changelog
@@ -232,143 +233,17 @@ _prune_rollback_snapshots() {
     done < <(find "${ROLLBACK_DIR}" -maxdepth 1 -type d -name "pre-update-*" | sort -r)
 }
 
-# snapshot_pre_update <timestamp>
-#   Creates data/backups/pre-update-<timestamp>/ and copies:
-#     • .env and .env.* variants
-#     • docker-compose*.yml overlays (tracks active stack)
-#     • config/{litellm,n8n,openclaw,searxng}/ (per-extension config)
-#     • .version
-#   Validates timestamp format, writes snapshot.json, verifies integrity,
-#   then prints the snapshot directory path on stdout.
-snapshot_pre_update() {
-    local timestamp="${1:-$(date +%Y%m%d-%H%M%S)}"
-
-    # All log calls redirect to stderr so command-substitution callers
-    # (snap_dir=$(snapshot_pre_update ...)) only capture the path on stdout.
-
-    if [[ ! "$timestamp" =~ ^[0-9]{8}-[0-9]{6}$ ]]; then
-        log_error "Invalid timestamp format '${timestamp}'; expected YYYYMMDD-HHMMSS." >&2
+_load_update_snapshot_contract() {
+    if declare -F snapshot_pre_update >/dev/null 2>&1; then
+        return 0
+    fi
+    local library="${SCRIPT_DIR}/lib/update-snapshots.sh"
+    if [[ ! -r "$library" || -L "$library" ]]; then
+        log_error "Secure update snapshot support is unavailable: ${library}"
         return 1
     fi
-
-    local snap_dir="${ROLLBACK_DIR}/pre-update-${timestamp}"
-    log_info "Creating rollback snapshot: pre-update-${timestamp}" >&2
-    mkdir -p "${snap_dir}"
-
-    local files_saved=0
-
-    # .env and .env.* variants
-    for pattern in ".env" ".env.*"; do
-        for f in "${INSTALL_DIR}"/${pattern}; do
-            [[ -f "$f" ]] || continue
-            cp "$f" "${snap_dir}/"
-            files_saved=$(( files_saved + 1 ))
-        done
-    done
-
-    # Active compose overlays — needed to re-create the exact stack on rollback
-    for f in "${INSTALL_DIR}"/docker-compose*.yml "${INSTALL_DIR}"/docker-compose*.yaml; do
-        [[ -f "$f" ]] || continue
-        cp "$f" "${snap_dir}/"
-        files_saved=$(( files_saved + 1 ))
-    done
-
-    # Cached compose flags — records which overlays were active, so rollback
-    # can bring the restored stack up with the same file selection
-    if [[ -f "${INSTALL_DIR}/.compose-flags" ]]; then
-        cp "${INSTALL_DIR}/.compose-flags" "${snap_dir}/"
-        files_saved=$(( files_saved + 1 ))
-    fi
-
-    # Per-extension config directories
-    for ext_dir in litellm n8n openclaw searxng; do
-        local src="${INSTALL_DIR}/config/${ext_dir}"
-        if [[ -d "$src" ]]; then
-            cp -r "$src" "${snap_dir}/config-${ext_dir}"
-            files_saved=$(( files_saved + 1 ))
-        fi
-    done
-
-    # Version file
-    if [[ -f "$VERSION_FILE" ]]; then
-        cp "$VERSION_FILE" "${snap_dir}/.version"
-        files_saved=$(( files_saved + 1 ))
-    fi
-
-    # Snapshot metadata
-    jq -n \
-        --arg ts  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-        --arg ver "$(get_current_version)" \
-        --argjson fc "$files_saved" \
-        --arg dir "$INSTALL_DIR" \
-        '{type:"pre-update", timestamp:$ts, version:$ver, files_count:$fc, install_dir:$dir}' \
-        > "${snap_dir}/snapshot.json"
-
-    # Integrity check: verify metadata is valid JSON before declaring success
-    if ! jq empty "${snap_dir}/snapshot.json"; then
-        log_error "Snapshot metadata is not valid JSON; aborting snapshot." >&2
-        rm -rf "${snap_dir}"
-        return 1
-    fi
-
-    log_ok "Rollback snapshot ready (${files_saved} items): ${snap_dir}" >&2
-
-    _prune_rollback_snapshots
-
-    echo "${snap_dir}"
-}
-
-# _restore_snapshot <snap_dir>
-#   Validates snapshot integrity, then restores .env files, compose overlays,
-#   and per-extension config dirs.  Does NOT restart services.
-_restore_snapshot() {
-    local snap_dir="$1"
-    if [[ ! -d "$snap_dir" ]]; then
-        log_error "Rollback snapshot not found: ${snap_dir}"
-        return 1
-    fi
-
-    # Integrity: snapshot.json must exist and be valid JSON
-    if [[ ! -f "${snap_dir}/snapshot.json" ]]; then
-        log_error "Snapshot is missing snapshot.json; cannot verify integrity: ${snap_dir}"
-        return 1
-    fi
-    if ! jq empty "${snap_dir}/snapshot.json"; then
-        log_error "snapshot.json is not valid JSON; snapshot may be corrupt: ${snap_dir}"
-        return 1
-    fi
-
-    # Warn about absent critical files (non-fatal — install may not have had them)
-    for required in ".env" ".version"; do
-        if [[ ! -f "${snap_dir}/${required}" ]]; then
-            log_warn "Snapshot is missing ${required} — snapshot may be incomplete."
-        fi
-    done
-
-    log_info "Restoring from rollback snapshot: $(basename "${snap_dir}")"
-
-    # Flat files: .env*, .version, docker-compose*.yml
-    shopt -s dotglob
-    for f in "${snap_dir}"/*; do
-        local base
-        base="$(basename "$f")"
-        [[ -f "$f" && "$base" != "snapshot.json" && "$base" != "metadata.json" ]] || continue
-        cp "$f" "${INSTALL_DIR}/"
-        log_info "  Restored: ${base}"
-    done
-    shopt -u dotglob
-
-    # Per-extension config directories
-    for ext_dir in litellm n8n openclaw searxng; do
-        local src="${snap_dir}/config-${ext_dir}"
-        if [[ -d "$src" ]]; then
-            rm -rf "${INSTALL_DIR}/config/${ext_dir}"
-            cp -r "$src" "${INSTALL_DIR}/config/${ext_dir}"
-            log_info "  Restored: config/${ext_dir}/"
-        fi
-    done
-
-    log_ok "Snapshot restored."
+    # shellcheck source=lib/update-snapshots.sh
+    . "$library"
 }
 
 # wait_for_healthy
@@ -648,6 +523,12 @@ cmd_backup() {
 # COMMAND: UPDATE
 #==============================================================================
 
+cmd_snapshot() {
+    local timestamp="${1:-$(date +%Y%m%d-%H%M%S)}"
+    _load_update_snapshot_contract || return 1
+    snapshot_pre_update "$timestamp"
+}
+
 cmd_update() {
     log_info "Starting ODS update..."
 
@@ -657,6 +538,7 @@ cmd_update() {
     if ! ensure_source_checkout_for_update; then
         return 1
     fi
+    _load_update_snapshot_contract || return 1
 
     # ── Step 1: rollback snapshot ─────────────────────────────────────────────
     local timestamp
@@ -753,6 +635,8 @@ cmd_rollback() {
     local target="${1:-}"
     local backup_path=""
 
+    _load_update_snapshot_contract || return 1
+
     if [[ -n "$target" ]]; then
         # Explicit target: search rollback snapshots first, then general backups.
         for candidate in \
@@ -811,6 +695,15 @@ cmd_rollback() {
         compose_args=("${COMPOSE_PARSED_ARGS[@]}")
     fi
 
+    # A pre-update snapshot must be fully validated before stopping services.
+    # This prevents malformed or tampered rollback input from mutating runtime.
+    if [[ -f "${backup_path}/snapshot.json" ]]; then
+        if ! _validate_snapshot "$backup_path"; then
+            log_error "Snapshot validation failed before service stop; nothing was changed."
+            return 1
+        fi
+    fi
+
     # Stop services using the currently active compose stack.
     log_info "Stopping services..."
     cd "$INSTALL_DIR"
@@ -850,7 +743,13 @@ cmd_rollback() {
     # overlay than the stack that was just stopped.  If the snapshot predates
     # .compose-flags, drop the stale cache so resolution falls back to the
     # restored .env.
-    if [[ ! -f "${backup_path}/.compose-flags" && -f "${INSTALL_DIR}/.compose-flags" ]]; then
+    local snapshot_compose_flags="${backup_path}/.compose-flags"
+    if [[ -f "${backup_path}/snapshot.json" ]] && \
+       [[ "$(jq -r '.schema // "legacy"' "${backup_path}/snapshot.json" | tr -d '\r')" == \
+          "${ODS_UPDATE_SNAPSHOT_SCHEMA}" ]]; then
+        snapshot_compose_flags="${backup_path}/payload/.compose-flags"
+    fi
+    if [[ ! -f "$snapshot_compose_flags" && -f "${INSTALL_DIR}/.compose-flags" ]]; then
         log_info "Snapshot has no .compose-flags; clearing stale cached stack."
         rm -f "${INSTALL_DIR}/.compose-flags"
     fi
@@ -1032,6 +931,8 @@ Commands:
   check          Check for available updates
   status         Show current version, update status, and rollback info
   backup [name]  Create a named general backup of current configuration
+  snapshot [ts]  Create an integrity-checked pre-update rollback snapshot
+                 (optional timestamp format: YYYYMMDD-HHMMSS)
   update         Source-checkout only: pull latest source, run migrations,
                  restart, health-check, and auto-restore on failure
   rollback [id]  Restore from a rollback snapshot or general backup
@@ -1041,7 +942,9 @@ Commands:
 
 Rollback snapshots:
   Stored in:  <install_dir>/data/backups/pre-update-<timestamp>/
-  Contents:   .env, docker-compose overlays, config/{litellm,n8n,openclaw,searxng}/
+  Contents:   exact environment/Compose state, config/, extension lockfile,
+              transaction journals/receipts, and data/user-extensions/
+  Security:   owner-private, checksum-verified; secret custody stays in place
   Retained:   MAX_BACKUPS most recent snapshots (oldest pruned automatically)
 
 Environment Variables:
@@ -1056,6 +959,7 @@ Examples:
   ods-update.sh check
   ods-update.sh status
   ods-update.sh backup pre-experiment
+  ods-update.sh snapshot
   ods update                    # normal runtime/image update
   ods-update.sh update          # source checkout only
   ods-update.sh rollback
@@ -1083,6 +987,9 @@ main() {
             ;;
         backup)
             cmd_backup "$@"
+            ;;
+        snapshot)
+            cmd_snapshot "$@"
             ;;
         update)
             cmd_update "$@"

@@ -2,8 +2,8 @@
 # ============================================================================
 # ODS backup path contract
 # ============================================================================
-# Single source of truth for the user-data directories `ods backup` captures
-# and `ods restore` puts back. Sourced by ods-backup.sh and ods-restore.sh so
+# Single source of truth for the user-data paths `ods backup` captures and
+# `ods restore` puts back. Sourced by ods-backup.sh and ods-restore.sh so
 # the two sides cannot drift apart.
 #
 # A directory belongs here when a bundled service bind-mounts it under
@@ -21,6 +21,15 @@
 
 # shellcheck disable=SC2034  # consumed by the scripts that source this file
 ODS_USER_DATA_PATHS=(
+    # Assistant First control-plane state is deliberately split so the
+    # host-owned secret store (data/assistant-first/secrets) is never copied
+    # into an ordinary archive. Desired state contains references only.
+    "data/assistant-first/desired-state"     # extension lockfile history
+    "data/assistant-first/transaction-store" # journals and finalization receipts
+    "data/user-extensions"                   # definitions and library receipts
+    "data/remote-provider/routing-state.json" # nonsecret provider routing state
+    "data/pixel-inference"                   # inference-sharing owner state
+    "data/langfuse"          # traces, projects, analytics stores, event uploads
     "data/open-webui"       # chats, prompts, RAG documents
     "data/n8n"              # workflows and credentials
     "data/qdrant"           # vector collections
@@ -49,4 +58,22 @@ ODS_BACKUP_EXCLUDED_DATA_PATHS=(
     "data/models"        # GGUF weights — re-downloadable, tens of GB
     "data/whisper"       # STT model cache (the cache backup type covers it)
     "data/embeddings"    # TEI model cache
+)
+
+# Secret-bearing host custody is deliberately excluded from ordinary backup
+# archives.  The primary .env/config backup type has its own owner-controlled
+# handling; these data paths are duplicate or runtime-generated secret stores.
+# shellcheck disable=SC2034  # consumed by tests/test-backup-data-coverage.sh
+ODS_BACKUP_EXCLUDED_SECRET_PATHS=(
+    "data/assistant-first/secrets"
+    "data/remote-provider/secrets"
+    "data/dashboard-api-key.txt"
+    "data/config-backups"
+)
+
+# In-flight staging is not committed user state.  Definition rollback points
+# under data/user-extensions/.backups remain included.
+# shellcheck disable=SC2034  # consumed by ods-backup.sh and coverage tests
+ODS_BACKUP_EXCLUDED_TRANSIENT_PATHS=(
+    "data/user-extensions/.tmp"
 )

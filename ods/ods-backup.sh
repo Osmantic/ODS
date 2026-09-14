@@ -66,6 +66,10 @@ estimate_backup_bytes() {
                 local b
                 b=$(du -sk "$ODS_DIR/$p" 2>/dev/null | awk '{print $1 * 1024}')
                 total=$(( total + ${b:-0} ))
+            elif [[ -f "$ODS_DIR/$p" && ! -L "$ODS_DIR/$p" ]]; then
+                local s
+                s=$(wc -c < "$ODS_DIR/$p" 2>/dev/null || echo 0)
+                total=$(( total + ${s:-0} ))
             fi
         done
     fi
@@ -288,9 +292,17 @@ create_manifest() {
     [[ "$backup_type" == "full" || "$backup_type" == "config" ]] && has_config="true"
     [[ "$backup_type" == "full" ]] && has_cache="true"
 
-    local user_data_paths_json
+    local user_data_paths_json excluded_secret_paths_json excluded_transient_paths_json
     user_data_paths_json=$(
         printf '%s\n' "${ODS_USER_DATA_PATHS[@]}" \
+            | jq -R -s 'split("\n") | map(select(length > 0))'
+    )
+    excluded_secret_paths_json=$(
+        printf '%s\n' "${ODS_BACKUP_EXCLUDED_SECRET_PATHS[@]}" \
+            | jq -R -s 'split("\n") | map(select(length > 0))'
+    )
+    excluded_transient_paths_json=$(
+        printf '%s\n' "${ODS_BACKUP_EXCLUDED_TRANSIENT_PATHS[@]}" \
             | jq -R -s 'split("\n") | map(select(length > 0))'
     )
 
@@ -306,6 +318,8 @@ create_manifest() {
         --argjson cfg "$has_config" \
         --argjson ca "$has_cache" \
         --argjson udp "$user_data_paths_json" \
+        --argjson esp "$excluded_secret_paths_json" \
+        --argjson etp "$excluded_transient_paths_json" \
         '{
           manifest_version: $mv,
           backup_date: $bd,
@@ -314,6 +328,7 @@ create_manifest() {
           ods_version: $dv,
           hostname: $hn,
           description: $desc,
+          exclusions: {secret_paths: $esp, transient_paths: $etp},
           contents: { user_data: $ud, config: $cfg, cache: $ca },
           paths: (
             {
@@ -338,10 +353,27 @@ backup_user_data() {
 
     for path in "${user_data_paths[@]}"; do
         local full_path="$ODS_DIR/$path"
-        if [[ -d "$full_path" ]]; then
-            local dest_dir="$backup_dir/$(dirname "$path")"
+        if [[ -L "$full_path" ]]; then
+            log_error "Refusing symlinked user-data path: $path"
+            return 1
+        elif [[ -d "$full_path" ]]; then
+            local dest_dir
+            dest_dir="$backup_dir/$(dirname "$path")"
+            local -a extra_args=()
+            if [[ "$path" == "data/user-extensions" ]]; then
+                # The source is passed without a trailing slash, so rsync's
+                # transfer root includes the user-extensions directory name.
+                # Anchor the filter to that root to exclude only its staging
+                # directory while retaining any extension-owned nested path.
+                extra_args+=(--exclude=/user-extensions/.tmp/)
+            fi
             mkdir -p "$dest_dir"
-            rsync_with_progress "$full_path" "$dest_dir/" "Backing up $path"
+            rsync_with_progress "$full_path" "$dest_dir/" "Backing up $path" \
+                "${extra_args[@]}"
+            log_success "Backed up: $path"
+        elif [[ -f "$full_path" ]]; then
+            mkdir -p "$backup_dir/$(dirname "$path")"
+            cp -p "$full_path" "$backup_dir/$path"
             log_success "Backed up: $path"
         else
             log_warn "Skipped (not found): $path"

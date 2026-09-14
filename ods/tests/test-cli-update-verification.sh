@@ -40,7 +40,9 @@ trap 'rm -rf "$FIXTURE"' EXIT
 # ---------------------------------------------------------------------------
 mkdir -p "$FIXTURE/lib" "$FIXTURE/extensions/services/bsvc" "$FIXTURE/extensions/services/oneshot" "$FIXTURE/bin"
 cp "$ROOT_DIR/ods-cli" "$FIXTURE/ods-cli"
+cp "$ROOT_DIR/ods-update.sh" "$FIXTURE/ods-update.sh"
 cp "$ROOT_DIR"/lib/*.sh "$FIXTURE/lib/"
+chmod +x "$FIXTURE/ods-update.sh"
 : > "$FIXTURE/docker-compose.base.yml"
 
 cat > "$FIXTURE/extensions/services/bsvc/manifest.yaml" <<'EOF'
@@ -138,9 +140,14 @@ case "${1:-}" in
 esac
 exit 0
 SH
-# curl shim: fail fast so trailing status/health probes don't stall the test
+# curl shim: report the fixture host agent healthy while failing unrelated
+# trailing status probes quickly.
 cat > "$FIXTURE/bin/curl" <<'SH'
 #!/usr/bin/env bash
+if [[ " $* " == *"/health"* ]]; then
+    echo '{"status":"ok","version":"fixture"}'
+    exit 0
+fi
 echo "curl: (7) Failed to connect" >&2
 exit 7
 SH

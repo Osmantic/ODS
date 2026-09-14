@@ -319,10 +319,16 @@ jobs:
           python3 scripts/validate-sim-summary.py artifacts/installer-sim/summary.json
 
       - name: Update Rollback Contract
-        run: bash tests/test-update-rollback-contract.sh
+        run: |
+          bash tests/test-update-rollback-contract.sh
+          bash tests/test-update-assistant-first-snapshot.sh
+          bash tests/test-cli-update-verification.sh
+          bash tests/test-ods-cli-update-verification.sh
 
       - name: Backup Data Coverage Contract
-        run: bash tests/test-backup-data-coverage.sh
+        run: |
+          bash tests/test-backup-data-coverage.sh
+          bash tests/test-backup-restore-roundtrip.sh
 
       - name: Bootstrap Upgrade Compose Flags Recovery Tests
         run: bash tests/test-bootstrap-upgrade-compose-flags-recovery.sh

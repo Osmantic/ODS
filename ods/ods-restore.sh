@@ -317,7 +317,7 @@ validate_backup() {
 
     local missing_any=false
     for p in "${expected_data[@]}"; do
-        if [[ ! -d "$backup_dir/$p" ]]; then
+        if [[ ! -d "$backup_dir/$p" && ! -f "$backup_dir/$p" ]]; then
             missing_any=true
             break
         fi
@@ -344,12 +344,12 @@ dry_run_preview() {
     if [[ "$restore_data" == "true" ]]; then
         echo "User Data to Restore:"
         echo "───────────────────────────────────────────────────────────────────"
-        local data_dirs=("${ODS_USER_DATA_PATHS[@]}")
-        for dir in "${data_dirs[@]}"; do
-            if [[ -d "$backup_dir/$dir" ]]; then
+        local data_paths=("${ODS_USER_DATA_PATHS[@]}")
+        for path in "${data_paths[@]}"; do
+            if [[ -d "$backup_dir/$path" || -f "$backup_dir/$path" ]]; then
                 local size
-                size=$(du -sh "$backup_dir/$dir" 2>/dev/null | cut -f1)
-                echo "  ✓ $dir ($size)"
+                size=$(du -sh "$backup_dir/$path" 2>/dev/null | cut -f1)
+                echo "  ✓ $path ($size)"
             fi
         done
         echo ""
@@ -395,24 +395,32 @@ restore_user_data() {
     local backup_dir="$1"
     log_step "Restoring user data..."
 
-    local data_dirs=("${ODS_USER_DATA_PATHS[@]}")
+    local data_paths=("${ODS_USER_DATA_PATHS[@]}")
 
     local restored_any=false
-    for dir in "${data_dirs[@]}"; do
-        if [[ -d "$backup_dir/$dir" ]]; then
+    for path in "${data_paths[@]}"; do
+        if [[ -L "$backup_dir/$path" ]]; then
+            log_error "Refusing symlinked backup user-data path: $path"
+            return 1
+        elif [[ -d "$backup_dir/$path" ]]; then
             restored_any=true
-            mkdir -p "$ODS_DIR/$(dirname "$dir")"
+            mkdir -p "$ODS_DIR/$(dirname "$path")"
             # Note: Using -a without --delete to preserve any new files created after backup
             # Use --force flag or manually delete target if you need exact restoration
-            rsync_with_progress "$backup_dir/$dir" "$ODS_DIR/$(dirname "$dir")/" "Restoring $dir"
-            log_success "Restored: $dir"
+            rsync_with_progress "$backup_dir/$path" "$ODS_DIR/$(dirname "$path")/" "Restoring $path"
+            log_success "Restored: $path"
+        elif [[ -f "$backup_dir/$path" ]]; then
+            restored_any=true
+            mkdir -p "$ODS_DIR/$(dirname "$path")"
+            cp -p "$backup_dir/$path" "$ODS_DIR/$path"
+            log_success "Restored: $path"
         else
-            log_warn "Skipped (not in backup): $dir"
+            log_warn "Skipped (not in backup): $path"
         fi
     done
 
     if [[ "$restored_any" == "false" ]]; then
-        log_warn "No user data directories were found in this backup."
+        log_warn "No user data paths were found in this backup."
     fi
 }
 

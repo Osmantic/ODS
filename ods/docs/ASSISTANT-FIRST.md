@@ -45,6 +45,34 @@ Full, Core, and Custom continue to use the legacy resolver behavior. The
 services extracted from `docker-compose.base.yml` remain enabled there through
 their manifest-owned Compose fragments.
 
+## Update recovery state
+
+Normal `ods update` image refreshes and source-checkout updates use the same
+owner-private, schema-versioned rollback snapshot. Creation fails closed before
+environment rewrites, image pulls, or checkout mutation. The snapshot records
+exact presence, content hashes, and restore custody for environment and Compose
+selection, generic `config/`, the extension desired-state lockfile, transaction
+journals and finalization receipts, and `data/user-extensions` definitions and
+receipts. Snapshot validation, path allowlisting, symlink rejection, and a
+staged payload copy all complete before a manual rollback stops services or
+changes files.
+
+Committed definition rollback points under `data/user-extensions/.backups`
+are durable state and are included. In-flight `data/user-extensions/.tmp`
+staging is explicitly excluded and removed by exact rollback. Ordinary user
+data backups also preserve nonsecret remote-provider routing and
+pixel-inference owner state while excluding remote-provider secrets, generated
+dashboard credentials, and secret-bearing environment backup history.
+
+`data/assistant-first/secrets` is deliberately not copied. It remains in place
+under host custody while lockfiles and transaction records carry references
+only. Older pre-v2 rollback snapshots remain readable with an explicit warning,
+but they cannot provide the v2 checksum guarantee.
+
+This snapshot contract does not yet authorize extension upgrades during a core
+update. Candidate-version compatibility solving, mutation quiescence, combined
+core/desired-state commit, and coordinated rollback are later Phase 5 gates.
+
 ## Evidence boundary
 
 The source contract checks resolver ordering, the exact candidate service set,
