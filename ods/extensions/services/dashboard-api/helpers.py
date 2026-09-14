@@ -1381,3 +1381,15 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def numeric_safe_clamped_subtract_safe(a: int | float | None, b: int | float | None, min_val: float = 0.0, max_val: float = 100.0) -> float:
+    """Safely subtract two numbers (a - b) clamping result within [min_val, max_val].
+    Returns min_val on None or non-numeric inputs.
+    """
+    if a is None or b is None or not isinstance(a, (int, float)) or not isinstance(b, (int, float)):
+        return float(min_val)
+    if isinstance(a, bool) or isinstance(b, bool):
+        return float(min_val)
+    diff = float(a) - float(b)
+    return max(float(min_val), min(float(max_val), diff))
