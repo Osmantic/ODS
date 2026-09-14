@@ -1740,3 +1740,17 @@ def test_flatten_bounds_cycles_and_large_depth_without_losing_empty_leaves():
         nested = {"child": nested}
     result = dict_flatten_nested_safe(nested, max_depth=100000)
     assert len(next(iter(result)).split(".")) == 128
+
+
+class TestListPartitionByPredicateSublistSafe:
+    def test_valid_partition(self):
+        from helpers import list_partition_by_predicate_sublist_safe
+        nums = [1, 2, 3, 4, 5, 6]
+        evens, odds = list_partition_by_predicate_sublist_safe(nums, lambda x: x % 2 == 0)
+        assert evens == [2, 4, 6]
+        assert odds == [1, 3, 5]
+
+    def test_invalid_inputs(self):
+        from helpers import list_partition_by_predicate_sublist_safe
+        assert list_partition_by_predicate_sublist_safe(None) == ([], [])
+        assert list_partition_by_predicate_sublist_safe([1, 2], "not_callable") == ([1, 2], [])
