@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import gzip
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -244,6 +245,82 @@ def test_timeout_is_distinct_from_unavailable(monkeypatch):
     try:
         with pytest.raises(agent_client.AgentTimeout):
             agent_client.request_json("GET", "/health")
+    finally:
+        client.close()
+
+
+def test_bounded_json_rejects_response_before_unbounded_buffering(monkeypatch):
+    body = b'{"value":"' + b"x" * 128 + b'"}'
+    client = httpx.Client(
+        base_url="http://agent",
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(200, content=body)
+        ),
+    )
+    monkeypatch.setattr(agent_client, "_sync_client", client)
+    try:
+        with pytest.raises(agent_client.AgentProtocolError):
+            agent_client.request_bounded_json("GET", "/health", max_response_bytes=64)
+    finally:
+        client.close()
+
+
+def test_bounded_json_preserves_status_mapping(monkeypatch):
+    client = httpx.Client(
+        base_url="http://agent",
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(409, json={"error": {"code": "busy"}})
+        ),
+    )
+    monkeypatch.setattr(agent_client, "_sync_client", client)
+    try:
+        with pytest.raises(agent_client.AgentHTTPError) as caught:
+            agent_client.request_bounded_json(
+                "POST", "/v1/test", max_response_bytes=1024
+            )
+        assert caught.value.status_code == 409
+        assert caught.value.detail == '{"code":"busy"}'
+    finally:
+        client.close()
+
+
+def test_bounded_json_counts_decoded_body_without_double_decoding(monkeypatch):
+    compressed = gzip.compress(b'{"status":"ok"}')
+    client = httpx.Client(
+        base_url="http://agent",
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(
+                200,
+                headers={"content-encoding": "gzip"},
+                content=compressed,
+            )
+        ),
+    )
+    monkeypatch.setattr(agent_client, "_sync_client", client)
+    try:
+        assert agent_client.request_bounded_json(
+            "GET", "/health", max_response_bytes=64
+        ) == {"status": "ok"}
+    finally:
+        client.close()
+
+
+def test_bounded_json_rejects_invalid_limit_before_request(monkeypatch):
+    calls = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json={"status": "ok"})
+
+    client = httpx.Client(
+        base_url="http://agent", transport=httpx.MockTransport(handler)
+    )
+    monkeypatch.setattr(agent_client, "_sync_client", client)
+    try:
+        with pytest.raises(ValueError, match="invalid max_response_bytes"):
+            agent_client.request_bounded_json("GET", "/health", max_response_bytes=0)
+        assert calls == 0
     finally:
         client.close()
 
