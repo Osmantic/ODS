@@ -100,12 +100,23 @@ internal_services=0
 
 for compose_file in "${compose_files[@]}"; do
     if [[ -f "$compose_file" ]]; then
+        # Extension composes live at extensions/services/<id>/compose.yaml, so
+        # the parent directory names them. The root docker-compose*.yml files
+        # have no such parent — dirname gives "." — so name them after the file.
         service_name=$(basename "$(dirname "$compose_file")")
+        [[ "$service_name" == "." ]] && service_name=$(basename "$compose_file")
 
-        # Services with external port mappings
-        if grep -q "ports:" "$compose_file"; then
-            # Check if ports are bound to localhost only
-            if grep -A10 "ports:" "$compose_file" | grep -q "127\.0\.0\.1:"; then
+        # Services with external port mappings. Anchor on a real `ports:` key
+        # rather than the bare word: hermes deliberately publishes nothing
+        # (expose: only, reached through the proxy) but discusses `ports:` in a
+        # comment, which the loose match counted as a published binding.
+        if grep -qE '^[[:space:]]*ports:[[:space:]]*$' "$compose_file"; then
+            # A localhost binding is written "${BIND_ADDRESS:-127.0.0.1}:..."
+            # throughout this repo — services bind 127.0.0.1 by default and an
+            # operator widens them deliberately via BIND_ADDRESS. Matching only
+            # a literal 127.0.0.1 missed every one of them, so this check
+            # failed all 16 extensions while the config was in fact correct.
+            if grep -A10 "ports:" "$compose_file" | grep -qE '(127\.0\.0\.1|BIND_ADDRESS:-127\.0\.0\.1\}):'; then
                 internal_services=$((internal_services + 1))
                 pass "Service '$service_name' exposed only to localhost"
             else
@@ -114,6 +125,12 @@ for compose_file in "${compose_files[@]}"; do
                 case "$service_name" in
                     dashboard|dashboard-api|open-webui)
                         skip "Service '$service_name' externally exposed (expected for UI/API)"
+                        ;;
+                    ods-proxy)
+                        # The documented exception to BIND_ADDRESS=127.0.0.1:
+                        # ods-proxy IS the LAN-facing surface, so every other
+                        # service can stay on loopback behind it.
+                        skip "Service '$service_name' externally exposed (proxy is the LAN entry point by design)"
                         ;;
                     *)
                         fail "Service '$service_name' may be externally exposed" "Review port binding configuration"
@@ -145,13 +162,26 @@ else
     skip "No custom networks defined (using default bridge network)"
 fi
 
-# Check for host networking (insecure)
+# Check for host networking (insecure). Anchor on the actual key so the long
+# explanatory comments around such a setting aren't counted as extra uses.
 host_network_count=0
 for compose_file in "${compose_files[@]}"; do
     if [[ -f "$compose_file" ]]; then
-        if grep -q "network_mode.*host" "$compose_file"; then
-            host_network_count=$((host_network_count + 1))
-            fail "Service uses host networking in $(basename "$compose_file")" "Breaks container isolation"
+        if grep -qE '^[[:space:]]*network_mode:[[:space:]]*"?host"?[[:space:]]*$' "$compose_file"; then
+            svc=$(basename "$(dirname "$compose_file")")
+            case "$svc" in
+                tailscale)
+                    # Structural, not an oversight: tailscaled must share the
+                    # host netns for the tailnet IP to land on the host. The
+                    # service registry models this first-class as
+                    # host_network: true (lib/service-registry.sh:44).
+                    skip "Service '$svc' uses host networking (required for tailnet addressing)"
+                    ;;
+                *)
+                    host_network_count=$((host_network_count + 1))
+                    fail "Service uses host networking in $(basename "$compose_file")" "Breaks container isolation"
+                    ;;
+            esac
         fi
     fi
 done
