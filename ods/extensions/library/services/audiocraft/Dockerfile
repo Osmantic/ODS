@@ -37,7 +37,7 @@ RUN pip install --no-cache-dir fastapi==0.115.6 pydantic==2.10.6 \
 WORKDIR /app
 
 # Create simple Gradio app for MusicGen
-RUN cat > /app/app.py << 'EOF'
+RUN cat > /app/app.py <<'EOF'
 import gradio as gr
 from audiocraft.models import MusicGen, AudioGen
 from audiocraft.data.audio import audio_write
