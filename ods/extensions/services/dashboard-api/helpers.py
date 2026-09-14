@@ -1146,3 +1146,21 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def string_slugify_clean_safe(s: str | None, max_len: int = 100) -> str:
+    """Safely convert string to lowercase slug, removing non-alphanumeric chars.
+    Returns empty string on invalid input or error.
+    """
+    if not isinstance(s, str) or not s.strip():
+        return ""
+    if not isinstance(max_len, int) or max_len <= 0:
+        max_len = 100
+    try:
+        import re
+        slug = re.sub(r"[^\w\s-]", "", s.strip().lower())
+        slug = re.sub(r"[-\s]+", "-", slug).strip("-")
+        return slug[:max_len]
+    except Exception:
+        return ""
+
