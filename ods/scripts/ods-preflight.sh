@@ -17,13 +17,14 @@ load_env_file "$SCRIPT_DIR/.env"
 sr_resolve_ports
 
 # Resolve compose flags for accurate status checks
-COMPOSE_FLAGS=""
+COMPOSE_FLAGS_ARRAY=()
 if [[ -x "$SCRIPT_DIR/scripts/resolve-compose-stack.sh" ]]; then
     # --gpu-count gates the multigpu-{backend}.yml overlay; without it,
     # preflight validates the wrong stack on multi-GPU machines.
-    COMPOSE_FLAGS=$("$SCRIPT_DIR/scripts/resolve-compose-stack.sh" \
+    _raw_flags=$("$SCRIPT_DIR/scripts/resolve-compose-stack.sh" \
         --script-dir "$SCRIPT_DIR" --tier "${TIER:-1}" --gpu-backend "${GPU_BACKEND:-nvidia}" \
-        --gpu-count "${GPU_COUNT:-1}")
+        --gpu-count "${GPU_COUNT:-1}" 2>/dev/null || echo "")
+    read -r -a COMPOSE_FLAGS_ARRAY <<< "$_raw_flags"
 fi
 
 # Colors
@@ -56,7 +57,7 @@ fi
 
 # Check containers are up
 echo -n "Core containers... "
-if docker compose $COMPOSE_FLAGS ps | grep -q "$LLM_CONTAINER"; then
+if docker compose "${COMPOSE_FLAGS_ARRAY[@]}" ps | grep -q "$LLM_CONTAINER"; then
     echo -e "${GREEN}✓ running${NC}"
 else
     echo -e "${RED}✗ not running${NC}"
