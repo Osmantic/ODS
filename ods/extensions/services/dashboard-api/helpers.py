@@ -1146,3 +1146,19 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def normalize_port_number_safe(port, default: int = 8080) -> int:
+    """Safely validate and normalize server port numbers [1..65535]."""
+    if port is None:
+        return default
+    try:
+        if isinstance(port, float) and (math.isnan(port) or math.isinf(port)):
+            return default
+        val = int(port)
+        if 1 <= val <= 65535:
+            return val
+        return default
+    except (ValueError, TypeError, OverflowError):
+        return default
+

@@ -1607,3 +1607,18 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+class TestNormalizePortNumberSafe:
+    def test_valid_ports(self):
+        from helpers import normalize_port_number_safe
+        assert normalize_port_number_safe(80) == 80
+        assert normalize_port_number_safe("443") == 443
+
+    def test_invalid_ports_and_bounds(self):
+        from helpers import normalize_port_number_safe
+        assert normalize_port_number_safe(None) == 8080
+        assert normalize_port_number_safe(0) == 8080
+        assert normalize_port_number_safe(70000) == 8080
+        assert normalize_port_number_safe("invalid_port", default=3000) == 3000
+
