@@ -604,7 +604,7 @@ if ext_dir.exists():
             if not isinstance(manifest, dict):
                 print(f"WARNING: empty/non-dict manifest for {service_dir.name} at {manifest_path}, skipping", file=sys.stderr)
                 continue
-            if manifest.get("schema_version") != "ods.services.v1":
+            if manifest.get("schema_version") not in {"ods.services.v1", "ods.services.v2"}:
                 continue
             service = manifest.get("service", {})
             # Check GPU backend compatibility
@@ -726,7 +726,7 @@ if user_ext_dir.exists() and not assistant_first:
                     if manifest is not None and not isinstance(manifest, dict):
                         print(f"WARNING: empty/non-dict manifest for {service_dir.name} at {manifest_path}, skipping", file=sys.stderr)
                         continue
-                    if isinstance(manifest, dict) and manifest.get("schema_version") != "ods.services.v1":
+                    if isinstance(manifest, dict) and manifest.get("schema_version") not in {"ods.services.v1", "ods.services.v2"}:
                         continue
                     service = manifest.get("service", {}) if isinstance(manifest, dict) else {}
                 else:

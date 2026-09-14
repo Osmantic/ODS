@@ -6,9 +6,9 @@
 #   scripts/validate-manifests.sh
 #
 # Behavior:
-#   - Loads core version and extension schema path from manifest.json
+#   - Loads core version and versioned extension schema paths from manifest.json
 #   - Scans extensions/services/*/manifest.{yaml,yml,json}
-#   - Validates structure against extensions/schema/service-manifest.v1.json
+#   - Validates each structure against its declared v1 or v2 schema
 #     when python3 + PyYAML + jsonschema are available (otherwise warns)
 #   - Reads optional per-manifest compatibility block:
 #       compatibility:
@@ -38,22 +38,20 @@ command -v jq >/dev/null 2>&1 || fail "jq is required"
 test -f "$MANIFEST_FILE" || fail "manifest.json not found"
 
 CORE_VERSION="$(jq -r '.release.version' "$MANIFEST_FILE")"
-SCHEMA_PATH_REL="$(jq -r '.contracts.extensions.serviceManifestSchema' "$MANIFEST_FILE")"
+SCHEMA_PATHS_JSON="$(jq -ce '.contracts.extensions.serviceManifestSchemas | select(type == "object")' "$MANIFEST_FILE")" ||
+  fail "contracts.extensions.serviceManifestSchemas missing or invalid in manifest.json"
 EXT_DIR_REL="$(jq -r '.contracts.extensions.serviceDirectory' "$MANIFEST_FILE")"
 
 test -n "$CORE_VERSION" || fail "release.version missing in manifest.json"
-test -n "$SCHEMA_PATH_REL" || fail "contracts.extensions.serviceManifestSchema missing in manifest.json"
 test -n "$EXT_DIR_REL" || fail "contracts.extensions.serviceDirectory missing in manifest.json"
 
-SCHEMA_PATH="${ROOT_DIR}/${SCHEMA_PATH_REL}"
 EXT_DIR="${ROOT_DIR}/${EXT_DIR_REL%/}"
 
-test -f "$SCHEMA_PATH" || fail "extension schema not found at ${SCHEMA_PATH_REL}"
 test -d "$EXT_DIR" || fail "extensions directory not found at ${EXT_DIR_REL}"
 
 info "Core version: ${CORE_VERSION}"
 info "Extensions directory: ${EXT_DIR_REL}"
-info "Schema: ${SCHEMA_PATH_REL}"
+info "Schemas: $(jq -r 'to_entries | sort_by(.key) | map("\(.key)=\(.value)") | join(", ")' <<<"$SCHEMA_PATHS_JSON")"
 
 PYTHON_OK=true
 if ! command -v python3 >/dev/null 2>&1; then
@@ -78,7 +76,7 @@ else
 fi
 
 py_exit=0
-python3 - "$ROOT_DIR" "$EXT_DIR_REL" "$SCHEMA_PATH_REL" "$CORE_VERSION" "$PYTHON_OK" <<'PY' || py_exit=$?
+python3 - "$ROOT_DIR" "$EXT_DIR_REL" "$SCHEMA_PATHS_JSON" "$CORE_VERSION" "$PYTHON_OK" <<'PY' || py_exit=$?
 import json
 import sys
 import textwrap
@@ -86,12 +84,11 @@ from pathlib import Path
 
 root_dir = Path(sys.argv[1])
 ext_dir_rel = sys.argv[2]
-schema_rel = sys.argv[3]
+schema_paths_json = sys.argv[3]
 core_version = sys.argv[4]
 python_ok = sys.argv[5].lower() == "true"
 
 ext_dir = root_dir / ext_dir_rel
-schema_path = root_dir / schema_rel
 
 results = []
 schema_errors = False
@@ -139,18 +136,30 @@ def compatibility_result(manifest, fallback_sid, core_ver_tuple):
 
 core_ver_tuple = parse_version(core_version)
 
+schemas = {}
 if python_ok:
     import yaml
     import jsonschema
 
-    with schema_path.open("r", encoding="utf-8") as f:
-        schema = json.load(f)
+    try:
+        schema_paths = json.loads(schema_paths_json)
+        if set(schema_paths) != {"ods.services.v1", "ods.services.v2"}:
+            raise ValueError("serviceManifestSchemas must declare exactly v1 and v2")
+        resolved_root = root_dir.resolve()
+        for schema_version, schema_rel in schema_paths.items():
+            if not isinstance(schema_rel, str):
+                raise TypeError(f"schema path for {schema_version} is not a string")
+            schema_path = (root_dir / schema_rel).resolve()
+            schema_path.relative_to(resolved_root)
+            schemas[schema_version] = json.loads(schema_path.read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        print(f"Cannot resolve extension manifest schemas: {exc}", file=sys.stderr)
+        raise SystemExit(1)
 else:
     try:
         import yaml  # type: ignore[import-not-found]
     except Exception:
         yaml = None  # type: ignore[assignment]
-    schema = None
 
 for service_dir in sorted(ext_dir.iterdir()):
     if not service_dir.is_dir():
@@ -192,7 +201,20 @@ for service_dir in sorted(ext_dir.iterdir()):
         )
         continue
 
-    if schema is not None:
+    if python_ok:
+        schema_version = manifest.get("schema_version") if isinstance(manifest, dict) else None
+        schema = schemas.get(schema_version)
+        if schema is None:
+            schema_errors = True
+            sid = manifest.get("service", {}).get("id") or service_dir.name
+            results.append(
+                {
+                    "service_id": sid,
+                    "status": "error",
+                    "reason": f"Unsupported schema_version: {schema_version}",
+                }
+            )
+            continue
         try:
             jsonschema.validate(manifest, schema)
         except jsonschema.ValidationError as e:  # type: ignore[attr-defined]

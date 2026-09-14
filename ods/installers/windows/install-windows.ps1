@@ -969,7 +969,7 @@ litellm_settings:
                 $manifestLines = Get-Content $manifestPath -ErrorAction SilentlyContinue
                 if (-not $manifestLines) { continue }
 
-                $hasSchema = $manifestLines | Where-Object { $_ -match "schema_version:\s*ods\.services\.v1" }
+                $hasSchema = $manifestLines | Where-Object { $_ -match "schema_version:\s*ods\.services\.v[12]" }
                 if (-not $hasSchema) { continue }
 
                 $category = ""

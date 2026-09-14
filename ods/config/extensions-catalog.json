@@ -1,7 +1,7 @@
 {
-  "generated_at": "2026-09-14T14:36:52Z",
+  "generated_at": "2026-09-14T20:10:53Z",
   "schema_version": "1.0.0",
-  "catalog_revision": "cbe8bacab858e1c1394927117c29487d0fd88edde58274f514909f466d12e38a",
+  "catalog_revision": "22905c395b3cea350f54af9c543a93c9ec3d9d692a6fb0fed39624c4ef274b7e",
   "extensions": [
     {
       "id": "aider",
@@ -4252,21 +4252,146 @@
     },
     {
       "id": "searxng",
-      "manifest_schema_version": "ods.services.v1",
+      "manifest_schema_version": "ods.services.v2",
       "planning": {
         "serviceType": "docker",
-        "version": "0.0.0-legacy",
-        "dataSchemaVersion": "legacy",
+        "version": "2026.3.8",
+        "dataSchemaVersion": "1",
         "odsCompatibility": {
           "minimum": "2.0.0",
-          "maximum": ""
+          "maximum": null
         },
-        "definitionSha256": "sha256:acb62db8b86503c01793525dc25fe3f3d562b6ec3821bddb4f75a9fabfda5197",
-        "composeSha256": "sha256:af6b1ddf0e0bddf58d5e9bc3568453e146a4eb2ecf58e9f24cfd78a55aec23e3",
+        "definitionSha256": "sha256:7b2bdcfceb5871a0f107b8fe1c2b44441e10d78367cdc1f0eb0d9a6ac15ed384",
+        "composeSha256": "sha256:aebfd89f6e5ca09f515e8db5be200b772b9c597a5d6cee5352910a39651971b4",
         "definitionSource": "builtin",
         "composeFile": "compose.yaml",
         "dependsOn": [],
-        "legacy": true
+        "provides": [
+          "web-search@1"
+        ],
+        "requires": [],
+        "optional": [],
+        "conflicts": [],
+        "providerPriority": 0,
+        "requirements": {
+          "platforms": [
+            "linux"
+          ],
+          "architectures": [
+            "amd64",
+            "arm64"
+          ],
+          "containerRuntimes": [
+            "docker"
+          ],
+          "gpuBackends": [
+            "amd",
+            "apple",
+            "cpu",
+            "intel",
+            "jetson",
+            "none",
+            "nvidia",
+            "sycl"
+          ],
+          "minDriverVersion": null
+        },
+        "estimates": {
+          "downloadBytes": 97736439,
+          "diskBytes": 268435456,
+          "cpuMillicores": 1000,
+          "ramBytes": 536870912,
+          "vramBytes": 0,
+          "gpuCount": 0
+        },
+        "resources": {
+          "hostPorts": [
+            {
+              "port": 8888,
+              "protocol": "tcp"
+            }
+          ],
+          "containerPorts": [
+            8080
+          ],
+          "networks": [],
+          "volumes": [],
+          "devices": [],
+          "exclusive": [],
+          "linuxCapabilities": [],
+          "hostPermissions": [
+            "host-mount",
+            "network"
+          ]
+        },
+        "configuration": [
+          {
+            "key": "SEARXNG_PORT",
+            "type": "integer",
+            "required": false,
+            "secret": false,
+            "source": "user",
+            "restartBehavior": "service",
+            "validation": {
+              "minimum": 1,
+              "maximum": 65535
+            },
+            "default": 8888
+          },
+          {
+            "key": "SEARXNG_SECRET",
+            "type": "string",
+            "required": true,
+            "secret": true,
+            "source": "generated",
+            "restartBehavior": "service",
+            "validation": {
+              "minLength": 32,
+              "maxLength": 128
+            }
+          }
+        ],
+        "artifacts": {
+          "images": [
+            {
+              "reference": "searxng/searxng:2026.3.8-a563127a2",
+              "digest": "sha256:754a07a64e926a1fc0a8a30cd7a07d08278188f0ef6143e38ad0b22ea8599c55",
+              "downloadBytes": 97736439
+            }
+          ],
+          "builds": []
+        },
+        "lifecycle": {
+          "healthChecks": [
+            "/healthz"
+          ],
+          "readiness": [
+            "healthy"
+          ],
+          "setupHook": null,
+          "migrationHook": null,
+          "rollback": "definition",
+          "timeoutSeconds": 120
+        },
+        "data": [
+          {
+            "path": "config/searxng",
+            "backupClass": "required",
+            "owner": "user",
+            "uninstall": "preserve",
+            "purge": "separate-approval"
+          }
+        ],
+        "trust": {
+          "tier": "bundled",
+          "publisher": "ODS",
+          "definitionSignature": null
+        },
+        "support": {
+          "status": "supported",
+          "url": null
+        },
+        "legacy": false
       },
       "name": "SearXNG (Web Search)",
       "description": "SearXNG (Web Search)",

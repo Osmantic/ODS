@@ -137,6 +137,50 @@ class CatalogTests(unittest.TestCase):
         changed[0]["planning"]["definitionSource"] = "library"
         self.assertNotEqual(first, generator.catalog_revision(changed))
 
+    def test_bundled_searxng_is_a_digest_pinned_v2_canary(self):
+        service_dir = ROOT / "extensions/services/searxng"
+        manifest_path = service_dir / "manifest.yaml"
+        manifest = generator._load_yaml(manifest_path.read_text(encoding="utf-8"))
+        entry = generator.extract_entry(
+            manifest,
+            manifest_path,
+            definition_source="builtin",
+        )
+
+        self.assertIsNotNone(entry)
+        assert entry is not None
+        self.assertEqual(entry["manifest_schema_version"], "ods.services.v2")
+        planning = entry["planning"]
+        self.assertFalse(planning["legacy"])
+        self.assertEqual(planning["provides"], ["web-search@1"])
+        self.assertEqual(planning["requirements"]["platforms"], ["linux"])
+        self.assertEqual(
+            planning["requirements"]["architectures"], ["amd64", "arm64"]
+        )
+        self.assertEqual(
+            planning["estimates"]["downloadBytes"],
+            planning["artifacts"]["images"][0]["downloadBytes"],
+        )
+        secret = next(
+            item
+            for item in planning["configuration"]
+            if item["key"] == "SEARXNG_SECRET"
+        )
+        self.assertTrue(secret["secret"])
+        self.assertEqual(secret["source"], "generated")
+        self.assertNotIn("default", secret)
+        self.assertEqual(planning["data"][0]["uninstall"], "preserve")
+        self.assertEqual(planning["data"][0]["purge"], "separate-approval")
+
+        compose = generator._load_yaml(
+            (service_dir / "compose.yaml").read_text(encoding="utf-8")
+        )
+        image = planning["artifacts"]["images"][0]
+        self.assertEqual(
+            compose["services"]["searxng"]["image"],
+            f'{image["reference"]}@{image["digest"]}',
+        )
+
     def test_v1_planning_projection_is_restricted_to_legacy_fields(self):
         self.manifest(self.services, "legacy")
         entry = generator.generate_catalog(self.library, self.services)[0]

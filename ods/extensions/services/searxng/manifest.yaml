@@ -1,4 +1,4 @@
-schema_version: ods.services.v1
+schema_version: ods.services.v2
 
 compatibility:
   ods_min: "2.0.0"
@@ -6,6 +6,8 @@ compatibility:
 service:
   id: searxng
   name: SearXNG (Web Search)
+  version: "2026.3.8"
+  data_schema_version: "1"
   aliases: [search]
   container_name: ods-searxng
   host_env: SEARXNG_HOST
@@ -24,3 +26,79 @@ service:
     requires: []
     optional: []
   depends_on: []
+  planning:
+    provides: [web-search@1]
+    requires: []
+    optional: []
+    conflicts: []
+    provider_priority: 0
+    requirements:
+      platforms: [linux]
+      architectures: [amd64, arm64]
+      container_runtimes: [docker]
+      gpu_backends: [amd, nvidia, apple, cpu, intel, sycl, jetson, none]
+      min_driver_version: null
+    estimates:
+      download_bytes: 97736439
+      disk_bytes: 268435456
+      cpu_millicores: 1000
+      ram_bytes: 536870912
+      vram_bytes: 0
+      gpu_count: 0
+    resources:
+      host_ports:
+        - port: 8888
+          protocol: tcp
+      container_ports: [8080]
+      networks: []
+      volumes: []
+      devices: []
+      exclusive: []
+      linux_capabilities: []
+      host_permissions: [network, host-mount]
+    configuration:
+      - key: SEARXNG_PORT
+        type: integer
+        required: false
+        secret: false
+        source: user
+        restart_behavior: service
+        validation:
+          minimum: 1
+          maximum: 65535
+        default: 8888
+      - key: SEARXNG_SECRET
+        type: string
+        required: true
+        secret: true
+        source: generated
+        restart_behavior: service
+        validation:
+          minLength: 32
+          maxLength: 128
+    artifacts:
+      images:
+        - reference: searxng/searxng:2026.3.8-a563127a2
+          digest: sha256:754a07a64e926a1fc0a8a30cd7a07d08278188f0ef6143e38ad0b22ea8599c55
+          download_bytes: 97736439
+      builds: []
+    lifecycle:
+      health_checks: ["/healthz"]
+      readiness: [healthy]
+      setup_hook: null
+      migration_hook: null
+      rollback: definition
+      timeout_seconds: 120
+    data:
+      - path: config/searxng
+        backup_class: required
+        owner: user
+        uninstall: preserve
+        purge: separate-approval
+    trust:
+      tier: bundled
+      publisher: ODS
+      definition_signature: null
+    support:
+      status: supported
+      url: null

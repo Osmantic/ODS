@@ -87,7 +87,7 @@ for root in sys.argv[1:]:
                         m = yaml.safe_load(f)
                 except Exception:
                     break
-                if isinstance(m, dict) and m.get("schema_version") == "ods.services.v1":
+                if isinstance(m, dict) and m.get("schema_version") in {"ods.services.v1", "ods.services.v2"}:
                     s = m.get("service", {})
                     if s.get("id"):
                         ids.add(s["id"])

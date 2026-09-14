@@ -229,7 +229,7 @@
                 },
                 "gpu_backends": {
                   "type": "array",
-                  "items": { "type": "string", "enum": ["amd", "nvidia", "apple", "cpu", "none"] },
+                  "items": { "type": "string", "enum": ["amd", "nvidia", "apple", "cpu", "intel", "sycl", "jetson", "none"] },
                   "minItems": 1,
                   "uniqueItems": true
                 },

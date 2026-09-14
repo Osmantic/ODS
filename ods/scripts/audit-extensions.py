@@ -462,11 +462,11 @@ def validate_records(
         manifest = record.manifest
         service = record.service
 
-        if manifest.get("schema_version") != "ods.services.v1":
+        if manifest.get("schema_version") not in {"ods.services.v1", "ods.services.v2"}:
             record.add_issue(
                 "error",
                 "schema-version-invalid",
-                "schema_version must be ods.services.v1",
+                "schema_version must be ods.services.v1 or ods.services.v2",
                 path=record.manifest_path,
             )
 

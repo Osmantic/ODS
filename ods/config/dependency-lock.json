@@ -235,7 +235,7 @@
       "id": "searxng.search",
       "type": "image",
       "path": "extensions/services/searxng/compose.yaml",
-      "value": "searxng/searxng:2026.3.8-a563127a2"
+      "value": "searxng/searxng:2026.3.8-a563127a2@sha256:754a07a64e926a1fc0a8a30cd7a07d08278188f0ef6143e38ad0b22ea8599c55"
     },
     {
       "id": "tailscale.sidecar",

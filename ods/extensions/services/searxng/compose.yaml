@@ -1,6 +1,6 @@
 services:
   searxng:
-    image: searxng/searxng:2026.3.8-a563127a2
+    image: searxng/searxng:2026.3.8-a563127a2@sha256:754a07a64e926a1fc0a8a30cd7a07d08278188f0ef6143e38ad0b22ea8599c55
     container_name: ods-searxng
     restart: unless-stopped
     security_opt:

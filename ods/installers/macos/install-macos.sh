@@ -2299,8 +2299,9 @@ else
             [[ ! -f "$MANIFEST_PATH" ]] && MANIFEST_PATH="${SVC_DIR}manifest.yml"
             [[ ! -f "$MANIFEST_PATH" ]] && continue
 
-            # Quick manifest validation: must contain schema_version: ods.services.v1
-            if ! grep -q "schema_version:.*ods\.services\.v1" "$MANIFEST_PATH" 2>/dev/null; then
+            # Quick compatibility gate; authoritative structure validation is
+            # handled by scripts/validate-manifest-schema.sh.
+            if ! grep -Eq "schema_version:.*ods\.services\.v[12]" "$MANIFEST_PATH" 2>/dev/null; then
                 continue
             fi
 

@@ -137,7 +137,7 @@ for service_dir in _all_service_dirs:
         if not isinstance(m, dict):
             print(f'# SKIP: {manifest_path}: not a valid YAML mapping', file=sys.stderr)
             continue
-        if m.get("schema_version") != "ods.services.v1":
+        if m.get("schema_version") not in {"ods.services.v1", "ods.services.v2"}:
             continue
         s = m.get("service")
         if not isinstance(s, dict):

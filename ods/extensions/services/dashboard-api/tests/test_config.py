@@ -292,6 +292,19 @@ class TestLoadExtensionManifests:
         assert len(features) == 1
         assert features[0]["id"] == "test-feature"
 
+    def test_loads_v2_manifest_through_runtime_registry(self, tmp_path):
+        svc_dir = tmp_path / "test-service"
+        svc_dir.mkdir()
+        (svc_dir / "manifest.yaml").write_text(
+            VALID_MANIFEST.replace("ods.services.v1", "ods.services.v2", 1)
+        )
+
+        services, features, errors = load_extension_manifests(tmp_path, "nvidia")
+
+        assert errors == []
+        assert services["test-service"]["port"] == 8080
+        assert features[0]["id"] == "test-feature"
+
     def test_normalizes_llm_contract(self, tmp_path):
         svc_dir = tmp_path / "llm-app"
         svc_dir.mkdir()

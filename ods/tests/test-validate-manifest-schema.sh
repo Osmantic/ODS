@@ -314,6 +314,27 @@ grep -q "secret_values" "$TMP_DIR/v2-secret-values.log" ||
     fail "v2 unknown-field failure did not identify the rejected field"
 pass "v2 planning schema rejects secret values and unknown fields"
 
+python3 - "$ROOT_DIR" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+root = Path(sys.argv[1])
+checks = {
+    "lib/service-registry.sh": r'not in \{"ods\.services\.v1", "ods\.services\.v2"\}',
+    "scripts/resolve-compose-stack.sh": r'not in \{"ods\.services\.v1", "ods\.services\.v2"\}',
+    "extensions/services/dashboard-api/config.py": r'not in \{"ods\.services\.v1", "ods\.services\.v2"\}',
+    "scripts/audit-extensions.py": r'not in \{"ods\.services\.v1", "ods\.services\.v2"\}',
+    "installers/macos/install-macos.sh": r'ods\\\.services\\\.v\[12\]',
+    "installers/windows/install-windows.ps1": r'ods\\\.services\\\.v\[12\]',
+}
+for relative, pattern in checks.items():
+    source = (root / relative).read_text(encoding="utf-8")
+    if re.search(pattern, source) is None:
+        raise SystemExit(f"{relative} does not admit both supported manifest schemas")
+PY
+pass "legacy runtime readers admit v1 and v2 manifests during migration"
+
 write_base_manifest
 mutate_manifest host-systemd
 check_case "host-systemd service type" valid

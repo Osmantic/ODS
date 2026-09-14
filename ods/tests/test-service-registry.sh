@@ -125,7 +125,7 @@ import yaml, sys
 with open(sys.argv[1]) as f:
     m = yaml.safe_load(f)
 errors = []
-if m.get('schema_version') != 'ods.services.v1':
+if m.get('schema_version') not in {'ods.services.v1', 'ods.services.v2'}:
     errors.append('missing/wrong schema_version')
 s = m.get('service', {})
 if not isinstance(s, dict):
@@ -201,7 +201,7 @@ for service_dir in service_dirs:
         manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
     except Exception:
         continue
-    if not isinstance(manifest, dict) or manifest.get("schema_version") != "ods.services.v1":
+    if not isinstance(manifest, dict) or manifest.get("schema_version") not in {"ods.services.v1", "ods.services.v2"}:
         continue
     service = manifest.get("service")
     if not isinstance(service, dict):

@@ -340,7 +340,7 @@ def load_extension_manifests(
                 continue
 
             manifest = _read_manifest_file(path)
-            if manifest.get("schema_version") != "ods.services.v1":
+            if manifest.get("schema_version") not in {"ods.services.v1", "ods.services.v2"}:
                 logger.warning("Skipping manifest with unsupported schema_version: %s", path)
                 errors.append({"file": str(path), "error": "Unsupported schema_version"})
                 continue

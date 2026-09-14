@@ -236,7 +236,7 @@ PY
 
 header "1" "Valid Project Passes Cleanly"
 root=$(make_fixture_root)
-trap 'rm -rf "$root" "${root2:-}" "${root3:-}" "${root4:-}" "${root5:-}" "${root6:-}" "${root7:-}"' EXIT
+trap 'rm -rf "$root" "${root2:-}" "${root3:-}" "${root4:-}" "${root5:-}" "${root6:-}" "${root7:-}" "${root8:-}"' EXIT
 create_valid_project "$root"
 report=$(mktemp)
 if run_audit "$root" --json > "$report"; then
@@ -383,6 +383,30 @@ if run_audit "$root7" --json > "$report7" 2>/dev/null; then
     pass "external_port_default=0 fixture audits successfully"
 else
     fail "external_port_default=0 should be allowed for internal-only services"
+fi
+
+header "8" "Manifest v2 Is Accepted By The Compatibility Audit"
+root8=$(make_fixture_root)
+create_valid_project "$root8"
+python3 - "$root8/extensions/services/search/manifest.yaml" <<'PY'
+import yaml
+import sys
+path = sys.argv[1]
+doc = yaml.safe_load(open(path, encoding="utf-8"))
+doc["schema_version"] = "ods.services.v2"
+with open(path, "w", encoding="utf-8") as handle:
+    yaml.safe_dump(doc, handle, sort_keys=False)
+PY
+report8=$(mktemp)
+if run_audit "$root8" --json > "$report8" 2>/dev/null; then
+    pass "compatibility audit accepts a v2 manifest"
+else
+    fail "compatibility audit must accept supported v2 manifests"
+fi
+if assert_json_value "$report8" "not any(issue['code'] == 'schema-version-invalid' for svc in payload['services'] for issue in svc['issues'])" >/dev/null; then
+    pass "v2 manifest has no legacy schema-version error"
+else
+    fail "v2 manifest was reported as an unsupported schema"
 fi
 
 echo ""

@@ -78,6 +78,12 @@ else
     fail "Output missing compatibility status"
 fi
 
+if echo "$out" | grep -qE '^searxng[[:space:]]+ok'; then
+    pass "Version-aware validator accepts the bundled SearXNG v2 manifest"
+else
+    fail "Version-aware validator did not accept the bundled SearXNG v2 manifest"
+fi
+
 echo ""
 echo "Result: $PASSED passed, $FAILED failed"
 [[ $FAILED -eq 0 ]]
