@@ -24,6 +24,8 @@ FAKE_ODS="$TMP/ods"
 mkdir -p "$FAKE_ODS/.backups"
 # minimal marker so 'is this a ODS dir' check passes
 mkdir -p "$FAKE_ODS/data"
+# ods-restore.sh sources $ODS_DIR/lib/*.sh at startup (rsync.sh, backup-paths.sh).
+cp -R "$SCRIPT_DIR/../lib" "$FAKE_ODS/lib"
 
 # Create a minimal backup (manifest only, no data dirs)
 BID="20260101-000000"
