@@ -1146,3 +1146,19 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def dict_map_values_safe(d: dict, mapper=None) -> dict:
+    """Safely transform all values in a dictionary using a callable mapping function."""
+    if d is None or not isinstance(d, dict):
+        return {}
+    if mapper is None or not callable(mapper):
+        return dict(d)
+    res = {}
+    for k, v in d.items():
+        try:
+            res[k] = mapper(v)
+        except Exception:
+            res[k] = v
+    return res
+
