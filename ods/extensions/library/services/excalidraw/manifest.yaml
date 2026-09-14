@@ -1,0 +1,40 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: excalidraw
+  name: Excalidraw (Virtual Whiteboard)
+  description: "Self-hosted virtual whiteboard for sketching hand-drawn style diagrams, architecture schemas, and wireframes locally."
+  aliases: [whiteboard, diagramming]
+  container_name: ods-excalidraw
+  default_host: excalidraw
+  port: 80
+  external_port_env: EXCALIDRAW_PORT
+  external_port_default: 7857
+  health: /
+  ui_path: /
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [whiteboard, diagram, sketching, architecture]
+  env_vars:
+    - key: EXCALIDRAW_PORT
+      description: "Published HTTP port"
+      default: "7857"
+features:
+  - id: virtual-whiteboard
+    name: Virtual Whiteboard
+    description: "Create hand-drawn style architecture diagrams, mind maps, and wireframes locally"
+    icon: Edit3
+    category: productivity
+    requirements:
+      services: [excalidraw]
+      vram_gb: 0
+    enabled_services_all: [excalidraw]
+    setup_time: "~30 seconds"
+    priority: 34
+    launch:
+      type: service
+      service: excalidraw

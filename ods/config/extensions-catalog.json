@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-13T16:53:56Z",
+  "generated_at": "2026-09-14T15:40:06Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -896,6 +896,58 @@
       "tags": [],
       "features": [],
       "catalog_source": "builtin",
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
+      "id": "excalidraw",
+      "name": "Excalidraw (Virtual Whiteboard)",
+      "description": "Self-hosted virtual whiteboard for sketching hand-drawn style diagrams, architecture schemas, and wireframes locally.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 80,
+      "external_port_default": 7857,
+      "health_endpoint": "/",
+      "env_vars": [
+        {
+          "key": "EXCALIDRAW_PORT",
+          "description": "Published HTTP port",
+          "default": "7857"
+        }
+      ],
+      "tags": [
+        "whiteboard",
+        "diagram",
+        "sketching",
+        "architecture"
+      ],
+      "features": [
+        {
+          "id": "virtual-whiteboard",
+          "name": "Virtual Whiteboard",
+          "description": "Create hand-drawn style architecture diagrams, mind maps, and wireframes locally",
+          "icon": "Edit3",
+          "category": "productivity",
+          "requirements": {
+            "services": [
+              "excalidraw"
+            ],
+            "vram_gb": 0
+          },
+          "enabled_services_all": [
+            "excalidraw"
+          ],
+          "setup_time": "~30 seconds",
+          "priority": 34,
+          "launch": {
+            "type": "service",
+            "service": "excalidraw"
+          }
+        }
+      ],
       "configuration_scope": "declared-environment-keys"
     },
     {
@@ -3153,6 +3205,28 @@
           ]
         }
       ],
+      "catalog_source": "builtin",
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
+      "id": "pixel-inference",
+      "name": "Pixel inference sharing (development)",
+      "description": "Disabled by default. Owner-provisioned, inference-only device credentials; loopback transport only. Does not provide Pixel agent or computer access. Private state must be provisioned before service activation. Native Windows private-state support and guided setup are not yet implemented.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [
+        "model-router"
+      ],
+      "port": 8093,
+      "external_port_default": 4005,
+      "health_endpoint": "/health",
+      "env_vars": [],
+      "tags": [],
+      "features": [],
+      "startup_check": false,
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
     },

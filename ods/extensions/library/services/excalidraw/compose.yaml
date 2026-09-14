@@ -1,0 +1,19 @@
+services:
+  excalidraw:
+    image: excalidraw/excalidraw:latest
+    container_name: ods-excalidraw
+    restart: unless-stopped
+    ports:
+      - "${EXCALIDRAW_PORT:-7857}:80"
+    environment:
+      - NODE_ENV=production
+    networks:
+      - ods-network
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+
+networks:
+  ods-network:
+    external: true
