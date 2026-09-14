@@ -4223,6 +4223,7 @@ def test_extension_operation_lock_falls_back_when_primary_lock_parent_cannot_cre
 
     data_dir = tmp_path / "data"
     data_dir.mkdir()
+    monkeypatch.delenv("ODS_ASSISTANT_TRANSACTIONS_ENABLED", raising=False)
     primary_lock = data_dir / ".extensions-lock"
     primary_lock.touch()
     fallback_lock = data_dir / "config" / ".extensions-lock"
@@ -4250,16 +4251,107 @@ def test_extension_operation_lock_falls_back_when_primary_lock_parent_cannot_cre
         assert (fallback_lock.parent / ".extension-operation-locks").is_dir()
 
 
-def test_transaction_factory_contends_with_single_extension_route_lock(
-    tmp_path, monkeypatch,
-):
-    """Composite and legacy mutations must use the exact same lock inode."""
-    from extension_operation_locks import FileServiceLockFactory, ServiceLockTimeout
-    from extension_transaction_executor import ExecutionBinding
+def test_assistant_first_operation_lock_uses_exact_data_root(tmp_path, monkeypatch):
     from routers import extensions as ext_module
 
     data_dir = tmp_path / "data"
     data_dir.mkdir()
+    observed = []
+
+    @contextlib.contextmanager
+    def guarded(parent, service_ids, *, timeout=None):
+        observed.append((Path(parent), tuple(service_ids), timeout))
+        yield tuple(service_ids)
+
+    def unexpected_fallback():
+        raise AssertionError("Assistant First must not select a fallback lock parent")
+
+    monkeypatch.setenv("ODS_ASSISTANT_TRANSACTIONS_ENABLED", "true")
+    monkeypatch.setattr(ext_module, "DATA_DIR", data_dir)
+    monkeypatch.setattr(ext_module, "lock_mutation_and_services", guarded)
+    monkeypatch.setattr(ext_module, "_extensions_lock_path", unexpected_fallback)
+
+    with ext_module._extension_operation_lock("aider"):
+        pass
+
+    assert observed == [
+        (
+            data_dir,
+            ("aider",),
+            ext_module._ASSISTANT_FIRST_MUTATION_TIMEOUT_SECONDS,
+        )
+    ]
+
+
+def test_serialized_extension_operation_reports_global_guard_contention(monkeypatch):
+    from routers import extensions as ext_module
+
+    @contextlib.contextmanager
+    def busy(_service_id):
+        raise ext_module.ServiceLockTimeout("service-lock-timeout:private-name")
+        yield
+
+    monkeypatch.setattr(ext_module, "_extension_operation_lock", busy)
+
+    @ext_module._serialize_extension_operation
+    def mutate(service_id):
+        return service_id
+
+    with pytest.raises(HTTPException) as raised:
+        mutate("aider")
+
+    assert raised.value.status_code == 409
+    assert raised.value.detail == {
+        "code": "extension-mutation-busy",
+        "message": (
+            "Another ODS update or extension mutation is in progress. "
+            "Wait for it to finish, then retry."
+        ),
+    }
+    assert "private-name" not in str(raised.value.detail)
+
+
+def test_serialized_extension_operation_reports_unsafe_guard_without_details(
+    monkeypatch,
+):
+    from routers import extensions as ext_module
+
+    @contextlib.contextmanager
+    def unsafe(_service_id):
+        raise ext_module.ServiceLockError("secret-path-or-inode-detail")
+        yield
+
+    monkeypatch.setattr(ext_module, "_extension_operation_lock", unsafe)
+
+    @ext_module._serialize_extension_operation
+    def mutate(service_id):
+        return service_id
+
+    with pytest.raises(HTTPException) as raised:
+        mutate("aider")
+
+    assert raised.value.status_code == 503
+    assert raised.value.detail["code"] == "extension-mutation-guard-unavailable"
+    assert "secret-path-or-inode-detail" not in str(raised.value.detail)
+
+
+def test_transaction_factory_contends_with_single_extension_route_lock(
+    tmp_path, monkeypatch,
+):
+    """Composite and legacy mutations must use the exact same service lock inode."""
+    from extension_operation_locks import (
+        FileServiceLockFactory,
+        ServiceLockTimeout,
+        operation_lock_directory,
+    )
+    from extension_transaction_executor import ExecutionBinding
+    from routers import extensions as ext_module
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(mode=0o700)
+    if os.name == "posix":
+        data_dir.chmod(0o700)
+    operation_lock_directory(data_dir)
     primary_lock = data_dir / ".extensions-lock"
     monkeypatch.setattr(
         ext_module,

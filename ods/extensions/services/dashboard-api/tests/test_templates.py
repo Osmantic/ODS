@@ -233,6 +233,28 @@ async def test_template_preview_not_found():
 
 
 @pytest.mark.asyncio
+async def test_template_apply_requires_composite_transaction_in_assistant_first(
+    monkeypatch,
+):
+    from fastapi import HTTPException
+    from routers.templates import apply_template
+
+    monkeypatch.setenv("ODS_ASSISTANT_TRANSACTIONS_ENABLED", "true")
+
+    with pytest.raises(HTTPException) as exc_info:
+        await apply_template("test-tmpl", api_key="test")
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == {
+        "code": "assistant-transaction-required",
+        "message": (
+            "Assistant First template changes require an approved composite "
+            "extension transaction."
+        ),
+    }
+
+
+@pytest.mark.asyncio
 async def test_template_apply_additive(tmp_path):
     """Apply enables services that aren't already running."""
     mock_templates = [{

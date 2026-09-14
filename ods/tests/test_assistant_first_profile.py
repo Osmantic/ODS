@@ -186,6 +186,12 @@ class AssistantFirstProfileTests(unittest.TestCase):
         base = yaml.safe_load(
             (ROOT / "docker-compose.base.yml").read_text(encoding="utf-8")
         )
+        assistant_fragment = yaml.safe_load(
+            (
+                ROOT
+                / "extensions/services/pixel-edge/compose.assistant-first.yaml"
+            ).read_text(encoding="utf-8")
+        )
         self.assertIn("--assistant-first", installer)
         self.assertIn('ODS_INSTALL_PROFILE="${ODS_INSTALL_PROFILE:-legacy}"', installer)
         self.assertIn("fresh installs during public beta", installer)
@@ -201,6 +207,15 @@ class AssistantFirstProfileTests(unittest.TestCase):
             "ODS_ASSISTANT_TRANSACTIONS_ENABLED=${ODS_ASSISTANT_TRANSACTIONS_ENABLED:-false}",
             base["services"]["dashboard-api"]["environment"],
         )
+        self.assertEqual(
+            assistant_fragment["services"]["dashboard-api"]["user"],
+            "${ODS_UID:-1000}:${ODS_GID:-1000}",
+        )
+        self.assertIn("data/.extension-operation-locks", directories)
+        self.assertIn("umask 077 && mkdir -p", directories)
+        self.assertIn("Assistant First requires ODS_UID to match", directories)
+        self.assertIn("not yet qualified for rootless Docker", directories)
+        self.assertIn("data-directory custody is unsafe", directories)
 
     @unittest.skipUnless(shutil.which("docker"), "Docker CLI is unavailable")
     def test_candidate_minimum_compose_renders_without_optional_services(self) -> None:
@@ -227,6 +242,8 @@ class AssistantFirstProfileTests(unittest.TestCase):
             "PIXEL_INGRESS_GID": "1234",
             "PIXEL_INGRESS_RUNTIME_DIR": "/tmp/ods-assistant-first-ingress",
             "PIXEL_PREVIEW_RUNTIME_DIR": "/tmp/ods-assistant-first-preview",
+            "ODS_UID": "2345",
+            "ODS_GID": "3456",
         }
         rendered = subprocess.run(
             command,
@@ -236,9 +253,14 @@ class AssistantFirstProfileTests(unittest.TestCase):
             text=True,
             capture_output=True,
         )
-        services = set(json.loads(rendered.stdout)["services"])
+        rendered_compose = json.loads(rendered.stdout)
+        services = set(rendered_compose["services"])
         self.assertEqual(services, MINIMUM_SERVICES)
         self.assertTrue(EXTRACTED_OPTIONAL.isdisjoint(services))
+        self.assertEqual(
+            rendered_compose["services"]["dashboard-api"]["user"],
+            "2345:3456",
+        )
 
 
 if __name__ == "__main__":

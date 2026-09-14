@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import os
 
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -14,6 +15,14 @@ logger = logging.getLogger(__name__)
 _BASE_COMPOSE_SERVICES = frozenset({"llama-server", "open-webui", "dashboard", "dashboard-api"})
 
 router = APIRouter(tags=["templates"])
+_ENABLED_VALUES = frozenset({"1", "true", "yes", "on"})
+
+
+def _assistant_transactions_enabled() -> bool:
+    return (
+        os.environ.get("ODS_ASSISTANT_TRANSACTIONS_ENABLED", "").strip().casefold()
+        in _ENABLED_VALUES
+    )
 
 
 def _runtime_dependency_order(
@@ -157,6 +166,17 @@ async def apply_template(template_id: str, api_key: str = Depends(verify_api_key
     auto_enable_deps=True — transitive deps are resolved and activated
     before each service.
     """
+    if _assistant_transactions_enabled():
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "assistant-transaction-required",
+                "message": (
+                    "Assistant First template changes require an approved "
+                    "composite extension transaction."
+                ),
+            },
+        )
     template = next((t for t in TEMPLATES if t["id"] == template_id), None)
     if not template:
         raise HTTPException(status_code=404, detail=f"Template not found: {template_id}")

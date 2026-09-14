@@ -79,6 +79,94 @@ def test_factory_resolves_parent_once_per_acquisition(tmp_path):
     assert calls == [True]
 
 
+def test_factory_creates_a_missing_private_lock_root(tmp_path):
+    lock_root = tmp_path / "locks"
+    factory = locks.FileServiceLockFactory(lock_root, timeout=1)
+
+    with factory.lock_services(object(), ["documents"]):
+        assert (lock_root / ".extension-operation-locks").is_dir()
+    if os.name == "posix":
+        assert lock_root.stat().st_mode & 0o777 == 0o700
+
+
+def test_mutation_guard_precedes_sorted_service_locks(tmp_path, monkeypatch):
+    entered = []
+    exited = []
+
+    @contextlib.contextmanager
+    def recording_lock(lock_path, *, timeout=None):
+        del timeout
+        entered.append(lock_path.name)
+        try:
+            yield
+        finally:
+            exited.append(lock_path.name)
+
+    monkeypatch.setattr(locks, "exclusive_file_lock", recording_lock)
+
+    with locks.lock_mutation_and_services(
+        tmp_path, ["voice", "documents", "voice"], timeout=5
+    ) as service_ids:
+        assert service_ids == ("documents", "voice")
+
+    assert entered == [
+        locks.operation_lock_path(
+            tmp_path, locks.MUTATION_GUARD_SERVICE_ID
+        ).name,
+        locks.operation_lock_path(tmp_path, "documents").name,
+        locks.operation_lock_path(tmp_path, "voice").name,
+    ]
+    assert exited == list(reversed(entered))
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX owner/mode contract")
+def test_mutation_guard_directory_is_private_and_repairs_owner_controlled_mode(
+    tmp_path,
+):
+    guard = locks.mutation_guard_path(tmp_path)
+    assert guard.parent.stat().st_mode & 0o777 == 0o700
+
+    guard.parent.chmod(0o755)
+    with pytest.raises(
+        locks.ServiceLockError, match="mutation-guard-directory-mode-unsafe"
+    ):
+        locks.mutation_guard_path(tmp_path)
+
+    assert locks.mutation_guard_path(tmp_path, repair_mode=True) == guard
+    assert guard.parent.stat().st_mode & 0o777 == 0o700
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX owner contract")
+def test_mutation_guard_rejects_foreign_owned_directory(tmp_path, monkeypatch):
+    guard_dir = locks.operation_lock_directory(tmp_path)
+    monkeypatch.setattr(locks.os, "geteuid", lambda: guard_dir.stat().st_uid + 1)
+
+    with pytest.raises(
+        locks.ServiceLockError, match="mutation-guard-parent-owner-unsafe"
+    ):
+        locks.mutation_guard_path(tmp_path, repair_mode=True)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX parent mode contract")
+def test_mutation_guard_rejects_group_writable_parent(tmp_path):
+    tmp_path.chmod(0o770)
+    try:
+        with pytest.raises(
+            locks.ServiceLockError, match="mutation-guard-parent-mode-unsafe"
+        ):
+            locks.mutation_guard_path(tmp_path, repair_mode=True)
+    finally:
+        tmp_path.chmod(0o700)
+
+
+def test_global_lock_validates_service_ids_before_creating_guard(tmp_path):
+    with pytest.raises(locks.ServiceLockError, match="invalid-service-id"):
+        with locks.lock_mutation_and_services(tmp_path, ["../voice"]):
+            pass
+
+    assert not (tmp_path / ".extension-operation-locks").exists()
+
+
 @pytest.mark.parametrize("timeout", [-1, float("inf"), float("nan"), True, "1"])
 def test_invalid_timeout_fails_before_lock_directory_creation(tmp_path, timeout):
     with pytest.raises(locks.ServiceLockError, match="invalid-lock-timeout"):
@@ -86,6 +174,17 @@ def test_invalid_timeout_fails_before_lock_directory_creation(tmp_path, timeout)
             pass
 
     assert not (tmp_path / ".extension-operation-locks").exists()
+
+
+@pytest.mark.parametrize("timeout", [-1, float("inf"), float("nan"), True, "1"])
+def test_exclusive_lock_rejects_invalid_timeout_before_file_creation(
+    tmp_path, timeout
+):
+    lock_path = tmp_path / "direct.lock"
+    with pytest.raises(locks.ServiceLockError, match="invalid-lock-timeout"):
+        with locks.exclusive_file_lock(lock_path, timeout=timeout):
+            pass
+    assert not lock_path.exists()
 
 
 def test_timeout_releases_already_acquired_composite_prefix(tmp_path):
@@ -170,9 +269,9 @@ def test_symlinked_lock_file_is_rejected(tmp_path):
     assert target.read_text(encoding="utf-8") == "unchanged"
 
 
-def test_hard_linked_lock_file_is_rejected(tmp_path):
+def test_hardlinked_lock_file_is_rejected(tmp_path):
     lock_path = locks.operation_lock_path(tmp_path, "documents")
-    target = tmp_path / "unrelated"
+    target = tmp_path / "unrelated-hardlink-target"
     target.write_bytes(b"unchanged")
     try:
         os.link(target, lock_path)

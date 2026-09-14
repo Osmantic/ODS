@@ -67,16 +67,18 @@ evidence fails closed and enters the existing reconciliation path. Execution
 receipts return the stored plan hash from the executor result rather than
 independently reflecting request input.
 
-Single-extension Dashboard mutations and the composite executor now share one
-per-service file-lock implementation and namespace under the selected durable
-lock parent (`<ODS_DATA_DIR>` or its existing writable config fallback).
+Single-extension Dashboard mutations, the composite executor, and Assistant
+First source update/rollback now share one file-lock implementation and namespace
+under `<ODS_DATA_DIR>/.extension-operation-locks`. Mutations acquire one global
+guard before any service locks; update and rollback retain its open descriptor
+across process replacement for their complete mutation and recovery window.
 Service IDs are validated before path creation, filenames are SHA-256-derived,
-symlinked directories and files fail closed, and composite lock sets are
-deduplicated and acquired in lexical service-ID order before caller code can
-run. A bounded composite acquisition unwinds every already-held lock if any
-later lock times out. The existing global `.extensions-lock` remains an
-additional legacy filesystem mutex; it is not the transaction collision
-boundary.
+symlinked or multiply-linked files and unsafe ownership/modes fail closed, and
+composite lock sets are deduplicated and acquired in lexical service-ID order
+before caller code can run. A bounded acquisition unwinds every already-held
+lock if any later lock times out.
+The existing global `.extensions-lock` remains an additional legacy filesystem
+mutex; it is not the Assistant First transaction collision boundary.
 
 `ServiceLockFactory` receives the same immutable `(transaction ID, plan hash)`
 binding as lifecycle adapters and observations. The local file-lock factory
@@ -92,7 +94,9 @@ transaction ID and plan hash. Invalid grants unwind their held lock prefix.
 Expiry releases an idle lease, while an in-flight mutation pins the lock set
 until that mutation exits; expired lease IDs cannot be renewed or replayed.
 Only one mutation may be active under a lease at a time, and it may address
-only services covered by the exact grant.
+only services covered by the exact grant. The global source/extension guard is
+orthogonal to that transaction-bound host lease: it prevents cross-process core
+and extension mutation, while the lease preserves per-plan host custody.
 
 The host agent now exposes authenticated, transaction-feature-gated POST
 operations to acquire, renew, inspect, and release this lease. Requests use a
@@ -118,8 +122,8 @@ crash/restart recovery evidence are implemented and qualified.
 ODS does not yet have production lifecycle adapters with durable, synchronous
 completion evidence. Existing single-extension endpoints may queue work, and a
 submitted or HTTP 202 operation is not completion. Enabling mutation before
-those adapters and cross-path locks are qualified would create false-success
-and collision risks.
+those adapters and installed cross-path lock behavior are qualified would create
+false-success and collision risks.
 
 Lifecycle execution therefore remains unavailable by default and in the
 production runtime. The next phase must add the host-owned adapter and lease

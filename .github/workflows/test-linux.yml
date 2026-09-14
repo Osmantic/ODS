@@ -322,6 +322,8 @@ jobs:
         run: |
           bash tests/test-update-rollback-contract.sh
           bash tests/test-update-assistant-first-snapshot.sh
+          bash tests/test-update-assistant-first-preflight.sh
+          bash tests/test-update-mutation-guard.sh
           bash tests/test-cli-update-verification.sh
           bash tests/test-ods-cli-update-verification.sh
 

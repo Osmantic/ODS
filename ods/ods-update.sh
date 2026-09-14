@@ -190,6 +190,62 @@ is_assistant_first_install() {
     [[ "$(env_file_value ODS_INSTALL_PROFILE)" == "assistant-first" ]]
 }
 
+_assistant_first_mutation_guard_held() {
+    local descriptor="${ODS_MUTATION_GUARD_FD:-}" python_cmd=""
+    [[ "$descriptor" =~ ^[0-9]+$ ]] || return 1
+    [[ -f "${INSTALL_DIR}/scripts/run-with-extension-mutation-guard.py" \
+        && ! -L "${INSTALL_DIR}/scripts/run-with-extension-mutation-guard.py" \
+        && -f "${INSTALL_DIR}/lib/python-cmd.sh" \
+        && ! -L "${INSTALL_DIR}/lib/python-cmd.sh" ]] || return 1
+    # The marker is not trusted by itself. Bind the inherited descriptor to the
+    # canonical guard inode and confirm (or safely acquire) its live flock.
+    # shellcheck source=lib/python-cmd.sh
+    . "${INSTALL_DIR}/lib/python-cmd.sh" >/dev/null 2>&1 || return 1
+    python_cmd=$(ods_detect_python_cmd 2>/dev/null || true)
+    [[ -n "$python_cmd" ]] || return 1
+    "$python_cmd" "${INSTALL_DIR}/scripts/run-with-extension-mutation-guard.py" \
+        --lock-parent "${INSTALL_DIR}/data" \
+        --verify-held-fd "$descriptor" >/dev/null 2>&1
+}
+
+_run_with_assistant_first_mutation_guard() {
+    local command="$1" python_cmd="" guard_status=0
+    shift || true
+
+    [[ -f "${INSTALL_DIR}/scripts/run-with-extension-mutation-guard.py" \
+        && ! -L "${INSTALL_DIR}/scripts/run-with-extension-mutation-guard.py" ]] || {
+        log_error "Assistant First update coordination support is unavailable."
+        return 74
+    }
+    [[ -f "${INSTALL_DIR}/lib/python-cmd.sh" \
+        && ! -L "${INSTALL_DIR}/lib/python-cmd.sh" ]] || {
+        log_error "Python command resolution is unavailable for update coordination."
+        return 74
+    }
+
+    # shellcheck source=lib/python-cmd.sh
+    if ! . "${INSTALL_DIR}/lib/python-cmd.sh"; then
+        log_error "Python command resolution could not be loaded."
+        return 74
+    fi
+    python_cmd=$(ods_detect_python_cmd 2>/dev/null || true)
+    [[ -n "$python_cmd" ]] || {
+        log_error "A runnable Python interpreter is required for update coordination."
+        return 74
+    }
+
+    # Replace this top-level updater process so terminal signals retain the
+    # same PID after the Python lock holder replaces itself with guarded Bash.
+    # Spawning a child here would strand the recovery traps in the child while
+    # HUP/INT/TERM terminates the waiting parent.
+    exec "$python_cmd" "${INSTALL_DIR}/scripts/run-with-extension-mutation-guard.py" \
+        --lock-parent "${INSTALL_DIR}/data" \
+        --timeout "${ODS_MUTATION_GUARD_TIMEOUT:-5}" \
+        -- bash "${SCRIPT_DIR}/ods-update.sh" "$command" "$@" \
+        || guard_status=$?
+    return "$guard_status"
+}
+
 # Assistant First source updates are resolved in a disposable repository so
 # fetching and inspecting a candidate cannot mutate the installed checkout.
 # The exact object is imported into the installed repository only after the
@@ -1046,6 +1102,13 @@ cmd_snapshot() {
 }
 
 cmd_update() {
+    local mutation_guard_status=0
+    if is_assistant_first_install && ! _assistant_first_mutation_guard_held; then
+        _run_with_assistant_first_mutation_guard update "$@" \
+            || mutation_guard_status=$?
+        return "$mutation_guard_status"
+    fi
+
     log_info "Starting ODS update..."
 
     local current_version assistant_first_update=false
@@ -1210,6 +1273,13 @@ cmd_update() {
 #==============================================================================
 
 cmd_rollback() {
+    local mutation_guard_status=0
+    if is_assistant_first_install && ! _assistant_first_mutation_guard_held; then
+        _run_with_assistant_first_mutation_guard rollback "$@" \
+            || mutation_guard_status=$?
+        return "$mutation_guard_status"
+    fi
+
     local target="${1:-}"
     local backup_path=""
 
@@ -1531,6 +1601,9 @@ Environment Variables:
   UPDATE_CHANNEL      stable|beta|nightly (default: stable)
   MAX_BACKUPS         Number of snapshots/backups to retain (default: 10)
   HEALTH_TIMEOUT      Seconds to wait for healthy services (default: 120)
+  ODS_MUTATION_GUARD_TIMEOUT
+                      Seconds to wait for an Assistant First lifecycle mutation
+                      before failing fast (default: 5)
   DASHBOARD_API_PORT  Dashboard API port (default: 3002)
   OLLAMA_PORT         llama-server port (default: 8080)
 

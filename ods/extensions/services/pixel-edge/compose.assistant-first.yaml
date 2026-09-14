@@ -55,6 +55,10 @@ services:
         max-file: "3"
 
   dashboard-api:
+    # Match the installing host identity only for Assistant First so the host
+    # updater and API share owner-private lifecycle locks. Legacy profile user
+    # behavior remains unchanged.
+    user: "${ODS_UID:-1000}:${ODS_GID:-1000}"
     environment:
       PIXEL_EDGE_URL: "http://pixel-edge:9595"
       PIXEL_OPENWEBUI_KEY: "${PIXEL_OPENWEBUI_KEY:?Set PIXEL_OPENWEBUI_KEY in .env}"

@@ -36,7 +36,13 @@ from host_agent_client import (
     request_text as request_agent_text,
 )
 from security import verify_api_key
-from extension_operation_locks import exclusive_file_lock, lock_services
+from extension_operation_locks import (
+    ServiceLockError,
+    ServiceLockTimeout,
+    exclusive_file_lock,
+    lock_mutation_and_services,
+    lock_services,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +52,8 @@ _SERVICE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 _MAX_EXTENSION_BYTES = 50 * 1024 * 1024  # 50 MB
 _LIBRARY_RECEIPT = ".ods-library-receipt.json"
 _LIBRARY_RECEIPT_SCHEMA = 1
+_ENABLED_VALUES = frozenset({"1", "true", "yes", "on"})
+_ASSISTANT_FIRST_MUTATION_TIMEOUT_SECONDS = 5.0
 _extension_digest_cache: dict[str, tuple[tuple, str]] = {}
 _extension_digest_cache_lock = threading.Lock()
 
@@ -1010,6 +1018,22 @@ def _extensions_lock():
 @contextlib.contextmanager
 def _extension_operation_lock(service_id: str):
     """Serialize the complete lifecycle transaction for one extension."""
+    if (
+        os.environ.get("ODS_ASSISTANT_TRANSACTIONS_ENABLED", "").strip().casefold()
+        in _ENABLED_VALUES
+    ):
+        # Core update/rollback and extension mutation must resolve this exact
+        # shared data directory. Never use the legacy config fallback for the
+        # global Assistant First guard or two writers could lock different
+        # inodes while believing they are mutually exclusive.
+        with lock_mutation_and_services(
+            Path(DATA_DIR),
+            [service_id],
+            timeout=_ASSISTANT_FIRST_MUTATION_TIMEOUT_SECONDS,
+        ):
+            yield
+        return
+
     lock_parent = _extensions_lock_path().parent.resolve()
     with lock_services(lock_parent, [service_id]):
         yield
@@ -1021,8 +1045,32 @@ def _serialize_extension_operation(func):
     def wrapped(service_id: str, *args, **kwargs):
         if not _SERVICE_ID_RE.match(service_id):
             return func(service_id, *args, **kwargs)
-        with _extension_operation_lock(service_id):
-            return func(service_id, *args, **kwargs)
+        try:
+            with _extension_operation_lock(service_id):
+                return func(service_id, *args, **kwargs)
+        except ServiceLockTimeout:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "extension-mutation-busy",
+                    "message": (
+                        "Another ODS update or extension mutation is in progress. "
+                        "Wait for it to finish, then retry."
+                    ),
+                },
+            ) from None
+        except ServiceLockError:
+            logger.exception("Safe extension mutation locking is unavailable")
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "extension-mutation-guard-unavailable",
+                    "message": (
+                        "ODS could not verify safe extension mutation coordination. "
+                        "Check the data-directory ownership and retry."
+                    ),
+                },
+            ) from None
 
     return wrapped
 
@@ -1049,7 +1097,19 @@ def _extensions_lock_path() -> Path:
                 prefix=".write-probe-",
             ):
                 pass
-            lock_path.touch(exist_ok=True)
+            lock_path.touch(mode=0o600, exist_ok=True)
+            if os.name == "posix":
+                lock_info = lock_path.lstat()
+                if (
+                    lock_path.is_symlink()
+                    or not stat.S_ISREG(lock_info.st_mode)
+                    or lock_info.st_nlink != 1
+                    or lock_info.st_uid != os.geteuid()
+                    or stat.S_IMODE(lock_info.st_mode) & 0o022
+                ):
+                    raise OSError("Extensions lock file custody is unsafe")
+                if stat.S_IMODE(lock_info.st_mode) != 0o600:
+                    lock_path.chmod(0o600)
             if lock_path != Path(DATA_DIR) / ".extensions-lock":
                 logger.warning("extensions lock falling back to %s", lock_path)
             return lock_path

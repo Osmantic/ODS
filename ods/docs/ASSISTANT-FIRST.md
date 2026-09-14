@@ -11,8 +11,10 @@ Run it from a reviewed checkout:
 ```
 
 The profile currently requires a host qualified for the assistant runtime and
-its separately accepted license. It does not change the default installer
-choice. It also refuses to convert an existing Full, Core, or Custom
+its separately accepted license. The first public-beta path uses rootful Docker;
+rootless Docker fails closed until its remapped container identity can share the
+host updater's owner-private mutation guard. It does not change the default
+installer choice. It also refuses to convert an existing Full, Core, or Custom
 installation because silently removing optional applications from an active
 Compose graph could stop containers the owner still uses.
 
@@ -117,12 +119,31 @@ original source revision before restoring the snapshot and restarting the old
 graph. Full, Core, and Custom retain their established source-update path.
 
 A result requiring extension changes still stops for a separately generated and
-approved composite plan. A cross-process guard that excludes extension mutation
-throughout the complete source-update window is still required; the immediate
-revalidation above detects drift but does not eliminate the final scheduling
-window by itself. Canonical empty-lockfile bootstrap, exact composite upgrade
-execution, combined core/desired-state commit, candidate health qualification,
-adoption, and strict offline artifact custody remain later Phase 5 gates.
+approved composite plan. Assistant First source update and rollback now acquire
+the same owner-private global mutation guard used by extension lifecycle routes.
+The host runner opens the canonical guard under
+`data/.extension-operation-locks`, clears close-on-exec only for that descriptor,
+and replaces itself with the updater so the kernel lock remains held through
+candidate inspection, snapshot, source mutation, migrations, service restart,
+health verification, and recovery. Dashboard mutations acquire this guard
+before their sorted service locks. The legacy bulk template-apply route fails
+closed in Assistant First until it is backed by the approved composite
+transaction executor; template preview remains read-only. Contention fails fast
+with an actionable busy result; unsafe custody fails closed without exposing
+host paths. Read-only routes and the established Full, Core, and Custom update
+paths are unchanged.
+
+The Assistant First Compose fragment runs Dashboard API with the persisted host
+UID/GID so the container and updater address the same owner-private inode. The
+installer creates that directory as mode `0700` and rejects a mismatched owner
+or stale `ODS_UID`; the containing data root must also be host-owned without
+group/world write access so another account cannot replace the guarded inode.
+Native Windows source update/rollback currently fails closed as unqualified
+rather than claiming equivalent descriptor-lock semantics.
+
+Canonical empty-lockfile bootstrap, exact composite upgrade execution, combined
+core/desired-state commit, candidate health qualification, adoption, and strict
+offline artifact custody remain later Phase 5 gates.
 
 ## Evidence boundary
 

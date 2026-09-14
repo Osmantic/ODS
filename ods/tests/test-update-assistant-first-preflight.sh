@@ -13,6 +13,17 @@ for required in git jq; do
 done
 command -v python3 >/dev/null 2>&1 || command -v python >/dev/null 2>&1 \
     || fail "python3 or python is required"
+if command -v python3 >/dev/null 2>&1 \
+    && python3 -c 'import os,sys; sys.exit(0 if os.name == "nt" else 1)' \
+        >/dev/null 2>&1; then
+    echo "[SKIP] Assistant First source updates are not qualified on native Windows"
+    exit 0
+elif command -v python >/dev/null 2>&1 \
+    && python -c 'import os,sys; sys.exit(0 if os.name == "nt" else 1)' \
+        >/dev/null 2>&1; then
+    echo "[SKIP] Assistant First source updates are not qualified on native Windows"
+    exit 0
+fi
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -20,7 +31,8 @@ trap 'rm -rf "$TMP"' EXIT
 REMOTE="$TMP/remote.git"
 SEED="$TMP/seed"
 BIN_DIR="$TMP/bin"
-mkdir -p "$SEED/ods/lib" "$SEED/ods/scripts" "$SEED/ods/config" "$BIN_DIR"
+mkdir -p "$SEED/ods/lib" "$SEED/ods/scripts" "$SEED/ods/config" \
+    "$SEED/ods/extensions/services/dashboard-api" "$BIN_DIR"
 
 git init -q --bare "$REMOTE"
 git init -q "$SEED"
@@ -31,6 +43,10 @@ git -C "$SEED" config core.autocrlf false
 
 cp "$ROOT_DIR/ods-update.sh" "$SEED/ods/ods-update.sh"
 cp "$ROOT_DIR/lib/python-cmd.sh" "$SEED/ods/lib/python-cmd.sh"
+cp "$ROOT_DIR/scripts/run-with-extension-mutation-guard.py" \
+    "$SEED/ods/scripts/run-with-extension-mutation-guard.py"
+cp "$ROOT_DIR/extensions/services/dashboard-api/extension_operation_locks.py" \
+    "$SEED/ods/extensions/services/dashboard-api/extension_operation_locks.py"
 chmod +x "$SEED/ods/ods-update.sh"
 
 cat > "$SEED/ods/lib/update-snapshots.sh" <<'SH'
@@ -279,6 +295,7 @@ prepare_runtime_state() {
         "$install/data/assistant-first/desired-state" \
         "$install/data/backups" \
         "$TMP/$name/runtime-tmp"
+    chmod go-w "$install/data"
     cat > "$install/.env" <<EOF
 ODS_INSTALL_PROFILE=$profile
 ODS_MODE=local

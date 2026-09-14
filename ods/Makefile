@@ -152,6 +152,8 @@ test: ## Run unit and contract tests
 	@bash tests/test-update-script-backup.sh
 	@bash tests/test-update-backup-retention-spaces.sh
 	@bash tests/test-update-assistant-first-snapshot.sh
+	@bash tests/test-update-assistant-first-preflight.sh
+	@bash tests/test-update-mutation-guard.sh
 	@bash tests/test-backup-data-coverage.sh
 	@echo ""
 	@echo "=== backup integrity and restore round-trip ==="

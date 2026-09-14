@@ -35,6 +35,7 @@ else:  # pragma: no cover - branch covered on POSIX CI
 _SERVICE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 _LOCK_DIRECTORY = ".extension-operation-locks"
 _POLL_SECONDS = 0.05
+MUTATION_GUARD_SERVICE_ID = "ods-mutation-guard"
 
 
 class ServiceLockError(RuntimeError):
@@ -59,7 +60,12 @@ def operation_lock_directory(lock_parent: Path) -> Path:
     if lock_dir.is_symlink():
         raise ServiceLockError("operation-lock-directory-is-symlink")
     try:
-        lock_dir.mkdir(parents=True, exist_ok=True)
+        # When a caller supplies a new dedicated lock root, do not let a
+        # group-friendly process umask create a replaceable parent directory.
+        parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        # A newly-created global guard directory must be usable immediately by
+        # the owner without first passing through the updater's repair path.
+        lock_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     except OSError as exc:
         raise ServiceLockError("operation-lock-directory-unavailable") from exc
     if lock_dir.is_symlink():
@@ -83,6 +89,64 @@ def operation_lock_path(lock_parent: Path, service_id: str) -> Path:
     lock_dir = operation_lock_directory(lock_parent)
     lock_name = hashlib.sha256(service_id.encode("utf-8")).hexdigest() + ".lock"
     return lock_dir / lock_name
+
+
+def mutation_guard_path(lock_parent: Path, *, repair_mode: bool = False) -> Path:
+    """Return the owner-private global lifecycle mutation guard.
+
+    Assistant First binds the dashboard API to the installing host UID/GID, so
+    its container and the host updater must see this exact directory and owner.
+    Existing owner-controlled 0755 lock directories may be tightened once by
+    the host updater; writable or foreign-owned directories always fail closed.
+    """
+    # Preserve the established FileServiceLockFactory contract: a caller may
+    # provide a not-yet-created private lock root.  operation_lock_directory()
+    # creates that root and returns its canonical, contained directory.
+    lock_dir = operation_lock_directory(lock_parent)
+    parent = lock_dir.parent
+    if not parent.is_dir():
+        raise ServiceLockError("mutation-guard-parent-not-directory")
+    if os.name == "posix":
+        try:
+            parent_info = parent.stat()
+            info = lock_dir.stat()
+        except OSError as exc:
+            raise ServiceLockError("mutation-guard-directory-unavailable") from exc
+        if parent_info.st_uid != os.geteuid():
+            raise ServiceLockError("mutation-guard-parent-owner-unsafe")
+        if stat.S_IMODE(parent_info.st_mode) & 0o022:
+            raise ServiceLockError("mutation-guard-parent-mode-unsafe")
+        mode = stat.S_IMODE(info.st_mode)
+        if info.st_uid != os.geteuid():
+            raise ServiceLockError("mutation-guard-directory-owner-unsafe")
+        if mode != 0o700:
+            if repair_mode and mode & 0o022 == 0:
+                try:
+                    lock_dir.chmod(0o700)
+                except OSError as exc:
+                    raise ServiceLockError(
+                        "mutation-guard-directory-mode-unsafe"
+                    ) from exc
+                try:
+                    info = lock_dir.stat()
+                except OSError as exc:
+                    raise ServiceLockError(
+                        "mutation-guard-directory-unavailable"
+                    ) from exc
+                mode = stat.S_IMODE(info.st_mode)
+            if mode != 0o700:
+                raise ServiceLockError("mutation-guard-directory-mode-unsafe")
+    return operation_lock_path(parent, MUTATION_GUARD_SERVICE_ID)
+
+
+def _validate_timeout(timeout: float | None) -> None:
+    if timeout is not None and (
+        isinstance(timeout, bool)
+        or not isinstance(timeout, (int, float))
+        or not math.isfinite(timeout)
+        or timeout < 0
+    ):
+        raise ServiceLockError("invalid-lock-timeout")
 
 
 def _open_lock_file(lock_path: Path):
@@ -115,6 +179,11 @@ def _open_lock_file(lock_path: Path):
             != (path_stat.st_dev, path_stat.st_ino)
         ):
             raise ServiceLockError("operation-lock-file-replaced")
+        if os.name == "posix":
+            if descriptor_stat.st_uid != os.geteuid():
+                raise ServiceLockError("operation-lock-file-owner-unsafe")
+            if stat.S_IMODE(descriptor_stat.st_mode) & 0o077:
+                raise ServiceLockError("operation-lock-file-mode-unsafe")
         return os.fdopen(descriptor, "r+b", buffering=0)
     except Exception:
         os.close(descriptor)
@@ -166,12 +235,13 @@ def _release_lock(lockfile) -> None:
 @contextlib.contextmanager
 def exclusive_file_lock(lock_path: Path, *, timeout: float | None = None):
     """Acquire one symlink-safe cross-process lock file."""
+    _validate_timeout(timeout)
     lockfile = _open_lock_file(Path(lock_path))
     acquired = False
     try:
         _acquire_lock(lockfile, Path(lock_path), timeout)
         acquired = True
-        yield
+        yield lockfile
     finally:
         try:
             if acquired:
@@ -192,13 +262,7 @@ def lock_services(
     No caller code runs until all locks are held.  If any acquisition fails,
     ``ExitStack`` releases the already-held prefix in reverse order.
     """
-    if timeout is not None and (
-        isinstance(timeout, bool)
-        or not isinstance(timeout, (int, float))
-        or not math.isfinite(timeout)
-        or timeout < 0
-    ):
-        raise ServiceLockError("invalid-lock-timeout")
+    _validate_timeout(timeout)
     canonical_ids = tuple(sorted({validate_service_id(item) for item in service_ids}))
     lock_dir = operation_lock_directory(lock_parent)
     deadline = None if timeout is None else time.monotonic() + timeout
@@ -210,6 +274,28 @@ def lock_services(
             lock_path = operation_lock_path(lock_dir.parent, service_id)
             stack.enter_context(exclusive_file_lock(lock_path, timeout=remaining))
         yield canonical_ids
+
+
+@contextlib.contextmanager
+def lock_mutation_and_services(
+    lock_parent: Path,
+    service_ids: Iterable[str],
+    *,
+    timeout: float | None = None,
+    repair_guard_mode: bool = False,
+):
+    """Acquire the global mutation guard before canonical service locks."""
+    _validate_timeout(timeout)
+    canonical_ids = tuple(sorted({validate_service_id(item) for item in service_ids}))
+    guard_path = mutation_guard_path(lock_parent, repair_mode=repair_guard_mode)
+    parent = guard_path.parent.parent
+    deadline = None if timeout is None else time.monotonic() + timeout
+    with exclusive_file_lock(guard_path, timeout=timeout):
+        remaining = None
+        if deadline is not None:
+            remaining = max(0.0, deadline - time.monotonic())
+        with lock_services(parent, canonical_ids, timeout=remaining) as locked_ids:
+            yield locked_ids
 
 
 class FileServiceLockFactory:
@@ -230,4 +316,4 @@ class FileServiceLockFactory:
         # interface. Host-owned implementations consume both binding fields.
         del binding
         parent = self._lock_parent() if callable(self._lock_parent) else self._lock_parent
-        return lock_services(parent, service_ids, timeout=self._timeout)
+        return lock_mutation_and_services(parent, service_ids, timeout=self._timeout)
