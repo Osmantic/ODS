@@ -306,6 +306,19 @@ quarantine. Normal verified success still releases exactly once. Dashboard's
 production transaction executor remains disabled, so this host boundary does
 not yet make conversational extension installation live.
 
+A dormant application-identity contract defines the labels a future apply
+adapter must place on managed services. It re-proves one exact
+`apply:<serviceId>` command against its immutable plan material and binds the
+transaction, plan hash, request hash, planned action, version, definition
+digest, optional Compose digest, and a deterministic identity digest. Parsing
+those labels validates only identity; it does not claim that a service is
+installed, running, healthy, configured, applied, or current. This phase has
+no production importer, host observer, executor wiring, filesystem access,
+Docker/Compose call, or service mutation. A later observer must combine
+current Docker-inspect labels with fixed-root active definition/config
+evidence and lifecycle receipts; receipts alone are historical evidence and
+cannot prove present state.
+
 ## Evidence boundary
 
 The source contract checks resolver ordering, the exact candidate service set,
