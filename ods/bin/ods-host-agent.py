@@ -12794,7 +12794,10 @@ def main():
 
     if args.pid_file:
         pid_path = Path(args.pid_file)
-        pid_path.write_text(str(os.getpid()), encoding="utf-8")
+        pid_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_pid = pid_path.with_name(f"{pid_path.name}.tmp.{os.getpid()}")
+        tmp_pid.write_text(str(os.getpid()), encoding="utf-8")
+        tmp_pid.replace(pid_path)
         atexit.register(lambda: pid_path.unlink(missing_ok=True))
 
     # Determine bind address: explicit env override, or a platform-aware safe
