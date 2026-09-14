@@ -76,21 +76,20 @@ def scan_user_extension_services(
                     logger.warning("Rejected health path for %s: %r", service_id, health)
                     continue
 
-            port = svc.get("port", 0)
-            name = svc.get("name", service_id)
+            port = int(svc.get("port", 0))
+            raw_name = svc.get("name")
+            name = str(raw_name) if isinstance(raw_name, (str, int, float)) and str(raw_name).strip() else service_id
+            ext_port = int(svc.get("external_port_default", port))
+            health_port_val = svc.get("health_port")
+            health_port = int(health_port_val) if health_port_val is not None else None
 
-            # Host = service_id (Docker DNS). Never trust manifest host_env/default_host.
             services[service_id] = {
                 "host": service_id,
-                "port": int(port),
-                "external_port": int(svc.get("external_port_default", port)),
+                "port": port,
+                "external_port": ext_port,
                 "health": health,
                 "name": name,
-                # Optional: extensions whose health endpoint lives on a
-                # secondary port (e.g. milvus 9091) need an explicit
-                # health_port; check_service_health() falls back to "port"
-                # when absent.
-                **({"health_port": int(svc["health_port"])} if "health_port" in svc else {}),
+                **({"health_port": health_port} if health_port is not None else {}),
             }
         except (TypeError, ValueError) as exc:
             logger.warning("Skipping extension %s: invalid manifest value: %s", service_id, exc)
