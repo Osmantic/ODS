@@ -98,7 +98,7 @@ def load_json(path):
     if not p.exists():
         return None
     try:
-        return json.loads(p.read_text(encoding="utf-8"))
+        return json.loads(p.read_text(encoding="utf-8", errors="replace"))
     except Exception:
         return None
 
