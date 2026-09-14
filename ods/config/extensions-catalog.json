@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-13T16:53:56Z",
+  "generated_at": "2026-09-14T15:29:52Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -3157,6 +3157,28 @@
       "configuration_scope": "declared-environment-keys"
     },
     {
+      "id": "pixel-inference",
+      "name": "Pixel inference sharing (development)",
+      "description": "Disabled by default. Owner-provisioned, inference-only device credentials; loopback transport only. Does not provide Pixel agent or computer access. Private state must be provisioned before service activation. Native Windows private-state support and guided setup are not yet implemented.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [
+        "model-router"
+      ],
+      "port": 8093,
+      "external_port_default": 4005,
+      "health_endpoint": "/health",
+      "env_vars": [],
+      "tags": [],
+      "features": [],
+      "startup_check": false,
+      "catalog_source": "builtin",
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
       "id": "qdrant",
       "name": "Qdrant (Vector DB)",
       "description": "Qdrant (Vector DB)",
@@ -3342,6 +3364,62 @@
       "tags": [],
       "features": [],
       "catalog_source": "builtin",
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
+      "id": "shlink",
+      "name": "Shlink",
+      "description": "",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 8080,
+      "external_port_default": 7856,
+      "health_endpoint": "/rest/health",
+      "env_vars": [
+        {
+          "key": "SHLINK_PORT",
+          "default": "7856",
+          "description": "Published Shlink redirect and REST API port"
+        },
+        {
+          "key": "DEFAULT_DOMAIN",
+          "default": "localhost:7856",
+          "description": "Default domain name used to generate short URLs"
+        }
+      ],
+      "tags": [
+        "urls",
+        "shortener",
+        "links",
+        "analytics",
+        "qr",
+        "local"
+      ],
+      "features": [
+        {
+          "id": "url-shortening",
+          "name": "URL Shortening",
+          "description": "Generate private shortened links, QR codes, and track visitor click analytics",
+          "icon": "Link",
+          "category": "productivity",
+          "requirements": {
+            "services": [
+              "shlink"
+            ],
+            "vram_gb": 0,
+            "disk_gb": 1
+          },
+          "enabled_services_all": [
+            "shlink"
+          ],
+          "setup_time": "~1 minute",
+          "priority": 43
+        }
+      ],
       "configuration_scope": "declared-environment-keys"
     },
     {
