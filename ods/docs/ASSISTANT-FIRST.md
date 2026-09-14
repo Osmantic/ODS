@@ -78,10 +78,21 @@ the candidate core, only a newer candidate definition whose range includes that
 core may become a required extension upgrade. Disabled incompatible entries are
 reported without silently enabling or upgrading them.
 
+`scripts/assess-extension-update.py` is the read-only filesystem adapter for
+that decision. It resolves the installed core version from `.env`, `.version`,
+or the installed manifest in that order; requires a canonical owner-private
+lockfile; and reads the candidate version and generated catalog from a separate
+candidate tree. Its hash-bound result includes the caller-supplied exact Git
+object ID plus hashes of the candidate manifest and catalog files. Stable exit
+states distinguish a ready update, a required separately approved extension
+plan, a compatibility blocker, and invalid input. The adapter creates no lock,
+snapshot, receipt, directory, or output file.
+
 This assessment performs no mutation and does not itself authorize an extension
-or core update. Candidate checkout resolution, exact composite upgrade planning,
-mutation quiescence, combined core/desired-state commit, health qualification,
-and coordinated rollback remain later Phase 5 gates.
+or core update. The update caller must still materialize the candidate tree from
+the exact object ID it supplies. Candidate source resolution, exact composite
+upgrade planning, mutation quiescence, combined core/desired-state commit,
+health qualification, and coordinated rollback remain later Phase 5 gates.
 
 ## Evidence boundary
 
