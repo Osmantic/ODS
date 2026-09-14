@@ -342,9 +342,15 @@ report = {
     "checks": checks,
 }
 
+import os
+import tempfile
+
 report_path = pathlib.Path(report_file)
 report_path.parent.mkdir(parents=True, exist_ok=True)
-report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+fd, tmp_name = tempfile.mkstemp(dir=str(report_path.parent), suffix=".tmp")
+with os.fdopen(fd, "w", encoding="utf-8") as f:
+    f.write(json.dumps(report, indent=2) + "\n")
+os.replace(tmp_name, str(report_path))
 
 if env_mode:
     def out(key, value):
