@@ -160,6 +160,23 @@ receipt still requires durable side-effect observation and cannot be replayed
 or declared failed by inference. Concrete host operations and the production
 executor therefore remain disabled.
 
+Future host work is also bound to the exact approved transaction before a
+dispatcher can run. The host loads the owner-private transaction store shared
+with Dashboard API, revalidates its canonical plan, approval, journal, and
+filesystem custody, and accepts only the operation, service order, definitions,
+and artifact digests contained in that plan for the transaction's current
+phase. The lifecycle request continues to carry only the closed typed operation
+reference; request-supplied definition or Compose material cannot become host
+authorization. Exact completed replays do not reload the plan or redispatch. A
+plan mismatch is terminalized as failed, while an unavailable loader leaves a
+started receipt for explicit recovery. The bound material remains in process
+and contains no lease credential or secret.
+
+This plan binding is still an inert safety boundary. The production dispatcher
+and transaction executor remain disabled until host-side artifact verification,
+real installed-state observation, idempotent effects, and crash recovery have
+been implemented and qualified.
+
 ## Evidence boundary
 
 The source contract checks resolver ordering, the exact candidate service set,

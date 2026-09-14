@@ -205,6 +205,31 @@ Production still injects no dispatcher and retains `executor=None`; concrete
 idempotent operations plus durable observation of their side effects remain
 required before activation.
 
+Phase 5G-I binds every future host dispatcher call to the exact owner-approved
+transaction rather than treating the lease and request hash as approval. After
+the matching started receipt is established, the host loads the transaction by
+ID from the existing owner-private `assistant-first/transaction-store` shared
+with Dashboard API. The store revalidates the canonical immutable plan,
+idempotency binding, approval, journal, owner, modes, links, inodes, and
+cross-process lock. A stdlib-only binder then requires the requested plan hash,
+current transaction phase, exact operation/action payload, ordered service set,
+definition order, and immutable artifact digests before attaching copied,
+frozen plan material to the in-process command. The dispatcher receives no
+lease token, approval credential, secret, arbitrary definition supplied by the
+requester, or mutable store object. The low-level dispatcher primitive also
+rejects an unbound command, so a future caller cannot bypass plan loading by
+skipping the receipted wrapper.
+
+A missing plan loader fails before the worker and leaves the started receipt
+available for recovery. A deterministic plan mismatch publishes the failed
+terminal receipt before returning; its replay never reloads the plan or invokes
+the worker. An already-completed terminal replay likewise skips both. The
+request grammar and 32 KiB bound remain unchanged. Production still leaves the
+host dispatcher unset and the Dashboard transaction executor `None`; this phase
+authorizes no artifact, file, process, Compose, container, or service mutation.
+Measured installed-state observation and idempotent concrete operations remain
+required before activation.
+
 All selected services are locked in canonical order before the final
 provenance check and before lifecycle work. Artifacts are downloaded and
 verified before apply. The first pre-transaction backup is replay-safe,

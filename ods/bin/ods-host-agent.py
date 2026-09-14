@@ -112,6 +112,34 @@ try:
     import extension_lifecycle_work as _extension_lifecycle_work
 except Exception:  # pragma: no cover - import environment dependent
     _extension_lifecycle_work = None
+try:
+    import extension_lifecycle_plan as _extension_lifecycle_plan
+except Exception:  # pragma: no cover - import environment dependent
+    _extension_lifecycle_plan = None
+
+_EXTENSION_TRANSACTION_STORE_PATH = (
+    Path(__file__).resolve().parent.parent
+    / "extensions"
+    / "services"
+    / "dashboard-api"
+    / "extension_transactions.py"
+)
+try:
+    _extension_transaction_store_spec = importlib.util.spec_from_file_location(
+        "_ods_host_extension_transactions",
+        _EXTENSION_TRANSACTION_STORE_PATH,
+    )
+    if (
+        _extension_transaction_store_spec is None
+        or _extension_transaction_store_spec.loader is None
+    ):
+        raise ImportError("extension transaction store module is unavailable")
+    _extension_transactions = importlib.util.module_from_spec(
+        _extension_transaction_store_spec
+    )
+    _extension_transaction_store_spec.loader.exec_module(_extension_transactions)
+except Exception:  # pragma: no cover - import environment dependent
+    _extension_transactions = None
 
 # ---------------------------------------------------------------------------
 # Lifecycle-receipt API constants (Phase 5G-B host boundary)
@@ -136,6 +164,15 @@ _SNAPSHOT_RECEIPT_KEYS = frozenset({
 _lifecycle_receipt_store = None
 _lifecycle_receipt_store_data_dir: Path | None = None
 _lifecycle_receipt_store_lock = threading.Lock()
+
+# The Dashboard and host agent run as the installing owner in the qualified
+# Assistant First profile and share DATA_DIR.  Load the same owner-private,
+# cross-process-locked transaction store lazily, then bind every real host
+# effect to the exact stored approval and plan material.
+_extension_transaction_store = None
+_extension_transaction_store_data_dir: Path | None = None
+_extension_transaction_store_lock = threading.Lock()
+_extension_lifecycle_plan_loader = None
 
 # Production lifecycle dispatch remains deliberately unwired.  A later phase
 # will install one reviewed host-owned dispatcher after each concrete operation
@@ -6481,6 +6518,53 @@ def _get_lifecycle_receipt_store() -> "_extension_lifecycle_receipts.LifecycleRe
         return _lifecycle_receipt_store
 
 
+def _get_extension_transaction_store():
+    """Return the fixed owner-private Assistant First transaction store."""
+    global _extension_transaction_store, _extension_transaction_store_data_dir
+    if _extension_transactions is None:
+        return None
+    with _extension_transaction_store_lock:
+        if (
+            _extension_transaction_store is None
+            or _extension_transaction_store_data_dir != DATA_DIR
+        ):
+            root = DATA_DIR / "assistant-first" / "transaction-store"
+            _extension_transaction_store = _extension_transactions.TransactionStore(
+                root
+            )
+            _extension_transaction_store_data_dir = DATA_DIR
+        return _extension_transaction_store
+
+
+def _load_extension_lifecycle_plan(command):
+    """Bind a validated command to one exact stored owner approval."""
+    if _extension_lifecycle_plan is None or _extension_transactions is None:
+        raise _extension_lifecycle_work.LifecycleWorkUnavailable(
+            "lifecycle-work-plan-loader-unavailable"
+        )
+    try:
+        store = _get_extension_transaction_store()
+        if store is None:
+            raise _extension_lifecycle_work.LifecycleWorkUnavailable(
+                "lifecycle-work-plan-loader-unavailable"
+            )
+        transaction = store.read(command.transaction_id)
+        return _extension_lifecycle_plan.bind_lifecycle_plan(command, transaction)
+    except _extension_lifecycle_work.LifecycleWorkError:
+        raise
+    except _extension_transactions.TransactionError as exc:
+        raise _extension_lifecycle_work.LifecycleWorkValidationError(
+            "lifecycle-work-plan-mismatch"
+        ) from exc
+    except Exception as exc:
+        raise _extension_lifecycle_work.LifecycleWorkExecutionError(
+            "lifecycle-work-plan-store-unavailable"
+        ) from exc
+
+
+_extension_lifecycle_plan_loader = _load_extension_lifecycle_plan
+
+
 def _receipt_store_response(handler, status_code: int, body: dict) -> None:
     """Send a JSON response with no-store on every receipt call."""
     json_response(handler, status_code, body, no_store=True)
@@ -7499,15 +7583,25 @@ class AgentHandler(BaseHTTPRequestHandler):
                             command,
                             _extension_lifecycle_work_dispatcher,
                             receipt_store,
+                            _extension_lifecycle_plan_loader,
                         )
                     )
         except _ExtensionMutationAdmissionRejected:
             return
-        except _extension_lifecycle_work.LifecycleWorkUnavailable:
+        except _extension_lifecycle_work.LifecycleWorkUnavailable as exc:
+            code = (
+                exc.code
+                if exc.code
+                in {
+                    "lifecycle-work-dispatcher-unavailable",
+                    "lifecycle-work-plan-loader-unavailable",
+                }
+                else "lifecycle-work-dispatcher-unavailable"
+            )
             json_response(
                 self,
                 503,
-                {"error": {"code": "lifecycle-work-dispatcher-unavailable"}},
+                {"error": {"code": code}},
                 no_store=True,
             )
             return
@@ -7518,6 +7612,7 @@ class AgentHandler(BaseHTTPRequestHandler):
                 in {
                     "lifecycle-work-receipt-mismatch",
                     "lifecycle-work-started-receipt-required",
+                    "lifecycle-work-plan-mismatch",
                 }
                 else "lifecycle-work-receipt-mismatch"
             )

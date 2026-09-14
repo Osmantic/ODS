@@ -8,7 +8,7 @@ import json
 import multiprocessing
 import os
 import sys
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
 from queue import Empty
 from types import SimpleNamespace
@@ -876,16 +876,19 @@ def test_receipted_host_dispatch_uses_the_real_durable_store(tmp_path):
         command,
         lambda value: calls.append(value) or EVIDENCE_HASH,
         store,
+        lambda value: replace(value, plan_material={"bound": True}),
     )
     second = host_work.dispatch_receipted_lifecycle_work(
         command,
         lambda _value: (_ for _ in ()).throw(AssertionError("replayed work")),
         store,
+        lambda _value: (_ for _ in ()).throw(AssertionError("reloaded plan")),
     )
     snapshot = store.snapshot(command.transaction_id, command.operation_key)
 
     assert first == second
-    assert calls == [command]
+    assert len(calls) == 1
+    assert calls[0].plan_material == {"bound": True}
     assert snapshot.state == "completed"
     assert snapshot.terminal_receipt is not None
     assert snapshot.terminal_receipt.evidence_hash == EVIDENCE_HASH

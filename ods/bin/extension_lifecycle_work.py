@@ -14,7 +14,7 @@ import hmac
 import json
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 REQUEST_SCHEMA = "ods.extension-lifecycle-work-request.v1"
@@ -87,6 +87,7 @@ class LifecycleWorkCommand:
     service_ids: tuple[str, ...]
     payload: dict[str, Any]
     timeout_seconds: int
+    plan_material: Any = field(default=None, repr=False, compare=False)
 
 
 def _invalid(code: str = "invalid-lifecycle-work-request") -> None:
@@ -247,12 +248,14 @@ def dispatch_lifecycle_work(
     command: LifecycleWorkCommand,
     dispatcher: Callable[[LifecycleWorkCommand], str] | None,
 ) -> dict[str, Any]:
-    """Run one injected synchronous dispatcher and build an exact result."""
+    """Run one plan-bound synchronous dispatcher and build an exact result."""
 
     if not isinstance(command, LifecycleWorkCommand):
         _invalid()
     if not callable(dispatcher):
         raise LifecycleWorkUnavailable("lifecycle-work-dispatcher-unavailable")
+    if command.plan_material is None:
+        raise LifecycleWorkValidationError("lifecycle-work-plan-mismatch")
     try:
         evidence_hash = dispatcher(command)
     except LifecycleWorkError:
@@ -365,6 +368,7 @@ def dispatch_receipted_lifecycle_work(
     command: LifecycleWorkCommand,
     dispatcher: Callable[[LifecycleWorkCommand], str] | None,
     receipt_store: Any,
+    plan_loader: Callable[[LifecycleWorkCommand], LifecycleWorkCommand] | None,
 ) -> dict[str, Any]:
     """Run at most one host operation and durably terminalize its receipt.
 
@@ -378,6 +382,8 @@ def dispatch_receipted_lifecycle_work(
         _invalid()
     if not callable(dispatcher):
         raise LifecycleWorkUnavailable("lifecycle-work-dispatcher-unavailable")
+    if not callable(plan_loader):
+        raise LifecycleWorkUnavailable("lifecycle-work-plan-loader-unavailable")
     if receipt_store is None or not callable(getattr(receipt_store, "snapshot", None)):
         raise LifecycleWorkUnavailable("lifecycle-work-receipt-store-unavailable")
     if not callable(getattr(receipt_store, "finish", None)):
@@ -396,7 +402,25 @@ def dispatch_receipted_lifecycle_work(
         raise LifecycleWorkExecutionError("lifecycle-work-terminal-failed")
 
     try:
-        result = dispatch_lifecycle_work(command, dispatcher)
+        bound_command = plan_loader(command)
+        if (
+            not isinstance(bound_command, LifecycleWorkCommand)
+            or bound_command.plan_material is None
+            or any(
+                getattr(bound_command, field_name) != getattr(command, field_name)
+                for field_name in (
+                    "transaction_id",
+                    "plan_hash",
+                    "operation_key",
+                    "request_hash",
+                    "service_ids",
+                    "payload",
+                    "timeout_seconds",
+                )
+            )
+        ):
+            raise LifecycleWorkValidationError("lifecycle-work-plan-mismatch")
+        result = dispatch_lifecycle_work(bound_command, dispatcher)
     except LifecycleWorkError as dispatch_error:
         evidence_hash = _failure_evidence_hash(command, dispatch_error.code)
         try:

@@ -6,6 +6,7 @@ import ast
 import hashlib
 import json
 import sys
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -325,13 +326,14 @@ def test_dispatch_returns_only_exact_terminal_evidence():
     command = host_work.parse_lifecycle_work_request(
         work_request("verify", ["documents"], {"serviceIds": ["documents"]})
     )
+    bound = replace(command, plan_material=SimpleNamespace(bound=True))
     seen = []
 
     result = host_work.dispatch_lifecycle_work(
-        command, lambda value: seen.append(value) or EVIDENCE_HASH
+        bound, lambda value: seen.append(value) or EVIDENCE_HASH
     )
 
-    assert seen == [command]
+    assert seen == [bound]
     assert result == {
         "schema": host_work.RESULT_SCHEMA,
         "transactionId": TRANSACTION_ID,
@@ -353,9 +355,18 @@ def test_dispatch_fails_closed_without_dispatcher_or_valid_evidence():
         host_work.dispatch_lifecycle_work(command, None)
     assert unavailable.value.code == "lifecycle-work-dispatcher-unavailable"
 
+    called = []
+    with pytest.raises(host_work.LifecycleWorkValidationError) as unbound:
+        host_work.dispatch_lifecycle_work(
+            command, lambda value: called.append(value) or EVIDENCE_HASH
+        )
+    assert unbound.value.code == "lifecycle-work-plan-mismatch"
+    assert called == []
+
+    bound = replace(command, plan_material=SimpleNamespace(bound=True))
     for value in (None, True, "short", "A" * 64):
         with pytest.raises(host_work.LifecycleWorkExecutionError) as invalid:
-            host_work.dispatch_lifecycle_work(command, lambda _command, v=value: v)
+            host_work.dispatch_lifecycle_work(bound, lambda _command, v=value: v)
         assert invalid.value.code == "lifecycle-work-invalid-result"
 
 
@@ -363,12 +374,13 @@ def test_dispatch_maps_private_exception_without_embedding_it():
     command = host_work.parse_lifecycle_work_request(
         work_request("verify", ["documents"], {"serviceIds": ["documents"]})
     )
+    bound = replace(command, plan_material=SimpleNamespace(bound=True))
 
     def fail(_command):
         raise RuntimeError("private-dispatch-detail")
 
     with pytest.raises(host_work.LifecycleWorkExecutionError) as raised:
-        host_work.dispatch_lifecycle_work(command, fail)
+        host_work.dispatch_lifecycle_work(bound, fail)
 
     assert raised.value.code == "lifecycle-work-operation-failed"
     assert "private-dispatch-detail" not in str(raised.value)
@@ -386,28 +398,91 @@ def _begun_store(command):
     return store
 
 
+def _load_plan(command):
+    return replace(command, plan_material=SimpleNamespace(bound=True))
+
+
 def test_receipted_dispatch_terminalizes_before_success_and_replays():
     command = host_work.parse_lifecycle_work_request(
         work_request("verify", ["documents"], {"serviceIds": ["documents"]})
     )
     store = _begun_store(command)
     seen = []
+    loaded = []
+
+    def load_plan(value):
+        loaded.append(value)
+        return _load_plan(value)
 
     first = host_work.dispatch_receipted_lifecycle_work(
-        command, lambda value: seen.append(value) or EVIDENCE_HASH, store
+        command, lambda value: seen.append(value) or EVIDENCE_HASH, store, load_plan
     )
     snapshot = store.snapshot(command.transaction_id, command.operation_key)
     second = host_work.dispatch_receipted_lifecycle_work(
         command,
         lambda _value: (_ for _ in ()).throw(AssertionError("replayed work")),
         store,
+        load_plan,
     )
 
     assert first == second
-    assert seen == [command]
+    assert len(seen) == 1
+    assert seen[0].plan_material.bound is True
+    assert loaded == [command]
     assert snapshot.state == "completed"
     assert snapshot.terminal_receipt is not None
     assert snapshot.terminal_receipt.evidence_hash == EVIDENCE_HASH
+
+
+def test_receipted_dispatch_requires_plan_binding_before_the_worker():
+    command = host_work.parse_lifecycle_work_request(
+        work_request("verify", ["documents"], {"serviceIds": ["documents"]})
+    )
+    store = _begun_store(command)
+    worker_calls = []
+    loader_calls = []
+
+    with pytest.raises(host_work.LifecycleWorkUnavailable) as unavailable:
+        host_work.dispatch_receipted_lifecycle_work(
+            command,
+            lambda value: worker_calls.append(value) or EVIDENCE_HASH,
+            store,
+            None,
+        )
+    assert unavailable.value.code == "lifecycle-work-plan-loader-unavailable"
+    assert worker_calls == []
+    assert store.snapshot(command.transaction_id, command.operation_key).state == (
+        "started"
+    )
+
+    def reject_plan(_command):
+        loader_calls.append(True)
+        raise host_work.LifecycleWorkValidationError("lifecycle-work-plan-mismatch")
+
+    with pytest.raises(host_work.LifecycleWorkValidationError) as rejected:
+        host_work.dispatch_receipted_lifecycle_work(
+            command,
+            lambda value: worker_calls.append(value) or EVIDENCE_HASH,
+            store,
+            reject_plan,
+        )
+    assert rejected.value.code == "lifecycle-work-plan-mismatch"
+    assert worker_calls == []
+    assert loader_calls == [True]
+    assert store.snapshot(command.transaction_id, command.operation_key).state == (
+        "failed"
+    )
+
+    with pytest.raises(host_work.LifecycleWorkExecutionError) as replay:
+        host_work.dispatch_receipted_lifecycle_work(
+            command,
+            lambda value: worker_calls.append(value) or EVIDENCE_HASH,
+            store,
+            reject_plan,
+        )
+    assert replay.value.code == "lifecycle-work-terminal-failed"
+    assert loader_calls == [True]
+    assert worker_calls == []
 
 
 def test_receipted_dispatch_requires_the_exact_started_binding():
@@ -419,7 +494,10 @@ def test_receipted_dispatch_requires_the_exact_started_binding():
 
     with pytest.raises(host_work.LifecycleWorkValidationError) as absent:
         host_work.dispatch_receipted_lifecycle_work(
-            command, lambda value: called.append(value) or EVIDENCE_HASH, store
+            command,
+            lambda value: called.append(value) or EVIDENCE_HASH,
+            store,
+            _load_plan,
         )
     assert absent.value.code == "lifecycle-work-started-receipt-required"
 
@@ -432,7 +510,10 @@ def test_receipted_dispatch_requires_the_exact_started_binding():
     )
     with pytest.raises(host_work.LifecycleWorkValidationError) as mismatch:
         host_work.dispatch_receipted_lifecycle_work(
-            command, lambda value: called.append(value) or EVIDENCE_HASH, store
+            command,
+            lambda value: called.append(value) or EVIDENCE_HASH,
+            store,
+            _load_plan,
         )
     assert mismatch.value.code == "lifecycle-work-receipt-mismatch"
     assert called == []
@@ -462,7 +543,9 @@ def test_receipted_dispatch_durably_fails_and_never_replays(
         return "invalid"
 
     with pytest.raises(host_work.LifecycleWorkExecutionError):
-        host_work.dispatch_receipted_lifecycle_work(command, dispatch, store)
+        host_work.dispatch_receipted_lifecycle_work(
+            command, dispatch, store, _load_plan
+        )
     snapshot = store.snapshot(command.transaction_id, command.operation_key)
     assert snapshot.state == "failed"
     assert snapshot.terminal_receipt is not None
@@ -486,7 +569,9 @@ def test_receipted_dispatch_durably_fails_and_never_replays(
     assert snapshot.terminal_receipt.evidence_hash == expected_failure_hash
 
     with pytest.raises(host_work.LifecycleWorkExecutionError) as replay:
-        host_work.dispatch_receipted_lifecycle_work(command, dispatch, store)
+        host_work.dispatch_receipted_lifecycle_work(
+            command, dispatch, store, _load_plan
+        )
     assert replay.value.code == "lifecycle-work-terminal-failed"
     assert calls == 1
 
@@ -508,6 +593,7 @@ def test_receipted_dispatch_never_reports_success_if_terminal_publish_fails():
             command,
             lambda value: calls.append(value) or EVIDENCE_HASH,
             store,
+            _load_plan,
         )
 
     assert caught.value.code == "lifecycle-work-receipt-store-unavailable"

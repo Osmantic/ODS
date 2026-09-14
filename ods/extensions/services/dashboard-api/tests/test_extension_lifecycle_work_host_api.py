@@ -11,7 +11,9 @@ import json
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -242,6 +244,10 @@ def host_server(tmp_path):
     )
     agent._lifecycle_receipt_store_data_dir = agent.DATA_DIR
     agent._extension_lifecycle_work_dispatcher = None
+    agent._extension_lifecycle_plan_loader = lambda command: replace(
+        command,
+        plan_material={"bound": True},
+    )
 
     listener = agent.ThreadedHTTPServer(("127.0.0.1", 0), agent.AgentHandler)
     thread = threading.Thread(target=listener.serve_forever, daemon=True)
@@ -353,6 +359,7 @@ def test_success_is_exact_synchronous_bound_and_token_free(host_server, host_req
     }
     assert len(seen) == 1
     assert seen[0].payload == {"serviceIds": ["documents"]}
+    assert seen[0].plan_material == {"bound": True}
     assert not hasattr(seen[0], "lease")
     assert not hasattr(seen[0], "lease_token")
     assert grant["leaseToken"] not in repr(seen[0])
@@ -390,6 +397,157 @@ def test_default_dispatcher_is_inert_but_authenticates_the_lease(
     state = agent._extension_lease_manager.describe(grant["leaseId"])
     assert state["active"] is False
     assert grant["leaseToken"] not in json.dumps(result)
+
+
+def test_missing_plan_loader_fails_before_worker_and_preserves_started_receipt(
+    host_server, host_request
+):
+    agent, _listener = host_server
+    grant = acquire_lease(agent, host_request)
+    request = work_request(
+        agent._extension_lifecycle_work.REQUEST_SCHEMA,
+        lease_evidence(agent, grant),
+    )
+    begin_receipt(agent, host_request, request)
+    calls = []
+    agent._extension_lifecycle_work_dispatcher = lambda command: (
+        calls.append(command) or EVIDENCE_HASH
+    )
+    agent._extension_lifecycle_plan_loader = None
+
+    status, result = host_request("/v1/extension/lifecycle-work", request)
+
+    assert status == 503
+    assert result == {
+        "error": {"code": "lifecycle-work-plan-loader-unavailable"}
+    }
+    assert calls == []
+    snapshot_status, snapshot = receipt_snapshot(agent, host_request, request)
+    assert snapshot_status == 200
+    assert snapshot["state"] == "started"
+
+
+def test_plan_mismatch_terminalizes_failure_and_never_runs_or_reloads(
+    host_server, host_request
+):
+    agent, _listener = host_server
+    grant = acquire_lease(agent, host_request)
+    request = work_request(
+        agent._extension_lifecycle_work.REQUEST_SCHEMA,
+        lease_evidence(agent, grant),
+    )
+    begin_receipt(agent, host_request, request)
+    worker_calls = []
+    loader_calls = []
+    agent._extension_lifecycle_work_dispatcher = lambda command: (
+        worker_calls.append(command) or EVIDENCE_HASH
+    )
+
+    def reject(_command):
+        loader_calls.append(True)
+        raise agent._extension_lifecycle_work.LifecycleWorkValidationError(
+            "lifecycle-work-plan-mismatch"
+        )
+
+    agent._extension_lifecycle_plan_loader = reject
+
+    status, result = host_request("/v1/extension/lifecycle-work", request)
+
+    assert status == 409
+    assert result == {"error": {"code": "lifecycle-work-plan-mismatch"}}
+    assert loader_calls == [True]
+    assert worker_calls == []
+    snapshot_status, snapshot = receipt_snapshot(agent, host_request, request)
+    assert snapshot_status == 200
+    assert snapshot["state"] == "failed"
+
+    replay_status, replay = host_request("/v1/extension/lifecycle-work", request)
+    assert replay_status == 503
+    assert replay == {"error": {"code": "lifecycle-work-operation-failed"}}
+    assert loader_calls == [True]
+    assert worker_calls == []
+
+
+def test_host_plan_loader_reads_exact_transaction_and_passes_only_store_result(
+    host_server
+):
+    agent, _listener = host_server
+    request = work_request(agent._extension_lifecycle_work.REQUEST_SCHEMA)
+    command = agent._extension_lifecycle_work.parse_lifecycle_work_request(request)
+    stored = {"transactionId": TRANSACTION_ID, "marker": object()}
+    calls = []
+
+    class Store:
+        def read(self, transaction_id):
+            calls.append(("read", transaction_id))
+            return stored
+
+    def bind(value, transaction):
+        calls.append(("bind", value, transaction))
+        return replace(value, plan_material={"approved": True})
+
+    agent._get_extension_transaction_store = Store
+    agent._extension_transactions = SimpleNamespace(TransactionError=RuntimeError)
+    agent._extension_lifecycle_plan = SimpleNamespace(bind_lifecycle_plan=bind)
+
+    bound = agent._load_extension_lifecycle_plan(command)
+
+    assert bound.plan_material == {"approved": True}
+    assert calls == [
+        ("read", TRANSACTION_ID),
+        ("bind", command, stored),
+    ]
+
+
+def test_host_plan_loader_maps_store_integrity_failure_without_private_detail(
+    host_server
+):
+    agent, _listener = host_server
+    request = work_request(agent._extension_lifecycle_work.REQUEST_SCHEMA)
+    command = agent._extension_lifecycle_work.parse_lifecycle_work_request(request)
+
+    class StoreError(Exception):
+        pass
+
+    class Store:
+        def read(self, _transaction_id):
+            raise StoreError("private-store-path")
+
+    agent._get_extension_transaction_store = Store
+    agent._extension_transactions = SimpleNamespace(TransactionError=StoreError)
+    agent._extension_lifecycle_plan = SimpleNamespace(
+        bind_lifecycle_plan=lambda *_args: (_ for _ in ()).throw(
+            AssertionError("binder called after store failure")
+        )
+    )
+
+    with pytest.raises(
+        agent._extension_lifecycle_work.LifecycleWorkValidationError
+    ) as raised:
+        agent._load_extension_lifecycle_plan(command)
+
+    assert raised.value.code == "lifecycle-work-plan-mismatch"
+    assert "private-store-path" not in str(raised.value)
+
+
+def test_host_transaction_store_uses_fixed_shared_data_root_and_caches(host_server):
+    agent, _listener = host_server
+    roots = []
+
+    class Store:
+        def __init__(self, root):
+            self.root = root
+            roots.append(root)
+
+    agent._extension_transactions = SimpleNamespace(TransactionStore=Store)
+    agent._extension_transaction_store = None
+    agent._extension_transaction_store_data_dir = None
+
+    first = agent._get_extension_transaction_store()
+    second = agent._get_extension_transaction_store()
+
+    assert first is second
+    assert roots == [agent.DATA_DIR / "assistant-first" / "transaction-store"]
 
 
 def test_auth_gate_and_missing_core_fail_closed_before_dispatch(
