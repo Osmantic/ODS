@@ -15,7 +15,7 @@ LIBRARY_SCHEMA = ROOT_DIR / "extensions" / "library" / "schema" / "service-manif
 
 
 def canonical_schema_path() -> Path:
-    manifest = json.loads(MANIFEST_FILE.read_text(encoding="utf-8"))
+    manifest = json.loads(MANIFEST_FILE.read_text(encoding="utf-8", errors="replace"))
     relative_path = manifest["contracts"]["extensions"]["serviceManifestSchema"]
     schema_path = (ROOT_DIR / relative_path).resolve()
     if not schema_path.is_file():
@@ -38,7 +38,7 @@ def main() -> int:
         source = canonical_schema_path()
         expected = source.read_bytes()
         actual = LIBRARY_SCHEMA.read_bytes() if LIBRARY_SCHEMA.exists() else None
-    except (KeyError, OSError, TypeError, json.JSONDecodeError) as exc:
+    except (KeyError, OSError, TypeError, json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
         print(f"ERROR: cannot resolve manifest schema contract: {exc}", file=sys.stderr)
         return 2
 
