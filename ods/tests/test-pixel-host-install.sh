@@ -1941,6 +1941,10 @@ assert "_ods_pixel_wait_ingress \"$owner\" \"$home\"" in installer
 assert installer.index("_ods_pixel_wait_ingress \"$owner\" \"$home\"") < installer.index("_ods_pixel_mark_ready \"$owner\" \"$home\"")
 assert "pixel\" configure --answers \"$answers\" --force" in text
 assert "pixel\" plan" in text
+native_search_provision = installer.index("--base-dir \"$INSTALL_DIR/data/pixel/native-search\"")
+pixel_bootstrap = installer.index("\"$pixel_root/pixel\" bootstrap --apply")
+native_search_digest = installer.index("\"$pixel_root/pixel\" extension-hash \"$parallel_path\"")
+assert native_search_provision < pixel_bootstrap < native_search_digest
 assert "Pixel configure failed. See $pixel_log" in text
 assert "Pixel plan failed. See $pixel_log" in text
 assert "Pixel configure or plan failed" not in text

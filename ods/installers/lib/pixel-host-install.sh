@@ -4098,6 +4098,19 @@ ods_pixel_install_default_agent() {
         ai_bad "Pixel requires Linux Node.js 20+ and Linux npm; Windows-mounted WSL tools are not accepted."
         return 1
     fi
+    if [[ "$web_search_provider" == parallel-free ]]; then
+        parallel_path="$INSTALL_DIR/data/pixel/native-search/parallel-2026.6.33"
+        # Pixel bootstrap validates an existing OpenClaw configuration before
+        # replacing it. Reinstalls can therefore still reference the pinned
+        # ODS-managed Parallel path; provision that path before bootstrap so
+        # the fail-closed validator sees the exact extension it was bound to.
+        if ! ods_pixel_run_as_owner "$owner" "$home" python3 \
+            "$plugin_root/host/native_search.py" \
+            --base-dir "$INSTALL_DIR/data/pixel/native-search" >>"$pixel_log" 2>&1; then
+            ai_bad "Pixel could not provision its pinned native search plugin. See $pixel_log."
+            return 1
+        fi
+    fi
     if ! ods_pixel_run_as_owner "$owner" "$home" "$pixel_root/pixel" bootstrap --apply >>"$pixel_log" 2>&1; then
         ai_bad "Pixel bootstrap failed. See $pixel_log for the exact Pixel error."
         return 1
@@ -4107,13 +4120,6 @@ ods_pixel_install_default_agent() {
     plugin_digest="$(ods_pixel_run_as_owner "$owner" "$home" "$pixel_root/pixel" extension-hash "$plugin_root/plugin")"
     [[ "$plugin_digest" =~ ^[0-9a-f]{64}$ ]] || return 1
     if [[ "$web_search_provider" == parallel-free ]]; then
-        parallel_path="$INSTALL_DIR/data/pixel/native-search/parallel-2026.6.33"
-        if ! ods_pixel_run_as_owner "$owner" "$home" python3 \
-            "$plugin_root/host/native_search.py" \
-            --base-dir "$INSTALL_DIR/data/pixel/native-search" >>"$pixel_log" 2>&1; then
-            ai_bad "Pixel could not provision its pinned native search plugin. See $pixel_log."
-            return 1
-        fi
         parallel_digest="$(ods_pixel_run_as_owner "$owner" "$home" "$pixel_root/pixel" extension-hash "$parallel_path")" || return 1
         [[ "$parallel_digest" =~ ^[0-9a-f]{64}$ ]] || return 1
     fi
