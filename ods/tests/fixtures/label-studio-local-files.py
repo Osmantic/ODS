@@ -10,6 +10,8 @@ sys.path.insert(0, "/label-studio/label_studio")
 os.environ["LABEL_STUDIO_LATEST_VERSION_CHECK"] = "false"
 os.environ["LABEL_STUDIO_SENTRY_DSN"] = ""
 os.environ["LABEL_STUDIO_FRONTEND_SENTRY_DSN"] = ""
+# This is an API permission test, not a database durability test.
+os.environ["LABEL_STUDIO_DATABASE_NAME"] = ":memory:"
 
 import django
 

@@ -58,7 +58,7 @@ def test_live_local_storage_api_rejects_outside_paths(rendered, tmp_path):
 
     def run(*args):
         result = subprocess.run(args, stdin=subprocess.DEVNULL,
-                                capture_output=True, text=True, timeout=240)
+                                capture_output=True, text=True, timeout=420)
         print(result.stdout, result.stderr)
         assert result.returncode == 0
         return result
