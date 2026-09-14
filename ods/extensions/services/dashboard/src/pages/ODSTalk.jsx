@@ -86,6 +86,14 @@ export default function ODSTalk() {
   // Track the currently-playing TTS state so we can shut down whatever
   // is in flight before starting the next reply's audio.
   const activeSpeechRef = useRef(null)
+  const speechRequestRef = useRef(null)
+  const speechMountedRef = useRef(false)
+  const speechEnabledRef = useRef(spokenReplies)
+  speechEnabledRef.current = spokenReplies
+  useEffect(() => {
+    speechMountedRef.current = true
+    return () => {speechMountedRef.current = false; speechRequestRef.current?.abort()}
+  }, [])
   // One persistent Audio element reused across all replies. iOS Safari's
   // audio session model is single-element-per-page; if we create a new
   // Audio() per turn (the obvious React-y pattern), the OS audio router
@@ -198,6 +206,8 @@ export default function ODSTalk() {
   // ObjectURL. The same element keeps its hold on the audio session
   // across turns, so the next play() lands without contention.
   const stopActiveSpeech = useCallback(() => {
+    speechRequestRef.current?.abort()
+    speechRequestRef.current = null
     const prev = activeSpeechRef.current
     activeSpeechRef.current = null
     if (!prev) return
@@ -218,20 +228,26 @@ export default function ODSTalk() {
     }
   }, [])
 
+  useEffect(() => {if (!spokenReplies) stopActiveSpeech()}, [spokenReplies, stopActiveSpeech])
+
   const speak = useCallback(async (text) => {
-    if (!spokenReplies || !voiceState.tts || !text.trim()) return
+    if (!speechMountedRef.current || !speechEnabledRef.current || !voiceState.tts || !text.trim()) return
     // ALWAYS stop the previous Audio/MediaSource before starting a new
     // one. Even if the previous one is still buffering chunks, the user
     // has clearly moved on (a new reply text has arrived).
     stopActiveSpeech()
+    const controller = new AbortController()
+    speechRequestRef.current = controller
     try {
       const body = new FormData()
       body.set('text', text)
       const resp = await fetch('/api/talk/speak', {
         method: 'POST',
+        signal: controller.signal,
         body,
         credentials: 'same-origin',
       })
+      if (controller.signal.aborted) {await resp.body?.cancel(); return}
       if (!resp.ok || !resp.body) return
 
       // Preferred path: MediaSource API plays MP3 chunks as they arrive
@@ -312,6 +328,7 @@ export default function ODSTalk() {
               sb.addEventListener('error', reject, { once: true })
               sb.appendBuffer(value)
             })
+            if (controller.signal.aborted || activeSpeechRef.current !== session) break
             if (!started) {
               started = true
               // play() returns a Promise on modern browsers. If iOS
@@ -347,6 +364,7 @@ export default function ODSTalk() {
       // The dashboard-api is still streaming on the network — we just
       // wait until it's all here before starting playback.
       const blob = await resp.blob()
+      if (controller.signal.aborted) return
       const url = URL.createObjectURL(blob)
       const audio = getSharedAudio()
       audio.src = url
