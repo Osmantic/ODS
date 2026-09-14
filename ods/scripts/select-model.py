@@ -119,7 +119,7 @@ def curated_source_allowed(model: dict[str, Any]) -> bool:
 
 
 def load_catalog(path: Path) -> list[dict[str, Any]]:
-    with path.open("r", encoding="utf-8") as fh:
+    with path.open("r", encoding="utf-8", errors="replace") as fh:
         data = json.load(fh)
     return [
         model for model in (
