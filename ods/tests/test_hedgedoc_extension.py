@@ -110,7 +110,8 @@ networks:
             with httpx.Client(base_url=origin, timeout=30) as other:
                 assert other.post("/login", data={"email": "other@example.test", "password": password}).status_code == 302
                 assert other.get(note_path + "/download").status_code == 403
-        assert (tmp_path / "data/hedgedoc/postgres/PG_VERSION").read_text().strip() == "17"
+        assert run("docker", "exec", "--user", "postgres", name + "-db",
+                   "cat", "/var/lib/postgresql/data/PG_VERSION") == "17"
     finally:
         run(*command, "down", "--timeout", "10")
         run("docker", "network", "rm", name)
