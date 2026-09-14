@@ -50,8 +50,8 @@ def scan_user_extension_services(
             continue
 
         try:
-            manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
-        except (yaml.YAMLError, OSError) as e:
+            manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8", errors="replace"))
+        except (yaml.YAMLError, OSError, UnicodeError, ValueError) as e:
             logger.debug("Skipping %s: bad manifest: %s", service_id, e)
             continue
 
