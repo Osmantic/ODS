@@ -135,6 +135,12 @@ class ObservationAdapter(Protocol):
         ...
 
 
+class CommitFinalizer(Protocol):
+    """Finalize desired state after the runtime journal is durably committed."""
+
+    def finalize(self, transaction: dict[str, Any]) -> dict[str, Any]: ...
+
+
 @dataclass(frozen=True)
 class ExecuteResult:
     transaction_id: str
@@ -143,6 +149,8 @@ class ExecuteResult:
     sequence: int
     applied_services: list[str] = field(default_factory=list)
     error: str | None = None
+    lockfile_hash: str | None = None
+    post_commit_observed_state_revision: str | None = None
 
 
 class TransactionExecutor:
@@ -155,6 +163,7 @@ class TransactionExecutor:
         lock_factory: ServiceLockFactory,
         adapter: LifecycleAdapter,
         observer: ObservationAdapter,
+        finalizer: CommitFinalizer,
         actor: str,
         clock: Callable[[], str] | None = None,
     ) -> None:
@@ -163,6 +172,7 @@ class TransactionExecutor:
         self._lock_factory = lock_factory
         self._adapter = adapter
         self._observer = observer
+        self._finalizer = finalizer
         self._actor = actor
         self._clock = clock or _now_ts
         self._process_lock = threading.Lock()
@@ -177,6 +187,8 @@ class TransactionExecutor:
             binding = ExecutionBinding(transaction_id, plan_hash)
             initial = self._load_exact(transaction_id, plan_hash)
             if initial["state"] in TERMINAL_STATES:
+                if initial["state"] == "committed":
+                    return self._finalized_result(initial)
                 return self._result(initial)
 
             envelope = initial["envelope"]
@@ -190,6 +202,8 @@ class TransactionExecutor:
                 loaded = self._load_exact(transaction_id, plan_hash)
                 state = loaded["state"]
                 if state in TERMINAL_STATES:
+                    if state == "committed":
+                        return self._finalized_result(loaded)
                     return self._result(loaded)
                 if state in RECOVERY_STATES:
                     return self._reconcile(binding, operations, service_ids)
@@ -268,7 +282,7 @@ class TransactionExecutor:
 
         loaded = self._store.read(binding.transaction_id)
         mutable_ops = [op for op in operations if op["action"] != "noop"]
-        return self._result(
+        return self._finalized_result(
             loaded,
             applied_services=[op["serviceId"] for op in mutable_ops],
         )
@@ -534,6 +548,8 @@ class TransactionExecutor:
         *,
         applied_services: list[str] | None = None,
         error: str | None = None,
+        lockfile_hash: str | None = None,
+        post_commit_observed_state_revision: str | None = None,
     ) -> ExecuteResult:
         return ExecuteResult(
             transaction_id=loaded["transactionId"],
@@ -542,6 +558,48 @@ class TransactionExecutor:
             sequence=loaded["sequence"],
             applied_services=list(applied_services or []),
             error=error,
+            lockfile_hash=lockfile_hash,
+            post_commit_observed_state_revision=post_commit_observed_state_revision,
+        )
+
+    def _finalized_result(
+        self,
+        loaded: dict[str, Any],
+        *,
+        applied_services: list[str] | None = None,
+    ) -> ExecuteResult:
+        if loaded.get("state") != "committed":
+            raise IntegrityError("finalization-before-commit")
+        receipt = self._finalizer.finalize(loaded)
+        expected_keys = {
+            "schema",
+            "transactionId",
+            "planHash",
+            "sequence",
+            "lockfileHash",
+            "postCommitObservedStateRevision",
+            "recordedAt",
+        }
+        if not isinstance(receipt, dict) or set(receipt) != expected_keys:
+            raise IntegrityError("invalid-finalization-receipt")
+        if (
+            receipt["transactionId"] != loaded["transactionId"]
+            or receipt["planHash"] != loaded["envelope"]["planHash"]
+            or receipt["sequence"] != loaded["sequence"]
+        ):
+            raise IntegrityError("finalization-binding-mismatch")
+        for digest_field in ("lockfileHash", "postCommitObservedStateRevision"):
+            if not isinstance(receipt[digest_field], str) or _SHA256_RE.fullmatch(
+                receipt[digest_field]
+            ) is None:
+                raise IntegrityError("invalid-finalization-digest")
+        return self._result(
+            loaded,
+            applied_services=applied_services,
+            lockfile_hash=receipt["lockfileHash"],
+            post_commit_observed_state_revision=receipt[
+                "postCommitObservedStateRevision"
+            ],
         )
 
 

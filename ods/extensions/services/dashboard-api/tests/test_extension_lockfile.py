@@ -404,6 +404,18 @@ def test_store_reports_uncertain_durability_after_directory_fsync_failure(
 
     monkeypatch.setattr(lockfile.os, "fsync", real_fsync)
     assert store.read() == second
+    assert store.confirm_durable(second["lockfile"]) == second
+
+
+def test_store_refuses_to_confirm_a_nonactive_lockfile(tmp_path: Path) -> None:
+    store = lockfile.ExtensionLockfileStore(tmp_path / "assistant-first")
+    first = store.commit(build()["lockfile"])
+    second = build(previous_lockfile=first)
+
+    with pytest.raises(
+        lockfile.ExtensionLockfileError, match="lockfile-durability-mismatch"
+    ):
+        store.confirm_durable(second["lockfile"])
 
 
 def test_store_rejects_corrupt_or_noncanonical_existing_file(tmp_path: Path) -> None:

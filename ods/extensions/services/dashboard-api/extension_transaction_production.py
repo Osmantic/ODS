@@ -34,7 +34,9 @@ from config import (
     USER_EXTENSIONS_DIR,
 )
 from extension_planning_contract import computed_catalog_revision
+from extension_lockfile import ExtensionLockfileStore
 from extension_transaction_configuration import TransactionConfigurationManager
+from extension_transaction_finalizer import TransactionLockfileFinalizer
 from extension_transaction_runtime import TransactionRuntime
 from extension_transactions import TransactionStore
 
@@ -351,6 +353,15 @@ def create_production_runtime() -> TransactionRuntime:
     root = Path(DATA_DIR) / "assistant-first" / "transaction-store"
     store = TransactionStore(root)
     configuration = TransactionConfigurationManager(store, HostSecretCustodian(), utc_now)
+    finalizer = TransactionLockfileFinalizer(
+        transactions=store,
+        lockfiles=ExtensionLockfileStore(
+            Path(DATA_DIR) / "assistant-first" / "desired-state"
+        ),
+        observed_state=production_observed_state,
+        runtime_mode="assistant-first",
+        clock=utc_now,
+    )
     return TransactionRuntime(
         store=store,
         catalog=production_catalog,
@@ -359,6 +370,7 @@ def create_production_runtime() -> TransactionRuntime:
         clock=utc_now,
         executor=None,
         configuration=configuration,
+        finalizer=finalizer,
     )
 
 

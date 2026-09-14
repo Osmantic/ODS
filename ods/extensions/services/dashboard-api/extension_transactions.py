@@ -169,6 +169,18 @@ CONFIGURATION_SCHEMA = "ods.assistant-first.transaction-configuration.v1"
 CONFIGURATION_INTENT_SCHEMA = (
     "ods.assistant-first.transaction-configuration-intent.v1"
 )
+FINALIZATION_SCHEMA = "ods.assistant-first.transaction-finalization.v1"
+FINALIZATION_KEYS = frozenset(
+    {
+        "schema",
+        "transactionId",
+        "planHash",
+        "sequence",
+        "lockfileHash",
+        "postCommitObservedStateRevision",
+        "recordedAt",
+    }
+)
 CONFIGURATION_KEYS = frozenset(
     {
         "actor",
@@ -1389,6 +1401,34 @@ class TransactionStore:
             intent, transaction_id, envelope, binding, intent=True
         )
 
+    def _load_finalization(self, tx_dir, transaction_id, envelope, journal):
+        path = tx_dir / "finalization.json"
+        if not self._entry_exists(path):
+            return None
+        record = _decode_canonical_object(path, FINALIZATION_KEYS, "finalization")
+        try:
+            _validate_timestamp(record["recordedAt"])
+        except ValidationRejected as exc:
+            raise IntegrityError("finalization-invalid") from exc
+        if record["schema"] != FINALIZATION_SCHEMA:
+            raise IntegrityError("finalization-schema")
+        if record["transactionId"] != transaction_id:
+            raise IntegrityError("finalization-transaction-mismatch")
+        if record["planHash"] != envelope["planHash"]:
+            raise IntegrityError("finalization-plan-hash-mismatch")
+        if type(record["sequence"]) is not int or record["sequence"] != len(journal):
+            raise IntegrityError("finalization-sequence-mismatch")
+        for field in ("lockfileHash", "postCommitObservedStateRevision"):
+            if not isinstance(record[field], str) or not HEX64_RE.fullmatch(
+                record[field]
+            ):
+                raise IntegrityError("finalization-digest")
+        if journal[-1]["state"] != "committed":
+            raise IntegrityError("finalization-before-commit")
+        if record["recordedAt"] < journal[-1]["timestamp"]:
+            raise IntegrityError("finalization-time-order")
+        return record
+
     def _read_transaction(
         self,
         transaction_id,
@@ -1453,6 +1493,9 @@ class TransactionStore:
                 )
             else:
                 approval = None
+        finalization = self._load_finalization(
+            tx_dir, transaction_id, envelope, records
+        )
         return {
             "transactionId": transaction_id,
             "txDir": tx_dir,
@@ -1462,6 +1505,7 @@ class TransactionStore:
             "configurationIntent": configuration_intent,
             "journal": records,
             "approval": approval,
+            "finalization": finalization,
             "state": records[-1]["state"],
         }
 
@@ -1942,6 +1986,62 @@ class TransactionStore:
                 "sequence": next_seq,
             }
 
+    def record_finalization(self, transaction_id, receipt):
+        """Persist one immutable desired-state receipt for a committed transaction."""
+
+        if not isinstance(receipt, dict) or set(receipt) != FINALIZATION_KEYS:
+            raise ValidationRejected("invalid-finalization-receipt")
+        with self._lock:
+            loaded = self._read_transaction(transaction_id)
+            if loaded["state"] != "committed":
+                raise TransitionError("transaction-not-committed")
+            expected = {
+                "transactionId": transaction_id,
+                "planHash": loaded["envelope"]["planHash"],
+                "sequence": len(loaded["journal"]),
+            }
+            if any(receipt.get(key) != value for key, value in expected.items()):
+                raise ValidationRejected("finalization-binding-mismatch")
+            if receipt.get("schema") != FINALIZATION_SCHEMA:
+                raise ValidationRejected("invalid-finalization-schema")
+            try:
+                _validate_timestamp(receipt.get("recordedAt"))
+            except ValidationRejected as exc:
+                raise ValidationRejected("invalid-finalization-timestamp") from exc
+            if receipt["recordedAt"] < loaded["journal"][-1]["timestamp"]:
+                raise ValidationRejected("finalization-time-order")
+            for field in ("lockfileHash", "postCommitObservedStateRevision"):
+                if not isinstance(receipt.get(field), str) or not HEX64_RE.fullmatch(
+                    receipt[field]
+                ):
+                    raise ValidationRejected("invalid-finalization-digest")
+
+            existing = loaded["finalization"]
+            if existing is not None:
+                if any(
+                    existing[key] != receipt[key]
+                    for key in FINALIZATION_KEYS
+                    if key != "recordedAt"
+                ):
+                    raise IdempotencyConflict("finalization-conflict")
+                result = dict(existing)
+                result["duplicate"] = True
+                return result
+
+            path = loaded["txDir"] / "finalization.json"
+            _write_immutable(path, canonical_json_bytes(receipt), 0o600)
+            written = self._load_finalization(
+                loaded["txDir"],
+                transaction_id,
+                loaded["envelope"],
+                loaded["journal"],
+            )
+            if written != receipt:
+                raise IntegrityError("finalization-write-verify-failed")
+            result = dict(written)
+            result["duplicate"] = False
+            return result
+
     def _approve_record(self, transaction_id, approval_data, current_time):
         """Replay a complete trusted approval record for low-level recovery tests.
 
@@ -2203,6 +2303,7 @@ class TransactionStore:
                 "journal": loaded["journal"],
                 "approval": loaded["approval"],
                 "configuration": loaded["configuration"],
+                "finalization": loaded["finalization"],
             }
 
     def list_transactions(self):
