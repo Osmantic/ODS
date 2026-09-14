@@ -190,6 +190,11 @@ test: ## Run unit and contract tests
 	@echo "=== issue-to-pr security check ==="
 	@bash tests/test-issue-to-pr-security.sh
 	@echo ""
+	@echo "=== documented security suites (SECURITY_AUDIT.md) ==="
+	@bash tests/test-secret-security.sh
+	@bash tests/test-openclaw-device-auth-default.sh
+	@bash tests/contracts/test-security-suites-wired.sh
+	@echo ""
 	@echo "=== NVIDIA multi-GPU visibility contract ==="
 	@bash tests/test-multigpu-nvidia-visibility.sh
 	@echo ""

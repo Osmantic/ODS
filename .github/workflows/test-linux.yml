@@ -137,6 +137,17 @@ jobs:
       - name: Fleet Host Lock Contract
         run: bash tests/test-fleet-host-lock.sh
 
+      # SECURITY_AUDIT.md presents these as the project's standing security
+      # checks, so CI has to be what runs them. No workflow invokes `make
+      # test`, so Makefile wiring alone would leave them unenforced.
+      - name: Documented Security Suites
+        run: |
+          bash tests/test-secret-security.sh
+          bash tests/test-openclaw-device-auth-default.sh
+
+      - name: Documented Security Suites Stay Wired
+        run: bash tests/contracts/test-security-suites-wired.sh
+
       - name: Integration Smoke
         run: bash tests/integration-test.sh
 
