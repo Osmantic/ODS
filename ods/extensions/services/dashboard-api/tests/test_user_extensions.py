@@ -228,3 +228,24 @@ class TestCaching:
 
         r2 = get_user_services_cached(user_dir, ttl=300.0)
         assert r2 == {}
+
+    def test_cache_keys_by_directory_path(self, tmp_path):
+        """Caching isolates entries per directory path."""
+        dir1 = tmp_path / "user1"
+        dir2 = tmp_path / "user2"
+
+        ext1 = dir1 / "ext1"
+        _write_manifest(ext1, _make_manifest("ext1"))
+        (ext1 / "compose.yaml").write_text("services: {}\n")
+
+        ext2 = dir2 / "ext2"
+        _write_manifest(ext2, _make_manifest("ext2"))
+        (ext2 / "compose.yaml").write_text("services: {}\n")
+
+        r1 = get_user_services_cached(dir1, ttl=300.0)
+        assert "ext1" in r1
+        assert "ext2" not in r1
+
+        r2 = get_user_services_cached(dir2, ttl=300.0)
+        assert "ext2" in r2
+        assert "ext1" not in r2

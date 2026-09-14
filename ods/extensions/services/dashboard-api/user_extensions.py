@@ -101,7 +101,7 @@ def scan_user_extension_services(
 
 # --- TTL Cache ---
 
-_cache: dict[str, Any] = {"result": {}, "timestamp": float("-inf")}
+_cache: dict[str, Any] = {}
 _cache_lock = threading.Lock()
 
 
@@ -110,22 +110,25 @@ def get_user_services_cached(
 ) -> dict[str, dict[str, Any]]:
     """Return cached result of ``scan_user_extension_services()``.
 
-    Re-scans when *ttl* seconds have elapsed since the last scan.
+    Re-scans when *ttl* seconds have elapsed since the last scan for the given directory.
     """
+    cache_key = str(user_ext_dir.resolve()) if hasattr(user_ext_dir, "resolve") else str(user_ext_dir)
     with _cache_lock:
         now = time.monotonic()
-        if now - _cache["timestamp"] < ttl:
-            return _cache["result"].copy()
+        entry = _cache.get(cache_key)
+        if entry and (now - entry["timestamp"] < ttl):
+            return entry["result"].copy()
 
     result = scan_user_extension_services(user_ext_dir)
     with _cache_lock:
-        _cache["result"] = result
-        _cache["timestamp"] = time.monotonic()
+        _cache[cache_key] = {
+            "result": result,
+            "timestamp": time.monotonic(),
+        }
     return result.copy()
 
 
 def _reset_cache() -> None:
     """Clear the cached scan result. Used for test isolation."""
     with _cache_lock:
-        _cache["result"] = {}
-        _cache["timestamp"] = float("-inf")
+        _cache.clear()

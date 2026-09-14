@@ -139,6 +139,8 @@ class CachedPrivacyShield(PrivacyShield):
 
     def scrub(self, text: str) -> str:
         """Scrub with optional caching."""
+        if not isinstance(text, str):
+            raise TypeError("PII scrub requires text")
         if CACHE_ENABLED and len(text) < 1000:  # Only cache small texts
             return self._scrub_cached(text)
         return self._scrub_impl(text)

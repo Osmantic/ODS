@@ -59,6 +59,27 @@ async def get_n8n_workflows() -> list[dict]:
                 if resp.status == 200:
                     data = await resp.json()
                     return data.get("data", [])
+                # Falling through to the empty list silently makes a rejected
+                # request indistinguishable from "this install has no
+                # workflows". n8n's public API requires a key that nothing
+                # provisions, so a fresh install answers 401 here and the
+                # dashboard would just show an empty list with no explanation.
+                if resp.status in (401, 403):
+                    logger.warning(
+                        "n8n rejected the workflow listing (HTTP %s): %s. The n8n "
+                        "public API requires an API key — create one in n8n "
+                        "(Settings > n8n API) and set N8N_API_KEY in .env.",
+                        resp.status,
+                        "N8N_API_KEY is not set"
+                        if not N8N_API_KEY
+                        else "the configured N8N_API_KEY was refused",
+                    )
+                else:
+                    logger.warning(
+                        "n8n returned HTTP %s for %s/api/v1/workflows",
+                        resp.status,
+                        N8N_URL,
+                    )
     except (aiohttp.ClientError, OSError, json.JSONDecodeError) as e:
         logger.warning(f"Failed to fetch workflows from n8n: {e}")
     return []

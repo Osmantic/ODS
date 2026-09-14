@@ -295,6 +295,24 @@ class TestClusterStatusRefresh:
 
         assert cs.total_gpus == 0
 
+    @pytest.mark.asyncio
+    async def test_refresh_handles_null_nodes_payload(self):
+        """ClusterStatus.refresh handles {"nodes": null} without TypeError."""
+        cs = ClusterStatus()
+
+        async def _fake_subprocess(*args, **kwargs):
+            proc = MagicMock()
+            proc.communicate = AsyncMock(return_value=(b'{"nodes": null}', b""))
+            proc.returncode = 0
+            return proc
+
+        with patch("asyncio.create_subprocess_exec", side_effect=_fake_subprocess):
+            await cs.refresh()
+
+        assert cs.nodes == []
+        assert cs.total_gpus == 0
+        assert cs.active_gpus == 0
+
 
 class TestGetFullAgentMetrics:
 
@@ -306,3 +324,54 @@ class TestGetFullAgentMetrics:
         assert "agent" in result
         assert "cluster" in result
         assert "throughput" in result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload,code", [
+    (b'null', 0), (b'[]', 0), (b'1', 0), (b'{}', 0),
+    (b'{"nodes": null}', 0), (b'{"nodes": {}}', 0),
+    (b'{"nodes": "invalid"}', 0), (b'{', 0), (b'\xff', 0),
+    (b'{"nodes": [{"healthy": true}, {"healthy": true}]}', 7),
+])
+async def test_invalid_cluster_poll_clears_previous_readiness(payload, code):
+    cs = ClusterStatus()
+    proc = MagicMock(returncode=0)
+    proc.communicate = AsyncMock(return_value=(
+        b'{"nodes": [{"healthy": true}, {"healthy": true}]}', b''))
+    with patch('asyncio.create_subprocess_exec', AsyncMock(return_value=proc)):
+        await cs.refresh()
+        assert cs.failover_ready is True
+        proc.returncode = code
+        proc.communicate.return_value = (payload, b'')
+        await cs.refresh()
+    assert cs.to_dict() == {
+        'nodes': [], 'total_gpus': 0, 'active_gpus': 0, 'failover_ready': False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_cluster_filters_invalid_nodes_and_requires_boolean_health():
+    cs = ClusterStatus()
+    proc = MagicMock(returncode=0)
+    proc.communicate = AsyncMock(return_value=(
+        b'{"nodes": [null, 3, "bad", {"healthy": "false"}, {"healthy": 1},'
+        b' {"healthy": false}, {"healthy": true}]}', b''))
+    with patch('asyncio.create_subprocess_exec', AsyncMock(return_value=proc)):
+        await cs.refresh()
+    assert cs.total_gpus == 4
+    assert cs.active_gpus == 1
+    assert cs.failover_ready is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('failure', [FileNotFoundError, OSError])
+async def test_unavailable_cluster_does_not_retain_ready_status(failure):
+    cs = ClusterStatus()
+    cs.nodes = [{'healthy': True}, {'healthy': True}]
+    cs.total_gpus = cs.active_gpus = 2
+    cs.failover_ready = True
+    with patch('asyncio.create_subprocess_exec', AsyncMock(side_effect=failure)):
+        await cs.refresh()
+    assert cs.nodes == []
+    assert cs.active_gpus == cs.total_gpus == 0
+    assert cs.failover_ready is False

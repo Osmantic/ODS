@@ -3,6 +3,16 @@
 
 ODS_ROOTLESS_HELPER_IMAGE="${ODS_ROOTLESS_HELPER_IMAGE:-busybox:1.36.1}"
 
+_ods_rootless_docker_info() {
+    # The installer may have verified sudo-backed Docker before the current
+    # login gains its new docker group. Standalone callers keep their own CLI.
+    if declare -F docker_run >/dev/null; then
+        docker_run info "$@"
+    else
+        docker info "$@"
+    fi
+}
+
 ods_docker_rootless_state() {
     case "${ODS_ASSUME_ROOTLESS:-}" in
         1|true) return 0 ;;
@@ -13,7 +23,7 @@ ods_docker_rootless_state() {
     # This field is Docker-specific; the podman "docker" shim does not expose it
     # and the Go template errors out instead of returning empty.
     local security_options
-    if security_options=$(docker info --format '{{json .SecurityOptions}}' 2>/dev/null) \
+    if security_options=$(_ods_rootless_docker_info --format '{{json .SecurityOptions}}' 2>/dev/null) \
        && [[ -n "$security_options" && "$security_options" != "null" ]]; then
         grep -q 'rootless' <<<"$security_options"
         return
@@ -22,7 +32,7 @@ ods_docker_rootless_state() {
     # Podman (invoked through the docker CLI shim) reports rootless via
     # .Host.Security.Rootless — a plain "true"/"false" boolean.
     local podman_rootless
-    if podman_rootless=$(docker info --format '{{.Host.Security.Rootless}}' 2>/dev/null) \
+    if podman_rootless=$(_ods_rootless_docker_info --format '{{.Host.Security.Rootless}}' 2>/dev/null) \
        && [[ -n "$podman_rootless" ]]; then
         [[ "$podman_rootless" == "true" ]]
         return

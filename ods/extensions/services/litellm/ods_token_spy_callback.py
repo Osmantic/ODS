@@ -177,7 +177,7 @@ class ODSTokenSpyCallback(CustomLogger):
         # model-router. Skipping here preserves exactly-once accounting.
         if (
             not self.enabled
-            or os.environ.get("ODS_MODEL_SWITCHBOARD", "observe") == "enabled"
+            or os.environ.get("ODS_MODEL_SWITCHBOARD", "enabled") == "enabled"
         ):
             return
         if self.worker is None or self.worker.done():

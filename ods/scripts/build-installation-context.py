@@ -131,8 +131,8 @@ def _running_services(repo_root: Path) -> set[str]:
     """Set of service-ids currently up per ``docker ps``. Cross-references
     container names against the manifest-built {container_name: service_id}
     map so e.g. ``ods-webui`` resolves to service id ``open-webui``.
-    Children of compound services (``ods-langfuse-clickhouse`` etc.) get
-    collapsed to their parent service-id via prefix match. Containers that
+    Only a manifest container represents the application: a running database
+    or worker does not prove its parent application is running. Containers that
     don't match any manifest are skipped — they're either non-ODS sidecars
     or post-install user additions we shouldn't claim as ours.
     """
@@ -145,26 +145,13 @@ def _running_services(repo_root: Path) -> set[str]:
         return set()
 
     cmap = _container_to_service_map(repo_root)
-    known_sids = set(cmap.values())
     running: set[str] = set()
     for line in result.stdout.splitlines():
         cname = line.strip()
         if not cname:
             continue
-        # Exact manifest match first
         if cname in cmap:
             running.add(cmap[cname])
-            continue
-        # Compound-service collapse: ods-langfuse-clickhouse → "langfuse"
-        # if the latter exists as a known service id.
-        if cname.startswith("ods-"):
-            stem = cname[len("ods-"):]
-            parts = stem.split("-")
-            for i in range(len(parts), 0, -1):
-                candidate = "-".join(parts[:i])
-                if candidate in known_sids:
-                    running.add(candidate)
-                    break
     return running
 
 

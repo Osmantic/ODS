@@ -1,0 +1,6 @@
+.pixel-source-find { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:10px; font-size:11px; }
+.pixel-source-find input { min-width:100px; flex:1; padding:6px 8px; color:inherit; background:transparent; border:1px solid #69717a; border-radius:5px; }
+.pixel-source-find button { padding:6px; border:1px solid #69717a; border-radius:5px; }
+.pixel-source-find button:disabled { opacity:.4; }
+.pixel-source-find [role=status] { flex-basis:100%; padding:0; }
+.pixel-preview-source [data-source-find-current] { background:#e9ac3328; outline:1px solid #b78c40; outline-offset:-1px; }

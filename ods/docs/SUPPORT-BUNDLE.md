@@ -28,6 +28,13 @@ scripts/ods-support-bundle.sh --json
 - Docker version, daemon info, container summary, and short ODS container log tails
 - Platform, git, disk, memory, listening port, manifest, env schema, and redacted `.env` details
 
+Container log tails are limited to names starting with `ods-`, including bundled
+sidecars such as `ods-langfuse-postgres`. Other applications whose names merely
+contain `ods` are excluded from log collection and do not consume its 25-container
+limit. This naming convention is not an ownership or authorization check; custom
+containers outside that namespace need separate log collection. The Docker
+container summary remains a host-wide diagnostic.
+
 The command is best-effort. Missing Docker, an unreachable daemon, or a failing
 diagnostic command is recorded in the bundle instead of aborting the whole run.
 

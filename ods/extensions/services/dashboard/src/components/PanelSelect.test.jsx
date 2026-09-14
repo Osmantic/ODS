@@ -1,0 +1,41 @@
+import { fireEvent, render, screen } from '@testing-library/react'
+import PanelSelect from './PanelSelect'
+
+const options = [{value:'first',label:'Configuration',group:'Core'}, {value:'second',label:'A very long category that must wrap inside the panel',group:'Advanced'}]
+test('opens inline and supports keyboard selection and Escape without closing its parent', () => {
+  const onChange = vi.fn(), parentKey = vi.fn()
+  const {container} = render(<div onKeyDown={parentKey}><PanelSelect label="Category" value="first" options={options} onChange={onChange} /></div>)
+  const trigger = screen.getByRole('combobox')
+  fireEvent.keyDown(trigger, {key:'ArrowDown'})
+  expect(container.querySelector('.panel-select')).toContainElement(screen.getByRole('listbox'))
+  fireEvent.keyDown(trigger, {key:'End'})
+  fireEvent.keyDown(trigger, {key:'Enter'})
+  expect(onChange).toHaveBeenCalledWith('second')
+  expect(trigger).toHaveFocus()
+  expect(screen.queryByRole('listbox')).toBeNull()
+  fireEvent.click(trigger)
+  parentKey.mockClear()
+  fireEvent.keyDown(trigger, {key:'Escape'})
+  expect(parentKey).not.toHaveBeenCalled()
+  expect(trigger).toHaveAttribute('aria-expanded','false')
+})
+test('closes on outside pointer or focus and supports pointer selection', () => {
+  const onChange = vi.fn()
+  render(<><PanelSelect label="Category" value="first" options={options} onChange={onChange} /><button>Outside</button></>)
+  const trigger = screen.getByRole('combobox')
+  fireEvent.click(trigger)
+  fireEvent.click(screen.getByRole('option', {name:options[1].label}))
+  expect(onChange).toHaveBeenCalledWith('second')
+  fireEvent.click(trigger)
+  fireEvent.pointerDown(screen.getByText('Outside'))
+  expect(screen.queryByRole('listbox')).toBeNull()
+  fireEvent.click(trigger)
+  fireEvent.blur(trigger, {relatedTarget:screen.getByText('Outside')})
+  expect(screen.queryByRole('listbox')).toBeNull()
+})
+test('empty and disabled selectors cannot open', () => {
+  const {rerender} = render(<PanelSelect label="Category" options={[]} onChange={vi.fn()} />)
+  expect(screen.getByRole('combobox')).toBeDisabled()
+  rerender(<PanelSelect label="Category" value="first" options={options} disabled onChange={vi.fn()} />)
+  expect(screen.getByRole('combobox')).toBeDisabled()
+})
