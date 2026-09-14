@@ -1607,3 +1607,18 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+class TestSafeTimestampFormat:
+    def test_valid_formatting(self):
+        from helpers import safe_timestamp_format
+        assert safe_timestamp_format(1700000000) == "2023-11-14T22:13:20Z"
+        assert safe_timestamp_format("1700000000") == "2023-11-14T22:13:20Z"
+
+    def test_invalid_and_bounds(self):
+        from helpers import safe_timestamp_format
+        assert safe_timestamp_format(None) == ""
+        assert safe_timestamp_format(float("nan")) == ""
+        assert safe_timestamp_format(-100) == ""
+        assert safe_timestamp_format("invalid_ts", default="err") == "err"
+

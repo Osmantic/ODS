@@ -1146,3 +1146,22 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def safe_timestamp_format(ts, fmt: str = "%Y-%m-%dT%H:%M:%SZ", default: str = "") -> str:
+    """Safely format Unix timestamp (seconds) into ISO UTC string."""
+    from datetime import datetime, timezone
+    if ts is None:
+        return default
+    try:
+        if isinstance(ts, float) and (math.isnan(ts) or math.isinf(ts)):
+            return default
+        val = float(ts)
+        if val < 0 or val > 4102444800:
+            return default
+        dt = datetime.fromtimestamp(val, tz=timezone.utc)
+        return dt.strftime(fmt)
+    except (ValueError, TypeError, OverflowError, OSError):
+        return default
+
+
