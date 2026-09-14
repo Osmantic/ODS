@@ -1381,3 +1381,15 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def dict_omit_keys_safe(d: dict | None, omit_keys: list | set | None) -> dict:
+    """Safely return a dictionary omitting specified keys.
+    Returns {} on None or non-dict inputs.
+    """
+    if not isinstance(d, dict) or d is None:
+        return {}
+    if not omit_keys or not isinstance(omit_keys, (list, tuple, set)):
+        return dict(d)
+    omit_set = set(omit_keys)
+    return {k: v for k, v in d.items() if k not in omit_set}
