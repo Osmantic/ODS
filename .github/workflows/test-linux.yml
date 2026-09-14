@@ -248,6 +248,16 @@ jobs:
       - name: Dotenv Serializer Tests
         run: bash tests/test-dotenv-serializer.sh
 
+      # Both are static source checks (grep/awk only), so they belong in the
+      # Linux job even though the Bash 3.2 one protects macOS. `make test`
+      # runs them, but no workflow runs `make test`, so without these steps
+      # neither guard ever executes in CI.
+      - name: Port Binding Sweep (community extensions)
+        run: bash tests/test-bind-address-sweep.sh
+
+      - name: Bash 3.2 Guard Placement
+        run: bash tests/test-bash32-guards.sh
+
       - name: Mode Switch Tests
         run: bash tests/test-mode-switch-status.sh
 
