@@ -70,6 +70,7 @@ Each extension is a self-contained directory with a `manifest.yaml` (service met
 |---------|------------|-----|
 | [`immich/`](services/immich/) | Immich — Google Photos alternative with AI face/object detection | AMD, NVIDIA |
 | [`paperless-ngx/`](services/paperless-ngx/) | Paperless-ngx — document management with OCR | CPU |
+| [`calibre-web/`](services/calibre-web/) | Calibre-Web — self-hosted eBook library and reader | CPU |
 | [`frigate/`](services/frigate/) | Frigate — NVR with real-time AI object detection | NVIDIA |
 | [`gitea/`](services/gitea/) | Gitea — lightweight self-hosted Git | CPU |
 | [`baserow/`](services/baserow/) | Baserow — open-source Airtable alternative | CPU |
@@ -95,6 +96,7 @@ Quick reference for hardware requirements. Data sourced from each service's `man
 | audiocraft | ✓ | — | — | — | 6 GB |
 | bark | ✓ | — | — | — | 4 GB |
 | baserow | — | — | — | ✓ | — |
+| calibre-web | — | — | — | ✓ | — |
 | chromadb | ✓ | ✓ | ✓ | — | — |
 | continue | ✓ | ✓ | ✓ | — | 4 GB |
 | crewai | — | — | — | ✓ | — |

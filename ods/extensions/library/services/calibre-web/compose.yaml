@@ -1,0 +1,31 @@
+services:
+  calibre-web:
+    image: lscr.io/linuxserver/calibre-web:0.6.24-ls334
+    container_name: ods-calibre-web
+    restart: unless-stopped
+    security_opt: [no-new-privileges:true]
+    environment:
+      PUID: "1000"
+      PGID: "1000"
+      TZ: ${TZ:-UTC}
+      DOCKER_MODS: "linuxserver/mods:universal-calibre"
+    volumes:
+      - ./data/calibre-web/config:/config
+      - ./data/calibre-web/books:/books
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${CALIBRE_WEB_PORT:-7852}:8083"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8083/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    networks: [ods-network]
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+networks:
+  ods-network:
+    external: true

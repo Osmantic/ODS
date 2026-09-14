@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-13T16:53:56Z",
+  "generated_at": "2026-09-14T16:10:41Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -513,6 +513,58 @@
         }
       ],
       "catalog_source": "builtin",
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
+      "id": "calibre-web",
+      "name": "Calibre-Web",
+      "description": "Web application for browsing, reading, and downloading eBooks stored in a Calibre library database.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 8083,
+      "external_port_default": 7852,
+      "health_endpoint": "/",
+      "env_vars": [
+        {
+          "key": "CALIBRE_WEB_PORT",
+          "default": "7852",
+          "description": "Published Calibre-Web web interface port"
+        }
+      ],
+      "tags": [
+        "books",
+        "ebooks",
+        "library",
+        "reader",
+        "epub",
+        "pdf",
+        "local"
+      ],
+      "features": [
+        {
+          "id": "ebook-library",
+          "name": "eBook Library",
+          "description": "Browse, read, and download digital books, EPUBs, and PDFs from a self-hosted library",
+          "icon": "BookOpen",
+          "category": "productivity",
+          "requirements": {
+            "services": [
+              "calibre-web"
+            ],
+            "vram_gb": 0,
+            "disk_gb": 2
+          },
+          "enabled_services_all": [
+            "calibre-web"
+          ],
+          "setup_time": "~1 minute",
+          "priority": 39
+        }
+      ],
       "configuration_scope": "declared-environment-keys"
     },
     {
@@ -3153,6 +3205,28 @@
           ]
         }
       ],
+      "catalog_source": "builtin",
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
+      "id": "pixel-inference",
+      "name": "Pixel inference sharing (development)",
+      "description": "Disabled by default. Owner-provisioned, inference-only device credentials; loopback transport only. Does not provide Pixel agent or computer access. Private state must be provisioned before service activation. Native Windows private-state support and guided setup are not yet implemented.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [
+        "model-router"
+      ],
+      "port": 8093,
+      "external_port_default": 4005,
+      "health_endpoint": "/health",
+      "env_vars": [],
+      "tags": [],
+      "features": [],
+      "startup_check": false,
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
     },
