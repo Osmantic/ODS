@@ -1146,3 +1146,23 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def transform_dict_values_safe(data: object, func: object) -> dict:
+    """Apply callable transformation function to dictionary values safely.
+
+    Catches transformation exceptions per key and preserves original value on failure.
+    Handles non-dict inputs or non-callable func safely.
+    """
+    if not isinstance(data, dict) or not callable(func):
+        return {}
+    res = {}
+    for k, v in data.items():
+        if k is None:
+            continue
+        try:
+            res[str(k)] = func(v)
+        except Exception:
+            res[str(k)] = v
+    return res
+

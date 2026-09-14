@@ -1607,3 +1607,17 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+class TestTransformDictValuesSafe:
+
+    def test_transforms_dict_values(self):
+        from helpers import transform_dict_values_safe
+        raw = {"k1": "10", "k2": "20", "k3": "invalid"}
+        assert transform_dict_values_safe(raw, int) == {"k1": 10, "k2": 20, "k3": "invalid"}
+
+    def test_handles_none_and_non_callable(self):
+        from helpers import transform_dict_values_safe
+        assert transform_dict_values_safe(None, int) == {}
+        assert transform_dict_values_safe({"a": 1}, None) == {}
+
