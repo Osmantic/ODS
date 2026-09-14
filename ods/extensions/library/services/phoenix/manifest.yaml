@@ -1,0 +1,51 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: phoenix
+  name: Phoenix (Local LLM Traces)
+  description: "Authenticated local OpenInference traces for debugging LLM and retrieval workflows. Instrumentation is opt-in."
+  aliases: [llm-trace-lab]
+  container_name: ods-phoenix
+  default_host: phoenix
+  port: 6006
+  external_port_env: PHOENIX_PORT
+  external_port_default: 8606
+  health: /readyz
+  ui_path: /
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [tracing, observability, llm]
+  env_vars:
+    - key: PHOENIX_PORT
+      description: "Published UI and HTTP collector port; internal listener remains 6006"
+      default: "8606"
+    - key: PHOENIX_SECRET
+      description: "JWT signing secret: at least 32 characters, including a digit and lowercase letter; retain with database backups"
+      required: true
+      secret: true
+    - key: PHOENIX_DEFAULT_ADMIN_INITIAL_PASSWORD
+      description: "Strong initial admin@localhost password; subsequent changes use the Phoenix account UI"
+      required: true
+      secret: true
+    - key: PHOENIX_RETENTION_DAYS
+      description: "Default trace retention in days; 0 retains indefinitely; existing project policies are managed in Phoenix"
+      default: "30"
+features:
+  - id: local-trace-lab
+    name: Local Trace Lab
+    description: "Inspect explicitly instrumented LLM spans, latency and token metadata in a private workspace"
+    icon: Activity
+    category: monitoring
+    requirements:
+      services: [phoenix]
+      vram_gb: 0
+    enabled_services_all: [phoenix]
+    setup_time: "~3 minutes after setting credentials"
+    priority: 33
+    launch:
+      type: service
+      service: phoenix
