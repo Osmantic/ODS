@@ -1607,3 +1607,16 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+class TestListChunkOverlappingSafe:
+    def test_valid_sliding_window(self):
+        from helpers import list_chunk_overlapping_safe
+        nums = [1, 2, 3, 4]
+        assert list_chunk_overlapping_safe(nums, size=2, step=1) == [[1, 2], [2, 3], [3, 4], [4]]
+
+    def test_invalid_and_bounds(self):
+        from helpers import list_chunk_overlapping_safe
+        assert list_chunk_overlapping_safe(None) == []
+        assert list_chunk_overlapping_safe([1, 2], size=-1, step=0) == [[1, 2], [2]]
+
