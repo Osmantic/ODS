@@ -1381,3 +1381,22 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def list_deduplicate_by_key_safe(items: list[dict] | None, key: str | None) -> list[dict]:
+    """Safely deduplicate a list of dictionaries by specified key.
+    Returns [] on None or non-list inputs.
+    """
+    if not items or not isinstance(items, (list, tuple)):
+        return []
+    if not isinstance(key, str) or not key:
+        return list(items)
+    seen = set()
+    result = []
+    for item in items:
+        if isinstance(item, dict):
+            val = item.get(key)
+            if val not in seen:
+                seen.add(val)
+                result.append(item)
+    return result
