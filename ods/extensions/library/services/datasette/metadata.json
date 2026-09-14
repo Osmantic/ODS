@@ -1,0 +1,5 @@
+{
+  "title": "ODS Local Datasets",
+  "description": "Read-only SQLite snapshots for local inspection and analysis.",
+  "allow": { "id": "root" }
+}
