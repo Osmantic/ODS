@@ -5,7 +5,7 @@ having to copy-paste a code.
 The security contract these tests enforce:
 
   * ``/api/oauth/callback`` MUST only write a callback file when
-    ``state`` matches a live nonce issued by ``/api/oauth/init``.
+    ``state`` matches a live nonce issued by ``/api/oauth/init`` or registered via ``/api/oauth/pending``.
   * Nonces are single-use and consumed before the callback payload is
     written, so replays and concurrent uses can't both succeed.
   * The callback endpoint stays unauthenticated (it's a provider
@@ -27,6 +27,23 @@ import pytest
 from fastapi.testclient import TestClient
 
 import main as main_module
+from routers import oauth_passthrough
+
+
+def _register_state(skill: str, state: str = "google-workspace") -> None:
+    """Pre-register a state nonce bound to a skill for testing callback endpoints."""
+    oauth_passthrough._PENDING_FLOWS[state] = {
+        "skill": skill,
+        "expires_at": int(time.time()) + 900
+    }
+
+
+@pytest.fixture(autouse=True)
+def clean_pending_store():
+    """Ensure the pending flow store is clean before and after each test."""
+    oauth_passthrough._PENDING_FLOWS.clear()
+    yield
+    oauth_passthrough._PENDING_FLOWS.clear()
 
 
 @pytest.fixture
@@ -74,8 +91,6 @@ def test_oauth_init_returns_state_and_expiry(oauth_client):
     assert resp.status_code == 200
     body = resp.json()
     assert body["skill_id"] == "google-workspace"
-    # 43 chars is what secrets.token_urlsafe(32) yields, but the endpoint's
-    # regex accepts 22..128 to leave room for entropy changes.
     assert 22 <= len(body["state"]) <= 128
     assert body["expires_at"] > int(time.time())
 
@@ -171,8 +186,7 @@ def test_oauth_init_prunes_expired_nonces(oauth_client):
 
 def test_callback_with_valid_nonce_writes_callback_and_returns_success(oauth_client):
     """Full happy path: init → callback with the issued state → callback
-    file written with the SERVER-RESOLVED skill_id (not whatever the
-    callback query said)."""
+    file written with the SERVER-RESOLVED skill_id."""
     state = _init_flow(oauth_client, skill_id="google-workspace")
     resp = oauth_client.get(
         "/api/oauth/callback",
@@ -187,8 +201,6 @@ def test_callback_with_valid_nonce_writes_callback_and_returns_success(oauth_cli
     assert callback.exists(), f"callback file not written at {callback}"
     payload = json.loads(callback.read_text())
     assert payload["code"] == "fake-code-abc123"
-    # The agent contract: `state` field carries the resolved skill_id, not
-    # the raw nonce. Hermes reads this to know which skill to finalise.
     assert payload["state"] == "google-workspace"
     assert isinstance(payload["captured_at"], int)
 
@@ -214,12 +226,10 @@ def test_callback_file_is_owner_only(oauth_client):
 
 def test_callback_uses_bound_return_url_not_query_param(oauth_client):
     """return_url is bound at init and MUST come from the nonce — a
-    callback query param must not influence it (would be an open-redirect
-    surface)."""
+    callback query param must not influence it."""
     state = _init_flow(oauth_client, return_url="/talk")
     resp = oauth_client.get(
         "/api/oauth/callback",
-        # Attacker attempts to override the return_url via query string.
         params={"code": "fake", "state": state, "return_url": "javascript:alert(1)"},
     )
     assert resp.status_code == 200
@@ -234,11 +244,7 @@ def test_callback_success_page_omits_button_when_no_return_url_bound(oauth_clien
     assert "Back to ODS Talk" not in resp.text
 
 
-def test_callback_escapes_skill_id_in_success_html(oauth_client, monkeypatch):
-    """Even if a compromised nonce file somehow contained an unsafe
-    skill_id, the success page must not reflect it as raw HTML."""
-    # Bypass init to plant a nonce whose skill_id is not what the endpoint
-    # would normally accept. The callback should fall back to "service".
+def test_callback_escapes_skill_id_in_success_html(oauth_client):
     nonce_dir = oauth_client.tmp / "oauth-nonces"
     nonce_dir.mkdir(parents=True, exist_ok=True)
     state = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEF"
@@ -257,26 +263,21 @@ def test_callback_escapes_skill_id_in_success_html(oauth_client, monkeypatch):
     resp = oauth_client.get("/api/oauth/callback", params={"code": "fake", "state": state})
     assert resp.status_code == 200
     assert "<script>alert(1)</script>" not in resp.text
-    # Falls back to the generic label when the stored skill_id is unsafe.
     assert "service" in resp.text
 
 
 # ---------------------------------------------------------------------------
-# /api/oauth/callback — rejection paths (the security-critical ones)
+# /api/oauth/callback — rejection paths
 # ---------------------------------------------------------------------------
 
 
 def test_callback_rejects_missing_state(oauth_client):
-    """Old default-to-google-workspace behaviour is GONE. A callback with
-    no state is unrecognised and MUST NOT produce a callback file."""
     resp = oauth_client.get("/api/oauth/callback", params={"code": "fake"})
     assert resp.status_code == 400
     assert not (oauth_client.tmp / "oauth_callback.json").exists()
 
 
 def test_callback_rejects_unknown_state(oauth_client):
-    """This is the injection attack from the issue: attacker fires a
-    callback with a guessed state, but never called /init. Refuse."""
     fake_state = "attacker-guessed-state-abcdefghijklmnop"
     resp = oauth_client.get(
         "/api/oauth/callback",
@@ -289,13 +290,13 @@ def test_callback_rejects_unknown_state(oauth_client):
 @pytest.mark.parametrize(
     "state",
     [
-        "short",                       # too short
-        "has spaces in it and more",   # invalid chars, wrong length
-        "../../../../etc/passwd",      # path traversal attempt
-        "..",                          # bare parent
-        "/absolute/path/attack",       # absolute path attempt
-        "has.dots.in.it.abcdefghij",   # '.' not in the base64url alphabet
-        "a" * 200,                     # too long
+        "short",
+        "has spaces in it and more",
+        "../../../../etc/passwd",
+        "..",
+        "/absolute/path/attack",
+        "has.dots.in.it.abcdefghij",
+        "a" * 200,
     ],
 )
 def test_callback_rejects_malformed_state(oauth_client, state):
@@ -308,8 +309,6 @@ def test_callback_rejects_malformed_state(oauth_client, state):
 
 
 def test_callback_rejects_expired_nonce(oauth_client):
-    """A nonce past its TTL must be refused and cleaned up. Simulate by
-    rewriting the on-disk nonce to look ancient."""
     state = _init_flow(oauth_client)
     nonce_file = oauth_client.tmp / "oauth-nonces" / f"{state}.json"
     payload = json.loads(nonce_file.read_text())
@@ -319,29 +318,23 @@ def test_callback_rejects_expired_nonce(oauth_client):
     resp = oauth_client.get("/api/oauth/callback", params={"code": "fake", "state": state})
     assert resp.status_code == 400
     assert not (oauth_client.tmp / "oauth_callback.json").exists()
-    assert not nonce_file.exists(), "expired nonce should be cleaned up"
+    assert not nonce_file.exists()
 
 
 def test_callback_rejects_replayed_nonce(oauth_client):
-    """Nonces are single-use. A second callback with the same state must
-    fail — otherwise a leaked callback URL could be exchanged twice."""
     state = _init_flow(oauth_client)
     first = oauth_client.get("/api/oauth/callback", params={"code": "first", "state": state})
     assert first.status_code == 200
 
-    # The callback file exists from the first legit call — snapshot it so
-    # we can prove the replay didn't overwrite it.
     callback_file = oauth_client.tmp / "oauth_callback.json"
     original = callback_file.read_text()
 
     second = oauth_client.get("/api/oauth/callback", params={"code": "second", "state": state})
     assert second.status_code == 400
-    assert callback_file.read_text() == original, "replay must not overwrite the legitimate callback"
+    assert callback_file.read_text() == original
 
 
 def test_callback_rejects_unreadable_nonce(oauth_client):
-    """If the nonce file is corrupt, refuse the callback and clean up
-    rather than falling through to accepting an unvalidated state."""
     state = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEF"
     nonce_dir = oauth_client.tmp / "oauth-nonces"
     nonce_dir.mkdir(parents=True, exist_ok=True)
@@ -351,7 +344,7 @@ def test_callback_rejects_unreadable_nonce(oauth_client):
     resp = oauth_client.get("/api/oauth/callback", params={"code": "fake", "state": state})
     assert resp.status_code == 400
     assert not (oauth_client.tmp / "oauth_callback.json").exists()
-    assert not nonce_file.exists(), "unreadable nonce should be cleaned up"
+    assert not nonce_file.exists()
 
 
 # ---------------------------------------------------------------------------
@@ -360,9 +353,6 @@ def test_callback_rejects_unreadable_nonce(oauth_client):
 
 
 def test_callback_provider_error_consumes_nonce(oauth_client):
-    """If the user denies consent, the provider redirects with ?error=...
-    plus the state we issued. The nonce must be consumed so it can't be
-    replayed by an attacker who observed the URL."""
     state = _init_flow(oauth_client)
     nonce_file = oauth_client.tmp / "oauth-nonces" / f"{state}.json"
     assert nonce_file.exists()
@@ -374,12 +364,10 @@ def test_callback_provider_error_consumes_nonce(oauth_client):
     assert resp.status_code == 400
     assert "access_denied" in resp.text
     assert not (oauth_client.tmp / "oauth_callback.json").exists()
-    assert not nonce_file.exists(), "provider-error path should consume the nonce"
+    assert not nonce_file.exists()
 
 
 def test_callback_missing_code_consumes_nonce(oauth_client):
-    """A malformed provider redirect (no code, no error) still burns the
-    nonce — the user needs a fresh flow to try again."""
     state = _init_flow(oauth_client)
     nonce_file = oauth_client.tmp / "oauth-nonces" / f"{state}.json"
 
@@ -391,8 +379,6 @@ def test_callback_missing_code_consumes_nonce(oauth_client):
 
 
 def test_callback_provider_error_without_state_still_400s(oauth_client):
-    """Some providers may drop state on error redirects. Still fail
-    cleanly without writing anything."""
     resp = oauth_client.get("/api/oauth/callback", params={"error": "server_error"})
     assert resp.status_code == 400
     assert not (oauth_client.tmp / "oauth_callback.json").exists()
@@ -404,21 +390,15 @@ def test_callback_provider_error_without_state_still_400s(oauth_client):
 
 
 def test_concurrent_flows_have_independent_nonces(oauth_client):
-    """Two skills being set up simultaneously must not interfere. Each
-    gets its own nonce, each callback resolves to its own skill_id."""
     state_a = _init_flow(oauth_client, skill_id="google-workspace")
     state_b = _init_flow(oauth_client, skill_id="spotify")
     assert state_a != state_b
 
-    # B's callback lands first.
     oauth_client.get("/api/oauth/callback", params={"code": "code-b", "state": state_b})
     b_payload = json.loads((oauth_client.tmp / "oauth_callback.json").read_text())
     assert b_payload["state"] == "spotify"
     assert b_payload["code"] == "code-b"
 
-    # A's callback lands next — legitimate overwrite of the fixed
-    # callback file (agent consumes each in turn). A's nonce is still
-    # valid because B consumed only B's nonce.
     oauth_client.get("/api/oauth/callback", params={"code": "code-a", "state": state_a})
     a_payload = json.loads((oauth_client.tmp / "oauth_callback.json").read_text())
     assert a_payload["state"] == "google-workspace"
@@ -426,8 +406,6 @@ def test_concurrent_flows_have_independent_nonces(oauth_client):
 
 
 def test_callback_atomic_write(oauth_client):
-    """The handler writes via a .tmp + rename so a concurrent read by the
-    agent never sees a half-written file."""
     state = _init_flow(oauth_client)
     resp = oauth_client.get("/api/oauth/callback", params={"code": "code1", "state": state})
     assert resp.status_code == 200
@@ -436,8 +414,108 @@ def test_callback_atomic_write(oauth_client):
 
 
 # ---------------------------------------------------------------------------
-# /api/oauth/pending
+# Pending flow tests (/api/oauth/pending)
 # ---------------------------------------------------------------------------
+
+
+def test_oauth_pending_registration_requires_auth(oauth_client):
+    resp = oauth_client.post("/api/oauth/pending", json={"skill": "spotify"})
+    assert resp.status_code == 401
+
+
+def test_oauth_registration_generates_high_entropy_state(oauth_client):
+    resp = oauth_client.post(
+        "/api/oauth/pending",
+        json={"skill": "spotify"},
+        headers=oauth_client.auth_headers
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "state" in body
+    assert len(body["state"]) >= 32
+
+
+def test_different_registrations_generate_different_states(oauth_client):
+    r1 = oauth_client.post(
+        "/api/oauth/pending",
+        json={"skill": "spotify"},
+        headers=oauth_client.auth_headers
+    ).json()
+    r2 = oauth_client.post(
+        "/api/oauth/pending",
+        json={"skill": "spotify"},
+        headers=oauth_client.auth_headers
+    ).json()
+    assert r1["state"] != r2["state"]
+
+
+def test_state_is_bound_to_registered_skill(oauth_client):
+    resp = oauth_client.post(
+        "/api/oauth/pending",
+        json={"skill": "spotify"},
+        headers=oauth_client.auth_headers
+    ).json()
+    state = resp["state"]
+    assert oauth_passthrough._PENDING_FLOWS[state]["skill"] == "spotify"
+
+
+def test_valid_state_callback_succeeds(oauth_client):
+    resp = oauth_client.post(
+        "/api/oauth/pending",
+        json={"skill": "spotify"},
+        headers=oauth_client.auth_headers
+    ).json()
+    state = resp["state"]
+
+    callback_resp = oauth_client.get(
+        "/api/oauth/callback",
+        params={"code": "auth-code-123", "state": state}
+    )
+    assert callback_resp.status_code == 200
+
+    legacy = oauth_client.tmp / "oauth_callback.json"
+    skill_specific = oauth_client.tmp / "oauth_callback_spotify.json"
+    assert legacy.exists()
+    assert skill_specific.exists()
+
+
+def test_expired_state_is_rejected_without_artifact(oauth_client):
+    resp = oauth_client.post(
+        "/api/oauth/pending",
+        json={"skill": "spotify"},
+        headers=oauth_client.auth_headers
+    ).json()
+    state = resp["state"]
+
+    oauth_passthrough._PENDING_FLOWS[state]["expires_at"] = int(time.time()) - 1
+
+    callback_resp = oauth_client.get(
+        "/api/oauth/callback",
+        params={"code": "code123", "state": state}
+    )
+    assert callback_resp.status_code == 400
+    assert not (oauth_client.tmp / "oauth_callback.json").exists()
+
+
+def test_consumed_state_cannot_be_reused(oauth_client):
+    resp = oauth_client.post(
+        "/api/oauth/pending",
+        json={"skill": "spotify"},
+        headers=oauth_client.auth_headers
+    ).json()
+    state = resp["state"]
+
+    r1 = oauth_client.get(
+        "/api/oauth/callback",
+        params={"code": "code1", "state": state}
+    )
+    assert r1.status_code == 200
+
+    r2 = oauth_client.get(
+        "/api/oauth/callback",
+        params={"code": "code2", "state": state}
+    )
+    assert r2.status_code == 400
 
 
 def test_oauth_pending_endpoint_returns_false_when_no_callback(oauth_client):
@@ -460,11 +538,6 @@ def test_oauth_pending_endpoint_returns_true_after_callback(oauth_client):
     assert isinstance(body["captured_at"], int)
     assert body["age_seconds"] >= 0
     assert body["stale"] is False
-
-
-# ---------------------------------------------------------------------------
-# /api/oauth/providers (unchanged surface — smoke covers regressions)
-# ---------------------------------------------------------------------------
 
 
 def test_oauth_providers_requires_auth(oauth_client):

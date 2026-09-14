@@ -63,14 +63,13 @@ Security model:
     so we don't accumulate garbage.
 """
 
-from __future__ import annotations
-
 import html
 import json
 import logging
 import os
 import re
 import secrets
+import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -98,14 +97,63 @@ _SKILL_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 _DEFAULT_NONCE_TTL_SECONDS = 900  # 15 min; OAuth provider codes usually expire in ~10 min
 
 
+# In-memory database of pending OAuth flows: {state_nonce: {"skill": skill, "expires_at": expires_at}}
+_PENDING_FLOWS: dict[str, dict] = {}
+_FLOW_LOCK = threading.Lock()
+FLOW_TTL_SECONDS = 900  # 15 minutes
+
+
+class OAuthRegisterRequest(BaseModel):
+    skill: str = Field(..., pattern=r"^[a-zA-Z0-9_-]+$", max_length=100)
+
+
+class OAuthRegisterResponse(BaseModel):
+    state: str
+    expires_at: int
+
+
+def _cleanup_expired_flows_unlocked() -> None:
+    """Remove expired entries from the pending store. Call under _FLOW_LOCK."""
+    now = int(time.time())
+    expired = [k for k, v in _PENDING_FLOWS.items() if v["expires_at"] < now]
+    for k in expired:
+        del _PENDING_FLOWS[k]
+
+
+def register_pending_flow(skill: str) -> tuple[str, int]:
+    """Generate a secure state nonce and record the pending flow."""
+    state = secrets.token_urlsafe(32)
+    now = int(time.time())
+    expires_at = now + FLOW_TTL_SECONDS
+    with _FLOW_LOCK:
+        _cleanup_expired_flows_unlocked()
+        _PENDING_FLOWS[state] = {
+            "skill": skill,
+            "expires_at": expires_at
+        }
+    return state, expires_at
+
+
+def consume_pending_flow(state: str) -> str | None:
+    """Atomically validate and consume a pending flow, returning the trusted skill if valid."""
+    now = int(time.time())
+    with _FLOW_LOCK:
+        _cleanup_expired_flows_unlocked()
+        flow = _PENDING_FLOWS.get(state)
+        if not flow:
+            return None
+        del _PENDING_FLOWS[state]
+        if flow["expires_at"] < now:
+            return None
+        return flow["skill"]
+
+
 def _callback_dir() -> Path:
     """Where dashboard-api writes the captured OAuth callback for the
     agent to consume. ``data/persona/`` is the operator-owned mount that
     Hermes can read (we don't put it in ``data/hermes/`` because that's
     uid 10000 and dashboard-api can't write there).
     """
-    # In-container path: dashboard-api mounts ./data → /data, so
-    # ./data/persona/ is /data/persona/ from here.
     base = Path(os.environ.get("ODS_PERSONA_DIR", "/data/persona"))
     base.mkdir(parents=True, exist_ok=True)
     return base
@@ -318,6 +366,16 @@ def _error_page(reason: str) -> str:
 <p>Head back to ODS Talk and ask your assistant to try again.</p></body></html>"""
 
 
+@router.post("/api/oauth/pending", response_model=OAuthRegisterResponse)
+async def register_oauth_flow(
+    payload: OAuthRegisterRequest,
+    api_key: str = Depends(verify_api_key)
+):
+    """Register a pending OAuth flow for a specific skill and get a secure state nonce."""
+    state, expires_at = register_pending_flow(payload.skill)
+    return OAuthRegisterResponse(state=state, expires_at=expires_at)
+
+
 class OAuthInitRequest(BaseModel):
     """Body for ``POST /api/oauth/init``.
 
@@ -400,22 +458,55 @@ async def oauth_init(
 @router.get("/api/oauth/callback")
 async def oauth_callback(
     code: str = Query("", description="Authorisation code returned by the OAuth provider."),
-    state: str = Query("", description="Nonce previously issued by /api/oauth/init. Callbacks whose state doesn't match a live nonce are rejected."),
+    state: str = Query("", description="Nonce previously issued by /api/oauth/init or /api/oauth/pending."),
     error: str = Query("", description="Set by the provider if the user denied or auth failed."),
 ):
     """OAuth redirect target.
 
-    Validates ``state`` against a server-issued nonce, and only on a
-    successful match writes the captured ``code`` to
+    Validates ``state`` against a server-issued nonce or in-memory pending flow,
+    and only on a successful match writes the captured ``code`` to
     ``data/persona/oauth_callback.json`` for the agent to consume. Nonces
-    are single-use and consumed BEFORE the callback file is written, so
-    a race between two callbacks with the same state resolves to one
-    winner.
+    are single-use and consumed BEFORE the callback file is written.
     """
+    if not state:
+        return HTMLResponse(_error_page("Missing state parameter."), status_code=400)
+
+    # 1. Check in-memory pending flows first
+    in_memory_skill = consume_pending_flow(state)
+    if in_memory_skill:
+        if not re.match(r"^[a-zA-Z0-9._-]+$", in_memory_skill):
+            logger.warning("OAuth callback rejected due to invalid skill identifier layout: %s", in_memory_skill[:50])
+            return HTMLResponse(_error_page("Invalid skill name structure."), status_code=400)
+        if error:
+            logger.warning("oauth callback received provider error for skill=%s: %s", in_memory_skill, error[:200])
+            return HTMLResponse(_error_page(f"The provider sent back an error: {error}"), status_code=400)
+        if not code:
+            return HTMLResponse(_error_page("No authorisation code was returned."), status_code=400)
+
+        now = int(time.time())
+        payload = {
+            "code": code,
+            "state": in_memory_skill,
+            "captured_at": now,
+        }
+        targets = [
+            _callback_dir() / "oauth_callback.json",
+            _callback_dir() / f"oauth_callback_{in_memory_skill}.json"
+        ]
+        for target in targets:
+            try:
+                _atomic_write_0600(target, json.dumps(payload, indent=2))
+            except OSError as exc:
+                logger.exception("oauth callback failed to write %s: %s", target, exc)
+                return HTMLResponse(
+                    _error_page("ODS caught the redirect but couldn't hand the code back to your assistant."),
+                    status_code=500,
+                )
+        logger.info("oauth callback captured for skill=%s", in_memory_skill)
+        return HTMLResponse(_success_page(in_memory_skill, None))
+
+    # 2. Check disk-backed nonces from /api/oauth/init
     if error:
-        # Consume the nonce even on error so a denied flow can't be
-        # replayed. State may be missing on error redirects; _consume_nonce
-        # is a no-op in that case.
         _consume_nonce(state)
         logger.warning("oauth callback received provider error: %s", error[:200])
         return HTMLResponse(_error_page(f"The provider sent back an error: {error}"), status_code=400)
@@ -427,9 +518,6 @@ async def oauth_callback(
             status_code=400,
         )
 
-    # State validation is the security boundary. If the incoming state
-    # doesn't map to a live nonce, refuse — do NOT write anything the
-    # agent might later consume.
     nonce_path = _nonce_path(state)
     if not nonce_path or not nonce_path.exists():
         logger.warning("oauth callback with unknown/invalid state (len=%d)", len(state))
@@ -471,12 +559,6 @@ async def oauth_callback(
     skill_id = skill_id_raw if _SKILL_ID_PATTERN.fullmatch(skill_id_raw) else "service"
     bound_return_url = str(nonce_payload.get("return_url") or "").strip() or None
 
-    # Consume the nonce BEFORE writing the callback file. If two callbacks
-    # race with the same state, only one unlink succeeds; the second one
-    # sees the file missing and bails at the nonce_path.exists() check on
-    # the next request. On this request, a failed unlink means the file
-    # vanished between our exists()/read and unlink() — treat that as
-    # someone else winning the race and refuse.
     try:
         nonce_path.unlink()
     except FileNotFoundError:
@@ -495,39 +577,53 @@ async def oauth_callback(
     payload = {
         "code": code,
         "state": skill_id,
-        # Unix epoch so the agent can detect stale callbacks (>15 min)
-        # and decline rather than trying to exchange a definitely-
-        # expired code at the provider.
         "captured_at": now,
     }
-    target = _callback_dir() / "oauth_callback.json"
-    try:
-        _atomic_write_0600(target, json.dumps(payload, indent=2))
-    except OSError as exc:
-        logger.exception("oauth callback failed to write %s: %s", target, exc)
-        return HTMLResponse(
-            _error_page("ODS caught the redirect but couldn't hand the code back to your assistant. The operator might need to check filesystem permissions on data/persona/."),
-            status_code=500,
-        )
+    targets = [
+        _callback_dir() / "oauth_callback.json",
+        _callback_dir() / f"oauth_callback_{skill_id}.json"
+    ]
+    for target in targets:
+        try:
+            _atomic_write_0600(target, json.dumps(payload, indent=2))
+        except OSError as exc:
+            logger.exception("oauth callback failed to write %s: %s", target, exc)
+            return HTMLResponse(
+                _error_page("ODS caught the redirect but couldn't hand the code back to your assistant. The operator might need to check filesystem permissions on data/persona/."),
+                status_code=500,
+            )
 
     logger.info("oauth callback captured for skill=%s (code length %d)", skill_id, len(code))
     return HTMLResponse(_success_page(skill_id, bound_return_url))
 
 
 @router.get("/api/oauth/pending")
-async def oauth_pending(api_key: str = Depends(verify_api_key)):
+async def oauth_pending(
+    skill: str = Query("google-workspace", description="The skill identifier to check for a pending callback."),
+    api_key: str = Depends(verify_api_key)
+):
     """Convenience endpoint the agent or operator can poll to find out
-    whether an OAuth callback has arrived but not yet been consumed. The
-    agent normally reads the file directly via its filesystem tools, but
-    this endpoint is useful for debugging from a browser or curl.
+    whether an OAuth callback has arrived but not yet been consumed.
     """
-    target = _callback_dir() / "oauth_callback.json"
+    if not re.match(r"^[a-zA-Z0-9_-]+$", skill):
+        return {"pending": False, "error": "invalid skill format"}
+
+    target = _callback_dir() / f"oauth_callback_{skill}.json"
     if not target.exists():
-        return {"pending": False}
+        if skill == "google-workspace":
+            legacy = _callback_dir() / "oauth_callback.json"
+            if legacy.exists():
+                target = legacy
+            else:
+                return {"pending": False}
+        else:
+            return {"pending": False}
+
     try:
         payload = json.loads(target.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         return {"pending": False, "error": f"could not read callback file: {exc}"}
+
     age = max(0, int(time.time()) - int(payload.get("captured_at", 0)))
     return {
         "pending": True,
