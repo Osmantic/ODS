@@ -1607,3 +1607,19 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+class TestPaginateListItemsBounds:
+
+    def test_paginates_list_items(self):
+        from helpers import paginate_list_items_bounds
+        items = list(range(25))
+        assert paginate_list_items_bounds(items, page=1, page_size=10) == list(range(10))
+        assert paginate_list_items_bounds(items, page=3, page_size=10) == [20, 21, 22, 23, 24]
+
+    def test_handles_out_of_bounds_and_none_inputs(self):
+        from helpers import paginate_list_items_bounds
+        assert paginate_list_items_bounds(None) == []
+        assert paginate_list_items_bounds([1, 2], page=10, page_size=10) == []
+        assert paginate_list_items_bounds([1, 2, 3], page=0, page_size=0) == [1, 2, 3]
+

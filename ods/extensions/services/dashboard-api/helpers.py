@@ -1146,3 +1146,22 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def paginate_list_items_bounds(items: object, page: int = 1, page_size: int = 10) -> list:
+    """Paginate list items safely with page and page_size bounds protection.
+
+    Enforces minimum page of 1 and page_size of 1. Handles None and non-sequence inputs safely.
+    """
+    if not isinstance(items, (list, tuple)):
+        return []
+    if page < 1:
+        page = 1
+    if page_size < 1:
+        page_size = 10
+    start_idx = (page - 1) * page_size
+    if start_idx >= len(items):
+        return []
+    end_idx = start_idx + page_size
+    return list(items[start_idx:end_idx])
+
