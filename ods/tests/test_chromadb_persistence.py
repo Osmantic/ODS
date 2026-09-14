@@ -22,6 +22,9 @@ def test_vectors_survive_recreation(tmp_path, legacy):
     name = "ods-chroma-persist-" + uuid.uuid4().hex[:10]
     installed = tmp_path / "extensions/services/chromadb"
     shutil.copytree(SERVICE, installed)
+    # Match the operator-created backup destination, including on non-root CI.
+    # Docker would otherwise create this missing directory owned by root.
+    (tmp_path / "data/chromadb").mkdir(parents=True)
     overlay = tmp_path / "isolation.yaml"
     overlay.write_text(f'''services:
   chromadb:
