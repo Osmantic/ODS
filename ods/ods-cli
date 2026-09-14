@@ -4743,7 +4743,36 @@ cmd_remote_provider() {
     esac
 }
 
+cmd_stt_transcribe() {
+    check_install
+    [[ $# -ge 1 && $# -le 2 ]] || error "Usage: ods stt transcribe FILE [MODEL]"
+    local audio_file="$1"
+    [[ -f "$audio_file" && -r "$audio_file" ]] || error "Cannot transcribe unreadable file: $audio_file"
+
+    local AUDIO_STT_MODEL="" WHISPER_PORT=""
+    if [[ -f "$INSTALL_DIR/.env" ]]; then
+        load_env
+    fi
+    local model="${2:-${AUDIO_STT_MODEL:-Systran/faster-whisper-base}}"
+    local url="http://127.0.0.1:${WHISPER_PORT:-9000}/v1/audio/transcriptions"
+    # curl's multipart filename grammar needs its own quoting, in addition to
+    # shell quoting. Keep commas, semicolons, quotes and backslashes literal.
+    audio_file="${audio_file//\\/\\\\}"
+    audio_file="${audio_file//\"/\\\"}"
+    curl --silent --show-error --fail --max-time 3600 \
+        --form "file=@\"${audio_file}\"" \
+        --form-string "model=$model" \
+        --form-string "response_format=json" "$url"
+}
+
 cmd_stt() {
+    # Resolve file arguments in the caller's directory, before the legacy
+    # model-management commands change to the installation directory.
+    if [[ "${1:-}" == "transcribe" ]]; then
+        shift
+        cmd_stt_transcribe "$@"
+        return
+    fi
     check_install; cd "$INSTALL_DIR"
     local subcmd="${1:-status}"
 
@@ -4813,7 +4842,7 @@ cmd_stt() {
             fi
             ;;
         *)
-            error "Usage: ods stt <current|status|download> [MODEL]"
+            error "Usage: ods stt <current|status|download> [MODEL] | ods stt transcribe FILE [MODEL]"
             ;;
     esac
 }
@@ -6540,6 +6569,8 @@ ${CYAN}Commands:${NC}
                       Configure, test, disable, or inspect remote GPU provider routing
   stt [current|status|download] [MODEL]
                       View Whisper STT model, check cache, or trigger download
+  stt transcribe FILE [MODEL]
+                      Transcribe a local audio file to JSON on stdout
   backup [options]    Create a backup of user data and config
   backup verify <id>   Verify checksum integrity for a backup
   restore [backup_id] Restore from a backup

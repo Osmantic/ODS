@@ -417,6 +417,7 @@ ods status                     # Check all services
 ods list                       # See available services and status
 ods logs llm                   # Watch llama-server logs (alias: llm)
 ods logs stt                   # Watch Whisper logs (alias: stt)
+ods stt transcribe recording.wav > transcript.json  # Transcribe a local file
 ods restart whisper            # Restart a service
 ods enable n8n                 # Enable an extension
 ods disable comfyui            # Disable an extension
@@ -428,6 +429,17 @@ ods start                      # Start everything
 ./scripts/llm-cold-storage.sh --status   # Check model hot/cold storage
 ods mode                               # Show current mode
 ```
+
+`ods stt transcribe FILE [MODEL]` uploads a readable audio file to the local
+Whisper/Speaches service and writes its JSON response to stdout. Relative paths
+are resolved from your current directory; quote filenames containing spaces.
+It uses `AUDIO_STT_MODEL` and `WHISPER_PORT` from the installation's `.env`, with
+an optional model argument taking precedence. Enable voice and start the stack
+first. The service may download an uncached model on first use; pre-cache it
+with `ods stt download MODEL` when needed. HTTP and connection failures return
+a nonzero exit code, and requests have a one-hour limit. The input file and
+configured model are left unchanged. This command targets the shared Bash CLI
+used on Linux/WSL; the separately generated native macOS CLI is unchanged.
 
 ## Comparison
 
