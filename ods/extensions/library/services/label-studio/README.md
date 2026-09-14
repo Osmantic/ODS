@@ -42,6 +42,12 @@ It does not isolate the Label Studio process from its own mounted files, and
 operators must not place secrets or links to sensitive paths in the dataset
 directory. Existing upload, media, static and database mounts are preserved.
 
+In upstream 1.22.0, a crafted parent-directory traversal is rejected by Django
+but its API exception handler reports HTTP 500 with a path error. This profile
+does not patch that upstream response mapping. Ordinary old root-relative file
+URLs outside the dataset mount return 404, and outside storage registration
+returns 400; the regression checks that no outside file content is returned.
+
 ### Existing local-file projects
 
 Earlier profiles enabled local-file serving with the image's `/` default.

@@ -62,4 +62,11 @@ if outside_download.status_code == 200:
     assert b"".join(outside_download.streaming_content) == b"synthetic outside-root marker\n"
     print("Outside-root synthetic marker was served")
 assert rejected.status_code == 400, "An authenticated project user must not register an outside-root dataset"
-assert outside_download.status_code in {400, 403, 404}
+# 1.22.0's DRF handler maps Django's traversal rejection to HTTP 500.
+# Assert the specific rejection, not merely any server error.
+assert outside_download.status_code == 500
+assert "SuspiciousFileOperation" in outside_download.json()["exc_info"]
+assert "outside of the base path" in outside_download.json()["detail"]
+assert b"synthetic outside-root marker" not in outside_download.content
+legacy_url = client.get("/data/local-files/", {"d": str(outside / "outside.txt").lstrip("/")})
+assert legacy_url.status_code == 404
