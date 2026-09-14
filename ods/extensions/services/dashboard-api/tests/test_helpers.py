@@ -1607,3 +1607,18 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+class TestSafeJsonParse:
+    def test_valid_json(self):
+        from helpers import safe_json_parse
+        assert safe_json_parse('{"status": "ok"}') == {"status": "ok"}
+        assert safe_json_parse(b'[1, 2, 3]') == [1, 2, 3]
+
+    def test_invalid_json_bounds(self):
+        from helpers import safe_json_parse
+        assert safe_json_parse(None) is None
+        assert safe_json_parse(12345, default={}) == {}
+        assert safe_json_parse("invalid json{") is None
+        assert safe_json_parse("   ", default="empty") == "empty"
+

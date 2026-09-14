@@ -1146,3 +1146,20 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def safe_json_parse(json_str, default=None):
+    """Safely parse JSON string or bytes with fallback default value."""
+    if json_str is None:
+        return default
+    if not isinstance(json_str, (str, bytes, bytearray)):
+        return default
+    try:
+        if isinstance(json_str, (bytes, bytearray)):
+            json_str = json_str.decode("utf-8", errors="ignore")
+        if not json_str.strip():
+            return default
+        return json.loads(json_str)
+    except (json.JSONDecodeError, TypeError, ValueError, UnicodeDecodeError):
+        return default
+
