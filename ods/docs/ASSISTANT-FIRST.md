@@ -244,6 +244,16 @@ the exact `stage` operation and passes both callables through the existing
 plan-bound receipt path. Every other lifecycle operation remains unavailable,
 and Dashboard execution remains `None`.
 
+The installer also provisions an owner-private
+`data/assistant-first/resource-reservations` root for the next host boundary.
+A dormant POSIX store records canonical, immutable reservation records bound to
+the exact transaction, plan hash, service, action, host ports, and exclusive
+resource claims. Cross-process locking prevents conflicting active claims from
+both being published; exact active replay is idempotent, terminal records are
+retained, and malformed, noncanonical, linked, replaced, or unsafe state fails
+closed. This phase deliberately adds no production importer, transaction
+adapter, resource projection, dispatcher, or Dashboard executor.
+
 ## Evidence boundary
 
 The source contract checks resolver ordering, the exact candidate service set,
