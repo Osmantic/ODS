@@ -1146,3 +1146,20 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def convert_string_to_camelcase(text: object) -> str:
+    """Convert snake_case or space-separated string to camelCase safely.
+
+    Handles None, non-string text, or already camelCased strings without exception.
+    """
+    if text is None:
+        return ""
+    val = str(text).strip()
+    if not val:
+        return ""
+    words = val.replace("_", " ").replace("-", " ").split()
+    if not words:
+        return ""
+    return words[0].lower() + "".join(w.capitalize() for w in words[1:])
+
