@@ -1146,3 +1146,17 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def list_find_indices_safe(items, target) -> list:
+    """Safely find all zero-indexed positions of target value in sequence."""
+    if items is None:
+        return []
+    if not isinstance(items, (list, tuple, set)):
+        try:
+            items = list(items)
+        except TypeError:
+            return []
+    else:
+        items = list(items)
+    return [idx for idx, val in enumerate(items) if val == target]
