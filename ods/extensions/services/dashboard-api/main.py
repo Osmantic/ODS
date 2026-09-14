@@ -52,7 +52,7 @@ from helpers import (
     get_disk_usage, dir_size_gb, get_model_info, get_bootstrap_status,
     get_uptime, get_cpu_metrics, get_ram_metrics,
     get_llama_metrics, get_loaded_model, get_llama_context_size,
-    _get_httpx_client, shutdown_service_health_client,
+    _get_httpx_client, shutdown_service_health_client, shutdown_llm_client,
 )
 from context_policy import HERMES_MIN_CONTEXT, HERMES_TARGET_CONTEXT
 from host_agent_client import (
@@ -1064,7 +1064,10 @@ async def _lifespan(app: FastAPI):
         try:
             await shutdown_agent_clients()
         finally:
-            await shutdown_service_health_client()
+            try:
+                await shutdown_service_health_client()
+            finally:
+                await shutdown_llm_client()
 
 
 app = FastAPI(

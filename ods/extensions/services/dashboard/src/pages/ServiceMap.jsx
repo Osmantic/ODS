@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ExternalLink, GitBranch, RefreshCw, X } from 'lucide-react'
 import { serviceUrl } from '../lib/serviceUrls'
 import PanelSelect from '../components/PanelSelect'
+import IntegrationSnapshotDownload from '../components/IntegrationSnapshotDownload'
 
 const POLL_INTERVAL = 10000
 const NODE_W = 170
@@ -267,7 +268,7 @@ function DependencyList({ label, edges, field }) {
   )
 }
 
-function CompactIntegrations({ nodes, edges, refresh, error }) {
+function CompactIntegrations({ nodes, edges, capturedAt, refresh, error }) {
   const [view, setView] = useState('list')
   const [search, setSearch] = useState('')
   const [filter, setFilter] = useState('all')
@@ -289,6 +290,7 @@ function CompactIntegrations({ nodes, edges, refresh, error }) {
   }
   return <section className="portal-integrations">
     <header className="integrations-header"><div><h2>Integrations</h2><p>{nodes.length} services · {nodes.filter(node => node.status === 'healthy').length} healthy</p></div><button type="button" aria-label="Refresh integrations" onClick={refresh}><RefreshCw size={15} /></button></header>
+    <IntegrationSnapshotDownload nodes={nodes} edges={edges} capturedAt={capturedAt} refreshFailed={Boolean(error)} />
     <nav className="settings-view-tabs" aria-label="Integration views"><button type="button" aria-pressed={view === 'list'} onClick={() => setView('list')}>Service list</button><button type="button" aria-pressed={view === 'map'} onClick={() => setView('map')}>View map</button></nav>
     {error && <p role="alert" className="text-red-400">Status could not be refreshed. {error}</p>}
     <div className="integrations-filters"><input type="search" aria-label="Search integrations" placeholder="Search services…" value={search} onChange={event => setSearch(event.target.value)} /><PanelSelect label="Service status" value={filter} onChange={setFilter} options={[{value:'all',label:'All statuses'},{value:'healthy',label:'Healthy'},{value:'attention',label:'Not healthy'}]} /></div>
@@ -332,7 +334,7 @@ export default function ServiceMap({ compact = false }) {
     try {
       const response = await fetch('/api/status')
       if (!response.ok) throw new Error('Failed to fetch service status')
-      setTopology(buildTopology(await response.json()))
+      setTopology({ ...buildTopology(await response.json()), capturedAt: new Date().toISOString() })
       setError(null)
     } catch (err) {
       setError(err.message)
@@ -353,7 +355,7 @@ export default function ServiceMap({ compact = false }) {
     }
   }, [fetchTopology])
 
-  const { nodes, edges } = topology
+  const { nodes, edges, capturedAt } = topology
   const { positions, layerY, svgWidth, svgHeight } = useMemo(() => computeLayout(nodes), [nodes])
   const counts = useMemo(() => ({
     healthy: nodes.filter(node => node.status === 'healthy').length,
@@ -371,7 +373,7 @@ export default function ServiceMap({ compact = false }) {
     return <div role="alert" className="text-sm text-red-400">Topology data unavailable: {error}<button className="ml-3" onClick={fetchTopology}>Retry</button></div>
   }
 
-  if (compact) return <CompactIntegrations nodes={nodes} edges={edges} refresh={fetchTopology} error={error} />
+  if (compact) return <CompactIntegrations nodes={nodes} edges={edges} capturedAt={capturedAt} refresh={fetchTopology} error={error} />
 
   return (
     <div className="p-8">
@@ -398,6 +400,7 @@ export default function ServiceMap({ compact = false }) {
       <div className="relative overflow-hidden rounded-xl border border-theme-border bg-theme-bg">
         <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-theme-border">
           <span className="text-xs text-theme-text-muted">Service connections</span>
+          <IntegrationSnapshotDownload nodes={nodes} edges={edges} capturedAt={capturedAt} refreshFailed={Boolean(error)} />
           <button type="button" aria-pressed={actualSize} onClick={() => setActualSize(value => !value)} className="rounded-md px-3 py-1.5 text-xs text-theme-text-secondary hover:bg-theme-card">{actualSize ? 'Fit to panel' : 'Actual size'}</button>
         </div>
         <div className="overflow-auto" role="region" aria-label="Service topology" tabIndex={0}>

@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-13T16:31:03Z",
+  "generated_at": "2026-09-14T04:53:11Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -2363,6 +2363,72 @@
       "configuration_scope": "declared-environment-keys"
     },
     {
+      "id": "miniflux",
+      "name": "Miniflux (Feed Reader)",
+      "description": "Self-hosted RSS and Atom reading with an authenticated API for local research workflows.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 8080,
+      "external_port_default": 8098,
+      "health_endpoint": "/healthcheck",
+      "env_vars": [
+        {
+          "key": "MINIFLUX_PORT",
+          "description": "Published HTTP port",
+          "default": "8098"
+        },
+        {
+          "key": "MINIFLUX_BASE_URL",
+          "description": "Client-facing URL; update when changing port or hostname",
+          "default": "http://localhost:8098"
+        },
+        {
+          "key": "MINIFLUX_DB_PASSWORD",
+          "description": "Password for the private PostgreSQL database; retain after initialization",
+          "required": true
+        },
+        {
+          "key": "MINIFLUX_ADMIN_PASSWORD",
+          "description": "Initial password for the admin account; later changes use the Miniflux UI",
+          "required": true
+        }
+      ],
+      "tags": [
+        "rss",
+        "research",
+        "reading"
+      ],
+      "features": [
+        {
+          "id": "feed-library",
+          "name": "Feed Library",
+          "description": "Collect RSS and Atom articles for reading and authenticated workflow access",
+          "icon": "Rss",
+          "category": "productivity",
+          "requirements": {
+            "services": [
+              "miniflux"
+            ],
+            "vram_gb": 0
+          },
+          "enabled_services_all": [
+            "miniflux"
+          ],
+          "setup_time": "~2 minutes after setting credentials",
+          "priority": 31,
+          "launch": {
+            "type": "service",
+            "service": "miniflux"
+          }
+        }
+      ],
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
       "id": "model-router",
       "name": "ODS Model Router",
       "description": "ODS Model Router",
@@ -2446,6 +2512,62 @@
         }
       ],
       "catalog_source": "builtin",
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
+      "id": "ntfy",
+      "name": "ntfy (Local Notifications)",
+      "description": "Authenticated local HTTP notifications for workflows and operator alerts.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 8080,
+      "external_port_default": 8097,
+      "health_endpoint": "/v1/health",
+      "env_vars": [
+        {
+          "key": "NTFY_PORT",
+          "description": "Published HTTP port for the ntfy web app and API",
+          "default": "8097"
+        },
+        {
+          "key": "NTFY_BASE_URL",
+          "description": "URL used by clients; set to your protected HTTPS URL for remote access",
+          "default": "http://localhost:8097"
+        }
+      ],
+      "tags": [
+        "notifications",
+        "automation",
+        "local"
+      ],
+      "features": [
+        {
+          "id": "local-notifications",
+          "name": "Local Notifications",
+          "description": "Publish and read authenticated topic notifications from local workflows",
+          "icon": "Bell",
+          "category": "productivity",
+          "requirements": {
+            "services": [
+              "ntfy"
+            ],
+            "vram_gb": 0
+          },
+          "enabled_services_all": [
+            "ntfy"
+          ],
+          "setup_time": "~1 minute plus account creation",
+          "priority": 30,
+          "launch": {
+            "type": "service",
+            "service": "ntfy"
+          }
+        }
+      ],
       "configuration_scope": "declared-environment-keys"
     },
     {

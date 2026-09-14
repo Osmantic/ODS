@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { ArrowLeft, Search } from 'lucide-react'
 import { loadSnapshotFiles } from '../lib/pixelArtifacts'
 import PixelPreviewSource from './PixelPreviewSource'
+import PixelPublicationDownload from './PixelPublicationDownload'
 import { PixelLanguageBadge } from './PixelCodeBlock'
 
 const fileType = file => {
@@ -46,6 +47,7 @@ export default function PixelTaskFiles({preview}) {
     {error ? <div role="alert" className="pixel-file-empty"><p>Task files could not be verified.</p><button type="button" onClick={() => setAttempt(value => value + 1)}>Try again</button></div>
       : !files ? <p role="status" className="pixel-file-empty">Verifying published files…</p>
         : <>
+          <PixelPublicationDownload key={`${preview.siteId}/${preview.sha256}`} preview={preview}/>
           <p className="pixel-file-caption" role="status">Showing {shown.length} of {files.length} files · {shown.reduce((total, file) => total + file.bytes, 0).toLocaleString()} bytes</p>
           <ul className="pixel-task-file-list">{shown.map(file => {
             return <li key={file.path}><button type="button" aria-current={selected?.path === file.path ? 'true' : undefined} onClick={() => setSelected(file)}><PixelLanguageBadge path={file.path}/><span>{file.path}</span><small>{file.bytes < 1024 ? `${file.bytes} B` : `${(file.bytes / 1024).toFixed(1)} KB`}</small></button></li>

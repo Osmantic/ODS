@@ -105,6 +105,8 @@ _CONNECT_TIMEOUT = 5
 _TOTAL_TIMEOUT = 1980
 _SOCK_READ_TIMEOUT = 1980
 _MAX_SSE_LINE = 1024 * 1024
+_MAX_SSE_PENDING_BYTES = 1024 * 1024
+_MAX_SSE_PENDING_LINES = 4096
 
 _UPSTREAM_REWRITE = "openclaw/default"
 _PIXEL_REWRITE = "pixel/default"
@@ -561,6 +563,14 @@ def _rewrite_json_response(raw: bytes, fallback: str) -> bytes:
     return json.dumps(parsed).encode("utf-8")
 
 
+def _normalize_sse_line(line: bytes) -> bytes:
+    # CRLF and the optional space after "data:" carry the same SSE field.
+    line = line.removesuffix(b"\r")
+    if line.startswith(b"data:") and not line.startswith(b"data: "):
+        line = b"data: " + line[5:]
+    return line
+
+
 def _sse_event(line: bytes):
     if not line.startswith(b"data: ") or line == b"data: [DONE]":
         return None, None, None
@@ -769,12 +779,13 @@ async def handle_chat_completions(request: web.Request):
         return web.json_response({"error": "request too large"}, status=413)
 
     try:
-        body = await request.read()
+        # Enforce this route's cap for both Content-Length and chunked bodies.
+        # Request.read() otherwise applies aiohttp's default 1 MiB cap first.
+        body = await _read_bounded(request.content, _MAX_BODY)
+    except ValueError:
+        return web.json_response({"error": "request too large"}, status=413)
     except Exception:
         return web.json_response({"error": "bad request"}, status=400)
-
-    if len(body) > _MAX_BODY:
-        return web.json_response({"error": "request too large"}, status=413)
 
     try:
         data = json.loads(body)
@@ -940,29 +951,42 @@ async def _stream_upstream(
     await response.prepare(request)
     buffered = bytearray()
     pending = []
+    pending_bytes = 0
     pending_text = ""
     passthrough = False
 
+    def queue_pending(line, event, content, finish_reason):
+        nonlocal pending_bytes
+        # The line cap alone does not bound many small reasoning/empty frames.
+        size = len(line) + 1
+        if (pending_bytes + size > _MAX_SSE_PENDING_BYTES
+                or len(pending) >= _MAX_SSE_PENDING_LINES):
+            raise ValueError("SSE prelude exceeded limit")
+        pending.append((line, event, content, finish_reason))
+        pending_bytes += size
+
     async def flush_pending():
-        nonlocal pending
+        nonlocal pending, pending_bytes
         for item in pending:
             await response.write(item[0] + b"\n")
         pending = []
+        pending_bytes = 0
 
     async def replace_pending(template: dict, *, synthesize_finish: bool):
-        nonlocal pending
+        nonlocal pending, pending_bytes
         # Preserve role/metadata events, but never expose the reserved text.
         for line, _event, content, finish_reason in pending:
             if content is None and finish_reason is None:
                 await response.write(line + b"\n")
         await response.write(
-            _fallback_sse_line(template, empty_reply_fallback, finished=False) + b"\n"
+            _fallback_sse_line(template, empty_reply_fallback, finished=False) + b"\n\n"
         )
         if synthesize_finish:
             await response.write(
-                _fallback_sse_line(template, empty_reply_fallback, finished=True) + b"\n"
+                _fallback_sse_line(template, empty_reply_fallback, finished=True) + b"\n\n"
             )
         pending = []
+        pending_bytes = 0
 
     try:
         async for chunk in resp.content.iter_any():
@@ -972,6 +996,7 @@ async def _stream_upstream(
             while b"\n" in buffered:
                 line, _, remainder = buffered.partition(b"\n")
                 buffered = bytearray(remainder)
+                line = _normalize_sse_line(line)
                 if cancel_event is not None and cancel_event.is_set():
                     pending = []
                     await response.write(b"data: [DONE]\n\n")
@@ -1027,7 +1052,7 @@ async def _stream_upstream(
                     passthrough = True
                     continue
 
-                pending.append((line, event, content, finish_reason))
+                queue_pending(line, event, content, finish_reason)
                 if content is not None:
                     pending_text += content
                     normalized = pending_text.strip()
@@ -1044,7 +1069,7 @@ async def _stream_upstream(
         if buffered:
             if len(buffered) > _MAX_SSE_LINE:
                 raise ValueError("SSE line exceeded limit")
-            line = bytes(buffered)
+            line = _normalize_sse_line(bytes(buffered))
             if line.rstrip(b"\r") == b"data: [DONE]" and activity is not None:
                 activity["terminal"] = True
             if line.startswith(b"data: ") and line != b"data: [DONE]":
@@ -1053,7 +1078,7 @@ async def _stream_upstream(
                 await response.write(line)
             else:
                 event, content, finish_reason = _sse_event(line)
-                pending.append((line, event, content, finish_reason))
+                queue_pending(line, event, content, finish_reason)
         if not passthrough and pending:
             normalized = pending_text.strip()
             if not normalized or normalized in _RESERVED_ASSISTANT_REPLIES:
@@ -1097,6 +1122,9 @@ def _preview_upstream_path(site_id: str, tail: str) -> str | None:
         return f"/{site_id}/{tail}"
     if re.fullmatch(r"__ods_changes__/(?:initial|site-[a-f0-9]{24})\.json", tail):
         return f"/{site_id}/{tail}"
+    # Match the host static server: a directory URL selects its index file.
+    if tail.endswith("/"):
+        tail += "index.html"
     parts = tail.split("/")
     if any(_PREVIEW_PATH_COMPONENT.fullmatch(part) is None for part in parts):
         return None

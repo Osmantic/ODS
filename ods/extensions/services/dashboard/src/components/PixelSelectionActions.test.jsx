@@ -38,3 +38,13 @@ test('Escape hides the toolbar until a new selection and switching clears it', (
   view.rerender(<><p data-pixel-response="">Answer</p><PixelSelectionActions conversationId="two" onInsert={() => {}}/></>)
   expect(screen.queryByRole('toolbar')).not.toBeInTheDocument()
 })
+
+test('responds to touch selection changes and clears a collapsed selection', () => {
+  render(<><p data-pixel-response="">Touch answer</p><PixelSelectionActions onInsert={() => {}}/></>)
+  const value = selection(screen.getByText('Touch answer').firstChild)
+  fireEvent(document, new Event('selectionchange'))
+  expect(screen.getByRole('toolbar')).toBeVisible()
+  value.isCollapsed = true
+  fireEvent(document, new Event('selectionchange'))
+  expect(screen.queryByRole('toolbar')).not.toBeInTheDocument()
+})

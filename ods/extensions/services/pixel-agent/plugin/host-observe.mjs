@@ -59,13 +59,22 @@ function toolResult(value) {
   };
 }
 
+class BrokerReadbackError extends Error {
+  constructor(jobId) {
+    super("Broker submission or result could not be verified");
+    this.jobId = jobId;
+  }
+}
+
 function errorResult(
   text = "Pixel could not complete the read-only ODS host observation.",
-  boundaryNotice = BOUNDARY
+  boundaryNotice = BOUNDARY,
+  jobId
 ) {
+  const next = jobId ? `Check job ${jobId} with pixel_ops_job_get or pixel_ops_job_wait; do not resubmit until its state is known. Submission or completion could not be confirmed.` : null;
   return {
-    content: [{ type: "text", text }],
-    details: { status: "unavailable", boundaryNotice },
+    content: [{ type: "text", text: next ? `${text} ${next}` : text }],
+    details: { status: "unavailable", boundaryNotice, ...(jobId ? {jobId, next} : {}) },
     isError: true,
   };
 }
@@ -264,13 +273,18 @@ async function observeHost(
     boundary:
       "Request only. The external broker compiles policy and decides whether execution is permitted.",
   };
-  await publishRequest(jobId, request, requestDir);
-  return waitForTerminal(jobId, {
-    resultDir,
-    timeoutMs,
-    pollIntervalMs,
-    boundaryNotice: BOUNDARY,
-  });
+  try {
+    await publishRequest(jobId, request, requestDir);
+    return await waitForTerminal(jobId, {
+      resultDir,
+      timeoutMs,
+      pollIntervalMs,
+      boundaryNotice: BOUNDARY,
+    });
+  } catch {
+    // A linked request can survive either result-read or submission-cleanup errors.
+    throw new BrokerReadbackError(jobId);
+  }
 }
 
 async function proposeHostCommand(
@@ -290,13 +304,18 @@ async function proposeHostCommand(
     boundary:
       "Request only. The external broker compiles an immutable plan and decides whether execution is permitted.",
   };
-  await publishRequest(jobId, request, requestDir);
-  return waitForTerminal(jobId, {
-    resultDir,
-    timeoutMs,
-    pollIntervalMs,
-    boundaryNotice: HOST_COMMAND_BOUNDARY,
-  });
+  try {
+    await publishRequest(jobId, request, requestDir);
+    return await waitForTerminal(jobId, {
+      resultDir,
+      timeoutMs,
+      pollIntervalMs,
+      boundaryNotice: HOST_COMMAND_BOUNDARY,
+    });
+  } catch {
+    // A linked request can survive either result-read or submission-cleanup errors.
+    throw new BrokerReadbackError(jobId);
+  }
 }
 
 export function createHostObserveTool({
@@ -364,8 +383,9 @@ export function createHostObserveTool({
           ...receipt,
           ...(odsStatusProjection ? { odsStatusProjection } : {}),
         });
-      } catch {
-        return errorResult();
+      } catch (failure) {
+        return errorResult(undefined, BOUNDARY,
+          failure instanceof BrokerReadbackError ? failure.jobId : undefined);
       }
     },
   };
@@ -469,10 +489,11 @@ export function createHostCommandProposeTool({
           pollIntervalMs,
         });
         return toolResult(receipt);
-      } catch {
+      } catch (failure) {
         return errorResult(
           "Pixel could not submit or verify the protected ODS host command proposal.",
-          HOST_COMMAND_BOUNDARY
+          HOST_COMMAND_BOUNDARY,
+          failure instanceof BrokerReadbackError ? failure.jobId : undefined
         );
       }
     },

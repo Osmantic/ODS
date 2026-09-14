@@ -2506,9 +2506,12 @@ def purge_extension_data(
             if (check_dir / "compose.yaml").exists():
                 raise HTTPException(status_code=400, detail=f"{service_id} is still enabled. Disable it first.")
 
-        data_path = (Path(DATA_DIR) / service_id).resolve()
-        if not data_path.is_relative_to(Path(DATA_DIR).resolve()):
+        data_root = Path(DATA_DIR).resolve()
+        data_path = (data_root / service_id).resolve()
+        if not data_path.is_relative_to(data_root):
             raise HTTPException(status_code=400, detail="Invalid data path")
+        if data_path != data_root / service_id:
+            raise HTTPException(status_code=400, detail="Service data directory redirects to another location")
 
         if not data_path.is_dir():
             raise HTTPException(status_code=404, detail=f"No data directory found for {service_id}")

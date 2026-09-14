@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { readSettings, prepareSettingsSave, GROUPS, CONTROLS } from './pixelRuntimeSettingsForm';
 import PixelSettingsRuntime from './PixelSettingsRuntime';
+import { useBeforeUnload } from '../../hooks/useBeforeUnload';
 
 function scalarToString(value) {
   if (value === null || value === undefined) return '';
@@ -129,6 +130,7 @@ export default function PixelRuntimeSettings() {
   }, [loadSettings, clearAbort]);
 
   const hasChanges = Object.keys(rawChanges).length > 0;
+  useBeforeUnload(hasChanges);
   const canSave = snapshot && hasChanges && !stale && !pending && !runtimeBusy && snapshot.revision < Number.MAX_SAFE_INTEGER;
   const canReload = !pending && !runtimeBusy;
   const canCancel = hasChanges && !pending && !runtimeBusy;

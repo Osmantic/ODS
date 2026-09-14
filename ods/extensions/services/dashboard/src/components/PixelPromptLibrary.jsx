@@ -8,6 +8,9 @@ export default function PixelPromptLibrary({input, disabled, onInsert}) {
   const [editing, setEditing] = useState(null)
   const [removing, setRemoving] = useState(null)
   const [error, setError] = useState('')
+  const [query, setQuery] = useState('')
+  const needle = query.trim().toLocaleLowerCase()
+  const shown = items.filter(item => `${item.title}\n${item.text}`.toLocaleLowerCase().includes(needle))
   function refresh() {
     try {setItems(readSavedPrompts()); setError('')}
     catch {setError('Saved prompts could not be read. Existing browser data has been preserved.')}
@@ -45,7 +48,13 @@ export default function PixelPromptLibrary({input, disabled, onInsert}) {
       </div> : <>
         <button className={buttonClass} type="button" onClick={() => edit(null)}>Save a new prompt</button>
         {!items.length && <p>No saved prompts yet. Start with your current draft or write a new one.</p>}
-        <ul>{items.map(item => {
+        {!!items.length && <div role="search" aria-label="Search prompt library">
+          <input className={fieldClass} type="search" aria-label="Search saved prompts" placeholder="Search names and full prompt text" value={query} onChange={event => setQuery(event.target.value)}/>
+          {query && <button className={buttonClass} type="button" onClick={() => setQuery('')}>Clear prompt search</button>}
+          <p role="status">{shown.length} of {items.length} prompts</p>
+          {!shown.length && <p>No prompts match your search.</p>}
+        </div>}
+        <ul>{shown.map(item => {
           const fits = input.length + item.text.length + 1 <= 16384
           return <li key={item.id} className="my-3 rounded border border-theme-border p-2">
             <strong>{item.title}</strong><p className="whitespace-pre-wrap break-words">{item.text.slice(0, 160)}{item.text.length > 160 ? '…' : ''}</p>

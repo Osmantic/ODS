@@ -78,3 +78,24 @@ test('rejects cross-run, unbounded, extra-field, duplicate and impossible projec
     {...value,calls:2,activities:[{kind:'read',calls:1,failures:0,blocked:0},{kind:'read',calls:1,failures:0,blocked:0}]}];
   for (const item of invalid) assert.equal(parseTaskActivity(item,runId),null);
 });
+
+test('configured agent activity binds to that agent and its exact user session', () => {
+  const recorder = createTaskActivity({now, agentId:'assistant'});
+  const user = 'ods-' + 'a'.repeat(64);
+  const context = {...ctx, agentId:'assistant', sessionKey:`agent:assistant:openai-user:${user}`};
+  recorder.begin({}, {...ctx, sessionKey:`agent:pixel:openai-user:${user}`});
+  assert.equal(recorder.projection(runId), null);
+  recorder.begin({}, context);
+  recorder.before({toolName:'read'}, {...context, toolCallId:'a'});
+  recorder.after({result:{}}, {...context, toolCallId:'a'});
+  const active = recorder.activeForUser(user);
+  assert.equal(active?.runId, runId);
+  assert.equal(active.calls, 1);
+  assert.equal(parseTaskActivity(active, runId), active);
+  assert.equal(recorder.activeForUser('ods-' + 'b'.repeat(64)), null);
+  recorder.finish({success:true}, ctx);
+  assert.equal(recorder.activeForUser(user)?.state, 'running');
+  recorder.finish({success:true}, context);
+  assert.equal(recorder.activeForUser(user), null);
+  assert.equal(recorder.projection(runId).state, 'completed');
+});

@@ -96,25 +96,23 @@ export default function PixelProviderScopes({ chatId, sending = false }) {
     } finally { finishOperation(); resetConsent() }
   }
 
-  const close = () => { generation.current++; queuedInspection.current = null; setOpen(false); resetConsent(); trigger.current?.focus() }
-  const keys = event => {
-    if (event.key === 'Escape') { event.preventDefault(); close() }
-    if (event.key !== 'Tab') return
-    const nodes = panel.current?.querySelectorAll('button:not(:disabled),select:not(:disabled),input:not(:disabled),a[href]')
-    if (!nodes?.length) return
-    const first = nodes[0], last = nodes[nodes.length - 1]
-    if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus() }
-    else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus() }
+  const close = () => {
+    generation.current++; queuedInspection.current = null
+    panel.current?.close(); setOpen(false); resetConsent(); trigger.current?.focus()
   }
-  useEffect(() => { if (open) panel.current?.querySelector('button')?.focus() }, [open])
+  useEffect(() => {
+    if (!open) return
+    const dialog = panel.current
+    dialog.showModal()
+    return () => dialog.close()
+  }, [open])
 
   return <>
     <button ref={trigger} type="button" className={button} onClick={() => { setOpen(true); void load() }}>Handoff scope</button>
-    {open && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-3">
-      <section ref={panel} role="dialog" aria-modal="true" aria-labelledby="pixel-scope-title" onKeyDown={keys}
-        className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-xl border border-theme-border bg-theme-bg p-4 text-theme-text">
+    {open && <dialog ref={panel} aria-labelledby="pixel-scope-title" onCancel={event => {event.preventDefault(); close()}}
+        className="m-auto backdrop:bg-black/60 max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-xl border border-theme-border bg-theme-bg p-4 text-theme-text">
         <div className="flex items-center justify-between gap-3"><h2 id="pixel-scope-title" className="text-lg font-semibold">Choose handoff scope</h2>
-          <button type="button" className={button} onClick={close}>Close scope controls</button></div>
+          <button autoFocus type="button" className={button} onClick={close}>Close scope controls</button></div>
         <p className="my-3 text-sm">These are saved preferences, not an active route. They do not start inference, install routing, change the tool computer or grant privileges. Once routing is activated, each selected handoff run still waits for Review handoffs approval.</p>
         <button type="button" className={button} disabled={busy} onClick={() => { void load() }}>Reload preferences</button>
         {error && <p role="alert" className="my-3 text-red-400">{error}</p>}
@@ -140,7 +138,6 @@ export default function PixelProviderScopes({ chatId, sending = false }) {
           <div className="flex flex-wrap gap-2"><button type="button" className={button} disabled={!canSelect} onClick={() => { void mutate('select') }}>Save handoff preference</button>
             <button type="button" className={button} disabled={!canChange || scope === 'task' && !state.taskId} onClick={() => { void mutate('return') }}>{scope === 'default' ? 'Reset new-task default' : 'Return from selected scope'}</button></div>
         </div>}
-      </section>
-    </div>}
+    </dialog>}
   </>
 }

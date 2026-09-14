@@ -262,6 +262,9 @@ jobs:
       - name: Runtime Config Wiring Tests
         run: python3 tests/test-runtime-config-wiring.py
 
+      - name: OpenClaw HTTP Shim Lifecycle Tests
+        run: node --test tests/test-openclaw-shim-lifecycle.mjs
+
       - name: Perplexica Entrypoint Contract Tests
         run: python3 tests/test-perplexica-entrypoint.py
 

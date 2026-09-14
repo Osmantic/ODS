@@ -4,6 +4,10 @@ export function exportConversation(chatId) {
   // Read at click time so a sidebar snapshot cannot export an older draft.
   const conversation = readConversations().find(chat => chat.chatId === chatId)
   if (!conversation) throw new Error('Conversation unavailable')
+  downloadConversation(conversation)
+}
+
+export function downloadConversation(conversation) {
   const archive = {
     schemaVersion: 1,
     kind: 'ods-pixel-conversation',

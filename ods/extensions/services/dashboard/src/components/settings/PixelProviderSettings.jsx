@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { copy, createProvider, eligible, prepareSave, readConfiguration } from './pixelProviderForm'
 import PixelProviderRuntime from './PixelProviderRuntime'
 import PixelConnectionImport from './PixelConnectionImport'
+import { useBeforeUnload } from '../../hooks/useBeforeUnload'
 
 const inputStyle = 'w-full rounded border border-theme-border bg-theme-bg px-3 py-2 text-theme-text focus:outline-none focus:ring-2 focus:ring-blue-500'
 const buttonStyle = 'rounded border border-theme-border px-3 py-2 text-sm hover:bg-white/5 disabled:opacity-40 focus:outline-none focus:ring-2 focus:ring-blue-500'
@@ -25,6 +26,7 @@ export default function PixelProviderSettings({ showHeading = true }) {
   const [dirty, setDirty] = useState(false)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  useBeforeUnload(Boolean(dirty || saving || newId || newLabel))
   const [stale, setStale] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')

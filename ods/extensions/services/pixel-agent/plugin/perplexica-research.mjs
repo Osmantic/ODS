@@ -36,7 +36,7 @@ async function readChunks(response, signal, consume) {
 }
 
 export async function readResearchStream(response, signal, onEvent) {
-  const decoder = new TextDecoder();
+  const decoder = new TextDecoder("utf-8", { fatal: true });
   let pending = "", complete = false;
   const line = (text) => {
     if (!text.trim()) return;
@@ -121,7 +121,7 @@ export function createPerplexicaResearchTool(deps = {}) {
         controller.signal.throwIfAborted();
         const configResponse = await request(`${base}/api/config`, { signal: controller.signal, redirect: "error" });
         if (!configResponse.ok) throw new Error("Research service configuration unavailable.");
-        const decoder = new TextDecoder();
+        const decoder = new TextDecoder("utf-8", { fatal: true });
         let configText = "";
         await readChunks(configResponse, controller.signal, (chunk) => { configText += decoder.decode(chunk, { stream: true }); });
         const preferences = JSON.parse(configText + decoder.decode()).values?.preferences;
@@ -169,6 +169,8 @@ export function createPerplexicaResearchTool(deps = {}) {
           : "Perplexica research was unavailable or did not finish correctly. No completed research answer was returned. Check the installed Perplexica service and its model/search configuration before retrying.",
         { status: interrupted ? (signal?.aborted ? "cancelled" : "timed_out") : "unavailable", researchSubmitted: researchStarted, upstreamCancellationVerified: false }, true);
       } finally {
+        // Release unread error bodies as well as any completed request resources.
+        controller.abort();
         clearTimeout(timer);
         signal?.removeEventListener("abort", abort);
       }

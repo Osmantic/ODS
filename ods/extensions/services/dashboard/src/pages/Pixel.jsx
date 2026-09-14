@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import PixelConversationRecovery from '../components/PixelConversationRecovery'
 import { readConversations, saveConversation, SELECT_EVENT, DELETE_EVENT, deleteConversation, isConversationDeleted } from '../lib/pixelConversations'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -478,7 +479,9 @@ function loadStoredChat(selected) {
       chatId: stored.chatId, messages, preview,
       contextStart: Number.isInteger(stored.contextStart) && stored.contextStart >= 0 && stored.contextStart <= messages.length ? stored.contextStart : 0,
       workspaceOpen: stored.workspaceOpen !== false && (stored.workspaceOpen === true || Boolean(preview)),
-      draft: typeof stored.draft === 'string' ? stored.draft.slice(0, MAX_INPUT_LEN) : '',
+      // The send limit must not truncate unsent text when restoring a draft.
+      // The composer keeps sending disabled until the user shortens it.
+      draft: typeof stored.draft === 'string' ? stored.draft : '',
       requestId: SAFE_CHAT_ID.test(stored.requestId || '') ? stored.requestId : null,
       interrupted: stored.inFlight === true || stored.interrupted === true,
     }
@@ -539,6 +542,7 @@ export default function Pixel({ systemStatus = null }) {
   useEffect(() => { setPreviewTab('preview') }, [preview?.siteId])
 
   const abortRef = useRef(null)
+  const stopRequestRef = useRef(null)
   const restoredActivityRef = useRef(restoredActivity)
   const chatIdRef = useRef(initialChat?.chatId || makeChatId())
   const contextStartRef = useRef(initialChat?.contextStart || 0)
@@ -708,7 +712,11 @@ export default function Pixel({ systemStatus = null }) {
     }
   }, [])
 
-  useEffect(() => () => abortRef.current?.abort(), [])
+  useEffect(() => () => {
+    abortRef.current?.abort()
+    stopRequestRef.current?.abort()
+    stopRequestRef.current = null
+  }, [])
 
   useEffect(() => {
     if (!sending) {
@@ -1046,13 +1054,19 @@ export default function Pixel({ systemStatus = null }) {
     const requestId = requestIdRef.current
     const restored = !controller && interrupted
       && ['active', 'unknown'].includes(restoredActivityRef.current)
-    if ((!controller && !restored) || stopping) return
+    if ((!controller && !restored) || stopping || stopRequestRef.current) return
 
+    // Bound the acknowledgement independently of the live chat stream.
+    // A deadline is uncertainty, never permission to claim the task stopped.
+    const stopRequest = new AbortController()
+    stopRequestRef.current = stopRequest
+    const timeout = setTimeout(() => stopRequest.abort(), 15000)
     setStopping(true)
     setStopError('')
     try {
       const response = await fetch('/api/pixel/chat/cancel', {
         method: 'POST',
+        signal: stopRequest.signal,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ chat_id: chatId, ...(requestId ? { request_id: requestId } : {}) }),
       })
@@ -1064,13 +1078,13 @@ export default function Pixel({ systemStatus = null }) {
           // The exact acknowledgement check below fails closed.
         }
       }
-      if (!response?.ok || !payload || Object.keys(payload).length !== 1 || payload.aborted !== true) {
+      if (stopRequest.signal.aborted || !response?.ok || !payload || Object.keys(payload).length !== 1 || payload.aborted !== true) {
         throw new Error('cancellation was not acknowledged')
       }
 
       // A normal terminal response may win the cancellation race. Do not
       // rewrite that completed answer as owner-stopped.
-      if (chatIdRef.current !== chatId || requestIdRef.current !== requestId || abortRef.current !== controller
+      if (stopRequestRef.current !== stopRequest || chatIdRef.current !== chatId || requestIdRef.current !== requestId || abortRef.current !== controller
         || (restored && !['active', 'unknown'].includes(restoredActivityRef.current))) return
       controller?.abort()
       abortRef.current = null
@@ -1085,14 +1099,18 @@ export default function Pixel({ systemStatus = null }) {
     } catch {
       // Keep the live stream attached and Stop retryable. Claiming success
       // without an exact acknowledgement could leave tools or inference active.
-      if (chatIdRef.current === chatId && abortRef.current === controller) {
+      if (stopRequestRef.current === stopRequest && chatIdRef.current === chatId && abortRef.current === controller) {
         setStopError(restored
           ? 'Stop was not confirmed. This chat may still have work in progress; check its activity or retry the stop request.'
           : 'Stop was not confirmed. Pixel is still connected; retry Stop.')
         if (restored) setActivityRefresh(value => value + 1)
       }
     } finally {
-      setStopping(false)
+      clearTimeout(timeout)
+      if (stopRequestRef.current === stopRequest) {
+        stopRequestRef.current = null
+        setStopping(false)
+      }
     }
   }, [stopping, interrupted, updateRestoredActivity])
 
@@ -1192,7 +1210,7 @@ export default function Pixel({ systemStatus = null }) {
     <div className="pixel-chat flex flex-col overflow-hidden text-theme-text">
       <div className="pixel-chat-preview-layout flex min-h-0 flex-1 flex-col lg:flex-row">
         <div className="pixel-chat-column flex min-h-0 min-w-0 flex-1 flex-col">
-      {persistenceError && <p role="alert" className="px-6 py-2 text-sm text-amber-300">{persistenceError}</p>}
+      {persistenceError && <PixelConversationRecovery error={persistenceError} chatId={chatIdRef.current} messages={messages} draft={input}/>}
       <header className="pixel-chat-header">
         <div className="pixel-chat-identity">
         <div className="flex h-9 w-9 items-center justify-center text-theme-accent-light">

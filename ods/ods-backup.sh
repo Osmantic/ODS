@@ -168,7 +168,7 @@ Commands:
 OPTIONS:
     -h, --help              Show this help message
     -o, --output DIR        Custom backup directory (default: .backups/)
-    -t, --type TYPE         Backup type: full, user-data, config (default: full)
+    -t, --type TYPE         Backup type: full, user-data, config (default: user-data)
     -c, --compress          Compress backup to .tar.gz
     -l, --list              List existing backups
     -d, --delete ID         Delete specific backup by ID

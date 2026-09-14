@@ -3,9 +3,9 @@ import { afterEach, expect, it, vi } from 'vitest'
 import PanelResizeHandle from './PanelResizeHandle'
 afterEach(cleanup)
 
-function pointer(element, type, x, button = 0) {
+function pointer(element, type, x, button = 0, pointerId = 1) {
   const event = new MouseEvent(type, {bubbles:true,clientX:x,button})
-  Object.defineProperty(event,'pointerId',{value:1})
+  Object.defineProperty(event,'pointerId',{value:pointerId})
   fireEvent(element,event)
 }
 
@@ -57,4 +57,32 @@ it('supports keyboard resizing and a reset with bounded widths', () => {
   expect(resize).toHaveBeenLastCalledWith(408)
   fireEvent.keyDown(handle, {key:'Home'})
   expect(resize).toHaveBeenLastCalledWith(440)
+})
+
+it('keeps a drag owned by its starting pointer until that pointer ends it', () => {
+  const resize = vi.fn()
+  const { container } = render(<aside><PanelResizeHandle width={440} onResize={resize} /></aside>)
+  container.querySelector('aside').getBoundingClientRect = () => ({ width: 440 })
+  const handle = screen.getByRole('separator')
+  handle.setPointerCapture = vi.fn()
+  handle.hasPointerCapture = () => true
+  handle.releasePointerCapture = vi.fn()
+  pointer(handle, 'pointerdown', 560)
+  pointer(handle, 'pointerdown', 800, 0, 2)
+  pointer(handle, 'pointermove', 700, 0, 2)
+  expect(resize).not.toHaveBeenCalled()
+  expect(handle.setPointerCapture).toHaveBeenCalledTimes(1)
+  for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) {
+    pointer(handle, type, 700, 0, 2)
+    pointer(handle, 'pointermove', 500)
+    expect(resize).toHaveBeenLastCalledWith(500)
+    resize.mockClear()
+  }
+  expect(handle.releasePointerCapture).not.toHaveBeenCalled()
+  pointer(handle, 'pointercancel', 500)
+  pointer(handle, 'pointermove', 400)
+  expect(resize).not.toHaveBeenCalled()
+  pointer(handle, 'pointerdown', 560, 0, 2)
+  pointer(handle, 'pointermove', 520, 0, 2)
+  expect(resize).toHaveBeenLastCalledWith(480)
 })

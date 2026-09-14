@@ -106,7 +106,8 @@ function validResponse(value, request) {
   return value;
 }
 
-function socketRequest(payload, socketPath = SOCKET_PATH) {
+function socketRequest(payload, { socketPath = SOCKET_PATH, signal } = {}) {
+  if (signal?.aborted) return Promise.reject(new Error("Pixel workspace preview cancelled"));
   return new Promise((resolve, reject) => {
     const connection = net.createConnection({ path: socketPath });
     const chunks = [];
@@ -115,9 +116,13 @@ function socketRequest(payload, socketPath = SOCKET_PATH) {
     const finish = (callback, value) => {
       if (settled) return;
       settled = true;
+      signal?.removeEventListener("abort", onAbort);
       connection.destroy();
       callback(value);
     };
+    const onAbort = () => finish(reject, new Error("Pixel workspace preview cancelled"));
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted) onAbort();
     connection.setTimeout(30_000);
     connection.on("connect", () => {
       connection.end(`${JSON.stringify(payload)}\n`);
@@ -173,7 +178,9 @@ function failedResult(code) {
   return {
     content: [{
       type: "text",
-      text: code
+      text: code === "cancelled"
+        ? "Pixel stopped waiting for preview publication. A request already accepted by the host may still complete; no new verified preview receipt is returned."
+        : code
         ? `ODS could not publish the preview. ${FAILURE_MESSAGES[code]} Do not claim a localhost URL is live until publication succeeds.`
         : "ODS could not publish a verified browser preview. Keep the site files in the workspace, correct the reported file or entry-point problem if one was returned, and do not claim a localhost URL is live.",
     }],
@@ -205,10 +212,12 @@ export function createWorkspacePreviewTool({ request = socketRequest } = {}) {
         },
       },
     },
-    execute: async (_toolCallId, params) => {
+    execute: async (_toolCallId, params, signal) => {
       try {
+        signal?.throwIfAborted();
         const normalized = normalizeWorkspacePreviewParams(params);
-        const raw = await request(normalized);
+        const raw = await request(normalized, { signal });
+        signal?.throwIfAborted();
         const failureCode = validatedFailureCode(raw);
         if (failureCode) return failedResult(failureCode);
         const response = validResponse(raw, normalized);
@@ -222,7 +231,7 @@ export function createWorkspacePreviewTool({ request = socketRequest } = {}) {
           details: response,
         };
       } catch {
-        return failedResult();
+        return failedResult(signal?.aborted ? "cancelled" : undefined);
       }
     },
   };
@@ -232,4 +241,5 @@ export const testing = Object.freeze({
   BOUNDARY,
   validRelativeDirectory,
   validResponse,
+  socketRequest,
 });

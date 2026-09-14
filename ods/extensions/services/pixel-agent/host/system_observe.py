@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import base64
+from concurrent.futures import ThreadPoolExecutor
 import ipaddress
 import json
 import os
@@ -56,7 +57,7 @@ def _run(
             timeout=timeout,
             env=environment,
         )
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
         return None
     if (
         len(result.stdout.encode("utf-8", "replace")) > MAX_OUTPUT
@@ -136,6 +137,8 @@ def _native_tailscale_state() -> tuple[bool, str, bool] | None:
     try:
         value = json.loads(result.stdout)
     except json.JSONDecodeError:
+        return True, "unknown", False
+    if not isinstance(value, dict):
         return True, "unknown", False
     raw = str(value.get("BackendState", "")).strip().casefold()
     states = {
@@ -285,6 +288,10 @@ def _resolve_peer(target: str) -> list[tuple[int, str, str]]:
         if family not in {socket.AF_INET, socket.AF_INET6}:
             continue
         address = str(ipaddress.ip_address(sockaddr[0]))
+        # Link-local IPv6 names can resolve on more than one interface. The
+        # scope is part of the endpoint, not an interchangeable duplicate.
+        if family == socket.AF_INET6 and sockaddr[3] and "%" not in address:
+            address = f"{address}%{sockaddr[3]}"
         if address in seen:
             continue
         seen.add(address)
@@ -364,7 +371,11 @@ def _probe_icmp(family: int, address: str) -> bool | None:
 
 
 def _probe_tcp(family: int, address: str, port: int) -> bool:
-    endpoint = (address, port) if family == socket.AF_INET else (address, port, 0, 0)
+    if family == socket.AF_INET6:
+        host, separator, interface = address.partition("%")
+        endpoint = (host, port, 0, int(interface) if separator else 0)
+    else:
+        endpoint = (address, port)
     try:
         with socket.socket(family, socket.SOCK_STREAM) as connection:
             connection.settimeout(0.4)
@@ -387,20 +398,25 @@ def observe_network_peer(target: str, ports: str = "") -> dict:
         parsed = ipaddress.ip_address(raw)
         resolved.append((socket.AF_INET if parsed.version == 4 else socket.AF_INET6, raw, "tailscale"))
         known.add(raw)
-    observations = []
-    for family, address, scope in resolved:
-        icmp = _probe_icmp(family, address)
-        tcp = [
-            {"port": port, "open": _probe_tcp(family, address, port)}
-            for port in normalized_ports
+    # Submit the already-validated, bounded peer/port set together. Serial
+    # timeouts can consume the broker's entire 30-second action deadline.
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        pending = [
+            (address, family, scope, pool.submit(_probe_icmp, family, address),
+             [(port, pool.submit(_probe_tcp, family, address, port))
+              for port in normalized_ports])
+            for family, address, scope in resolved
         ]
-        observations.append({
-            "address": address,
-            "family": "ipv4" if family == socket.AF_INET else "ipv6",
-            "scope": scope,
-            "icmpReachable": icmp,
-            "tcp": tcp,
-        })
+        observations = [
+            {
+                "address": address,
+                "family": "ipv4" if family == socket.AF_INET else "ipv6",
+                "scope": scope,
+                "icmpReachable": icmp.result(),
+                "tcp": [{"port": port, "open": result.result()} for port, result in tcp],
+            }
+            for address, family, scope, icmp, tcp in pending
+        ]
     reachable = tailscale["online"] is True or any(
         item["icmpReachable"] is True or any(port["open"] for port in item["tcp"])
         for item in observations

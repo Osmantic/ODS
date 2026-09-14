@@ -36,9 +36,9 @@ function failedResult(event) {
   return false;
 }
 
-export function createTaskActivity({now = () => new Date().toISOString(), maximumRuns = 64, maximumCalls = 512} = {}) {
+export function createTaskActivity({agentId = 'pixel', now = () => new Date().toISOString(), maximumRuns = 64, maximumCalls = 512} = {}) {
   const runs = new Map();
-  const identify = (event, context) => context?.agentId === 'pixel' ? context.runId ?? event?.runId : undefined;
+  const identify = (event, context) => context?.agentId === agentId ? context.runId ?? event?.runId : undefined;
   function begin(event, context) {
     const id = identify(event, context);
     if (!RUN.test(id ?? '')) return;
@@ -78,7 +78,7 @@ export function createTaskActivity({now = () => new Date().toISOString(), maximu
     begin,
     activeForUser(user) {
       if (typeof user !== 'string' || !/^ods-[a-f0-9]{64}$/.test(user)) return null;
-      const matches = [...runs.values()].filter(run => run.state === 'running' && run.sessionKey === `agent:pixel:openai-user:${user}`);
+      const matches = [...runs.values()].filter(run => run.state === 'running' && run.sessionKey === `agent:${agentId}:openai-user:${user}`);
       // Ambiguity is not evidence: never guess which run belongs to this turn.
       return matches.length === 1 ? this.projection(matches[0].runId) : null;
     },

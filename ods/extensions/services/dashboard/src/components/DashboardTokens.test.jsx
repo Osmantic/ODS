@@ -118,3 +118,74 @@ it('rescales only the visible interval and selected series without changing dail
   fireEvent.click(screen.getByRole('button',{name:'All token series'}))
   expect(ceiling()).toBe('100 auto')
 })
+
+it('lets a report slower than the polling interval finish without overlapping requests', async () => {
+  vi.useFakeTimers()
+  let resolveReport
+  let signal
+  const fetch = vi.fn(async (url, options) => {
+    if (url.includes('/report?')) {
+      signal = options.signal
+      return {ok:true,json:() => new Promise(resolve => {resolveReport = resolve})}
+    }
+    return {ok:true,json:async () => ({available:true,source:{status:'ok'},points:[]})}
+  })
+  vi.stubGlobal('fetch',fetch)
+  await act(async () => {render(<DashboardTokens/>)})
+  await act(async () => {await vi.advanceTimersByTimeAsync(6000)})
+  expect(fetch.mock.calls.filter(([url]) => url.includes('/report?'))).toHaveLength(1)
+  expect(signal.aborted).toBe(false)
+  await act(async () => {resolveReport({summary:{total_tokens:1234},daily:[]})})
+  expect(screen.getByTitle((1234).toLocaleString())).toBeVisible()
+  await act(async () => {await vi.advanceTimersByTimeAsync(4000)})
+  expect(fetch.mock.calls.filter(([url]) => url.includes('/report?'))).toHaveLength(2)
+})
+
+it('does not relabel a previous period total while the selected period is pending', async () => {
+  vi.stubGlobal('fetch',vi.fn(async url => {
+    if (url.includes('/report?')) return {ok:true,json:async () => ({summary:{total_tokens:9876},daily:[]})}
+    return {ok:true,json:async () => ({available:true})}
+  }))
+  render(<DashboardTokens/>)
+  expect(await screen.findByTitle((9876).toLocaleString())).toBeVisible()
+  globalThis.fetch.mockImplementation(() => new Promise(() => {}))
+  fireEvent.click(screen.getByRole('button',{name:'7 days'}))
+  expect(screen.queryByTitle((9876).toLocaleString())).toBeNull()
+  expect(screen.getByRole('status')).toHaveTextContent('Loading token usage')
+})
+
+it('expires a stalled JSON body and restores an explicit refresh without accepting its late result', async () => {
+  vi.useFakeTimers()
+  let resolveBody
+  const signals = []
+  vi.stubGlobal('fetch',vi.fn(async (url,{signal}) => {
+    signals.push(signal)
+    return {ok:true,json:() => url.includes('/report?')
+      ? new Promise(resolve => {resolveBody = resolve})
+      : Promise.resolve({available:true})}
+  }))
+  await act(async () => {render(<DashboardTokens/>)})
+  await act(async () => {await vi.advanceTimersByTimeAsync(20000)})
+  expect(signals[0].aborted).toBe(true)
+  expect(screen.getByRole('alert')).toHaveTextContent('timed out')
+  expect(screen.getByRole('button',{name:'Refresh token usage'})).toBeEnabled()
+  await act(async () => {resolveBody({summary:{total_tokens:9999}})})
+  expect(screen.queryByTitle((9999).toLocaleString())).toBeNull()
+})
+
+it('aborts unfinished sibling telemetry reads when one endpoint fails early', async () => {
+  const signals = []
+  vi.stubGlobal('fetch', vi.fn(async (url, {signal}) => {
+    signals.push(signal)
+    if (url.includes('/report?')) return {ok:false}
+    return {ok:true,json:() => new Promise((resolve,reject) => {
+      if (signal.aborted) reject(new globalThis.DOMException('Aborted','AbortError'))
+      else signal.addEventListener('abort',() => reject(new globalThis.DOMException('Aborted','AbortError')),{once:true})
+    })}
+  }))
+  render(<DashboardTokens/>)
+  expect(await screen.findByRole('alert')).toHaveTextContent('Token telemetry unavailable')
+  expect(signals).toHaveLength(3)
+  expect(signals.every(signal => signal.aborted)).toBe(true)
+  expect(screen.getByRole('button',{name:'Refresh token usage'})).toBeEnabled()
+})

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertCircle,
   CheckCircle2,
@@ -320,7 +320,7 @@ export default function RemoteProvider({ compact = false }) {
   const [testResult, setTestResult] = useState(null)
   const [testError, setTestError] = useState(null)
   const [form, setForm] = useState(INITIAL_FORM)
-  const [formDirty, setFormDirty] = useState(false)
+  const formEdit = useRef({ dirty: false, revision: 0 })
   const [planning, setPlanning] = useState(false)
   const [applyingAction, setApplyingAction] = useState(null)
   const [planResult, setPlanResult] = useState(null)
@@ -337,6 +337,17 @@ export default function RemoteProvider({ compact = false }) {
     try {
       const payload = await fetchJson('/api/remote-provider/status')
       setStatusData(payload)
+      const provider = payload?.routeState?.provider
+      if (!formEdit.current.dirty && provider) {
+        setForm(current => ({
+          ...current,
+          baseUrl: provider.baseUrl || '',
+          model: provider.model || '',
+          contextLength: String(provider.contextLength || 32768),
+          maxTokens: String(provider.maxTokens || 4096),
+          reasoning: provider.reasoning === true,
+        }))
+      }
       setError(null)
       return payload
     } catch (err) {
@@ -381,21 +392,10 @@ export default function RemoteProvider({ compact = false }) {
     void loadPeerModels()
   }, [loadPeerModels, statusData?.capabilities?.odsPeerLifecycle, statusData])
 
-  useEffect(() => {
-    const provider = statusData?.routeState?.provider
-    if (formDirty || !provider) return
-    setForm(current => ({
-      ...current,
-      baseUrl: provider.baseUrl || '',
-      model: provider.model || '',
-      contextLength: String(provider.contextLength || 32768),
-      maxTokens: String(provider.maxTokens || 4096),
-      reasoning: provider.reasoning === true,
-    }))
-  }, [formDirty, statusData])
 
   const updateForm = (key, value) => {
-    setFormDirty(true)
+    formEdit.current.dirty = true
+    formEdit.current.revision += 1
     setForm(current => ({ ...current, [key]: value }))
   }
 
@@ -437,12 +437,13 @@ export default function RemoteProvider({ compact = false }) {
     setTestResult(null)
     setTestError(null)
     try {
+      const submittedRevision = formEdit.current.revision
       const payload = action === 'configure' ? configurePayload(form) : { action }
       const result = await fetchJson('/api/remote-provider/apply', jsonOptions(payload), LIFECYCLE_TIMEOUT_MS)
       setLifecycleResult(result)
-      if (action === 'configure') {
+      if (action === 'configure' && formEdit.current.revision === submittedRevision) {
         setForm(current => ({ ...current, apiKey: '' }))
-        setFormDirty(false)
+        formEdit.current.dirty = false
       }
       await loadStatus({ quiet: true })
     } catch (err) {

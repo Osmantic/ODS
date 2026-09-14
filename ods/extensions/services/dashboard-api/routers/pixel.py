@@ -625,10 +625,13 @@ async def _retained_chat_stream(request, body, owner):
     async def subscribe():
         after = -1
         while True:
+            # Snapshot terminal state before yielding any bytes. Sending a chunk
+            # can suspend this subscriber while the producer commits its tail.
+            # If it was active, take another snapshot before deciding to close.
+            row = _result_state(store, identity)
             for chunk in store.chunks(identity, after):
                 after = chunk["sequence"]
                 yield chunk["data"]
-            row = _result_state(store, identity)
             if row is None or row["state"] != "active":
                 return
             if await request.is_disconnected():
@@ -846,6 +849,5 @@ async def pixel_chat_stream(request: Request, body: ChatStreamRequest, owner: st
             "X-Accel-Buffering": "no",
         },
     )
-
 
 

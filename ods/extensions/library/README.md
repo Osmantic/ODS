@@ -1,6 +1,6 @@
 # ODS Extensions Library
 
-**34 service extensions being tested for ODS. 17 are already in production — these are next.**
+**36 service extensions being tested for ODS. 17 are already in production — these are next.**
 
 Each extension is a self-contained directory with a `manifest.yaml` (service metadata), `compose.yaml` (Docker Compose fragment), and optional Dockerfiles, workflows, and documentation. Drop any of these into your ODS's `extensions/services/` directory and run `ods enable <service-id>`.
 
@@ -74,6 +74,8 @@ Each extension is a self-contained directory with a `manifest.yaml` (service met
 | [`gitea/`](services/gitea/) | Gitea — lightweight self-hosted Git | CPU |
 | [`baserow/`](services/baserow/) | Baserow — open-source Airtable alternative | CPU |
 | [`memos/`](services/memos/) | Memos — local Markdown notes and authenticated workflow API | CPU |
+| [`miniflux/`](services/miniflux/) | Miniflux — RSS/Atom reading and research API | CPU |
+| [`ntfy/`](services/ntfy/) | ntfy — authenticated local workflow notifications | CPU |
 | [`sillytavern/`](services/sillytavern/) | SillyTavern — advanced roleplay/chat frontend | AMD, NVIDIA, Apple |
 
 ### Data & ML
@@ -204,4 +206,4 @@ python3 -c "import yaml; yaml.safe_load(open('my-service/manifest.yaml'))"
 
 These extensions are actively tested on ODS development builds. Some are battle-tested (Ollama, ChromaDB, Bark), others are newer. All follow the v1 manifest schema and integrate with the ODS service registry, dashboard, and CLI.
 
-**17 services have already graduated to production** — these 32 are being prepared for the next wave.
+**17 services have already graduated to production** — these 36 are being prepared for the next wave.

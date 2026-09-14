@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { RefreshCw } from 'lucide-react'
 import MetalMetricIcon from './MetalMetricIcon'
 import './dashboard-tokens.css'
@@ -79,18 +79,28 @@ export default function DashboardTokens() {
   const [days, setDays] = useState(1)
   const [minuteWindow,setMinuteWindow] = useState(15)
   const [revision, setRevision] = useState(0)
-  const [state, setState] = useState({loading:true})
+  const [result, setState] = useState({loading:true,days:1})
+  const pending = useRef(null)
+  const state = result.days === days ? result : {loading:true}
   useEffect(() => {
-    const timer = setInterval(() => {if (document.visibilityState !== 'hidden') setRevision(value => value + 1)}, days === 1 ? 5000 : 30000)
+    const timer = setInterval(() => {if (document.visibilityState !== 'hidden' && !pending.current) setRevision(value => value + 1)}, days === 1 ? 5000 : 30000)
     return () => clearInterval(timer)
   }, [days])
   useEffect(() => {
     const controller = new AbortController()
+    pending.current = controller
+    const timeout = setTimeout(() => {
+      controller.abort()
+      if (pending.current === controller) {
+        pending.current = null
+        setState({days,error:'Token telemetry timed out.'})
+      }
+    }, 20000)
     const end = new Date()
     const start = new Date(end)
     start.setUTCDate(start.getUTCDate() - days + 1)
     const date = value => value.toISOString().slice(0,10)
-    setState(previous => ({...previous, loading:true, error:null}))
+    setState(previous => ({...(previous.days === days ? previous : {}),days,loading:true,error:null}))
     Promise.all([
       fetch(`/api/usage/report?start=${date(start)}&end=${date(end)}`,{signal:controller.signal}).then(response => {if (!response.ok) throw new Error('Token telemetry unavailable.'); return response.json()}),
       fetch('/api/usage/readiness',{signal:controller.signal}).then(response => response.ok ? response.json() : null).catch(() => null),
@@ -98,8 +108,22 @@ export default function DashboardTokens() {
     ]).then(([report,readiness,timeline]) => {
       if (report.source?.status && report.source.status !== 'ok') throw new Error('Token telemetry unavailable.')
       if (!controller.signal.aborted) setState({report,readiness,timeline,days})
-    }).catch(error => {if (!controller.signal.aborted) setState({error:error.message})})
-    return () => controller.abort()
+    }).catch(error => {
+      if (!controller.signal.aborted) {
+        setState({days,error:error.message})
+        // Promise.all rejects as soon as one endpoint fails. Release any
+        // sibling body reads even when the tab is hidden and polling pauses.
+        controller.abort()
+      }
+    }).finally(() => {
+      clearTimeout(timeout)
+      if (pending.current === controller) pending.current = null
+    })
+    return () => {
+      clearTimeout(timeout)
+      controller.abort()
+      if (pending.current === controller) pending.current = null
+    }
   }, [days,revision])
   const summary = state.report?.summary || {}
   const rows = days === 1 ? (state.timeline?.source?.status === 'ok' && Array.isArray(state.timeline?.points) ? state.timeline.points : []) : state.report?.daily

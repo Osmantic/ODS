@@ -1,6 +1,7 @@
 import {useEffect, useMemo, useState} from 'react'
 import {ChevronLeft, ChevronRight, RefreshCw, Search, Download, Activity, Cpu, Layers, Wallet} from 'lucide-react'
 import MetalMetricIcon from '../MetalMetricIcon'
+import DailyUsageExport from './DailyUsageExport'
 import './usage-refined.css'
 
 export const integer = value => Number(value || 0).toLocaleString('en-US')
@@ -28,7 +29,7 @@ const seriesInfo = {input:{field:'input_tokens',label:'Input',color:'#dce1e5'},o
 
 export function csvForRows(rows) {
   const fields=['model','provider','service','input_tokens','output_tokens','cache_read_tokens','cache_write_tokens','requests','cost_usd','cost_source']
-  const cell=value=>`"${String(value ?? '').replace(/^[=+@\-\t\r]/,"'$&").replaceAll('"','""')}"`
+  const cell=value=>`"${String(value ?? '').replace(/^[=+@\-\t\r\n＝＋－＠]/,"'$&").replaceAll('"','""')}"`
   return [fields.join(','),...rows.map(row=>fields.map(key=>cell(row[key])).join(','))].join('\r\n')
 }
 
@@ -76,7 +77,7 @@ function ActivityView({report,available}) {
   const data=daily.map(day=>({date:day.date,input:Number(day.input_tokens || 0),output:Number(day.output_tokens || 0),cache:Number(day.cache_read_tokens || 0)+Number(day.cache_write_tokens || 0),requests:day.requests}))
   const keys=series==='all' ? ['input','output','cache'] : [series]
   return <>
-    <header className="usage-section-title"><div><h2>Token activity</h2><p>Daily volume · UTC</p></div></header>
+    <header className="usage-section-title"><div><h2>Token activity</h2><p>Daily volume · UTC</p></div><DailyUsageExport daily={daily} available={available} source={report.source}/></header>
     <div className="usage-series" role="group" aria-label="Token series">{['all','input','output','cache'].map(key=><button key={key} aria-pressed={series===key} onClick={()=>setSeries(key)}>{key==='all' ? 'All' : seriesInfo[key].label}</button>)}</div>
     <div className="usage-charts">
       <Trend label="Tokens per day" data={data} keys={keys} available={available}/>
@@ -111,13 +112,32 @@ function Trend({label,data,keys,available,currency=false,gapDays=1}) {
 }
 
 function ModelView({rows,telemetrySource}) {
+  const [exportError,setExportError]=useState(false)
   const [query,setQuery]=useState(''),[provider,setProvider]=useState('all'),[service,setService]=useState('all'),[source,setSource]=useState('all'),[page,setPage]=useState(0)
   const filtered=useMemo(()=>rows.filter(row=>(provider==='all'||metadataValue(row.provider)===provider)&&(service==='all'||metadataValue(row.service)===service)&&(source==='all'||metadataValue(row.cost_source)===source)&&[row.model,row.provider,row.service,row.cost_source].some(value=>String(value || '').toLowerCase().includes(query.trim().toLowerCase()))).sort((a,b)=>tokens(b)-tokens(a)),[rows,query,provider,service,source])
   useEffect(()=>setPage(0),[query,provider,service,source])
   const count=Math.max(1,Math.ceil(filtered.length/8)), current=Math.min(page,count-1)
-  function exportCsv(){const url=URL.createObjectURL(new Blob([csvForRows(filtered)],{type:'text/csv;charset=utf-8'}));const link=document.createElement('a');link.href=url;link.download='ods-usage-by-model.csv';link.click();URL.revokeObjectURL(url)}
+  function exportCsv() {
+    let url, link
+    setExportError(false)
+    try {
+      url = URL.createObjectURL(new Blob([csvForRows(filtered)], {type:'text/csv;charset=utf-8'}))
+      link = document.createElement('a')
+      link.href = url
+      link.download = 'ods-usage-by-model.csv'
+      document.body.append(link)
+      link.click()
+    } catch {
+      setExportError(true)
+    } finally {
+      link?.remove()
+      // Let browser activation consume the URL before releasing its bytes.
+      if (url) setTimeout(() => URL.revokeObjectURL(url), 1000)
+    }
+  }
   return <>
     <header className="usage-section-title"><div><h2>Usage by Model</h2><p>Ordered by recorded token volume</p></div><button className="usage-text-button" disabled={!filtered.length} onClick={exportCsv}><Download size={14}/>Export CSV</button></header>
+    {exportError && <p role="alert" className="usage-notice">CSV export could not be started. Try again; your report and filters are unchanged.</p>}
     <label className="usage-search"><Search size={14}/><input aria-label="Search models" placeholder="Search models..." value={query} onChange={event=>setQuery(event.target.value)}/></label>
     <details className="usage-filter-details"><summary>Filters{provider!=='all'||service!=='all'||source!=='all' ? ' · active' : ''}</summary><div className="usage-filters">{[['All Providers','provider',provider,setProvider],['All Services','service',service,setService],['All Sources','cost_source',source,setSource]].map(([label,key,value,set])=><select key={key} aria-label={label} value={value} onChange={event=>set(event.target.value)}><option value="all">{label}</option>{[...new Set([...rows.map(row=>metadataValue(row[key])), ...(value==='all' ? [] : [value])])].map(option=><option key={option} value={option}>{sourceNames[option] || option}</option>)}</select>)}</div></details>
     <div className="usage-model-list">{filtered.slice(current*8,current*8+8).map(row=><details key={`${row.model}-${row.provider}-${row.service}-${row.cost_source}`} className="usage-model-row"><summary><span className="usage-model-name"><strong title={row.model}>{row.model || 'Unknown model'}</strong><small>{row.provider || 'unknown'} · {row.service || 'unknown'}</small></span><span className="usage-model-total">{compactNumber(tokens(row))}<small>tokens</small></span><ChevronRight size={13}/></summary><dl>{[['Input',integer(row.input_tokens)],['Output',integer(row.output_tokens)],['Cache read',integer(row.cache_read_tokens)],['Cache write',integer(row.cache_write_tokens)],['Requests',requestLabel(row,telemetrySource)],['Cost',costLabel(row)],['Source',sourceNames[row.cost_source] || 'Unknown cost']].map(([label,value])=><div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl></details>)}</div>

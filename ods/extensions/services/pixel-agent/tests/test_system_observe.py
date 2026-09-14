@@ -4,10 +4,14 @@ if sys.platform == "win32":
     raise SkipTest("Requires POSIX host ownership, file locks, or Unix sockets; run under Linux/WSL")
 
 import importlib.util
+import contextlib
+import io
+import json
 import socket
 import pathlib
 import stat
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
@@ -20,6 +24,41 @@ SPEC.loader.exec_module(system_observe)
 
 
 class SystemObserveTests(unittest.TestCase):
+    def test_cli_keeps_invalid_command_bytes_out_of_observation_receipts(self):
+        for action in ("gpu", "tailscale"):
+            for descriptor in (1, 2):
+                with self.subTest(action=action, descriptor=descriptor), tempfile.TemporaryDirectory() as directory:
+                    executable = pathlib.Path(directory) / "observer"
+                    executable.write_text(
+                        f"#!{sys.executable}\nimport os\nos.write({descriptor}, bytes([255]))\n",
+                        encoding="utf-8",
+                    )
+                    executable.chmod(0o700)
+                    output = io.StringIO()
+                    with mock.patch.object(system_observe, "_trusted_executable", return_value=str(executable)), \
+                         contextlib.redirect_stdout(output):
+                        self.assertEqual(system_observe.main(["observer", action]), 0)
+                    value = json.loads(output.getvalue())
+                    if action == "gpu":
+                        self.assertFalse(value["available"])
+                        self.assertEqual(value["devices"], [])
+                    else:
+                        self.assertEqual(value["state"], "unknown")
+                        self.assertFalse(value["serviceRunning"])
+
+    def test_tailscale_cli_rejects_non_object_status_without_crashing(self):
+        for payload in ("null", "[]", "42", '"running"'):
+            with self.subTest(payload=payload):
+                result = mock.Mock(returncode=0, stdout=payload, stderr="")
+                output = io.StringIO()
+                with mock.patch.object(system_observe, "_trusted_executable", return_value="/usr/bin/tailscale"), \
+                     mock.patch.object(system_observe, "_run", return_value=result), \
+                     contextlib.redirect_stdout(output):
+                    self.assertEqual(system_observe.main(["observer", "tailscale"]), 0)
+                value = json.loads(output.getvalue())
+                self.assertEqual(value["state"], "unknown")
+                self.assertFalse(value["serviceRunning"])
+
     def test_gpu_output_is_bounded_and_omits_device_identifiers(self):
         result = mock.Mock(
             returncode=0,
@@ -115,6 +154,54 @@ class SystemObserveTests(unittest.TestCase):
             with mock.patch.object(pathlib.Path, "lstat", return_value=mock.Mock(st_mode=stat.S_IFDIR | 0o777, st_uid=0)):
                 self.assertEqual(system_observe._trusted_interop_sockets(root), [])
 
+    def test_peer_probes_overlap_with_a_bounded_pool_and_preserve_receipt_order(self):
+        addresses = [f"192.168.1.{index}" for index in range(10, 14)]
+        ports = list(range(8000, 8008))
+        ready = threading.Event()
+        lock = threading.Lock()
+        active = 0
+        maximum = 0
+        calls = []
+
+        def probe(family, address, port=None):
+            nonlocal active, maximum
+            with lock:
+                active += 1
+                maximum = max(maximum, active)
+                calls.append((family, address, port))
+                if active == 8:
+                    ready.set()
+            try:
+                self.assertTrue(ready.wait(2), "peer probes ran serially")
+                return port == 8003 if port is not None else None
+            finally:
+                with lock:
+                    active -= 1
+
+        tailscale = {"available": False, "found": False, "online": None, "addresses": []}
+        with mock.patch.object(system_observe, "_resolve_peer",
+                               return_value=[(socket.AF_INET, address, "lan") for address in addresses]), \
+             mock.patch.object(system_observe, "_tailscale_peer_status", return_value=tailscale), \
+             mock.patch.object(system_observe, "_probe_icmp", side_effect=probe), \
+             mock.patch.object(system_observe, "_probe_tcp", side_effect=probe):
+            value = system_observe.observe_network_peer("peer", ",".join(map(str, ports)))
+        self.assertEqual(maximum, 8)
+        self.assertEqual(len(calls), 36)
+        self.assertTrue(value["reachable"])
+        self.assertEqual([item["address"] for item in value["addresses"]], addresses)
+        for item in value["addresses"]:
+            self.assertIsNone(item["icmpReachable"])
+            self.assertEqual(item["tcp"], [{"port": port, "open": port == 8003} for port in ports])
+
+    def test_rejected_resolution_starts_no_peer_probes(self):
+        with mock.patch.object(system_observe, "_resolve_peer", side_effect=ValueError("private network boundary")), \
+             mock.patch.object(system_observe, "_probe_tcp") as tcp, \
+             mock.patch.object(system_observe, "_probe_icmp") as icmp, \
+             self.assertRaisesRegex(ValueError, "private network boundary"):
+            system_observe.observe_network_peer("public.example", "443")
+        tcp.assert_not_called()
+        icmp.assert_not_called()
+
     def test_private_network_peer_reports_only_bounded_exact_peer_evidence(self):
         records = [
             (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.168.0.166", 0)),
@@ -146,6 +233,58 @@ class SystemObserveTests(unittest.TestCase):
             "icmpReachable": False,
             "tcp": [{"port": 22, "open": True}, {"port": 3389, "open": False}],
         }])
+
+    def test_link_local_peer_retains_resolved_interface_for_each_probe(self):
+        records = [
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("fe80::1234", 0, 0, 3)),
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("fe80::1234", 0, 0, 4)),
+        ]
+        tailscale = {"available": False, "found": False, "online": None, "addresses": []}
+        connection = mock.MagicMock()
+        connection.__enter__.return_value = connection
+        connection.connect_ex.side_effect = lambda endpoint: 0 if endpoint[3] == 3 else 113
+        with mock.patch.object(system_observe.socket, "getaddrinfo", return_value=records), \
+             mock.patch.object(system_observe.socket, "socket", return_value=connection), \
+             mock.patch.object(system_observe, "_tailscale_peer_status", return_value=tailscale), \
+             mock.patch.object(system_observe, "_probe_icmp", return_value=False) as icmp:
+            value = system_observe.observe_network_peer("printer.local", "443")
+        self.assertTrue(value["reachable"])
+        self.assertEqual([row["address"] for row in value["addresses"]], ["fe80::1234%3", "fe80::1234%4"])
+        self.assertEqual([row["tcp"] for row in value["addresses"]],
+                         [[{"port": 443, "open": True}], [{"port": 443, "open": False}]])
+        # Probe completion order is intentionally concurrent; only the final
+        # receipt order and exact scoped endpoint set are deterministic.
+        self.assertEqual(connection.connect_ex.call_count, 2)
+        connection.connect_ex.assert_has_calls(
+            [mock.call(("fe80::1234", 443, 0, 3)), mock.call(("fe80::1234", 443, 0, 4))], any_order=True)
+        self.assertEqual(icmp.call_count, 2)
+        icmp.assert_has_calls(
+            [mock.call(socket.AF_INET6, "fe80::1234%3"), mock.call(socket.AF_INET6, "fe80::1234%4")], any_order=True)
+
+    def test_receipts_stay_in_resolver_order_when_the_second_peer_finishes_first(self):
+        second_finished = threading.Event()
+        completed = []
+        addresses = ["192.168.1.10", "192.168.1.11"]
+
+        def icmp(_family, address):
+            if address == addresses[0]:
+                self.assertTrue(second_finished.wait(2), "second probe never started")
+                completed.append(address)
+                return False
+            completed.append(address)
+            second_finished.set()
+            return True
+
+        tailscale = {"available": False, "found": False, "online": None, "addresses": []}
+        with mock.patch.object(system_observe, "_resolve_peer",
+                               return_value=[(socket.AF_INET, address, "lan") for address in addresses]), \
+             mock.patch.object(system_observe, "_tailscale_peer_status", return_value=tailscale), \
+             mock.patch.object(system_observe, "_probe_icmp", side_effect=icmp), \
+             mock.patch.object(system_observe, "_probe_tcp", return_value=False):
+            value = system_observe.observe_network_peer("peer", "443")
+        self.assertEqual(completed, list(reversed(addresses)))
+        self.assertEqual([row["address"] for row in value["addresses"]], addresses)
+        self.assertEqual([row["icmpReachable"] for row in value["addresses"]], [False, True])
 
     def test_network_peer_rejects_public_resolution_and_unbounded_ports(self):
         records = [

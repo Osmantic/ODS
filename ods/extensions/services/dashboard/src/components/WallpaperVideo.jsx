@@ -29,7 +29,11 @@ export default function WallpaperVideo() {
       else {
         const playing = video.play()
         playing?.then(() => { if (!disposed && (document.hidden || reduced?.matches)) video.pause() })
-          .catch(() => { if (!disposed) setFailed(true) })
+          .catch(error => {
+            // pause() can interrupt a pending play when visibility or motion
+            // changes. That cancellation must not disable later playback.
+            if (!disposed && error.name !== 'AbortError') setFailed(true)
+          })
       }
     }
     sync()

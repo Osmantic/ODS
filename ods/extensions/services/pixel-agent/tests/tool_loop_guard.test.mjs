@@ -14712,3 +14712,25 @@ for (const transport of ["direct", "tool-search"]) {
     });
   }
 }
+
+test("scoped IPv6 peer observations remain verifiable host receipts", () => {
+  const guard = createToolLoopGuard();
+  guard.observeRun({agentId:"pixel", runId:"run-1", sessionId:"session-1"}, "pixel", {
+    prompt:"Probe Strixy on the local network port 443.",
+  });
+  const params = {actions:["host.network-peer"], peer:"Strixy", ports:[443]};
+  assert.deepEqual(call(guard, "pixel_ods_host_observe", {event:{params}}), {params});
+  afterCall(guard, "pixel_ods_host_observe", {event:{params, result:{details:{
+    jobId:"ops-1234567890123-abcdef123456", status:"succeeded", waitTimedOut:false,
+    steps:[{stepId:"observe-1", target:"ods-host", action:"host.network-peer", exitCode:0,
+      stdout:JSON.stringify({schemaVersion:1, kind:"ods-host-network-peer", target:"Strixy", ports:[443],
+        resolved:true, reachable:true, addresses:[{address:"fe80::1234%3", family:"ipv6", scope:"link-local",
+          icmpReachable:false, tcp:[{port:443, open:true}]}],
+        tailscale:{available:false, found:false, online:null, addresses:[]}}),
+      stderr:"", outputTruncated:{stdout:false, stderr:false}, riskSignals:[]}],
+  }}}});
+  const verification = guard.verificationForRun("run-1");
+  assert.equal(verification.status, "passed");
+  assert.match(verification.text, /fe80::1234%3/);
+  assert.match(verification.text, /open TCP 443/);
+});
