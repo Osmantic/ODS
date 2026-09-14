@@ -7,6 +7,7 @@ from performance_oracle import (
     build_models_payload,
     current_model_matches,
     evaluate_performance,
+    find_catalog_model,
     load_evidence,
     model_compatibility_runtime_context,
     model_app_compatibility,
@@ -17,6 +18,11 @@ from performance_oracle import (
     read_env_value,
     read_persisted_env_value,
 )
+
+
+def test_find_catalog_model_tolerates_invalid_catalog_types():
+    assert find_catalog_model(None, "llama-7b") is None
+    assert find_catalog_model(["invalid-string-entry"], "llama-7b") is None
 
 
 def _gpu(name="NVIDIA GeForce RTX 4060", total_mb=8192, backend="nvidia"):

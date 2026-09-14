@@ -615,7 +615,9 @@ def current_model_matches(model: dict[str, Any], current_model: str | None, curr
 def find_catalog_model(catalog: list[dict[str, Any]], model_name: str | None, gguf: str | None = None) -> dict[str, Any] | None:
     if not model_name and not gguf:
         return None
-    return next((model for model in catalog if current_model_matches(model, model_name, gguf)), None)
+    if not isinstance(catalog, (list, tuple)):
+        return None
+    return next((model for model in catalog if isinstance(model, dict) and current_model_matches(model, model_name, gguf)), None)
 
 
 def _hardware_match(gpu_info: Optional[GPUInfo], context_length: Optional[int],
