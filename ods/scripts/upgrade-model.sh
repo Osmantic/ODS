@@ -47,6 +47,9 @@ detect_compose_file() {
     elif [[ -f "$ODS_DIR/docker-compose.yml" ]]; then
         COMPOSE_FILE_ARGS=(-f "$ODS_DIR/docker-compose.yml")
     fi
+    if [[ -f "$ODS_DIR/docker-compose.override.yml" ]]; then
+        COMPOSE_FILE_ARGS+=(-f "$ODS_DIR/docker-compose.override.yml")
+    fi
 }
 
 detect_inference_service() {
