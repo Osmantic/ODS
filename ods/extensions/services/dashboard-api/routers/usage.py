@@ -330,13 +330,13 @@ async def usage_readiness(api_key: str = Depends(verify_api_key)):
 
 
 def _token_spy_api_key() -> str:
-    raw_key = (TOKEN_SPY_API_KEY or "").strip()
+    raw_key = (TOKEN_SPY_API_KEY or os.environ.get("TOKEN_SPY_API_KEY", "")).strip()
     if raw_key:
         return raw_key
     try:
         if TOKEN_SPY_KEY_FILE.is_file():
             return TOKEN_SPY_KEY_FILE.read_text(encoding="utf-8").strip()
-    except (OSError, UnicodeError):
+    except (OSError, UnicodeError, ValueError):
         pass
     return ""
 
