@@ -48,11 +48,14 @@ def download_artifact(url: str, destination: Path) -> Path:
     )
     destination.parent.mkdir(parents=True, exist_ok=True)
     tmp_destination = destination.with_name(f"{destination.name}.hf-tmp")
-    shutil.copyfile(downloaded, tmp_destination)
-    if tmp_destination.stat().st_size <= 0:
+    try:
+        shutil.copyfile(downloaded, tmp_destination)
+        if tmp_destination.stat().st_size <= 0:
+            raise RuntimeError("downloaded artifact is empty")
+        tmp_destination.replace(destination)
+    except Exception:
         tmp_destination.unlink(missing_ok=True)
-        raise RuntimeError("downloaded artifact is empty")
-    tmp_destination.replace(destination)
+        raise
     return destination
 
 
