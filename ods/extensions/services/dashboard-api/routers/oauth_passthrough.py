@@ -190,12 +190,10 @@ def _safe_return_path(return_url: str) -> str | None:
     candidate = (return_url or "").strip()
     if not candidate.startswith("/"):
         return None
-    # Reject protocol-relative URLs. Browsers fold backslashes to forward
-    # slashes in the authority, so "/\evil.com" and "/\\evil.com" resolve to
-    # "//evil.com" — a same-looking prefix that is really an off-origin
-    # redirect. Treat the character after the leading slash as the guard, and
-    # reject backslashes anywhere since a same-origin path never needs one.
+    # Reject protocol-relative URLs, backslashes, and control characters (CRLF/NUL).
     if candidate[1:2] in ("/", "\\") or "\\" in candidate:
+        return None
+    if any(ord(c) < 32 or ord(c) == 127 for c in candidate):
         return None
     return candidate
 
