@@ -562,7 +562,7 @@ async def execute_transaction(
     return JSONResponse(
         content={
             "transactionId": result.transaction_id,
-            "planHash": model.planHash,
+            "planHash": result.plan_hash,
             "finalState": result.final_state,
             "sequence": result.sequence,
             "appliedServices": result.applied_services,
