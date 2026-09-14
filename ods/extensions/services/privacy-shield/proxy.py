@@ -269,6 +269,31 @@ def _build_upstream_headers(request: Request, scrubbed_len: int | None) -> dict:
     return headers
 
 
+# JSON string tokens are disjoint: consume escapes without mistaking an escaped
+# quote for a value boundary. Keep number tokens and object keys as protocol data.
+_JSON_STRING = re.compile(r'"(?:[^"\\]|\\.)*"')
+_JSON_KEY_SUFFIX = re.compile(r"\s*:")
+
+
+def _scrub_request_text(shield: CachedPrivacyShield, text: str, content_type: str):
+    mime, _ = _parse_content_type(content_type)
+    if not (mime == "application/json" or mime.startswith("application/") and mime.endswith("+json")):
+        return shield.process_request(text)
+
+    _, metadata = shield.process_request("")
+
+    def scrub_value(match):
+        nonlocal metadata
+        if _JSON_KEY_SUFFIX.match(text, match.end()):
+            return match.group(0)
+        scrubbed, metadata = shield.process_request(match.group(0))
+        return scrubbed
+
+    scrubbed = _JSON_STRING.sub(scrub_value, text)
+    metadata["scrubbed"] = scrubbed != text
+    return scrubbed, metadata
+
+
 @app.post("/{path:path}", dependencies=[Depends(verify_api_key)])
 @app.get("/{path:path}", dependencies=[Depends(verify_api_key)])
 async def proxy(request: Request, path: str):
@@ -299,7 +324,9 @@ async def proxy(request: Request, path: str):
         outbound = raw_body
         metadata = {"pii_count": 0}
     else:
-        scrubbed_body, metadata = shield.process_request(body_str)
+        scrubbed_body, metadata = _scrub_request_text(
+            shield, body_str, request.headers.get("content-type", "")
+        )
         outbound = scrubbed_body.encode("utf-8")
 
     target_url = f"{TARGET_API_BASE}/{path}"
