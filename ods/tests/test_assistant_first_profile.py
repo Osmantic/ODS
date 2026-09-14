@@ -8,7 +8,10 @@ import os
 import pathlib
 import shlex
 import shutil
+import stat
 import subprocess
+import sys
+import tempfile
 import unittest
 
 import yaml
@@ -16,6 +19,7 @@ import yaml
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 RESOLVER = ROOT / "scripts" / "resolve-compose-stack.sh"
+CUSTODY_HELPER = ROOT / "installers" / "lib" / "assistant-first-state.sh"
 MINIMUM_SERVICES = {
     "dashboard",
     "dashboard-api",
@@ -183,6 +187,7 @@ class AssistantFirstProfileTests(unittest.TestCase):
         directories = (ROOT / "installers/phases/06-directories.sh").read_text(
             encoding="utf-8"
         )
+        custody = CUSTODY_HELPER.read_text(encoding="utf-8")
         base = yaml.safe_load(
             (ROOT / "docker-compose.base.yml").read_text(encoding="utf-8")
         )
@@ -211,11 +216,26 @@ class AssistantFirstProfileTests(unittest.TestCase):
             assistant_fragment["services"]["dashboard-api"]["user"],
             "${ODS_UID:-1000}:${ODS_GID:-1000}",
         )
-        self.assertIn("data/.extension-operation-locks", directories)
-        self.assertIn("umask 077 && mkdir -p", directories)
+        self.assertIn("ods_assistant_first_prepare_state_directories", directories)
+        self.assertIn("data_root/assistant-first", custody)
+        self.assertIn("data_root/.extension-operation-locks", custody)
+        self.assertIn("for child_name in config models persona", custody)
+        self.assertIn("umask 077 && mkdir --", custody)
         self.assertIn("Assistant First requires ODS_UID to match", directories)
         self.assertIn("not yet qualified for rootless Docker", directories)
-        self.assertIn("data-directory custody is unsafe", directories)
+        self.assertIn("not owned by the installing host UID", custody)
+        create_step = directories.index('_phase06_step "create-directories"')
+        uid_guard = directories.index(
+            "Assistant First requires ODS_UID to match", create_step
+        )
+        custody_call = directories.index(
+            "ods_assistant_first_prepare_state_directories", uid_guard
+        )
+        generic_children = directories.index(
+            'mkdir -p "$INSTALL_DIR"/data/{config,models,persona}', custody_call
+        )
+        self.assertLess(uid_guard, custody_call)
+        self.assertLess(custody_call, generic_children)
 
     @unittest.skipUnless(shutil.which("docker"), "Docker CLI is unavailable")
     def test_candidate_minimum_compose_renders_without_optional_services(self) -> None:
@@ -261,6 +281,239 @@ class AssistantFirstProfileTests(unittest.TestCase):
             rendered_compose["services"]["dashboard-api"]["user"],
             "2345:3456",
         )
+
+
+@unittest.skipUnless(
+    sys.platform.startswith("linux") and shutil.which("bash"),
+    "Assistant First directory custody is qualified on Linux",
+)
+class AssistantFirstStateCustodyTests(unittest.TestCase):
+    _SCRIPT = r"""
+set -uo pipefail
+error() { printf '%s\n' "$*" >&2; }
+source "$1"
+umask "${ODS_TEST_UMASK:-022}"
+ods_assistant_first_prepare_state_directories "$2" "$3"
+"""
+
+    def _run(
+        self,
+        data_root: pathlib.Path,
+        *,
+        expected_uid: int | str | None = None,
+        ambient_umask: str = "022",
+    ) -> subprocess.CompletedProcess[str]:
+        uid = os.getuid() if expected_uid is None else expected_uid
+        return subprocess.run(
+            [
+                "bash",
+                "-c",
+                self._SCRIPT,
+                "assistant-first-state-test",
+                str(CUSTODY_HELPER),
+                str(data_root),
+                str(uid),
+            ],
+            cwd=ROOT,
+            env={**os.environ, "ODS_TEST_UMASK": ambient_umask},
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+    @staticmethod
+    def _mode(path: pathlib.Path) -> int:
+        return stat.S_IMODE(path.stat().st_mode)
+
+    def test_fresh_state_root_accepts_real_transaction_store(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            install = pathlib.Path(temp) / "install"
+            install.mkdir()
+            data = install / "data"
+
+            result = self._run(data)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            private = data / "assistant-first"
+            locks = data / ".extension-operation-locks"
+            self.assertEqual(self._mode(data), 0o755)
+            self.assertEqual(self._mode(private), 0o700)
+            self.assertEqual(self._mode(locks), 0o700)
+            for child_name in ("config", "models", "persona"):
+                self.assertEqual(self._mode(data / child_name), 0o755)
+
+            api_root = ROOT / "extensions" / "services" / "dashboard-api"
+            transaction_root = private / "transaction-store"
+            initialized = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    (
+                        "import pathlib,sys; "
+                        "from extension_transactions import TransactionStore; "
+                        "TransactionStore(pathlib.Path(sys.argv[1]))"
+                    ),
+                    str(transaction_root),
+                ],
+                cwd=api_root,
+                env={**os.environ, "PYTHONPATH": str(api_root)},
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(initialized.returncode, 0, initialized.stderr)
+            self.assertTrue(transaction_root.is_dir())
+            self.assertEqual(self._mode(transaction_root), 0o700)
+
+    def test_data_symlink_is_rejected_before_child_writes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            install = root / "install"
+            target = root / "redirect-target"
+            install.mkdir()
+            target.mkdir()
+            (install / "data").symlink_to(target, target_is_directory=True)
+
+            result = self._run(install / "data")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("must not be a symlink", result.stderr)
+            self.assertEqual(list(target.iterdir()), [])
+
+    def test_dangling_data_symlink_is_rejected_before_child_writes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            install = root / "install"
+            install.mkdir()
+            data = install / "data"
+            data.symlink_to(root / "missing-target", target_is_directory=True)
+
+            result = self._run(data)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("must not be a symlink", result.stderr)
+            self.assertTrue(data.is_symlink())
+            self.assertFalse(root.joinpath("missing-target").exists())
+
+    def test_private_symlink_is_rejected_without_creating_lock_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            data = root / "data"
+            target = root / "redirect-target"
+            data.mkdir(mode=0o755)
+            target.mkdir()
+            (data / "assistant-first").symlink_to(target, target_is_directory=True)
+
+            result = self._run(data)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("must not be a symlink", result.stderr)
+            self.assertEqual(list(target.iterdir()), [])
+            self.assertFalse((data / ".extension-operation-locks").exists())
+
+    def test_dangling_private_symlink_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            data = pathlib.Path(temp) / "data"
+            data.mkdir(mode=0o755)
+            private = data / "assistant-first"
+            private.symlink_to(data / "missing-target", target_is_directory=True)
+
+            result = self._run(data)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("must not be a symlink", result.stderr)
+            self.assertTrue(private.is_symlink())
+            self.assertFalse((data / ".extension-operation-locks").exists())
+
+    def test_wrong_types_and_unexpected_owner_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            data_file = root / "data-file"
+            data_file.write_text("not-a-directory", encoding="utf-8")
+            wrong_type = self._run(data_file)
+            self.assertNotEqual(wrong_type.returncode, 0)
+            self.assertIn("not a directory", wrong_type.stderr)
+
+            data = root / "data"
+            data.mkdir(mode=0o755)
+            wrong_owner = self._run(data, expected_uid=os.getuid() + 1)
+            self.assertNotEqual(wrong_owner.returncode, 0)
+            self.assertIn("not owned by the installing host UID", wrong_owner.stderr)
+            self.assertEqual(list(data.iterdir()), [])
+
+            private_file = data / "assistant-first"
+            private_file.write_text("not-a-directory", encoding="utf-8")
+            private_type = self._run(data)
+            self.assertNotEqual(private_type.returncode, 0)
+            self.assertIn("path is not a directory", private_type.stderr)
+            self.assertFalse((data / ".extension-operation-locks").exists())
+
+    def test_non_numeric_expected_uid_fails_before_writes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            data = pathlib.Path(temp) / "data"
+
+            result = self._run(data, expected_uid="not-a-uid")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("requires a numeric host UID", result.stderr)
+            self.assertFalse(data.exists())
+
+    def test_existing_modes_are_repaired_idempotently_for_same_owner(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            data = pathlib.Path(temp) / "data"
+            private = data / "assistant-first"
+            locks = data / ".extension-operation-locks"
+            data.mkdir(mode=0o777)
+            private.mkdir(mode=0o755)
+            locks.mkdir(mode=0o755)
+            marker = private / "preserved"
+            marker.write_text("state", encoding="utf-8")
+            data.chmod(0o777)
+            private.chmod(0o755)
+            locks.chmod(0o755)
+
+            first = self._run(data)
+            second = self._run(data)
+            self.assertEqual(first.returncode, 0, first.stderr)
+            self.assertEqual(second.returncode, 0, second.stderr)
+            self.assertEqual(self._mode(data) & 0o022, 0)
+            self.assertEqual(self._mode(private), 0o700)
+            self.assertEqual(self._mode(locks), 0o700)
+            self.assertEqual(marker.read_text(encoding="utf-8"), "state")
+
+    def test_preexisting_shared_symlink_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            data = root / "data"
+            target = root / "redirect-target"
+            data.mkdir(mode=0o777)
+            target.mkdir()
+            (data / "config").symlink_to(target, target_is_directory=True)
+
+            result = self._run(data)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("must not be a symlink", result.stderr)
+            self.assertEqual(list(target.iterdir()), [])
+            self.assertFalse((data / "assistant-first").exists())
+            self.assertFalse((data / ".extension-operation-locks").exists())
+
+    def test_non_traversable_data_and_hostile_umask_normalize_safely(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            data = pathlib.Path(temp) / "data"
+            data.mkdir(mode=0o644)
+            data.chmod(0o644)
+
+            repaired = self._run(data, ambient_umask="000")
+            self.assertEqual(repaired.returncode, 0, repaired.stderr)
+            self.assertEqual(self._mode(data), 0o755)
+            self.assertEqual(self._mode(data / "assistant-first"), 0o700)
+            self.assertEqual(self._mode(data / ".extension-operation-locks"), 0o700)
+            for child_name in ("config", "models", "persona"):
+                self.assertEqual(self._mode(data / child_name), 0o755)
+
+    def test_restrictive_safe_data_mode_is_not_widened(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            data = pathlib.Path(temp) / "data"
+            data.mkdir(mode=0o700)
+            data.chmod(0o700)
+
+            result = self._run(data)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(self._mode(data), 0o700)
 
 
 if __name__ == "__main__":

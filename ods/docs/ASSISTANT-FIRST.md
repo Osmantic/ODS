@@ -134,12 +134,16 @@ host paths. Read-only routes and the established Full, Core, and Custom update
 paths are unchanged.
 
 The Assistant First Compose fragment runs Dashboard API with the persisted host
-UID/GID so the container and updater address the same owner-private inode. The
-installer creates that directory as mode `0700` and rejects a mismatched owner
-or stale `ODS_UID`; the containing data root must also be host-owned without
-group/world write access so another account cannot replace the guarded inode.
-Native Windows source update/rollback currently fails closed as unqualified
-rather than claiming equivalent descriptor-lock semantics.
+UID/GID so the container and updater address the same owner-private inode. Before
+writing any data child, the installer rejects a symlinked or wrong-type data
+root, requires the installing host UID, and removes group/world write access.
+It creates both `data/assistant-first` and
+`data/.extension-operation-locks` as real owner-private mode `0700`
+directories, repairs mode only for the matching owner, and rejects a stale
+`ODS_UID`. The first transaction-store initialization can therefore create its
+own private child without weakening the parent contract. Native Windows source
+update/rollback currently fails closed as unqualified rather than claiming
+equivalent descriptor-lock semantics.
 
 When the opt-in transaction runtime first starts without an active desired-state
 lockfile, it writes one canonical owner-private bootstrap record. That record

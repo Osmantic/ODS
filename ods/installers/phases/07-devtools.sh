@@ -200,7 +200,7 @@ else
             _opencode_key="no-key"
         fi
         if [[ -z "${_opencode_key:-}" ]]; then
-            ai_err "OpenCode switchboard config requires LITELLM_KEY, but it is empty."
+            ai_bad "OpenCode switchboard config requires LITELLM_KEY, but it is empty."
             exit 1
         fi
 

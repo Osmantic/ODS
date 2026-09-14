@@ -80,6 +80,7 @@ if $DRY_RUN; then
     log "[DRY RUN] Would create: $INSTALL_DIR/{config,data,models}"
     log "[DRY RUN] Would copy compose files ($COMPOSE_FLAGS) and source tree"
     if [[ "${ODS_INSTALL_PROFILE:-legacy}" == "assistant-first" ]]; then
+        log "[DRY RUN] Would create owner-private Assistant First state and mutation-lock directories"
         log "[DRY RUN] Would generate only required control-plane and inference configuration"
     else
         log "[DRY RUN] Would generate .env with secrets (WEBUI_SECRET, N8N_PASS, LITELLM_KEY, etc.)"
@@ -209,9 +210,7 @@ else
     # Create directories
     _phase06_step "create-directories"
     ods_progress 38 "directories" "Creating directory structure"
-    mkdir -p "$INSTALL_DIR"/{config,data,models}
-    mkdir -p "$INSTALL_DIR"/data/{config,models,persona}
-    mkdir -p "$INSTALL_DIR"/config/{litellm,model-router}
+    mkdir -p "$INSTALL_DIR"/{config,models}
     if [[ "${ODS_INSTALL_PROFILE:-legacy}" == "assistant-first" ]]; then
         if $_phase06_rootless; then
             error "Assistant First mutation coordination is not yet qualified for rootless Docker. Use a rootful Docker runtime for this public-beta profile."
@@ -222,65 +221,18 @@ else
             error "Assistant First requires ODS_UID to match the installing host UID ($_phase06_host_uid); found $_phase06_compose_uid. Remove the stale override or use the matching owner, then re-run ODS."
             return 1
         fi
-
-        _phase06_data_metadata=$(stat -c '%u:%a' "$INSTALL_DIR/data" 2>/dev/null || true)
-        _phase06_data_owner="${_phase06_data_metadata%%:*}"
-        _phase06_data_mode="${_phase06_data_metadata#*:}"
-        if [[ "$_phase06_data_owner" != "$_phase06_host_uid" \
-            || ! "$_phase06_data_mode" =~ ^[0-7]{3,4}$ ]]; then
-            error "Assistant First data-directory custody is unsafe: $INSTALL_DIR/data"
-            return 1
+        if ! declare -F ods_assistant_first_prepare_state_directories >/dev/null 2>&1; then
+            # shellcheck source=../lib/assistant-first-state.sh
+            source "$SCRIPT_DIR/installers/lib/assistant-first-state.sh"
         fi
-        if (( (8#${_phase06_data_mode}) & 0022 )); then
-            chmod go-w -- "$INSTALL_DIR/data" || {
-                error "Could not remove group/world write access from the Assistant First data directory."
-                return 1
-            }
-            _phase06_data_mode=$(stat -c '%a' "$INSTALL_DIR/data" 2>/dev/null || true)
-            if [[ ! "$_phase06_data_mode" =~ ^[0-7]{3,4}$ ]] \
-                || (( (8#${_phase06_data_mode}) & 0022 )); then
-                error "Assistant First data-directory mode verification failed."
-                return 1
-            fi
-        fi
-
-        _phase06_mutation_lock_dir="$INSTALL_DIR/data/.extension-operation-locks"
-        if [[ -L "$_phase06_mutation_lock_dir" ]]; then
-            error "Assistant First mutation lock directory must not be a symlink: $_phase06_mutation_lock_dir"
-            return 1
-        fi
-        if [[ -e "$_phase06_mutation_lock_dir" \
-            && ! -d "$_phase06_mutation_lock_dir" ]]; then
-            error "Assistant First mutation lock path is not a directory: $_phase06_mutation_lock_dir"
-            return 1
-        fi
-        (umask 077 && mkdir -p -- "$_phase06_mutation_lock_dir") || {
-            error "Could not create the Assistant First mutation lock directory."
-            return 1
-        }
-        _phase06_guard_metadata=$(stat -c '%u:%a' \
-            "$_phase06_mutation_lock_dir" 2>/dev/null || true)
-        if [[ "$_phase06_guard_metadata" != "$_phase06_host_uid:700" ]]; then
-            _phase06_guard_owner="${_phase06_guard_metadata%%:*}"
-            if [[ "$_phase06_guard_owner" != "$_phase06_host_uid" ]]; then
-                error "Assistant First mutation lock directory is not owned by the installing host UID: $_phase06_mutation_lock_dir"
-                return 1
-            fi
-            chmod 700 -- "$_phase06_mutation_lock_dir" || {
-                error "Could not make the Assistant First mutation lock directory owner-private."
-                return 1
-            }
-            _phase06_guard_metadata=$(stat -c '%u:%a' \
-                "$_phase06_mutation_lock_dir" 2>/dev/null || true)
-            [[ "$_phase06_guard_metadata" == "$_phase06_host_uid:700" ]] || {
-                error "Assistant First mutation lock directory custody verification failed."
-                return 1
-            }
-        fi
-        unset _phase06_host_uid _phase06_mutation_lock_dir
-        unset _phase06_guard_metadata _phase06_guard_owner
-        unset _phase06_data_metadata _phase06_data_owner _phase06_data_mode
+        ods_assistant_first_prepare_state_directories \
+            "$INSTALL_DIR/data" "$_phase06_host_uid" || return 1
+        unset _phase06_host_uid
+    else
+        mkdir -p "$INSTALL_DIR/data"
+        mkdir -p "$INSTALL_DIR"/data/{config,models,persona}
     fi
+    mkdir -p "$INSTALL_DIR"/config/{litellm,model-router}
     if [[ "${ODS_INSTALL_PROFILE:-legacy}" != "assistant-first" ]]; then
         mkdir -p "$INSTALL_DIR"/data/{open-webui,whisper,tts,n8n,qdrant,privacy-shield,ape,token-spy,hermes}
         mkdir -p "$INSTALL_DIR"/data/hermes-proxy/{caddy-data,caddy-config}

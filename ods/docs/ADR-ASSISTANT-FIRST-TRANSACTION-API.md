@@ -143,3 +143,10 @@ wire the lease client and renewer only around complete operations, add
 backup/restore and strict offline behavior, and pass real Linux qualification
 before advertising execution. Existing Full, Core, Custom, and single-extension
 routes remain unchanged.
+
+The Assistant First installer now prepares the transaction store's immediate
+`data/assistant-first` parent before Dashboard API can initialize it. The data
+root is rejected before child writes when it is a symlink or wrong type, while
+the private state and mutation-lock directories require the installing owner and
+exact mode `0700`. This closes the fresh-install bootstrap gap but does not
+enable the dormant production executor or constitute installed qualification.
