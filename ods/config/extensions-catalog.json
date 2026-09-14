@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-13T16:53:56Z",
+  "generated_at": "2026-09-14T09:01:32Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -1371,6 +1371,79 @@
       ],
       "tags": [],
       "features": [],
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
+      "id": "hedgedoc",
+      "name": "HedgeDoc",
+      "description": "Local collaborative Markdown with managed accounts and private notes by default.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 3000,
+      "external_port_default": 7824,
+      "health_endpoint": "/_health",
+      "env_vars": [
+        {
+          "key": "HEDGEDOC_PORT",
+          "default": "7824",
+          "description": "Published port for the Markdown workspace"
+        },
+        {
+          "key": "HEDGEDOC_PUBLIC_HOST",
+          "description": "Browser-facing hostname and port; defaults to localhost with HEDGEDOC_PORT"
+        },
+        {
+          "key": "HEDGEDOC_USE_SSL",
+          "default": "false",
+          "description": "Generate HTTPS URLs when an external TLS reverse proxy is configured"
+        },
+        {
+          "key": "HEDGEDOC_DB_PASSWORD",
+          "required": true,
+          "description": "PostgreSQL password; retain this value with the database"
+        },
+        {
+          "key": "HEDGEDOC_SESSION_SECRET",
+          "required": true,
+          "description": "Stable random session secret, generated with openssl rand -hex 32"
+        }
+      ],
+      "tags": [
+        "notes",
+        "markdown",
+        "collaboration",
+        "local"
+      ],
+      "features": [
+        {
+          "id": "collaborative-markdown",
+          "name": "Collaborative Markdown",
+          "description": "Write and share Markdown notes on your own server",
+          "icon": "FileText",
+          "category": "productivity",
+          "requirements": {
+            "services": [
+              "hedgedoc"
+            ],
+            "vram_gb": 0,
+            "disk_gb": 3
+          },
+          "enabled_services_all": [
+            "hedgedoc"
+          ],
+          "setup_time": "~2-5 minutes",
+          "priority": 32,
+          "launch": {
+            "type": "service",
+            "service": "hedgedoc"
+          }
+        }
+      ],
+      "startup_timeout": 300,
       "configuration_scope": "declared-environment-keys"
     },
     {
@@ -3153,6 +3226,28 @@
           ]
         }
       ],
+      "catalog_source": "builtin",
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
+      "id": "pixel-inference",
+      "name": "Pixel inference sharing (development)",
+      "description": "Disabled by default. Owner-provisioned, inference-only device credentials; loopback transport only. Does not provide Pixel agent or computer access. Private state must be provisioned before service activation. Native Windows private-state support and guided setup are not yet implemented.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [
+        "model-router"
+      ],
+      "port": 8093,
+      "external_port_default": 4005,
+      "health_endpoint": "/health",
+      "env_vars": [],
+      "tags": [],
+      "features": [],
+      "startup_check": false,
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
     },
