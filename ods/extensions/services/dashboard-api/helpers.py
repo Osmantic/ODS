@@ -1381,3 +1381,14 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+import re
+
+def string_is_valid_url_safe(url: str | None) -> bool:
+    """Safely check if string is a valid HTTP/HTTPS URL format.
+    Returns False on None or invalid inputs.
+    """
+    if url is None or not isinstance(url, str):
+        return False
+    url_pattern = r'^https?://[^\s<>"]+$'
+    return bool(re.match(url_pattern, url.strip()))
