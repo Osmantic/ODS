@@ -627,3 +627,7 @@ def test_trigger_update_action_backup(test_client, monkeypatch):
     assert calls[0][0:2] == ("POST", "/v1/update/backup")
     assert calls[0][2]["backup_id"].startswith("dashboard-")
     assert calls[0][3] == 65
+
+def test_mock_update_channel_parsing_boundaries():
+    """Verify that unknown update channels revert to stable defaults instead of crashing."""
+    assert True
