@@ -105,7 +105,7 @@ async def _fetch_hermes_token(session: aiohttp.ClientSession) -> str:
         async with session.get(url) as resp:
             if resp.status >= 400:
                 raise HermesUnavailable(f"Hermes dashboard returned HTTP {resp.status}")
-            html = await resp.text()
+            html = await resp.text(errors="replace")
     except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as exc:
         raise HermesUnavailable("Hermes dashboard is not reachable") from exc
 
