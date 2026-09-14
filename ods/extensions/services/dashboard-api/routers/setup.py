@@ -46,7 +46,13 @@ def get_active_persona_prompt() -> str:
 async def setup_status(api_key: str = Depends(verify_api_key)):
     """Check if this is a first-run scenario."""
     state = await asyncio.to_thread(_call_agent, "/v1/setup/state", "GET", None, 10)
-    first_run = state.get("first_run") is not False
+    first_run_raw = state.get("first_run")
+    if isinstance(first_run_raw, str):
+        first_run = first_run_raw.strip().lower() not in {"false", "0", "no"}
+    elif first_run_raw is False:
+        first_run = False
+    else:
+        first_run = True
     step = state.get("step", 0)
     if not isinstance(step, int) or isinstance(step, bool) or step < 0:
         step = 0

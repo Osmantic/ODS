@@ -87,6 +87,15 @@ def test_setup_status_already_complete(test_client, setup_config_dir):
     assert resp.json()["first_run"] is False
 
 
+def test_setup_status_string_first_run(test_client, monkeypatch):
+    """String representations like 'false' evaluate to first_run=False."""
+    import routers.setup as setup_router
+    monkeypatch.setattr(setup_router, "_call_agent", lambda *a, **kw: {"first_run": "false", "step": 1})
+    resp = test_client.get("/api/setup/status", headers=test_client.auth_headers)
+    assert resp.status_code == 200
+    assert resp.json()["first_run"] is False
+
+
 def test_setup_status_with_progress_step(test_client, setup_config_dir):
     """Progress step is read from setup-progress.json."""
     (setup_config_dir / "setup-progress.json").write_text(
