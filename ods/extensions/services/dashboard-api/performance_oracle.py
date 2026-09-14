@@ -141,10 +141,10 @@ def read_env_value(key: str, install_dir: str | Path) -> str:
 def read_env_file_value(key: str, install_dir: str | Path) -> str:
     env_path = Path(install_dir) / ".env"
     try:
-        for line in env_path.read_text(encoding="utf-8").splitlines():
+        for line in env_path.read_text(encoding="utf-8", errors="replace").splitlines():
             if line.startswith(f"{key}="):
                 return strip_matching_quotes(line.split("=", 1)[1])
-    except OSError:
+    except (OSError, UnicodeDecodeError, ValueError):
         pass
     return ""
 
