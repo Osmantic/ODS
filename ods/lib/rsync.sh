@@ -35,7 +35,10 @@ rsync_with_progress() {
 
     # Use --info=progress2 for compact single-line progress updates
     # Fallback to basic rsync if progress2 not supported
-    if rsync --help 2>/dev/null | grep -q "info=progress2"; then
+    # Modern help documents --info=FLAGS rather than listing each accepted
+    # flag. Ask the option parser without starting a transfer; older rsync
+    # rejects the option and can still use its per-file progress display.
+    if rsync --info=progress2 --version >/dev/null 2>&1; then
         rsync -a --info=progress2 "$src" "$dest"
     else
         # Fallback: use --progress for older rsync versions
