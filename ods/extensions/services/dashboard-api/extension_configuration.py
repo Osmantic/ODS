@@ -446,6 +446,8 @@ def _validate_configuration_presence(
     contracts: Mapping[str, Mapping[str, Any]],
     value_map: Mapping[str, Any],
     secret_keys: set[str],
+    *,
+    trusted_managed: bool = False,
 ) -> dict[str, list[str]]:
     value_keys = set(value_map)
     if value_keys & secret_keys:
@@ -461,14 +463,18 @@ def _validate_configuration_presence(
         _fail("nonsecret-in-secret-values", keys=wrong_secrets)
 
     submitted = value_keys | secret_keys
-    restricted = sorted(key for key in submitted if contracts[key]["source"] != "user")
+    restricted = sorted(
+        key
+        for key in submitted
+        if contracts[key]["source"] != "user" and not trusted_managed
+    )
     if restricted:
         _fail("configuration-source-restricted", keys=restricted)
     missing_config = sorted(
         key
         for key, item in contracts.items()
-        if item["source"] == "user"
-        and item["required"]
+        if item["required"]
+        and (trusted_managed or item["source"] == "user")
         and not item["secret"]
         and "default" not in item
         and key not in value_keys
@@ -476,8 +482,8 @@ def _validate_configuration_presence(
     missing_secrets = sorted(
         key
         for key, item in contracts.items()
-        if item["source"] == "user"
-        and item["required"]
+        if item["required"]
+        and (trusted_managed or item["source"] == "user")
         and item["secret"]
         and key not in secret_keys
     )
@@ -552,7 +558,10 @@ def validate_stored_configuration(
     if expected_schema_hash != schema_hash:
         _fail("stored-schema-hash-mismatch")
     presence = _validate_configuration_presence(
-        contracts, value_map, set(secret_keys)
+        contracts,
+        value_map,
+        set(secret_keys),
+        trusted_managed=True,
     )
     return {
         "schema": _RECEIPT_SCHEMA,

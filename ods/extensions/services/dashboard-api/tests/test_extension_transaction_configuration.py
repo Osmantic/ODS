@@ -18,15 +18,18 @@ NOW = "2026-09-12T07:00:00Z"
 _DEFAULT_CUSTODY = object()
 
 
-def contract(key: str, *, secret: bool = False) -> dict:
-    return {
+def contract(key: str, *, secret: bool = False, source: str = "user") -> dict:
+    result = {
         "key": key,
         "type": "string",
         "required": True,
         "secret": secret,
-        "source": "user",
+        "source": source,
         "restartBehavior": "service",
     }
+    if source == "generated":
+        result["validation"] = {"minLength": 32, "maxLength": 128}
+    return result
 
 
 def envelope() -> dict:
@@ -66,6 +69,25 @@ def optional_envelope() -> dict:
         ],
         "requiredConfigKeys": [],
         "requiredSecretKeys": [],
+    }
+    canonical = json.dumps(plan, sort_keys=True, separators=(",", ":")) + "\n"
+    return {"plan": plan, "planHash": hashlib.sha256(canonical.encode()).hexdigest()}
+
+
+def generated_envelope() -> dict:
+    plan = {
+        "schema": "ods.assistant-first.plan.v1",
+        "selectedServices": ["searxng"],
+        "definitions": [
+            {
+                "id": "searxng",
+                "configuration": [
+                    contract("SEARXNG_SECRET", secret=True, source="generated")
+                ],
+            }
+        ],
+        "requiredConfigKeys": [],
+        "requiredSecretKeys": ["SEARXNG_SECRET"],
     }
     canonical = json.dumps(plan, sort_keys=True, separators=(",", ":")) + "\n"
     return {"plan": plan, "planHash": hashlib.sha256(canonical.encode()).hexdigest()}
@@ -160,7 +182,10 @@ class FakeCustodian:
         return {
             "reference": REFERENCE,
             "duplicate": len(self.events) > 1,
-            "presentSecretKeys": sorted(submission["secret_values"]),
+            "presentSecretKeys": sorted(
+                set(submission["secret_values"])
+                | set(submission["generated_secret_keys"])
+            ),
         }
 
     def status(self, **binding):
@@ -219,6 +244,30 @@ def test_exact_retry_is_idempotent_across_intent_custody_and_final_record() -> N
     assert first["duplicate"] is False
     assert second["duplicate"] is True
     assert store.events == ["intent", "finish", "intent", "finish"]
+
+
+def test_required_generated_secret_is_created_only_inside_host_custody() -> None:
+    service, store, custody = manager()
+    store.loaded["envelope"] = generated_envelope()
+    stored = store.loaded["envelope"]
+    request = {
+        "plan_hash": stored["planHash"],
+        "schema_hash": configuration_schema(
+            stored, expected_plan_hash=stored["planHash"]
+        )["schemaHash"],
+        "idempotency_key": IDEMPOTENCY_KEY,
+        "values": {},
+        "secret_values": {},
+    }
+
+    result = service.submit(TRANSACTION_ID, **request)
+
+    staged = custody.events[0][1]
+    assert staged["secret_values"] == {}
+    assert staged["generated_secret_keys"] == ["SEARXNG_SECRET"]
+    assert store.intent["presentSecretKeys"] == ["SEARXNG_SECRET"]
+    assert result["presentSecretKeys"] == ["SEARXNG_SECRET"]
+    assert "secretReference" not in result
 
 
 def test_custody_unavailable_is_rejected_before_writing_intent() -> None:

@@ -384,6 +384,43 @@ def test_non_user_required_field_is_not_a_user_submission_requirement() -> None:
     assert submit(stored, {}, {})["presentConfigKeys"] == []
 
 
+def test_stored_generated_secret_requires_trusted_host_presence() -> None:
+    stored = envelope(
+        (
+            "searxng",
+            [
+                contract(
+                    "SEARXNG_SECRET",
+                    secret=True,
+                    source="generated",
+                    validation={"minLength": 32, "maxLength": 128},
+                )
+            ],
+        )
+    )
+    schema_hash = schema(stored)["schemaHash"]
+
+    receipt = configuration.validate_stored_configuration(
+        stored,
+        {},
+        ["SEARXNG_SECRET"],
+        expected_plan_hash=stored["planHash"],
+        expected_schema_hash=schema_hash,
+    )
+    assert receipt["presentSecretKeys"] == ["SEARXNG_SECRET"]
+
+    error(
+        "missing-required-configuration",
+        lambda: configuration.validate_stored_configuration(
+            stored,
+            {},
+            [],
+            expected_plan_hash=stored["planHash"],
+            expected_schema_hash=schema_hash,
+        ),
+    )
+
+
 def test_required_user_config_and_secret_are_reported_by_key_only() -> None:
     stored = envelope(
         (

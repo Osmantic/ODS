@@ -50,7 +50,32 @@ def test_stage_uses_fixed_post_and_never_projects_secret() -> None:
         10.0,
     )
     assert kwargs["payload"]["secretValues"] == {"API_KEY": SENTINEL}
+    assert kwargs["payload"]["generatedSecretKeys"] == []
     assert SENTINEL not in json.dumps(result)
+
+
+def test_stage_requests_host_generated_secrets_without_a_value() -> None:
+    calls = []
+
+    def request(method, path, **kwargs):
+        calls.append((method, path, kwargs))
+        response = status(duplicate=False)
+        response["presentSecretKeys"] = ["SEARXNG_SECRET"]
+        return response
+
+    result = HostSecretCustodian(request).stage(
+        transaction_id=TRANSACTION_ID,
+        plan_hash=PLAN_HASH,
+        schema_hash=SCHEMA_HASH,
+        idempotency_key=IDEMPOTENCY_KEY,
+        secret_values={},
+        generated_secret_keys=["SEARXNG_SECRET"],
+    )
+
+    payload = calls[0][2]["payload"]
+    assert payload["secretValues"] == {}
+    assert payload["generatedSecretKeys"] == ["SEARXNG_SECRET"]
+    assert result["presentSecretKeys"] == ["SEARXNG_SECRET"]
 
 
 def test_status_uses_fixed_post_and_exact_reference_binding() -> None:
@@ -89,6 +114,34 @@ def test_transport_error_text_cannot_escape_custody_boundary() -> None:
     assert caught.value.code == "secret-custody-unavailable"
     assert SENTINEL not in str(caught.value)
     assert SENTINEL not in repr(caught.value)
+
+
+@pytest.mark.parametrize(
+    ("secret_values", "generated_secret_keys"),
+    [
+        (None, ()),
+        ({}, None),
+        ({}, "SEARXNG_SECRET"),
+    ],
+)
+def test_stage_rejects_invalid_generated_secret_request_shape(
+    secret_values, generated_secret_keys
+) -> None:
+    custodian = HostSecretCustodian(
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("invalid request reached host")
+        )
+    )
+    with pytest.raises(SecretCustodyError) as caught:
+        custodian.stage(
+            transaction_id=TRANSACTION_ID,
+            plan_hash=PLAN_HASH,
+            schema_hash=SCHEMA_HASH,
+            idempotency_key=IDEMPOTENCY_KEY,
+            secret_values=secret_values,
+            generated_secret_keys=generated_secret_keys,
+        )
+    assert caught.value.code == "secret-custody-invalid-request"
 
 
 @pytest.mark.parametrize(

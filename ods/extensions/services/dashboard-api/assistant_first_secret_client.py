@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from host_agent_client import AgentClientError, request_json
 
-STAGE_REQUEST_SCHEMA = "ods.assistant-first.secret-stage-request.v1"
+STAGE_REQUEST_SCHEMA = "ods.assistant-first.secret-stage-request.v2"
 STATUS_REQUEST_SCHEMA = "ods.assistant-first.secret-status-request.v1"
 DELETE_REQUEST_SCHEMA = "ods.assistant-first.secret-delete-request.v1"
 STATUS_SCHEMA = "ods.assistant-first.secret-status.v1"
@@ -118,8 +118,27 @@ class HostSecretCustodian:
         schema_hash: str,
         idempotency_key: str,
         secret_values: Mapping[str, Any],
+        generated_secret_keys: Sequence[str] = (),
     ) -> dict[str, Any]:
         _binding(transaction_id, plan_hash, schema_hash)
+        if (
+            not isinstance(secret_values, Mapping)
+            or not isinstance(generated_secret_keys, Sequence)
+            or isinstance(generated_secret_keys, (str, bytes, bytearray))
+        ):
+            _fail("secret-custody-invalid-request")
+        generated = list(generated_secret_keys)
+        if (
+            not isinstance(idempotency_key, str)
+            or _HASH_RE.fullmatch(idempotency_key) is None
+            or generated != sorted(set(generated))
+            or any(
+                not isinstance(key, str) or _KEY_RE.fullmatch(key) is None
+                for key in generated
+            )
+            or set(generated) & set(secret_values)
+        ):
+            _fail("secret-custody-invalid-request")
         payload = {
             "schema": STAGE_REQUEST_SCHEMA,
             "transactionId": transaction_id,
@@ -127,6 +146,7 @@ class HostSecretCustodian:
             "schemaHash": schema_hash,
             "idempotencyKey": idempotency_key,
             "secretValues": dict(secret_values),
+            "generatedSecretKeys": generated,
         }
         try:
             response = self._request(

@@ -46,6 +46,7 @@ def stage_request(**changes):
         "schemaHash": SCHEMA_HASH,
         "idempotencyKey": IDEMPOTENCY,
         "secretValues": {"EXAMPLE_API_KEY": SECRET_VALUE},
+        "generatedSecretKeys": [],
     }
     value.update(changes)
     return value
@@ -111,6 +112,44 @@ def test_idempotent_stage_reuses_reference_and_conflict_is_value_free(tmp_path):
         )
     )
     assert code == "secret-idempotency-conflict"
+
+
+def test_generated_secret_is_host_owned_redacted_and_stable_on_replay(tmp_path):
+    store = AssistantFirstSecretStore(tmp_path)
+    request = stage_request(
+        secretValues={}, generatedSecretKeys=["SEARXNG_SECRET"]
+    )
+    first = store.stage(request)
+    record_path = tmp_path / "assistant-first" / "secrets" / f"{TXN}.json"
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    generated = record["secretValues"]["SEARXNG_SECRET"]
+
+    assert record["schema"] == _store_module.RECORD_SCHEMA
+    assert record["generatedSecretKeys"] == ["SEARXNG_SECRET"]
+    assert len(generated) == 64
+    assert all(character in "0123456789abcdef" for character in generated)
+    assert generated not in json.dumps(first)
+    assert first["presentSecretKeys"] == ["SEARXNG_SECRET"]
+
+    second = store.stage(request)
+    replayed = json.loads(record_path.read_text(encoding="utf-8"))
+    assert second["duplicate"] is True
+    assert second["reference"] == first["reference"]
+    assert replayed["secretValues"]["SEARXNG_SECRET"] == generated
+
+
+def test_generated_secret_request_rejects_overlap_or_rebinding(tmp_path):
+    store = AssistantFirstSecretStore(tmp_path)
+    overlap = stage_request(
+        secretValues={"SEARXNG_SECRET": SECRET_VALUE},
+        generatedSecretKeys=["SEARXNG_SECRET"],
+    )
+    assert error_code(lambda: store.stage(overlap)) == "generated-secret-key-overlap"
+
+    original = stage_request(secretValues={}, generatedSecretKeys=["SEARXNG_SECRET"])
+    store.stage(original)
+    changed = stage_request(secretValues={}, generatedSecretKeys=["OTHER_SECRET"])
+    assert error_code(lambda: store.stage(changed)) == "secret-idempotency-conflict"
 
 
 def test_new_idempotency_key_atomically_replaces_reference(tmp_path):

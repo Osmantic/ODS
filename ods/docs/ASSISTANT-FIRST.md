@@ -162,10 +162,9 @@ its exact response-loss recovery anchor. A started receipt must already exist;
 the host publishes the matching completed or failed terminal before replying,
 and an exact completed replay never dispatches work again. A started-only
 receipt still requires durable side-effect observation and cannot be replayed
-or declared failed by inference. General apply, configuration, health
-verification, and composite compensation operations and the production executor
-therefore remain disabled; the exact canary operations activated below are the
-only exceptions.
+or declared failed by inference. General apply, health verification, and
+composite compensation operations and the production executor therefore remain
+disabled; the exact canary operations activated below are the only exceptions.
 
 Future host work is also bound to the exact approved transaction before a
 dispatcher can run. The host loads the owner-private transaction store shared
@@ -235,7 +234,8 @@ dispatcher path. Invalid, corrupt, conflicting, or unavailable observations
 cannot dispatch or terminalize the receipt. The production host supplies this
 observer only for exact `stage` work, so a matching immutable bundle can
 terminalize a started receipt without a second write. It grants no recovery
-authority for configuration, apply, verification, rollback, or removal.
+authority for general apply, verification, rollback, or removal. The exact
+SearXNG configuration observer described below is a separate closed exception.
 
 Production code composes the exact verifier roots, immutable stage store, stage
 dispatcher, and started-receipt observer against that fixed installer-owned
@@ -244,9 +244,9 @@ only the exact `DATA_DIR` and extension-root binding, and accepts no request or
 environment override. The host lifecycle handler calls the factory only for
 the exact `stage` operation and passes both callables through the existing
 plan-bound receipt path. Beyond stage, the exact immutable-image canary, the
-paired reserve/release boundary described below, and the paired data
-backup/restore canary, lifecycle operations remain unavailable. Dashboard
-execution remains `None`.
+paired reserve/release boundary described below, the paired data backup/restore
+canary, and the exact SearXNG configuration canary, lifecycle operations remain
+unavailable. Dashboard execution remains `None`.
 
 The installer also provisions an owner-private
 `data/assistant-first/resource-reservations` root for the next host boundary.
@@ -341,6 +341,37 @@ effect. Receipts expose only bound evidence hashes, never backed-up bytes. The
 runtime has no process, network, container, Docker, Compose, or secret-store
 authority, and it cannot make conversational extension installation live by
 itself.
+
+The exact `configure` host operation is now activated only for that same
+SearXNG Manifest v2 canary. Required `source: generated` string secrets are
+created inside the owner-private host secret store during transactional
+configuration. Dashboard sends only the generated key name to that boundary;
+the durable transaction and every public response retain only sorted presence
+metadata and an opaque transaction-bound reference. An exact retry reuses the
+existing generated value. The secret value is never returned to Dashboard,
+the assistant, a lifecycle request, a receipt, evidence, or generated settings.
+
+Before publishing settings, the configuration effect reloads and re-proves the
+current transaction state, approved plan hash, immutable SearXNG definition and
+image, configuration schema hash, nonsecret port/default selection, opaque
+secret reference, and current host-custody presence. It then writes one fixed
+secret-free `config/searxng/settings.yml` through descriptor-relative,
+no-follow opens and an owner-created mode-0600 temporary inode, fsyncs the file,
+sets the final mode to 0644 for the container mount, atomically renames it,
+fsyncs the directory, and verifies the exact bytes. Existing symlinks, special
+files, hard links, foreign ownership, unsafe modes, races, or an unsafe path
+fail closed. No path or file content can be supplied by the lifecycle request.
+
+Exact replay leaves an already matching inode untouched. The paired started-
+receipt observer reloads the same plan, transaction, and secret-presence
+bindings and recovers completion only when the current settings bytes match;
+this covers response loss after atomic publication without a second write.
+Evidence binds the transaction, plan, configuration metadata, and settings
+digest without containing the secret. This runtime does not invoke Docker or
+Compose, inject environment variables, start a service, or claim health. The
+later exact apply/verify/compensate boundary must supply the host-custodied
+secret and selected port to the container. Dashboard's production transaction
+executor remains disabled in this phase.
 
 A dormant application-identity contract defines the labels a future apply
 adapter must place on managed services. It re-proves one exact

@@ -26,10 +26,12 @@ except ImportError:  # pragma: no cover - native Windows
     fcntl = None
 
 
-STAGE_REQUEST_SCHEMA = "ods.assistant-first.secret-stage-request.v1"
+LEGACY_STAGE_REQUEST_SCHEMA = "ods.assistant-first.secret-stage-request.v1"
+STAGE_REQUEST_SCHEMA = "ods.assistant-first.secret-stage-request.v2"
 STATUS_REQUEST_SCHEMA = "ods.assistant-first.secret-status-request.v1"
 DELETE_REQUEST_SCHEMA = "ods.assistant-first.secret-delete-request.v1"
-RECORD_SCHEMA = "ods.assistant-first.secret-record.v1"
+LEGACY_RECORD_SCHEMA = "ods.assistant-first.secret-record.v1"
+RECORD_SCHEMA = "ods.assistant-first.secret-record.v2"
 STATUS_SCHEMA = "ods.assistant-first.secret-status.v1"
 
 _TRANSACTION_RE = re.compile(r"^txn-[0-9a-f]{24}$")
@@ -98,14 +100,32 @@ def _safe_secret_scalar(value: Any) -> None:
     _fail("invalid-secret-value")
 
 
-def _secret_map(value: Any) -> dict[str, Any]:
-    if type(value) is not dict or not value or len(value) > _MAX_SECRET_KEYS:
+def _secret_map(value: Any, *, allow_empty: bool = False) -> dict[str, Any]:
+    if (
+        type(value) is not dict
+        or (not value and not allow_empty)
+        or len(value) > _MAX_SECRET_KEYS
+    ):
         _fail("invalid-secret-values")
     result: dict[str, Any] = {}
     for key, item in value.items():
         _safe_text(key, _KEY_RE, "invalid-secret-key")
         _safe_secret_scalar(item)
         result[key] = item
+    return result
+
+
+def _secret_key_list(value: Any) -> list[str]:
+    if type(value) is not list or len(value) > _MAX_SECRET_KEYS:
+        _fail("invalid-generated-secret-keys")
+    result: list[str] = []
+    previous: str | None = None
+    for item in value:
+        key = _safe_text(item, _KEY_RE, "invalid-generated-secret-key")
+        if previous is not None and key <= previous:
+            _fail("invalid-generated-secret-keys")
+        previous = key
+        result.append(key)
     return result
 
 
@@ -338,7 +358,7 @@ class AssistantFirstSecretStore:
 
     @staticmethod
     def _validated_record(value: Any) -> dict[str, Any]:
-        keys = frozenset(
+        legacy_keys = frozenset(
             {
                 "schema",
                 "transactionId",
@@ -349,15 +369,26 @@ class AssistantFirstSecretStore:
                 "secretValues",
             }
         )
-        record = _exact_dict(value, keys, "secret-record-integrity")
-        if record["schema"] != RECORD_SCHEMA:
+        current_keys = legacy_keys | {"generatedSecretKeys"}
+        if type(value) is not dict:
+            _fail("secret-record-integrity")
+        if value.get("schema") == LEGACY_RECORD_SCHEMA:
+            record = _exact_dict(value, legacy_keys, "secret-record-integrity")
+            record = dict(record)
+            record["generatedSecretKeys"] = []
+        elif value.get("schema") == RECORD_SCHEMA:
+            record = _exact_dict(value, current_keys, "secret-record-integrity")
+        else:
             _fail("secret-record-integrity")
         _safe_text(record["transactionId"], _TRANSACTION_RE, "secret-record-integrity")
         _safe_text(record["planHash"], _HASH_RE, "secret-record-integrity")
         _safe_text(record["schemaHash"], _HASH_RE, "secret-record-integrity")
         _safe_text(record["idempotencyKey"], _HASH_RE, "secret-record-integrity")
         _safe_text(record["reference"], _REFERENCE_RE, "secret-record-integrity")
-        _secret_map(record["secretValues"])
+        secret_values = _secret_map(record["secretValues"])
+        generated = _secret_key_list(record["generatedSecretKeys"])
+        if not set(generated) <= set(secret_values):
+            _fail("secret-record-integrity")
         return record
 
     @staticmethod
@@ -456,7 +487,7 @@ class AssistantFirstSecretStore:
 
     def stage(self, payload: Any) -> dict[str, Any]:
         """Atomically stage values and return only an opaque reference."""
-        keys = frozenset(
+        legacy_keys = frozenset(
             {
                 "schema",
                 "transactionId",
@@ -466,27 +497,56 @@ class AssistantFirstSecretStore:
                 "secretValues",
             }
         )
-        request = _exact_dict(payload, keys, "invalid-secret-stage-request")
-        if request["schema"] != STAGE_REQUEST_SCHEMA:
+        current_keys = legacy_keys | {"generatedSecretKeys"}
+        if type(payload) is not dict:
+            _fail("invalid-secret-stage-request")
+        if payload.get("schema") == LEGACY_STAGE_REQUEST_SCHEMA:
+            request = _exact_dict(
+                payload, legacy_keys, "invalid-secret-stage-request"
+            )
+            generated_secret_keys: list[str] = []
+        elif payload.get("schema") == STAGE_REQUEST_SCHEMA:
+            request = _exact_dict(
+                payload, current_keys, "invalid-secret-stage-request"
+            )
+            generated_secret_keys = _secret_key_list(
+                request["generatedSecretKeys"]
+            )
+        else:
             _fail("invalid-secret-stage-schema")
         transaction_id, plan_hash, schema_hash = self._binding(request)
         idempotency_key = _safe_text(
             request["idempotencyKey"], _HASH_RE, "invalid-idempotency-key"
         )
-        secret_values = _secret_map(request["secretValues"])
+        secret_values = _secret_map(request["secretValues"], allow_empty=True)
+        if set(secret_values) & set(generated_secret_keys):
+            _fail("generated-secret-key-overlap")
+        if not secret_values and not generated_secret_keys:
+            _fail("invalid-secret-values")
         with self._locked_directory() as directory_fd:
             current = self._read_record(directory_fd, transaction_id)
             if current is not None:
                 self._assert_binding(current, transaction_id, plan_hash, schema_hash)
                 if current["idempotencyKey"] == idempotency_key:
+                    if current["generatedSecretKeys"] != generated_secret_keys:
+                        _fail("secret-idempotency-conflict")
+                    generated = set(current["generatedSecretKeys"])
+                    current_user_values = {
+                        key: value
+                        for key, value in current["secretValues"].items()
+                        if key not in generated
+                    }
                     same = hmac.compare_digest(
-                        _canonical_bytes(current["secretValues"]),
+                        _canonical_bytes(current_user_values),
                         _canonical_bytes(secret_values),
                     )
                     if not same:
                         _fail("secret-idempotency-conflict")
                     return self._status(current, duplicate=True)
 
+            stored_values = dict(secret_values)
+            for key in generated_secret_keys:
+                stored_values[key] = secrets.token_hex(32)
             record = {
                 "schema": RECORD_SCHEMA,
                 "transactionId": transaction_id,
@@ -494,7 +554,8 @@ class AssistantFirstSecretStore:
                 "schemaHash": schema_hash,
                 "idempotencyKey": idempotency_key,
                 "reference": f"secret-v1-{secrets.token_hex(24)}",
-                "secretValues": secret_values,
+                "secretValues": stored_values,
+                "generatedSecretKeys": generated_secret_keys,
             }
             self._atomic_write(
                 directory_fd, self._filename(transaction_id), _canonical_bytes(record)
@@ -567,6 +628,8 @@ class AssistantFirstSecretStore:
 
 __all__ = [
     "DELETE_REQUEST_SCHEMA",
+    "LEGACY_RECORD_SCHEMA",
+    "LEGACY_STAGE_REQUEST_SCHEMA",
     "STAGE_REQUEST_SCHEMA",
     "STATUS_REQUEST_SCHEMA",
     "STATUS_SCHEMA",

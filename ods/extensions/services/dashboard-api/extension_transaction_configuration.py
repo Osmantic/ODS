@@ -65,7 +65,11 @@ class TransactionConfigurationManager:
             )
         except ExtensionConfigurationError as exc:
             raise ValidationRejected(exc.code) from None
-        if receipt["presentSecretKeys"] and self._secret_custodian is None:
+        generated_secret_keys = self._generated_secret_keys(schema)
+        present_secret_keys = sorted(
+            set(receipt["presentSecretKeys"]) | set(generated_secret_keys)
+        )
+        if present_secret_keys and self._secret_custodian is None:
             raise IntegrityError("secret-custody-unavailable")
         timestamp = self._clock()
         intent = self._store.begin_configuration_exact(
@@ -74,7 +78,7 @@ class TransactionConfigurationManager:
             schema_hash,
             idempotency_key,
             values,
-            receipt["presentSecretKeys"],
+            present_secret_keys,
             receipt["appliedDefaultKeys"],
             timestamp,
             timestamp,
@@ -82,7 +86,7 @@ class TransactionConfigurationManager:
 
         reference = None
         custody_duplicate = True
-        if receipt["presentSecretKeys"]:
+        if present_secret_keys:
             try:
                 staged = self._secret_custodian.stage(
                     transaction_id=transaction_id,
@@ -90,10 +94,11 @@ class TransactionConfigurationManager:
                     schema_hash=schema_hash,
                     idempotency_key=idempotency_key,
                     secret_values=secret_values,
+                    generated_secret_keys=generated_secret_keys,
                 )
             except SecretCustodyError as exc:
                 raise IntegrityError(exc.code) from None
-            if staged.get("presentSecretKeys") != receipt["presentSecretKeys"]:
+            if staged.get("presentSecretKeys") != present_secret_keys:
                 raise IntegrityError("secret-custody-presence-mismatch")
             reference = staged.get("reference")
             custody_duplicate = staged.get("duplicate") is True
@@ -110,6 +115,27 @@ class TransactionConfigurationManager:
             and finished.get("duplicate") is True
         )
         return self._project(finished, schema, duplicate=duplicate)
+
+    @staticmethod
+    def _generated_secret_keys(schema: dict[str, Any]) -> list[str]:
+        """Select required host-generated string secrets from the bound schema."""
+
+        result: list[str] = []
+        for field in schema["fields"]:
+            if (
+                field["secret"] is True
+                and field["source"] == "generated"
+                and field["required"] is True
+            ):
+                validation = field.get("validation", {})
+                if (
+                    field["type"] != "string"
+                    or validation.get("minLength", 0) > 64
+                    or validation.get("maxLength", 65_536) < 64
+                ):
+                    raise IntegrityError("generated-secret-contract-unsupported")
+                result.append(field["key"])
+        return sorted(result)
 
     def require_ready(
         self, transaction_id: str, plan_hash: str

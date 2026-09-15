@@ -133,6 +133,11 @@ except Exception:  # pragma: no cover - import environment dependent
     _data_backup_runtime_module = None
 
 try:
+    import extension_configuration_effect_runtime as _configuration_effect_runtime_module
+except Exception:  # pragma: no cover - import environment dependent
+    _configuration_effect_runtime_module = None
+
+try:
     import extension_resource_reservation_runtime
 except Exception:  # pragma: no cover - import environment dependent
     _resource_reservation_runtime_module = None
@@ -217,6 +222,13 @@ _data_backup_runtime = None
 _data_backup_runtime_binding: tuple[Path, Path, object] | None = None
 _data_backup_runtime_lock = threading.Lock()
 
+# Exact SearXNG configuration publication is composed lazily from the fixed
+# install root, transaction store, and host secret custody. Only ``configure``
+# selects it; construction publishes no file and reads no secret value.
+_configuration_effect_runtime = None
+_configuration_effect_runtime_binding: tuple[Path, Path, object, object] | None = None
+_configuration_effect_runtime_lock = threading.Lock()
+
 # Exact resource-reservation dependencies are composed lazily from fixed host
 # roots. Only the ``reserve:<serviceId>`` and ``release`` lifecycle-work
 # branches select them. Construction performs no reservation/release mutation.
@@ -226,10 +238,10 @@ _resource_reservation_runtime_lock = threading.Lock()
 
 # General production lifecycle dispatch remains deliberately unwired.  The
 # exact ``download-and-verify`` canary, paired ``backup``/``restore`` canary,
-# ``stage``, ``reserve:<serviceId>``, and ``release`` operations select fixed
-# host-owned runtimes after lease admission; every other operation remains
-# unavailable. Tests may inject a callable for the still-dormant operation
-# contracts.
+# ``configure`` canary, ``stage``, ``reserve:<serviceId>``, and ``release``
+# operations select fixed host-owned runtimes after lease admission; every
+# other operation remains unavailable. Tests may inject a callable for the
+# still-dormant operation contracts.
 _extension_lifecycle_work_dispatcher = None
 
 _MODEL_MEMORY_PATH = (
@@ -6650,6 +6662,48 @@ def _get_extension_data_backup_runtime():
         return _data_backup_runtime
 
 
+def _get_extension_configuration_effect_runtime():
+    """Compose, but do not run, the exact SearXNG configuration effect."""
+
+    global _configuration_effect_runtime, _configuration_effect_runtime_binding
+    if (
+        _configuration_effect_runtime_module is None
+        or _AssistantFirstSecretStore is None
+        or not callable(_extension_lifecycle_plan_loader)
+    ):
+        return None
+    binding = (
+        INSTALL_DIR,
+        DATA_DIR,
+        _extension_lifecycle_plan_loader,
+        _AssistantFirstSecretStore,
+    )
+    with _configuration_effect_runtime_lock:
+        if (
+            _configuration_effect_runtime is None
+            or _configuration_effect_runtime_binding != binding
+        ):
+            try:
+                transactions = _get_extension_transaction_store()
+                if transactions is None:
+                    return None
+                secrets_store = _AssistantFirstSecretStore(DATA_DIR)
+                _configuration_effect_runtime = (
+                    _configuration_effect_runtime_module.build_configuration_effect_runtime(
+                        install_dir=INSTALL_DIR,
+                        plan_loader=_extension_lifecycle_plan_loader,
+                        transaction_loader=transactions.read,
+                        secret_status=secrets_store.status,
+                    )
+                )
+            except Exception:
+                _configuration_effect_runtime = None
+                _configuration_effect_runtime_binding = None
+                return None
+            _configuration_effect_runtime_binding = binding
+        return _configuration_effect_runtime
+
+
 def _get_extension_resource_reservation_runtime():
     """Compose, but do not register, the fixed host resource-reservation runtime.
 
@@ -7746,6 +7800,12 @@ class AgentHandler(BaseHTTPRequestHandler):
                         else:
                             dispatcher = runtime.restore_dispatcher
                             started_observer = runtime.restore_started_observer
+                elif command.operation_key == "configure":
+                    dispatcher = None
+                    runtime = _get_extension_configuration_effect_runtime()
+                    if runtime is not None:
+                        dispatcher = runtime.dispatcher
+                        started_observer = runtime.started_observer
                 elif command.operation_key == "stage":
                     runtime = _get_extension_artifact_stage_runtime()
                     if runtime is not None:

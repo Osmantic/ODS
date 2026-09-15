@@ -188,6 +188,7 @@ class AssistantFirstProfileTests(unittest.TestCase):
             encoding="utf-8"
         )
         custody = CUSTODY_HELPER.read_text(encoding="utf-8")
+        host_agent = (ROOT / "bin/ods-host-agent.py").read_text(encoding="utf-8")
         base = yaml.safe_load(
             (ROOT / "docker-compose.base.yml").read_text(encoding="utf-8")
         )
@@ -226,6 +227,11 @@ class AssistantFirstProfileTests(unittest.TestCase):
         self.assertIn("Assistant First requires ODS_UID to match", directories)
         self.assertIn("not yet qualified for rootless Docker", directories)
         self.assertIn("not owned by the installing host UID", custody)
+        self.assertTrue(
+            (ROOT / "bin/extension_configuration_effect_runtime.py").is_file()
+        )
+        self.assertIn("extension_configuration_effect_runtime", host_agent)
+        self.assertIn("_get_extension_configuration_effect_runtime", host_agent)
         create_step = directories.index('_phase06_step "create-directories"')
         uid_guard = directories.index(
             "Assistant First requires ODS_UID to match", create_step

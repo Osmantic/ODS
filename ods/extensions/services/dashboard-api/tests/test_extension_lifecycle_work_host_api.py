@@ -220,6 +220,53 @@ def receipt_snapshot(agent, host_request, request):
 
 
 def bind_fixture_plan(agent, command):
+    if command.operation_key == "configure":
+        plan = agent._extension_lifecycle_plan
+        runtime = agent._configuration_effect_runtime_module
+        canonical = (
+            json.dumps(
+                {"configuration": runtime.CANARY_CONFIGURATION},
+                ensure_ascii=False,
+                allow_nan=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n"
+        ).encode("utf-8")
+        operation = plan.PlannedOperation(runtime.CANARY_SERVICE_ID, "install")
+        definition = plan.PlannedDefinition(
+            service_id=runtime.CANARY_SERVICE_ID,
+            service_type="docker",
+            manifest_schema_version=runtime.CANARY_MANIFEST_SCHEMA,
+            version=runtime.CANARY_VERSION,
+            data_schema_version=runtime.CANARY_DATA_SCHEMA_VERSION,
+            definition_sha256=runtime.CANARY_DEFINITION_SHA256,
+            compose_sha256=runtime.CANARY_COMPOSE_SHA256,
+            definition_source="builtin",
+            compose_file="compose.yaml",
+            images=(
+                plan.PlannedImage(
+                    reference=runtime.CANARY_IMAGE_REFERENCE,
+                    digest=runtime.CANARY_IMAGE_DIGEST,
+                    download_bytes=runtime.CANARY_IMAGE_DOWNLOAD_BYTES,
+                ),
+            ),
+            builds=(),
+            canonical_document=canonical,
+            host_ports=(),
+            exclusive=(),
+        )
+        return replace(
+            command,
+            plan_material=plan.LifecyclePlanMaterial(
+                schema=plan.PLAN_MATERIAL_SCHEMA,
+                transaction_id=command.transaction_id,
+                plan_hash=command.plan_hash,
+                state="configuring",
+                operations=(operation,),
+                definitions=(definition,),
+            ),
+        )
     if command.operation_key in {"backup", "restore"}:
         plan = agent._extension_lifecycle_plan
         runtime = agent._data_backup_runtime_module
@@ -338,6 +385,30 @@ def data_work_request(agent, lease, operation_key):
     )
 
 
+def configuration_work_request(agent, lease):
+    runtime = agent._configuration_effect_runtime_module
+    return work_request(
+        agent._extension_lifecycle_work.REQUEST_SCHEMA,
+        lease,
+        operation_key="configure",
+        service_ids=[runtime.CANARY_SERVICE_ID],
+        payload={"serviceIds": [runtime.CANARY_SERVICE_ID]},
+    )
+
+
+def bind_configuration_runtime(agent, *, dispatcher, started_observer):
+    agent._configuration_effect_runtime = SimpleNamespace(
+        dispatcher=dispatcher,
+        started_observer=started_observer,
+    )
+    agent._configuration_effect_runtime_binding = (
+        agent.INSTALL_DIR,
+        agent.DATA_DIR,
+        agent._extension_lifecycle_plan_loader,
+        agent._AssistantFirstSecretStore,
+    )
+
+
 @pytest.fixture()
 def host_server(tmp_path):
     agent_path = BIN_DIR / "ods-host-agent.py"
@@ -401,6 +472,8 @@ def host_server(tmp_path):
     agent._image_artifact_runtime_plan_loader = None
     agent._data_backup_runtime = None
     agent._data_backup_runtime_binding = None
+    agent._configuration_effect_runtime = None
+    agent._configuration_effect_runtime_binding = None
     agent._resource_reservation_runtime = None
     agent._resource_reservation_runtime_data_dir = None
     agent._extension_lifecycle_plan_loader = lambda command: bind_fixture_plan(
@@ -2055,7 +2128,7 @@ def test_unrelated_operations_never_gain_data_runtime_authority(
         agent._extension_lifecycle_plan_loader,
     )
     grant = acquire_lease(agent, host_request)
-    for operation_key in ("configure", "verify"):
+    for operation_key in ("verify",):
         request = work_request(
             agent._extension_lifecycle_work.REQUEST_SCHEMA,
             lease_evidence(agent, grant),
@@ -2086,6 +2159,218 @@ def test_host_agent_source_wires_closed_data_runtime_module():
     assert "extension_data_backup_runtime" in agent_source
     assert "_data_backup_runtime" in agent_source
     assert "_get_extension_data_backup_runtime" in agent_source
+
+
+def test_configure_uses_closed_runtime_and_replays_once(host_server, host_request):
+    agent, _listener = host_server
+    runtime_module = agent._configuration_effect_runtime_module
+    grant = acquire_lease(agent, host_request, [runtime_module.CANARY_SERVICE_ID])
+    request = configuration_work_request(agent, lease_evidence(agent, grant))
+    calls = []
+    bind_configuration_runtime(
+        agent,
+        dispatcher=lambda value: calls.append(value) or EVIDENCE_HASH,
+        started_observer=lambda _value: agent._extension_lifecycle_work.LifecycleWorkStartedObservation(
+            state="missing"
+        ),
+    )
+    agent._extension_lifecycle_work_dispatcher = lambda _command: (
+        (_ for _ in ()).throw(AssertionError("generic received configure work"))
+    )
+    begin_receipt(agent, host_request, request)
+
+    status, result = host_request("/v1/extension/lifecycle-work", request)
+
+    assert status == 200
+    assert result["operationKey"] == "configure"
+    assert result["completed"] is True
+    assert result["evidenceHash"] == EVIDENCE_HASH
+    assert len(calls) == 1
+    assert calls[0].operation_key == "configure"
+    replay_status, replay = host_request(
+        "/v1/extension/lifecycle-work", request
+    )
+    assert replay_status == 200
+    assert replay == result
+    assert len(calls) == 1
+
+
+def test_configure_started_receipt_recovers_without_redispatch(
+    host_server, host_request
+):
+    agent, _listener = host_server
+    runtime_module = agent._configuration_effect_runtime_module
+    grant = acquire_lease(agent, host_request, [runtime_module.CANARY_SERVICE_ID])
+    request = configuration_work_request(agent, lease_evidence(agent, grant))
+    calls = []
+    bind_configuration_runtime(
+        agent,
+        dispatcher=lambda value: calls.append(value) or EVIDENCE_HASH,
+        started_observer=lambda _value: agent._extension_lifecycle_work.LifecycleWorkStartedObservation(
+            state="completed", evidence_hash=EVIDENCE_HASH
+        ),
+    )
+    begin_receipt(agent, host_request, request)
+
+    status, result = host_request("/v1/extension/lifecycle-work", request)
+
+    assert status == 200
+    assert result["evidenceHash"] == EVIDENCE_HASH
+    assert calls == []
+    snapshot_status, snapshot = receipt_snapshot(
+        agent, host_request, request
+    )
+    assert snapshot_status == 200
+    assert snapshot["state"] == "completed"
+
+
+def test_missing_configuration_runtime_never_falls_back_to_generic_dispatcher(
+    host_server, host_request
+):
+    agent, _listener = host_server
+    runtime_module = agent._configuration_effect_runtime_module
+    grant = acquire_lease(agent, host_request, [runtime_module.CANARY_SERVICE_ID])
+    request = configuration_work_request(agent, lease_evidence(agent, grant))
+    begin_receipt(agent, host_request, request)
+    calls = []
+    agent._configuration_effect_runtime_module = None
+    agent._configuration_effect_runtime = None
+    agent._configuration_effect_runtime_binding = None
+    agent._extension_lifecycle_work_dispatcher = (
+        lambda value: calls.append(value) or EVIDENCE_HASH
+    )
+
+    status, result = host_request("/v1/extension/lifecycle-work", request)
+
+    assert status == 503
+    assert result == {"error": {"code": "lifecycle-work-dispatcher-unavailable"}}
+    assert calls == []
+
+
+def test_configuration_runtime_constructor_failure_cannot_fall_back(
+    host_server, host_request
+):
+    agent, _listener = host_server
+    original_module = agent._configuration_effect_runtime_module
+    grant = acquire_lease(agent, host_request, [original_module.CANARY_SERVICE_ID])
+    request = configuration_work_request(agent, lease_evidence(agent, grant))
+    begin_receipt(agent, host_request, request)
+    calls = []
+
+    class BrokenRuntimeModule:
+        CANARY_SERVICE_ID = original_module.CANARY_SERVICE_ID
+
+        @staticmethod
+        def build_configuration_effect_runtime(**_kwargs):
+            raise OSError("private-configuration-construction-detail")
+
+    agent._configuration_effect_runtime_module = BrokenRuntimeModule
+    agent._configuration_effect_runtime = None
+    agent._configuration_effect_runtime_binding = None
+    agent._extension_lifecycle_work_dispatcher = (
+        lambda value: calls.append(value) or EVIDENCE_HASH
+    )
+
+    status, result = host_request("/v1/extension/lifecycle-work", request)
+
+    assert status == 503
+    assert result == {"error": {"code": "lifecycle-work-dispatcher-unavailable"}}
+    assert calls == []
+    assert "private-configuration-construction-detail" not in json.dumps(result)
+
+
+def test_configuration_runtime_not_constructed_before_admission_gates(
+    host_server, host_request
+):
+    agent, _listener = host_server
+    original_module = agent._configuration_effect_runtime_module
+    constructed = []
+
+    class ConstructionTracker:
+        CANARY_SERVICE_ID = original_module.CANARY_SERVICE_ID
+
+        @staticmethod
+        def build_configuration_effect_runtime(**_kwargs):
+            constructed.append(True)
+            raise AssertionError("must not construct before admission")
+
+    agent._configuration_effect_runtime_module = ConstructionTracker
+    agent._configuration_effect_runtime = None
+    agent._configuration_effect_runtime_binding = None
+    request = work_request(
+        agent._extension_lifecycle_work.REQUEST_SCHEMA,
+        operation_key="configure",
+        service_ids=[original_module.CANARY_SERVICE_ID],
+        payload={"serviceIds": [original_module.CANARY_SERVICE_ID]},
+    )
+
+    assert host_request(
+        "/v1/extension/lifecycle-work", request, token="wrong"
+    )[0] == 403
+    assert constructed == []
+    agent.ASSISTANT_TRANSACTIONS_ENABLED = False
+    assert host_request("/v1/extension/lifecycle-work", request)[0] == 404
+    assert constructed == []
+    agent.ASSISTANT_TRANSACTIONS_ENABLED = True
+    assert host_request("/v1/extension/lifecycle-work", request)[0] == 422
+    assert constructed == []
+
+
+def test_unrelated_operations_never_gain_configuration_runtime_authority(
+    host_server, host_request
+):
+    agent, _listener = host_server
+    calls = []
+    bind_configuration_runtime(
+        agent,
+        dispatcher=lambda value: calls.append(("configure", value)),
+        started_observer=lambda value: calls.append(("observe", value)),
+    )
+    grant = acquire_lease(agent, host_request)
+    request = work_request(
+        agent._extension_lifecycle_work.REQUEST_SCHEMA,
+        lease_evidence(agent, grant),
+        operation_key="verify",
+    )
+
+    status, result = host_request("/v1/extension/lifecycle-work", request)
+
+    assert status == 503
+    assert result == {"error": {"code": "lifecycle-work-dispatcher-unavailable"}}
+    assert calls == []
+
+
+@pytest.mark.skipif(not STAGE_SUPPORTED, reason="requires Linux dir_fd semantics")
+def test_configuration_production_reachability_is_paired_and_inert(host_server):
+    agent, _listener = host_server
+    calls = []
+
+    class InertSecretStore:
+        def __init__(self, data_dir):
+            calls.append(("secret-store", data_dir))
+
+        def status(self, _payload):
+            raise AssertionError("construction must not query secret custody")
+
+    agent._AssistantFirstSecretStore = InertSecretStore
+    agent._get_extension_transaction_store = lambda: SimpleNamespace(
+        read=lambda _transaction_id: (_ for _ in ()).throw(
+            AssertionError("construction must not load a transaction")
+        )
+    )
+    runtime = agent._get_extension_configuration_effect_runtime()
+    assert runtime is not None
+    assert callable(runtime.dispatcher)
+    assert callable(runtime.started_observer)
+    assert calls == [("secret-store", agent.DATA_DIR)]
+    assert not (agent.INSTALL_DIR / "config" / "searxng").exists()
+
+
+def test_host_agent_source_wires_closed_configuration_runtime_module():
+    agent_source = (BIN_DIR / "ods-host-agent.py").read_text(encoding="utf-8")
+    assert "extension_configuration_effect_runtime" in agent_source
+    assert "_configuration_effect_runtime" in agent_source
+    assert "_get_extension_configuration_effect_runtime" in agent_source
 
 
 if __name__ == "__main__":
