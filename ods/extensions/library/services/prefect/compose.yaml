@@ -32,7 +32,7 @@ services:
       USER: ods
       PYTHONDONTWRITEBYTECODE: "1"
     ports:
-      - "127.0.0.1:${PREFECT_PORT:-4200}:4200"
+      - "${BIND_ADDRESS:-127.0.0.1}:${PREFECT_PORT:-4200}:4200"
     volumes:
       - ./data/prefect:/prefect
     read_only: true
