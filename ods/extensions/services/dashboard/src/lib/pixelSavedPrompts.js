@@ -19,3 +19,39 @@ export function writeSavedPrompt(value, previous = null, remove = false) {
   localStorage.setItem(SAVED_PROMPTS_KEY, JSON.stringify(next))
   return next
 }
+
+export const MAX_PROMPT_BACKUP_BYTES = 3 * 1024 * 1024
+
+export function exportSavedPrompts() {
+  const prompts = readSavedPrompts().map(({id, title, text}) => ({id, title, text}))
+  return JSON.stringify({schemaVersion:1, kind:'ods-saved-prompts', prompts}, null, 2)
+}
+
+export function parseSavedPromptBackup(raw) {
+  if (typeof raw !== 'string' || new TextEncoder().encode(raw).length > MAX_PROMPT_BACKUP_BYTES) throw new Error('Choose a prompt backup no larger than 3 MB.')
+  const value = JSON.parse(raw)
+  if (!value || value.schemaVersion !== 1 || value.kind !== 'ods-saved-prompts' || Object.keys(value).length !== 3
+    || !Array.isArray(value.prompts) || value.prompts.length > 30 || !value.prompts.every(item => valid(item) && Object.keys(item).length === 3)
+    || new Set(value.prompts.map(item => item.id)).size !== value.prompts.length) throw new Error('Choose a valid ODS saved-prompt backup.')
+  return value.prompts.map(({id, title, text}) => ({id, title, text}))
+}
+
+export function restoreSavedPrompts(raw) {
+  const imported = parseSavedPromptBackup(raw)
+  // Re-read at confirmation time so an open preview cannot replace later edits.
+  const items = readSavedPrompts()
+  const ids = new Set(items.map(item => item.id))
+  const contents = new Set(items.map(item => JSON.stringify([item.title, item.text])))
+  let added = 0
+  for (const item of imported) {
+    const content = JSON.stringify([item.title, item.text])
+    if (contents.has(content)) continue
+    let id = item.id, suffix = 1
+    while (ids.has(id)) id = `${item.id.slice(0, 60)}-import-${suffix++}`
+    items.push({...item, id})
+    ids.add(id); contents.add(content); added++
+  }
+  if (items.length > 30) throw new RangeError('This import would exceed 30 saved prompts. Remove some prompts and try again.')
+  if (added) localStorage.setItem(SAVED_PROMPTS_KEY, JSON.stringify(items))
+  return {items, added, skipped:imported.length - added}
+}
