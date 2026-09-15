@@ -117,7 +117,7 @@ hr() {
 # Update or add a key=value in .env
 _env_set() {
     local key="$1" val="$2" file="$INSTALL_DIR/.env"
-    if grep -q "^${key}=" "$file" 2>/dev/null; then
+    if grep -qF "^${key}=" "$file" 2>/dev/null; then
         # Use awk to avoid sed delimiter collisions with values containing | / or =
         awk -v k="$key" -v v="$val" '{
             if (index($0, k "=") == 1) print k "=" v; else print
