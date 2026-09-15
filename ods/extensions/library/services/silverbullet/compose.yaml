@@ -1,0 +1,60 @@
+services:
+  silverbullet:
+    image: ghcr.io/silverbulletmd/silverbullet:2.10.0@sha256:27b5724cc36798e7de82180ec9898ea9c157c4f15127f279834bca2897b91f37
+    container_name: ods-silverbullet
+    user: "1000:1000"
+    entrypoint: [/sbin/tini, --, /bin/sh, -euc]
+    command:
+      - |
+        for key in SILVERBULLET_PASSWORD SILVERBULLET_API_TOKEN; do
+          case "$$key" in
+            SILVERBULLET_PASSWORD) value=$$SILVERBULLET_PASSWORD ;;
+            SILVERBULLET_API_TOKEN) value=$$SILVERBULLET_API_TOKEN ;;
+          esac
+          case "$$value" in
+            *[!A-Za-z0-9_-]*) printf '%s requires 16-128 URL-safe characters\n' "$$key" >&2; exit 1 ;;
+          esac
+          if [ "$${#value}" -lt 16 ] || [ "$${#value}" -gt 128 ]; then
+            printf '%s requires 16-128 URL-safe characters\n' "$$key" >&2
+            exit 1
+          fi
+        done
+        export SB_USER="ods:$$SILVERBULLET_PASSWORD" SB_AUTH_TOKEN="$$SILVERBULLET_API_TOKEN"
+        unset SILVERBULLET_PASSWORD SILVERBULLET_API_TOKEN value
+        exec /silverbullet --single /space
+    environment:
+      SILVERBULLET_PASSWORD: "${SILVERBULLET_PASSWORD:?Set SILVERBULLET_PASSWORD before enabling SilverBullet}"
+      SILVERBULLET_API_TOKEN: "${SILVERBULLET_API_TOKEN:?Set SILVERBULLET_API_TOKEN before enabling SilverBullet}"
+      SB_HOSTNAME: 0.0.0.0
+      SB_PORT: "3000"
+      SB_FOLDER: /space
+      SB_SHELL_BACKEND: "off"
+      SB_RUNTIME_API: "0"
+      HOME: /tmp
+    ports:
+      - "127.0.0.1:${SILVERBULLET_PORT:-3034}:3000"
+    volumes:
+      - ./data/silverbullet:/space
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=64m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+    healthcheck:
+      test: [CMD, curl, --fail, --silent, --show-error, --max-time, "3", http://127.0.0.1:3000/.ping]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    networks: [ods-network]
+
+networks:
+  ods-network:
+    external: true
+    name: ods-network
