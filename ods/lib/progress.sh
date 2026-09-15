@@ -2,6 +2,13 @@
 # ODS — Progress Bar Utilities
 # Sourced by install-core.sh for download/install progress display
 
+# Color variables (if not already defined by caller)
+[[ -n "${CYAN:-}" ]] || CYAN=""
+[[ -n "${GREEN:-}" ]] || GREEN=""
+[[ -n "${BLUE:-}" ]] || BLUE=""
+[[ -n "${BOLD:-}" ]] || BOLD=""
+[[ -n "${NC:-}" ]] || NC=""
+
 # Require Bash 4+ (associative array PHASE_ESTIMATES used for phase timing)
 if (( BASH_VERSINFO[0] < 4 )); then
     echo "ERROR: $(basename "${BASH_SOURCE[0]}") requires Bash 4.0+ (current: $BASH_VERSION)" >&2
