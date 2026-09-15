@@ -19,6 +19,7 @@ if str(DASH_API_DIR) not in sys.path:
 
 import extension_lifecycle_plan as lifecycle_plan  # noqa: E402
 import extension_lifecycle_work as lifecycle_work  # noqa: E402
+import extension_data_scope_contract as data_scope  # noqa: E402
 import extension_transactions as transaction_store  # noqa: E402
 
 
@@ -348,6 +349,34 @@ def test_host_binding_preserves_approved_prior_v2_data_scope_and_rejects_drift()
     with pytest.raises(lifecycle_work.LifecycleWorkValidationError) as caught:
         lifecycle_plan.bind_lifecycle_plan(parsed, altered)
     assert caught.value.code == "lifecycle-work-plan-mismatch"
+
+
+def test_attested_host_plan_material_feeds_only_its_old_new_union_to_generic_scope():
+    stored = attested_transaction("configuring")
+    plan = stored["envelope"]["plan"]
+    plan["operations"][0]["action"] = "update"
+    plan["definitions"][0]["data"] = [{
+        "path": "data/documents-new", "backupClass": "required", "owner": "user",
+        "uninstall": "preserve", "purge": "separate-approval",
+    }]
+    plan["priorDataBindings"] = [{
+        "serviceId": "documents", "manifestSchemaVersion": "ods.services.v2",
+        "version": "1.1.0", "dataSchemaVersion": "1",
+        "definitionSha256": "sha256:" + "a" * 64,
+        "paths": [{
+            "path": "data/documents-prior", "backupClass": "required", "owner": "user",
+            "uninstall": "preserve", "purge": "separate-approval",
+        }],
+    }]
+    parsed = command("backup", ["documents"], {"serviceIds": ["documents"]})
+    approved = lifecycle_plan.bind_lifecycle_plan(
+        parsed, stored, require_attested_approval=True
+    )
+    bound = data_scope.bind_data_scope(approved)
+    assert [path.path for path in bound.services[0].paths] == [
+        "data/documents-new", "data/documents-prior",
+    ]
+    assert bound.services[0].prior_definition_sha256 == "sha256:" + "a" * 64
 
 
 def test_bind_accepts_reserve_for_present_empty_claims():
