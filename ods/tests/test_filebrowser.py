@@ -27,7 +27,7 @@ def compose_env(tmp_path):
     (tmp_path / "empty.env").write_text("")
     env = {key: value for key, value in os.environ.items()
            if not key.startswith("FILEBROWSER_")}
-    env.update(FILEBROWSER_PASSWORD=secrets.token_hex(24), BIND_ADDRESS="0.0.0.0")
+    env.update(FILEBROWSER_PASSWORD=secrets.token_hex(24), BIND_ADDRESS="127.0.0.1")
     return env
 
 
@@ -37,6 +37,20 @@ def render(tmp_path, env, check=True):
         "--project-directory", str(tmp_path), "-f", str(EXTENSION / "compose.yaml"),
         "config", "--format", "json", "filebrowser",
     ], env=env, check=check, capture_output=True, text=True, timeout=30)
+
+
+@pytest.mark.parametrize("bind_address", [None, "127.0.0.1", "0.0.0.0", "192.0.2.42"])
+def test_bind_address_opt_in_preserves_native_configuration(tmp_path, compose_env, bind_address):
+    compose_env.pop("BIND_ADDRESS", None)
+    baseline = json.loads(render(tmp_path, compose_env).stdout)["services"]["filebrowser"]
+    if bind_address is not None:
+        compose_env["BIND_ADDRESS"] = bind_address
+    service = json.loads(render(tmp_path, compose_env).stdout)["services"]["filebrowser"]
+    assert all(port["host_ip"] == (bind_address or "127.0.0.1") for port in service["ports"])
+    assert [(p["published"], p["target"]) for p in service["ports"]] == [
+        (p["published"], p["target"]) for p in baseline["ports"]]
+    assert service["environment"] == baseline["environment"]
+    assert service["volumes"] == baseline["volumes"]
 
 
 @pytest.mark.parametrize("port", ["8095", "18095"])

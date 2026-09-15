@@ -3,8 +3,8 @@
 A CPU-only file manager for the dedicated `data/filebrowser/files` directory.
 Install **File Browser (Local Files)** from Extensions, set a unique
 `FILEBROWSER_PASSWORD` in ODS Settings, then enable it. Open
-`http://localhost:8095` and sign in as `ods`. `FILEBROWSER_PORT` changes only the
-loopback host port; `BIND_ADDRESS` does not expose this recipe to the LAN.
+`http://localhost:8095` and sign in as `ods`. `FILEBROWSER_PORT` changes the published host port. It defaults to loopback
+and honors `BIND_ADDRESS` for explicit LAN publication.
 
 The pinned image is File Browser v2.63.23, including its native web UI, JSON
 login, scoped users and file API. Generate the bootstrap password with
@@ -92,3 +92,19 @@ remain unqualified by this fixture.
 Native contracts: [v2.63.23 root settings](https://github.com/filebrowser/filebrowser/blob/v2.63.23/cmd/root.go),
 [account mutation](https://github.com/filebrowser/filebrowser/blob/v2.63.23/http/users.go),
 [JWT authentication and renewal](https://github.com/filebrowser/filebrowser/blob/v2.63.23/http/auth.go).
+
+## Host publication
+
+The published ports honor ODS `BIND_ADDRESS`: unset keeps `127.0.0.1`; the
+explicit LAN opt-in can select `0.0.0.0` or a specific host interface. This
+controls Docker publication and preserves native authentication and application
+policy. Disable/recreate after changes, and keep operator edits to the installed
+definition backed up before updating or reinstalling the extension.
+
+Native authentication, workspace permissions, shell restrictions and session
+behavior remain in force. Configure TLS/access controls for remote credentials.
+
+Compose regression tests cover unset, loopback, wildcard and a specific interface
+while preserving target ports, credentials and storage. Actual lifecycle fixtures
+remain bound to isolated loopback ports. Remote browser/TLS deployments are not
+qualified by those local tests.

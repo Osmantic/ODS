@@ -30,7 +30,7 @@ services:
       FB_FOLLOW_EXTERNAL_SYMLINKS: "false"
       FB_TOKEN_EXPIRATION_TIME: 30m
     ports:
-      - "127.0.0.1:${FILEBROWSER_PORT:-8095}:8080"
+      - "${BIND_ADDRESS:-127.0.0.1}:${FILEBROWSER_PORT:-8095}:8080"
     volumes:
       - ./data/filebrowser/files:/srv
       - ./data/filebrowser/database:/database
