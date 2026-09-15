@@ -1,0 +1,37 @@
+services:
+  gatus:
+    image: twinproduction/gatus:v5.36.0@sha256:c5f210d095fa78e6efaa20ffeb14803f2ba4f10615e16a6d12087697149617f0
+    container_name: ods-gatus
+    user: "1000:1000"
+    environment:
+      GATUS_CONFIG_PATH: /config/config.yaml
+      GATUS_LOG_LEVEL: WARN
+      GATUS_PASSWORD_BCRYPT: "${GATUS_PASSWORD_BCRYPT:?Set GATUS_PASSWORD_BCRYPT before enabling Gatus}"
+    ports:
+      - "127.0.0.1:${GATUS_PORT:-8102}:8080"
+    volumes:
+      - type: bind
+        source: ./config/gatus/config.yaml
+        target: /config/config.yaml
+        read_only: true
+        bind:
+          create_host_path: false
+      - ./data/gatus:/data
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=64m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+    stop_grace_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 256M
+    networks: [ods-network]
+
+networks:
+  ods-network:
+    external: true
+    name: ods-network
