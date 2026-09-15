@@ -91,6 +91,10 @@ Compose's service namespace dependency handles the normal configuration update.
 An already accepted delivery may finish with the old configuration. Change
 destination credentials in `APPRISE_CONFIG_TEXT` and recreate the API to rotate
 them. Revoke old credentials at the destination separately when appropriate.
+After a rejected configuration has made the gateway unhealthy, restore the valid
+settings and recreate **both** services. This resets the stale gateway health
+state as well as restoring the native API; recreating only the API can make
+Compose `--wait` fail immediately on the old unhealthy gateway.
 
 ## Qualification
 

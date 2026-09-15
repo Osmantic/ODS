@@ -193,7 +193,9 @@ HTTPServer(("0.0.0.0", 9876), Receiver).serve_forever()
         assert "must contain a usable native text configuration" in run(*command, "logs", "--tail", "20", "apprise-api").stdout
         api["environment"]["APPRISE_CONFIG_TEXT"] = routes
         save()
-        run(*command, "up", "-d", "--force-recreate", "--wait", "--wait-timeout", "120", "apprise-api")
+        # Recreate both after a rejected config: the old gateway can already be
+        # unhealthy, which makes Compose --wait fail before it recovers.
+        run(*command, "up", "-d", "--force-recreate", "--wait", "--wait-timeout", "120", "apprise", "apprise-api")
         deliver()
         print("Recreation, gateway namespace reconciliation on hash update, invalid target rejection and configuration recovery verified", flush=True)
     finally:
