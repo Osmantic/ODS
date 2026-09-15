@@ -1,0 +1,44 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: filebrowser
+  name: File Browser (Local Files)
+  description: "Authenticated browser uploads, downloads and scoped users for an isolated local file directory."
+  aliases: [file-browser]
+  container_name: ods-filebrowser
+  container_uid: 1000
+  default_host: filebrowser
+  port: 8080
+  external_port_env: FILEBROWSER_PORT
+  external_port_default: 8095
+  health: /health
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [files, storage, uploads]
+  env_vars:
+    - key: FILEBROWSER_PORT
+      description: "Loopback file manager port"
+      default: "8095"
+    - key: FILEBROWSER_PASSWORD
+      description: "Initial ods administrator password; 16-72 URL-safe characters"
+      required: true
+      secret: true
+features:
+  - id: local-file-workspace
+    name: Manage Local Files
+    description: "Upload and download files through an authenticated local workspace"
+    icon: FileText
+    category: storage
+    requirements:
+      services: [filebrowser]
+      vram_gb: 0
+    enabled_services_all: [filebrowser]
+    setup_time: "~1 minute"
+    priority: 40
+    launch:
+      type: service
+      service: filebrowser

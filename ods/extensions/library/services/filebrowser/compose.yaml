@@ -1,0 +1,61 @@
+services:
+  filebrowser:
+    image: filebrowser/filebrowser:v2.63.23@sha256:a469ea076d4a1b4b1d86a41d130f2f536cd9da996a2b1fb39c0d7635f9d89b9a
+    container_name: ods-filebrowser
+    user: "1000:1000"
+    entrypoint: [tini, --, /bin/sh, -euc]
+    command:
+      - |
+        set -o pipefail
+        case "$$FILEBROWSER_PASSWORD" in
+          *[!A-Za-z0-9_-]*) printf 'FILEBROWSER_PASSWORD requires 16-72 URL-safe characters\n' >&2; exit 1 ;;
+        esac
+        if [ "$${#FILEBROWSER_PASSWORD}" -lt 16 ] || [ "$${#FILEBROWSER_PASSWORD}" -gt 72 ]; then
+          printf 'FILEBROWSER_PASSWORD requires 16-72 URL-safe characters\n' >&2
+          exit 1
+        fi
+        umask 077
+        FB_PASSWORD=$$(filebrowser hash "$$FILEBROWSER_PASSWORD")
+        export FB_PASSWORD
+        unset FILEBROWSER_PASSWORD
+        exec /init.sh
+    environment:
+      FILEBROWSER_PASSWORD: "${FILEBROWSER_PASSWORD:?Set FILEBROWSER_PASSWORD before enabling File Browser}"
+      FB_USERNAME: ods
+      FB_ADDRESS: 0.0.0.0
+      FB_PORT: "8080"
+      FB_ROOT: /srv
+      FB_DATABASE: /database/filebrowser.db
+      FB_DISABLE_EXEC: "true"
+      FB_FOLLOW_EXTERNAL_SYMLINKS: "false"
+      FB_TOKEN_EXPIRATION_TIME: 30m
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${FILEBROWSER_PORT:-8095}:8080"
+    volumes:
+      - ./data/filebrowser/files:/srv
+      - ./data/filebrowser/database:/database
+      - ./data/filebrowser/config:/config
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=64m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+    stop_grace_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+    healthcheck:
+      test: [CMD, wget, --quiet, --spider, --timeout=3, http://127.0.0.1:8080/health]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    networks: [ods-network]
+
+networks:
+  ods-network:
+    external: true
+    name: ods-network
