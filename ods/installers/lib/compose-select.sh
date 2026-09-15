@@ -25,7 +25,7 @@ resolve_compose_config() {
         compose_overlay_ok=true
         for overlay in "${profile_overlays[@]}"; do
             if [[ -f "$SCRIPT_DIR/$overlay" ]]; then
-                COMPOSE_FLAGS="$COMPOSE_FLAGS -f $overlay"
+                COMPOSE_FLAGS="$COMPOSE_FLAGS -f \"$overlay\""
             else
                 compose_overlay_ok=false
                 break
