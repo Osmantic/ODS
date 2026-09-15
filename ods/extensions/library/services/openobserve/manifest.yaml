@@ -1,0 +1,46 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: openobserve
+  name: OpenObserve (Local Observability)
+  description: "Local log, metric and trace ingestion with authenticated SQL search and a native observability UI."
+  aliases: [open-observe]
+  container_name: ods-openobserve
+  container_uid: 10001
+  default_host: openobserve
+  port: 5080
+  external_port_env: OPENOBSERVE_PORT
+  external_port_default: 5080
+  health: /healthz
+  ui_path: /web/
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [observability, logs, metrics, traces]
+  env_vars:
+    - key: OPENOBSERVE_PORT
+      description: "Loopback observability port"
+      default: "5080"
+    - key: OPENOBSERVE_PASSWORD
+      description: "Initial ods@localhost.invalid root password; 8-128 URL-safe characters, including upper/lowercase, digit and _ or -"
+      required: true
+      secret: true
+features:
+  - id: local-observability
+    name: Search Local Telemetry
+    description: "Inspect ingested logs, metrics and traces using native SQL search"
+    icon: Activity
+    category: monitoring
+    requirements:
+      services: [openobserve]
+      vram_gb: 0
+    enabled_services_all: [openobserve]
+    setup_time: "~1 minute"
+    priority: 40
+    launch:
+      type: service
+      service: openobserve
+      path: /web/
