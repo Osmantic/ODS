@@ -736,3 +736,24 @@ def load_templates() -> list[dict]:
 
 
 TEMPLATES = load_templates()
+
+
+# ── config guard: merge_config_dicts ──────────────────────────
+def merge_config_dicts(base: dict, override: dict) -> dict:
+    """Recursively merge *override* into *base* and return a new dict.
+
+    Nested ``dict`` values are merged recursively; all other types in
+    *override* replace the corresponding value in *base*.  Neither
+    input dict is mutated.
+    """
+    if not isinstance(base, dict):
+        raise TypeError(f"base must be a dict, got {type(base).__name__}")
+    if not isinstance(override, dict):
+        raise TypeError(f"override must be a dict, got {type(override).__name__}")
+    result = dict(base)
+    for key, val in override.items():
+        if key in result and isinstance(result[key], dict) and isinstance(val, dict):
+            result[key] = merge_config_dicts(result[key], val)
+        else:
+            result[key] = val
+    return result
