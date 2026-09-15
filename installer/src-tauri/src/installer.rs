@@ -2,8 +2,9 @@ use crate::state::{InstallPhase, InstallState};
 use serde::Serialize;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 
 const DEFAULT_REPO_URL: &str = "https://github.com/Osmantic/ODS.git";
@@ -13,6 +14,25 @@ const TRANSFERRED_REPO_URL_BYTES: &[u8] = &[
     105, 103, 104, 116, 45, 72, 101, 97, 114, 116, 45, 76, 97, 98, 115, 47, 79, 68, 83, 46, 103,
     105, 116,
 ];
+
+static ACTIVE_CHILD: OnceLock<Mutex<Option<Child>>> = OnceLock::new();
+static CANCEL_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+fn active_child() -> &'static Mutex<Option<Child>> {
+    ACTIVE_CHILD.get_or_init(|| Mutex::new(None))
+}
+
+pub fn cancel_active_install() -> bool {
+    CANCEL_REQUESTED.store(true, Ordering::Release);
+    let Ok(mut active) = active_child().lock() else {
+        return false;
+    };
+    if let Some(child) = active.as_mut() {
+        child.kill().is_ok()
+    } else {
+        false
+    }
+}
 
 fn repo_url() -> &'static str {
     option_env!("ODS_REPO_URL").unwrap_or(DEFAULT_REPO_URL)
@@ -37,6 +57,7 @@ pub fn run_install(
     tier: u8,
     features: Vec<String>,
 ) -> Result<(), String> {
+    CANCEL_REQUESTED.store(false, Ordering::Release);
     // Phase 1: Clone the repo
     update_progress(&state, "Downloading ODS", 5);
 
@@ -130,8 +151,14 @@ pub fn run_install(
         })
     });
 
-    // Parse stdout for progress updates
-    if let Some(stdout) = child.stdout.take() {
+    let stdout = child.stdout.take();
+    *active_child()
+        .lock()
+        .map_err(|_| "Installer child state lock poisoned".to_string())? = Some(child);
+
+    // Parse stdout for progress updates. The child remains registered while
+    // pipes are read so the cancel command can terminate it immediately.
+    if let Some(stdout) = stdout {
         let reader = BufReader::new(stdout);
         for line in reader.lines() {
             if let Ok(line) = line {
@@ -142,12 +169,24 @@ pub fn run_install(
         }
     }
 
-    let output = child
+    let output = active_child()
+        .lock()
+        .map_err(|_| "Installer child state lock poisoned".to_string())?
+        .take()
+        .ok_or_else(|| "Installer child process was not registered".to_string())?
         .wait()
         .map_err(|e| format!("Installer process error: {}", e))?;
     let stderr_lines = stderr_handle
         .and_then(|handle| handle.join().ok())
         .unwrap_or_default();
+
+    if CANCEL_REQUESTED.load(Ordering::Acquire) {
+        let mut s = state.lock().map_err(|_| "Installer state lock poisoned".to_string())?;
+        s.phase = InstallPhase::Error;
+        s.error = Some("Installation cancelled by the operator.".into());
+        let _ = s.save();
+        return Err("Installation cancelled by the operator.".into());
+    }
 
     if output.success() {
         update_progress(&state, "Installation complete!", 100);
@@ -428,5 +467,12 @@ mod tests {
             "https://github.com/example/ODS.git",
             DEFAULT_REPO_URL
         ));
+    }
+
+    #[test]
+    fn cancel_without_active_child_is_safe_and_non_destructive() {
+        CANCEL_REQUESTED.store(false, Ordering::Release);
+        assert!(!cancel_active_install());
+        CANCEL_REQUESTED.store(false, Ordering::Release);
     }
 }
