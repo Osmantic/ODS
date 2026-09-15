@@ -137,7 +137,13 @@ class ConfigurationEffectRuntimeError(LifecycleWorkExecutionError):
 
 
 @dataclass(frozen=True)
-class _BoundConfiguration:
+class BoundConfiguration:
+    """Validated, secret-free configuration metadata for one lifecycle state.
+
+    The opaque secret reference is safe to pass back to the owner-private
+    secret store.  Secret values are never materialized by this object.
+    """
+
     schema_hash: str
     port: int
     used_default_port: bool
@@ -292,11 +298,68 @@ def _validate_loaded_command(
     return loaded
 
 
-def _load_configuration(
+def load_bound_configuration(
     command: LifecycleWorkCommand,
     transaction_loader: _TransactionLoader,
     secret_status: _SecretStatus,
-) -> _BoundConfiguration:
+    *,
+    expected_state: str,
+) -> BoundConfiguration:
+    """Re-prove the canary configuration in ``configuring`` or ``applying``.
+
+    Configuration is collected and sealed while the transaction is in its
+    configuring state, then deliberately retained as immutable input for the
+    later applying state.  Keeping this validation in one public helper avoids
+    a second, subtly different configuration parser in the application effect.
+    """
+
+    if type(command) is not LifecycleWorkCommand:
+        _validation_error("lifecycle-work-command-invalid")
+    if type(expected_state) is not str or expected_state not in {
+        "configuring",
+        "applying",
+    }:
+        _validation_error("lifecycle-work-configuration-state-invalid")
+    if (
+        not isinstance(command.transaction_id, str)
+        or _TRANSACTION_RE.fullmatch(command.transaction_id) is None
+        or not isinstance(command.plan_hash, str)
+        or _HASH_RE.fullmatch(command.plan_hash) is None
+        or command.service_ids != (CANARY_SERVICE_ID,)
+    ):
+        _validation_error("lifecycle-work-configuration-state-invalid")
+    material = command.plan_material
+    if (
+        type(material) is not LifecyclePlanMaterial
+        or material.schema != PLAN_MATERIAL_SCHEMA
+        or material.transaction_id != command.transaction_id
+        or material.plan_hash != command.plan_hash
+        or material.state != expected_state
+    ):
+        _validation_error("lifecycle-work-configuration-state-invalid")
+    if expected_state == "configuring":
+        operation_matches = (
+            command.operation_key == "configure"
+            and command.payload == {"serviceIds": [CANARY_SERVICE_ID]}
+        )
+    else:
+        operation = (
+            command.payload.get("operation")
+            if type(command.payload) is dict
+            else None
+        )
+        operation_matches = (
+            command.operation_key == f"apply:{CANARY_SERVICE_ID}"
+            and type(operation) is dict
+            and set(operation) == {"serviceId", "action"}
+            and operation.get("serviceId") == CANARY_SERVICE_ID
+            and operation.get("action") in _ACTIONS
+        )
+    if not operation_matches:
+        _validation_error("lifecycle-work-configuration-state-invalid")
+    if not callable(transaction_loader) or not callable(secret_status):
+        _execution_error("lifecycle-work-configuration-runtime-invalid")
+
     try:
         transaction = transaction_loader(command.transaction_id)
     except LifecycleWorkError:
@@ -306,7 +369,7 @@ def _load_configuration(
     if (
         type(transaction) is not dict
         or transaction.get("transactionId") != command.transaction_id
-        or transaction.get("state") != "configuring"
+        or transaction.get("state") != expected_state
         or not isinstance(transaction.get("envelope"), dict)
         or transaction["envelope"].get("planHash") != command.plan_hash
         or not isinstance(transaction.get("approval"), dict)
@@ -374,7 +437,7 @@ def _load_configuration(
         or status.get("presentSecretKeys") != ["SEARXNG_SECRET"]
     ):
         _execution_error("lifecycle-work-configuration-secret-mismatch")
-    return _BoundConfiguration(
+    return BoundConfiguration(
         schema_hash=schema_hash,
         port=port,
         used_default_port=used_default,
@@ -600,7 +663,7 @@ def _publish_settings(directory: int) -> None:
 
 
 def _evidence_hash(
-    command: LifecycleWorkCommand, bound: _BoundConfiguration
+    command: LifecycleWorkCommand, bound: BoundConfiguration
 ) -> str:
     configuration_hash = hashlib.sha256(
         _canonical_json(
@@ -698,8 +761,11 @@ class ConfigurationEffectDispatcher:
 
     def __call__(self, command: LifecycleWorkCommand) -> str:
         _validate_plan(command)
-        bound = _load_configuration(
-            command, self._transaction_loader, self._secret_status
+        bound = load_bound_configuration(
+            command,
+            self._transaction_loader,
+            self._secret_status,
+            expected_state="configuring",
         )
         self._store.publish()
         if not self._store.matches():
@@ -731,8 +797,11 @@ class ConfigurationEffectStartedObserver:
             _execution_error("lifecycle-work-configuration-observation-failed", exc)
         bound_command = _validate_loaded_command(command, loaded)
         _validate_plan(bound_command)
-        bound = _load_configuration(
-            bound_command, self._transaction_loader, self._secret_status
+        bound = load_bound_configuration(
+            bound_command,
+            self._transaction_loader,
+            self._secret_status,
+            expected_state="configuring",
         )
         if not self._store.matches():
             return LifecycleWorkStartedObservation(state="missing")
@@ -775,6 +844,7 @@ def build_configuration_effect_runtime(
 
 
 __all__ = [
+    "BoundConfiguration",
     "CANARY_CONFIGURATION",
     "CANARY_SETTINGS_BYTES",
     "CANARY_SETTINGS_PATH",
@@ -785,4 +855,5 @@ __all__ = [
     "ConfigurationEffectStartedObserver",
     "ConfigurationEffectStore",
     "build_configuration_effect_runtime",
+    "load_bound_configuration",
 ]

@@ -144,6 +144,21 @@ def command(*, bound=True, material_value=None, **changes) -> LifecycleWorkComma
     return LifecycleWorkCommand(**values)
 
 
+def apply_command(**changes) -> LifecycleWorkCommand:
+    values = {
+        "operation_key": f"apply:{configuration_runtime.CANARY_SERVICE_ID}",
+        "payload": {
+            "operation": {
+                "serviceId": configuration_runtime.CANARY_SERVICE_ID,
+                "action": "install",
+            }
+        },
+        "plan_material": material(state="applying"),
+    }
+    values.update(changes)
+    return command(**values)
+
+
 def configuration_record(*, port=None, **changes):
     if port is None:
         values = {}
@@ -250,6 +265,101 @@ def test_canary_configuration_allowlist_matches_generated_catalog():
     assert entries[0]["planning"]["configuration"] == (
         configuration_runtime.CANARY_CONFIGURATION
     )
+
+
+@pytest.mark.parametrize(
+    "port,expected_port,used_default",
+    [(None, 8888, True), (9999, 9999, False)],
+)
+def test_configuration_binding_is_reusable_in_applying_state(
+    port, expected_port, used_default
+):
+    status_calls = []
+
+    def load_transaction(_transaction_id):
+        return transaction(port=port, state="applying")
+
+    def load_status(payload):
+        status_calls.append(payload)
+        return status_response()
+
+    bound = configuration_runtime.load_bound_configuration(
+        apply_command(),
+        load_transaction,
+        load_status,
+        expected_state="applying",
+    )
+
+    assert type(bound) is configuration_runtime.BoundConfiguration
+    assert bound.schema_hash == SCHEMA_HASH
+    assert bound.port == expected_port
+    assert bound.used_default_port is used_default
+    assert bound.secret_reference == SECRET_REFERENCE
+    assert SECRET_VALUE not in repr(bound)
+    assert status_calls == [
+        {
+            "schema": secret_store.STATUS_REQUEST_SCHEMA,
+            "transactionId": TXN,
+            "planHash": PLAN_HASH,
+            "schemaHash": SCHEMA_HASH,
+            "reference": SECRET_REFERENCE,
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    "value,expected_state,transaction_state",
+    [
+        (command(), "applying", "applying"),
+        (apply_command(), "configuring", "configuring"),
+        (apply_command(), "applying", "configuring"),
+        (apply_command(), "verifying", "applying"),
+        (apply_command(), [], "applying"),
+        (
+            apply_command(
+                payload={
+                    "operation": {"serviceId": "searxng", "action": "noop"}
+                }
+            ),
+            "applying",
+            "applying",
+        ),
+        (
+            apply_command(service_ids=("documents",)),
+            "applying",
+            "applying",
+        ),
+        (
+            apply_command(plan_hash="not-a-hash"),
+            "applying",
+            "applying",
+        ),
+        (
+            apply_command(plan_material=material(state="configuring")),
+            "applying",
+            "applying",
+        ),
+        (
+            apply_command(plan_material=None),
+            "applying",
+            "applying",
+        ),
+    ],
+)
+def test_configuration_binding_rejects_state_or_operation_confusion(
+    value, expected_state, transaction_state
+):
+    status_calls = []
+
+    with pytest.raises(LifecycleWorkValidationError):
+        configuration_runtime.load_bound_configuration(
+            value,
+            lambda _transaction_id: transaction(state=transaction_state),
+            lambda payload: status_calls.append(payload) or status_response(),
+            expected_state=expected_state,
+        )
+
+    assert status_calls == []
 
 
 @pytest.mark.parametrize("port", [None, 9999])
