@@ -6,6 +6,7 @@ from pathlib import Path
 import secrets
 import shutil
 import subprocess
+import sys
 import uuid
 
 import pytest
@@ -37,15 +38,8 @@ if __name__ == "__main__":
 def installation(tmp_path):
     if not shutil.which("docker"):
         pytest.skip("Docker Compose CLI required")
-    installed = tmp_path / "extensions/services/marimo"
+    installed = tmp_path / "data/user-extensions/marimo"
     shutil.copytree(EXTENSION, installed)
-    # Dashboard installation rewrites the recipe-relative build context to
-    # this final directory. Its real HTTP boundary is covered by
-    # dashboard-api/tests/test_marimo_install.py.
-    compose = installed / "compose.yaml"
-    text = compose.read_text()
-    assert "      context: .\n" in text
-    compose.write_text(text.replace("      context: .\n", f"      context: {installed}\n"))
     (tmp_path / "empty.env").write_text("")
     env = {key: value for key, value in os.environ.items() if not key.startswith("MARIMO_")}
     env.pop("BIND_ADDRESS", None)
@@ -68,7 +62,9 @@ def test_installation_uses_scoped_writable_data_and_private_editor(installation)
     result = render(installation)
     assert result.returncode == 0, result.stderr
     service = json.loads(result.stdout)["services"]["marimo"]
-    assert service["build"]["context"] == str(installed)
+    assert service["image"] == "ods-marimo:0.24.2-r1"
+    assert service["pull_policy"] == "never"
+    assert "build" not in service
     assert service["user"] == "1000:1000"
     assert service["read_only"] is True
     assert service["ports"][0]["published"] == "12718"
@@ -94,12 +90,49 @@ def test_missing_editor_password_blocks_compose(installation, empty):
     assert "MARIMO_PASSWORD" in result.stderr
 
 
+@pytest.mark.parametrize("exit_code", [0, 23])
+def test_setup_builds_the_declared_image_and_propagates_failure(installation, exit_code):
+    directory, installed, env = installation
+    expected_image = json.loads(render(installation).stdout)["services"]["marimo"]["image"]
+    tools = directory / "fake-bin"
+    tools.mkdir()
+    record = directory / "docker-call.json"
+    docker = tools / "docker"
+    docker.write_text(
+        f"#!{sys.executable}\nimport json, pathlib, sys\n"
+        f"pathlib.Path({str(record)!r}).write_text(json.dumps(sys.argv[1:]))\n"
+        f"sys.exit({exit_code})\n"
+    )
+    docker.chmod(0o755)
+    env["PATH"] = str(tools) + os.pathsep + env["PATH"]
+    result = subprocess.run(["bash", str(installed / "setup.sh"), str(directory), "cpu"],
+                            cwd=directory, env=env, capture_output=True, text=True, timeout=15)
+    assert result.returncode == exit_code, result.stderr
+    assert json.loads(record.read_text()) == [
+        "build", "--tag", expected_image, "--file", str(installed / "Dockerfile"), str(installed),
+    ]
+
+
+def test_installed_editor_is_accepted_by_the_real_stack_resolver(installation):
+    directory, installed, env = installation
+    (directory / "docker-compose.base.yml").write_text("services:\n  fixture-core:\n    image: busybox\n")
+    result = subprocess.run(["bash", str(ROOT / "scripts/resolve-compose-stack.sh"),
+                             "--script-dir", str(directory), "--gpu-backend", "cpu"],
+                            env=env, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert "data/user-extensions/marimo/compose.yaml" in result.stdout
+
+
 @pytest.mark.skipif(os.getenv("ODS_TEST_MARIMO") != "1", reason="Opt-in actual editor build and execution")
 def test_live_authentication_notebook_execution_and_recreation(installation):
-    directory, _, env = installation
+    directory, installed, env = installation
     project = "ods-q40-marimo-" + uuid.uuid4().hex[:12]
     plan = json.loads(render(installation).stdout)
     service = plan["services"]["marimo"]
+    # Build the same Dockerfile under an owned tag; never overwrite an
+    # operator's local deployment image during the runtime test.
+    image = project + ":test"
+    service["image"] = image
     service.update(container_name=project, restart="no", network_mode="none")
     service.pop("networks")
     service.pop("ports")
@@ -122,10 +155,11 @@ def test_live_authentication_notebook_execution_and_recreation(installation):
 
     probe = (ROOT / "tests/fixtures/marimo-http.py").read_text()
     try:
-        run(*command, "build", timeout=480)
-        built = json.loads(run(*command, "config", "--format", "json").stdout)
-        # Compose names its build-only image after this owned project/service.
-        image = built["services"]["marimo"].get("image", project + "-marimo")
+        run("docker", "build", "--tag", image, "--file",
+            str(installed / "Dockerfile"), str(installed), timeout=480)
+        # The host install path runs pull after the setup hook; never contact
+        # a registry for this deliberately local build artifact.
+        run(*command, "pull", "marimo")
         for volume in plan["volumes"].values():
             run("docker", "volume", "create", volume["name"])
         run("docker", "run", "--rm", "--network", "none", "--user", "0",
@@ -161,4 +195,5 @@ def test_live_authentication_notebook_execution_and_recreation(installation):
     finally:
         diagnostics = run("docker", "logs", "--tail", "15", project, check=False)
         print("Editor diagnostics:", diagnostics.stdout, diagnostics.stderr)
-        run(*command, "down", "--volumes", "--rmi", "local", "--timeout", "30")
+        run(*command, "down", "--volumes", "--timeout", "30")
+        run("docker", "image", "rm", image)

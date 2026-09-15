@@ -16,6 +16,7 @@ service:
   category: optional
   depends_on: []
   uid: 1000
+  setup_hook: setup.sh
   description: Reactive Python notebooks stored as ordinary Python files for reproducible local analysis.
   env_vars:
     - key: MARIMO_PASSWORD

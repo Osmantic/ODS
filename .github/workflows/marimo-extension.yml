@@ -18,7 +18,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: python -m pip install pytest
+      - run: python -m pip install pytest pyyaml
       - run: python -m pytest ods/tests/test_marimo.py -q -s
         env:
           ODS_TEST_MARIMO: '1'

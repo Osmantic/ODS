@@ -1,7 +1,7 @@
 services:
   marimo:
-    build:
-      context: .
+    image: ods-marimo:0.24.2-r1
+    pull_policy: never
     container_name: ods-marimo
     restart: unless-stopped
     user: "1000:1000"

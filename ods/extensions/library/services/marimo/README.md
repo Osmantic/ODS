@@ -42,6 +42,15 @@ package 0.24.2, including the newer cookie-token handling. No 0.24.2 container
 tag was available when this definition was prepared. The build checks package
 compatibility. Review the resulting build and dependency updates before upgrades.
 
+The existing install setup hook builds the local ods-marimo:0.24.2-r1 image.
+Compose consumes that image with pull_policy: never, so activation and
+disable/re-enable follow ODS's image-only user-extension policy. Installation
+requires working Docker build access and initial image/package network access;
+a failed build fails setup visibly. Retain this local image for offline use and
+rollback. If an operator removes it, rerun the installed setup.sh before starting
+the service. Changing an image version requires updating both setup.sh and the
+Compose image reference.
+
 Version checks and built-in sharing UI are disabled. These settings do not
 prevent trusted notebook code from making network requests.
 
