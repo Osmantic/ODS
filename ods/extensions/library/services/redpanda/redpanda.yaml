@@ -1,0 +1,16 @@
+redpanda:
+  data_directory: /var/lib/redpanda/data
+  node_id: 0
+  seed_servers: []
+  developer_mode: false
+  rpc_server:
+    address: 127.0.0.1
+    port: 33145
+  advertised_rpc_api:
+    address: 127.0.0.1
+    port: 33145
+  admin:
+    - address: 0.0.0.0
+      port: 9644
+rpk:
+  enable_memory_locking: false

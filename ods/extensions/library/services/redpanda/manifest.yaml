@@ -1,0 +1,35 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: redpanda
+  name: Redpanda (Kafka Event Log)
+  description: "Retain and replay local workflow events through the Kafka API with SCRAM authentication and native topic/group ACLs."
+  aliases: [kafka]
+  container_name: ods-redpanda
+  container_uid: 101
+  default_host: redpanda
+  port: 0
+  external_port_default: 0
+  health: /v1/status/ready
+  health_port: 9644
+  health_source: container
+  startup_check: true
+  startup_timeout: 180
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [kafka, events, streaming]
+  env_vars:
+    - key: REDPANDA_PORT
+      description: "Published Kafka port and port advertised to host clients"
+      default: "19092"
+    - key: REDPANDA_ADVERTISE_HOST
+      description: "Host name advertised to host Kafka clients; separate from the bind address"
+      default: "127.0.0.1"
+    - key: REDPANDA_PASSWORD
+      description: "Initial SCRAM-SHA-256 password for administrator ods; no colon or newline; rotate with native user management"
+      required: true
+      secret: true

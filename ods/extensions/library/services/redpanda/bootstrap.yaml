@@ -1,0 +1,12 @@
+enable_sasl: true
+superusers: [ods]
+admin_api_require_auth: true
+enable_metrics_reporter: false
+auto_create_topics_enabled: false
+default_topic_replications: 1
+transaction_coordinator_replication: 1
+id_allocator_replication: 1
+write_caching_default: disabled
+delete_retention_ms: 86400000
+retention_bytes: 1073741824
+log_segment_size: 134217728

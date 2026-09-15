@@ -3176,6 +3176,46 @@
       "configuration_scope": "declared-environment-keys"
     },
     {
+      "id": "redpanda",
+      "name": "Redpanda (Kafka Event Log)",
+      "description": "Retain and replay local workflow events through the Kafka API with SCRAM authentication and native topic/group ACLs.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 0,
+      "external_port_default": 0,
+      "health_endpoint": "/v1/status/ready",
+      "env_vars": [
+        {
+          "key": "REDPANDA_PORT",
+          "description": "Published Kafka port and port advertised to host clients",
+          "default": "19092"
+        },
+        {
+          "key": "REDPANDA_ADVERTISE_HOST",
+          "description": "Host name advertised to host Kafka clients; separate from the bind address",
+          "default": "127.0.0.1"
+        },
+        {
+          "key": "REDPANDA_PASSWORD",
+          "description": "Initial SCRAM-SHA-256 password for administrator ods; no colon or newline; rotate with native user management",
+          "required": true
+        }
+      ],
+      "tags": [
+        "kafka",
+        "events",
+        "streaming"
+      ],
+      "features": [],
+      "startup_check": true,
+      "startup_timeout": 180,
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
       "id": "remote-provider-egress",
       "name": "Remote Provider Egress",
       "description": "Internal-only OpenAI-compatible egress boundary for optional remote LLM providers. It reads generated remote routing state and a private provider secret file, enforces the remote-provider egress policy, and exposes no host port.\n",
