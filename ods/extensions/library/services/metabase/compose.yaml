@@ -1,0 +1,82 @@
+services:
+  metabase:
+    image: metabase/metabase:v0.63.17@sha256:918187453bd5d70849d14bb6af0bb482a617dc849f251502679a8e626d98f4ee
+    container_name: ods-metabase
+    user: "2000:2000"
+    restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp:size=512m,mode=1777
+    environment:
+      MB_DB_TYPE: postgres
+      MB_DB_HOST: metabase-db
+      MB_DB_PORT: "5432"
+      MB_DB_DBNAME: metabase
+      MB_DB_USER: metabase
+      MB_DB_PASS: "${METABASE_DB_PASSWORD:?Set METABASE_DB_PASSWORD before enabling Metabase}"
+      MB_ENCRYPTION_SECRET_KEY: "${METABASE_ENCRYPTION_KEY:?Set METABASE_ENCRYPTION_KEY before enabling Metabase}"
+      MB_SITE_URL: "${METABASE_SITE_URL:-http://localhost:${METABASE_PORT:-3032}}"
+      MB_ANON_TRACKING_ENABLED: "false"
+      MB_CHECK_FOR_UPDATES: "false"
+      MB_ENABLE_PUBLIC_SHARING: "false"
+      MB_LOAD_SAMPLE_CONTENT: "false"
+      MB_PLUGINS_DIR: /tmp/plugins
+      JAVA_OPTS: "-Xms128m -Xmx1024m -XX:ActiveProcessorCount=2 -Duser.home=/tmp"
+      JAVA_TIMEZONE: UTC
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${METABASE_PORT:-3032}:3000"
+    depends_on:
+      metabase-db:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, curl, --fail, --silent, --output, /dev/null, "http://127.0.0.1:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 180s
+    networks: [ods-network, metabase-private]
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+
+  metabase-db:
+    image: postgres:17.11-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
+    container_name: ods-metabase-db
+    user: "70:70"
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+      - /var/run/postgresql:uid=70,gid=70,mode=0770
+    environment:
+      POSTGRES_DB: metabase
+      POSTGRES_USER: metabase
+      POSTGRES_PASSWORD: "${METABASE_DB_PASSWORD:?Set METABASE_DB_PASSWORD before enabling Metabase}"
+      POSTGRES_HOST_AUTH_METHOD: scram-sha-256
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
+    volumes:
+      - ./data/metabase/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD, pg_isready, -U, metabase, -d, metabase]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [metabase-private]
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+
+networks:
+  ods-network:
+    external: true
+  metabase-private:
+    internal: true

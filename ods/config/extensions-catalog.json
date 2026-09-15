@@ -2293,6 +2293,74 @@
       "configuration_scope": "declared-environment-keys"
     },
     {
+      "id": "metabase",
+      "name": "Metabase (Local SQL Analytics)",
+      "description": "Save SQL questions and build reports over explicitly connected local databases, with a dedicated application store.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 3000,
+      "external_port_default": 3032,
+      "health_endpoint": "/api/health",
+      "env_vars": [
+        {
+          "key": "METABASE_PORT",
+          "description": "Metabase UI and authenticated API host port",
+          "default": "3032"
+        },
+        {
+          "key": "METABASE_SITE_URL",
+          "description": "Optional public URL; empty derives http://localhost from METABASE_PORT",
+          "default": ""
+        },
+        {
+          "key": "METABASE_DB_PASSWORD",
+          "description": "Initial password for the private application PostgreSQL database; not the UI login",
+          "required": true
+        },
+        {
+          "key": "METABASE_ENCRYPTION_KEY",
+          "description": "Persistent connection-encryption key of at least 16 characters; keep with private backups",
+          "required": true
+        }
+      ],
+      "tags": [
+        "analytics",
+        "dashboards",
+        "database"
+      ],
+      "features": [
+        {
+          "id": "local-sql-analytics",
+          "name": "Local SQL Analytics",
+          "description": "Explore approved local data sources and save reproducible SQL questions",
+          "icon": "BarChart3",
+          "category": "monitoring",
+          "requirements": {
+            "services": [
+              "metabase"
+            ],
+            "vram_gb": 0
+          },
+          "enabled_services_all": [
+            "metabase"
+          ],
+          "setup_time": "~3 minutes",
+          "priority": 40,
+          "launch": {
+            "type": "service",
+            "service": "metabase",
+            "path": "/"
+          }
+        }
+      ],
+      "startup_timeout": 300,
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
       "id": "milvus",
       "name": "Milvus (Vector Database)",
       "description": "Production-grade open-source vector database for scalable similarity search.",
