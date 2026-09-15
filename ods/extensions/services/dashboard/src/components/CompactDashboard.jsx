@@ -19,7 +19,7 @@ function Meter({ value, label }) {
   return <div className="dashboard-metal-track" role="progressbar" aria-label={label} aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent}><span style={{width:`${percent}%`}}/></div>
 }
 
-export default function CompactDashboard({ metrics, services, health }) {
+export default function CompactDashboard({ metrics, services, health, resourceExport }) {
   const [tab, setTab] = useState('overview')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(6)
@@ -57,7 +57,7 @@ export default function CompactDashboard({ metrics, services, health }) {
       <dt><MetalMetricIcon icon={Icon}/><span>{label}<small>{subvalue}</small></span></dt>
       <dd><span title={String(value)}>{alert && <StatusDot tone="orange"/>}{value}</span>{Number.isFinite(usage) && <Meter value={usage} label={`${label} utilization`}/>}</dd>
     </div>)}</dl>
-    <header className="dashboard-services-heading"><div><h2>Services</h2><p>Current service health</p></div><span>{services.length} services</span></header>
+    <header className="dashboard-services-heading"><div><h2>Services</h2><p>Current service health</p></div><div>{resourceExport}<span>{services.length} services</span></div></header>
     <div ref={list} className="dashboard-service-list">{services.slice((currentPage - 1) * pageSize,currentPage * pageSize).map((service,index) => <details key={service.id || service.name || index}>
       <summary><Activity size={13}/><span className="dashboard-service-name">{service.name || service.id}</span><span className="dashboard-status-badge"><StatusDot tone={tone(service.status)}/>{(service.status || 'unknown').replaceAll('_',' ')}</span><ChevronRight className="dashboard-service-chevron" size={12}/></summary>
       <dl><div><dt>Status</dt><dd>{(service.status || 'unknown').replaceAll('_',' ')}</dd></div>{service.port && <div><dt>Port</dt><dd>{service.port}</dd></div>}{service.id && <div><dt>Service</dt><dd>{service.id}</dd></div>}</dl>
