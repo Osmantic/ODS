@@ -1381,3 +1381,20 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def list_subsequence_contains_safe(items: list | None, sub: list | None) -> bool:
+    """Safely check if contiguous sub sequence exists within items list.
+    Returns False on None or non-list inputs.
+    """
+    if not isinstance(items, (list, tuple)) or not isinstance(sub, (list, tuple)):
+        return False
+    if not sub:
+        return True
+    n, m = len(items), len(sub)
+    if m > n:
+        return False
+    for i in range(n - m + 1):
+        if list(items[i:i + m]) == list(sub):
+            return True
+    return False
