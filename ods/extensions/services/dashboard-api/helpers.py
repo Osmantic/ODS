@@ -1381,3 +1381,12 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def dict_key_count_safe(d: dict | None) -> int:
+    """Safely return count of keys in dictionary.
+    Returns 0 on None or non-dict inputs.
+    """
+    if not isinstance(d, dict) or d is None:
+        return 0
+    return len(d)
