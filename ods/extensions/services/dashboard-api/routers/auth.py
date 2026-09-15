@@ -86,6 +86,10 @@ def verify_session(request: Request) -> dict:
     the parser.
     """
     cookie_value = request.cookies.get(SESSION_COOKIE_NAME, "")
+    if not cookie_value:
+        auth_header = request.headers.get("authorization", "")
+        if auth_header.lower().startswith("bearer "):
+            cookie_value = auth_header[7:].strip()
     ok, reason = session_signer.verify(cookie_value)
     if not ok:
         logger.info("verify-session denied: reason=%s", reason)
