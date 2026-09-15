@@ -50,7 +50,7 @@ sr_resolve_ports
 if $JSON_OUTPUT || $QUIET; then
     GREEN="" RED="" YELLOW="" CYAN="" NC=""
 else
-    GREEN='\033[0;32m' RED='\033[0;31m' YELLOW='\033[1;33m' CYAN='\033[0;36m' NC='\033[0m'
+    GREEN=$'\033[0;32m' RED=$'\033[0;31m' YELLOW=$'\033[1;33m' CYAN=$'\033[0;36m' NC=$'\033[0m'
 fi
 
 # Track results (indexed arrays — Bash 3.2 compatible as defense-in-depth)
