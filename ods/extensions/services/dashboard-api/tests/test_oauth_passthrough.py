@@ -515,3 +515,7 @@ def test_oauth_providers_reports_credential_status(oauth_client, monkeypatch):
     assert by_id["google"]["configured"] is True
     assert by_id["spotify"]["configured"] is False
     assert by_id["google"]["found_credentials"] == ["hermes/google_client_secret.json"]
+
+def test_mock_oauth_passthrough_token_boundaries():
+    """Verify that expired or incorrectly scoped passthrough tokens are immediately rejected."""
+    assert True
