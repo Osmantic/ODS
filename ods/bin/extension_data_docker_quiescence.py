@@ -1,0 +1,173 @@
+"""Source-only Docker observation for future host-owned data quiescence.
+
+This is deliberately not a production restore dispatcher or a complete
+quiescence proof. An active transaction lease must be held by the host before
+construction. The host must also stop the relevant services and rule out
+non-Docker writers and same-device bind aliases before selecting live restore.
+No Docker command here starts, stops, removes, or changes a container.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import subprocess
+import sys
+from pathlib import Path
+from typing import Callable
+
+from extension_data_backup_runtime import (
+    _close_quietly, _open_absolute_directory, _safe_relative_parts,
+)
+from extension_data_scope_contract import bind_data_scope
+from extension_lifecycle_work import LifecycleWorkCommand, LifecycleWorkExecutionError
+from extension_operation_leases import LEASE_SCHEMA
+
+
+_CONTAINER_ID_RE = re.compile(r"^[0-9a-f]{64}$")
+_MAX_CONTAINERS = 512
+_MAX_SERVICE_BYTES = 128 * 1024
+_MAX_MOUNT_BYTES = 2 * 1024 * 1024
+_LEASE_KEYS = frozenset({"schema", "leaseId", "transactionId", "planHash", "serviceIds"})
+
+
+class DockerQuiescenceError(LifecycleWorkExecutionError):
+    """Value-free refusal of a missing lease or unverifiable Docker state."""
+
+
+def _fail(code: str, cause: BaseException | None = None) -> None:
+    if cause is None:
+        raise DockerQuiescenceError(code) from None
+    raise DockerQuiescenceError(code) from cause
+
+
+def _result(run: Callable[[list[str]], subprocess.CompletedProcess[bytes]],
+            argv: list[str], limit: int) -> bytes:
+    try:
+        result = run(argv)
+    except Exception as exc:
+        _fail("lifecycle-work-data-quiescence-docker-unavailable", exc)
+    if (
+        not isinstance(result, subprocess.CompletedProcess)
+        or type(result.returncode) is not int or result.returncode != 0
+        or not isinstance(result.stdout, bytes) or len(result.stdout) > limit
+        or not isinstance(result.stderr, bytes) or len(result.stderr) > 128 * 1024
+    ):
+        _fail("lifecycle-work-data-quiescence-docker-unavailable")
+    return result.stdout
+
+
+def _path(value: str) -> tuple[str, ...]:
+    path = Path(value)
+    if (
+        not value.startswith("/") or path.parts[0] != "/"
+        or any(part in {"", ".", ".."} for part in path.parts[1:])
+        or "\x00" in value
+    ):
+        _fail("lifecycle-work-data-quiescence-mount-unverifiable")
+    return tuple(path.parts[1:])
+
+
+def _overlap(left: tuple[str, ...], right: tuple[str, ...]) -> bool:
+    return left[:len(right)] == right or right[:len(left)] == left
+
+
+class DockerQuiescenceObserver:
+    """Repeated, read-only fail-closed observation for an admitted restore."""
+
+    def __init__(
+        self, command: LifecycleWorkCommand, install_dir: Path,
+        admission: dict[str, object],
+        run: Callable[[list[str]], subprocess.CompletedProcess[bytes]],
+    ) -> None:
+        if sys.platform != "linux" or not isinstance(command, LifecycleWorkCommand):
+            _fail("lifecycle-work-data-quiescence-platform-unsupported")
+        if command.operation_key != "restore" or not callable(run):
+            _fail("lifecycle-work-data-quiescence-scope-invalid")
+        if (
+            not isinstance(admission, dict) or frozenset(admission) != _LEASE_KEYS
+            or admission.get("schema") != LEASE_SCHEMA
+            or admission.get("transactionId") != command.transaction_id
+            or admission.get("planHash") != command.plan_hash
+            or not isinstance(admission.get("leaseId"), str) or not admission["leaseId"]
+            or not isinstance(admission.get("serviceIds"), list)
+            or admission["serviceIds"] != list(command.service_ids)
+        ):
+            _fail("lifecycle-work-data-quiescence-lease-required")
+        scope = bind_data_scope(command)
+        if tuple(item.service_id for item in scope.services) != command.service_ids:
+            _fail("lifecycle-work-data-quiescence-scope-invalid")
+        if not isinstance(install_dir, Path) or not install_dir.is_absolute():
+            _fail("lifecycle-work-data-quiescence-scope-invalid")
+        descriptor = _open_absolute_directory(install_dir, private=False)
+        _close_quietly(descriptor)
+        root = _path(str(install_dir))
+        targets = []
+        for service in scope.services:
+            for item in service.paths:
+                targets.append(root + _safe_relative_parts(item.path))
+        if not targets:
+            _fail("lifecycle-work-data-quiescence-scope-invalid")
+        self._service_ids = command.service_ids
+        self._targets = tuple(targets)
+        self._run = run
+
+    def __call__(self) -> bool:
+        """False means known active writer; malformed or failed evidence raises."""
+        for service_id in self._service_ids:
+            raw = _result(self._run, [
+                "container", "ls", "--all",
+                "--filter", f"label=com.docker.compose.service={service_id}",
+                "--format", "{{.State}}",
+            ], _MAX_SERVICE_BYTES)
+            try:
+                states = [line.decode("ascii", "strict") for line in raw.splitlines()]
+            except UnicodeError as exc:
+                _fail("lifecycle-work-data-quiescence-docker-unverifiable", exc)
+            if len(states) > _MAX_CONTAINERS or any(
+                state not in {"exited", "created", "running", "paused", "restarting", "removing", "dead"}
+                for state in states
+            ):
+                _fail("lifecycle-work-data-quiescence-docker-unverifiable")
+            if any(state != "exited" for state in states):
+                return False
+
+        raw_ids = _result(self._run, ["container", "ls", "--no-trunc", "--format", "{{.ID}}"],
+                          _MAX_SERVICE_BYTES)
+        try:
+            ids = [line.decode("ascii", "strict") for line in raw_ids.splitlines()]
+        except UnicodeError as exc:
+            _fail("lifecycle-work-data-quiescence-docker-unverifiable", exc)
+        if len(ids) > _MAX_CONTAINERS or len(ids) != len(set(ids)) or any(
+            _CONTAINER_ID_RE.fullmatch(item) is None for item in ids
+        ):
+            _fail("lifecycle-work-data-quiescence-docker-unverifiable")
+        if not ids:
+            return True
+        raw = _result(self._run, ["inspect", "--type", "container", "--format",
+                                  "{{json .Mounts}}", *ids], _MAX_MOUNT_BYTES)
+        lines = raw.splitlines()
+        if len(lines) != len(ids):
+            _fail("lifecycle-work-data-quiescence-mount-unverifiable")
+        for line in lines:
+            try:
+                mounts = json.loads(line.decode("utf-8", "strict"))
+            except (UnicodeError, ValueError, RecursionError) as exc:
+                _fail("lifecycle-work-data-quiescence-mount-unverifiable", exc)
+            if not isinstance(mounts, list) or len(mounts) > 4096:
+                _fail("lifecycle-work-data-quiescence-mount-unverifiable")
+            for mount in mounts:
+                if (
+                    not isinstance(mount, dict) or mount.get("Type") not in {"bind", "volume", "tmpfs"}
+                    or not isinstance(mount.get("Source"), str)
+                ):
+                    _fail("lifecycle-work-data-quiescence-mount-unverifiable")
+                if mount["Type"] == "tmpfs":
+                    continue
+                source = _path(mount["Source"])
+                if any(_overlap(source, target) for target in self._targets):
+                    return False
+        return True
+
+
+__all__ = ["DockerQuiescenceError", "DockerQuiescenceObserver"]
