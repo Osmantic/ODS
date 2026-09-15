@@ -1,9 +1,10 @@
 """Source-only Docker observation for future host-owned data quiescence.
 
 This is deliberately not a production restore dispatcher or a complete
-quiescence proof. An active transaction lease must be held by the host before
-construction. The host must also stop the relevant services and rule out
-non-Docker writers and same-device bind aliases before selecting live restore.
+quiescence proof. The host must supply a token-authenticated lease-status
+callback while holding the active mutation window. It must stop relevant
+services and rule out non-Docker writers and same-device bind aliases before
+selecting live restore.
 No Docker command here starts, stops, removes, or changes a container.
 """
 
@@ -21,7 +22,7 @@ from extension_data_backup_runtime import (
 )
 from extension_data_scope_contract import bind_data_scope
 from extension_lifecycle_work import LifecycleWorkCommand, LifecycleWorkExecutionError
-from extension_operation_leases import LEASE_SCHEMA
+from extension_operation_leases import LEASE_SCHEMA, MAX_LEASE_SERVICES
 
 
 _CONTAINER_ID_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -29,6 +30,7 @@ _MAX_CONTAINERS = 512
 _MAX_SERVICE_BYTES = 128 * 1024
 _MAX_MOUNT_BYTES = 2 * 1024 * 1024
 _LEASE_KEYS = frozenset({"schema", "leaseId", "transactionId", "planHash", "serviceIds"})
+_STATUS_KEYS = _LEASE_KEYS | {"active"}
 
 
 class DockerQuiescenceError(LifecycleWorkExecutionError):
@@ -79,10 +81,11 @@ class DockerQuiescenceObserver:
         self, command: LifecycleWorkCommand, install_dir: Path,
         admission: dict[str, object],
         run: Callable[[list[str]], subprocess.CompletedProcess[bytes]],
+        status: Callable[[], dict[str, object]],
     ) -> None:
         if sys.platform != "linux" or not isinstance(command, LifecycleWorkCommand):
             _fail("lifecycle-work-data-quiescence-platform-unsupported")
-        if command.operation_key != "restore" or not callable(run):
+        if command.operation_key != "restore" or not callable(run) or not callable(status):
             _fail("lifecycle-work-data-quiescence-scope-invalid")
         if (
             not isinstance(admission, dict) or frozenset(admission) != _LEASE_KEYS
@@ -111,9 +114,38 @@ class DockerQuiescenceObserver:
         self._service_ids = command.service_ids
         self._targets = tuple(targets)
         self._run = run
+        self._status = status
+        self._lease_id = admission["leaseId"]
+        self._transaction_id = command.transaction_id
+        self._plan_hash = command.plan_hash
+
+    def _require_active_lease(self) -> bool:
+        """Require fresh host status from the caller's authorized use window."""
+        try:
+            record = self._status()
+        except Exception as exc:
+            _fail("lifecycle-work-data-quiescence-lease-not-active", exc)
+        if not isinstance(record, dict) or frozenset(record) != _STATUS_KEYS:
+            _fail("lifecycle-work-data-quiescence-lease-not-active")
+        ids = record.get("serviceIds")
+        if (
+            record.get("schema") != LEASE_SCHEMA
+            or record.get("leaseId") != self._lease_id
+            or record.get("transactionId") != self._transaction_id
+            or record.get("planHash") != self._plan_hash
+            or record.get("active") is not True
+            or not isinstance(ids, list)
+            or not ids or len(ids) > MAX_LEASE_SERVICES
+            or not all(isinstance(item, str) for item in ids)
+            or ids != sorted(set(ids))
+            or not set(self._service_ids).issubset(ids)
+        ):
+            _fail("lifecycle-work-data-quiescence-lease-not-active")
+        return True
 
     def __call__(self) -> bool:
         """False means known active writer; malformed or failed evidence raises."""
+        self._require_active_lease()
         for service_id in self._service_ids:
             raw = _result(self._run, [
                 "container", "ls", "--all",
@@ -143,7 +175,7 @@ class DockerQuiescenceObserver:
         ):
             _fail("lifecycle-work-data-quiescence-docker-unverifiable")
         if not ids:
-            return True
+            return self._require_active_lease()
         raw = _result(self._run, ["inspect", "--type", "container", "--format",
                                   "{{json .Mounts}}", *ids], _MAX_MOUNT_BYTES)
         lines = raw.splitlines()
@@ -167,7 +199,7 @@ class DockerQuiescenceObserver:
                 source = _path(mount["Source"])
                 if any(_overlap(source, target) for target in self._targets):
                     return False
-        return True
+        return self._require_active_lease()
 
 
 __all__ = ["DockerQuiescenceError", "DockerQuiescenceObserver"]

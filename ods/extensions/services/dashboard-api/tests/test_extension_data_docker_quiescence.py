@@ -16,6 +16,7 @@ if str(BIN_DIR) not in sys.path:
 import extension_data_docker_quiescence as quiescence  # noqa: E402
 from extension_operation_leases import LEASE_SCHEMA  # noqa: E402
 from test_extension_data_restore_journal import _ready  # noqa: E402
+from test_extension_operation_leases import FakeClock, make_manager  # noqa: E402
 
 
 linux_effect = pytest.mark.skipif(sys.platform != "linux", reason="Linux-only Docker restore observer")
@@ -28,6 +29,13 @@ def _admission(command):
         "transactionId": command.transaction_id, "planHash": command.plan_hash,
         "serviceIds": sorted(command.service_ids),
     }
+
+
+def _status(command, admission=None, **changes):
+    admission = admission or _admission(command)
+    record = {**admission, "active": True}
+    record.update(changes)
+    return record
 
 
 class FakeDocker:
@@ -56,8 +64,9 @@ class FakeDocker:
 
 def _observer(tmp_path: Path, fake: FakeDocker):
     install, _backup, _alpha, _store, command, _root, _journal = _ready(tmp_path)
+    admission = _admission(command)
     return install, command, quiescence.DockerQuiescenceObserver(
-        command, install, _admission(command), fake,
+        command, install, admission, fake, lambda: _status(command, admission),
     )
 
 
@@ -86,7 +95,10 @@ def test_running_foreign_container_with_ancestor_data_bind_mount_refuses(tmp_pat
     fake = FakeDocker(ids=(_ID + "\n").encode(), mounts=[[
         {"Type": "bind", "Source": str(install / "data"), "RW": False},
     ]])
-    observer = quiescence.DockerQuiescenceObserver(command, install, _admission(command), fake)
+    admission = _admission(command)
+    observer = quiescence.DockerQuiescenceObserver(
+        command, install, admission, fake, lambda: _status(command, admission),
+    )
     assert observer() is False
     assert fake.calls[-1][:5] == ["inspect", "--type", "container", "--format", "{{json .Mounts}}"]
 
@@ -132,7 +144,9 @@ def test_lease_binding_mismatch_refuses_before_any_docker_probe(tmp_path: Path):
     admission = _admission(command)
     admission["planHash"] = "0" * 64
     with pytest.raises(quiescence.DockerQuiescenceError) as caught:
-        quiescence.DockerQuiescenceObserver(command, install, admission, fake)
+        quiescence.DockerQuiescenceObserver(
+            command, install, admission, fake, lambda: _status(command, admission),
+        )
     assert caught.value.code == "lifecycle-work-data-quiescence-lease-required"
     assert not fake.calls
 
@@ -147,7 +161,9 @@ def test_lease_service_ids_must_be_exact_ordered_binding(
     admission = _admission(command)
     admission["serviceIds"] = service_ids
     with pytest.raises(quiescence.DockerQuiescenceError) as caught:
-        quiescence.DockerQuiescenceObserver(command, install, admission, fake)
+        quiescence.DockerQuiescenceObserver(
+            command, install, admission, fake, lambda: _status(command, admission),
+        )
     assert caught.value.code == "lifecycle-work-data-quiescence-lease-required"
     assert not fake.calls
 
@@ -159,6 +175,109 @@ def test_non_linux_posix_host_cannot_select_linux_only_observer(
     fake = FakeDocker()
     monkeypatch.setattr(quiescence.sys, "platform", "darwin")
     with pytest.raises(quiescence.DockerQuiescenceError) as caught:
-        quiescence.DockerQuiescenceObserver(command, install, _admission(command), fake)
+        quiescence.DockerQuiescenceObserver(
+            command, install, _admission(command), fake,
+            lambda: _status(command),
+        )
     assert caught.value.code == "lifecycle-work-data-quiescence-platform-unsupported"
     assert not fake.calls
+
+
+@linux_effect
+@pytest.mark.parametrize("change", [
+    {"active": False}, {"planHash": "0" * 64}, {"leaseId": "lease-" + "0" * 24},
+    {"serviceIds": ["alpha"]}, {"serviceIds": [["alpha"], "beta"]},
+])
+def test_inactive_or_unbound_host_status_refuses_before_docker_probe(
+        tmp_path: Path, change: dict):
+    install, _backup, _alpha, _store, command, _root, _journal = _ready(tmp_path)
+    admission = _admission(command)
+    fake = FakeDocker()
+    observer = quiescence.DockerQuiescenceObserver(
+        command, install, admission, fake,
+        lambda: _status(command, admission, **change),
+    )
+    with pytest.raises(quiescence.DockerQuiescenceError) as caught:
+        observer()
+    assert caught.value.code == "lifecycle-work-data-quiescence-lease-not-active"
+    assert not fake.calls
+
+
+@linux_effect
+def test_lease_loss_after_docker_snapshot_refuses_before_success(tmp_path: Path):
+    install, _backup, _alpha, _store, command, _root, _journal = _ready(tmp_path)
+    admission = _admission(command)
+    fake = FakeDocker()
+    records = iter([_status(command, admission), _status(command, admission, active=False)])
+    observer = quiescence.DockerQuiescenceObserver(
+        command, install, admission, fake, lambda: next(records),
+    )
+    with pytest.raises(quiescence.DockerQuiescenceError) as caught:
+        observer()
+    assert caught.value.code == "lifecycle-work-data-quiescence-lease-not-active"
+    assert len(fake.calls) == len(command.service_ids) + 1
+
+
+@linux_effect
+def test_real_manager_status_proves_only_the_active_use_window(tmp_path: Path):
+    install, _backup, _alpha, _store, command, _root, _journal = _ready(tmp_path)
+    manager, locks, _events = make_manager()
+    grant = manager.acquire(command.transaction_id, command.plan_hash, command.service_ids)
+    fake = FakeDocker()
+
+    def status():
+        return manager.status(
+            grant["leaseId"], grant["leaseToken"],
+            command.transaction_id, command.plan_hash,
+        )
+
+    with manager.use(
+            grant["leaseId"], grant["leaseToken"], command.transaction_id,
+            command.plan_hash, command.service_ids,
+    ) as admission:
+        observer = quiescence.DockerQuiescenceObserver(
+            command, install, admission, fake, status,
+        )
+        assert grant["leaseToken"] not in repr(observer)
+        assert observer() is True
+        assert all(locks[service_id].locked() for service_id in command.service_ids)
+    prior_calls = len(fake.calls)
+    with pytest.raises(quiescence.DockerQuiescenceError) as caught:
+        observer()
+    assert caught.value.code == "lifecycle-work-data-quiescence-lease-not-active"
+    assert grant["leaseToken"] not in str(caught.value)
+    assert len(fake.calls) == prior_calls
+
+
+@linux_effect
+def test_real_manager_expiry_during_observation_refuses(tmp_path: Path):
+    install, _backup, _alpha, _store, command, _root, _journal = _ready(tmp_path)
+    clock = FakeClock()
+    manager, _locks, _events = make_manager(clock=clock)
+    grant = manager.acquire(
+        command.transaction_id, command.plan_hash, command.service_ids,
+        ttl_seconds=10,
+    )
+
+    class ExpiringDocker(FakeDocker):
+        def __call__(self, argv: list[str]) -> subprocess.CompletedProcess[bytes]:
+            result = super().__call__(argv)
+            if len(self.calls) == 1:
+                clock.advance(11)
+            return result
+
+    fake = ExpiringDocker()
+    with manager.use(
+            grant["leaseId"], grant["leaseToken"], command.transaction_id,
+            command.plan_hash, command.service_ids,
+    ) as admission:
+        observer = quiescence.DockerQuiescenceObserver(
+            command, install, admission, fake,
+            lambda: manager.status(
+                grant["leaseId"], grant["leaseToken"],
+                command.transaction_id, command.plan_hash,
+            ),
+        )
+        with pytest.raises(quiescence.DockerQuiescenceError) as caught:
+            observer()
+        assert caught.value.code == "lifecycle-work-data-quiescence-lease-not-active"
