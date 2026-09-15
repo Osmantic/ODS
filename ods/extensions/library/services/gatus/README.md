@@ -3,8 +3,8 @@
 Install **Gatus (Local Service History)**, generate a local password hash, set
 `GATUS_PASSWORD_BCRYPT`, then enable the extension. Open `http://localhost:8102`
 and authenticate as `ods` when the native UI requests detailed status data.
-`GATUS_PORT` changes this loopback port. `BIND_ADDRESS` does not publish Gatus
-to the LAN.
+`GATUS_PORT` changes the published port. `BIND_ADDRESS` selects the host
+interface, with loopback as the default.
 
 The pinned Gatus 5.36.0 image checks the Docker chat and inference listeners
 at `open-webui:8080/health` and `llama-server:8080/health` every 30 seconds.
@@ -108,3 +108,20 @@ Native contracts: [5.36.0 release](https://github.com/TwiN/gatus/releases/tag/v5
 [authentication and public routes](https://github.com/TwiN/gatus/blob/v5.36.0/api/api.go),
 [Basic authentication](https://github.com/TwiN/gatus/blob/v5.36.0/security/config.go),
 [SQLite storage configuration](https://github.com/TwiN/gatus/blob/v5.36.0/storage/config.go).
+
+## Host publication
+
+The published ports honor ODS `BIND_ADDRESS`: unset keeps `127.0.0.1`; the
+explicit LAN opt-in can select `0.0.0.0` or a specific host interface. This
+controls Docker publication and preserves native authentication and application
+policy. Disable/recreate after changes, and keep operator edits to the installed
+definition backed up before updating or reinstalling the extension.
+
+Native public badges, configuration and aggregate endpoints remain public
+on every published interface. Basic authentication still protects detailed status.
+Configure a separate access/TLS boundary when broader privacy is required.
+
+Compose regression tests cover unset, loopback, wildcard and a specific interface
+while preserving target ports, credentials and storage. Actual lifecycle fixtures
+remain bound to isolated loopback ports. Remote browser/TLS deployments are not
+qualified by those local tests.

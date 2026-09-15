@@ -8,7 +8,7 @@ services:
       GATUS_LOG_LEVEL: WARN
       GATUS_PASSWORD_BCRYPT: "${GATUS_PASSWORD_BCRYPT:?Set GATUS_PASSWORD_BCRYPT before enabling Gatus}"
     ports:
-      - "127.0.0.1:${GATUS_PORT:-8102}:8080"
+      - "${BIND_ADDRESS:-127.0.0.1}:${GATUS_PORT:-8102}:8080"
     volumes:
       - type: bind
         source: ./config/gatus/config.yaml

@@ -31,7 +31,7 @@ def compose_env(tmp_path):
         pytest.skip("Docker Compose CLI required")
     (tmp_path / "empty.env").write_text("")
     env = {k: v for k, v in os.environ.items() if not k.startswith("GATUS_")}
-    env.update(GATUS_PASSWORD_BCRYPT=password_hash(secrets.token_hex(20)), BIND_ADDRESS="0.0.0.0")
+    env.update(GATUS_PASSWORD_BCRYPT=password_hash(secrets.token_hex(20)), BIND_ADDRESS="127.0.0.1")
     return env
 
 
@@ -41,6 +41,20 @@ def render(tmp_path, env, check=True):
         "--project-directory", str(tmp_path), "-f", str(EXTENSION / "compose.yaml"),
         "config", "--format", "json", "gatus",
     ], env=env, check=check, capture_output=True, text=True, timeout=30)
+
+
+@pytest.mark.parametrize("bind_address", [None, "127.0.0.1", "0.0.0.0", "192.0.2.42"])
+def test_bind_address_opt_in_preserves_native_configuration(tmp_path, compose_env, bind_address):
+    compose_env.pop("BIND_ADDRESS", None)
+    baseline = json.loads(render(tmp_path, compose_env).stdout)["services"]["gatus"]
+    if bind_address is not None:
+        compose_env["BIND_ADDRESS"] = bind_address
+    service = json.loads(render(tmp_path, compose_env).stdout)["services"]["gatus"]
+    assert all(port["host_ip"] == (bind_address or "127.0.0.1") for port in service["ports"])
+    assert [(p["published"], p["target"]) for p in service["ports"]] == [
+        (p["published"], p["target"]) for p in baseline["ports"]]
+    assert service["environment"] == baseline["environment"]
+    assert service["volumes"] == baseline["volumes"]
 
 
 @pytest.mark.parametrize("port", ["8102", "18102"])
