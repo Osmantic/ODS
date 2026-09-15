@@ -2219,6 +2219,61 @@ def test_missing_data_runtime_never_falls_back_to_generic_dispatcher(
     assert calls == []
 
 
+def test_restore_route_rechecks_the_real_host_lease_before_runtime_selection(
+    host_server, host_request, monkeypatch
+):
+    agent, _listener = host_server
+    service_id = agent._data_backup_runtime_module.CANARY_SERVICE_ID
+    grant = acquire_lease(agent, host_request, [service_id])
+    request = data_work_request(agent, lease_evidence(agent, grant), "restore")
+    manager = agent._extension_lease_manager
+    original_status = manager.status
+    observed = []
+
+    def witnessed(*args):
+        record = original_status(*args)
+        observed.append((record["active"], record["serviceIds"]))
+        return record
+
+    monkeypatch.setattr(manager, "status", witnessed)
+    monkeypatch.setattr(agent, "_get_extension_data_backup_runtime", lambda: None)
+    status, result = host_request("/v1/extension/lifecycle-work", request)
+
+    assert status == 503
+    assert result == {"error": {"code": "lifecycle-work-dispatcher-unavailable"}}
+    assert observed == [(True, [service_id])]
+    assert manager.describe(grant["leaseId"])["active"] is False
+    assert grant["leaseToken"] not in json.dumps(result)
+
+
+def test_restore_route_rejects_lost_status_before_runtime_or_receipt_creation(
+    host_server, host_request, monkeypatch
+):
+    agent, _listener = host_server
+    service_id = agent._data_backup_runtime_module.CANARY_SERVICE_ID
+    grant = acquire_lease(agent, host_request, [service_id])
+    request = data_work_request(agent, lease_evidence(agent, grant), "restore")
+    manager = agent._extension_lease_manager
+    initial_store = agent._lifecycle_receipt_store
+    monkeypatch.setattr(
+        manager, "status",
+        lambda *_args: (_ for _ in ()).throw(
+            agent._extension_leases.LeaseExpired("lease-not-active")
+        ),
+    )
+    monkeypatch.setattr(
+        agent, "_get_extension_data_backup_runtime",
+        lambda: (_ for _ in ()).throw(AssertionError("restore runtime selected")),
+    )
+
+    status, result = host_request("/v1/extension/lifecycle-work", request)
+    assert status == 410
+    assert result == {"error": {"code": "lease-not-active"}}
+    assert agent._lifecycle_receipt_store is initial_store
+    assert manager.describe(grant["leaseId"])["active"] is False
+    assert grant["leaseToken"] not in json.dumps(result)
+
+
 @pytest.mark.parametrize("operation_key", ["backup", "restore"])
 def test_data_runtime_constructor_failure_cannot_fall_back(
     host_server, host_request, operation_key

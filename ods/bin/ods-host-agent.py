@@ -7231,7 +7231,7 @@ class _ExtensionMutationAdmission:
 
     __slots__ = (
         "_handler", "_evidence", "_service_ids", "_legacy_locks",
-        "_lease_context",
+        "_lease_context", "_lease_manager", "_lease_record",
     )
 
     def __init__(self, handler, evidence, service_ids) -> None:
@@ -7240,6 +7240,8 @@ class _ExtensionMutationAdmission:
         self._service_ids = tuple(service_ids)
         self._legacy_locks = []
         self._lease_context = None
+        self._lease_manager = None
+        self._lease_record = None
 
     def __repr__(self) -> str:
         mode = (
@@ -7271,6 +7273,8 @@ class _ExtensionMutationAdmission:
                 self._legacy_locks.append(lock)
             return None
 
+        context = None
+        entered = False
         try:
             manager = _get_extension_lease_manager()
             if manager is None:
@@ -7283,17 +7287,106 @@ class _ExtensionMutationAdmission:
                 self._service_ids,
             )
             result = context.__enter__()
+            entered = True
+            if (
+                not isinstance(result, dict)
+                or frozenset(result) != frozenset({
+                    "schema", "leaseId", "transactionId", "planHash",
+                    "serviceIds",
+                })
+                or result.get("schema") != _extension_leases.LEASE_SCHEMA
+                or result.get("leaseId") != self._evidence.lease_id
+                or result.get("transactionId") != self._evidence.transaction_id
+                or result.get("planHash") != self._evidence.plan_hash
+                or not isinstance(result.get("serviceIds"), list)
+                or result["serviceIds"] != sorted(set(self._service_ids))
+            ):
+                raise _extension_leases.LeaseAuthorizationError(
+                    "lease-binding-mismatch"
+                )
         except Exception as exc:
+            if entered:
+                try:
+                    context.__exit__(type(exc), exc, exc.__traceback__)
+                except Exception as close_exc:
+                    logger.error(
+                        "Extension mutation lease cleanup failed (%s)",
+                        type(close_exc).__name__,
+                    )
             _extension_mutation_lease_error(self._handler, exc)
             raise _ExtensionMutationAdmissionRejected from None
         self._lease_context = context
+        self._lease_manager = manager
+        self._lease_record = {
+            **result,
+            "serviceIds": list(result["serviceIds"]),
+        }
         return result
+
+    def active_lease_status(self):
+        """Recheck the exact host-held lease without returning its token."""
+        manager = self._lease_manager
+        record = self._lease_record
+        if self._lease_context is None or manager is None or record is None:
+            raise _extension_leases.LeaseExpired("lease-not-active")
+        evidence = self._evidence
+        status = manager.status(
+            evidence.lease_id,
+            evidence.reveal_token(),
+            evidence.transaction_id,
+            evidence.plan_hash,
+        )
+        service_ids = status.get("serviceIds") if isinstance(status, dict) else None
+        if (
+            not isinstance(status, dict)
+            or frozenset(status) != frozenset({
+                "schema", "leaseId", "transactionId", "planHash",
+                "serviceIds", "active",
+            })
+            or status.get("schema") != _extension_leases.LEASE_SCHEMA
+            or status.get("active") is not True
+            or status.get("leaseId") != record["leaseId"]
+            or status.get("transactionId") != record["transactionId"]
+            or status.get("planHash") != record["planHash"]
+            or not isinstance(service_ids, list)
+            or not all(isinstance(item, str) for item in service_ids)
+            or service_ids != sorted(set(service_ids))
+            or not set(self._service_ids).issubset(service_ids)
+        ):
+            raise _extension_leases.LeaseAuthorizationError(
+                "lease-service-not-covered"
+            )
+        return status
+
+    def docker_restore_observer(self, command, run):
+        """Build a Docker witness from the active lease and fixed install root."""
+        self.active_lease_status()
+        try:
+            import extension_data_docker_quiescence as quiescence
+        except Exception as exc:
+            raise _extension_lifecycle_work.LifecycleWorkExecutionError(
+                "lifecycle-work-data-quiescence-docker-unavailable"
+            ) from exc
+        return quiescence.DockerQuiescenceObserver(
+            command,
+            INSTALL_DIR,
+            {
+                **self._lease_record,
+                "serviceIds": list(self._lease_record["serviceIds"]),
+            },
+            run,
+            self.active_lease_status,
+        )
 
     def __exit__(self, exc_type, exc_value, traceback) -> bool:
         if self._lease_context is not None:
             context = self._lease_context
             self._lease_context = None
-            return bool(context.__exit__(exc_type, exc_value, traceback))
+            try:
+                return bool(context.__exit__(exc_type, exc_value, traceback))
+            finally:
+                self._lease_manager = None
+                self._lease_record = None
         for lock in reversed(self._legacy_locks):
             lock.release()
         self._legacy_locks.clear()
@@ -7810,11 +7903,18 @@ class AgentHandler(BaseHTTPRequestHandler):
             return
 
         try:
-            with _ExtensionMutationAdmission(
+            admission = _ExtensionMutationAdmission(
                 self, lease_evidence, command.service_ids
-            ):
+            )
+            with admission:
                 dispatcher = _extension_lifecycle_work_dispatcher
                 started_observer = None
+                if command.operation_key == "restore":
+                    # Revalidate against the actual process-local manager
+                    # before selecting even the closed data canary. A future
+                    # generic restore can use admission.docker_restore_observer
+                    # only inside this admitted host-owned window.
+                    admission.active_lease_status()
                 if command.operation_key == "download-and-verify":
                     runtime = _get_extension_image_artifact_runtime()
                     if runtime is not None:
@@ -7936,6 +8036,12 @@ class AgentHandler(BaseHTTPRequestHandler):
             )
             return
         except Exception as exc:
+            if (
+                _extension_leases is not None
+                and isinstance(exc, _extension_leases.LeaseError)
+            ):
+                _extension_mutation_lease_error(self, exc)
+                return
             logger.error(
                 "Lifecycle work boundary failed (%s)",
                 type(exc).__name__,

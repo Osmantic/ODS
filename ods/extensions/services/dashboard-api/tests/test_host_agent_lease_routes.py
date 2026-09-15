@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import collections
+import contextlib
 import json
 import shutil
 import threading
@@ -598,6 +599,32 @@ def test_valid_toggle_lease_uses_existing_custody_without_reacquiring(
     assert result["action"] == "deactivate"
     assert lock.acquire_calls == 1
     assert lock.locked()
+
+
+def test_malformed_manager_use_record_closes_window_before_rejection(
+    host_server, host_request, monkeypatch
+):
+    agent, _listener = host_server
+    write_compose(agent, "documents", active=False)
+    grant = acquire_lease(agent, host_request)
+    manager = agent._extension_lease_manager
+    original_use = manager.use
+
+    @contextlib.contextmanager
+    def malformed_use(*args):
+        with original_use(*args):
+            yield {"schema": "malformed-manager-record"}
+
+    monkeypatch.setattr(manager, "use", malformed_use)
+    status, result = host_request(
+        "/v1/extension/activate",
+        {"service_id": "documents", "lease": mutation_lease(agent, grant)},
+    )
+    assert status == 403
+    assert result == {"error": {"code": "lease-binding-mismatch"}}
+    assert manager.describe(grant["leaseId"])["active"] is False
+    assert (agent.EXTENSIONS_DIR / "documents" / "compose.yaml.disabled").is_file()
+    assert grant["leaseToken"] not in json.dumps(result)
 
 
 @pytest.mark.parametrize(
