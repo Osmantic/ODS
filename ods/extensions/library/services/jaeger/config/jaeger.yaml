@@ -1,0 +1,71 @@
+service:
+  extensions: [basicauth/ods, jaeger_storage, jaeger_query, healthcheckv2]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [jaeger_storage_exporter]
+  telemetry:
+    logs:
+      level: info
+    metrics:
+      level: none
+
+extensions:
+  basicauth/ods:
+    htpasswd:
+      inline: ${env:JAEGER_HTPASSWD}
+  healthcheckv2:
+    use_v2: true
+    http:
+      endpoint: 0.0.0.0:13133
+      status:
+        enabled: true
+        path: /status
+      config:
+        enabled: false
+  jaeger_query:
+    storage:
+      traces: retained
+    http:
+      endpoint: 0.0.0.0:16686
+      response_headers:
+        WWW-Authenticate: 'Basic realm="ODS Jaeger"'
+      auth:
+        authenticator: basicauth/ods
+    grpc:
+      endpoint: 127.0.0.1:16685
+  jaeger_storage:
+    backends:
+      retained:
+        badger:
+          directories:
+            keys: /var/lib/jaeger/keys
+            values: /var/lib/jaeger/values
+          ephemeral: false
+          consistency: true
+          ttl:
+            spans: 48h
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+        max_request_body_size: 2097152
+        auth:
+          authenticator: basicauth/ods
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 512
+    spike_limit_mib: 128
+  batch:
+    timeout: 1s
+    send_batch_size: 128
+    send_batch_max_size: 128
+
+exporters:
+  jaeger_storage_exporter:
+    trace_storage: retained
