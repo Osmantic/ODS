@@ -124,8 +124,14 @@ async def run_setup_diagnostics(api_key: str = Depends(verify_api_key)):
             yield "Diagnostic script not found. Running basic connectivity tests...\n"
             all_ok = True
             async with aiohttp.ClientSession() as session:
+                def _format_probe_url(c: dict, s: str) -> str:
+                    h = c.get("health", "/")
+                    if not h.startswith("/"):
+                        h = f"/{h}"
+                    return f"http://{c.get('host', s)}:{c.get('port', 80)}{h}"
+
                 services = [
-                    (cfg.get("name", sid), f"http://{cfg.get('host', sid)}:{cfg.get('port', 80)}{cfg.get('health', '/')}")
+                    (cfg.get("name", sid), _format_probe_url(cfg, sid))
                     for sid, cfg in SERVICES.items()
                 ]
                 for name, url in services:
