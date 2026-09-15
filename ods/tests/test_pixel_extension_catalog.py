@@ -76,6 +76,121 @@ class CatalogTests(unittest.TestCase):
             (directory / ("compose.yaml.disabled" if disabled else "compose.yaml")).write_text("services: {}\n")
         return directory
 
+    def image_manifest(self, service_id, *, images=None, compose=None):
+        directory = self.manifest(self.services, service_id, schema="ods.services.v2")
+        manifest_path = directory / "manifest.yaml"
+        manifest = json.loads(manifest_path.read_text())
+        reference = "example.invalid/ods-test:1"
+        digest = "sha256:" + "a" * 64
+        image = f"{reference}@{digest}"
+        manifest["service"]["planning"]["artifacts"]["images"] = [
+            {"reference": reference, "digest": digest, "download_bytes": 10}
+        ] if images is None else images
+        manifest_path.write_text(json.dumps(manifest))
+        compose_path = directory / "compose.yaml"
+        compose_path.write_text(json.dumps(compose or {"services": {"app": {"image": image}}}))
+        return manifest, manifest_path, compose_path, image
+
+    def test_v2_primary_compose_images_match_approved_artifacts(self):
+        manifest, path, compose_path, image = self.image_manifest("matched-image")
+        entry = generator.extract_entry(manifest, path, definition_source="builtin")
+        self.assertEqual(entry["planning"]["artifacts"]["images"][0]["digest"], "sha256:" + "a" * 64)
+
+        compose_path.write_text(json.dumps({"services": {
+            "app": {"image": image}, "worker": {"image": image}
+        }}))
+        reused = generator.extract_entry(manifest, path, definition_source="builtin")
+        self.assertEqual(reused["id"], "matched-image")
+
+    def test_v2_catalog_generation_refuses_a_floating_primary_image(self):
+        _manifest, _path, compose_path, _image = self.image_manifest("catalog-image")
+        self.assertEqual(generator.generate_catalog(self.library, self.services)[0]["id"], "catalog-image")
+        compose_path.write_text("services:\n  app:\n    image: example.invalid/ods-test:latest\n")
+        with self.assertRaisesRegex(ValueError, "^v2-compose-image-artifact-mismatch$"):
+            generator.generate_catalog(self.library, self.services)
+
+    def test_v2_primary_compose_image_mismatches_fail_before_catalog_publication(self):
+        cases = {
+            "floating": {"services": {"app": {"image": "example.invalid/ods-test:1"}}},
+            "wrong-digest": {"services": {"app": {"image": "example.invalid/ods-test:1@sha256:" + "b" * 64}}},
+            "interpolated": {"services": {"app": {"image": "${ODS_IMAGE}"}}},
+            "missing-image": {"services": {"app": {}}},
+            "extra-image": {"services": {"app": {"image": "example.invalid/ods-test:1@sha256:" + "a" * 64},
+                                           "other": {"image": "example.invalid/other@sha256:" + "c" * 64}}},
+            "build": {"services": {"app": {"image": "example.invalid/ods-test:1@sha256:" + "a" * 64,
+                                             "build": "."}}},
+            "empty-services": {"services": {}},
+            "malformed-services": {"services": ["app"]},
+        }
+        for name, compose in cases.items():
+            with self.subTest(name=name):
+                manifest, path, _compose_path, _image = self.image_manifest(name, compose=compose)
+                with self.assertRaisesRegex(ValueError, "^v2-compose-image-artifact-mismatch$"):
+                    generator.extract_entry(manifest, path, definition_source="builtin")
+
+    def test_v2_primary_compose_requires_every_declared_image_and_valid_document(self):
+        second = {"reference": "example.invalid/second:1", "digest": "sha256:" + "b" * 64,
+                  "download_bytes": 10}
+        manifest, path, compose_path, image = self.image_manifest("missing-artifact")
+        manifest["service"]["planning"]["artifacts"]["images"].append(second)
+        path.write_text(json.dumps(manifest))
+        with self.assertRaisesRegex(ValueError, "^v2-compose-image-artifact-mismatch$"):
+            generator.extract_entry(manifest, path, definition_source="builtin")
+
+        for text in ("services: [\n", f"services:\n  app:\n    image: {image}\n    image: {image}\n"):
+            with self.subTest(text=text[:20]):
+                compose_path.write_text(text)
+                with self.assertRaisesRegex(ValueError, "^v2-compose-image-artifact-mismatch$"):
+                    generator.extract_entry(manifest, path, definition_source="builtin")
+
+        compose_path.unlink()
+        with self.assertRaisesRegex(ValueError, "^v2-compose-image-artifact-mismatch$"):
+            generator.extract_entry(manifest, path, definition_source="builtin")
+
+    def test_v2_image_artifacts_require_a_primary_compose_declaration(self):
+        manifest, path, _compose_path, _image = self.image_manifest("no-compose-declaration")
+        manifest["service"]["compose_file"] = ""
+        path.write_text(json.dumps(manifest))
+        with self.assertRaisesRegex(ValueError, "^v2-compose-image-artifact-mismatch$"):
+            generator.extract_entry(manifest, path, definition_source="builtin")
+
+    def test_v2_without_image_artifacts_keeps_existing_catalog_behavior(self):
+        manifest, path, compose_path, _image = self.image_manifest("no-image-artifacts", images=[])
+        compose_path.write_text("services:\n  app:\n    image: example.invalid/legacy:latest\n")
+        entry = generator.extract_entry(manifest, path, definition_source="builtin")
+        self.assertEqual(entry["planning"]["artifacts"]["images"], [])
+
+    def test_v2_image_artifacts_reject_builds_and_interpolated_references(self):
+        manifest, path, _compose_path, image = self.image_manifest("mixed-build")
+        manifest["service"]["planning"]["artifacts"]["builds"] = [{
+            "source": "local", "revision": "1", "context_digest": "sha256:" + "b" * 64,
+            "output": "example.invalid/build:1", "download_bytes": 10,
+        }]
+        path.write_text(json.dumps(manifest))
+        with self.assertRaisesRegex(ValueError, "^v2-compose-image-artifact-mismatch$"):
+            generator.extract_entry(manifest, path, definition_source="builtin")
+
+        manifest["service"]["planning"]["artifacts"]["builds"] = []
+        manifest["service"]["planning"]["artifacts"]["images"][0]["reference"] = "${IMAGE}"
+        path.write_text(json.dumps(manifest))
+        (_compose_path).write_text(json.dumps({"services": {"app": {
+            "image": "${IMAGE}@sha256:" + "a" * 64,
+        }}}))
+        with self.assertRaisesRegex(ValueError, "^v2-compose-image-artifact-mismatch$"):
+            generator.extract_entry(manifest, path, definition_source="builtin")
+
+    def test_v1_floating_compose_remains_legacy_compatible(self):
+        directory = self.manifest(self.services, "legacy-floating")
+        (directory / "compose.yaml").write_text("services:\n  app:\n    image: example.invalid/legacy:latest\n")
+        manifest_path = directory / "manifest.yaml"
+        manifest = json.loads(manifest_path.read_text())
+        entry = generator.extract_entry(manifest, manifest_path, definition_source="builtin")
+        self.assertTrue(entry["planning"]["legacy"])
+        self.assertEqual(
+            entry["planning"]["composeSha256"],
+            generator.canonical_document_sha256(directory / "compose.yaml"),
+        )
+
     def build(self, entries):
         catalog = self.root / "catalog.json"
         catalog.write_text(json.dumps({"extensions": entries}))

@@ -25,6 +25,7 @@ CATALOG_SCHEMA_VERSION = "1.0.0"
 EXCLUDED_IDS = {"privacy-shield"}
 SERVICE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 RELATIVE_COMPOSE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
+IMAGE_REFERENCE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$")
 
 PLANNER_PATH = (
     Path(__file__).resolve().parent.parent
@@ -84,6 +85,37 @@ _UniqueKeyLoader.add_constructor(
 
 def _load_yaml(text: str) -> object:
     return yaml.load(text, Loader=_UniqueKeyLoader)
+
+
+def _validate_v2_compose_images(compose_payload: bytes | None, images: tuple[dict, ...]) -> None:
+    """Bind image-only v2 artifacts to the ordinary primary Compose definition."""
+
+    mismatch = "v2-compose-image-artifact-mismatch"
+    if compose_payload is None:
+        raise ValueError(mismatch)
+    try:
+        compose = _load_yaml(compose_payload.decode("utf-8"))
+    except (yaml.YAMLError, UnicodeError) as exc:
+        raise ValueError(mismatch) from exc
+    if not isinstance(compose, dict):
+        raise ValueError(mismatch)
+    services = compose.get("services")
+    if not isinstance(services, dict) or not services:
+        raise ValueError(mismatch)
+
+    if any(IMAGE_REFERENCE_RE.fullmatch(image["reference"]) is None for image in images):
+        raise ValueError(mismatch)
+    declared = {f"{image['reference']}@{image['digest']}" for image in images}
+    actual: set[str] = set()
+    for name, service in services.items():
+        if not isinstance(name, str) or not name or not isinstance(service, dict):
+            raise ValueError(mismatch)
+        image = service.get("image")
+        if "build" in service or not isinstance(image, str) or image not in declared:
+            raise ValueError(mismatch)
+        actual.add(image)
+    if actual != declared:
+        raise ValueError(mismatch)
 
 
 def parse_args() -> argparse.Namespace:
@@ -211,11 +243,23 @@ def extract_entry(
     definition_sha256 = ""
     compose_sha256 = ""
     compose_file = None
+    compose_path = None
+    compose_payload = None
     raw_compose_name = service.get("compose_file")
     compose_name = (
         raw_compose_name
         if isinstance(raw_compose_name, str) and raw_compose_name
         else None
+    )
+    raw_planning = service.get("planning")
+    raw_artifacts = (
+        raw_planning.get("artifacts") if isinstance(raw_planning, dict) else None
+    )
+    v2_image_candidate = (
+        manifest["schema_version"] == "ods.services.v2"
+        and service.get("type") == "docker"
+        and isinstance(raw_artifacts, dict)
+        and bool(raw_artifacts.get("images"))
     )
     if manifest_path is not None:
         definition_sha256 = canonical_document_sha256(manifest_path)
@@ -223,7 +267,16 @@ def extract_entry(
             compose_path = _compose_path(manifest_path, compose_name)
             if compose_path is not None:
                 compose_file = compose_name
-                compose_sha256 = canonical_document_sha256(compose_path)
+                if v2_image_candidate:
+                    try:
+                        compose_payload = compose_path.read_bytes()
+                        compose_sha256 = DOCUMENT_DIGEST.canonical_document_sha256(
+                            compose_payload
+                        )
+                    except (OSError, DOCUMENT_DIGEST.CanonicalDocumentError) as exc:
+                        raise ValueError("v2-compose-image-artifact-mismatch") from exc
+                else:
+                    compose_sha256 = canonical_document_sha256(compose_path)
     planning_record = PLANNER.adapt_manifest(
         {
             **manifest,
@@ -235,6 +288,16 @@ def extract_entry(
             },
         }
     )
+    if (
+        manifest["schema_version"] == "ods.services.v2"
+        and planning_record["serviceType"] == "docker"
+        and planning_record["artifacts"]["images"]
+    ):
+        if planning_record["artifacts"]["builds"]:
+            raise ValueError("v2-compose-image-artifact-mismatch")
+        _validate_v2_compose_images(
+            compose_payload, planning_record["artifacts"]["images"]
+        )
     planning = {
         "serviceType": planning_record["serviceType"],
         "version": planning_record["version"],
