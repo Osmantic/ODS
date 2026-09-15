@@ -30,7 +30,7 @@ services:
       ZO_DISK_CACHE_ENABLED: "false"
       ZO_COMPACT_DATA_RETENTION_DAYS: "7"
     ports:
-      - "127.0.0.1:${OPENOBSERVE_PORT:-5080}:5080"
+      - "${BIND_ADDRESS:-127.0.0.1}:${OPENOBSERVE_PORT:-5080}:5080"
     volumes:
       - ./data/openobserve:/data
     read_only: true

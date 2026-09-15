@@ -4,7 +4,7 @@ Install **OpenObserve (Local Observability)** from Extensions, set a unique
 `OPENOBSERVE_PASSWORD`, then enable the service. Open
 `http://localhost:5080/web/` and log in as `ods@localhost.invalid`. The optional
 `OPENOBSERVE_PORT` changes both the loopback host port and allowed local browser
-origins. `BIND_ADDRESS` does not publish this service on the LAN.
+origins. `BIND_ADDRESS` selects the published interface; loopback remains the default.
 
 The pinned OpenObserve v1.0.0 image provides its native UI, log/metric/trace
 HTTP ingestion and SQL search. This recipe uses local mode, SQLite metadata and
@@ -99,3 +99,20 @@ recorded runtime environment.
 Native contracts: [v1.0.0 configuration](https://github.com/openobserve/openobserve/blob/v1.0.0/src/config/src/config.rs),
 [HTTP routes and CORS](https://github.com/openobserve/openobserve/blob/v1.0.0/src/api/http/src/handler/http/router/mod.rs),
 [account/login handlers](https://github.com/openobserve/openobserve/blob/v1.0.0/src/api/management/src/request/users/mod.rs).
+
+## Host publication
+
+The published ports honor ODS `BIND_ADDRESS`: unset keeps `127.0.0.1`; the
+explicit LAN opt-in can select `0.0.0.0` or a specific host interface. This
+controls Docker publication and preserves native authentication and application
+policy. Disable/recreate after changes, and keep operator edits to the installed
+definition backed up before updating or reinstalling the extension.
+
+For a remote browser origin, set `ZO_WEB_URL` and the explicit
+`ZO_CORS_ALLOWED_ORIGINS` in the installed `compose.yaml` to the intended URLs.
+Port publication alone does not update native browser-origin policy or configure TLS.
+
+Compose regression tests cover unset, loopback, wildcard and a specific interface
+while preserving target ports, credentials and storage. Actual lifecycle fixtures
+remain bound to isolated loopback ports. Remote browser/TLS deployments are not
+qualified by those local tests.
