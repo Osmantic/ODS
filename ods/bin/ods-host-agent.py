@@ -7358,8 +7358,12 @@ class _ExtensionMutationAdmission:
             )
         return status
 
-    def docker_restore_observer(self, command, run):
-        """Build a Docker witness from the active lease and fixed install root."""
+    def docker_restore_observer(self, command, run=None):
+        """Build a Docker witness from the active lease and fixed install root.
+
+        The default transport pins the local daemon. An injected runner is
+        reserved for isolated source tests, not production restore selection.
+        """
         self.active_lease_status()
         try:
             import extension_data_docker_quiescence as quiescence
@@ -7367,6 +7371,14 @@ class _ExtensionMutationAdmission:
             raise _extension_lifecycle_work.LifecycleWorkExecutionError(
                 "lifecycle-work-data-quiescence-docker-unavailable"
             ) from exc
+        if run is None:
+            try:
+                from extension_data_local_docker_runner import PinnedLocalDockerRunner
+                run = PinnedLocalDockerRunner()
+            except Exception as exc:
+                raise _extension_lifecycle_work.LifecycleWorkExecutionError(
+                    "lifecycle-work-data-quiescence-docker-unavailable"
+                ) from exc
         return quiescence.DockerQuiescenceObserver(
             command,
             INSTALL_DIR,
