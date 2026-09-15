@@ -20,8 +20,8 @@ if [[ -f "docker-compose.base.yml" && -f "docker-compose.amd.yml" ]]; then
     # Append enabled extension compose fragments
     if [[ -d "extensions/services" ]]; then
         for ext_dir in extensions/services/*/; do
-            [[ -f "${ext_dir}compose.yaml" ]] && COMPOSE_FLAGS="$COMPOSE_FLAGS -f ${ext_dir}compose.yaml"
-            [[ -f "${ext_dir}compose.amd.yaml" ]] && COMPOSE_FLAGS="$COMPOSE_FLAGS -f ${ext_dir}compose.amd.yaml"
+            [[ -f "${ext_dir}compose.yaml" ]] && COMPOSE_FLAGS="$COMPOSE_FLAGS -f \"${ext_dir}compose.yaml\""
+            [[ -f "${ext_dir}compose.amd.yaml" ]] && COMPOSE_FLAGS="$COMPOSE_FLAGS -f \"${ext_dir}compose.amd.yaml\""
         done
     fi
 elif [[ -f "docker-compose.yml" ]]; then
