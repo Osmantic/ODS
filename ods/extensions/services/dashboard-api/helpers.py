@@ -1381,3 +1381,14 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def dict_safe_key_filter(d: dict | None, keys_to_keep: list | None) -> dict:
+    """Safely filter a dictionary, retaining only the specified keys.
+    """
+    if not d or not isinstance(d, dict):
+        return {}
+    if not keys_to_keep or not isinstance(keys_to_keep, (list, tuple, set)):
+        return {}
+    keep = set(keys_to_keep)
+    return {k: v for k, v in d.items() if k in keep}
