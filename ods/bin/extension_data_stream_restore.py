@@ -18,6 +18,7 @@ from extension_data_backup_runtime import (
     DataBackupRuntimeError,
     _close_quietly,
     _directory_flags,
+    _identity,
     _open_absolute_directory,
     _open_relative_directory,
     _safe_relative_parts,
@@ -139,6 +140,166 @@ def _copy_file(parent: int, name: str, archive: tarfile.TarFile,
         _close_quietly(descriptor)
 
 
+def _observed(parent: int, name: str) -> os.stat_result | None:
+    try:
+        return os.stat(name, dir_fd=parent, follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+
+
+def _candidate_file(info: os.stat_result, parent: int, entry: dict[str, Any]) -> None:
+    mode = stat.S_IMODE(info.st_mode)
+    if (
+        not stat.S_ISREG(info.st_mode) or info.st_dev != os.fstat(parent).st_dev
+        or info.st_uid != os.geteuid() or info.st_gid != os.getegid()
+        or info.st_nlink != 1 or info.st_size > entry["size"]
+        or mode not in {0o600, entry["mode"]}
+        or (info.st_size < entry["size"] and mode != 0o600)
+    ):
+        _fail("lifecycle-work-data-restore-stage-foreign")
+
+
+def _exact_source_bytes(source: Any, size: int) -> bytes:
+    chunks: list[bytes] = []
+    remaining = size
+    while remaining:
+        chunk = source.read(remaining)
+        if not chunk:
+            _fail("lifecycle-work-data-restore-stage-content-invalid")
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
+
+
+def _exact_fd_bytes(descriptor: int, size: int) -> bytes:
+    chunks: list[bytes] = []
+    remaining = size
+    while remaining:
+        chunk = os.read(descriptor, remaining)
+        if not chunk:
+            _fail("lifecycle-work-data-restore-stage-drift")
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
+
+
+def _check_prefix(parent: int, name: str, archive: tarfile.TarFile,
+                  member: tarfile.TarInfo, entry: dict[str, Any]) -> None:
+    observed = _observed(parent, name)
+    if observed is None:
+        _fail("lifecycle-work-data-restore-stage-drift")
+    _candidate_file(observed, parent, entry)
+    if not member.isfile() or member.size != entry["size"] or member.mode != entry["mode"]:
+        _fail("lifecycle-work-data-restore-stage-member-invalid")
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(
+            name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NOATIME
+            | getattr(os, "O_CLOEXEC", 0), dir_fd=parent,
+        )
+        opened = os.fstat(descriptor)
+        if _identity(opened) != _identity(observed):
+            _fail("lifecycle-work-data-restore-stage-drift")
+        _check_extended_metadata(descriptor)
+        source = archive.extractfile(member)
+        if source is None:
+            _fail("lifecycle-work-data-restore-stage-member-invalid")
+        digest = hashlib.sha256()
+        remaining = opened.st_size
+        while remaining:
+            size = min(remaining, 64 * 1024)
+            staged_bytes = _exact_fd_bytes(descriptor, size)
+            archive_bytes = _exact_source_bytes(source, size)
+            if staged_bytes != archive_bytes:
+                _fail("lifecycle-work-data-restore-stage-prefix-invalid")
+            digest.update(archive_bytes)
+            remaining -= size
+        if opened.st_size == entry["size"] and digest.hexdigest() != entry["sha256"]:
+            _fail("lifecycle-work-data-restore-stage-prefix-invalid")
+        if _identity(os.fstat(descriptor)) != _identity(opened) or (
+            (visible := _observed(parent, name)) is None or _identity(visible) != _identity(opened)
+        ):
+            _fail("lifecycle-work-data-restore-stage-drift")
+    finally:
+        _close_quietly(descriptor)
+
+
+def _resume_file(parent: int, name: str, archive: tarfile.TarFile,
+                 member: tarfile.TarInfo, entry: dict[str, Any]) -> None:
+    # Repeat the read-only preflight immediately before appending; an earlier
+    # whole-tree classification is not authority to trust a changed inode.
+    _check_prefix(parent, name, archive, member, entry)
+    observed = _observed(parent, name)
+    if observed is None:
+        _fail("lifecycle-work-data-restore-stage-drift")
+    flags = os.O_RDWR if observed.st_size < entry["size"] else os.O_RDONLY
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(
+            name, flags | os.O_NOFOLLOW | os.O_NOATIME
+            | getattr(os, "O_CLOEXEC", 0), dir_fd=parent,
+        )
+        opened = os.fstat(descriptor)
+        if _identity(opened) != _identity(observed):
+            _fail("lifecycle-work-data-restore-stage-drift")
+        _candidate_file(opened, parent, entry)
+        _check_extended_metadata(descriptor)
+        source = archive.extractfile(member)
+        if source is None or not member.isfile() or member.size != entry["size"]:
+            _fail("lifecycle-work-data-restore-stage-member-invalid")
+        digest = hashlib.sha256()
+        remaining_prefix = opened.st_size
+        while remaining_prefix:
+            size = min(remaining_prefix, 64 * 1024)
+            staged_bytes = _exact_fd_bytes(descriptor, size)
+            archive_bytes = _exact_source_bytes(source, size)
+            if staged_bytes != archive_bytes:
+                _fail("lifecycle-work-data-restore-stage-prefix-invalid")
+            digest.update(archive_bytes)
+            remaining_prefix -= size
+        if _identity(os.fstat(descriptor)) != _identity(opened) or (
+            (visible := _observed(parent, name)) is None or _identity(visible) != _identity(opened)
+        ):
+            _fail("lifecycle-work-data-restore-stage-drift")
+        remaining = entry["size"] - opened.st_size
+        while remaining:
+            chunk = source.read(min(remaining, 64 * 1024))
+            if not chunk:
+                _fail("lifecycle-work-data-restore-stage-content-invalid")
+            digest.update(chunk)
+            view = memoryview(chunk)
+            while view:
+                written = os.write(descriptor, view)
+                if written <= 0:
+                    _fail("lifecycle-work-data-restore-stage-write-failed")
+                view = view[written:]
+            remaining -= len(chunk)
+        if source.read(1) or digest.hexdigest() != entry["sha256"]:
+            _fail("lifecycle-work-data-restore-stage-content-invalid")
+        os.fsync(descriptor)
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        readback = hashlib.sha256()
+        remaining = entry["size"]
+        while remaining:
+            chunk = os.read(descriptor, min(remaining, 64 * 1024))
+            if not chunk:
+                _fail("lifecycle-work-data-restore-stage-content-invalid")
+            readback.update(chunk)
+            remaining -= len(chunk)
+        if os.read(descriptor, 1) or readback.hexdigest() != entry["sha256"]:
+            _fail("lifecycle-work-data-restore-stage-content-invalid")
+        _stamp(descriptor, entry["mode"], entry["atimeNs"], entry["mtimeNs"])
+        _check_extended_metadata(descriptor)
+        if os.fstat(descriptor).st_size != entry["size"] or (
+            (visible := _observed(parent, name)) is None
+            or (visible.st_dev, visible.st_ino) != (opened.st_dev, opened.st_ino)
+        ):
+            _fail("lifecycle-work-data-restore-stage-drift")
+        os.fsync(parent)
+    finally:
+        _close_quietly(descriptor)
+
+
 def _plan(path_state: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[tuple[str, ...], set[str]]]:
     directories, files = [], []
     children: dict[tuple[str, ...], set[str]] = {(): set()}
@@ -162,6 +323,58 @@ def _plan(path_state: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[s
         if any(parts[:depth] not in directory_paths for depth in range(1, len(parts))):
             _fail("lifecycle-work-data-restore-stage-index-invalid")
     return directories, files, children
+
+
+def _classify_partial(root: int, archive: tarfile.TarFile, path_state: dict[str, Any],
+                      children: dict[tuple[str, ...], set[str]], service_id: str,
+                      index: int) -> None:
+    """Prove the whole existing namespace is an expected subset before writes."""
+    directory_entries = {tuple(entry["path"].split("/")): entry for entry in path_state["entries"]
+                         if entry["type"] == "directory"}
+    file_entries = {tuple(entry["path"].split("/")): entry for entry in path_state["entries"]
+                    if entry["type"] == "file"}
+    for parts in sorted(children, key=lambda value: (len(value), value)):
+        try:
+            descriptor = _beneath(root, parts)
+        except FileNotFoundError:
+            continue
+        try:
+            entry = directory_entries.get(parts)
+            expected_mode = path_state["rootMode"] if entry is None else entry["mode"]
+            mode = stat.S_IMODE(os.fstat(descriptor).st_mode)
+            if mode not in {0o700, expected_mode}:
+                _fail("lifecycle-work-data-restore-stage-foreign")
+            actual = set(os.listdir(descriptor))
+            if not actual <= children[parts] or (
+                mode == expected_mode and expected_mode != 0o700 and actual != children[parts]
+            ):
+                _fail("lifecycle-work-data-restore-stage-foreign")
+            for name in sorted(actual):
+                child_parts = parts + (name,)
+                observed = _observed(descriptor, name)
+                if observed is None:
+                    _fail("lifecycle-work-data-restore-stage-drift")
+                file_entry = file_entries.get(child_parts)
+                if file_entry is not None:
+                    _candidate_file(observed, descriptor, file_entry)
+                    member = archive.getmember(f"payload/{service_id}/{index}/{file_entry['path']}")
+                    _check_prefix(descriptor, name, archive, member, file_entry)
+                    continue
+                directory_entry = directory_entries.get(child_parts)
+                if directory_entry is None or not stat.S_ISDIR(observed.st_mode):
+                    _fail("lifecycle-work-data-restore-stage-foreign")
+                child = _opened_dir(descriptor, name)
+                try:
+                    if (
+                        (os.fstat(child).st_dev, os.fstat(child).st_ino)
+                        != (observed.st_dev, observed.st_ino)
+                        or stat.S_IMODE(observed.st_mode) not in {0o700, directory_entry["mode"]}
+                    ):
+                        _fail("lifecycle-work-data-restore-stage-foreign")
+                finally:
+                    _close_quietly(child)
+        finally:
+            _close_quietly(descriptor)
 
 
 def _verify_tree(root: int, path_state: dict[str, Any],
@@ -269,19 +482,36 @@ class StreamRestoreStager:
                 elif not stat.S_ISDIR(observed.st_mode):
                     _fail("lifecycle-work-data-restore-stage-collision")
                 staged = _opened_dir(parent, stage_name)
+                completed = False
                 if observed is not None:
                     if (os.fstat(staged).st_dev, os.fstat(staged).st_ino) != (observed.st_dev, observed.st_ino):
                         _fail("lifecycle-work-data-restore-stage-collision")
-                    _verify_tree(staged, path_state, children)
-                else:
+                    try:
+                        _verify_tree(staged, path_state, children)
+                        completed = True
+                    except StreamRestoreStageError as exc:
+                        if exc.code != "lifecycle-work-data-restore-stage-readback-invalid":
+                            raise
+                    if not completed:
+                        _classify_partial(staged, archive, path_state, children, service_id, index)
+                if not completed:
                     for entry in directories:
                         child_parts = _safe_relative_parts(entry["path"])
                         directory_parent = _beneath(staged, child_parts[:-1])
                         try:
-                            os.mkdir(child_parts[-1], 0o700, dir_fd=directory_parent)
-                            os.fsync(directory_parent)
+                            previous = _observed(directory_parent, child_parts[-1])
+                            if previous is None:
+                                os.mkdir(child_parts[-1], 0o700, dir_fd=directory_parent)
+                                os.fsync(directory_parent)
                             child = _opened_dir(directory_parent, child_parts[-1])
-                            _close_quietly(child)
+                            try:
+                                if previous is not None and (
+                                    (os.fstat(child).st_dev, os.fstat(child).st_ino)
+                                    != (previous.st_dev, previous.st_ino)
+                                ):
+                                    _fail("lifecycle-work-data-restore-stage-drift")
+                            finally:
+                                _close_quietly(child)
                         finally:
                             _close_quietly(directory_parent)
                     for entry in files:
@@ -289,7 +519,10 @@ class StreamRestoreStager:
                         file_parent = _beneath(staged, file_parts[:-1])
                         try:
                             member = archive.getmember(f"payload/{service_id}/{index}/{entry['path']}")
-                            _copy_file(file_parent, file_parts[-1], archive, member, entry)
+                            if _observed(file_parent, file_parts[-1]) is None:
+                                _copy_file(file_parent, file_parts[-1], archive, member, entry)
+                            else:
+                                _resume_file(file_parent, file_parts[-1], archive, member, entry)
                         finally:
                             _close_quietly(file_parent)
                     for entry in sorted(directories, key=lambda item: len(item["path"].split("/")), reverse=True):

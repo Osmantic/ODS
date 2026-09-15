@@ -22,12 +22,13 @@ from test_extension_data_stream_snapshot import _command, _protocol_hash, _roots
 linux_effect = pytest.mark.skipif(os.name != "posix", reason="descriptor-relative Linux restore journal")
 
 
-def _ready(tmp_path: Path):
+def _ready(tmp_path: Path, *, source_mode: int = 0o600):
     install, data, backup, alpha = _roots(tmp_path)
     journal_root = data / "assistant-first" / "restore-journals"
     journal_root.mkdir(mode=0o700)
     journal_root.chmod(0o700)
     _write(alpha / "note", b"private source")
+    (alpha / "note").chmod(source_mode)
     backup_command = _command()
     backup_command = replace(backup_command, request_hash=_protocol_hash(backup_command, "backup"))
     store = snapshots.StreamSnapshotStore(install, data, backup)
