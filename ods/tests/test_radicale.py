@@ -76,19 +76,23 @@ def test_image_rejects_invalid_credential_without_echoing_it(tmp_path, compose_e
     image = json.loads(render(tmp_path, compose_env).stdout)["services"]["radicale"]["image"]
     name = "ods-q40-dav-invalid-" + uuid.uuid4().hex[:10]
     guard = EXTENSION / "config/radicale/entrypoint.py"
-    subprocess.run(["docker", "create", "--name", name, "--network", "none", "--read-only",
-                    "--entrypoint", "/app/bin/python", "-e", "RADICALE_PASSWORD=" + password,
-                    "--mount", f"type=bind,src={guard},dst=/guard.py,readonly", image, "/guard.py"],
-                   check=True, capture_output=True, text=True, timeout=30)
     try:
+        subprocess.run(["docker", "create", "--name", name, "--network", "none", "--read-only",
+                        "--entrypoint", "/app/bin/python", "-e", "RADICALE_PASSWORD=" + password,
+                        "--mount", f"type=bind,src={guard},dst=/guard.py,readonly", image, "/guard.py"],
+                       check=True, capture_output=True, text=True, timeout=30)
         result = subprocess.run(["docker", "start", "--attach", name],
                                 capture_output=True, text=True, timeout=30)
         assert result.returncode != 0
         assert "16 to 72 UTF-8 bytes" in result.stdout + result.stderr
         assert password not in result.stdout + result.stderr
     finally:
-        subprocess.run(["docker", "rm", "--force", "--volumes", name],
-                       check=True, capture_output=True, text=True, timeout=30)
+        # A timed-out create can still leave a container registered by the daemon.
+        created = subprocess.run(["docker", "ps", "--all", "--quiet", "--filter", f"name=^/{name}$"],
+                                 check=True, capture_output=True, text=True, timeout=30)
+        if created.stdout.strip():
+            subprocess.run(["docker", "rm", "--force", "--volumes", name],
+                           check=True, capture_output=True, text=True, timeout=30)
 
 
 @LIVE
