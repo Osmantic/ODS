@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-13T16:53:56Z",
+  "generated_at": "2026-09-15T05:37:05Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -2377,6 +2377,79 @@
       "configuration_scope": "declared-environment-keys"
     },
     {
+      "id": "minio",
+      "name": "MinIO (S3 Object Storage)",
+      "description": "High-performance, S3-compatible local object storage with web console for document pipelines, RAG ingestion, and model artifacts.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 9000,
+      "external_port_default": 9020,
+      "health_endpoint": "/minio/health/ready",
+      "env_vars": [
+        {
+          "key": "MINIO_PORT",
+          "description": "Published S3 API endpoint port (defaults to 9020 to prevent port collisions with Whisper/Lemonade)",
+          "default": "9020"
+        },
+        {
+          "key": "MINIO_CONSOLE_PORT",
+          "description": "Published MinIO Web Console management UI port",
+          "default": "9021"
+        },
+        {
+          "key": "MINIO_ROOT_USER",
+          "description": "Root administrative username / Access Key ID for MinIO",
+          "default": "minioadmin"
+        },
+        {
+          "key": "MINIO_ROOT_PASSWORD",
+          "description": "Root secret key / password for MinIO (minimum 8 characters)",
+          "required": true
+        },
+        {
+          "key": "MINIO_BROWSER",
+          "description": "Enable or disable web console UI ('on' or 'off')",
+          "default": "on"
+        }
+      ],
+      "tags": [
+        "s3",
+        "storage",
+        "object-store",
+        "documents",
+        "rag"
+      ],
+      "features": [
+        {
+          "id": "s3-object-storage",
+          "name": "S3 Object Storage",
+          "description": "Provide local S3-compatible bucket storage for document pipelines, RAG ingestion, and model artifacts",
+          "icon": "HardDrive",
+          "category": "storage",
+          "requirements": {
+            "services": [
+              "minio"
+            ],
+            "vram_gb": 0
+          },
+          "enabled_services_all": [
+            "minio"
+          ],
+          "setup_time": "~1 minute after setting credentials",
+          "priority": 32,
+          "launch": {
+            "type": "service",
+            "service": "minio"
+          }
+        }
+      ],
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
       "id": "model-router",
       "name": "ODS Model Router",
       "description": "ODS Model Router",
@@ -3153,6 +3226,28 @@
           ]
         }
       ],
+      "catalog_source": "builtin",
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
+      "id": "pixel-inference",
+      "name": "Pixel inference sharing (development)",
+      "description": "Disabled by default. Owner-provisioned, inference-only device credentials; loopback transport only. Does not provide Pixel agent or computer access. Private state must be provisioned before service activation. Native Windows private-state support and guided setup are not yet implemented.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [
+        "model-router"
+      ],
+      "port": 8093,
+      "external_port_default": 4005,
+      "health_endpoint": "/health",
+      "env_vars": [],
+      "tags": [],
+      "features": [],
+      "startup_check": false,
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
     },
