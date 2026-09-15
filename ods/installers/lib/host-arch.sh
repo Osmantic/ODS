@@ -17,11 +17,19 @@
 
 # Echoes one of: amd64, arm64, unknown
 detect_host_arch() {
-    local m
-    m="$(uname -m 2>/dev/null || echo unknown)"
+    local m="${1:-}"
+    if [[ -z "$m" ]]; then
+        m="$(uname -m 2>/dev/null || echo unknown)"
+    fi
+    m="$(printf '%s' "$m" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
     case "$m" in
-        x86_64|amd64) echo "amd64" ;;
-        aarch64|arm64) echo "arm64" ;;
+        x86_64|x86-64|amd64) echo "amd64" ;;
+        aarch64*|arm64*|armv8*) echo "arm64" ;;
         *) echo "unknown" ;;
     esac
 }
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    detect_host_arch "$@"
+fi
+
