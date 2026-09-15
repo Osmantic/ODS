@@ -1740,3 +1740,14 @@ def test_flatten_bounds_cycles_and_large_depth_without_losing_empty_leaves():
         nested = {"child": nested}
     result = dict_flatten_nested_safe(nested, max_depth=100000)
     assert len(next(iter(result)).split(".")) == 128
+
+
+class TestNumericSafeExponentialMovingAvgSafe:
+    def test_valid_ema(self):
+        from helpers import numeric_safe_exponential_moving_avg_safe
+        assert numeric_safe_exponential_moving_avg_safe([10, 20, 30], 0.5) == [10.0, 15.0, 22.5]
+
+    def test_invalid_inputs(self):
+        from helpers import numeric_safe_exponential_moving_avg_safe
+        assert numeric_safe_exponential_moving_avg_safe(None) == []
+        assert numeric_safe_exponential_moving_avg_safe([10, 20], -1) == [10.0, 13.0]
