@@ -80,7 +80,7 @@ scheduling without locking memory. It does not alter host sysctls, disk tuning,
 or kernel configuration. Native broker startup and its actual configuration
 are qualified; these choices are not performance or production-capacity claims.
 
-Default topic retention is one day / 1 GiB with 128 MiB segments. Segment-based
+Default retention is one day / 1 GiB per partition with 128 MiB segments. Segment-based
 retention and internal cluster logs mean this is not a hard 1 GiB total-directory
 quota. Monitor disk usage and size topic retention to the workload. Producer
 `acks=all` with write caching disabled uses the native broker's durable-write

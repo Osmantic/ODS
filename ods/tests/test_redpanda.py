@@ -67,6 +67,7 @@ def test_native_entrypoint_rejects_invalid_bootstrap_format_without_disclosing_i
 
 @pytest.mark.skipif(os.getenv("ODS_TEST_REDPANDA") != "1", reason="Opt-in native Kafka lifecycle")
 def test_native_scram_acl_replay_consumer_offsets_rotation_and_cold_restore(tmp_path):
+    import yaml
     from confluent_kafka import Consumer, KafkaError, Producer, TopicPartition
     from confluent_kafka.admin import AdminClient, AclBinding, AclOperation, AclPermissionType, NewTopic, ResourcePatternType, ResourceType
 
@@ -178,9 +179,8 @@ def test_native_scram_acl_replay_consumer_offsets_rotation_and_cold_restore(tmp_
         admin("/v1/security/users", expected=403)
         admin("/v1/security/users", credential="incorrect", expected=401)
         native = admin("/v1/cluster_config", credential=password)
-        assert native["enable_sasl"] is True and native["admin_api_require_auth"] is True
-        assert native["write_caching_default"] == "disabled" and native["enable_metrics_reporter"] is False
-        assert native["auto_create_topics_enabled"] is False
+        for setting, expected in yaml.safe_load((EXTENSION / "bootstrap.yaml").read_text()).items():
+            assert native[setting] == expected, f"Native cluster setting was not applied: {setting}"
         listeners = run("docker", "exec", project, "cat", "/proc/net/tcp", "/proc/net/tcp6").stdout.splitlines()
         addresses = [line.split()[1] for line in listeners if len(line.split()) > 3 and line.split()[3] == "0A"]
         assert not {8081, 8082} & {int(address.rsplit(":", 1)[1], 16) for address in addresses}
