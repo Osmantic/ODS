@@ -1,0 +1,32 @@
+services:
+  kiwix:
+    image: ghcr.io/kiwix/kiwix-serve:3.8.2@sha256:e478554a9920412eeb5ce1d73f24e4b28445ebed233187cdd03c623c32be46a5
+    container_name: ods-kiwix
+    user: "1001:1001"
+    entrypoint: ["/usr/bin/dumb-init", "--", "/usr/local/bin/kiwix-serve"]
+    command: ["--port=8080", "/data/${KIWIX_ZIM_FILE:?Set KIWIX_ZIM_FILE to an existing filename in data/kiwix}"]
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - ./data/kiwix:/data:ro
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${KIWIX_PORT:-8105}:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/catalog/v2/root.xml"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks: [ods-network]
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+
+networks:
+  ods-network:
+    external: true

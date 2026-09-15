@@ -1,0 +1,43 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: kiwix
+  name: Kiwix (Offline Knowledge)
+  description: "Read and search a local ZIM knowledge archive without an external content service."
+  aliases: [kiwix-serve]
+  container_name: ods-kiwix
+  default_host: kiwix
+  port: 8080
+  external_port_env: KIWIX_PORT
+  external_port_default: 8105
+  health: /
+  ui_path: /
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [knowledge, reference, offline]
+  env_vars:
+    - key: KIWIX_PORT
+      description: "Published port for the offline knowledge library"
+      default: "8105"
+    - key: KIWIX_ZIM_FILE
+      description: "Existing ZIM filename inside data/kiwix; required before enabling"
+      required: true
+features:
+  - id: offline-knowledge-library
+    name: Offline Knowledge
+    description: "Read and search an operator-provided local ZIM archive"
+    icon: BookOpen
+    category: productivity
+    requirements:
+      services: [kiwix]
+      vram_gb: 0
+    enabled_services_all: [kiwix]
+    setup_time: "~1 minute"
+    priority: 30
+    launch:
+      type: service
+      service: kiwix
