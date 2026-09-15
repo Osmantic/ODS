@@ -1,6 +1,7 @@
 """Actual in-container HTTP probe; only synthetic validation data is used."""
 
 import base64
+from http.cookies import SimpleCookie
 import json
 import os
 import re
@@ -44,9 +45,11 @@ assert status == 200, (status, body)
 payload = json.loads(body)
 assert payload["root"] == "/workspace", payload
 assert any(file["name"] == "analysis.py" for file in payload["files"]), payload
-cookie = headers.get("Set-Cookie", "")
-assert cookie
-session = cookie.split("session=", 1)[1].split(".", 1)[0]
+cookies = SimpleCookie()
+cookies.load(headers.get("Set-Cookie", ""))
+assert "session_8080" in cookies, "Editor must issue its port-scoped session cookie"
+session = cookies["session_8080"].value.split(".", 1)[0]
 decoded = base64.b64decode(session + "=" * (-len(session) % 4)).decode()
 assert os.environ["MARIMO_PASSWORD"] not in decoded
+assert json.loads(decoded)["access_token"], "Session must store a token hash"
 print("HTTP rejects missing/wrong credentials; authenticated workspace listing and non-secret session cookie passed")
