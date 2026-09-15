@@ -106,6 +106,21 @@ Privacy Shield status is displayed in the ODS dashboard:
 - Enable/disable toggle
 - Statistics (requests processed, PII items scrubbed)
 
+The authenticated dashboard endpoint `GET /api/privacy-shield/status` reports
+`target_api` and `pii_cache_enabled` from the running shield's authenticated
+health response. `configuration_verified: true` means those two fields were
+received from that runtime, so changing/recreating the shield does not require
+restarting the dashboard to refresh its diagnostics. This does not prove that
+the upstream LLM is reachable or that a particular request passed through PII
+scrubbing.
+
+If the shield is unavailable, its shared `SHIELD_API_KEY` is missing/incorrect,
+or an older health response omits configuration, `configuration_verified` is
+false. The prior dashboard-derived values remain for compatibility and must
+not be treated as verified runtime configuration. Basic health can still be
+available without authenticated configuration. No key or PII mapping is
+included in this status response.
+
 ## Files
 
 - `proxy.py` — Main FastAPI proxy server

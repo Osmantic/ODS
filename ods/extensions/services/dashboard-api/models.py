@@ -120,6 +120,7 @@ class PrivacyShieldStatus(BaseModel):
     target_api: str
     pii_cache_enabled: bool
     message: str
+    configuration_verified: bool = False
 
 
 class PrivacyShieldToggle(BaseModel):
