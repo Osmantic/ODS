@@ -1740,3 +1740,15 @@ def test_flatten_bounds_cycles_and_large_depth_without_losing_empty_leaves():
         nested = {"child": nested}
     result = dict_flatten_nested_safe(nested, max_depth=100000)
     assert len(next(iter(result)).split(".")) == 128
+
+
+class TestStringExtractEmailsSafe:
+    def test_valid_extraction(self):
+        from helpers import string_extract_emails_safe
+        s = "Contact support@example.com or admin@test.org for info."
+        assert string_extract_emails_safe(s) == ["support@example.com", "admin@test.org"]
+
+    def test_invalid_inputs(self):
+        from helpers import string_extract_emails_safe
+        assert string_extract_emails_safe(None) == []
+        assert string_extract_emails_safe(999) == []

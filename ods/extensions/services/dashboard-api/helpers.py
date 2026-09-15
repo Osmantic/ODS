@@ -1381,3 +1381,14 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+import re
+
+def string_extract_emails_safe(text: str | None) -> list[str]:
+    """Safely extract valid email addresses from a text string.
+    Returns [] on None or non-string inputs.
+    """
+    if text is None or not isinstance(text, str):
+        return []
+    email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
+    return re.findall(email_pattern, text)
