@@ -14,8 +14,8 @@ validate_service_dependencies() {
 
     # Build list of enabled services (have compose files)
     local -A enabled_services
-    for sid in "${SERVICE_IDS[@]}"; do
-        local cf="${SERVICE_COMPOSE[$sid]}"
+    for sid in "${SERVICE_IDS[@]:-}"; do
+        local cf="${SERVICE_COMPOSE[$sid]:-}"
         if [[ -n "$cf" && -f "$cf" ]]; then
             enabled_services[$sid]=1
         fi
@@ -23,7 +23,7 @@ validate_service_dependencies() {
 
     # Core services defined in docker-compose.base.yml are always enabled
     # (they have no extension manifest, so the registry does not know about them)
-    local _base_compose="${INSTALL_DIR:-$SCRIPT_DIR}/docker-compose.base.yml"
+    local _base_compose="${INSTALL_DIR:-${SCRIPT_DIR:-.}}/docker-compose.base.yml"
     if [[ -f "$_base_compose" ]]; then
         local _svc
         while IFS= read -r _svc; do
@@ -32,7 +32,7 @@ validate_service_dependencies() {
     fi
 
     # Check each enabled service's dependencies
-    for sid in "${SERVICE_IDS[@]}"; do
+    for sid in "${SERVICE_IDS[@]:-}"; do
         [[ -z "${enabled_services[$sid]:-}" ]] && continue
 
         local deps="${SERVICE_DEPENDS[$sid]:-}"
