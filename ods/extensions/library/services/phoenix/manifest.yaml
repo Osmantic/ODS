@@ -1,0 +1,47 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: phoenix
+  name: Phoenix (AI Tracing & Evals)
+  description: "Lightweight, open-source LLM observability, trace evaluation, and OpenTelemetry collector for local AI agents."
+  aliases: [observability, phoenix-ai, tracing, opentelemetry]
+  container_name: ods-phoenix
+  default_host: phoenix
+  port: 6006
+  external_port_env: PHOENIX_PORT
+  external_port_default: 6006
+  health: /
+  ui_path: /
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [observability, tracing, telemetry, opentelemetry, evals, monitoring]
+  env_vars:
+    - key: PHOENIX_PORT
+      description: "Published Web UI and HTTP trace ingestion port"
+      default: "6006"
+    - key: PHOENIX_GRPC_PORT
+      description: "Published OpenTelemetry gRPC collector port"
+      default: "4317"
+    - key: PHOENIX_SECRET
+      description: "Authentication secret and session signing key for Phoenix web dashboard"
+      required: true
+      secret: true
+features:
+  - id: llm-tracing
+    name: LLM Traces & Observability
+    description: "Inspect LLM prompts, token usage, agent execution spans, and latency graphs"
+    icon: Activity
+    category: monitoring
+    requirements:
+      services: [phoenix]
+      vram_gb: 0
+    enabled_services_all: [phoenix]
+    setup_time: "~1 minute after setting credentials"
+    priority: 35
+    launch:
+      type: service
+      service: phoenix
