@@ -1335,6 +1335,62 @@
       "configuration_scope": "declared-environment-keys"
     },
     {
+      "id": "gatus",
+      "name": "Gatus (Local Service History)",
+      "description": "Record local chat and inference endpoint availability with native status history and protected detailed status APIs.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 8080,
+      "external_port_default": 8102,
+      "health_endpoint": "/health",
+      "env_vars": [
+        {
+          "key": "GATUS_PORT",
+          "description": "Loopback status page port",
+          "default": "8102"
+        },
+        {
+          "key": "GATUS_PASSWORD_BCRYPT",
+          "description": "Native URL-safe base64 bcrypt hash for ods; generate locally using hash-password.py",
+          "required": true
+        }
+      ],
+      "tags": [
+        "monitoring",
+        "health",
+        "history"
+      ],
+      "features": [
+        {
+          "id": "local-service-history",
+          "name": "Inspect Service History",
+          "description": "Review availability checks for local chat and inference endpoints",
+          "icon": "Activity",
+          "category": "productivity",
+          "requirements": {
+            "services": [
+              "gatus"
+            ],
+            "vram_gb": 0
+          },
+          "enabled_services_all": [
+            "gatus"
+          ],
+          "setup_time": "~1 minute after generating the local password hash",
+          "priority": 40,
+          "launch": {
+            "type": "service",
+            "service": "gatus"
+          }
+        }
+      ],
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
       "id": "gitea",
       "name": "Gitea (Git Hosting)",
       "description": "Lightweight self-hosted Git service for managing repositories and CI/CD.",
