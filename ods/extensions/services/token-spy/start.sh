@@ -13,13 +13,15 @@
 # ─────────────────────────────────────────────────────────────────────────────
 
 set -e
-cd "$(dirname "$0")"
+SERVICE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SERVICE_DIR"
 mkdir -p data
 
 # Safe .env loading (no eval; use ODS lib/safe-env.sh)
-ODS_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-[[ -f "$ODS_ROOT/lib/safe-env.sh" ]] && . "$ODS_ROOT/lib/safe-env.sh"
-load_env_file "$(pwd)/.env"
+ODS_ROOT="$(cd "$SERVICE_DIR/../../.." && pwd)"
+# shellcheck source=../../../lib/safe-env.sh
+. "$ODS_ROOT/lib/safe-env.sh"
+load_env_file "$SERVICE_DIR/.env"
 
 # Database backend (sqlite or postgres)
 export DB_BACKEND="${DB_BACKEND:-sqlite}"
@@ -50,7 +52,13 @@ AGENT_NAME="${AGENT_NAME:-openclaw}"
 PORT="${PORT:-9110}"
 
 # Session management for OpenClaw (local inference, $0 cost)
-export AGENT_SESSION_DIRS="${AGENT_SESSION_DIRS:-'{\"openclaw\":\"~/ods/data/openclaw/home/agents/main/sessions\"}'}"
+if [[ -z "${AGENT_SESSION_DIRS:-}" ]]; then
+    # JSON data, not shell arguments: embedded quotes must remain literal.
+    # shellcheck disable=SC2089
+    AGENT_SESSION_DIRS='{"openclaw":"~/ods/data/openclaw/home/agents/main/sessions"}'
+fi
+# shellcheck disable=SC2090
+export AGENT_SESSION_DIRS
 export LOCAL_MODEL_AGENTS="${LOCAL_MODEL_AGENTS:-openclaw}"
 
 echo "Starting Token Spy — API Monitor..."

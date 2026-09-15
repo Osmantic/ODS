@@ -38,14 +38,20 @@ schema.
 ## Standalone Usage
 
 ```bash
-cd token-spy
+# From the ODS repository root:
+cd ods/extensions/services/token-spy
 pip install -r requirements.txt
-cp .env.example .env
-# Edit .env -- at minimum set AGENT_NAME and TOKEN_SPY_API_KEY
 TOKEN_SPY_API_KEY=dev-token \
 UPSTREAM_API_KEY=provider-secret \
 AGENT_NAME=my-agent python -m uvicorn main:app --host 0.0.0.0 --port 9110
 ```
+
+Alternatively, create a service-local `.env` with `AGENT_NAME`,
+`TOKEN_SPY_API_KEY`, and the upstream settings. When running from an ODS
+checkout, `bash start.sh` loads this service's `.env`
+through the shared environment parser and starts the proxy. It also accepts
+`PORT` (default `9110`) and can be invoked by absolute path from another
+directory. The direct `uvicorn` command above uses exported environment values.
 
 Open `http://localhost:9110/dashboard` to see the monitoring UI.
 
