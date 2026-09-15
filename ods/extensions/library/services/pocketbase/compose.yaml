@@ -1,0 +1,39 @@
+services:
+  pocketbase:
+    image: ods-pocketbase:0.40.4-r1
+    pull_policy: never
+    container_name: ods-pocketbase
+    user: "1000:1000"
+    init: true
+    environment:
+      POCKETBASE_PASSWORD: "${POCKETBASE_PASSWORD:?Set POCKETBASE_PASSWORD before enabling PocketBase}"
+      POCKETBASE_ENCRYPTION_KEY: "${POCKETBASE_ENCRYPTION_KEY:?Set POCKETBASE_ENCRYPTION_KEY before enabling PocketBase}"
+      POCKETBASE_PORT: "${POCKETBASE_PORT:-8090}"
+    ports:
+      - "127.0.0.1:${POCKETBASE_PORT:-8090}:8090"
+    volumes:
+      - ./data/pocketbase:/pb/pb_data
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=128m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+    stop_grace_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1G
+    healthcheck:
+      test: [CMD, wget, -q, --spider, http://127.0.0.1:8090/api/health]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    networks: [ods-network]
+
+networks:
+  ods-network:
+    external: true
+    name: ods-network
