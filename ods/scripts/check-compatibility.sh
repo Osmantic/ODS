@@ -22,11 +22,22 @@ jq -e '.manifestVersion and .release.version and .compatibility and .contracts' 
   || fail "manifest.json missing required top-level fields"
 pass "manifest structure"
 
+# Validate and capture before entering the loop: process-substitution failures
+# do not propagate through the loop's exit status, even with pipefail.
+compose_files="$(jq -er '
+  .contracts.compose.canonical
+  | if type == "array" and length > 0
+       and all(.[]; type == "string" and length > 0)
+    then .[]
+    else error("expected a non-empty array of non-empty path strings")
+    end
+' "$MANIFEST_FILE")" || fail "invalid or unreadable compose canonical contract"
+
 # Compose contract files
 while IFS= read -r file; do
   file="${file%$'\r'}"
   test -f "${ROOT_DIR}/${file}" || fail "missing compose contract file: ${file}"
-done < <(jq -r '.contracts.compose.canonical[]' "$MANIFEST_FILE")
+done <<< "$compose_files"
 pass "compose canonical files"
 
 # Workflow catalog canonical path

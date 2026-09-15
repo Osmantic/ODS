@@ -153,6 +153,7 @@ jobs:
 
       - name: Manifest Compatibility Checks
         run: |
+          python3 tests/test-compose-compatibility-contract.py
           bash scripts/check-compatibility.sh
           bash scripts/check-release-claims.sh
 
