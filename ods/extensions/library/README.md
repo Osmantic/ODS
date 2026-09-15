@@ -1,6 +1,6 @@
 # ODS Extensions Library
 
-**35 service extensions being tested for ODS. 17 are already in production — these are next.**
+**Optional service extensions being tested for ODS.**
 
 Each extension is a self-contained directory with a `manifest.yaml` (service metadata), `compose.yaml` (Docker Compose fragment), and optional Dockerfiles, workflows, and documentation. Drop any of these into your ODS's `extensions/services/` directory and run `ods enable <service-id>`.
 
