@@ -94,6 +94,10 @@ STUB
 }
 
 @test "check_port_conflict: detects conflict when port is occupied" {
+    # This case replays the ss(8) branch of check_port_conflict. ss is
+    # iproute2 and does not exist on macOS, so there the replay can only
+    # ever report CLEAR. Skip before starting the background listener.
+    command -v ss >/dev/null 2>&1 || skip "ss(8) not available on this host; the ss-based conflict check is Linux-only"
     # Start a background listener on a test port
     local test_port=59877
     python3 -c "
