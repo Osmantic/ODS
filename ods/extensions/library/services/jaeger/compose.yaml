@@ -1,0 +1,39 @@
+services:
+  jaeger:
+    image: jaegertracing/jaeger:2.21.0@sha256:3d0ac795ff98aa04d1be04311d2dac6c25b4bfc8322dc02e53bc5b170c5018c3
+    container_name: ods-jaeger
+    user: "10001:10001"
+    command: [--config, /etc/jaeger/ods.yaml]
+    restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    environment:
+      JAEGER_HTPASSWD: "${JAEGER_HTPASSWD:?Set JAEGER_HTPASSWD before enabling Jaeger}"
+      GOMAXPROCS: "2"
+      GOMEMLIMIT: 1GiB
+    volumes:
+      - ./data/jaeger:/var/lib/jaeger
+      - ./config/jaeger.yaml:/etc/jaeger/ods.yaml:ro
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${JAEGER_PORT:-16686}:16686"
+      - "${BIND_ADDRESS:-127.0.0.1}:${JAEGER_OTLP_PORT:-4318}:4318"
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, "http://127.0.0.1:13133/status"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    networks: [ods-network]
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+
+networks:
+  ods-network:
+    external: true
