@@ -1,0 +1,38 @@
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2.1.2-alpine@sha256:6f8d8a947c506f8a2290ec65cd4bd2bc7cb4d43fb5f6271f861cb013e2ef9797
+    container_name: ods-mosquitto
+    user: "1883:1883"
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    entrypoint: ["/bin/ash", "/etc/ods-mosquitto/start.sh"]
+    environment:
+      MOSQUITTO_PUBLISH_PASSWORD: ${MOSQUITTO_PUBLISH_PASSWORD:?Set MOSQUITTO_PUBLISH_PASSWORD}
+      MOSQUITTO_READ_PASSWORD: ${MOSQUITTO_READ_PASSWORD:?Set MOSQUITTO_READ_PASSWORD}
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${MOSQUITTO_PORT:-1883}:1883"
+      - "${BIND_ADDRESS:-127.0.0.1}:${MOSQUITTO_WEBSOCKET_PORT:-9001}:9001"
+    volumes:
+      - ./data/mosquitto:/mosquitto/data
+      - ./extensions/mosquitto/mosquitto.conf:/etc/ods-mosquitto/mosquitto.conf:ro
+      - ./extensions/mosquitto/acl:/etc/ods-mosquitto/acl:ro
+      - ./extensions/mosquitto/start.sh:/etc/ods-mosquitto/start.sh:ro
+    tmpfs:
+      - /tmp:size=16m,uid=1883,gid=1883,mode=0700
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8081/api/v1/version"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 256M
+    networks: [ods-network]
+networks:
+  ods-network:
+    external: true
