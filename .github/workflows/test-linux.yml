@@ -162,6 +162,9 @@ jobs:
       - name: Tier Map Unit Tests
         run: bash tests/test-tier-map.sh
 
+      - name: Extension credential generator failures
+        run: python3 tests/test-extension-secret-failures.py
+
       - name: Active Model Preservation Tests
         run: python3 tests/test-preserve-active-model.py
 
