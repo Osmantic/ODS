@@ -263,12 +263,12 @@ _detect_topo_rocmsmi() {
 
             # Try to extract weight from the weight table
             local w
-            w=$(echo "$topo_out" | awk -v gpu="GPU$i" -v col=$((j+2)) '/^GPU/ && $1==gpu {print $col}' | head -1)
+            w=$(echo "$topo_out" | awk -v gpu="GPU$i" -v col="$((j+2))" '/^GPU/ && $1==gpu {print $col}' | head -1)
             [[ -n "$w" && "$w" =~ ^[0-9]+$ ]] && weight="$w"
 
             # Try to extract link type from the type table
             local lt
-            lt=$(echo "$topo_out" | awk -v gpu="GPU$i" -v col=$((j+2)) '/Link Type/ {found=1; next} found && /^GPU/ && $1==gpu {print $col; exit}')
+            lt=$(echo "$topo_out" | awk -v gpu="GPU$i" -v col="$((j+2))" '/Link Type/ {found=1; next} found && /^GPU/ && $1==gpu {print $col; exit}')
             [[ -n "$lt" ]] && link_type="$lt"
 
             case "$link_type" in
