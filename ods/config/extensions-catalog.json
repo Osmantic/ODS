@@ -1,7 +1,7 @@
 {
-  "generated_at": "2026-09-15T16:41:46Z",
+  "generated_at": "2026-09-15T23:51:33Z",
   "schema_version": "1.0.0",
-  "catalog_revision": "17f0e1fbe4bcdacbe36919cb8c45e707235a7dc407cdad273bea887390bb1102",
+  "catalog_revision": "b1397ce2c91e63d01aaaab7ba0658aea14ee1786383e5330598ac0f7d7e6338b",
   "extensions": [
     {
       "id": "aider",
@@ -1663,21 +1663,182 @@
     },
     {
       "id": "gitea",
-      "manifest_schema_version": "ods.services.v1",
+      "manifest_schema_version": "ods.services.v2",
       "planning": {
         "serviceType": "docker",
-        "version": "0.0.0-legacy",
-        "dataSchemaVersion": "legacy",
+        "version": "1.23.5",
+        "dataSchemaVersion": "1",
         "odsCompatibility": {
-          "minimum": "",
-          "maximum": ""
+          "minimum": "2.6.0",
+          "maximum": null
         },
-        "definitionSha256": "sha256:9bd8410497299ba59f2668771155083e4423f220db3da9f6c43a60166997cfec",
+        "definitionSha256": "sha256:db937b67b2eef3ef49f8e1120d444cd907930a971d785d0ade03b5f00d98e584",
         "composeSha256": "sha256:6eaea94977f0e9a0c597971d8e39dc2bc73793c9c3b969c2443ee4327625f6cd",
         "definitionSource": "library",
         "composeFile": "compose.yaml",
         "dependsOn": [],
-        "legacy": true
+        "provides": [
+          "git-hosting@1"
+        ],
+        "requires": [],
+        "optional": [],
+        "conflicts": [],
+        "providerPriority": 0,
+        "requirements": {
+          "platforms": [
+            "linux"
+          ],
+          "architectures": [
+            "amd64",
+            "arm64"
+          ],
+          "containerRuntimes": [
+            "docker"
+          ],
+          "gpuBackends": [
+            "amd",
+            "apple",
+            "cpu",
+            "intel",
+            "jetson",
+            "none",
+            "nvidia",
+            "sycl"
+          ],
+          "minDriverVersion": null
+        },
+        "estimates": {
+          "downloadBytes": 71144161,
+          "diskBytes": 1073741824,
+          "cpuMillicores": 1000,
+          "ramBytes": 1073741824,
+          "vramBytes": 0,
+          "gpuCount": 0
+        },
+        "resources": {
+          "hostPorts": [
+            {
+              "port": 2222,
+              "protocol": "tcp",
+              "configurationKey": "GITEA_SSH_PORT"
+            },
+            {
+              "port": 7830,
+              "protocol": "tcp",
+              "configurationKey": "GITEA_PORT"
+            }
+          ],
+          "containerPorts": [
+            2222,
+            3000
+          ],
+          "networks": [
+            "ods-network"
+          ],
+          "volumes": [],
+          "devices": [],
+          "exclusive": [],
+          "linuxCapabilities": [],
+          "hostPermissions": [
+            "host-mount",
+            "network"
+          ]
+        },
+        "configuration": [
+          {
+            "key": "GITEA_APP_NAME",
+            "type": "string",
+            "required": false,
+            "secret": false,
+            "source": "user",
+            "restartBehavior": "service",
+            "validation": {
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "default": "ODS Git"
+          },
+          {
+            "key": "GITEA_HOST",
+            "type": "string",
+            "required": false,
+            "secret": false,
+            "source": "user",
+            "restartBehavior": "service",
+            "validation": {
+              "minLength": 1,
+              "maxLength": 253
+            },
+            "default": "localhost"
+          },
+          {
+            "key": "GITEA_PORT",
+            "type": "integer",
+            "required": false,
+            "secret": false,
+            "source": "user",
+            "restartBehavior": "service",
+            "validation": {
+              "minimum": 1,
+              "maximum": 65535
+            },
+            "default": 7830
+          },
+          {
+            "key": "GITEA_SSH_PORT",
+            "type": "integer",
+            "required": false,
+            "secret": false,
+            "source": "user",
+            "restartBehavior": "service",
+            "validation": {
+              "minimum": 1,
+              "maximum": 65535
+            },
+            "default": 2222
+          }
+        ],
+        "artifacts": {
+          "images": [
+            {
+              "reference": "gitea/gitea:1.23.5-rootless",
+              "digest": "sha256:3a335645ca700660ac6c10d6f3223b6611ed6959441f6d2f7cd5fa607baf1425",
+              "downloadBytes": 71144161
+            }
+          ],
+          "builds": []
+        },
+        "lifecycle": {
+          "healthChecks": [
+            "/api/healthz"
+          ],
+          "readiness": [
+            "healthy"
+          ],
+          "setupHook": null,
+          "migrationHook": null,
+          "rollback": "definition",
+          "timeoutSeconds": 180
+        },
+        "data": [
+          {
+            "path": "data/gitea",
+            "backupClass": "required",
+            "owner": "user",
+            "uninstall": "preserve",
+            "purge": "separate-approval"
+          }
+        ],
+        "trust": {
+          "tier": "bundled",
+          "publisher": "ODS",
+          "definitionSignature": null
+        },
+        "support": {
+          "status": "experimental",
+          "url": null
+        },
+        "legacy": false
       },
       "name": "Gitea (Git Hosting)",
       "description": "Lightweight self-hosted Git service for managing repositories and CI/CD.",
@@ -2889,21 +3050,181 @@
     },
     {
       "id": "miniflux",
-      "manifest_schema_version": "ods.services.v1",
+      "manifest_schema_version": "ods.services.v2",
       "planning": {
         "serviceType": "docker",
-        "version": "0.0.0-legacy",
-        "dataSchemaVersion": "legacy",
+        "version": "2.3.3",
+        "dataSchemaVersion": "1",
         "odsCompatibility": {
           "minimum": "2.6.0",
-          "maximum": ""
+          "maximum": null
         },
-        "definitionSha256": "sha256:c8a90e73726db0b78d5b3f451ddbf5f504b9d44495dea0f58e9ed493ee126804",
+        "definitionSha256": "sha256:fef3fbdde7d2c4dc5de3bb64a51aa73644aa0a9c0690a1279796380d45f99e03",
         "composeSha256": "sha256:a7b1df61cd6e652825edbdceb751386c027ef8783f118a81408476eab3097123",
         "definitionSource": "library",
         "composeFile": "compose.yaml",
         "dependsOn": [],
-        "legacy": true
+        "provides": [
+          "feed-library@1"
+        ],
+        "requires": [],
+        "optional": [],
+        "conflicts": [],
+        "providerPriority": 0,
+        "requirements": {
+          "platforms": [
+            "linux"
+          ],
+          "architectures": [
+            "amd64",
+            "arm64"
+          ],
+          "containerRuntimes": [
+            "docker"
+          ],
+          "gpuBackends": [
+            "amd",
+            "apple",
+            "cpu",
+            "intel",
+            "jetson",
+            "none",
+            "nvidia",
+            "sycl"
+          ],
+          "minDriverVersion": null
+        },
+        "estimates": {
+          "downloadBytes": 130331037,
+          "diskBytes": 1073741824,
+          "cpuMillicores": 2000,
+          "ramBytes": 805306368,
+          "vramBytes": 0,
+          "gpuCount": 0
+        },
+        "resources": {
+          "hostPorts": [
+            {
+              "port": 8098,
+              "protocol": "tcp",
+              "configurationKey": "MINIFLUX_PORT"
+            }
+          ],
+          "containerPorts": [
+            5432,
+            8080
+          ],
+          "networks": [
+            "miniflux-private",
+            "ods-network"
+          ],
+          "volumes": [],
+          "devices": [],
+          "exclusive": [],
+          "linuxCapabilities": [],
+          "hostPermissions": [
+            "host-mount",
+            "network"
+          ]
+        },
+        "configuration": [
+          {
+            "key": "MINIFLUX_ADMIN_PASSWORD",
+            "type": "string",
+            "required": true,
+            "secret": true,
+            "source": "user",
+            "restartBehavior": "service",
+            "validation": {
+              "minLength": 1,
+              "maxLength": 1024
+            }
+          },
+          {
+            "key": "MINIFLUX_BASE_URL",
+            "type": "url",
+            "required": false,
+            "secret": false,
+            "source": "user",
+            "restartBehavior": "service",
+            "validation": {
+              "minLength": 1,
+              "maxLength": 2048
+            },
+            "default": "http://localhost:8098"
+          },
+          {
+            "key": "MINIFLUX_DB_PASSWORD",
+            "type": "string",
+            "required": true,
+            "secret": true,
+            "source": "user",
+            "restartBehavior": "service",
+            "validation": {
+              "minLength": 1,
+              "maxLength": 1024
+            }
+          },
+          {
+            "key": "MINIFLUX_PORT",
+            "type": "integer",
+            "required": false,
+            "secret": false,
+            "source": "user",
+            "restartBehavior": "service",
+            "validation": {
+              "minimum": 1,
+              "maximum": 65535
+            },
+            "default": 8098
+          }
+        ],
+        "artifacts": {
+          "images": [
+            {
+              "reference": "miniflux/miniflux:2.3.3",
+              "digest": "sha256:49d7b60987616387c306a8023087b31f2c9b7b21288b523026cb04058e8b6dbb",
+              "downloadBytes": 13148924
+            },
+            {
+              "reference": "postgres:17.11-alpine",
+              "digest": "sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73",
+              "downloadBytes": 117182113
+            }
+          ],
+          "builds": []
+        },
+        "lifecycle": {
+          "healthChecks": [
+            "/healthcheck"
+          ],
+          "readiness": [
+            "healthy"
+          ],
+          "setupHook": null,
+          "migrationHook": null,
+          "rollback": "definition",
+          "timeoutSeconds": 180
+        },
+        "data": [
+          {
+            "path": "data/miniflux/postgres",
+            "backupClass": "required",
+            "owner": "user",
+            "uninstall": "preserve",
+            "purge": "separate-approval"
+          }
+        ],
+        "trust": {
+          "tier": "bundled",
+          "publisher": "ODS",
+          "definitionSignature": null
+        },
+        "support": {
+          "status": "experimental",
+          "url": null
+        },
+        "legacy": false
       },
       "name": "Miniflux (Feed Reader)",
       "description": "Self-hosted RSS and Atom reading with an authenticated API for local research workflows.",

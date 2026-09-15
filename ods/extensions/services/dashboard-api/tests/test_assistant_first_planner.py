@@ -272,6 +272,46 @@ def test_bundled_searxng_v2_is_the_deterministic_web_search_provider() -> None:
             assert result["plan"]["warnings"] == []
 
 
+@pytest.mark.parametrize(
+    ("service_id", "capability", "secrets", "image_count"),
+    [
+        ("gitea", "git-hosting@1", [], 1),
+        ("miniflux", "feed-library@1", ["MINIFLUX_ADMIN_PASSWORD", "MINIFLUX_DB_PASSWORD"], 2),
+    ],
+)
+def test_pinned_library_v2_apps_are_selectable_by_capability(
+    service_id: str, capability: str, secrets: list[str], image_count: int
+) -> None:
+    library = Path(__file__).resolve().parents[3] / "library" / "services"
+    record = yaml.safe_load((library / service_id / "manifest.yaml").read_text(encoding="utf-8"))
+    record["_catalog"] = {
+        "definition_sha256": "sha256:" + "d" * 64,
+        "compose_sha256": "sha256:" + "c" * 64,
+        "definition_source": "library",
+        "compose_file": "compose.yaml",
+    }
+    state = copy.deepcopy(HOST_STATE)
+    state["odsVersion"] = "2.6.0"
+    policy = copy.deepcopy(POLICY)
+    policy["allowExperimental"] = True
+    result = build(
+        [record],
+        requested_capabilities=[capability],
+        observed_state=state,
+        observed_state_revision=hashlib.sha256(planner.canonical_json_bytes(state)).hexdigest(),
+        policy=policy,
+        policy_revision=hashlib.sha256(planner.canonical_json_bytes(policy)).hexdigest(),
+    )
+
+    assert result["plan"]["selectedServices"] == [service_id]
+    assert result["plan"]["operations"] == [{"serviceId": service_id, "action": "install"}]
+    assert result["plan"]["requiredSecretKeys"] == secrets
+    definition = result["plan"]["definitions"][0]
+    assert definition["manifestSchemaVersion"] == "ods.services.v2"
+    assert definition["artifacts"]["images"] and len(definition["artifacts"]["images"]) == image_count
+    assert definition["data"][0]["backupClass"] == "required"
+
+
 def test_utf8_is_unescaped_and_has_one_trailing_lf() -> None:
     encoded = planner.canonical_json_bytes({"label": "café"})
     assert b"caf\xc3\xa9" in encoded

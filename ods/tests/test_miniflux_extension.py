@@ -11,6 +11,7 @@ import sys
 import uuid
 
 import httpx
+import jsonschema
 import pytest
 import yaml
 
@@ -19,6 +20,9 @@ SERVICE = ROOT / 'extensions/library/services/miniflux'
 
 
 def test_miniflux_catalog_preserves_required_credentials(tmp_path):
+    manifest = yaml.safe_load((SERVICE / 'manifest.yaml').read_text())
+    schema = json.loads((ROOT / 'extensions/library/schema/service-manifest.v2.json').read_text())
+    jsonschema.validate(manifest, schema)
     output = tmp_path / 'catalog.json'
     subprocess.run([sys.executable, str(ROOT / 'scripts/generate-extensions-catalog.py'), '--output', str(output)], check=True)
     generated = json.loads(output.read_text())
@@ -28,9 +32,32 @@ def test_miniflux_catalog_preserves_required_credentials(tmp_path):
     assert entry['port'] == 8080
     assert entry['external_port_default'] == 8098
     assert entry['health_endpoint'] == '/healthcheck'
+    assert entry['manifest_schema_version'] == 'ods.services.v2'
+    planning = entry['planning']
+    assert planning['legacy'] is False
+    assert planning['provides'] == ['feed-library@1']
+    assert planning['resources']['hostPorts'] == [{
+        'port': 8098, 'protocol': 'tcp', 'configurationKey': 'MINIFLUX_PORT',
+    }]
+    assert planning['resources']['networks'] == ['miniflux-private', 'ods-network']
+    assert planning['estimates']['downloadBytes'] == sum(
+        image['downloadBytes'] for image in planning['artifacts']['images']
+    )
+    assert planning['data'] == [{
+        'path': 'data/miniflux/postgres', 'backupClass': 'required',
+        'owner': 'user', 'uninstall': 'preserve', 'purge': 'separate-approval',
+    }]
+    required_secrets = {item['key'] for item in planning['configuration'] if item['secret']}
+    assert required_secrets == {'MINIFLUX_DB_PASSWORD', 'MINIFLUX_ADMIN_PASSWORD'}
+    assert all(item['required'] and 'default' not in item
+               for item in planning['configuration'] if item['secret'])
     required = {item['key'] for item in entry['env_vars'] if item.get('required')}
     assert required == {'MINIFLUX_DB_PASSWORD', 'MINIFLUX_ADMIN_PASSWORD'}
     services = yaml.safe_load((SERVICE / 'compose.yaml').read_text())['services']
+    assert {item['image'] for item in services.values()} == {
+        f"{image['reference']}@{image['digest']}"
+        for image in planning['artifacts']['images']
+    }
     assert 'ports' not in services['miniflux-db']
     assert services['miniflux-db']['networks'] == ['miniflux-private']
     assert services['miniflux']['depends_on']['miniflux-db']['condition'] == 'service_healthy'
