@@ -1381,3 +1381,17 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+import math
+
+def numeric_safe_factorial_safe(n: int | None, max_n: int = 20) -> int:
+    """Safely calculate factorial of n protecting against negative or overflow values.
+    Returns 1 on n=0/1 and 0 on invalid or n > max_n inputs.
+    """
+    if n is None or not isinstance(n, int) or isinstance(n, bool) or n < 0:
+        return 0
+    if not isinstance(max_n, int) or isinstance(max_n, bool) or max_n < 0:
+        max_n = 20
+    if n > max_n:
+        return 0
+    return math.factorial(n)
