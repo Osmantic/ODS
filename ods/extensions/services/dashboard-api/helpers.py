@@ -1381,3 +1381,20 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def dict_safe_nested_set(d: dict | None, keys: list | None, value: any) -> dict:
+    """Safely set a value in a nested dictionary creating intermediate dicts.
+    Returns empty dict on invalid root.
+    """
+    if d is None or not isinstance(d, dict):
+        d = {}
+    if not keys or not isinstance(keys, (list, tuple)):
+        return d
+    curr = d
+    for k in keys[:-1]:
+        if k not in curr or not isinstance(curr[k], dict):
+            curr[k] = {}
+        curr = curr[k]
+    curr[keys[-1]] = value
+    return d
