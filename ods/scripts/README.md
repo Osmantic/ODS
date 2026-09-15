@@ -12,6 +12,7 @@ Utility scripts for diagnostics, testing, validation, and operations.
 | `classify-hardware.sh` | GPU-to-tier classification | No |
 | `build-capability-profile.sh` | Machine capability JSON profile | No |
 | `health-check.sh` | Service health checks | Yes |
+| `check-tls-endpoint.py` | [Verified TLS endpoint and certificate expiry receipt](../docs/TLS-ENDPOINT-DIAGNOSTICS.md) | No |
 
 ## Testing
 
