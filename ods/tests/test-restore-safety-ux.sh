@@ -60,5 +60,7 @@ out=$(ODS_DIR="$FAKE_ODS" bash "$ODS_RESTORE" -f "$BID" 2>&1)
 rc=$?
 set -e
 
-[[ $rc -eq 0 ]] || fail "Expected rc=0 on forced restore, got $rc"
-pass "Forced restore runs without interactive confirmation"
+[[ $rc -ne 0 ]] || fail "Expected incomplete forced restore to fail, got rc=$rc"
+echo "$out" | grep -q "Restore verification failed" || fail "Expected verification failure message"
+echo "$out" | grep -q "Restore complete" && fail "Incomplete restore must not report completion"
+pass "Forced restore rejects incomplete installations"
