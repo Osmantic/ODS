@@ -1,0 +1,53 @@
+services:
+  influxdb:
+    image: influxdb:2.9.1@sha256:f75e48af0598e8aec7986e991a848d19a119101a7d563a2e5db1dfaac9c45daa
+    container_name: ods-influxdb
+    user: "1000:1000"
+    restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    environment:
+      DOCKER_INFLUXDB_INIT_MODE: setup
+      DOCKER_INFLUXDB_INIT_USERNAME: ods
+      DOCKER_INFLUXDB_INIT_PASSWORD: "${INFLUXDB_PASSWORD:?Set INFLUXDB_PASSWORD before enabling InfluxDB}"
+      DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: "${INFLUXDB_ADMIN_TOKEN:?Set INFLUXDB_ADMIN_TOKEN before enabling InfluxDB}"
+      DOCKER_INFLUXDB_INIT_ORG: ods
+      DOCKER_INFLUXDB_INIT_BUCKET: workflows
+      DOCKER_INFLUXDB_INIT_RETENTION: 168h
+      INFLUXD_REPORTING_DISABLED: "true"
+      INFLUXD_PPROF_DISABLED: "true"
+      INFLUXD_METRICS_DISABLED: "true"
+      INFLUXD_TEMPLATE_FILE_URLS_DISABLED: "true"
+      INFLUXD_QUERY_CONCURRENCY: "2"
+      INFLUXD_QUERY_QUEUE_SIZE: "8"
+      INFLUXD_QUERY_MEMORY_BYTES: "134217728"
+      INFLUXD_QUERY_MAX_MEMORY_BYTES: "268435456"
+      INFLUXD_STORAGE_CACHE_MAX_MEMORY_SIZE: "134217728"
+      INFLUXD_STORAGE_MAX_CONCURRENT_COMPACTIONS: "1"
+      GOMAXPROCS: "2"
+      GOMEMLIMIT: 1GiB
+    volumes:
+      - ./data/influxdb/storage:/var/lib/influxdb2
+      - ./data/influxdb/config:/etc/influxdb2
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${INFLUXDB_PORT:-8086}:8086"
+    healthcheck:
+      test: [CMD, influx, ping, --host, "http://127.0.0.1:8086"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    networks: [ods-network]
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+
+networks:
+  ods-network:
+    external: true

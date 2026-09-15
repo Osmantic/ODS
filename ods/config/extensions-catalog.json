@@ -1582,6 +1582,68 @@
       "configuration_scope": "declared-environment-keys"
     },
     {
+      "id": "influxdb",
+      "name": "InfluxDB (Flux Workflows)",
+      "description": "Store local workflow measurements in scoped buckets and query them with the InfluxDB v2 API and Flux.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 8086,
+      "external_port_default": 8086,
+      "health_endpoint": "/health",
+      "env_vars": [
+        {
+          "key": "INFLUXDB_PORT",
+          "description": "InfluxDB UI and v2 API host port",
+          "default": "8086"
+        },
+        {
+          "key": "INFLUXDB_PASSWORD",
+          "description": "Initial ods login password; rotate through InfluxDB after setup",
+          "required": true
+        },
+        {
+          "key": "INFLUXDB_ADMIN_TOKEN",
+          "description": "Initial operator API token; retain offline for recovery, issue scoped tokens to workflows",
+          "required": true
+        }
+      ],
+      "tags": [
+        "database",
+        "time-series",
+        "workflows"
+      ],
+      "features": [
+        {
+          "id": "flux-workflows",
+          "name": "Flux Workflows",
+          "description": "Query retained workflow measurements with Flux and bucket-scoped API tokens",
+          "icon": "Database",
+          "category": "automation",
+          "requirements": {
+            "services": [
+              "influxdb"
+            ],
+            "vram_gb": 0
+          },
+          "enabled_services_all": [
+            "influxdb"
+          ],
+          "setup_time": "~1 minute",
+          "priority": 40,
+          "launch": {
+            "type": "service",
+            "service": "influxdb",
+            "path": "/"
+          }
+        }
+      ],
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
       "id": "invokeai",
       "name": "InvokeAI",
       "description": "InvokeAI is a leading creative engine for Stable Diffusion models. \nProfessional-grade image generation with a node-based canvas, layer support,\nand FLUX model compatibility. Best-in-class UI for serious creators.\n",
