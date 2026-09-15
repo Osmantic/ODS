@@ -1740,3 +1740,15 @@ def test_flatten_bounds_cycles_and_large_depth_without_losing_empty_leaves():
         nested = {"child": nested}
     result = dict_flatten_nested_safe(nested, max_depth=100000)
     assert len(next(iter(result)).split(".")) == 128
+
+
+class TestListFindFirstMatchingSafe:
+    def test_valid_finding(self):
+        from helpers import list_find_first_matching_safe
+        nums = [1, 3, 5, 8, 9]
+        assert list_find_first_matching_safe(nums, lambda x: x % 2 == 0) == 8
+
+    def test_invalid_inputs(self):
+        from helpers import list_find_first_matching_safe
+        assert list_find_first_matching_safe(None) is None
+        assert list_find_first_matching_safe([1, 3], lambda x: x > 10, -1) == -1

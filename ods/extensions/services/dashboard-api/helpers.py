@@ -1381,3 +1381,20 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def list_find_first_matching_safe(items: list | None, predicate=None, default=None):
+    """Safely find and return the first element in items matching predicate function.
+    Returns default on no match, None or non-list inputs.
+    """
+    if not items or not isinstance(items, (list, tuple)):
+        return default
+    if predicate is None or not callable(predicate):
+        predicate = bool
+    for item in items:
+        try:
+            if predicate(item):
+                return item
+        except Exception:
+            continue
+    return default
