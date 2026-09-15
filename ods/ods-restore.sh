@@ -486,8 +486,8 @@ verify_restore() {
         log_success "Restore verification passed"
         return 0
     else
-        log_warn "Some paths may be missing (this may be normal if they weren't in backup)"
-        return 0
+        log_error "Restore verification failed; the restored installation is incomplete"
+        return 1
     fi
 }
 
@@ -559,7 +559,10 @@ do_restore() {
     fi
 
     # Verify
-    verify_restore
+    if ! verify_restore; then
+        log_error "Restore aborted: verification found missing critical paths"
+        return 1
+    fi
 
     log_success "Restore complete!"
     echo ""
