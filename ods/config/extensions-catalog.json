@@ -3570,6 +3570,51 @@
       "configuration_scope": "declared-environment-keys"
     },
     {
+      "id": "trino",
+      "name": "Trino (Federated SQL)",
+      "description": "Query explicitly configured local data sources through one read-only SQL endpoint with native HTTPS and password authentication.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 0,
+      "external_port_default": 0,
+      "health_endpoint": "/v1/info",
+      "env_vars": [
+        {
+          "key": "TRINO_HTTPS_PORT",
+          "description": "Native HTTPS SQL/UI host port; trust the generated certificate explicitly",
+          "default": "8448"
+        },
+        {
+          "key": "TRINO_PASSWORD_HASH",
+          "description": "bcrypt hash for user ods, cost at least 8; htpasswd -nB -C 10 ods generates ods:HASH, supply only HASH",
+          "required": true
+        },
+        {
+          "key": "TRINO_INTERNAL_SECRET",
+          "description": "Random shared secret for native coordinator/worker authentication",
+          "required": true
+        },
+        {
+          "key": "TRINO_TLS_PASSWORD",
+          "description": "Stable password of at least 6 characters protecting the persisted TLS keystore",
+          "required": true
+        }
+      ],
+      "tags": [
+        "sql",
+        "analytics",
+        "federation"
+      ],
+      "features": [],
+      "startup_check": true,
+      "startup_timeout": 180,
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
       "id": "tts",
       "name": "Kokoro (TTS)",
       "description": "Kokoro (TTS)",

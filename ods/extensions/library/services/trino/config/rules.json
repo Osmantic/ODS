@@ -1,0 +1,7 @@
+{
+  "catalogs": [{"user": "ods", "catalog": ".*", "allow": "read-only"}],
+  "schemas": [{"user": "ods", "owner": false}],
+  "tables": [{"user": "ods", "privileges": ["SELECT"]}],
+  "queries": [{"user": "ods", "allow": ["execute"]}],
+  "impersonation": [{"original_user": ".*", "new_user": ".*", "allow": false}]
+}
