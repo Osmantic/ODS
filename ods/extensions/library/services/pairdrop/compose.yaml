@@ -1,0 +1,36 @@
+services:
+  pairdrop:
+    image: ghcr.io/schlagmichdoch/pairdrop:v1.11.2@sha256:c4b30977264a76e335740089e693a52a0d0d616330dec7f93c7b96beef7b4a02
+    container_name: ods-pairdrop
+    user: "1000:1000"
+    entrypoint: ["node", "server/index.js"]
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      PORT: "3000"
+      RTC_CONFIG: /home/node/app/ods-rtc-config.json
+      WS_FALLBACK: "false"
+      DEBUG_MODE: "false"
+    volumes:
+      - ./extensions/services/pairdrop/rtc-config.json:/home/node/app/ods-rtc-config.json:ro
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${PAIRDROP_PORT:-8104}:3000"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:3000/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks: [ods-network]
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 256M
+
+networks:
+  ods-network:
+    external: true

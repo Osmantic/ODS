@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-13T16:53:56Z",
+  "generated_at": "2026-09-13T19:05:07Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -2825,6 +2825,57 @@
         }
       },
       "catalog_source": "builtin",
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
+      "id": "pairdrop",
+      "name": "PairDrop (Local File Transfer)",
+      "description": "Send files directly between nearby browsers with receiver confirmation.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 3000,
+      "external_port_default": 8104,
+      "health_endpoint": "/",
+      "env_vars": [
+        {
+          "key": "PAIRDROP_PORT",
+          "description": "Published port for local browser file transfer",
+          "default": "8104"
+        }
+      ],
+      "tags": [
+        "files",
+        "sharing",
+        "local"
+      ],
+      "features": [
+        {
+          "id": "local-file-transfer",
+          "name": "Local File Transfer",
+          "description": "Transfer files over direct WebRTC connections without external STUN or TURN servers",
+          "icon": "Send",
+          "category": "productivity",
+          "requirements": {
+            "services": [
+              "pairdrop"
+            ],
+            "vram_gb": 0
+          },
+          "enabled_services_all": [
+            "pairdrop"
+          ],
+          "setup_time": "~1 minute",
+          "priority": 30,
+          "launch": {
+            "type": "service",
+            "service": "pairdrop"
+          }
+        }
+      ],
       "configuration_scope": "declared-environment-keys"
     },
     {
