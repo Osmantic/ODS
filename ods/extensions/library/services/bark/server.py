@@ -25,8 +25,24 @@ app = FastAPI(title="Bark TTS API", version="0.1.6")
 _models_loaded = False
 _model_lock = threading.Lock()
 
-# Thread pool for CPU-intensive TTS generation
-_executor = ThreadPoolExecutor(max_workers=2)
+# Bark reuses mutable model/device state across every generation stage.
+_executor = ThreadPoolExecutor(max_workers=1)
+_generation_lock = threading.Lock()
+
+
+def _submit_generation(function, *args):
+    """Admit one job without queuing HTTP workers behind model work."""
+    if not _generation_lock.acquire(blocking=False):
+        raise HTTPException(status_code=503, detail="Bark is busy. Wait for the current generation to finish.")
+    try:
+        future = _executor.submit(function, *args)
+    except RuntimeError:
+        # A shut-down executor did not accept work, so it cannot release the slot.
+        _generation_lock.release()
+        raise
+    # Release when computation ends, even if a caller stops waiting for its result.
+    future.add_done_callback(lambda completed: _generation_lock.release())
+    return future
 
 # Valid output formats
 VALID_FORMATS = {"WAV", "MP3", "OGG", "FLAC"}
@@ -157,14 +173,10 @@ def text_to_speech(req: TTSRequest):
     Returns:
         Base64-encoded audio with sample rate.
     """
+    future = _submit_generation(
+        _generate_audio_sync, req.text, req.voice_preset, req.output_format,
+    )
     try:
-        # Run CPU-intensive TTS in thread pool to prevent worker starvation
-        future = _executor.submit(
-            _generate_audio_sync,
-            req.text,
-            req.voice_preset,
-            req.output_format,
-        )
         result = future.result()
 
         return TTSResponse(**result)
@@ -184,12 +196,10 @@ def text_to_speech_stream(req: TTSRequest):
     Generate speech and return raw audio bytes (wav).
     Suitable for streaming to audio players.
     """
+    future = _submit_generation(
+        _generate_audio_stream_sync, req.text, req.voice_preset,
+    )
     try:
-        future = _executor.submit(
-            _generate_audio_stream_sync,
-            req.text,
-            req.voice_preset,
-        )
         return future.result()
     except ValueError as e:
         logger.warning(f"TTS stream validation failed: {e}")
