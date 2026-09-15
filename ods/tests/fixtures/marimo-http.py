@@ -3,12 +3,25 @@
 import base64
 import json
 import os
+import re
 import urllib.error
 import urllib.request
 
 
+password = os.environ["MARIMO_PASSWORD"]
+authorization = "Basic " + base64.b64encode(("ods:" + password).encode()).decode()
+with urllib.request.urlopen(urllib.request.Request(
+    "http://127.0.0.1:8080/", headers={"Authorization": authorization},
+), timeout=10) as response:
+    assert response.status == 200
+    page = response.read().decode()
+match = re.search(r'"serverToken":\s*("(?:\\.|[^"\\])*")', page)
+assert match, "Authenticated editor page must supply its skew-protection token"
+server_token = json.loads(match[1])
+
+
 def request(password=None):
-    headers = {"Content-Type": "application/json"}
+    headers = {"Content-Type": "application/json", "Marimo-Server-Token": server_token}
     if password is not None:
         auth = base64.b64encode(("ods:" + password).encode()).decode()
         headers["Authorization"] = "Basic " + auth
