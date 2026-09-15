@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { startInstall, getInstallProgress, type ProgressInfo } from "../hooks/useTauri";
+import { cancelInstall, startInstall, getInstallProgress, type ProgressInfo } from "../hooks/useTauri";
 
 interface Props {
   tier: number;
@@ -113,6 +113,14 @@ export default function Installing({
           );
         })}
       </div>
+
+      <button
+        type="button"
+        className="mt-6 text-sm text-gray-500 hover:text-gray-300"
+        onClick={() => cancelInstall().catch(onError)}
+      >
+        Cancel installation
+      </button>
 
       <p className="mt-10 text-xs text-gray-600 text-center max-w-sm">
         Please don't close this window. If the install is interrupted, you can

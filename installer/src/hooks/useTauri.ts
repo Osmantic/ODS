@@ -105,6 +105,8 @@ export const startInstall = (
     installDir: installDir ?? null,
   });
 
+export const cancelInstall = () => invoke<void>("cancel_install");
+
 export const getInstallProgress = () =>
   invoke<ProgressInfo>("get_install_progress");
 
