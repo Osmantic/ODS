@@ -736,3 +736,22 @@ def load_templates() -> list[dict]:
 
 
 TEMPLATES = load_templates()
+
+
+# ── config guard: resolve_data_dir ────────────────────────────
+def resolve_data_dir(path: Any, must_exist: bool = False) -> Path | None:
+    """Resolve *path* to an absolute ``Path`` object.
+
+    Expands ``~`` and environment variables.  Returns ``None`` when
+    *path* is falsy or when *must_exist* is True and the path does not
+    exist on disk.
+    """
+    if not path:
+        return None
+    try:
+        resolved = Path(os.path.expandvars(str(path))).expanduser().resolve()
+    except (TypeError, ValueError):
+        return None
+    if must_exist and not resolved.exists():
+        return None
+    return resolved
