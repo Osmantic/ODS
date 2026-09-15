@@ -1335,6 +1335,55 @@
       "configuration_scope": "declared-environment-keys"
     },
     {
+      "id": "garage",
+      "name": "Garage (Local Object Artifacts)",
+      "description": "Store reproducible local artifacts through S3 with Garage's native single-node layout and bucket permissions.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 0,
+      "external_port_default": 0,
+      "health_endpoint": "/health",
+      "env_vars": [
+        {
+          "key": "GARAGE_S3_PORT",
+          "description": "Garage S3 protocol host port; no browser UI",
+          "default": "3900"
+        },
+        {
+          "key": "GARAGE_RPC_SECRET",
+          "description": "64 hexadecimal characters for the native local RPC secret; preserve with backups",
+          "required": true
+        },
+        {
+          "key": "GARAGE_ADMIN_TOKEN",
+          "description": "Long random native administration API token; not an S3 access key",
+          "required": true
+        },
+        {
+          "key": "GARAGE_ACCESS_KEY",
+          "description": "Native bootstrap S3 access-key ID: GK followed by 32 hexadecimal characters",
+          "required": true
+        },
+        {
+          "key": "GARAGE_SECRET_KEY",
+          "description": "64 hexadecimal characters for the bootstrap S3 secret; existing keys require the same value",
+          "required": true
+        }
+      ],
+      "tags": [
+        "storage",
+        "artifacts",
+        "s3"
+      ],
+      "features": [],
+      "startup_check": true,
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
       "id": "gitea",
       "name": "Gitea (Git Hosting)",
       "description": "Lightweight self-hosted Git service for managing repositories and CI/CD.",
