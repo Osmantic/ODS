@@ -1,0 +1,45 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: radicale
+  name: Radicale (Calendars and Contacts)
+  description: "Local authenticated CalDAV calendars and CardDAV address books for explicitly configured clients."
+  aliases: [local-calendars]
+  container_name: ods-radicale
+  container_uid: 1000
+  default_host: radicale
+  port: 5232
+  external_port_env: RADICALE_PORT
+  external_port_default: 5232
+  health: /.web/
+  ui_path: /.web/
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [calendar, contacts, caldav, carddav, privacy]
+  env_vars:
+    - key: RADICALE_PORT
+      description: "Published HTTP port; internal listener remains 5232"
+      default: "5232"
+    - key: RADICALE_PASSWORD
+      description: "Password for the ods account; 16 to 72 UTF-8 bytes, shared by explicitly configured DAV clients"
+      required: true
+      secret: true
+features:
+  - id: local-dav-organizer
+    name: Local Calendars and Contacts
+    description: "Store calendars and address books locally using authenticated DAV clients"
+    icon: Calendar
+    category: productivity
+    requirements:
+      services: [radicale]
+      vram_gb: 0
+    enabled_services_all: [radicale]
+    setup_time: "~1 minute after setting credentials"
+    priority: 38
+    launch:
+      type: service
+      service: radicale
