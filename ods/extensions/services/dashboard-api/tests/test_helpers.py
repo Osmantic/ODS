@@ -1740,3 +1740,14 @@ def test_flatten_bounds_cycles_and_large_depth_without_losing_empty_leaves():
         nested = {"child": nested}
     result = dict_flatten_nested_safe(nested, max_depth=100000)
     assert len(next(iter(result)).split(".")) == 128
+
+
+class TestStringMaskCreditCardSafe:
+    def test_valid_masking(self):
+        from helpers import string_mask_credit_card_safe
+        assert string_mask_credit_card_safe("1234-5678-9012-3456") == "************3456"
+
+    def test_invalid_inputs(self):
+        from helpers import string_mask_credit_card_safe
+        assert string_mask_credit_card_safe(None) == ""
+        assert string_mask_credit_card_safe("12") == "**"
