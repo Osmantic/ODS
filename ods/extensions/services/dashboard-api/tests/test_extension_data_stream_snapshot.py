@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-import os
-import json
 import errno
+import hashlib
+import json
+import os
 import sys
 import tarfile
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -17,7 +19,7 @@ if str(BIN_DIR) not in sys.path:
 
 import extension_data_stream_snapshot as snapshots  # noqa: E402
 from extension_data_scope_contract import bind_data_scope  # noqa: E402
-from extension_lifecycle_work import LifecycleWorkExecutionError  # noqa: E402
+from extension_lifecycle_work import REQUEST_SCHEMA, LifecycleWorkExecutionError  # noqa: E402
 from test_extension_data_scope_contract import command  # noqa: E402
 
 
@@ -30,6 +32,17 @@ def _command():
         selected_paths=(["data/alpha"], ["data/beta"]),
         prior_paths=[],
     )
+
+
+def _protocol_hash(value, operation_key: str) -> str:
+    unsigned = {
+        "schema": REQUEST_SCHEMA, "transactionId": value.transaction_id,
+        "planHash": value.plan_hash, "operationKey": operation_key,
+        "serviceIds": list(value.service_ids),
+        "payload": {"serviceIds": list(value.service_ids)},
+    }
+    encoded = json.dumps(unsigned, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _roots(tmp_path: Path):
@@ -220,6 +233,52 @@ def test_published_first_snapshot_wins_after_live_data_changes(tmp_path: Path):
     initial = store.backup(value)
     _write(source, b"second\n")
     assert store.backup(value) == initial
+
+
+@linux_effect
+def test_reconciling_command_rebinds_original_backup_archive_without_rebackup(tmp_path: Path):
+    install, data, backup, alpha = _roots(tmp_path)
+    _write(alpha / "note", b"first")
+    value = _command()
+    value = replace(value, request_hash=_protocol_hash(value, "backup"))
+    store = snapshots.StreamSnapshotStore(install, data, backup)
+    original = store.backup(value)
+    reconciling = replace(value.plan_material, state="reconciling")
+    restore = replace(
+        value, operation_key="restore", plan_material=reconciling,
+        request_hash=_protocol_hash(value, "restore"),
+    )
+    _write(alpha / "note", b"changed after apply")
+    assert store.verify(restore) == original
+    with pytest.raises(LifecycleWorkExecutionError):
+        store.backup(restore)
+
+
+@linux_effect
+def test_verified_restore_archive_lease_keeps_original_inode_on_path_swap(tmp_path: Path):
+    install, data, backup, alpha = _roots(tmp_path)
+    _write(alpha / "note", b"sealed original")
+    value = _command()
+    value = replace(value, request_hash=_protocol_hash(value, "backup"))
+    store = snapshots.StreamSnapshotStore(install, data, backup)
+    store.backup(value)
+    restore = replace(
+        value, operation_key="restore",
+        plan_material=replace(value.plan_material, state="reconciling"),
+        request_hash=_protocol_hash(value, "restore"),
+    )
+    archive_path = backup / f"{value.transaction_id}.{value.plan_hash}.tar"
+    held = backup / "held-original.tar"
+    with store.open_verified(restore) as (archive, document, receipt):
+        assert receipt.file_count == 1
+        assert document["schema"] == snapshots.SNAPSHOT_SCHEMA
+        member = next(item for item in archive.getmembers() if item.name.endswith("/note"))
+        archive_path.rename(held)
+        archive_path.write_bytes(b"invalid replacement")
+        archive_path.chmod(0o400)
+        assert archive.extractfile(member).read() == b"sealed original"
+    with pytest.raises(LifecycleWorkExecutionError):
+        store.verify(restore)
 
 
 @linux_effect
