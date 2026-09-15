@@ -40,7 +40,7 @@ services:
       READECK_TRUSTED_PROXIES: 127.0.0.1/32,::1/128
       READECK_WORKER_NUMBER: "2"
     ports:
-      - "127.0.0.1:${READECK_PORT:-8096}:8000"
+      - "${BIND_ADDRESS:-127.0.0.1}:${READECK_PORT:-8096}:8000"
     volumes:
       - ./data/readeck:/readeck
     read_only: true

@@ -2,8 +2,8 @@
 
 Install **Readeck (Local Reading Library)** from Extensions, set a unique
 `READECK_PASSWORD`, then enable it. Open `http://localhost:8096` and log in as
-`ods`. `READECK_PORT` changes the loopback host port; `BIND_ADDRESS` does not
-expose this recipe to the LAN.
+`ods`. `READECK_PORT` changes the published host port. `BIND_ADDRESS` selects
+the host interface, with loopback as the default.
 
 The pinned Readeck 0.23.2 image saves articles, labels and reading state locally
 and provides native HTML, Markdown and EPUB exports. Saving a URL deliberately
@@ -115,3 +115,20 @@ claim an audit of every upstream feature.
 Native contracts: [0.23.2 user CLI](https://codeberg.org/readeck/readeck/src/tag/0.23.2/internal/app/user.go),
 [bookmark creation](https://codeberg.org/readeck/readeck/src/tag/0.23.2/docs/api/bookmarks/doc-create.md),
 [profile/password/token routes](https://codeberg.org/readeck/readeck/src/tag/0.23.2/internal/profile/views.go).
+
+## Host publication
+
+The published ports honor ODS `BIND_ADDRESS`: unset keeps `127.0.0.1`; the
+explicit LAN opt-in can select `0.0.0.0` or a specific host interface. This
+controls Docker publication and preserves native authentication and application
+policy. Disable/recreate after changes, and keep operator edits to the installed
+definition backed up before updating or reinstalling the extension.
+
+Before LAN access, add the intended host name or IP to `READECK_ALLOWED_HOSTS`
+in the installed `compose.yaml`. Keep unrelated hosts excluded and preserve the
+loopback-only trusted proxy list unless a specific proxy has been qualified.
+
+Compose regression tests cover unset, loopback, wildcard and a specific interface
+while preserving target ports, credentials and storage. Actual lifecycle fixtures
+remain bound to isolated loopback ports. Remote browser/TLS deployments are not
+qualified by those local tests.
