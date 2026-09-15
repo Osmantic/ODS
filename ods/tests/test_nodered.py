@@ -81,6 +81,7 @@ def test_native_deployment_credentials_context_rotation_and_cold_restore(tmp_pat
     fixture.write_text('''const http = require("node:http");
 const expected = "Basic " + Buffer.from("fixture:" + process.env.FIXTURE_PASSWORD).toString("base64");
 http.createServer((req, res) => {
+  if (req.url === "/health") { res.writeHead(200); res.end("ready"); return; }
   if (req.headers.authorization !== expected) { res.writeHead(401); res.end("Unauthorized"); return; }
   res.writeHead(200, {"Content-Type":"application/json"});
   res.end(JSON.stringify({receipt:"Xin chào from native credentials"}));
@@ -91,7 +92,10 @@ http.createServer((req, res) => {
         "entrypoint": ["node", "/receipt.js"], "environment": {"FIXTURE_PASSWORD": fixture_password},
         "volumes": [{"type": "bind", "source": str(fixture), "target": "/receipt.js", "read_only": True}],
         "networks": ["ods-network"], "labels": {"io.ods.quality20.validation": "true"},
-        "healthcheck": {"disable": True},
+        "healthcheck": {
+            "test": ["CMD", "node", "-e", "const r=require('node:http').get('http://127.0.0.1:9090/health',{timeout:4000},s=>{s.resume();process.exitCode=s.statusCode===200?0:1});r.on('timeout',()=>r.destroy(new Error('timeout')));r.on('error',()=>{process.exitCode=1});"],
+            "interval": "5s", "timeout": "5s", "retries": 3,
+        },
     }
     plan["networks"] = {"ods-network": {"name": project + "-network"}}
     config = tmp_path / "isolated.json"
