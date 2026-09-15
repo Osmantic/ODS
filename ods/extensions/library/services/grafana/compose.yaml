@@ -23,6 +23,7 @@ services:
       GF_PLUGINS_PREINSTALL_DISABLED: "true"
       GF_PLUGINS_PREINSTALL_AUTO_UPDATE: "false"
       GF_LOG_MODE: console
+      GF_DATABASE_WAL: "true"
     volumes:
       - ./data/grafana:/var/lib/grafana
     tmpfs:
@@ -34,7 +35,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 12
-      start_period: 30s
+      start_period: 120s
     networks: [ods-network]
     deploy:
       resources:

@@ -33,6 +33,10 @@ That directory holds SQLite state and plugin data; the image is read-only
 with bounded temporary storage. The API health check indicates availability,
 not that any selected data source is healthy.
 
+SQLite uses its supported WAL mode. Keep the complete data directory together,
+including any WAL/SHM files, and stop Grafana before copying a filesystem backup.
+First startup runs database migrations and has a longer health-check grace period.
+
 GRAFANA_ADMIN_PASSWORD seeds a new database only. Changing its environment
 value does not reset an existing account. Manage established passwords using
 Grafana account settings or its documented administrator recovery procedure.

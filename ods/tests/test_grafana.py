@@ -131,11 +131,11 @@ def test_live_saved_dashboard_and_secret_backed_queries_survive_recreation(insta
         run("docker", "run", "--rm", "--network", "none", "--user", "0",
             "--entrypoint", "sh", "-v", project + "-data:/var/lib/grafana", service["image"],
             "-c", "chown 472:472 /var/lib/grafana")
-        run(*command, "up", "-d", "--wait", "--wait-timeout", "120")
+        run(*command, "up", "-d", "--wait", "--wait-timeout", "300", timeout=360)
         exercise(seed=True)
         service["environment"]["GF_SECURITY_ADMIN_PASSWORD"] = env["ODS_GRAFANA_RESEED_PASSWORD"]
         config.write_text(json.dumps(plan))
-        run(*command, "up", "-d", "--force-recreate", "--wait", "--wait-timeout", "120")
+        run(*command, "up", "-d", "--force-recreate", "--wait", "--wait-timeout", "300", timeout=360)
         exercise(seed=False)
         logs = run("docker", "logs", project)
         for key in ("GRAFANA_SECRET_KEY", "GRAFANA_ADMIN_PASSWORD", "ODS_METRICS_PASSWORD"):
