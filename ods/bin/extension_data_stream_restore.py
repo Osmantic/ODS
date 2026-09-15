@@ -25,7 +25,9 @@ from extension_data_backup_runtime import (
     _validate_platform,
 )
 from extension_data_restore_journal import RestoreIntentJournal
-from extension_data_stream_snapshot import StreamSnapshotStore, _check_extended_metadata
+from extension_data_stream_snapshot import (
+    StreamSnapshotStore, _check_extended_metadata, _check_sparse_file,
+)
 from extension_lifecycle_work import LifecycleWorkCommand, LifecycleWorkExecutionError
 
 
@@ -417,6 +419,7 @@ def _verify_tree(root: int, path_state: dict[str, Any],
                     ):
                         _fail("lifecycle-work-data-restore-stage-readback-invalid")
                     _check_extended_metadata(file_descriptor)
+                    _check_sparse_file(file_descriptor, file_info)
                     digest = hashlib.sha256()
                     remaining = file_entry["size"]
                     while remaining:
