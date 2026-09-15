@@ -225,7 +225,7 @@ _ods_cli_bootstrap_upgrade_process_running() {
     [[ -n "$model" ]] || return 1
     while IFS= read -r args; do
         case "$args" in
-            *"/scripts/bootstrap-upgrade.sh"*" $model "*|*" scripts/bootstrap-upgrade.sh"*" $model "*)
+            *"/scripts/bootstrap-upgrade.sh"*" $model"*|*" scripts/bootstrap-upgrade.sh"*" $model"*)
                 return 0
                 ;;
         esac
