@@ -315,6 +315,41 @@ def test_bind_accepts_empty_present_reservation_claims():
     assert material.exclusive == ()
 
 
+def test_host_binding_preserves_approved_prior_v2_data_scope_and_rejects_drift():
+    stored = transaction("downloading")
+    stored["envelope"]["plan"]["operations"][0]["action"] = "update"
+    stored["envelope"]["plan"]["priorDataBindings"] = [{
+        "serviceId": "documents", "manifestSchemaVersion": "ods.services.v2",
+        "version": "1.1.0", "dataSchemaVersion": "1",
+        "definitionSha256": "sha256:" + "a" * 64,
+        "paths": [{
+            "path": "data/documents-prior", "backupClass": "required", "owner": "user",
+            "uninstall": "preserve", "purge": "separate-approval",
+        }],
+    }]
+    parsed = command("download-and-verify", ["documents"], {
+        "operations": [{"serviceId": "documents", "action": "update"}]
+    })
+    bound = lifecycle_plan.bind_lifecycle_plan(parsed, stored)
+    prior = bound.plan_material.prior_data_bindings[0]
+    assert prior.service_id == "documents"
+    assert prior.definition_sha256 == "sha256:" + "a" * 64
+    assert prior.paths[0].path == "data/documents-prior"
+    for changed_path in ("../private", "data/documents-prior/../private", "data//documents", "data/./documents"):
+        altered = transaction("downloading")
+        altered["envelope"]["plan"] = json.loads(json.dumps(stored["envelope"]["plan"]))
+        altered["envelope"]["plan"]["priorDataBindings"][0]["paths"][0]["path"] = changed_path
+        with pytest.raises(lifecycle_work.LifecycleWorkValidationError) as caught:
+            lifecycle_plan.bind_lifecycle_plan(parsed, altered)
+        assert caught.value.code == "lifecycle-work-plan-mismatch"
+    altered = transaction("downloading")
+    altered["envelope"]["plan"] = json.loads(json.dumps(stored["envelope"]["plan"]))
+    altered["envelope"]["plan"]["priorDataBindings"][0]["paths"][0]["owner"] = ["user"]
+    with pytest.raises(lifecycle_work.LifecycleWorkValidationError) as caught:
+        lifecycle_plan.bind_lifecycle_plan(parsed, altered)
+    assert caught.value.code == "lifecycle-work-plan-mismatch"
+
+
 def test_bind_accepts_reserve_for_present_empty_claims():
     stored = transaction("reserved")
     stored["envelope"]["plan"]["definitions"][0]["resources"] = claims()

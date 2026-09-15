@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -257,6 +258,37 @@ def test_real_planner_envelope_create_read_and_idempotent_replay(tmp_path):
     assert observed["envelope"] == envelope
     assert observed["sequence"] == 2
     assert observed["approval"] is None
+
+
+def test_prior_data_binding_survives_durable_plan_and_rejects_unsafe_rehash(tmp_path):
+    state = copy.deepcopy(HOST_STATE)
+    state["installedServices"] = [{
+        "id": "notes", "version": "1.1.0", "definitionSha256": "sha256:" + "c" * 64,
+        "status": "enabled", "manifestSchemaVersion": "ods.services.v2",
+        "dataSchemaVersion": "1", "data": [{
+            "path": "data/notes-prior", "backupClass": "required", "owner": "user",
+            "uninstall": "preserve", "purge": "separate-approval",
+        }],
+    }]
+    revision = hashlib.sha256(planner.canonical_json_bytes(state)).hexdigest()
+    envelope = planner.build_plan(
+        [catalog_entry()], requested_action="ensure", requested_services=["notes"],
+        requested_capabilities=[], provider_preferences={}, missing_config_keys=[],
+        missing_secret_keys=[], catalog_revision=CATALOG_REVISION,
+        observed_state_revision=revision, observed_state=state,
+        policy_revision=POLICY_REVISION, policy=POLICY, valid_until=VALID_UNTIL,
+    )
+    store = transactions.TransactionStore(tmp_path / "transactions")
+    descriptor = create(store, envelope)
+    observed = store.read(descriptor["transactionId"])["envelope"]
+    assert observed["plan"]["priorDataBindings"][0]["paths"][0]["path"] == "data/notes-prior"
+    tampered = copy.deepcopy(envelope)
+    tampered["plan"]["priorDataBindings"][0]["paths"][0]["path"] = "../private"
+    new_hash = hashlib.sha256(planner.canonical_json_bytes(tampered["plan"])).hexdigest()
+    tampered["planHash"] = new_hash
+    tampered["planId"] = f"plan-{new_hash[:24]}"
+    with pytest.raises(transactions.ValidationRejected, match="invalid-prior-data-path"):
+        create(store, tampered, key="9" * 64)
 
 
 def test_pre_binding_durable_plan_remains_readable_after_upgrade(tmp_path):

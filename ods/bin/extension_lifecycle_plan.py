@@ -143,6 +143,24 @@ class PlannedDefinition:
 
 
 @dataclass(frozen=True)
+class PlannedPriorDataPath:
+    path: str
+    backup_class: str
+    owner: str
+    uninstall: str
+    purge: str
+
+
+@dataclass(frozen=True)
+class PlannedPriorDataBinding:
+    service_id: str
+    version: str
+    data_schema_version: str
+    definition_sha256: str
+    paths: tuple[PlannedPriorDataPath, ...]
+
+
+@dataclass(frozen=True)
 class LifecyclePlanMaterial:
     schema: str
     transaction_id: str
@@ -150,6 +168,7 @@ class LifecyclePlanMaterial:
     state: str
     operations: tuple[PlannedOperation, ...]
     definitions: tuple[PlannedDefinition, ...]
+    prior_data_bindings: tuple[PlannedPriorDataBinding, ...] = ()
     attested_approval: bool = False
 
 
@@ -366,6 +385,65 @@ def _definition(value: Any) -> PlannedDefinition:
     )
 
 
+def _prior_data_bindings(
+    value: Any, operations: tuple[PlannedOperation, ...]
+) -> tuple[PlannedPriorDataBinding, ...]:
+    if not isinstance(value, list) or len(value) > len(operations):
+        _reject()
+    mutable = {item.service_id for item in operations if item.action in {"enable", "repair", "update"}}
+    result: list[PlannedPriorDataBinding] = []
+    previous_service: str | None = None
+    operation_order = {item.service_id: index for index, item in enumerate(operations)}
+    for item in value:
+        if not isinstance(item, dict) or set(item) != {
+            "serviceId", "manifestSchemaVersion", "version", "dataSchemaVersion", "definitionSha256", "paths"
+        }:
+            _reject()
+        service_id = _service_id(item["serviceId"])
+        if (
+            service_id not in mutable
+            or item["manifestSchemaVersion"] != "ods.services.v2"
+            or (previous_service is not None and operation_order[service_id] <= operation_order[previous_service])
+        ):
+            _reject()
+        paths = item["paths"]
+        if not isinstance(paths, list) or len(paths) > 2048:
+            _reject()
+        bound_paths: list[PlannedPriorDataPath] = []
+        previous_path: str | None = None
+        for path_item in paths:
+            if not isinstance(path_item, dict) or set(path_item) != {"path", "backupClass", "owner", "uninstall", "purge"}:
+                _reject()
+            path = _text(path_item["path"], maximum=256)
+            if (
+                path.startswith("/") or ".." in path
+                or any(part in {"", ".", ".."} for part in path.split("/"))
+                or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", path) is None
+                or (previous_path is not None and path <= previous_path)
+                or not isinstance(path_item["backupClass"], str)
+                or path_item["backupClass"] not in {"required", "recommended", "ephemeral"}
+                or not isinstance(path_item["owner"], str)
+                or path_item["owner"] not in {"ods", "extension", "user"}
+                or not isinstance(path_item["uninstall"], str)
+                or path_item["uninstall"] not in {"preserve", "archive"}
+                or not isinstance(path_item["purge"], str)
+                or path_item["purge"] not in {"separate-approval", "unsupported"}
+            ):
+                _reject()
+            bound_paths.append(PlannedPriorDataPath(
+                path, path_item["backupClass"], path_item["owner"], path_item["uninstall"], path_item["purge"]
+            ))
+            previous_path = path
+        digest = _digest(item["definitionSha256"])
+        assert isinstance(digest, str)
+        result.append(PlannedPriorDataBinding(
+            service_id, _text(item["version"], maximum=128),
+            _text(item["dataSchemaVersion"], maximum=64), digest, tuple(bound_paths)
+        ))
+        previous_service = service_id
+    return tuple(result)
+
+
 def _expected_request(
     command: LifecycleWorkCommand,
     operations: tuple[PlannedOperation, ...],
@@ -481,6 +559,7 @@ def bind_lifecycle_plan(
     definitions = tuple(_definition(item) for item in raw_definitions)
     if tuple(item.service_id for item in definitions) != operation_services:
         _reject()
+    prior_data_bindings = _prior_data_bindings(plan.get("priorDataBindings", []), operations)
 
     prefix = command.operation_key.partition(":")[0]
     if state not in _ALLOWED_STATES.get(prefix, frozenset()):
@@ -506,6 +585,7 @@ def bind_lifecycle_plan(
         state=state,
         operations=operations,
         definitions=definitions,
+        prior_data_bindings=prior_data_bindings,
         attested_approval=attested,
     )
     return replace(command, plan_material=material)
@@ -519,5 +599,7 @@ __all__ = [
     "PlannedHostPort",
     "PlannedImage",
     "PlannedOperation",
+    "PlannedPriorDataBinding",
+    "PlannedPriorDataPath",
     "bind_lifecycle_plan",
 ]

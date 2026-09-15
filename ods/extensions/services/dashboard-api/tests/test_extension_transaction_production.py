@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import importlib.util
+from pathlib import Path
+
 import pytest
 
 import extension_transaction_production as production
@@ -118,6 +121,11 @@ def test_observed_state_projects_manifest_v2_and_legacy_host_ports(
         service = builtin / service_id
         service.mkdir(parents=True)
         (service / "compose.yaml").write_text("services: {}\n", encoding="utf-8")
+        if service_id == "notes":
+            (service / "manifest.yaml").write_text(
+                "schema_version: ods.services.v1\nservice:\n  id: notes\n  type: docker\n",
+                encoding="utf-8",
+            )
     monkeypatch.setattr(production.platform, "system", lambda: "Linux")
     monkeypatch.setattr(production.platform, "machine", lambda: "x86_64")
     monkeypatch.setattr(production, "GPU_BACKEND", "cpu")
@@ -148,6 +156,10 @@ def test_installed_bound_port_observation_uses_persisted_compose_value(
     service.mkdir(parents=True)
     data.mkdir()
     (service / "compose.yaml").write_text("services: {}\n", encoding="utf-8")
+    (service / "manifest.yaml").write_text(
+        "schema_version: ods.services.v1\nservice:\n  id: notes\n  type: docker\n",
+        encoding="utf-8",
+    )
     (install / ".env").write_text(
         "ODS_VERSION=2.6.0\nNOTES_PORT=8181\n", encoding="utf-8"
     )
@@ -177,6 +189,83 @@ def test_installed_bound_port_observation_uses_persisted_compose_value(
     monkeypatch.delenv("NOTES_PORT", raising=False)
     (install / ".env").write_text("NOTES_PORT=bad\n", encoding="utf-8")
     with pytest.raises(PlanningError, match="installed-port-env-invalid"):
+        production.production_observed_state(**arguments)
+
+
+def test_installed_v2_identity_and_prior_data_come_from_actual_manifest(monkeypatch, tmp_path):
+    install = tmp_path / "install"
+    data = tmp_path / "data"
+    service = install / "extensions" / "services" / "ntfy"
+    service.mkdir(parents=True)
+    data.mkdir()
+    (service / "compose.yaml").write_text("services: {}\n", encoding="utf-8")
+    manifest_source = Path(__file__).resolve().parents[3] / "library/services/ntfy/manifest.yaml"
+    prior = manifest_source.read_text(encoding="utf-8").replace(
+        'version: "2.28.0"', 'version: "2.27.0"'
+    ).replace("path: data/ntfy", "path: data/ntfy-prior")
+    (service / "manifest.yaml").write_text(prior, encoding="utf-8")
+    (install / ".env").write_text("ODS_VERSION=2.6.0\n", encoding="utf-8")
+    entry = catalog_entry("ntfy")
+    entry["manifest_schema_version"] = "ods.services.v2"
+    entry["planning"]["version"] = "2.28.0"
+    entry["planning"]["definitionSha256"] = "sha256:" + "d" * 64
+    monkeypatch.setattr(production.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(production.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(production, "GPU_BACKEND", "cpu")
+    monkeypatch.setenv("ODS_CONTAINER_RUNTIME", "docker")
+    state = production.production_observed_state(
+        install_dir=install, data_dir=data,
+        user_extensions_dir=data / "user-extensions",
+        builtin_extensions_dir=install / "extensions" / "services",
+        catalog_entries=[entry], cached_statuses={"ntfy": "healthy"},
+    )
+    observed = state["installedServices"][0]
+    assert observed["version"] == "2.27.0"
+    assert observed["definitionSha256"] != entry["planning"]["definitionSha256"]
+    assert observed["data"] == [{
+        "path": "data/ntfy-prior", "backupClass": "required", "owner": "user",
+        "uninstall": "preserve", "purge": "separate-approval",
+    }]
+    digest_source = Path(__file__).resolve().parents[4] / "bin/extension_document_digest.py"
+    spec = importlib.util.spec_from_file_location("digest_parity", digest_source)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert observed["definitionSha256"] == module.canonical_document_sha256(prior)
+
+
+def test_installed_v2_missing_or_ambiguous_manifest_fails_closed(monkeypatch, tmp_path):
+    install = tmp_path / "install"
+    data = tmp_path / "data"
+    service = install / "extensions" / "services" / "ntfy"
+    service.mkdir(parents=True)
+    data.mkdir()
+    (service / "compose.yaml").write_text("services: {}\n", encoding="utf-8")
+    entry = catalog_entry("ntfy")
+    entry["manifest_schema_version"] = "ods.services.v2"
+    monkeypatch.setattr(production.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(production.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(production, "GPU_BACKEND", "cpu")
+    monkeypatch.setenv("ODS_CONTAINER_RUNTIME", "docker")
+    arguments = {
+        "install_dir": install, "data_dir": data,
+        "user_extensions_dir": data / "user-extensions",
+        "builtin_extensions_dir": install / "extensions" / "services",
+        "catalog_entries": [entry], "cached_statuses": {"ntfy": "healthy"},
+    }
+    with pytest.raises(PlanningError, match="installed-manifest-unavailable"):
+        production.production_observed_state(**arguments)
+    (service / "manifest.yaml").write_text(
+        "schema_version: ods.services.v1\nservice:\n  id: ntfy\n  id: ntfy\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(PlanningError, match="installed-manifest-invalid"):
+        production.production_observed_state(**arguments)
+    (service / "manifest.yaml").write_text(
+        "schema_version: ods.services.v1\nservice:\n  id: ntfy\n  metadata:\n    1: unsafe\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(PlanningError, match="installed-manifest-invalid"):
         production.production_observed_state(**arguments)
 
 

@@ -35,6 +35,7 @@ from config import (
     USER_EXTENSIONS_DIR,
 )
 from extension_planning_contract import computed_catalog_revision
+from extension_installed_manifest import observe_installed_manifest
 from extension_lockfile import ExtensionLockfileStore, build_empty_lockfile
 from extension_transaction_configuration import TransactionConfigurationManager
 from extension_transaction_finalizer import TransactionLockfileFinalizer
@@ -343,22 +344,55 @@ def production_observed_state(
         service_id = entry.get("id")
         if not isinstance(service_id, str):
             continue
+        if re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", service_id) is None:
+            raise PlanningError("invalid-catalog-service-id")
+        if entry.get("manifest_schema_version") == "ods.services.v2":
+            for candidate in (user_root / service_id, builtin_root / service_id):
+                try:
+                    metadata = candidate.lstat()
+                except FileNotFoundError:
+                    continue
+                except OSError as exc:
+                    raise PlanningError("installed-manifest-unavailable", serviceId=service_id) from exc
+                if not stat.S_ISDIR(metadata.st_mode) or candidate.is_symlink():
+                    raise PlanningError("installed-manifest-unsafe", serviceId=service_id)
         status = _installed_status(service_id, user_root, builtin_root, data, statuses)
         if status is None:
             continue
-        version, definition = _entry_definition(entry)
+        planning = entry.get("planning") if isinstance(entry.get("planning"), dict) else {}
+        catalog_schema = entry.get("manifest_schema_version")
+        root = user_root / service_id
+        if not root.exists():
+            root = builtin_root / service_id
+        manifest_present = (root / "manifest.yaml").exists() or (root / "manifest.yaml").is_symlink()
+        actual = (
+            observe_installed_manifest(service_id, user_root, builtin_root)
+            if manifest_present or catalog_schema == "ods.services.v2"
+            else None
+        )
+        if actual is not None:
+            version, definition = actual["version"], actual["definitionSha256"]
+        else:
+            version, definition = _entry_definition(entry)
         if not _DIGEST_RE.fullmatch(definition):
             continue
-        installed.append(
-            {
+        observed = {
                 "id": service_id,
                 "version": version,
                 "definitionSha256": definition,
                 "status": status,
             }
+        if actual is not None and actual["manifestSchemaVersion"] == "ods.services.v2":
+            observed.update({
+                "manifestSchemaVersion": actual["manifestSchemaVersion"],
+                "dataSchemaVersion": actual["dataSchemaVersion"],
+                "data": actual["data"],
+            })
+        installed.append(observed)
+        resources = (
+            actual["resources"] if actual is not None and actual["manifestSchemaVersion"] == "ods.services.v2"
+            else planning.get("resources") if isinstance(planning.get("resources"), dict) else {}
         )
-        planning = entry.get("planning") if isinstance(entry.get("planning"), dict) else {}
-        resources = planning.get("resources") if isinstance(planning.get("resources"), dict) else {}
         if status != "disabled":
             raw_host_ports = resources.get("hostPorts", [])
             if not isinstance(raw_host_ports, list):

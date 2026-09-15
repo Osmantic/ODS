@@ -976,6 +976,59 @@ def test_installed_state_drives_exact_operation_and_resource_delta(
     assert result["plan"]["resourceDelta"]["downloadBytes"] == download
 
 
+def test_update_binds_installed_v2_prior_data_separately_from_new_definition() -> None:
+    state = copy.deepcopy(HOST_STATE)
+    prior_path = {
+        "path": "data/app-old", "backupClass": "required", "owner": "user",
+        "uninstall": "preserve", "purge": "separate-approval",
+    }
+    state["installedServices"] = [{
+        "id": "app", "version": "1.1.0", "definitionSha256": "sha256:" + "c" * 64,
+        "status": "enabled", "manifestSchemaVersion": "ods.services.v2",
+        "dataSchemaVersion": "1", "data": [prior_path],
+    }]
+    selected = manifest("app")
+    selected["service"]["planning"]["data"] = [{
+        "path": "data/app-new", "backup_class": "required", "owner": "user",
+        "uninstall": "preserve", "purge": "separate-approval",
+    }]
+    revision = hashlib.sha256(planner.canonical_json_bytes(state)).hexdigest()
+    result = build([selected], requested_services=["app"],
+                   observed_state=state, observed_state_revision=revision)
+    plan = result["plan"]
+    assert plan["operations"] == [{"serviceId": "app", "action": "update"}]
+    assert plan["priorDataBindings"] == [{
+        "serviceId": "app", "manifestSchemaVersion": "ods.services.v2",
+        "version": "1.1.0", "dataSchemaVersion": "1",
+        "definitionSha256": "sha256:" + "c" * 64, "paths": [prior_path],
+    }]
+    assert plan["definitions"][0]["data"][0]["path"] == "data/app-new"
+    assert plan["dataEffects"][0]["paths"][0]["path"] == "data/app-new"
+    changed = copy.deepcopy(state)
+    changed["installedServices"][0]["data"][0]["path"] = "data/app-other"
+    changed_revision = hashlib.sha256(planner.canonical_json_bytes(changed)).hexdigest()
+    changed_plan = build([selected], requested_services=["app"],
+                         observed_state=changed, observed_state_revision=changed_revision)
+    assert result["planHash"] != changed_plan["planHash"]
+
+
+@pytest.mark.parametrize("unsafe_path", ["../private", "data//app", "data/./app", "data/app/"])
+def test_prior_data_scope_rejects_unbound_or_unsafe_records(unsafe_path: str) -> None:
+    state = copy.deepcopy(HOST_STATE)
+    state["installedServices"] = [{
+        "id": "app", "version": "1.1.0", "definitionSha256": "sha256:" + "c" * 64,
+        "status": "enabled", "manifestSchemaVersion": "ods.services.v2",
+        "dataSchemaVersion": "1", "data": [{
+            "path": unsafe_path, "backupClass": "required", "owner": "user",
+            "uninstall": "preserve", "purge": "separate-approval",
+        }],
+    }]
+    revision = hashlib.sha256(planner.canonical_json_bytes(state)).hexdigest()
+    error("invalid-relative-path", lambda: build([manifest("app")],
+          requested_services=["app"], observed_state=state,
+          observed_state_revision=revision))
+
+
 @pytest.mark.parametrize("expiry", ["2026-99-01T00:00:00Z", "2026-10-01 00:00:00Z", ""])
 def test_expiry_must_be_a_real_canonical_utc_timestamp(expiry: str) -> None:
     error("invalid-plan-expiry", lambda: build([], valid_until=expiry))

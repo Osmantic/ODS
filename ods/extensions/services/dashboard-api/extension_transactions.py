@@ -82,7 +82,7 @@ INNER_KEYS = frozenset(
         "approval",
     ]
 )
-OPTIONAL_INNER_KEYS = frozenset({"resourcePortBindings"})
+OPTIONAL_INNER_KEYS = frozenset({"resourcePortBindings", "priorDataBindings"})
 OP_KEYS = frozenset(["serviceId", "action"])
 # requestedAction must be exactly "ensure"; operation actions are install/enable/repair/update/noop
 REQUESTED_ACTION = "ensure"
@@ -133,6 +133,7 @@ MAX_LIST_ITEMS = 4096
 MAX_STEP_SCALAR_LEN = 1024
 IDEMPOTENCY_DIR, TRANSACTIONS_DIR = "_idempotency", "transactions"
 HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
+DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 SERVICE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 PLAN_ID_RE = re.compile(r"^plan-[0-9a-f]{24}$")
 TXN_ID_RE = re.compile(r"^txn-[0-9a-f]{24}$")
@@ -600,6 +601,55 @@ def _validate_inner_plan(plan):
             raise ValidationRejected("invalid-selectedServiceId", s)
     if seen_service_order != sel:
         raise ValidationRejected("service-order-mismatch")
+
+    prior_bindings = plan.get("priorDataBindings", [])
+    if not isinstance(prior_bindings, list) or len(prior_bindings) > len(ops):
+        raise ValidationRejected("invalid-prior-data-bindings")
+    mutable = {op["serviceId"] for op in ops if op["action"] in {"enable", "repair", "update"}}
+    prior_order = []
+    for binding in prior_bindings:
+        if not isinstance(binding, dict) or set(binding) != {
+            "serviceId", "manifestSchemaVersion", "version", "dataSchemaVersion", "definitionSha256", "paths"
+        }:
+            raise ValidationRejected("invalid-prior-data-binding")
+        service_id = binding["serviceId"]
+        if (
+            not isinstance(service_id, str) or service_id not in mutable or service_id in prior_order
+            or binding["manifestSchemaVersion"] != "ods.services.v2"
+            or not isinstance(binding["version"], str) or not 0 < len(binding["version"]) <= 128
+            or not isinstance(binding["dataSchemaVersion"], str) or not 0 < len(binding["dataSchemaVersion"]) <= 64
+            or not isinstance(binding["definitionSha256"], str)
+            or not DIGEST_RE.fullmatch(binding["definitionSha256"])
+        ):
+            raise ValidationRejected("invalid-prior-data-binding")
+        paths = binding["paths"]
+        if not isinstance(paths, list) or len(paths) > 2048:
+            raise ValidationRejected("invalid-prior-data-paths")
+        previous = None
+        for path in paths:
+            if not isinstance(path, dict) or set(path) != {"path", "backupClass", "owner", "uninstall", "purge"}:
+                raise ValidationRejected("invalid-prior-data-path")
+            value = path["path"]
+            if (
+                not isinstance(value, str) or not 0 < len(value) <= 256
+                or value.startswith("/") or ".." in value
+                or any(part in {"", ".", ".."} for part in value.split("/"))
+                or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", value) is None
+                or (previous is not None and value <= previous)
+                or not isinstance(path["backupClass"], str)
+                or path["backupClass"] not in {"required", "recommended", "ephemeral"}
+                or not isinstance(path["owner"], str)
+                or path["owner"] not in {"ods", "extension", "user"}
+                or not isinstance(path["uninstall"], str)
+                or path["uninstall"] not in {"preserve", "archive"}
+                or not isinstance(path["purge"], str)
+                or path["purge"] not in {"separate-approval", "unsupported"}
+            ):
+                raise ValidationRejected("invalid-prior-data-path")
+            previous = value
+        prior_order.append(service_id)
+    if prior_order != [service_id for service_id in sel if service_id in prior_order]:
+        raise ValidationRejected("prior-data-order-mismatch")
 
     bindings = plan.get("resourcePortBindings", [])
     if not isinstance(bindings, list) or len(bindings) > 2048:

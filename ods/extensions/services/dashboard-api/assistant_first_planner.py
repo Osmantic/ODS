@@ -385,7 +385,11 @@ def _device(value: Any, field: str) -> str:
 
 def _relative_path(value: Any, field: str, maximum: int) -> str:
     result = _text(value, field, maximum=maximum)
-    if result.startswith("/") or ".." in result or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", result) is None:
+    if (
+        result.startswith("/") or ".." in result
+        or any(part in {"", ".", ".."} for part in result.split("/"))
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", result) is None
+    ):
         _fail("invalid-relative-path", field=field)
     return result
 
@@ -1094,16 +1098,15 @@ def normalize_host_state(value: Any) -> dict[str, Any]:
         _sequence(state.get("installedServices"), "observed_state.installedServices")
     ):
         field = f"observed_state.installedServices[{index}]"
-        service = _exact_mapping(
-            item, field, frozenset({"id", "version", "definitionSha256", "status"})
-        )
+        legacy_fields = frozenset({"id", "version", "definitionSha256", "status"})
+        prior_fields = legacy_fields | frozenset({"manifestSchemaVersion", "dataSchemaVersion", "data"})
+        service = _exact_mapping(item, field, prior_fields if isinstance(item, Mapping) and "data" in item else legacy_fields)
         service_id = _identifier(service.get("id"), f"{field}.id")
         if service_id in seen_installed:
             _fail("duplicate-value", field="observed_state.installedServices", value=service_id)
         seen_installed.add(service_id)
         version = _text(service.get("version"), f"{field}.version", maximum=128)
-        installed.append(
-            {
+        normalized_service = {
                 "id": service_id,
                 "version": version,
                 "definitionSha256": _digest(
@@ -1115,7 +1118,33 @@ def normalize_host_state(value: Any) -> dict[str, Any]:
                     frozenset({"enabled", "disabled", "stopped", "unhealthy", "error"}),
                 ),
             }
-        )
+        if "data" in service:
+            if service.get("manifestSchemaVersion") != "ods.services.v2":
+                _fail("invalid-installed-manifest-schema", field=field)
+            data_schema_version = _text(service.get("dataSchemaVersion"), f"{field}.dataSchemaVersion", maximum=64)
+            data: list[dict[str, Any]] = []
+            seen_paths: set[str] = set()
+            for data_index, item in enumerate(_sequence(service.get("data"), f"{field}.data")):
+                data_field = f"{field}.data[{data_index}]"
+                value = _exact_mapping(item, data_field, frozenset({"path", "backupClass", "owner", "uninstall", "purge"}))
+                path = _relative_path(value.get("path"), f"{data_field}.path", 256)
+                if path in seen_paths:
+                    _fail("duplicate-value", field=f"{field}.data", value=path)
+                seen_paths.add(path)
+                data.append({
+                    "path": path,
+                    "backupClass": _enum(value.get("backupClass"), f"{data_field}.backupClass", frozenset({"required", "recommended", "ephemeral"})),
+                    "owner": _enum(value.get("owner"), f"{data_field}.owner", frozenset({"ods", "extension", "user"})),
+                    "uninstall": _enum(value.get("uninstall"), f"{data_field}.uninstall", frozenset({"preserve", "archive"})),
+                    "purge": _enum(value.get("purge"), f"{data_field}.purge", frozenset({"separate-approval", "unsupported"})),
+                })
+            data.sort(key=lambda item: item["path"])
+            normalized_service.update({
+                "manifestSchemaVersion": "ods.services.v2",
+                "dataSchemaVersion": data_schema_version,
+                "data": data,
+            })
+        installed.append(normalized_service)
     installed.sort(key=lambda item: item["id"])
 
     driver = state.get("driverVersion")
@@ -1587,6 +1616,22 @@ def build_plan(
         item.pop("default", None)
         missing_configuration.append(item)
     warnings.sort(key=lambda item: canonical_json_bytes(item))
+    prior_data_bindings = [
+        {
+            "serviceId": service_id,
+            "manifestSchemaVersion": "ods.services.v2",
+            "version": installed[service_id]["version"],
+            "dataSchemaVersion": installed[service_id]["dataSchemaVersion"],
+            "definitionSha256": installed[service_id]["definitionSha256"],
+            "paths": public_json_value(installed[service_id]["data"]),
+        }
+        for service_id, operation in (
+            (item["serviceId"], item["action"]) for item in operations
+        )
+        if operation not in {"noop", "install"}
+        and service_id in installed
+        and installed[service_id].get("manifestSchemaVersion") == "ods.services.v2"
+    ]
     plan = {
         "schema": "ods.assistant-first.plan.v1",
         "requestedAction": action,
@@ -1604,6 +1649,7 @@ def build_plan(
         ],
         "optionalCapabilities": optional,
         "definitions": definitions,
+        "priorDataBindings": prior_data_bindings,
         "resourcePortBindings": port_bindings,
         "resourceDelta": totals,
         "requiredConfigKeys": required_config,
