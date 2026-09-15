@@ -25,8 +25,14 @@ services:
       timeout: 10s
       retries: 3
       start_period: 30s
+    networks:
+      - ods-network
     logging:
       driver: "json-file"
       options:
         max-size: "10m"
         max-file: "3"
+
+networks:
+  ods-network:
+    external: true
