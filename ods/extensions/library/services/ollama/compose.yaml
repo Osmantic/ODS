@@ -13,6 +13,11 @@ services:
       - OLLAMA_HOST=0.0.0.0
       - OLLAMA_PORT=11434
       - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3}
+    # Ollama does not consume OLLAMA_MODEL itself. Pull the configured model
+    # after the daemon is ready so a fresh install cannot report healthy while
+    # its advertised default model is absent.
+    command: >-
+      sh -c 'set -eu; ollama serve & server=$$!; until ollama list >/dev/null 2>&1; do sleep 1; done; ollama pull "$${OLLAMA_MODEL:-llama3}"; wait "$$server"'
     deploy:
       resources:
         limits:
