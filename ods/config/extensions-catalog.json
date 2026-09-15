@@ -2331,8 +2331,8 @@
         },
         {
           "key": "MINIFLUX_BASE_URL",
-          "description": "Client-facing URL; update when changing port or hostname",
-          "default": "http://localhost:8098"
+          "description": "Optional client-facing URL; leave empty to derive localhost and MINIFLUX_PORT",
+          "default": ""
         },
         {
           "key": "MINIFLUX_DB_PASSWORD",
