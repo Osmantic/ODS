@@ -1,0 +1,64 @@
+services:
+  loki:
+    image: nginxinc/nginx-unprivileged:1.30.1-alpine@sha256:acc3239879a65d9e3d250b21847ec3f34f33367017394d22830242af15cf1cb0
+    container_name: ods-loki
+    user: "101:101"
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    entrypoint: [/bin/sh, /etc/ods-loki/start-gateway.sh]
+    environment:
+      LOKI_WRITER_HASH: "${LOKI_WRITER_HASH:?Set LOKI_WRITER_HASH before enabling Loki}"
+      LOKI_READER_HASH: "${LOKI_READER_HASH:?Set LOKI_READER_HASH before enabling Loki}"
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${LOKI_PORT:-3100}:8080"
+    volumes:
+      - ./extensions/library/services/loki/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./extensions/library/services/loki/start-gateway.sh:/etc/ods-loki/start-gateway.sh:ro
+      - ./extensions/library/services/loki/proxy.conf:/etc/nginx/ods-proxy.conf:ro
+    tmpfs:
+      - /tmp:size=32m,mode=0700,uid=101,gid=101
+    depends_on:
+      loki-store:
+        condition: service_started
+    healthcheck:
+      test: [CMD, wget, -q, --spider, http://127.0.0.1:8080/ready]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks: [ods-network, loki-private]
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 128M
+  loki-store:
+    image: grafana/loki:3.7.7@sha256:d70e4659623f3e109af669cae76fe2a5dd5be54e2298fe8aed380d982fbc2500
+    container_name: ods-loki-store
+    user: "10001:10001"
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    command: [-config.file=/etc/loki/ods.yaml, -target=all]
+    environment:
+      GOMEMLIMIT: 1GiB
+    volumes:
+      - ./data/loki:/loki
+      - ./extensions/library/services/loki/loki.yaml:/etc/loki/ods.yaml:ro
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    stop_grace_period: 60s
+    networks: [loki-private]
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1536M
+networks:
+  ods-network:
+    external: true
+  loki-private:
+    internal: true
