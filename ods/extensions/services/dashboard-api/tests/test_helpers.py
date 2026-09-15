@@ -1740,3 +1740,14 @@ def test_flatten_bounds_cycles_and_large_depth_without_losing_empty_leaves():
         nested = {"child": nested}
     result = dict_flatten_nested_safe(nested, max_depth=100000)
     assert len(next(iter(result)).split(".")) == 128
+
+
+class TestStringPadCenterSafe:
+    def test_valid_centering(self):
+        from helpers import string_pad_center_safe
+        assert string_pad_center_safe("test", 10, "-") == "---test---"
+
+    def test_invalid_inputs(self):
+        from helpers import string_pad_center_safe
+        assert string_pad_center_safe(None) == ""
+        assert string_pad_center_safe("abc", -5, "invalid") == "abc                 "

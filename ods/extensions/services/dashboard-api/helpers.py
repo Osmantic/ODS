@@ -1381,3 +1381,16 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def string_pad_center_safe(text: str | None, width: int = 20, fillchar: str = ' ') -> str:
+    """Safely center-pad text string to target width with fillchar.
+    Returns "" on None or non-string inputs.
+    """
+    if text is None or not isinstance(text, str):
+        return ""
+    if not isinstance(width, int) or isinstance(width, bool) or width <= 0:
+        width = 20
+    if not isinstance(fillchar, str) or len(fillchar) != 1:
+        fillchar = ' '
+    return text.center(width, fillchar)
