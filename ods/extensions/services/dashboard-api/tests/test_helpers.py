@@ -1740,3 +1740,17 @@ def test_flatten_bounds_cycles_and_large_depth_without_losing_empty_leaves():
         nested = {"child": nested}
     result = dict_flatten_nested_safe(nested, max_depth=100000)
     assert len(next(iter(result)).split(".")) == 128
+
+
+class TestDictGroupByKeySafe:
+    def test_valid_grouping(self):
+        from helpers import dict_group_by_key_safe
+        data = [{"role": "admin", "id": 1}, {"role": "user", "id": 2}, {"role": "admin", "id": 3}]
+        grouped = dict_group_by_key_safe(data, "role")
+        assert len(grouped["admin"]) == 2
+        assert len(grouped["user"]) == 1
+
+    def test_invalid_inputs(self):
+        from helpers import dict_group_by_key_safe
+        assert dict_group_by_key_safe(None, "role") == {}
+        assert dict_group_by_key_safe([{"a": 1}], None) == {}
