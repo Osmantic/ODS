@@ -1,0 +1,20 @@
+log_level: info
+log_format: json
+data_dir: /var/lib/dolt
+cfg_dir: /var/lib/dolt/.doltcfg
+privilege_file: /var/lib/dolt/.doltcfg/privileges.db
+branch_control_file: /var/lib/dolt/.doltcfg/branch_control.db
+listener:
+  host: 0.0.0.0
+  port: 3306
+  max_connections: 25
+  back_log: 8
+  read_timeout_millis: 60000
+  write_timeout_millis: 60000
+behavior:
+  autocommit: true
+  dolt_transaction_commit: false
+  event_scheduler: "OFF"
+metrics:
+  host: 0.0.0.0
+  port: 11112
