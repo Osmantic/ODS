@@ -20,6 +20,12 @@ address is reachable inside a container. Remote access requires deliberate
 `NEO4J_PUBLIC_HOST`, binding, TLS and access-control configuration. Both published
 ports bind to loopback by default.
 
+The installer copies the password guard through the existing host-agent config
+sync into config/neo4j/entrypoint.sh before startup. Compose mounts that file
+read-only and refuses to create a directory in its place. Include config/neo4j
+in deployment backups; retain the reviewed guard alongside the matching image
+when rolling back. It contains no deployment password.
+
 For an explicit HTTP integration, POST authenticated JSON to
 `/db/neo4j/query/v2` with `statement` and `parameters`. Always inspect the
 response's error fields: HTTP 202 alone does not mean the Cypher query succeeded.

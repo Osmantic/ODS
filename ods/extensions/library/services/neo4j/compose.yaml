@@ -21,7 +21,7 @@ services:
       - ./data/neo4j/data:/data
       - ./data/neo4j/logs:/logs
       - type: bind
-        source: ./extensions/services/neo4j/entrypoint.sh
+        source: ./config/neo4j/entrypoint.sh
         target: /opt/ods-neo4j-entrypoint.sh
         read_only: true
         bind:

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Installed through the host agent's service-scoped config sync boundary.
 set -euo pipefail
 
 # The upstream entrypoint prints malformed NEO4J_AUTH verbatim. Reject unsupported

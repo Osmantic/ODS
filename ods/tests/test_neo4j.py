@@ -22,8 +22,11 @@ EXTENSION = ROOT / "extensions/library/services/neo4j"
 def installation(tmp_path):
     if not shutil.which("docker"):
         pytest.skip("Docker Compose CLI required")
-    installed = tmp_path / "extensions/services/neo4j"
+    installed = tmp_path / "data/user-extensions/neo4j"
     shutil.copytree(EXTENSION, installed)
+    # The real Dashboard-to-host-agent HTTP sync is exercised separately by
+    # dashboard-api/tests/test_neo4j_install.py before startup is accepted.
+    shutil.copytree(installed / "config", tmp_path / "config")
     (tmp_path / "empty.env").write_text("")
     env = {key: value for key, value in os.environ.items() if not key.startswith("NEO4J_")}
     env["NEO4J_PASSWORD"] = secrets.token_hex(24) + "$:[%]"
@@ -141,7 +144,7 @@ def test_live_bolt_http_transactions_and_offline_copy_recovery(installation):
         for invalid in ("short", "unsupported/secret", "line\nbreak-password"):
             rejected_env = dict(env, ODS_NEO4J_PASSWORD=invalid)
             bad = run("docker", "run", "--rm", "--network", "none", "--entrypoint", "bash",
-                      "-e", "ODS_NEO4J_PASSWORD", "-v", str(installed / "entrypoint.sh") + ":/guard:ro",
+                      "-e", "ODS_NEO4J_PASSWORD", "-v", str(installed / "config/neo4j/entrypoint.sh") + ":/guard:ro",
                       service["image"], "/guard", "neo4j", check=False, environment=rejected_env)
             assert bad.returncode != 0
             assert invalid not in bad.stdout + bad.stderr
