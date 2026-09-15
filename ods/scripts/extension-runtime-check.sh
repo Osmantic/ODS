@@ -16,6 +16,10 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [[ -n "${1:-}" && ! -d "$1" ]]; then
+    echo "ERROR: Specified directory does not exist: $1" >&2
+    exit 1
+fi
 ODS_ROOT="$(cd "${1:-$ROOT_DIR}" && pwd)"
 export SCRIPT_DIR="$ODS_ROOT"
 
@@ -94,6 +98,7 @@ for sid in "${SERVICE_IDS[@]}"; do
     port="${SERVICE_PORTS[$sid]:-0}"
     health="${SERVICE_HEALTH[$sid]:-}"
     timeout_sec="${SERVICE_HEALTH_TIMEOUTS[$sid]:-5}"
+    [[ "$timeout_sec" =~ ^[0-9]+$ ]] || timeout_sec=5
 
     if [[ ! "$port" =~ ^[0-9]+$ ]] || [[ "$port" -le 0 ]]; then
         ok_line "[$sid] $disp — running (no external port to probe)"
@@ -104,6 +109,8 @@ for sid in "${SERVICE_IDS[@]}"; do
         ok_line "[$sid] $disp — running (no health path in manifest)"
         continue
     fi
+
+    [[ "$health" == /* ]] || health="/$health"
 
     if ! $HAVE_CURL; then
         warn "[$sid] $disp — running; curl missing, cannot probe http://127.0.0.1:${port}${health}"
