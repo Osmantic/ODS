@@ -1,0 +1,69 @@
+services:
+  readeck:
+    image: codeberg.org/readeck/readeck:0.23.2@sha256:32bd82e457a3a9a3fffb161f55cfebf0fd7ffbc87ddf2fe7a321361905348f0a
+    container_name: ods-readeck
+    user: "1000:1000"
+    init: true
+    working_dir: /readeck
+    entrypoint: [/bin/sh, -euc]
+    command:
+      - |
+        set -o pipefail
+        case "$$READECK_PASSWORD" in
+          *[!A-Za-z0-9_-]*) printf 'READECK_PASSWORD requires 16-128 URL-safe characters\n' >&2; exit 1 ;;
+        esac
+        if [ "$${#READECK_PASSWORD}" -lt 16 ] || [ "$${#READECK_PASSWORD}" -gt 128 ]; then
+          printf 'READECK_PASSWORD requires 16-128 URL-safe characters\n' >&2
+          exit 1
+        fi
+        umask 077
+        if [ ! -e config.toml ] && [ ! -e data/db.sqlite3 ]; then
+          /bin/readeck user -config config.toml -user ods -email ods@localhost.invalid -group admin -password env:READECK_PASSWORD
+        elif [ ! -f config.toml ] || [ ! -f data/db.sqlite3 ]; then
+          printf 'Readeck configuration/database pair is incomplete; restore both before startup\n' >&2
+          exit 1
+        fi
+        account=$$(/bin/readeck user -config config.toml -user ods -dry-run -json)
+        case "$$account" in
+          '{"exists":true,'*) ;;
+          *) printf 'Readeck ods account is missing; recover it before startup\n' >&2; exit 1 ;;
+        esac
+        unset READECK_PASSWORD
+        exec /bin/readeck serve -config config.toml
+    environment:
+      READECK_PASSWORD: "${READECK_PASSWORD:?Set READECK_PASSWORD before enabling Readeck}"
+      READECK_DATA_DIRECTORY: /readeck/data
+      READECK_DATABASE_SOURCE: sqlite3:/readeck/data/db.sqlite3
+      READECK_SERVER_HOST: 0.0.0.0
+      READECK_SERVER_PORT: "8000"
+      READECK_ALLOWED_HOSTS: localhost,127.0.0.1,readeck
+      READECK_TRUSTED_PROXIES: 127.0.0.1/32,::1/128
+      READECK_WORKER_NUMBER: "2"
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${READECK_PORT:-8096}:8000"
+    volumes:
+      - ./data/readeck:/readeck
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=128m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+    stop_grace_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1G
+    healthcheck:
+      test: [CMD, /bin/readeck, healthcheck, -config, /readeck/config.toml]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    networks: [ods-network]
+
+networks:
+  ods-network:
+    external: true
+    name: ods-network
