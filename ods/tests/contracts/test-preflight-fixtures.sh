@@ -59,6 +59,28 @@ scripts/preflight-engine.sh \
 blockers="$(json_summary_blockers "$tmpdir/windows-mvp-good.json")"
 assert_eq "$blockers" "0" "windows-mvp-good blockers"
 
+# macOS: the installer requires Apple Silicon. An empty --host-arch (what the
+# Linux CI simulation of installers/macos.sh passes) must not add a blocker.
+for macos_case in "macos-arm64-good:arm64:0" "macos-intel-blocked:x86_64:1" "macos-arch-unknown::0"; do
+  IFS=: read -r case_name host_arch expected <<<"$macos_case"
+  echo "[contract] preflight fixture: $case_name"
+  scripts/preflight-engine.sh \
+    --report "$tmpdir/$case_name.json" \
+    --tier T1 \
+    --ram-gb 16 \
+    --disk-gb 120 \
+    --gpu-backend apple \
+    --gpu-vram-mb 0 \
+    --gpu-name "Apple Silicon" \
+    --platform-id macos \
+    --host-arch "$host_arch" \
+    --compose-overlays docker-compose.base.yml,docker-compose.amd.yml \
+    --script-dir "$ROOT_DIR" \
+    --env >/dev/null
+  blockers="$(json_summary_blockers "$tmpdir/$case_name.json")"
+  assert_eq "$blockers" "$expected" "$case_name blockers"
+done
+
 echo "[contract] preflight fixture: macos-mvp-good"
 scripts/preflight-engine.sh \
   --report "$tmpdir/macos-mvp-good.json" \
