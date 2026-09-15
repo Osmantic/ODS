@@ -145,10 +145,13 @@ def test_amqp_auth_acknowledgements_recreation_rotation_and_cold_restore(tmp_pat
             delivery, properties, received = channel.basic_get("ods-fixture", auto_ack=False)
             assert received == payload and properties.delivery_mode == 2
             channel.basic_nack(delivery.delivery_tag, requeue=True)
+            delivery, _, received = channel.basic_get("ods-fixture", auto_ack=False)
+            assert received == payload and delivery.redelivered is True
         run(*command, "up", "-d", "--force-recreate", "--wait", "--wait-timeout", "120")
         with connect(password) as connection:
             delivery, _, received = connection.channel().basic_get("ods-fixture", auto_ack=False)
-            assert received == payload and delivery.redelivered is True
+            # Classic queues do not persist the redelivered hint across restart.
+            assert received == payload
         http("/api/users/ods", password, "PUT", {"password": rotated, "tags": "administrator"}, expected=204)
         run(*command, "up", "-d", "--force-recreate", "--wait", "--wait-timeout", "120")
         http("/api/overview", password, expected=401)
