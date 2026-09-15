@@ -15,7 +15,8 @@ In Extensions, supply:
 - `APPRISE_DJANGO_SECRET`: a distinct random secret of at least 32 characters.
   This is Django configuration, not the caller's API credential.
 - `APPRISE_CONFIG_TEXT`: native Apprise **TEXT** configuration containing only
-  destinations you approve. It may contain credentials; store it as a secret.
+  a destination you approve. **Use one configuration line:** ODS settings reject
+  newline characters. It may contain credentials; store it as a secret.
   Native TEXT tag assignments let a caller choose among configured destinations.
 
 For a local JSON receiver, a configuration line has this shape:

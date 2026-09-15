@@ -62,7 +62,9 @@ def test_native_fixed_routes_receipts_rotation_and_recovery(tmp_path):
     def hashed(value):
         return bcrypt.hashpw(value.encode(), bcrypt.gensalt(rounds=8)).decode()
 
-    routes = "\n".join(route + " = json://apprise-receiver:9876/" + route + "?retry=0&cto=3&rto=5" for route in ("ok", "fail", "redirect"))
+    # ODS settings values are single-line; exercise the configuration an
+    # operator can actually save, while the receiver controls failure modes.
+    routes = "workflow = json://apprise-receiver:9876/notify?retry=0&cto=3&rto=5"
     values = {"APPRISE_AUTH_HASH": hashed(password), "APPRISE_CONFIG_TEXT": routes, "APPRISE_DJANGO_SECRET": secrets.token_urlsafe(32)}
     project = "ods-q20-apprise-" + uuid.uuid4().hex[:12]
     plan = json.loads(render(tmp_path, values).stdout)
@@ -77,6 +79,7 @@ def test_native_fixed_routes_receipts_rotation_and_recovery(tmp_path):
     receiver.write_text('''import json
 from http.server import BaseHTTPRequestHandler, HTTPServer
 events = []
+mode = "ok"
 class Receiver(BaseHTTPRequestHandler):
     def log_message(self, *_args):
         return
@@ -89,10 +92,16 @@ class Receiver(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
     def do_POST(self):
+        global mode
         payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-        events.append({"path": self.path, "payload": payload})
-        self.send_response(500 if self.path == "/fail" else 302 if self.path == "/redirect" else 200)
-        if self.path == "/redirect":
+        if self.path == "/mode":
+            mode = payload["mode"]
+            self.send_response(200)
+            self.end_headers()
+            return
+        events.append({"path": self.path, "payload": payload, "mode": mode})
+        self.send_response(500 if mode == "fail" else 302 if mode == "redirect" else 200)
+        if mode == "redirect":
             self.send_header("Location", "http://apprise-receiver:9876/should-not-follow")
         self.end_headers()
         self.wfile.write(b"fixture response")
@@ -145,14 +154,14 @@ HTTPServer(("0.0.0.0", 9876), Receiver).serve_forever()
                 assert response.headers["WWW-Authenticate"] == 'Basic realm="ODS Apprise"'
             return json.loads(body) if body and response.headers.get_content_type() == "application/json" else body.decode()
 
-    message = {"title": "ODS workflow", "body": "Xin chào: artifact 42", "tag": "ok"}
+    message = {"title": "ODS workflow", "body": "Xin chào: artifact 42", "tag": "workflow"}
 
     def deliver():
         before = len(http("/events", fixture=True))
         result = http("/notify/ods", "POST", {**message, "urls": "json://apprise-receiver:9876/evil"}, credential=password)
         assert result["error"] is None
         events = http("/events", fixture=True)
-        assert len(events) == before + 1 and events[-1]["path"] == "/ok"
+        assert len(events) == before + 1 and events[-1]["path"] == "/notify"
         assert events[-1]["payload"]["message"] == message["body"]
 
     try:
@@ -165,11 +174,17 @@ HTTPServer(("0.0.0.0", 9876), Receiver).serve_forever()
         http("/notify/ods", "POST", {**message, "attachment": "http://apprise-receiver:9876/attachment"}, expected=400, credential=password)
         assert http("/events", fixture=True) == []
         deliver()
-        http("/notify/ods", "POST", {**message, "tag": "fail"}, expected=424, credential=password)
-        assert http("/events", fixture=True)[-1]["path"] == "/fail"
-        http("/notify/ods", "POST", {**message, "tag": "redirect"}, expected=424, credential=password)
+        http("/mode", "POST", {"mode": "fail"}, fixture=True)
+        http("/notify/ods", "POST", message, expected=424, credential=password)
+        assert http("/events", fixture=True)[-1]["mode"] == "fail"
+        http("/mode", "POST", {"mode": "redirect"}, fixture=True)
+        http("/notify/ods", "POST", message, expected=424, credential=password)
         events = http("/events", fixture=True)
-        assert [event["path"] for event in events] == ["/ok", "/fail", "/redirect"]
+        assert [event["mode"] for event in events] == ["ok", "fail", "redirect"]
+        assert all(event["path"] == "/notify" for event in events)
+        http("/mode", "POST", {"mode": "ok"}, fixture=True)
+        http("/notify/ods", "POST", {**message, "tag": "unknown"}, expected=424, credential=password)
+        assert http("/events", fixture=True) == events
         http("/notify/ods", "POST", {}, expected=400, credential=password)
         for path in ("/notify", "/notify/other", "/cfg/ods", "/get/ods", "/add/ods", "/del/ods", "/json/urls/ods", "/details", "/"):
             http(path, "POST", message, expected=404, credential=password)
