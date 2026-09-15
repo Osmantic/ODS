@@ -6,6 +6,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -105,11 +106,93 @@ def test_running_foreign_container_with_ancestor_data_bind_mount_refuses(tmp_pat
 
 @linux_effect
 def test_unrelated_running_container_mount_does_not_create_false_overlap(tmp_path: Path):
+    foreign = tmp_path / "foreign-mount"
+    foreign.mkdir()
     fake = FakeDocker(ids=(_ID + "\n").encode(), mounts=[[
-        {"Type": "bind", "Source": "/var/run/docker.sock", "RW": False},
+        {"Type": "bind", "Source": str(foreign), "RW": False},
     ]])
     _install, _command, observer = _observer(tmp_path, fake)
     assert observer() is True
+
+
+@linux_effect
+def test_symlinked_mount_source_is_not_a_safe_nonoverlap(tmp_path: Path):
+    install, _backup, _alpha, _store, command, _root, _journal = _ready(tmp_path)
+    alias = tmp_path / "alias-to-data"
+    alias.symlink_to(install / "data", target_is_directory=True)
+    fake = FakeDocker(ids=(_ID + "\n").encode(), mounts=[[
+        {"Type": "bind", "Source": str(alias)},
+    ]])
+    observer = quiescence.DockerQuiescenceObserver(
+        command, install, _admission(command), fake,
+        lambda: _status(command),
+    )
+    with pytest.raises(quiescence.DockerQuiescenceError) as caught:
+        observer()
+    assert caught.value.code == "lifecycle-work-data-quiescence-mount-unverifiable"
+
+
+@linux_effect
+def test_same_inode_bind_alias_refuses_even_when_strings_do_not_overlap(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    install, _backup, alpha, _store, command, _root, _journal = _ready(tmp_path)
+    alias = tmp_path / "simulated-bind-alias"
+    alias.mkdir()
+    target_info = alpha.stat()
+    original_lstat = quiescence.os.lstat
+
+    def same_inode(path):
+        info = original_lstat(path)
+        if path == str(alias):
+            return SimpleNamespace(
+                st_mode=info.st_mode, st_dev=target_info.st_dev,
+                st_ino=target_info.st_ino, st_nlink=info.st_nlink,
+            )
+        return info
+
+    monkeypatch.setattr(quiescence.os, "lstat", same_inode)
+    fake = FakeDocker(ids=(_ID + "\n").encode(), mounts=[[
+        {"Type": "bind", "Source": str(alias)},
+    ]])
+    observer = quiescence.DockerQuiescenceObserver(
+        command, install, _admission(command), fake,
+        lambda: _status(command),
+    )
+    assert observer() is False
+
+
+@linux_effect
+def test_missing_or_hardlinked_mount_source_refuses_as_unverifiable(tmp_path: Path):
+    install, _backup, alpha, _store, command, _root, _journal = _ready(tmp_path)
+    hardlink = tmp_path / "aliased-note"
+    hardlink.hardlink_to(alpha / "note")
+    for source in (tmp_path / "missing-source", hardlink):
+        fake = FakeDocker(ids=(_ID + "\n").encode(), mounts=[[
+            {"Type": "bind", "Source": str(source)},
+        ]])
+        observer = quiescence.DockerQuiescenceObserver(
+            command, install, _admission(command), fake,
+            lambda: _status(command),
+        )
+        with pytest.raises(quiescence.DockerQuiescenceError) as caught:
+            observer()
+        assert caught.value.code == "lifecycle-work-data-quiescence-mount-unverifiable"
+
+
+@linux_effect
+def test_target_symlink_drift_refuses_even_without_running_containers(tmp_path: Path):
+    install, _backup, alpha, _store, command, _root, _journal = _ready(tmp_path)
+    saved = tmp_path / "preserved-alpha"
+    alpha.rename(saved)
+    alpha.symlink_to(saved, target_is_directory=True)
+    fake = FakeDocker()
+    observer = quiescence.DockerQuiescenceObserver(
+        command, install, _admission(command), fake,
+        lambda: _status(command),
+    )
+    with pytest.raises(quiescence.DockerQuiescenceError) as caught:
+        observer()
+    assert caught.value.code == "lifecycle-work-data-quiescence-mount-unverifiable"
 
 
 @linux_effect

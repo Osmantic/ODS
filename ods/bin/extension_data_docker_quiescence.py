@@ -11,7 +11,9 @@ No Docker command here starts, stops, removes, or changes a container.
 from __future__ import annotations
 
 import json
+import os
 import re
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -29,6 +31,9 @@ _CONTAINER_ID_RE = re.compile(r"^[0-9a-f]{64}$")
 _MAX_CONTAINERS = 512
 _MAX_SERVICE_BYTES = 128 * 1024
 _MAX_MOUNT_BYTES = 2 * 1024 * 1024
+_MAX_PATH_COMPONENTS = 256
+_MAX_PATH_BYTES = 4096
+_MAX_IDENTITY_PROBES = 16384
 _LEASE_KEYS = frozenset({"schema", "leaseId", "transactionId", "planHash", "serviceIds"})
 _STATUS_KEYS = _LEASE_KEYS | {"active"}
 
@@ -60,9 +65,15 @@ def _result(run: Callable[[list[str]], subprocess.CompletedProcess[bytes]],
 
 
 def _path(value: str) -> tuple[str, ...]:
+    try:
+        size = len(value.encode("utf-8", "strict"))
+    except UnicodeError:
+        _fail("lifecycle-work-data-quiescence-mount-unverifiable")
     path = Path(value)
     if (
-        not value.startswith("/") or path.parts[0] != "/"
+        size > _MAX_PATH_BYTES
+        or not value.startswith("/") or path.parts[0] != "/"
+        or len(path.parts) > _MAX_PATH_COMPONENTS + 1
         or any(part in {"", ".", ".."} for part in path.parts[1:])
         or "\x00" in value
     ):
@@ -72,6 +83,34 @@ def _path(value: str) -> tuple[str, ...]:
 
 def _overlap(left: tuple[str, ...], right: tuple[str, ...]) -> bool:
     return left[:len(right)] == right or right[:len(left)] == left
+
+
+def _inode_prefixes(
+    parts: tuple[str, ...], budget: list[int], *, allow_missing: bool,
+) -> tuple[tuple[int, int], ...]:
+    """Walk current local identities; refuse opaque links and stat failures."""
+    identities = []
+    for end in range(1, len(parts) + 1):
+        budget[0] -= 1
+        if budget[0] < 0:
+            _fail("lifecycle-work-data-quiescence-mount-unverifiable")
+        path = "/" + "/".join(parts[:end])
+        try:
+            info = os.lstat(path)
+        except FileNotFoundError:
+            if allow_missing:
+                break
+            _fail("lifecycle-work-data-quiescence-mount-unverifiable")
+        except OSError:
+            _fail("lifecycle-work-data-quiescence-mount-unverifiable")
+        if (
+            stat.S_ISLNK(info.st_mode)
+            or (end < len(parts) and not stat.S_ISDIR(info.st_mode))
+            or (stat.S_ISREG(info.st_mode) and info.st_nlink != 1)
+        ):
+            _fail("lifecycle-work-data-quiescence-mount-unverifiable")
+        identities.append((info.st_dev, info.st_ino))
+    return tuple(identities)
 
 
 class DockerQuiescenceObserver:
@@ -174,6 +213,14 @@ class DockerQuiescenceObserver:
             _CONTAINER_ID_RE.fullmatch(item) is None for item in ids
         ):
             _fail("lifecycle-work-data-quiescence-docker-unverifiable")
+        budget = [_MAX_IDENTITY_PROBES]
+        target_prefixes = set()
+        target_finals = set()
+        for target in self._targets:
+            prefixes = _inode_prefixes(target, budget, allow_missing=True)
+            target_prefixes.update(prefixes)
+            if len(prefixes) == len(target):
+                target_finals.add(prefixes[-1])
         if not ids:
             return self._require_active_lease()
         raw = _result(self._run, ["inspect", "--type", "container", "--format",
@@ -198,6 +245,17 @@ class DockerQuiescenceObserver:
                     continue
                 source = _path(mount["Source"])
                 if any(_overlap(source, target) for target in self._targets):
+                    return False
+                # Docker's Source string can be a symlink, hardlink, or a
+                # different bind path to the same local inode. A lexical
+                # non-overlap is not enough to authorize a data swap.
+                source_prefixes = _inode_prefixes(
+                    source, budget, allow_missing=False
+                )
+                if (
+                    source_prefixes[-1] in target_prefixes
+                    or any(item in source_prefixes for item in target_finals)
+                ):
                     return False
         return self._require_active_lease()
 
