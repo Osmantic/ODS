@@ -173,6 +173,10 @@ The full guide is at [docs/WRITING-BASELINES.md](docs/WRITING-BASELINES.md).
 
 `install.sh` creates systemd timer/service pairs:
 
+Generated services retain the absolute path to the configuration selected by
+`MEMORY_SHEPHERD_CONF` (or the discovered default), so timer runs use the same
+agent definitions as installation. Rerun the installer if you move that file.
+
 - **`memory-shepherd.timer`** — Resets all agents every 3 hours (enabled by default)
 - **`memory-shepherd-<agent>.timer`** — Per-agent timer with staggered scheduling (installed but not enabled)
 

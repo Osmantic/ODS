@@ -102,6 +102,8 @@ CONF_FILE=$(find_config) || {
     exit 1
 }
 
+# systemd does not inherit the shell's configuration selection or working dir.
+CONF_FILE="$(cd "$(dirname "$CONF_FILE")" && pwd)/$(basename "$CONF_FILE")"
 parse_config "$CONF_FILE"
 
 if [ ${#AGENTS[@]} -eq 0 ]; then
@@ -132,6 +134,19 @@ fi
 
 # ── Generate Units ─────────────────────────────────────────────────────
 
+# Unit-file C quoting and specifier escaping. ExecStart's ':' prefix below
+# keeps dollar signs literal; the script path is an argument to fixed Bash.
+unit_quote() {
+    local value="$1"
+    value="${value//\\/\\\\}"
+    value="${value//\"/\\\"}"
+    value="${value//%/%%}"
+    value="${value//$'\n'/\\n}"
+    value="${value//$'\r'/\\r}"
+    value="${value//$'\t'/\\t}"
+    printf '"%s"' "$value"
+}
+
 generate_service() {
     local name="$1"
     local target="$2"  # agent name or "all"
@@ -143,7 +158,8 @@ Description=$description
 
 [Service]
 Type=oneshot
-ExecStart=$SHEPHERD $target
+Environment=$(unit_quote "MEMORY_SHEPHERD_CONF=$CONF_FILE")
+ExecStart=:/bin/bash $(unit_quote "$SHEPHERD") $target
 EOF
 }
 
