@@ -55,6 +55,17 @@ printf 'Linux\n'
 EOF
 chmod +x "$fakebin/uname"
 
+# With uname faked to Linux, the model lifecycle lock library requires
+# flock(1). That is util-linux and does not exist on macOS, so provide a no-op
+# shim there; hosts that have flock keep using the real one.
+if ! command -v flock >/dev/null 2>&1; then
+    cat > "$fakebin/flock" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+    chmod +x "$fakebin/flock"
+fi
+
 # Docker is "up" with a running llama-server so the restart branch is taken.
 # inspect reports a restarting container so the health wait aborts quickly.
 cat > "$fakebin/docker" <<'EOF'
