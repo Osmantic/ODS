@@ -32,7 +32,7 @@ services:
       SB_RUNTIME_API: "0"
       HOME: /tmp
     ports:
-      - "127.0.0.1:${SILVERBULLET_PORT:-3034}:3000"
+      - "${BIND_ADDRESS:-127.0.0.1}:${SILVERBULLET_PORT:-3034}:3000"
     volumes:
       - ./data/silverbullet:/space
     read_only: true
