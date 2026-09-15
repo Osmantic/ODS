@@ -1,0 +1,38 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: apprise
+  name: Apprise (Fixed Notification Routes)
+  description: "Deliver workflow notifications to operator-configured native Apprise targets through an authenticated fixed-route API."
+  aliases: [apprise-api]
+  container_name: ods-apprise
+  default_host: apprise
+  port: 0
+  external_port_default: 0
+  health: /status
+  health_port: 8080
+  health_source: container
+  startup_check: true
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [notifications, workflows, webhooks]
+  env_vars:
+    - key: APPRISE_PORT
+      description: "Authenticated fixed-route notification gateway host port"
+      default: "8094"
+    - key: APPRISE_AUTH_HASH
+      description: "bcrypt password hash for the gateway's ods account"
+      required: true
+      secret: true
+    - key: APPRISE_CONFIG_TEXT
+      description: "Native Apprise TEXT configuration containing only operator-approved target URLs and optional tags; rebuilt on recreation"
+      required: true
+      secret: true
+    - key: APPRISE_DJANGO_SECRET
+      description: "Long random Django secret; distinct from the gateway password and destination credentials"
+      required: true
+      secret: true
