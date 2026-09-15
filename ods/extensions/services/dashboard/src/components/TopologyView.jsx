@@ -28,9 +28,9 @@ export const TopologyView = memo(function TopologyView({ topology }) {
   const matrix = buildMatrix(n, links)
 
   return (
-    <div className="p-5 bg-zinc-900/50 border border-zinc-800 rounded-xl">
+    <div className="min-w-0 p-5 bg-zinc-900/50 border border-zinc-800 rounded-xl">
       {/* Header */}
-      <div className="flex items-center justify-between mb-4">
+      <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
         <div className="flex items-center gap-2">
           <Network size={16} className="text-indigo-400" />
           <h3 className="text-sm font-semibold text-white">GPU Interconnect Topology</h3>
@@ -47,7 +47,7 @@ export const TopologyView = memo(function TopologyView({ topology }) {
       {/* GPU reference chips */}
       <div className="flex flex-wrap gap-2 mb-4">
         {gpus.map(g => (
-          <div key={g.index} className="flex items-center gap-1.5 px-2 py-1 bg-zinc-800 rounded-lg text-xs">
+          <div key={g.index} className="flex max-w-full flex-wrap items-center gap-1.5 px-2 py-1 bg-zinc-800 rounded-lg text-xs">
             <span className="text-indigo-300 font-mono">GPU{g.index}</span>
             <span className="text-zinc-400">{g.name.replace('NVIDIA ', '').replace('AMD Radeon ', '')}</span>
             <span className="text-zinc-600 font-mono">{g.memory_gb}GB</span>
@@ -57,7 +57,7 @@ export const TopologyView = memo(function TopologyView({ topology }) {
 
       {/* Topology matrix table */}
       {n > 1 && links.length > 0 ? (
-        <div className="overflow-x-auto">
+        <div role="region" aria-label="GPU interconnect matrix" tabIndex={0} className="max-w-full overflow-x-auto">
           <table className="w-auto border-collapse text-xs font-mono">
             <thead>
               <tr>

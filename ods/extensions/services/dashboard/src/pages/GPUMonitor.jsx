@@ -54,9 +54,9 @@ export default function GPUMonitor() {
   const { gpus = [], backend, gpu_count, aggregate, assignment, split_mode, tensor_split } = detailed
 
   return (
-    <div className="p-8">
+    <div className="min-w-0 p-4 sm:p-8">
       {/* Page header */}
-      <div className="mb-6 flex items-start justify-between">
+      <div className="mb-6 flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold text-white flex items-center gap-2">
             <Activity size={22} className="text-indigo-400" />
@@ -140,7 +140,7 @@ export default function GPUMonitor() {
       {activeTab === 'overview' && (
         <>
           {/* Per-GPU cards */}
-          <div className={`grid gap-4 mb-8 ${gpus.length <= 2 ? 'grid-cols-1 md:grid-cols-2' : 'grid-cols-2 lg:grid-cols-4'}`}>
+          <div className={`grid gap-4 mb-8 ${gpus.length <= 2 ? 'grid-cols-1 md:grid-cols-2' : 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-4'}`}>
             {gpus.map(gpu => (
               <GPUCard key={gpu.uuid} gpu={gpu} />
             ))}
@@ -157,7 +157,7 @@ export default function GPUMonitor() {
       )}
 
       {activeTab === 'history' && (
-        <div className={`grid gap-4 ${gpus.length <= 2 ? 'grid-cols-1 md:grid-cols-2' : 'grid-cols-2 lg:grid-cols-4'}`}>
+        <div className={`grid gap-4 ${gpus.length <= 2 ? 'grid-cols-1 md:grid-cols-2' : 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-4'}`}>
           {gpus.map(gpu => (
             <GPUChart key={gpu.uuid} history={history} gpuIndex={gpu.index} />
           ))}
