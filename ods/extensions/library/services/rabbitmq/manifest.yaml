@@ -1,0 +1,49 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: rabbitmq
+  name: RabbitMQ (Local Work Queues)
+  description: "Authenticated AMQP work queues with acknowledgements, durable messages and a management console."
+  aliases: [rabbit]
+  container_name: ods-rabbitmq
+  container_uid: 999
+  default_host: rabbitmq
+  port: 15672
+  external_port_env: RABBITMQ_PORT
+  external_port_default: 15672
+  health: /
+  ui_path: /
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [queues, automation, messaging]
+  env_vars:
+    - key: RABBITMQ_PORT
+      description: "Management console HTTP port"
+      default: "15672"
+    - key: RABBITMQ_AMQP_PORT
+      description: "AMQP client port"
+      default: "5672"
+    - key: RABBITMQ_PASSWORD
+      description: "Initial ods administrator password; rotate existing users in RabbitMQ"
+      required: true
+      secret: true
+features:
+  - id: durable-work-queues
+    name: Local Work Queues
+    description: "Inspect and route acknowledged background jobs through a local AMQP broker"
+    icon: Workflow
+    category: automation
+    requirements:
+      services: [rabbitmq]
+      vram_gb: 0
+    enabled_services_all: [rabbitmq]
+    setup_time: "~1 minute"
+    priority: 40
+    launch:
+      type: service
+      service: rabbitmq
+      path: /
