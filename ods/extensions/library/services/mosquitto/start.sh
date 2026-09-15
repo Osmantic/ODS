@@ -1,4 +1,5 @@
 #!/bin/ash
+# shellcheck shell=busybox
 # BusyBox ash in the pinned Alpine image supports pipefail.
 set -euo pipefail
 umask 077
