@@ -1381,3 +1381,22 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def numeric_harmonic_mean_safe(values: list | None) -> float:
+    """Safely calculate harmonic mean of a positive numeric sequence.
+    Returns 0.0 on None, non-sequence, empty, or <= 0 values.
+    """
+    if not values or not isinstance(values, (list, tuple)):
+        return 0.0
+    cleaned = []
+    for v in values:
+        if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0:
+            cleaned.append(float(v))
+    if not cleaned:
+        return 0.0
+    try:
+        denom = sum(1.0 / x for x in cleaned)
+        return round(len(cleaned) / denom, 4)
+    except ZeroDivisionError:
+        return 0.0
