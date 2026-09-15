@@ -176,6 +176,10 @@ The full guide is at [docs/WRITING-BASELINES.md](docs/WRITING-BASELINES.md).
 - **`memory-shepherd.timer`** — Resets all agents every 3 hours (enabled by default)
 - **`memory-shepherd-<agent>.timer`** — Per-agent timer with staggered scheduling (installed but not enabled)
 
+Per-agent schedules use ten-minute offsets within the three-hour cycle. The
+seventh agent starts at 01:00, the thirteenth at 02:00, and offsets repeat after
+18 agents. Each timer retains its two-minute randomized delay.
+
 ```bash
 # Install timers (detects root vs. user mode automatically)
 ./install.sh

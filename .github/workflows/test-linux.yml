@@ -37,6 +37,8 @@ jobs:
           python-version: ${{ matrix.python }}
       - name: Install isolated inference test dependencies
         run: python -m pip install -r extensions/services/pixel-inference/requirements.txt 'pytest>=8,<9'
+      - name: Memory Shepherd per-agent calendars
+        run: python -m pytest tests/test_memory_shepherd_calendar.py -q
       - name: Sharing credential and owner control tests
         run: python -m pytest tests/pixel_inference -q
       - name: Inference perimeter and cancellation tests
