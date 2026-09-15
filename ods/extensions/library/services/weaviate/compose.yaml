@@ -1,12 +1,13 @@
 services:
   weaviate:
-    image: cr.weaviate.io/semitechnologies/weaviate:1.36.2
+    image: cr.weaviate.io/semitechnologies/weaviate:1.36.2@sha256:eda7b079b05e7e05deab9e90aae0de718720235e5b57577f0745c94cdd04c599
     container_name: ods-weaviate
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
     environment:
       - QUERY_DEFAULTS_LIMIT=25
+      - DISABLE_TELEMETRY=true
       - AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED=false
       - AUTHENTICATION_APIKEY_ENABLED=true
       - AUTHENTICATION_APIKEY_ALLOWED_KEYS=${WEAVIATE_API_KEY:?WEAVIATE_API_KEY must be set}
