@@ -1,0 +1,47 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: victorialogs
+  name: VictoriaLogs (Log History)
+  description: "Authenticated local log ingestion, retention and LogsQL search for explicitly connected producers."
+  aliases: [log-history]
+  container_name: ods-victorialogs
+  default_host: victorialogs
+  port: 9428
+  external_port_env: VLOGS_PORT
+  external_port_default: 9428
+  health: /health
+  ui_path: /select/vmui/
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [logs, monitoring, search]
+  env_vars:
+    - key: VLOGS_PORT
+      description: "Published HTTP port; internal listener remains 9428"
+      default: "9428"
+    - key: VLOGS_PASSWORD
+      description: "Strong Basic Auth password for the ods account; required for ingestion, queries and UI"
+      required: true
+      secret: true
+    - key: VLOGS_RETENTION
+      description: "Log retention, for example 7d; shortening it deletes older records"
+      default: "7d"
+features:
+  - id: persistent-log-history
+    name: Local Log History
+    description: "Search retained structured logs from explicitly configured producers"
+    icon: Code
+    category: monitoring
+    requirements:
+      services: [victorialogs]
+      vram_gb: 0
+    enabled_services_all: [victorialogs]
+    setup_time: "~1 minute after setting credentials"
+    priority: 37
+    launch:
+      type: service
+      service: victorialogs
