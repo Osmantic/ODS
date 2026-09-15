@@ -49,6 +49,15 @@ def test_route_evidence_requires_dashboard_auth(test_client):
     assert resp.status_code == 401
 
 
+def test_router_internal_key_does_not_fall_back_to_dashboard_key(monkeypatch):
+    from routers import model_routes as mr
+
+    monkeypatch.delenv("ODS_ROUTER_INTERNAL_KEY", raising=False)
+    monkeypatch.setenv("DASHBOARD_API_KEY", "dashboard-secret")
+
+    assert mr._router_internal_key() == ""
+
+
 def test_route_evidence_rejects_invalid_probe_id(test_client):
     resp = test_client.get(
         "/api/models/routes/not-a-uuid",

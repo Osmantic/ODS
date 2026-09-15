@@ -48,9 +48,9 @@ def _normal_probe_id(value: str) -> str:
 
 
 def _router_internal_key() -> str:
-    return os.environ.get("ODS_ROUTER_INTERNAL_KEY", "") or os.environ.get(
-        "DASHBOARD_API_KEY", ""
-    )
+    # Internal evidence must use its own credential; the dashboard API key is
+    # a separate trust domain and must never authenticate router internals.
+    return os.environ.get("ODS_ROUTER_INTERNAL_KEY", "")
 
 
 def _sanitize_evidence(payload: Any, probe_id: str) -> dict[str, Any]:

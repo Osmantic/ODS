@@ -119,14 +119,14 @@ def _signed_marker(probe_id: str, key: str = "probe-secret") -> str:
     return f"[ODS_PROBE id={probe_id} sig={sig}]"
 
 
-def test_internal_key_falls_back_to_dashboard_api_key(monkeypatch):
+def test_internal_key_does_not_fall_back_to_dashboard_api_key(monkeypatch):
     monkeypatch.delenv("ODS_ROUTER_INTERNAL_KEY", raising=False)
     monkeypatch.setenv("DASHBOARD_API_KEY", "dashboard-secret")
     import app.main as mod
 
     mod = importlib.reload(mod)
 
-    assert mod.INTERNAL_KEY == "dashboard-secret"
+    assert mod.INTERNAL_KEY == ""
 
 
 class _ChunkedStream(httpx.AsyncByteStream):
