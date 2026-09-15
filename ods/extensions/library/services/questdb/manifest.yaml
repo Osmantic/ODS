@@ -1,0 +1,49 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: questdb
+  name: QuestDB (Time-Series SQL)
+  description: "Ingest timestamped workflow events through authenticated HTTP and query them with time-series SQL."
+  aliases: [timeseries-sql]
+  container_name: ods-questdb
+  container_uid: 10001
+  default_host: questdb
+  port: 9000
+  external_port_env: QUESTDB_PORT
+  external_port_default: 9100
+  health: /index.html
+  ui_path: /index.html
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [database, time-series, analytics]
+  env_vars:
+    - key: QUESTDB_PORT
+      description: "QuestDB Web Console and HTTP ingestion/query host port"
+      default: "9100"
+    - key: QUESTDB_PG_PORT
+      description: "QuestDB PostgreSQL wire protocol host port"
+      default: "8812"
+    - key: QUESTDB_PASSWORD
+      description: "Shared ods HTTP and PostgreSQL password; recreation applies rotation"
+      required: true
+      secret: true
+features:
+  - id: time-series-sql
+    name: Time-Series SQL
+    description: "Explore local timestamped events with SQL and authenticated line-protocol ingestion"
+    icon: Database
+    category: automation
+    requirements:
+      services: [questdb]
+      vram_gb: 0
+    enabled_services_all: [questdb]
+    setup_time: "~1 minute"
+    priority: 40
+    launch:
+      type: service
+      service: questdb
+      path: /index.html
