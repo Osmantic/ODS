@@ -10,6 +10,20 @@
 # Provides: ods_sudo(), ods_prepare_sudo()
 # ============================================================================
 
+# Fallback UI helpers when running standalone
+if ! declare -F ai >/dev/null 2>&1; then
+    ai() { echo "[AI] $*"; }
+fi
+if ! declare -F ai_warn >/dev/null 2>&1; then
+    ai_warn() { echo "[WARN] $*" >&2; }
+fi
+if ! declare -F ai_bad >/dev/null 2>&1; then
+    ai_bad() { echo "[BAD] $*" >&2; }
+fi
+if ! declare -F error >/dev/null 2>&1; then
+    error() { echo "[ERROR] $*" >&2; return 1; }
+fi
+
 # ODS_SUDO_AVAILABLE is set by ods_prepare_sudo(). It is "true" only when we can
 # run privileged commands without an interactive prompt (either we are root, or
 # sudo is cached / passwordless). Anything else is "false" and the installer
@@ -19,13 +33,24 @@ export ODS_SUDO_AVAILABLE="${ODS_SUDO_AVAILABLE:-}"
 
 # ods_sudo_available: true when privileged commands can run without a prompt.
 ods_sudo_available() {
-    [[ ${EUID:-$(id -u)} -eq 0 ]] && return 0
+    local uid="${EUID:-}"
+    if [[ -z "$uid" ]] && command -v id >/dev/null 2>&1; then
+        uid="$(id -u 2>/dev/null || echo 1000)"
+    fi
+    [[ "$uid" =~ ^[0-9]+$ && "$uid" -eq 0 ]] && return 0
     [[ "${ODS_SUDO_AVAILABLE:-true}" == "true" ]] && return 0
     return 1
 }
 
 ods_sudo() {
-    if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
+    [[ $# -eq 0 ]] && return 0
+
+    local uid="${EUID:-}"
+    if [[ -z "$uid" ]] && command -v id >/dev/null 2>&1; then
+        uid="$(id -u 2>/dev/null || echo 1000)"
+    fi
+
+    if [[ "$uid" =~ ^[0-9]+$ && "$uid" -eq 0 ]]; then
         "$@"
         return $?
     fi
@@ -55,7 +80,11 @@ ods_prepare_sudo() {
         export ODS_SUDO_AVAILABLE=true
         return 0
     fi
-    if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
+    local uid="${EUID:-}"
+    if [[ -z "$uid" ]] && command -v id >/dev/null 2>&1; then
+        uid="$(id -u 2>/dev/null || echo 1000)"
+    fi
+    if [[ "$uid" =~ ^[0-9]+$ && "$uid" -eq 0 ]]; then
         export ODS_SUDO_AVAILABLE=true
         return 0
     fi
