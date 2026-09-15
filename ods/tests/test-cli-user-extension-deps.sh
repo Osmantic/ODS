@@ -178,6 +178,21 @@ else
     fail "purge left data of disabled user extension: $output"
 fi
 
+# ---------------------------------------------------------------------------
+# 7. purge: EOF/non-interactive confirmation must fail closed
+# ---------------------------------------------------------------------------
+mkdir -p "$FIXTURE/data/usvc"
+echo "keep" > "$FIXTURE/data/usvc/marker"
+set +e
+output=$(run_cli purge usvc </dev/null 2>&1)
+rc=$?
+set -e
+if [[ $rc -ne 0 && -f "$FIXTURE/data/usvc/marker" ]]; then
+    pass "non-interactive purge reports cancellation as failure"
+else
+    fail "non-interactive purge reported success or deleted data: rc=$rc output=$output"
+fi
+
 echo ""
 echo "Results: $PASSED passed, $FAILED failed"
 [[ $FAILED -eq 0 ]] || exit 1

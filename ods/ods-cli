@@ -3010,7 +3010,10 @@ cmd_purge() {
     read -p "  Type '$service_id' to confirm deletion: " -r _confirm || _confirm=""
     if [[ "$_confirm" != "$service_id" ]]; then
         log "Purge cancelled."
-        return 0
+        # EOF/non-interactive input must not look like a successful deletion
+        # to automation. The data is still present, so return failure and make
+        # the caller handle the missing confirmation explicitly.
+        return 1
     fi
 
     # Delete data — try direct rm first, fall back to docker for root-owned files
