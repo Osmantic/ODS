@@ -13,7 +13,7 @@ Set two different random passwords in `.env`, using 16-128 letters, digits, unde
 | `MAILPIT_UI_PASSWORD` | Required inbox/API password, username `ods` | none |
 | `MAILPIT_SMTP_PASSWORD` | Required SMTP password, username `ods` | none |
 
-Open `http://localhost:8025`. Configure an explicitly selected test workflow to use SMTP host `mailpit`, port `1025`, username `ods` and the SMTP password when it shares `ods-network`. A host process uses `127.0.0.1` and `MAILPIT_SMTP_PORT`. SMTP authentication uses PLAIN/LOGIN without TLS; these listeners are intended for the trusted local host and Docker network. Both published ports remain loopback-only even when ODS uses a broader `BIND_ADDRESS`.
+Open `http://localhost:8025`. Configure an explicitly selected test workflow to use SMTP host `mailpit`, port `1025`, username `ods` and the SMTP password when it shares `ods-network`. A host process uses `127.0.0.1` and `MAILPIT_SMTP_PORT`. SMTP authentication uses PLAIN/LOGIN without TLS; these listeners are intended for the trusted local host and Docker network. Both published ports default to loopback and honor the operator's `BIND_ADDRESS` LAN opt-in.
 
 The inbox password also protects message creation through `/api/v1/send`; the SMTP password alone cannot read the inbox. The readiness endpoint is public and reports availability, without exposing message contents. POP3 is disabled. No workflow credentials are modified automatically.
 
@@ -34,3 +34,20 @@ Automatic version checks and reverse DNS lookups are disabled. Remote CSS/fonts 
 The opt-in `ODS_TEST_MAILPIT=1` test covers the pinned image's authenticated SMTP -> persisted inbox/API path, attachments, rejected access, recreation and credential rotation on Linux/amd64. It does not qualify real recipient delivery, TLS, native Windows/macOS installation, sustained load, or a separate backup restore.
 
 Upstream: [version 1.31.1](https://github.com/axllent/mailpit/releases/tag/v1.31.1), [SMTP authentication](https://mailpit.axllent.org/docs/configuration/smtp/), [HTTP authentication](https://mailpit.axllent.org/docs/configuration/http/), [storage](https://mailpit.axllent.org/docs/configuration/email-storage/).
+
+## Host publication
+
+The published ports honor ODS `BIND_ADDRESS`: unset keeps `127.0.0.1`; the
+explicit LAN opt-in can select `0.0.0.0` or a specific host interface. This
+controls Docker publication and preserves native authentication and application
+policy. Disable/recreate after changes, and keep operator edits to the installed
+definition backed up before updating or reinstalling the extension.
+
+This applies to both the inbox HTTP port and the SMTP port. Native SMTP
+PLAIN/LOGIN and HTTP Basic authentication are not transport encryption; select
+a trusted segment or configure an appropriate TLS/access boundary.
+
+Compose regression tests cover unset, loopback, wildcard and a specific interface
+while preserving target ports, credentials and storage. Actual lifecycle fixtures
+remain bound to isolated loopback ports. Remote browser/TLS deployments are not
+qualified by those local tests.

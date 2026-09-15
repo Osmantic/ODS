@@ -5,8 +5,8 @@ services:
     user: "1000:1000"
     entrypoint: ["/bin/sh", "/run/ods-mailpit.sh"]
     ports:
-      - "127.0.0.1:${MAILPIT_PORT:-8025}:8025"
-      - "127.0.0.1:${MAILPIT_SMTP_PORT:-1025}:1025"
+      - "${BIND_ADDRESS:-127.0.0.1}:${MAILPIT_PORT:-8025}:8025"
+      - "${BIND_ADDRESS:-127.0.0.1}:${MAILPIT_SMTP_PORT:-1025}:1025"
     environment:
       MAILPIT_UI_PASSWORD: "${MAILPIT_UI_PASSWORD:?Set MAILPIT_UI_PASSWORD before enabling Mailpit}"
       MAILPIT_SMTP_PASSWORD: "${MAILPIT_SMTP_PASSWORD:?Set MAILPIT_SMTP_PASSWORD before enabling Mailpit}"
