@@ -27,6 +27,7 @@ def test_pocketbase_install_and_reenable_use_an_image_only_compose(test_client, 
         assert "build" not in service
         manifest = yaml.safe_load((installed / "manifest.yaml").read_text())
         assert manifest["service"]["setup_hook"] == "setup.sh"
+        assert manifest["service"]["ui_path"] == "/_/"
         assert (installed / "setup.sh").is_file()
         assert (installed / "Dockerfile").is_file()
         assert (installed / "start-pocketbase.sh").is_file()

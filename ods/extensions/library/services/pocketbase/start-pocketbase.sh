@@ -1,4 +1,6 @@
 #!/bin/sh
+# Alpine uses BusyBox ash for /bin/sh.
+# shellcheck shell=ash
 set -eu
 set -o pipefail
 POCKETBASE_PASSWORD=${POCKETBASE_PASSWORD:-}

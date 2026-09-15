@@ -13,6 +13,7 @@ service:
   external_port_env: POCKETBASE_PORT
   external_port_default: 8090
   health: /api/health
+  ui_path: /_/
   type: docker
   gpu_backends: [all]
   compose_file: compose.yaml
