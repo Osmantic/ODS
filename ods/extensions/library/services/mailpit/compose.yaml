@@ -1,0 +1,55 @@
+services:
+  mailpit:
+    image: axllent/mailpit:v1.31.1@sha256:98b916bd3c8d61f7633a52d3ea2f58d00620cb01ca57ab59edde68c347a95365
+    container_name: ods-mailpit
+    user: "1000:1000"
+    entrypoint: ["/bin/sh", "/run/ods-mailpit.sh"]
+    ports:
+      - "127.0.0.1:${MAILPIT_PORT:-8025}:8025"
+      - "127.0.0.1:${MAILPIT_SMTP_PORT:-1025}:1025"
+    environment:
+      MAILPIT_UI_PASSWORD: "${MAILPIT_UI_PASSWORD:?Set MAILPIT_UI_PASSWORD before enabling Mailpit}"
+      MAILPIT_SMTP_PASSWORD: "${MAILPIT_SMTP_PASSWORD:?Set MAILPIT_SMTP_PASSWORD before enabling Mailpit}"
+      MP_DATABASE: /data/mailpit.db
+      MP_MAX_MESSAGES: "500"
+      MP_MAX_AGE: 7d
+      MP_MAX_MESSAGE_SIZE: "10"
+      MP_SMTP_MAX_RECIPIENTS: "20"
+      MP_SMTP_AUTH_ALLOW_INSECURE: "true"
+      MP_SMTP_DISABLE_RDNS: "true"
+      MP_DISABLE_VERSION_CHECK: "true"
+      MP_BLOCK_REMOTE_CSS_AND_FONTS: "true"
+      MP_ALLOWED_HOSTS: mailpit,ods-mailpit
+    volumes:
+      - ./data/mailpit:/data
+      - type: bind
+        source: ./config/mailpit/entrypoint.sh
+        target: /run/ods-mailpit.sh
+        read_only: true
+        bind:
+          create_host_path: false
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=32m
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    networks:
+      - ods-network
+
+networks:
+  ods-network:
+    external: true
+    name: ods-network

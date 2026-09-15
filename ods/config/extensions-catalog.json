@@ -2293,6 +2293,73 @@
       "configuration_scope": "declared-environment-keys"
     },
     {
+      "id": "mailpit",
+      "name": "Mailpit (Email Preview)",
+      "description": "Capture test email locally over authenticated SMTP and inspect it through a private web inbox.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 8025,
+      "external_port_default": 8025,
+      "health_endpoint": "/readyz",
+      "env_vars": [
+        {
+          "key": "MAILPIT_PORT",
+          "description": "Published inbox and HTTP API port",
+          "default": "8025"
+        },
+        {
+          "key": "MAILPIT_SMTP_PORT",
+          "description": "Published SMTP capture port; internal listener remains 1025",
+          "default": "1025"
+        },
+        {
+          "key": "MAILPIT_UI_PASSWORD",
+          "description": "Inbox password for ods; 16-128 letters, digits, underscores or hyphens",
+          "required": true
+        },
+        {
+          "key": "MAILPIT_SMTP_PASSWORD",
+          "description": "SMTP submission password for ods; 16-128 letters, digits, underscores or hyphens",
+          "required": true
+        }
+      ],
+      "tags": [
+        "email",
+        "smtp",
+        "development",
+        "workflows"
+      ],
+      "features": [
+        {
+          "id": "local-email-preview",
+          "name": "Preview Workflow Email",
+          "description": "Inspect test emails locally before connecting a workflow to a delivery provider",
+          "icon": "Mail",
+          "category": "productivity",
+          "requirements": {
+            "services": [
+              "mailpit"
+            ],
+            "vram_gb": 0
+          },
+          "enabled_services_all": [
+            "mailpit"
+          ],
+          "setup_time": "~1 minute after setting credentials",
+          "priority": 39,
+          "launch": {
+            "type": "service",
+            "service": "mailpit"
+          }
+        }
+      ],
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
       "id": "milvus",
       "name": "Milvus (Vector Database)",
       "description": "Production-grade open-source vector database for scalable similarity search.",
