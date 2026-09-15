@@ -63,11 +63,19 @@ env_mode = sys.argv[2] == "true"
 platform_id = sys.argv[3]
 gpu_vendor = sys.argv[4]
 memory_type = sys.argv[5]
-vram_mb = int(float(sys.argv[6] or 0))
+def _safe_mb(val: str) -> int:
+    try:
+        return max(0, int(float(val)))
+    except (ValueError, TypeError):
+        import re
+        m = re.match(r"^\s*(\d+)", str(val or ""))
+        return int(m.group(1)) if m else 0
+
+vram_mb = _safe_mb(sys.argv[6])
 device_id = sys.argv[7]
 gpu_name = sys.argv[8]
 cpu_name = sys.argv[9]
-ram_mb = int(float(sys.argv[10] or 0))
+ram_mb = _safe_mb(sys.argv[10])
 
 with open(db_path, "r", encoding="utf-8") as f:
     db = json.load(f)
