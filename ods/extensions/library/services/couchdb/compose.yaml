@@ -28,7 +28,7 @@ services:
       ERL_CRASH_DUMP: /tmp/erl_crash.dump
       HOME: /tmp
     ports:
-      - "127.0.0.1:${COUCHDB_PORT:-5984}:5984"
+      - "${BIND_ADDRESS:-127.0.0.1}:${COUCHDB_PORT:-5984}:5984"
     volumes:
       - ./data/couchdb/databases:/opt/couchdb/data
       - ./data/couchdb/config:/opt/couchdb/etc/local.d

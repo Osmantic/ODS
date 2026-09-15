@@ -4,7 +4,7 @@ Optional single-node CouchDB using the 3.5.2.1 packaging image, pinned by digest
 
 Set `COUCHDB_PASSWORD` (16-128 URL-safe characters) and `COUCHDB_SECRET` (32-128 URL-safe characters) before enabling; accepted characters are ASCII letters, digits, underscore and hyphen. Generate independent values with `openssl rand -hex 24`. The initial administrator is `ods`. Open Fauxton at `http://localhost:5984/_utils/`, or the configured `COUCHDB_PORT`. HTTP clients use Basic authentication. The normal ODS config sync installs the read-only baseline INI, and host startup prepares both writable directories for UID 5984.
 
-The baseline enables native single-node setup, including system databases, with one shard and one replica. It requires authentication for all endpoints except the public `/_up` availability probe. This probe does not prove database contents or replication status. CORS is disabled. Only the HTTP port is published, bound to loopback regardless of `BIND_ADDRESS`; Erlang distribution and EPMD are restricted to container loopback. Remote clients need an operator-managed TLS/access boundary. No Docker socket is mounted; the process runs as UID 5984 with a read-only root and dropped capabilities.
+The baseline enables native single-node setup, including system databases, with one shard and one replica. It requires authentication for all endpoints except the public `/_up` availability probe. This probe does not prove database contents or replication status. CORS is disabled. Only the HTTP port is published, bound to loopback by default and honoring `BIND_ADDRESS`; Erlang distribution and EPMD are restricted to container loopback. Remote clients need an operator-managed TLS/access boundary. No Docker socket is mounted; the process runs as UID 5984 with a read-only root and dropped capabilities.
 
 Data has two equally important parts under `data/couchdb`: `databases/` contains documents, attachments, revisions and user/replicator databases; `config/` contains native runtime settings, hashed administrator credentials and the cookie secret. The image bootstraps credentials only when the corresponding configuration is absent. **Changing `.env` does not rotate an existing administrator or secret.** Keep the existing native configuration with database backups. Docker/.env administrators and readers of the protected config directory can access authentication material.
 
@@ -17,3 +17,19 @@ For backup, stop CouchDB and copy the entire `data/couchdb` directory together w
 Qualification uses isolated Linux amd64 Docker: authenticated database/user creation, membership rejection, attachment bytes, stale revision conflicts, Mango lookup, changes-feed cursor, same-node replication, persistent admin configuration, credential rotation/recreate and cold restoration. Native macOS/Windows installation, browser workflows, external/PouchDB replication, TLS, clustering, concurrent load, full-text search, crash recovery and version upgrades remain unverified.
 
 Exact image packaging: [3.5.2.1 Dockerfile](https://github.com/apache/couchdb-docker/blob/a76020b130d5d2e2a0e54f9437d90d35652b8707/3.5.2.1/Dockerfile), [native entrypoint](https://github.com/apache/couchdb-docker/blob/a76020b130d5d2e2a0e54f9437d90d35652b8707/3.5.2.1/docker-entrypoint.sh). API semantics: [CouchDB documentation](https://docs.couchdb.org/en/stable/api/index.html).
+
+## Host publication
+
+The published ports honor ODS `BIND_ADDRESS`: unset keeps `127.0.0.1`; the
+explicit LAN opt-in can select `0.0.0.0` or a specific host interface. This
+controls Docker publication and preserves native authentication and application
+policy. Disable/recreate after changes, and keep operator edits to the installed
+definition backed up before updating or reinstalling the extension.
+
+Only the HTTP listener follows this opt-in. EPMD and Erlang distribution
+remain on container loopback. Native authentication and disabled CORS are preserved.
+
+Compose regression tests cover unset, loopback, wildcard and a specific interface
+while preserving target ports, credentials and storage. Actual lifecycle fixtures
+remain bound to isolated loopback ports. Remote browser/TLS deployments are not
+qualified by those local tests.
