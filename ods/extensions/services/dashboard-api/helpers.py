@@ -1381,3 +1381,15 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+from collections import Counter
+import re
+
+def string_word_frequency_counter_safe(text: str | None) -> dict[str, int]:
+    """Safely count frequency of words in text string ignoring punctuation and case.
+    Returns {} on None or non-string inputs.
+    """
+    if text is None or not isinstance(text, str):
+        return {}
+    words = re.findall(r'\b\w+\b', text.lower())
+    return dict(Counter(words))

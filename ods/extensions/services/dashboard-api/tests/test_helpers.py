@@ -1740,3 +1740,17 @@ def test_flatten_bounds_cycles_and_large_depth_without_losing_empty_leaves():
         nested = {"child": nested}
     result = dict_flatten_nested_safe(nested, max_depth=100000)
     assert len(next(iter(result)).split(".")) == 128
+
+
+class TestStringWordFrequencyCounterSafe:
+    def test_valid_counting(self):
+        from helpers import string_word_frequency_counter_safe
+        text = "Hello world! Hello python world."
+        counts = string_word_frequency_counter_safe(text)
+        assert counts["hello"] == 2
+        assert counts["world"] == 2
+
+    def test_invalid_inputs(self):
+        from helpers import string_word_frequency_counter_safe
+        assert string_word_frequency_counter_safe(None) == {}
+        assert string_word_frequency_counter_safe(100) == {}
