@@ -447,10 +447,29 @@ restore_config() {
 
     if [[ -d "$backup_dir/config" ]]; then
         restored_any=true
-        if [[ -d "$ODS_DIR/config" ]]; then
-            rm -rf "$ODS_DIR/config"
+        local staging_dir="$ODS_DIR/.config.restore.$$"
+        local displaced_dir="$ODS_DIR/.config.previous.$$"
+        rm -rf "$staging_dir" "$displaced_dir"
+        if ! cp -r "$backup_dir/config" "$staging_dir"; then
+            rm -rf "$staging_dir"
+            log_error "Failed to stage restored config; live config was left unchanged."
+            return 1
         fi
-        cp -r "$backup_dir/config" "$ODS_DIR/"
+
+        if [[ -d "$ODS_DIR/config" ]]; then
+            mv "$ODS_DIR/config" "$displaced_dir" || {
+                rm -rf "$staging_dir"
+                log_error "Failed to prepare live config for replacement."
+                return 1
+            }
+        fi
+        if ! mv "$staging_dir" "$ODS_DIR/config"; then
+            [[ -d "$displaced_dir" ]] && mv "$displaced_dir" "$ODS_DIR/config"
+            rm -rf "$staging_dir"
+            log_error "Failed to activate restored config; live config was rolled back."
+            return 1
+        fi
+        rm -rf "$displaced_dir"
         log_success "Restored: config/"
     else
         log_warn "Skipped (not in backup): config/"
@@ -555,7 +574,10 @@ do_restore() {
     fi
 
     if [[ "$restore_config" == "true" ]]; then
-        restore_config "$backup_dir"
+        if ! restore_config "$backup_dir"; then
+            log_error "Configuration restore failed; restore was not completed."
+            return 1
+        fi
     fi
 
     # Verify
