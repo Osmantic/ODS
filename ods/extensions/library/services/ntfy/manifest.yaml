@@ -1,4 +1,4 @@
-schema_version: ods.services.v1
+schema_version: ods.services.v2
 compatibility:
   ods_min: "2.6.0"
 service:
@@ -14,10 +14,89 @@ service:
   health: /v1/health
   ui_path: /
   type: docker
+  version: "2.28.0"
+  data_schema_version: "1"
   gpu_backends: [all]
   compose_file: compose.yaml
   category: optional
   depends_on: []
+  planning:
+    provides: [local-notifications@1]
+    requires: []
+    optional: []
+    conflicts: []
+    provider_priority: 0
+    requirements:
+      platforms: [linux]
+      architectures: [amd64, arm64]
+      container_runtimes: [docker]
+      gpu_backends: [amd, nvidia, apple, cpu, intel, sycl, jetson, none]
+      min_driver_version: null
+    estimates:
+      download_bytes: 36000000
+      disk_bytes: 536870912
+      cpu_millicores: 1000
+      ram_bytes: 268435456
+      vram_bytes: 0
+      gpu_count: 0
+    resources:
+      host_ports:
+        - port: 8097
+          protocol: tcp
+      container_ports: [8080]
+      networks: [ods-network]
+      volumes: []
+      devices: []
+      exclusive: []
+      linux_capabilities: []
+      host_permissions: [network, host-mount]
+    configuration:
+      - key: NTFY_PORT
+        type: integer
+        required: false
+        secret: false
+        source: user
+        restart_behavior: service
+        validation:
+          minimum: 1
+          maximum: 65535
+        default: 8097
+      - key: NTFY_BASE_URL
+        type: string
+        required: false
+        secret: false
+        source: user
+        restart_behavior: service
+        validation:
+          minLength: 1
+          maxLength: 2048
+        default: "http://localhost:8097"
+    artifacts:
+      images:
+        - reference: binwiederhier/ntfy:v2.28.0
+          digest: sha256:6ef4b819f722fccdc036af611c4774cfdc2de821ab74fdd48bbf4c9d6f8973da
+          download_bytes: 36000000
+      builds: []
+    lifecycle:
+      health_checks: ["/v1/health"]
+      readiness: [healthy]
+      setup_hook: null
+      migration_hook: null
+      rollback: definition
+      timeout_seconds: 120
+    data:
+      - path: data/ntfy
+        backup_class: required
+        owner: user
+        uninstall: preserve
+        purge: separate-approval
+    trust:
+      tier: bundled
+      publisher: ODS
+      definition_signature: null
+    support:
+      status: experimental
+      url: null
   tags: [notifications, automation, local]
   env_vars:
     - key: NTFY_PORT

@@ -1,7 +1,7 @@
 {
-  "generated_at": "2026-09-14T20:10:53Z",
+  "generated_at": "2026-09-15T16:23:04Z",
   "schema_version": "1.0.0",
-  "catalog_revision": "22905c395b3cea350f54af9c543a93c9ec3d9d692a6fb0fed39624c4ef274b7e",
+  "catalog_revision": "e7849fd4a1cb9a23ab25f5b20863b850e1f666b6352ac18960d5e9cf28d2b59e",
   "extensions": [
     {
       "id": "aider",
@@ -3089,21 +3089,149 @@
     },
     {
       "id": "ntfy",
-      "manifest_schema_version": "ods.services.v1",
+      "manifest_schema_version": "ods.services.v2",
       "planning": {
         "serviceType": "docker",
-        "version": "0.0.0-legacy",
-        "dataSchemaVersion": "legacy",
+        "version": "2.28.0",
+        "dataSchemaVersion": "1",
         "odsCompatibility": {
           "minimum": "2.6.0",
-          "maximum": ""
+          "maximum": null
         },
-        "definitionSha256": "sha256:a72588847655f1e1b25b61771f5d9727d3a5526201bb19d1b04a1050b1ba886f",
+        "definitionSha256": "sha256:38463fd47401f3ad4d194b82aa33d6c9370f1476ad8b4712d8db503952976f49",
         "composeSha256": "sha256:4f1527accc55c275ac3261fd57b92fb87e5e171c3a851f1453e2241056b832e7",
         "definitionSource": "library",
         "composeFile": "compose.yaml",
         "dependsOn": [],
-        "legacy": true
+        "provides": [
+          "local-notifications@1"
+        ],
+        "requires": [],
+        "optional": [],
+        "conflicts": [],
+        "providerPriority": 0,
+        "requirements": {
+          "platforms": [
+            "linux"
+          ],
+          "architectures": [
+            "amd64",
+            "arm64"
+          ],
+          "containerRuntimes": [
+            "docker"
+          ],
+          "gpuBackends": [
+            "amd",
+            "apple",
+            "cpu",
+            "intel",
+            "jetson",
+            "none",
+            "nvidia",
+            "sycl"
+          ],
+          "minDriverVersion": null
+        },
+        "estimates": {
+          "downloadBytes": 36000000,
+          "diskBytes": 536870912,
+          "cpuMillicores": 1000,
+          "ramBytes": 268435456,
+          "vramBytes": 0,
+          "gpuCount": 0
+        },
+        "resources": {
+          "hostPorts": [
+            {
+              "port": 8097,
+              "protocol": "tcp"
+            }
+          ],
+          "containerPorts": [
+            8080
+          ],
+          "networks": [
+            "ods-network"
+          ],
+          "volumes": [],
+          "devices": [],
+          "exclusive": [],
+          "linuxCapabilities": [],
+          "hostPermissions": [
+            "host-mount",
+            "network"
+          ]
+        },
+        "configuration": [
+          {
+            "key": "NTFY_BASE_URL",
+            "type": "string",
+            "required": false,
+            "secret": false,
+            "source": "user",
+            "restartBehavior": "service",
+            "validation": {
+              "minLength": 1,
+              "maxLength": 2048
+            },
+            "default": "http://localhost:8097"
+          },
+          {
+            "key": "NTFY_PORT",
+            "type": "integer",
+            "required": false,
+            "secret": false,
+            "source": "user",
+            "restartBehavior": "service",
+            "validation": {
+              "minimum": 1,
+              "maximum": 65535
+            },
+            "default": 8097
+          }
+        ],
+        "artifacts": {
+          "images": [
+            {
+              "reference": "binwiederhier/ntfy:v2.28.0",
+              "digest": "sha256:6ef4b819f722fccdc036af611c4774cfdc2de821ab74fdd48bbf4c9d6f8973da",
+              "downloadBytes": 36000000
+            }
+          ],
+          "builds": []
+        },
+        "lifecycle": {
+          "healthChecks": [
+            "/v1/health"
+          ],
+          "readiness": [
+            "healthy"
+          ],
+          "setupHook": null,
+          "migrationHook": null,
+          "rollback": "definition",
+          "timeoutSeconds": 120
+        },
+        "data": [
+          {
+            "path": "data/ntfy",
+            "backupClass": "required",
+            "owner": "user",
+            "uninstall": "preserve",
+            "purge": "separate-approval"
+          }
+        ],
+        "trust": {
+          "tier": "bundled",
+          "publisher": "ODS",
+          "definitionSignature": null
+        },
+        "support": {
+          "status": "experimental",
+          "url": null
+        },
+        "legacy": false
       },
       "name": "ntfy (Local Notifications)",
       "description": "Authenticated local HTTP notifications for workflows and operator alerts.",

@@ -28,8 +28,27 @@ def test_ntfy_is_discoverable_with_consistent_manifest_and_compose(tmp_path):
     assert entry['compose_file'] == 'compose.yaml'
     assert entry['health_endpoint'] == '/v1/health'
     assert entry['external_port_default'] == 8097
+    assert entry['manifest_schema_version'] == 'ods.services.v2'
+    planning = entry['planning']
+    assert planning['legacy'] is False
+    assert planning['definitionSource'] == 'library'
+    assert planning['provides'] == ['local-notifications@1']
+    assert planning['requirements']['architectures'] == ['amd64', 'arm64']
+    assert planning['resources']['hostPorts'] == [{'port': 8097, 'protocol': 'tcp'}]
+    assert planning['estimates']['downloadBytes'] == 36000000
+    assert planning['artifacts']['builds'] == []
+    assert planning['data'] == [{
+        'path': 'data/ntfy', 'backupClass': 'required', 'owner': 'user',
+        'uninstall': 'preserve', 'purge': 'separate-approval',
+    }]
+    assert all(field['secret'] is False for field in planning['configuration'])
+    port = next(field for field in planning['configuration'] if field['key'] == 'NTFY_PORT')
+    assert port['default'] == 8097
+    assert port['validation'] == {'minimum': 1, 'maximum': 65535}
     manifest = yaml.safe_load((SERVICE / 'manifest.yaml').read_text())['service']
     compose = yaml.safe_load((SERVICE / 'compose.yaml').read_text())['services']['ntfy']
+    image = planning['artifacts']['images'][0]
+    assert compose['image'] == f"{image['reference']}@{image['digest']}"
     assert manifest['container_name'] == compose['container_name']
     assert manifest['port'] == 8080
     assert compose['environment']['NTFY_AUTH_DEFAULT_ACCESS'] == 'deny-all'
