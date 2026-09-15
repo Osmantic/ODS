@@ -1740,3 +1740,15 @@ def test_flatten_bounds_cycles_and_large_depth_without_losing_empty_leaves():
         nested = {"child": nested}
     result = dict_flatten_nested_safe(nested, max_depth=100000)
     assert len(next(iter(result)).split(".")) == 128
+
+
+class TestListFindAllIndicesSafe:
+    def test_valid_finding(self):
+        from helpers import list_find_all_indices_safe
+        nums = [10, 25, 30, 45, 50]
+        assert list_find_all_indices_safe(nums, lambda x: x % 10 == 0) == [0, 2, 4]
+
+    def test_invalid_inputs(self):
+        from helpers import list_find_all_indices_safe
+        assert list_find_all_indices_safe(None) == []
+        assert list_find_all_indices_safe([1, 2], "invalid") == [0, 1]
