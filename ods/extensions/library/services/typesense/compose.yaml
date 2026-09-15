@@ -1,0 +1,40 @@
+services:
+  typesense:
+    image: typesense/typesense:27.1
+    container_name: ods-typesense
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      TYPESENSE_API_KEY: "${TYPESENSE_API_KEY:?Set TYPESENSE_API_KEY before enabling typesense}"
+      TYPESENSE_DATA_DIR: "/data"
+      TYPESENSE_ENABLE_CORS: "true"
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${TYPESENSE_PORT:-8108}:8108"
+    volumes:
+      - ./data/typesense:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:8108/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - ods-network
+    deploy:
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: 1G
+        reservations:
+          cpus: "0.2"
+          memory: 256M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  ods-network:
+    external: true
