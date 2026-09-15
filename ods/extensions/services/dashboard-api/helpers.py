@@ -1381,3 +1381,14 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def dict_values_type_filter_safe(d: dict | None, target_type: type | None) -> dict:
+    """Safely filter dictionary retaining only items whose value matches target_type.
+    Returns {} on None or invalid inputs.
+    """
+    if not isinstance(d, dict) or d is None:
+        return {}
+    if target_type is None or not isinstance(target_type, type):
+        return dict(d)
+    return {k: v for k, v in d.items() if isinstance(v, target_type)}

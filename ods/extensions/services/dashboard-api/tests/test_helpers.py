@@ -1740,3 +1740,15 @@ def test_flatten_bounds_cycles_and_large_depth_without_losing_empty_leaves():
         nested = {"child": nested}
     result = dict_flatten_nested_safe(nested, max_depth=100000)
     assert len(next(iter(result)).split(".")) == 128
+
+
+class TestDictValuesTypeFilterSafe:
+    def test_valid_filtering(self):
+        from helpers import dict_values_type_filter_safe
+        d = {"a": 1, "b": "hello", "c": 3.14, "d": 42}
+        assert dict_values_type_filter_safe(d, int) == {"a": 1, "d": 42}
+
+    def test_invalid_inputs(self):
+        from helpers import dict_values_type_filter_safe
+        assert dict_values_type_filter_safe(None, int) == {}
+        assert dict_values_type_filter_safe({"a": 1}, "not_a_type") == {"a": 1}
