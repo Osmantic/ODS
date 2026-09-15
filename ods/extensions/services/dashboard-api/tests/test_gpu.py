@@ -564,3 +564,12 @@ class TestGetGpuInfoDispatcher:
 
         result = get_gpu_info()
         assert result is None
+
+
+class TestGPUTelemetryErrorBoundaries:
+    def test_format_telemetry_outage_response(self):
+        from routers.gpu import format_telemetry_outage_response
+        res = format_telemetry_outage_response("Connection refused")
+        assert res["status"] == "degraded"
+        assert res["timestamp_valid"] is False
+        assert "Connection refused" in res["error"]
