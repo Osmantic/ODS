@@ -1,0 +1,43 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: mailpit
+  name: Mailpit (Email Testing & Web UI)
+  description: "Local mock SMTP server and web inspection UI for testing transactional emails, password resets, and agent alerts without external mail servers."
+  aliases: [smtp, email-testing, mail]
+  container_name: ods-mailpit
+  default_host: mailpit
+  port: 8025
+  external_port_env: MAILPIT_PORT
+  external_port_default: 8025
+  health: /api/v1/info
+  ui_path: /
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [email, smtp, testing, alerts, developer-tools]
+  env_vars:
+    - key: MAILPIT_PORT
+      description: "Published Web UI and REST API port"
+      default: "8025"
+    - key: MAILPIT_SMTP_PORT
+      description: "Published mock SMTP port for receiving application mail"
+      default: "1025"
+features:
+  - id: local-email-testing
+    name: Local Email & Alert Testing
+    description: "Inspect outgoing transactional emails and notification webhooks locally"
+    icon: Mail
+    category: developer-tools
+    requirements:
+      services: [mailpit]
+      vram_gb: 0
+    enabled_services_all: [mailpit]
+    setup_time: "~1 minute"
+    priority: 37
+    launch:
+      type: service
+      service: mailpit

@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-13T16:53:56Z",
+  "generated_at": "2026-09-15T05:52:37Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -2293,6 +2293,64 @@
       "configuration_scope": "declared-environment-keys"
     },
     {
+      "id": "mailpit",
+      "name": "Mailpit (Email Testing & Web UI)",
+      "description": "Local mock SMTP server and web inspection UI for testing transactional emails, password resets, and agent alerts without external mail servers.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 8025,
+      "external_port_default": 8025,
+      "health_endpoint": "/api/v1/info",
+      "env_vars": [
+        {
+          "key": "MAILPIT_PORT",
+          "description": "Published Web UI and REST API port",
+          "default": "8025"
+        },
+        {
+          "key": "MAILPIT_SMTP_PORT",
+          "description": "Published mock SMTP port for receiving application mail",
+          "default": "1025"
+        }
+      ],
+      "tags": [
+        "email",
+        "smtp",
+        "testing",
+        "alerts",
+        "developer-tools"
+      ],
+      "features": [
+        {
+          "id": "local-email-testing",
+          "name": "Local Email & Alert Testing",
+          "description": "Inspect outgoing transactional emails and notification webhooks locally",
+          "icon": "Mail",
+          "category": "developer-tools",
+          "requirements": {
+            "services": [
+              "mailpit"
+            ],
+            "vram_gb": 0
+          },
+          "enabled_services_all": [
+            "mailpit"
+          ],
+          "setup_time": "~1 minute",
+          "priority": 37,
+          "launch": {
+            "type": "service",
+            "service": "mailpit"
+          }
+        }
+      ],
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
       "id": "milvus",
       "name": "Milvus (Vector Database)",
       "description": "Production-grade open-source vector database for scalable similarity search.",
@@ -3153,6 +3211,28 @@
           ]
         }
       ],
+      "catalog_source": "builtin",
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
+      "id": "pixel-inference",
+      "name": "Pixel inference sharing (development)",
+      "description": "Disabled by default. Owner-provisioned, inference-only device credentials; loopback transport only. Does not provide Pixel agent or computer access. Private state must be provisioned before service activation. Native Windows private-state support and guided setup are not yet implemented.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [
+        "model-router"
+      ],
+      "port": 8093,
+      "external_port_default": 4005,
+      "health_endpoint": "/health",
+      "env_vars": [],
+      "tags": [],
+      "features": [],
+      "startup_check": false,
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
     },
