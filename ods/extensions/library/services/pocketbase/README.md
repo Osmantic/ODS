@@ -5,7 +5,7 @@ Install **PocketBase (Local App Backend)** from Extensions, set the three
 log in as `ods@localhost.invalid`. The API root is `http://localhost:8090/api`.
 `POCKETBASE_PORT` changes the loopback port and permitted local browser origins.
 Other ODS containers can explicitly use `http://pocketbase:8090` with native
-application credentials. `BIND_ADDRESS` does not expose this recipe to the LAN.
+application credentials. `BIND_ADDRESS` selects the published interface, defaulting to loopback.
 
 PocketBase 0.40.4 is a pre-1.0 application backend. Operators must review native
 migration/release notes before upgrading; this recipe is not a qualification
@@ -108,3 +108,21 @@ Native references: [0.40.4 release](https://github.com/pocketbase/pocketbase/rel
 [bootstrap events](https://github.com/pocketbase/pocketbase/blob/v0.40.4/core/base.go),
 [settings encryption](https://github.com/pocketbase/pocketbase/blob/v0.40.4/core/settings_query.go),
 [protected files](https://github.com/pocketbase/pocketbase/blob/v0.40.4/apis/file.go).
+
+## Host publication
+
+The published ports honor ODS `BIND_ADDRESS`: unset keeps `127.0.0.1`; the
+explicit LAN opt-in can select `0.0.0.0` or a specific host interface. This
+controls Docker publication and preserves native authentication and application
+policy. Disable/recreate after changes, and keep operator edits to the installed
+definition backed up before updating or reinstalling the extension.
+
+Native browser-origin policy remains explicit. Cross-origin application
+clients may require adding their origin to `--origins` in the installed
+`start-pocketbase.sh`, rebuilding through `setup.sh`, and recreating. This binding
+change does not relax the native origin list or add TLS.
+
+Compose regression tests cover unset, loopback, wildcard and a specific interface
+while preserving target ports, credentials and storage. Actual lifecycle fixtures
+remain bound to isolated loopback ports. Remote browser/TLS deployments are not
+qualified by those local tests.

@@ -10,7 +10,7 @@ services:
       POCKETBASE_ENCRYPTION_KEY: "${POCKETBASE_ENCRYPTION_KEY:?Set POCKETBASE_ENCRYPTION_KEY before enabling PocketBase}"
       POCKETBASE_PORT: "${POCKETBASE_PORT:-8090}"
     ports:
-      - "127.0.0.1:${POCKETBASE_PORT:-8090}:8090"
+      - "${BIND_ADDRESS:-127.0.0.1}:${POCKETBASE_PORT:-8090}:8090"
     volumes:
       - ./data/pocketbase:/pb/pb_data
     read_only: true
