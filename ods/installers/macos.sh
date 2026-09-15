@@ -112,9 +112,42 @@ for check in data.get("checks", []):
 PY
 fi
 
+# scripts/ods-doctor.sh sources lib/service-registry.sh, which needs Bash 4+.
+# macOS ships Bash 3.2, so run the doctor through a modern Bash when one is
+# available and say so when it is not. Never claim a report that was not written.
+_ods_doctor_bash_is_modern() {
+    [[ -x "$1" ]] || return 1
+    "$1" -c '[ "${BASH_VERSINFO[0]:-0}" -ge 4 ]' >/dev/null 2>&1
+}
+
+DOCTOR_BASH=""
+_doctor_bash_candidates=("${BASH:-}")
+if command -v brew >/dev/null 2>&1; then
+    _brew_prefix="$(brew --prefix 2>/dev/null || true)"
+    [[ -n "$_brew_prefix" ]] && _doctor_bash_candidates+=("$_brew_prefix/bin/bash")
+fi
+_doctor_bash_candidates+=(/opt/homebrew/bin/bash /usr/local/bin/bash)
+for _candidate in "${_doctor_bash_candidates[@]}"; do
+    if [[ -n "$_candidate" ]] && _ods_doctor_bash_is_modern "$_candidate"; then
+        DOCTOR_BASH="$_candidate"
+        break
+    fi
+done
+
 if [[ -x "$SCRIPT_DIR/scripts/ods-doctor.sh" ]]; then
-    "$SCRIPT_DIR/scripts/ods-doctor.sh" "$DOCTOR_FILE" >/dev/null 2>&1 || true
-    echo "[INFO] Doctor report: $DOCTOR_FILE"
+    if [[ -z "$DOCTOR_BASH" ]]; then
+        echo "[WARN] Doctor report skipped: scripts/ods-doctor.sh requires Bash 4+ (found ${BASH_VERSION})."
+        echo "       Install one with 'brew install bash' and re-run this script."
+    else
+        _doctor_rc=0
+        _doctor_err="$("$DOCTOR_BASH" "$SCRIPT_DIR/scripts/ods-doctor.sh" "$DOCTOR_FILE" 2>&1 >/dev/null)" || _doctor_rc=$?
+        if [[ "$_doctor_rc" -eq 0 && -f "$DOCTOR_FILE" ]]; then
+            echo "[INFO] Doctor report: $DOCTOR_FILE"
+        else
+            echo "[WARN] Doctor report was not written: scripts/ods-doctor.sh exited ${_doctor_rc}."
+            [[ -n "$_doctor_err" ]] && printf '%s\n' "$_doctor_err" | tail -n 3 | sed 's/^/       /'
+        fi
+    fi
 fi
 
 echo ""
