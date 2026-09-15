@@ -1740,3 +1740,13 @@ def test_flatten_bounds_cycles_and_large_depth_without_losing_empty_leaves():
         nested = {"child": nested}
     result = dict_flatten_nested_safe(nested, max_depth=100000)
     assert len(next(iter(result)).split(".")) == 128
+
+
+class TestDictInvertMappingSafe:
+    def test_valid(self):
+        from helpers import dict_invert_mapping_safe
+        assert dict_invert_mapping_safe({'a': 1, 'b': 2}) == {1: 'a', 2: 'b'}
+
+    def test_invalid(self):
+        from helpers import dict_invert_mapping_safe
+        assert dict_invert_mapping_safe({'a': [1]}) == {}
