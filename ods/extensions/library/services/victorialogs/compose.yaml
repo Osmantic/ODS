@@ -1,0 +1,37 @@
+services:
+  victorialogs:
+    image: victoriametrics/victoria-logs:v1.52.0@sha256:47b820890d64c4575a2a0a46415dcd8a4fd59a0f1fcd6a377693d7aea639442e
+    container_name: ods-victorialogs
+    command:
+      - -envflag.enable=true
+      - -envflag.prefix=VL_
+      - -httpListenAddr=:9428
+      - -storageDataPath=/storage
+      - -memory.allowedBytes=512MiB
+      - -search.maxConcurrentRequests=2
+      - -search.maxQueryDuration=15s
+      - -http.disableCORS=true
+    environment:
+      VL_httpAuth_username: ods
+      VL_httpAuth_password: "${VLOGS_PASSWORD:?Set VLOGS_PASSWORD before enabling VictoriaLogs}"
+      VL_retentionPeriod: "${VLOGS_RETENTION:-7d}"
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${VLOGS_PORT:-9428}:9428"
+    volumes:
+      - ./data/victorialogs:/storage
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: ["/tmp:size=32m,mode=1777"]
+    # This upstream image contains only the service binary. ODS probes /health
+    # externally via the manifest; there is no shell or HTTP probe executable.
+    networks: [ods-network]
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1G
+networks:
+  ods-network:
+    external: true
