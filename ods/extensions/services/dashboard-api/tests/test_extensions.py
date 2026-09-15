@@ -546,6 +546,91 @@ def _patch_mutation_config(monkeypatch, tmp_path, lib_dir=None, user_dir=None):
 
 class TestInstallExtension:
 
+    def test_install_without_shipped_config_skips_config_sync(
+        self, test_client, monkeypatch, tmp_path,
+    ):
+        """A configless one-click app does not depend on a host no-op sync."""
+        lib_dir = _setup_library_ext(tmp_path, "my-ext")
+        _patch_mutation_config(monkeypatch, tmp_path, lib_dir=lib_dir)
+        sync_calls = []
+        monkeypatch.setattr(
+            "routers.extensions._sync_extension_config",
+            lambda sid, *, require_synced=False: sync_calls.append(sid) or False,
+        )
+        monkeypatch.setattr("routers.extensions._call_agent_install", lambda sid: True)
+
+        resp = test_client.post(
+            "/api/extensions/my-ext/install", headers=test_client.auth_headers,
+        )
+
+        assert resp.status_code == 200
+        assert sync_calls == []
+        assert resp.json()["restart_required"] is False
+
+    def test_shipped_config_sync_failure_preserves_copy_without_start(
+        self, test_client, monkeypatch, tmp_path,
+    ):
+        """Never queue the host install when required shipped config did not land."""
+        lib_dir = _setup_library_ext(tmp_path, "my-ext")
+        shipped = lib_dir / "my-ext" / "config" / "my-ext"
+        shipped.mkdir(parents=True)
+        (shipped / "settings.json").write_text('{"keep": true}')
+        _patch_mutation_config(monkeypatch, tmp_path, lib_dir=lib_dir)
+        starts = []
+        monkeypatch.setattr(
+            "routers.extensions._sync_extension_config",
+            lambda sid, *, require_synced=False: False,
+        )
+        monkeypatch.setattr(
+            "routers.extensions._call_agent_install",
+            lambda sid: starts.append(sid) or True,
+        )
+
+        resp = test_client.post(
+            "/api/extensions/my-ext/install", headers=test_client.auth_headers,
+        )
+
+        assert resp.status_code == 503
+        assert "config sync failed" in resp.json()["detail"]
+        assert starts == []
+        installed_settings = (
+            tmp_path / "user" / "my-ext" / "config" / "my-ext" / "settings.json"
+        )
+        assert installed_settings.read_text() == '{"keep": true}'
+        progress = json.loads((tmp_path / "extension-progress" / "my-ext.json").read_text())
+        assert progress["status"] == "error"
+        retry = test_client.post(
+            "/api/extensions/my-ext/install", headers=test_client.auth_headers,
+        )
+        assert retry.status_code == 409
+        assert starts == []
+
+    def test_shipped_config_sync_success_starts_existing_install_job(
+        self, test_client, monkeypatch, tmp_path,
+    ):
+        """The ordinary one-click host job remains the successful path."""
+        lib_dir = _setup_library_ext(tmp_path, "my-ext")
+        (lib_dir / "my-ext" / "config" / "my-ext").mkdir(parents=True)
+        _patch_mutation_config(monkeypatch, tmp_path, lib_dir=lib_dir)
+        calls = []
+        monkeypatch.setattr(
+            "routers.extensions._sync_extension_config",
+            lambda sid, *, require_synced=False: calls.append(
+                ("sync", sid, require_synced)
+            ) or True,
+        )
+        monkeypatch.setattr(
+            "routers.extensions._call_agent_install",
+            lambda sid: calls.append(("install", sid)) or True,
+        )
+
+        resp = test_client.post(
+            "/api/extensions/my-ext/install", headers=test_client.auth_headers,
+        )
+
+        assert resp.status_code == 200
+        assert calls == [("sync", "my-ext", True), ("install", "my-ext")]
+
     def test_install_copies_and_enables(self, test_client, monkeypatch, tmp_path):
         """Install copies from library and keeps compose.yaml enabled."""
         lib_dir = _setup_library_ext(tmp_path, "my-ext")
@@ -3501,14 +3586,14 @@ class TestSyncExtensionConfig:
 
         calls = []
 
-        def _fake(sid, *, preserve_existing=False):
-            calls.append((sid, preserve_existing))
+        def _fake(sid, *, preserve_existing=False, require_synced=False):
+            calls.append((sid, preserve_existing, require_synced))
             return True
 
         monkeypatch.setattr(ext_mod, "_call_agent_sync_config", _fake)
         result = ext_mod._sync_extension_config("my-ext")
 
-        assert calls == [("my-ext", False)]
+        assert calls == [("my-ext", False, False)]
         assert result is True
 
     def test_returns_false_on_agent_failure(self, monkeypatch):
@@ -3517,7 +3602,7 @@ class TestSyncExtensionConfig:
 
         monkeypatch.setattr(
             ext_mod, "_call_agent_sync_config",
-            lambda _sid, *, preserve_existing=False: False,
+            lambda _sid, *, preserve_existing=False, require_synced=False: False,
         )
         assert ext_mod._sync_extension_config("my-ext") is False
 
@@ -3545,6 +3630,33 @@ class TestSyncExtensionConfig:
             "payload": {"service_id": "my-ext", "preserve_existing": False},
             "timeout": ext_mod._AGENT_TIMEOUT,
         }
+
+    def test_required_config_sync_needs_exact_host_receipt(self, monkeypatch):
+        """A 200 without the requested copied tree is not landing proof."""
+        from routers import extensions as ext_mod
+
+        receipt = {
+            "status": "ok", "service_id": "my-ext",
+            "synced": ["my-ext"], "preserve_existing": False,
+        }
+        monkeypatch.setattr(
+            ext_mod, "request_agent_json", lambda *args, **kwargs: receipt,
+        )
+        assert ext_mod._call_agent_sync_config("my-ext", require_synced=True) is True
+        for changed in (
+            {"service_id": "other-ext"},
+            {"synced": []},
+            {"synced": ["other-ext"]},
+            {"preserve_existing": True},
+            {"status": "error"},
+        ):
+            monkeypatch.setattr(
+                ext_mod, "request_agent_json",
+                lambda *args, **kwargs: {**receipt, **changed},
+            )
+            assert ext_mod._call_agent_sync_config(
+                "my-ext", require_synced=True,
+            ) is False
 
 
 class TestUpdateExtension:

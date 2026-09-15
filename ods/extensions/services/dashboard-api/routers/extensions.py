@@ -296,7 +296,9 @@ def _clear_progress(service_id: str) -> None:
         logger.warning("Failed to clear progress file for %s: %s", service_id, exc)
 
 
-def _sync_extension_config(service_id: str, *, preserve_existing: bool = False) -> bool:
+def _sync_extension_config(
+    service_id: str, *, preserve_existing: bool = False, require_synced: bool = False,
+) -> bool:
     """Ask host agent to copy config/<id>/ from an installed extension
     into INSTALL_DIR/config/.
 
@@ -312,7 +314,11 @@ def _sync_extension_config(service_id: str, *, preserve_existing: bool = False) 
     extension has no config/ subdir), False if the agent rejected the
     request or was unreachable.
     """
-    return _call_agent_sync_config(service_id, preserve_existing=preserve_existing)
+    return _call_agent_sync_config(
+        service_id,
+        preserve_existing=preserve_existing,
+        require_synced=require_synced,
+    )
 
 
 def _is_one_shot_extension(ext: dict) -> bool:
@@ -923,7 +929,9 @@ def _call_agent_install(service_id: str) -> bool:
         return False
 
 
-def _call_agent_sync_config(service_id: str, *, preserve_existing: bool = False) -> bool:
+def _call_agent_sync_config(
+    service_id: str, *, preserve_existing: bool = False, require_synced: bool = False,
+) -> bool:
     """Ask host agent to copy <ext>/config/* into INSTALL_DIR/config/.
 
     The dashboard-api container has /ods/config bind-mounted
@@ -944,6 +952,17 @@ def _call_agent_sync_config(service_id: str, *, preserve_existing: bool = False)
             },
             timeout=_AGENT_TIMEOUT,
         )
+        if require_synced and (
+            response.get("status") != "ok"
+            or response.get("service_id") != service_id
+            or response.get("synced") != [service_id]
+            or response.get("preserve_existing") is not False
+        ):
+            logger.warning(
+                "sync_config for %s did not confirm its exact copied config",
+                service_id,
+            )
+            return False
         if preserve_existing and (
             not isinstance(response, dict)
             or response.get("preserve_existing") is not True
@@ -1712,7 +1731,26 @@ def install_extension(service_id: str, api_key: str = Depends(verify_api_key)):
     # Some extensions (continue, sillytavern) ship a config/<id>/ directory
     # that the compose.yaml bind-mounts relative to the compose project root
     # (INSTALL_DIR), not relative to the extension directory.
-    _sync_extension_config(service_id)
+    # A library definition without shipped config has nothing to copy.  For
+    # definitions that do ship config, a failed host sync must stop before the
+    # asynchronous setup/pull/start job: otherwise Docker may create an empty
+    # bind-mount source while the dashboard reports an accepted install.
+    shipped_config = dest / "config"
+    has_shipped_config = shipped_config.exists() or shipped_config.is_symlink()
+    if has_shipped_config and not _sync_extension_config(
+        service_id, require_synced=True,
+    ):
+        _write_error_progress(
+            service_id,
+            "Extension config sync failed; installed files were preserved and no start was requested.",
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"Extension config sync failed for {service_id}. Installed files were "
+                "preserved; resolve the host-agent/config issue before explicit recovery."
+            ),
+        )
 
     # Write initial progress file so status shows "installing" immediately
     # (before host agent starts processing — closes the race window)
