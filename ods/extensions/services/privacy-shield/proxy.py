@@ -13,6 +13,7 @@ import httpx
 import secrets
 import hashlib
 from contextlib import asynccontextmanager
+from urllib.parse import parse_qsl, urlencode
 from fastapi import FastAPI, Request, Depends, HTTPException, Security, WebSocket
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -221,6 +222,38 @@ def _extract_ws_token(client_ws: WebSocket) -> tuple[str | None, str | None]:
         if proto.startswith(("bearer.", "Bearer.")):
             return proto.split(".", 1)[1], proto
     return None, None
+
+
+_WS_CREDENTIAL_QUERY_KEYS = frozenset({
+    "token",
+    "access_token",
+    "id_token",
+    "refresh_token",
+    "authorization",
+    "authorization_token",
+    "auth_token",
+    "auth",
+    "api_key",
+    "apikey",
+    "api-key",
+})
+
+
+def _safe_ws_query(query: str) -> str:
+    """Preserve non-credential query parameters for an upstream WS request.
+
+    Browser WebSocket clients may use ``token`` to authenticate to this proxy,
+    but that credential is only for the Shield and must never reach the model
+    upstream or its access logs.
+    """
+    return urlencode(
+        [
+            (key, value)
+            for key, value in parse_qsl(query, keep_blank_values=True)
+            if key.lower() not in _WS_CREDENTIAL_QUERY_KEYS
+        ],
+        doseq=True,
+    )
 
 
 @app.get("/health")
@@ -465,8 +498,9 @@ async def proxy_websocket(client_ws: WebSocket, path: str):
     base = TARGET_API_BASE.split("//", 1)[-1]
     scheme = "wss" if TARGET_API_BASE.startswith("https") else "ws"
     upstream_url = f"{scheme}://{base}/{path}"
-    if client_ws.url.query:
-        upstream_url += f"?{client_ws.url.query}"
+    upstream_query = _safe_ws_query(client_ws.url.query)
+    if upstream_query:
+        upstream_url += f"?{upstream_query}"
 
     extra_headers = []
     if TARGET_API_KEY and TARGET_API_KEY != "not-needed":

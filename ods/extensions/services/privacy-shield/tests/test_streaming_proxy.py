@@ -432,6 +432,10 @@ class TestWebSocketAuth:
             box["stop"] = stop
 
             async def echo(ws):
+                request = getattr(ws, "request", None)
+                box["path"] = (
+                    request.path if request is not None else ws.path
+                )
                 async for msg in ws:
                     await ws.send(f"echo:{msg}")
 
@@ -454,10 +458,11 @@ class TestWebSocketAuth:
                             f"http://127.0.0.1:{box['port']}")
         try:
             with client.websocket_connect(
-                f"/v1/realtime?token={TEST_KEY}"
+                f"/v1/realtime?token={TEST_KEY}&Authorization=other-secret&safe=x"
             ) as ws:
                 ws.send_text("hi")
                 assert ws.receive_text() == "echo:hi"
+            assert box["path"] == "/v1/realtime?safe=x"
         finally:
             loop = box.get("loop")
             stop = box.get("stop")
