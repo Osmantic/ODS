@@ -112,16 +112,25 @@ def _get_or_create_agent(agent_name: str) -> UUID:
             # Bypass RLS for this query
             cur.execute("SET LOCAL app.current_tenant = %s", (str(_tenant_id),))
 
-            slug = agent_name.lower().replace(" ", "-")
+            # Agent names are identities, not slugs: "Research Bot" and
+            # "research-bot" must never share usage. Serialize cold-cache
+            # creation across workers without changing existing agent IDs.
             cur.execute(
-                "SELECT id FROM agents WHERE tenant_id = %s AND slug = %s",
-                (_tenant_id, slug)
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                (f"{_tenant_id}:{agent_name}",),
+            )
+            cur.execute(
+                "SELECT id FROM agents WHERE tenant_id = %s AND name = %s ORDER BY id LIMIT 1",
+                (_tenant_id, agent_name)
             )
             row = cur.fetchone()
 
             if row:
                 agent_id = row["id"]
             else:
+                # Slugs are internal keys. A fresh opaque value also avoids
+                # collisions with normalized slugs retained by older installs.
+                slug = f"agent-{uuid4().hex}"
                 cur.execute(
                     """
                     INSERT INTO agents (tenant_id, name, slug)
