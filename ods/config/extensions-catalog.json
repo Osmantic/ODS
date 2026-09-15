@@ -899,6 +899,62 @@
       "configuration_scope": "declared-environment-keys"
     },
     {
+      "id": "filebrowser",
+      "name": "File Browser (Local Files)",
+      "description": "Authenticated browser uploads, downloads and scoped users for an isolated local file directory.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 8080,
+      "external_port_default": 8095,
+      "health_endpoint": "/health",
+      "env_vars": [
+        {
+          "key": "FILEBROWSER_PORT",
+          "description": "Loopback file manager port",
+          "default": "8095"
+        },
+        {
+          "key": "FILEBROWSER_PASSWORD",
+          "description": "Initial ods administrator password; 16-72 URL-safe characters",
+          "required": true
+        }
+      ],
+      "tags": [
+        "files",
+        "storage",
+        "uploads"
+      ],
+      "features": [
+        {
+          "id": "local-file-workspace",
+          "name": "Manage Local Files",
+          "description": "Upload and download files through an authenticated local workspace",
+          "icon": "FileText",
+          "category": "storage",
+          "requirements": {
+            "services": [
+              "filebrowser"
+            ],
+            "vram_gb": 0
+          },
+          "enabled_services_all": [
+            "filebrowser"
+          ],
+          "setup_time": "~1 minute",
+          "priority": 40,
+          "launch": {
+            "type": "service",
+            "service": "filebrowser"
+          }
+        }
+      ],
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
       "id": "flowise",
       "name": "Flowise",
       "description": "Visual LLM workflow builder with drag-and-drop interface.\nBuild AI agents, chatbots, and automation flows without code.\nIntegrates with OpenAI, Anthropic, local models, and 100+ tools.\n",
