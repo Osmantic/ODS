@@ -37,7 +37,7 @@ def main() -> int:
     try:
         source = canonical_schema_path()
         expected = source.read_bytes()
-        actual = LIBRARY_SCHEMA.read_bytes() if LIBRARY_SCHEMA.exists() else None
+        actual = LIBRARY_SCHEMA.read_bytes() if LIBRARY_SCHEMA.is_file() else None
     except (KeyError, OSError, TypeError, json.JSONDecodeError) as exc:
         print(f"ERROR: cannot resolve manifest schema contract: {exc}", file=sys.stderr)
         return 2
