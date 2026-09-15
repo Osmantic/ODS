@@ -86,7 +86,7 @@ sr_load() {
     # Create the cache as a race-safe, private (mode 0600) temp file. Its
     # contents are sourced as bash below, so a predictable /tmp name would be a
     # local code-injection vector (symlink / TOCTOU race).
-    _SR_CACHE="$(mktemp "${TMPDIR:-/tmp}/ods-service-registry.XXXXXX")" || _SR_CACHE=""
+    _SR_CACHE="$(mktemp "${TMPDIR:-/tmp}/ods-service-registry.XXXXXX")" || return 1
 
     if ! "$PYTHON_CMD" - "$EXTENSIONS_DIR" <<'PYEOF' > "$_SR_CACHE"
 import yaml, sys, os
