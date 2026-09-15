@@ -1381,3 +1381,21 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def dict_flatten_nested_keys_safe(d: dict | None, parent_key: str = '', sep: str = '.') -> dict:
+    """Safely flatten nested dict into dot-separated key-value notation.
+    Returns {} on None or non-dict inputs.
+    """
+    if not isinstance(d, dict) or d is None:
+        return {}
+    if not isinstance(sep, str):
+        sep = '.'
+    items = []
+    for k, v in d.items():
+        new_key = f"{parent_key}{sep}{k}" if parent_key else str(k)
+        if isinstance(v, dict):
+            items.extend(dict_flatten_nested_keys_safe(v, new_key, sep=sep).items())
+        else:
+            items.append((new_key, v))
+    return dict(items)
