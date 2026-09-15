@@ -72,14 +72,16 @@ echo ""
 
 # ── Stop and Disable ──────────────────────────────────────────────────
 
+# Keep the unit files available for recovery until every manager operation
+# succeeds. A missing bus or denied stop must never look like an uninstall.
 for timer in "${TIMERS[@]}"; do
     echo "Stopping and disabling $timer..."
-    systemctl $SYSTEMCTL_FLAG stop "$timer" 2>/dev/null || true
-    systemctl $SYSTEMCTL_FLAG disable "$timer" 2>/dev/null || true
+    systemctl $SYSTEMCTL_FLAG stop "$timer"
+    systemctl $SYSTEMCTL_FLAG disable "$timer"
 done
 
 for service in "${SERVICES[@]}"; do
-    systemctl $SYSTEMCTL_FLAG stop "$service" 2>/dev/null || true
+    systemctl $SYSTEMCTL_FLAG stop "$service"
 done
 
 # ── Remove Files ──────────────────────────────────────────────────────

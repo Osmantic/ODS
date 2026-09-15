@@ -50,6 +50,9 @@ jobs:
             extensions/services/pixel-agent/tests/test_workspace_preview_git.py \
             extensions/services/pixel-agent/tests/test_preview_empty_assets.py
 
+      - name: Memory Shepherd uninstall recovery
+        run: python -m pytest tests/test_memory_shepherd_uninstall.py -q
+
       - name: Settings transaction and access preservation contracts
         run: |
           python -m pytest -q tests/pixel_settings/test_contract.py tests/pixel_settings/test_projection.py \

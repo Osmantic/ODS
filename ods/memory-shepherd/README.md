@@ -198,6 +198,11 @@ systemctl list-timers | grep memory
 journalctl -u memory-shepherd      # View logs
 ```
 
+Uninstall stops if systemd cannot stop a unit or disable a timer, and retains
+all unit files for recovery. Resolve the reported service-manager error and
+rerun `uninstall.sh` with the same prefix. Units stopped or disabled before the
+failure stay stopped or disabled; configuration, baselines, and archives remain.
+
 ## Optional: File Integrity Protection
 
 The baseline files in `baselines/` are critical — if they get corrupted or overwritten, your agents get bad resets. For production deployments, consider:
