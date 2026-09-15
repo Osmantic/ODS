@@ -12,11 +12,11 @@ BACKUP_ROOT="${ODS_DIR}/.backups"
 RETENTION_COUNT="${RETENTION_COUNT:-5}"
 
 # Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+RED=$'\033[0;31m'
+GREEN=$'\033[0;32m'
+YELLOW=$'\033[1;33m'
+BLUE=$'\033[0;34m'
+NC=$'\033[0m' # No Color
 
 # Prerequisites check
 command -v rsync >/dev/null 2>&1 || { echo -e "${RED}Error: rsync is required but not installed.${NC}" >&2; echo "Install with: apt install rsync (Debian/Ubuntu) or brew install rsync (macOS)" >&2; exit 1; }
