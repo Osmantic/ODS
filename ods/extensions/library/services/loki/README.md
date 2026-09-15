@@ -61,7 +61,9 @@ These settings are resource limits, not measured throughput or a disk quota.
 Compactor retention is configured for seven days with a two-hour deletion delay.
 Deletion is asynchronous and depends on compaction; it does not free space
 precisely at a timestamp or react to disk pressure. Operator deletion APIs are
-disabled. The native lifecycle test validates admission limits but does not age
+blocked by the gateway. Native deletion bookkeeping remains enabled inside the
+private store so query cache-generation requests can complete. The native
+lifecycle test validates admission limits but does not age
 seven days of data or prove physical retention deletion.
 
 Rotate an account by updating its hash and recreating the gateway. Existing data

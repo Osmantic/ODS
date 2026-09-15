@@ -42,7 +42,7 @@ compactor:
   retention_delete_delay: 2h
 limits_config:
   retention_period: 168h
-  deletion_mode: disabled
+  deletion_mode: filter-and-delete
   reject_old_samples: true
   reject_old_samples_max_age: 168h
   ingestion_rate_mb: 4

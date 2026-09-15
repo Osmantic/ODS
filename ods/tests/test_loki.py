@@ -188,6 +188,7 @@ def test_native_logql_roles_tenant_mapping_rotation_and_restore(tmp_path):
         save()
         run(*command, "up", "-d", "--force-recreate", "--wait", "--wait-timeout", "120", "loki")
         verify()
+        assert "error loading cache generation numbers" not in run(*command, "logs", "loki-store").stdout
     finally:
         print(run(*command, "logs", "--tail", "12").stdout)
         run(*command, "down", "--volumes")
