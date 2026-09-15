@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-13T16:53:56Z",
+  "generated_at": "2026-09-14T19:53:49Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -2460,6 +2460,72 @@
         }
       ],
       "catalog_source": "builtin",
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
+      "id": "neo4j",
+      "name": "Neo4j (Bolt Graph Store)",
+      "description": "Authenticated local graph database and Browser for applications using Neo4j Bolt and Cypher.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 7474,
+      "external_port_default": 7474,
+      "health_endpoint": "/",
+      "env_vars": [
+        {
+          "key": "NEO4J_PASSWORD",
+          "description": "Initial neo4j administrator password, at least 12 characters without slash or line break; does not reset an existing database",
+          "required": true
+        },
+        {
+          "key": "NEO4J_PORT",
+          "description": "Published Browser and HTTP Query API port",
+          "default": "7474"
+        },
+        {
+          "key": "NEO4J_BOLT_PORT",
+          "description": "Published Bolt driver port",
+          "default": "7687"
+        },
+        {
+          "key": "NEO4J_PUBLIC_HOST",
+          "description": "Host advertised to Browser and external drivers; set deliberately for remote access",
+          "default": "localhost"
+        }
+      ],
+      "tags": [
+        "graph",
+        "cypher",
+        "database"
+      ],
+      "features": [
+        {
+          "id": "bolt-graph-store",
+          "name": "Neo4j Graph Store",
+          "description": "Query local entity relationships with Neo4j-compatible applications",
+          "icon": "Workflow",
+          "category": "productivity",
+          "requirements": {
+            "services": [
+              "neo4j"
+            ],
+            "vram_gb": 0
+          },
+          "enabled_services_all": [
+            "neo4j"
+          ],
+          "setup_time": "~2 minutes after setting credentials",
+          "priority": 30,
+          "launch": {
+            "type": "service",
+            "service": "neo4j"
+          }
+        }
+      ],
       "configuration_scope": "declared-environment-keys"
     },
     {

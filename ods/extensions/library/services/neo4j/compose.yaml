@@ -1,0 +1,46 @@
+services:
+  neo4j:
+    image: neo4j:2026.08.1@sha256:7f2c38fa0de8caf875d35237fa7dabda74de4f4fc2fc7c3c9e4b53c2add268ad
+    container_name: ods-neo4j
+    entrypoint: [tini, -g, --, bash, /opt/ods-neo4j-entrypoint.sh]
+    command: [neo4j]
+    restart: unless-stopped
+    security_opt: [no-new-privileges:true]
+    environment:
+      ODS_NEO4J_PASSWORD: "${NEO4J_PASSWORD:?Set NEO4J_PASSWORD before enabling Neo4j}"
+      NEO4J_server_memory_heap_initial__size: 512m
+      NEO4J_server_memory_heap_max__size: 512m
+      NEO4J_server_memory_pagecache_size: 512m
+      NEO4J_server_http_advertised__address: "${NEO4J_PUBLIC_HOST:-localhost}:${NEO4J_PORT:-7474}"
+      NEO4J_server_bolt_advertised__address: "${NEO4J_PUBLIC_HOST:-localhost}:${NEO4J_BOLT_PORT:-7687}"
+      NEO4J_dbms_usage__report_enabled: "false"
+      NEO4J_client_allow__telemetry: "false"
+      NEO4J_dbms_fleet__manager_enabled: "false"
+      NEO4J_server_fleet__discovery_enabled: "false"
+    volumes:
+      - ./data/neo4j/data:/data
+      - ./data/neo4j/logs:/logs
+      - type: bind
+        source: ./config/neo4j/entrypoint.sh
+        target: /opt/ods-neo4j-entrypoint.sh
+        read_only: true
+        bind:
+          create_host_path: false
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${NEO4J_PORT:-7474}:7474"
+      - "${BIND_ADDRESS:-127.0.0.1}:${NEO4J_BOLT_PORT:-7687}:7687"
+    healthcheck:
+      test: [CMD, wget, --quiet, --timeout=3, --output-document=/dev/null, "http://127.0.0.1:7474/"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 60s
+    networks: [ods-network]
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+networks:
+  ods-network:
+    external: true
