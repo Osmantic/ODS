@@ -435,6 +435,31 @@ revalidated before locking. The store does not wire Docker, Compose, host
 probes, the Dashboard transaction executor, installation, or runtime service
 mutation.
 
+A dormant SearXNG Compose-effect substrate now consumes the exact plan-bound
+application identity, immutable staged definition/Compose bytes, validated
+configuration metadata, and an owner-private secret-use callback. It writes
+only two fixed, secret-free, owner-private active Compose files and invokes a
+fixed, no-shell `docker compose up` argv with the installation root as the
+project directory. A fixed owner-private per-service lock serializes file
+publication and the Compose effect across concurrent retries. The generated
+override pins all nine identity labels and
+records the bound port without publishing a second port; the staged Compose
+file resolves the actual port from the temporary process environment. The
+secret is provided only inside the host secret-store callback, and command
+output is discarded so it cannot enter a receipt or response. File replay
+still invokes Compose: matching files alone never establish `APPLIED` or
+health. A failed or ambiguous runner leaves partial files for explicit
+observation and compensation rather than claiming a clean absence.
+
+This substrate remains unregistered in the host agent. Before it can be made
+live, the integration must re-prove the current transaction and configuration,
+match the effective configured host port to an active reservation, observe
+the generated override digest alongside definition/configuration/container/
+receipt evidence, publish the active
+application record last, and recover or compensate every partial effect.
+In particular, a user-selected SearXNG port must not bypass a reservation
+that still describes the manifest's default port 8888.
+
 ## Evidence boundary
 
 The source contract checks resolver ordering, the exact candidate service set,
