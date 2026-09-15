@@ -800,15 +800,20 @@ def aggregate_gpu_details(gpus: list[IndividualGPU], backend: str) -> GPUInfo:
     if not gpus:
         raise ValueError("at least one GPU is required")
 
-    mem_used = sum(gpu.memory_used_mb for gpu in gpus)
-    mem_total = sum(gpu.memory_total_mb for gpu in gpus)
+    mem_used = sum(gpu.memory_used_mb for gpu in gpus if isinstance(gpu.memory_used_mb, (int, float)))
+    mem_total = sum(gpu.memory_total_mb for gpu in gpus if isinstance(gpu.memory_total_mb, (int, float)))
     available_utilization = [
-        gpu.utilization_percent for gpu in gpus if gpu.utilization_available
+        gpu.utilization_percent for gpu in gpus
+        if gpu.utilization_available and isinstance(gpu.utilization_percent, (int, float))
     ]
     available_temperatures = [
-        gpu.temperature_c for gpu in gpus if gpu.temperature_available
+        gpu.temperature_c for gpu in gpus
+        if gpu.temperature_available and isinstance(gpu.temperature_c, (int, float))
     ]
-    available_power = [gpu.power_w for gpu in gpus if gpu.power_w is not None]
+    available_power = [
+        gpu.power_w for gpu in gpus
+        if gpu.power_w is not None and isinstance(gpu.power_w, (int, float))
+    ]
     names = [gpu.name for gpu in gpus]
     if len(set(names)) == 1:
         display_name = names[0] if len(names) == 1 else f"{names[0]} \u00d7 {len(names)}"
@@ -817,16 +822,19 @@ def aggregate_gpu_details(gpus: list[IndividualGPU], backend: str) -> GPUInfo:
         if len(names) > 2:
             display_name += f" + {len(names) - 2} more"
 
+    raw_util = (
+        round(sum(available_utilization) / len(available_utilization))
+        if available_utilization else 0
+    )
+    clamped_util = max(0, min(100, raw_util))
+
     return GPUInfo(
         name=display_name,
         memory_used_mb=mem_used,
         memory_total_mb=mem_total,
         memory_percent=round(mem_used / mem_total * 100, 1) if mem_total > 0 else 0.0,
-        utilization_percent=(
-            round(sum(available_utilization) / len(available_utilization))
-            if available_utilization else 0
-        ),
-        temperature_c=max(available_temperatures) if available_temperatures else 0,
+        utilization_percent=clamped_util,
+        temperature_c=int(round(max(available_temperatures))) if available_temperatures else 0,
         power_w=round(sum(available_power), 1) if available_power else None,
         memory_type=(
             "unified" if all(gpu.memory_type == "unified" for gpu in gpus)
