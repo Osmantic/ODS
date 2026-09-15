@@ -281,22 +281,38 @@ async def apply_template(template_id: str, api_key: str = Depends(verify_api_key
             # already in place (not compose.yaml.disabled), so _activate_service
             # will report "already_enabled" afterwards — we still want to start it.
             installable = _is_installable(svc_id)
-            installed_dir_exists = (USER_EXTENSIONS_DIR / svc_id).is_dir()
+            installed_target = USER_EXTENSIONS_DIR / svc_id
+            installed_dir_exists = installed_target.is_dir() and not installed_target.is_symlink()
             has_install_error = (
                 await asyncio.to_thread(_has_error_progress, svc_id)
                 if installable and installed_dir_exists
                 else False
             )
-            needs_library_install = installable and (
-                not installed_dir_exists or has_install_error
+            blocked_destination = installable and (
+                installed_target.is_symlink()
+                or (installed_target.exists() and not installed_dir_exists)
+                or (installed_dir_exists and not any(
+                    (installed_target / name).is_file()
+                    for name in ("compose.yaml", "compose.yaml.disabled")
+                ))
+                or has_install_error
             )
+            if blocked_destination:
+                message = (
+                    "existing extension files require owner recovery before retry; "
+                    "ODS will not overwrite or delete them automatically"
+                )
+                results[svc_id] = f"skipped: {message}"
+                warnings.append(f"{svc_id}: {message}")
+                continue
+            needs_library_install = installable and not installed_dir_exists
             if needs_library_install:
                 try:
                     await asyncio.to_thread(_install_with_lock, svc_id)
                     library_installed.append(svc_id)
                     config_synced = await asyncio.to_thread(_sync_extension_config, svc_id)
                     if not config_synced:
-                        message = "extension config sync failed; retry template apply after restoring the host agent"
+                        message = "extension config sync failed; recover existing files explicitly after restoring the host agent"
                         await asyncio.to_thread(_write_error_progress, svc_id, message)
                         results[svc_id] = f"skipped: {message}"
                         warnings.append(f"{svc_id}: {message}")
@@ -305,7 +321,7 @@ async def apply_template(template_id: str, api_key: str = Depends(verify_api_key
                         _call_agent_hook, svc_id, "post_install",
                     )
                     if not post_install_ok:
-                        message = "post_install hook failed; retry template apply after fixing the hook"
+                        message = "post_install hook failed; recover existing files explicitly after fixing the hook"
                         await asyncio.to_thread(_write_error_progress, svc_id, message)
                         results[svc_id] = f"skipped: {message}"
                         warnings.append(f"{svc_id}: {message}")
@@ -317,6 +333,7 @@ async def apply_template(template_id: str, api_key: str = Depends(verify_api_key
                         svc_id, detail,
                     )
                     results[svc_id] = f"skipped: install failed: {detail}"
+                    warnings.append(f"{svc_id}: install failed: {detail}")
                     continue
 
             # Resolve the complete runtime dependency tree separately from the

@@ -479,6 +479,18 @@ class ExtensionManagerTests(unittest.TestCase):
         self.assertEqual(result["currentStatus"], "unhealthy")
         self.assertFalse(result["externalEffectOccurred"])
 
+    def test_install_does_not_retry_or_rollback_recovery_required_state(self) -> None:
+        with (
+            mock.patch.object(manager, "_detail", return_value=detail("error")),
+            mock.patch.object(manager, "_mutate") as mutate,
+        ):
+            result = self.execute("install")
+        mutate.assert_not_called()
+        self.assertEqual(result["outcome"], "blocked")
+        self.assertEqual(result["currentStatus"], "error")
+        self.assertFalse(result["externalEffectOccurred"])
+        self.assertFalse(result["rollback"]["attempted"])
+
     def test_install_success_is_reconciled_to_the_expected_state(self) -> None:
         with (
             mock.patch.object(manager, "_detail", return_value=detail("not_installed")),

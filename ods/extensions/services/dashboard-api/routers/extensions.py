@@ -374,6 +374,10 @@ def _compute_extension_status(ext: dict, services_by_id: dict) -> str:
 
     # User-installed extension — health-based when compose.yaml exists
     user_dir = USER_EXTENSIONS_DIR / ext_id
+    if user_dir.is_symlink():
+        # A symlinked destination is not a fresh install target or a trusted
+        # installed definition, even if its external target has compose files.
+        return "error"
     if user_dir.is_dir():
         if (user_dir / "compose.yaml").exists():
             # One-shot CLI extensions don't expose a healthcheck — once
@@ -394,6 +398,12 @@ def _compute_extension_status(ext: dict, services_by_id: dict) -> str:
             return "stopped"
         if (user_dir / "compose.yaml.disabled").exists():
             return "disabled"
+        # An atomic library install never leaves a definition without either
+        # Compose state. Preserve the files and surface recovery explicitly.
+        return "error"
+    if user_dir.exists():
+        # A regular file at the destination likewise blocks safe installation.
+        return "error"
 
     # GPU incompatibility
     gpu_backends = ext.get("gpu_backends", [])
@@ -1225,6 +1235,11 @@ async def extensions_catalog(
             _progress = _read_progress(ext_id)
             if _progress and _progress.get("error"):
                 enriched["error_message"] = _progress["error"]
+            elif user_dir.exists() or user_dir.is_symlink():
+                enriched["error_message"] = (
+                    "Existing extension files require owner recovery before retry. "
+                    "ODS will not overwrite or delete them automatically."
+                )
 
         if category and ext.get("category") != category:
             continue
@@ -1385,6 +1400,11 @@ async def extension_detail(
         _progress = _read_progress(service_id)
         if _progress and _progress.get("error"):
             error_message = _progress["error"]
+        elif user_dir.exists() or user_dir.is_symlink():
+            error_message = (
+                "Existing extension files require owner recovery before retry. "
+                "ODS will not overwrite or delete them automatically."
+            )
 
     return {
         "id": ext["id"],
@@ -1538,7 +1558,7 @@ def _install_from_library(service_id: str) -> None:
     dest = USER_EXTENSIONS_DIR / service_id
 
     # Re-check under lock to prevent double-install race.
-    if dest.exists():
+    if dest.exists() or dest.is_symlink():
         has_compose = (dest / "compose.yaml").exists()
         has_disabled = (dest / "compose.yaml.disabled").exists()
         if (has_compose or has_disabled) and not _has_error_progress(service_id):
@@ -1546,9 +1566,13 @@ def _install_from_library(service_id: str) -> None:
                 status_code=409,
                 detail=f"Extension already installed: {service_id}",
             )
-        logger.warning("Cleaning up extension directory under lock before retry: %s", dest)
-        shutil.rmtree(dest)
-        _clear_progress(service_id)
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Existing extension files require owner recovery before retry: "
+                f"{service_id}. ODS will not overwrite or delete them automatically."
+            ),
+        )
 
     with _staged_library_extension(service_id, dest) as (staged, source_digest):
         installed_digest = _extension_tree_digest(staged)
@@ -1657,17 +1681,22 @@ def install_extension(service_id: str, api_key: str = Depends(verify_api_key)):
     dest = USER_EXTENSIONS_DIR / service_id
 
     # Early check (non-authoritative, rechecked under lock in _install_from_library)
-    if dest.exists():
+    if dest.exists() or dest.is_symlink():
         has_compose = (dest / "compose.yaml").exists()
         has_disabled = (dest / "compose.yaml.disabled").exists()
         if (has_compose or has_disabled) and not _has_error_progress(service_id):
             raise HTTPException(
                 status_code=409, detail=f"Extension already installed: {service_id}",
             )
-        # Broken or failed directory — clean up before reinstall.
-        logger.warning("Cleaning up extension directory before retry: %s", dest)
-        shutil.rmtree(dest)
-        _clear_progress(service_id)
+        # A failed retry may contain owner edits or application data. Leave
+        # both files and error progress in place for an explicit recovery.
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Existing extension files require owner recovery before retry: "
+                f"{service_id}. ODS will not overwrite or delete them automatically."
+            ),
+        )
 
     # NOTE: pre_install hook is deferred to a future version. On fresh library
     # installs, the extension directory doesn't exist yet, so the host agent

@@ -906,6 +906,7 @@ async def test_template_apply_library_install_failure_skips_gracefully(tmp_path)
 
     assert "skipped" in result["results"]["lib-svc"]
     assert "install failed" in result["results"]["lib-svc"]
+    assert any("install failed" in warning for warning in result["warnings"])
     assert result["library_installed"] == []
     assert result["enabled_count"] == 0
     # _activate_service must NOT have been called after the install failed
@@ -1011,8 +1012,8 @@ async def test_template_apply_config_sync_failure_is_retryable(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_template_apply_reinstalls_library_extension_with_error_progress(tmp_path):
-    """Persisted install errors force the library setup path to run again."""
+async def test_template_apply_preserves_library_extension_with_error_progress(tmp_path):
+    """Persisted install errors require recovery rather than a destructive retry."""
     mock_templates = [{
         "id": "test-tmpl",
         "name": "Test",
@@ -1048,9 +1049,62 @@ async def test_template_apply_reinstalls_library_extension_with_error_progress(t
         from routers.templates import apply_template
         result = await apply_template("test-tmpl", api_key="test")
 
-    mock_install.assert_called_once_with("lib-svc")
-    assert result["results"]["lib-svc"] == "library_installed"
+    mock_install.assert_not_called()
+    assert "owner recovery" in result["results"]["lib-svc"]
+    assert result["skipped_services"] == ["lib-svc"]
+    assert any("owner recovery" in warning for warning in result["warnings"])
     assert result["failed_services"] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("blocked_kind", ["broken", "symlink"])
+async def test_template_apply_blocked_library_destination_isolated(
+    tmp_path, blocked_kind
+):
+    """An unsafe library destination is skipped while another app can start."""
+    user_ext = tmp_path / "user-ext"
+    user_ext.mkdir()
+    blocked = user_ext / "lib-svc"
+    if blocked_kind == "broken":
+        blocked.mkdir()
+        (blocked / "owner-notes.txt").write_text("preserve")
+    else:
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "owner-notes.txt").write_text("preserve")
+        blocked.symlink_to(outside, target_is_directory=True)
+    mock_install = MagicMock()
+    mock_lock = MagicMock()
+    mock_lock.__enter__ = MagicMock(return_value=None)
+    mock_lock.__exit__ = MagicMock(return_value=False)
+
+    with (
+        patch("routers.templates.TEMPLATES", [{
+            "id": "test-tmpl", "name": "Test", "services": ["lib-svc", "builtin-svc"],
+        }]),
+        patch("routers.templates._BASE_COMPOSE_SERVICES", frozenset()),
+        patch("routers.templates.USER_EXTENSIONS_DIR", user_ext),
+        patch("helpers.get_cached_services", return_value=[]),
+        patch("routers.extensions._activate_service",
+              return_value={"id": "builtin-svc", "action": "enabled"}),
+        patch("routers.extensions._extensions_lock", return_value=mock_lock),
+        patch("routers.extensions._get_missing_deps_transitive", return_value=[]),
+        patch("routers.extensions._call_agent", return_value=True),
+        patch("routers.extensions._call_agent_hook", return_value=True),
+        patch("routers.extensions._validate_service_id"),
+        patch("routers.extensions._is_installable",
+              side_effect=lambda sid: sid == "lib-svc"),
+        patch("routers.extensions._install_from_library", mock_install),
+    ):
+        from routers.templates import apply_template
+        result = await apply_template("test-tmpl", api_key="test")
+
+    mock_install.assert_not_called()
+    assert "owner recovery" in result["results"]["lib-svc"]
+    assert result["results"]["builtin-svc"] == "enabled"
+    assert result["skipped_services"] == ["lib-svc"]
+    assert result["enabled_count"] == 1
+    assert any("owner recovery" in warning for warning in result["warnings"])
 
 
 @pytest.mark.asyncio
@@ -1064,6 +1118,7 @@ async def test_template_apply_library_already_installed_skips_reinstall(tmp_path
 
     user_ext = tmp_path / "user-ext"
     (user_ext / "lib-svc").mkdir(parents=True)  # Already installed
+    (user_ext / "lib-svc" / "compose.yaml.disabled").write_text("services: {}")
 
     mock_install = MagicMock()
     mock_activate = MagicMock(return_value={"id": "lib-svc", "action": "enabled"})
