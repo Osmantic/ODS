@@ -1,0 +1,40 @@
+services:
+  garage:
+    image: dxflrs/garage:v2.3.0@sha256:866bd13ed2038ba7e7190e840482bc27234c4afaf77be8cfa439ae088c1e4690
+    container_name: ods-garage
+    user: "1000:1000"
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    command: [/garage, server, --single-node, --default-bucket]
+    environment:
+      GARAGE_RPC_SECRET: "${GARAGE_RPC_SECRET:?Set GARAGE_RPC_SECRET before enabling Garage}"
+      GARAGE_ADMIN_TOKEN: "${GARAGE_ADMIN_TOKEN:?Set GARAGE_ADMIN_TOKEN before enabling Garage}"
+      GARAGE_DEFAULT_ACCESS_KEY: "${GARAGE_ACCESS_KEY:?Set GARAGE_ACCESS_KEY before enabling Garage}"
+      GARAGE_DEFAULT_SECRET_KEY: "${GARAGE_SECRET_KEY:?Set GARAGE_SECRET_KEY before enabling Garage}"
+      GARAGE_DEFAULT_BUCKET: ods-artifacts
+      RUST_LOG: garage=info
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${GARAGE_S3_PORT:-3900}:3900"
+    volumes:
+      - ./data/garage:/var/lib/garage
+      - ./extensions/library/services/garage/garage.toml:/etc/garage.toml:ro
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    stop_grace_period: 45s
+    healthcheck:
+      test: [CMD, /garage, status]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks: [ods-network]
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+networks:
+  ods-network:
+    external: true
