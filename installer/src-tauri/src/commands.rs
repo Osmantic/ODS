@@ -1,6 +1,7 @@
 use crate::state::{GpuInfo, InstallPhase, InstallState};
 use crate::{docker, gpu, installer, platform};
 use serde::Serialize;
+use std::path::Path;
 use std::sync::Mutex;
 
 const ALLOWED_FEATURES: &[&str] = &["voice", "workflows", "rag", "image_gen", "all"];
@@ -245,9 +246,62 @@ pub fn get_install_state() -> InstallState {
 
 // ---- Open ODS ----
 
+#[derive(Serialize, Clone)]
+pub struct ServiceUrls {
+    pub chat: String,
+    pub dashboard: String,
+    pub api: String,
+}
+
+fn env_port(env_path: &Path, key: &str, default: u16) -> u16 {
+    let Ok(contents) = std::fs::read_to_string(env_path) else {
+        return default;
+    };
+    contents
+        .lines()
+        .filter_map(|line| line.split_once('='))
+        .find_map(|(name, value)| {
+            if name.trim() != key {
+                return None;
+            }
+            value
+                .split('#')
+                .next()
+                .map(str::trim)
+                .map(|value| value.trim_matches(|character| character == '"' || character == '\''))
+                .and_then(|value| value.parse::<u16>().ok())
+        })
+        .unwrap_or(default)
+}
+
+fn resolved_service_urls() -> ServiceUrls {
+    let install_dir = get_install_state().install_dir.map(std::path::PathBuf::from);
+    let env_path = install_dir
+        .as_deref()
+        .map(|dir| dir.join("ods").join(".env"))
+        .unwrap_or_default();
+    ServiceUrls {
+        chat: format!("http://localhost:{}", env_port(&env_path, "WEBUI_PORT", 3000)),
+        dashboard: format!(
+            "http://localhost:{}",
+            env_port(&env_path, "DASHBOARD_PORT", 3001)
+        ),
+        api: format!(
+            "http://localhost:{}/v1",
+            env_port(&env_path, "OLLAMA_PORT", 8080)
+        ),
+    }
+}
+
+#[tauri::command]
+pub fn get_service_urls() -> ServiceUrls {
+    resolved_service_urls()
+}
+
 #[tauri::command]
 pub fn open_ods() -> Result<(), String> {
-    let url = "http://localhost:3000";
+    let urls = resolved_service_urls();
+    let url = urls.chat;
     #[cfg(target_os = "windows")]
     {
         std::process::Command::new("cmd")
@@ -297,5 +351,23 @@ fn state_file_path() -> std::path::PathBuf {
         std::path::PathBuf::from(base)
             .join("ods")
             .join("installer-state.json")
+    }
+}
+
+#[cfg(test)]
+mod service_url_tests {
+    use super::env_port;
+    use std::fs;
+
+    #[test]
+    fn env_port_reads_quoted_values_and_uses_safe_fallbacks() {
+        let path = std::env::temp_dir().join(format!(
+            "ods-installer-url-test-{}.env",
+            std::process::id()
+        ));
+        fs::write(&path, "WEBUI_PORT=\"4310\" # selected by installer\n").unwrap();
+        assert_eq!(env_port(&path, "WEBUI_PORT", 3000), 4310);
+        assert_eq!(env_port(&path, "DASHBOARD_PORT", 3001), 3001);
+        fs::remove_file(path).unwrap();
     }
 }

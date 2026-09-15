@@ -82,6 +82,12 @@ export interface InstallState {
   reboot_pending: boolean;
 }
 
+export interface ServiceUrls {
+  chat: string;
+  dashboard: string;
+  api: string;
+}
+
 // Tauri command wrappers
 
 export const checkSystem = () => invoke<SystemCheckResult>("check_system");
@@ -110,5 +116,8 @@ export const getInstallProgress = () =>
 
 export const getInstallState = () =>
   invoke<InstallState>("get_install_state");
+
+export const getServiceUrls = () =>
+  invoke<ServiceUrls>("get_service_urls");
 
 export const openODSserver = () => invoke("open_ods");
