@@ -1,0 +1,49 @@
+schema_version: ods.services.v1
+service:
+  id: grafana
+  name: Grafana
+  aliases: [metrics-dashboards]
+  container_name: ods-grafana
+  host_env: GRAFANA_HOST
+  default_host: grafana
+  port: 3000
+  external_port_env: GRAFANA_PORT
+  external_port_default: 3033
+  health: /api/health
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  uid: 472
+  description: Local dashboards and queries for metrics sources deliberately connected by the operator.
+  env_vars:
+    - key: GRAFANA_ADMIN_PASSWORD
+      required: true
+      secret: true
+      description: Initial admin password; existing account passwords are managed inside Grafana
+    - key: GRAFANA_SECRET_KEY
+      required: true
+      secret: true
+      description: Stable encryption key; retain with the data directory and backups
+    - key: GRAFANA_PORT
+      default: "3033"
+      description: Published local dashboard port
+    - key: GRAFANA_ROOT_URL
+      description: Optional complete public URL for a deliberately configured remote route
+features:
+  - id: local-metrics-dashboards
+    name: Local Metrics Dashboards
+    description: Explore time series and retain dashboards for your chosen local metrics sources.
+    icon: BarChart3
+    category: monitoring
+    requirements:
+      services: [grafana]
+      vram_gb: 0
+    enabled_services_all: [grafana]
+    setup_time: ~2 minutes
+    priority: 30
+    launch:
+      type: service
+      service: grafana
+      path: /
