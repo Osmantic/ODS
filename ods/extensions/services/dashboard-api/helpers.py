@@ -1381,3 +1381,16 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+import re
+import unicodedata
+
+def string_slugify_unicode_safe(text: str | None) -> str:
+    """Safely convert unicode text string into URL-safe hyphenated slug.
+    Returns "" on None or non-string inputs.
+    """
+    if text is None or not isinstance(text, str):
+        return ""
+    text = unicodedata.normalize('NFKD', text).encode('ascii', 'ignore').decode('ascii')
+    text = re.sub(r'[^\w\s-]', '', text.lower()).strip()
+    return re.sub(r'[-\s]+', '-', text)
