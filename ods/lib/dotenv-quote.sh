@@ -7,6 +7,8 @@ dotenv_quote() {
     local value="$1"
     value="${value//$'\r'/ }"
     value="${value//$'\n'/ }"
+    value="${value//$'\f'/ }"
+    value="${value//$'\v'/ }"
 
     # Single quotes are literal in both Bash and Compose. When the value itself
     # contains one, use their common double-quoted escape set. Bash requires a

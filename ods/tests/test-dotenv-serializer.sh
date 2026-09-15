@@ -23,6 +23,8 @@ values=(
     'C:\Users\dev\ods\models'
     $'carriage\rreturn'
     $'multi\nline'
+    $'form\ffeed'
+    $'vertical\vtab'
     ""
     "it's a model"
     'it'"'"'s $HOME $(touch pwned) `id` C:\path "dq"'
@@ -32,6 +34,8 @@ for value in "${values[@]}"; do
     quoted="$(dotenv_quote "$value")"
     expected="${value//$'\r'/ }"
     expected="${expected//$'\n'/ }"
+    expected="${expected//$'\f'/ }"
+    expected="${expected//$'\v'/ }"
     if [[ "$expected" == *"'"* ]]; then
         expected="${expected//\`/ˋ}"
     fi
