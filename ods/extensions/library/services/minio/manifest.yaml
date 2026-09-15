@@ -1,0 +1,53 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: minio
+  name: MinIO (S3 Object Storage)
+  description: "High-performance, S3-compatible local object storage with web console for document pipelines, RAG ingestion, and model artifacts."
+  aliases: [s3, object-storage]
+  container_name: ods-minio
+  default_host: minio
+  port: 9000
+  external_port_env: MINIO_PORT
+  external_port_default: 9020
+  health: /minio/health/ready
+  ui_path: /
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [s3, storage, object-store, documents, rag]
+  env_vars:
+    - key: MINIO_PORT
+      description: "Published S3 API endpoint port (defaults to 9020 to prevent port collisions with Whisper/Lemonade)"
+      default: "9020"
+    - key: MINIO_CONSOLE_PORT
+      description: "Published MinIO Web Console management UI port"
+      default: "9021"
+    - key: MINIO_ROOT_USER
+      description: "Root administrative username / Access Key ID for MinIO"
+      default: "minioadmin"
+    - key: MINIO_ROOT_PASSWORD
+      description: "Root secret key / password for MinIO (minimum 8 characters)"
+      required: true
+      secret: true
+    - key: MINIO_BROWSER
+      description: "Enable or disable web console UI ('on' or 'off')"
+      default: "on"
+features:
+  - id: s3-object-storage
+    name: S3 Object Storage
+    description: "Provide local S3-compatible bucket storage for document pipelines, RAG ingestion, and model artifacts"
+    icon: HardDrive
+    category: storage
+    requirements:
+      services: [minio]
+      vram_gb: 0
+    enabled_services_all: [minio]
+    setup_time: "~1 minute after setting credentials"
+    priority: 32
+    launch:
+      type: service
+      service: minio
