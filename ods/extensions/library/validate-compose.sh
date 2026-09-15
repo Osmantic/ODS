@@ -2,10 +2,10 @@
 set -euo pipefail
 
 # Colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-BOLD='\033[1m'
-RESET='\033[0m'
+RED=$'\033[0;31m'
+GREEN=$'\033[0;32m'
+BOLD=$'\033[1m'
+RESET=$'\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SERVICES_DIR="${SCRIPT_DIR}/services"
