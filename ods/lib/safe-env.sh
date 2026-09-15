@@ -38,10 +38,10 @@ load_env_file() {
         key="${key%"${key##*[![:space:]]}"}"
         [[ -z "$key" ]] && continue
         [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
-        # Bash exposes UID as a readonly shell variable. A .env line such as
-        # UID=1000 is valid for Docker Compose, but exporting it here aborts
+        # Bash exposes UID, EUID, and PPID as readonly shell variables. A .env line
+        # containing them is valid for Docker Compose, but exporting them here aborts
         # lifecycle commands under set -e before they can reach compose.
-        [[ "$key" == "UID" ]] && continue
+        [[ "$key" == "UID" || "$key" == "EUID" || "$key" == "PPID" ]] && continue
         # Apply Docker Compose's value grammar before looking at quotes: these
         # values are exported into the environment Compose interpolates, and
         # Compose gives the environment precedence over .env. Surrounding
@@ -109,6 +109,7 @@ load_env_from_output() {
         [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
         if [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=\"(.*)\"$ ]]; then
             key="${BASH_REMATCH[1]}"
+            [[ "$key" == "UID" || "$key" == "EUID" || "$key" == "PPID" ]] && continue
             value="$(_safe_env_unescape_double_quoted "${BASH_REMATCH[2]}")"
             export "$key=$value"
         fi
