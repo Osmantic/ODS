@@ -497,14 +497,19 @@ class ExtensionManagerTests(unittest.TestCase):
         with (
             mock.patch.object(
                 manager, "_detail",
-                side_effect=[detail("not_installed"), detail("enabled")],
+                side_effect=[detail("not_installed"), detail("enabled"), detail("enabled")],
             ),
             mock.patch.object(manager, "_mutate") as mutate,
             mock.patch.object(manager, "_wait_for_status", return_value="enabled") as wait,
+            mock.patch.object(manager, "_wait_for_install_progress", return_value="started") as progress,
         ):
             result = self.execute("install")
         mutate.assert_called_once()
         wait.assert_called_once()
+        progress.assert_called_once()
+        self.assertEqual(
+            wait.call_args.kwargs["deadline"], progress.call_args.kwargs["deadline"]
+        )
         self.assertEqual(result["outcome"], "succeeded")
         self.assertTrue(result["changed"])
         self.assertTrue(result["externalEffectOccurred"])
@@ -554,6 +559,137 @@ class ExtensionManagerTests(unittest.TestCase):
         self.assertEqual(result["outcome"], "failed")
         self.assertEqual(result["currentStatus"], "enabled")
         self.assertEqual(result["rollback"], {"attempted": False, "succeeded": None})
+
+    def test_one_click_never_claims_stale_copy_without_terminal_host_progress(self) -> None:
+        for phase in ("pulling", "error", "idle"):
+            with self.subTest(phase=phase):
+                with (
+                    mock.patch.object(
+                        manager, "_detail",
+                        side_effect=[detail("not_installed"), detail("cli_installed"), detail("cli_installed")],
+                    ),
+                    mock.patch.object(manager, "_mutate"),
+                    mock.patch.object(manager, "_wait_for_status", return_value="cli_installed"),
+                    mock.patch.object(manager, "_wait_for_install_progress", return_value=phase) as progress,
+                ):
+                    result = self.execute("install")
+                progress.assert_called_once()
+                self.assertEqual(result["outcome"], "failed")
+                self.assertEqual(result["currentStatus"], "cli_installed")
+                self.assertTrue(result["externalEffectOccurred"])
+                self.assertFalse(result["rollback"]["attempted"])
+
+    def test_one_shot_one_click_succeeds_on_the_same_started_host_receipt(self) -> None:
+        with (
+            mock.patch.object(
+                manager, "_detail",
+                side_effect=[detail("not_installed"), detail("cli_installed"), detail("cli_installed")],
+            ),
+            mock.patch.object(manager, "_mutate"),
+            mock.patch.object(manager, "_wait_for_status", return_value="cli_installed"),
+            mock.patch.object(manager, "_wait_for_install_progress", return_value="started") as progress,
+        ):
+            result = self.execute("install")
+        progress.assert_called_once()
+        self.assertEqual(result["outcome"], "succeeded")
+        self.assertEqual(result["currentStatus"], "cli_installed")
+        self.assertFalse(result["runtimeRequirementsVerified"])
+
+    def test_ambiguous_one_click_post_cannot_reuse_prior_started_progress(self) -> None:
+        with (
+            mock.patch.object(
+                manager, "_detail",
+                side_effect=[detail("not_installed"), detail("cli_installed"),
+                             detail("cli_installed"), detail("cli_installed")],
+            ),
+            mock.patch.object(manager, "_mutate", side_effect=manager.ManagerError("timeout")),
+            mock.patch.object(manager, "_wait_for_status") as wait,
+            mock.patch.object(manager, "_wait_for_install_progress") as progress,
+        ):
+            result = self.execute("install")
+        wait.assert_not_called()
+        progress.assert_not_called()
+        self.assertEqual(result["outcome"], "failed")
+        self.assertTrue(result["externalEffectOccurred"])
+
+    def test_one_click_progress_projection_rejects_foreign_or_malformed_receipts(self) -> None:
+        base = {"service_id": "crewai", "status": "started",
+                "started_at": "2026-09-15T15:00:00+00:00",
+                "updated_at": "2026-09-15T15:00:01+00:00"}
+        for response in (
+            (200, {**base, "service_id": "other"}),
+            (200, {**base, "status": {"unsafe": "value"}}),
+            (200, {"service_id": "crewai", "status": "started"}),
+            (503, base),
+        ):
+            with self.subTest(response=response), mock.patch.object(
+                manager, "_request_json", return_value=response
+            ):
+                with self.assertRaises(manager.ManagerError):
+                    manager._install_progress_status(3002, "a" * 64, "crewai")
+        with mock.patch.object(manager, "_request_json", return_value=(200, base)):
+            self.assertEqual(
+                manager._install_progress_status(3002, "a" * 64, "crewai"), "started"
+            )
+
+    def test_one_click_progress_wait_is_bounded_when_host_never_completes(self) -> None:
+        with (
+            mock.patch.object(manager, "_install_progress_status", return_value="pulling") as progress,
+            mock.patch.object(manager.time, "monotonic", side_effect=[0, 1, 31]),
+            mock.patch.object(manager.time, "sleep") as sleep,
+        ):
+            phase = manager._wait_for_install_progress(
+                port=3002, credential="a" * 64, extension_id="crewai", deadline=30
+            )
+        self.assertEqual(phase, "pulling")
+        self.assertEqual(progress.call_count, 2)
+        self.assertEqual(sleep.call_count, 2)
+
+    def test_one_click_progress_wait_tolerates_only_transient_read_failures(self) -> None:
+        with (
+            mock.patch.object(
+                manager, "_install_progress_status",
+                side_effect=[manager.ManagerError("temporary"), "starting", "started"],
+            ) as progress,
+            mock.patch.object(manager.time, "sleep") as sleep,
+        ):
+            phase = manager._wait_for_install_progress(
+                port=3002, credential="a" * 64, extension_id="crewai",
+                deadline=manager.time.monotonic() + 30,
+            )
+        self.assertEqual(phase, "started")
+        self.assertEqual(progress.call_count, 3)
+        self.assertEqual(sleep.call_count, 2)
+
+        with (
+            mock.patch.object(
+                manager, "_install_progress_status",
+                side_effect=manager.ManagerError("persistent"),
+            ) as progress,
+            mock.patch.object(manager.time, "sleep"),
+        ):
+            with self.assertRaises(manager.ManagerError):
+                manager._wait_for_install_progress(
+                    port=3002, credential="a" * 64, extension_id="crewai",
+                    deadline=manager.time.monotonic() + 30,
+                )
+        self.assertEqual(progress.call_count, 3)
+
+    def test_one_click_rechecks_the_library_receipt_after_host_completion(self) -> None:
+        untracked = {**detail("enabled"), "update_status": "untracked"}
+        with (
+            mock.patch.object(
+                manager, "_detail",
+                side_effect=[detail("not_installed"), detail("enabled"), untracked, untracked],
+            ),
+            mock.patch.object(manager, "_mutate"),
+            mock.patch.object(manager, "_wait_for_status", return_value="enabled"),
+            mock.patch.object(manager, "_wait_for_install_progress", return_value="started"),
+        ):
+            result = self.execute("install")
+        self.assertEqual(result["outcome"], "failed")
+        self.assertEqual(result["currentStatus"], "enabled")
+        self.assertFalse(result["rollback"]["attempted"])
 
     def test_unhealthy_one_click_install_is_not_claimed_or_removed(self) -> None:
         with (

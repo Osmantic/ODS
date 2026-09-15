@@ -688,6 +688,58 @@ def _wait_for_status(
     return last_status
 
 
+def _install_progress_status(port: int, credential: str, extension_id: str) -> str:
+    """Read only the bounded terminal phase of the host's one-click receipt."""
+
+    encoded = urllib.parse.quote(extension_id, safe="")
+    status, value = _request_json(
+        port=port,
+        credential=credential,
+        method="GET",
+        path=f"/api/extensions/{encoded}/progress",
+        timeout=5,
+    )
+    phase = value.get("status")
+    if (
+        status != 200
+        or value.get("service_id") != extension_id
+        or not isinstance(phase, str)
+        or phase not in {"idle", "setup_hook", "pulling", "starting", "started", "error"}
+    ):
+        raise ManagerError("extension install progress is unavailable")
+    if phase != "idle" and (
+        not isinstance(value.get("started_at"), str)
+        or not value["started_at"]
+        or not isinstance(value.get("updated_at"), str)
+        or not value["updated_at"]
+    ):
+        raise ManagerError("extension install progress is unavailable")
+    return phase
+
+
+def _wait_for_install_progress(
+    *, port: int, credential: str, extension_id: str, deadline: float
+) -> str:
+    """Never turn a copied library definition into a claimed completed job."""
+
+    last_phase = "idle"
+    unavailable_reads = 0
+    while time.monotonic() < deadline:
+        try:
+            last_phase = _install_progress_status(port, credential, extension_id)
+        except ManagerError:
+            unavailable_reads += 1
+            if unavailable_reads >= 3:
+                raise
+            time.sleep(1.0)
+            continue
+        unavailable_reads = 0
+        if last_phase in TERMINAL_PROGRESS:
+            return last_phase
+        time.sleep(1.0)
+    return last_phase
+
+
 def _mutate(
     *, port: int, credential: str, action: str, extension_id: str, previous: str
 ) -> None:
@@ -802,6 +854,8 @@ def _execute(
         )
 
     current_status = previous_status
+    install_accepted = False
+    install_deadline: float | None = None
     try:
         if action == "remove" and previous_status in {"enabled", "cli_installed"}:
             _mutate(
@@ -827,12 +881,17 @@ def _execute(
             extension_id=extension_id,
             previous=current_status,
         )
+        if action == "install":
+            # A failed or ambiguous POST may have copied owner files without
+            # starting the host job; old per-service progress is not proof.
+            install_accepted = True
+            install_deadline = time.monotonic() + 600
         current_status = _wait_for_status(
             port=port,
             credential=credential,
             extension_id=extension_id,
             expected=SUCCESS_STATUS[action],
-            deadline=time.monotonic() + (600 if action == "install" else 120),
+            deadline=install_deadline if install_deadline is not None else time.monotonic() + 120,
         )
     except ManagerError:
         # A timeout or unavailable response can happen after the internal API
@@ -854,12 +913,31 @@ def _execute(
             landed = _detail(port, credential, extension_id)
             current_status = _bounded_status(landed.get("status"))
             landed_receipt = (
-                landed.get("source") == "user"
+                install_accepted
+                and landed.get("source") == "user"
                 and landed.get("update_status")
                 in {"current", "modified", "available"}
             )
         except ManagerError:
             landed_receipt = False
+        if landed_receipt:
+            try:
+                landed_receipt = _wait_for_install_progress(
+                    port=port,
+                    credential=credential,
+                    extension_id=extension_id,
+                    deadline=install_deadline if install_deadline is not None else time.monotonic(),
+                ) == "started"
+                if landed_receipt:
+                    landed = _detail(port, credential, extension_id)
+                    current_status = _bounded_status(landed.get("status"))
+                    landed_receipt = (
+                        landed.get("source") == "user"
+                        and landed.get("update_status")
+                        in {"current", "modified", "available"}
+                    )
+            except ManagerError:
+                landed_receipt = False
     succeeded = current_status in SUCCESS_STATUS[action] and landed_receipt
     rollback_attempted = False
     rollback_succeeded: bool | None = None
