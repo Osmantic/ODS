@@ -16,7 +16,7 @@ services:
       HOME: /tmp
       PYTHONDONTWRITEBYTECODE: "1"
     ports:
-      - "127.0.0.1:${MLFLOW_PORT:-5051}:5000"
+      - "${BIND_ADDRESS:-127.0.0.1}:${MLFLOW_PORT:-5051}:5000"
     volumes:
       - ./data/mlflow:/data
     read_only: true

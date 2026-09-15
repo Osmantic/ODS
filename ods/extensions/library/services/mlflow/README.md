@@ -8,13 +8,13 @@ Set `MLFLOW_ADMIN_PASSWORD` and `MLFLOW_SECRET_KEY` in `.env`, then install MLfl
 
 | Variable | Purpose | Default |
 | --- | --- | --- |
-| `MLFLOW_PORT` | Host loopback UI/API port; container uses 5000 | `5051` |
+| `MLFLOW_PORT` | Published UI/API port (loopback by default); container uses 5000 | `5051` |
 | `MLFLOW_ADMIN_PASSWORD` | Initial administrator password, 16-128 printable ASCII characters without spaces | required |
 | `MLFLOW_SECRET_KEY` | Stable CSRF signing secret, 32-128 printable ASCII characters without spaces | required |
 
 The existing installation hook builds `ods-mlflow:3.16.0-r1` from the pinned official image. The official image omits its optional authentication dependencies, so the Dockerfile adds only Flask-WTF 1.3.0 and WTForms 3.2.2 with wheel hashes and runs `pip check`. Installation needs access to the container registry and Python package index. Runtime startup does not install packages. The installed Compose recipe uses the prepared image with `pull_policy: never`; a missing image requires rerunning setup, not pulling a similarly named image from a registry.
 
-Open `http://localhost:5051`. A host MLflow client uses this tracking URI; a client on `ods-network` uses `http://mlflow:5000`. Configure that client with `MLFLOW_TRACKING_USERNAME` and `MLFLOW_TRACKING_PASSWORD`. Basic authentication is not transport encryption: this recipe publishes only on loopback and assumes a trusted Docker network. It does not configure a remote TLS endpoint.
+Open `http://localhost:5051`. A host MLflow client uses this tracking URI; a client on `ods-network` uses `http://mlflow:5000`. Configure that client with `MLFLOW_TRACKING_USERNAME` and `MLFLOW_TRACKING_PASSWORD`. Basic authentication is not transport encryption: this recipe defaults to loopback, honors `BIND_ADDRESS`, and assumes a trusted network. It does not configure a remote TLS endpoint.
 
 Use the native user/permission APIs to create ordinary accounts and grant access to selected experiments. The default permission is `NO_PERMISSIONS`; authentication alone does not grant access to another account's runs and artifacts. The public `/health` endpoint only indicates server availability. One worker and disabled authentication caching keep credential/permission changes visible without a per-worker cache delay.
 
@@ -33,3 +33,20 @@ MLflow telemetry is disabled. Workspace mode and remote Assistant access are dis
 The opt-in `ODS_TEST_MLFLOW=1` regression exercises real authenticated experiment/run APIs, metrics, artifact permissions, password rotation and restoration from a stopped-data copy. Static tests cover installation image preparation and required credentials. Native Windows/macOS installs, concurrent writers, large artifacts, interrupted writes, upgrades between MLflow versions and browser-only administration require separate qualification.
 
 Upstream: [MLflow 3.16.0](https://github.com/mlflow/mlflow/releases/tag/v3.16.0), [versioned auth configuration](https://github.com/mlflow/mlflow/blob/v3.16.0/mlflow/server/auth/config.py), [authentication documentation](https://mlflow.org/docs/latest/self-hosting/security/basic-http-auth/).
+
+## Host publication
+
+The published ports honor ODS `BIND_ADDRESS`: unset keeps `127.0.0.1`; the
+explicit LAN opt-in can select `0.0.0.0` or a specific host interface. This
+controls Docker publication and preserves native authentication and application
+policy. Disable/recreate after changes, and keep operator edits to the installed
+definition backed up before updating or reinstalling the extension.
+
+Before using an external host name, add that explicit host/port to
+`MLFLOW_SERVER_ALLOWED_HOSTS` in the installed `compose.yaml`, preserving the
+existing local entries. The native host allowlist still applies to LAN traffic.
+
+Compose regression tests cover unset, loopback, wildcard and a specific interface
+while preserving target ports, credentials and storage. Actual lifecycle fixtures
+remain bound to isolated loopback ports. Remote browser/TLS deployments are not
+qualified by those local tests.
