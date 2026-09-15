@@ -1,0 +1,39 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: postgrest
+  name: PostgREST (Workflow Artifact API)
+  description: "Expose structured local workflow artifacts through native PostgREST filters, transactions and PostgreSQL reader/writer grants."
+  aliases: [artifact-api]
+  container_name: ods-postgrest
+  container_uid: 70
+  default_host: postgrest
+  port: 0
+  external_port_default: 0
+  health: /ready
+  health_port: 3001
+  health_source: http
+  startup_check: true
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [database, workflows, rest]
+  env_vars:
+    - key: POSTGREST_PORT
+      description: "Native JWT-authenticated REST host port; no browser UI"
+      default: "3005"
+    - key: POSTGREST_DB_PASSWORD
+      description: "Initial PostgreSQL authenticator password; rotate existing database roles natively"
+      required: true
+      secret: true
+    - key: POSTGREST_POSTGRES_PASSWORD
+      description: "Separate initial database administrator password; never used by the API"
+      required: true
+      secret: true
+    - key: POSTGREST_JWT_SECRET
+      description: "At least 32 random characters for a trusted HS256 token issuer; never distribute to readers or browsers"
+      required: true
+      secret: true
