@@ -1,0 +1,54 @@
+services:
+  openobserve:
+    image: public.ecr.aws/zinclabs/openobserve:v1.0.0@sha256:d581789cb03b5f061ed56a3e864b5e4bbc86bbf6d317ec863372e98ee49b30d5
+    container_name: ods-openobserve
+    user: "10001:10001"
+    environment:
+      ZO_ROOT_USER_EMAIL: ods@localhost.invalid
+      ZO_ROOT_USER_PASSWORD: "${OPENOBSERVE_PASSWORD:?Set OPENOBSERVE_PASSWORD before enabling OpenObserve}"
+      ZO_LOCAL_MODE: "true"
+      ZO_LOCAL_MODE_STORAGE: disk
+      ZO_META_STORE: sqlite
+      ZO_DATA_DIR: /data
+      ZO_HTTP_ADDR: 0.0.0.0
+      ZO_HTTP_PORT: "5080"
+      ZO_GRPC_ADDR: 127.0.0.1
+      ZO_WEB_URL: "http://localhost:${OPENOBSERVE_PORT:-5080}"
+      ZO_CORS_ALLOWED_ORIGINS: "http://127.0.0.1:${OPENOBSERVE_PORT:-5080}"
+      ZO_TELEMETRY: "false"
+      ZO_RUM_ENABLED: "false"
+      ZO_TRACING_ENABLED: "false"
+      ZO_TRACING_SEARCH_ENABLED: "false"
+      ZO_PROMETHEUS_ENABLED: "false"
+      ZO_SWAGGER_ENABLED: "false"
+      ZO_COOKIE_MAX_AGE: "1800"
+      ZO_COOKIE_SAME_SITE_LAX: "true"
+      ZO_HTTP_WORKER_NUM: "2"
+      ZO_QUERY_THREAD_NUM: "2"
+      ZO_MEMORY_CACHE_ENABLED: "false"
+      ZO_MEMORY_CACHE_DATAFUSION_MAX_SIZE: "512"
+      ZO_DISK_CACHE_ENABLED: "false"
+      ZO_COMPACT_DATA_RETENTION_DAYS: "7"
+    ports:
+      - "127.0.0.1:${OPENOBSERVE_PORT:-5080}:5080"
+    volumes:
+      - ./data/openobserve:/data
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=128m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+    stop_grace_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+    # The distroless image has no shell, curl or wget. ODS probes /healthz.
+    networks: [ods-network]
+
+networks:
+  ods-network:
+    external: true
+    name: ods-network
