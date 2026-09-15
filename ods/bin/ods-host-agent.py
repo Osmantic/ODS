@@ -6788,7 +6788,18 @@ def _load_extension_lifecycle_plan(command):
                 "lifecycle-work-plan-loader-unavailable"
             )
         transaction = store.read(command.transaction_id)
-        return _extension_lifecycle_plan.bind_lifecycle_plan(command, transaction)
+        # Preserve the bundled SearXNG v1-approval canary. Every other image
+        # preparation must originate from a durable, config-attested v2 owner
+        # approval before its dispatcher may start a Docker pull.
+        require_attested = (
+            command.operation_key == "download-and-verify"
+            and command.service_ids != ("searxng",)
+        )
+        return _extension_lifecycle_plan.bind_lifecycle_plan(
+            command,
+            transaction,
+            require_attested_approval=require_attested,
+        )
     except _extension_lifecycle_work.LifecycleWorkError:
         raise
     except _extension_transactions.TransactionError as exc:
@@ -7869,6 +7880,10 @@ class AgentHandler(BaseHTTPRequestHandler):
                             receipt_store,
                             _extension_lifecycle_plan_loader,
                             started_observer,
+                            terminalize_observer_failure=(
+                                command.operation_key == "download-and-verify"
+                                and command.service_ids != ("searxng",)
+                            ),
                         )
                     )
         except _ExtensionMutationAdmissionRejected:

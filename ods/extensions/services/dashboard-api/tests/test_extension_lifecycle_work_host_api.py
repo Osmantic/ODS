@@ -932,8 +932,8 @@ def test_host_plan_loader_reads_exact_transaction_and_passes_only_store_result(
             calls.append(("read", transaction_id))
             return stored
 
-    def bind(value, transaction):
-        calls.append(("bind", value, transaction))
+    def bind(value, transaction, *, require_attested_approval=False):
+        calls.append(("bind", value, transaction, require_attested_approval))
         return replace(value, plan_material={"approved": True})
 
     agent._get_extension_transaction_store = Store
@@ -945,8 +945,55 @@ def test_host_plan_loader_reads_exact_transaction_and_passes_only_store_result(
     assert bound.plan_material == {"approved": True}
     assert calls == [
         ("read", TRANSACTION_ID),
-        ("bind", command, stored),
+        ("bind", command, stored, False),
     ]
+
+
+@pytest.mark.parametrize(
+    "operation_key,service_id,payload,strict",
+    [
+        (
+            "download-and-verify",
+            "documents",
+            {"operations": [{"serviceId": "documents", "action": "install"}]},
+            True,
+        ),
+        (
+            "download-and-verify",
+            "searxng",
+            {"operations": [{"serviceId": "searxng", "action": "install"}]},
+            False,
+        ),
+        ("verify", "documents", {"serviceIds": ["documents"]}, False),
+    ],
+)
+def test_host_plan_loader_requires_v2_attestation_for_non_canary_images(
+    host_server, operation_key, service_id, payload, strict
+):
+    agent, _listener = host_server
+    request = work_request(
+        agent._extension_lifecycle_work.REQUEST_SCHEMA,
+        operation_key=operation_key,
+        service_ids=[service_id],
+        payload=payload,
+    )
+    command = agent._extension_lifecycle_work.parse_lifecycle_work_request(request)
+    seen = []
+    stored = {"transactionId": TRANSACTION_ID}
+    agent._get_extension_transaction_store = lambda: SimpleNamespace(
+        read=lambda _transaction_id: stored
+    )
+    agent._extension_lifecycle_plan = SimpleNamespace(
+        bind_lifecycle_plan=lambda value, transaction, *,
+        require_attested_approval: seen.append(
+            (value, transaction, require_attested_approval)
+        ) or replace(value, plan_material={"approved": True})
+    )
+
+    bound = agent._load_extension_lifecycle_plan(command)
+
+    assert bound.plan_material == {"approved": True}
+    assert seen == [(command, stored, strict)]
 
 
 def test_host_plan_loader_maps_store_integrity_failure_without_private_detail(
@@ -1548,6 +1595,137 @@ def test_download_selects_image_dispatcher_and_started_observer(
     assert status == 200
     assert result["evidenceHash"] == EVIDENCE_HASH
     assert seen == ["observe", ("dispatch", True)]
+
+
+def test_attested_image_observer_timeout_terminalizes_without_docker_effect(
+    host_server, host_request
+):
+    agent, _listener = host_server
+    seen = []
+
+    def timeout(_command):
+        seen.append("inspect")
+        raise agent._extension_lifecycle_work.LifecycleWorkExecutionError(
+            "lifecycle-work-image-command-timeout"
+        )
+
+    agent._image_artifact_runtime = SimpleNamespace(
+        dispatcher=lambda _command: (_ for _ in ()).throw(
+            AssertionError("dispatcher reached after observer timeout")
+        ),
+        started_observer=timeout,
+    )
+    agent._image_artifact_runtime_plan_loader = (
+        agent._extension_lifecycle_plan_loader
+    )
+    grant = acquire_lease(agent, host_request)
+    request = work_request(
+        agent._extension_lifecycle_work.REQUEST_SCHEMA,
+        lease_evidence(agent, grant),
+        operation_key="download-and-verify",
+        service_ids=["documents"],
+        payload={"operations": [{"serviceId": "documents", "action": "install"}]},
+    )
+    begin_receipt(agent, host_request, request)
+
+    status, result = host_request("/v1/extension/lifecycle-work", request)
+
+    assert status == 503
+    assert result == {"error": {"code": "lifecycle-work-operation-failed"}}
+    snapshot_status, snapshot = receipt_snapshot(agent, host_request, request)
+    assert snapshot_status == 200
+    assert snapshot["state"] == "failed"
+    assert seen == ["inspect"]
+
+    replay_status, replay = host_request("/v1/extension/lifecycle-work", request)
+    assert replay_status == 503
+    assert replay == result
+    assert seen == ["inspect"]
+
+
+def test_legacy_approval_cannot_reach_library_image_effect_through_host(
+    host_server, host_request
+):
+    agent, _listener = host_server
+    valid_definition = {
+        key: [] for key in agent._extension_lifecycle_plan._DEFINITION_KEYS
+    }
+    valid_definition.update(
+        id="documents",
+        serviceType="docker",
+        manifestSchemaVersion="ods.services.v2",
+        version="1.0.0",
+        dataSchemaVersion="1",
+        definitionSha256="sha256:" + "a" * 64,
+        composeSha256="sha256:" + "b" * 64,
+        definitionSource="library",
+        composeFile="compose.yaml",
+        resources={},
+        artifacts={
+            "images": [{
+                "reference": "example.invalid/documents:1.0.0",
+                "digest": "sha256:" + "c" * 64,
+                "downloadBytes": 123,
+            }],
+            "builds": [],
+        },
+    )
+    legacy = {
+        "transactionId": TRANSACTION_ID,
+        "state": "downloading",
+        "approval": {
+            "transactionId": TRANSACTION_ID,
+            "planHash": PLAN_HASH,
+            "approvedBy": "owner",
+        },
+        "envelope": {
+            "planHash": PLAN_HASH,
+            "plan": {
+                "selectedServices": ["documents"],
+                "operations": [{"serviceId": "documents", "action": "install"}],
+                "definitions": [valid_definition],
+            },
+        },
+    }
+    agent._get_extension_transaction_store = lambda: SimpleNamespace(
+        read=lambda _transaction_id: legacy
+    )
+    agent._extension_lifecycle_plan_loader = agent._load_extension_lifecycle_plan
+    calls = []
+    image_module = agent._image_artifact_runtime_module
+    agent._image_artifact_runtime = image_module.build_image_artifact_runtime(
+        plan_loader=agent._extension_lifecycle_plan_loader,
+        runner=lambda argv, **_kwargs: calls.append(argv) or (
+            (_ for _ in ()).throw(AssertionError("Docker reached with v1 approval"))
+        ),
+    )
+    agent._image_artifact_runtime_plan_loader = (
+        agent._extension_lifecycle_plan_loader
+    )
+    grant = acquire_lease(agent, host_request)
+    request = work_request(
+        agent._extension_lifecycle_work.REQUEST_SCHEMA,
+        lease_evidence(agent, grant),
+        operation_key="download-and-verify",
+        service_ids=["documents"],
+        payload={"operations": [{"serviceId": "documents", "action": "install"}]},
+    )
+    command = agent._extension_lifecycle_work.parse_lifecycle_work_request(
+        {key: request[key] for key in agent._extension_lifecycle_work.REQUEST_KEYS}
+    )
+    assert agent._extension_lifecycle_plan.bind_lifecycle_plan(
+        command, legacy
+    ).plan_material.attested_approval is False
+    begin_receipt(agent, host_request, request)
+
+    status, result = host_request("/v1/extension/lifecycle-work", request)
+
+    assert status == 409
+    assert result == {"error": {"code": "lifecycle-work-plan-mismatch"}}
+    assert calls == []
+    snapshot_status, snapshot = receipt_snapshot(agent, host_request, request)
+    assert snapshot_status == 200
+    assert snapshot["state"] == "failed"
 
 
 def test_real_image_runtime_recovers_then_dispatches_once(host_server, host_request):

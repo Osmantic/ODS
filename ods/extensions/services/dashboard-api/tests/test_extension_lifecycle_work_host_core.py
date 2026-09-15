@@ -548,6 +548,70 @@ def test_started_observer_failure_is_value_safe_and_does_not_terminalize():
     )
 
 
+def test_opted_observer_timeout_terminalizes_failed_once_without_dispatch():
+    command = host_work.parse_lifecycle_work_request(
+        work_request("stage", ["documents"], payload_for("stage", ["documents"]))
+    )
+    store = _begun_store(command)
+    observed = []
+    dispatched = []
+
+    def timeout(_command):
+        observed.append("inspect")
+        raise host_work.LifecycleWorkExecutionError(
+            "lifecycle-work-image-command-timeout"
+        )
+
+    with pytest.raises(host_work.LifecycleWorkExecutionError) as rejected:
+        host_work.dispatch_receipted_lifecycle_work(
+            command,
+            lambda value: dispatched.append(value) or EVIDENCE_HASH,
+            store,
+            _load_plan,
+            timeout,
+            terminalize_observer_failure=True,
+        )
+
+    assert rejected.value.code == "lifecycle-work-image-command-timeout"
+    assert observed == ["inspect"]
+    assert dispatched == []
+    snapshot = store.snapshot(command.transaction_id, command.operation_key)
+    assert snapshot.state == "failed"
+    assert len(snapshot.terminal_receipt.evidence_hash) == 64
+
+    with pytest.raises(host_work.LifecycleWorkExecutionError) as replay:
+        host_work.dispatch_receipted_lifecycle_work(
+            command,
+            lambda value: dispatched.append(value) or EVIDENCE_HASH,
+            store,
+            _load_plan,
+            timeout,
+            terminalize_observer_failure=True,
+        )
+    assert replay.value.code == "lifecycle-work-terminal-failed"
+    assert observed == ["inspect"]
+    assert dispatched == []
+
+
+@pytest.mark.parametrize("invalid_flag", [None, 0, 1, "true"])
+def test_observer_failure_terminalization_requires_a_boolean_flag(invalid_flag):
+    command = host_work.parse_lifecycle_work_request(
+        work_request("stage", ["documents"], payload_for("stage", ["documents"]))
+    )
+    store = _begun_store(command)
+    with pytest.raises(host_work.LifecycleWorkValidationError):
+        host_work.dispatch_receipted_lifecycle_work(
+            command,
+            lambda _value: EVIDENCE_HASH,
+            store,
+            _load_plan,
+            terminalize_observer_failure=invalid_flag,
+        )
+    assert store.snapshot(command.transaction_id, command.operation_key).state == (
+        "started"
+    )
+
+
 def test_terminal_replay_bypasses_started_observer():
     command = host_work.parse_lifecycle_work_request(
         work_request("stage", ["documents"], payload_for("stage", ["documents"]))

@@ -252,7 +252,8 @@ def test_non_canary_service_is_denied_before_subprocess():
         payload={"operations": [{"serviceId": "documents", "action": "install"}]},
     )
     with pytest.raises(
-        LifecycleWorkValidationError, match="lifecycle-work-image-canary-denied"
+        LifecycleWorkValidationError,
+        match="lifecycle-work-(?:image-canary-denied|plan-mismatch)",
     ):
         image_runtime.ImageArtifactDispatcher(runner)(value)
     assert runner.calls == []
@@ -349,3 +350,274 @@ def test_runtime_construction_is_inert():
         runtime.started_observer, image_runtime.ImageArtifactStartedObserver
     )
     assert runner.calls == []
+
+
+def library_definition(service_id="documents", **changes):
+    values = {
+        "service_id": service_id,
+        "version": "1.0.0",
+        "definition_source": "library",
+        "definition_sha256": "sha256:" + "6" * 64,
+        "compose_sha256": "sha256:" + "7" * 64,
+        "images": (
+            PlannedImage(
+                reference=f"example.invalid/{service_id}:1.0.0",
+                digest="sha256:" + "8" * 64,
+                download_bytes=123,
+            ),
+        ),
+    }
+    values.update(changes)
+    return definition(**values)
+
+
+def library_command(
+    service_ids=("documents",),
+    *,
+    attested=True,
+    definitions=None,
+    operations=None,
+    **changes,
+):
+    operations = operations or tuple(
+        PlannedOperation(service_id, "install") for service_id in service_ids
+    )
+    definitions = definitions or tuple(
+        library_definition(service_id) for service_id in service_ids
+    )
+    plan = replace(
+        material(),
+        operations=operations,
+        definitions=definitions,
+        attested_approval=attested,
+    )
+    values = {
+        "service_ids": service_ids,
+        "payload": {
+            "operations": [
+                {"serviceId": operation.service_id, "action": operation.action}
+                for operation in operations
+                if operation.action != "noop"
+            ]
+        },
+        "plan_material": plan,
+    }
+    values.update(changes)
+    return command(**values)
+
+
+def test_attested_library_image_pulls_exact_digest_without_compose_effect():
+    runner = Runner([completed(), completed(stdout=IMAGE_ID + "\n")])
+    value = library_command()
+
+    evidence = image_runtime.ImageArtifactDispatcher(runner)(value)
+
+    target = "example.invalid/documents:1.0.0@sha256:" + "8" * 64
+    assert len(evidence) == 64
+    assert [call[0] for call in runner.calls] == [
+        ["docker", "image", "pull", "--quiet", target],
+        ["docker", "image", "inspect", "--format", "{{.Id}}", target],
+    ]
+
+
+def test_attested_composite_prepares_every_image_and_observer_reopens_all():
+    second_id = "sha256:" + "a" * 64
+    value = library_command(("documents", "voice"))
+    dispatch_runner = Runner(
+        [
+            completed(), completed(stdout=IMAGE_ID),
+            completed(), completed(stdout=second_id),
+        ]
+    )
+    evidence = image_runtime.ImageArtifactDispatcher(dispatch_runner)(value)
+    observe_runner = Runner(
+        [completed(stdout=IMAGE_ID), completed(stdout=second_id)]
+    )
+    observer = image_runtime.ImageArtifactStartedObserver(
+        loader(value.plan_material), observe_runner
+    )
+
+    observed = observer(replace(value, plan_material=None))
+
+    assert observed.state == "completed"
+    assert observed.evidence_hash == evidence
+    assert [call[0][2] for call in dispatch_runner.calls] == [
+        "pull", "inspect", "pull", "inspect"
+    ]
+    assert [call[0][2] for call in observe_runner.calls] == [
+        "inspect", "inspect"
+    ]
+
+
+def test_attested_library_download_skips_already_present_searxng_noop():
+    value = library_command(
+        operations=(
+            PlannedOperation("searxng", "noop"),
+            PlannedOperation("documents", "install"),
+        ),
+        definitions=(definition(), library_definition()),
+    )
+    runner = Runner([completed(), completed(stdout=IMAGE_ID)])
+
+    evidence = image_runtime.ImageArtifactDispatcher(runner)(value)
+
+    assert len(evidence) == 64
+    assert [call[0][2] for call in runner.calls] == ["pull", "inspect"]
+    assert all(
+        "searxng/searxng" not in " ".join(call[0])
+        for call in runner.calls
+    )
+
+
+def test_attested_library_image_count_is_bounded_before_any_effect():
+    images = tuple(
+        PlannedImage(f"example.invalid/documents:{index}", "sha256:" + "8" * 64, 1)
+        for index in range(65)
+    )
+    runner = Runner([])
+
+    with pytest.raises(
+        LifecycleWorkValidationError,
+        match="lifecycle-work-image-attestation-required",
+    ):
+        image_runtime.ImageArtifactDispatcher(runner)(
+            library_command(definitions=(library_definition(images=images),))
+        )
+
+    assert runner.calls == []
+
+
+def test_attested_library_accepts_exactly_64_distinct_images():
+    images = tuple(
+        PlannedImage(f"example.invalid/documents:{index}", "sha256:" + "8" * 64, 1)
+        for index in range(64)
+    )
+    runner = Runner(
+        [response for _ in images for response in (
+            completed(), completed(stdout=IMAGE_ID)
+        )]
+    )
+
+    evidence = image_runtime.ImageArtifactDispatcher(runner)(
+        library_command(definitions=(library_definition(images=images),))
+    )
+
+    assert len(evidence) == 64
+    assert len(runner.calls) == 128
+    assert {call[0][2] for call in runner.calls} == {"pull", "inspect"}
+
+
+def test_attested_composite_observer_fails_closed_if_any_image_is_missing():
+    value = library_command(("documents", "voice"))
+    runner = Runner(
+        [completed(stdout=IMAGE_ID), completed(returncode=1)]
+    )
+    observer = image_runtime.ImageArtifactStartedObserver(
+        loader(value.plan_material), runner
+    )
+
+    observed = observer(replace(value, plan_material=None))
+
+    assert observed.state == "missing"
+    assert observed.evidence_hash is None
+    assert [call[0][2] for call in runner.calls] == ["inspect", "inspect"]
+
+
+def test_attested_services_reuse_one_identical_immutable_image():
+    shared = library_definition().images
+    value = library_command(
+        ("documents", "voice"),
+        definitions=(
+            library_definition("documents", images=shared),
+            library_definition("voice", images=shared),
+        ),
+    )
+    dispatch_runner = Runner([completed(), completed(stdout=IMAGE_ID)])
+    expected = image_runtime.ImageArtifactDispatcher(dispatch_runner)(value)
+    observe_runner = Runner([completed(stdout=IMAGE_ID)])
+    observer = image_runtime.ImageArtifactStartedObserver(
+        loader(value.plan_material), observe_runner
+    )
+
+    observed = observer(replace(value, plan_material=None))
+
+    assert observed.evidence_hash == expected
+    assert [call[0][2] for call in dispatch_runner.calls] == [
+        "pull", "inspect"
+    ]
+    assert [call[0][2] for call in observe_runner.calls] == ["inspect"]
+
+
+def test_attested_observer_timeout_is_value_free_and_never_pulls():
+    value = library_command()
+    runner = Runner(
+        [subprocess.TimeoutExpired(["docker", "image", "inspect"], timeout=30)]
+    )
+    observer = image_runtime.ImageArtifactStartedObserver(
+        loader(value.plan_material), runner
+    )
+
+    with pytest.raises(
+        image_runtime.ImageArtifactRuntimeError,
+        match="^lifecycle-work-image-command-timeout$",
+    ):
+        observer(replace(value, plan_material=None))
+
+    assert [call[0][2] for call in runner.calls] == ["inspect"]
+    assert runner.calls[0][1]["timeout"] <= 30.0
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"attested": False},
+        {"definitions": (library_definition(manifest_schema_version="ods.services.v1"),)},
+        {"definitions": (library_definition(definition_source="user"),)},
+        {"definitions": (library_definition(builds=(object(),)),)},
+        {"definitions": (library_definition(compose_sha256=None),)},
+        {"definitions": (library_definition(images=()),)},
+        {"definitions": (
+            library_definition(images=(
+                PlannedImage("example.invalid/documents:1.0.0", "sha256:" + "A" * 64, 123),
+            )),
+        )},
+        {"definitions": (
+            library_definition(images=(
+                PlannedImage("example.invalid/documents:1.0.0@floating", "sha256:" + "8" * 64, 123),
+            )),
+        )},
+        {"payload": {"operations": [{"serviceId": "voice", "action": "install"}]}},
+        {"service_ids": ("voice",), "definitions": (library_definition("documents"),)},
+        {"plan_hash": "f" * 64},
+    ],
+)
+def test_unattested_or_drifted_library_plan_never_starts_a_pull(changes):
+    runner = Runner([])
+    value = library_command(**changes)
+
+    with pytest.raises(LifecycleWorkValidationError):
+        image_runtime.ImageArtifactDispatcher(runner)(value)
+
+    assert runner.calls == []
+
+
+def test_library_pull_failure_is_value_free_and_does_not_touch_compose():
+    runner = Runner([completed(returncode=1, stdout="private source")])
+    with pytest.raises(
+        image_runtime.ImageArtifactRuntimeError,
+        match="^lifecycle-work-image-command-failed$",
+    ):
+        image_runtime.ImageArtifactDispatcher(runner)(library_command())
+    assert [call[0][2] for call in runner.calls] == ["pull"]
+
+
+def test_library_pull_timeout_is_value_free_and_terminalizable():
+    runner = Runner(
+        [subprocess.TimeoutExpired(["docker", "image", "pull"], timeout=120)]
+    )
+    with pytest.raises(
+        image_runtime.ImageArtifactRuntimeError,
+        match="^lifecycle-work-image-command-timeout$",
+    ):
+        image_runtime.ImageArtifactDispatcher(runner)(library_command())
+    assert [call[0][2] for call in runner.calls] == ["pull"]
