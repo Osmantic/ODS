@@ -1381,3 +1381,21 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def dict_key_suffix_stripper_safe(d: dict | None, suffix: str | None) -> dict:
+    """Safely strip string suffix from dictionary keys.
+    Returns {} on None or non-dict inputs.
+    """
+    if not isinstance(d, dict) or d is None:
+        return {}
+    if not isinstance(suffix, str) or not suffix:
+        return dict(d)
+    result = {}
+    for k, v in d.items():
+        if isinstance(k, str) and k.endswith(suffix):
+            new_key = k[:-len(suffix)]
+            result[new_key] = v
+        else:
+            result[k] = v
+    return result

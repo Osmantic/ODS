@@ -1740,3 +1740,15 @@ def test_flatten_bounds_cycles_and_large_depth_without_losing_empty_leaves():
         nested = {"child": nested}
     result = dict_flatten_nested_safe(nested, max_depth=100000)
     assert len(next(iter(result)).split(".")) == 128
+
+
+class TestDictKeySuffixStripperSafe:
+    def test_valid_stripping(self):
+        from helpers import dict_key_suffix_stripper_safe
+        d = {"count_raw": 10, "name": "test"}
+        assert dict_key_suffix_stripper_safe(d, "_raw") == {"count": 10, "name": "test"}
+
+    def test_invalid_inputs(self):
+        from helpers import dict_key_suffix_stripper_safe
+        assert dict_key_suffix_stripper_safe(None, "_raw") == {}
+        assert dict_key_suffix_stripper_safe({"a": 1}, None) == {"a": 1}
