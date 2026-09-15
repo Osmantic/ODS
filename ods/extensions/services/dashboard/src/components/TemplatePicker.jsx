@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import MetalMetricIcon from './MetalMetricIcon'
 import {
   MessageSquare, Image, Code, Shield, Layers, Package,
@@ -138,6 +138,52 @@ export function TemplatePreview({ template, onClose, onApplied }) {
   const [applyResult, setApplyResult] = useState(null)
   const requestClose = () => { if (!applying) onClose() }
 
+  const dialogRef = useRef(null)
+  const headingRef = useRef(null)
+  const closeRef = useRef(null)
+  useEffect(() => { closeRef.current = requestClose })
+  useEffect(() => {
+    const dialog = dialogRef.current
+    const previous = document.activeElement
+    const previousGroup = previous?.parentElement
+    const keepFocus = event => {
+      if (!dialog.contains(event.target)) headingRef.current?.focus()
+    }
+    const keyDown = event => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        event.stopPropagation()
+        closeRef.current?.()
+      } else if (event.key === 'Tab') {
+        const controls = [...dialog.querySelectorAll('button:not(:disabled)')]
+        const first = controls[0], last = controls.at(-1)
+        if (!controls.length) {
+          event.preventDefault()
+          headingRef.current?.focus()
+        } else if (!controls.includes(document.activeElement)
+          || event.shiftKey && document.activeElement === first
+          || !event.shiftKey && document.activeElement === last) {
+          event.preventDefault()
+          const target = event.shiftKey ? last : first
+          target.focus()
+        }
+      }
+    }
+    headingRef.current?.focus()
+    document.addEventListener('focusin', keepFocus)
+    dialog.addEventListener('keydown', keyDown)
+    return () => {
+      document.removeEventListener('focusin', keepFocus)
+      dialog.removeEventListener('keydown', keyDown)
+      const target = previous?.isConnected && !previous.disabled
+        ? previous : previousGroup?.querySelector('button:not(:disabled)')
+      if (target?.isConnected) target.focus()
+    }
+  }, [])
+  useEffect(() => {
+    if (applying) headingRef.current?.focus()
+  }, [applying])
+
   const Icon = ICON_MAP[template.icon] || Package
 
   const loadPreview = async () => {
@@ -193,6 +239,7 @@ export function TemplatePreview({ template, onClose, onApplied }) {
       <div
         className="bg-theme-card border border-theme-border rounded-xl p-6 max-w-lg mx-4 w-full"
         onClick={e => e.stopPropagation()}
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-label={`${template.name} template preview`}
@@ -204,7 +251,7 @@ export function TemplatePreview({ template, onClose, onApplied }) {
               <Icon size={20} className="text-theme-accent-light" />
             </div>
             <div>
-              <h3 className="text-lg font-semibold text-theme-text">{template.name}</h3>
+              <h3 ref={headingRef} tabIndex={-1} className="text-lg font-semibold text-theme-text">{template.name}</h3>
               <p className="text-xs text-theme-text-muted">{template.description}</p>
             </div>
           </div>
