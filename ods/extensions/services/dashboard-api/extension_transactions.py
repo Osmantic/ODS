@@ -10,7 +10,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-
 # ── Exceptions ───────────────────────────────────────────────────────────────
 class TransactionError(Exception):
     """Base transaction error."""
@@ -197,12 +196,67 @@ CONFIGURATION_KEYS = frozenset(
         "values",
     }
 )
+APPROVAL_V2_KEYS = APPROVAL_KEYS | frozenset(
+    {"configurationHash", "configurationSchemaHash", "privateConfigurationDigest"}
+)
 CONFIGURATION_INTENT_KEYS = CONFIGURATION_KEYS - {"secretReference"}
 CONFIGURATION_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,127}$")
 SECRET_REFERENCE_RE = re.compile(r"^secret-v1-[0-9a-f]{48}$")
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
+def configuration_attestation_hash(
+    transaction_id: str,
+    plan_hash: str,
+    schema_hash: str,
+    configured: bool,
+    values: dict[str, Any],
+    present_config_keys: list[str],
+    present_secret_keys: list[str],
+    applied_default_keys: list[str],
+) -> str:
+    """Compute the owner-visible configuration attestation hash.
+
+    SHA-256 over a domain-separated canonical JSON preimage containing ONLY
+    the listed nonsecret fields.  secretReference, resolved/raw secret values,
+    idempotencyKey, timestamps, and owner identity are deliberately excluded
+    so the hash is safe to expose in public projections.  Shared by
+    TransactionConfigurationManager and TransactionStore without circular
+    imports.
+    """
+    preimage = {
+        "schema": "ods.assistant-first.configuration-attestation.v1",
+        "transactionId": transaction_id,
+        "planHash": plan_hash,
+        "schemaHash": schema_hash,
+        "configured": configured,
+        "values": values,
+        "presentConfigKeys": present_config_keys,
+        "presentSecretKeys": present_secret_keys,
+        "appliedDefaultKeys": applied_default_keys,
+    }
+    return _sha256(canonical_json_bytes(preimage))
+
+
+def configuration_record_digest(
+    configuration: dict[str, Any], schema_hash: str
+) -> str:
+    """Compute the private configuration record digest for owner-approval files.
+
+    SHA-256 over a domain-separated canonical JSON preimage containing the
+    FULL validated configuration record INCLUDING the opaque secretReference
+    (or None) plus the schemaHash.  Resolved or raw secret values are never
+    part of the preimage.  The digest is host-owner-only material and must
+    not appear in public projections or API responses.
+    """
+    preimage = {
+        "schema": "ods.assistant-first.configuration-record-digest.v1",
+        "schemaHash": schema_hash,
+        "configuration": configuration,
+    }
+    return _sha256(canonical_json_bytes(preimage))
+
+
 def _json_safe(v, depth=0):
     """Reject non-JSON-safe types: tuples, surrogates, excessive sizes.
 
@@ -927,6 +981,16 @@ def _read_checked(path, max_bytes=None):
 
 
 def _decode_canonical_object(path, expected_keys, error_prefix):
+    """Decode a canonical JSON object, enforcing exact expected key sets.
+
+    ``expected_keys`` may be a single set-like value (exact-match semantics,
+    used by all existing callers) or an explicit tuple of set-like values
+    (strict alternation: the decoded object must match exactly one of the
+    given sets; no union, subset, or extra keys are tolerated).
+    """
+    key_sets = (
+        expected_keys if isinstance(expected_keys, tuple) else (expected_keys,)
+    )
     raw = _read_checked(path, MAX_INPUT_BYTES)
     try:
         value = json.loads(
@@ -937,7 +1001,7 @@ def _decode_canonical_object(path, expected_keys, error_prefix):
         raise IntegrityError(f"{error_prefix}-parse-error") from exc
     if not isinstance(value, dict):
         raise IntegrityError(f"{error_prefix}-not-object")
-    if set(value) != expected_keys:
+    if not any(set(value) == key_set for key_set in key_sets):
         raise IntegrityError(f"{error_prefix}-keys")
     try:
         encoded = canonical_json_bytes(value)
@@ -1347,11 +1411,80 @@ class TransactionStore:
             raise IntegrityError("idempotency-index-mismatch")
         return index
 
-    def _load_approval(self, tx_dir, transaction_id, envelope, binding):
+    def _load_approval(
+        self, tx_dir, transaction_id, envelope, binding, configuration=None
+    ):
         path = tx_dir / "approval.json"
         if not self._entry_exists(path):
             raise IntegrityError("missing-approval")
-        approval = _decode_canonical_object(path, APPROVAL_KEYS, "approval")
+        approval = _decode_canonical_object(
+            path, (APPROVAL_KEYS, APPROVAL_V2_KEYS), "approval"
+        )
+        if set(approval) == APPROVAL_V2_KEYS:
+            from extension_configuration import (
+                configuration_schema,
+                ExtensionConfigurationError,
+            )
+
+            for field in (
+                "configurationHash",
+                "configurationSchemaHash",
+                "privateConfigurationDigest",
+            ):
+                value = approval[field]
+                if not isinstance(value, str) or not HEX64_RE.fullmatch(value):
+                    raise IntegrityError("approval-v2-digest-invalid")
+
+            # Derive schema from envelope and validate v2 schema hash
+            try:
+                schema = configuration_schema(
+                    envelope, expected_plan_hash=envelope["planHash"]
+                )
+            except ExtensionConfigurationError:
+                raise IntegrityError("approval-v2-schema-invalid")
+            schema_hash = schema["schemaHash"]
+            if approval["configurationSchemaHash"] != schema_hash:
+                raise IntegrityError("approval-v2-schema-mismatch")
+            # If a stored configuration record exists, its schemaHash must match
+            if configuration is not None:
+                if approval["configurationSchemaHash"] != configuration["schemaHash"]:
+                    raise IntegrityError("approval-v2-schema-mismatch")
+
+            # Recompute and verify configuration attestation hash
+            configured = configuration is not None
+            if configured:
+                attestation_hash = configuration_attestation_hash(
+                    transaction_id,
+                    envelope["planHash"],
+                    schema_hash,
+                    True,
+                    configuration["values"],
+                    configuration["presentConfigKeys"],
+                    configuration["presentSecretKeys"],
+                    configuration["appliedDefaultKeys"],
+                )
+                private_digest = configuration_record_digest(
+                    configuration, schema_hash
+                )
+            else:
+                attestation_hash = configuration_attestation_hash(
+                    transaction_id,
+                    envelope["planHash"],
+                    schema_hash,
+                    False,
+                    {},
+                    [],
+                    [],
+                    [],
+                )
+                private_digest = configuration_record_digest(None, schema_hash)
+
+            if approval["configurationHash"] != attestation_hash:
+                raise IntegrityError("approval-v2-configuration-mismatch")
+            if approval["privateConfigurationDigest"] != private_digest:
+                raise IntegrityError("approval-v2-custody-mismatch")
+
+            # v2 fell through digest checks; continue with common binding checks below
         try:
             _validate_actor_id(approval["actor"])
             _validate_approver_id(approval["approvedBy"])
@@ -1483,13 +1616,15 @@ class TransactionStore:
             raise IntegrityError("missing-configuration")
         approval_path = tx_dir / "approval.json"
         if has_approved:
-            approval = self._load_approval(tx_dir, transaction_id, envelope, binding)
+            approval = self._load_approval(
+                tx_dir, transaction_id, envelope, binding, configuration
+            )
         else:
             if self._entry_exists(approval_path):
                 if not allow_unjournaled_approval:
                     raise IntegrityError("unexpected-approval")
                 approval = self._load_approval(
-                    tx_dir, transaction_id, envelope, binding
+                    tx_dir, transaction_id, envelope, binding, configuration
                 )
             else:
                 approval = None
@@ -2266,6 +2401,211 @@ class TransactionStore:
                 if (
                     self._load_approval(
                         tx_dir, transaction_id, envelope, binding
+                    )
+                    != approval_record
+                ):
+                    raise IntegrityError("approval-write-verify-failed")
+
+            next_seq = len(records) + 1
+            line = _journal_entry(
+                transaction_id,
+                next_seq,
+                "approved",
+                envelope["planHash"],
+                approval_record["approvedAt"],
+                binding["actor"],
+            )
+            _journal_append(
+                tx_dir / "journal.jsonl",
+                line,
+                expected_actor=binding["actor"],
+            )
+            return {
+                "transactionId": transaction_id,
+                "state": "approved",
+                "sequence": next_seq,
+                "noop": False,
+            }
+
+    def approve_configured_exact(
+        self,
+        transaction_id,
+        expected_plan_hash,
+        expected_configuration_hash,
+        schema_hash,
+        approved_by,
+        approved_at,
+        current_time,
+    ):
+        """Approve one stored plan with an exact v2 configuration attestation.
+
+        v2 only: the current configuration schema is rederived from the
+        durable envelope, the safe owner-visible attestation hash is compared
+        against the configuration the owner reviewed (the current validated
+        record, or the empty attestation when none is stored), and the
+        immutable approval file carries the private configuration record
+        digest under owner-only custody.  Existing v1 approvals always
+        conflict; only an identical v2 owner/hash set may replay.
+        """
+        _validate_timestamp(approved_at)
+        _validate_timestamp(current_time)
+        if approved_at > current_time:
+            raise ApprovalError("future-approval")
+        if not isinstance(expected_plan_hash, str) or not HEX64_RE.fullmatch(
+            expected_plan_hash
+        ):
+            raise ApprovalError("invalid-plan-hash")
+        if not isinstance(expected_configuration_hash, str) or not HEX64_RE.fullmatch(
+            expected_configuration_hash
+        ):
+            raise ApprovalError("invalid-configuration-hash")
+        if not isinstance(schema_hash, str) or not HEX64_RE.fullmatch(schema_hash):
+            raise ApprovalError("invalid-schema-hash")
+        if (
+            not isinstance(approved_by, str)
+            or re.fullmatch(r"owner-[0-9a-f]{16}", approved_by) is None
+        ):
+            raise ApprovalError("invalid-owner-approval-identity")
+        try:
+            _validate_approver_id(approved_by)
+        except ValidationRejected as exc:
+            raise ApprovalError("invalid-approval-data", exc.code) from exc
+
+        with self._lock:
+            try:
+                loaded = self._read_transaction(
+                    transaction_id, allow_unjournaled_approval=True
+                )
+            except TransactionError as exc:
+                raise ApprovalError(exc.code, exc.detail) from exc
+            tx_dir = loaded["txDir"]
+            envelope = loaded["envelope"]
+            binding = loaded["binding"]
+            records = loaded["journal"]
+            configuration = loaded["configuration"]
+            if envelope["planHash"] != expected_plan_hash:
+                raise ApprovalError("plan-hash-mismatch")
+            if not current_time < envelope["plan"]["validUntil"]:
+                raise ApprovalError("approval-expired")
+            if _plan_requires_configuration(envelope) and configuration is None:
+                raise ApprovalError("missing-configuration")
+
+            # Rederive the current configuration schema (lazy) and compare the
+            # safe attestation hash for the current validated record, or the
+            # empty attestation when no validated record exists.
+            from extension_configuration import (
+                configuration_schema,
+                ExtensionConfigurationError,
+            )
+
+            try:
+                schema = configuration_schema(
+                    envelope, expected_plan_hash=envelope["planHash"]
+                )
+            except ExtensionConfigurationError:
+                raise IntegrityError("approval-v2-schema-invalid")
+            derived_schema_hash = schema["schemaHash"]
+            if derived_schema_hash != schema_hash:
+                raise ApprovalError("schema-hash-mismatch")
+            if configuration is not None and configuration["schemaHash"] != derived_schema_hash:
+                raise IntegrityError("approval-v2-schema-mismatch")
+            if configuration is not None:
+                attestation_hash = configuration_attestation_hash(
+                    transaction_id,
+                    envelope["planHash"],
+                    derived_schema_hash,
+                    True,
+                    configuration["values"],
+                    configuration["presentConfigKeys"],
+                    configuration["presentSecretKeys"],
+                    configuration["appliedDefaultKeys"],
+                )
+                private_digest = configuration_record_digest(
+                    configuration, derived_schema_hash
+                )
+            else:
+                attestation_hash = configuration_attestation_hash(
+                    transaction_id,
+                    envelope["planHash"],
+                    derived_schema_hash,
+                    False,
+                    {},
+                    [],
+                    [],
+                    [],
+                )
+                private_digest = configuration_record_digest(
+                    None, derived_schema_hash
+                )
+            if attestation_hash != expected_configuration_hash:
+                raise ApprovalError("configuration-hash-mismatch")
+
+            current_state = loaded["state"]
+            if current_state == "approved":
+                approval = loaded["approval"]
+                if (
+                    set(approval) == APPROVAL_V2_KEYS
+                    and approval["approvedBy"] == approved_by
+                    and approval["configurationHash"] == expected_configuration_hash
+                    and approval["configurationSchemaHash"] == schema_hash
+                    and approval["privateConfigurationDigest"] == private_digest
+                ):
+                    return {
+                        "transactionId": transaction_id,
+                        "state": "approved",
+                        "sequence": len(records),
+                        "noop": True,
+                    }
+                raise ApprovalError("approval-conflict")
+            if current_state != "awaiting_approval":
+                raise ApprovalError("wrong-state", current_state)
+
+            approval_path = tx_dir / "approval.json"
+            if loaded["approval"] is not None:
+                # Crash replay: the approval file exists but was not journaled.
+                # Only an identical v2 owner/hash set may replay it; a stored
+                # v1 record always conflicts.
+                existing = loaded["approval"]
+                if set(existing) != APPROVAL_V2_KEYS:
+                    raise ApprovalError("approval-conflict")
+                if (
+                    existing["approvedBy"] != approved_by
+                    or existing["configurationHash"] != expected_configuration_hash
+                    or existing["configurationSchemaHash"] != schema_hash
+                    or existing["privateConfigurationDigest"] != private_digest
+                ):
+                    raise ApprovalError("approval-conflict")
+                approval_record = existing
+            else:
+                approval_record = {
+                    "actor": binding["actor"],
+                    "approvedAt": approved_at,
+                    "approvedBy": approved_by,
+                    "catalogRevision": envelope["catalogRevision"],
+                    "configurationHash": attestation_hash,
+                    "configurationSchemaHash": derived_schema_hash,
+                    "idempotencyKey": binding["idempotencyKey"],
+                    "observedStateRevision": envelope["observedStateRevision"],
+                    "planHash": envelope["planHash"],
+                    "policyRevision": envelope["policyRevision"],
+                    "privateConfigurationDigest": private_digest,
+                    "transactionId": transaction_id,
+                    "validUntil": envelope["plan"]["validUntil"],
+                }
+                if not binding["createdAt"] <= approved_at:
+                    raise ApprovalError("approval-before-transaction")
+                if not approved_at < approval_record["validUntil"]:
+                    raise ApprovalError("approval-expired")
+                if not current_time < approval_record["validUntil"]:
+                    raise ApprovalError("approval-expired")
+                _write_immutable(
+                    approval_path,
+                    canonical_json_bytes(approval_record),
+                    0o600,
+                )
+                if (
+                    self._load_approval(
+                        tx_dir, transaction_id, envelope, binding, configuration
                     )
                     != approval_record
                 ):

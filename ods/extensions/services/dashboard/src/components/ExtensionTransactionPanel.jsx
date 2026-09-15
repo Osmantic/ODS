@@ -99,7 +99,7 @@ const PlanReview = ({ plan, planHash }) => {
     <section aria-labelledby="transaction-plan-title" className="space-y-4">
       <div>
         <h3 id="transaction-plan-title" className="text-sm font-semibold text-theme-text">Exact extension plan</h3>
-        <p className="mt-1 text-[10px] text-theme-text-muted/65">Review the computed dependencies and impact. Approval is bound only to this SHA-256.</p>
+        <p className="mt-1 text-[10px] text-theme-text-muted/65">Review the computed dependencies and impact. Approval binds this plan hash and the configuration hash below.</p>
         <code className="mt-2 block rounded-lg border border-theme-border/60 bg-theme-bg/60 px-3 py-2 text-[10px] text-theme-text-secondary break-all">{planHash}</code>
       </div>
 
@@ -229,7 +229,7 @@ export default function ExtensionTransactionPanel({ proposal, extensionName, onC
   }, [status.state])
 
   const requiredConfiguration = (status.plan.requiredConfigKeys || []).length > 0 || (status.plan.requiredSecretKeys || []).length > 0
-  const readyForApproval = !requiredConfiguration || configuration?.configured === true
+  const readyForApproval = configuration !== null && (!requiredConfiguration || configuration.configured === true)
 
   const submitConfiguration = async event => {
     event.preventDefault()
@@ -287,7 +287,7 @@ export default function ExtensionTransactionPanel({ proposal, extensionName, onC
     setBusy('approval')
     setError(null)
     try {
-      await approveExtensionTransaction(status.transactionId, status.planHash)
+      await approveExtensionTransaction(status.transactionId, status.planHash, configuration.configurationHash)
       await refresh()
     } catch (caught) {
       if (mounted.current) setError(errorLabel(caught.code))
@@ -377,6 +377,21 @@ export default function ExtensionTransactionPanel({ proposal, extensionName, onC
               </div>
             </form>
           )}
+          {configuration && (
+            <div className="mt-3 rounded-lg border border-theme-border/60 bg-theme-bg/60 p-3 text-[10px] text-theme-text-secondary">
+              <p>Review the saved nonsecret values and the presence of host-held secrets before approving.</p>
+              {Object.entries(configuration.values).length > 0 && (
+                <dl className="mt-2 space-y-1">
+                  {Object.entries(configuration.values).map(([key, value]) => (
+                    <div key={key} className="flex gap-2"><dt>{key}:</dt><dd className="break-all">{String(value)}</dd></div>
+                  ))}
+                </dl>
+              )}
+              {configuration.presentSecretKeys.length > 0 && <p className="mt-2">Host-held secret keys: {configuration.presentSecretKeys.join(', ')}</p>}
+              <p className="mt-2">Configuration SHA-256:</p>
+              <code className="mt-1 block break-all">{configuration.configurationHash}</code>
+            </div>
+          )}
         </section>
 
         <section className="mt-6 border-t border-theme-border/70 pt-5" aria-labelledby="transaction-approval-title">
@@ -384,7 +399,7 @@ export default function ExtensionTransactionPanel({ proposal, extensionName, onC
             <ShieldCheck size={17} className="mt-0.5 text-theme-accent-light" aria-hidden="true" />
             <div>
               <h3 id="transaction-approval-title" className="text-sm font-semibold text-theme-text">Owner approval and execution</h3>
-              <p className="mt-1 text-[10px] text-theme-text-muted">Approval cannot change the plan, grant broader authority, or execute a different hash.</p>
+              <p className="mt-1 text-[10px] text-theme-text-muted">Approval binds the exact plan and reviewed configuration; it cannot grant broader authority.</p>
             </div>
           </div>
           <div className="mt-4 flex flex-wrap gap-2">

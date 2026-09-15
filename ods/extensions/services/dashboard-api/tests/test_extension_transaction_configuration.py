@@ -8,7 +8,13 @@ import pytest
 from assistant_first_secret_client import SecretCustodyError
 from extension_configuration import configuration_schema
 from extension_transaction_configuration import TransactionConfigurationManager
-from extension_transactions import IntegrityError, TransitionError, ValidationRejected
+from extension_transactions import (
+    configuration_attestation_hash,
+    configuration_record_digest,
+    IntegrityError,
+    TransitionError,
+    ValidationRejected,
+)
 
 TRANSACTION_ID = "txn-" + "1" * 24
 IDEMPOTENCY_KEY = "2" * 64
@@ -343,3 +349,328 @@ def test_require_ready_allows_unset_optional_configuration() -> None:
     assert result["configured"] is False
     assert [field["key"] for field in result["fields"]] == ["LABEL"]
     assert custody.events == []
+
+def _compute_expected_hash(
+    transaction_id, plan_hash, schema_hash, configured,
+    values, present_config_keys, present_secret_keys, applied_default_keys,
+):
+    """Reproduce the preimage hash for assertion."""
+    from extension_transactions import canonical_json_bytes
+    preimage = {
+        "schema": "ods.assistant-first.configuration-attestation.v1",
+        "transactionId": transaction_id,
+        "planHash": plan_hash,
+        "schemaHash": schema_hash,
+        "configured": configured,
+        "values": values,
+        "presentConfigKeys": present_config_keys,
+        "presentSecretKeys": present_secret_keys,
+        "appliedDefaultKeys": applied_default_keys,
+    }
+    return hashlib.sha256(canonical_json_bytes(preimage)).hexdigest()
+
+
+def test_empty_view_has_stable_configuration_hash() -> None:
+    service, _store, _custody = manager()
+    result = service.view(TRANSACTION_ID)
+    assert "configurationHash" in result
+    assert len(result["configurationHash"]) == 64
+    schema = configuration_schema(
+        _store.loaded["envelope"],
+        expected_plan_hash=_store.loaded["envelope"]["planHash"],
+    )
+    expected = _compute_expected_hash(
+        TRANSACTION_ID,
+        _store.loaded["envelope"]["planHash"],
+        schema["schemaHash"],
+        False, {}, [], [], [],
+    )
+    assert result["configurationHash"] == expected
+    # Stable across calls
+    result2 = service.view(TRANSACTION_ID)
+    assert result2["configurationHash"] == result["configurationHash"]
+
+
+def test_changed_nonsecret_value_changes_hash() -> None:
+    """Two identical configurations with different non-secret values produce distinct hashes."""
+    env = envelope()
+    schema_hash = configuration_schema(
+        env, expected_plan_hash=env["planHash"]
+    )["schemaHash"]
+
+    # Instance A: ENDPOINT = https://example.invalid/v1
+    svc_a, store_a, _ = manager()
+    store_a.loaded["envelope"] = copy.deepcopy(env)
+    svc_a.submit(
+        TRANSACTION_ID,
+        plan_hash=env["planHash"],
+        schema_hash=schema_hash,
+        idempotency_key=IDEMPOTENCY_KEY,
+        values={"ENDPOINT": "https://example.invalid/v1"},
+        secret_values={"TOKEN": SENTINEL},
+    )
+    result_a = svc_a.view(TRANSACTION_ID)
+
+    # Instance B: ENDPOINT = https://example.invalid/v2
+    svc_b, store_b, _ = manager()
+    store_b.loaded["envelope"] = copy.deepcopy(env)
+    svc_b.submit(
+        TRANSACTION_ID,
+        plan_hash=env["planHash"],
+        schema_hash=schema_hash,
+        idempotency_key=IDEMPOTENCY_KEY,
+        values={"ENDPOINT": "https://example.invalid/v2"},
+        secret_values={"TOKEN": SENTINEL},
+    )
+    result_b = svc_b.view(TRANSACTION_ID)
+
+    assert result_a["configurationHash"] != result_b["configurationHash"]
+    expected_a = _compute_expected_hash(
+        TRANSACTION_ID, env["planHash"], schema_hash, True,
+        {"ENDPOINT": "https://example.invalid/v1"},
+        ["ENDPOINT"], ["TOKEN"], [],
+    )
+    expected_b = _compute_expected_hash(
+        TRANSACTION_ID, env["planHash"], schema_hash, True,
+        {"ENDPOINT": "https://example.invalid/v2"},
+        ["ENDPOINT"], ["TOKEN"], [],
+    )
+    assert result_a["configurationHash"] == expected_a
+    assert result_b["configurationHash"] == expected_b
+
+
+def test_changed_secret_key_presence_changes_hash() -> None:
+    """Helper-level test: presentSecretKeys alone changes the hash.
+
+    This is NOT stored-schema validation; it calls the _configuration_hash
+    helper directly with identical inputs except presentSecretKeys to prove
+    that secret-key presence is included in the canonical preimage.
+    """
+    env = envelope()
+    schema_hash = configuration_schema(
+        env, expected_plan_hash=env["planHash"]
+    )["schemaHash"]
+
+    h_none = TransactionConfigurationManager._configuration_hash(
+        TRANSACTION_ID, env["planHash"], schema_hash, False,
+        {}, [], [], [],
+    )
+    h_token = TransactionConfigurationManager._configuration_hash(
+        TRANSACTION_ID, env["planHash"], schema_hash, False,
+        {}, [], ["TOKEN"], [],
+    )
+
+    assert h_none != h_token
+    expected_none = _compute_expected_hash(
+        TRANSACTION_ID, env["planHash"], schema_hash, False,
+        {}, [], [], [],
+    )
+    expected_token = _compute_expected_hash(
+        TRANSACTION_ID, env["planHash"], schema_hash, False,
+        {}, [], ["TOKEN"], [],
+    )
+    assert h_none == expected_none
+    assert h_token == expected_token
+
+
+def test_no_secret_material_in_projection_or_preimage() -> None:
+    service, store, _custody = manager()
+    result = service.submit(TRANSACTION_ID, **submission(store))
+    result_json = json.dumps(result)
+    assert SENTINEL not in result_json
+    assert "secretReference" not in result
+    assert "secretValues" not in result
+    # Verify preimage used for hash has no secret fields
+    assert result["configurationHash"] == _compute_expected_hash(
+        TRANSACTION_ID,
+        store.loaded["envelope"]["planHash"],
+        store.loaded["configuration"]["schemaHash"],
+        True,
+        {"ENDPOINT": "https://example.invalid/v1"},
+        ["ENDPOINT"],
+        ["TOKEN"],
+        [],
+    )
+
+
+def test_submit_view_require_ready_equal_hash() -> None:
+    service, store, _custody = manager()
+    submitted = service.submit(TRANSACTION_ID, **submission(store))
+    viewed = service.view(TRANSACTION_ID)
+    required = service.require_ready(
+        TRANSACTION_ID, store.loaded["envelope"]["planHash"]
+    )
+    assert submitted["configurationHash"] == viewed["configurationHash"]
+    assert viewed["configurationHash"] == required["configurationHash"]
+    # All three agree with the independently computed value
+    expected = _compute_expected_hash(
+        TRANSACTION_ID,
+        store.loaded["envelope"]["planHash"],
+        store.loaded["configuration"]["schemaHash"],
+        True,
+        {"ENDPOINT": "https://example.invalid/v1"},
+        ["ENDPOINT"],
+        ["TOKEN"],
+        [],
+    )
+    assert submitted["configurationHash"] == expected
+
+
+def test_manager_delegates_to_public_configuration_attestation_hash() -> None:
+    """The manager's projections must equal the public module-level helper.
+
+    Preserves the exact hash contract: the static method delegates to the
+    public helper, so old expected hashes remain valid bit-for-bit.
+    """
+    service, store, _custody = manager()
+    result = service.view(TRANSACTION_ID)
+    schema = configuration_schema(
+        store.loaded["envelope"],
+        expected_plan_hash=store.loaded["envelope"]["planHash"],
+    )
+    assert (
+        result["configurationHash"]
+        == configuration_attestation_hash(
+            TRANSACTION_ID,
+            store.loaded["envelope"]["planHash"],
+            schema["schemaHash"],
+            False,
+            {},
+            [],
+            [],
+            [],
+        )
+        == _compute_expected_hash(
+            TRANSACTION_ID,
+            store.loaded["envelope"]["planHash"],
+            schema["schemaHash"],
+            False, {}, [], [], [],
+        )
+    )
+
+    submitted = service.submit(TRANSACTION_ID, **submission(store))
+    assert (
+        submitted["configurationHash"]
+        == configuration_attestation_hash(
+            TRANSACTION_ID,
+            store.loaded["envelope"]["planHash"],
+            store.loaded["configuration"]["schemaHash"],
+            True,
+            {"ENDPOINT": "https://example.invalid/v1"},
+            ["ENDPOINT"],
+            ["TOKEN"],
+            [],
+        )
+        == _compute_expected_hash(
+            TRANSACTION_ID,
+            store.loaded["envelope"]["planHash"],
+            store.loaded["configuration"]["schemaHash"],
+            True,
+            {"ENDPOINT": "https://example.invalid/v1"},
+            ["ENDPOINT"],
+            ["TOKEN"],
+            [],
+        )
+    )
+
+
+def test_static_configuration_hash_matches_public_helper_exactly() -> None:
+    """Direct equality across every projection dimension."""
+    cases = [
+        (TRANSACTION_ID, "a" * 64, "b" * 64, False, {}, [], [], []),
+        (
+            TRANSACTION_ID,
+            "a" * 64,
+            "b" * 64,
+            True,
+            {"ENDPOINT": "https://example.invalid/v1"},
+            ["ENDPOINT"],
+            ["TOKEN"],
+            ["ENDPOINT"],
+        ),
+        (
+            "txn-" + "9" * 24,
+            "c" * 64,
+            "d" * 64,
+            True,
+            {"LABEL": "notes", "PORT": 8080},
+            ["LABEL", "PORT"],
+            [],
+            [],
+        ),
+    ]
+    for case in cases:
+        assert TransactionConfigurationManager._configuration_hash(
+            *case
+        ) == configuration_attestation_hash(*case)
+
+
+def test_private_record_digest_tracks_reference_but_safe_hash_does_not() -> None:
+    """Opaque secretReference changes the private digest, never the safe hash."""
+    env = envelope()
+    stored = env
+    schema_hash = configuration_schema(
+        stored, expected_plan_hash=stored["planHash"]
+    )["schemaHash"]
+
+    def record(reference):
+        return {
+            "schema": "ods.assistant-first.transaction-configuration.v1",
+            "transactionId": TRANSACTION_ID,
+            "actor": "assistant-manager",
+            "planHash": env["planHash"],
+            "schemaHash": schema_hash,
+            "idempotencyKey": IDEMPOTENCY_KEY,
+            "configuredAt": NOW,
+            "values": {"ENDPOINT": "https://example.invalid/v1"},
+            "presentConfigKeys": ["ENDPOINT"],
+            "presentSecretKeys": ["TOKEN"],
+            "appliedDefaultKeys": [],
+            "secretReference": reference,
+        }
+
+    digest_a = configuration_record_digest(record(REFERENCE), schema_hash)
+    digest_b = configuration_record_digest(
+        record("secret-v1-" + "f" * 48), schema_hash
+    )
+    digest_none = configuration_record_digest(record(None), schema_hash)
+    assert digest_a != digest_b
+    assert digest_a != digest_none
+    assert len(digest_a) == 64
+
+    # The owner-visible attestation hash excludes secretReference entirely:
+    # projecting each record's nonsecret fields yields ONE stable hash even
+    # though the two records' private digests differ.
+    def safe_hash_from(record):
+        return configuration_attestation_hash(
+            record["transactionId"],
+            record["planHash"],
+            record["schemaHash"],
+            True,
+            dict(record["values"]),
+            list(record["presentConfigKeys"]),
+            list(record["presentSecretKeys"]),
+            list(record["appliedDefaultKeys"]),
+        )
+
+    assert safe_hash_from(record(REFERENCE)) == safe_hash_from(
+        record("secret-v1-" + "f" * 48)
+    )
+    assert safe_hash_from(record(REFERENCE)) == _compute_expected_hash(
+        TRANSACTION_ID,
+        env["planHash"],
+        schema_hash,
+        True,
+        {"ENDPOINT": "https://example.invalid/v1"},
+        ["ENDPOINT"],
+        ["TOKEN"],
+        [],
+    )
+    assert safe_hash_from(record(REFERENCE)) != digest_a
+
+    # Digest is domain-separated: bound to schemaHash and record identity,
+    # and distinct from any value derived from the nonsecret projection.
+    assert configuration_record_digest(
+        record(REFERENCE), "0" * 64
+    ) != digest_a
+    assert configuration_record_digest(record(REFERENCE), schema_hash) == digest_a

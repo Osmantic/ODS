@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  approveExtensionTransaction,
   createExtensionTransaction,
   getExtensionTransactionConfiguration,
   getTransactionCapabilities,
@@ -92,11 +93,13 @@ describe('extension transaction client', () => {
       transactionId: TX_ID,
       planHash: HASH,
       schemaHash: 'c'.repeat(64),
+      configurationHash: 'e'.repeat(64),
       fields: [],
       configured: false,
       values: {},
       presentConfigKeys: [],
       presentSecretKeys: 'TOKEN',
+      appliedDefaultKeys: [],
     })))
     await expect(getExtensionTransactionConfiguration(TX_ID)).rejects.toMatchObject({ code: 'invalid-transaction-configuration' })
   })
@@ -107,11 +110,13 @@ describe('extension transaction client', () => {
       transactionId: TX_ID,
       planHash: 'd'.repeat(64),
       schemaHash: 'c'.repeat(64),
+      configurationHash: 'e'.repeat(64),
       fields: [],
       configured: false,
       values: {},
       presentConfigKeys: [],
       presentSecretKeys: [],
+      appliedDefaultKeys: [],
     })))
     await expect(getExtensionTransactionConfiguration(TX_ID, HASH)).rejects.toMatchObject({ code: 'transaction-plan-hash-mismatch' })
   })
@@ -119,5 +124,35 @@ describe('extension transaction client', () => {
   it('maps only stable API error codes into client failures', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response({ error: { code: 'missing-configuration', detail: 'do-not-render-this' } }, 409)))
     await expect(getTransactionCapabilities()).rejects.toMatchObject({ code: 'missing-configuration', status: 409 })
+  })
+
+  it('submits both reviewed hashes for owner approval and rejects an absent configuration hash', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(response({ transactionId: TX_ID, state: 'approved', sequence: 3 }))
+    vi.stubGlobal('fetch', fetchMock)
+    await approveExtensionTransaction(TX_ID, HASH, 'e'.repeat(64))
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      planHash: HASH,
+      configurationHash: 'e'.repeat(64),
+    })
+    await expect(approveExtensionTransaction(TX_ID, HASH, null)).rejects.toMatchObject({ code: 'invalid-configuration-hash' })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('rejects secret references in the configuration projection', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response({
+      schema: 'ods.assistant-first.transaction-configuration-view.v1',
+      transactionId: TX_ID,
+      planHash: HASH,
+      schemaHash: 'c'.repeat(64),
+      configurationHash: 'e'.repeat(64),
+      fields: [],
+      configured: true,
+      values: {},
+      presentConfigKeys: [],
+      presentSecretKeys: [],
+      appliedDefaultKeys: [],
+      secretReference: 'private-pointer',
+    })))
+    await expect(getExtensionTransactionConfiguration(TX_ID, HASH)).rejects.toMatchObject({ code: 'secret-value-in-configuration-projection' })
   })
 })

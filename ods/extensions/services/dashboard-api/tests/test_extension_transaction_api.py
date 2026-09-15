@@ -14,6 +14,8 @@ from plan_provenance import validate_request_intent
 API_KEY = "transaction-test-key"
 NOW = "2026-09-11T12:00:00Z"
 PLAN_HASH = "a" * 64
+CONFIGURATION_HASH = "d" * 64
+SCHEMA_HASH = "9" * 64
 IDEMPOTENCY_KEY = "b" * 64
 TX_ID = "txn-" + "c" * 24
 
@@ -125,11 +127,26 @@ class FakeStore:
             "duplicate": duplicate,
         }
 
-    def approve_exact(
-        self, transaction_id, plan_hash, approved_by, approved_at, current_time
+    def approve_configured_exact(
+        self,
+        transaction_id,
+        expected_plan_hash,
+        expected_configuration_hash,
+        schema_hash,
+        approved_by,
+        approved_at,
+        current_time,
     ):
         self.approved.append(
-            (transaction_id, plan_hash, approved_by, approved_at, current_time)
+            (
+                transaction_id,
+                expected_plan_hash,
+                expected_configuration_hash,
+                schema_hash,
+                approved_by,
+                approved_at,
+                current_time,
+            )
         )
         self.record["state"] = "approved"
         self.record["sequence"] = 3
@@ -177,10 +194,18 @@ class FakeConfiguration:
     def __init__(self) -> None:
         self.ready_calls = []
         self.submit_calls = []
+        self.ready_result: dict | None = None
 
     def require_ready(self, transaction_id, plan_hash):
         self.ready_calls.append((transaction_id, plan_hash))
-        return {"configured": True}
+        return self.ready_result or {
+            "schema": "ods.assistant-first.transaction-configuration-view.v1",
+            "transactionId": transaction_id,
+            "planHash": plan_hash,
+            "schemaHash": SCHEMA_HASH,
+            "configured": True,
+            "configurationHash": CONFIGURATION_HASH,
+        }
 
     def view(self, transaction_id):
         return {
@@ -596,12 +621,61 @@ def test_owner_approval_passes_only_exact_hash_and_hashed_identity(api):
     api.client.cookies.set("ods-session", cookie)
     response = api.client.post(
         f"/api/extensions/transactions/{TX_ID}/approval",
-        json={"planHash": PLAN_HASH},
+        json={"planHash": PLAN_HASH, "configurationHash": CONFIGURATION_HASH},
     )
     assert response.status_code == 200
-    assert api.store.approved == [(TX_ID, PLAN_HASH, approved_by, NOW, NOW)]
+    assert api.store.approved == [
+        (
+            TX_ID,
+            PLAN_HASH,
+            CONFIGURATION_HASH,
+            SCHEMA_HASH,
+            approved_by,
+            NOW,
+            NOW,
+        )
+    ]
     assert api.configuration.ready_calls == [(TX_ID, PLAN_HASH)]
     assert "approval" not in response.request.content.decode("utf-8")
+
+
+def test_approval_rejects_missing_configuration_hash(api):
+    cookie = session_signer.issue_scoped("owner", ttl_seconds=60)
+    api.client.cookies.set("ods-session", cookie)
+    response = api.client.post(
+        f"/api/extensions/transactions/{TX_ID}/approval",
+        json={"planHash": PLAN_HASH},
+    )
+    assert response.status_code == 422
+    assert api.configuration.ready_calls == []
+    assert api.store.approved == []
+
+
+def test_approval_rejects_configuration_hash_mismatch_without_store_call(api):
+    cookie = session_signer.issue_scoped("owner", ttl_seconds=60)
+    api.client.cookies.set("ods-session", cookie)
+    response = api.client.post(
+        f"/api/extensions/transactions/{TX_ID}/approval",
+        json={"planHash": PLAN_HASH, "configurationHash": "e" * 64},
+    )
+    assert response.status_code == 409
+    assert response.json() == {"error": {"code": "configuration-hash-mismatch"}}
+    assert api.configuration.ready_calls == [(TX_ID, PLAN_HASH)]
+    assert api.store.approved == []
+
+
+def test_approval_fails_closed_without_configured_store_method(api, monkeypatch):
+    store = api.store
+    monkeypatch.delattr(type(store), "approve_configured_exact")
+    cookie = session_signer.issue_scoped("owner", ttl_seconds=60)
+    api.client.cookies.set("ods-session", cookie)
+    response = api.client.post(
+        f"/api/extensions/transactions/{TX_ID}/approval",
+        json={"planHash": PLAN_HASH, "configurationHash": CONFIGURATION_HASH},
+    )
+    assert response.status_code == 503
+    assert response.json() == {"error": {"code": "approval-binding-unavailable"}}
+    assert api.configuration.ready_calls == [(TX_ID, PLAN_HASH)]
 
 
 def test_approval_rejects_extra_fields(api):
@@ -609,7 +683,11 @@ def test_approval_rejects_extra_fields(api):
     api.client.cookies.set("ods-session", cookie)
     response = api.client.post(
         f"/api/extensions/transactions/{TX_ID}/approval",
-        json={"planHash": PLAN_HASH, "approvedBy": "assistant-manager"},
+        json={
+            "planHash": PLAN_HASH,
+            "configurationHash": CONFIGURATION_HASH,
+            "approvedBy": "assistant-manager",
+        },
     )
     assert response.status_code == 422
     assert api.store.approved == []
@@ -622,6 +700,10 @@ def test_status_is_no_store_and_redacts_approval_binding(api):
         "actor": "assistant-manager",
         "idempotencyKey": IDEMPOTENCY_KEY,
         "validUntil": "2026-10-01T00:00:00Z",
+        "configurationHash": "f" * 64,
+        "configurationSchemaHash": "e" * 64,
+        "privateConfigurationDigest": "0" * 64,
+        "secretReference": "private-host-pointer",
     }
     response = api.client.get(
         f"/api/extensions/transactions/{TX_ID}", headers=api.headers
@@ -635,6 +717,8 @@ def test_status_is_no_store_and_redacts_approval_binding(api):
         "approvedBy": "owner-" + "1" * 16,
     }
     assert IDEMPOTENCY_KEY not in response.text
+    assert "privateConfigurationDigest" not in response.text
+    assert "private-host-pointer" not in response.text
     assert response.json()["plan"]["requiredSecretKeys"] == ["NOTES_API_KEY"]
     assert response.json()["desiredState"] == {
         "status": "not-committed",
@@ -928,7 +1012,7 @@ def test_main_csrf_blocks_cross_origin_owner_approval(test_client, monkeypatch):
 
     response = test_client.post(
         f"/api/extensions/transactions/{TX_ID}/approval",
-        json={"planHash": PLAN_HASH},
+        json={"planHash": PLAN_HASH, "configurationHash": CONFIGURATION_HASH},
         headers={
             "Origin": "https://evil.invalid",
             "Sec-Fetch-Site": "cross-site",

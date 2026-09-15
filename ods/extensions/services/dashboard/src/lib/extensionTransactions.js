@@ -88,7 +88,9 @@ const validateConfiguration = (body, transactionId, planHash = null) => {
   assertHash(body.planHash, 'plan-hash')
   if (planHash !== null && body.planHash !== planHash) fail('transaction-plan-hash-mismatch')
   assertHash(body.schemaHash, 'schema-hash')
-  if (!Array.isArray(body.presentConfigKeys) || !Array.isArray(body.presentSecretKeys)) {
+  assertHash(body.configurationHash, 'configuration-hash')
+  if (Object.hasOwn(body, 'secretReference') || Object.hasOwn(body, 'secretValues')) fail('secret-value-in-configuration-projection')
+  if (!Array.isArray(body.presentConfigKeys) || !Array.isArray(body.presentSecretKeys) || !Array.isArray(body.appliedDefaultKeys)) {
     fail('invalid-transaction-configuration')
   }
   const secretKeys = []
@@ -203,10 +205,11 @@ export const configureExtensionTransaction = async (transactionId, planHash, sch
   return validateConfiguration(body, transactionId, planHash)
 }
 
-export const approveExtensionTransaction = async (transactionId, planHash) => {
+export const approveExtensionTransaction = async (transactionId, planHash, configurationHash) => {
   assertTransactionId(transactionId)
   assertHash(planHash, 'plan-hash')
-  const body = await postJson(`/api/extensions/transactions/${transactionId}/approval`, { planHash })
+  assertHash(configurationHash, 'configuration-hash')
+  const body = await postJson(`/api/extensions/transactions/${transactionId}/approval`, { planHash, configurationHash })
   if (!isObject(body) || body.transactionId !== transactionId || body.state !== 'approved' || !Number.isSafeInteger(body.sequence)) {
     fail('invalid-transaction-approval')
   }

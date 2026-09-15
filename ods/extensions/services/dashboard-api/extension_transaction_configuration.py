@@ -12,6 +12,7 @@ from extension_configuration import (
     validate_stored_configuration,
 )
 from extension_transactions import (
+    configuration_attestation_hash,
     IntegrityError,
     TransitionError,
     ValidationRejected,
@@ -189,7 +190,45 @@ class TransactionConfigurationManager:
             "presentConfigKeys": [],
             "presentSecretKeys": [],
             "appliedDefaultKeys": [],
+            "configurationHash": TransactionConfigurationManager._configuration_hash(
+                transaction_id,
+                plan_hash,
+                schema["schemaHash"],
+                False,
+                {},
+                [],
+                [],
+                [],
+            ),
         }
+
+    @staticmethod
+    def _configuration_hash(
+        transaction_id: str,
+        plan_hash: str,
+        schema_hash: str,
+        configured: bool,
+        values: dict[str, Any],
+        present_config_keys: list[str],
+        present_secret_keys: list[str],
+        applied_default_keys: list[str],
+    ) -> str:
+        """Compute a SHA-256 digest over a domain-separated canonical JSON preimage.
+
+        Preimage contains ONLY the listed nonsecret fields; secretReference,
+        secretValues, idempotencyKey, timestamps, owner identity, and fields
+        are deliberately excluded.
+        """
+        return configuration_attestation_hash(
+            transaction_id,
+            plan_hash,
+            schema_hash,
+            configured,
+            values,
+            present_config_keys,
+            present_secret_keys,
+            applied_default_keys,
+        )
 
     @staticmethod
     def _schema(
@@ -249,6 +288,16 @@ class TransactionConfigurationManager:
             "presentConfigKeys": list(record["presentConfigKeys"]),
             "presentSecretKeys": list(record["presentSecretKeys"]),
             "appliedDefaultKeys": list(record["appliedDefaultKeys"]),
+            "configurationHash": TransactionConfigurationManager._configuration_hash(
+                record["transactionId"],
+                record["planHash"],
+                record["schemaHash"],
+                True,
+                dict(record["values"]),
+                list(record["presentConfigKeys"]),
+                list(record["presentSecretKeys"]),
+                list(record["appliedDefaultKeys"]),
+            ),
         }
         if duplicate is not None:
             result["duplicate"] = duplicate

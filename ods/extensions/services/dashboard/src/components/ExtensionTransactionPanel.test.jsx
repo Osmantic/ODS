@@ -73,6 +73,7 @@ const configuration = (configured = false) => ({
   transactionId: TX_ID,
   planHash: HASH,
   schemaHash: 'c'.repeat(64),
+  configurationHash: 'e'.repeat(64),
   fields: [
     { key: 'NOTES_PATH', type: 'string', required: true, secret: false, source: 'user', restartBehavior: 'service' },
     { key: 'NOTES_TOKEN', type: 'string', required: true, secret: true, source: 'user', restartBehavior: 'service', validation: { minLength: 8 } },
@@ -144,7 +145,9 @@ describe('ExtensionTransactionPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Validate and secure configuration' }))
     await waitFor(() => expect(approve).toBeEnabled())
     fireEvent.click(approve)
-    await waitFor(() => expect(approveExtensionTransaction).toHaveBeenCalledWith(TX_ID, HASH))
+    await waitFor(() => expect(approveExtensionTransaction).toHaveBeenCalledWith(TX_ID, HASH, 'e'.repeat(64)))
+    expect(screen.getByText('e'.repeat(64))).toBeVisible()
+    expect(screen.getByText('/notes')).toBeVisible()
     const apply = await screen.findByRole('button', { name: 'Apply approved plan' })
     fireEvent.click(apply)
     await waitFor(() => expect(executeExtensionTransaction).toHaveBeenCalledWith(TX_ID, HASH))

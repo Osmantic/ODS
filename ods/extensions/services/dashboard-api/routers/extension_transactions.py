@@ -49,6 +49,19 @@ class ExactHashRequest(BaseModel):
     )
 
 
+class OwnerApprovalRequest(BaseModel):
+    """Owner approval must bind to one exact plan AND configuration attestation."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    planHash: str = Field(
+        min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"
+    )
+    configurationHash: str = Field(
+        min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"
+    )
+
+
 class AssistantPlanRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -448,18 +461,25 @@ async def approve_transaction(
     approved_by: str = Depends(require_owner_approval_session),
     runtime: TransactionRuntime = Depends(get_transaction_runtime),
 ) -> JSONResponse:
-    """Bind one owner browser session to one exact stored plan hash."""
-    model = await _request_model(request, ExactHashRequest)
+    """Bind one owner browser session to one exact stored plan and configuration."""
+    model = await _request_model(request, OwnerApprovalRequest)
     try:
-        await asyncio.to_thread(
+        ready = await asyncio.to_thread(
             _configuration_manager(runtime).require_ready,
             transaction_id,
             model.planHash,
         )
+        if model.configurationHash != ready["configurationHash"]:
+            raise ApprovalError("configuration-hash-mismatch")
         timestamp = runtime.clock()
-        result = runtime.store.approve_exact(
+        approve = getattr(runtime.store, "approve_configured_exact", None)
+        if not callable(approve):
+            raise IntegrityError("approval-binding-unavailable")
+        result = approve(
             transaction_id,
             model.planHash,
+            model.configurationHash,
+            ready["schemaHash"],
             approved_by,
             timestamp,
             timestamp,
