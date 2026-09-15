@@ -1594,7 +1594,7 @@
       "depends_on": [],
       "port": 9090,
       "external_port_default": 9090,
-      "health_endpoint": "/health",
+      "health_endpoint": "/api/v1/app/version",
       "env_vars": [],
       "tags": [
         "image-generation",
