@@ -1381,3 +1381,11 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def string_safe_title_case(text: str | None) -> str:
+    """Safely convert strings to title case, returning empty string on invalid inputs.
+    """
+    if text is None or not isinstance(text, str):
+        return ""
+    return text.title()
