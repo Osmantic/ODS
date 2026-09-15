@@ -1,0 +1,7 @@
+topic read /api/v1/version
+
+user publisher
+topic write ods/#
+
+user reader
+topic read ods/#
