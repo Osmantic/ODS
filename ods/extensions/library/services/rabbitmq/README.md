@@ -26,9 +26,10 @@ persistent. Set queue/message TTLs and size limits appropriate for your workload
 ## State, operations and recovery
 
 `data/rabbitmq` holds the broker database, users, permissions, Erlang cookie and
-durable messages. The stable `rabbit@ods-rabbitmq` node identity must be retained
+durable messages. The stable `rabbit@localhost` node identity must be retained
 when restoring that directory. The installer prepares UID 999 bind ownership.
 The container has a read-only root and a writable persistent data directory.
+The node name resolves to loopback, matching the restricted Erlang listener.
 Erlang discovery/distribution listens only on container loopback; only the AMQP
 and management client ports are published.
 

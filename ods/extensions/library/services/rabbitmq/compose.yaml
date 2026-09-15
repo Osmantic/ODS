@@ -8,7 +8,7 @@ services:
       RABBITMQ_DEFAULT_USER: ods
       RABBITMQ_DEFAULT_PASS: "${RABBITMQ_PASSWORD:?Set RABBITMQ_PASSWORD before enabling RabbitMQ}"
       RABBITMQ_DEFAULT_VHOST: ods
-      RABBITMQ_NODENAME: rabbit@ods-rabbitmq
+      RABBITMQ_NODENAME: rabbit@localhost
       RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS: "+S 2:2 -kernel inet_dist_use_interface {127,0,0,1}"
       ERL_EPMD_ADDRESS: 127.0.0.1
       ERL_CRASH_DUMP: /tmp/erl_crash.dump

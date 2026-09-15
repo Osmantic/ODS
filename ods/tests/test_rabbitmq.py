@@ -47,7 +47,7 @@ def test_recipe_preserves_auth_state_and_explicit_port_binding(tmp_path, compose
     published = {p["target"]: (p["host_ip"], p["published"]) for p in service["ports"]}
     assert published == {15672: (bind or "127.0.0.1", ports[0]), 5672: (bind or "127.0.0.1", ports[1])}
     assert service["environment"]["RABBITMQ_DEFAULT_PASS"] == compose_env["RABBITMQ_PASSWORD"]
-    assert service["environment"]["RABBITMQ_NODENAME"] == "rabbit@" + service["hostname"]
+    assert service["environment"]["RABBITMQ_NODENAME"] == "rabbit@localhost"
     assert service["environment"]["ERL_EPMD_ADDRESS"] == "127.0.0.1"
     assert service["user"] == "999:999" and service["read_only"] is True
     mounts = {item["target"]: item for item in service["volumes"]}
