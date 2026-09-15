@@ -196,3 +196,19 @@ def test_parseable_expiry_still_requires_a_signature():
     future = int(time.time()) + 3600
     assert session_signer.verify(f"id.{future}.forged") == (False, "bad-signature")
     assert session_signer.verify("id.1.forged") == (False, "bad-signature")
+
+
+class TestSessionSignerHardening:
+    def test_secure_compare_tokens(self):
+        try:
+            from session_signer import secure_compare_tokens
+        except ImportError:
+            # Fallback if module structure differs
+            import sys
+            import os
+            sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+            from session_signer import secure_compare_tokens
+            
+        assert secure_compare_tokens("abc", "abc") is True
+        assert secure_compare_tokens("abc", "def") is False
+        assert secure_compare_tokens(None, "def") is False
