@@ -1740,3 +1740,13 @@ def test_flatten_bounds_cycles_and_large_depth_without_losing_empty_leaves():
         nested = {"child": nested}
     result = dict_flatten_nested_safe(nested, max_depth=100000)
     assert len(next(iter(result)).split(".")) == 128
+
+
+class TestNumericSafeMeanCalc:
+    def test_valid(self):
+        from helpers import numeric_safe_mean_calc
+        assert numeric_safe_mean_calc([2, 4, 6]) == 4.0
+
+    def test_invalid(self):
+        from helpers import numeric_safe_mean_calc
+        assert numeric_safe_mean_calc([None, "bad"]) == 0.0
