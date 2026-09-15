@@ -14,17 +14,32 @@
 #   Add new compose overlay mappings or backends here.
 # ============================================================================
 
-[[ -f "${SCRIPT_DIR:-}/lib/safe-env.sh" ]] && . "${SCRIPT_DIR}/lib/safe-env.sh"
+[[ -f "${SCRIPT_DIR:-}/lib/safe-env.sh" ]] && . "${SCRIPT_DIR:-}/lib/safe-env.sh"
+
+if ! declare -F log >/dev/null 2>&1; then
+    log() { :; }
+fi
+if ! declare -F warn >/dev/null 2>&1; then
+    warn() { :; }
+fi
+if ! declare -F load_env_from_output >/dev/null 2>&1; then
+    load_env_from_output() { :; }
+fi
 
 resolve_compose_config() {
     COMPOSE_FILE="docker-compose.yml"
     COMPOSE_FLAGS=""
 
+    local _script_dir="${SCRIPT_DIR:-.}"
+    local _tier="${TIER:-}"
+    local _gpu_backend="${GPU_BACKEND:-}"
+    local _log_file="${LOG_FILE:-/dev/null}"
+
     if [[ -n "${CAP_COMPOSE_OVERLAYS:-}" ]]; then
         IFS=',' read -r -a profile_overlays <<< "$CAP_COMPOSE_OVERLAYS"
         compose_overlay_ok=true
         for overlay in "${profile_overlays[@]}"; do
-            if [[ -f "$SCRIPT_DIR/$overlay" ]]; then
+            if [[ -f "$_script_dir/$overlay" ]]; then
                 COMPOSE_FLAGS="$COMPOSE_FLAGS -f $overlay"
             else
                 compose_overlay_ok=false
@@ -41,41 +56,41 @@ resolve_compose_config() {
 
     # Backward compatibility default if no flags were set.
     if [[ -z "$COMPOSE_FLAGS" ]]; then
-        if [[ "$TIER" == "NV_ULTRA" ]]; then
-            if [[ -f "$SCRIPT_DIR/docker-compose.base.yml" && -f "$SCRIPT_DIR/docker-compose.nvidia.yml" ]]; then
+        if [[ "$_tier" == "NV_ULTRA" ]]; then
+            if [[ -f "$_script_dir/docker-compose.base.yml" && -f "$_script_dir/docker-compose.nvidia.yml" ]]; then
                 COMPOSE_FLAGS="-f docker-compose.base.yml -f docker-compose.nvidia.yml"
                 COMPOSE_FILE="docker-compose.nvidia.yml"
             fi
-        elif [[ "$TIER" == "CLOUD" ]]; then
-            if [[ -f "$SCRIPT_DIR/docker-compose.base.yml" ]]; then
+        elif [[ "$_tier" == "CLOUD" ]]; then
+            if [[ -f "$_script_dir/docker-compose.base.yml" ]]; then
                 COMPOSE_FLAGS="-f docker-compose.base.yml"
                 COMPOSE_FILE="docker-compose.base.yml"
             fi
-        elif [[ "$GPU_BACKEND" == "cpu" ]]; then
-            if [[ -f "$SCRIPT_DIR/docker-compose.base.yml" && -f "$SCRIPT_DIR/docker-compose.cpu.yml" ]]; then
+        elif [[ "$_gpu_backend" == "cpu" ]]; then
+            if [[ -f "$_script_dir/docker-compose.base.yml" && -f "$_script_dir/docker-compose.cpu.yml" ]]; then
                 COMPOSE_FLAGS="-f docker-compose.base.yml -f docker-compose.cpu.yml"
                 COMPOSE_FILE="docker-compose.cpu.yml"
             fi
-        elif [[ "$TIER" == "SH_LARGE" || "$TIER" == "SH_COMPACT" ]]; then
-            if [[ -f "$SCRIPT_DIR/docker-compose.base.yml" && -f "$SCRIPT_DIR/docker-compose.amd.yml" ]]; then
+        elif [[ "$_tier" == "SH_LARGE" || "$_tier" == "SH_COMPACT" ]]; then
+            if [[ -f "$_script_dir/docker-compose.base.yml" && -f "$_script_dir/docker-compose.amd.yml" ]]; then
                 COMPOSE_FLAGS="-f docker-compose.base.yml -f docker-compose.amd.yml"
                 COMPOSE_FILE="docker-compose.amd.yml"
             fi
-        elif [[ "$TIER" == "ARC" || "$TIER" == "ARC_LITE" || "$GPU_BACKEND" == "intel" || "$GPU_BACKEND" == "sycl" ]]; then
+        elif [[ "$_tier" == "ARC" || "$_tier" == "ARC_LITE" || "$_gpu_backend" == "intel" || "$_gpu_backend" == "sycl" ]]; then
             # Prefer docker-compose.arc.yml (oneAPI build-from-source) when present;
             # fall back to docker-compose.intel.yml (pre-built image) if arc.yml is absent.
-            if [[ -f "$SCRIPT_DIR/docker-compose.base.yml" && -f "$SCRIPT_DIR/docker-compose.arc.yml" ]]; then
+            if [[ -f "$_script_dir/docker-compose.base.yml" && -f "$_script_dir/docker-compose.arc.yml" ]]; then
                 COMPOSE_FLAGS="-f docker-compose.base.yml -f docker-compose.arc.yml"
                 COMPOSE_FILE="docker-compose.arc.yml"
-            elif [[ -f "$SCRIPT_DIR/docker-compose.base.yml" && -f "$SCRIPT_DIR/docker-compose.intel.yml" ]]; then
+            elif [[ -f "$_script_dir/docker-compose.base.yml" && -f "$_script_dir/docker-compose.intel.yml" ]]; then
                 COMPOSE_FLAGS="-f docker-compose.base.yml -f docker-compose.intel.yml"
                 COMPOSE_FILE="docker-compose.intel.yml"
             fi
         else
-            if [[ -f "$SCRIPT_DIR/docker-compose.base.yml" && -f "$SCRIPT_DIR/docker-compose.nvidia.yml" ]]; then
+            if [[ -f "$_script_dir/docker-compose.base.yml" && -f "$_script_dir/docker-compose.nvidia.yml" ]]; then
                 COMPOSE_FLAGS="-f docker-compose.base.yml -f docker-compose.nvidia.yml"
                 COMPOSE_FILE="docker-compose.nvidia.yml"
-            elif [[ -f "$SCRIPT_DIR/docker-compose.yml" ]]; then
+            elif [[ -f "$_script_dir/docker-compose.yml" ]]; then
                 COMPOSE_FLAGS="-f docker-compose.yml"
             fi
         fi
@@ -85,27 +100,27 @@ resolve_compose_config() {
         COMPOSE_FLAGS="-f $COMPOSE_FILE"
     fi
 
-    if [[ -x "$SCRIPT_DIR/scripts/resolve-compose-stack.sh" ]]; then
-        COMPOSE_ENV="$("$SCRIPT_DIR/scripts/resolve-compose-stack.sh" \
-            --script-dir "$SCRIPT_DIR" \
-            --tier "$TIER" \
-            --gpu-backend "$GPU_BACKEND" \
+    if [[ -x "$_script_dir/scripts/resolve-compose-stack.sh" ]]; then
+        COMPOSE_ENV="$("$_script_dir/scripts/resolve-compose-stack.sh" \
+            --script-dir "$_script_dir" \
+            --tier "$_tier" \
+            --gpu-backend "$_gpu_backend" \
             --profile-overlays "${CAP_COMPOSE_OVERLAYS:-}" \
             --gpu-count "${GPU_COUNT:-1}" \
             --ods-mode "${ODS_MODE:-local}" \
-            --env 2>>"$LOG_FILE")"
+            --env 2>>"$_log_file")"
         load_env_from_output <<< "$COMPOSE_ENV"
     fi
 
     # Layer Tier 0 memory overlay for low-RAM machines
-    if [[ "$TIER" == "0" && -f "$SCRIPT_DIR/docker-compose.tier0.yml" ]]; then
+    if [[ "$_tier" == "0" && -f "$_script_dir/docker-compose.tier0.yml" ]]; then
         COMPOSE_FLAGS="$COMPOSE_FLAGS -f docker-compose.tier0.yml"
         log "Including docker-compose.tier0.yml (Tier 0 memory limits)"
     fi
 
     # Auto-include docker-compose.override.yml if present (standard Docker convention).
     # This lets modders add services without editing core compose files.
-    if [[ -f "$SCRIPT_DIR/docker-compose.override.yml" ]]; then
+    if [[ -f "$_script_dir/docker-compose.override.yml" ]]; then
         COMPOSE_FLAGS="$COMPOSE_FLAGS -f docker-compose.override.yml"
         log "Including docker-compose.override.yml (user overrides)"
     fi
