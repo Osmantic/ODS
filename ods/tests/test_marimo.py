@@ -39,6 +39,13 @@ def installation(tmp_path):
         pytest.skip("Docker Compose CLI required")
     installed = tmp_path / "extensions/services/marimo"
     shutil.copytree(EXTENSION, installed)
+    # Dashboard installation rewrites the recipe-relative build context to
+    # this final directory. Its real HTTP boundary is covered by
+    # dashboard-api/tests/test_marimo_install.py.
+    compose = installed / "compose.yaml"
+    text = compose.read_text()
+    assert "      context: .\n" in text
+    compose.write_text(text.replace("      context: .\n", f"      context: {installed}\n"))
     (tmp_path / "empty.env").write_text("")
     env = {key: value for key, value in os.environ.items() if not key.startswith("MARIMO_")}
     env.pop("BIND_ADDRESS", None)

@@ -1,7 +1,7 @@
 services:
   marimo:
     build:
-      context: ./extensions/services/marimo
+      context: .
     container_name: ods-marimo
     restart: unless-stopped
     user: "1000:1000"
