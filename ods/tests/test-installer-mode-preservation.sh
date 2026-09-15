@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# The installer creates .env under umask 077 (phase 06). Pin the same mode
+# here: ods_existing_install_mode rejects group-writable files, so a fixture
+# written under a stock Ubuntu umask of 002 (mode 664) would be refused and
+# every case below would fail for reasons unrelated to what it tests.
+umask 077
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/ods-install-mode.XXXXXX")"
