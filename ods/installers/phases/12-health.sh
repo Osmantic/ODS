@@ -37,6 +37,7 @@ if $DRY_RUN; then
     log "[DRY RUN] Would verify service health:"
     if [[ "${ODS_INSTALL_PROFILE:-legacy}" == "assistant-first" ]]; then
         log "[DRY RUN]   - Dashboard, Dashboard API, and the selected inference route"
+        [[ "${ENABLE_SEARXNG:-false}" == "true" ]] && log "[DRY RUN]   - Bundled SearXNG search provider"
         [[ "${ENABLE_PIXEL_RUNTIME:-false}" == "true" ]] && log "[DRY RUN]   - Assistant gateway, private ingress, and edge"
     else
         log "[DRY RUN]   - llama-server, Open WebUI, Perplexica, ComfyUI"
@@ -63,6 +64,7 @@ sleep 5
 # Services may need more startup time; we report all failures at the end.
 HEALTH_FAILURES=0
 EMBEDDINGS_HEALTH_FAILED=false
+ASSISTANT_SEARCH_HEALTH_FAILED=false
 _check_health() {
     if ! check_service "$@"; then
         HEALTH_FAILURES=$((HEALTH_FAILURES + 1))
@@ -405,6 +407,13 @@ if [[ "${ODS_INSTALL_PROFILE:-legacy}" == "assistant-first" ]]; then
     ods_progress 89 "health" "Waiting for assistant control plane"
     _check_health "Dashboard API" "http://127.0.0.1:${SERVICE_PORTS[dashboard-api]:-3002}${SERVICE_HEALTH[dashboard-api]:-/health}" 150 10 "$(sr_container dashboard-api)"
     _check_health "Assistant" "http://127.0.0.1:${SERVICE_PORTS[dashboard]:-3001}${SERVICE_HEALTH[dashboard]:-/}" 150 10 "$(sr_container dashboard)"
+    if [[ "${ENABLE_SEARXNG:-false}" == "true" ]]; then
+        ods_progress 90 "health" "Waiting for private web search"
+        if ! check_service "SearXNG" "http://127.0.0.1:${SERVICE_PORTS[searxng]:-8888}${SERVICE_HEALTH[searxng]:-/healthz}" 60 10 "$(sr_container searxng)"; then
+            HEALTH_FAILURES=$((HEALTH_FAILURES + 1))
+            ASSISTANT_SEARCH_HEALTH_FAILED=true
+        fi
+    fi
 else
     # Open WebUI: 150 attempts * adaptive backoff = up to ~20 minutes
     ods_progress 89 "health" "Waiting for Chat UI"
@@ -707,6 +716,11 @@ if [[ "$HEALTH_FAILURES" -gt 0 ]]; then
         ai_warn "This often means text-embeddings-inference stalled while downloading its ONNX model from Hugging Face."
         ai_warn "Recovery: docker compose logs embeddings"
         ai_warn "Then retry after network/CDN recovery: docker compose up -d embeddings"
+        exit 1
+    fi
+    if [[ "${ODS_INSTALL_PROFILE:-legacy}" == "assistant-first" && "$ASSISTANT_SEARCH_HEALTH_FAILED" == "true" ]]; then
+        ai_warn "The first-boot SearXNG search provider did not become healthy; Assistant First cannot claim search readiness."
+        ai_warn "Inspect the SearXNG container and retry after the port, configuration, or network issue is resolved."
         exit 1
     fi
     if [[ "${COMPOSE_STARTED_WITH_DELAYED_HEALTH:-false}" == "true" ]]; then

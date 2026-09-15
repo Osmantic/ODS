@@ -26,6 +26,7 @@ MINIMUM_SERVICES = {
     "llama-server",
     "model-router",
     "pixel-edge",
+    "searxng",
 }
 EXTRACTED_OPTIONAL = {
     "open-webui",
@@ -34,12 +35,16 @@ EXTRACTED_OPTIONAL = {
 }
 
 
-def resolve(*args: str, env: dict[str, str] | None = None) -> list[str]:
+def resolve(
+    *args: str,
+    env: dict[str, str] | None = None,
+    script_dir: pathlib.Path = ROOT,
+) -> list[str]:
     command = [
         "bash",
         str(RESOLVER),
         "--script-dir",
-        str(ROOT),
+        str(script_dir),
         "--tier",
         "1",
         "--gpu-backend",
@@ -51,7 +56,7 @@ def resolve(*args: str, env: dict[str, str] | None = None) -> list[str]:
     result = subprocess.run(
         command,
         check=True,
-        cwd=ROOT,
+        cwd=script_dir,
         env={**os.environ, **(env or {})},
         text=True,
         capture_output=True,
@@ -85,6 +90,7 @@ class AssistantFirstProfileTests(unittest.TestCase):
                 "docker-compose.base.yml",
                 "docker-compose.nvidia.yml",
                 "extensions/services/pixel-edge/compose.assistant-first.yaml",
+                "extensions/services/searxng/compose.yaml",
             ],
         )
         self.assertTrue(all("open-webui" not in item for item in files))
@@ -100,9 +106,73 @@ class AssistantFirstProfileTests(unittest.TestCase):
             )
             self.assertEqual(backend_files[0:2], ["docker-compose.base.yml", overlay])
             self.assertEqual(
-                backend_files[-1],
-                "extensions/services/pixel-edge/compose.assistant-first.yaml",
+                backend_files[-2:],
+                [
+                    "extensions/services/pixel-edge/compose.assistant-first.yaml",
+                    "extensions/services/searxng/compose.yaml",
+                ],
             )
+
+    def test_explicit_native_search_omits_searxng_without_optional_apps(self) -> None:
+        files = resolve(
+            "--install-profile", "assistant-first",
+            env={"PIXEL_WEB_SEARCH_PROVIDER": "parallel-free"},
+        )
+        self.assertNotIn("extensions/services/searxng/compose.yaml", files)
+        self.assertEqual(
+            files[-1], "extensions/services/pixel-edge/compose.assistant-first.yaml"
+        )
+        self.assertTrue(all("open-webui" not in item for item in files))
+
+    def test_persisted_assistant_search_choice_preserves_old_native_installs(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            install = pathlib.Path(temp)
+            for file_name in ("docker-compose.base.yml", "docker-compose.nvidia.yml"):
+                shutil.copy2(ROOT / file_name, install / file_name)
+            for service_id in ("pixel-edge", "searxng"):
+                shutil.copytree(
+                    ROOT / "extensions/services" / service_id,
+                    install / "extensions/services" / service_id,
+                )
+            persisted = install / ".env"
+            persisted.write_text("ODS_INSTALL_PROFILE=assistant-first\n", encoding="utf-8")
+            old_files = resolve(
+                "--install-profile", "assistant-first", script_dir=install
+            )
+            self.assertNotIn("extensions/services/searxng/compose.yaml", old_files)
+
+            persisted.write_text(
+                "ODS_INSTALL_PROFILE=assistant-first\n"
+                "PIXEL_WEB_SEARCH_PROVIDER=searxng\n",
+                encoding="utf-8",
+            )
+            new_files = resolve(
+                "--install-profile", "assistant-first", script_dir=install
+            )
+            self.assertIn("extensions/services/searxng/compose.yaml", new_files)
+            explicit_native = resolve(
+                "--install-profile", "assistant-first", script_dir=install,
+                env={"PIXEL_WEB_SEARCH_PROVIDER": "parallel-free"},
+            )
+            self.assertNotIn(
+                "extensions/services/searxng/compose.yaml", explicit_native
+            )
+
+    def test_invalid_search_provider_fails_before_compose_selection(self) -> None:
+        result = subprocess.run(
+            [
+                "bash", str(RESOLVER), "--script-dir", str(ROOT),
+                "--install-profile", "assistant-first",
+            ],
+            cwd=ROOT,
+            env={**os.environ, "PIXEL_WEB_SEARCH_PROVIDER": "unqualified"},
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("search provider must be searxng or parallel-free", result.stderr)
+        self.assertEqual(result.stdout, "")
 
     def test_external_modes_replace_managed_inference_without_optional_apps(self) -> None:
         cloud = resolve(
@@ -115,6 +185,7 @@ class AssistantFirstProfileTests(unittest.TestCase):
                 "docker-compose.cloud.yml",
                 "extensions/services/litellm/compose.yaml",
                 "extensions/services/pixel-edge/compose.assistant-first.yaml",
+                "extensions/services/searxng/compose.yaml",
             ],
         )
         external = resolve(
@@ -151,6 +222,10 @@ class AssistantFirstProfileTests(unittest.TestCase):
             (ROOT / "extensions/services/litellm/manifest.yaml").read_text(encoding="utf-8")
         )
         self.assertIn("inference-route@1", litellm["service"]["capabilities"]["provides"])
+        searxng = yaml.safe_load(
+            (ROOT / "extensions/services/searxng/manifest.yaml").read_text(encoding="utf-8")
+        )
+        self.assertIn("web-search@1", searxng["service"]["planning"]["provides"])
 
     def test_image_phase_owns_optional_images_through_compose(self) -> None:
         phase = (ROOT / "installers/phases/08-images.sh").read_text(encoding="utf-8")
@@ -168,6 +243,9 @@ class AssistantFirstProfileTests(unittest.TestCase):
         self.assertIn('"Dashboard API"', health)
         self.assertIn('"Assistant"', health)
         self.assertIn("Assistant gateway, private ingress, and edge", health)
+        self.assertIn('check_service "SearXNG"', health)
+        self.assertIn("ASSISTANT_SEARCH_HEALTH_FAILED=true", health)
+        self.assertIn("cannot claim search readiness", health)
 
         devtools = (ROOT / "installers/phases/07-devtools.sh").read_text(encoding="utf-8")
         self.assertIn("Assistant First skips optional developer tools", devtools)
@@ -267,6 +345,7 @@ class AssistantFirstProfileTests(unittest.TestCase):
             **os.environ,
             "PIXEL_OPENWEBUI_KEY": "a" * 64,
             "DASHBOARD_API_KEY": "b" * 64,
+            "SEARXNG_SECRET": "c" * 64,
             "PIXEL_INGRESS_GID": "1234",
             "PIXEL_INGRESS_RUNTIME_DIR": "/tmp/ods-assistant-first-ingress",
             "PIXEL_PREVIEW_RUNTIME_DIR": "/tmp/ods-assistant-first-preview",

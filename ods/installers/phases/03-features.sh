@@ -264,15 +264,59 @@ if ! $DRY_RUN; then
         _pixel_support_services=true
     fi
     _sync_extension_compose "$_pixel_support_services" litellm    "LiteLLM"       "neither recommended services nor Pixel are enabled"
-    # SearXNG backs Pixel, Open WebUI web search, Perplexica, and agent web tools.
-    # It is not only a recommended extra — --no-recommended with Perplexica
-    # still needs the search backend.
-    if [[ "${ODS_INSTALL_PROFILE:-legacy}" != "assistant-first" ]] &&
-       [[ "${ENABLE_RECOMMENDED:-false}" == "true" ||
-          "${ENABLE_PIXEL_RUNTIME:-false}" == "true" ||
-          "${ENABLE_PERPLEXICA:-false}" == "true" ||
-          "${ENABLE_HERMES:-false}" == "true" ||
-          "${ENABLE_OPENCLAW:-false}" == "true" ]]; then
+    # Search is part of the first-boot assistant capability, not one of the
+    # optional applications in extensions/library/services. The bundled,
+    # private SearXNG provider is the Assistant First default. An explicit
+    # parallel-free selection uses the separately pinned native provider and
+    # omits the SearXNG container. Preserve a saved selection on rerun.
+    if [[ "${ODS_INSTALL_PROFILE:-legacy}" == "assistant-first" ]]; then
+        _pixel_search_provider="${PIXEL_WEB_SEARCH_PROVIDER:-}"
+        _pixel_search_env="${INSTALL_DIR:-$SCRIPT_DIR}/.env"
+        if [[ -z "$_pixel_search_provider" &&
+              ( -e "$_pixel_search_env" || -L "$_pixel_search_env" ) ]]; then
+            if [[ -L "$_pixel_search_env" || ! -f "$_pixel_search_env" ]] ||
+               [[ ! -r "$_pixel_search_env" ]]; then
+                ai_bad "Assistant First .env must be a regular file under 2 MiB."
+                return 1 2>/dev/null || exit 1
+            fi
+            _pixel_env_bytes="$(wc -c < "$_pixel_search_env" 2>/dev/null)"
+            if [[ ! "$_pixel_env_bytes" =~ ^[0-9]+$ ]] ||
+               (( _pixel_env_bytes > 2097152 )); then
+                ai_bad "Assistant First .env must be a regular file under 2 MiB."
+                return 1 2>/dev/null || exit 1
+            fi
+            _pixel_search_saved="$(grep '^PIXEL_WEB_SEARCH_PROVIDER=' \
+                "$_pixel_search_env" 2>/dev/null || true)"
+            if [[ "$_pixel_search_saved" == *$'\n'* ]]; then
+                ai_bad "Duplicate Assistant First search provider in .env."
+                return 1 2>/dev/null || exit 1
+            fi
+            _pixel_search_provider="${_pixel_search_saved#*=}"
+            _pixel_search_provider="${_pixel_search_provider%\"}"
+            _pixel_search_provider="${_pixel_search_provider#\"}"
+            _pixel_search_provider="${_pixel_search_provider%\'}"
+            _pixel_search_provider="${_pixel_search_provider#\'}"
+            # Earlier Assistant First installs omitted this .env key while
+            # fresh native onboarding selected parallel-free. Do not add a
+            # SearXNG container during their rerun without owner selection.
+            _pixel_search_provider="${_pixel_search_provider:-parallel-free}"
+            unset _pixel_search_saved
+        fi
+        _pixel_search_provider="${_pixel_search_provider:-searxng}"
+        case "$_pixel_search_provider" in
+            searxng) ENABLE_SEARXNG=true ;;
+            parallel-free) ENABLE_SEARXNG=false ;;
+            *) ai_bad "Assistant First search provider must be searxng or parallel-free.";
+               return 1 2>/dev/null || exit 1 ;;
+        esac
+        PIXEL_WEB_SEARCH_PROVIDER="$_pixel_search_provider"
+        export PIXEL_WEB_SEARCH_PROVIDER
+        unset _pixel_search_provider _pixel_search_env _pixel_env_bytes
+    elif [[ "${ENABLE_RECOMMENDED:-false}" == "true" ||
+            "${ENABLE_PIXEL_RUNTIME:-false}" == "true" ||
+            "${ENABLE_PERPLEXICA:-false}" == "true" ||
+            "${ENABLE_HERMES:-false}" == "true" ||
+            "${ENABLE_OPENCLAW:-false}" == "true" ]]; then
         ENABLE_SEARXNG=true
     else
         ENABLE_SEARXNG=false

@@ -38,4 +38,66 @@ for ((mask=0; mask<64; mask++)); do
         }
     )
 done
-echo 'PASS: all 64 Pixel/external/shared-service consumer combinations'
+
+# Assistant First requires search on first boot. The bundled SearXNG provider
+# is the default, while an explicit or saved native-provider selection remains
+# a valid one-provider alternative on rerun.
+fixture_root="$(mktemp -d)"
+trap 'rm -rf -- "$fixture_root"' EXIT
+
+check_assistant_search() (
+    local requested="$1" saved="$2" expected="$3"
+    INSTALL_DIR="$fixture_root"
+    ODS_INSTALL_PROFILE=assistant-first
+    PIXEL_WEB_SEARCH_PROVIDER="$requested"
+    if [[ "$saved" == old-no-provider ]]; then
+        printf 'ODS_INSTALL_PROFILE=assistant-first\n' > "$fixture_root/.env"
+    elif [[ -n "$saved" ]]; then
+        printf 'PIXEL_WEB_SEARCH_PROVIDER=%s\n' "$saved" > "$fixture_root/.env"
+    else
+        rm -f -- "$fixture_root/.env"
+    fi
+    declare -A selected=()
+    _sync_extension_compose() { selected["$2"]="$1"; }
+    ai_bad() { echo "FAIL: $*" >&2; }
+    source /dev/stdin <<< "$block"
+    [[ "${selected[searxng]:-missing}" == "$expected" &&
+       "$ENABLE_SEARXNG" == "$expected" &&
+       "$ENABLE_WEB_SEARCH" == "$expected" ]] || {
+        echo "FAIL: Assistant First search selection ($requested/$saved)" >&2
+        exit 1
+    }
+    if [[ "$expected" == true ]]; then
+        [[ "$PIXEL_WEB_SEARCH_PROVIDER" == searxng ]]
+    else
+        [[ "$PIXEL_WEB_SEARCH_PROVIDER" == parallel-free ]]
+    fi
+)
+
+check_assistant_search '' '' true
+check_assistant_search parallel-free '' false
+check_assistant_search '' old-no-provider false
+check_assistant_search '' parallel-free false
+check_assistant_search searxng parallel-free true
+
+# Persisted provider ambiguity or a symlink must fail instead of silently
+# selecting a different provider from the post-install resolver.
+check_rejected_saved_search() (
+    INSTALL_DIR="$fixture_root"
+    ODS_INSTALL_PROFILE=assistant-first
+    PIXEL_WEB_SEARCH_PROVIDER=""
+    declare -A selected=()
+    _sync_extension_compose() { selected["$2"]="$1"; }
+    ai_bad() { :; }
+    if source /dev/stdin <<< "$block"; then
+        echo "FAIL: unsafe persisted Assistant First search provider accepted" >&2
+        exit 1
+    fi
+)
+printf 'PIXEL_WEB_SEARCH_PROVIDER=searxng\nPIXEL_WEB_SEARCH_PROVIDER=parallel-free\n' > "$fixture_root/.env"
+check_rejected_saved_search
+mv -- "$fixture_root/.env" "$fixture_root/.env-target"
+ln -s -- "$fixture_root/.env-target" "$fixture_root/.env"
+check_rejected_saved_search
+
+echo 'PASS: 64 legacy combinations and Assistant First search-provider selection'

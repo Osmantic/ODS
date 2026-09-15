@@ -611,6 +611,85 @@ class TestResolveComposeFlags:
         assert cmd[cmd.index("--ods-mode") + 1] == expected_mode
         assert cmd[cmd.index("--gpu-count") + 1] == "1"
 
+    @pytest.mark.parametrize(
+        ("saved_provider", "expected_provider"),
+        [
+            ("", "parallel-free"),
+            ("searxng", "searxng"),
+            ("parallel-free", "parallel-free"),
+        ],
+    )
+    def test_cache_invalidation_preserves_assistant_first_search_choice(
+        self, tmp_path, monkeypatch, saved_provider, expected_provider
+    ):
+        install_dir = tmp_path / "ods"
+        scripts_dir = install_dir / "scripts"
+        scripts_dir.mkdir(parents=True)
+        (scripts_dir / "resolve-compose-stack.sh").write_text("#!/usr/bin/env bash\n")
+        (install_dir / ".env").write_text(
+            "ODS_INSTALL_PROFILE=assistant-first\n"
+            + (
+                f"PIXEL_WEB_SEARCH_PROVIDER={saved_provider}\n"
+                if saved_provider else ""
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.setattr(_mod.platform, "system", lambda: "Linux")
+        monkeypatch.setattr(_mod, "_find_usable_bash", lambda: "/bin/bash")
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            return subprocess.CompletedProcess(cmd, 0, "-f docker-compose.base.yml\n", "")
+
+        monkeypatch.setattr(_mod.subprocess, "run", fake_run)
+        assert resolve_compose_flags() == ["-f", "docker-compose.base.yml"]
+        cmd, kwargs = calls[0]
+        assert cmd[cmd.index("--install-profile") + 1] == "assistant-first"
+        assert kwargs["env"]["PIXEL_WEB_SEARCH_PROVIDER"] == expected_provider
+
+    def test_invalid_persisted_assistant_search_choice_fails_before_resolver(
+        self, tmp_path, monkeypatch
+    ):
+        install_dir = tmp_path / "ods"
+        scripts_dir = install_dir / "scripts"
+        scripts_dir.mkdir(parents=True)
+        (scripts_dir / "resolve-compose-stack.sh").write_text("#!/usr/bin/env bash\n")
+        (install_dir / ".env").write_text(
+            "ODS_INSTALL_PROFILE=assistant-first\n"
+            "PIXEL_WEB_SEARCH_PROVIDER=unqualified\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.setattr(_mod, "_find_usable_bash", lambda: "/bin/bash")
+        with pytest.raises(RuntimeError, match="unsupported persisted Assistant First search"):
+            resolve_compose_flags()
+
+    def test_fresh_assistant_first_cache_resolution_defaults_to_searxng(
+        self, tmp_path, monkeypatch
+    ):
+        install_dir = tmp_path / "ods"
+        scripts_dir = install_dir / "scripts"
+        scripts_dir.mkdir(parents=True)
+        (scripts_dir / "resolve-compose-stack.sh").write_text("#!/usr/bin/env bash\n")
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.setattr(_mod.platform, "system", lambda: "Linux")
+        monkeypatch.setattr(_mod, "_find_usable_bash", lambda: "/bin/bash")
+        monkeypatch.setenv("ODS_INSTALL_PROFILE", "assistant-first")
+        monkeypatch.delenv("PIXEL_WEB_SEARCH_PROVIDER", raising=False)
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            return subprocess.CompletedProcess(cmd, 0, "-f docker-compose.base.yml\n", "")
+
+        monkeypatch.setattr(_mod.subprocess, "run", fake_run)
+        assert resolve_compose_flags() == ["-f", "docker-compose.base.yml"]
+        cmd, kwargs = calls[0]
+        assert cmd[cmd.index("--install-profile") + 1] == "assistant-first"
+        assert kwargs["env"]["PIXEL_WEB_SEARCH_PROVIDER"] == "searxng"
+
     def test_windows_resolver_skips_whisper_overlay_for_cpu_fallback(
         self,
         tmp_path,

@@ -4936,8 +4936,31 @@ def resolve_compose_flags() -> list:
     if platform.system() == "Windows":
         _ensure_windows_resolver_pyyaml(sys.executable)
         env["ODS_PYTHON_CMD"] = _to_bash_path(Path(sys.executable))
-    install_env = load_env(INSTALL_DIR / ".env")
+    persisted_env_path = INSTALL_DIR / ".env"
+    install_env = load_env(persisted_env_path)
     ods_mode = install_env.get("ODS_MODE", "").strip() or "local"
+    # Once .env exists, it is authoritative for profile/search selection.
+    # Before first persistence, the installer can pass its explicit selection.
+    fresh_selection = not persisted_env_path.exists()
+    install_profile = install_env.get("ODS_INSTALL_PROFILE", "").strip() or (
+        os.environ.get("ODS_INSTALL_PROFILE", "").strip() if fresh_selection else ""
+    ) or "legacy"
+    search_provider = install_env.get("PIXEL_WEB_SEARCH_PROVIDER", "").strip() or (
+        os.environ.get("PIXEL_WEB_SEARCH_PROVIDER", "").strip()
+        if fresh_selection else ""
+    )
+    if install_profile not in {"legacy", "assistant-first"}:
+        raise RuntimeError("unsupported persisted install profile")
+    if install_profile == "assistant-first":
+        if search_provider and search_provider not in {"searxng", "parallel-free"}:
+            raise RuntimeError("unsupported persisted Assistant First search provider")
+        # Existing Assistant First .env files without this key predate the
+        # bundled-search default and used native parallel-free onboarding.
+        # Fresh installs without .env select bundled search; a persisted older
+        # .env with no provider key keeps its prior native-search behavior.
+        env["PIXEL_WEB_SEARCH_PROVIDER"] = search_provider or (
+            "parallel-free" if persisted_env_path.exists() else "searxng"
+        )
     cmd = [
         bash, _to_bash_path(script),
         "--script-dir", _to_bash_path(INSTALL_DIR),
@@ -4945,6 +4968,7 @@ def resolve_compose_flags() -> list:
         "--gpu-backend", GPU_BACKEND,
         "--gpu-count", GPU_COUNT,
         "--ods-mode", ods_mode,
+        "--install-profile", install_profile,
     ]
     if platform.system() == "Windows" and not _windows_whisper_cuda_supported(install_env):
         cmd.extend(["--skip-gpu-overlays", "whisper"])

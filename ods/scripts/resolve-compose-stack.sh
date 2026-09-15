@@ -103,6 +103,39 @@ if install_profile not in {"legacy", "assistant-first"}:
     print(f"ERROR: unsupported install profile: {install_profile}", file=sys.stderr)
     sys.exit(1)
 assistant_first = install_profile == "assistant-first"
+assistant_search_provider = None
+if assistant_first:
+    assistant_search_provider = os.environ.get("PIXEL_WEB_SEARCH_PROVIDER", "").strip().lower()
+    if not assistant_search_provider:
+        # A fresh install has no .env and defaults to bundled private search.
+        # Older Assistant First installations could have an .env without a
+        # provider key; their fresh native onboarding used parallel-free.
+        persisted_env = script_dir / ".env"
+        if persisted_env.is_symlink():
+            print("ERROR: Assistant First .env cannot be a symlink", file=sys.stderr)
+            sys.exit(1)
+        if persisted_env.is_file():
+            if persisted_env.stat().st_size > 2 * 1024 * 1024:
+                print("ERROR: Assistant First .env is oversized", file=sys.stderr)
+                sys.exit(1)
+            saved_provider = None
+            try:
+                with persisted_env.open(encoding="utf-8") as handle:
+                    for line in handle:
+                        if line.startswith("PIXEL_WEB_SEARCH_PROVIDER="):
+                            if saved_provider is not None:
+                                print("ERROR: duplicate Assistant First search provider", file=sys.stderr)
+                                sys.exit(1)
+                            saved_provider = line.partition("=")[2].strip().strip('"\'').lower()
+            except (OSError, UnicodeError):
+                print("ERROR: cannot read Assistant First .env as UTF-8", file=sys.stderr)
+                sys.exit(1)
+            assistant_search_provider = saved_provider or "parallel-free"
+        else:
+            assistant_search_provider = "searxng"
+    if assistant_search_provider not in {"searxng", "parallel-free"}:
+        print("ERROR: Assistant First search provider must be searxng or parallel-free", file=sys.stderr)
+        sys.exit(1)
 if os.environ.get("WHISPER_ACCELERATION", "").strip().lower() == "cpu":
     skip_gpu_overlays.add("whisper")
 lemonade_external = (
@@ -584,6 +617,8 @@ if ext_dir.exists():
             allowed = {"pixel-edge"}
             if ods_mode in {"cloud", "lemonade"}:
                 allowed.add("litellm")
+            if assistant_search_provider == "searxng":
+                allowed.add("searxng")
             if service_dir.name not in allowed:
                 continue
         # Find manifest
