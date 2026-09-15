@@ -353,7 +353,10 @@ _restore_snapshot() {
         local base
         base="$(basename "$f")"
         [[ -f "$f" && "$base" != "snapshot.json" && "$base" != "metadata.json" ]] || continue
-        cp "$f" "${INSTALL_DIR}/"
+        if ! cp "$f" "${INSTALL_DIR}/"; then
+            log_error "Failed to restore ${base}; live installation was left unchanged for this file."
+            return 1
+        fi
         log_info "  Restored: ${base}"
     done
     shopt -u dotglob
@@ -362,8 +365,27 @@ _restore_snapshot() {
     for ext_dir in litellm n8n openclaw searxng; do
         local src="${snap_dir}/config-${ext_dir}"
         if [[ -d "$src" ]]; then
-            rm -rf "${INSTALL_DIR}/config/${ext_dir}"
-            cp -r "$src" "${INSTALL_DIR}/config/${ext_dir}"
+            local live="${INSTALL_DIR}/config/${ext_dir}"
+            local stage="${INSTALL_DIR}/config/.${ext_dir}.restore.$$.tmp"
+            local previous="${INSTALL_DIR}/config/.${ext_dir}.previous.$$"
+            rm -rf "$stage" "$previous"
+            if ! mkdir -p "$stage" || ! cp -r "$src"/. "$stage"/; then
+                rm -rf "$stage"
+                log_error "Failed to stage config/${ext_dir}; existing configuration was preserved."
+                return 1
+            fi
+            if [[ -e "$live" ]] && ! mv "$live" "$previous"; then
+                rm -rf "$stage"
+                log_error "Failed to reserve existing config/${ext_dir}; configuration was preserved."
+                return 1
+            fi
+            if ! mv "$stage" "$live"; then
+                [[ -e "$previous" ]] && mv "$previous" "$live" || true
+                rm -rf "$stage"
+                log_error "Failed to activate restored config/${ext_dir}; existing configuration was preserved."
+                return 1
+            fi
+            rm -rf "$previous"
             log_info "  Restored: config/${ext_dir}/"
         fi
     done
@@ -1108,4 +1130,6 @@ main() {
     esac
 }
 
-main "$@"
+if [[ "${ODS_UPDATE_SOURCE_ONLY:-false}" != "true" ]]; then
+    main "$@"
+fi
