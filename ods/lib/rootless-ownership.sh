@@ -111,6 +111,9 @@ _ods_rootless_env_id_override() {
         END { print value }
     ' "$env_file")
     value="${value%$'\r'}"
+    value="${value%%#*}"
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
     if [[ "$value" == '""' || "$value" == "''" ]]; then
         value=""
     fi
