@@ -1,0 +1,37 @@
+services:
+  linkding:
+    image: sissbruecker/linkding:1.46.2@sha256:0c0a9a04c7ebd644293c37f98710872fe7cdff0ea1ff7fd9be4d235e4c4678d2
+    container_name: ods-linkding
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    # Upstream bootstrap owns the bind mount, then uWSGI drops to www-data.
+    cap_add: [CHOWN, DAC_OVERRIDE, SETUID, SETGID]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    environment:
+      LD_SERVER_HOST: 0.0.0.0
+      LD_SERVER_PORT: "9090"
+      LD_DISABLE_BACKGROUND_TASKS: "True"
+      LD_REQUEST_MAX_CONTENT_LENGTH: "10485760"
+    volumes:
+      - ./data/linkding:/etc/linkding/data
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${LINKDING_PORT:-8100}:9090"
+    healthcheck:
+      test: [CMD, curl, --fail, --silent, --show-error, "http://127.0.0.1:9090/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    networks: [ods-network]
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+
+networks:
+  ods-network:
+    external: true
