@@ -195,10 +195,12 @@ _ods_cli_bootstrap_status() {
 
 _ods_cli_bootstrap_status_field() {
     local key="$1" status_file="$INSTALL_DIR/data/bootstrap-status.json"
+    local escaped_key
     [[ -f "$status_file" ]] || return 0
-    grep -o "\"${key}\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" "$status_file" \
+    escaped_key="$(printf '%s\n' "$key" | sed 's/[.[\*^$\\/]/\\&/g')"
+    grep -o "\"${escaped_key}\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" "$status_file" \
         | sed -n '1p' \
-        | sed "s/.*\"${key}\"[[:space:]]*:[[:space:]]*\"//" \
+        | sed 's/.*"'"${escaped_key}"'"[[:space:]]*:[[:space:]]*"//' \
         | sed 's/"//' \
         || true
 }
