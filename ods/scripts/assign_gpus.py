@@ -79,7 +79,10 @@ def parse_gpus(topology: dict) -> list:
         total_mb = float(g["memory_gb"]) * 1024
         scheduling_mb = total_mb
         if g.get("memory_free_gb") is not None:
-            scheduling_mb = max(float(g["memory_free_gb"]) * 1024, 0.0)
+            try:
+                scheduling_mb = max(float(g["memory_free_gb"]) * 1024, 0.0)
+            except (ValueError, TypeError):
+                scheduling_mb = total_mb
         gpus.append(GPU(
             index=g["index"],
             uuid=g["uuid"],
