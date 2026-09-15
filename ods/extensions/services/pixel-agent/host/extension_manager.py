@@ -844,39 +844,42 @@ def _execute(
             )
         except ManagerError:
             current_status = previous_status
-    succeeded = current_status in SUCCESS_STATUS[action]
+    landed_receipt = True
+    if action == "install" and current_status in SUCCESS_STATUS["install"]:
+        # The dashboard can report a healthy container before an agent has
+        # established that this fresh library copy has its tracked receipt.
+        # The one-click path emits the receipt during atomic staging; require
+        # the installed user source and a readable tracked update state too.
+        try:
+            landed = _detail(port, credential, extension_id)
+            current_status = _bounded_status(landed.get("status"))
+            landed_receipt = (
+                landed.get("source") == "user"
+                and landed.get("update_status")
+                in {"current", "modified", "available"}
+            )
+        except ManagerError:
+            landed_receipt = False
+    succeeded = current_status in SUCCESS_STATUS[action] and landed_receipt
     rollback_attempted = False
     rollback_succeeded: bool | None = None
-    if not succeeded and action in {"install", "enable", "disable"}:
+    if not succeeded and action == "install":
+        # A failed fresh one-click install can leave owner configuration,
+        # application data, and an error progress receipt at the destination.
+        # Removing or disabling it here would erase recovery evidence or
+        # mutate owner files after the original install authority was spent.
+        # Preserve the observed state for an explicit owner recovery plan.
+        try:
+            current_status = _bounded_status(
+                _detail(port, credential, extension_id).get("status")
+            )
+        except ManagerError:
+            pass
+    elif not succeeded and action in {"enable", "disable"}:
         rollback_attempted = True
         try:
             observed = _bounded_status(_detail(port, credential, extension_id).get("status"))
-            if action == "install":
-                if observed in {"enabled", "cli_installed", "stopped", "unhealthy", "error"}:
-                    _mutate(
-                        port=port,
-                        credential=credential,
-                        action="disable",
-                        extension_id=extension_id,
-                        previous=observed,
-                    )
-                    observed = _wait_for_status(
-                        port=port,
-                        credential=credential,
-                        extension_id=extension_id,
-                        expected=frozenset({"disabled"}),
-                        deadline=time.monotonic() + 120,
-                    )
-                if observed == "disabled":
-                    _mutate(
-                        port=port,
-                        credential=credential,
-                        action="remove",
-                        extension_id=extension_id,
-                        previous=observed,
-                    )
-                rollback_expected = frozenset({"not_installed"})
-            elif action == "enable" and observed in {
+            if action == "enable" and observed in {
                 "enabled", "cli_installed", "stopped", "unhealthy", "error",
             }:
                 _mutate(

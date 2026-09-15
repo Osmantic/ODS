@@ -28,6 +28,8 @@ def detail(status: str, *, required: tuple[str, ...] = ()) -> dict[str, object]:
     return {
         "id": "crewai",
         "status": status,
+        "source": "library" if status == "not_installed" else "user",
+        "update_status": "unavailable" if status == "not_installed" else "current",
         "env_vars": [
             {"key": key, "required": True, "value": "must-not-leak"}
             for key in required
@@ -493,7 +495,10 @@ class ExtensionManagerTests(unittest.TestCase):
 
     def test_install_success_is_reconciled_to_the_expected_state(self) -> None:
         with (
-            mock.patch.object(manager, "_detail", return_value=detail("not_installed")),
+            mock.patch.object(
+                manager, "_detail",
+                side_effect=[detail("not_installed"), detail("enabled")],
+            ),
             mock.patch.object(manager, "_mutate") as mutate,
             mock.patch.object(manager, "_wait_for_status", return_value="enabled") as wait,
         ):
@@ -505,7 +510,7 @@ class ExtensionManagerTests(unittest.TestCase):
         self.assertTrue(result["externalEffectOccurred"])
         self.assertEqual(result["rollback"], {"attempted": False, "succeeded": None})
 
-    def test_ambiguous_install_timeout_reconciles_and_rolls_back(self) -> None:
+    def test_ambiguous_install_timeout_preserves_failed_owner_state(self) -> None:
         with (
             mock.patch.object(
                 manager,
@@ -519,21 +524,58 @@ class ExtensionManagerTests(unittest.TestCase):
             mock.patch.object(
                 manager,
                 "_mutate",
-                side_effect=[manager.ManagerError("timeout"), None, None],
+                side_effect=manager.ManagerError("timeout"),
             ) as mutate,
+            mock.patch.object(manager, "_wait_for_status") as wait,
+        ):
+            result = self.execute("install")
+        self.assertEqual(mutate.call_count, 1)
+        wait.assert_not_called()
+        self.assertEqual(result["outcome"], "failed")
+        self.assertTrue(result["changed"])
+        self.assertTrue(result["externalEffectOccurred"])
+        self.assertEqual(result["currentStatus"], "error")
+        self.assertEqual(result["rollback"], {"attempted": False, "succeeded": None})
+
+    def test_one_click_install_needs_a_tracked_library_receipt(self) -> None:
+        untracked = {**detail("enabled"), "update_status": "untracked"}
+        with (
             mock.patch.object(
-                manager,
-                "_wait_for_status",
-                side_effect=["disabled", "not_installed"],
+                manager, "_detail",
+                side_effect=[detail("not_installed"), untracked, untracked],
+            ),
+            mock.patch.object(manager, "_mutate") as mutate,
+            mock.patch.object(
+                manager, "_wait_for_status", return_value="enabled"
             ),
         ):
             result = self.execute("install")
-        self.assertEqual(mutate.call_count, 3)
+        self.assertEqual(mutate.call_count, 1)
         self.assertEqual(result["outcome"], "failed")
-        self.assertFalse(result["changed"])
-        self.assertTrue(result["externalEffectOccurred"])
-        self.assertEqual(result["currentStatus"], "not_installed")
-        self.assertEqual(result["rollback"], {"attempted": True, "succeeded": True})
+        self.assertEqual(result["currentStatus"], "enabled")
+        self.assertEqual(result["rollback"], {"attempted": False, "succeeded": None})
+
+    def test_unhealthy_one_click_install_is_not_claimed_or_removed(self) -> None:
+        with (
+            mock.patch.object(
+                manager,
+                "_detail",
+                side_effect=[
+                    detail("not_installed"),
+                    detail("unhealthy"),
+                ],
+            ),
+            mock.patch.object(manager, "_mutate") as mutate,
+            mock.patch.object(
+                manager, "_wait_for_status", return_value="unhealthy"
+            ) as wait,
+        ):
+            result = self.execute("install")
+        self.assertEqual(mutate.call_count, 1)
+        self.assertEqual(wait.call_count, 1)
+        self.assertEqual(result["outcome"], "failed")
+        self.assertEqual(result["currentStatus"], "unhealthy")
+        self.assertEqual(result["rollback"], {"attempted": False, "succeeded": None})
 
     def test_remove_enabled_extension_safely_disables_then_preserves_data_on_remove(self) -> None:
         with (
