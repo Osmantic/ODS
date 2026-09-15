@@ -1,0 +1,33 @@
+services:
+  cyberchef:
+    image: ghcr.io/gchq/cyberchef:11.4.0@sha256:379c6cbcfd8cc10b8e045548f3ebaa82ce429e4b40cf60e4532e116a4c67884d
+    container_name: ods-cyberchef
+    user: "101:101"
+    entrypoint: ["nginx", "-g", "daemon off;"]
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    volumes:
+      - ./extensions/services/cyberchef/nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${CYBERCHEF_PORT:-8103}:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks: [ods-network]
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 256M
+
+networks:
+  ods-network:
+    external: true

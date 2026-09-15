@@ -1,0 +1,34 @@
+name: CyberChef browser contract
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/cyberchef-runtime.yml'
+      - 'ods/extensions/library/services/cyberchef/**'
+      - 'ods/tests/test_cyberchef_extension.py'
+  push:
+    branches: [main, public-beta]
+    paths:
+      - '.github/workflows/cyberchef-runtime.yml'
+      - 'ods/extensions/library/services/cyberchef/**'
+      - 'ods/tests/test_cyberchef_extension.py'
+
+permissions:
+  contents: read
+
+jobs:
+  cyberchef-browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: '3.11'
+      - run: python -m pip install 'pytest>=8,<9' 'PyYAML>=6,<7' 'playwright==1.62.0'
+      - run: python -m playwright install --with-deps chromium
+      - name: Catalog discovery and offline recipe replay in Chromium
+        working-directory: ods
+        env:
+          ODS_TEST_CYBERCHEF_BROWSER: '1'
+        run: python -m pytest -q tests/test_cyberchef_extension.py
