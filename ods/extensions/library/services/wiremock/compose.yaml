@@ -1,0 +1,46 @@
+services:
+  wiremock:
+    image: wiremock/wiremock:3.13.2@sha256:0d4ecb3e4dc8213fd7a4d37d6a78f6e6b553a6d2e15bd51b0999781282ac61b3
+    container_name: ods-wiremock
+    user: "1000:1000"
+    restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+    environment:
+      JAVA_OPTS: "-Xms128m -Xmx512m"
+    command:
+      - --admin-api-basic-auth
+      - "ods:${WIREMOCK_PASSWORD:?Set WIREMOCK_PASSWORD before enabling WireMock}"
+      - --max-request-journal-entries
+      - "100"
+      - --logged-response-body-size-limit
+      - "4096"
+      - --disable-request-logging
+      - --disable-response-templating
+      - --disable-extensions-scanning
+      - --disable-banner
+    volumes:
+      - ./data/wiremock:/home/wiremock
+      - ./config/wiremock/status.json:/home/wiremock/__files/__ods_status.json:ro
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${WIREMOCK_PORT:-8099}:8080"
+    healthcheck:
+      test: [CMD, curl, --fail, --silent, --output, /dev/null, "http://127.0.0.1:8080/__ods_status.json"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    networks: [ods-network]
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1G
+
+networks:
+  ods-network:
+    external: true
