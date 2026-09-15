@@ -259,6 +259,17 @@ def test_real_planner_envelope_create_read_and_idempotent_replay(tmp_path):
     assert observed["approval"] is None
 
 
+def test_pre_binding_durable_plan_remains_readable_after_upgrade(tmp_path):
+    envelope = build_envelope()
+    envelope["plan"].pop("resourcePortBindings")
+    old_hash = hashlib.sha256(planner.canonical_json_bytes(envelope["plan"])).hexdigest()
+    envelope["planHash"] = old_hash
+    envelope["planId"] = f"plan-{old_hash[:24]}"
+    store = transactions.TransactionStore(tmp_path / "transactions")
+    descriptor = create(store, envelope)
+    assert store.read(descriptor["transactionId"])["envelope"] == envelope
+
+
 def test_root_lock_serializes_threads_without_replacing_active_descriptor(tmp_path):
     store = transactions.TransactionStore(tmp_path / "transactions")
     first_entered = threading.Event()

@@ -275,6 +275,37 @@ def test_expected_plan_hash_happy_path_matches() -> None:
     authorize(expected_plan_hash=envelope["planHash"])  # must not raise
 
 
+def test_effective_port_override_is_catalog_bound_and_changes_authoritative_hash() -> None:
+    entry = catalog_entry("app")
+    entry["planning"]["resources"]["hostPorts"] = [
+        {"port": 8080, "protocol": "tcp", "configurationKey": "APP_PORT"}
+    ]
+    entry["planning"]["configuration"] = [{
+        "key": "APP_PORT", "type": "integer", "required": False,
+        "secret": False, "source": "user", "restartBehavior": "service",
+        "default": 8080, "validation": {"minimum": 1, "maximum": 65535},
+    }]
+    entries = [entry]
+    default = authorize(entries=entries)
+    configured = authorize(
+        intent(resourcePortOverrides={"APP_PORT": 8181}), entries=entries
+    )
+    assert configured["planHash"] != default["planHash"]
+    assert configured["plan"]["definitions"][0]["resources"]["hostPorts"] == [
+        {"port": 8181, "protocol": "tcp"}
+    ]
+    prov_error("plan-hash-mismatch", lambda: authorize(
+        intent(resourcePortOverrides={"APP_PORT": 8181}), entries=entries,
+        expected_plan_hash=default["planHash"],
+    ))
+    prov_error("invalid-resource-port-override", lambda: authorize(
+        intent(resourcePortOverrides={"APP_PORT": True}), entries=entries,
+    ))
+    with pytest.raises(plan_provenance.PlanningError) as caught:
+        authorize(intent(resourcePortOverrides={"OTHER_PORT": 8181}), entries=entries)
+    assert caught.value.code == "unused-resource-port-override"
+
+
 # ---------------------------------------------------------------------------
 # Stale expected hash after drift
 # ---------------------------------------------------------------------------

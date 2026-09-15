@@ -601,6 +601,94 @@ def test_host_collisions_and_hard_resource_limits_fail_before_execution() -> Non
     )
 
 
+def test_configured_host_port_is_resolved_before_collision_and_exact_approval() -> None:
+    record = manifest("app", ports=[8080])
+    record["service"]["planning"]["resources"]["host_ports"][0][
+        "configuration_key"
+    ] = "APP_PORT"
+    record["service"]["planning"]["configuration"] = [{
+        "key": "APP_PORT", "type": "integer", "required": False,
+        "secret": False, "source": "user", "restart_behavior": "service",
+        "validation": {"minimum": 1, "maximum": 65535}, "default": 8080,
+    }]
+    state = copy.deepcopy(HOST_STATE)
+    state["occupiedPorts"] = [{"port": 8080, "protocol": "tcp", "owner": "other"}]
+    revision = hashlib.sha256(planner.canonical_json_bytes(state)).hexdigest()
+    error("host-port-conflict", lambda: build(
+        [record], requested_services=["app"],
+        observed_state=state, observed_state_revision=revision,
+    ))
+    approved = build(
+        [record], requested_services=["app"], observed_state=state,
+        observed_state_revision=revision,
+        resource_port_overrides={"APP_PORT": 8181},
+    )
+    assert approved["plan"]["definitions"][0]["resources"]["hostPorts"] == [
+        {"port": 8181, "protocol": "tcp"}
+    ]
+    assert approved["plan"]["resourcePortBindings"] == [
+        {"serviceId": "app", "key": "APP_PORT", "port": 8181, "protocol": "tcp"}
+    ]
+    receipt = configuration.validate_configuration_submission(
+        approved, {"APP_PORT": 8181}, {}, expected_plan_hash=approved["planHash"]
+    )
+    assert receipt["presentConfigKeys"] == ["APP_PORT"]
+    assert configuration.validate_stored_configuration(
+        approved, {"APP_PORT": 8181}, [], expected_plan_hash=approved["planHash"],
+        expected_schema_hash=receipt["schemaHash"],
+    )["presentConfigKeys"] == ["APP_PORT"]
+    with pytest.raises(configuration.ExtensionConfigurationError) as caught:
+        configuration.validate_stored_configuration(
+            approved, {"APP_PORT": 8182}, [], expected_plan_hash=approved["planHash"],
+            expected_schema_hash=receipt["schemaHash"],
+        )
+    assert caught.value.code == "resource-port-approval-mismatch"
+    with pytest.raises(configuration.ExtensionConfigurationError) as caught:
+        configuration.validate_configuration_submission(
+            approved, {"APP_PORT": 8182}, {}, expected_plan_hash=approved["planHash"]
+        )
+    assert caught.value.code == "resource-port-approval-mismatch"
+    with pytest.raises(configuration.ExtensionConfigurationError) as caught:
+        configuration.validate_configuration_submission(
+            approved, {}, {}, expected_plan_hash=approved["planHash"]
+        )
+    assert caught.value.code == "resource-port-approval-mismatch"
+    state["occupiedPorts"] = [{"port": 8181, "protocol": "tcp", "owner": "other"}]
+    revision = hashlib.sha256(planner.canonical_json_bytes(state)).hexdigest()
+    error("host-port-conflict", lambda: build(
+        [record], requested_services=["app"], observed_state=state,
+        observed_state_revision=revision, resource_port_overrides={"APP_PORT": 8181},
+    ))
+    error("unused-resource-port-override", lambda: build(
+        [record], requested_services=["app"], resource_port_overrides={"OTHER_PORT": 8181},
+    ))
+    record["service"]["planning"]["configuration"][0]["validation"]["maximum"] = 9000
+    error("invalid-resource-port-override", lambda: build(
+        [record], requested_services=["app"], resource_port_overrides={"APP_PORT": 10000},
+    ))
+
+
+@pytest.mark.parametrize("contract_change", [
+    {"secret": True}, {"type": "string"}, {"source": "generated"},
+    {"default": 8181},
+])
+def test_host_port_binding_rejects_non_owner_or_mismatched_config(contract_change: dict) -> None:
+    record = manifest("app", ports=[8080])
+    record["service"]["planning"]["resources"]["host_ports"][0][
+        "configuration_key"
+    ] = "APP_PORT"
+    field = {
+        "key": "APP_PORT", "type": "integer", "required": False,
+        "secret": False, "source": "user", "restart_behavior": "service",
+        "default": 8080,
+    }
+    field.update(contract_change)
+    if field["secret"] or field["type"] != "integer":
+        field.pop("default")
+    record["service"]["planning"]["configuration"] = [field]
+    error("invalid-host-port-configuration-binding", lambda: planner.adapt_manifest(record))
+
+
 def test_platform_trust_permissions_and_support_fail_closed() -> None:
     incompatible = manifest("app")
     incompatible["service"]["planning"]["requirements"]["platforms"] = ["darwin"]

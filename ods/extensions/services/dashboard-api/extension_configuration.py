@@ -510,6 +510,59 @@ def _validate_configuration_presence(
     }
 
 
+def _validate_resource_port_bindings(
+    plan: Mapping[str, Any],
+    contracts: Mapping[str, Mapping[str, Any]],
+    value_map: Mapping[str, Any],
+) -> None:
+    """Reject a configuration that changes ports after the exact plan was approved."""
+    bindings = _sequence(plan.get("resourcePortBindings", []), "plan.resourcePortBindings")
+    if len(bindings) > _MAX_CONFIGURATION_FIELDS:
+        _fail("too-many-resource-port-bindings")
+    definitions = {
+        item["id"]: item for item in _sequence(plan.get("definitions"), "plan.definitions")
+    }
+    seen: set[tuple[str, str, str]] = set()
+    for index, raw_binding in enumerate(bindings):
+        binding = _mapping(raw_binding, f"plan.resourcePortBindings[{index}]")
+        if set(binding) != {"serviceId", "key", "port", "protocol"}:
+            _fail("invalid-resource-port-binding")
+        service_id, key, port, protocol = (
+            binding["serviceId"], binding["key"], binding["port"], binding["protocol"]
+        )
+        if (
+            not isinstance(service_id, str)
+            or service_id not in definitions
+            or not isinstance(key, str)
+            or _KEY_RE.fullmatch(key) is None
+            or type(port) is not int
+            or not 1 <= port <= 65535
+            or not isinstance(protocol, str)
+            or protocol not in {"tcp", "udp"}
+        ):
+            _fail("invalid-resource-port-binding")
+        identity = (service_id, key, protocol)
+        if identity in seen:
+            _fail("duplicate-resource-port-binding")
+        seen.add(identity)
+        contract = contracts.get(key)
+        if (
+            contract is None
+            or contract["type"] != "integer"
+            or contract["secret"]
+            or contract["source"] != "user"
+            or "default" not in contract
+        ):
+            _fail("invalid-resource-port-binding")
+        effective_port = value_map.get(key, contract["default"])
+        if effective_port != port:
+            _fail("resource-port-approval-mismatch", key=key)
+        resources = _mapping(definitions[service_id].get("resources"), "definition.resources")
+        host_ports = _sequence(resources.get("hostPorts"), "definition.resources.hostPorts")
+        if {"port": port, "protocol": protocol} not in host_ports:
+            _fail("resource-port-definition-mismatch", serviceId=service_id)
+
+
 def validate_configuration_submission(
     envelope: Any,
     values: Any,
@@ -525,6 +578,7 @@ def validate_configuration_submission(
     presence = _validate_configuration_presence(
         contracts, value_map, set(secret_map)
     )
+    _validate_resource_port_bindings(plan, contracts, value_map)
     for key in sorted(secret_map):
         _validate_value(secret_map[key], contracts[key], f"secretValues.{key}")
 
@@ -563,6 +617,7 @@ def validate_stored_configuration(
         set(secret_keys),
         trusted_managed=True,
     )
+    _validate_resource_port_bindings(plan, contracts, value_map)
     return {
         "schema": _RECEIPT_SCHEMA,
         "planHash": plan_hash,

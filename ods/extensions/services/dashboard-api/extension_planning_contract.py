@@ -49,6 +49,21 @@ _V2_LEGACY_PLANNING_KEYS = _V1_LEGACY_PLANNING_KEYS | {
 _V2_PLANNING_KEYS = _V2_LEGACY_PLANNING_KEYS | _ORIGIN_PLANNING_KEYS
 
 
+def _manifest_host_ports(value: Any) -> Any:
+    """Convert the catalog's normalized binding name back to manifest v2 spelling."""
+    if not isinstance(value, list):
+        return value
+    result = []
+    for item in value:
+        if isinstance(item, dict) and "configurationKey" in item:
+            normalized = dict(item)
+            normalized["configuration_key"] = normalized.pop("configurationKey")
+            result.append(normalized)
+        else:
+            result.append(item)
+    return result
+
+
 def manifest_from_catalog_entry(entry: Mapping[str, Any]) -> dict[str, Any]:
     """Convert a strict catalog entry into the planner's raw manifest shape."""
     if not isinstance(entry, dict):
@@ -122,7 +137,7 @@ def manifest_from_catalog_entry(entry: Mapping[str, Any]) -> dict[str, Any]:
                 "gpu_count": estimates.get("gpuCount"),
             },
             "resources": {
-                "host_ports": resources.get("hostPorts"),
+                "host_ports": _manifest_host_ports(resources.get("hostPorts")),
                 "container_ports": resources.get("containerPorts"),
                 "networks": resources.get("networks"),
                 "volumes": resources.get("volumes"),

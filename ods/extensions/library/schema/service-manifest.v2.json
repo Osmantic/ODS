@@ -265,7 +265,8 @@
                     "required": ["port", "protocol"],
                     "properties": {
                       "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
-                      "protocol": { "type": "string", "enum": ["tcp", "udp"] }
+                      "protocol": { "type": "string", "enum": ["tcp", "udp"] },
+                      "configuration_key": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,127}$" }
                     },
                     "additionalProperties": false
                   }

@@ -449,6 +449,39 @@ def test_assistant_plan_rejects_actions_not_supported_by_ensure_planner(api, act
     assert api.store.created == []
 
 
+def test_assistant_plan_passes_only_bounded_nonsecret_port_intent(api, monkeypatch):
+    calls = []
+
+    def authorize(intent, *, catalog, observed_state, policy):
+        calls.append(validate_request_intent(intent))
+        return assistant_envelope()
+
+    monkeypatch.setattr(transaction_api, "authorize_plan", authorize)
+    response = api.client.post(
+        "/api/extensions/transactions/assistant-plan",
+        json={
+            "request": "install:notes", "idempotencyKey": IDEMPOTENCY_KEY,
+            "resourcePortOverrides": {"NOTES_PORT": 8181},
+        },
+        headers=api.headers,
+    )
+    assert response.status_code == 201
+    assert calls[0]["resource_port_overrides"] == {
+        "NOTES_PORT": 8181
+    }
+    assert "NOTES_PORT" not in response.text
+    assert "8181" not in response.text
+    invalid = api.client.post(
+        "/api/extensions/transactions/assistant-plan",
+        json={
+            "request": "install:notes", "idempotencyKey": IDEMPOTENCY_KEY,
+            "resourcePortOverrides": {"NOTES_PORT": True},
+        },
+        headers=api.headers,
+    )
+    assert invalid.status_code == 422
+
+
 def test_assistant_plan_accepts_catalog_style_dotted_ids_before_action_check(api):
     response = api.client.post(
         "/api/extensions/transactions/assistant-plan",

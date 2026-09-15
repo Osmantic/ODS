@@ -53,6 +53,7 @@ class PlanningRequest(BaseModel):
     providerPreferences: dict[str, str] = Field(default_factory=dict, max_length=128)
     missingConfigKeys: list[str] = Field(default_factory=list, max_length=256)
     missingSecretKeys: list[str] = Field(default_factory=list, max_length=256)
+    resourcePortOverrides: dict[str, int] = Field(default_factory=dict, max_length=256)
 
 
 def _pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -216,6 +217,7 @@ async def plan_extensions(
             provider_preferences=model.providerPreferences,
             missing_config_keys=model.missingConfigKeys,
             missing_secret_keys=model.missingSecretKeys,
+            resource_port_overrides=model.resourcePortOverrides,
             catalog_revision=model.catalogRevision,
             observed_state_revision=model.observedStateRevision,
             observed_state=model.observedState,

@@ -34,7 +34,9 @@ def test_ntfy_is_discoverable_with_consistent_manifest_and_compose(tmp_path):
     assert planning['definitionSource'] == 'library'
     assert planning['provides'] == ['local-notifications@1']
     assert planning['requirements']['architectures'] == ['amd64', 'arm64']
-    assert planning['resources']['hostPorts'] == [{'port': 8097, 'protocol': 'tcp'}]
+    assert planning['resources']['hostPorts'] == [{
+        'port': 8097, 'protocol': 'tcp', 'configurationKey': 'NTFY_PORT',
+    }]
     assert planning['estimates']['downloadBytes'] == 36000000
     assert planning['artifacts']['builds'] == []
     assert planning['data'] == [{

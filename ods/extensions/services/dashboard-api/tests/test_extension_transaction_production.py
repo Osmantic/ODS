@@ -139,6 +139,47 @@ def test_observed_state_projects_manifest_v2_and_legacy_host_ports(
     ]
 
 
+def test_installed_bound_port_observation_uses_persisted_compose_value(
+    monkeypatch, tmp_path
+):
+    install = tmp_path / "install"
+    data = tmp_path / "data"
+    service = install / "extensions" / "services" / "notes"
+    service.mkdir(parents=True)
+    data.mkdir()
+    (service / "compose.yaml").write_text("services: {}\n", encoding="utf-8")
+    (install / ".env").write_text(
+        "ODS_VERSION=2.6.0\nNOTES_PORT=8181\n", encoding="utf-8"
+    )
+    monkeypatch.delenv("NOTES_PORT", raising=False)
+    monkeypatch.setattr(production.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(production.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(production, "GPU_BACKEND", "cpu")
+    monkeypatch.setenv("ODS_CONTAINER_RUNTIME", "docker")
+    entry = catalog_entry()
+    entry["manifest_schema_version"] = "ods.services.v2"
+    entry["planning"]["resources"] = {"hostPorts": [
+        {"port": 8080, "protocol": "tcp", "configurationKey": "NOTES_PORT"}
+    ]}
+    arguments = {
+        "install_dir": install, "data_dir": data,
+        "user_extensions_dir": data / "user-extensions",
+        "builtin_extensions_dir": install / "extensions" / "services",
+        "catalog_entries": [entry], "cached_statuses": {"notes": "healthy"},
+    }
+    state = production.production_observed_state(**arguments)
+    assert state["occupiedPorts"] == [
+        {"port": 8181, "protocol": "tcp", "owner": "notes"}
+    ]
+    monkeypatch.setenv("NOTES_PORT", "8080")
+    with pytest.raises(PlanningError, match="installed-port-env-ambiguous"):
+        production.production_observed_state(**arguments)
+    monkeypatch.delenv("NOTES_PORT", raising=False)
+    (install / ".env").write_text("NOTES_PORT=bad\n", encoding="utf-8")
+    with pytest.raises(PlanningError, match="installed-port-env-invalid"):
+        production.production_observed_state(**arguments)
+
+
 @pytest.mark.parametrize(
     "host_ports",
     [

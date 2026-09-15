@@ -76,6 +76,7 @@ class AssistantPlanRequest(BaseModel):
     idempotencyKey: str = Field(
         min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"
     )
+    resourcePortOverrides: dict[str, int] = Field(default_factory=dict, max_length=256)
 
 
 class ConfigurationSubmissionRequest(ExactHashRequest):
@@ -410,6 +411,8 @@ async def request_assistant_plan(
             "missingConfigKeys": [],
             "missingSecretKeys": [],
         }
+        if model.resourcePortOverrides:
+            intent["resourcePortOverrides"] = model.resourcePortOverrides
         envelope, descriptor = await asyncio.to_thread(
             _persist_authoritative_plan,
             runtime,

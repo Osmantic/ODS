@@ -1,7 +1,7 @@
 {
-  "generated_at": "2026-09-15T16:23:04Z",
+  "generated_at": "2026-09-15T16:41:46Z",
   "schema_version": "1.0.0",
-  "catalog_revision": "e7849fd4a1cb9a23ab25f5b20863b850e1f666b6352ac18960d5e9cf28d2b59e",
+  "catalog_revision": "17f0e1fbe4bcdacbe36919cb8c45e707235a7dc407cdad273bea887390bb1102",
   "extensions": [
     {
       "id": "aider",
@@ -3098,7 +3098,7 @@
           "minimum": "2.6.0",
           "maximum": null
         },
-        "definitionSha256": "sha256:38463fd47401f3ad4d194b82aa33d6c9370f1476ad8b4712d8db503952976f49",
+        "definitionSha256": "sha256:ca92545af150b2e226c131e506213548a6ce4d46708bcecd55d8e361b9665579",
         "composeSha256": "sha256:4f1527accc55c275ac3261fd57b92fb87e5e171c3a851f1453e2241056b832e7",
         "definitionSource": "library",
         "composeFile": "compose.yaml",
@@ -3145,7 +3145,8 @@
           "hostPorts": [
             {
               "port": 8097,
-              "protocol": "tcp"
+              "protocol": "tcp",
+              "configurationKey": "NTFY_PORT"
             }
           ],
           "containerPorts": [

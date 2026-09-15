@@ -14,6 +14,7 @@ import os
 import platform
 import re
 import shutil
+import stat
 from pathlib import Path
 from typing import Any
 
@@ -57,6 +58,8 @@ _ARCHITECTURES = {
 }
 _CONTAINER_RUNTIMES = frozenset({"docker", "podman", "none"})
 _ENABLED_VALUES = frozenset({"1", "true", "yes", "on"})
+_PORT_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,127}$")
+_PORT_VALUE_RE = re.compile(r"^[1-9][0-9]{0,4}$")
 
 
 def utc_now() -> str:
@@ -155,15 +158,65 @@ def _entry_definition(entry: dict[str, Any]) -> tuple[str, str]:
     )
 
 
-def _host_port_identity(value: Any, service_id: str) -> tuple[str, int]:
+def _installed_port_value(install_dir: Path, key: str, default: int) -> int:
+    """Read only one non-secret bound integer from the install Compose environment."""
+    if not isinstance(key, str) or _PORT_KEY_RE.fullmatch(key) is None:
+        raise PlanningError("invalid-catalog-host-port-binding")
+    candidates: list[str] = []
+    process_value = os.environ.get(key)
+    if process_value is not None:
+        candidates.append(process_value)
+    env_path = install_dir / ".env"
+    try:
+        metadata = env_path.lstat()
+    except FileNotFoundError:
+        metadata = None
+    except OSError as exc:
+        raise PlanningError("installed-port-env-unavailable") from exc
+    if metadata is not None:
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > 1024 * 1024:
+            raise PlanningError("installed-port-env-unsafe")
+        seen = False
+        try:
+            with env_path.open("r", encoding="utf-8", errors="strict") as stream:
+                for line in stream:
+                    if not line.startswith(f"{key}="):
+                        continue
+                    if seen:
+                        raise PlanningError("installed-port-env-ambiguous", key=key)
+                    seen = True
+                    candidates.append(line[len(key) + 1:].strip())
+        except (OSError, UnicodeError) as exc:
+            raise PlanningError("installed-port-env-unavailable") from exc
+    resolved: set[int] = set()
+    for value in candidates:
+        token = value.strip()
+        if len(token) >= 2 and token[0] == token[-1] and token[0] in {"'", '"'}:
+            token = token[1:-1]
+        if _PORT_VALUE_RE.fullmatch(token) is None or not 1 <= int(token) <= 65535:
+            raise PlanningError("installed-port-env-invalid", key=key)
+        resolved.add(int(token))
+    if len(resolved) > 1:
+        raise PlanningError("installed-port-env-ambiguous", key=key)
+    return next(iter(resolved)) if resolved else default
+
+
+def _host_port_identity(value: Any, service_id: str, install_dir: Path) -> tuple[str, int]:
     """Normalize legacy integer and Manifest v2 host-port declarations."""
 
     if type(value) is int and 1 <= value <= 65535:
         return "tcp", value
-    if isinstance(value, dict) and set(value) == {"port", "protocol"}:
+    if isinstance(value, dict) and set(value) in (
+        {"port", "protocol"}, {"port", "protocol", "configurationKey"}
+    ):
         port = value.get("port")
         protocol = value.get("protocol")
-        if type(port) is int and 1 <= port <= 65535 and protocol in {"tcp", "udp"}:
+        if (
+            type(port) is int and 1 <= port <= 65535
+            and isinstance(protocol, str) and protocol in {"tcp", "udp"}
+        ):
+            if "configurationKey" in value:
+                port = _installed_port_value(install_dir, value["configurationKey"], port)
             return protocol, port
     raise PlanningError("invalid-catalog-host-port", serviceId=service_id)
 
@@ -311,7 +364,7 @@ def production_observed_state(
             if not isinstance(raw_host_ports, list):
                 raise PlanningError("invalid-catalog-host-ports", serviceId=service_id)
             for value in raw_host_ports:
-                protocol, port = _host_port_identity(value, service_id)
+                protocol, port = _host_port_identity(value, service_id, install)
                 if (protocol, port) not in seen_ports:
                     seen_ports.add((protocol, port))
                     occupied.append(

@@ -43,6 +43,7 @@ service:
       host_ports:
         - port: 8097
           protocol: tcp
+          configuration_key: NTFY_PORT
       container_ports: [8080]
       networks: [ods-network]
       volumes: []

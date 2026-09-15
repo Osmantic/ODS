@@ -82,6 +82,7 @@ INNER_KEYS = frozenset(
         "approval",
     ]
 )
+OPTIONAL_INNER_KEYS = frozenset({"resourcePortBindings"})
 OP_KEYS = frozenset(["serviceId", "action"])
 # requestedAction must be exactly "ensure"; operation actions are install/enable/repair/update/noop
 REQUESTED_ACTION = "ensure"
@@ -462,7 +463,7 @@ def _check_no_secrets_in_unknown_keys(outer, inner):
     for k in set(outer.keys()) - OUTER_KEYS:
         if _is_secret_like(k):
             raise ValidationRejected("secret-unknown-key", f"outer:{k}")
-    for k in set(inner.keys()) - INNER_KEYS:
+    for k in set(inner.keys()) - (INNER_KEYS | OPTIONAL_INNER_KEYS):
         if _is_secret_like(k):
             raise ValidationRejected("secret-unknown-key", f"inner:{k}")
 
@@ -550,8 +551,8 @@ def _validate_envelope(envelope):
 
 def _validate_inner_plan(plan):
     keys = set(plan.keys())
-    if keys != INNER_KEYS:
-        _key_error(keys, INNER_KEYS, "invalid-plan-keys")
+    if keys - OPTIONAL_INNER_KEYS != INNER_KEYS or keys - (INNER_KEYS | OPTIONAL_INNER_KEYS):
+        _key_error(keys - OPTIONAL_INNER_KEYS, INNER_KEYS, "invalid-plan-keys")
     if plan["schema"] != INNER_SCHEMA:
         raise ValidationRejected("invalid-plan-schema")
 
@@ -599,6 +600,30 @@ def _validate_inner_plan(plan):
             raise ValidationRejected("invalid-selectedServiceId", s)
     if seen_service_order != sel:
         raise ValidationRejected("service-order-mismatch")
+
+    bindings = plan.get("resourcePortBindings", [])
+    if not isinstance(bindings, list) or len(bindings) > 2048:
+        raise ValidationRejected("invalid-resource-port-bindings")
+    seen_bindings = set()
+    for binding in bindings:
+        if not isinstance(binding, dict) or set(binding) != {
+            "serviceId", "key", "port", "protocol"
+        }:
+            raise ValidationRejected("invalid-resource-port-binding")
+        service_id, key, port, protocol = (
+            binding["serviceId"], binding["key"], binding["port"], binding["protocol"]
+        )
+        if (
+            not isinstance(service_id, str) or service_id not in seen_services
+            or not isinstance(key, str) or not CONFIGURATION_KEY_RE.fullmatch(key)
+            or type(port) is not int or not 1 <= port <= 65535
+            or not isinstance(protocol, str) or protocol not in {"tcp", "udp"}
+        ):
+            raise ValidationRejected("invalid-resource-port-binding")
+        identity = (service_id, key, protocol)
+        if identity in seen_bindings:
+            raise ValidationRejected("duplicate-resource-port-binding")
+        seen_bindings.add(identity)
 
     # Validate requestedServices is a list of valid IDs
     rs = plan.get("requestedServices", [])

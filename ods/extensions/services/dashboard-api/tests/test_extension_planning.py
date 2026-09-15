@@ -205,6 +205,40 @@ def test_plan_is_deterministic_revision_bound_and_secret_name_only(client) -> No
     assert "=" not in first.text
 
 
+def test_http_plan_checks_effective_owner_port_before_hashing(client, monkeypatch) -> None:
+    entry = catalog_entry("app")
+    entry["planning"]["resources"]["hostPorts"] = [
+        {"port": 8080, "protocol": "tcp", "configurationKey": "APP_PORT"}
+    ]
+    entry["planning"]["configuration"] = [{
+        "key": "APP_PORT", "type": "integer", "required": False,
+        "secret": False, "source": "user", "restartBehavior": "service",
+        "default": 8080,
+    }]
+    entries = [entry]
+    monkeypatch.setattr(api, "EXTENSION_CATALOG", entries)
+    monkeypatch.setattr(api, "EXTENSION_CATALOG_REVISION", api._computed_catalog_revision(entries))
+    state = {**HOST_STATE, "occupiedPorts": [
+        {"port": 8080, "protocol": "tcp", "owner": "other"}
+    ]}
+    body = request_body(
+        observedState=state,
+        observedStateRevision=hashlib.sha256(api.canonical_json_bytes(state)).hexdigest(),
+        missingSecretKeys=[],
+    )
+    blocked = client.post("/api/extensions/plan", headers=AUTH, json=body)
+    assert blocked.status_code == 409
+    assert blocked.json()["error"]["code"] == "host-port-conflict"
+    body["resourcePortOverrides"] = {"APP_PORT": 8181}
+    approved = client.post("/api/extensions/plan", headers=AUTH, json=body)
+    assert approved.status_code == 200
+    assert approved.json()["plan"]["definitions"][0]["resources"]["hostPorts"] == [
+        {"port": 8181, "protocol": "tcp"}
+    ]
+    body["resourcePortOverrides"] = {"APP_PORT": True}
+    assert client.post("/api/extensions/plan", headers=AUTH, json=body).status_code == 422
+
+
 def test_legacy_catalog_origin_is_derived_before_new_plan_hashing() -> None:
     entry = catalog_entry("legacy")
     entry["planning"].pop("definitionSource")

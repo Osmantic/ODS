@@ -3,7 +3,8 @@
 The server-side component that rebuilds the exact plan envelope from trusted
 inputs only.  An assistant or API-key caller supplies a minimal *request intent*
 containing nothing more than the services, capabilities, provider preferences,
-expiry, and missing configuration/secret key names they need.  The server owns
+expiry, missing configuration/secret key names, and bounded non-secret port
+overrides they need.  The server owns
 the current catalog, the policy, and a callable returning the live observed
 host state.  From those three sources plus the intent, this module calls the
 existing Phase 2 manifest adapter and deterministic planner, computes the
@@ -21,8 +22,8 @@ The caller cannot:
   * Execute against stale observed state (the revision is computed from the
     state the server observed, never read from the caller; an expected
     planHash must match the rebuilt envelope exactly or the call fails).
-  * Inject secret values (only configuration/secret key names pass the
-    strict key-name pattern).
+  * Inject secret values (configuration/secret entries remain names only;
+    the sole value-bearing intent is a catalog-bound integer host port).
 
 The module deliberately has no FastAPI dependency: Phase 3 HTTP and
 Unix-socket routes will wrap :func:`authorize_plan` later.  Catalog conversion
@@ -58,7 +59,7 @@ from extension_planning_contract import (
 # ---------------------------------------------------------------------------
 
 RequestIntent = dict[str, Any]
-"""Minimal intent the caller may supply.  Only the six allowed keys are read."""
+"""Minimal intent the caller may supply. Only the allowlisted keys are read."""
 
 CatalogProvider = Callable[[], tuple[list[dict[str, Any]], str]]
 """Returns (current catalog entries, catalog revision sha256 hex digest)."""
@@ -85,12 +86,14 @@ _INTENT_KEYS = frozenset(
         "validUntil",
         "missingConfigKeys",
         "missingSecretKeys",
+        "resourcePortOverrides",
     }
 )
 _MAX_REQUESTED_SERVICES = 128
 _MAX_REQUESTED_CAPABILITIES = 128
 _MAX_PROVIDER_PREFERENCES = 128
 _MAX_MISSING_KEYS = 256
+_MAX_RESOURCE_PORT_OVERRIDES = 256
 
 _IDENTIFIER_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 _CAPABILITY_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}@[1-9][0-9]{0,8}$")
@@ -180,6 +183,21 @@ def _check_provider_preferences(value: Any, field: str) -> dict[str, str]:
     return result
 
 
+def _check_resource_port_overrides(value: Any) -> dict[str, int]:
+    """Accept only non-secret, bounded integer port intent; bindings are catalog-owned."""
+    if not isinstance(value, dict):
+        raise ProvenanceError("invalid-field-type", field="resourcePortOverrides")
+    if len(value) > _MAX_RESOURCE_PORT_OVERRIDES:
+        raise ProvenanceError("list-too-long", field="resourcePortOverrides")
+    result: dict[str, int] = {}
+    for key, port in value.items():
+        name = _check_config_key(key, "resourcePortOverrides.key")
+        if type(port) is not int or not 1 <= port <= 65535:
+            raise ProvenanceError("invalid-resource-port-override", key=name)
+        result[name] = port
+    return {key: result[key] for key in sorted(result)}
+
+
 def _check_valid_until(value: Any) -> str:
     """Validate the ISO-8601 UTC expiry string (format only, not freshness)."""
     if not isinstance(value, str) or _UTC_RE.fullmatch(value) is None:
@@ -200,11 +218,11 @@ def validate_request_intent(intent: RequestIntent) -> dict[str, Any]:
     """Validate and normalize the caller's request intent.
 
     The intent is the caller's *only* input channel.  It may contain exactly
-    the six allowed keys; everything else -- plan envelopes, operations,
+    the allowed keys; everything else -- plan envelopes, operations,
     definitions, effects, shell data, secret values, approvals, actors, and
     any revision input -- is rejected as an extra key.  Configuration and
-    secret entries are names only: the strict ``[A-Z][A-Z0-9_]`` key pattern
-    rejects anything value-shaped.  Duplicate IDs, capabilities, and
+    secret entries are names only; bounded non-secret resource port integers
+    are the sole value-bearing exception. Duplicate IDs, capabilities, and
     preference keys are rejected.
     """
     if not isinstance(intent, dict):
@@ -243,8 +261,11 @@ def validate_request_intent(intent: RequestIntent) -> dict[str, Any]:
         _check_config_key,
         _MAX_MISSING_KEYS,
     )
+    port_overrides = _check_resource_port_overrides(
+        intent.get("resourcePortOverrides", {})
+    )
 
-    return {
+    normalized = {
         "requested_services": services,
         "requested_capabilities": capabilities,
         "provider_preferences": preferences,
@@ -252,6 +273,9 @@ def validate_request_intent(intent: RequestIntent) -> dict[str, Any]:
         "missing_config_keys": config_keys,
         "missing_secret_keys": secret_keys,
     }
+    if "resourcePortOverrides" in intent:
+        normalized["resource_port_overrides"] = port_overrides
+    return normalized
 
 
 # ---------------------------------------------------------------------------
@@ -355,6 +379,7 @@ def authorize_plan(
         provider_preferences=normalized["provider_preferences"],
         missing_config_keys=normalized["missing_config_keys"],
         missing_secret_keys=normalized["missing_secret_keys"],
+        resource_port_overrides=normalized.get("resource_port_overrides", {}),
         catalog_revision=catalog_revision,
         observed_state_revision=state_revision,
         observed_state=current_state,

@@ -552,17 +552,21 @@ def adapt_manifest(manifest: Any) -> dict[str, Any]:
     for index, item in enumerate(
         _sequence(resources.get("host_ports"), "service.planning.resources.host_ports")
     ):
-        port = _exact_mapping(
-            item,
-            f"service.planning.resources.host_ports[{index}]",
-            frozenset({"port", "protocol"}),
-        )
+        port = _mapping(item, f"service.planning.resources.host_ports[{index}]")
+        if not {"port", "protocol"} <= set(port) or not set(port) <= {
+            "port", "protocol", "configuration_key"
+        }:
+            _fail("invalid-object-fields", field=f"service.planning.resources.host_ports[{index}]")
         normalized = {
             "port": _integer(port.get("port"), f"host_ports[{index}].port", 1, 65535),
             "protocol": _enum(
                 port.get("protocol"), f"host_ports[{index}].protocol", frozenset({"tcp", "udp"})
             ),
         }
+        if "configuration_key" in port:
+            normalized["configurationKey"] = _config_key(
+                port["configuration_key"], f"host_ports[{index}].configuration_key"
+            )
         identity = (normalized["protocol"], normalized["port"])
         if identity in seen_host_ports:
             _fail("duplicate-value", field="service.planning.resources.host_ports")
@@ -619,6 +623,20 @@ def adapt_manifest(manifest: Any) -> dict[str, Any]:
             )
         configuration.append(normalized)
     configuration.sort(key=lambda item: item["key"])
+    config_by_key = {item["key"]: item for item in configuration}
+    for port in host_ports:
+        key = port.get("configurationKey")
+        if key is None:
+            continue
+        contract = config_by_key.get(key)
+        if (
+            contract is None
+            or contract["type"] != "integer"
+            or contract["secret"]
+            or contract["source"] != "user"
+            or contract.get("default") != port["port"]
+        ):
+            _fail("invalid-host-port-configuration-binding", key=key)
 
     artifacts = _exact_mapping(
         planning.get("artifacts"), "service.planning.artifacts", _ARTIFACT_FIELDS
@@ -1176,6 +1194,7 @@ def build_plan(
     requested_services: Any = (),
     requested_capabilities: Any = (),
     provider_preferences: Any = None,
+    resource_port_overrides: Any = None,
     missing_config_keys: Any = (),
     missing_secret_keys: Any = (),
     catalog_revision: Any,
@@ -1241,6 +1260,17 @@ def build_plan(
         capability = _capability(key, "provider_preferences.key")
         service_id = _identifier(value, f"provider_preferences.{key}")
         preferences[capability] = service_id
+    raw_port_overrides = {} if resource_port_overrides is None else _mapping(
+        resource_port_overrides, "resource_port_overrides"
+    )
+    if len(raw_port_overrides) > 256:
+        _fail("too-many-resource-port-overrides")
+    port_overrides = {
+        _config_key(key, "resource_port_overrides.key"): _integer(
+            value, f"resource_port_overrides.{key}", 1, 65535
+        )
+        for key, value in raw_port_overrides.items()
+    }
     unknown_preferences = sorted(set(preferences) - set(capabilities) - {
         capability
         for record in records.values()
@@ -1296,14 +1326,37 @@ def build_plan(
 
     ports: dict[tuple[str, int], str] = {}
     resources: dict[str, str] = {}
+    effective_host_ports: dict[str, list[dict[str, Any]]] = {}
+    port_bindings: list[dict[str, Any]] = []
+    used_port_overrides: set[str] = set()
     for service_id in sorted(selected):
+        effective_host_ports[service_id] = []
         for port in records[service_id]["resources"]["hostPorts"]:
-            identity = (port["protocol"], port["port"])
+            key = port.get("configurationKey")
+            effective_port = port["port"] if key is None else port_overrides.get(key, port["port"])
+            if key is not None:
+                contract = next(
+                    item for item in records[service_id]["configuration"] if item["key"] == key
+                )
+                rules = contract.get("validation", {})
+                if (
+                    effective_port < rules.get("minimum", 1)
+                    or effective_port > rules.get("maximum", 65535)
+                ):
+                    _fail("invalid-resource-port-override", key=key)
+                used_port_overrides.add(key)
+                port_bindings.append(
+                    {"serviceId": service_id, "key": key, "port": effective_port,
+                     "protocol": port["protocol"]}
+                )
+            resolved = {"port": effective_port, "protocol": port["protocol"]}
+            effective_host_ports[service_id].append(resolved)
+            identity = (resolved["protocol"], resolved["port"])
             if identity in ports:
                 _fail(
                     "port-conflict",
-                    port=port["port"],
-                    protocol=port["protocol"],
+                    port=effective_port,
+                    protocol=resolved["protocol"],
                     services=[ports[identity], service_id],
                 )
             ports[identity] = service_id
@@ -1315,6 +1368,11 @@ def build_plan(
                     services=[resources[resource], service_id],
                 )
             resources[resource] = service_id
+        effective_host_ports[service_id].sort(key=lambda item: (item["protocol"], item["port"]))
+    unused_port_overrides = sorted(set(port_overrides) - used_port_overrides)
+    if unused_port_overrides:
+        _fail("unused-resource-port-override", keys=unused_port_overrides)
+    port_bindings.sort(key=lambda item: (item["serviceId"], item["key"], item["protocol"]))
 
     order = _topological_order(selected, edges)
     installed = {item["id"]: item for item in state["installedServices"]}
@@ -1481,7 +1539,10 @@ def build_plan(
                 "estimates": public_json_value(record["estimates"]),
                 "configuration": public_json_value(record["configuration"]),
                 "artifacts": public_json_value(record["artifacts"]),
-                "resources": public_json_value(record["resources"]),
+                "resources": {
+                    **public_json_value(record["resources"]),
+                    "hostPorts": public_json_value(effective_host_ports[service_id]),
+                },
                 "lifecycle": public_json_value(record["lifecycle"]),
                 "data": public_json_value(record["data"]),
                 "trust": public_json_value(record["trust"]),
@@ -1543,6 +1604,7 @@ def build_plan(
         ],
         "optionalCapabilities": optional,
         "definitions": definitions,
+        "resourcePortBindings": port_bindings,
         "resourceDelta": totals,
         "requiredConfigKeys": required_config,
         "requiredSecretKeys": required_secrets,
