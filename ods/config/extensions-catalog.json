@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-13T16:53:56Z",
+  "generated_at": "2026-09-13T19:16:55Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -875,6 +875,57 @@
             "amd",
             "nvidia"
           ]
+        }
+      ],
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
+      "id": "drawio",
+      "name": "draw.io (Local Diagrams)",
+      "description": "Create, edit and export diagrams locally in your browser.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 8080,
+      "external_port_default": 8106,
+      "health_endpoint": "/",
+      "env_vars": [
+        {
+          "key": "DRAWIO_PORT",
+          "description": "Published port for the local diagram editor",
+          "default": "8106"
+        }
+      ],
+      "tags": [
+        "diagrams",
+        "design",
+        "local"
+      ],
+      "features": [
+        {
+          "id": "local-diagram-editor",
+          "name": "Local Diagrams",
+          "description": "Edit diagram files and export SVG locally without a hosted rendering service",
+          "icon": "Workflow",
+          "category": "productivity",
+          "requirements": {
+            "services": [
+              "drawio"
+            ],
+            "vram_gb": 0
+          },
+          "enabled_services_all": [
+            "drawio"
+          ],
+          "setup_time": "~1 minute",
+          "priority": 30,
+          "launch": {
+            "type": "service",
+            "service": "drawio"
+          }
         }
       ],
       "configuration_scope": "declared-environment-keys"
