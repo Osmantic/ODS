@@ -1,6 +1,7 @@
 """Privacy Shield management endpoints."""
 
 import asyncio
+import json
 import logging
 import os
 
@@ -34,12 +35,29 @@ async def get_privacy_shield_status(api_key: str = Depends(verify_api_key)):
 
     # Check health directly — no Docker socket needed
     service_healthy = False
+    target_api = os.environ.get("TARGET_API_URL", f"http://{SERVICES.get('llama-server', {}).get('host', 'llama-server')}:{SERVICES.get('llama-server', {}).get('port', 0)}/v1")
+    pii_cache_enabled = os.environ.get("PII_CACHE_ENABLED", "true").lower() == "true"
+    configuration_verified = False
+    shield_api_key = os.environ.get("SHIELD_API_KEY", "")
+    headers = {"Authorization": f"Bearer {shield_api_key}"} if shield_api_key else {}
     try:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=3)) as session:
-            async with session.get(f"{shield_url}/health") as resp:
+            async with session.get(f"{shield_url}/health", headers=headers) as resp:
                 service_healthy = resp.status == 200
-    except (asyncio.TimeoutError, aiohttp.ClientError, OSError):
-        logger.debug("Privacy-shield health check failed")
+                if service_healthy:
+                    health = await resp.json()
+                    # Only authenticated shield health includes these fields.
+                    # A minimal/legacy response still proves availability, but
+                    # cannot verify the runtime's route or cache configuration.
+                    if (isinstance(health, dict)
+                            and isinstance(health.get("target_api"), str)
+                            and health["target_api"].strip()
+                            and isinstance(health.get("cache_enabled"), bool)):
+                        target_api = health["target_api"]
+                        pii_cache_enabled = health["cache_enabled"]
+                        configuration_verified = True
+    except (asyncio.TimeoutError, aiohttp.ClientError, OSError, json.JSONDecodeError):
+        logger.debug("Privacy-shield health/configuration probe failed")
 
     container_running = service_healthy
 
@@ -47,8 +65,9 @@ async def get_privacy_shield_status(api_key: str = Depends(verify_api_key)):
         enabled=container_running and service_healthy,
         container_running=container_running,
         port=shield_port,
-        target_api=os.environ.get("TARGET_API_URL", f"http://{SERVICES.get('llama-server', {}).get('host', 'llama-server')}:{SERVICES.get('llama-server', {}).get('port', 0)}/v1"),
-        pii_cache_enabled=os.environ.get("PII_CACHE_ENABLED", "true").lower() == "true",
+        target_api=target_api,
+        pii_cache_enabled=pii_cache_enabled,
+        configuration_verified=configuration_verified,
         message="Privacy Shield is active" if (container_running and service_healthy) else "Privacy Shield is not running. Check: docker compose ps privacy-shield"
     )
 
