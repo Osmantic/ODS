@@ -1,0 +1,40 @@
+services:
+  pgvector:
+    image: pgvector/pgvector:pg16
+    container_name: ods-pgvector
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      POSTGRES_DB: "${PGVECTOR_DB:-postgres}"
+      POSTGRES_USER: "${PGVECTOR_USER:-postgres}"
+      POSTGRES_PASSWORD: "${PGVECTOR_PASSWORD:?Set PGVECTOR_PASSWORD before enabling pgvector}"
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${PGVECTOR_PORT:-5435}:5432"
+    volumes:
+      - ./data/pgvector:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-postgres} -d $${POSTGRES_DB:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - ods-network
+    deploy:
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: 1G
+        reservations:
+          cpus: "0.2"
+          memory: 256M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  ods-network:
+    external: true

@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-13T16:53:56Z",
+  "generated_at": "2026-09-15T05:39:54Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -2972,6 +2972,75 @@
       "configuration_scope": "declared-environment-keys"
     },
     {
+      "id": "pgvector",
+      "name": "pgvector (PostgreSQL & Vector Store)",
+      "description": "Enterprise PostgreSQL 16 database with the pgvector extension for unified relational data and high-dimensional vector embeddings.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 5432,
+      "external_port_default": 5435,
+      "health_endpoint": "/",
+      "env_vars": [
+        {
+          "key": "PGVECTOR_PORT",
+          "description": "Published PostgreSQL port (defaults to 5435 to avoid conflicts with host Postgres and Token Spy)",
+          "default": "5435"
+        },
+        {
+          "key": "PGVECTOR_DB",
+          "description": "Default database name initialized on first startup",
+          "default": "postgres"
+        },
+        {
+          "key": "PGVECTOR_USER",
+          "description": "Administrative username for PostgreSQL",
+          "default": "postgres"
+        },
+        {
+          "key": "PGVECTOR_PASSWORD",
+          "description": "Password for the PostgreSQL superuser (required, auto-generated if unset)",
+          "required": true
+        }
+      ],
+      "tags": [
+        "postgres",
+        "pgvector",
+        "database",
+        "vectors",
+        "embeddings",
+        "sql"
+      ],
+      "features": [
+        {
+          "id": "pgvector-store",
+          "name": "PGVector Relational & Vector Store",
+          "description": "Provide relational ACID storage and vector similarity search (HNSW / IVFFlat) for local AI agents",
+          "icon": "Database",
+          "category": "database",
+          "requirements": {
+            "services": [
+              "pgvector"
+            ],
+            "vram_gb": 0
+          },
+          "enabled_services_all": [
+            "pgvector"
+          ],
+          "setup_time": "~1 minute after setting credentials",
+          "priority": 33,
+          "launch": {
+            "type": "service",
+            "service": "pgvector"
+          }
+        }
+      ],
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
       "id": "piper-audio",
       "name": "Piper TTS",
       "description": "Fast and lightweight text-to-speech engine optimized for edge and low-resource devices.",
@@ -3153,6 +3222,28 @@
           ]
         }
       ],
+      "catalog_source": "builtin",
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
+      "id": "pixel-inference",
+      "name": "Pixel inference sharing (development)",
+      "description": "Disabled by default. Owner-provisioned, inference-only device credentials; loopback transport only. Does not provide Pixel agent or computer access. Private state must be provisioned before service activation. Native Windows private-state support and guided setup are not yet implemented.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [
+        "model-router"
+      ],
+      "port": 8093,
+      "external_port_default": 4005,
+      "health_endpoint": "/health",
+      "env_vars": [],
+      "tags": [],
+      "features": [],
+      "startup_check": false,
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
     },
