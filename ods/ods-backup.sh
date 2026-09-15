@@ -47,8 +47,12 @@ fmt_bytes() {
 # Available bytes on filesystem containing a path
 free_bytes_for_path() {
     local path="$1"
+    while [[ -n "$path" && ! -e "$path" ]]; do
+        path="$(dirname "$path")"
+    done
+    [[ -z "$path" ]] && path="/"
     # df -P gives POSIX output; field 4 = available 1K-blocks
-    df -Pk "$path" 2>/dev/null | awk 'NR==2 { print $4 * 1024 }'
+    df -Pk "$path" 2>/dev/null | awk 'NR==2 && $4 ~ /^[0-9]+$/ { print $4 * 1024 }'
 }
 
 # Estimate bytes needed for a backup type (rough but safe)
@@ -710,4 +714,6 @@ main() {
     do_backup "$backup_type" "$compress" "$description"
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi
