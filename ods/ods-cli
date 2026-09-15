@@ -1131,7 +1131,11 @@ _compose_run_with_summary() {
         warn "Then verify with: docker ps"
     fi
     echo ""
-    log "Full compose output: $_compose_log"
+    # The error summary above is the operator-facing record. Do not leave a
+    # private mktemp file behind after every failed command: repeated outages
+    # otherwise consume /tmp indefinitely and may expose stale diagnostics.
+    rm -f "$_compose_log"
+    log "Full compose output was surfaced; temporary log removed."
     trap - INT TERM
     return "$_rc"
 }
