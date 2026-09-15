@@ -3294,7 +3294,7 @@
       "env_vars": [
         {
           "key": "RVC_API_KEY",
-          "description": "API key for RVC service authentication (optional; leave empty to disable auth)",
+          "description": "Unsupported legacy setting; nonempty values stop startup because this image has no API-key authentication",
           "default": ""
         }
       ],
