@@ -1,0 +1,55 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: nodered
+  name: Node-RED (Local Event Flows)
+  description: "Deploy event-driven flows with separate native editor and HTTP-node authentication."
+  aliases: [node-red]
+  container_name: ods-nodered
+  container_uid: 1000
+  default_host: nodered
+  port: 1880
+  external_port_env: NODERED_PORT
+  external_port_default: 1880
+  health: /admin/auth/login
+  ui_path: /admin/
+  startup_timeout: 120
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [workflows, events, automation]
+  env_vars:
+    - key: NODERED_PORT
+      description: "Node-RED editor and HTTP-node host port"
+      default: "1880"
+    - key: NODERED_ADMIN_HASH
+      description: "Complete bcrypt hash for editor user ods, cost at least 8"
+      required: true
+      secret: true
+    - key: NODERED_HTTP_HASH
+      description: "Separate complete bcrypt hash for HTTP-node user workflow, cost at least 8"
+      required: true
+      secret: true
+    - key: NODERED_CREDENTIAL_SECRET
+      description: "Persistent random native flow-credential encryption secret; retain with private backups"
+      required: true
+      secret: true
+features:
+  - id: local-event-flows
+    name: Local Event Flows
+    description: "Connect local events through native Node-RED flows"
+    icon: Workflow
+    category: automation
+    requirements:
+      services: [nodered]
+      vram_gb: 0
+    enabled_services_all: [nodered]
+    setup_time: "~2 minutes"
+    priority: 40
+    launch:
+      type: service
+      service: nodered
+      path: /admin/
