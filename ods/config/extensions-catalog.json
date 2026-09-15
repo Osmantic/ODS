@@ -650,6 +650,68 @@
       "configuration_scope": "declared-environment-keys"
     },
     {
+      "id": "couchdb",
+      "name": "CouchDB (Local JSON Documents)",
+      "description": "Authenticated single-node JSON documents, binary attachments, revisions and replication APIs.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 5984,
+      "external_port_default": 5984,
+      "health_endpoint": "/_up",
+      "env_vars": [
+        {
+          "key": "COUCHDB_PORT",
+          "description": "Loopback HTTP and Fauxton port",
+          "default": "5984"
+        },
+        {
+          "key": "COUCHDB_PASSWORD",
+          "description": "Initial ods administrator password; 16-128 URL-safe characters",
+          "required": true
+        },
+        {
+          "key": "COUCHDB_SECRET",
+          "description": "Initial cookie signing secret; 32-128 URL-safe characters",
+          "required": true
+        }
+      ],
+      "tags": [
+        "database",
+        "documents",
+        "replication"
+      ],
+      "features": [
+        {
+          "id": "local-json-documents",
+          "name": "Manage Local JSON Documents",
+          "description": "Store revisioned JSON documents and attachments in a local CouchDB node",
+          "icon": "Database",
+          "category": "storage",
+          "requirements": {
+            "services": [
+              "couchdb"
+            ],
+            "vram_gb": 0
+          },
+          "enabled_services_all": [
+            "couchdb"
+          ],
+          "setup_time": "~1 minute",
+          "priority": 40,
+          "launch": {
+            "type": "service",
+            "service": "couchdb",
+            "path": "/_utils/"
+          }
+        }
+      ],
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
       "id": "crewai",
       "name": "CrewAI",
       "description": "CrewAI is a multi-agent framework for AI workflows. It enables autonomous\nAI agents to collaborate, delegate tasks, and work together to solve\ncomplex problems. Perfect for building agent teams that simulate real-world\ncollaboration and decision-making.\n",
