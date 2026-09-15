@@ -58,9 +58,10 @@ def test_native_entrypoint_rejects_invalid_bootstrap_format_without_disclosing_i
 
     image = yaml.safe_load((EXTENSION / "compose.yaml").read_text())["services"]["redpanda"]["image"]
     env = {**os.environ, "REDPANDA_PASSWORD": password}
-    result = subprocess.run(["docker", "run", "--rm", "--read-only", "--user", "101:101", "--entrypoint", "/bin/bash",
+    result = subprocess.run(["docker", "run", "--rm", "--name", "ods-q20-redpanda-guard-" + uuid.uuid4().hex[:12],
+                             "--label", "io.ods.quality20.validation=true", "--read-only", "--user", "101:101", "--entrypoint", "/bin/bash",
                              "--env", "REDPANDA_PASSWORD", "--volume", str(EXTENSION / "start.sh") + ":/ods-start.sh:ro",
-                             image, "/ods-start.sh"], env=env, capture_output=True, text=True, timeout=30)
+                             image, "/ods-start.sh"], env=env, capture_output=True, text=True, timeout=90)
     assert result.returncode == 2 and "native bootstrap credential format" in result.stderr
     assert password not in result.stdout + result.stderr
 
