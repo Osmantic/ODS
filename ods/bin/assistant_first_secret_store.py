@@ -16,8 +16,10 @@ import re
 import secrets
 import stat
 import threading
-from collections.abc import Iterator
+import time
+from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 try:  # pragma: no cover - unavailable by design on native Windows
@@ -30,9 +32,11 @@ LEGACY_STAGE_REQUEST_SCHEMA = "ods.assistant-first.secret-stage-request.v1"
 STAGE_REQUEST_SCHEMA = "ods.assistant-first.secret-stage-request.v2"
 STATUS_REQUEST_SCHEMA = "ods.assistant-first.secret-status-request.v1"
 DELETE_REQUEST_SCHEMA = "ods.assistant-first.secret-delete-request.v1"
+USE_REQUEST_SCHEMA = "ods.assistant-first.secret-use-request.v1"
 LEGACY_RECORD_SCHEMA = "ods.assistant-first.secret-record.v1"
 RECORD_SCHEMA = "ods.assistant-first.secret-record.v2"
 STATUS_SCHEMA = "ods.assistant-first.secret-status.v1"
+USE_STATUS_SCHEMA = "ods.assistant-first.secret-use-status.v1"
 
 _TRANSACTION_RE = re.compile(r"^txn-[0-9a-f]{24}$")
 _HASH_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -42,6 +46,8 @@ _MAX_SECRET_KEYS = 128
 _MAX_SECRET_VALUE_LENGTH = 65_536
 _MAX_RECORD_BYTES = 256 * 1024
 _MAX_SAFE_INTEGER = (1 << 53) - 1
+_LOCK_TIMEOUT_SECONDS = 5.0
+_LOCK_POLL_SECONDS = 0.01
 _CLOEXEC = getattr(os, "O_CLOEXEC", 0)
 _DIRECTORY_FLAGS = (
     os.O_RDONLY
@@ -129,6 +135,20 @@ def _secret_key_list(value: Any) -> list[str]:
     return result
 
 
+def _expected_secret_key_list(value: Any) -> list[str]:
+    if type(value) is not list or not value or len(value) > _MAX_SECRET_KEYS:
+        _fail("invalid-expected-secret-keys")
+    result: list[str] = []
+    previous: str | None = None
+    for item in value:
+        key = _safe_text(item, _KEY_RE, "invalid-expected-secret-key")
+        if previous is not None and key <= previous:
+            _fail("invalid-expected-secret-keys")
+        previous = key
+        result.append(key)
+    return result
+
+
 def _canonical_bytes(value: Any) -> bytes:
     try:
         encoded = (
@@ -165,6 +185,7 @@ class AssistantFirstSecretStore:
     """POSIX dirfd-backed, transaction-bound secret record store."""
 
     _process_lock = threading.RLock()
+    _consumer_state = threading.local()
 
     def __init__(self, data_dir: Path | str) -> None:
         self.data_dir = Path(data_dir)
@@ -244,30 +265,52 @@ class AssistantFirstSecretStore:
 
     @contextlib.contextmanager
     def _locked_directory(self) -> Iterator[int]:
-        with self._process_lock, self._store_directory() as directory_fd:
-            flags = os.O_RDWR | os.O_CREAT | _FILE_NOFOLLOW | _CLOEXEC
-            try:
-                lock_fd = os.open(".lock", flags, 0o600, dir_fd=directory_fd)
-            except OSError:
-                _fail("secret-store-lock-unavailable")
-            try:
-                metadata = os.fstat(lock_fd)
-                if (
-                    not stat.S_ISREG(metadata.st_mode)
-                    or metadata.st_nlink != 1
-                    or metadata.st_uid != os.geteuid()
-                ):
-                    _fail("secret-store-lock-integrity")
-                os.fchmod(lock_fd, 0o600)
-                fcntl.flock(lock_fd, fcntl.LOCK_EX)
-                self._recover_temporary_files(directory_fd)
-                yield directory_fd
-            except OSError:
-                _fail("secret-store-lock-unavailable")
-            finally:
-                with contextlib.suppress(OSError):
-                    fcntl.flock(lock_fd, fcntl.LOCK_UN)
-                os.close(lock_fd)
+        if getattr(self._consumer_state, "active", False):
+            _fail("secret-store-reentrant-use")
+        if not self._process_lock.acquire(timeout=_LOCK_TIMEOUT_SECONDS):
+            _fail("secret-store-lock-timeout")
+        try:
+            with self._store_directory() as directory_fd:
+                flags = os.O_RDWR | os.O_CREAT | _FILE_NOFOLLOW | _CLOEXEC
+                try:
+                    lock_fd = os.open(".lock", flags, 0o600, dir_fd=directory_fd)
+                except OSError:
+                    _fail("secret-store-lock-unavailable")
+                locked = False
+                try:
+                    try:
+                        metadata = os.fstat(lock_fd)
+                        if (
+                            not stat.S_ISREG(metadata.st_mode)
+                            or metadata.st_nlink != 1
+                            or metadata.st_uid != os.geteuid()
+                        ):
+                            _fail("secret-store-lock-integrity")
+                        os.fchmod(lock_fd, 0o600)
+                    except OSError:
+                        _fail("secret-store-lock-unavailable")
+
+                    deadline = time.monotonic() + _LOCK_TIMEOUT_SECONDS
+                    while True:
+                        try:
+                            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                            locked = True
+                            break
+                        except BlockingIOError:
+                            if time.monotonic() >= deadline:
+                                _fail("secret-store-lock-timeout")
+                            time.sleep(_LOCK_POLL_SECONDS)
+                        except OSError:
+                            _fail("secret-store-lock-unavailable")
+                    self._recover_temporary_files(directory_fd)
+                    yield directory_fd
+                finally:
+                    if locked:
+                        with contextlib.suppress(OSError):
+                            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                    os.close(lock_fd)
+        finally:
+            self._process_lock.release()
 
     @staticmethod
     def _filename(transaction_id: str) -> str:
@@ -402,6 +445,13 @@ class AssistantFirstSecretStore:
         )
 
     @staticmethod
+    def _scrub_record(record: dict[str, Any]) -> None:
+        secret_values = record.get("secretValues")
+        if type(secret_values) is dict:
+            for key in secret_values:
+                secret_values[key] = None
+
+    @staticmethod
     def _assert_binding(
         record: dict[str, Any], transaction_id: str, plan_hash: str, schema_hash: str
     ) -> None:
@@ -410,6 +460,7 @@ class AssistantFirstSecretStore:
             or record["planHash"] != plan_hash
             or record["schemaHash"] != schema_hash
         ):
+            AssistantFirstSecretStore._scrub_record(record)
             _fail("secret-binding-mismatch")
 
     @staticmethod
@@ -580,8 +631,83 @@ class AssistantFirstSecretStore:
                 _fail("secret-record-not-found")
             self._assert_binding(record, transaction_id, plan_hash, schema_hash)
             if not hmac.compare_digest(record["reference"], reference):
+                self._scrub_record(record)
                 _fail("secret-reference-mismatch")
             return self._status(record)
+
+    def invoke_with_secrets(
+        self,
+        payload: Any,
+        consumer: Callable[[Mapping[str, Any]], Any],
+    ) -> dict[str, Any]:
+        """Invoke one host-internal consumer without projecting secret values.
+
+        The exact record binding, opaque reference, and expected key set are
+        verified under the owner-only store lock. The consumer sees an
+        immutable mapping whose backing copy is cleared before this method
+        returns. Its return value is discarded, and an exception of any kind
+        is replaced after leaving the exception handler so its secret-bearing
+        context cannot escape.
+        """
+
+        keys = frozenset(
+            {
+                "schema",
+                "transactionId",
+                "planHash",
+                "schemaHash",
+                "reference",
+                "expectedSecretKeys",
+            }
+        )
+        request = _exact_dict(payload, keys, "invalid-secret-use-request")
+        if request["schema"] != USE_REQUEST_SCHEMA:
+            _fail("invalid-secret-use-schema")
+        if not callable(consumer):
+            _fail("invalid-secret-consumer")
+        transaction_id, plan_hash, schema_hash = self._binding(request)
+        reference = _safe_text(
+            request["reference"], _REFERENCE_RE, "invalid-secret-reference"
+        )
+        expected_keys = _expected_secret_key_list(request["expectedSecretKeys"])
+
+        with self._locked_directory() as directory_fd:
+            record = self._read_record(directory_fd, transaction_id)
+            if record is None:
+                _fail("secret-record-not-found")
+            self._assert_binding(record, transaction_id, plan_hash, schema_hash)
+            if not hmac.compare_digest(record["reference"], reference):
+                self._scrub_record(record)
+                _fail("secret-reference-mismatch")
+            if sorted(record["secretValues"]) != expected_keys:
+                self._scrub_record(record)
+                _fail("secret-key-set-mismatch")
+
+            materialized = dict(record["secretValues"])
+            consumer_failed = False
+            self._consumer_state.active = True
+            try:
+                consumer(MappingProxyType(materialized))
+            except BaseException:
+                consumer_failed = True
+            finally:
+                self._consumer_state.active = False
+                for key in materialized:
+                    materialized[key] = None
+            if consumer_failed:
+                self._scrub_record(record)
+                _fail("secret-consumer-failed")
+
+            return {
+                "schema": USE_STATUS_SCHEMA,
+                "transactionId": transaction_id,
+                "planHash": plan_hash,
+                "schemaHash": schema_hash,
+                "reference": record["reference"],
+                "configured": True,
+                "presentSecretKeys": expected_keys,
+                "invoked": True,
+            }
 
     def delete(self, payload: Any) -> dict[str, Any]:
         """Delete only the record matching every supplied binding."""
@@ -609,11 +735,13 @@ class AssistantFirstSecretStore:
                 }
             self._assert_binding(record, transaction_id, plan_hash, schema_hash)
             if not hmac.compare_digest(record["reference"], reference):
+                self._scrub_record(record)
                 _fail("secret-reference-mismatch")
             try:
                 os.unlink(self._filename(transaction_id), dir_fd=directory_fd)
                 os.fsync(directory_fd)
             except OSError:
+                self._scrub_record(record)
                 _fail("secret-record-delete-failed")
             return {
                 "schema": STATUS_SCHEMA,
@@ -633,6 +761,8 @@ __all__ = [
     "STAGE_REQUEST_SCHEMA",
     "STATUS_REQUEST_SCHEMA",
     "STATUS_SCHEMA",
+    "USE_REQUEST_SCHEMA",
+    "USE_STATUS_SCHEMA",
     "AssistantFirstSecretStore",
     "SecretStoreError",
 ]

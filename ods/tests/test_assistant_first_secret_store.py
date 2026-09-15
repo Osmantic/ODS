@@ -26,8 +26,11 @@ sys.modules[_store_spec.name] = _store_module
 _store_spec.loader.exec_module(_store_module)
 AssistantFirstSecretStore = _store_module.AssistantFirstSecretStore
 DELETE_REQUEST_SCHEMA = _store_module.DELETE_REQUEST_SCHEMA
+LEGACY_STAGE_REQUEST_SCHEMA = _store_module.LEGACY_STAGE_REQUEST_SCHEMA
 STAGE_REQUEST_SCHEMA = _store_module.STAGE_REQUEST_SCHEMA
 STATUS_REQUEST_SCHEMA = _store_module.STATUS_REQUEST_SCHEMA
+USE_REQUEST_SCHEMA = _store_module.USE_REQUEST_SCHEMA
+USE_STATUS_SCHEMA = _store_module.USE_STATUS_SCHEMA
 SecretStoreError = _store_module.SecretStoreError
 
 
@@ -64,12 +67,34 @@ def bound_request(schema, reference, **changes):
     return value
 
 
+def use_request(reference_value, **changes):
+    value = bound_request(
+        USE_REQUEST_SCHEMA,
+        reference_value,
+        expectedSecretKeys=["EXAMPLE_API_KEY"],
+    )
+    value.update(changes)
+    return value
+
+
 def error_code(call):
     with pytest.raises(SecretStoreError) as raised:
         call()
     assert SECRET_VALUE not in str(raised.value)
     assert SECRET_VALUE not in repr(raised.value)
     return raised.value.code
+
+
+def traceback_locals_text(error):
+    frames = []
+    traceback = error.__traceback__
+    while traceback is not None:
+        if Path(traceback.tb_frame.f_code.co_filename).resolve() == (
+            BIN_DIR / "assistant_first_secret_store.py"
+        ).resolve():
+            frames.append(repr(traceback.tb_frame.f_locals))
+        traceback = traceback.tb_next
+    return "\n".join(frames)
 
 
 def test_stage_status_delete_round_trip_is_redacted_and_restrictive(tmp_path):
@@ -331,6 +356,200 @@ def test_concurrent_same_request_has_one_record_and_one_reference(tmp_path):
     assert len({result["reference"] for result in results}) == 1
     assert sum(result["duplicate"] is False for result in results) == 1
     assert sum(result["duplicate"] is True for result in results) == 15
+
+
+def test_invoke_with_secrets_is_bound_immutable_and_value_free(tmp_path):
+    store = AssistantFirstSecretStore(tmp_path)
+    staged = store.stage(stage_request())
+    observed = []
+    retained = []
+
+    def consume(values):
+        observed.append(values["EXAMPLE_API_KEY"])
+        retained.append(values)
+        with pytest.raises(TypeError):
+            values["EXAMPLE_API_KEY"] = "replacement"
+        return {"doNotProject": SECRET_VALUE}
+
+    result = store.invoke_with_secrets(use_request(staged["reference"]), consume)
+
+    assert observed == [SECRET_VALUE]
+    assert result == {
+        "schema": USE_STATUS_SCHEMA,
+        "transactionId": TXN,
+        "planHash": PLAN,
+        "schemaHash": SCHEMA_HASH,
+        "reference": staged["reference"],
+        "configured": True,
+        "presentSecretKeys": ["EXAMPLE_API_KEY"],
+        "invoked": True,
+    }
+    assert SECRET_VALUE not in json.dumps(result)
+    assert retained[0]["EXAMPLE_API_KEY"] is None
+
+
+@pytest.mark.parametrize(
+    "raised_error",
+    [RuntimeError(f"failed: {SECRET_VALUE}"), KeyboardInterrupt(SECRET_VALUE)],
+)
+def test_invoke_with_secrets_contains_callback_exception_chain(
+    tmp_path, raised_error
+):
+    store = AssistantFirstSecretStore(tmp_path)
+    staged = store.stage(stage_request())
+
+    def consume(_values):
+        raise raised_error
+
+    with pytest.raises(SecretStoreError) as raised:
+        store.invoke_with_secrets(use_request(staged["reference"]), consume)
+
+    assert raised.value.code == "secret-consumer-failed"
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
+    assert SECRET_VALUE not in str(raised.value)
+    assert SECRET_VALUE not in repr(raised.value)
+    assert SECRET_VALUE not in traceback_locals_text(raised.value)
+
+
+@pytest.mark.parametrize(
+    ("changes", "expected"),
+    [
+        ({"planHash": "6" * 64}, "secret-binding-mismatch"),
+        ({"reference": "secret-v1-" + "7" * 48}, "secret-reference-mismatch"),
+        ({"expectedSecretKeys": ["OTHER_KEY"]}, "secret-key-set-mismatch"),
+        ({"expectedSecretKeys": []}, "invalid-expected-secret-keys"),
+        (
+            {"expectedSecretKeys": ["EXAMPLE_API_KEY", "EXAMPLE_API_KEY"]},
+            "invalid-expected-secret-keys",
+        ),
+        ({"expectedSecretKeys": ["bad-key"]}, "invalid-expected-secret-key"),
+    ],
+)
+def test_invoke_with_secrets_rejects_binding_reference_and_keys(
+    tmp_path, changes, expected
+):
+    store = AssistantFirstSecretStore(tmp_path)
+    staged = store.stage(stage_request())
+    called = []
+
+    assert (
+        error_code(
+            lambda: store.invoke_with_secrets(
+                use_request(staged["reference"], **changes),
+                lambda _values: called.append(True),
+            )
+        )
+        == expected
+    )
+    assert called == []
+
+
+def test_invoke_with_secrets_rejects_shape_schema_and_consumer_before_state(tmp_path):
+    store = AssistantFirstSecretStore(tmp_path)
+    reference = "secret-v1-" + "0" * 48
+    invalid_shape = use_request(reference, extra=True)
+    invalid_schema = use_request(reference, schema=STATUS_REQUEST_SCHEMA)
+
+    assert (
+        error_code(lambda: store.invoke_with_secrets(invalid_shape, lambda _v: None))
+        == "invalid-secret-use-request"
+    )
+    assert (
+        error_code(lambda: store.invoke_with_secrets(invalid_schema, lambda _v: None))
+        == "invalid-secret-use-schema"
+    )
+    assert (
+        error_code(lambda: store.invoke_with_secrets(use_request(reference), None))
+        == "invalid-secret-consumer"
+    )
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_invoke_with_secrets_holds_store_lock_for_consumer(tmp_path):
+    store = AssistantFirstSecretStore(tmp_path)
+    staged = store.stage(stage_request())
+    entered = threading.Event()
+    release = threading.Event()
+    status_done = threading.Event()
+
+    def consume(_values):
+        entered.set()
+        assert release.wait(timeout=5)
+
+    def invoke():
+        store.invoke_with_secrets(use_request(staged["reference"]), consume)
+
+    def read_status():
+        store.status(bound_request(STATUS_REQUEST_SCHEMA, staged["reference"]))
+        status_done.set()
+
+    invoke_thread = threading.Thread(target=invoke)
+    invoke_thread.start()
+    assert entered.wait(timeout=5)
+    status_thread = threading.Thread(target=read_status)
+    status_thread.start()
+    assert not status_done.wait(timeout=0.2)
+    release.set()
+    invoke_thread.join(timeout=5)
+    status_thread.join(timeout=5)
+    assert not invoke_thread.is_alive()
+    assert not status_thread.is_alive()
+    assert status_done.is_set()
+
+
+def test_invoke_with_secrets_reentrant_store_use_fails_without_deadlock(tmp_path):
+    store = AssistantFirstSecretStore(tmp_path)
+    staged = store.stage(stage_request())
+
+    def consume(_values):
+        store.status(bound_request(STATUS_REQUEST_SCHEMA, staged["reference"]))
+
+    with pytest.raises(SecretStoreError) as raised:
+        store.invoke_with_secrets(use_request(staged["reference"]), consume)
+
+    assert raised.value.code == "secret-consumer-failed"
+    assert SECRET_VALUE not in traceback_locals_text(raised.value)
+
+
+def test_store_lock_contention_times_out_fail_closed(tmp_path, monkeypatch):
+    store = AssistantFirstSecretStore(tmp_path)
+    staged = store.stage(stage_request())
+    original_flock = _store_module.fcntl.flock
+
+    def blocked_flock(descriptor, operation):
+        if operation & _store_module.fcntl.LOCK_NB:
+            raise BlockingIOError()
+        return original_flock(descriptor, operation)
+
+    monkeypatch.setattr(_store_module, "_LOCK_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(_store_module, "_LOCK_POLL_SECONDS", 0.0)
+    monkeypatch.setattr(_store_module.fcntl, "flock", blocked_flock)
+
+    assert (
+        error_code(
+            lambda: store.status(
+                bound_request(STATUS_REQUEST_SCHEMA, staged["reference"])
+            )
+        )
+        == "secret-store-lock-timeout"
+    )
+
+
+def test_invoke_with_secrets_supports_validated_legacy_record(tmp_path):
+    store = AssistantFirstSecretStore(tmp_path)
+    request = stage_request(schema=LEGACY_STAGE_REQUEST_SCHEMA)
+    request.pop("generatedSecretKeys")
+    staged = store.stage(request)
+    observed = []
+
+    result = store.invoke_with_secrets(
+        use_request(staged["reference"]),
+        lambda values: observed.append(values["EXAMPLE_API_KEY"]),
+    )
+
+    assert result["invoked"] is True
+    assert observed == [SECRET_VALUE]
 
 
 @pytest.fixture(scope="module")
