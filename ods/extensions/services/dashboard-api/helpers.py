@@ -1381,3 +1381,18 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def numeric_clamp_between_safe(val: float | int | None, min_v: float, max_v: float) -> float:
+    """Safely clamp a numeric value between min_v and max_v.
+    Returns 0.0 on invalid inputs.
+    """
+    if val is None or not isinstance(val, (int, float)) or isinstance(val, bool):
+        return 0.0
+    try:
+        min_f, max_f = float(min_v), float(max_v)
+        if min_f > max_f:
+            min_f, max_f = max_f, min_f
+        return max(min_f, min(float(val), max_f))
+    except (ValueError, TypeError):
+        return 0.0
