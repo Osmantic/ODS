@@ -27,10 +27,28 @@ from extension_lifecycle_work import (
 PLAN_MATERIAL_SCHEMA = "ods.extension-lifecycle-plan-material.v1"
 
 _DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+_HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 _SERVICE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 _EXCLUSIVE_RE = re.compile(r"^[a-z0-9][a-z0-9._:/-]{0,127}$")
 _HOST_PORT_KEYS = frozenset({"port", "protocol"})
 _CLAIM_KEYS = frozenset({"hostPorts", "exclusive"})
+_V2_APPROVAL_KEYS = frozenset(
+    {
+        "actor",
+        "approvedAt",
+        "approvedBy",
+        "catalogRevision",
+        "idempotencyKey",
+        "observedStateRevision",
+        "planHash",
+        "policyRevision",
+        "transactionId",
+        "validUntil",
+        "configurationHash",
+        "configurationSchemaHash",
+        "privateConfigurationDigest",
+    }
+)
 _ACTIONS = frozenset({"install", "enable", "repair", "update", "noop"})
 _DEFINITION_SOURCES = frozenset({"builtin", "library", "user"})
 _LEGACY_DEFINITION_KEYS = frozenset(
@@ -132,6 +150,7 @@ class LifecyclePlanMaterial:
     state: str
     operations: tuple[PlannedOperation, ...]
     definitions: tuple[PlannedDefinition, ...]
+    attested_approval: bool = False
 
 
 def _reject() -> None:
@@ -385,12 +404,36 @@ def _expected_request(
         _reject()
 
 
+def _attested_approval(approval: Any) -> bool:
+    """Check the version of a trusted ``TransactionStore.read`` approval.
+
+    The store has already verified schema, configuration, and private custody;
+    this stdlib-only host binder checks exact v2 shape without copying those
+    digests or secret material into the lifecycle command.
+    """
+    if not isinstance(approval, dict) or frozenset(approval) != _V2_APPROVAL_KEYS:
+        return False
+    for key in (
+        "configurationHash",
+        "configurationSchemaHash",
+        "privateConfigurationDigest",
+    ):
+        value = approval[key]
+        if not isinstance(value, str) or _HEX64_RE.fullmatch(value) is None:
+            return False
+    return True
+
+
 def bind_lifecycle_plan(
     command: LifecycleWorkCommand,
     transaction: Any,
+    *,
+    require_attested_approval: bool = False,
 ) -> LifecycleWorkCommand:
     """Return the command with immutable material from one exact approved plan."""
 
+    if type(require_attested_approval) is not bool:
+        _reject()
     if not isinstance(command, LifecycleWorkCommand) or command.plan_material is not None:
         _reject()
     if not isinstance(transaction, dict):
@@ -410,6 +453,9 @@ def bind_lifecycle_plan(
         or approval.get("transactionId") != command.transaction_id
         or approval.get("planHash") != command.plan_hash
     ):
+        _reject()
+    attested = _attested_approval(approval)
+    if require_attested_approval and not attested:
         _reject()
     plan = envelope.get("plan")
     if not isinstance(plan, dict):
@@ -460,6 +506,7 @@ def bind_lifecycle_plan(
         state=state,
         operations=operations,
         definitions=definitions,
+        attested_approval=attested,
     )
     return replace(command, plan_material=material)
 

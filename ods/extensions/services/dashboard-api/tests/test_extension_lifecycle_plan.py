@@ -13,9 +13,13 @@ import pytest
 BIN_DIR = Path(__file__).resolve().parents[4] / "bin"
 if str(BIN_DIR) not in sys.path:
     sys.path.insert(0, str(BIN_DIR))
+DASH_API_DIR = Path(__file__).resolve().parents[1]
+if str(DASH_API_DIR) not in sys.path:
+    sys.path.insert(0, str(DASH_API_DIR))
 
 import extension_lifecycle_plan as lifecycle_plan  # noqa: E402
 import extension_lifecycle_work as lifecycle_work  # noqa: E402
+import extension_transactions as transaction_store  # noqa: E402
 
 
 def claims(ports: list | None = None, exclusive: list | None = None) -> dict:
@@ -96,6 +100,93 @@ def transaction(state: str) -> dict:
             },
         },
     }
+
+
+def attested_transaction(state: str) -> dict:
+    stored = transaction(state)
+    stored["approval"] = {
+        "actor": "owner-42",
+        "approvedAt": "2026-09-11T12:01:00Z",
+        "approvedBy": "owner-" + "a" * 16,
+        "catalogRevision": "a" * 64,
+        "configurationHash": "b" * 64,
+        "configurationSchemaHash": "c" * 64,
+        "idempotencyKey": "d" * 64,
+        "observedStateRevision": "e" * 64,
+        "planHash": PLAN_HASH,
+        "policyRevision": "f" * 64,
+        "privateConfigurationDigest": "1" * 64,
+        "transactionId": TRANSACTION_ID,
+        "validUntil": "2026-10-01T00:00:00Z",
+    }
+    return stored
+
+
+def test_host_plan_binding_strict_gate_requires_exact_attested_approval():
+    parsed = command(
+        "download-and-verify", ["documents"], {"operations": [INSTALL]}
+    )
+    legacy = lifecycle_plan.bind_lifecycle_plan(
+        parsed, transaction("downloading")
+    )
+    assert legacy.plan_material.attested_approval is False
+    with pytest.raises(lifecycle_work.LifecycleWorkValidationError) as caught:
+        lifecycle_plan.bind_lifecycle_plan(
+            parsed, transaction("downloading"),
+            require_attested_approval=True,
+        )
+    assert caught.value.code == "lifecycle-work-plan-mismatch"
+
+    bound = lifecycle_plan.bind_lifecycle_plan(
+        parsed, attested_transaction("downloading"),
+        require_attested_approval=True,
+    )
+    assert bound.plan_material.attested_approval is True
+    assert bound.plan_material.plan_hash == PLAN_HASH
+
+
+def test_host_attestation_key_set_tracks_the_durable_store():
+    assert lifecycle_plan._V2_APPROVAL_KEYS == (
+        transaction_store.APPROVAL_V2_KEYS
+    )
+
+
+@pytest.mark.parametrize("invalid_gate", [None, 0, 1, "true"])
+def test_host_plan_binding_requires_a_boolean_gate(invalid_gate):
+    parsed = command(
+        "download-and-verify", ["documents"], {"operations": [INSTALL]}
+    )
+    with pytest.raises(lifecycle_work.LifecycleWorkValidationError) as caught:
+        lifecycle_plan.bind_lifecycle_plan(
+            parsed, attested_transaction("downloading"),
+            require_attested_approval=invalid_gate,
+        )
+    assert caught.value.code == "lifecycle-work-plan-mismatch"
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda record: record.pop("privateConfigurationDigest"),
+        lambda record: record.update({"extra": "assistant-supplied"}),
+        lambda record: record.update({"configurationHash": "B" * 64}),
+        lambda record: record.update({"configurationSchemaHash": "not-a-hash"}),
+    ],
+)
+def test_host_plan_binding_rejects_malformed_attestation(mutation):
+    stored = attested_transaction("downloading")
+    mutation(stored["approval"])
+    parsed = command(
+        "download-and-verify", ["documents"], {"operations": [INSTALL]}
+    )
+    with pytest.raises(lifecycle_work.LifecycleWorkValidationError) as caught:
+        lifecycle_plan.bind_lifecycle_plan(
+            parsed, stored, require_attested_approval=True,
+        )
+    assert caught.value.code == "lifecycle-work-plan-mismatch"
+    assert lifecycle_plan.bind_lifecycle_plan(
+        parsed, stored
+    ).plan_material.attested_approval is False
 
 
 def command(operation_key: str, service_ids: list[str], payload: dict):
