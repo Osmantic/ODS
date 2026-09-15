@@ -1,0 +1,50 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: pgvector
+  name: pgvector (PostgreSQL & Vector Store)
+  description: "Enterprise PostgreSQL 16 database with the pgvector extension for unified relational data and high-dimensional vector embeddings."
+  aliases: [postgres, pgvector-db, vector-db]
+  container_name: ods-pgvector
+  default_host: pgvector
+  port: 5432
+  external_port_env: PGVECTOR_PORT
+  external_port_default: 5435
+  health: /
+  ui_path: ""
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [postgres, pgvector, database, vectors, embeddings, sql]
+  env_vars:
+    - key: PGVECTOR_PORT
+      description: "Published PostgreSQL port (defaults to 5435 to avoid conflicts with host Postgres and Token Spy)"
+      default: "5435"
+    - key: PGVECTOR_DB
+      description: "Default database name initialized on first startup"
+      default: "postgres"
+    - key: PGVECTOR_USER
+      description: "Administrative username for PostgreSQL"
+      default: "postgres"
+    - key: PGVECTOR_PASSWORD
+      description: "Password for the PostgreSQL superuser (required, auto-generated if unset)"
+      required: true
+      secret: true
+features:
+  - id: pgvector-store
+    name: PGVector Relational & Vector Store
+    description: "Provide relational ACID storage and vector similarity search (HNSW / IVFFlat) for local AI agents"
+    icon: Database
+    category: database
+    requirements:
+      services: [pgvector]
+      vram_gb: 0
+    enabled_services_all: [pgvector]
+    setup_time: "~1 minute after setting credentials"
+    priority: 33
+    launch:
+      type: service
+      service: pgvector
