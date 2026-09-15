@@ -82,7 +82,7 @@ resolve_compose_config() {
     fi
 
     if [[ -z "$COMPOSE_FLAGS" ]]; then
-        COMPOSE_FLAGS="-f $COMPOSE_FILE"
+        COMPOSE_FLAGS="-f \"$COMPOSE_FILE\""
     fi
 
     if [[ -x "$SCRIPT_DIR/scripts/resolve-compose-stack.sh" ]]; then
