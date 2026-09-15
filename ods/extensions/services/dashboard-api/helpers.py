@@ -1381,3 +1381,19 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def dict_compact_empty_containers_safe(d: dict | None) -> dict:
+    """Safely remove None, empty dicts, and empty lists from dictionary.
+    Returns {} on None or non-dict inputs.
+    """
+    if not isinstance(d, dict) or d is None:
+        return {}
+    result = {}
+    for k, v in d.items():
+        if v is None:
+            continue
+        if isinstance(v, (dict, list, tuple, set)) and len(v) == 0:
+            continue
+        result[k] = v
+    return result
