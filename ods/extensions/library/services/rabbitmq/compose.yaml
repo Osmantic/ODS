@@ -1,0 +1,47 @@
+services:
+  rabbitmq:
+    image: rabbitmq:4.3.5-management-alpine@sha256:b3b8b7f95f5382a19f9ea33540e604f30aad081d37ad9aba72255135765373a1
+    container_name: ods-rabbitmq
+    hostname: ods-rabbitmq
+    user: "999:999"
+    environment:
+      RABBITMQ_DEFAULT_USER: ods
+      RABBITMQ_DEFAULT_PASS: "${RABBITMQ_PASSWORD:?Set RABBITMQ_PASSWORD before enabling RabbitMQ}"
+      RABBITMQ_DEFAULT_VHOST: ods
+      RABBITMQ_NODENAME: rabbit@ods-rabbitmq
+      RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS: "+S 2:2 -kernel inet_dist_use_interface {127,0,0,1}"
+      ERL_EPMD_ADDRESS: 127.0.0.1
+      ERL_CRASH_DUMP: /tmp/erl_crash.dump
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${RABBITMQ_PORT:-15672}:15672"
+      - "${BIND_ADDRESS:-127.0.0.1}:${RABBITMQ_AMQP_PORT:-5672}:5672"
+    volumes:
+      - ./data/rabbitmq:/var/lib/rabbitmq
+      - type: bind
+        source: ./config/rabbitmq/99-ods.conf
+        target: /etc/rabbitmq/conf.d/99-ods.conf
+        read_only: true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=64m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+    stop_grace_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+    healthcheck:
+      test: [CMD-SHELL, "rabbitmq-diagnostics -q check_running && rabbitmq-diagnostics -q check_local_alarms"]
+      interval: 15s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks: [ods-network]
+
+networks:
+  ods-network:
+    external: true
+    name: ods-network

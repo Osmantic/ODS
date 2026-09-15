@@ -206,3 +206,7 @@ python3 -c "import yaml; yaml.safe_load(open('my-service/manifest.yaml'))"
 These extensions are actively tested on ODS development builds. Some are battle-tested (Ollama, ChromaDB, Bark), others are newer. All follow the v1 manifest schema and integrate with the ODS service registry, dashboard, and CLI.
 
 **17 services have already graduated to production** — these 32 are being prepared for the next wave.
+
+### Local work queues
+
+[RabbitMQ](services/rabbitmq/README.md) supplies authenticated AMQP queues with a native management console. Enable it explicitly and configure your workers; it does not change ODS chat routing.
