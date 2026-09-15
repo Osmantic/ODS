@@ -18,7 +18,13 @@ Your data is preserved when disabling. To re-enable later: `ods enable xtts`
 
 ## Access
 
-- **API:** `http://localhost:8100`
+- **API documentation:** `http://localhost:8100/docs`
+
+`XTTS_PORT` changes the published host port (default `8100`). The pinned image
+listens on container port `8020`; its entrypoint does not consume `PORT`.
+Both the container and Dashboard probe `/docs`, which becomes available after
+application initialization. This confirms HTTP availability, not successful
+speech synthesis or GPU compatibility. The image has no `/health` endpoint.
 
 ## First-Time Setup
 
@@ -28,7 +34,7 @@ Your data is preserved when disabling. To re-enable later: `ods enable xtts`
 ### Example Request
 
 ```bash
-curl -X POST http://localhost:8100/tts \
+curl -X POST http://localhost:8100/tts_to_audio/ \
   -H "Content-Type: application/json" \
   -d '{
     "text": "Hello, this is a test.",
