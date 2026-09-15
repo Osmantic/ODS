@@ -43,14 +43,14 @@ fi
 #=============================================================================
 # Colors — green phosphor CRT theme
 #=============================================================================
-RED='\033[0;31m'
-GRN='\033[0;32m'         # Standard green — body text
-BGRN='\033[1;32m'        # Bright green — emphasis, success, headings
-DGRN='\033[2;32m'        # Dim green — secondary text, lore
-AMB='\033[0;33m'         # Amber — warnings, ETA labels
-WHT='\033[1;37m'         # White — key URLs
-DIM='\033[2;37m'         # Dim white
-NC='\033[0m'             # Reset
+RED=$'\033[0;31m'
+GRN=$'\033[0;32m'         # Standard green — body text
+BGRN=$'\033[1;32m'        # Bright green — emphasis, success, headings
+DGRN=$'\033[2;32m'        # Dim green — secondary text, lore
+AMB=$'\033[0;33m'         # Amber — warnings, ETA labels
+WHT=$'\033[1;37m'         # White — key URLs
+DIM=$'\033[2;37m'         # Dim white
+NC=$'\033[0m'             # Reset
 CURSOR='█'               # Block cursor for typing
 
 #=============================================================================
