@@ -464,11 +464,11 @@ compress_backup() {
     local parent_dir
     parent_dir=$(dirname "$backup_dir")
 
-    tar czf "$parent_dir/$backup_name.tar.gz" -C "$parent_dir" "$backup_name"
-    # The archive bundles the raw .env (DASHBOARD_API_KEY, session secret, service
-    # passwords). Restrict it to the owner rather than leaving it world-readable
-    # at the umask default, matching the 0600 the .env itself carries.
-    chmod 600 "$parent_dir/$backup_name.tar.gz"
+    local archive_file="$parent_dir/$backup_name.tar.gz"
+    # Pre-secure archive permissions before writing sensitive bundle contents
+    touch "$archive_file" && chmod 600 "$archive_file" 2>/dev/null || true
+    tar czf "$archive_file" -C "$parent_dir" "$backup_name"
+    chmod 600 "$archive_file" 2>/dev/null || true
     local compressed_size
     compressed_size=$(du -sh "$parent_dir/$backup_name.tar.gz" | cut -f1)
 
