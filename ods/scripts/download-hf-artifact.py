@@ -22,12 +22,17 @@ def parse_huggingface_resolve_url(url: str) -> tuple[str, str, str]:
         raise ValueError("URL is not a Hugging Face URL")
 
     parts = [unquote(part) for part in parsed.path.split("/") if part]
-    if len(parts) < 5 or parts[2] != "resolve":
+    if "resolve" not in parts:
         raise ValueError("URL is not a Hugging Face /resolve/ artifact URL")
-
-    repo_id = f"{parts[0]}/{parts[1]}"
-    revision = parts[3]
-    filename = "/".join(parts[4:])
+    idx = parts.index("resolve")
+    repo_parts = parts[:idx]
+    if repo_parts and repo_parts[0] in {"models", "datasets", "spaces"}:
+        repo_parts = repo_parts[1:]
+    if not repo_parts or idx + 2 >= len(parts):
+        raise ValueError("URL is not a Hugging Face /resolve/ artifact URL")
+    repo_id = "/".join(repo_parts)
+    revision = parts[idx + 1]
+    filename = "/".join(parts[idx + 2:])
     if not filename:
         raise ValueError("Hugging Face artifact filename is empty")
     return repo_id, revision, filename
