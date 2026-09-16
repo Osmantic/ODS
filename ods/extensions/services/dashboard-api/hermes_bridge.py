@@ -339,8 +339,13 @@ async def shutdown_pool() -> None:
         _SWEEPER_TASK.cancel()
         try:
             await _SWEEPER_TASK
-        except (asyncio.CancelledError, Exception):
+        except asyncio.CancelledError:
+            # Expected: we just cancelled it.
             pass
+        except Exception:
+            # The sweeper died on its own before shutdown. Shutdown still
+            # proceeds, but the cause is worth surfacing rather than dropping.
+            logger.exception("Hermes connection sweeper failed before shutdown")
         _SWEEPER_TASK = None
     async with _POOL_GUARD:
         connections = list(_CONNECTION_POOL.values())
