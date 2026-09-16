@@ -566,7 +566,7 @@ describe('ODSTalk', () => {
 test.each(['md', 'json'])('exports the displayed conversation as %s without another network request', async (format) => {
   const fetchMock = vi.fn(async url => url === '/api/talk/status'
     ? response({ capabilities: { text_chat: true } })
-    : sseResponse([{ type: 'complete', text: 'Answer with Unicode ß', status: 'ok' }, { type: 'done' }]))
+    : sseResponse([{ type: 'complete', text: 'Answer with Unicode ÃŸ', status: 'ok' }, { type: 'done' }]))
   vi.stubGlobal('fetch', fetchMock)
   const create = vi.fn(() => 'blob:transcript')
   vi.stubGlobal('URL', Object.assign(URL, { createObjectURL: create, revokeObjectURL: vi.fn() }))
@@ -576,7 +576,8 @@ test.each(['md', 'json'])('exports the displayed conversation as %s without anot
   await screen.findByText('Ready')
   fireEvent.change(screen.getByPlaceholderText('Message ODS'), { target: { value: 'Keep this note' } })
   fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
-  await screen.findByText('Answer with Unicode ß')
+  expect(screen.getByRole('button', { name: 'Export conversation' })).toBeDisabled()
+  await screen.findByText('Answer with Unicode ÃŸ')
   await waitFor(() => expect(screen.getByRole('button', { name: 'Export conversation' })).toBeEnabled())
   fireEvent.change(screen.getByLabelText('Transcript format'), { target: { value: format } })
   const requests = fetchMock.mock.calls.length
@@ -588,7 +589,7 @@ test.each(['md', 'json'])('exports the displayed conversation as %s without anot
     reader.readAsText(blob)
   })
   expect(text).toContain('Keep this note')
-  expect(text).toContain('Answer with Unicode ß')
+  expect(text).toContain('Answer with Unicode ÃŸ')
   expect(text).not.toContain("Hey, I'm ODS")
   if (format === 'json') expect(JSON.parse(text).messages).toHaveLength(2)
   expect(fetchMock).toHaveBeenCalledTimes(requests)
