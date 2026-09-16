@@ -226,7 +226,7 @@ else
             source "$SCRIPT_DIR/installers/lib/assistant-first-state.sh"
         fi
         ods_assistant_first_prepare_state_directories \
-            "$INSTALL_DIR/data" "$_phase06_host_uid" || return 1
+            "$INSTALL_DIR/data" "$_phase06_host_uid" "$INSTALL_DIR" || return 1
         unset _phase06_host_uid
     else
         mkdir -p "$INSTALL_DIR/data"

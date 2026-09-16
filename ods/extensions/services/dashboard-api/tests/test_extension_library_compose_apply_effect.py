@@ -546,7 +546,13 @@ def test_exact_replay_preserves_files_and_repeats_observation(tmp_path):
     ]
 
 
-def test_production_host_agent_does_not_import_dormant_library_effect():
-    source = (ODS / "bin" / "ods-host-agent.py").read_text(encoding="utf-8")
-    assert "extension_library_compose_apply_effect" not in source
-    assert "LibraryComposeApplyEffect" not in source
+def test_production_host_agent_registers_only_through_the_bounded_runtime():
+    host_source = (ODS / "bin" / "ods-host-agent.py").read_text(encoding="utf-8")
+    runtime_source = (
+        ODS / "bin" / "extension_library_application_runtime.py"
+    ).read_text(encoding="utf-8")
+    assert "extension_library_application_runtime" in host_source
+    assert "extension_library_compose_apply_effect" not in host_source
+    assert "LibraryComposeApplyEffect" not in host_source
+    assert "from extension_library_compose_apply_effect import" in runtime_source
+    assert "build_library_application_runtime" in runtime_source

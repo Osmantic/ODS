@@ -192,9 +192,22 @@ class ArtifactStageRuntimeTests(unittest.TestCase):
                 ):
                     callers.append((path.relative_to(repo), node.lineno))
 
-        self.assertEqual(len(callers), 1)
-        self.assertEqual(callers[0][0], Path("ods/bin/ods-host-agent.py"))
+        self.assertEqual(len(callers), 2)
+        self.assertEqual(
+            {path for path, _line in callers},
+            {Path("ods/bin/ods-host-agent.py")},
+        )
         host_source = (BIN_DIR / "ods-host-agent.py").read_text(encoding="utf-8")
+        call_lines = {
+            host_source.splitlines()[line - 1].strip() for _path, line in callers
+        }
+        self.assertEqual(
+            call_lines,
+            {
+                "stage = _get_extension_artifact_stage_runtime()",
+                "runtime = _get_extension_artifact_stage_runtime()",
+            },
+        )
         self.assertIn("_extension_lifecycle_work_dispatcher = None", host_source)
 
 

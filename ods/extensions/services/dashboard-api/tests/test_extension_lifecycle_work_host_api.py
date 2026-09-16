@@ -430,7 +430,10 @@ def host_server(tmp_path):
     builtins.chmod(0o700)
     users.mkdir(mode=0o700)
     users.chmod(0o700)
-    for service_id in ("documents", "voice", "dashboard", "searxng"):
+    for service_id in (
+        "documents", "voice", "dashboard", "searxng",
+        "gitea", "miniflux", "ntfy", "ollama",
+    ):
         extension = builtins / service_id
         extension.mkdir(mode=0o700)
         extension.chmod(0o700)
@@ -443,13 +446,20 @@ def host_server(tmp_path):
     agent.INSTALL_DIR = tmp_path / "install"
     agent.INSTALL_DIR.mkdir(mode=0o700)
     agent.INSTALL_DIR.chmod(0o700)
+    application_root = agent.INSTALL_DIR / ".ods-assistant-first" / "applications"
+    application_root.mkdir(mode=0o700, parents=True)
+    application_root.parent.chmod(0o700)
+    application_root.chmod(0o700)
     agent.DATA_DIR = agent.INSTALL_DIR / "data"
     agent.DATA_DIR.mkdir(mode=0o700)
     agent.DATA_DIR.chmod(0o700)
     library = agent.DATA_DIR / "extensions-library"
     library.mkdir(mode=0o700)
     library.chmod(0o700)
-    for service_id in ("documents", "voice", "dashboard", "searxng"):
+    for service_id in (
+        "documents", "voice", "dashboard", "searxng",
+        "gitea", "miniflux", "ntfy", "ollama",
+    ):
         extension = library / service_id
         extension.mkdir(mode=0o700)
         extension.chmod(0o700)
@@ -468,6 +478,7 @@ def host_server(tmp_path):
     data_backup_root = agent.DATA_DIR / "assistant-first" / "data-backups"
     data_backup_root.mkdir(mode=0o700, parents=True)
     data_backup_root.chmod(0o700)
+    (agent.DATA_DIR / "assistant-first").chmod(0o700)
     agent.EXTENSIONS_DIR = builtins
     agent.USER_EXTENSIONS_DIR = users
     agent.ALWAYS_ON_SERVICES = frozenset({"dashboard"})
@@ -660,6 +671,130 @@ def test_still_dormant_operations_remain_inert_but_authenticate_the_lease(
     state = agent._extension_lease_manager.describe(grant["leaseId"])
     assert state["active"] is False
     assert grant["leaseToken"] not in json.dumps(result)
+
+
+def test_approved_library_apply_selects_lease_bound_receipted_runtime(
+    host_server, host_request
+):
+    agent, _listener = host_server
+    service_id = "gitea"
+    grant = acquire_lease(agent, host_request, [service_id])
+    request = work_request(
+        agent._extension_lifecycle_work.REQUEST_SCHEMA,
+        lease_evidence(agent, grant),
+        operation_key=f"apply:{service_id}",
+        service_ids=[service_id],
+        payload={
+            "operation": {"serviceId": service_id, "action": "install"}
+        },
+    )
+    begin_receipt(agent, host_request, request)
+    calls = []
+
+    def build(receipt_store, active_lease):
+        assert receipt_store is agent._lifecycle_receipt_store
+
+        def observe(command):
+            calls.append(("observe", command, active_lease()))
+            return agent._extension_lifecycle_work.LifecycleWorkStartedObservation(
+                state="missing"
+            )
+
+        def dispatch(command):
+            calls.append(("dispatch", command, active_lease()))
+            return EVIDENCE_HASH
+
+        return SimpleNamespace(
+            dispatcher=dispatch,
+            started_observer=observe,
+        )
+
+    agent._get_extension_library_application_runtime = build
+    agent._extension_lifecycle_work_dispatcher = lambda _command: (
+        (_ for _ in ()).throw(AssertionError("generic received library apply"))
+    )
+
+    status, result = host_request("/v1/extension/lifecycle-work", request)
+
+    assert status == 200
+    assert result["evidenceHash"] == EVIDENCE_HASH
+    assert [item[0] for item in calls] == ["observe", "dispatch"]
+    assert all(item[2] is True for item in calls)
+    assert calls[0][1].plan_material is None
+    assert calls[1][1].plan_material == {"bound": True}
+    assert grant["leaseToken"] not in repr(calls)
+
+
+def test_approved_library_apply_never_falls_back_to_generic_dispatcher(
+    host_server, host_request
+):
+    agent, _listener = host_server
+    service_id = "gitea"
+    grant = acquire_lease(agent, host_request, [service_id])
+    request = work_request(
+        agent._extension_lifecycle_work.REQUEST_SCHEMA,
+        lease_evidence(agent, grant),
+        operation_key=f"apply:{service_id}",
+        service_ids=[service_id],
+        payload={
+            "operation": {"serviceId": service_id, "action": "install"}
+        },
+    )
+    agent._get_extension_library_application_runtime = lambda *_args: None
+    agent._extension_lifecycle_work_dispatcher = lambda _command: (
+        (_ for _ in ()).throw(AssertionError("generic received library apply"))
+    )
+
+    status, result = host_request("/v1/extension/lifecycle-work", request)
+
+    assert status == 503
+    assert result == {"error": {"code": "lifecycle-work-dispatcher-unavailable"}}
+
+
+def test_unapproved_library_apply_never_falls_back_to_generic_dispatcher(
+    host_server, host_request
+):
+    agent, _listener = host_server
+    service_id = "documents"
+    grant = acquire_lease(agent, host_request, [service_id])
+    request = work_request(
+        agent._extension_lifecycle_work.REQUEST_SCHEMA,
+        lease_evidence(agent, grant),
+        operation_key=f"apply:{service_id}",
+        service_ids=[service_id],
+        payload={
+            "operation": {"serviceId": service_id, "action": "install"}
+        },
+    )
+    agent._extension_lifecycle_work_dispatcher = lambda _command: (
+        (_ for _ in ()).throw(AssertionError("generic received unapproved apply"))
+    )
+
+    status, result = host_request("/v1/extension/lifecycle-work", request)
+
+    assert status == 503
+    assert result == {"error": {"code": "lifecycle-work-dispatcher-unavailable"}}
+
+
+@pytest.mark.skipif(not STAGE_SUPPORTED, reason="requires POSIX custody semantics")
+def test_approved_library_runtime_factory_is_effect_free_and_fully_composed(
+    host_server
+):
+    agent, _listener = host_server
+    application_root = (
+        agent.INSTALL_DIR / ".ods-assistant-first" / "applications"
+    )
+
+    runtime = agent._get_extension_library_application_runtime(
+        agent._lifecycle_receipt_store,
+        lambda: True,
+    )
+
+    assert runtime is not None
+    assert callable(runtime.dispatcher)
+    assert callable(runtime.started_observer)
+    assert list(application_root.iterdir()) == []
+    assert list(agent.USER_EXTENSIONS_DIR.iterdir()) == []
 
 
 @pytest.mark.parametrize(

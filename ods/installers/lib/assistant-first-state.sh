@@ -130,7 +130,7 @@ _ods_assistant_first_prepare_private_directory() {
 }
 
 ods_assistant_first_prepare_state_directories() {
-    local data_root="$1" expected_uid="$2"
+    local data_root="$1" expected_uid="$2" install_root="${3:-}"
     local child_name child_path
 
     case "$expected_uid" in
@@ -143,6 +143,22 @@ ods_assistant_first_prepare_state_directories() {
         error "Assistant First state custody requires a data directory."
         return 1
     fi
+    if [[ -z "$install_root" ]]; then
+        install_root="$(dirname -- "$data_root")"
+    fi
+
+    # The application observer and record store must exist before the first
+    # approved library apply. Validate every install-side component before any
+    # state child is created, then make both directories owner-private.
+    _ods_assistant_first_prepare_shared_directory \
+        "$install_root" "Assistant First install directory" "$expected_uid" \
+        || return 1
+    _ods_assistant_first_preflight_existing_directory \
+        "$install_root/.ods-assistant-first" \
+        "Assistant First application root" || return 1
+    _ods_assistant_first_preflight_existing_directory \
+        "$install_root/.ods-assistant-first/applications" \
+        "Assistant First applications directory" || return 1
 
     # This must run before any child mkdir. In particular, never follow a
     # pre-existing or broken data symlink into an unrelated tree.
@@ -193,6 +209,14 @@ ods_assistant_first_prepare_state_directories() {
     _ods_assistant_first_prepare_private_directory \
         "$data_root/.extension-operation-locks" \
         "Assistant First mutation lock directory" \
+        "$expected_uid" || return 1
+    _ods_assistant_first_prepare_private_directory \
+        "$install_root/.ods-assistant-first" \
+        "Assistant First application root" \
+        "$expected_uid" || return 1
+    _ods_assistant_first_prepare_private_directory \
+        "$install_root/.ods-assistant-first/applications" \
+        "Assistant First applications directory" \
         "$expected_uid" || return 1
 
     # These shared roots are also checked rather than blindly reached through

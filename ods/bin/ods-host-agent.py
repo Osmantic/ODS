@@ -143,6 +143,11 @@ except Exception:  # pragma: no cover - import environment dependent
     _configuration_effect_runtime_module = None
 
 try:
+    import extension_library_application_runtime as _library_application_runtime_module
+except Exception:  # pragma: no cover - import environment dependent
+    _library_application_runtime_module = None
+
+try:
     import extension_resource_reservation_runtime
 except Exception:  # pragma: no cover - import environment dependent
     _resource_reservation_runtime_module = None
@@ -240,6 +245,11 @@ _configuration_effect_runtime = None
 _configuration_effect_runtime_binding: tuple[Path, Path, object, object] | None = None
 _configuration_effect_runtime_lock = threading.Lock()
 
+# Approved extension-library application dependencies are composed per
+# admitted apply request because the current-state observer must hold that
+# request's exact lease and receipt store. Construction itself performs no
+# Compose, container, network, or application mutation.
+
 # Exact resource-reservation dependencies are composed lazily from fixed host
 # roots. Only the ``reserve:<serviceId>`` and ``release`` lifecycle-work
 # branches select them. Construction performs no reservation/release mutation.
@@ -250,8 +260,9 @@ _resource_reservation_runtime_lock = threading.Lock()
 # General production lifecycle dispatch remains deliberately unwired.  The
 # exact ``download-and-verify`` canary, paired ``backup``/``restore`` canary,
 # receipted generic ``backup`` only, ``configure`` canary, ``stage``,
-# ``reserve:<serviceId>``, and ``release`` select fixed host-owned runtimes
-# after lease admission. Generic restore/apply/verify remain unavailable.
+# approved library ``apply:<serviceId>``, ``reserve:<serviceId>``, and
+# ``release`` select fixed host-owned runtimes after lease admission. Generic
+# restore, unapproved apply, and verify remain unavailable.
 # Tests may inject a callable for the still-dormant operation contracts.
 _extension_lifecycle_work_dispatcher = None
 
@@ -6769,6 +6780,43 @@ def _get_extension_configuration_effect_runtime():
         return _configuration_effect_runtime
 
 
+def _get_extension_library_application_runtime(receipt_store, active_lease):
+    """Compose one lease-bound approved library application runtime."""
+
+    if (
+        _library_application_runtime_module is None
+        or _AssistantFirstSecretStore is None
+        or not callable(_extension_lifecycle_plan_loader)
+        or not callable(active_lease)
+    ):
+        return None
+    try:
+        stage = _get_extension_artifact_stage_runtime()
+        transactions = _get_extension_transaction_store()
+        if stage is None or transactions is None:
+            return None
+        secret_store = _AssistantFirstSecretStore(DATA_DIR)
+        return (
+            _library_application_runtime_module.build_library_application_runtime(
+                install_dir=INSTALL_DIR,
+                user_extensions_root=USER_EXTENSIONS_DIR,
+                library_root=DATA_DIR / "extensions-library",
+                stage_store=stage.store,
+                receipt_store=receipt_store,
+                plan_loader=_extension_lifecycle_plan_loader,
+                transaction_loader=transactions.read,
+                secret_store=secret_store,
+                active_lease=active_lease,
+            )
+        )
+    except Exception as exc:
+        logger.error(
+            "Library application runtime construction failed (%s)",
+            type(exc).__name__,
+        )
+        return None
+
+
 def _get_extension_resource_reservation_runtime():
     """Compose, but do not register, the fixed host resource-reservation runtime.
 
@@ -7966,6 +8014,7 @@ class AgentHandler(BaseHTTPRequestHandler):
             with admission:
                 dispatcher = _extension_lifecycle_work_dispatcher
                 started_observer = None
+                receipt_store = None
                 if command.operation_key == "restore":
                     # Revalidate against the actual process-local manager
                     # before selecting even the closed data canary. A future
@@ -8002,15 +8051,49 @@ class AgentHandler(BaseHTTPRequestHandler):
                             started_observer = runtime.restore_started_observer
                 elif command.operation_key == "configure":
                     dispatcher = None
-                    runtime = _get_extension_configuration_effect_runtime()
-                    if runtime is not None:
-                        dispatcher = runtime.dispatcher
-                        started_observer = runtime.started_observer
+                    if command.service_ids == ("searxng",):
+                        runtime = _get_extension_configuration_effect_runtime()
+                        if runtime is not None:
+                            dispatcher = runtime.dispatcher
+                            started_observer = runtime.started_observer
                 elif command.operation_key == "stage":
                     runtime = _get_extension_artifact_stage_runtime()
                     if runtime is not None:
                         dispatcher = runtime.dispatcher
                         started_observer = runtime.started_observer
+                elif command.operation_key.startswith("apply:"):
+                    # Only the reviewed one-service library set gains this
+                    # production route. Every other apply contract remains
+                    # dormant even if a test injects the generic dispatcher.
+                    dispatcher = None
+                    approved = getattr(
+                        _library_application_runtime_module,
+                        "APPROVED_LIBRARY_SERVICES",
+                        None,
+                    )
+                    service_id = command.operation_key.removeprefix("apply:")
+                    if (
+                        type(approved) is frozenset
+                        and len(command.service_ids) == 1
+                        and command.service_ids == (service_id,)
+                        and service_id in approved
+                    ):
+                        try:
+                            receipt_store = _get_lifecycle_receipt_store()
+                        except Exception as exc:
+                            raise _extension_lifecycle_work.LifecycleWorkExecutionError(
+                                "lifecycle-work-receipt-store-unavailable"
+                            ) from exc
+
+                        def active_application_lease():
+                            return admission.active_lease_status()["active"] is True
+
+                        runtime = _get_extension_library_application_runtime(
+                            receipt_store, active_application_lease
+                        )
+                        if runtime is not None:
+                            dispatcher = runtime.dispatcher
+                            started_observer = runtime.started_observer
                 elif (
                     command.operation_key == "release"
                     or command.operation_key.startswith("reserve:")
@@ -8032,12 +8115,13 @@ class AgentHandler(BaseHTTPRequestHandler):
                         None,
                     )
                 else:
-                    try:
-                        receipt_store = _get_lifecycle_receipt_store()
-                    except Exception as exc:
-                        raise _extension_lifecycle_work.LifecycleWorkExecutionError(
-                            "lifecycle-work-receipt-store-unavailable"
-                        ) from exc
+                    if receipt_store is None:
+                        try:
+                            receipt_store = _get_lifecycle_receipt_store()
+                        except Exception as exc:
+                            raise _extension_lifecycle_work.LifecycleWorkExecutionError(
+                                "lifecycle-work-receipt-store-unavailable"
+                            ) from exc
                     result = (
                         _extension_lifecycle_work.dispatch_receipted_lifecycle_work(
                             command,

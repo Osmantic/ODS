@@ -426,6 +426,8 @@ ods_assistant_first_prepare_state_directories "$2" "$3"
             applications = private / "application-state"
             backups = private / "data-backups"
             locks = data / ".extension-operation-locks"
+            application_root = install / ".ods-assistant-first"
+            active_applications = application_root / "applications"
             self.assertEqual(self._mode(data), 0o755)
             self.assertEqual(self._mode(private), 0o700)
             self.assertEqual(self._mode(stage), 0o700)
@@ -433,6 +435,8 @@ ods_assistant_first_prepare_state_directories "$2" "$3"
             self.assertEqual(self._mode(applications), 0o700)
             self.assertEqual(self._mode(backups), 0o700)
             self.assertEqual(self._mode(locks), 0o700)
+            self.assertEqual(self._mode(application_root), 0o700)
+            self.assertEqual(self._mode(active_applications), 0o700)
             for child_name in ("config", "models", "persona"):
                 self.assertEqual(self._mode(data / child_name), 0o755)
 
@@ -501,6 +505,23 @@ ods_assistant_first_prepare_state_directories "$2" "$3"
             self.assertIn("must not be a symlink", result.stderr)
             self.assertEqual(list(target.iterdir()), [])
             self.assertFalse((data / ".extension-operation-locks").exists())
+
+    def test_application_root_symlink_is_rejected_before_state_writes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            install = root / "install"
+            target = root / "redirect-target"
+            install.mkdir()
+            target.mkdir()
+            (install / ".ods-assistant-first").symlink_to(
+                target, target_is_directory=True
+            )
+
+            result = self._run(install / "data")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("must not be a symlink", result.stderr)
+            self.assertEqual(list(target.iterdir()), [])
+            self.assertFalse((install / "data").exists())
 
     def test_dangling_private_symlink_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -688,6 +709,8 @@ ods_assistant_first_prepare_state_directories "$2" "$3"
             applications = private / "application-state"
             backups = private / "data-backups"
             locks = data / ".extension-operation-locks"
+            application_root = data.parent / ".ods-assistant-first"
+            active_applications = application_root / "applications"
             data.mkdir(mode=0o777)
             private.mkdir(mode=0o755)
             stage.mkdir(mode=0o755)
@@ -695,6 +718,7 @@ ods_assistant_first_prepare_state_directories "$2" "$3"
             applications.mkdir(mode=0o755)
             backups.mkdir(mode=0o755)
             locks.mkdir(mode=0o755)
+            active_applications.mkdir(mode=0o755, parents=True)
             marker = private / "preserved"
             marker.write_text("state", encoding="utf-8")
             data.chmod(0o777)
@@ -704,6 +728,8 @@ ods_assistant_first_prepare_state_directories "$2" "$3"
             applications.chmod(0o755)
             backups.chmod(0o755)
             locks.chmod(0o755)
+            application_root.chmod(0o755)
+            active_applications.chmod(0o755)
 
             first = self._run(data)
             second = self._run(data)
@@ -716,6 +742,8 @@ ods_assistant_first_prepare_state_directories "$2" "$3"
             self.assertEqual(self._mode(applications), 0o700)
             self.assertEqual(self._mode(backups), 0o700)
             self.assertEqual(self._mode(locks), 0o700)
+            self.assertEqual(self._mode(application_root), 0o700)
+            self.assertEqual(self._mode(active_applications), 0o700)
             self.assertEqual(marker.read_text(encoding="utf-8"), "state")
 
     def test_preexisting_shared_symlink_is_rejected(self) -> None:
@@ -761,6 +789,15 @@ ods_assistant_first_prepare_state_directories "$2" "$3"
                 0o700,
             )
             self.assertEqual(self._mode(data / ".extension-operation-locks"), 0o700)
+            self.assertEqual(
+                self._mode(data.parent / ".ods-assistant-first"), 0o700
+            )
+            self.assertEqual(
+                self._mode(
+                    data.parent / ".ods-assistant-first" / "applications"
+                ),
+                0o700,
+            )
             for child_name in ("config", "models", "persona"):
                 self.assertEqual(self._mode(data / child_name), 0o755)
 
