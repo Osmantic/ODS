@@ -34,6 +34,7 @@ test: ## Run unit and contract tests
 	@bash tests/contracts/test-installer-contracts.sh
 	@bash tests/test-external-services.sh
 	@bash tests/test-resolve-compose-resilient.sh
+	@bash tests/test-tier0-memory-overlay.sh
 	@bash tests/test-phase03-multigpu-tty.sh
 	@bash tests/test-pixel-support-services.sh
 	@bash tests/test-phase03-no-gpu-assignment-message.sh

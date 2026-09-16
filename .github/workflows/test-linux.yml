@@ -253,6 +253,9 @@ jobs:
           python3 tests/test_pixel_agent_teams_roles_count.py
           bash tests/test-service-registry.sh
 
+      - name: Tier 0 Memory Overlay Resolution
+        run: bash tests/test-tier0-memory-overlay.sh
+
       - name: Switchboard Bypass Inventory
         run: python3 tests/test-switchboard-bypass-inventory.py
 
