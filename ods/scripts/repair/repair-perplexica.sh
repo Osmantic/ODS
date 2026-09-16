@@ -9,7 +9,7 @@ LLM_MODEL="${2:-qwen3-30b-a3b}"
 PERPLEXICA_MODEL="${PERPLEXICA_MODEL:-}"
 PERPLEXICA_LLM_BASE_URL="${PERPLEXICA_LLM_BASE_URL:-${LLM_API_URL:-http://llama-server:8080}}"
 PERPLEXICA_API_KEY="${PERPLEXICA_API_KEY:-${LITELLM_KEY:-${OPENAI_API_KEY:-no-key}}}"
-_perplexica_switchboard_mode="$(printf '%s' "${ODS_MODEL_SWITCHBOARD:-observe}" | tr '[:upper:]' '[:lower:]')"
+_perplexica_switchboard_mode="$(printf '%s' "${ODS_MODEL_SWITCHBOARD:-enabled}" | tr '[:upper:]' '[:lower:]')"
 if [[ "$_perplexica_switchboard_mode" == "enabled" ]]; then
     : "${PERPLEXICA_MODEL:=ods/current}"
     PERPLEXICA_LLM_BASE_URL="http://litellm:4000/v1"
@@ -40,8 +40,8 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PYTHON_CMD="python3"
-if [[ -f "$SCRIPT_DIR/lib/python-cmd.sh" ]]; then
-    . "$SCRIPT_DIR/lib/python-cmd.sh"
+if [[ -f "$SCRIPT_DIR/../lib/python-cmd.sh" ]]; then
+    . "$SCRIPT_DIR/../lib/python-cmd.sh"
     PYTHON_CMD="$(ods_detect_python_cmd)"
 elif command -v python >/dev/null 2>&1; then
     PYTHON_CMD="python"
