@@ -507,8 +507,22 @@ descriptors. Its tree digest must equal the exact approved
 The returned object contains the complete in-memory payload for a later
 materializer; that materializer must consume those bytes and must not reopen
 the live library tree. Manifest v1 warning-only entries are refused. The bridge
-is not registered, writes no active files, and grants no Compose, hook, service,
-or health authority.
+is not registered and grants no Compose, hook, service, or health authority.
+
+A dormant Linux install materializer now consumes that exact in-memory payload
+for an `install` action only. It recomputes the bounded tree digest, takes an
+owner-private lock in the fixed user-extensions root, writes through no-follow
+descriptors, fsyncs the complete temporary tree, and publishes the service
+directory with a kernel no-replace rename. Exact retries are read-only replays;
+an existing mismatch is never overwritten, a definite pre-publication failure
+removes only the bounded transaction temp, and any post-rename ambiguity remains
+an explicit uncertain effect for later observation. Its canonical receipt keeps
+the existing one-click compatibility fields while adding only secret-free
+transaction, plan, service, tree, and count bindings. The materializer does not
+reopen the library, evaluate Compose, invoke hooks, read secrets, start a
+container, or claim health. It is still unregistered: host admission, lifecycle
+dispatch, Compose project handling, installed-state observation, compensation,
+and update/repair/enable actions remain later reviewed boundaries.
 
 A dormant SearXNG Compose-effect substrate now consumes the exact plan-bound
 application identity, immutable staged definition/Compose bytes, validated

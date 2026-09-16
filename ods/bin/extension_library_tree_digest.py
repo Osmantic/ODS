@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import stat
 import subprocess
 from pathlib import Path
@@ -19,6 +20,7 @@ MAX_TREE_ENTRIES = 4096
 MAX_TREE_DEPTH = 64
 _RECEIPT = ".ods-library-receipt.json"
 _DOMAIN = b"ods-extension-library-tree-v1\0"
+_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
 class LibraryTreeDigestError(ValueError):
@@ -273,6 +275,99 @@ def _snapshot_file(
         os.close(descriptor)
 
 
+def _snapshot_digest(
+    directories: tuple[str, ...], files: tuple[LibraryTreeFile, ...]
+) -> str:
+    digest = hashlib.sha256(_DOMAIN)
+    records = [(name, None) for name in directories] + [
+        (item.relative_path, item) for item in files
+    ]
+    for name, item in sorted(records, key=lambda pair: pair[0]):
+        if item is None:
+            digest.update(b"D\0" + name.encode("utf-8") + b"\0")
+        else:
+            _file_hash(digest, name, item.content, item.executable)
+    return "sha256:" + digest.hexdigest()
+
+
+def _snapshot_path(value: Any) -> str:
+    if not isinstance(value, str):
+        _fail("library-tree-snapshot-invalid")
+    try:
+        encoded = value.encode("utf-8", "strict")
+    except UnicodeError:
+        _fail("library-tree-snapshot-invalid")
+    if (
+        not value
+        or len(encoded) > 4096
+        or value.startswith("/")
+        or "\\" in value
+        or any(part in {"", ".", ".."} for part in value.split("/"))
+    ):
+        _fail("library-tree-snapshot-invalid")
+    return value
+
+
+def validate_library_tree_snapshot(value: Any) -> LibraryTreeSnapshot:
+    """Recompute and validate one captured payload before materialization."""
+
+    if type(value) is not LibraryTreeSnapshot:
+        _fail("library-tree-snapshot-invalid")
+    if (
+        not isinstance(value.digest, str)
+        or _DIGEST_RE.fullmatch(value.digest) is None
+        or type(value.directories) is not tuple
+        or type(value.files) is not tuple
+        or type(value.total_bytes) is not int
+        or value.total_bytes < 0
+        or value.total_bytes > MAX_TREE_BYTES
+        or len(value.directories) + len(value.files) > MAX_TREE_ENTRIES
+    ):
+        _fail("library-tree-snapshot-invalid")
+
+    directories = tuple(_snapshot_path(item) for item in value.directories)
+    if directories != tuple(sorted(directories)) or len(set(directories)) != len(
+        directories
+    ):
+        _fail("library-tree-snapshot-invalid")
+    directory_set = set(directories)
+    for directory in directories:
+        parts = directory.split("/")
+        if len(parts) > MAX_TREE_DEPTH:
+            _fail("library-tree-snapshot-invalid")
+        parent = "/".join(parts[:-1])
+        if parent and parent not in directory_set:
+            _fail("library-tree-snapshot-invalid")
+
+    file_paths: list[str] = []
+    total = 0
+    for item in value.files:
+        if (
+            type(item) is not LibraryTreeFile
+            or not isinstance(item.content, bytes)
+            or type(item.executable) is not bool
+        ):
+            _fail("library-tree-snapshot-invalid")
+        path = _snapshot_path(item.relative_path)
+        if path == _RECEIPT or path in directory_set:
+            _fail("library-tree-snapshot-invalid")
+        parent = path.rpartition("/")[0]
+        if parent and parent not in directory_set:
+            _fail("library-tree-snapshot-invalid")
+        total += len(item.content)
+        if total > MAX_TREE_BYTES:
+            _fail("library-tree-snapshot-invalid")
+        file_paths.append(path)
+    if (
+        tuple(file_paths) != tuple(sorted(file_paths))
+        or len(set(file_paths)) != len(file_paths)
+        or total != value.total_bytes
+        or _snapshot_digest(directories, value.files) != value.digest
+    ):
+        _fail("library-tree-snapshot-invalid")
+    return value
+
+
 def snapshot_extension_tree(root: Any) -> LibraryTreeSnapshot:
     """Capture one bounded, owner-controlled tree through no-follow descriptors.
 
@@ -358,19 +453,12 @@ def snapshot_extension_tree(root: Any) -> LibraryTreeSnapshot:
                 os.close(parent)
         if _identity(os.fstat(descriptor)) != _identity(original):
             _fail("library-tree-root-drift")
-        digest = hashlib.sha256(_DOMAIN)
-        records = [(name, None) for name in directories] + [
-            (item.relative_path, item) for item in files
-        ]
-        for name, item in sorted(records, key=lambda pair: pair[0]):
-            if item is None:
-                digest.update(b"D\0" + name.encode("utf-8") + b"\0")
-            else:
-                _file_hash(digest, name, item.content, item.executable)
+        captured_directories = tuple(sorted(directories))
+        captured_files = tuple(sorted(files, key=lambda item: item.relative_path))
         return LibraryTreeSnapshot(
-            digest="sha256:" + digest.hexdigest(),
-            directories=tuple(sorted(directories)),
-            files=tuple(sorted(files, key=lambda item: item.relative_path)),
+            digest=_snapshot_digest(captured_directories, captured_files),
+            directories=captured_directories,
+            files=captured_files,
             total_bytes=total,
         )
     finally:
@@ -478,4 +566,5 @@ __all__ = [
     "digest_extension_tree",
     "digest_indexed_extension_tree",
     "snapshot_extension_tree",
+    "validate_library_tree_snapshot",
 ]

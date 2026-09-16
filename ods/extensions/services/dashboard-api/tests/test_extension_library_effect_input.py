@@ -128,6 +128,7 @@ def test_returns_every_approved_byte_for_future_effect(tmp_path):
     assert result.transaction_id == command.transaction_id
     assert result.plan_hash == command.plan_hash
     assert result.service_id == "demo"
+    assert result.action == "install"
     assert (
         result.payload.digest == command.plan_material.definitions[0].source_tree_sha256
     )

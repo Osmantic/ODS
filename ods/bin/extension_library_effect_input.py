@@ -48,6 +48,7 @@ class VerifiedLibraryEffectInput:
     transaction_id: str
     plan_hash: str
     service_id: str
+    action: str
     payload: LibraryTreeSnapshot
 
 
@@ -55,7 +56,9 @@ def _deny(code: str) -> None:
     raise LibraryEffectInputError(code) from None
 
 
-def _planned_definition(command: Any) -> tuple[PlannedDefinition, tuple[str, ...]]:
+def _planned_definition(
+    command: Any,
+) -> tuple[PlannedDefinition, tuple[str, ...], str]:
     if type(command) is not LifecycleWorkCommand or len(command.service_ids) != 1:
         _deny("library-effect-command-invalid")
     service_id = command.service_ids[0]
@@ -76,6 +79,7 @@ def _planned_definition(command: Any) -> tuple[PlannedDefinition, tuple[str, ...
         _deny("library-effect-plan-mismatch")
     mutable: list[str] = []
     selected: PlannedDefinition | None = None
+    selected_action: str | None = None
     for operation, definition in zip(
         material.operations, material.definitions, strict=True
     ):
@@ -95,7 +99,8 @@ def _planned_definition(command: Any) -> tuple[PlannedDefinition, tuple[str, ...
             }:
                 _deny("library-effect-plan-mismatch")
             selected = definition
-    if selected is None or len(mutable) != len(set(mutable)):
+            selected_action = operation.action
+    if selected is None or selected_action is None or len(mutable) != len(set(mutable)):
         _deny("library-effect-plan-mismatch")
     if (
         selected.manifest_schema_version != "ods.services.v2"
@@ -110,7 +115,7 @@ def _planned_definition(command: Any) -> tuple[PlannedDefinition, tuple[str, ...
         or _DIGEST_RE.fullmatch(selected.compose_sha256) is None
     ):
         _deny("library-effect-definition-unsupported")
-    return selected, tuple(mutable)
+    return selected, tuple(mutable), selected_action
 
 
 def _staged_definition(
@@ -157,7 +162,7 @@ def verify_plan_bound_library_payload(
     starts an application nor certifies health or recoverability.
     """
 
-    definition, mutable = _planned_definition(command)
+    definition, mutable, action = _planned_definition(command)
     staged = _staged_definition(command, staged_batch, mutable)
     if (
         not isinstance(library_root, Path)
@@ -197,6 +202,7 @@ def verify_plan_bound_library_payload(
         transaction_id=command.transaction_id,
         plan_hash=command.plan_hash,
         service_id=definition.service_id,
+        action=action,
         payload=payload,
     )
 

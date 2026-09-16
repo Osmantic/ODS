@@ -103,6 +103,28 @@ def test_snapshot_refuses_symlink_and_group_writable_payload(tmp_path):
         tree.snapshot_extension_tree(root)
 
 
+def test_snapshot_validation_recomputes_structure_bytes_and_digest(tmp_path):
+    if os.name != "posix":
+        pytest.skip("Linux descriptor snapshot only")
+    root = tmp_path / "extension"
+    (root / "nested").mkdir(parents=True)
+    (root / "nested" / "payload").write_bytes(b"approved\n")
+    snapshot = tree.snapshot_extension_tree(root)
+    assert tree.validate_library_tree_snapshot(snapshot) is snapshot
+
+    invalid = (
+        snapshot._replace(digest="sha256:" + "0" * 64),
+        snapshot._replace(directories=("nested/child",)),
+        snapshot._replace(total_bytes=snapshot.total_bytes + 1),
+        snapshot._replace(files=(snapshot.files[0]._replace(content=b"changed\n"),)),
+    )
+    for value in invalid:
+        with pytest.raises(
+            tree.LibraryTreeDigestError, match="library-tree-snapshot-invalid"
+        ):
+            tree.validate_library_tree_snapshot(value)
+
+
 def test_crlf_bytes_are_hashed_without_platform_text_translation(tmp_path):
     root = tmp_path / "extension"
     root.mkdir()
