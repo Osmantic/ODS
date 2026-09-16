@@ -202,7 +202,9 @@ jobs:
           bash tests/test-extension-audit.sh
 
       - name: Extension Runtime Check Tests
-        run: bash tests/test-extension-runtime-check.sh
+        run: |
+          python3 tests/test_extension_runtime_health_url.py
+          bash tests/test-extension-runtime-check.sh
 
       - name: AP network identity preflight
         run: |
