@@ -18,7 +18,6 @@ from remote_provider.ssh_supervisor import (
     ssh_supervisor_plan,
 )
 
-
 HEALTH_SCHEMA = "ods.remote-provider-ssh-tunnel-health.v1"
 PROCESS_SCHEMA = "ods.remote-provider-ssh-tunnel-process.v1"
 ROUTE_STATE_SCHEMA = "ods.remote-routing-state.v1"

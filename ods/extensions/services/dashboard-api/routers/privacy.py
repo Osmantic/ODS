@@ -5,14 +5,15 @@ import logging
 import os
 
 import aiohttp
-from fastapi import APIRouter, Depends
-
 from config import SERVICES
+from fastapi import APIRouter, Depends
 from host_agent_client import (
     AgentHTTPError,
     AgentProtocolError,
     AgentTimeout,
     AgentUnavailable,
+)
+from host_agent_client import (
     request_json as request_agent_json,
 )
 from models import PrivacyShieldStatus, PrivacyShieldToggle

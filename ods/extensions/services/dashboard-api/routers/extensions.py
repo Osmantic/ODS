@@ -18,23 +18,31 @@ from pathlib import Path
 from typing import Optional
 
 import yaml
-from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
-
 from config import (
-    ALWAYS_ON_SERVICES, CORE_SERVICE_IDS, DATA_DIR,
-    EXTENSION_CATALOG, EXTENSIONS_DIR,
-    EXTENSIONS_LIBRARY_DIR, GPU_BACKEND, SERVICES,
+    ALWAYS_ON_SERVICES,
+    CORE_SERVICE_IDS,
+    DATA_DIR,
+    EXTENSION_CATALOG,
+    EXTENSIONS_DIR,
+    EXTENSIONS_LIBRARY_DIR,
+    GPU_BACKEND,
+    SERVICES,
     USER_EXTENSIONS_DIR,
 )
+from fastapi import APIRouter, Depends, HTTPException, Query
 from host_agent_client import (
     AgentClientError,
     AgentHTTPError,
     AgentProtocolError,
     AgentUnavailable,
+)
+from host_agent_client import (
     request_json as request_agent_json,
+)
+from host_agent_client import (
     request_text as request_agent_text,
 )
+from pydantic import BaseModel
 from security import verify_api_key
 
 try:
@@ -781,7 +789,9 @@ def _copytree_safe(src: Path, dst: Path) -> None:
 
 def _get_service_data_info(service_id: str) -> dict | None:
     """Return data directory info for a service, or None if no data dir exists."""
-    from helpers import dir_size_gb  # noqa: PLC0415 — deferred to avoid circular import at module level
+    from helpers import (
+        dir_size_gb,  # noqa: PLC0415 — deferred to avoid circular import at module level
+    )
     data_path = (Path(DATA_DIR) / service_id).resolve()
     if not data_path.is_relative_to(Path(DATA_DIR).resolve()):
         return None
@@ -1105,7 +1115,7 @@ async def extensions_catalog(
 
     _cleanup_future.add_done_callback(_log_cleanup_error)
 
-    from helpers import get_cached_services, get_all_services
+    from helpers import get_all_services, get_cached_services
 
     service_list = get_cached_services()
     if service_list is None:

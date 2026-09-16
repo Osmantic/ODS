@@ -9,7 +9,6 @@ from typing import Any, Mapping
 from urllib.parse import urlparse
 
 import yaml
-
 from env_values import strip_matching_quotes
 
 logger = logging.getLogger(__name__)

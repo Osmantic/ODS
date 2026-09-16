@@ -10,7 +10,6 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 EMBEDDING_ENV = {
     "EMBEDDING_MODEL": "BAAI/bge-m3",

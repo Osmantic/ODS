@@ -10,7 +10,6 @@ import threading
 import urllib.request
 from pathlib import Path
 
-
 MODULE_PATH = Path(__file__).resolve().parents[1] / "bin" / "ods-macos-llm-bridge.py"
 SPEC = importlib.util.spec_from_file_location("ods_macos_llm_bridge", MODULE_PATH)
 assert SPEC and SPEC.loader

@@ -11,15 +11,10 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
-from typing import Optional
+from typing import Any, Optional
 from urllib.parse import quote, urljoin, urlsplit
 
 import httpx
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
-from fastapi.responses import RedirectResponse
-
-from env_values import strip_matching_quotes
 from config import (
     DATA_DIR,
     INSTALL_DIR,
@@ -29,6 +24,9 @@ from config import (
     SERVICES,
     normalize_ods_mode,
 )
+from env_values import strip_matching_quotes
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi.responses import RedirectResponse
 from gpu import get_gpu_info
 from helpers import (
     get_bootstrap_status,
@@ -43,6 +41,8 @@ from host_agent_client import (
     AgentHTTPError,
     AgentProtocolError,
     AgentUnavailable,
+)
+from host_agent_client import (
     request_json as request_agent_json,
 )
 from models import ModelLibraryGpu, ModelLibraryResponse

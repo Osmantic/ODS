@@ -9,7 +9,6 @@ import sys
 import tempfile
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "bin"))
 
@@ -25,7 +24,6 @@ from remote_provider.egress_probe import (  # noqa: E402
     PROBE_RESPONSE_SCHEMA,
     probe_route_response,
 )
-
 
 BASE_COMPOSE = ROOT / "docker-compose.base.yml"
 MANIFEST = ROOT / "extensions" / "services" / "remote-provider-egress" / "manifest.yaml"

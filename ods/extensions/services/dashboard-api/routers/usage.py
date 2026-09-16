@@ -15,9 +15,8 @@ from pathlib import Path
 from typing import Any
 
 import aiohttp
-from fastapi import APIRouter, Depends, Query
-
 from config import EXTENSIONS_DIR, SERVICES, USER_EXTENSIONS_DIR, read_live_env_value
+from fastapi import APIRouter, Depends, Query
 from helpers import check_service_health, get_cached_services
 from security import verify_api_key
 

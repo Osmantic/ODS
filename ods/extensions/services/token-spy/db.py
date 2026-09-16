@@ -1,7 +1,7 @@
 """SQLite storage for token usage metrics."""
 
-import sqlite3
 import os
+import sqlite3
 import threading
 from datetime import date, timedelta
 

@@ -17,7 +17,6 @@ from .transport import (
     build_ssh_tunnel_specs,
 )
 
-
 SSH_SUPERVISOR_PLAN_SCHEMA = "ods.remote-provider-ssh-supervisor-plan.v1"
 DEFAULT_SSH_TUNNEL_SERVICE_HOST = "remote-provider-ssh-tunnel"
 DEFAULT_SSH_SECRET_DIR = Path("/state/remote-provider/secrets")

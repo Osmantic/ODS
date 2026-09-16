@@ -8,7 +8,6 @@ import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "check-dependency-pins.py"
 

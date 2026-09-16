@@ -6,7 +6,6 @@ It validates the ods-session cookie via session_signer and returns
 """
 
 import pytest
-
 import session_signer
 
 

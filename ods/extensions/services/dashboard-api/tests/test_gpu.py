@@ -4,11 +4,15 @@ import subprocess
 from unittest.mock import MagicMock
 
 import pytest
-
 from gpu import (
-    get_gpu_tier, get_gpu_info_nvidia, get_gpu_info_apple,
-    get_gpu_info_amd, get_gpu_info, get_gpu_info_windows_host,
-    get_gpu_info_windows_host_detailed, run_command,
+    get_gpu_info,
+    get_gpu_info_amd,
+    get_gpu_info_apple,
+    get_gpu_info_nvidia,
+    get_gpu_info_windows_host,
+    get_gpu_info_windows_host_detailed,
+    get_gpu_tier,
+    run_command,
 )
 
 

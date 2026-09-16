@@ -14,7 +14,6 @@ from pathlib import Path
 import pytest
 import yaml
 
-
 ROOT = Path(__file__).resolve().parents[1]
 TOKEN_KEY = "HERMES_DASHBOARD_SESSION_TOKEN"
 HERMES_IMAGE = "nousresearch/hermes-agent:v2026.6.5"

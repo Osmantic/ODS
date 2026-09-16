@@ -41,9 +41,8 @@ TEST_KEY = "test-shield-key-abcdef0123456789"
 os.environ["SHIELD_API_KEY"] = TEST_KEY
 os.environ.setdefault("PII_CACHE_ENABLED", "false")  # deterministic PII map
 
-from fastapi.testclient import TestClient  # noqa: E402
-
 import proxy  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
 
 AUTH = {"Authorization": f"Bearer {TEST_KEY}"}
 EMAIL = "alice.streaming@example.com"

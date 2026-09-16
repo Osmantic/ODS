@@ -4,14 +4,13 @@ import asyncio
 import json
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Request
-
+import settings
 from config import INSTALL_DIR
+from fastapi import APIRouter, Depends, Request
 from gpu import get_gpu_info
 from helpers import get_all_services, get_loaded_model
 from models import NodeCapabilities
 from security import verify_api_key
-import settings
 
 router = APIRouter(tags=["node"])
 

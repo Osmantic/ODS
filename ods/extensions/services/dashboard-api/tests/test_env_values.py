@@ -1,5 +1,4 @@
 import pytest
-
 from env_values import strip_matching_quotes
 
 

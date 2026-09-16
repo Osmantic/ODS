@@ -6,12 +6,15 @@ import logging
 import re
 
 import aiohttp
-from fastapi import APIRouter, Depends, HTTPException
-
 from config import (
-    SERVICES, WORKFLOW_DIR, WORKFLOW_CATALOG_FILE,
-    DEFAULT_WORKFLOW_CATALOG, N8N_URL, N8N_API_KEY,
+    DEFAULT_WORKFLOW_CATALOG,
+    N8N_API_KEY,
+    N8N_URL,
+    SERVICES,
+    WORKFLOW_CATALOG_FILE,
+    WORKFLOW_DIR,
 )
+from fastapi import APIRouter, Depends, HTTPException
 from security import verify_api_key
 
 logger = logging.getLogger(__name__)

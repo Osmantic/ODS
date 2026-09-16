@@ -17,7 +17,6 @@ from pathlib import Path
 
 import yaml
 
-
 SCHEMA_VERSION = "ods.services.v1"
 CATALOG_SCHEMA_VERSION = "1.0.0"
 EXCLUDED_IDS = {"privacy-shield"}

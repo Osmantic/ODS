@@ -1614,8 +1614,8 @@ class TestSyncExtensionConfigWire:
         assert on the raw status code (the dashboard-api helper masks
         4xx as a generic False, which is too coarse for these tests)."""
         import json as _json
-        import urllib.request
         import urllib.error
+        import urllib.request
         url = f"http://127.0.0.1:{port}/v1/extension/sync_config"
         req = urllib.request.Request(
             url,

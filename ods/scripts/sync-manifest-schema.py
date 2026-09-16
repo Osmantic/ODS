@@ -8,7 +8,6 @@ import json
 import sys
 from pathlib import Path
 
-
 ROOT_DIR = Path(__file__).resolve().parent.parent
 MANIFEST_FILE = ROOT_DIR / "manifest.json"
 LIBRARY_SCHEMA = ROOT_DIR / "extensions" / "library" / "schema" / "service-manifest.v1.json"

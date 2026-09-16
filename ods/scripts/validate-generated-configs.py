@@ -8,7 +8,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PATH = ROOT / "config" / "generated-config-contracts.json"
 VALID_INVARIANTS = {"file_contains", "yaml_text_contains", "json_path_enum_contains"}

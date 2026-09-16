@@ -11,13 +11,14 @@ from typing import Any, Mapping
 from urllib.parse import quote, urlsplit, urlunsplit
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
-
 from config import DATA_DIR
+from fastapi import APIRouter, Depends, HTTPException
 from host_agent_client import (
     AgentHTTPError,
     AgentProtocolError,
     AgentUnavailable,
+)
+from host_agent_client import (
     async_request_json as async_request_agent_json,
 )
 from security import verify_api_key

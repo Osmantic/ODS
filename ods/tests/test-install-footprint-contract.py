@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Contract checks for the cross-platform installed-footprint policy."""
 
-from pathlib import Path
 import re
 import shlex
-
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 MACOS_INSTALLER = ROOT / "installers" / "macos" / "install-macos.sh"

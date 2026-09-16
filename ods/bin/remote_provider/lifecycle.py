@@ -18,7 +18,6 @@ from .policy import (
     redacted_secret_refs,
 )
 
-
 LIFECYCLE_OPERATION_SCHEMA = "ods.remote-provider-lifecycle-operation.v1"
 LIFECYCLE_ACTIONS = frozenset({"configure", "test", "disable", "remove"})
 

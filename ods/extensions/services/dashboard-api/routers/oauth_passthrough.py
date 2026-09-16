@@ -78,7 +78,6 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
-
 from security import verify_api_key
 
 logger = logging.getLogger(__name__)

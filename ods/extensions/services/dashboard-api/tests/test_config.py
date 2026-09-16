@@ -3,17 +3,15 @@
 import logging
 from pathlib import Path
 
-import pytest
-
 import config
+import pytest
 from config import (
     _apply_external_llm_service_override,
     _apply_host_native_llm_service_override,
     _detect_container_default_gateway,
-    load_extension_manifests,
     _read_manifest_file,
+    load_extension_manifests,
 )
-
 
 VALID_MANIFEST = """\
 schema_version: ods.services.v1

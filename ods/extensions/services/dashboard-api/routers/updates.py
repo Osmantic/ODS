@@ -10,16 +10,17 @@ from pathlib import Path
 from typing import Optional
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
-
 from config import INSTALL_DIR
 from env_values import strip_matching_quotes
+from fastapi import APIRouter, Depends, HTTPException
 from host_agent_client import (
     AgentHTTPError,
     AgentUnavailable,
+)
+from host_agent_client import (
     request_text as request_agent_text,
 )
-from models import VersionInfo, UpdateAction
+from models import UpdateAction, VersionInfo
 from security import verify_api_key
 
 logger = logging.getLogger(__name__)

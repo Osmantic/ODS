@@ -13,7 +13,6 @@ from unittest.mock import patch
 
 from host_agent_client import AgentHTTPError, AgentTimeout, AgentUnavailable
 
-
 # ---------------------------------------------------------------------------
 # Auth enforcement
 # ---------------------------------------------------------------------------

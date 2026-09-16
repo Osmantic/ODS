@@ -8,7 +8,6 @@ import re
 import sys
 from pathlib import Path
 
-
 DEFAULT_STT_MODEL = "Systran/faster-whisper-base"
 DEFAULT_EMBEDDING_MODEL = "BAAI/bge-base-en-v1.5"
 

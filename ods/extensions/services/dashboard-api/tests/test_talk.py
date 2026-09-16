@@ -471,6 +471,7 @@ def _run_with_one_loop(coro_factory):
     returns a coroutine — because coroutines themselves can't be re-awaited.
     """
     import asyncio as _asyncio
+
     import hermes_bridge
     loop = _asyncio.new_event_loop()
     try:
@@ -494,6 +495,7 @@ def test_hermes_bridge_pool_serializes_same_key_parallels_different_keys(monkeyp
     behaviour is what's under test.
     """
     import asyncio as _asyncio
+
     import hermes_bridge
 
     # Clear any pool state from prior tests. Synchronous reset since we
@@ -583,6 +585,7 @@ def test_hermes_bridge_slow_open_does_not_block_other_keys(monkeypatch):
         shares its result instead of opening a duplicate.
     """
     import asyncio as _asyncio
+
     import hermes_bridge
 
     hermes_bridge._CONNECTION_POOL.clear()
@@ -808,6 +811,7 @@ def test_hermes_bridge_pool_sweeper_skips_active_connections(monkeypatch):
     The sweeper must not close a connection while its per-connection lock is
     held, even if last_used is old."""
     import asyncio as _asyncio
+
     import hermes_bridge
 
     hermes_bridge._CONNECTION_POOL.clear()
@@ -857,6 +861,7 @@ def test_hermes_bridge_pool_sweeper_evicts_idle_connections(monkeypatch):
     by the background sweeper so a fleet of one-time visitors doesn't
     pin Hermes resources forever."""
     import asyncio as _asyncio
+
     import hermes_bridge
 
     hermes_bridge._CONNECTION_POOL.clear()

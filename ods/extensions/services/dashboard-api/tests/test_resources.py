@@ -3,9 +3,7 @@
 from unittest.mock import patch
 
 from host_agent_client import AgentHTTPError, AgentUnavailable
-
-from routers.resources import _scan_service_disk, _fetch_container_stats
-
+from routers.resources import _fetch_container_stats, _scan_service_disk
 
 # ---------------------------------------------------------------------------
 # _scan_service_disk

@@ -5,7 +5,6 @@ import time
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
 from main import (
     TTLCache,
     _build_api_status,
@@ -16,7 +15,6 @@ from main import (
     _serialize_services,
     get_allowed_origins,
 )
-
 
 # --- get_allowed_origins ---
 
@@ -222,7 +220,7 @@ class TestBuildApiStatus:
 
     @pytest.mark.asyncio
     async def test_returns_full_structure(self, monkeypatch):
-        from models import GPUInfo, BootstrapStatus, ModelInfo
+        from models import BootstrapStatus, GPUInfo, ModelInfo
 
         gpu = GPUInfo(
             name="RTX 4090", memory_used_mb=2048, memory_total_mb=24576,
@@ -280,7 +278,7 @@ class TestBuildApiStatus:
 
     @pytest.mark.asyncio
     async def test_tier_professional(self, monkeypatch):
-        from models import GPUInfo, BootstrapStatus
+        from models import BootstrapStatus, GPUInfo
 
         gpu = GPUInfo(
             name="H100", memory_used_mb=4096, memory_total_mb=81920,
@@ -303,7 +301,7 @@ class TestBuildApiStatus:
 
     @pytest.mark.asyncio
     async def test_tier_strix_halo(self, monkeypatch):
-        from models import GPUInfo, BootstrapStatus
+        from models import BootstrapStatus, GPUInfo
 
         gpu = GPUInfo(
             name="Strix Halo", memory_used_mb=10240, memory_total_mb=98304,
@@ -552,8 +550,8 @@ class TestExternalLinks:
 class TestApiStorage:
 
     def test_returns_storage_breakdown(self, test_client, monkeypatch):
-        from models import DiskUsage
         from main import _cache
+        from models import DiskUsage
 
         _cache.invalidate("storage")
         monkeypatch.setattr("main.get_disk_usage", lambda: DiskUsage(
@@ -727,8 +725,8 @@ class TestPreflightPorts:
 class TestGpuEndpoint:
 
     def test_gpu_cached_hit(self, test_client, monkeypatch):
-        from models import GPUInfo
         import main
+        from models import GPUInfo
         gpu = GPUInfo(
             name="RTX 4090", memory_used_mb=2048, memory_total_mb=24576,
             memory_percent=8.3, utilization_percent=35, temperature_c=62,
@@ -869,7 +867,7 @@ class TestModelReadiness:
 class TestStatusEndpoint:
 
     def test_returns_full_status(self, test_client, monkeypatch):
-        from models import GPUInfo, DiskUsage, ModelInfo, BootstrapStatus
+        from models import BootstrapStatus, DiskUsage, GPUInfo, ModelInfo
         monkeypatch.setattr("main.get_gpu_info", lambda: GPUInfo(
             name="RTX 4090", memory_used_mb=2048, memory_total_mb=24576,
             memory_percent=8.3, utilization_percent=35, temperature_c=62,
@@ -1109,7 +1107,7 @@ class TestBuildApiStatusTiers:
 
     @pytest.mark.asyncio
     async def test_tier_entry(self, monkeypatch):
-        from models import GPUInfo, BootstrapStatus
+        from models import BootstrapStatus, GPUInfo
         gpu = GPUInfo(
             name="RTX 3060", memory_used_mb=1024, memory_total_mb=12288,
             memory_percent=8.3, utilization_percent=10, temperature_c=55,
@@ -1131,7 +1129,7 @@ class TestBuildApiStatusTiers:
 
     @pytest.mark.asyncio
     async def test_tier_standard(self, monkeypatch):
-        from models import GPUInfo, BootstrapStatus
+        from models import BootstrapStatus, GPUInfo
         gpu = GPUInfo(
             name="RTX 4080", memory_used_mb=2048, memory_total_mb=16384,
             memory_percent=12.5, utilization_percent=20, temperature_c=55,
@@ -1153,7 +1151,7 @@ class TestBuildApiStatusTiers:
 
     @pytest.mark.asyncio
     async def test_tier_minimal(self, monkeypatch):
-        from models import GPUInfo, BootstrapStatus
+        from models import BootstrapStatus, GPUInfo
         gpu = GPUInfo(
             name="GT 1030", memory_used_mb=256, memory_total_mb=2048,
             memory_percent=12.5, utilization_percent=5, temperature_c=40,
@@ -1193,7 +1191,7 @@ class TestBuildApiStatusTiers:
 
     @pytest.mark.asyncio
     async def test_gpu_with_power_draw(self, monkeypatch):
-        from models import GPUInfo, BootstrapStatus
+        from models import BootstrapStatus, GPUInfo
         gpu = GPUInfo(
             name="RTX 4090", memory_used_mb=2048, memory_total_mb=24576,
             memory_percent=8.3, utilization_percent=35, temperature_c=62,
@@ -1215,7 +1213,7 @@ class TestBuildApiStatusTiers:
 
     @pytest.mark.asyncio
     async def test_active_bootstrap(self, monkeypatch):
-        from models import GPUInfo, BootstrapStatus
+        from models import BootstrapStatus, GPUInfo
         gpu = GPUInfo(
             name="RTX 4090", memory_used_mb=2048, memory_total_mb=24576,
             memory_percent=8.3, utilization_percent=35, temperature_c=62,

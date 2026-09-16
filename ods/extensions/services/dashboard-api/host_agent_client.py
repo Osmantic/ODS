@@ -10,7 +10,6 @@ import time
 from typing import Any
 
 import httpx
-
 from config import AGENT_URL, ODS_AGENT_KEY
 
 

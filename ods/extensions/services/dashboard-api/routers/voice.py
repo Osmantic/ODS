@@ -3,7 +3,6 @@
 import logging
 
 from fastapi import APIRouter, Depends
-
 from security import verify_api_key
 
 logger = logging.getLogger(__name__)
@@ -25,8 +24,8 @@ async def voice_status(api_key: str = Depends(verify_api_key)):
     Stub implementation — returns service health based on the existing
     service health infrastructure. Full voice API is not yet implemented.
     """
-    from helpers import check_service_health
     from config import SERVICES
+    from helpers import check_service_health
 
     services_status = {}
     for svc_key, display_name in [("whisper", "stt"), ("tts", "tts")]:

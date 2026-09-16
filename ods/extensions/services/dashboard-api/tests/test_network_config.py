@@ -14,7 +14,6 @@ from unittest.mock import patch
 
 from host_agent_client import AgentHTTPError, AgentUnavailable
 
-
 # ---------------------------------------------------------------------------
 # Auth enforcement
 # ---------------------------------------------------------------------------

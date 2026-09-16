@@ -5,15 +5,16 @@ import logging
 import re
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
-
 from config import DATA_DIR, GPU_BACKEND, SERVICES
+from fastapi import APIRouter, Depends, HTTPException
 from helpers import dir_size_gb
 from host_agent_client import (
     AgentClientError,
     AgentHTTPError,
     AgentProtocolError,
     AgentUnavailable,
+)
+from host_agent_client import (
     request_json as request_agent_json,
 )
 from security import verify_api_key
@@ -92,7 +93,9 @@ def _post_agent_json(path: str, body: dict, timeout: int = 65) -> dict:
 @router.get("/api/services/resources")
 async def service_resources(api_key: str = Depends(verify_api_key)):
     """Get per-service resource metrics (CPU, RAM, disk)."""
-    from main import _cache  # noqa: PLC0415 — deferred import to avoid circular dependency
+    from main import (
+        _cache,  # noqa: PLC0415 — deferred import to avoid circular dependency
+    )
 
     container_stats = _cache.get("service_resources_containers")
     disk_usage = _cache.get("service_resources_disk")
@@ -207,6 +210,8 @@ async def restart_service(service_id: str, api_key: str = Depends(verify_api_key
         body,
     )
 
-    from main import _cache  # noqa: PLC0415 — deferred import to avoid circular dependency
+    from main import (
+        _cache,  # noqa: PLC0415 — deferred import to avoid circular dependency
+    )
     _cache.invalidate("service_resources_containers")
     return result

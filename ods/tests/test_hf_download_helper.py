@@ -7,7 +7,6 @@ from types import SimpleNamespace
 
 import pytest
 
-
 HELPER_PATH = Path(__file__).resolve().parents[1] / "scripts" / "download-hf-artifact.py"
 SNAPSHOT_HELPER_PATH = (
     Path(__file__).resolve().parents[1] / "scripts" / "download-hf-snapshot.py"

@@ -4,10 +4,9 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import host_agent_client as agent_client
 import httpx
 import pytest
-
-import host_agent_client as agent_client
 
 
 def test_host_agent_url_usage_is_centralized():

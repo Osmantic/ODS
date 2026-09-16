@@ -12,10 +12,8 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-
-from security import verify_api_key
-
 from gpu import (
+    _live_env_value,
     aggregate_gpu_details,
     decode_gpu_assignment,
     get_gpu_info_amd_detailed,
@@ -23,12 +21,16 @@ from gpu import (
     get_gpu_info_nvidia_detailed,
     get_gpu_info_windows_host,
     get_gpu_info_windows_host_detailed,
-    _live_env_value,
     read_gpu_topology,
 )
-from models import GPUInfo, IndividualGPU, MultiGPUStatus
-from models import AmdRuntimeStatus
-from lemonade_client import LemonadeClient, LemonadeClientError, LemonadeSettings, normalize_base_url
+from lemonade_client import (
+    LemonadeClient,
+    LemonadeClientError,
+    LemonadeSettings,
+    normalize_base_url,
+)
+from models import AmdRuntimeStatus, GPUInfo, IndividualGPU, MultiGPUStatus
+from security import verify_api_key
 
 logger = logging.getLogger(__name__)
 

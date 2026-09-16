@@ -360,6 +360,7 @@ class TestObserveHook:
 
     def test_activation_success_records_state(self, tmp_path, monkeypatch):
         import subprocess
+
         import test_model_activate as tma
 
         install_dir = tma._write_model_activation_fixture(tmp_path)[0]
@@ -389,6 +390,7 @@ class TestObserveHook:
 
     def test_activation_failure_leaves_state_untouched(self, tmp_path, monkeypatch):
         import subprocess
+
         import test_model_activate as tma
 
         install_dir = tma._write_model_activation_fixture(tmp_path)[0]

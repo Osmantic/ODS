@@ -4,43 +4,6 @@ This package is intentionally stdlib-only so installer, host-agent, and future
 egress-service code can share the same contract without adding runtime deps.
 """
 
-from .policy import (  # noqa: F401
-    ACTIVATION_RECEIPT_SCHEMA,
-    DEFAULT_POLICY_PATH,
-    FORBIDDEN_PUBLIC_SECRET_ENV,
-    INTERNAL_EGRESS_BASE_URL,
-    PUBLIC_MODEL_ALIAS,
-    REDACTED,
-    REMOTE_ROUTE_SCHEMA,
-    SCHEMA,
-    PolicyError,
-    classify_forbidden_ip_address,
-    load_policy,
-    normalize_provider_base_url,
-    plan_route,
-    public_activation_receipt,
-    redacted_secret_refs,
-    validate_public_env_keys,
-    validate_remote_model_id,
-)
-from .transport import (  # noqa: F401
-    DEFAULT_SSH_CONTROL_LISTEN_PORT,
-    DEFAULT_SSH_IDENTITY_PATH,
-    DEFAULT_SSH_INFERENCE_LISTEN_PORT,
-    DEFAULT_SSH_KNOWN_HOSTS_PATH,
-    DEFAULT_SSH_LOCAL_BIND_HOST,
-    SshTunnelSpec,
-    TransportError,
-    build_ssh_tunnel_specs,
-)
-from .ssh_supervisor import (  # noqa: F401
-    DEFAULT_SSH_SECRET_DIR,
-    DEFAULT_SSH_TUNNEL_SERVICE_HOST,
-    SSH_SUPERVISOR_PLAN_SCHEMA,
-    ssh_secret_status,
-    ssh_supervisor_plan,
-    ssh_tunnel_base_url,
-)
 from .egress import (  # noqa: F401
     DEFAULT_MAX_BODY_BYTES,
     DEFAULT_SECRET_PATH,
@@ -68,6 +31,25 @@ from .lifecycle import (  # noqa: F401
     LifecycleError,
     plan_lifecycle_operation,
 )
+from .policy import (  # noqa: F401
+    ACTIVATION_RECEIPT_SCHEMA,
+    DEFAULT_POLICY_PATH,
+    FORBIDDEN_PUBLIC_SECRET_ENV,
+    INTERNAL_EGRESS_BASE_URL,
+    PUBLIC_MODEL_ALIAS,
+    REDACTED,
+    REMOTE_ROUTE_SCHEMA,
+    SCHEMA,
+    PolicyError,
+    classify_forbidden_ip_address,
+    load_policy,
+    normalize_provider_base_url,
+    plan_route,
+    public_activation_receipt,
+    redacted_secret_refs,
+    validate_public_env_keys,
+    validate_remote_model_id,
+)
 from .probe import (  # noqa: F401
     DEFAULT_PROBE_TIMEOUT_SECONDS,
     MAX_PROBE_RESPONSE_BYTES,
@@ -76,6 +58,24 @@ from .probe import (  # noqa: F401
     probe_direct_provider,
     probe_provider_route,
     public_probe_receipt,
+)
+from .ssh_supervisor import (  # noqa: F401
+    DEFAULT_SSH_SECRET_DIR,
+    DEFAULT_SSH_TUNNEL_SERVICE_HOST,
+    SSH_SUPERVISOR_PLAN_SCHEMA,
+    ssh_secret_status,
+    ssh_supervisor_plan,
+    ssh_tunnel_base_url,
+)
+from .transport import (  # noqa: F401
+    DEFAULT_SSH_CONTROL_LISTEN_PORT,
+    DEFAULT_SSH_IDENTITY_PATH,
+    DEFAULT_SSH_INFERENCE_LISTEN_PORT,
+    DEFAULT_SSH_KNOWN_HOSTS_PATH,
+    DEFAULT_SSH_LOCAL_BIND_HOST,
+    SshTunnelSpec,
+    TransportError,
+    build_ssh_tunnel_specs,
 )
 
 __all__ = [

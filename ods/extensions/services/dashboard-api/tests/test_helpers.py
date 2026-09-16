@@ -8,18 +8,30 @@ from unittest.mock import AsyncMock, MagicMock
 import aiohttp
 import httpx
 import pytest
-
 from helpers import (
-    get_model_info, get_bootstrap_status, _update_lifetime_tokens,
-    get_uptime, get_cpu_metrics, get_ram_metrics,
-    check_service_health, get_all_services,
-    get_llama_metrics, get_loaded_model, get_llama_context_size,
-    get_disk_usage, dir_size_gb, invalidate_dir_size_cache, clear_dir_size_cache,
-    _get_aio_session, set_services_cache, get_cached_services,
-    _get_httpx_client, _get_lifetime_tokens, record_model_performance,
+    _get_aio_session,
+    _get_httpx_client,
+    _get_lifetime_tokens,
+    _update_lifetime_tokens,
+    check_service_health,
+    clear_dir_size_cache,
+    dir_size_gb,
+    get_all_services,
+    get_bootstrap_status,
+    get_cached_services,
+    get_cpu_metrics,
+    get_disk_usage,
+    get_llama_context_size,
+    get_llama_metrics,
+    get_loaded_model,
+    get_model_info,
+    get_ram_metrics,
+    get_uptime,
+    invalidate_dir_size_cache,
+    record_model_performance,
+    set_services_cache,
 )
-from models import BootstrapStatus, ServiceStatus, DiskUsage
-
+from models import BootstrapStatus, DiskUsage, ServiceStatus
 
 # --- get_model_info ---
 
@@ -1124,8 +1136,9 @@ class TestGetLlamaMetricsTPS:
     @pytest.mark.asyncio
     async def test_tps_calculated_on_second_call(self, monkeypatch):
         """TPS is calculated when previous token count and gen_secs are set."""
-        import helpers
         import time as _time
+
+        import helpers
 
         fake_services = {
             "llama-server": {"host": "localhost", "port": 8080, "health": "/health", "name": "llama-server"},

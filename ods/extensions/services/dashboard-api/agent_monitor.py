@@ -6,9 +6,9 @@ Collects real-time metrics on agent swarms, sessions, and throughput.
 import asyncio
 import json
 import logging
+import os
 from datetime import datetime, timedelta, timezone
 from typing import List
-import os
 
 import aiohttp
 

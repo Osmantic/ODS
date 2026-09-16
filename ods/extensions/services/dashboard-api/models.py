@@ -2,10 +2,9 @@
 
 from typing import Annotated, Any, Optional
 
-from pydantic import BaseModel, Field
-
 from config import GPU_BACKEND
 from context_policy import HERMES_MIN_CONTEXT, HERMES_TARGET_CONTEXT
+from pydantic import BaseModel, Field
 
 
 class GPUInfo(BaseModel):

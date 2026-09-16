@@ -11,13 +11,11 @@ import tempfile
 from pathlib import Path
 from typing import Iterator
 
-
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "bin"))
 sys.path.insert(0, str(ROOT / "extensions" / "services" / "remote-provider-ssh-tunnel"))
 
 from remote_provider.ssh_supervisor import SSH_SUPERVISOR_PLAN_SCHEMA  # noqa: E402
-
 
 BASE_COMPOSE = ROOT / "docker-compose.base.yml"
 MANIFEST = ROOT / "extensions" / "services" / "remote-provider-ssh-tunnel" / "manifest.yaml"

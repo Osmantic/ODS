@@ -4,15 +4,15 @@ Drop-in replacement for db.py (SQLite) when using PostgreSQL backend.
 Set DB_BACKEND=postgres to use this module.
 """
 
-import os
 import logging
+import os
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Optional, Tuple
 from uuid import UUID, uuid4
 
-from psycopg2.extras import RealDictCursor, register_uuid
 from psycopg2 import pool
+from psycopg2.extras import RealDictCursor, register_uuid
 
 # Register UUID type adapter
 register_uuid()

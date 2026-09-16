@@ -11,10 +11,10 @@ from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urlsplit
 
-from fastapi import HTTPException
-
 from env_values import strip_matching_quotes
-from host_agent_client import AgentClientError, request_json as request_agent_json
+from fastapi import HTTPException
+from host_agent_client import AgentClientError
+from host_agent_client import request_json as request_agent_json
 
 # ── Regex constants ────────────────────────────────────────────────────────────
 

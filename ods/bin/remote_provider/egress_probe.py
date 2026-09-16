@@ -13,7 +13,6 @@ from .probe import (
     public_probe_receipt,
 )
 
-
 PROBE_RESPONSE_SCHEMA = "ods.remote-provider-egress-probe.v1"
 RouteProbe = Callable[..., Mapping[str, Any]]
 

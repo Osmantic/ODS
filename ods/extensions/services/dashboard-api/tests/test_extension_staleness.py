@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from routers.extensions import _is_stale, _is_one_shot_extension
+from routers.extensions import _is_one_shot_extension, _is_stale
 
 
 def _iso(delta_seconds: int) -> str:

@@ -1,6 +1,5 @@
 import httpx
 import pytest
-
 from lemonade_client import (
     LemonadeClient,
     LemonadeClientError,

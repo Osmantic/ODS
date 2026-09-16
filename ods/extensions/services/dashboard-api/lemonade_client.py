@@ -8,7 +8,6 @@ from typing import Any, Mapping, Optional, Sequence
 
 import httpx
 
-
 DEFAULT_BASE_URL = "http://localhost:13305"
 DEFAULT_API_BASE_PATH = "/api/v1"
 

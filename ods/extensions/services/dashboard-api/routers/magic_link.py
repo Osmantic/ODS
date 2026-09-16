@@ -58,17 +58,22 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from urllib.parse import urlparse
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
+import session_signer
+from config import (
+    EXTENSIONS_DIR,
+    GPU_BACKEND,
+    SERVICES,
+    _read_env_value,
+    load_extension_manifests,
+)
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
-
-import session_signer
-from config import EXTENSIONS_DIR, GPU_BACKEND, SERVICES, _read_env_value, load_extension_manifests
 from security import verify_api_key
 
 logger = logging.getLogger(__name__)
@@ -385,8 +390,9 @@ def _qr_data_url(text: str) -> Optional[str]:
     still returns a usable URL.
     """
     try:
-        import qrcode  # noqa: PLC0415
         from io import BytesIO
+
+        import qrcode  # noqa: PLC0415
     except ImportError:
         return None
 

@@ -3,7 +3,6 @@
 from pathlib import Path
 
 import yaml
-
 from user_extensions import (
     _reset_cache,
     get_user_services_cached,

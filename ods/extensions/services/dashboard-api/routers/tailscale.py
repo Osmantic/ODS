@@ -23,12 +23,13 @@ import asyncio
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException
-
 from host_agent_client import (
     AgentHTTPError,
     AgentProtocolError,
     AgentTimeout,
     AgentUnavailable,
+)
+from host_agent_client import (
     request_json as request_agent_json,
 )
 from security import verify_api_key

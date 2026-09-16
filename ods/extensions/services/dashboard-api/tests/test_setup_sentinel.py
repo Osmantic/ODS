@@ -14,7 +14,6 @@ from pathlib import Path
 
 import pytest
 
-
 SENTINEL_PREFIX = "__ODS_RESULT__:"
 
 

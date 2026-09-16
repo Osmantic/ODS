@@ -10,7 +10,6 @@ from typing import Any
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
-
 from security import verify_api_key
 
 logger = logging.getLogger(__name__)

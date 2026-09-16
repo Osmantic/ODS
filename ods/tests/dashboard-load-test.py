@@ -10,14 +10,14 @@ Usage:
 """
 
 import argparse
-import threading
-import urllib.request
-import urllib.error
-import time
-from datetime import datetime
-import queue
 import os
+import queue
 import sys
+import threading
+import time
+import urllib.error
+import urllib.request
+from datetime import datetime
 
 DASHBOARD_API = "http://localhost:3002"
 ENDPOINTS = [

@@ -19,8 +19,8 @@ import json
 import logging
 import os
 import re
-import socket
 import shutil
+import socket
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -29,61 +29,115 @@ from typing import Any, Optional
 from urllib.parse import urlparse
 
 import httpx
-from fastapi import FastAPI, Depends, HTTPException, Body, Request
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from agent_monitor import collect_metrics
+from config import (
+    AGENT_HOST,
+    AGENT_PORT,
+    AGENT_URL,
+    ALWAYS_ON_SERVICES,
+    DATA_DIR,
+    INSTALL_DIR,
+    MANIFEST_ERRORS,
+    ODS_AGENT_KEY,
+    SERVICES,
+    SIDEBAR_ICONS,
+    _detect_container_default_gateway,
+    _read_env_from_file,
+    _running_inside_container,
+)
+from context_policy import HERMES_MIN_CONTEXT, HERMES_TARGET_CONTEXT
 
 # --- Local modules ---
 from env_values import strip_matching_quotes
-from config import (
-    SERVICES, DATA_DIR, INSTALL_DIR, SIDEBAR_ICONS, MANIFEST_ERRORS, ALWAYS_ON_SERVICES,
-    AGENT_HOST, AGENT_PORT, AGENT_URL, ODS_AGENT_KEY,
-    _detect_container_default_gateway, _running_inside_container,
-    _read_env_from_file,
-)
-from models import (
-    GPUInfo, ServiceStatus, DiskUsage, ModelInfo, BootstrapStatus,
-    FullStatus, PortCheckRequest,
-)
-from security import verify_api_key
+from fastapi import Body, Depends, FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from gpu import get_gpu_info
 from helpers import (
-    get_all_services, get_cached_services, set_services_cache,
-    get_disk_usage, dir_size_gb, get_model_info, get_bootstrap_status,
-    get_uptime, get_cpu_metrics, get_ram_metrics,
-    get_llama_metrics, get_loaded_model, get_llama_context_size,
     _get_httpx_client,
+    dir_size_gb,
+    get_all_services,
+    get_bootstrap_status,
+    get_cached_services,
+    get_cpu_metrics,
+    get_disk_usage,
+    get_llama_context_size,
+    get_llama_metrics,
+    get_loaded_model,
+    get_model_info,
+    get_ram_metrics,
+    get_uptime,
+    set_services_cache,
 )
-from context_policy import HERMES_MIN_CONTEXT, HERMES_TARGET_CONTEXT
 from host_agent_client import (
     AgentHTTPError,
     AgentProtocolError,
     AgentUnavailable,
+)
+from host_agent_client import (
     request_json as request_agent_json,
+)
+from host_agent_client import (
     shutdown_clients as shutdown_agent_clients,
 )
-from agent_monitor import collect_metrics
+from models import (
+    BootstrapStatus,
+    DiskUsage,
+    FullStatus,
+    GPUInfo,
+    ModelInfo,
+    PortCheckRequest,
+    ServiceStatus,
+)
 from routers import (
-    workflows, features, setup, updates, agents, privacy, extensions,
-    gpu as gpu_router, resources, voice, models as models_router, model_state as model_state_router,
-    model_routes as model_routes_router, remote_provider_status, templates,
-    auth as auth_router,
+    agents,
+    extensions,
+    features,
     magic_link,
-    oauth_passthrough,
-    talk,
-    tailscale,
-    usage,
     node,
+    oauth_passthrough,
+    privacy,
+    remote_provider_status,
+    resources,
+    setup,
+    tailscale,
+    talk,
+    templates,
+    updates,
+    usage,
+    voice,
+    workflows,
 )
+from routers import (
+    auth as auth_router,
+)
+from routers import (
+    gpu as gpu_router,
+)
+from routers import (
+    model_routes as model_routes_router,
+)
+from routers import (
+    model_state as model_state_router,
+)
+from routers import (
+    models as models_router,
+)
+from security import verify_api_key
 from settings import (
-    _ENV_ASSIGNMENT_RE, _ENV_COMMENTED_ASSIGNMENT_RE, _SETTINGS_APPLY_ALLOWED_SERVICES, _parse_env_text, _read_env_map_from_path,
-    _slugify,
-    _build_env_fields, _validate_env_values, _serialize_form_values,
-    _empty_value_unsets_env_key,
-    _compute_env_apply_plan,
+    _ENV_ASSIGNMENT_RE,
+    _ENV_COMMENTED_ASSIGNMENT_RE,
+    _SETTINGS_APPLY_ALLOWED_SERVICES,
+    _build_env_fields,
     _check_host_agent_available,
+    _compute_env_apply_plan,
+    _empty_value_unsets_env_key,
+    _parse_env_text,
+    _read_env_map_from_path,
+    _serialize_form_values,
+    _slugify,
+    _validate_env_values,
 )
-
 
 # ================================================================
 # TTL Cache — avoids redundant subprocess/IO calls every poll cycle

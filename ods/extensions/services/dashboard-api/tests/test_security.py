@@ -1,11 +1,9 @@
 """Tests for security.py — API key authentication."""
 
 import pytest
-
+import security
 from fastapi import HTTPException
 from fastapi.security import HTTPAuthorizationCredentials
-
-import security
 
 
 class TestVerifyApiKey:

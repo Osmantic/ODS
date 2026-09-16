@@ -19,7 +19,6 @@ from .egress import (
     validate_direct_provider_resolution,
 )
 
-
 DEFAULT_PROBE_TIMEOUT_SECONDS = 10.0
 MAX_PROBE_RESPONSE_BYTES = 64 * 1024
 PROBE_RECEIPT_SCHEMA = "ods.remote-provider-probe-receipt.v1"

@@ -10,7 +10,6 @@ import tempfile
 from pathlib import Path
 from unittest import SkipTest
 
-
 ROOT = Path(__file__).resolve().parents[1]
 
 

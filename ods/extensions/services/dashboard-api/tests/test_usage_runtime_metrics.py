@@ -10,9 +10,7 @@ observation cache) and previously had no direct coverage.
 from __future__ import annotations
 
 import pytest
-
 from routers import usage
-
 
 # ---------------------------------------------------------------------------
 # _metric_value

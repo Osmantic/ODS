@@ -2,7 +2,6 @@
 
 from unittest.mock import AsyncMock
 
-
 # --- GET /api/agents/metrics ---
 
 
@@ -41,8 +40,9 @@ class TestGetAgentMetricsHtml:
 
     def test_escapes_html_special_chars(self, test_client, monkeypatch):
         """HTML content should be escaped to prevent XSS."""
-        from agent_monitor import agent_metrics
         from datetime import datetime
+
+        from agent_monitor import agent_metrics
 
         # Inject XSS-like data into agent metrics
         original_last_update = agent_metrics.last_update

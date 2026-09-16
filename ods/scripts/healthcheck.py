@@ -56,7 +56,6 @@ import urllib.request
 from dataclasses import dataclass
 from typing import List, Optional, Sequence, Set, Tuple
 
-
 # -----------------------------
 # Data model
 # -----------------------------

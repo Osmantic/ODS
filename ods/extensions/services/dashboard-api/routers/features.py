@@ -4,9 +4,8 @@ import logging
 import os
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request
-
 from config import FEATURES, GPU_BACKEND, SERVICES
+from fastapi import APIRouter, Depends, HTTPException, Request
 from gpu import get_gpu_info, get_gpu_tier
 from models import GPUInfo
 from security import verify_api_key
@@ -114,6 +113,7 @@ def calculate_feature_status(feature: dict, services: list, gpu_info: Optional[G
 async def api_features(api_key: str = Depends(verify_api_key)):
     """Get feature discovery data."""
     import asyncio
+
     from helpers import get_all_services, get_cached_services
     service_list = get_cached_services()
     if service_list is None:

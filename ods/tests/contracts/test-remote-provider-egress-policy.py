@@ -8,10 +8,14 @@ import sys
 import tempfile
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "bin"))
 
+from remote_provider.lifecycle import (  # noqa: E402
+    LIFECYCLE_OPERATION_SCHEMA,
+    LifecycleError,
+    plan_lifecycle_operation,
+)
 from remote_provider.policy import (  # noqa: E402
     ACTIVATION_RECEIPT_SCHEMA,
     FORBIDDEN_PUBLIC_SECRET_ENV,
@@ -28,6 +32,24 @@ from remote_provider.policy import (  # noqa: E402
     public_activation_receipt,
     validate_public_env_keys,
 )
+from remote_provider.probe import (  # noqa: E402
+    PROBE_RECEIPT_SCHEMA,
+    ProbeError,
+    probe_direct_provider,
+    probe_provider_route,
+    public_probe_receipt,
+)
+from remote_provider.reconciler import (  # noqa: E402
+    PHASES,
+    FakeActivationAdapter,
+    result,
+    run_activation_transaction,
+)
+from remote_provider.ssh_supervisor import (  # noqa: E402
+    SSH_SUPERVISOR_PLAN_SCHEMA,
+    ssh_secret_status,
+    ssh_supervisor_plan,
+)
 from remote_provider.transport import (  # noqa: E402
     DEFAULT_SSH_CONTROL_LISTEN_PORT,
     DEFAULT_SSH_IDENTITY_PATH,
@@ -37,30 +59,6 @@ from remote_provider.transport import (  # noqa: E402
     TransportError,
     build_ssh_tunnel_specs,
 )
-from remote_provider.ssh_supervisor import (  # noqa: E402
-    SSH_SUPERVISOR_PLAN_SCHEMA,
-    ssh_secret_status,
-    ssh_supervisor_plan,
-)
-from remote_provider.reconciler import (  # noqa: E402
-    PHASES,
-    FakeActivationAdapter,
-    result,
-    run_activation_transaction,
-)
-from remote_provider.lifecycle import (  # noqa: E402
-    LIFECYCLE_OPERATION_SCHEMA,
-    LifecycleError,
-    plan_lifecycle_operation,
-)
-from remote_provider.probe import (  # noqa: E402
-    PROBE_RECEIPT_SCHEMA,
-    ProbeError,
-    probe_direct_provider,
-    probe_provider_route,
-    public_probe_receipt,
-)
-
 
 POLICY_PATH = ROOT / "config" / "remote-provider-egress-policy.json"
 

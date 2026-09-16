@@ -1,7 +1,7 @@
 """Tests for features.py — calculate_feature_status with Apple Silicon fallback."""
 
 import os
-from unittest.mock import patch, AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from routers.features import calculate_feature_status
 
@@ -127,8 +127,8 @@ class TestCalculateFeatureStatusGeneral:
         )
 
     def test_enabled_when_all_services_healthy(self):
-        from routers.features import calculate_feature_status
         from models import GPUInfo
+        from routers.features import calculate_feature_status
 
         gpu = GPUInfo(
             name="RTX 4090", memory_used_mb=2048, memory_total_mb=24576,
@@ -145,8 +145,8 @@ class TestCalculateFeatureStatusGeneral:
         assert result["enabled"] is True
 
     def test_preserves_launch_and_enabled_service_metadata(self):
-        from routers.features import calculate_feature_status
         from models import GPUInfo
+        from routers.features import calculate_feature_status
 
         gpu = GPUInfo(
             name="RTX 4090", memory_used_mb=2048, memory_total_mb=24576,
@@ -169,8 +169,8 @@ class TestCalculateFeatureStatusGeneral:
         assert result["launch"] == {"type": "service", "service": "open-webui"}
 
     def test_insufficient_vram(self):
-        from routers.features import calculate_feature_status
         from models import GPUInfo
+        from routers.features import calculate_feature_status
 
         gpu = GPUInfo(
             name="GTX 1050", memory_used_mb=1024, memory_total_mb=4096,
@@ -188,8 +188,8 @@ class TestCalculateFeatureStatusGeneral:
         assert result["requirements"]["vramOk"] is False
 
     def test_services_needed_when_deps_missing(self):
-        from routers.features import calculate_feature_status
         from models import GPUInfo
+        from routers.features import calculate_feature_status
 
         gpu = GPUInfo(
             name="RTX 4090", memory_used_mb=2048, memory_total_mb=24576,
@@ -206,8 +206,8 @@ class TestCalculateFeatureStatusGeneral:
         assert "tts" in result["requirements"]["servicesMissing"]
 
     def test_available_when_vram_ok_but_not_enabled(self):
-        from routers.features import calculate_feature_status
         from models import GPUInfo
+        from routers.features import calculate_feature_status
 
         gpu = GPUInfo(
             name="RTX 4090", memory_used_mb=2048, memory_total_mb=24576,

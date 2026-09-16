@@ -11,7 +11,6 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any, Mapping
 
-
 DEFAULT_SSH_IDENTITY_PATH = PurePosixPath("/state/remote-provider/secrets/ssh-identity")
 DEFAULT_SSH_KNOWN_HOSTS_PATH = PurePosixPath("/state/remote-provider/secrets/known_hosts")
 DEFAULT_SSH_LOCAL_BIND_HOST = "0.0.0.0"

@@ -36,10 +36,11 @@ import tempfile
 import threading
 import time
 from datetime import datetime, timezone
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path, PureWindowsPath
 from socketserver import ThreadingMixIn
-from urllib import error as urllib_error, request as urllib_request
+from urllib import error as urllib_error
+from urllib import request as urllib_request
 from urllib.parse import parse_qs, unquote, urlparse
 
 # Model Switchboard (PR 1, observe mode): stdlib-only sibling package. The
@@ -64,17 +65,27 @@ try:
     )
     from remote_provider.lifecycle import (
         LifecycleError as _RemoteProviderLifecycleError,
+    )
+    from remote_provider.lifecycle import (
         plan_lifecycle_operation as _plan_remote_provider_lifecycle_operation,
     )
     from remote_provider.policy import PolicyError as _RemoteProviderPolicyError
     from remote_provider.probe import (
         PROBE_RECEIPT_SCHEMA as _REMOTE_PROVIDER_PROBE_RECEIPT_SCHEMA,
+    )
+    from remote_provider.probe import (
         ProbeError as _RemoteProviderProbeError,
+    )
+    from remote_provider.probe import (
         probe_direct_provider as _probe_remote_provider_direct,
+    )
+    from remote_provider.probe import (
         public_probe_receipt as _remote_provider_public_probe_receipt,
     )
     from remote_provider.ssh_supervisor import (
         SSH_SUPERVISOR_PLAN_SCHEMA as _REMOTE_PROVIDER_SSH_SUPERVISOR_PLAN_SCHEMA,
+    )
+    from remote_provider.ssh_supervisor import (
         ssh_supervisor_plan as _remote_provider_ssh_supervisor_plan,
     )
 except Exception:  # pragma: no cover - import environment dependent

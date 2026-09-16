@@ -11,7 +11,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
-
 CALLBACK_PATH = Path(__file__).resolve().parent.parent / "ods_token_spy_callback.py"
 
 

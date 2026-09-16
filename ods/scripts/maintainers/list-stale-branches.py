@@ -15,7 +15,6 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-
 DEFAULT_EXCLUDE_EXACT = {
     "origin/HEAD",
     "origin/main",

@@ -1,7 +1,7 @@
 """Tests for routers/setup.py — setup wizard, persona selection, and completion."""
 
 import json
-from unittest.mock import patch, MagicMock, AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 
 def test_chat_handles_empty_choices(test_client, monkeypatch):

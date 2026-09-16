@@ -337,6 +337,7 @@ class TestLemonadeAdapter:
 class TestHostAgentWiring:
     def test_compose_llama_path_flows_through_reconciler(self, tmp_path, monkeypatch):
         import subprocess
+
         import test_model_activate as tma
 
         install_dir = tma._write_model_activation_fixture(tmp_path)[0]
@@ -384,6 +385,7 @@ class TestHostAgentWiring:
 
     def test_reconciler_failure_uses_existing_rollback(self, tmp_path, monkeypatch):
         import subprocess
+
         import test_model_activate as tma
 
         install_dir = tma._write_model_activation_fixture(tmp_path)[0]
@@ -456,6 +458,7 @@ class TestHostAgentWiring:
 
     def test_stage_exception_keeps_existing_error_contract(self, tmp_path, monkeypatch):
         import subprocess
+
         import test_model_activate as tma
 
         install_dir = tma._write_model_activation_fixture(tmp_path)[0]

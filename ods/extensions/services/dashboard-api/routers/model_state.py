@@ -14,11 +14,10 @@ import os
 from pathlib import Path
 from typing import Any
 
+from config import DATA_DIR, INSTALL_DIR
 from fastapi import APIRouter, Depends
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError
-
-from config import DATA_DIR, INSTALL_DIR
 from security import verify_api_key
 
 logger = logging.getLogger(__name__)

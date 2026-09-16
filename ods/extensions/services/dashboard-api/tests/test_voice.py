@@ -8,7 +8,6 @@ verdict has to describe the voice stack ODS actually installed.
 from types import SimpleNamespace
 
 import pytest
-
 from routers.voice import voice_status
 
 

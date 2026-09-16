@@ -2,10 +2,9 @@
 
 import html as html_mod
 
+from agent_monitor import cluster_status, get_full_agent_metrics, throughput
 from fastapi import APIRouter, Depends
 from fastapi.responses import HTMLResponse
-
-from agent_monitor import get_full_agent_metrics, cluster_status, throughput
 from security import verify_api_key
 
 router = APIRouter(tags=["agents"])

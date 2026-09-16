@@ -5,7 +5,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-
 ROOT_DIR = Path(__file__).resolve().parents[1]
 ENTRYPOINT = ROOT_DIR / "extensions" / "services" / "whisper" / "docker-entrypoint.sh"
 

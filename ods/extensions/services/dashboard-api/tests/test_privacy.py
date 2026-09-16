@@ -1,8 +1,8 @@
 """Tests for privacy router endpoints."""
 
-import aiohttp
-from unittest.mock import patch, AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import aiohttp
 from host_agent_client import AgentHTTPError, AgentTimeout, AgentUnavailable
 
 

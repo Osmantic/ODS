@@ -16,7 +16,6 @@ import time
 
 import requests
 
-
 LLAMA_SERVER_URL = os.environ.get("ODS_AGENT_TEMPLATE_BASE_URL", "http://localhost:8080")
 MODEL = os.environ.get("ODS_AGENT_TEMPLATE_MODEL", "qwen2.5-32b-instruct")
 

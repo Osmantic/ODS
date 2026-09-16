@@ -6,7 +6,7 @@ import unittest
 # Allow running this test from repo root without installing the service as a package.
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from key_management import resolve_shield_api_key, persist_key
+from key_management import persist_key, resolve_shield_api_key
 
 
 class TestKeyManagement(unittest.TestCase):

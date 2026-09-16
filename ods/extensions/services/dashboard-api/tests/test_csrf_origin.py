@@ -10,7 +10,6 @@ cookie and no prior session is needed for such a request to be authenticated.
 
 from unittest.mock import patch
 
-
 ATTACKER = "https://evil.invalid"
 
 

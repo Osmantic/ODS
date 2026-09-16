@@ -16,13 +16,12 @@ import logging
 import os
 from typing import Any, AsyncIterator
 
-import httpx
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import StreamingResponse
-
 import hermes_bridge
+import httpx
 import session_signer
 from config import INSTALL_DIR, SERVICES
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import StreamingResponse
 from helpers import check_service_health, get_loaded_model
 from performance_oracle import (
     find_catalog_model,

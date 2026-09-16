@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
-
-
 # ---------------------------------------------------------------------------
 # Health & Core
 # ---------------------------------------------------------------------------
@@ -614,6 +612,7 @@ def test_agents_throughput_authenticated(test_client):
 def test_get_active_persona_prompt_with_persona(setup_config_dir):
     """get_active_persona_prompt reads system_prompt from persona.json."""
     import json
+
     from routers.setup import get_active_persona_prompt
     persona_file = setup_config_dir / "persona.json"
     persona_file.write_text(json.dumps({"system_prompt": "custom prompt"}))
@@ -622,15 +621,15 @@ def test_get_active_persona_prompt_with_persona(setup_config_dir):
 
 def test_get_active_persona_prompt_defaults_when_no_file(setup_config_dir):
     """get_active_persona_prompt returns general prompt when no persona.json."""
-    from routers.setup import get_active_persona_prompt
     from config import PERSONAS
+    from routers.setup import get_active_persona_prompt
     assert get_active_persona_prompt() == PERSONAS["general"]["system_prompt"]
 
 
 def test_get_active_persona_prompt_corrupt_file(setup_config_dir):
     """get_active_persona_prompt returns default on corrupt JSON."""
-    from routers.setup import get_active_persona_prompt
     from config import PERSONAS
+    from routers.setup import get_active_persona_prompt
     persona_file = setup_config_dir / "persona.json"
     persona_file.write_text("not valid json{{{")
     assert get_active_persona_prompt() == PERSONAS["general"]["system_prompt"]

@@ -20,7 +20,6 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable
 
-
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MODEL = "qwen3.5-9b"
 DEFAULT_GGUF = "Qwen3.5-9B-Q4_K_M.gguf"

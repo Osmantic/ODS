@@ -23,10 +23,9 @@ import tempfile
 import time
 from pathlib import Path
 
+import main as main_module
 import pytest
 from fastapi.testclient import TestClient
-
-import main as main_module
 
 
 @pytest.fixture

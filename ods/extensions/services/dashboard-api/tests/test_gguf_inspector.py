@@ -12,7 +12,6 @@ path and every failure mode are pinned down.
 import struct
 
 import pytest
-
 from gguf_inspector import inspect_gguf
 
 # GGUF value type ids (see gguf_inspector._GGUF_VALUE_TYPES).

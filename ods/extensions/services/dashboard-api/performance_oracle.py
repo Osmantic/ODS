@@ -18,9 +18,9 @@ import re
 from pathlib import Path
 from typing import Any, Optional
 
+from context_policy import HERMES_MIN_CONTEXT, HERMES_TARGET_CONTEXT
 from env_values import strip_matching_quotes
 from gguf_inspector import inspect_gguf
-from context_policy import HERMES_MIN_CONTEXT, HERMES_TARGET_CONTEXT
 from helpers import (
     get_model_performance_samples,
     get_recorded_model_performance,
@@ -28,7 +28,6 @@ from helpers import (
 )
 from model_memory import required_model_memory_gb
 from models import GPUInfo
-
 
 _EVIDENCE_PATH = Path(__file__).with_name("performance_evidence.json")
 _DEFAULT_RECOMMENDATION_POLICY = "catalog-fit-pre-download"

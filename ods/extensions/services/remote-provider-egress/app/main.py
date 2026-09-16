@@ -15,7 +15,6 @@ from typing import Any, AsyncIterator, Mapping
 import httpx
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
-
 from remote_provider.egress import (
     DEFAULT_MAX_BODY_BYTES,
     DEFAULT_SECRET_PATH,
@@ -33,7 +32,6 @@ from remote_provider.probe import (
     DEFAULT_PROBE_TIMEOUT_SECONDS,
     ProbeError,
 )
-
 
 ROUTE_PATH = Path(
     os.environ.get(

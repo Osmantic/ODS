@@ -3,7 +3,6 @@
 import time
 
 import pytest
-
 import session_signer
 
 

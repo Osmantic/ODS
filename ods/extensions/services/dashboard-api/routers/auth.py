@@ -31,9 +31,8 @@ import logging
 import os
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
-
 import session_signer
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from security import verify_api_key
 
 logger = logging.getLogger(__name__)

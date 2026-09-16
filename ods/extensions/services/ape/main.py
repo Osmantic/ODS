@@ -68,7 +68,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 import yaml
-from fastapi import FastAPI, Request, HTTPException, Header, Depends
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 

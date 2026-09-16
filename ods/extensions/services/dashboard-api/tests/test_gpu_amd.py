@@ -9,7 +9,6 @@ from gpu import (
     get_gpu_info_amd_detailed,
 )
 
-
 # ============================================================================
 # _find_hwmon_temp — label-based discovery (junction > edge > temp1)
 # ============================================================================

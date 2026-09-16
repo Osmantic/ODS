@@ -12,7 +12,6 @@ from fastapi import HTTPException
 from models import ServiceStatus
 from routers.extensions import _assert_not_core
 
-
 # --- Helpers ---
 
 
@@ -3926,7 +3925,7 @@ class TestWriteErrorProgress:
 
     def test_sets_error_status_on_existing_progress(self, monkeypatch, tmp_path):
         """Error progress overwrites status but preserves started_at."""
-        from routers.extensions import _write_initial_progress, _write_error_progress
+        from routers.extensions import _write_error_progress, _write_initial_progress
 
         monkeypatch.setattr("routers.extensions.DATA_DIR", str(tmp_path))
 
@@ -4091,6 +4090,7 @@ class TestCallAgentErrorNarrowing:
     def test_call_agent_returns_false_on_transport_error(self, monkeypatch, caplog):
         """Network failures produce (False, warning) — callers rely on this."""
         import logging
+
         from host_agent_client import AgentUnavailable
         from routers import extensions as ext_module
 

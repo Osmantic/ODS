@@ -16,11 +16,11 @@ from typing import Optional
 
 import aiohttp
 import httpx
-
-from config import SERVICES, INSTALL_DIR, DATA_DIR, LLM_BACKEND, read_live_env_value
+from config import DATA_DIR, INSTALL_DIR, LLM_BACKEND, SERVICES, read_live_env_value
 from env_values import strip_matching_quotes
-from host_agent_client import AgentClientError, async_request_json as request_agent_json
-from models import ServiceStatus, DiskUsage, ModelInfo, BootstrapStatus
+from host_agent_client import AgentClientError
+from host_agent_client import async_request_json as request_agent_json
+from models import BootstrapStatus, DiskUsage, ModelInfo, ServiceStatus
 
 
 class _DirSizeCache:

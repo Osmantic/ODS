@@ -16,7 +16,6 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
-
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_POLICY_PATH = ROOT / "config" / "remote-provider-egress-policy.json"
 SCHEMA = "ods.remote-provider-egress-policy.v1"

@@ -6,6 +6,7 @@ the required abstract methods for request/response handling and cost calculation
 
 from abc import ABC, abstractmethod
 from typing import Any, Dict, Optional
+
 import httpx
 
 

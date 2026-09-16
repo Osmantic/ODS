@@ -2,10 +2,9 @@
 
 import json
 from datetime import datetime
-from unittest.mock import patch, MagicMock, AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
-
 from host_agent_client import AgentHTTPError, AgentUnavailable
 
 

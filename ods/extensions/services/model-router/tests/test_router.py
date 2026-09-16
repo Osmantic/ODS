@@ -3,8 +3,8 @@ upstream is an httpx.MockTransport and state/endpoints are temp files."""
 
 from __future__ import annotations
 
-import base64
 import asyncio
+import base64
 import hashlib
 import hmac
 import importlib

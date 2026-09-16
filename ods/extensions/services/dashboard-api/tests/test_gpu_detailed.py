@@ -14,7 +14,6 @@ from gpu import (
 )
 from models import GPUInfo
 
-
 # ============================================================================
 # read_gpu_topology — reads config/gpu-topology.json
 # ============================================================================

@@ -8,9 +8,9 @@ Run with: pytest tests/test_setup_card.py
 """
 
 import importlib.util
+import struct
 import subprocess
 import sys
-import struct
 from pathlib import Path
 
 import pytest

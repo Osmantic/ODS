@@ -5,7 +5,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-
 ROOT_DIR = Path(__file__).resolve().parents[2]
 ODS_CLI = ROOT_DIR / "ods-cli"
 DOCTOR = ROOT_DIR / "scripts" / "ods-doctor.sh"

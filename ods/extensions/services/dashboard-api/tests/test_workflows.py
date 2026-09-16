@@ -264,9 +264,9 @@ def test_check_workflow_dependencies_unhealthy(test_client, monkeypatch):
 
 def test_check_workflow_dependencies_unknown_dep(test_client, monkeypatch):
     """check_workflow_dependencies returns True for deps not in SERVICES."""
-    import routers.workflows as wf_mod
-
     import asyncio
+
+    import routers.workflows as wf_mod
     result = asyncio.run(
         wf_mod.check_workflow_dependencies(["totally-unknown-service-xyz"])
     )

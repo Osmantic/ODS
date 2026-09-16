@@ -3,6 +3,7 @@
 
 import json
 
+
 def process_users(user_list):
     """Process a list of user dictionaries."""
     results = []

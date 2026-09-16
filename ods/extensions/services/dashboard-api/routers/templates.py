@@ -3,9 +3,14 @@
 import asyncio
 import logging
 
+from config import (
+    EXTENSION_CATALOG,
+    GPU_BACKEND,
+    SERVICES,
+    TEMPLATES,
+    USER_EXTENSIONS_DIR,
+)
 from fastapi import APIRouter, Depends, HTTPException
-
-from config import EXTENSION_CATALOG, GPU_BACKEND, SERVICES, TEMPLATES, USER_EXTENSIONS_DIR
 from security import verify_api_key
 
 logger = logging.getLogger(__name__)
@@ -86,7 +91,8 @@ async def preview_template(template_id: str, api_key: str = Depends(verify_api_k
     if not template:
         raise HTTPException(status_code=404, detail=f"Template not found: {template_id}")
 
-    from helpers import get_cached_services, get_all_services
+    from helpers import get_all_services, get_cached_services
+
     from routers.extensions import _compute_extension_status
 
     service_list = get_cached_services()
@@ -161,13 +167,22 @@ async def apply_template(template_id: str, api_key: str = Depends(verify_api_key
     if not template:
         raise HTTPException(status_code=404, detail=f"Template not found: {template_id}")
 
-    from helpers import get_cached_services, get_all_services
+    from helpers import get_all_services, get_cached_services
+
     from routers.extensions import (
-        _activate_service, _extensions_lock, _call_agent, _call_agent_hook,
-        _get_missing_deps_transitive, _read_direct_deps, _validate_service_id,
-        _install_from_library, _is_installable,
+        _activate_service,
+        _call_agent,
+        _call_agent_hook,
         _call_agent_invalidate_compose_cache,
-        _has_error_progress, _sync_extension_config, _write_error_progress,
+        _extensions_lock,
+        _get_missing_deps_transitive,
+        _has_error_progress,
+        _install_from_library,
+        _is_installable,
+        _read_direct_deps,
+        _sync_extension_config,
+        _validate_service_id,
+        _write_error_progress,
     )
 
     # Blocking sections run in the thread pool so the event loop stays

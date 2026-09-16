@@ -10,8 +10,9 @@ from pathlib import Path
 from typing import Optional
 
 from env_values import strip_matching_quotes
+from host_agent_client import AgentClientError
+from host_agent_client import request_json as request_agent_json
 from models import GPUInfo, IndividualGPU
-from host_agent_client import AgentClientError, request_json as request_agent_json
 
 logger = logging.getLogger(__name__)
 

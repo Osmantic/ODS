@@ -22,7 +22,12 @@ from urllib.parse import urlparse
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, Security
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    StreamingResponse,
+)
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from filters import apply_filters
 from providers import ProviderRegistry
@@ -36,9 +41,25 @@ from routed_telemetry import (
 DB_BACKEND = os.environ.get("DB_BACKEND", "sqlite").lower()
 
 if DB_BACKEND == "postgres":
-    from db_postgres import init_db, log_usage, query_report, query_session_status, query_summary, query_usage, query_recent_events
+    from db_postgres import (
+        init_db,
+        log_usage,
+        query_recent_events,
+        query_report,
+        query_session_status,
+        query_summary,
+        query_usage,
+    )
 else:
-    from db import init_db, log_usage, query_report, query_session_status, query_summary, query_usage, query_recent_events
+    from db import (
+        init_db,
+        log_usage,
+        query_recent_events,
+        query_report,
+        query_session_status,
+        query_summary,
+        query_usage,
+    )
 
 # ── Configuration ────────────────────────────────────────────────────────────
 

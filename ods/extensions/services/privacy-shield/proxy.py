@@ -4,22 +4,22 @@ M3: API Privacy Shield - HTTP Proxy (ODS Integration)
 FastAPI-based proxy with connection pooling and PII caching.
 """
 
+import hashlib
 import logging
 import os
 import re
-import time
-import httpx
 import secrets
-import hashlib
+import time
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request, Depends, HTTPException, Security, WebSocket
-from fastapi.responses import JSONResponse, StreamingResponse
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from functools import lru_cache
-from cachetools import TTLCache
 
-from pii_scrubber import PrivacyShield, StreamRestorer
+import httpx
+from cachetools import TTLCache
+from fastapi import Depends, FastAPI, HTTPException, Request, Security, WebSocket
+from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from key_management import resolve_shield_api_key
+from pii_scrubber import PrivacyShield, StreamRestorer
 
 logger = logging.getLogger("privacy-shield")
 

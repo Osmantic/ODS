@@ -11,13 +11,11 @@ import json
 from pathlib import Path
 
 import pytest
-
 from model_memory import (
     estimated_context_kv_gb,
     estimated_param_billions,
     required_model_memory_gb,
 )
-
 
 ODS_ROOT = Path(__file__).resolve().parents[4]
 CATALOG_PATH = ODS_ROOT / "config" / "model-library.json"

@@ -1,14 +1,15 @@
 """Bark TTS API Server Tests"""
 
-import pytest
 import base64
 import threading
-import numpy as np
 from unittest.mock import patch
-from fastapi.testclient import TestClient
+
+import numpy as np
+import pytest
 
 # Import the module under test
 import server
+from fastapi.testclient import TestClient
 
 client = TestClient(server.app)
 

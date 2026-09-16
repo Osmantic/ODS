@@ -7,7 +7,6 @@ from pathlib import Path
 import pytest
 import yaml
 from fastapi import HTTPException
-
 from routers.extensions import _rewrite_build_context
 
 

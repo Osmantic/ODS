@@ -4,12 +4,12 @@ Wraps suno-ai/bark with a minimal FastAPI HTTP interface.
 Compatible with the ODS extensions ecosystem.
 """
 
-import io
 import base64
+import io
 import logging
 import threading
-from typing import Optional
 from concurrent.futures import ThreadPoolExecutor
+from typing import Optional
 
 import soundfile as sf
 from fastapi import FastAPI, HTTPException
@@ -122,7 +122,7 @@ class TTSResponse(BaseModel):
 
 def _generate_audio_sync(text: str, voice_preset: str, output_format: str) -> dict:
     """Synchronous audio generation — runs in thread pool."""
-    from bark import generate_audio, SAMPLE_RATE
+    from bark import SAMPLE_RATE, generate_audio
 
     _load_models()
     audio_array = generate_audio(text, history_prompt=voice_preset)
@@ -201,7 +201,7 @@ def text_to_speech_stream(req: TTSRequest):
 
 def _generate_audio_stream_sync(text: str, voice_preset: str) -> Response:
     """Synchronous stream generation — runs in thread pool."""
-    from bark import generate_audio, SAMPLE_RATE
+    from bark import SAMPLE_RATE, generate_audio
 
     _load_models()
     audio_array = generate_audio(text, history_prompt=voice_preset)

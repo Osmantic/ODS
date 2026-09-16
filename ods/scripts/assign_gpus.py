@@ -18,7 +18,6 @@ from dataclasses import dataclass
 from itertools import combinations
 from typing import Optional
 
-
 #  Constants
 
 HIGH_BW_THRESHOLD = 80   # min rank for NVLink / XGMI

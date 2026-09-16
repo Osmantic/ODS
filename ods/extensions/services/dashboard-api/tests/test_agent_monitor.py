@@ -3,11 +3,10 @@
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import agent_monitor
 import aiohttp
 import pytest
-
-from agent_monitor import ThroughputMetrics, AgentMetrics, ClusterStatus
-import agent_monitor
+from agent_monitor import AgentMetrics, ClusterStatus, ThroughputMetrics
 
 
 class TestThroughputMetrics:

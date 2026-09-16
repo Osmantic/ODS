@@ -5,11 +5,11 @@ Detects and replaces PII with tokens, restores on reverse.
 """
 
 import codecs
-import re
 import hashlib
+import re
 import secrets
-from typing import Dict, Tuple
 from dataclasses import dataclass, field
+from typing import Dict, Tuple
 
 
 @dataclass

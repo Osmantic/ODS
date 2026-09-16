@@ -15,7 +15,6 @@ from typing import Any
 
 import yaml
 
-
 VALID_CATEGORIES = {"core", "recommended", "optional"}
 VALID_TYPES = {"docker", "host-systemd"}
 VALID_GPU_BACKENDS = {"amd", "nvidia", "apple", "all", "none"}

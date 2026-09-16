@@ -8,18 +8,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import aiohttp
+from config import INSTALL_DIR, PERSONAS, SERVICES, read_live_env_value
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field, field_validator
-
-from config import SERVICES, PERSONAS, INSTALL_DIR, read_live_env_value
 from host_agent_client import (
     AgentHTTPError,
     AgentProtocolError,
     AgentUnavailable,
+)
+from host_agent_client import (
     request_json as request_agent_json,
 )
-from models import PersonaRequest, ChatRequest
+from models import ChatRequest, PersonaRequest
+from pydantic import BaseModel, Field, field_validator
 from security import verify_api_key
 
 logger = logging.getLogger(__name__)
