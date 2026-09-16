@@ -51,7 +51,11 @@ def _agent_viable_for_release(model, host=None):
     if str(model.get("source") or "").strip().lower() not in {"", "curated"}:
         return False
     compatibility = model.get("app_compatibility") or {}
-    for entry in compatibility.values():
+    for key, entry in compatibility.items():
+        # Pixel has a stricter real tool-loop verdict and its own selector.
+        # Generic release viability remains the app/Talk compatibility view.
+        if key == "pixel_agent":
+            continue
         entry = entry or {}
         status = str((entry or {}).get("status") or "").strip().lower()
         if status not in BLOCKING_AGENT_STATUSES or _has_runtime_scope(entry):
@@ -332,6 +336,60 @@ def test_windows_8gb_revalidation_models_have_64k_compressed_kv_profiles():
         assert profile["env"]["LLAMA_ARG_FLASH_ATTN"] == "on"
         assert profile["env"]["LLAMA_ARG_CACHE_TYPE_K"] == cache_type
         assert profile["env"]["LLAMA_ARG_CACHE_TYPE_V"] == cache_type
+
+
+def test_default_qwen_9b_has_live_proven_64k_and_compatible_32k_runtime_profiles():
+    catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
+    model = next(model for model in catalog["models"] if model["id"] == "qwen3.5-9b-q4")
+    profiles = {profile["id"]: profile for profile in model["runtime_profiles"]}
+    profile = profiles["nvidia-8gb-64k-q8-kv"]
+
+    assert profile["backend"] == "nvidia"
+    assert profile["host_arch"] == ["amd64"]
+    assert profile["memory_type"] == "discrete"
+    assert profile["vram_min_gb"] == 7.5
+    assert profile["vram_max_gb"] == 8.5
+    assert profile["system_ram_min_gb"] == 15
+    assert profile["context_length"] == HERMES_CONTEXT_FLOOR
+    assert profile["estimated_required_gb"] == 7.2
+    assert profile["env"] == {
+        "LLAMA_PARALLEL": "1",
+        "LLAMA_ARG_FLASH_ATTN": "on",
+        "LLAMA_ARG_CACHE_TYPE_K": "q8_0",
+        "LLAMA_ARG_CACHE_TYPE_V": "q8_0",
+        "LLAMA_SERVER_MEMORY_LIMIT": "12G",
+    }
+
+    fallback = profiles["nvidia-8gb-32k-q8-kv"]
+    assert fallback["context_length"] == 32768
+    assert fallback["estimated_required_gb"] == 6.8
+
+
+def test_ministral_has_a_constrained_wsl_8gb_runtime_profile():
+    catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
+    model = next(
+        model
+        for model in catalog["models"]
+        if model["id"] == "ministral3-8b-instruct-2512-q4"
+    )
+    profiles = {profile["id"]: profile for profile in model["runtime_profiles"]}
+    profile = profiles["nvidia-8gb-32k-q8-kv"]
+
+    assert profile["backend"] == "nvidia"
+    assert profile["host_arch"] == ["amd64"]
+    assert profile["memory_type"] == "discrete"
+    assert profile["vram_min_gb"] == 7.5
+    assert profile["vram_max_gb"] == 8.5
+    assert profile["system_ram_min_gb"] == 15
+    assert profile["context_length"] == 32768
+    assert profile["estimated_required_gb"] == 6.8
+    assert profile["env"] == {
+        "LLAMA_PARALLEL": "1",
+        "LLAMA_ARG_FLASH_ATTN": "on",
+        "LLAMA_ARG_CACHE_TYPE_K": "q8_0",
+        "LLAMA_ARG_CACHE_TYPE_V": "q8_0",
+        "LLAMA_SERVER_MEMORY_LIMIT": "12G",
+    }
 
 
 def test_windows_8gb_revalidation_models_have_verified_app_evidence():
@@ -659,18 +717,29 @@ def test_ministral3_8b_is_recommended_after_six_host_validation():
     assert model["size_bytes"] == 5198911904
     assert model["vram_required_gb"] == 7
     assert model["context_length"] == 262144
-    profile = {
-        item["id"]: item for item in model["runtime_profiles"]
-    }["nvidia-8gb-64k-q4-kv"]
-    assert profile["backend"] == "nvidia"
-    assert profile["host_arch"] == ["amd64"]
-    assert profile["memory_type"] == "discrete"
-    assert profile["vram_min_gb"] == 7.5
-    assert profile["vram_max_gb"] == 8.5
-    assert profile["system_ram_min_gb"] == 31
-    assert profile["context_length"] == 65536
-    assert profile["estimated_required_gb"] == 7.4
-    assert profile["env"] == {
+    profiles = {item["id"]: item for item in model["runtime_profiles"]}
+    cpu_profile = profiles["cpu-16k-agent-memory"]
+    assert cpu_profile["backend"] == "cpu"
+    assert cpu_profile["system_ram_min_gb"] == 16
+    assert cpu_profile["context_length"] == 16384
+    assert cpu_profile["estimated_required_gb"] == 7.8
+    assert cpu_profile["env"] == {
+        "LLAMA_PARALLEL": "1",
+        "LLAMA_ARG_FLASH_ATTN": "auto",
+        "LLAMA_ARG_CACHE_TYPE_K": "f16",
+        "LLAMA_ARG_CACHE_TYPE_V": "f16",
+        "LLAMA_SERVER_MEMORY_LIMIT": "8G",
+    }
+    nvidia_profile = profiles["nvidia-8gb-64k-q4-kv"]
+    assert nvidia_profile["backend"] == "nvidia"
+    assert nvidia_profile["host_arch"] == ["amd64"]
+    assert nvidia_profile["memory_type"] == "discrete"
+    assert nvidia_profile["vram_min_gb"] == 7.5
+    assert nvidia_profile["vram_max_gb"] == 8.5
+    assert nvidia_profile["system_ram_min_gb"] == 31
+    assert nvidia_profile["context_length"] == 65536
+    assert nvidia_profile["estimated_required_gb"] == 7.4
+    assert nvidia_profile["env"] == {
         "LLAMA_PARALLEL": "1",
         "LLAMA_ARG_FLASH_ATTN": "on",
         "LLAMA_ARG_CACHE_TYPE_K": "q4_0",
@@ -679,13 +748,16 @@ def test_ministral3_8b_is_recommended_after_six_host_validation():
     compatibility = model["app_compatibility"]
     assert model.get("install_recommendation") is True
     assert {
-        app: entry["status"] for app, entry in compatibility.items()
+        app: entry["status"]
+        for app, entry in compatibility.items()
+        if app != "pixel_agent"
     } == {
         "openai_chat": "verified",
         "hermes_talk": "verified",
         "perplexica": "verified",
         "agent_viability": "verified",
     }
+    assert compatibility["pixel_agent"]["status"] == "not_agent_viable"
     evidence = compatibility["agent_viability"]
     assert "2026-07-27T06-31-36Z" in evidence["evidence"]
     assert evidence["productSha"] == "7629cd20c0ec75a274187aea52b8cc9ad6fa2a2a"
@@ -971,3 +1043,35 @@ def test_new_switchboard_models_do_not_change_install_recommendations():
     assert expected_switchboard_only <= set(by_id)
     for model_id in expected_switchboard_only:
         assert by_id[model_id].get("install_recommendation") is False, model_id
+
+
+def test_real_pixel_verdicts_are_separate_from_generic_agent_evidence():
+    catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
+    by_id = {model["id"]: model for model in catalog["models"]}
+    expected_failures = {
+        "nvidia-nemotron3-nano-4b-q4": "nvidia-nemotron-3-nano-4b",
+        "ministral3-8b-instruct-2512-q4": "ministral-3-8b-instruct-2512",
+        "qwen2.5-coder-3b-128k-q4": "qwen-25-coder-3b-128k",
+        "qwen3.5-4b-q4": "qwen-35-4b",
+    }
+
+    for model_id, evidence_anchor in expected_failures.items():
+        compatibility = by_id[model_id]["app_compatibility"]
+        assert compatibility["agent_viability"]["status"] == "verified"
+        pixel = compatibility["pixel_agent"]
+        assert pixel["status"] == "not_agent_viable"
+        assert pixel["hostScope"] == ["windows-laptop"]
+        assert pixel["productSha"] == "df05a732ed7aedac6c527e1f9e7eeeeccfed3a5b"
+        assert pixel["pixelSha"] == "f1f811d02bffd5a1589eb6feb34323f6dadf7832"
+        assert pixel["evidence"].endswith(f"#{evidence_anchor}")
+
+    qwen_9b = by_id["qwen3.5-9b-q4"]["app_compatibility"]["pixel_agent"]
+    assert qwen_9b["status"] == "verified"
+    assert qwen_9b["hostScope"] == ["windows-laptop"]
+    assert qwen_9b["productSha"] == "d0808d08645841ffcbb3cf3919a9c81fe485937b"
+    assert qwen_9b["pixelSha"] == "d99923246e5ea22c0f1c8c8fc7b0927ac8b523fe"
+    assert qwen_9b["harnessSha"] == "d99923246e5ea22c0f1c8c8fc7b0927ac8b523fe"
+    assert qwen_9b["evidence"].endswith("#qwen-35-9b-revalidation-2026-09-02")
+    assert "background process" in qwen_9b["reason"]
+    assert "9/9" in qwen_9b["reason"]
+    assert "historical evidence" in qwen_9b["reason"]

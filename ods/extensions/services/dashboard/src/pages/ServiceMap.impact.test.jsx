@@ -2,14 +2,14 @@ import { createElement } from 'react'
 import { fireEvent, render, screen, within } from '@testing-library/react'
 import ServiceMap from './ServiceMap'
 
-test('traces direct and indirect affected services from the live status map', async () => {
+test.each([false, true])('traces direct and indirect affected services from the live status map (compact=%s)', async (compact) => {
   vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({ services: [
     { id: 'llama-server', name: 'Inference', status: 'healthy' },
     { id: 'litellm', name: 'Gateway', status: 'healthy' },
     { id: 'open-webui', name: 'Chat', status: 'healthy' },
     { id: 'whisper', name: 'Voice', status: 'healthy' },
   ] }) })))
-  render(createElement(ServiceMap))
+  render(createElement(ServiceMap, { compact }))
   const selector = await screen.findByLabelText('Service to inspect')
   fireEvent.change(selector, { target: { value: 'llama-server' } })
   const affected = within(screen.getByRole('list', { name: 'Affected services' }))

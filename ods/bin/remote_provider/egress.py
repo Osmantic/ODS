@@ -190,16 +190,28 @@ def provider_secret_status(path: str | Path) -> dict[str, Any]:
     return {"configured": stat.st_size > 0, "path": str(secret_path), "bytes": stat.st_size}
 
 
+def connection_header_names(headers: Mapping[str, str]) -> set[str]:
+    """Collect hop-specific field names from every Connection field."""
+    return {
+        option.strip().lower()
+        for name, value in headers.items()
+        if name.lower() == "connection"
+        for option in value.split(",")
+        if option.strip()
+    }
+
+
 def sanitize_forward_headers(
     headers: Mapping[str, str],
     *,
     provider_secret: str,
 ) -> dict[str, str]:
     """Strip client auth and hop-by-hop headers; add provider auth privately."""
+    excluded = HOP_BY_HOP_HEADERS | connection_header_names(headers)
     forwarded: dict[str, str] = {}
     for name, value in headers.items():
         lower = name.lower()
-        if lower in HOP_BY_HOP_HEADERS:
+        if lower in excluded:
             continue
         forwarded[name] = value
     forwarded["content-type"] = "application/json"
@@ -416,6 +428,7 @@ __all__ = [
     "read_provider_secret",
     "route_from_state",
     "sanitize_forward_headers",
+    "connection_header_names",
     "resolve_direct_provider_addresses",
     "upstream_base_url_for_route",
     "validate_direct_provider_resolution",
