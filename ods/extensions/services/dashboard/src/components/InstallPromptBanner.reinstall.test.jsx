@@ -82,3 +82,16 @@ test('a denied local-storage getter does not crash the rendered banner or instal
   act(() => window.dispatchEvent(new Event('appinstalled')))
   expect(banner()).toBeNull()
 })
+
+test('accepts installation in memory when browser storage writes are denied', async () => {
+  vi.spyOn(window.Storage.prototype, 'setItem').mockImplementation(() => {
+    throw new window.DOMException('Storage quota exceeded', 'QuotaExceededError')
+  })
+  render(<InstallPromptBanner />)
+  const event = installable()
+  expect(banner()).toBeInTheDocument()
+  await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Add to home screen' })))
+  expect(event.prompt).toHaveBeenCalledOnce()
+  expect(banner()).toBeNull()
+  expect(localStorage.getItem(INSTALLED)).toBeNull()
+})
