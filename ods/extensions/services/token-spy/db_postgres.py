@@ -35,7 +35,7 @@ _pool: Optional[pool.ThreadedConnectionPool] = None
 _tenant_id: Optional[UUID] = None
 _agent_cache: dict[str, UUID] = {}
 
-EventCursor = Tuple[datetime, UUID]
+EventCursor = tuple[datetime, UUID]
 
 
 def _get_pool() -> pool.ThreadedConnectionPool:

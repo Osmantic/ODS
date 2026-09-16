@@ -20,7 +20,7 @@ class LLMProvider(ABC):
     - Cost calculation (pricing per model)
     """
 
-    def __init__(self, config: Optional[Dict[str, Any]] = None):
+    def __init__(self, config: Optional[dict[str, Any]] = None):
         """Initialize provider with optional configuration.
 
         Args:
@@ -53,7 +53,7 @@ class LLMProvider(ABC):
         pass
 
     @abstractmethod
-    def get_model_pricing(self, model: str) -> Dict[str, float]:
+    def get_model_pricing(self, model: str) -> dict[str, float]:
         """Return pricing per 1M tokens for a model.
 
         Returns:
@@ -63,7 +63,7 @@ class LLMProvider(ABC):
         pass
 
     @abstractmethod
-    def analyze_request(self, body: Dict[str, Any]) -> Dict[str, Any]:
+    def analyze_request(self, body: dict[str, Any]) -> dict[str, Any]:
         """Extract metrics from request body.
 
         Returns dict with:
@@ -79,7 +79,7 @@ class LLMProvider(ABC):
         pass
 
     @abstractmethod
-    def rewrite_request(self, body: Dict[str, Any]) -> Dict[str, Any]:
+    def rewrite_request(self, body: dict[str, Any]) -> dict[str, Any]:
         """Rewrite request for provider compatibility.
 
         E.g., convert 'developer' role to 'system' for Moonshot.
@@ -88,7 +88,7 @@ class LLMProvider(ABC):
         pass
 
     @abstractmethod
-    def extract_usage_from_response(self, response: Dict[str, Any]) -> Dict[str, Any]:
+    def extract_usage_from_response(self, response: dict[str, Any]) -> dict[str, Any]:
         """Extract token usage from non-streaming response.
 
         Returns dict with:
@@ -103,7 +103,7 @@ class LLMProvider(ABC):
     @abstractmethod
     def extract_usage_from_stream(
         self, line: str, event_type: Optional[str] = None
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Optional[dict[str, Any]]:
         """Extract usage from a single SSE stream line.
 
         Args:
@@ -116,7 +116,7 @@ class LLMProvider(ABC):
         """
         pass
 
-    def get_auth_headers(self, request_headers: Dict[str, str]) -> Dict[str, str]:
+    def get_auth_headers(self, request_headers: dict[str, str]) -> dict[str, str]:
         """Extract and return authentication headers to forward.
 
         Override in subclasses for provider-specific auth handling.
@@ -149,7 +149,7 @@ class LLMProvider(ABC):
             await self._client.aclose()
             self._client = None
 
-    def calculate_cost(self, usage: Dict[str, Any], model: str) -> float:
+    def calculate_cost(self, usage: dict[str, Any], model: str) -> float:
         """Calculate cost in USD from usage and model.
 
         Args:

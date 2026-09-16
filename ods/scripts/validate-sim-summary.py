@@ -34,7 +34,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Union
 
-Json = Union[None, bool, int, float, str, List["Json"], Dict[str, "Json"]]
+Json = Union[None, bool, int, float, str, list["Json"], dict[str, "Json"]]
 
 
 # -----------------------------
@@ -54,7 +54,7 @@ class ValidationIssue:
 class Validator:
     def __init__(self, *, strict: bool = False) -> None:
         self.strict = strict
-        self.issues: List[ValidationIssue] = []
+        self.issues: list[ValidationIssue] = []
 
     def add(self, path: str, message: str) -> None:
         self.issues.append(ValidationIssue(path=path, message=message))

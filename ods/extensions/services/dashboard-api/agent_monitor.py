@@ -42,7 +42,7 @@ class ClusterStatus:
     """Cluster health and node status"""
 
     def __init__(self):
-        self.nodes: List[dict] = []
+        self.nodes: list[dict] = []
         self.failover_ready = False
         self.total_gpus = 0
         self.active_gpus = 0
@@ -91,7 +91,7 @@ class ThroughputMetrics:
 
     def __init__(self, history_minutes: int = 15):
         self.history_minutes = history_minutes
-        self.data_points: List[dict] = []
+        self.data_points: list[dict] = []
 
     def add_sample(self, tokens_per_sec: float):
         """Add a new throughput sample"""

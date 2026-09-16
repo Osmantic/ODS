@@ -53,7 +53,7 @@ class AnthropicProvider(LLMProvider):
     def api_endpoint(self) -> str:
         return "/v1/messages"
 
-    def get_model_pricing(self, model: str) -> Dict[str, float]:
+    def get_model_pricing(self, model: str) -> dict[str, float]:
         """Match model name to pricing table."""
         model_lower = model.lower()
 
@@ -65,7 +65,7 @@ class AnthropicProvider(LLMProvider):
         # Default to zero if unknown model
         return {"input": 0.0, "output": 0.0, "cache_read": 0.0, "cache_write": 0.0}
 
-    def analyze_request(self, body: Dict[str, Any]) -> Dict[str, Any]:
+    def analyze_request(self, body: dict[str, Any]) -> dict[str, Any]:
         """Analyze Anthropic request for metrics.
 
         Extracts:
@@ -103,7 +103,7 @@ class AnthropicProvider(LLMProvider):
 
         return result
 
-    def _analyze_system_prompt(self, system: Any) -> Dict[str, Any]:
+    def _analyze_system_prompt(self, system: Any) -> dict[str, Any]:
         """Parse system prompt structure for workspace file breakdown.
 
         Anthropic system prompt can be:
@@ -159,7 +159,7 @@ class AnthropicProvider(LLMProvider):
 
         return result
 
-    def _analyze_messages(self, messages: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def _analyze_messages(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
         """Analyze message array for counts and sizes."""
         user_count = 0
         assistant_count = 0
@@ -185,11 +185,11 @@ class AnthropicProvider(LLMProvider):
             "conversation_history_chars": history_chars,
         }
 
-    def rewrite_request(self, body: Dict[str, Any]) -> Dict[str, Any]:
+    def rewrite_request(self, body: dict[str, Any]) -> dict[str, Any]:
         """Anthropic is the reference format — no rewriting needed."""
         return body
 
-    def extract_usage_from_response(self, response: Dict[str, Any]) -> Dict[str, Any]:
+    def extract_usage_from_response(self, response: dict[str, Any]) -> dict[str, Any]:
         """Extract usage from non-streaming response."""
         usage = response.get("usage", {})
         return {
@@ -202,7 +202,7 @@ class AnthropicProvider(LLMProvider):
 
     def extract_usage_from_stream(
         self, line: str, event_type: Optional[str] = None
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Optional[dict[str, Any]]:
         """Extract usage from Anthropic SSE stream.
 
         Anthropic uses event types:
@@ -248,7 +248,7 @@ class AnthropicProvider(LLMProvider):
 
         return result if result else None
 
-    def get_auth_headers(self, request_headers: Dict[str, str]) -> Dict[str, str]:
+    def get_auth_headers(self, request_headers: dict[str, str]) -> dict[str, str]:
         """Extract Anthropic-specific headers to forward."""
         headers = {}
 

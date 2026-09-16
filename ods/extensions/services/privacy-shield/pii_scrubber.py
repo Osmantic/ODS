@@ -21,7 +21,7 @@ class PIIDetector:
     token_suffix: str = ">"
 
     # Session-specific PII mappings (persistent per conversation)
-    pii_map: Dict[str, str] = field(default_factory=dict)
+    pii_map: dict[str, str] = field(default_factory=dict)
     counter: int = field(default=0)
 
     # Stable session token (persisted, doesn't change on restart)
@@ -125,7 +125,7 @@ class PIIDetector:
             return 0
         return max(len(token) for token in self.pii_map)
 
-    def get_stats(self) -> Dict:
+    def get_stats(self) -> dict:
         """Return statistics about detected PII."""
         return {
             'unique_pii_count': len(self.pii_map),
@@ -230,7 +230,7 @@ class PrivacyShield:
         self.detector = PIIDetector()
         self.backend = backend_client  # e.g., OpenAI client
 
-    def process_request(self, prompt: str) -> Tuple[str, Dict]:
+    def process_request(self, prompt: str) -> tuple[str, dict]:
         """
         Process outgoing request - scrub PII.
         Returns (scrubbed_prompt, metadata for restore).

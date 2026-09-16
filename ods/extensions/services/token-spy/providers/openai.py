@@ -73,7 +73,7 @@ class OpenAICompatibleProvider(LLMProvider):
     def api_endpoint(self) -> str:
         return "/v1/chat/completions"
 
-    def get_model_pricing(self, model: str) -> Dict[str, float]:
+    def get_model_pricing(self, model: str) -> dict[str, float]:
         """Match model name to pricing table."""
         model_lower = model.lower()
 
@@ -85,7 +85,7 @@ class OpenAICompatibleProvider(LLMProvider):
         # Default to zero for unknown models (likely local)
         return {"input": 0.0, "output": 0.0, "cache_read": 0.0, "cache_write": 0.0}
 
-    def analyze_request(self, body: Dict[str, Any]) -> Dict[str, Any]:
+    def analyze_request(self, body: dict[str, Any]) -> dict[str, Any]:
         """Analyze OpenAI-format request for metrics."""
         messages = body.get("messages", [])
 
@@ -134,7 +134,7 @@ class OpenAICompatibleProvider(LLMProvider):
             "tool_count": len(body.get("tools", body.get("functions", []))),
         }
 
-    def rewrite_request(self, body: Dict[str, Any]) -> Dict[str, Any]:
+    def rewrite_request(self, body: dict[str, Any]) -> dict[str, Any]:
         """Rewrite request for OpenAI compatibility.
 
         Main transformation: convert 'developer' role to 'system' for
@@ -153,7 +153,7 @@ class OpenAICompatibleProvider(LLMProvider):
 
         return body
 
-    def extract_usage_from_response(self, response: Dict[str, Any]) -> Dict[str, Any]:
+    def extract_usage_from_response(self, response: dict[str, Any]) -> dict[str, Any]:
         """Extract usage from non-streaming response."""
         usage = response.get("usage", {})
 
@@ -173,7 +173,7 @@ class OpenAICompatibleProvider(LLMProvider):
 
     def extract_usage_from_stream(
         self, line: str, event_type: Optional[str] = None
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Optional[dict[str, Any]]:
         """Extract usage from OpenAI SSE stream.
 
         OpenAI streaming:
@@ -217,7 +217,7 @@ class OpenAICompatibleProvider(LLMProvider):
 
         return result if result else None
 
-    def get_auth_headers(self, request_headers: Dict[str, str]) -> Dict[str, str]:
+    def get_auth_headers(self, request_headers: dict[str, str]) -> dict[str, str]:
         """Extract Authorization header for OpenAI-compatible APIs."""
         headers = {}
 
@@ -266,6 +266,6 @@ class LocalProvider(OpenAICompatibleProvider):
     def default_base_url(self) -> str:
         return self.config.get("base_url", "http://localhost:8000")
 
-    def get_model_pricing(self, model: str) -> Dict[str, float]:
+    def get_model_pricing(self, model: str) -> dict[str, float]:
         """Local models are free (electricity cost not tracked)."""
         return {"input": 0.0, "output": 0.0, "cache_read": 0.0, "cache_write": 0.0}
