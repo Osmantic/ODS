@@ -1,0 +1,61 @@
+[Unit]
+Description=Pixel Agent host ingress (ODS -> Pixel gateway)
+# Wait for the network/filesystem that the ingress and status paths depend on.
+After=network.target
+Wants=network-online.target
+
+[Service]
+# Run as the same unprivileged owner as the Pixel gateway so the service can
+# read that owner's mode-0600 token without copying it into ODS state.
+Type=simple
+User=__PIXEL_SERVICE_USER__
+Group=ods-pixel
+ExecStart=/usr/bin/env node /usr/local/libexec/ods-pixel-ingress.mjs
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=30
+TimeoutStopSec=20
+
+# Nonsecret configuration only. The gateway token is never placed here; it is
+# read solely from the restricted PIXEL_GATEWAY_TOKEN_FILE at runtime.
+EnvironmentFile=/etc/ods/pixel-agent.env
+Environment=NODE_ENV=production
+
+# RuntimeDirectory gives us /run/ods-pixel owned by the Pixel user:ods-pixel.
+# Group members may traverse to the known socket path but cannot list entries.
+RuntimeDirectory=ods-pixel
+RuntimeDirectoryMode=0710
+# Docker bind-mounts the runtime directory into pixel-edge. Preserve the
+# directory inode across ingress restarts so the container continues to see a
+# newly recreated socket instead of remaining bound to an abandoned directory.
+RuntimeDirectoryPreserve=restart
+
+UMask=0007
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+RestrictNamespaces=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictRealtime=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+# ProtectHome hides every home directory. Bind only the exact owner-private
+# source file into the service's private runtime directory; the process never
+# receives access to the source home path or any neighboring owner state.
+BindReadOnlyPaths=__PIXEL_GATEWAY_TOKEN_SOURCE__:__PIXEL_GATEWAY_TOKEN_FILE__
+ReadOnlyPaths=/etc/ods/pixel-agent.env
+ReadWritePaths=/run/ods-pixel
+# Docker socket is NOT mounted into the service; the status projection probes
+# docker only if the CLI is available on the host PATH.
+PrivateMounts=true
+
+[Install]
+WantedBy=multi-user.target

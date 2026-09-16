@@ -100,7 +100,9 @@ class _Reader:
         return chunk
 
     def skip(self, size: int) -> None:
-        self.read(size)
+        if self.offset + size > len(self.data):
+            raise ValueError("GGUF metadata ended unexpectedly")
+        self.offset += size
 
     def unpack(self, fmt: str):
         size = struct.calcsize(fmt)
@@ -134,6 +136,9 @@ def _skip_value(reader: _Reader, value_type: int, depth: int = 0) -> None:
             raise ValueError("GGUF array nesting too deep")
         item_type = reader.unpack("<I")
         length = reader.unpack("<Q")
+        if item_type in _STRUCTS:
+            reader.skip(struct.calcsize(_STRUCTS[item_type]) * length)
+            return
         for _ in range(length):
             _skip_value(reader, item_type, depth + 1)
         return
@@ -150,8 +155,14 @@ def _read_array(reader: _Reader, depth: int = 0) -> Any:
 
     sample_limit = 64
     sample = [_read_value(reader, item_type, depth + 1) for _ in range(min(length, sample_limit))]
-    for _ in range(max(length - sample_limit, 0)):
-        _skip_value(reader, item_type, depth + 1)
+    remaining = max(length - sample_limit, 0)
+    if item_type in _STRUCTS:
+        # Tokenizer score/type arrays can contain hundreds of thousands of
+        # entries. Their unused fixed-width tail needs only one bounds check.
+        reader.skip(struct.calcsize(_STRUCTS[item_type]) * remaining)
+    else:
+        for _ in range(remaining):
+            _skip_value(reader, item_type, depth + 1)
 
     if length <= sample_limit:
         return sample
@@ -166,6 +177,21 @@ def _read_array(reader: _Reader, depth: int = 0) -> Any:
 def _first_int(metadata: dict[str, Any], suffixes: tuple[str, ...]) -> int | None:
     for key, value in metadata.items():
         if key.endswith(suffixes) and isinstance(value, int) and not isinstance(value, bool):
+            return value
+    return None
+
+
+def _first_int_or_list(
+    metadata: dict[str, Any], suffixes: tuple[str, ...]
+) -> int | list[int] | None:
+    for key, value in metadata.items():
+        if not key.endswith(suffixes):
+            continue
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+        if isinstance(value, list) and all(
+            isinstance(item, int) and not isinstance(item, bool) for item in value
+        ):
             return value
     return None
 
@@ -223,7 +249,16 @@ def inspect_gguf(path: Path | str, max_metadata_bytes: int = 8 * 1024 * 1024) ->
             "block_count": _first_int(metadata, (".block_count",)),
             "embedding_length": _first_int(metadata, (".embedding_length",)),
             "attention_head_count": _first_int(metadata, (".attention.head_count",)),
-            "attention_head_count_kv": _first_int(metadata, (".attention.head_count_kv",)),
+            "attention_head_count_kv": _first_int_or_list(
+                metadata, (".attention.head_count_kv",)
+            ),
+            "attention_key_length": _first_int(
+                metadata, (".attention.key_length",)
+            ),
+            "attention_value_length": _first_int(
+                metadata, (".attention.value_length",)
+            ),
+            "rope_dimension_count": _first_int(metadata, (".rope.dimension_count",)),
             "expert_count": _first_int(metadata, (".expert_count", ".expert.count")),
             "expert_used_count": _first_int(metadata, (".expert_used_count", ".expert.used_count")),
             "model_name": _first_value(metadata, ("general.name",)),

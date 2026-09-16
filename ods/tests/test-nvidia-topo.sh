@@ -39,8 +39,8 @@ test_1gpu_pcie() {
             echo "0, NVIDIA RTX 4090, 24564, 24564, 4, 16, GPU-12345678-1234-1234-1234-123456789012"
         elif [[ "$*" == "--query-gpu=driver_version --format=csv,noheader" ]]; then
             echo "535.129.03"
-        elif [[ "$1" == "-q" ]]; then
-            echo "MIG Mode: Disabled"
+        elif [[ "$1" == "--query-gpu=mig.mode.current" ]]; then
+            echo "Disabled"
         fi
     }
     
@@ -75,8 +75,8 @@ test_4gpus_soc() {
             echo "3, NVIDIA A100-SXM4-80GB, 81920, 81920, 4, 16, GPU-33333333-3333-3333-3333-333333333333"
         elif [[ "$*" == "--query-gpu=driver_version --format=csv,noheader" ]]; then
             echo "535.129.03"
-        elif [[ "$1" == "-q" ]]; then
-            echo "MIG Mode: Disabled"
+        elif [[ "$1" == "--query-gpu=mig.mode.current" ]]; then
+            echo "Disabled"
         fi
     }
     
@@ -112,8 +112,8 @@ test_4gpus_sys_separated_nv_pairs() {
             echo "3, NVIDIA A100-SXM4-80GB, 81920, 81920, 4, 16, GPU-33333333-3333-3333-3333-333333333333"
         elif [[ "$*" == "--query-gpu=driver_version --format=csv,noheader" ]]; then
             echo "535.129.03"
-        elif [[ "$1" == "-q" ]]; then
-            echo "MIG Mode: Disabled"
+        elif [[ "$1" == "--query-gpu=mig.mode.current" ]]; then
+            echo "Disabled"
         fi
     }
     
@@ -149,8 +149,8 @@ test_5gpus_nv12_with_mlx5() {
             echo "4, NVIDIA A100-SXM4-80GB, 81920, 81920, 4, 16, GPU-44444444-4444-4444-4444-444444444444"
         elif [[ "$*" == "--query-gpu=driver_version --format=csv,noheader" ]]; then
             echo "535.129.03"
-        elif [[ "$1" == "-q" ]]; then
-            echo "MIG Mode: Disabled"
+        elif [[ "$1" == "--query-gpu=mig.mode.current" ]]; then
+            echo "Disabled"
         fi
     }
     
@@ -184,8 +184,8 @@ test_8gpus_nv12_full_mesh() {
             done
         elif [[ "$*" == "--query-gpu=driver_version --format=csv,noheader" ]]; then
             echo "535.129.03"
-        elif [[ "$1" == "-q" ]]; then
-            echo "MIG Mode: Disabled"
+        elif [[ "$1" == "--query-gpu=mig.mode.current" ]]; then
+            echo "Disabled"
         fi
     }
     
@@ -220,8 +220,8 @@ test_8gpus_nv12_full_mesh_with_numa() {
             done
         elif [[ "$*" == "--query-gpu=driver_version --format=csv,noheader" ]]; then
             echo "535.129.03"
-        elif [[ "$1" == "-q" ]]; then
-            echo "MIG Mode: Disabled"
+        elif [[ "$1" == "--query-gpu=mig.mode.current" ]]; then
+            echo "Disabled"
         fi
     }
     
@@ -263,8 +263,8 @@ test_8gpus_nv1_nv2_partial_mesh() {
             done
         elif [[ "$*" == "--query-gpu=driver_version --format=csv,noheader" ]]; then
             echo "535.129.03"
-        elif [[ "$1" == "-q" ]]; then
-            echo "MIG Mode: Disabled"
+        elif [[ "$1" == "--query-gpu=mig.mode.current" ]]; then
+            echo "Disabled"
         fi
     }
     

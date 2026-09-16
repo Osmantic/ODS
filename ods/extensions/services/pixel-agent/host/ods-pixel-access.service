@@ -1,0 +1,21 @@
+[Unit]
+Description=ODS Pixel access transition coordinator
+After=docker.service openclaw-gateway.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=/usr/bin/python3 -I /usr/local/libexec/ods-pixel-access/access_mode_server.py
+WorkingDirectory=/
+Environment=PYTHONNOUSERSITE=1
+RuntimeDirectory=ods-pixel-access
+RuntimeDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
