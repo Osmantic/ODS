@@ -847,9 +847,13 @@ class TestApplicationRecordStore:
                     and node.module == "extension_application_record_store"
                 ):
                     importers.append(path.relative_to(ODS_ROOT).as_posix())
-        # The read-only collector may consume the dormant store, but no
-        # production host or transaction executor may import it yet.
-        assert importers == ["bin/extension_application_observation_adapter.py"]
+        # The read-only collector and the dormant library Compose effect may
+        # consume the store, but no production host or transaction executor
+        # may import it yet.
+        assert sorted(importers) == [
+            "bin/extension_application_observation_adapter.py",
+            "bin/extension_library_compose_apply_effect.py",
+        ]
         source = module.read_text(encoding="utf-8")
         assert "subprocess" not in source
         assert "getenv" not in source
