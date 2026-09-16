@@ -494,3 +494,15 @@ it('combines favorites with compact library views and leaves collections unfilte
   expect(fetchMock.mock.calls.every(([, init]) => !init?.method)).toBe(true)
   localStorage.removeItem('ods-extension-favorites-v1')
 })
+
+it.each(['not-json', '{"alpha":true}', '[42]'])('recovers from unreadable saved favorites: %s', async saved => {
+  localStorage.setItem('ods-extension-favorites-v1', saved)
+  installFetchMock({ extensions: [{ id: 'alpha', name: 'Alpha', status: 'not_installed', features: [baseFeature] }], summary: baseSummary() })
+  render(<Extensions compact />)
+  const button = await screen.findByRole('button', { name: 'Favorite Alpha', pressed: false })
+  expect(screen.getByRole('status')).toHaveTextContent(/could not be read/)
+  fireEvent.click(button)
+  expect(JSON.parse(localStorage.getItem('ods-extension-favorites-v1'))).toEqual(['alpha'])
+  expect(screen.getByRole('button', { name: 'Favorite Alpha', pressed: true })).toBeInTheDocument()
+  localStorage.removeItem('ods-extension-favorites-v1')
+})
