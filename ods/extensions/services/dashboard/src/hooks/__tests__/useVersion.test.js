@@ -93,6 +93,39 @@ describe('useVersion', () => {
     expect(result.current.version.update_available).toBe(true)
   })
 
+  test('still exposes version data when reading localStorage throws', async () => {
+    vi.spyOn(globalThis.Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new globalThis.DOMException('Storage is blocked', 'SecurityError')
+    })
+    fetch.mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ current: '1.0.0', latest: '2.0.0', update_available: true })
+    })
+
+    const { result } = renderHook(() => useVersion())
+
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    expect(result.current.version.latest).toBe('2.0.0')
+    expect(result.current.version.update_available).toBe(true)
+    expect(result.current.error).toBeNull()
+  })
+
+  test('dismisses the current banner when writing localStorage throws', async () => {
+    fetch.mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ current: '1.0.0', latest: '2.0.0', update_available: true })
+    })
+    const { result } = renderHook(() => useVersion())
+    await waitFor(() => expect(result.current.version).toBeTruthy())
+    vi.spyOn(globalThis.Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new globalThis.DOMException('Storage is blocked', 'SecurityError')
+    })
+
+    act(() => result.current.dismissUpdate())
+
+    expect(result.current.version.update_available).toBe(false)
+  })
+
   test('handles fetch error gracefully', async () => {
     fetch.mockRejectedValue(new Error('network error'))
 
@@ -103,5 +136,18 @@ describe('useVersion', () => {
     })
     expect(result.current.error).toBeTruthy()
     expect(result.current.version).toBeNull()
+  })
+
+  test('loads and dismisses the banner when the localStorage getter itself is denied', async () => {
+    vi.spyOn(globalThis, 'localStorage', 'get').mockImplementation(() => {
+      throw new globalThis.DOMException('Storage denied', 'SecurityError')
+    })
+    fetch.mockResolvedValue({ ok: true, json: async () => ({ current: '1', latest: '2', update_available: true }) })
+    const { result } = renderHook(() => useVersion())
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    expect(result.current.version.latest).toBe('2')
+    expect(result.current.error).toBeNull()
+    act(() => result.current.dismissUpdate())
+    expect(result.current.version.update_available).toBe(false)
   })
 })

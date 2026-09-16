@@ -2,6 +2,24 @@ import { useState, useEffect } from 'react'
 
 // Auth: nginx injects Authorization header for all /api/ requests (see nginx.conf).
 
+function readDismissedVersion() {
+  try {
+    return globalThis.localStorage?.getItem('dismissed-update') ?? null
+  } catch (error) {
+    if (!(error instanceof globalThis.DOMException)) throw error
+    return null
+  }
+}
+
+function storeDismissedVersion(version) {
+  try {
+    globalThis.localStorage?.setItem('dismissed-update', version)
+  } catch (error) {
+    if (!(error instanceof globalThis.DOMException)) throw error
+    // Persistence is best-effort when storage is blocked or quota-limited.
+  }
+}
+
 export function useVersion() {
   const [version, setVersion] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -22,7 +40,7 @@ export function useVersion() {
         // the exact version that was dismissed; a genuinely newer `latest` no
         // longer matches and surfaces normally.
         if (data.update_available && data.latest &&
-            localStorage.getItem('dismissed-update') === data.latest) {
+            readDismissedVersion() === data.latest) {
           data.update_available = false
         }
         setVersion(data)
@@ -43,7 +61,7 @@ export function useVersion() {
 
   const dismissUpdate = () => {
     if (version) {
-      localStorage.setItem('dismissed-update', version.latest)
+      storeDismissedVersion(version.latest)
       setVersion({ ...version, update_available: false })
     }
   }
