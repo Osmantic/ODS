@@ -118,6 +118,9 @@ jobs:
       - name: Health Check Tests
         run: bash tests/test-health-check.sh
 
+      - name: Env Example Schema Sync
+        run: bash tests/test-env-example-required.sh
+
       - name: QR Code Helper Tests
         run: bash tests/test-qrcode-helper.sh
 
