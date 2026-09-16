@@ -204,6 +204,31 @@ def _current_files(
         os.close(root)
 
 
+def _current_override(install_root: Path, service_id: str) -> str | None:
+    """Hash the active generated Compose override under the same custody rules."""
+
+    root = _open_absolute_install(install_root)
+    try:
+        parent = root
+        opened: list[int] = []
+        try:
+            for name in (".ods-assistant-first", "applications"):
+                child = _open_child(parent, name)
+                assert child is not None
+                opened.append(child)
+                parent = child
+            service = _open_child(parent, service_id, optional=True)
+            if service is None:
+                return None
+            opened.append(service)
+            return _file_digest(service, "compose.override.yaml")
+        finally:
+            for descriptor in reversed(opened):
+                os.close(descriptor)
+    finally:
+        os.close(root)
+
+
 def _ids(raw: bytes) -> set[str]:
     try:
         lines = raw.decode("utf-8", "strict").splitlines()

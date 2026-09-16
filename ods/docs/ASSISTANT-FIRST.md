@@ -566,6 +566,20 @@ application record last, and recover or compensate every partial effect.
 In particular, a user-selected SearXNG port must not bypass a reservation
 that still describes the manifest's default port 8888.
 
+The approved Manifest v2 library pilot (Gitea, Miniflux, ntfy, and Ollama)
+now has an exact host-side apply route, but the Dashboard production transaction
+executor is still disabled. Before Compose can run, apply refuses any typed
+host-port value not covered by the approved plan's reservation claims. The
+host-side `verify` route rebinds all selected pilot services, including noops,
+to the approved plan and current active records. Under an admitted lease it
+double-samples owner-custodied active files, the generated Compose override,
+the exact expected Docker service/container identities, container and image
+IDs, complete loopback-only published ports, and Docker health around a bounded
+host-facing HTTP probe. A drifted or unavailable observation cannot produce a
+completed verification receipt, and replay checks fresh evidence again. This
+is a source-level pilot check, not a claim that the app's real user journey or
+the full extension library has been qualified.
+
 ## Evidence boundary
 
 The source contract checks resolver ordering, the exact candidate service set,

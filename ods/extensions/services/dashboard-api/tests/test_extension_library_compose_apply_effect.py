@@ -34,6 +34,7 @@ from extension_lifecycle_plan import (  # noqa: E402
     PLAN_MATERIAL_SCHEMA,
     LifecyclePlanMaterial,
     PlannedDefinition,
+    PlannedHostPort,
     PlannedImage,
     PlannedOperation,
 )
@@ -86,6 +87,12 @@ SERVICES = {
     "miniflux": ("miniflux", "miniflux-db"),
     "ntfy": ("ntfy",),
     "ollama": ("ollama",),
+}
+HOST_PORTS = {
+    "gitea": (2222, 7830),
+    "miniflux": (8098,),
+    "ntfy": (8097,),
+    "ollama": (7804,),
 }
 
 
@@ -140,6 +147,7 @@ def _inputs(tmp_path: Path, service_id: str = "miniflux") -> SimpleNamespace:
         ),
         builds=(),
         canonical_document=manifest,
+        host_ports=tuple(PlannedHostPort("tcp", port) for port in HOST_PORTS[service_id]),
         source_tree_sha256=payload.digest,
     )
     material = LifecyclePlanMaterial(
@@ -426,6 +434,31 @@ def test_unapproved_or_misaligned_inputs_fail_before_any_effect(tmp_path):
         ),
         (
             inputs.command,
+            inputs.effect_input,
+            replace(
+                inputs.configuration,
+                values=tuple(
+                    item
+                    for item in inputs.configuration.values
+                    if item[0] != "MINIFLUX_PORT"
+                ),
+            ),
+            inputs.identity,
+        ),
+        (
+            inputs.command,
+            inputs.effect_input,
+            replace(
+                inputs.configuration,
+                values=tuple(
+                    (key, 9001 if key == "MINIFLUX_PORT" else value)
+                    for key, value in inputs.configuration.values
+                ),
+            ),
+            inputs.identity,
+        ),
+        (
+            inputs.command,
             replace(
                 inputs.effect_input,
                 payload=inputs.effect_input.payload._replace(
@@ -439,6 +472,46 @@ def test_unapproved_or_misaligned_inputs_fail_before_any_effect(tmp_path):
     for arguments in invalid:
         with pytest.raises(LifecycleWorkValidationError):
             runtime.apply(*arguments, FakeSecrets())
+    assert calls == []
+    assert list(install.iterdir()) == []
+    assert list(users.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    "service_id,port_key",
+    [
+        ("gitea", "GITEA_PORT"),
+        ("gitea", "GITEA_SSH_PORT"),
+        ("miniflux", "MINIFLUX_PORT"),
+        ("ntfy", "NTFY_PORT"),
+        ("ollama", "EXT_OLLAMA_PORT"),
+    ],
+)
+def test_pilot_app_port_must_be_reserved_by_approved_plan(
+    tmp_path, service_id, port_key
+):
+    install, users = _roots(tmp_path)
+    inputs = _inputs(tmp_path, service_id)
+    calls = []
+    runtime = effect.LibraryComposeApplyEffect(
+        install,
+        users,
+        lambda *args: calls.append(args) or True,
+        lambda *args: calls.append(args) or b"",
+    )
+    values = tuple(
+        (key, 9001 if key == port_key else value)
+        for key, value in inputs.configuration.values
+    )
+    with pytest.raises(LifecycleWorkValidationError) as caught:
+        runtime.apply(
+            inputs.command,
+            inputs.effect_input,
+            replace(inputs.configuration, values=values),
+            inputs.identity,
+            FakeSecrets(),
+        )
+    assert caught.value.code == "library-compose-port-plan-mismatch"
     assert calls == []
     assert list(install.iterdir()) == []
     assert list(users.iterdir()) == []

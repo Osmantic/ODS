@@ -647,6 +647,52 @@ def test_success_is_exact_synchronous_bound_and_token_free(host_server, host_req
     assert snapshot["terminalReceipt"]["evidenceHash"] == EVIDENCE_HASH
 
 
+def test_approved_library_verify_route_rechecks_current_state_on_replay(
+    host_server, host_request
+):
+    agent, _listener = host_server
+    grant = acquire_lease(agent, host_request, ["gitea"])
+    evidence = lease_evidence(agent, grant)
+    seen = []
+    agent._extension_lifecycle_work_dispatcher = None
+
+    def build(active_lease):
+        def dispatch(command):
+            assert active_lease() is True
+            seen.append(command)
+            return EVIDENCE_HASH
+
+        return dispatch
+
+    agent._get_extension_library_verify_runtime = build
+    request = work_request(
+        agent._extension_lifecycle_work.REQUEST_SCHEMA,
+        evidence,
+        service_ids=["gitea"],
+    )
+    begin_receipt(agent, host_request, request)
+
+    first_status, first = host_request("/v1/extension/lifecycle-work", request)
+    replay_status, replay = host_request("/v1/extension/lifecycle-work", request)
+    assert first_status == replay_status == 200
+    assert first == replay
+    assert len(seen) == 2
+    assert all(command.service_ids == ("gitea",) for command in seen)
+
+
+def test_unapproved_library_verify_route_stays_unavailable(host_server, host_request):
+    agent, _listener = host_server
+    grant = acquire_lease(agent, host_request, ["documents"])
+    evidence = lease_evidence(agent, grant)
+    agent._extension_lifecycle_work_dispatcher = None
+    request = work_request(agent._extension_lifecycle_work.REQUEST_SCHEMA, evidence)
+    begin_receipt(agent, host_request, request)
+
+    status, body = host_request("/v1/extension/lifecycle-work", request)
+    assert status == 503
+    assert body == {"error": {"code": "lifecycle-work-dispatcher-unavailable"}}
+
+
 @pytest.mark.parametrize(
     "operation_key,payload",
     [

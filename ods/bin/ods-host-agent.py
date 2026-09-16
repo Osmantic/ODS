@@ -148,6 +148,11 @@ except Exception:  # pragma: no cover - import environment dependent
     _library_application_runtime_module = None
 
 try:
+    import extension_library_verify_runtime as _library_verify_runtime_module
+except Exception:  # pragma: no cover - import environment dependent
+    _library_verify_runtime_module = None
+
+try:
     import extension_library_configuration_runtime as _library_configuration_runtime_module
 except Exception:  # pragma: no cover - import environment dependent
     _library_configuration_runtime_module = None
@@ -6851,6 +6856,23 @@ def _get_extension_library_application_runtime(receipt_store, active_lease):
         return None
 
 
+def _get_extension_library_verify_runtime(active_lease):
+    """Compose the read-only current-state verifier for approved library apps."""
+
+    if _library_verify_runtime_module is None or not callable(active_lease):
+        return None
+    try:
+        return _library_verify_runtime_module.build_library_verify_runtime(
+            INSTALL_DIR, active_lease
+        )
+    except Exception as exc:
+        logger.error(
+            "Library verification runtime construction failed (%s)",
+            type(exc).__name__,
+        )
+        return None
+
+
 def _get_extension_resource_reservation_runtime():
     """Compose, but do not register, the fixed host resource-reservation runtime.
 
@@ -8109,6 +8131,24 @@ class AgentHandler(BaseHTTPRequestHandler):
                     if runtime is not None:
                         dispatcher = runtime.dispatcher
                         started_observer = runtime.started_observer
+                elif command.operation_key == "verify" and dispatcher is None:
+                    approved = getattr(
+                        _library_application_runtime_module,
+                        "APPROVED_LIBRARY_SERVICES",
+                        None,
+                    )
+                    if (
+                        type(approved) is frozenset
+                        and command.service_ids
+                        and set(command.service_ids) <= approved
+                    ):
+
+                        def active_verify_lease():
+                            return admission.active_lease_status()["active"] is True
+
+                        dispatcher = _get_extension_library_verify_runtime(
+                            active_verify_lease
+                        )
                 elif command.operation_key.startswith("apply:"):
                     # Only the reviewed one-service library set gains this
                     # production route. Every other apply contract remains

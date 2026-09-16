@@ -48,6 +48,7 @@ from extension_lifecycle_plan import (
     PLAN_MATERIAL_SCHEMA,
     LifecyclePlanMaterial,
     PlannedDefinition,
+    PlannedHostPort,
     PlannedOperation,
 )
 from extension_lifecycle_work import (
@@ -66,6 +67,12 @@ _VALUE_KEYS = {
     "miniflux": frozenset({"MINIFLUX_BASE_URL", "MINIFLUX_PORT"}),
     "ntfy": frozenset({"NTFY_BASE_URL", "NTFY_PORT"}),
     "ollama": frozenset({"EXT_OLLAMA_PORT", "OLLAMA_MODEL"}),
+}
+_PORT_KEYS = {
+    "gitea": ("GITEA_PORT", "GITEA_SSH_PORT"),
+    "miniflux": ("MINIFLUX_PORT",),
+    "ntfy": ("NTFY_PORT",),
+    "ollama": ("EXT_OLLAMA_PORT",),
 }
 _SECRET_KEYS = {
     "gitea": frozenset(),
@@ -276,15 +283,38 @@ def _validate_inputs(
         ):
             _deny("library-compose-configuration-mismatch")
         keys.append(key)
-    if keys != sorted(keys) or len(keys) != len(set(keys)):
+    if (
+        keys != sorted(keys)
+        or len(keys) != len(set(keys))
+        or set(keys) != _VALUE_KEYS[service_id]
+    ):
         _deny("library-compose-configuration-mismatch")
+    # Typed configuration is collected after planning.  Never let a selected
+    # Compose port escape the exact host-port claims covered by approval.
+    values = dict(configuration.values)
+    configured_ports = tuple(values[key] for key in _PORT_KEYS[service_id])
+    planned_ports = definition.host_ports
+    if (
+        type(planned_ports) is not tuple
+        or len(planned_ports) != len(configured_ports)
+        or any(type(port) is not int or not 1 <= port <= 65535 for port in configured_ports)
+        or any(
+            type(claim) is not PlannedHostPort
+            or claim.protocol != "tcp"
+            or type(claim.port) is not int
+            or not 1 <= claim.port <= 65535
+            for claim in planned_ports
+        )
+        or len(set(configured_ports)) != len(configured_ports)
+        or sorted(configured_ports) != sorted(claim.port for claim in planned_ports)
+    ):
+        _deny("library-compose-port-plan-mismatch")
     service_secrets = _validate_key_tuple(configuration.secret_keys)
     expected_secrets = _validate_key_tuple(configuration.expected_secret_keys)
     if (
         set(keys) & set(service_secrets)
         or not set(service_secrets) <= set(expected_secrets)
         or set(service_secrets) & {"PATH", "BIND_ADDRESS"}
-        or set(keys) != _VALUE_KEYS[service_id]
         or set(service_secrets) != _SECRET_KEYS[service_id]
     ):
         _deny("library-compose-configuration-mismatch")
@@ -378,6 +408,10 @@ def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
             raise ValueError("duplicate key")
         result[key] = value
     return result
+
+
+def _project_name(service_id: str) -> str:
+    return "ods-af-" + service_id
 
 
 def _containers(
@@ -789,7 +823,7 @@ class LibraryComposeApplyEffect:
                 *_APPLICATION_PARTS, identity.service_id
             )
             project_directory = self._user_root / identity.service_id
-            project_name = "ods-af-" + identity.service_id
+            project_name = _project_name(identity.service_id)
             base_argv = (
                 "docker",
                 "compose",
