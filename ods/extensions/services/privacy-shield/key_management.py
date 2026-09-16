@@ -30,9 +30,16 @@ def persist_key(path: str, key: str) -> None:
             f.write(key)
         try:
             os.chmod(path, 0o600)
-        except Exception:
-            # Best-effort only (may fail on some mounts/platforms)
-            pass
+        except OSError:
+            # Best-effort: some mounts (e.g. certain bind mounts, FAT/SMB)
+            # reject chmod. The key is still written, but it keeps the
+            # directory's default permissions, so say so rather than
+            # leaving a possibly world-readable credential unmentioned.
+            logging.warning(
+                "Could not restrict permissions on SHIELD_API_KEY file %s; "
+                "verify it is not readable by other users",
+                path,
+            )
     except Exception:
         logging.exception("Failed to persist generated SHIELD_API_KEY")
 
