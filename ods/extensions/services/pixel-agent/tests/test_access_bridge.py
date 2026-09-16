@@ -53,6 +53,76 @@ class OwnerLauncherTests(unittest.TestCase):
             launch.assert_not_called()
 
 
+class HostAgentDiscoveryTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.root = Path(self.directory.name)
+        self.adapter = bridge.SystemdAccessBridge(self.root, "k" * 64)
+
+    def tearDown(self):
+        self.directory.cleanup()
+
+    @contextlib.contextmanager
+    def root_custody(self):
+        info = types.SimpleNamespace(st_mode=0o100755, st_uid=0)
+        with patch.object(bridge.platform, "system", return_value="Linux"), \
+                patch.object(bridge.os, "geteuid", return_value=0), \
+                patch.object(bridge.Path, "is_dir", return_value=True), \
+                patch.object(bridge.Path, "lstat", return_value=info):
+            yield
+
+    def assert_unavailable_without_proc_read(self, properties):
+        with self.root_custody(), \
+                patch.object(self.adapter, "command", return_value=properties), \
+                patch.object(bridge.Path, "read_bytes", side_effect=AssertionError("unexpected /proc read")):
+            status = self.adapter.status()
+        self.assertFalse(status["available"])
+        self.assertFalse(status["runtime_verified"])
+        self.assertEqual(status["reason"], "host-agent-unavailable")
+
+    def test_missing_host_agent_is_classified_before_proc_zero(self):
+        self.assert_unavailable_without_proc_read(
+            "MainPID=0\nUser=\nLoadState=not-found\nActiveState=failed"
+        )
+
+    def test_inactive_root_host_agent_is_classified_before_proc_zero(self):
+        self.assert_unavailable_without_proc_read(
+            "MainPID=0\nUser=\nLoadState=loaded\nActiveState=failed"
+        )
+
+    def test_malformed_root_host_agent_pid_is_classified(self):
+        self.assert_unavailable_without_proc_read(
+            "MainPID=invalid\nUser=root\nLoadState=loaded\nActiveState=active"
+        )
+
+    def test_root_host_agent_exit_during_proc_inspection_is_classified(self):
+        properties = "MainPID=987654\nUser=root\nLoadState=loaded\nActiveState=active"
+        with self.root_custody(), \
+                patch.object(self.adapter, "command", return_value=properties), \
+                patch.object(bridge.Path, "read_bytes", side_effect=FileNotFoundError):
+            status = self.adapter.status()
+        self.assertFalse(status["available"])
+        self.assertEqual(status["reason"], "host-agent-unavailable")
+
+    def test_empty_root_host_agent_cmdline_is_classified(self):
+        properties = "MainPID=987654\nUser=root\nLoadState=loaded\nActiveState=active"
+        with self.root_custody(), \
+                patch.object(self.adapter, "command", return_value=properties), \
+                patch.object(bridge.Path, "read_bytes", return_value=b""):
+            status = self.adapter.status()
+        self.assertFalse(status["available"])
+        self.assertEqual(status["reason"], "host-agent-unavailable")
+
+    def test_live_root_host_agent_still_requires_isolated_execution(self):
+        properties = "MainPID=987654\nUser=root\nLoadState=loaded\nActiveState=active"
+        with self.root_custody(), \
+                patch.object(self.adapter, "command", return_value=properties), \
+                patch.object(bridge.Path, "read_bytes", return_value=b"python3\0/opt/ods-host-agent.py\0"):
+            status = self.adapter.status()
+        self.assertFalse(status["available"])
+        self.assertEqual(status["reason"], "root-host-agent-isolation-required")
+
+
 class FakeBridge(bridge.SystemdAccessBridge):
     """Fake the installed services, retaining the real coordinator and journals."""
     def __init__(self, root):
@@ -62,10 +132,13 @@ class FakeBridge(bridge.SystemdAccessBridge):
         self.native_phase = self.edge_phase = "idle"
         self.nrev, self.erev = "a" * 64, "b" * 64
         self.proof = None
+        self.probe_failure = None
         self.log = []
         self.fail = None
 
-    def discover(self):
+    def discover(self, *, allow_installing=False):
+        if allow_installing:
+            self.log.append("discover-installing")
         self.surface = "linux-systemd"
         self.home = self.install
         self.owner = types.SimpleNamespace(pw_uid=os.getuid(), pw_gid=os.getgid(), pw_name="fixture")
@@ -80,14 +153,17 @@ class FakeBridge(bridge.SystemdAccessBridge):
     def native(self, operation=None, token=None, *, timeout=60):
         if operation:
             self.log.append("native-" + operation)
-            if self.fail == operation: raise bridge.AccessError("injected-" + operation)
+            if self.fail == operation:
+                if operation == "probe": self.probe_failure = "core-exec"
+                raise bridge.AccessError("injected-" + operation)
             if operation == "acquire":
                 if self.active: raise bridge.AccessError("busy")
                 self.native_phase = "held"
             elif operation == "release": self.native_phase = "idle"
             elif operation == "probe": self.proof = {"mode": self.mode, "executed": True, "pid": self.pid}
         return {"available": True, "phase": self.native_phase, "revision": self.nrev,
-                "pid": self.pid, "active": self.active, "proof": self.proof}
+                "pid": self.pid, "active": self.active, "proof": self.proof,
+                "probe_failure": self.probe_failure}
 
     def edge(self, operation=None, token=None, revision=None):
         if operation:
@@ -199,7 +275,8 @@ class BridgeTests(unittest.TestCase):
 
     def test_failed_probe_retains_both_gates_and_recovery_receipt(self):
         self.runtime.fail = "probe"
-        with self.assertRaises(bridge.AccessError): self.runtime.change(self.request())
+        with self.assertRaisesRegex(bridge.AccessError, "runtime-proof-core-exec"):
+            self.runtime.change(self.request())
         self.assertEqual(self.runtime.native_phase, "held")
         self.assertEqual(self.runtime.edge_phase, "held")
         self.assertEqual(self.runtime.pending()["phase"], "error")
@@ -207,13 +284,51 @@ class BridgeTests(unittest.TestCase):
         self.runtime.fail = None
         self.assertEqual(self.runtime.change(self.request("sandboxed"))["effective_mode"], "sandboxed")
 
+    def test_native_admission_failure_identifies_bounded_transition_stage(self):
+        original = self.runtime.native
+        def native(operation=None, token=None, *, timeout=60):
+            if operation == "acquire": raise bridge.AccessError("runtime-unavailable-or-busy")
+            return original(operation, token, timeout=timeout)
+        with patch.object(self.runtime, "native", side_effect=native), \
+                self.assertRaisesRegex(bridge.AccessError, "runtime-initial-acquire-unavailable"):
+            self.runtime.change(self.request())
+        self.assertEqual(self.runtime.pending()["error"], "runtime-initial-acquire-unavailable")
+
+    def test_probe_diagnostic_is_allowlisted_and_arbitrary_value_is_not_forwarded(self):
+        self.runtime.fail = "probe"
+        self.runtime.probe_failure = "private-path-etc-shadow"
+        original = self.runtime.native
+        def native(operation=None, token=None, *, timeout=60):
+            if operation == "probe": raise bridge.AccessError("runtime-unavailable-or-busy")
+            result = original(operation, token, timeout=timeout)
+            result["probe_failure"] = "private-path-etc-shadow"
+            return result
+        with patch.object(self.runtime, "native", side_effect=native), \
+                self.assertRaisesRegex(bridge.AccessError, "runtime-unavailable-or-busy"):
+            self.runtime.change(self.request())
+        self.assertNotIn("private-path-etc-shadow", self.runtime.pending()["error"])
+
+    def test_probe_diagnostic_requires_runtime_to_remain_held(self):
+        original = self.runtime.native
+        failed = [False]
+        def native(operation=None, token=None, *, timeout=60):
+            if operation == "probe":
+                failed[0] = True
+                raise bridge.AccessError("runtime-unavailable-or-busy")
+            result = original(operation, token, timeout=timeout)
+            if failed[0]: result.update(phase="idle", probe_failure="core-exec")
+            return result
+        with patch.object(self.runtime, "native", side_effect=native), \
+                self.assertRaisesRegex(bridge.AccessError, "runtime-unavailable-or-busy"):
+            self.runtime.change(self.request())
+
     def test_pristine_safer_probe_recovery_does_not_restart_unchanged_gateway(self):
         self.runtime.fail = "probe"
         with self.assertRaises(bridge.AccessError):
             self.runtime.change(self.request("sandboxed"))
         self.assertFalse(self.runtime.managed)
         self.assertEqual(self.runtime.pending()["phase"], "error")
-        self.assertEqual(self.runtime.pending()["error"], "injected-probe")
+        self.assertEqual(self.runtime.pending()["error"], "runtime-proof-core-exec")
         self.runtime.fail = None
         restored = self.runtime.change(self.request("sandboxed"))
         self.assertTrue(restored["runtime_verified"])
@@ -269,16 +384,37 @@ class BridgeTests(unittest.TestCase):
         self.assertFalse(status["runtime_verified"])
         self.assertIsNone(status["revision"])
 
-    def test_release_failure_does_not_reopen_native_admission(self):
+    def test_edge_release_failure_keeps_external_admission_blocked(self):
         self.runtime.fail = "edge-release"
         with self.assertRaises(bridge.AccessError): self.runtime.change(self.request())
+        self.assertEqual(self.runtime.native_phase, "idle")
+        self.assertEqual(self.runtime.edge_phase, "held")
+        self.assertLess(self.runtime.log.index("native-release"), self.runtime.log.index("edge-release"))
+        self.assertEqual(self.runtime.pending()["phase"], "error")
+
+    def test_native_release_failure_keeps_both_admission_gates_held(self):
+        self.runtime.fail = "release"
+        with self.assertRaises(bridge.AccessError): self.runtime.change(self.request())
         self.assertEqual(self.runtime.native_phase, "held")
-        self.assertNotIn("native-release", self.runtime.log)
+        self.assertEqual(self.runtime.edge_phase, "held")
+        self.assertNotIn("edge-release", self.runtime.log)
+        self.assertEqual(self.runtime.pending()["phase"], "error")
 
     def test_proof_invalidated_by_external_config_change_or_gateway_restart(self):
         self.runtime.change(self.request())
         self.runtime.pid += 1
         self.assertEqual(self.runtime.status()["effective_mode"], "unknown")
+
+    def test_root_owned_gateway_port_overrides_missing_or_stale_owner_config(self):
+        explicit = bridge.SystemdAccessBridge(self.root, "k" * 64, gateway_port=18790)
+        self.assertEqual(explicit.configured_gateway_port({}), 18790)
+        self.assertEqual(explicit.configured_gateway_port({"gateway": {"port": 18789}}), 18790)
+        legacy = bridge.SystemdAccessBridge(self.root, "k" * 64)
+        self.assertEqual(legacy.configured_gateway_port({}), 18789)
+        self.assertEqual(legacy.configured_gateway_port({"gateway": {"port": 19432}}), 19432)
+        for invalid in (0, 65536, True, "18790"):
+            with self.subTest(invalid=invalid), self.assertRaises(bridge.AccessError):
+                bridge.SystemdAccessBridge(self.root, "k" * 64, gateway_port=invalid)
 
     def test_stopped_gateway_recovery_requires_empty_unit_and_same_durable_lease(self):
         real = bridge.SystemdAccessBridge(self.root, "k" * 64)

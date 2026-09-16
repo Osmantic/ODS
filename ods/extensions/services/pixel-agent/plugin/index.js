@@ -316,7 +316,14 @@ export default definePluginEntry({
           }
           else throw new Error();
           sendJson(res, 200, result);
-        } catch { sendJson(res, 409, {error: "access transition unavailable, busy, or proof failed"}); }
+        } catch (failure) {
+          sendJson(res, 409, {error: (typeof managedRuntime?.classifyTransitionError === 'function'
+            ? managedRuntime.classifyTransitionError(failure)
+            : null) ?? (typeof accessRuntime.classifyTransitionError === 'function'
+            ? accessRuntime.classifyTransitionError(failure)
+            : null)
+            ?? "access transition unavailable, busy, or proof failed"});
+        }
         return true;
       },
     });

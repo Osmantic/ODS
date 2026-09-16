@@ -126,8 +126,8 @@ assert_grep "installers/phases/11-services.sh" '_hermes_switchboard_mode=.*ODS_M
     "Linux Hermes patcher reads switchboard mode"
 assert_grep "installers/phases/11-services.sh" '_hermes_model="ods/current"' \
     "Linux Hermes patcher uses the stable switchboard model alias"
-assert_grep "installers/phases/11-services.sh" '_hermes_base_url=.*http://litellm:4000/v1' \
-    "Linux Hermes patcher routes switchboard mode through LiteLLM"
+assert_grep "installers/phases/11-services.sh" '_hermes_base_url=.*http://model-router:9099/v1' \
+    "Linux Hermes patcher routes local switchboard mode through model-router"
 assert_grep "installers/phases/11-services.sh" '_hermes_model_yaml=.*_phase11_yaml_double_quoted_scalar_content' \
     "Linux Hermes verification serializes the selected model as YAML"
 assert_grep "installers/phases/11-services.sh" 'grep -Fqx "  default: \\"\$_hermes_model_yaml\\""' \

@@ -2320,6 +2320,10 @@ function Invoke-Restart {
                 Write-ODSComposeDiagnostics -InstallDir $InstallDir -ComposeFlags $flags -Phase "ods.ps1 restart (all)"
                 exit 1
             }
+            # The native host agent reads .env once at process startup. Refresh
+            # it after recreating env-backed containers so dashboard requests do
+            # not use a newer ODS_AGENT_KEY or model state than the agent holds.
+            Invoke-Agent -Action "restart"
             Write-AISuccess "All services restarted"
             $null = Start-ODSOpenCodeRuntime
             if ($hermesInStack) {

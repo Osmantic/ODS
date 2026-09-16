@@ -674,10 +674,10 @@ def _selector_required_memory_gb(model: dict[str, Any]) -> float:
     return required_model_memory_gb(model)
 
 
-def _matching_runtime_profile(model: dict[str, Any], gpu_info: Optional[GPUInfo],
-                              system_ram_gb: int | None = None) -> dict[str, Any] | None:
+def _hardware_matching_runtime_profiles(model: dict[str, Any], gpu_info: Optional[GPUInfo]) -> list[dict[str, Any]]:
+    """Return profiles anchored to the detected GPU before system-RAM filtering."""
     if not gpu_info:
-        return None
+        return []
     backend = normalize_key(gpu_info.gpu_backend)
     memory_type = (
         "unified"
@@ -688,7 +688,7 @@ def _matching_runtime_profile(model: dict[str, Any], gpu_info: Optional[GPUInfo]
     )
     host_arch = _normalize_host_arch(platform.machine())
     vram_gb = float(gpu_info.memory_total_mb or 0) / 1024.0
-    ram_gb = system_ram_gb if system_ram_gb is not None else _system_ram_gb()
+    matches: list[dict[str, Any]] = []
     for profile in model.get("runtime_profiles", []) or []:
         if not isinstance(profile, dict):
             continue
@@ -705,6 +705,17 @@ def _matching_runtime_profile(model: dict[str, Any], gpu_info: Optional[GPUInfo]
                 continue
             if profile.get("vram_max_gb") is not None and vram_gb > float(profile["vram_max_gb"]):
                 continue
+        except (TypeError, ValueError):
+            continue
+        matches.append(profile)
+    return matches
+
+
+def _matching_runtime_profile(model: dict[str, Any], gpu_info: Optional[GPUInfo],
+                              system_ram_gb: int | None = None) -> dict[str, Any] | None:
+    ram_gb = system_ram_gb if system_ram_gb is not None else _system_ram_gb()
+    for profile in _hardware_matching_runtime_profiles(model, gpu_info):
+        try:
             if profile.get("system_ram_min_gb") is not None and float(ram_gb or 0) < float(profile["system_ram_min_gb"]):
                 continue
         except (TypeError, ValueError):
@@ -1193,6 +1204,8 @@ def rank_pre_download_models(catalog: list[dict[str, Any]], gpu_info: Optional[G
         if not _family_allowed_for_profile(model, normalized_profile):
             continue
         runtime_profile = _matching_runtime_profile(model, gpu_info, system_ram_gb)
+        if runtime_profile is None and _hardware_matching_runtime_profiles(model, gpu_info):
+            continue
         candidate_model = {**model, "_runtime_profile": runtime_profile} if runtime_profile else model
         required = _effective_required_memory_gb(candidate_model, runtime_profile)
         fits = _fits_declared_vram(required, capacity_gb)
@@ -1207,7 +1220,13 @@ def rank_pre_download_models(catalog: list[dict[str, Any]], gpu_info: Optional[G
         fallback_pool = [
             model for model in catalog
             if (not installable_only or model.get("gguf_url")) and _family_allowed_for_profile(model, normalized_profile)
-        ] or catalog
+            and not _hardware_matching_runtime_profiles(model, gpu_info)
+        ] or [
+            model for model in catalog
+            if not _hardware_matching_runtime_profiles(model, gpu_info)
+        ]
+        if not fallback_pool:
+            return []
         fallback = min(fallback_pool, key=lambda m: float(m.get("vram_required_gb") or 999))
         candidates = [{"model": fallback, "score": -1.0}]
 
@@ -1350,6 +1369,10 @@ def build_models_payload(gpu_info: Optional[GPUInfo], loaded_model: Optional[str
             current_model_id = model["id"]
         metadata = inspect_gguf(path) if path else {"exists": False, "readable": False, "quantization": model.get("quantization", "unknown")}
         runtime_profile = _matching_runtime_profile(model, gpu_info, install_ram_gb or None)
+        profile_ram_ineligible = bool(
+            runtime_profile is None
+            and _hardware_matching_runtime_profiles(model, gpu_info)
+        )
         profile_context = _effective_context_length(model, runtime_profile)
         configured_context = recommendation.get("contextLength") if is_configured else None
         actual_context = (
@@ -1381,8 +1404,8 @@ def build_models_payload(gpu_info: Optional[GPUInfo], loaded_model: Optional[str
         )
         if gpu_info:
             capacity_gb = _usable_model_memory_gb(gpu_info)
-            fits_total = bool(_fits_declared_vram(selector_required, capacity_gb) or is_loaded)
-            fits_current = bool(_fits_declared_vram(selector_required, free_gb) or is_loaded)
+            fits_total = bool((not profile_ram_ineligible and _fits_declared_vram(selector_required, capacity_gb)) or is_loaded)
+            fits_current = bool((not profile_ram_ineligible and _fits_declared_vram(selector_required, free_gb)) or is_loaded)
         else:
             fits_total = bool(_fits_declared_vram(selector_required, 4.0) or is_loaded)
             fits_current = False

@@ -58,7 +58,9 @@ def control_request(value):
     if type(value) is not dict or type(value.get("operation")) is not str:
         raise ProtocolError("invalid-request")
     operation = value["operation"]
-    keys = {"status": {"operation"}, "change": {"operation", "request"},
+    keys = {"status": {"operation"}, "model-status": {"operation"},
+            "change": {"operation", "request"},
+            "model-begin": {"operation"}, "model-finish": {"operation", "request"},
             "settings-status": {"operation", "data_dir_id"},
             "settings-change": {"operation", "data_dir_id", "request"},
             "provider-status": {"operation", "data_dir_id"},
@@ -69,6 +71,13 @@ def control_request(value):
         raise ProtocolError("invalid-request")
     if "request" in value and type(value["request"]) is not dict:
         raise ProtocolError("invalid-request")
+    if operation == "model-finish":
+        request_value = value["request"]
+        if (set(request_value) != {"transaction_id", "outcome"}
+                or type(request_value["transaction_id"]) is not str
+                or not HEX.fullmatch(request_value["transaction_id"])
+                or request_value["outcome"] not in ("applied", "rolled-back")):
+            raise ProtocolError("invalid-request")
     return value
 
 

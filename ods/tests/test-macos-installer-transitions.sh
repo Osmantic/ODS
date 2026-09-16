@@ -230,10 +230,10 @@ source "$ENV_GENERATOR"
         || fail "macOS env did not persist enabled switchboard mode"
     grep -Fqx 'LLM_API_URL=http://host.docker.internal:8080' "$env_file" \
         || fail "macOS switchboard env must keep backend URL for model-router"
-    grep -Fqx 'HERMES_LLM_BASE_URL=http://litellm:4000/v1' "$env_file" \
-        || fail "macOS switchboard env must route Hermes through LiteLLM"
-    grep -Fqx "HERMES_LLM_API_KEY=${litellm_key}" "$env_file" \
-        || fail "macOS switchboard env must give Hermes the LiteLLM key"
+    grep -Fqx 'HERMES_LLM_BASE_URL=http://model-router:9099/v1' "$env_file" \
+        || fail "macOS switchboard env must route Hermes through model-router"
+    grep -Fqx 'HERMES_LLM_API_KEY=no-key' "$env_file" \
+        || fail "macOS switchboard env must give Hermes the local model-router key"
     grep -Fqx 'OPEN_WEBUI_LLM_BASE_URL=http://litellm:4000' "$env_file" \
         || fail "macOS switchboard env must route Open WebUI through LiteLLM"
     grep -Fqx "OPEN_WEBUI_LLM_API_KEY=${litellm_key}" "$env_file" \

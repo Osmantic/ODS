@@ -647,6 +647,9 @@ async def _retained_chat_stream(request, body, owner):
 async def _produce_retained_result(store, identity, body, config):
     edge_url, key = config
     done_seen = False
+    answer_seen = False
+    empty_done_seen = False
+    terminal_error_seen = False
     cancelled = False
     failed = False
     stopped = False
@@ -669,10 +672,44 @@ async def _produce_retained_result(store, identity, body, config):
                             del buffered[:newline + 1]
                             if len(line.rstrip(b"\r\n")) > _MAX_SSE_LINE_BYTES:
                                 raise ResultCapacity("SSE line limit")
-                            store.append(identity, line)
-                            if line.rstrip(b"\r\n") == b"data: [DONE]":
+                            stripped = line.rstrip(b"\r\n")
+                            if stripped.startswith(b"data: ") and stripped != b"data: [DONE]":
+                                try:
+                                    event = json.loads(stripped[6:])
+                                except (json.JSONDecodeError, UnicodeDecodeError):
+                                    event = None
+                                if isinstance(event, dict):
+                                    if "error" in event:
+                                        # A syntactically terminal SSE stream can still be
+                                        # a failed attempt. Keep its sanitized error bytes
+                                        # for replay, but never publish it as complete.
+                                        terminal_error_seen = True
+                                        failed = True
+                                    choices = event.get("choices")
+                                    for choice in choices if isinstance(choices, list) else []:
+                                        if not isinstance(choice, dict):
+                                            continue
+                                        for field in ("delta", "message"):
+                                            payload = choice.get(field)
+                                            if isinstance(payload, dict) and isinstance(payload.get("content"), str) \
+                                                    and payload["content"]:
+                                                answer_seen = True
+                            if stripped == b"data: [DONE]":
+                                if not answer_seen and not terminal_error_seen:
+                                    # Live Pixel Edge cancellations can end with only
+                                    # [DONE]. The host session reports zero output and
+                                    # aborted, so a syntactic DONE is not a user answer.
+                                    # Do not persist it as a successful receipt.
+                                    terminal_error_seen = True
+                                    empty_done_seen = True
+                                    failed = True
+                                    store.append(identity, _error_event("Pixel returned no answer. Try again.")
+                                                 + b"data: [DONE]\n\n", terminal=True)
+                                else:
+                                    store.append(identity, line)
                                 done_seen = True
                                 break
+                            store.append(identity, line)
                         if done_seen:
                             break
                         if len(buffered) > _MAX_SSE_LINE_BYTES:
@@ -698,7 +735,18 @@ async def _produce_retained_result(store, identity, body, config):
                 text = "Pixel was stopped." if cancelled else "Pixel could not complete the response. Check saved work before continuing."
                 store.append(identity, _error_event(text) + b"data: [DONE]\n\n", terminal=True)
         finally:
-            state = "complete" if done_seen else "cancelled" if cancelled else "interrupted" if failed and stopped else "unresolved" if failed else "complete"
+            state = (
+                "complete" if done_seen and not terminal_error_seen
+                else "cancelled" if cancelled
+                # A DONE-only frame can overtake the Edge Stop acknowledgment.
+                # Keep the attempt reserved until Stop resolves; an acknowledged
+                # abort then commits cancelled, while an unacknowledged native
+                # run must remain unresolved instead of admitting a successor.
+                else "unresolved" if empty_done_seen and identity[:2] in _result_stops
+                else "interrupted" if terminal_error_seen or failed and stopped
+                else "unresolved" if failed
+                else "complete"
+            )
             store.finish(identity, state)
 
 

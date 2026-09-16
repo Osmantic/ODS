@@ -104,6 +104,12 @@
       "value": "python:3.11-slim"
     },
     {
+      "id": "pixel-model-relay.python",
+      "type": "image",
+      "path": "extensions/services/pixel-model-relay/Dockerfile",
+      "value": "python:3.11-slim"
+    },
+    {
       "id": "remote-provider-egress.python",
       "type": "image",
       "path": "extensions/services/remote-provider-egress/Dockerfile",
@@ -173,13 +179,13 @@
       "id": "langfuse.minio",
       "type": "image",
       "path": "extensions/services/langfuse/compose.yaml.disabled",
-      "value": "minio/minio:RELEASE.2025-09-07T16-13-09Z"
+      "value": "quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z"
     },
     {
       "id": "langfuse.minio-client",
       "type": "image",
       "path": "extensions/services/langfuse/compose.yaml.disabled",
-      "value": "minio/mc:RELEASE.2025-08-13T08-35-41Z"
+      "value": "quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z"
     },
     {
       "id": "litellm.proxy",
@@ -314,6 +320,11 @@
       "path": "extensions/services/pixel-edge/compose.yaml.disabled",
       "value": "ods-pixel-edge:local",
       "reason": "Qualified Linux installs enable this fragment and build the internal Pixel edge image from its adjacent Dockerfile."
+    },
+    {
+      "path": "extensions/services/pixel-model-relay/compose.yaml.disabled",
+      "value": "ods-pixel-model-relay:local",
+      "reason": "Qualified Pixel installs enable this host-loopback fragment and build its image from the adjacent Dockerfile."
     },
     {
       "path": "docker-compose.base.yml",

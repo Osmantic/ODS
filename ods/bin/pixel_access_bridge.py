@@ -34,6 +34,7 @@ HEX = re.compile(r"^[a-f0-9]{64}$")
 OWNER_TIMEOUT = 300
 OWNER_EXIT_TIMEOUT = 5
 OWNER_TERMINATE_TIMEOUT = 10
+MODEL_DRAIN_TIMEOUT = 1800
 _DEADLINE = contextvars.ContextVar("pixel_access_operation_deadline", default=None)
 
 
@@ -41,6 +42,29 @@ class AccessError(Exception):
     def __init__(self, code):
         self.code = code
         super().__init__(code)
+
+
+PROBE_FAILURES = frozenset((
+    "probe-directory-unavailable",
+    "sandbox-resolution",
+    "core-tool-construction",
+    "core-exec",
+    "core-cancellation",
+    "filesystem-boundary",
+))
+RUNTIME_TRANSITION_FAILURES = frozenset((
+    "managed-transition-busy",
+    "managed-transition-invalid-owner",
+    "managed-transition-access-owner-refused",
+    "native-transition-unavailable",
+    "native-transition-revision-changed",
+    "native-transition-busy",
+    "native-transition-busy-active-run",
+    "native-transition-busy-active-tool",
+    "native-transition-busy-detached-process",
+    "native-transition-busy-held",
+    "native-transition-busy-phase",
+))
 
 
 def digest(value):
@@ -243,13 +267,23 @@ def _edge_container_request(container_id, path, key, payload, timeout=20):
                     stream.close()
 
 class SystemdAccessBridge:
-    def __init__(self, install_dir, edge_key, *, state=STATE, dropin=DROPIN, installed_binary=None, gateway_owner=None, settings_data_dir=None):
+    def __init__(self, install_dir, edge_key, *, state=STATE, dropin=DROPIN, installed_binary=None,
+                 gateway_owner=None, gateway_port=None, settings_data_dir=None):
         self.install = Path(install_dir).resolve()
         self.edge_key = edge_key
         self.state = Path(state)
         self.dropin = Path(dropin)
         self.installed_binary, self.gateway_owner = installed_binary, gateway_owner
+        if gateway_port is not None and (type(gateway_port) is not int or not 1 <= gateway_port <= 65535):
+            raise AccessError("gateway-port-unavailable")
+        self.gateway_port = gateway_port
         self.settings_data_dir = settings_data_dir
+
+    def configured_gateway_port(self, config):
+        port = self.gateway_port if self.gateway_port is not None else config.get("gateway", {}).get("port", 18789)
+        if type(port) is not int or not 1 <= port <= 65535:
+            raise AccessError("gateway-auth-unavailable")
+        return port
 
     @contextlib.contextmanager
     def bounded(self, seconds):
@@ -315,7 +349,7 @@ class SystemdAccessBridge:
         except (OSError, subprocess.SubprocessError):
             raise AccessError("host-command-failed") from None
 
-    def discover(self):
+    def discover(self, *, allow_installing=False):
         if platform.system() != "Linux":
             raise AccessError("macos-launchd-adapter-missing" if platform.system() == "Darwin" else "native-windows-adapter-missing")
         if os.geteuid() != 0: raise AccessError("root-host-adapter-required")
@@ -327,10 +361,34 @@ class SystemdAccessBridge:
                 raise AccessError("root-program-custody-required")
         # A root host agent must also execute protected code. Normal installs
         # run it as the owner; historical root overrides need an explicit repair.
-        agent_user = self.command(["systemctl", "show", "ods-host-agent.service", "--property=User", "--value"])
+        agent_state = self.command([
+            "systemctl", "show", "ods-host-agent.service",
+            "--property=LoadState,ActiveState,MainPID,User",
+        ])
+        agent_fields = {}
+        for line in agent_state.splitlines():
+            key, separator, value = line.partition("=")
+            if separator:
+                agent_fields[key] = value
+        if agent_fields.get("LoadState") != "loaded":
+            raise AccessError("host-agent-unavailable")
+        agent_user = agent_fields.get("User", "")
         if agent_user in ("", "root", "0"):
-            pid = int(self.command(["systemctl", "show", "ods-host-agent.service", "--property=MainPID", "--value"]))
-            args = Path("/proc/%d/cmdline" % pid).read_bytes().split(b"\0")
+            try:
+                pid = int(agent_fields.get("MainPID", ""))
+            except (TypeError, ValueError):
+                raise AccessError("host-agent-unavailable") from None
+            if agent_fields.get("ActiveState") != "active" or pid <= 0:
+                raise AccessError("host-agent-unavailable")
+            try:
+                args = Path("/proc/%d/cmdline" % pid).read_bytes().split(b"\0")
+            except OSError:
+                # The unit can stop between systemctl inspection and /proc.
+                # Treat that race as unavailable, never as an unclassified
+                # inspection crash and never continue with stale identity.
+                raise AccessError("host-agent-unavailable") from None
+            if not any(args):
+                raise AccessError("host-agent-unavailable")
             if b"-I" not in args: raise AccessError("root-host-agent-isolation-required")
             scripts = [Path(os.fsdecode(arg)) for arg in args if arg.endswith(b"ods-host-agent.py")]
             if len(scripts) != 1 or not scripts[0].is_absolute(): raise AccessError("root-host-agent-custody-required")
@@ -352,16 +410,22 @@ class SystemdAccessBridge:
         if owner.pw_uid == 0 or not home.is_absolute() or home.resolve() != home:
             raise AccessError("unsafe-gateway-owner")
         marker = private_json(home / ".config/ods/pixel-managed.json", owner.pw_uid, 65536)
+        allowed_states = ("ready", "installing") if allow_installing else ("ready",)
         if (marker.get("schema_version") != 2 or marker.get("manager") != "ods"
-                or marker.get("state") != "ready" or Path(marker.get("install_dir", "")).resolve() != self.install):
+                or marker.get("state") not in allowed_states
+                or Path(marker.get("install_dir", "")).resolve() != self.install):
             raise AccessError("managed-owner-mismatch")
         config = private_json(home / ".openclaw/openclaw.json", owner.pw_uid)
         binary = self.installed_binary
         if not isinstance(binary, str) or not Path(binary).is_absolute() or not os.access(binary, os.X_OK):
             raise AccessError("installed-validator-unavailable")
-        port = config.get("gateway", {}).get("port", 18789)
+        # The root-owned deployment record is authoritative. The owner config
+        # may omit gateway.port even when systemd intentionally runs a custom
+        # port, and using the default in that case disconnects the access plane
+        # from the live gateway it is supposed to prove.
+        port = self.configured_gateway_port(config)
         token = config.get("gateway", {}).get("auth", {}).get("token")
-        if type(port) is not int or not 1 <= port <= 65535 or not isinstance(token, str) or not 16 <= len(token) <= 4096:
+        if not isinstance(token, str) or not 16 <= len(token) <= 4096:
             raise AccessError("gateway-auth-unavailable")
         self.owner, self.home, self.binary = owner, home, binary
         self.native_origin, self.native_key = "http://127.0.0.1:%d" % port, token
@@ -402,8 +466,16 @@ class SystemdAccessBridge:
             connection.request("POST" if body is not None else "GET", path, body=body,
                                headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"})
             with connection.getresponse() as response:
-                if response.status != 200: raise AccessError("runtime-unavailable-or-busy")
                 raw = response.read(65537)
+                if response.status != 200:
+                    if len(raw) <= 65536:
+                        try:
+                            failure = protocol.decode_frame(raw.decode("utf-8") + "\n", 65537).get("error")
+                        except (AttributeError, ValueError, UnicodeError):
+                            failure = None
+                        if isinstance(failure, str) and failure in RUNTIME_TRANSITION_FAILURES:
+                            raise AccessError(failure)
+                    raise AccessError("runtime-unavailable-or-busy")
             if expired.is_set() or time.monotonic() >= deadline:
                 raise AccessError("runtime-operation-timeout")
             if len(raw) > 65536: raise ValueError()
@@ -602,8 +674,13 @@ class SystemdAccessBridge:
             yield
         finally: os.close(fd)
 
-    def inspect(self):
-        self.discover()
+    def inspect(self, *, allow_installing=False):
+        # Model reconciliation deliberately marks the already verified ODS
+        # deployment as installing before it takes both admission gates.  Keep
+        # ordinary status/settings/provider inspection ready-only, but let the
+        # model-transition entry point admit that exact managed state so a
+        # retry can resume instead of deadlocking on its own marker.
+        self.discover(allow_installing=allow_installing)
         config, native, edge = self.worker(), self.native(), self.edge()
         if not native.get("available") or edge.get("capability") != "available": raise AccessError("admission-gate-unavailable")
         pid = int(self.command(["systemctl", "show", UNIT, "--property=MainPID", "--value"]))
@@ -677,6 +754,303 @@ class SystemdAccessBridge:
         if not stat.S_ISDIR(info.st_mode) or info.st_uid != self.owner.pw_uid or info.st_mode & 0o077:
             raise AccessError("unsafe-probe-directory")
 
+    def verify_held_mode(self, token, mode):
+        if mode not in ("full-access", "sandboxed") or type(token) is not str or not HEX.fullmatch(token):
+            raise AccessError("invalid-model-transition")
+        self.provision_probe()
+        baseline_file = self.state / "service-baseline.json"
+        if not baseline_file.exists():
+            raise AccessError("service-baseline-missing")
+        boundary = self.unit_boundary()
+        baseline = private_json(baseline_file, 0, 8192)["boundary"]
+        if mode == "sandboxed":
+            if boundary != baseline: raise AccessError("service-restore-mismatch")
+        else:
+            def other_settings(value):
+                return [line for line in value.splitlines()
+                        if not line.startswith(("ProtectSystem=", "ProtectHome="))]
+            if ("ProtectSystem=no" not in boundary or "ProtectHome=no" not in boundary
+                    or other_settings(boundary) != other_settings(baseline)):
+                raise AccessError("service-boundary-mismatch")
+        try:
+            proof = self.native("probe", token)
+        except AccessError as error:
+            # The runtime deliberately exposes only a fixed proof-stage label.
+            # Preserve that bounded diagnostic across the root coordinator so
+            # live qualification can distinguish a failed proof from a busy
+            # runtime without forwarding exception text or private paths.
+            try:
+                snapshot = self.native(timeout=10)
+                failure = snapshot.get("probe_failure") if snapshot.get("phase") == "held" else None
+            except AccessError:
+                failure = None
+            if failure in PROBE_FAILURES:
+                raise AccessError("runtime-proof-" + failure) from None
+            raise error
+        if proof.get("proof", {}).get("mode") != mode: raise AccessError("runtime-proof-failed")
+        verified_config = self.worker()
+        if verified_config.get("configured_status") != mode:
+            raise AccessError("configured-mode-changed")
+        atomic_json(self.state / "verified.json", {"pid": proof["pid"], "proof": proof["proof"],
+                    "config_sha256": verified_config["config_sha256"], "boundary": boundary})
+
+    def model_journal(self, transaction_id=None):
+        pending = self.pending()
+        required = {"kind", "transaction_id", "token", "phase", "edge_revision",
+                    "configured_mode", "start_config_sha256"}
+        if (type(pending) is not dict or not required.issubset(pending)
+                or not set(pending).issubset(required | {"error"})
+                or pending.get("kind") != "model"
+                or type(pending.get("transaction_id")) is not str
+                or not HEX.fullmatch(pending["transaction_id"])
+                or type(pending.get("token")) is not str or not HEX.fullmatch(pending["token"])
+                or type(pending.get("edge_revision")) is not str
+                or not HEX.fullmatch(pending["edge_revision"])
+                or pending.get("configured_mode") not in ("full-access", "sandboxed")
+                or type(pending.get("start_config_sha256")) is not str
+                or not HEX.fullmatch(pending["start_config_sha256"])
+                or pending.get("phase") not in ("acquiring", "draining", "held", "finishing",
+                                                 "releasing", "native-released", "error")
+                or ("error" in pending and (type(pending["error"]) is not str
+                    or not re.fullmatch(r"[a-z][a-z0-9-]{0,95}", pending["error"])))):
+            raise AccessError("model-recovery-required")
+        if transaction_id is not None and transaction_id != pending["transaction_id"]:
+            raise AccessError("model-transaction-mismatch")
+        return pending
+
+    def model_status(self):
+        """Disclose only the validated pending model handle to the host owner."""
+        if self.pending() is None:
+            return {"pending": False}
+        journal = self.model_journal()
+        result = {"pending": True, "kind": "model",
+                  "transaction_id": journal["transaction_id"],
+                  "phase": journal["phase"],
+                  "configured_mode": journal["configured_mode"],
+                  "start_config_sha256": journal["start_config_sha256"]}
+        if "error" in journal:
+            result["error"] = journal["error"]
+        return result
+
+    def model_error(self, pending, error):
+        pending["phase"] = "error"
+        pending["error"] = error.code if isinstance(error, AccessError) else "model-transition-failed"
+        atomic_json(self.state / "transition.json", pending)
+
+    def remove_model_journal(self):
+        try: (self.state / "transition.json").unlink()
+        except FileNotFoundError: pass
+        directory = os.open(self.state, os.O_RDONLY)
+        try: os.fsync(directory)
+        finally: os.close(directory)
+
+    def model_completion(self, request=None):
+        path = self.state / "model-completed.json"
+        if not path.exists(): return None
+        value = private_json(path, 0, 4096)
+        if (type(value) is not dict
+                or set(value) != {"kind", "transaction_id", "outcome", "config_sha256"}
+                or value.get("kind") != "model-completion"
+                or type(value.get("transaction_id")) is not str
+                or not HEX.fullmatch(value["transaction_id"])
+                or value.get("outcome") not in ("applied", "rolled-back")
+                or type(value.get("config_sha256")) is not str
+                or not HEX.fullmatch(value["config_sha256"])):
+            raise AccessError("model-recovery-required")
+        if request is not None and (value["transaction_id"] != request["transaction_id"]
+                                    or value["outcome"] != request["outcome"]):
+            return None
+        return value
+
+    def model_begin(self):
+        with self.bounded(MODEL_DRAIN_TIMEOUT + 30), self.locked():
+            if self.pending() is not None:
+                raise AccessError("transition-recovery-required")
+            snapshot = self.inspect(allow_installing=True)
+            configured_mode = snapshot["configured_mode"]
+            trusted_snapshot = (
+                snapshot["available"] is True
+                and snapshot["scope"] == "owner-host"
+                and configured_mode in ("full-access", "sandboxed")
+                and snapshot["pending"] is False
+                and isinstance(snapshot["revision"], str)
+                and HEX.fullmatch(snapshot["revision"]) is not None
+            )
+            runtime_ready = (
+                trusted_snapshot
+                and snapshot["runtime_verified"] is True
+                and snapshot["effective_mode"] == configured_mode
+                and snapshot["reason"] is None
+            )
+            # A gateway process restart deliberately invalidates verified.json.
+            # Admit only that exact, idle fail-closed projection; ambiguous,
+            # busy, pending, unavailable, or differently configured states
+            # must still require explicit recovery. The runtime is re-proved
+            # below only after both admission gates are durably held, avoiding
+            # an open-admission window between recovery and model mutation.
+            stale_runtime_proof = (
+                trusted_snapshot
+                and snapshot["effective_mode"] == "unknown"
+                and snapshot["runtime_verified"] is False
+                and snapshot["busy"] is False
+                and snapshot["reason"] == "runtime-proof-required"
+            )
+            if (configured_mode not in ("full-access", "sandboxed")
+                    or not (runtime_ready or stale_runtime_proof)):
+                raise AccessError("runtime-proof-required")
+            if (snapshot["_native"].get("phase") != "idle"
+                    or snapshot["_edge"].get("phase") != "idle"):
+                raise AccessError("transition-recovery-required")
+            pending = {"kind": "model", "transaction_id": os.urandom(32).hex(),
+                       "token": os.urandom(32).hex(), "phase": "acquiring",
+                       "edge_revision": snapshot["_edge"]["revision"],
+                       "configured_mode": snapshot["configured_mode"],
+                       "start_config_sha256": snapshot["_config"]["config_sha256"]}
+            # Durable intent precedes both admission-gate acquisition calls.
+            atomic_json(self.state / "transition.json", pending)
+            try:
+                edge = self.edge("acquire", pending["token"], pending["edge_revision"])
+                pending["edge_revision"] = edge["revision"]
+                pending["phase"] = "draining"
+                atomic_json(self.state / "transition.json", pending)
+                self.native("acquire", pending["token"])
+                deadline = time.monotonic() + MODEL_DRAIN_TIMEOUT
+                while True:
+                    native = self.native("acquire", pending["token"], timeout=5)
+                    edge = self.edge("acquire", pending["token"], pending["edge_revision"])
+                    if (native.get("phase") == "held" and edge.get("phase") == "held"
+                            and not native.get("active") and not edge.get("streams")):
+                        break
+                    if time.monotonic() >= deadline:
+                        raise AccessError("runtime-busy")
+                    time.sleep(1)
+                # Re-prove the configured mode while both native and external
+                # admission remain closed. A failed proof leaves the durable
+                # model journal and both gates held for explicit recovery.
+                self.verify_held_mode(pending["token"], configured_mode)
+                pending["phase"] = "held"
+                atomic_json(self.state / "transition.json", pending)
+                return {"status": "held", "transaction_id": pending["transaction_id"]}
+            except Exception as error:
+                self.model_error(pending, error)
+                if isinstance(error, AccessError): raise
+                raise AccessError("model-transition-failed") from None
+
+    def model_finish(self, request):
+        if (type(request) is not dict or set(request) != {"transaction_id", "outcome"}
+                or type(request["transaction_id"]) is not str
+                or not HEX.fullmatch(request["transaction_id"])
+                or request["outcome"] not in ("applied", "rolled-back")):
+            raise AccessError("invalid-request")
+        with self.bounded(300), self.locked():
+            completion = self.model_completion(request)
+            if completion is not None:
+                # The socket reply may have been lost after both gates released.
+                # A root-owned exact completion makes finish safely replayable.
+                pending = self.pending()
+                if isinstance(pending, dict) and pending.get("transaction_id") == request["transaction_id"]:
+                    try:
+                        self.model_journal(request["transaction_id"])
+                        self.remove_model_journal()
+                    except (AccessError, OSError):
+                        pass
+                return {"status": "released", "outcome": request["outcome"]}
+            pending = self.model_journal(request["transaction_id"])
+            try:
+                self.discover(allow_installing=True)
+                token = pending["token"]
+                edge_snapshot = self.edge()
+                if edge_snapshot.get("phase") == "idle":
+                    pending["edge_revision"] = edge_snapshot["revision"]
+                    edge = self.edge("acquire", token, pending["edge_revision"])
+                elif edge_snapshot.get("phase") == "interrupted":
+                    pending["edge_revision"] = edge_snapshot["revision"]
+                    edge = self.edge("recover", token, pending["edge_revision"])
+                elif edge_snapshot.get("phase") == "held":
+                    # The token, not a stale pre-acquire revision, proves that
+                    # this controller owns a hold recovered after a crash.
+                    pending["edge_revision"] = edge_snapshot["revision"]
+                    edge = self.edge("acquire", token, pending["edge_revision"])
+                else:
+                    raise AccessError("model-lease-lost")
+                pending["edge_revision"] = edge["revision"]
+                pending["phase"] = "finishing"
+                pending.pop("error", None)
+                atomic_json(self.state / "transition.json", pending)
+                native_snapshot = self.native()
+                if (native_snapshot.get("phase") not in ("idle", "interrupted", "held")
+                        or native_snapshot.get("stopped")
+                        or not isinstance(native_snapshot.get("pid"), int) or native_snapshot["pid"] <= 0):
+                    raise AccessError("model-lease-lost")
+                # The native runtime has one acquire verb: its implementation
+                # explicitly accepts both idle and interrupted states, while a
+                # same-token held acquire is idempotent. Unlike edge, it has no
+                # distinct recover operation.
+                native = self.native("acquire", token, timeout=10)
+                edge = self.edge("acquire", token, pending["edge_revision"])
+                if (native.get("phase") != "held" or edge.get("phase") != "held"
+                        or native.get("active") or edge.get("streams")):
+                    raise AccessError("runtime-busy")
+                config = self.worker()
+                if config.get("configured_status") != pending["configured_mode"]:
+                    raise AccessError("configured-mode-changed")
+                if (request["outcome"] == "rolled-back"
+                        and config.get("config_sha256") != pending["start_config_sha256"]):
+                    raise AccessError("rollback-config-mismatch")
+                self.verify_held_mode(token, pending["configured_mode"])
+                pending["phase"] = "releasing"
+                atomic_json(self.state / "transition.json", pending)
+                # Keep edge admission closed until the native runtime release
+                # succeeds. Any native-release failure therefore returns with
+                # the externally reachable gate still held.
+                try:
+                    self.native("release", token)
+                except AccessError:
+                    # A lost HTTP reply can follow a successful release. The
+                    # edge is still held, so an observed idle native runtime is
+                    # an adequate completion receipt without reopening work.
+                    released_native = self.native()
+                    if (released_native.get("phase") != "idle"
+                            or released_native.get("active")
+                            or released_native.get("stopped")):
+                        raise
+                pending["phase"] = "native-released"
+                atomic_json(self.state / "transition.json", pending)
+                try:
+                    self.edge("release", token, pending["edge_revision"])
+                except AccessError:
+                    # Edge release is idempotent, but a second transport can
+                    # also fail. Only a directly observed idle/empty gate is
+                    # accepted as proof that external admission reopened.
+                    released_edge = self.edge()
+                    if (released_edge.get("phase") != "idle"
+                            or released_edge.get("streams")):
+                        raise
+                try:
+                    atomic_json(self.state / "model-completed.json", {
+                        "kind": "model-completion", "transaction_id": pending["transaction_id"],
+                        "outcome": request["outcome"], "config_sha256": config["config_sha256"]})
+                except OSError:
+                    # The verified route is already live and both gates are
+                    # conclusively open. Treat this as metadata cleanup rather
+                    # than inviting an unsafe outer model rollback.
+                    try: self.model_error(pending, AccessError("completion-write-failed"))
+                    except OSError: pass
+                    return {"status": "released", "outcome": request["outcome"]}
+                try:
+                    self.remove_model_journal()
+                except OSError:
+                    # Both gates have conclusively released after the selected
+                    # outcome was verified. Never turn metadata cleanup into a
+                    # model rollback; retain a conservative recovery marker.
+                    try: self.model_error(pending, AccessError("journal-cleanup-failed"))
+                    except OSError: pass
+                return {"status": "released", "outcome": request["outcome"]}
+            except Exception as error:
+                self.model_error(pending, error)
+                if isinstance(error, AccessError): raise
+                raise AccessError("model-transition-failed") from None
+
     def change(self, request):
         if (not isinstance(request, dict) or set(request) != {"mode", "revision", "confirmed"}
                 or request["mode"] not in ("full-access", "sandboxed") or type(request["confirmed"]) is not bool
@@ -688,8 +1062,10 @@ class SystemdAccessBridge:
             if snapshot["revision"] != request["revision"]: raise AccessError("inspection-changed")
             if snapshot["busy"]: raise AccessError("runtime-busy")
             pending = self.pending()
-            # Missing kind is the legacy access journal. Never consume a
-            # settings (or unknown) journal through access-mode restoration.
+            # Missing kind is the legacy access journal. Never consume another
+            # controller's journal through access-mode restoration.
+            if pending and pending.get("kind", "access") == "model":
+                raise AccessError("transition-recovery-required")
             if pending and pending.get("kind", "access") != "access":
                 raise AccessError("settings-recovery-required")
             if pending and request["mode"] != "sandboxed": raise AccessError("restore-required")
@@ -698,14 +1074,22 @@ class SystemdAccessBridge:
                 atomic_json(self.state / "transition.json", pending)
             token = pending["token"]
             try:
+                def native_at(stage, operation=None, operation_token=None, *, timeout=60):
+                    try:
+                        return self.native(operation, operation_token, timeout=timeout)
+                    except AccessError as error:
+                        if error.code == "runtime-unavailable-or-busy":
+                            raise AccessError("runtime-" + stage + "-unavailable") from None
+                        raise
+
                 if snapshot["_edge"]["phase"] == "idle": pending["edge_revision"] = snapshot["_edge"]["revision"]
                 edge = self.edge("recover" if snapshot["_edge"]["phase"] == "interrupted" else "acquire", token, pending["edge_revision"])
                 pending["edge_revision"] = edge["revision"]
                 atomic_json(self.state / "transition.json", pending)
-                self.native("acquire", token)
+                native_at("initial-acquire", "acquire", token)
 
                 def busy():
-                    native = self.native("acquire", token)
+                    native = native_at("drain-acquire", "acquire", token)
                     edge = self.edge("acquire", token, pending["edge_revision"])
                     return native.get("phase") != "held" or edge.get("phase") != "held" or bool(native.get("active") or edge.get("streams"))
 
@@ -715,7 +1099,7 @@ class SystemdAccessBridge:
                     agents = [agent for agent in current.get("agents", {}).get("list", []) if agent.get("id") == "pixel"]
                     if len(agents) != 1: return False
                     self.dropin_for(agents[0].get("sandbox", {}).get("mode") == "off" and agents[0].get("tools", {}).get("exec", {}).get("host") == "gateway")
-                    old_pid = self.native()["pid"]
+                    old_pid = native_at("pre-restart-read")["pid"]
                     self.command(["systemctl", "restart", UNIT], timeout=60)
                     # The pinned runtime can take over a minute to initialize
                     # on a supported guest. Observe the same restarted process;
@@ -723,10 +1107,10 @@ class SystemdAccessBridge:
                     deadline = time.monotonic() + 120
                     while time.monotonic() < deadline:
                         try:
-                            status = self.native(timeout=min(3, max(0.1, deadline - time.monotonic())))
+                            status = native_at("restart-read", timeout=min(3, max(0.1, deadline - time.monotonic())))
                             if status.get("available") and status.get("pid") != old_pid and status.get("phase") == "held":
                                 # The same durable token must still own the restarted gateway.
-                                self.native("acquire", token, timeout=3)
+                                native_at("restart-acquire", "acquire", token, timeout=3)
                                 health = self.http(self.native_origin, "/health", self.native_key, timeout=3)
                                 return health.get("ok") is True
                         except AccessError: pass
@@ -751,25 +1135,13 @@ class SystemdAccessBridge:
                 # A pending journal alone does not mean this pristine config
                 # changed. Recheck the actual service boundary and core tools
                 # below; restarting again can perpetually interrupt recovery.
-                boundary = self.unit_boundary()
-                baseline = private_json(baseline_file, 0, 8192)["boundary"]
-                if request["mode"] == "sandboxed":
-                    if boundary != baseline: raise AccessError("service-restore-mismatch")
-                else:
-                    def other_settings(value):
-                        return [line for line in value.splitlines() if not line.startswith(("ProtectSystem=", "ProtectHome="))]
-                    if ("ProtectSystem=no" not in boundary or "ProtectHome=no" not in boundary
-                            or other_settings(boundary) != other_settings(baseline)):
-                        raise AccessError("service-boundary-mismatch")
-                proof = self.native("probe", token)
-                if proof.get("proof", {}).get("mode") != request["mode"]: raise AccessError("runtime-proof-failed")
-                verified_config = self.worker()
-                atomic_json(self.state / "verified.json", {"pid": proof["pid"], "proof": proof["proof"],
-                            "config_sha256": verified_config["config_sha256"], "boundary": boundary})
+                self.verify_held_mode(token, request["mode"])
                 pending["phase"] = "releasing"
                 atomic_json(self.state / "transition.json", pending)
+                native_at("release", "release", token)
+                pending["phase"] = "native-released"
+                atomic_json(self.state / "transition.json", pending)
                 self.edge("release", token, pending["edge_revision"])
-                self.native("release", token)
                 (self.state / "transition.json").unlink()
                 return self.status()
             except Exception as error:

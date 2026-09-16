@@ -191,6 +191,111 @@ def test_truncated_upstream_retains_error_and_does_not_release_unknown_native_wo
     asyncio.run(run())
 
 
+def test_terminal_upstream_error_is_replayable_but_never_complete(store, monkeypatch):
+    async def run():
+        terminal_error = b'data: {"error":"upstream error"}\n\ndata: [DONE]\n\n'
+        monkeypatch.setattr(
+            pixel.httpx,
+            "AsyncClient",
+            lambda **kw: FakeClient(
+                FakeResponse(content_type="text/event-stream", chunks=[terminal_error])
+            ),
+        )
+        cancels = []
+
+        async def cancel(*args):
+            cancels.append(args)
+            return True
+
+        monkeypatch.setattr(pixel, "_cancel_edge_run", cancel)
+        await pixel.pixel_chat_stream(ConnectedRequest(), body(), OWNER)
+        await asyncio.gather(*list(pixel._result_tasks.values()))
+
+        result = await pixel.pixel_chat_result(
+            pixel.ChatResultRequest(chat_id="chat-test", request_id="attempt-one"),
+            OWNER,
+        )
+        assert result == {
+            "state": "interrupted",
+            "events": 'data: {"error":"upstream error"}\n\ndata: [DONE]\n',
+        }
+        assert not store.has_pending(IDENTITY[:2])
+        assert not cancels
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("ack", [True, False])
+def test_edge_abort_ack_survives_empty_done_during_cancel_round_trip(store, monkeypatch, ack):
+    """A real Edge abort can race its empty DONE through the retained producer."""
+    async def run():
+        started = asyncio.Event()
+        release_done = asyncio.Event()
+        cancel_entered = asyncio.Event()
+
+        class Upstream(FakeResponse):
+            async def aiter_bytes(self):
+                started.set()
+                await release_done.wait()
+                yield b"data: [DONE]\n\n"
+
+        monkeypatch.setattr(pixel.httpx, "AsyncClient", lambda **kw: FakeClient(
+            Upstream(content_type="text/event-stream")))
+
+        async def cancel(*args):
+            cancel_entered.set()
+            release_done.set()
+            await asyncio.gather(*list(pixel._result_tasks.values()))
+            return ack
+
+        monkeypatch.setattr(pixel, "_cancel_edge_run", cancel)
+        await pixel.pixel_chat_stream(ConnectedRequest(), body(), OWNER)
+        await started.wait()
+        stop = asyncio.create_task(pixel.pixel_chat_cancel(
+            pixel.ChatCancelRequest(chat_id="chat-test", request_id="attempt-one"), OWNER))
+        await cancel_entered.wait()
+        assert await stop == {"aborted": ack}
+        assert store.get(IDENTITY)["state"] == ("cancelled" if ack else "unresolved")
+        assert store.has_pending(IDENTITY[:2]) is not ack
+        assert b"Pixel returned no answer" in b"".join(
+            row["data"] for row in store.chunks(IDENTITY))
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("chunks", [
+    [b"data: [DONE]\n\n"],
+    [b'data: {"choices":[{"delta":{"role":"assistant"}}]}\n\n', b"data: [DONE]\n\n"],
+])
+def test_done_without_user_answer_is_never_a_complete_receipt(store, monkeypatch, chunks):
+    """Five live Tower1 cancel attempts had aborted, zero-token Pixel sessions.
+
+    Edge supplied only DONE while ODS previously published complete. A
+    terminal SSE marker alone must not become a successful saved answer.
+    """
+    async def run():
+        monkeypatch.setattr(pixel.httpx, "AsyncClient", lambda **kw: FakeClient(
+            FakeResponse(content_type="text/event-stream", chunks=chunks)))
+        cancels = []
+        async def cancel(*args):
+            cancels.append(args)
+            return False
+        monkeypatch.setattr(pixel, "_cancel_edge_run", cancel)
+        await pixel.pixel_chat_stream(ConnectedRequest(), body(), OWNER)
+        await asyncio.gather(*list(pixel._result_tasks.values()))
+        result = await pixel.pixel_chat_result(
+            pixel.ChatResultRequest(chat_id="chat-test", request_id="attempt-one"), OWNER)
+        assert result["state"] == "interrupted"
+        assert "Pixel returned no answer" in result["events"]
+        assert result["events"].count("[DONE]") == 1
+        assert not store.has_pending(IDENTITY[:2])
+        assert await pixel.pixel_chat_cancel(
+            pixel.ChatCancelRequest(chat_id="chat-test", request_id="attempt-one"), OWNER
+        ) == {"aborted": False}
+        assert not cancels
+    asyncio.run(run())
+
+
 def test_terminal_write_failure_still_releases_known_stopped_attempt(store, monkeypatch):
     async def run():
         append = store.append

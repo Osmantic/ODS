@@ -1070,20 +1070,15 @@ MODELS_INI_EOF
             if [[ "${GPU_BACKEND:-}" == "amd" && "${ODS_MODE:-local}" != "cloud" ]] && ! _phase11_external_lemonade; then
                 _hermes_model="extra.$GGUF_FILE"
             fi
-            # base_url: on AMD/Lemonade hosts, route Hermes through litellm
-            # instead of direct-to-Lemonade. Lemonade is strict about model
-            # names and rejects concurrent connections that show up during a
-            # multi-step agent loop (web_search → reason → tool result →
-            # reason …), which results in APIConnectionError mid-tool-loop.
-            # litellm's "*" wildcard model_list normalises the model name and
-            # adds upstream retry logic. On non-AMD Linux installs there's a
-            # sibling llama-server container that takes any model name; on
-            # macOS install-macos.sh handles the host.docker.internal swap.
+            # Local switchboard mode routes Hermes through model-router so a
+            # disconnected Talk request cancels the backend operation instead
+            # of leaving LiteLLM retries alive. Cloud/external and legacy AMD
+            # modes retain their authenticated/normalised LiteLLM paths.
             _hermes_base_url=""
             _hermes_api_key=""
             if [[ "$_hermes_switchboard_mode" == "enabled" ]]; then
-                _hermes_base_url="${HERMES_LLM_BASE_URL:-http://litellm:4000/v1}"
-                _hermes_api_key="${HERMES_LLM_API_KEY:-${LITELLM_KEY:-}}"
+                _hermes_base_url="${HERMES_LLM_BASE_URL:-http://model-router:9099/v1}"
+                _hermes_api_key="${HERMES_LLM_API_KEY:-no-key}"
             elif [[ "${ODS_MODE:-local}" == "cloud" ]]; then
                 _hermes_base_url="${HERMES_LLM_BASE_URL:-http://litellm:4000/v1}"
                 _hermes_api_key="${HERMES_LLM_API_KEY:-${LITELLM_KEY:-}}"
@@ -1207,7 +1202,7 @@ MODELS_INI_EOF
     compose_ok=false
     # Build local images individually so every failure is reported before the
     # installer refuses to launch any potentially stale image.
-    _candidate_build_services=(dashboard dashboard-api model-router remote-provider-egress remote-provider-ssh-tunnel ape token-spy privacy-shield brave-search pixel-edge pixel-inference)
+    _candidate_build_services=(dashboard dashboard-api model-router remote-provider-egress remote-provider-ssh-tunnel ape token-spy privacy-shield brave-search pixel-edge pixel-model-relay pixel-inference)
     [[ "$ENABLE_COMFYUI" == "true" ]] && _candidate_build_services+=(comfyui)
     [[ "$GPU_BACKEND" == "amd" ]] && _candidate_build_services+=(llama-server)
     if ! _enabled_compose_services="$($DOCKER_COMPOSE_CMD "${COMPOSE_FLAGS_ARR[@]}" config --services 2>>"$LOG_FILE")"; then
@@ -1409,18 +1404,63 @@ MODELS_INI_EOF
             warn "Could not persist bootstrap-upgrade retry metadata"
         chmod 600 "$_bootstrap_upgrade_args" 2>/dev/null || true
 
-        # Start the long-lived downloader from a child shell that closes inherited
-        # non-stdio FDs first. Otherwise caller-owned advisory locks (FD 9, FD
-        # 200, etc.) can stay held until the model download exits.
-        (
-            _phase11_close_inherited_fds_for_daemon
-            exec nohup bash "$SCRIPT_DIR/scripts/bootstrap-upgrade.sh" \
-                "$INSTALL_DIR" "$FULL_GGUF_FILE" "$FULL_GGUF_URL" \
-                "$FULL_GGUF_SHA256" "$FULL_LLM_MODEL" "$FULL_MAX_CONTEXT" \
-                "$BOOTSTRAP_GGUF_FILE" \
-                > "$INSTALL_DIR/logs/model-upgrade.log" 2>&1
-        ) &
-        _upgrade_pid=$!
+        # An SSH or other service-scoped installer can have its whole login
+        # cgroup reaped as soon as the foreground install exits.  nohup only
+        # ignores SIGHUP; it does not move the downloader out of that cgroup.
+        # Prefer a transient user service so the promised background upgrade
+        # survives non-interactive installs.  Keep the portable nohup fallback
+        # for hosts without a reachable systemd user manager.
+        _upgrade_unit=ods-model-upgrade.service
+        _upgrade_log="$INSTALL_DIR/logs/model-upgrade.log"
+        _upgrade_pid=""
+        _upgrade_systemd_started=false
+        _upgrade_uid="$(id -u)"
+        _upgrade_runtime_dir="/run/user/$_upgrade_uid"
+        _upgrade_systemd_env=(env \
+            "XDG_RUNTIME_DIR=$_upgrade_runtime_dir" \
+            "DBUS_SESSION_BUS_ADDRESS=unix:path=$_upgrade_runtime_dir/bus")
+        if command -v systemd-run >/dev/null 2>&1 \
+            && [[ -d "$_upgrade_runtime_dir" && -S "$_upgrade_runtime_dir/bus" ]] \
+            && "${_upgrade_systemd_env[@]}" systemctl --user show-environment >/dev/null 2>&1; then
+            "${_upgrade_systemd_env[@]}" systemctl --user stop "$_upgrade_unit" >/dev/null 2>&1 || true
+            "${_upgrade_systemd_env[@]}" systemctl --user reset-failed "$_upgrade_unit" >/dev/null 2>&1 || true
+            if "${_upgrade_systemd_env[@]}" systemd-run --user --unit="${_upgrade_unit%.service}" --no-block \
+                --property=Type=exec \
+                --property=Restart=on-failure \
+                --property=RestartPreventExitStatus=1 \
+                --property=RestartSec=2s \
+                --property="StandardOutput=append:$_upgrade_log" \
+                --property="StandardError=append:$_upgrade_log" \
+                bash "$SCRIPT_DIR/scripts/bootstrap-upgrade.sh" \
+                    "$INSTALL_DIR" "$FULL_GGUF_FILE" "$FULL_GGUF_URL" \
+                    "$FULL_GGUF_SHA256" "$FULL_LLM_MODEL" "$FULL_MAX_CONTEXT" \
+                    "$BOOTSTRAP_GGUF_FILE" >/dev/null; then
+                _upgrade_systemd_started=true
+                for _ in {1..50}; do
+                    _upgrade_pid="$("${_upgrade_systemd_env[@]}" systemctl --user show "$_upgrade_unit" \
+                        --property=MainPID --value 2>/dev/null || true)"
+                    [[ "$_upgrade_pid" =~ ^[1-9][0-9]*$ ]] && break
+                    sleep 0.1
+                done
+            fi
+        fi
+        if [[ ! "$_upgrade_pid" =~ ^[1-9][0-9]*$ ]]; then
+            if [[ "$_upgrade_systemd_started" == true ]]; then
+                "${_upgrade_systemd_env[@]}" systemctl --user stop "$_upgrade_unit" >/dev/null 2>&1 || true
+            fi
+            # Start the portable daemon from a child shell that closes inherited
+            # non-stdio FDs first. Otherwise caller-owned advisory locks (FD 9,
+            # FD 200, etc.) can stay held until the model download exits.
+            (
+                _phase11_close_inherited_fds_for_daemon
+                exec nohup bash "$SCRIPT_DIR/scripts/bootstrap-upgrade.sh" \
+                    "$INSTALL_DIR" "$FULL_GGUF_FILE" "$FULL_GGUF_URL" \
+                    "$FULL_GGUF_SHA256" "$FULL_LLM_MODEL" "$FULL_MAX_CONTEXT" \
+                    "$BOOTSTRAP_GGUF_FILE" \
+                    > "$_upgrade_log" 2>&1
+            ) &
+            _upgrade_pid=$!
+        fi
 
         if command -v bg_task_start &>/dev/null; then
             bg_task_start "full-model-download" "$_upgrade_pid" \

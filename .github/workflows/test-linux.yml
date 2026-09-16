@@ -308,6 +308,9 @@ jobs:
       - name: Windows Installer Flag Tests
         run: bash tests/test-windows-installer-flags.sh
 
+      - name: Windows Bootstrap Download Handoff Tests
+        run: bash tests/test-windows-bootstrap-download-handoff.sh
+
       - name: Validate Env Tests
         run: bash tests/test-validate-env.sh
 
@@ -390,6 +393,7 @@ jobs:
       - name: Installer Contract Checks
         run: |
           bash tests/contracts/test-installer-contracts.sh
+          bash tests/test-linux-ollama-port-override.sh
           bash tests/test-external-services.sh
           bash tests/test-resolve-compose-resilient.sh
           bash tests/test-phase03-multigpu-tty.sh
@@ -406,6 +410,7 @@ jobs:
         run: |
           bash tests/test-pixel-integration.sh
           bash tests/test-pixel-host-install.sh
+          python3 -m unittest -v tests/test_pixel_model_transition.py
           python3 -m unittest -v tests/test_pixel_native_search.py
           bash tests/test-pixel-compose-wiring.sh
           python3 tests/test_pixel_timeout_contract.py
@@ -416,6 +421,7 @@ jobs:
         run: |
           bash tests/test-linux-install-preflight.sh
           bash tests/test-preflight-dashboard-port.sh
+          bash tests/test-wsl-broken-docker-shim.sh
 
       - name: Installer Simulation Harness
         run: |

@@ -7,6 +7,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/ods}"
+REQUESTED_INSTALL_DIR=""
 
 # Colors
 RED='\033[0;31m'
@@ -34,10 +35,17 @@ prepare_sudo_credential() {
     fi
 
     log_info "Administrator privileges are required for system-owned ODS files."
-    # Keep the credential prompt attached directly to the terminal. Wrapping an
-    # interactive sudo invocation in `timeout` can prevent sudo from managing
-    # terminal echo correctly on some systems.
-    sudo -v
+    if $NON_INTERACTIVE; then
+        if ! sudo -n -v; then
+            log_error "Non-interactive uninstall requires cached or passwordless sudo. Run sudo -v in a terminal, then retry."
+            return 1
+        fi
+    else
+        # Keep the credential prompt attached directly to the terminal. Wrapping
+        # an interactive sudo invocation in `timeout` can prevent sudo from
+        # managing terminal echo correctly on some systems.
+        sudo -v
+    fi
     SUDO_CREDENTIAL_READY=true
 }
 
@@ -81,12 +89,44 @@ resolve_compose_flags() {
 KEEP_MODELS=false
 KEEP_DATA=false
 FORCE=false
+NON_INTERACTIVE=false
+
+validate_requested_install_dir() {
+    local target_dir="$1" target_real home_real script_real
+
+    [[ "$target_dir" == /* ]] || return 1
+    [[ -d "$target_dir" && ! -L "$target_dir" ]] || return 1
+    target_real="$(cd -P -- "$target_dir" 2>/dev/null && pwd -P)" || return 1
+    home_real="$(cd -P -- "$HOME" 2>/dev/null && pwd -P)" || return 1
+    script_real="$(cd -P -- "$SCRIPT_DIR" 2>/dev/null && pwd -P)" || return 1
+    [[ "$target_real" != / && "$target_real" != "$home_real" && "$target_real" != "$script_real" ]] || return 1
+    [[ -f "$target_real/.env" && ! -L "$target_real/.env" ]] || return 1
+    [[ -f "$target_real/ods-cli" && ! -L "$target_real/ods-cli" ]] || return 1
+    [[ -f "$target_real/ods-uninstall.sh" && ! -L "$target_real/ods-uninstall.sh" ]] || return 1
+    if [[ -f "$target_real/docker-compose.base.yml" && ! -L "$target_real/docker-compose.base.yml" ]]; then
+        printf '%s\n' "$target_real"
+        return 0
+    fi
+    [[ -f "$target_real/docker-compose.yml" && ! -L "$target_real/docker-compose.yml" ]] || return 1
+    printf '%s\n' "$target_real"
+}
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --keep-models) KEEP_MODELS=true; shift ;;
         --keep-data)   KEEP_DATA=true; shift ;;
         --force)       FORCE=true; shift ;;
+        --non-interactive) NON_INTERACTIVE=true; shift ;;
+        --install-dir)
+            [[ $# -ge 2 && -n "$2" ]] || { log_error "--install-dir requires a path"; exit 1; }
+            REQUESTED_INSTALL_DIR="$2"
+            shift 2
+            ;;
+        --install-dir=*)
+            REQUESTED_INSTALL_DIR="${1#*=}"
+            [[ -n "$REQUESTED_INSTALL_DIR" ]] || { log_error "--install-dir requires a path"; exit 1; }
+            shift
+            ;;
         -h|--help)
             cat << EOF
 ODS Uninstaller
@@ -97,6 +137,8 @@ Options:
     --keep-models   Keep downloaded AI models (saves re-download time)
     --keep-data     Keep user data (chat history, n8n workflows, etc.)
     --force         Skip confirmation prompts
+    --non-interactive  Never prompt for sudo; require cached or passwordless sudo
+    --install-dir   Uninstall a separately located, fingerprinted ODS installation
     -h, --help      Show this help
 
 This will remove:
@@ -122,8 +164,12 @@ echo -e "${RED}║         ODS UNINSTALLER                ║${NC}"
 echo -e "${RED}╚══════════════════════════════════════════════════╝${NC}"
 echo ""
 
-# Detect install dir
-if [[ -d "$SCRIPT_DIR" && -f "$SCRIPT_DIR/ods-cli" ]]; then
+# Detect install dir. A candidate bootstrap can explicitly target an older ODS
+# tree, but only after this uninstaller independently validates that target.
+if [[ -n "$REQUESTED_INSTALL_DIR" ]]; then
+    INSTALL_DIR="$(validate_requested_install_dir "$REQUESTED_INSTALL_DIR")" \
+        || { log_error "Refusing unsafe or unrecognized ODS install target: $REQUESTED_INSTALL_DIR"; exit 1; }
+elif [[ -d "$SCRIPT_DIR" && -f "$SCRIPT_DIR/ods-cli" ]]; then
     INSTALL_DIR="$SCRIPT_DIR"
 fi
 
@@ -155,6 +201,15 @@ if [[ "$FORCE" != "true" ]]; then
         exit 0
     fi
     echo ""
+fi
+
+# A non-interactive purge must prove that privileged cleanup can run before
+# removing Pixel, stopping containers, or otherwise mutating the installation.
+# Candidate-driven reinstalls rely on this path and must fail promptly instead
+# of waiting forever at a sudo password prompt or leaving a half-uninstalled
+# tree behind.
+if $NON_INTERACTIVE && ! $KEEP_DATA && [[ "$(id -u)" -ne 0 ]] && command -v sudo >/dev/null 2>&1; then
+    prepare_sudo_credential || exit 1
 fi
 
 # Retire verified host services before deleting their installation or data.
@@ -245,6 +300,19 @@ fi
 # 2. Stop and remove host service definitions
 log_info "Removing systemd user services..."
 SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
+# Phase 11 may use a transient user service so a large model download survives
+# a non-interactive SSH installer.  It has no unit file in SYSTEMD_USER_DIR,
+# therefore stop it explicitly before deleting its install tree.
+_ods_uninstall_uid="$(id -u)"
+_ods_uninstall_runtime_dir="/run/user/$_ods_uninstall_uid"
+if [[ -d "$_ods_uninstall_runtime_dir" && -S "$_ods_uninstall_runtime_dir/bus" ]]; then
+    env XDG_RUNTIME_DIR="$_ods_uninstall_runtime_dir" \
+        DBUS_SESSION_BUS_ADDRESS="unix:path=$_ods_uninstall_runtime_dir/bus" \
+        systemctl --user stop ods-model-upgrade.service 2>/dev/null || true
+    env XDG_RUNTIME_DIR="$_ods_uninstall_runtime_dir" \
+        DBUS_SESSION_BUS_ADDRESS="unix:path=$_ods_uninstall_runtime_dir/bus" \
+        systemctl --user reset-failed ods-model-upgrade.service 2>/dev/null || true
+fi
 for unit in opencode-web.service openclaw-session-cleanup.timer \
             memory-shepherd-workspace.timer memory-shepherd-memory.timer \
             openclaw-session-cleanup.service \
@@ -434,6 +502,11 @@ OPENCODE_CONFIG="$HOME/.config/opencode/opencode.json"
 if [[ -f "$OPENCODE_CONFIG" ]] && grep -q "llama-server" "$OPENCODE_CONFIG" 2>/dev/null; then
     rm -f "$OPENCODE_CONFIG"
     log_ok "OpenCode config removed"
+fi
+
+if ! $INSTALL_DIR_CLEANED; then
+    log_error "ODS uninstall was incomplete; the installation directory remains at $INSTALL_DIR"
+    exit 1
 fi
 
 echo ""

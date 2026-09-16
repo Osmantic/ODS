@@ -802,17 +802,21 @@ function New-ODSEnv {
         "http://llama-server:8080"
     })
 
-    # Hermes streams through the OpenAI-compatible provider. On Windows AMD
-    # Lemonade, direct streaming against Lemonade can close chunked responses
-    # early; LiteLLM normalizes that path and already fronts the same runtime
-    # for Open WebUI. Match the Linux AMD behavior and authenticate with the
-    # LiteLLM master key whenever Hermes targets LiteLLM.
-    $hermesUsesLiteLlm = ($windowsAmdLemonade -or $ODSMode -eq "cloud")
-    if ($switchboardMode -eq "enabled") {
-        $hermesUsesLiteLlm = $true
-    }
-    $hermesLlmBaseUrl = $(if ($hermesUsesLiteLlm) { "http://litellm:4000/v1" } else { "$llmApiUrl$llmApiBasePath" })
-    $hermesLlmApiKey = $(if ($hermesUsesLiteLlm) { $litellmKey } else { "sk-ods-hermes-local" })
+    # Hermes streams through the OpenAI-compatible provider. Local switchboard
+    # installs use model-router directly so client cancellation reaches the
+    # active backend request; cloud installs still use authenticated LiteLLM.
+    # Windows AMD without the switchboard keeps LiteLLM's Lemonade stream
+    # normalization rather than calling the native runtime directly.
+    $hermesUsesModelRouter = ($switchboardMode -eq "enabled" -and $ODSMode -ne "cloud")
+    $hermesUsesLiteLlm = (-not $hermesUsesModelRouter -and ($windowsAmdLemonade -or $ODSMode -eq "cloud"))
+    $hermesLlmBaseUrl = $(if ($hermesUsesModelRouter) {
+        "http://model-router:9099/v1"
+    } elseif ($hermesUsesLiteLlm) {
+        "http://litellm:4000/v1"
+    } else {
+        "$llmApiUrl$llmApiBasePath"
+    })
+    $hermesLlmApiKey = $(if ($hermesUsesModelRouter) { "no-key" } elseif ($hermesUsesLiteLlm) { $litellmKey } else { "sk-ods-hermes-local" })
     $openWebuiLlmBaseUrl = Get-EnvOrNew "OPEN_WEBUI_LLM_BASE_URL" $(if ($switchboardMode -eq "enabled") { "http://litellm:4000" } else { "" })
     $openWebuiLlmApiKey = Get-EnvOrNew "OPEN_WEBUI_LLM_API_KEY" $(if ($switchboardMode -eq "enabled") { $litellmKey } else { "" })
 
@@ -1228,6 +1232,9 @@ engines:
   - name: google
     disabled: false
   - name: brave
+    disabled: false
+  - name: seznam
+    # Independent general-web fallback when major engines block this household IP.
     disabled: false
   - name: wikipedia
     disabled: false

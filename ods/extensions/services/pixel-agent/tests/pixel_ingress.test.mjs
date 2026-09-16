@@ -421,6 +421,97 @@ test("cancel survives the bounded OpenClaw run-mapping startup race", async () =
   }
 });
 
+test("successful explicit cancel closes only the matching gateway transport", async () => {
+  const upstreamClosed = new Map();
+  const upstreamObserved = new Map();
+  const upstream = http.createServer((req, res) => {
+    let body = "";
+    req.on("data", (chunk) => (body += chunk));
+    req.on("end", () => {
+      const parsed = body ? JSON.parse(body) : {};
+      if (req.url === "/pixel-ods/abort") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ aborted: true }));
+        return;
+      }
+      const user = parsed.user;
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.flushHeaders();
+      upstreamObserved.get(user)?.();
+      res.on("close", () => upstreamClosed.get(user)?.(!res.writableEnded));
+      // Keep both provider transports open until cancellation or test cleanup.
+    });
+  });
+  await new Promise((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+  const ingress = await startIngress({ gatewayPort: upstream.address().port });
+  const clients = [];
+  const openChat = (rawUser) => {
+    const opaqueUser = computeSessionUser({ user: rawUser });
+    const observed = new Promise((resolve) => upstreamObserved.set(opaqueUser, resolve));
+    const closed = new Promise((resolve) => upstreamClosed.set(opaqueUser, resolve));
+    const response = new Promise((resolve, reject) => {
+      const client = http.request(
+        {
+          socketPath: ingress.address(),
+          method: "POST",
+          path: "/v1/chat/completions",
+          headers: { "Content-Type": "application/json" },
+        },
+        (res) => {
+          res.once("error", () => {});
+          clients.push(res);
+          resolve(res);
+        }
+      );
+      client.once("error", reject);
+      clients.push(client);
+      client.end(JSON.stringify({
+        user: rawUser,
+        stream: true,
+        messages: [{ role: "user", content: "keep generating" }],
+      }));
+    });
+    return { opaqueUser, observed, closed, response };
+  };
+
+  try {
+    const cancelled = openChat("cancel-this-chat");
+    const retained = openChat("leave-this-chat-running");
+    await Promise.all([
+      cancelled.observed,
+      retained.observed,
+      cancelled.response,
+      retained.response,
+    ]);
+
+    const cancel = await request(ingress, "POST", "/v1/chat/cancel", {
+      body: JSON.stringify({ user: "cancel-this-chat" }),
+      headers: { "Content-Type": "application/json" },
+    });
+    assert.equal(cancel.status, 200);
+    assert.deepEqual(JSON.parse(cancel.body), { aborted: true });
+    assert.equal(
+      await Promise.race([
+        cancelled.closed,
+        new Promise((resolve) => setTimeout(() => resolve(false), 2000)),
+      ]),
+      true
+    );
+    assert.equal(
+      await Promise.race([
+        retained.closed,
+        new Promise((resolve) => setTimeout(() => resolve("still-open"), 100)),
+      ]),
+      "still-open",
+      "cancelling one opaque user must not close another user's provider transport"
+    );
+  } finally {
+    for (const client of clients) client.destroy?.();
+    await new Promise((resolve) => ingress.close(resolve));
+    await new Promise((resolve) => upstream.close(resolve));
+  }
+});
+
 test("health fails closed when the Pixel gateway is unreachable", async () => {
   const deps = {
     fetch: async () => { throw new Error("offline"); },

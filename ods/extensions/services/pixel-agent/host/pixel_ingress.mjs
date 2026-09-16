@@ -925,8 +925,44 @@ export function streamTaskActivity(res, user, token, gatewayPort, signal, deps =
   return () => { stopped = true; deps.clearTimeout(timer); inFlight?.abort(); };
 }
 
-async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps) {
+function registerActiveGatewayTransport(activeGatewayTransports, user, controller) {
+  if (!(activeGatewayTransports instanceof Map) || typeof user !== "string") {
+    return () => {};
+  }
+  let controllers = activeGatewayTransports.get(user);
+  if (!controllers) {
+    controllers = new Set();
+    activeGatewayTransports.set(user, controllers);
+  }
+  controllers.add(controller);
+  return () => {
+    controllers.delete(controller);
+    if (controllers.size === 0 && activeGatewayTransports.get(user) === controllers) {
+      activeGatewayTransports.delete(user);
+    }
+  };
+}
+
+function abortActiveGatewayTransports(activeGatewayTransports, user) {
+  const controllers = activeGatewayTransports.get(user);
+  if (!controllers) return;
+  for (const controller of [...controllers]) controller.abort();
+}
+
+async function forwardChat(
+  res,
+  outgoing,
+  token,
+  gatewayPort,
+  deps = defaultDeps,
+  activeGatewayTransports = new Map()
+) {
   const controller = new AbortController();
+  const unregisterGatewayTransport = registerActiveGatewayTransport(
+    activeGatewayTransports,
+    outgoing.user,
+    controller
+  );
   const totalTimer = deps.setTimeout(() => controller.abort(), TOTAL_TIMEOUT_MS);
   const abortOnDownstreamClose = () => {
     if (!res.writableEnded) controller.abort();
@@ -1058,6 +1094,7 @@ async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps
     stopActivity?.();
     res.off("close", abortOnDownstreamClose);
     deps.clearTimeout(totalTimer);
+    unregisterGatewayTransport();
   }
 }
 
@@ -1332,6 +1369,9 @@ export async function writeStatus(
 }
 
 export function createIngressServer({ token, gatewayPort, deps = defaultDeps }) {
+  // Cancellation is scoped to this ingress instance and the opaque ODS user.
+  // A Set preserves correct behavior if one chat has overlapping transports.
+  const activeGatewayTransports = new Map();
   return http.createServer((req, res) => {
     let pathname;
     try {
@@ -1367,7 +1407,7 @@ export function createIngressServer({ token, gatewayPort, deps = defaultDeps }) 
         sendError(res, 415, "content type must be application/json");
         return;
       }
-      void handleChat(req, res, token, gatewayPort, deps);
+      void handleChat(req, res, token, gatewayPort, deps, activeGatewayTransports);
       return;
     }
 
@@ -1381,7 +1421,7 @@ export function createIngressServer({ token, gatewayPort, deps = defaultDeps }) 
         sendError(res, 415, "content type must be application/json");
         return;
       }
-      void handleCancel(req, res, token, gatewayPort, deps);
+      void handleCancel(req, res, token, gatewayPort, deps, activeGatewayTransports);
       return;
     }
 
@@ -1389,7 +1429,7 @@ export function createIngressServer({ token, gatewayPort, deps = defaultDeps }) 
   });
 }
 
-async function handleCancel(req, res, token, gatewayPort, deps) {
+async function handleCancel(req, res, token, gatewayPort, deps, activeGatewayTransports) {
   let raw;
   try {
     raw = await readBody(req, MAX_CANCEL_BODY);
@@ -1420,10 +1460,15 @@ async function handleCancel(req, res, token, gatewayPort, deps) {
     return;
   }
   const user = computeSessionUser({ user: parsed.user });
-  sendJson(res, 200, { aborted: await abortGatewayRun(user, token, gatewayPort, deps) });
+  const aborted = await abortGatewayRun(user, token, gatewayPort, deps);
+  // OpenClaw's abort acknowledgement covers its agent loop. Close the matching
+  // OpenAI-compatible request as well so the provider (including llama.cpp)
+  // receives a transport abort instead of generating after the UI is terminal.
+  if (aborted) abortActiveGatewayTransports(activeGatewayTransports, user);
+  sendJson(res, 200, { aborted });
 }
 
-async function handleChat(req, res, token, gatewayPort, deps) {
+async function handleChat(req, res, token, gatewayPort, deps, activeGatewayTransports) {
   let raw;
   try {
     raw = await readBody(req, MAX_BODY);
@@ -1450,7 +1495,7 @@ async function handleChat(req, res, token, gatewayPort, deps) {
 
   try {
     const outgoing = buildOutgoing(parsed, computeSessionUser(parsed));
-    await forwardChat(res, outgoing, token, gatewayPort, deps);
+    await forwardChat(res, outgoing, token, gatewayPort, deps, activeGatewayTransports);
   } catch (error) {
     sendError(
       res,
