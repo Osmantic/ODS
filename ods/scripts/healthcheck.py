@@ -26,6 +26,7 @@ Options
   --expect-status 200,204,3xx    Allowed HTTP status codes/ranges
   --expect-body-regex REGEX      Regex to match in response body (GET only)
   --user-agent UA                Custom user-agent
+  --no-redirects                 Inspect the first HTTP response without following Location
   --json                         Emit machine-readable JSON result
 
 Exit codes
@@ -53,6 +54,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+import urllib.response
 from dataclasses import dataclass
 from typing import List, Optional, Sequence, Set, Tuple
 
@@ -160,15 +162,30 @@ def check_tcp(host: str, port: int, timeout: float) -> Tuple[bool, str]:
         return (False, f"tcp error: {exc}")
 
 
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Return redirects as responses so status and body predicates still apply."""
+
+    def http_error_302(self, req, fp, code, msg, headers):
+        return urllib.response.addinfourl(fp, headers, req.full_url, code)
+
+    http_error_301 = http_error_302
+    http_error_303 = http_error_302
+    http_error_307 = http_error_302
+    http_error_308 = http_error_302
+
+
 def _http_request(
     url: str,
     *,
     method: str,
     timeout: float,
     user_agent: str,
+    follow_redirects: bool = True,
 ) -> urllib.response.addinfourl:
     req = urllib.request.Request(url, method=method)
     req.add_header("User-Agent", user_agent)
+    if not follow_redirects:
+        return urllib.request.build_opener(_NoRedirectHandler()).open(req, timeout=timeout)
     return urllib.request.urlopen(req, timeout=timeout)  # nosec B310
 
 
@@ -180,6 +197,7 @@ def check_http(
     allowed_status: Optional[Set[int]],
     body_regex: Optional[re.Pattern[str]],
     user_agent: str,
+    follow_redirects: bool = True,
 ) -> Tuple[bool, str, Optional[int]]:
     """Check HTTP endpoint matches expected status and optional body regex."""
 
@@ -198,7 +216,8 @@ def check_http(
 
     for m in try_methods:
         try:
-            with _http_request(url, method=m, timeout=timeout, user_agent=user_agent) as resp:
+            with _http_request(url, method=m, timeout=timeout, user_agent=user_agent,
+                               follow_redirects=follow_redirects) as resp:
                 status = getattr(resp, "status", None)
 
                 # Status validation
@@ -296,6 +315,7 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         help="User-Agent header",
     )
     p.add_argument("--json", action="store_true", help="Emit JSON result")
+    p.add_argument("--no-redirects", action="store_true", help="Inspect the first HTTP response without following redirects")
     return p.parse_args(argv)
 
 
@@ -365,6 +385,10 @@ def main(argv: Sequence[str]) -> int:
     start = time.perf_counter()
 
     if kind == "tcp":
+        if args.no_redirects:
+            res = Result(ok=False, target=args.target, kind=kind, detail="--no-redirects requires an HTTP target")
+            print(res.to_json() if args.json else f"[FAIL] {res.detail}")
+            return 2
         try:
             host, port = _parse_host_port(norm)
         except ValueError as exc:
@@ -388,6 +412,7 @@ def main(argv: Sequence[str]) -> int:
                 allowed_status=allowed_status,
                 body_regex=body_re,
                 user_agent=args.user_agent,
+                follow_redirects=not args.no_redirects,
             ),
             retries=args.retries,
         )
