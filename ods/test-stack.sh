@@ -190,13 +190,11 @@ if $STRESS; then
         echo -e "${BOLD}Stress Test (10 concurrent, 1 round)${NC}"
         echo ""
         
-        cd "$TESTS_DIR"
-        if "$PYTHON_CMD" voice-stress-test.py --concurrent 10 --rounds 1 --skip-check; then
-            SUITE_PASSED=$((SUITE_PASSED + 1))
-        else
+        if ! ( cd "$TESTS_DIR" && "$PYTHON_CMD" voice-stress-test.py --concurrent 10 --rounds 1 --skip-check ); then
             SUITE_FAILED=$((SUITE_FAILED + 1))
+        else
+            SUITE_PASSED=$((SUITE_PASSED + 1))
         fi
-        cd - >/dev/null
         echo ""
     else
         echo -e "${YELLOW}○ Stress test skipped (python3 or script not available)${NC}"
