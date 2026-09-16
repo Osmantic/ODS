@@ -100,7 +100,10 @@ OPTIONS:
     -l, --list              List available backups
     -f, --force             Skip confirmation prompts
     -d, --dry-run           Show what would be restored without doing it
-    -s, --stop-containers   Stop containers before restore (recommended)
+    -s, --stop-containers   Stop containers before restore (default)
+    --no-stop-containers    Restore without stopping containers (unsafe:
+                            services may hold open or overwrite the files
+                            being restored)
     --data-only             Restore only user data, not config
     --config-only           Restore only config, not user data
     --skip-verify           Skip checksum verification (NOT RECOMMENDED)
@@ -384,9 +387,11 @@ stop_containers() {
     cd "$ODS_DIR"
     if docker compose down; then
         log_success "Containers stopped"
-    else
-        log_warn "Some containers may not have stopped cleanly"
+        return 0
     fi
+
+    log_error "docker compose down failed; containers may still be running"
+    return 1
 }
 
 # Restore user data
@@ -543,9 +548,17 @@ do_restore() {
         fi
     fi
 
-    # Stop containers if requested
+    # Stop containers unless the operator explicitly opted out.
     if [[ "$stop_first" == "true" ]]; then
-        stop_containers
+        if ! stop_containers; then
+            log_error "Refusing to restore into a stack that could not be stopped."
+            log_error "Stop it by hand and re-run, or pass --no-stop-containers to"
+            log_error "accept the risk of restoring underneath running services."
+            return 1
+        fi
+    else
+        log_warn "Restoring without stopping containers (--no-stop-containers)."
+        log_warn "Running services may hold open or overwrite the restored files."
     fi
 
     # Perform restore
@@ -573,7 +586,11 @@ main() {
     local backup_id=""
     local force="false"
     local dry_run="false"
-    local stop_first="false"
+    # Restoring into a running stack lets services hold open or overwrite the
+    # files being replaced. The script never restarts containers either — its
+    # own completion message tells the operator to `docker compose up -d` — so
+    # stopping first is the only coherent default (#4159).
+    local stop_first="true"
     local restore_data="true"
     local restore_config="true"
     local list_mode="false"
@@ -600,6 +617,10 @@ main() {
                 ;;
             -s|--stop-containers)
                 stop_first="true"
+                shift
+                ;;
+            --no-stop-containers)
+                stop_first="false"
                 shift
                 ;;
             --data-only)
