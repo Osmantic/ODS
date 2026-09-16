@@ -7,6 +7,7 @@ from fastapi import APIRouter,Depends,HTTPException,Request
 from fastapi.responses import JSONResponse
 from host_agent_client import AgentHTTPError,AgentProtocolError,AgentUnavailable,async_request_json as request_agent_json
 from security import verify_api_key
+from request_body import read_bounded_body
 from .pixel_providers import _pairs,_float,_constant,_check_depth
 
 router=APIRouter(tags=['pixel-advice-runtime'])
@@ -60,11 +61,7 @@ def readiness(value):
 
 
 async def request_body(request,action):
-    raw=bytearray()
-    async for part in request.stream():
-        if len(raw)+len(part)>8192:
-            raise HTTPException(413,'Setup request exceeds size limit')
-        raw.extend(part)
+    raw = await read_bounded_body(request, 8192, 'Setup request exceeds size limit')
     try:
         text=bytes(raw).decode(); _check_depth(text)
         value=json.loads(text,object_pairs_hook=_pairs,parse_float=_float,parse_constant=_constant)

@@ -24,6 +24,7 @@ from pixel_provider_runtime_public import (
     safe_reason,
 )
 from security import verify_api_key
+from request_body import read_bounded_body
 
 router = APIRouter(tags=["pixel-providers"])
 MAX_BYTES = 256 * 1024
@@ -76,11 +77,8 @@ def _check_depth(text):
 
 
 async def _body(request, *, runtime=False):
-    raw = bytearray()
-    async for chunk in request.stream():
-        if len(raw) + len(chunk) > (2048 if runtime else MAX_BYTES):
-            raise HTTPException(413, "Provider request exceeds size limit", headers=NO_STORE)
-        raw.extend(chunk)
+    raw = await read_bounded_body(request, 2048 if runtime else MAX_BYTES,
+                                  "Provider request exceeds size limit", headers=NO_STORE)
     try:
         text = bytes(raw).decode("utf-8")
         _check_depth(text)
@@ -135,11 +133,7 @@ async def save_providers(request: Request, _key: str = Depends(verify_api_key)):
 
 @router.post("/api/pixel/providers/connection-probe")
 async def probe_connection(request: Request, _key: str = Depends(verify_api_key)):
-    raw = bytearray()
-    async for chunk in request.stream():
-        if len(raw) + len(chunk) > 65536:
-            raise HTTPException(413, "Connection request exceeds size limit", headers=NO_STORE)
-        raw.extend(chunk)
+    raw = await read_bounded_body(request, 65536, "Connection request exceeds size limit", headers=NO_STORE)
     try:
         text = bytes(raw).decode('utf-8')
         _check_depth(text)
@@ -245,4 +239,3 @@ async def get_active_provider_health(_key: str = Depends(verify_api_key)):
         return JSONResponse(content=raw, headers=NO_STORE)
     except (AgentHTTPError, AgentUnavailable, AgentProtocolError, ValueError, TypeError):
         return JSONResponse(content={"status": "unavailable"}, headers=NO_STORE)
-
