@@ -58,3 +58,27 @@ jobs:
 
       - name: Run Unit Tests
         run: pytest tests/ -v --cov=. --cov-report=term --cov-report=lcov:coverage.lcov
+
+  # model-router ships 51 tests that no workflow ran, so nothing stopped a
+  # regression in the routing or internal-auth paths from merging.
+  model-router:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ods/extensions/services/model-router
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Setup Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: "3.11"
+
+      - name: Install Dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install "pytest>=8,<9"
+
+      - name: Run Unit Tests
+        run: pytest tests/ -v
