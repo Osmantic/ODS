@@ -10,6 +10,14 @@ from key_management import resolve_shield_api_key, persist_key
 
 
 class TestKeyManagement(unittest.TestCase):
+    def test_blank_environment_falls_back_without_changing_persisted_key(self):
+        with tempfile.TemporaryDirectory() as d:
+            key_path = os.path.join(d, "shield_api_key")
+            persist_key(key_path, "persisted")
+            for value in ("", " \t\n", None, 42):
+                self.assertEqual(resolve_shield_api_key(value, key_path), "persisted")
+            self.assertEqual(resolve_shield_api_key(" exact secret ", key_path), " exact secret ")
+
     def test_env_key_wins(self):
         with tempfile.TemporaryDirectory() as d:
             key_path = os.path.join(d, "shield_api_key")

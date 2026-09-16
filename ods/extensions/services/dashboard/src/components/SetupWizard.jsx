@@ -253,8 +253,8 @@ export default function SetupWizard({ onComplete }) {
           {/* Step 4: Name */}
           {step === 4 && (
             <div className="text-center max-w-md mx-auto">
-              <div className="w-20 h-20 bg-purple-500/20 rounded-2xl flex items-center justify-center mx-auto mb-6">
-                <User className="w-10 h-10 text-purple-400" />
+              <div className="w-10 h-10 bg-theme-surface rounded-lg flex items-center justify-center mx-auto mb-6">
+                <User className="w-5 h-5 text-theme-text-secondary" />
               </div>
               <h2 className="text-3xl font-bold text-theme-text mb-4">What should we call you?</h2>
               <p className="text-theme-text-secondary mb-8">

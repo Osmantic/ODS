@@ -28,16 +28,14 @@ chmod +x "${FAKEBIN}/curl"
 cd "$ROOT_DIR"
 
 # 1) Linux installer dry-run simulation
+# Capture the real status: inside `if ! cmd; then`, $? is the negated result
+# (always 0), which used to record every failed run as exit code 0.
 LINUX_EXIT=0
-if ! PATH="${FAKEBIN}:$PATH" bash install-core.sh --dry-run --non-interactive --skip-docker --force --summary-json "$LINUX_SUMMARY_JSON" >"$LINUX_LOG" 2>&1; then
-  LINUX_EXIT=$?
-fi
+PATH="${FAKEBIN}:$PATH" bash install-core.sh --dry-run --non-interactive --skip-docker --force --summary-json "$LINUX_SUMMARY_JSON" >"$LINUX_LOG" 2>&1 || LINUX_EXIT=$?
 
 # 2) macOS installer MVP simulation
 MACOS_EXIT=0
-if ! bash installers/macos.sh --no-delegate --report "$MACOS_PREFLIGHT_JSON" --doctor-report "$MACOS_DOCTOR_JSON" >"$MACOS_LOG" 2>&1; then
-  MACOS_EXIT=$?
-fi
+bash installers/macos.sh --no-delegate --report "$MACOS_PREFLIGHT_JSON" --doctor-report "$MACOS_DOCTOR_JSON" >"$MACOS_LOG" 2>&1 || MACOS_EXIT=$?
 
 # 3) Windows scenario simulation via preflight engine (since pwsh may be unavailable in CI/sandbox)
 scripts/preflight-engine.sh \
@@ -55,9 +53,7 @@ scripts/preflight-engine.sh \
 
 # 4) Doctor snapshot for current machine context
 DOCTOR_EXIT=0
-if ! scripts/ods-doctor.sh "$DOCTOR_JSON" >/dev/null 2>&1; then
-  DOCTOR_EXIT=$?
-fi
+scripts/ods-doctor.sh "$DOCTOR_JSON" >/dev/null 2>&1 || DOCTOR_EXIT=$?
 
 PYTHON_CMD="python3"
 if [[ -f "$ROOT_DIR/lib/python-cmd.sh" ]]; then
