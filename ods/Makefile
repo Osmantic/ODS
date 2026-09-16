@@ -44,6 +44,7 @@ test: ## Run unit and contract tests
 	@echo "=== Linux install preflight ==="
 	@bash tests/test-linux-install-preflight.sh
 	@bash tests/test-phase05-podman-shim.sh
+	@bash tests/test-docker-sudo-fallback-hint.sh
 	@bash tests/test-linux-host-agent-stop.sh
 	@bash tests/test-preflight-dashboard-port.sh
 	@echo ""
