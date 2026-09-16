@@ -158,10 +158,19 @@ for service_dir in _all_service_dirs:
             continue
 
         aliases = s.get("aliases", [])
+        if isinstance(aliases, str):
+            aliases = [aliases]
+        elif not isinstance(aliases, (list, tuple)):
+            aliases = []
+
         container = s.get("container_name", f"ods-{sid}")
         compose_file = s.get("compose_file", "")
         category = s.get("category", "optional")
         depends = s.get("depends_on", [])
+        if isinstance(depends, str):
+            depends = [depends]
+        elif not isinstance(depends, (list, tuple)):
+            depends = []
 
         # Validate aliases
         valid_aliases = []
