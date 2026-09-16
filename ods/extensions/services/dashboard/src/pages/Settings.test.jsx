@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { render } from '../test/test-utils'
 import Settings from './Settings' // eslint-disable-line no-unused-vars
 
@@ -57,6 +57,11 @@ const editor = {
 }
 
 const payloadByUrl = (url) => {
+  if (url === '/api/pixel/providers') return { configuration: {
+    schemaVersion: 1, revision: 0, enabled: false, providers: [],
+    roles: { leader: null, backups: [], advisor: null, handoff: null },
+    policy: { allowCloud: false, maxAttempts: 3, deadlineSeconds: 120 },
+  }, runtime: { status: 'not-applied' } }
   if (url === '/api/settings/summary') return summary
   if (url === '/api/storage') return storage
   if (url === '/api/settings/env') return editor
@@ -87,6 +92,27 @@ const renderSettings = (override = null) => {
 }
 
 describe('Settings', () => {
+  it('does not invent uptime or a live state when uptime is missing', async () => {
+    renderSettings(url => url === '/api/settings/summary' ? response({...summary,uptime:undefined}) : null)
+    const label = await screen.findByText('Uptime')
+    const row = label.closest('.settings-meta-row')
+    expect(within(row).getByText('Unknown')).toBeVisible()
+    expect(within(row).queryByText('Live')).toBeNull()
+  })
+  it('preserves unsaved provider edits during a system refresh', async () => {
+    const { fetchMock } = renderSettings()
+    await screen.findByText('No providers configured.', {}, { timeout: 3000 })
+    fireEvent.change(screen.getByLabelText('New provider ID'), { target: { value: 'unsaved' } })
+    fireEvent.change(screen.getByLabelText('New provider label'), { target: { value: 'Unsaved provider' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add provider', exact: true }))
+    fireEvent.change(screen.getByLabelText('Model', { exact: true }), { target: { value: 'keep-this-model' } })
+    const header = screen.getByRole('heading', { name: 'Settings', exact: true }).closest('header')
+    fireEvent.click(within(header).getByRole('button', { name: 'Refresh', exact: true }))
+    await waitFor(() => expect(fetchMock.mock.calls.filter(([url]) => url === '/api/settings/summary')).toHaveLength(2))
+    expect(screen.getByLabelText('Model', { exact: true })).toHaveValue('keep-this-model')
+    expect(fetchMock.mock.calls.filter(([url]) => url === '/api/pixel/providers')).toHaveLength(1)
+  })
+
   afterEach(() => {
     vi.restoreAllMocks()
     globalThis.localStorage.removeItem('ods-theme')
@@ -163,15 +189,19 @@ describe('Settings', () => {
     expect(screen.getAllByText('Empty')).toHaveLength(3)
   })
 
-  test('does not force dark inline card backgrounds when the light theme is selected', async () => {
+  test('migrates a retired theme to the shared Pixel appearance', async () => {
+    localStorage.setItem('ods-theme', 'light')
     const { container } = renderSettings()
     await screen.findByRole('heading', { name: 'System Identity' })
 
-    fireEvent.click(screen.getByRole('button', { name: 'Light' }))
+    expect(screen.queryByRole('button', { name: 'Light' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Pixel', exact: true })).toHaveAttribute('aria-pressed', 'true')
 
-    await waitFor(() => expect(document.documentElement).toHaveAttribute('data-theme', 'light'))
-    const cards = [...container.querySelectorAll('.liquid-metal-frame')]
+    await waitFor(() => expect(document.documentElement).toHaveAttribute('data-theme', 'ods'))
+    expect(localStorage.getItem('ods-theme')).toBe('ods')
+    const cards = [...container.querySelectorAll('.settings-section')]
     expect(cards.length).toBeGreaterThan(0)
+    expect(container.querySelector('.liquid-metal-frame')).not.toBeInTheDocument()
     expect(cards.every(card => !card.getAttribute('style')?.includes('rgba(18,18,25'))).toBe(true)
   })
 
@@ -182,6 +212,19 @@ describe('Settings', () => {
     expect(screen.queryByRole('button', { name: 'More information about ODS Version' })).not.toBeInTheDocument()
     expect(screen.queryByText('K', { selector: 'span' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'localhost' })).not.toBeInTheDocument()
+  })
+
+  test('keeps compact route filters functional and allows collapsing the expanded list', async () => {
+    renderSettings(url => url === '/api/settings/summary' ? response({ ...summary, services: Array.from({ length: 6 }, (_, index) => ({ id: `route-${index}`, name: `Test route ${index}`, status: 'healthy', port: 8000 + index })) }) : null)
+    const filters = await screen.findByRole('group', { name: 'Filter routes' })
+    expect(within(filters).getByRole('button', { name: 'all', exact: true })).toHaveAttribute('aria-pressed', 'true')
+    fireEvent.click(screen.getByRole('button', { name: '2 more routes' }))
+    expect(screen.getByText('Test route 5')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Show fewer routes' }))
+    expect(screen.queryByText('Test route 5')).not.toBeInTheDocument()
+    fireEvent.click(within(filters).getByRole('button', { name: 'inactive', exact: true }))
+    expect(screen.getByText('No routes match this filter.')).toBeInTheDocument()
+    expect(within(filters).getByRole('button', { name: 'inactive', exact: true })).toHaveAttribute('aria-pressed', 'true')
   })
 
   test('preserves unsaved environment changes during a global refresh', async () => {
@@ -214,4 +257,28 @@ describe('Settings', () => {
     expect(screen.getByDisplayValue('192.168.1.10')).toBeInTheDocument()
     expect(fetchMock.mock.calls.filter(([url]) => url === '/api/settings/env')).toHaveLength(3)
   })
+})
+
+it.each([true,false])('locks the environment draft until its pending save settles (success=%s)', async success => {
+  const {fetchMock} = renderSettings()
+  const field = await screen.findByLabelText('LAN Host IP')
+  fireEvent.change(field,{target:{value:'192.168.1.25'}})
+  let finish
+  const original = fetchMock.getMockImplementation()
+  fetchMock.mockImplementation((url,options) => options?.method === 'PUT'
+    ? new Promise(resolve => {finish = resolve})
+    : original(url,options))
+  fireEvent.click(screen.getByRole('button',{name:'Save .env'}))
+  expect(field).toBeDisabled()
+  const env = screen.getByRole('heading',{name:'Environment Editor'}).closest('section')
+  expect(within(env).getByRole('button',{name:'Reload'})).toBeDisabled()
+  expect(within(env).getByRole('button',{name:'Refresh',exact:true})).toBeDisabled()
+  await act(async () => finish(response(success
+    ? {...editor,values:{...editor.values,HOST_LAN_IP:'192.168.1.25'}}
+    : {detail:'Write failed'}, success ? 200 : 503)))
+  expect(field).toBeEnabled()
+  expect(field).toHaveValue('192.168.1.25')
+  fireEvent.change(field,{target:{value:'192.168.1.26'}})
+  expect(screen.getByRole('button',{name:'Save .env'})).toBeEnabled()
+  expect(fetchMock.mock.calls.filter(([,options]) => options?.method === 'PUT')).toHaveLength(1)
 })
