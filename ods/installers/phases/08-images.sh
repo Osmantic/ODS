@@ -26,15 +26,19 @@ fi
 # Build image list with cinematic labels
 # Format: "image|friendly_name"
 PULL_LIST=()
-if [[ "$GPU_BACKEND" == "amd" ]]; then
-    case "${LEMONADE_EXTERNAL:-false}" in
-        true|TRUE|1|yes|YES|on|ON) _lemonade_external=true ;;
-        *) _lemonade_external=false ;;
-    esac
-    if [[ "$_lemonade_external" != "true" ]]; then
-        _lemonade_image="${LEMONADE_SERVER_IMAGE:-${BACKEND_LEMONADE_CONTAINER_IMAGE:-ghcr.io/lemonade-sdk/lemonade-server:v10.2.0}}"
-        PULL_LIST+=("${_lemonade_image}|LEMONADE — downloading the brain (AMD ROCm)")
-    fi
+case "${LEMONADE_EXTERNAL:-false}" in
+    true|TRUE|1|yes|YES|on|ON) _lemonade_external=true ;;
+    *) _lemonade_external=false ;;
+esac
+if [[ "$_lemonade_external" == "true" ]]; then
+    # The external host owns inference. In WSL the Linux capability probe can
+    # legitimately fall back to CPU even though Windows Lemonade has full NPU/
+    # GPU access; pulling a dormant llama.cpp image wastes time and disk and
+    # makes the installation plan lie about which model path will run.
+    :
+elif [[ "$GPU_BACKEND" == "amd" ]]; then
+    _lemonade_image="${LEMONADE_SERVER_IMAGE:-${BACKEND_LEMONADE_CONTAINER_IMAGE:-ghcr.io/lemonade-sdk/lemonade-server:v10.2.0}}"
+    PULL_LIST+=("${_lemonade_image}|LEMONADE — downloading the brain (AMD ROCm)")
     [[ "$ENABLE_COMFYUI" == "true" ]] && PULL_LIST+=("ignatberesnev/comfyui-gfx1151:v0.2|COMFYUI — image generation engine (gfx1151)")
 elif [[ "$GPU_BACKEND" == "cpu" ]]; then
     PULL_LIST+=("${LLAMA_SERVER_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-b8248}|LLAMA-SERVER — downloading the brain (CPU)")
@@ -44,10 +48,10 @@ fi
 PULL_LIST+=("ghcr.io/open-webui/open-webui:v0.7.2|OPEN WEBUI — interface module")
 PULL_LIST+=("itzcrazykns1337/perplexica:slim-latest@sha256:6e399abf4ff587822b0ef0df11f36088fb928e17ac61556fe89beb68d48c378e|PERPLEXICA — deep research engine")
 if [[ "$ENABLE_VOICE" == "true" ]]; then
-    if [[ "$GPU_BACKEND" == "nvidia" ]]; then
+    if [[ "$GPU_BACKEND" == "nvidia" && "${WHISPER_ACCELERATION:-cuda}" == "cuda" ]]; then
         PULL_LIST+=("ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cuda|WHISPER — ears online (Speaches STT, CUDA)")
     else
-        PULL_LIST+=("ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cpu|WHISPER — ears online (Speaches STT)")
+        PULL_LIST+=("${WHISPER_IMAGE:-ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cpu}|WHISPER — ears online (Speaches STT, CPU)")
     fi
     PULL_LIST+=("ghcr.io/remsky/kokoro-fastapi-cpu:v0.2.4|KOKORO — voice module")
 fi
