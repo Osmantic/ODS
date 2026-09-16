@@ -38,7 +38,7 @@ export const TopologyView = memo(function TopologyView({ topology }) {
         <div className="flex items-center gap-3 text-[10px] font-mono text-zinc-500">
           {driver_version && <span>driver {driver_version}</span>}
           {mig_enabled && (
-            <span className="px-1.5 py-0.5 bg-purple-500/15 text-purple-400 rounded">MIG</span>
+            <span className="px-1.5 py-0.5 bg-theme-surface text-theme-text-secondary rounded">MIG</span>
           )}
           <span className="uppercase">{vendor}</span>
         </div>

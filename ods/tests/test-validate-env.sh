@@ -456,6 +456,7 @@ fi
 manifest_env_contract() {
     awk '
         /^[[:space:]]+external_port_env:[[:space:]]*/ {
+            if ($2 == "\047\047" || $2 == "\"\"") next
             print FILENAME "	" $2
             next
         }
@@ -468,7 +469,8 @@ manifest_env_contract() {
             pending = ""
         }
         /^[[:space:]]+-[[:space:]]+key:/ { pending = $3 }
-    ' "$ROOT_DIR"/extensions/services/*/manifest.yaml | sort -u
+    ' "$ROOT_DIR"/extensions/services/*/manifest.yaml \
+      "$ROOT_DIR"/extensions/library/services/*/manifest.yaml | sort -u
 }
 
 undeclared=""
@@ -503,6 +505,121 @@ else
 ' ' ')"
 fi
 
+# 22. Keys the Linux installer itself writes for Intel Arc (GPU_BACKEND=sycl,
+# installers/phases/06-directories.sh INTEL_ENV block) must be declared, or
+# `ods config validate` reports them as unknown on every Arc install.
+cp "$TMP_DIR/valid.env" "$TMP_DIR/arc.env"
+cat >> "$TMP_DIR/arc.env" <<'EOF'
+ONEAPI_DEVICE_SELECTOR=level_zero:gpu
+SYCL_CACHE_PERSISTENT=1
+ZES_ENABLE_SYSMAN=1
+EOF
+set +e
+out=$("$VALIDATE_ENV_BASH" "$ROOT_DIR/scripts/validate-env.sh" "$TMP_DIR/arc.env" "$ROOT_DIR/.env.schema.json" 2>&1)
+r=$?
+set -e
+if [[ $r -eq 0 ]]; then
+    pass "Installer-written Intel Arc keys validate cleanly"
+else
+    fail "Intel Arc keys should validate, got exit $r: $(echo "$out" | grep -iE 'ONEAPI|SYCL|ZES' | tr '\n' ' ')"
+fi
+
+# 23. Inline-comment rule must match Docker Compose (checked with `docker compose
+# config`): a '#' without a leading space is part of the value, a " #..." note
+# after a closing quote is not. Uses a small schema so both directions show:
+# a valid value must not be truncated into a false error, and an invalid value
+# must not be truncated into a false pass.
+cat > "$TMP_DIR/comment-schema.json" <<'EOF'
+{
+  "type": "object",
+  "required": [],
+  "properties": {
+    "SECRET_WITH_HASH": {"type": "string", "minLength": 10},
+    "QUOTED_THEN_NOTE": {"type": "string", "minLength": 10},
+    "PLAIN_THEN_NOTE":  {"type": "string", "enum": ["value"]},
+    "BACKEND":          {"type": "string", "enum": ["nvidia", "amd"]}
+  }
+}
+EOF
+cat > "$TMP_DIR/comment-ok.env" <<'EOF'
+SECRET_WITH_HASH=abcdefgh#ijklmnop
+QUOTED_THEN_NOTE="sk-abcdefghij-valid" # rotate me
+PLAIN_THEN_NOTE=value # a note
+BACKEND=nvidia   # picked by installer
+EOF
+set +e
+out=$("$VALIDATE_ENV_BASH" "$ROOT_DIR/scripts/validate-env.sh" "$TMP_DIR/comment-ok.env" "$TMP_DIR/comment-schema.json" 2>&1)
+r=$?
+set -e
+if [[ $r -eq 0 ]]; then
+    pass "Inline-comment rule matches Compose (no false errors on '#' inside values or notes after quotes)"
+else
+    fail "Compose-valid values were rejected (exit $r): $(echo "$out" | grep -E 'SECRET_WITH_HASH|QUOTED_THEN_NOTE|PLAIN_THEN_NOTE|BACKEND' | head -3 | tr '\n' ' ')"
+fi
+
+cat > "$TMP_DIR/comment-bad.env" <<'EOF'
+BACKEND=nvidia#x
+EOF
+set +e
+out=$("$VALIDATE_ENV_BASH" "$ROOT_DIR/scripts/validate-env.sh" "$TMP_DIR/comment-bad.env" "$TMP_DIR/comment-schema.json" 2>&1)
+r=$?
+set -e
+if [[ $r -ne 0 ]] && echo "$out" | grep -q "BACKEND"; then
+    pass "A '#' glued to a value is validated as data (BACKEND=nvidia#x fails the enum, as it would in Compose)"
+else
+    fail "BACKEND=nvidia#x should fail the enum check (Compose passes 'nvidia#x' to the container), got exit $r"
+fi
+
+# 24. Keys phase 09 appends to .env for an air-gapped install
+# (installers/phases/09-offline.sh, `--offline`) must be declared, or every
+# offline install ends up with a .env that `ods config validate` rejects.
+cp "$TMP_DIR/valid.env" "$TMP_DIR/offline.env"
+cat >> "$TMP_DIR/offline.env" <<'EOF'
+OFFLINE_MODE=true
+DISABLE_TELEMETRY=true
+DISABLE_UPDATE_CHECK=true
+WEB_SEARCH_ENABLED=false
+LOCAL_RAG_ENABLED=true
+EOF
+set +e
+out=$("$VALIDATE_ENV_BASH" "$ROOT_DIR/scripts/validate-env.sh" "$TMP_DIR/offline.env" "$ROOT_DIR/.env.schema.json" 2>&1)
+r=$?
+set -e
+if [[ $r -eq 0 ]]; then
+    pass "Installer-written offline-mode keys validate cleanly"
+else
+    fail "Offline-mode keys should validate, got exit $r: $(echo "$out" | grep -iE 'OFFLINE_MODE|TELEMETRY|UPDATE_CHECK|WEB_SEARCH|LOCAL_RAG' | tr '\n' ' ')"
+fi
+
 echo ""
+# Library port overrides are optional, but must be valid when operators set them.
+cp "$TMP_DIR/valid.env" "$TMP_DIR/library-ports.env"
+cat >> "$TMP_DIR/library-ports.env" <<'EOF'
+MINIFLUX_BASE_URL=http://localhost:8098
+NTFY_BASE_URL=http://localhost:8097
+MINIFLUX_DB_PASSWORD=fixture-database-password
+MINIFLUX_ADMIN_PASSWORD=fixture-admin-password
+EOF
+port=31000
+while read -r key; do
+    printf '%s=%s\n' "$key" "$port" >> "$TMP_DIR/library-ports.env"
+    port=$((port + 1))
+done < <(awk '/^[[:space:]]+external_port_env:/ { if ($2 != "\047\047" && $2 != "\"\"") print $2 }' \
+    "$ROOT_DIR"/extensions/library/services/*/manifest.yaml | sort -u)
+if out=$("$VALIDATE_ENV_BASH" "$ROOT_DIR/scripts/validate-env.sh" "$TMP_DIR/library-ports.env" "$ROOT_DIR/.env.schema.json" 2>&1); then
+    pass "Every library port override passes public env validation"
+else
+    fail "Library port overrides failed validation: $out"
+fi
+cp "$TMP_DIR/valid.env" "$TMP_DIR/library-invalid-port.env"
+printf 'DIFY_PORT=65536\n' >> "$TMP_DIR/library-invalid-port.env"
+if out=$("$VALIDATE_ENV_BASH" "$ROOT_DIR/scripts/validate-env.sh" "$TMP_DIR/library-invalid-port.env" "$ROOT_DIR/.env.schema.json" 2>&1); then
+    fail "Out-of-range library port passed validation"
+elif [[ "$out" == *"DIFY_PORT: value 65536 is > maximum 65535"* ]]; then
+    pass "Library ports retain numeric range validation"
+else
+    fail "Library port was rejected for the wrong reason: $out"
+fi
+
 echo "Result: $PASSED passed, $FAILED failed"
 [[ $FAILED -eq 0 ]]
