@@ -102,7 +102,9 @@ Options:
 This will remove:
     - Docker containers, images, and volumes for ODS
     - Installation directory ($INSTALL_DIR)
+    - ODS-managed Pixel host services and private configuration
     - Systemd user services (opencode-web, openclaw timers)
+    - Systemd system services (ods-host-agent, ods-mdns)
     - macOS LaunchAgents (com.ods.host-agent, com.ods.opencode-web, legacy agents)
     - CLI symlinks (/usr/local/bin/ods, ~/.local/bin/ods, legacy /usr/local/bin/ods-cli)
     - Backup directory (~/.ods)
@@ -147,12 +149,45 @@ fi
 
 if [[ "$FORCE" != "true" ]]; then
     echo -e "${YELLOW}This will permanently remove ODS and its components.${NC}"
-    read -rp "Are you sure? Type 'yes' to confirm: " confirm
+    read -rp "Are you sure? Type 'yes' to confirm: " confirm || confirm=""
     if [[ "$confirm" != "yes" ]]; then
         log_info "Uninstall cancelled."
         exit 0
     fi
     echo ""
+fi
+
+# Retire verified host services before deleting their installation or data.
+if [[ "$(uname -s)" == "Linux" ]]; then
+    if [[ -f "$SCRIPT_DIR/lib/system-uninstall.sh" ]]; then
+        . "$SCRIPT_DIR/lib/system-uninstall.sh"
+        if ! ods_uninstall_system_units "$INSTALL_DIR" "$HOME"; then
+            log_error "System service cleanup failed; installation retained"
+            exit 1
+        fi
+    elif [[ -e /etc/systemd/system/ods-host-agent.service || -e /etc/systemd/system/ods-mdns.service ]]; then
+        log_error "System service uninstall helper is missing; installation retained"
+        exit 1
+    fi
+fi
+
+# Validate and remove Pixel before any broader uninstall mutation. The helper
+# is marker-bound to this exact install and fails closed on ambient or drifted
+# Pixel state.
+if [[ "$(uname -s)" == "Linux" ]]; then
+    _ods_pixel_marker="$HOME/.config/ods/pixel-managed.json"
+    if [[ -f "$SCRIPT_DIR/lib/pixel-uninstall.sh" ]]; then
+        # shellcheck source=lib/pixel-uninstall.sh
+        . "$SCRIPT_DIR/lib/pixel-uninstall.sh"
+        if ! ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME"; then
+            log_error "Pixel cleanup failed before ODS uninstall mutation"
+            exit 1
+        fi
+    elif [[ -e "$_ods_pixel_marker" || -L "$_ods_pixel_marker" ]]; then
+        log_error "ODS-managed Pixel marker exists but its uninstall helper is missing"
+        exit 1
+    fi
+    unset _ods_pixel_marker
 fi
 
 # 1. Stop and remove Docker containers
@@ -312,23 +347,6 @@ if (( ${#_ods_uninstall_orphan_pids[@]} > 0 )); then
     done
 fi
 unset _ods_uninstall_orphan_pids _pid
-
-# Remove system-mode ods-host-agent unit (migrated from --user mode).
-# Idempotent — no-op if the unit was never installed (e.g. older user-mode installs).
-if systemctl is-enabled ods-host-agent.service >/dev/null 2>&1; then
-    if ! prepare_sudo_credential; then
-        log_warn "sudo is unavailable; ods-host-agent.service was not removed"
-    elif ! timeout 20s sudo -n -- systemctl disable --now ods-host-agent.service 2>/dev/null; then
-        log_warn "ods-host-agent did not stop cleanly; forcing service shutdown"
-        run_sudo systemctl kill -s SIGKILL ods-host-agent.service 2>/dev/null || true
-        timeout 10s sudo -n -- systemctl disable ods-host-agent.service 2>/dev/null || true
-    fi
-fi
-if [[ -e /etc/systemd/system/ods-host-agent.service ]]; then
-    run_sudo rm -f /etc/systemd/system/ods-host-agent.service 2>/dev/null || true
-    run_sudo systemctl daemon-reload 2>/dev/null || true
-fi
-log_ok "Systemd services removed"
 
 # 3. Remove CLI symlinks
 _removed_cli_symlink=false

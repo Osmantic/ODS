@@ -217,7 +217,9 @@ describe('useDownloadProgress', () => {
       await result.current.cancelDownload()
     })
 
-    expect(fetch).toHaveBeenCalledWith('/api/models/download/cancel', { method: 'POST' })
+    expect(fetch).toHaveBeenCalledWith('/api/models/download/cancel', {
+      method: 'POST', signal: expect.any(AbortSignal),
+    })
     expect(result.current.isDownloading).toBe(false)
     expect(result.current.progress).toMatchObject({
       status: 'cancelled',

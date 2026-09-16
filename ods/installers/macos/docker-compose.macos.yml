@@ -47,9 +47,9 @@ services:
 
   dashboard-api:
     environment:
-      - OLLAMA_URL=http://${ODS_MACOS_HOST_GATEWAY:-host.docker.internal}:8080
+      - OLLAMA_URL=http://${ODS_MACOS_HOST_GATEWAY:-host.docker.internal}:${OLLAMA_PORT:-8080}
       - OLLAMA_HOST=${ODS_MACOS_HOST_GATEWAY:-host.docker.internal}
-      - OLLAMA_PORT=8080        # llama-server runs natively on macOS at this port
+      - OLLAMA_PORT=${OLLAMA_PORT:-8080}   # llama-server runs natively on macOS at this port
       # gpu.py routes to get_gpu_info_apple() which reads HOST_* env vars.
       # config.py defaults include 'apple' so all manifests are discovered.
       - GPU_BACKEND=apple
@@ -61,5 +61,5 @@ services:
       llama-server-ready:
         condition: service_healthy
     environment:
-      OPENAI_API_BASE_URL: "${OPEN_WEBUI_LLM_BASE_URL:-http://${ODS_MACOS_HOST_GATEWAY:-host.docker.internal}:8080/v1}"
+      OPENAI_API_BASE_URL: "${OPEN_WEBUI_LLM_BASE_URL:-http://${ODS_MACOS_HOST_GATEWAY:-host.docker.internal}:${OLLAMA_PORT:-8080}/v1}"
       OPENAI_API_KEY: "${OPEN_WEBUI_LLM_API_KEY:-}"
