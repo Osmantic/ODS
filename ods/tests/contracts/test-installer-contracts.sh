@@ -400,9 +400,9 @@ grep -q 'NEXT_TELEMETRY_DISABLED.*1' extensions/services/langfuse/compose.yaml.d
   grep -q 'NEXT_TELEMETRY_DISABLED.*1' extensions/services/langfuse/compose.yaml 2>/dev/null || \
   { echo "[FAIL] Next.js telemetry not disabled"; exit 1; }
 
-grep -q 'MINIO_TELEMETRY_DISABLED.*1' extensions/services/langfuse/compose.yaml.disabled 2>/dev/null || \
-  grep -q 'MINIO_TELEMETRY_DISABLED.*1' extensions/services/langfuse/compose.yaml 2>/dev/null || \
-  { echo "[FAIL] MinIO telemetry not disabled"; exit 1; }
+grep -q 'master.telemetry=false' extensions/services/langfuse/compose.yaml.disabled 2>/dev/null || \
+  grep -q 'master.telemetry=false' extensions/services/langfuse/compose.yaml 2>/dev/null || \
+  { echo "[FAIL] SeaweedFS telemetry not disabled"; exit 1; }
 
 echo "[contract] RAG service flags gate qdrant and embeddings"
 # RAG = qdrant (vector store) + embeddings (TEI). Both default from

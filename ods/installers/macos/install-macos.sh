@@ -1596,7 +1596,7 @@ else
     mkdir -p "${INSTALL_DIR}/data/langfuse/postgres"
     mkdir -p "${INSTALL_DIR}/data/langfuse/clickhouse"
     mkdir -p "${INSTALL_DIR}/data/langfuse/redis"
-    mkdir -p "${INSTALL_DIR}/data/langfuse/minio"
+    mkdir -p "${INSTALL_DIR}/data/langfuse/seaweedfs"
     mkdir -p "${INSTALL_DIR}/bin"
     ai_ok "Created directory structure"
 

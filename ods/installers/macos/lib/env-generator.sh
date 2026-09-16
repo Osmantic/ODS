@@ -431,10 +431,10 @@ generate_ods_env() {
     langfuse_clickhouse_password=$(new_secure_hex 16)
     local langfuse_redis_password
     langfuse_redis_password=$(new_secure_hex 16)
-    local langfuse_minio_access_key
-    langfuse_minio_access_key=$(new_secure_hex 16)
-    local langfuse_minio_secret_key
-    langfuse_minio_secret_key=$(new_secure_hex 32)
+    local langfuse_s3_access_key
+    langfuse_s3_access_key=$(new_secure_hex 16)
+    local langfuse_s3_secret_key
+    langfuse_s3_secret_key=$(new_secure_hex 32)
     local langfuse_project_public_key
     langfuse_project_public_key="pk-lf-ods-$(new_secure_hex 16)"
     local langfuse_project_secret_key
@@ -679,8 +679,8 @@ LANGFUSE_ENCRYPTION_KEY=${langfuse_encryption_key}
 LANGFUSE_DB_PASSWORD=${langfuse_db_password}
 LANGFUSE_CLICKHOUSE_PASSWORD=${langfuse_clickhouse_password}
 LANGFUSE_REDIS_PASSWORD=${langfuse_redis_password}
-LANGFUSE_MINIO_ACCESS_KEY=${langfuse_minio_access_key}
-LANGFUSE_MINIO_SECRET_KEY=${langfuse_minio_secret_key}
+LANGFUSE_S3_ACCESS_KEY=${langfuse_s3_access_key}
+LANGFUSE_S3_SECRET_KEY=${langfuse_s3_secret_key}
 LANGFUSE_PROJECT_PUBLIC_KEY=${langfuse_project_public_key}
 LANGFUSE_PROJECT_SECRET_KEY=${langfuse_project_secret_key}
 LANGFUSE_INIT_PROJECT_ID=${langfuse_init_project_id}
