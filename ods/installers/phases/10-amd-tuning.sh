@@ -77,9 +77,15 @@ elif [[ "$GPU_BACKEND" == "amd" ]] && ! $DRY_RUN; then
     if [[ -d "$INSTALL_DIR/scripts/systemd" ]]; then
         for _unit in "$INSTALL_DIR/scripts/systemd"/*.service "$INSTALL_DIR/scripts/systemd"/*.timer; do
             [[ -f "$_unit" ]] || continue
-            case "$(basename "$_unit")" in
-                ods-host-agent.service|ods-ap-mode.service) continue ;;
-            esac
+            # Skip system-scope units: they carry __PLACEHOLDER__ tokens that
+            # phase 07 renders when installing to /etc/systemd/system
+            # (ods-host-agent, ods-ap-mode, ods-mdns). Copying them raw here
+            # drops an unrendered, non-functional unit into the user scope that
+            # also survives uninstall. Detect them by their placeholders rather
+            # than a name list, which previously missed ods-mdns.service.
+            if grep -q '__[A-Z0-9_]\{1,\}__' "$_unit"; then
+                continue
+            fi
             cp "$_unit" "$SYSTEMD_USER_DIR/" 2>/dev/null || true
         done
     fi

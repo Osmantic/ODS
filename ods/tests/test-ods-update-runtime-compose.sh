@@ -51,10 +51,13 @@ EOF
 printf '%s\n' '-f docker-compose.base.yml -f docker-compose.cpu.yml' > "$INSTALL_DIR/.compose-flags"
 
 DOCKER_LOG="$TMP_DIR/docker-args.log"
+DOCKER_TOKEN_LOG="$TMP_DIR/docker-token-args.log"
 export DOCKER_LOG
+export DOCKER_TOKEN_LOG
 cat > "$BIN_DIR/docker" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${DOCKER_LOG:?}"
+printf '<%s>\n' "$@" >> "${DOCKER_TOKEN_LOG:?}"
 
 if [[ "${1:-}" == "info" ]]; then
     exit 0
@@ -108,6 +111,17 @@ if grep -q "No services defined in docker-compose" "$TMP_DIR/health.out"; then
     fail "health emitted stale bare-compose warning"
 fi
 pass "ods-update health uses saved compose flags in runtime installs"
+
+mkdir -p "$INSTALL_DIR/custom stack"
+printf 'services: {}\n' > "$INSTALL_DIR/custom stack/compose.yaml"
+printf '%s\n' "-f docker-compose.base.yml -f 'custom stack/compose.yaml'" \
+    > "$INSTALL_DIR/.compose-flags"
+: > "$DOCKER_TOKEN_LOG"
+PATH="$BIN_DIR:$PATH" bash "$INSTALL_DIR/ods-update.sh" health > "$TMP_DIR/spaced-health.out" 2>&1 \
+    || { cat "$TMP_DIR/spaced-health.out"; fail "health should preserve a quoted compose path containing spaces"; }
+grep -qF '<custom stack/compose.yaml>' "$DOCKER_TOKEN_LOG" \
+    || { cat "$DOCKER_TOKEN_LOG"; fail "quoted compose path was split into multiple Docker arguments"; }
+pass "ods-update health preserves quoted compose paths as single arguments"
 
 PATH="$BIN_DIR:$PATH" bash "$INSTALL_DIR/ods-update.sh" backup runtime-smoke > "$TMP_DIR/backup.out" 2>&1 \
     || { cat "$TMP_DIR/backup.out"; fail "backup should not fail while counting copied files"; }

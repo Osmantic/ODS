@@ -1,94 +1,88 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { CheckCircle, XCircle, AlertCircle, Loader2, Wifi, Cpu, HardDrive, Layers } from 'lucide-react'
 
 export function PreFlightChecks({ onComplete, onIssuesFound }) {
   const [checks, setChecks] = useState([])
   const [running, setRunning] = useState(true)
 
-  const [requiredPorts, setRequiredPorts] = useState([])
+  const active = useRef(null)
 
-  useEffect(() => {
-    // Fetch service ports from API, then run checks
-    fetch('/api/preflight/required-ports')
-      .then(r => r.ok ? r.json() : { ports: [] })
-      .then(data => {
-        setRequiredPorts(data.ports || [])
-        runChecks(data.ports || [])
-      })
-      .catch(() => runChecks([]))
-  }, [])
-
-  const runChecks = async (ports) => {
-    const portsToCheck = ports || requiredPorts
-    setRunning(true)
-    const results = []
-
-    // Check 1: Docker available
-    results.push({
-      name: 'Docker Available',
-      status: 'checking',
-      icon: Layers
-    })
-    setChecks([...results])
-
-    await new Promise(r => setTimeout(r, 500))
-    const dockerCheck = await checkDocker()
-    results[0] = { ...results[0], ...dockerCheck }
-    setChecks([...results])
-
-    // Check 2: GPU Detected
-    results.push({
-      name: 'GPU Detected',
-      status: 'checking',
-      icon: Cpu
-    })
-    setChecks([...results])
-
-    await new Promise(r => setTimeout(r, 500))
-    const gpuCheck = await checkGPU()
-    results[1] = { ...results[1], ...gpuCheck }
-    setChecks([...results])
-
-    // Check 3: Port availability
-    results.push({
-      name: 'Port Availability',
-      status: 'checking',
-      icon: Wifi
-    })
-    setChecks([...results])
-
-    await new Promise(r => setTimeout(r, 800))
-    const portCheck = await checkPorts(portsToCheck)
-    results[2] = { ...results[2], ...portCheck }
-    setChecks([...results])
-
-    // Check 4: Disk space
-    results.push({
-      name: 'Disk Space',
-      status: 'checking',
-      icon: HardDrive
-    })
-    setChecks([...results])
-
-    await new Promise(r => setTimeout(r, 500))
-    const diskCheck = await checkDiskSpace()
-    results[3] = { ...results[3], ...diskCheck }
-    setChecks([...results])
-
-    setRunning(false)
-
-    const errors = results.filter(r => r.status === 'error')
-    if (errors.length > 0) {
-      onIssuesFound?.(errors)
-    } else {
-      // Warnings don't block progress - only hard errors do
-      onComplete?.()
+  const cancelChecks = () => {
+    const previous = active.current
+    active.current = null
+    if (previous) {
+      clearTimeout(previous.timer)
+      previous.controller.abort()
     }
   }
 
-  const checkDocker = async () => {
+  useEffect(() => {
+    void runChecks()
+    return cancelChecks
+  }, [])
+
+  const runChecks = async () => {
+    cancelChecks()
+    const flight = { controller: new AbortController() }
+    const signal = flight.controller.signal
+    active.current = flight
+    const current = () => active.current === flight && !signal.aborted
+    setRunning(true)
+    setChecks([])
+    // Bound the entire readiness pass, including the initial port inventory
+    // and response bodies. An abandoned pass must never complete a later one.
+    flight.timer = setTimeout(() => {
+      if (!current()) return
+      cancelChecks()
+      const issue = {
+        name: 'System Readiness', icon: AlertCircle, status: 'error',
+        message: 'System checks timed out',
+        fix: 'Check the dashboard connection, then retry the checks.',
+      }
+      setChecks(previous => [...previous.filter(check => check.status !== 'checking'), issue])
+      setRunning(false)
+      onIssuesFound?.([issue])
+    }, 30000)
+
     try {
-      const response = await fetch('/api/preflight/docker')
+      let ports = []
+      try {
+        const response = await fetch('/api/preflight/required-ports', { signal })
+        const data = response.ok ? await response.json() : {}
+        ports = data?.ports || []
+      } catch { /* Individual checks retain their existing warning behavior. */ }
+      if (!current()) return
+
+      const results = []
+      const steps = [
+        ['Docker Available', Layers, 500, () => checkDocker(signal)],
+        ['GPU Detected', Cpu, 500, () => checkGPU(signal)],
+        ['Port Availability', Wifi, 800, () => checkPorts(ports, signal)],
+        ['Disk Space', HardDrive, 500, () => checkDiskSpace(signal)],
+      ]
+      for (const [name, icon, delay, check] of steps) {
+        results.push({ name, icon, status: 'checking' })
+        setChecks([...results])
+        await new Promise(resolve => setTimeout(resolve, delay))
+        if (!current()) return
+        const result = await check()
+        if (!current()) return
+        results[results.length - 1] = { name, icon, ...result }
+        setChecks([...results])
+      }
+      setRunning(false)
+      const errors = results.filter(result => result.status === 'error')
+      if (errors.length > 0) onIssuesFound?.(errors)
+      else onComplete?.()
+    } finally {
+      clearTimeout(flight.timer)
+      if (active.current === flight) active.current = null
+    }
+  }
+
+  const checkDocker = async (signal) => {
+    try {
+      const response = await fetch('/api/preflight/docker', { signal })
       if (!response.ok) {
         return { status: 'warning', message: `API error (${response.status})`, fix: 'Check dashboard-api logs' }
       }
@@ -102,9 +96,9 @@ export function PreFlightChecks({ onComplete, onIssuesFound }) {
     }
   }
 
-  const checkGPU = async () => {
+  const checkGPU = async (signal) => {
     try {
-      const response = await fetch('/api/preflight/gpu')
+      const response = await fetch('/api/preflight/gpu', { signal })
       if (!response.ok) {
         return { status: 'warning', message: `API error (${response.status})`, fix: 'Check dashboard-api logs' }
       }
@@ -123,9 +117,10 @@ export function PreFlightChecks({ onComplete, onIssuesFound }) {
     }
   }
 
-  const checkPorts = async (ports) => {
+  const checkPorts = async (ports, signal) => {
     try {
       const response = await fetch('/api/preflight/ports', {
+        signal,
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ports: ports.map(p => p.port) })
@@ -161,9 +156,9 @@ export function PreFlightChecks({ onComplete, onIssuesFound }) {
     }
   }
 
-  const checkDiskSpace = async () => {
+  const checkDiskSpace = async (signal) => {
     try {
-      const response = await fetch('/api/preflight/disk')
+      const response = await fetch('/api/preflight/disk', { signal })
       if (!response.ok) {
         return { status: 'warning', message: `API error (${response.status})`, fix: 'Check dashboard-api logs' }
       }

@@ -1,0 +1,123 @@
+/* ODS settings: quiet, readable rows in the workspace utility panel.
+   Semantic validation and runtime colours stay intact. */
+.pixel-diagnostics { font-size:12px; line-height:1.6; color:var(--theme-text-secondary, #b4b8bd); }
+.pixel-diagnostics-intro { display:flex; align-items:flex-start; justify-content:space-between; flex-wrap:wrap; gap:12px; }
+.pixel-diagnostics-intro p { flex:1 1 200px; }
+.pixel-diagnostics-intro button { display:inline-flex; align-items:center; gap:7px; border:1px solid #35383b; border-radius:18px; padding:6px 10px; white-space:nowrap; }
+.pixel-diagnostics-intro button:disabled { opacity:.5; }
+.pixel-diagnostics-time { margin-top:10px; color:#8e969f; font-size:11px; }
+.pixel-diagnostic-check { padding:22px 0; border-bottom:1px solid #303235; }
+.pixel-diagnostic-check header { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px; }
+.pixel-diagnostic-check h3 { display:flex; align-items:center; gap:9px; color:#e0e3e6; font-weight:500; font-size:13px; }
+.pixel-diagnostic-check header > span { font-size:11px; color:#969da5; }
+.pixel-diagnostic-check header > .is-confirmed { color:#c5d0c9; }
+.pixel-diagnostic-check p { margin-top:10px; }
+.pixel-diagnostic-check dl > div { display:flex; justify-content:space-between; gap:18px; padding-top:12px; }
+.pixel-diagnostic-check dt { flex-shrink:0; color:#919aa4; }
+.pixel-diagnostic-check dd { text-align:right; overflow-wrap:anywhere; min-width:0; }
+.pixel-diagnostics-note { margin:20px 0; color:#949ca5; }
+.pixel-diagnostics nav { display:flex; flex-wrap:wrap; gap:15px; }
+.pixel-diagnostics nav a:hover { text-decoration:underline; }
+.pixel-diagnostics :is(a,button):focus-visible { outline:2px solid #b6bcc4; outline-offset:3px; }
+.ods-settings-modal .settings-refined { font-size:13px; line-height:1.55; }
+.ods-settings-modal .settings-refined :is(h2,h3) { font-size:14px; font-weight:550; letter-spacing:0; }
+.ods-settings-modal .settings-refined .uppercase { text-transform:none; letter-spacing:0; }
+.ods-settings-modal .settings-refined svg { stroke-width:1.7; }
+.ods-settings-modal .settings-refined .settings-section { border-radius:0; }
+.ods-settings-modal .settings-section-intro { gap:10px; margin-bottom:18px; }
+.ods-settings-modal .settings-section-intro p { font-size:12px; color:#a5a8a8; }
+.ods-settings-modal .settings-refined :is(button,input,select) { font-size:13px; }
+.ods-settings-modal .settings-refined button.rounded-lg:not([role]) { border-radius:18px; padding:7px 12px; }
+.ods-settings-modal .settings-refined section[aria-labelledby] { background:transparent; border:0; padding:0; }
+.ods-settings-modal .settings-refined section[aria-labelledby] > div:first-child { align-items:flex-start; flex-wrap:wrap; padding-bottom:16px; border-bottom:1px solid #353636; }
+.ods-settings-modal .settings-refined section[aria-labelledby] > div:first-child > div:first-child { flex:1; min-width:180px; }
+.ods-settings-modal .settings-refined section[aria-labelledby] :is(p,label,legend) { font-size:12px; }
+.ods-settings-modal .settings-refined section[aria-labelledby] label { gap:7px; }
+.ods-settings-modal .settings-refined section[aria-labelledby="pixel-access-title"] dl { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:0 16px; }
+.ods-settings-modal .settings-refined section[aria-labelledby="pixel-access-title"] dl :is(dt,dd) { padding:12px 0; border-bottom:1px solid #353636; }
+.ods-settings-modal .settings-refined section[aria-labelledby="pixel-access-title"] dl dd { text-align:right; overflow-wrap:anywhere; }
+.ods-settings-modal .settings-refined section[aria-labelledby="pixel-sharing-title"] > .grid:first-of-type > div { display:flex; align-items:baseline; justify-content:space-between; gap:16px; border-bottom:1px solid #353636; padding:12px 0; }
+.ods-settings-modal .settings-refined section[aria-labelledby="pixel-sharing-title"] > .grid:first-of-type > div p { text-align:right; overflow-wrap:anywhere; }
+.ods-settings-modal .settings-refined ul[aria-label="Inference devices"] > li { padding:14px 0; border:0; border-bottom:1px solid #353636; border-radius:0; }
+.ods-settings-modal .settings-refined #pixel-connections-title ~ p { max-width:48ch; }
+.ods-settings-modal .settings-refined section[aria-labelledby="pixel-connections-title"] fieldset fieldset { border:0; border-top:1px solid #353636; border-radius:0; padding:18px 0; }
+/* New runtime controls inherit the existing flat Connections layout. */
+.ods-settings-modal .settings-refined section[aria-labelledby="pixel-runtime-title"] { padding-top:24px; margin-top:24px; border-top:1px solid rgb(var(--theme-border, 53 54 54)); }
+.ods-settings-modal .settings-refined section[aria-labelledby="pixel-runtime-title"] fieldset { border:0; border-top:1px solid rgb(var(--theme-border, 53 54 54)); border-radius:0; padding:18px 0; min-width:0; }
+.ods-settings-modal .settings-refined section[aria-labelledby="pixel-runtime-title"] legend { padding:0 10px 0 0; }
+.ods-settings-modal .settings-refined section[aria-labelledby="pixel-settings-runtime-status-title"] { padding-top:20px; border-top:1px solid rgb(var(--theme-border, 53 54 54)); }
+.ods-settings-modal .settings-refined :is(input:not([type=checkbox]):not([type=radio]),select) { min-height:34px; border-radius:7px; }
+.ods-settings-modal .settings-refined input:is([type=checkbox],[type=radio]) { width:15px; height:15px; min-height:0; flex-shrink:0; accent-color:#8eb1ee; }
+.ods-settings-modal .settings-refined :is(button,a):focus-visible { outline:2px solid #afb5ba; outline-offset:3px; }
+.ods-settings-modal .settings-refined .settings-section > .grid { margin-top:0; padding-top:0; gap:0; border-top:0; }
+.ods-settings-modal .settings-appearance-options { border-top:1px solid #353636; }
+.ods-settings-modal .settings-appearance-option { display:flex; align-items:center; justify-content:space-between; width:100%; gap:16px; padding:16px 0; border-bottom:1px solid #353636; text-align:left; }
+.ods-settings-modal .settings-selected-label { border-radius:16px; padding:4px 11px; font-size:12px; background:#343737; color:#d5d9d9; }
+.ods-settings-modal .settings-appearance-option:hover .settings-selected-label { background:#414545; }
+.ods-settings-modal .settings-refined .settings-section :is(button,a.settings-inline-action) { transition:background-color 120ms,color 120ms; }
+.ods-settings-modal .settings-metric-row { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:15px 0; border-bottom:1px solid #353636; }
+.ods-settings-modal .settings-metric-row > p { font-size:13px; font-weight:400; }
+.ods-settings-modal .settings-metric-row > div { margin:0; flex-wrap:wrap; justify-content:flex-end; }
+.ods-settings-modal .settings-metric-row > div > p { font-size:13px; font-weight:500; }
+.ods-settings-modal .settings-metric-row svg { display:none; }
+.ods-settings-modal .settings-route-intro { padding:0; border:0; }
+.ods-settings-modal .settings-route-host { margin:8px 0 18px; font-size:12px; color:#c4c7c7; overflow-wrap:anywhere; }
+.ods-settings-modal .settings-route-host span { color:#969b9b; }
+.ods-settings-modal .settings-route-toolbar { display:flex; gap:12px; flex-wrap:wrap; align-items:center; justify-content:space-between; }
+.ods-settings-modal .settings-route-filters { display:flex; flex-wrap:wrap; gap:3px; padding:3px; border:1px solid #373939; border-radius:8px; }
+.ods-settings-modal .settings-route-filter { padding:5px 9px; border:0; border-radius:5px; color:#aeb2b2; text-transform:capitalize; background:transparent; }
+.ods-settings-modal .settings-route-filter:hover,.ods-settings-modal .settings-route-filter[aria-pressed=true] { color:#f0f1f1; background:#353838; }
+.ods-settings-modal .settings-inline-action { display:inline-flex; align-items:center; gap:4px; font-size:12px; color:#c5c9c9; }
+.ods-settings-modal .settings-route-summary { display:flex; flex-wrap:wrap; gap:16px; padding:17px 0; border-bottom:1px solid #353636; }
+.ods-settings-modal .settings-route-count { display:flex; align-items:center; gap:8px; font-size:12px; }
+.ods-settings-modal .settings-route-count :is(p,span) { font-size:12px; font-weight:400; }
+.ods-settings-modal .settings-route-list { border-top:1px solid #353636; }
+.ods-settings-modal .settings-route-row { padding:12px 2px; }
+.ods-settings-modal .settings-route-row > div { gap:10px; }
+.ods-settings-modal .settings-route-row p { font-size:13px; font-weight:450; }
+.ods-settings-modal .settings-route-row p + p { font-size:12px; color:#969b9b; }
+.ods-settings-modal .settings-route-port { color:#a5abab; font-size:12px; font-variant-numeric:tabular-nums; }
+.ods-settings-modal .settings-storage-overview { display:block; }
+.ods-settings-modal .settings-storage-overview > div { padding:14px 0; border-bottom:1px solid #353636; }
+.ods-settings-modal .settings-storage-overview .text-2xl { font-size:15px; font-weight:500; }
+.ods-settings-modal .settings-storage-overview svg { display:none; }
+.ods-settings-modal .settings-storage-data > div:first-child > div { display:flex; justify-content:space-between; align-items:center; gap:16px; width:100%; }
+.ods-settings-modal .settings-storage-data > div:last-child { border:0; margin-top:10px; padding-top:0; }
+.ods-settings-modal .settings-storage-data code { padding:0; background:transparent; }
+.ods-settings-modal .settings-storage-disk > div:first-child > div { display:flex; justify-content:space-between; gap:16px; align-items:center; width:100%; }
+.ods-settings-modal .settings-storage-disk .h-2 { height:4px; }
+.ods-settings-modal .settings-storage-breakdown { margin-top:16px; }
+.ods-settings-modal .settings-storage-row { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:7px 16px; padding:12px 0; }
+.ods-settings-modal .settings-storage-row p { margin:0; font-size:13px; font-weight:400; }
+.ods-settings-modal .settings-storage-track { grid-column:1/-1; height:3px; }
+.ods-settings-modal .settings-environment { border-radius:0; }
+.ods-settings-panel .remote-settings-content { padding:0; }
+.ods-settings-panel .remote-settings-content > header { flex-direction:column; }
+.ods-settings-panel .remote-settings-content > .grid > section { padding:18px 0; border:0; border-top:1px solid #353636; border-radius:0; background:transparent; box-shadow:none; }
+.ods-settings-panel .settings-environment-header { flex-direction:column; gap:14px; }
+.ods-settings-panel .settings-environment-header > div { width:100%; min-width:0; }
+.ods-settings-panel .settings-environment-header > div:last-child { justify-content:flex-start; gap:8px; }
+.ods-settings-panel .settings-environment-header p { font-size:12px; line-height:1.6; }
+.ods-settings-modal .settings-environment-fields { min-width:0; padding:0; border:0; }
+.ods-settings-modal .settings-environment-fields > div:first-child { padding-bottom:14px; margin-bottom:0; }
+.ods-settings-modal .settings-environment-field { padding:18px 0; margin-top:0!important; border-bottom:1px solid #353636; }
+.ods-settings-modal .settings-environment-field--issue { border-bottom-color:#736038; }
+.ods-settings-modal .settings-environment-field label { font-size:13px; font-weight:550; }
+.ods-settings-modal .settings-environment-field p { font-size:12px; line-height:1.6; }
+.ods-settings-modal .settings-environment-field > div:first-child span { padding:1px 5px; border-radius:4px; font-size:10px; }
+.ods-settings-modal .settings-environment-field > div:nth-child(2) { margin-top:12px; }
+.ods-settings-modal .settings-environment-field :is(input,select) { padding:8px 10px; }
+.ods-settings-modal .settings-environment-field [role=group] button { padding:5px 10px; }
+.ods-settings-modal .settings-environment-behavior { border-top:1px solid #353636; border-bottom:1px solid #353636; }
+.ods-settings-modal .settings-environment-behavior > div { padding:12px 0; }
+.ods-settings-modal .settings-environment-behavior > div + div { border-top:1px solid #303232; }
+.ods-settings-modal .env-category-nav { padding:10px; background:transparent; border-radius:8px; }
+.ods-settings-modal .env-category-nav [aria-pressed=true] { background:#333636; box-shadow:none; }
+.ods-settings-modal .env-status-strip { background:transparent; border-radius:0; border:0; border-bottom:1px solid #353636; padding:0 0 14px; }
+@media(max-width:600px) {
+  .ods-settings-modal .settings-route-toolbar { align-items:flex-start; }
+  .ods-settings-modal .settings-route-filters { gap:1px; }
+  .ods-settings-modal .settings-route-filter { padding:5px 7px; }
+  .ods-settings-modal .settings-route-summary { gap:12px; }
+  .ods-settings-modal .settings-storage-overview > div > div:first-child > div { flex-wrap:wrap; gap:4px 12px; }
+}
