@@ -343,6 +343,16 @@ def _capture_directory(
     _check_extended_metadata(descriptor)
     if _snapshot_identity(os.fstat(descriptor)) != _snapshot_identity(before):
         _fail("lifecycle-work-data-snapshot-source-changed")
+    # Some filesystems can report the same directory timestamps for two
+    # mutations inside one clock tick. Recheck the namespace itself so a file
+    # added or removed during the first listing cannot be silently omitted.
+    try:
+        if sorted(_safe_name(name) for name in os.listdir(descriptor)) != names:
+            _fail("lifecycle-work-data-snapshot-source-changed")
+    except (OSError, UnicodeError) as exc:
+        _fail("lifecycle-work-data-snapshot-read-failed", exc)
+    if _snapshot_identity(os.fstat(descriptor)) != _snapshot_identity(before):
+        _fail("lifecycle-work-data-snapshot-source-changed")
 
 
 def _archive_name(command: LifecycleWorkCommand) -> str:

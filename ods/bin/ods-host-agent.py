@@ -138,6 +138,11 @@ except Exception:  # pragma: no cover - import environment dependent
     _data_stream_backup_runtime_module = None
 
 try:
+    import extension_data_stream_restore_runtime as _data_stream_restore_runtime_module
+except Exception:  # pragma: no cover - import environment dependent
+    _data_stream_restore_runtime_module = None
+
+try:
     import extension_configuration_effect_runtime as _configuration_effect_runtime_module
 except Exception:  # pragma: no cover - import environment dependent
     _configuration_effect_runtime_module = None
@@ -8302,9 +8307,10 @@ class AgentHandler(BaseHTTPRequestHandler):
                     else:
                         dispatcher = None
                 elif command.operation_key in {"backup", "restore"}:
-                    # The generic backup captures an attested immutable path
-                    # union, but generic restore remains unavailable. Neither
-                    # data route may fall back to an injected dispatcher.
+                    # Neither data route may fall back to an injected
+                    # dispatcher. Generic restore replays a sealed snapshot
+                    # through the verified stage and paired transition only
+                    # under this admitted, host-owned Docker witness.
                     dispatcher = None
                     if command.operation_key == "backup" and command.service_ids != ("searxng",):
                         runtime = _get_extension_data_stream_backup_runtime()
@@ -8314,6 +8320,16 @@ class AgentHandler(BaseHTTPRequestHandler):
                                 witness=admission.docker_data_observer(loaded),
                             )
                             started_observer = runtime.backup_started_observer
+                    elif command.operation_key == "restore" and command.service_ids != ("searxng",):
+                        runtime = _get_extension_data_stream_backup_runtime()
+                        if runtime is not None and _data_stream_restore_runtime_module is not None:
+                            def dispatcher(loaded):
+                                return _data_stream_restore_runtime_module.StreamRestoreDispatcher(
+                                    runtime.store,
+                                )(
+                                    loaded,
+                                    witness=admission.docker_restore_observer(loaded),
+                                )
                     elif command.service_ids == ("searxng",):
                         runtime = _get_extension_data_backup_runtime()
                         if runtime is not None and command.operation_key == "backup":

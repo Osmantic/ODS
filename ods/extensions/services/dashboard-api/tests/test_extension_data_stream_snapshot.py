@@ -1,4 +1,4 @@
-"""Real Linux streaming snapshots; generic restore/executor stay disabled."""
+"""Real Linux streaming snapshots; Dashboard executor stays disabled."""
 
 from __future__ import annotations
 

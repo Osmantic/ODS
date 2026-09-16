@@ -374,8 +374,15 @@ snapshot starts and again before its temporary archive is published. Any
 active scoped service, overlapping running container mount, unverifiable
 Docker state, or lease loss refuses publication. A previously sealed exact
 archive can still be replayed without another capture. This does not rule out
-non-Docker writers or establish a cross-path point-in-time snapshot; generic
-`restore`, apply, and conversational execution remain disabled.
+ non-Docker writers or establish a cross-path point-in-time snapshot. Generic
+ `restore` now reopens that sealed archive under an admitted host lease, stages
+ every path before any live transition, and repeatedly requires a pinned
+ local-Docker quiescence witness. Linux no-replace renames retain displaced
+ trees under deterministic quarantine names; started-only receipts replay the
+ same proof-based transition after a crash, without deleting quarantined data.
+ Unknown path state, archive drift, or witness loss leaves the operation
+ uncertain for owner review. This does not authorize arbitrary writers or make
+ the Dashboard transaction executor and conversational installation live.
 
 The exact `configure` host operation is now activated only for that same
 SearXNG Manifest v2 canary. Required `source: generated` string secrets are

@@ -1,9 +1,11 @@
-"""Receipted generic, immutable extension-data backup; no live restore effect.
+"""Receipted generic, immutable extension-data backup.
 
 The selected host route requires an admitted lease-bound Docker witness for
 new snapshots of the attested old/new path union. This still does not establish
 a point-in-time snapshot across non-Docker or active external writers,
-so neither this archive nor a green receipt qualifies generic rollback yet.
+so neither this archive nor a green backup receipt alone qualifies rollback.
+The separate generic restore route requires its own admitted witness and
+proof-based, non-overwriting paired transition.
 """
 
 from __future__ import annotations

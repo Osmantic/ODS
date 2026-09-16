@@ -1,7 +1,8 @@
-"""Source-only, one-path paired transition for verified extension data.
+"""One-path paired transition for verified extension data.
 
 The caller must stage a verified stream snapshot and supply a host-owned
-quiescence check. This module is not selected by ods-host-agent. It never
+quiescence check. The host selects it only inside an admitted generic restore;
+the Dashboard production transaction executor remains disabled. It never
 overwrites, unlinks, or automatically rolls back live data; the original tree
 is retained under the intent's deterministic quarantine name. Same-UID
 adversaries and hidden filesystem metadata still require live qualification.
@@ -269,7 +270,7 @@ def _publish_exact(root: int, name: str, expected: dict[str, Any]) -> None:
 
 
 class PairedDataTransition:
-    """Proof-based one-path effect; not yet wired to the production host agent."""
+    """Proof-based one-path effect selected by the generic host restore route."""
 
     def __init__(self, install_dir: Path, store: StreamSnapshotStore,
                  journal: RestoreIntentJournal) -> None:

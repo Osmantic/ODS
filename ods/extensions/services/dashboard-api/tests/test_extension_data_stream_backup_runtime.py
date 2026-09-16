@@ -1,11 +1,10 @@
-"""Real generic backup receipt and host reachability; restore stays disabled."""
+"""Real generic backup receipt and host-gated restore reachability."""
 
 # Imported pytest fixtures are intentionally injected by name into tests.
 # ruff: noqa: F401, F811
 
 from __future__ import annotations
 
-import os
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -17,6 +16,7 @@ if str(BIN_DIR) not in sys.path:
     sys.path.insert(0, str(BIN_DIR))
 
 import extension_data_stream_backup_runtime as runtime_module  # noqa: E402
+import extension_data_paired_transition as paired  # noqa: E402
 import extension_data_local_docker_runner as docker_runner  # noqa: E402
 from test_extension_data_scope_contract import command as generic_command  # noqa: E402
 from test_extension_data_docker_quiescence import FakeDocker  # noqa: E402
@@ -27,7 +27,7 @@ from test_extension_lifecycle_work_host_api import (  # noqa: E402
 )
 
 
-linux_effect = pytest.mark.skipif(os.name != "posix", reason="Linux generic data backup")
+linux_effect = pytest.mark.skipif(sys.platform != "linux", reason="Linux generic data backup and restore")
 
 
 @pytest.fixture(autouse=True)
@@ -244,11 +244,15 @@ def test_generic_backup_recovers_started_receipt_from_sealed_archive(
 
 
 @linux_effect
-def test_generic_restore_stays_unavailable_and_never_uses_injected_dispatcher(
+def test_generic_restore_requires_sealed_snapshot_and_never_uses_injected_dispatcher(
     host_server, host_request,
 ):
     agent, _listener = host_server
     _host_ready(agent)
+    _fixture_plan(agent, generic_command(
+        operation_key="restore", actions=("install", "install"),
+        selected_paths=(["data/alpha"], ["data/beta"]), prior_paths=[],
+    ))
     grant = acquire_lease(agent, host_request, ["alpha", "beta"])
     request = work_request(
         agent._extension_lifecycle_work.REQUEST_SCHEMA,
@@ -260,8 +264,132 @@ def test_generic_restore_stays_unavailable_and_never_uses_injected_dispatcher(
     agent._extension_lifecycle_work_dispatcher = lambda value: calls.append(value)
     status, result = host_request("/v1/extension/lifecycle-work", request)
     assert status == 503
-    assert result == {"error": {"code": "lifecycle-work-dispatcher-unavailable"}}
+    assert result == {"error": {"code": "lifecycle-work-operation-failed"}}
     assert calls == []
+    assert agent._get_lifecycle_receipt_store().snapshot(
+        request["transactionId"], "restore",
+    ).state == "failed"
+
+
+@linux_effect
+def test_host_generic_restore_uses_sealed_snapshot_and_replays_receipt(
+    host_server, host_request,
+):
+    agent, _listener = host_server
+    _host_ready(agent)
+    grant = acquire_lease(agent, host_request, ["alpha", "beta"])
+    lease = lease_evidence(agent, grant)
+    backup = work_request(
+        agent._extension_lifecycle_work.REQUEST_SCHEMA, lease,
+        operation_key="backup", service_ids=["alpha", "beta"],
+    )
+    begin_receipt(agent, host_request, backup)
+    assert host_request("/v1/extension/lifecycle-work", backup)[0] == 200
+
+    for service_id in ("alpha", "beta"):
+        (agent.DATA_DIR / service_id / "note").write_bytes(b"changed after apply")
+    _fixture_plan(agent, generic_command(
+        operation_key="restore", actions=("install", "install"),
+        selected_paths=(["data/alpha"], ["data/beta"]), prior_paths=[],
+    ))
+    restore = work_request(
+        agent._extension_lifecycle_work.REQUEST_SCHEMA, lease,
+        operation_key="restore", service_ids=["alpha", "beta"],
+    )
+    begin_receipt(agent, host_request, restore)
+    calls = []
+    agent._extension_lifecycle_work_dispatcher = lambda value: calls.append(value)
+    status, result = host_request("/v1/extension/lifecycle-work", restore)
+    assert status == 200
+    assert result["completed"] is True and result["operationKey"] == "restore"
+    assert calls == []
+    assert host_request("/v1/extension/lifecycle-work", restore) == (status, result)
+    for service_id in ("alpha", "beta"):
+        assert (agent.DATA_DIR / service_id / "note").read_bytes() == service_id.encode("ascii")
+        quarantine = list(agent.DATA_DIR.glob(".ods-restore-quarantine-*"))
+        assert len(quarantine) == 2
+    assert sorted((item / "note").read_bytes() for item in quarantine) == [
+        b"changed after apply", b"changed after apply",
+    ]
+
+
+@linux_effect
+def test_host_restore_refuses_active_docker_writer_before_live_transition(
+    host_server, host_request, monkeypatch,
+):
+    agent, _listener = host_server
+    _host_ready(agent)
+    grant = acquire_lease(agent, host_request, ["alpha", "beta"])
+    lease = lease_evidence(agent, grant)
+    backup = work_request(
+        agent._extension_lifecycle_work.REQUEST_SCHEMA, lease,
+        operation_key="backup", service_ids=["alpha", "beta"],
+    )
+    begin_receipt(agent, host_request, backup)
+    assert host_request("/v1/extension/lifecycle-work", backup)[0] == 200
+    _fixture_plan(agent, generic_command(
+        operation_key="restore", actions=("install", "install"),
+        selected_paths=(["data/alpha"], ["data/beta"]), prior_paths=[],
+    ))
+    restore = work_request(
+        agent._extension_lifecycle_work.REQUEST_SCHEMA, lease,
+        operation_key="restore", service_ids=["alpha", "beta"],
+    )
+    begin_receipt(agent, host_request, restore)
+    before = {service_id: (agent.DATA_DIR / service_id).stat().st_ino
+              for service_id in ("alpha", "beta")}
+    fake = FakeDocker(states={"alpha": b"running\n"})
+    monkeypatch.setattr(docker_runner, "PinnedLocalDockerRunner", lambda: fake)
+    status, result = host_request("/v1/extension/lifecycle-work", restore)
+    assert status == 503
+    assert result == {"error": {"code": "lifecycle-work-operation-failed"}}
+    assert {service_id: (agent.DATA_DIR / service_id).stat().st_ino
+            for service_id in before} == before
+    assert not list(agent.DATA_DIR.glob(".ods-restore-quarantine-*"))
+    assert not list(agent.DATA_DIR.glob(".ods-restore-stage-*"))
+    assert agent._get_lifecycle_receipt_store().snapshot(
+        restore["transactionId"], "restore",
+    ).state == "started"
+
+
+@linux_effect
+def test_host_started_restore_receipt_replays_completed_effect_without_rename(
+    host_server, host_request, monkeypatch,
+):
+    agent, _listener = host_server
+    _host_ready(agent)
+    grant = acquire_lease(agent, host_request, ["alpha", "beta"])
+    lease = lease_evidence(agent, grant)
+    backup = work_request(
+        agent._extension_lifecycle_work.REQUEST_SCHEMA, lease,
+        operation_key="backup", service_ids=["alpha", "beta"],
+    )
+    begin_receipt(agent, host_request, backup)
+    assert host_request("/v1/extension/lifecycle-work", backup)[0] == 200
+    _fixture_plan(agent, generic_command(
+        operation_key="restore", actions=("install", "install"),
+        selected_paths=(["data/alpha"], ["data/beta"]), prior_paths=[],
+    ))
+    restore = work_request(
+        agent._extension_lifecycle_work.REQUEST_SCHEMA, lease,
+        operation_key="restore", service_ids=["alpha", "beta"],
+    )
+    begin_receipt(agent, host_request, restore)
+    parsed = agent._extension_lifecycle_work.parse_lifecycle_work_request({
+        key: restore[key] for key in agent._extension_lifecycle_work.REQUEST_KEYS
+    })
+    bound = agent._extension_lifecycle_plan_loader(parsed)
+    store = agent._get_extension_data_stream_backup_runtime().store
+    evidence = agent._data_stream_restore_runtime_module.StreamRestoreDispatcher(store)(
+        bound, witness=lambda: True,
+    )
+    monkeypatch.setattr(
+        paired, "_no_replace", lambda *_args: pytest.fail("replay must not rename"),
+    )
+    status, result = host_request("/v1/extension/lifecycle-work", restore)
+    assert status == 200
+    assert result["evidenceHash"] == evidence
+    assert result["completed"] is True
 
 
 @linux_effect
