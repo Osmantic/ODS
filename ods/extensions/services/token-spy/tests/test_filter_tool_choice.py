@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 
 
 @pytest.mark.parametrize("mode", ["blocklist", "allowlist"])
-@pytest.mark.parametrize("choice", ["blocked", "kept", "auto", "required", "none"])
+@pytest.mark.parametrize("choice", ["blocked", "kept", "auto", "required", "none", None, {"function": None}])
 def test_filtered_proxy_keeps_tool_choice_consistent(monkeypatch, tmp_path, mode, choice):
     service_dir = Path(__file__).resolve().parents[1]
     monkeypatch.syspath_prepend(str(service_dir))
@@ -32,7 +32,7 @@ def test_filtered_proxy_keeps_tool_choice_consistent(monkeypatch, tmp_path, mode
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(upstream), base_url="http://model")
     monkeypatch.setattr(proxy, "get_moonshot_client", lambda: client)
-    tool_choice = {"type": "function", "function": {"name": choice}} if choice in {"blocked", "kept"} else choice
+    tool_choice = {"type": "function", "function": {"name": choice}} if isinstance(choice, str) and choice in {"blocked", "kept"} else choice
     response = TestClient(proxy.app).post(
         "/v1/chat/completions",
         headers={"Authorization": "Bearer filter-test-key"},
