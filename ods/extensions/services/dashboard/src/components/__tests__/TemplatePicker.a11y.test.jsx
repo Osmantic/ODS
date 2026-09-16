@@ -40,11 +40,11 @@ describe('TemplatePicker accessibility', () => {
     expect(within(card).getByText(/Installing/i)).toBeInTheDocument()
   })
 
-  test('hasErrors card disables the button and renders the "Has errors" status text', () => {
+  test('hasErrors card permits review and renders the "Has errors" status text', () => {
     render(<TemplatePicker templates={[{ ...baseTemplate, _status: 'has_errors' }]} />)
 
     const card = screen.getByRole('button', { name: /Chat Stack/i })
-    expect(card).toBeDisabled()
+    expect(card).toBeEnabled()
     expect(within(card).getByText(/Has errors/i)).toBeInTheDocument()
   })
 

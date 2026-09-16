@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -69,14 +70,17 @@ def validate_string_list(issues: Issues, value: Any, path: str) -> list[str]:
 
 def discover_marked_writers(marker: str) -> set[str]:
     writers: set[str] = set()
-    for source in ROOT.rglob("*"):
-        if not source.is_file() or source.suffix.lower() not in WRITER_SOURCE_SUFFIXES:
-            continue
-        relative = source.relative_to(ROOT)
-        if relative.parts and relative.parts[0] == "tests":
-            continue
-        if marker in source.read_text(encoding="utf-8", errors="replace"):
-            writers.add(relative.as_posix())
+    for directory, subdirectories, filenames in os.walk(ROOT):
+        if Path(directory) == ROOT:
+            # Fixtures and retained snapshots are not active config writers.
+            # Prune before descending: backups may also contain large data trees.
+            subdirectories[:] = [name for name in subdirectories if name not in {"tests", ".backups"}]
+        for filename in filenames:
+            source = Path(directory) / filename
+            if not source.is_file() or source.suffix.lower() not in WRITER_SOURCE_SUFFIXES:
+                continue
+            if marker in source.read_text(encoding="utf-8", errors="replace"):
+                writers.add(source.relative_to(ROOT).as_posix())
     return writers
 
 

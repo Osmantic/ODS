@@ -3,9 +3,10 @@
 # ODS Installer — Phase 07: Developer Tools
 # ============================================================================
 # Part of: installers/phases/
-# Purpose: Install Claude Code, Codex CLI, and OpenCode
+# Purpose: Install developer CLIs and, when selected, the OpenCode extension
 #
 # Expects: DRY_RUN, INSTALL_DIR, LOG_FILE, LLM_MODEL, MAX_CONTEXT,
+#           ENABLE_OPENCODE,
 #           PKG_MANAGER,
 #           ai(), ai_ok(), ai_warn(), log()
 # Provides: (developer tools installed to ~/.npm-global)
@@ -15,51 +16,60 @@
 # ============================================================================
 
 ods_progress 42 "devtools" "Installing developer tools"
+# shellcheck source=../lib/node-runtime.sh
+. "$SCRIPT_DIR/installers/lib/node-runtime.sh"
 if $DRY_RUN; then
-    log "[DRY RUN] Would install AI developer tools (Claude Code, Codex CLI, OpenCode)"
-    log "[DRY RUN] Would configure OpenCode for local llama-server (user-level systemd service on port 3003)"
+    log "[DRY RUN] Would install AI developer tools (Claude Code and Codex CLI)"
+    if [[ "${ENABLE_OPENCODE:-false}" == "true" ]]; then
+        log "[DRY RUN] Would install and configure the optional OpenCode browser IDE (user-level systemd service on port 3003)"
+    else
+        log "[DRY RUN] OpenCode extension is disabled; it would not be installed or started"
+    fi
     log "[DRY RUN] Would install ODS host agent systemd service (system-mode, port 7710)"
     log "[DRY RUN] Would install ODS mDNS announcer systemd service (if zeroconf available)"
 else
     ai "Installing AI developer tools..."
 
     # Ensure Node.js/npm is available (needed for Claude Code and Codex)
-    if ! command -v npm &> /dev/null; then
-        # In non-interactive mode, fail fast if sudo requires a password — otherwise
-        # the sudo prompt hangs and the trailing error-mask silently skips Node.js,
-        # leaving downstream Claude Code / Codex CLI installs to be skipped without
-        # any visible failure. See pattern in 05-docker.sh:61-65.
-        if [[ "${INTERACTIVE:-true}" != "true" ]] && ! sudo -n true 2>/dev/null; then
-            error "Cannot install Node.js: sudo password required but running in --non-interactive mode. Re-run interactively or configure NOPASSWD sudo."
+    if ! ods_linux_node_tools_available; then
+        # Node.js install needs root. When sudo isn't usable (rootless box, or
+        # non-interactive without cached/passwordless sudo), skip it with a clear
+        # warning instead of failing the install. The optional AI dev-tool CLIs
+        # (Claude Code / Codex) simply won't be installed; core ODS is
+        # unaffected. ods_sudo() below also skips these calls when sudo is absent.
+        if ! ods_sudo_available; then
+            ai_warn "sudo unavailable — skipping Node.js install (optional dev-tool CLIs will be skipped)."
+            ai "  Install Node.js 22+ yourself and re-run to add Claude Code / Codex."
+        else
+            ai "Installing Node.js..."
+            case "$PKG_MANAGER" in
+                apt)
+                    tmpfile=$(mktemp /tmp/nodesource-setup.XXXXXX.sh)
+                    if curl -fsSL --max-time 300 https://deb.nodesource.com/setup_22.x -o "$tmpfile" 2>/dev/null; then
+                        ods_sudo -E bash "$tmpfile" 2>&1 | tee -a "$LOG_FILE" || ai_warn "Failed to run NodeSource apt setup script (non-fatal — Claude Code/Codex CLI will be skipped)"
+                    fi
+                    rm -f "$tmpfile"
+                    ods_sudo apt-get install -y nodejs 2>&1 | tee -a "$LOG_FILE" || ai_warn "Failed to install nodejs via apt-get (non-fatal — Claude Code/Codex CLI will be skipped)"
+                    ;;
+                dnf)
+                    ods_sudo dnf module install -y nodejs:22 2>&1 | tee -a "$LOG_FILE" || \
+                        ods_sudo dnf install -y nodejs 2>&1 | tee -a "$LOG_FILE" || ai_warn "Failed to install nodejs via dnf (non-fatal — Claude Code/Codex CLI will be skipped)"
+                    ;;
+                pacman)
+                    ods_sudo pacman -S --noconfirm --needed nodejs npm 2>&1 | tee -a "$LOG_FILE" || ai_warn "Failed to install nodejs via pacman (non-fatal — Claude Code/Codex CLI will be skipped)"
+                    ;;
+                zypper)
+                    ods_sudo zypper --non-interactive install nodejs22 2>&1 | tee -a "$LOG_FILE" || \
+                        ods_sudo zypper --non-interactive install nodejs 2>&1 | tee -a "$LOG_FILE" || ai_warn "Failed to install nodejs via zypper (non-fatal — Claude Code/Codex CLI will be skipped)"
+                    ;;
+                *)
+                    ai_warn "Unknown package manager — cannot install Node.js automatically"
+                    ;;
+            esac
         fi
-        ai "Installing Node.js..."
-        case "$PKG_MANAGER" in
-            apt)
-                tmpfile=$(mktemp /tmp/nodesource-setup.XXXXXX.sh)
-                if curl -fsSL --max-time 300 https://deb.nodesource.com/setup_22.x -o "$tmpfile" 2>/dev/null; then
-                    sudo -E bash "$tmpfile" 2>&1 | tee -a "$LOG_FILE" || ai_warn "Failed to run NodeSource apt setup script (non-fatal — Claude Code/Codex CLI will be skipped)"
-                fi
-                rm -f "$tmpfile"
-                sudo apt-get install -y nodejs 2>&1 | tee -a "$LOG_FILE" || ai_warn "Failed to install nodejs via apt-get (non-fatal — Claude Code/Codex CLI will be skipped)"
-                ;;
-            dnf)
-                sudo dnf module install -y nodejs:22 2>&1 | tee -a "$LOG_FILE" || \
-                    sudo dnf install -y nodejs 2>&1 | tee -a "$LOG_FILE" || ai_warn "Failed to install nodejs via dnf (non-fatal — Claude Code/Codex CLI will be skipped)"
-                ;;
-            pacman)
-                sudo pacman -S --noconfirm --needed nodejs npm 2>&1 | tee -a "$LOG_FILE" || ai_warn "Failed to install nodejs via pacman (non-fatal — Claude Code/Codex CLI will be skipped)"
-                ;;
-            zypper)
-                sudo zypper --non-interactive install nodejs22 2>&1 | tee -a "$LOG_FILE" || \
-                    sudo zypper --non-interactive install nodejs 2>&1 | tee -a "$LOG_FILE" || ai_warn "Failed to install nodejs via zypper (non-fatal — Claude Code/Codex CLI will be skipped)"
-                ;;
-            *)
-                ai_warn "Unknown package manager — cannot install Node.js automatically"
-                ;;
-        esac
     fi
 
-    if command -v npm &> /dev/null; then
+    if ods_linux_node_tools_available; then
         # Set up user-level npm global prefix (no sudo needed)
         NPM_GLOBAL_DIR="$HOME/.npm-global"
         if [[ ! -d "$NPM_GLOBAL_DIR" ]]; then
@@ -93,10 +103,11 @@ else
             ai "Added ~/.npm-global/bin to PATH in ~/.bashrc"
         fi
     else
-        ai_warn "npm not available — skipping Claude Code and Codex CLI install"
-        ai "  Install later: npm i -g @anthropic-ai/claude-code @openai/codex"
+        ai_warn "Linux Node.js 20+ and npm are not available — skipping Claude Code and Codex CLI install"
+        ai "  Install Linux Node.js 22+ and re-run to add Claude Code / Codex."
     fi
 
+    if [[ "${ENABLE_OPENCODE:-false}" == "true" ]]; then
     _opencode_candidate_is_file() {
         local candidate="$1"
         [[ -n "$candidate" && "$candidate" == /* && -x "$candidate" && ! -d "$candidate" ]]
@@ -169,7 +180,7 @@ else
         _opencode_model_id="${LLM_MODEL}"
         _opencode_model_name="${LLM_MODEL}"
         _opencode_provider_name="llama-server (local)"
-        if [[ "${ODS_MODEL_SWITCHBOARD:-observe}" == "enabled" ]]; then
+        if [[ "${ODS_MODEL_SWITCHBOARD:-enabled}" == "enabled" ]]; then
             _opencode_url="http://127.0.0.1:${LITELLM_PORT:-4000}/v1"
             _opencode_key="${LITELLM_KEY:-}"
             _opencode_model_id="ods/current"
@@ -302,6 +313,17 @@ OPENCODE_EOF
                 ai_warn "Could not enable linger. OpenCode may stop after logout. Run: loginctl enable-linger $(whoami)"
         fi
     fi
+    else
+        # A rerun with --no-opencode must not leave an earlier ODS-managed
+        # browser IDE running. Preserve the binary and user configuration so
+        # an explicit future opt-in is reversible, but retire the managed unit.
+        if systemctl --user is-active --quiet opencode-web.service 2>/dev/null \
+            || systemctl --user is-enabled --quiet opencode-web.service 2>/dev/null; then
+            systemctl --user disable --now opencode-web.service >> "$LOG_FILE" 2>&1 || \
+                ai_warn "Could not stop the previously enabled OpenCode extension"
+        fi
+        log "OpenCode extension disabled; skipped installation and startup"
+    fi
 fi
 
 # The host-agent and mDNS blocks below use real sudo/systemctl calls.
@@ -312,6 +334,27 @@ if $DRY_RUN; then return 0; fi
 # System-mode systemd unit (was --user mode pre-#573). Installs to
 # /etc/systemd/system, runs as the installing user with SupplementaryGroups=docker
 # so the agent can manage Docker without socket-mounting into a container.
+_ods_start_session_host_agent() {
+    if ! "$AGENT_PYTHON" -c "import huggingface_hub, hf_xet" >/dev/null 2>&1; then
+        ai "Installing ODS host-agent model downloader dependencies..."
+        if ods_ensure_python_pip "$AGENT_PYTHON" "ODS host-agent" && \
+           ods_python_pip_install_user "$AGENT_PYTHON" "$LOG_FILE" "huggingface_hub[hf_xet]>=0.27"; then
+            ai_ok "ODS host-agent Hugging Face downloader ready"
+        else
+            ai_warn "Could not install huggingface_hub[hf_xet]; model manager downloads may fail on Xet-backed Hugging Face models."
+        fi
+    fi
+
+    if ODS_AGENT_FORCE_SESSION=true "$INSTALL_DIR/ods-cli" agent start >> "$LOG_FILE" 2>&1; then
+        ai_ok "ODS host agent started for this session (background mode)"
+        ai "  Run 'ods agent start' after reboot or login to start it again."
+        return 0
+    fi
+
+    ai_warn "Could not start the session host agent. Run: ods agent start"
+    return 1
+}
+
 if [[ -f "$INSTALL_DIR/bin/ods-host-agent.py" ]]; then
     AGENT_PYTHON="$(command -v python3)"
     if [[ -n "$AGENT_PYTHON" ]]; then
@@ -325,14 +368,16 @@ if [[ -f "$INSTALL_DIR/bin/ods-host-agent.py" ]]; then
                 ai_ok "Migrated host agent from --user mode to system mode"
             fi
 
-            # System-mode install requires sudo. Fail fast in non-interactive
-            # mode if passwordless sudo isn't available (mirrors phase 05).
-            if [[ "${INTERACTIVE:-true}" != "true" ]] && ! sudo -n true 2>/dev/null; then
-                ai_bad "Host agent install requires sudo and sudo requires a password."
-                ai_bad "In non-interactive mode, either:"
-                ai "  1. Run with passwordless sudo (NOPASSWD in sudoers)"
-                ai "  2. Run the installer interactively (without --non-interactive)"
-                error "Cannot install host agent system unit without sudo in non-interactive mode."
+            # System-mode install of the host-agent + mDNS units needs root.
+            # When sudo isn't usable (rootless box, or non-interactive without
+            # cached/passwordless sudo), skip these OPTIONAL extras instead of
+            # failing the whole install. Core ODS runs rootless; start the agent
+            # as a session process so model management remains available. This
+            # return exits phase 07 (the remaining system units need root).
+            if ! ods_sudo_available; then
+                ai_warn "sudo unavailable — skipping host-agent + mDNS systemd units (optional)."
+                _ods_start_session_host_agent || true
+                return 0
             fi
 
             # Determine the user that should own the running agent. Under
@@ -424,8 +469,8 @@ if [[ -f "$INSTALL_DIR/bin/ods-host-agent.py" ]]; then
             # loginctl enable-linger no longer needed for host agent (system-mode unit)
 
         else
-            ai_warn "No systemd detected — ods host agent not auto-installed."
-            ai_warn "  Start manually: ods agent start"
+            ai_warn "No systemd detected — starting the host agent without a system service."
+            _ods_start_session_host_agent || true
         fi
     else
         ai_warn "python3 not found — ods host agent not installed"
@@ -451,11 +496,14 @@ if [[ -f "$INSTALL_DIR/bin/ods-mdns.py" ]] && [[ "$(uname -s)" == "Linux" ]]; th
     #      warning and the mDNS announcer never starts even though the
     #      Python module is one pip away.
     _install_zeroconf_via_pkg() {
+        # Needs root; skip cleanly when sudo isn't available (falls back to pip
+        # --user below, which needs no root).
+        ods_sudo_available || return 99
         case "$PKG_MANAGER" in
-            apt)    sudo apt-get install -y python3-zeroconf 2>&1 | tee -a "$LOG_FILE" ;;
-            dnf)    sudo dnf install -y python3-zeroconf 2>&1 | tee -a "$LOG_FILE" ;;
-            pacman) sudo pacman -S --noconfirm --needed python-zeroconf 2>&1 | tee -a "$LOG_FILE" ;;
-            zypper) sudo zypper --non-interactive install python3-zeroconf 2>&1 | tee -a "$LOG_FILE" ;;
+            apt)    ods_sudo apt-get install -y python3-zeroconf 2>&1 | tee -a "$LOG_FILE" ;;
+            dnf)    ods_sudo dnf install -y python3-zeroconf 2>&1 | tee -a "$LOG_FILE" ;;
+            pacman) ods_sudo pacman -S --noconfirm --needed python-zeroconf 2>&1 | tee -a "$LOG_FILE" ;;
+            zypper) ods_sudo zypper --non-interactive install python3-zeroconf 2>&1 | tee -a "$LOG_FILE" ;;
             *)      return 99 ;;
         esac
     }
@@ -487,6 +535,7 @@ if [[ -f "$INSTALL_DIR/bin/ods-mdns.py" ]] && [[ "$(uname -s)" == "Linux" ]]; th
     # __PLACEHOLDER__ substitution pattern, the same user resolution
     # (INSTALL_USER → SUDO_USER → whoami), and the same sudo discipline.
     if python3 -c "import zeroconf" 2>/dev/null && \
+       ods_sudo_available && \
        (systemctl status >/dev/null 2>&1 || [[ -d /run/systemd/system ]]) && \
        [[ -f "$INSTALL_DIR/scripts/systemd/ods-mdns.service" ]]; then
         MDNS_PYTHON="$(command -v python3)"

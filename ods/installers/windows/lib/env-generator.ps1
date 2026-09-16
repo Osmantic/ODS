@@ -346,12 +346,19 @@ function Write-WindowsODSLemonadeLiteLlmConfig {
         "--gpu-backend", "amd",
         "--lemonade-model-id", $ModelId,
         "--lemonade-api-base", $lemonadeApiBase,
-        "--litellm-key", $ApiKey,
         "--output-root", $InstallDir,
         "--write"
     )
-    $renderOutput = & $python.FilePath @renderArgs 2>&1
-    if ($LASTEXITCODE -ne 0) {
+    $previousRendererKey = [Environment]::GetEnvironmentVariable("ODS_RENDER_LITELLM_KEY", "Process")
+    try {
+        [Environment]::SetEnvironmentVariable("ODS_RENDER_LITELLM_KEY", $ApiKey, "Process")
+        $renderOutput = & $python.FilePath @renderArgs 2>&1
+        $renderExitCode = $LASTEXITCODE
+    }
+    finally {
+        [Environment]::SetEnvironmentVariable("ODS_RENDER_LITELLM_KEY", $previousRendererKey, "Process")
+    }
+    if ($renderExitCode -ne 0) {
         throw "Runtime config renderer failed for Windows Lemonade route: $($renderOutput -join "`n")"
     }
 
@@ -457,6 +464,22 @@ function New-SecureBase64 {
     return [Convert]::ToBase64String($buf)
 }
 
+function ConvertTo-ODSDotenvValue {
+    <# Serialize a value for Bash, Docker Compose, and ODS safe-env readers. #>
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value)
+
+    $text = ([string]$Value) -replace "`r", " " -replace "`n", " "
+    if ($text.IndexOf("'") -ge 0) {
+        # Bash and Compose disagree about \` inside double-quoted dotenv
+        # values. Normalize it only in this apostrophe fallback so both readers
+        # receive the same safe text.
+        $text = $text.Replace('`', 'ˋ')
+        $escaped = $text.Replace('\', '\\').Replace('"', '\"').Replace('$', '\$')
+        return '"' + $escaped + '"'
+    }
+    return "'" + $text + "'"
+}
+
 function New-ODSEnv {
     <#
     .SYNOPSIS
@@ -497,7 +520,8 @@ function New-ODSEnv {
         # `ods enable langfuse` edits survive.
         [bool]$EnableLangfuse = $false,
         [bool]$EnableLan = $false,
-        [bool]$EnableODSProxy = $false
+        [bool]$EnableODSProxy = $false,
+        [bool]$EnableWebSearch = $true
     )
 
     # Preserve existing secrets on re-install (mirrors Linux _env_get logic)
@@ -667,14 +691,14 @@ function New-ODSEnv {
     $difySecretKey    = Get-EnvOrNew "DIFY_SECRET_KEY"           (New-SecureHex -Bytes 32)
     $qdrantApiKey     = Get-EnvOrNew "QDRANT_API_KEY"            (New-SecureHex -Bytes 32)
     $opencodePassword = Get-EnvOrNew "OPENCODE_SERVER_PASSWORD"  (New-SecureBase64 -Bytes 16)
-    $switchboardModeDefault = if ([string]::IsNullOrWhiteSpace($SwitchboardMode)) { "observe" } else { $SwitchboardMode.Trim().ToLowerInvariant() }
+    $switchboardModeDefault = if ([string]::IsNullOrWhiteSpace($SwitchboardMode)) { "enabled" } else { $SwitchboardMode.Trim().ToLowerInvariant() }
     if ($switchboardModeDefault -notin @("legacy", "observe", "enabled")) {
-        $switchboardModeDefault = "observe"
+        $switchboardModeDefault = "enabled"
     }
     $switchboardMode = Get-EnvOrNew "ODS_MODEL_SWITCHBOARD" $switchboardModeDefault
     $switchboardMode = $switchboardMode.Trim().ToLowerInvariant()
     if ($switchboardMode -notin @("legacy", "observe", "enabled")) {
-        $switchboardMode = "observe"
+        $switchboardMode = "enabled"
     }
     $cpuBudget = Get-LlamaCpuBudget -GpuBackend $(if ($GpuBackend -eq "none") { "cpu" } else { $GpuBackend })
     $llamaCpuLimit = Select-AutoCpuValue -Key "LLAMA_CPU_LIMIT" -Detected $cpuBudget.Limit
@@ -701,6 +725,7 @@ function New-ODSEnv {
     $langfusePort              = Get-EnvOrNew "LANGFUSE_PORT"              "3006"
     $langfuseDefault           = if ($EnableLangfuse) { "true" } else { "false" }
     $langfuseEnabled           = Get-EnvOrNew "LANGFUSE_ENABLED"           $langfuseDefault
+    $enableWebSearchValue      = if ($EnableWebSearch) { "true" } else { "false" }
     $langfuseNextauthSecret    = Get-EnvOrNew "LANGFUSE_NEXTAUTH_SECRET"   (New-SecureHex -Bytes 32)
     $langfuseSalt              = Get-EnvOrNew "LANGFUSE_SALT"              (New-SecureHex -Bytes 32)
     $langfuseEncryptionKey     = Get-EnvOrNew "LANGFUSE_ENCRYPTION_KEY"    (New-SecureHex -Bytes 32)
@@ -876,6 +901,13 @@ function New-ODSEnv {
     if ([string]::IsNullOrWhiteSpace($nGpuLayers)) { $nGpuLayers = "auto" }
 
     # Build .env content (matches Phase 06 format)
+    $recommendationSource = ConvertTo-ODSDotenvValue $(if ($TierConfig.RecommendationSource) { $TierConfig.RecommendationSource } else { "installer_tier_map" })
+    $recommendationPolicy = ConvertTo-ODSDotenvValue $(if ($TierConfig.RecommendationPolicy) { $TierConfig.RecommendationPolicy } else { "tier-map" })
+    $recommendationConfidence = ConvertTo-ODSDotenvValue $(if ($TierConfig.RecommendationConfidence) { $TierConfig.RecommendationConfidence } else { "medium" })
+    $recommendationReason = ConvertTo-ODSDotenvValue $(if ($TierConfig.RecommendationReason) { $TierConfig.RecommendationReason } else { "Selected by installer tier $Tier ($($TierConfig.TierName)) for $GpuBackend backend; benchmark locally after first launch." })
+    $recommendationAlternatives = ConvertTo-ODSDotenvValue $(if ($TierConfig.RecommendationAlternatives) { $TierConfig.RecommendationAlternatives } else { "" })
+    $performanceLabel = ConvertTo-ODSDotenvValue "Benchmark after first launch"
+
     $envContent = @"
 # ODS Configuration -- $($TierConfig.TierName) Edition
 # Generated by Windows installer v$($script:ODS_VERSION) on $timestamp
@@ -890,6 +922,8 @@ ODS_AGENT_HOST=$(Get-EnvOrNew "ODS_AGENT_HOST" "host.docker.internal")
 # The dashboard-api container must call the host agent over Docker Desktop's
 # host gateway. Bearer auth still protects every host-agent endpoint.
 ODS_AGENT_BIND=$(Get-EnvOrNew "ODS_AGENT_BIND" "0.0.0.0")
+# Docker Desktop presents host-owned lifecycle secrets through its root group.
+REMOTE_PROVIDER_DATA_GID=0
 
 #=== LLM Backend Mode ===
 ODS_MODE=$effectiveODSMode
@@ -923,16 +957,16 @@ CTX_SIZE=$($TierConfig.MaxContext)
 MODEL_RECOMMENDED_MODEL=$($TierConfig.LlmModel)
 MODEL_RECOMMENDED_GGUF=$($TierConfig.GgufFile)
 MODEL_RECOMMENDED_CONTEXT=$($TierConfig.MaxContext)
-MODEL_RECOMMENDATION_SOURCE=$(if ($TierConfig.RecommendationSource) { $TierConfig.RecommendationSource } else { "installer_tier_map" })
-MODEL_RECOMMENDATION_POLICY=$(if ($TierConfig.RecommendationPolicy) { $TierConfig.RecommendationPolicy } else { "tier-map" })
-MODEL_RECOMMENDATION_CONFIDENCE=$(if ($TierConfig.RecommendationConfidence) { $TierConfig.RecommendationConfidence } else { "medium" })
-MODEL_RECOMMENDATION_REASON=$(if ($TierConfig.RecommendationReason) { $TierConfig.RecommendationReason } else { "Selected by installer tier $Tier ($($TierConfig.TierName)) for $GpuBackend backend; benchmark locally after first launch." })
-MODEL_RECOMMENDED_ALTERNATIVES=$(if ($TierConfig.RecommendationAlternatives) { $TierConfig.RecommendationAlternatives } else { "" })
+MODEL_RECOMMENDATION_SOURCE=$recommendationSource
+MODEL_RECOMMENDATION_POLICY=$recommendationPolicy
+MODEL_RECOMMENDATION_CONFIDENCE=$recommendationConfidence
+MODEL_RECOMMENDATION_REASON=$recommendationReason
+MODEL_RECOMMENDED_ALTERNATIVES=$recommendationAlternatives
 MODEL_RUNTIME_PROFILE=$(if ($TierConfig.RuntimeProfile) { $TierConfig.RuntimeProfile } else { "" })
 MODEL_RUNTIME_PROFILE_LABEL=$(if ($TierConfig.RuntimeProfileLabel) { $TierConfig.RuntimeProfileLabel } else { "" })
 MODEL_RUNTIME_PROFILE_SOURCE=$(if ($TierConfig.RuntimeProfileSource) { $TierConfig.RuntimeProfileSource } else { "" })
 MODEL_PERFORMANCE_SOURCE=benchmark_required
-MODEL_PERFORMANCE_LABEL=Benchmark after first launch
+MODEL_PERFORMANCE_LABEL=$performanceLabel
 GPU_BACKEND=$GpuBackend
 SYSTEM_RAM_GB=$SystemRamGB
 N_GPU_LAYERS=$nGpuLayers
@@ -1030,7 +1064,7 @@ EMBEDDINGS_MEMORY_LIMIT=$embeddingsMemoryLimit
 #=== Web UI Settings ===
 # Loopback installs open directly. LAN installs require a login by default.
 WEBUI_AUTH=$webuiAuth
-ENABLE_WEB_SEARCH=true
+ENABLE_WEB_SEARCH=$enableWebSearchValue
 WEB_SEARCH_ENGINE=searxng
 
 #=== n8n Settings ===
@@ -1186,6 +1220,9 @@ search:
     - html
     - json
 engines:
+  - name: bing
+    # Requalify before enabling: https://github.com/searxng/searxng/pull/6671
+    disabled: true
   - name: duckduckgo
     disabled: false
   - name: google

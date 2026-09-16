@@ -24,7 +24,26 @@ while [[ -L "$_source" ]]; do
     [[ "$_source" != /* ]] && _source="$_dir/$_source"
 done
 SCRIPT_DIR="$(cd "$(dirname "$_source")" && pwd)"
-INSTALL_DIR="${ODS_HOME:-$HOME/ods}"
+
+_resolve_cli_install_dir() {
+    if [[ -n "${INSTALL_DIR:-}" ]]; then
+        printf '%s\n' "$INSTALL_DIR"
+    elif [[ -n "${ODS_HOME:-}" ]]; then
+        printf '%s\n' "$ODS_HOME"
+    elif [[ -n "${ODS_SCRIPT_HINT:-}" ]] && [[ -f "$ODS_SCRIPT_HINT/.env" ]]; then
+        printf '%s\n' "$ODS_SCRIPT_HINT"
+    elif [[ -n "${ODS_INSTALL_DIR:-}" ]]; then
+        printf '%s\n' "$ODS_INSTALL_DIR"
+    elif [[ -f "$SCRIPT_DIR/docker-compose.base.yml" || -f "$SCRIPT_DIR/docker-compose.yml" ]]; then
+        # Installed copies and symlink targets are self-locating. This keeps a
+        # custom-path CLI from silently operating on an unrelated $HOME/ods.
+        printf '%s\n' "$SCRIPT_DIR"
+    else
+        printf '%s\n' "$HOME/ods"
+    fi
+}
+
+INSTALL_DIR="$(_resolve_cli_install_dir)"
 VERSION="2.6.0"
 if [[ -f "$INSTALL_DIR/.env" ]]; then
     _v=$(awk -F= '/^ODS_VERSION=/{gsub(/^["'"'"']|["'"'"']$/,"",$2); print $2; exit}' "$INSTALL_DIR/.env" 2>/dev/null) || true
@@ -104,6 +123,11 @@ _env_set() {
             if (index($0, k "=") == 1) print k "=" v; else print
         }' "$file" > "${file}.tmp" && cat "${file}.tmp" > "$file" && rm -f "${file}.tmp"
     else
+        # Appending after a last line that has no newline would join the new
+        # assignment onto that line and corrupt both keys.
+        if [[ -s "$file" && -n "$(tail -c 1 "$file")" ]]; then
+            printf '\n' >> "$file"
+        fi
         echo "${key}=${val}" >> "$file"
     fi
 }
@@ -644,7 +668,7 @@ _check_version_compat() {
         if [[ "$force" == "true" ]]; then
             warn "--force specified: proceeding with downgrade."
         else
-            read -p "  Proceed with downgrade? [y/N] " -n 1 -r
+            read -p "  Proceed with downgrade? [y/N] " -n 1 -r || REPLY=""
             echo ""
             if [[ ! $REPLY =~ ^[Yy]$ ]]; then
                 log "Update cancelled."
@@ -697,7 +721,7 @@ _check_version_compat() {
         if [[ "$force" == "true" ]]; then
             warn "--force specified: skipping confirmation."
         else
-            read -p "  Proceed with v${_COMPAT_INSTALLED_VER} → v${_COMPAT_TARGET_VER} anyway? [y/N] " -n 1 -r
+            read -p "  Proceed with v${_COMPAT_INSTALLED_VER} → v${_COMPAT_TARGET_VER} anyway? [y/N] " -n 1 -r || REPLY=""
             echo ""
             if [[ ! $REPLY =~ ^[Yy]$ ]]; then
                 log "Update cancelled."
@@ -1251,6 +1275,36 @@ _ods_cli_pull_external_images() {
 # Commands
 #=============================================================================
 
+_ods_cli_service_health() {
+    local sid="$1" port="$2" health_path="$3"
+    shift 3
+
+    if [[ "${SERVICE_HEALTH_SOURCES[$sid]:-http}" == "container" ]]; then
+        local container_id="" inspect="" state="" container_health=""
+        container_id=$(docker compose "$@" ps -q "$sid" 2>/dev/null || true)
+        if [[ -n "$container_id" ]]; then
+            inspect=$(docker inspect \
+                --format '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' \
+                "$container_id" 2>/dev/null || true)
+            read -r state container_health <<<"$inspect"
+        fi
+        if [[ "$state" == "running" && "$container_health" == "healthy" ]]; then
+            printf 'healthy\n'
+        else
+            printf 'unhealthy\n'
+        fi
+        return 0
+    fi
+
+    local url="http://127.0.0.1:${port}${health_path}"
+    local timeout="${SERVICE_HEALTH_TIMEOUTS[$sid]:-5}"
+    if curl -sf --max-time "$timeout" "$url" >/dev/null 2>&1; then
+        printf 'healthy\n'
+    else
+        printf 'unhealthy\n'
+    fi
+}
+
 cmd_status() {
     local json_mode="false"
     while [[ $# -gt 0 ]]; do
@@ -1280,8 +1334,11 @@ cmd_status() {
     echo -e "${BLUE}━━━ ODS Status ━━━${NC}"
     echo ""
 
-    # Container status
-    docker compose "${flags[@]}" ps --format "table {{.Name}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null || docker-compose ps
+    # Container status. Let compose's own stderr through: when the daemon is
+    # unreachable the user needs "Cannot connect to the Docker daemon", not a
+    # flag-less fallback complaining about a missing configuration file.
+    docker compose "${flags[@]}" ps --format "table {{.Name}}\t{{.Status}}\t{{.Ports}}" \
+        || warn "Could not list containers (see the docker error above); continuing with health checks."
 
     echo ""
 
@@ -1304,8 +1361,10 @@ cmd_status() {
         local name="${SERVICE_NAMES[$sid]:-$sid}"
         local cat="${SERVICE_CATEGORIES[$sid]}"
 
-        # Skip services with no health endpoint or port
-        [[ -z "$health" || "$default_port" == "0" ]] && continue
+        # Container-authoritative internal services have no host port but are
+        # still part of operator status.
+        [[ -z "$health" ]] && continue
+        [[ "$default_port" == "0" && "${SERVICE_HEALTH_SOURCES[$sid]:-http}" != "container" ]] && continue
 
         # Resolve port from env var or default
         local port="$default_port"
@@ -1322,9 +1381,7 @@ cmd_status() {
 
         # Launch health check in background
         (
-            url="http://127.0.0.1:${port}${health}"
-            timeout="${SERVICE_HEALTH_TIMEOUTS[$sid]:-5}"
-            if curl -sf --max-time "$timeout" "$url" > /dev/null 2>&1; then
+            if [[ "$(_ods_cli_service_health "$sid" "$port" "$health" "${flags[@]}")" == "healthy" ]]; then
                 echo "healthy|$name" > "$tmpdir/$sid"
             else
                 echo "unhealthy|$name" > "$tmpdir/$sid"
@@ -1411,8 +1468,10 @@ cmd_status_json() {
         local default_port="${SERVICE_PORTS[$sid]}"
         local name="${SERVICE_NAMES[$sid]:-$sid}"
 
-        # Skip services with no health endpoint or port configured
-        [[ -z "$health" || "$default_port" == "0" ]] && continue
+        # Container-authoritative internal services have no host port but are
+        # still part of operator status.
+        [[ -z "$health" ]] && continue
+        [[ "$default_port" == "0" && "${SERVICE_HEALTH_SOURCES[$sid]:-http}" != "container" ]] && continue
 
         # Resolve port from env var or default
         local port="$default_port"
@@ -1435,12 +1494,7 @@ cmd_status_json() {
         if [[ "$cat" != "core" && "$container_status" == "stopped" ]]; then
             status="stopped"
         else
-            local url="http://127.0.0.1:${port}${health}"
-            if curl -sf --max-time 5 "$url" > /dev/null 2>&1; then
-                status="healthy"
-            else
-                status="unhealthy"
-            fi
+            status="$(_ods_cli_service_health "$sid" "$port" "$health" "${flags[@]}")"
         fi
 
         jq -n \
@@ -1578,9 +1632,11 @@ cmd_restart() {
     fi
 
     if [[ -z "$resolved_service" ]]; then
-        _compose_run_with_summary "Restarting all services" "${flags[@]}" up -d
+        _compose_run_with_summary "Restarting all services" \
+            "${flags[@]}" up -d --force-recreate --no-build --pull never
     else
-        _compose_run_with_summary "Restarting $resolved_service" "${flags[@]}" up -d "$resolved_service"
+        _compose_run_with_summary "Restarting $resolved_service" \
+            "${flags[@]}" up -d --force-recreate --no-build --pull never "$resolved_service"
     fi
 
     # Refresh SOUL.md after compose has ensured Hermes is running, so the
@@ -2006,7 +2062,7 @@ cmd_update() {
         fi
     elif [[ -x "$INSTALL_DIR/ods-backup.sh" ]]; then
         log "Creating pre-update backup (${_snap_label})..."
-        if ! "$INSTALL_DIR/ods-backup.sh" "$_snap_label"; then
+        if ! "$INSTALL_DIR/ods-backup.sh" --type user-data --description "$_snap_label"; then
             warn "Pre-update backup failed; proceeding without safety net."
         fi
     else
@@ -2772,7 +2828,7 @@ cmd_enable() {
             warn "$service_id may not work with GPU backend: $current_backend"
             warn "  Supported backends: $gpu_backends"
             warn "  Current backend: $current_backend"
-            read -p "  Continue anyway? [y/N] " -n 1 -r
+            read -p "  Continue anyway? [y/N] " -n 1 -r || REPLY=""
             echo
             if [[ ! $REPLY =~ ^[Yy]$ ]]; then
                 log "Cancelled."
@@ -2797,7 +2853,7 @@ cmd_enable() {
         done
         if [[ ${#missing[@]} -gt 0 ]]; then
             warn "$service_id depends on disabled services: ${missing[*]}"
-            read -p "  Enable them too? [Y/n] " -n 1 -r
+            read -p "  Enable them too? [Y/n] " -n 1 -r || REPLY=""
             echo
             if [[ ! $REPLY =~ ^[Nn]$ ]]; then
                 for dep in "${missing[@]}"; do
@@ -2875,7 +2931,7 @@ cmd_disable() {
     done
     if [[ ${#dependents[@]} -gt 0 ]]; then
         warn "These enabled extensions depend on $service_id: ${dependents[*]}"
-        read -p "  Continue anyway? [y/N] " -n 1 -r
+        read -p "  Continue anyway? [y/N] " -n 1 -r || REPLY=""
         echo
         [[ ! $REPLY =~ ^[Yy]$ ]] && { log "Cancelled."; return 1; }
     fi
@@ -2956,7 +3012,7 @@ cmd_purge() {
     log ""
 
     local _confirm
-    read -p "  Type '$service_id' to confirm deletion: " -r _confirm
+    read -p "  Type '$service_id' to confirm deletion: " -r _confirm || _confirm=""
     if [[ "$_confirm" != "$service_id" ]]; then
         log "Purge cancelled."
         return 0
@@ -3147,7 +3203,7 @@ META
                 echo ""
             fi
 
-            read -p "Restore this preset? This will overwrite current .env. [y/N] " -n 1 -r
+            read -p "Restore this preset? This will overwrite current .env. [y/N] " -n 1 -r || REPLY=""
             echo ""
             [[ $REPLY =~ ^[Yy]$ ]] || { log "Cancelled."; return 0; }
 
@@ -3224,7 +3280,7 @@ META
             local preset_dir="${PRESETS_DIR}/${name}"
             [[ -d "$preset_dir" ]] || error "Preset not found: $name"
 
-            read -p "Delete preset '${name}'? [y/N] " -n 1 -r
+            read -p "Delete preset '${name}'? [y/N] " -n 1 -r || REPLY=""
             echo ""
             [[ $REPLY =~ ^[Yy]$ ]] || { log "Cancelled."; return 0; }
 
@@ -3252,7 +3308,18 @@ META
 
             # Create archive (relative to presets dir to avoid absolute paths)
             cd "$PRESETS_DIR"
-            if tar czf "$output" "$name" 2>/dev/null; then
+            if (
+                umask 077
+                staged_archive="$(mktemp "${output}.XXXXXX")" || exit 1
+                trap 'rm -f -- "$staged_archive"' EXIT
+                trap 'exit 130' INT
+                trap 'exit 143' TERM
+                # Finish privately before replacing an existing public file.
+                chmod 600 "$staged_archive" || exit 1
+                tar czf "$staged_archive" "$name" 2>/dev/null || exit 1
+                [[ ! -d "$output" ]] || exit 1
+                mv -f -- "$staged_archive" "$output"
+            ); then
                 local size
                 size=$(du -h "$output" 2>/dev/null | cut -f1 || true)
                 success "Preset exported to: $output ($size)"
@@ -3282,7 +3349,7 @@ META
             # Check if preset already exists
             if [[ -d "${PRESETS_DIR}/${archive_name}" ]]; then
                 warn "Preset '${archive_name}' already exists"
-                read -p "Overwrite? [y/N] " -n 1 -r
+                read -p "Overwrite? [y/N] " -n 1 -r || REPLY=""
                 echo ""
                 [[ $REPLY =~ ^[Yy]$ ]] || { log "Cancelled."; return 0; }
                 rm -rf "${PRESETS_DIR}/${archive_name}"
@@ -3692,22 +3759,30 @@ cmd_model() {
 }
 
 _agent_probe_host() {
-    local bind_addr="" gateway=""
+    local bind_addr="" gateway="" kernel_release=""
     bind_addr="$(_env_get_raw ODS_AGENT_BIND)"
     bind_addr="${bind_addr#\"}"; bind_addr="${bind_addr%\"}"
     bind_addr="${bind_addr#\'}"; bind_addr="${bind_addr%\'}"
     bind_addr="$(printf '%s' "$bind_addr" | tr -d '[:space:]')"
 
-    if [[ -z "$bind_addr" && "$(uname -s)" == "Linux" ]] && command -v docker >/dev/null 2>&1; then
-        gateway="$(docker network inspect ods-network \
-            --format '{{range .IPAM.Config}}{{if .Gateway}}{{println .Gateway}}{{end}}{{end}}' \
-            2>/dev/null | sed '/^[[:space:]]*$/d' | head -n1 | tr -d '[:space:]' || true)"
-        if [[ -z "$gateway" ]]; then
-            gateway="$(docker network inspect bridge \
+    if [[ -z "$bind_addr" && "$(uname -s)" == "Linux" ]]; then
+        kernel_release="$(uname -r 2>/dev/null | tr '[:upper:]' '[:lower:]' || true)"
+        if [[ "$kernel_release" == *microsoft* ]]; then
+            # The host agent deliberately binds loopback under WSL because
+            # Docker Desktop forwards host.docker.internal there; its compose
+            # gateway is not a locally bindable host-agent address.
+            bind_addr="127.0.0.1"
+        elif command -v docker >/dev/null 2>&1; then
+            gateway="$(docker network inspect ods-network \
                 --format '{{range .IPAM.Config}}{{if .Gateway}}{{println .Gateway}}{{end}}{{end}}' \
                 2>/dev/null | sed '/^[[:space:]]*$/d' | head -n1 | tr -d '[:space:]' || true)"
+            if [[ -z "$gateway" ]]; then
+                gateway="$(docker network inspect bridge \
+                    --format '{{range .IPAM.Config}}{{if .Gateway}}{{println .Gateway}}{{end}}{{end}}' \
+                    2>/dev/null | sed '/^[[:space:]]*$/d' | head -n1 | tr -d '[:space:]' || true)"
+            fi
+            bind_addr="$gateway"
         fi
-        bind_addr="$gateway"
     fi
 
     case "$bind_addr" in
@@ -3762,7 +3837,7 @@ Usage: ods remote-provider <command> [options]
 Commands:
   status [--json]
       Show sanitized remote-provider route, egress, and action status.
-  plan <configure|test|disable|remove> [options]
+  plan <configure|test|enable|disable|remove> [options]
       Print the redacted lifecycle plan without mutating state.
   configure --base-url URL --model MODEL [secret options]
       Persist an OpenAI-compatible provider route and provider API key.
@@ -3770,8 +3845,10 @@ Commands:
       Probe the configured provider route through the internal egress service.
   test --base-url URL --model MODEL [secret options]
       Probe a provider without writing route state or secrets.
+  enable [--json]
+      Re-prove and reactivate the saved route without re-entering secrets.
   disable
-      Disable the remote-provider route while keeping stored secrets.
+      Pause the remote-provider route while keeping its profile and secrets.
   remove
       Delete remote-provider route state and stored secrets.
   peer-models list [--json]
@@ -3791,6 +3868,9 @@ Provider options for configure/test/plan configure/plan test:
   --transport direct|ssh  Provider transport (default direct)
   --base-url URL          OpenAI-compatible base URL, for example https://gpu.example/v1
   --model MODEL           Provider model id
+  --context-length TOKENS Exact provider context window (default 32768)
+  --max-tokens TOKENS     Exact provider output limit (default 4096)
+  --reasoning true|false  Whether the provider route supports reasoning (default false)
   --ssh-host HOST         SSH server host for ssh transport
   --ssh-user USER         SSH server user for ssh transport
   --ssh-port PORT         SSH server port for ssh transport (default 22)
@@ -3919,6 +3999,7 @@ _remote_provider_write_payload() {
     local action="$1" payload_file="$2"
     shift 2
     local transport="direct" base_url="" model="" json_mode="false"
+    local context_length="32768" max_tokens="4096" reasoning="false"
     local api_key_env="REMOTE_LLM_API_KEY" api_key_env_explicit="false" api_key_file="" api_key_stdin="false"
     local ssh_host="" ssh_user="" ssh_port="22" ssh_inference_host="" ssh_inference_port=""
     local ssh_control_host="" ssh_control_port="" ssh_option_seen="false"
@@ -3940,6 +4021,18 @@ _remote_provider_write_payload() {
                 [[ $# -ge 2 ]] || error "--model requires a value"
                 provider_option_seen="true"
                 model="${2:-}"; shift 2 ;;
+            --context-length)
+                [[ $# -ge 2 ]] || error "--context-length requires a value"
+                provider_option_seen="true"
+                context_length="${2:-}"; shift 2 ;;
+            --max-tokens)
+                [[ $# -ge 2 ]] || error "--max-tokens requires a value"
+                provider_option_seen="true"
+                max_tokens="${2:-}"; shift 2 ;;
+            --reasoning)
+                [[ $# -ge 2 ]] || error "--reasoning requires true or false"
+                provider_option_seen="true"
+                reasoning="${2:-}"; shift 2 ;;
             --ssh-host)
                 [[ $# -ge 2 ]] || error "--ssh-host requires a value"
                 provider_option_seen="true"; ssh_option_seen="true"
@@ -4011,7 +4104,7 @@ _remote_provider_write_payload() {
     done
 
     REMOTE_PROVIDER_JSON_MODE="$json_mode"
-    if [[ "$action" == "disable" || "$action" == "remove" ]]; then
+    if [[ "$action" == "enable" || "$action" == "disable" || "$action" == "remove" ]]; then
         [[ "$provider_option_seen" == "false" && "$secret_option_seen" == "false" ]] || \
             error "remote-provider $action does not accept provider or secret options"
         jq -nc --arg action "$action" '{action: $action}' > "$payload_file" || \
@@ -4026,6 +4119,19 @@ _remote_provider_write_payload() {
     esac
     [[ -n "$base_url" ]] || error "--base-url is required"
     [[ -n "$model" ]] || error "--model is required"
+    [[ "$context_length" =~ ^[1-9][0-9]{0,7}$ ]] || \
+        error "--context-length must be an integer from 16384 to 10000000"
+    (( context_length >= 16384 && context_length <= 10000000 )) || \
+        error "--context-length must be an integer from 16384 to 10000000"
+    [[ "$max_tokens" =~ ^[1-9][0-9]{0,7}$ ]] || \
+        error "--max-tokens must be a positive integer within the context window"
+    (( max_tokens <= context_length )) || \
+        error "--max-tokens must be a positive integer within the context window"
+    reasoning="$(printf '%s' "$reasoning" | tr '[:upper:]' '[:lower:]')"
+    case "$reasoning" in
+        true|false) ;;
+        *) error "--reasoning must be true or false" ;;
+    esac
     if [[ "$transport" == "direct" && "$ssh_option_seen" == "true" ]]; then
         error "direct remote-provider transport does not accept SSH options"
     fi
@@ -4063,6 +4169,9 @@ _remote_provider_write_payload() {
             --arg transport "$transport" \
             --arg base_url "$base_url" \
             --arg model "$model" \
+            --arg context_length "$context_length" \
+            --arg max_tokens "$max_tokens" \
+            --argjson reasoning "$reasoning" \
             --arg ssh_host "$ssh_host" \
             --arg ssh_user "$ssh_user" \
             --arg ssh_port "$ssh_port" \
@@ -4076,7 +4185,10 @@ _remote_provider_write_payload() {
                 provider: {
                     transport: $transport,
                     baseUrl: $base_url,
-                    model: $model
+                    model: $model,
+                    contextLength: ($context_length | tonumber),
+                    maxTokens: ($max_tokens | tonumber),
+                    reasoning: $reasoning
                 },
                 ssh: {
                     host: $ssh_host,
@@ -4104,12 +4216,18 @@ _remote_provider_write_payload() {
         --arg transport "$transport" \
         --arg base_url "$base_url" \
         --arg model "$model" \
+        --arg context_length "$context_length" \
+        --arg max_tokens "$max_tokens" \
+        --argjson reasoning "$reasoning" \
         '{
             action: $action,
             provider: {
                 transport: $transport,
                 baseUrl: $base_url,
-                model: $model
+                model: $model,
+                contextLength: ($context_length | tonumber),
+                maxTokens: ($max_tokens | tonumber),
+                reasoning: $reasoning
             },
             secrets: {
                 apiKey: .
@@ -4122,6 +4240,7 @@ _remote_provider_print_status() {
     jq -r '
         "Remote provider: \(.status // "unknown")",
         "Route: " + (if .routeState.enabled == true then "enabled" else "disabled" end),
+        "Saved route: " + (if .routeState.resumeAvailable == true then "available" else "none" end),
         (if .routeState.enabled == true and .routeState.provider then
             "Provider: \(.routeState.provider.model // "unknown") via \(.routeState.provider.transport // "unknown") at \(.routeState.provider.baseUrl // "unknown")"
          else empty end),
@@ -4298,7 +4417,10 @@ _remote_provider_probe_configured() {
         error "Could not create a remote-provider response file"
     chmod 600 "$response_file"
     trap 'rm -f "$response_file"' INT TERM HUP
-    if http_code="$(_remote_provider_request POST /api/remote-provider/probe "$response_file" "" 20)"; then
+    # A configured probe can activate and reconcile all downstream consumers.
+    # Stay beyond the Dashboard API's 1800-second lifecycle deadline instead
+    # of reporting a false failure while the host transaction is still live.
+    if http_code="$(_remote_provider_request POST /api/remote-provider/probe "$response_file" "" 1860)"; then
         curl_status=0
     else
         curl_status=$?
@@ -4496,11 +4618,11 @@ cmd_remote_provider() {
             ;;
         plan)
             local action="${1:-}"
-            [[ -n "$action" ]] || error "Usage: ods remote-provider plan <configure|test|disable|remove> [options]"
+            [[ -n "$action" ]] || error "Usage: ods remote-provider plan <configure|test|enable|disable|remove> [options]"
             shift || true
             case "$action" in
-                configure|test|disable|remove) ;;
-                *) error "Usage: ods remote-provider plan <configure|test|disable|remove> [options]" ;;
+                configure|test|enable|disable|remove) ;;
+                *) error "Usage: ods remote-provider plan <configure|test|enable|disable|remove> [options]" ;;
             esac
             local payload_file response_file http_code curl_status
             payload_file=$(mktemp "${TMPDIR:-/tmp}/ods-remote-provider-payload.XXXXXX") || \
@@ -4529,12 +4651,51 @@ cmd_remote_provider() {
             jq . "$response_file"
             rm -f "$response_file"; trap - INT TERM HUP
             ;;
+        enable)
+            local json_mode="false" response_file http_code curl_status
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --json) json_mode="true"; shift ;;
+                    --help|-h) _remote_provider_usage; return 0 ;;
+                    *) error "Unknown remote-provider enable option: $1" ;;
+                esac
+            done
+            response_file=$(mktemp "${TMPDIR:-/tmp}/ods-remote-provider-enable.XXXXXX") || \
+                error "Could not create a remote-provider response file"
+            chmod 600 "$response_file"
+            trap 'rm -f "$response_file"' INT TERM HUP
+            if http_code="$(_remote_provider_request POST /api/remote-provider/enable "$response_file" "" 1860)"; then
+                curl_status=0
+            else
+                curl_status=$?
+            fi
+            if [[ $curl_status -ne 0 ]]; then
+                rm -f "$response_file"; trap - INT TERM HUP
+                error "Remote-provider enable request failed before Dashboard API completed"
+            fi
+            if [[ "$http_code" != "200" ]]; then
+                local detail
+                detail="$(_remote_provider_response_error "$response_file")"
+                rm -f "$response_file"; trap - INT TERM HUP
+                error "Remote-provider enable failed (HTTP $http_code): $detail"
+            fi
+            if [[ "$json_mode" == "true" ]]; then
+                jq . "$response_file"
+            else
+                _remote_provider_print_apply_result "$response_file"
+            fi
+            rm -f "$response_file"; trap - INT TERM HUP
+            ;;
         configure|test|disable|remove)
             if [[ "$subcmd" == "test" ]]; then
                 local use_configured_probe="true" arg
                 for arg in "$@"; do
                     case "$arg" in
-                        --transport|--base-url|--model|--api-key|--api-key-stdin|--api-key-file|--api-key-env)
+                        --transport|--base-url|--model|--context-length|--max-tokens|--reasoning)
+                            use_configured_probe="false"
+                            break
+                            ;;
+                        --api-key|--api-key-stdin|--api-key-file|--api-key-env)
                             use_configured_probe="false"
                             break
                             ;;
@@ -4566,7 +4727,7 @@ cmd_remote_provider() {
             trap 'rm -f "$payload_file" "$response_file"' INT TERM HUP
             REMOTE_PROVIDER_JSON_MODE="false"
             _remote_provider_write_payload "$subcmd" "$payload_file" "$@"
-            if http_code="$(_remote_provider_request POST /api/remote-provider/apply "$response_file" "$payload_file" 20)"; then
+            if http_code="$(_remote_provider_request POST /api/remote-provider/apply "$response_file" "$payload_file" 1860)"; then
                 curl_status=0
             else
                 curl_status=$?
@@ -4593,7 +4754,7 @@ cmd_remote_provider() {
             _remote_provider_usage
             ;;
         *)
-            error "Usage: ods remote-provider <status|plan|configure|test|disable|remove|peer-models>"
+            error "Usage: ods remote-provider <status|plan|configure|test|enable|disable|remove|peer-models>"
             ;;
     esac
 }
@@ -4604,10 +4765,14 @@ cmd_stt() {
 
     # Resolve model and port from .env (with fallback for older installs).
     local model port model_encoded url
-    model=$(_env_get_raw AUDIO_STT_MODEL)
-    [[ -z "$model" ]] && model="Systran/faster-whisper-base"
-    port=$(_env_get_raw WHISPER_PORT)
-    [[ -z "$port" ]] && port="9000"
+    # These settings are dotenv values, including quotes and inline comments.
+    # Keep missing-file/key defaults independent of the caller's environment.
+    local AUDIO_STT_MODEL="" WHISPER_PORT=""
+    if [[ -f "$INSTALL_DIR/.env" ]]; then
+        load_env
+    fi
+    model="${AUDIO_STT_MODEL:-Systran/faster-whisper-base}"
+    port="${WHISPER_PORT:-9000}"
     model_encoded="${model//\//%2F}"
     url="http://127.0.0.1:${port}"
 
@@ -4709,23 +4874,15 @@ cmd_restore() {
 cmd_rollback() {
     check_install
     cd "$INSTALL_DIR"
-    load_env
-
-    if [[ ! -f "$INSTALL_DIR/.last-backup-id" ]]; then
-        error "No rollback point found. Rollback is only available after a failed update."
+    if [[ ! -x "$INSTALL_DIR/ods-update.sh" ]]; then
+        error "ods-update.sh not found or not executable"
     fi
 
-    local backup_id
-    backup_id=$(cat "$INSTALL_DIR/.last-backup-id")
-
-    if [[ -z "$backup_id" ]]; then
-        error "Invalid rollback point (empty backup ID)"
-    fi
-
-    log "Rolling back to pre-update state (backup: $backup_id)..."
+    local target="${1:-}"
+    log "Rolling back to pre-update state${target:+ (snapshot: $target)}..."
     echo ""
     warn "This will restore configuration from before the last update."
-    read -p "Continue with rollback? [y/N] " -n 1 -r
+    read -p "Continue with rollback? [y/N] " -n 1 -r || REPLY=""
     echo ""
 
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
@@ -4733,33 +4890,11 @@ cmd_rollback() {
         return 0
     fi
 
-    # Stop services before rollback
-    log "Stopping services..."
-    local flags_str
-    flags_str=$(get_compose_flags)
-    local -a flags
-    read -ra flags <<< "$flags_str"
-    docker compose "${flags[@]}" down 2>/dev/null || true
-
-    # Restore from backup
-    if "$INSTALL_DIR/ods-restore.sh" "$backup_id"; then
-        success "Configuration restored from backup: $backup_id"
-
-        # Restart services with restored configuration
-        log "Restarting services with restored configuration..."
-        if docker compose "${flags[@]}" up -d; then
-            success "Rollback complete"
-            rm -f "$INSTALL_DIR/.last-backup-id"
-
-            log "Checking service health..."
-            sleep 5
-            cmd_status
-        else
-            error "Failed to restart services after rollback. Check 'docker compose logs' for details."
-        fi
-    else
-        error "Failed to restore from backup. Your system may be in an inconsistent state."
-    fi
+    # ods-update.sh owns pre-update snapshot discovery, integrity verification,
+    # compose-stack restoration, restart, and health proof. Keeping that
+    # transaction in one implementation avoids diverging backup roots and stale
+    # in-memory compose flags in this CLI wrapper.
+    bash "$INSTALL_DIR/ods-update.sh" rollback ${target:+"$target"}
 }
 
 cmd_agent() {
@@ -4772,22 +4907,44 @@ cmd_agent() {
     local log_file="$INSTALL_DIR/data/ods-host-agent.log"
     local agent_script="$INSTALL_DIR/bin/ods-host-agent.py"
 
-    # Detect daemon type
+    _agent_process_owned() {
+        local candidate_pid="${1:-}" command_line=""
+        [[ "$candidate_pid" =~ ^[0-9]+$ ]] || return 1
+        kill -0 "$candidate_pid" 2>/dev/null || return 1
+        command_line=$(ps -p "$candidate_pid" -o command= 2>/dev/null || true)
+        [[ -n "$command_line" && "$command_line" == *"$agent_script"* ]]
+    }
+
+    _agent_health_ready() {
+        local bind_addr health_payload
+        bind_addr="$(_agent_probe_host)"
+        health_payload=$(curl -sf --max-time 2 "http://${bind_addr}:${port}/health" 2>/dev/null) || return 1
+        grep -Eq '"status"[[:space:]]*:[[:space:]]*"ok"' <<<"$health_payload" && \
+            grep -Eq '"version"[[:space:]]*:' <<<"$health_payload"
+    }
+
+    # Installer phases can explicitly request the per-session fallback when
+    # sudo is unavailable, even if an older system unit remains on disk.
     local daemon_type="none"
-    case "$(uname -s)" in
-        Darwin) daemon_type="launchd" ;;
-        Linux)
-            if systemctl status >/dev/null 2>&1 || [[ -d /run/systemd/system ]]; then
-                daemon_type="systemd"
-            fi
-            ;;
-    esac
+    if [[ "${ODS_AGENT_FORCE_SESSION:-false}" != "true" ]]; then
+        case "$(uname -s)" in
+            Darwin)
+                if [[ -f "$HOME/Library/LaunchAgents/com.ods.host-agent.plist" ]]; then
+                    daemon_type="launchd"
+                fi
+                ;;
+            Linux)
+                if command -v systemctl >/dev/null 2>&1 && \
+                   systemctl cat ods-host-agent.service >/dev/null 2>&1; then
+                    daemon_type="systemd"
+                fi
+                ;;
+        esac
+    fi
 
     case "$action" in
         status)
-            local bind_addr
-            bind_addr="$(_agent_probe_host)"
-            if curl -sf --max-time 2 "http://${bind_addr}:${port}/health" > /dev/null 2>&1; then
+            if _agent_health_ready; then
                 success "ODS host agent: running (port ${port}, ${daemon_type})"
             else
                 warn "ODS host agent: not responding (port ${port})"
@@ -4806,17 +4963,49 @@ cmd_agent() {
                     ;;
                 *)
                     # Fallback: nohup + PID file
+                    if _agent_health_ready; then
+                        success "ODS host agent: already running (port ${port})"
+                        return 0
+                    fi
                     if [[ -f "$pid_file" ]]; then
-                        kill "$(cat "$pid_file")" 2>/dev/null || true
+                        local stale_pid
+                        stale_pid=$(tr -d '[:space:]' < "$pid_file")
+                        if _agent_process_owned "$stale_pid"; then
+                            kill "$stale_pid" 2>/dev/null || true
+                        elif [[ -n "$stale_pid" ]]; then
+                            warn "Ignoring stale host-agent PID file; process $stale_pid is not owned by ODS"
+                        fi
                         rm -f "$pid_file"
                     fi
+                    # Use log_error (not error): callers such as cmd_update run
+                    # this under `cmd_agent restart || warn "...non-fatal"`, and
+                    # error() exits the whole CLI — which would abort an already
+                    # successful update instead of returning to the guard.
                     if ! command -v python3 &>/dev/null; then
-                        error "python3 not found in PATH"
+                        log_error "python3 not found in PATH"
+                        return 1
+                    fi
+                    if [[ ! -f "$agent_script" ]]; then
+                        log_error "ODS host agent script not found: $agent_script"
                         return 1
                     fi
                     nohup python3 "$agent_script" --pid-file "$pid_file" \
-                        >> "$log_file" 2>&1 &disown
-                    success "Agent started (background, PID $!)"
+                        >> "$log_file" 2>&1 &
+                    local agent_pid=$!
+                    disown "$agent_pid" 2>/dev/null || true
+                    local attempt
+                    for attempt in {1..20}; do
+                        if _agent_health_ready; then
+                            success "Agent started (background, PID $agent_pid)"
+                            return 0
+                        fi
+                        kill -0 "$agent_pid" 2>/dev/null || break
+                        sleep 0.5
+                    done
+                    _agent_process_owned "$agent_pid" && kill "$agent_pid" 2>/dev/null || true
+                    rm -f "$pid_file"
+                    log_error "Agent did not become healthy on port ${port}; check $log_file"
+                    return 1
                     ;;
             esac
             ;;
@@ -4832,8 +5021,16 @@ cmd_agent() {
                     ;;
                 *)
                     if [[ -f "$pid_file" ]]; then
-                        kill "$(cat "$pid_file")" 2>/dev/null && \
-                            success "Agent stopped" || warn "Agent process not found"
+                        local agent_pid
+                        agent_pid=$(tr -d '[:space:]' < "$pid_file")
+                        if _agent_process_owned "$agent_pid"; then
+                            kill "$agent_pid" 2>/dev/null && \
+                                success "Agent stopped" || warn "Agent process not found"
+                        elif [[ -n "$agent_pid" ]]; then
+                            warn "Refusing to stop process $agent_pid because it is not owned by ODS"
+                        else
+                            warn "Agent PID file is empty"
+                        fi
                         rm -f "$pid_file"
                     else
                         warn "Agent not running (no PID file)"
@@ -4842,7 +5039,7 @@ cmd_agent() {
             esac
             ;;
         restart)
-            cmd_agent stop
+            cmd_agent stop || return 1
             sleep 1
             cmd_agent start
             ;;
@@ -6359,14 +6556,14 @@ ${CYAN}Commands:${NC}
                       Switch between local/cloud/hybrid modes
   model [current|list|swap]
                       View or change the local LLM model tier
-  remote-provider [status|plan|configure|test|disable|remove|peer-models]
+  remote-provider [status|plan|configure|test|enable|disable|remove|peer-models]
                       Configure, test, disable, or inspect remote GPU provider routing
   stt [current|status|download] [MODEL]
                       View Whisper STT model, check cache, or trigger download
   backup [options]    Create a backup of user data and config
   backup verify <id>   Verify checksum integrity for a backup
   restore [backup_id] Restore from a backup
-  rollback            Rollback to pre-update state (after failed update)
+  rollback [snapshot] Rollback to pre-update state (after failed update)
   logs <service>      Tail logs for a service
   restart [service] [--rebuild-images]
                       Restart services (all if no service specified)
@@ -6496,7 +6693,13 @@ ${CYAN}Examples:${NC}
   ods repair hermes-workers     # Prune leaked Hermes slash_worker children
 
 ${CYAN}Environment:${NC}
-  ODS_HOME          Installation directory (default: ~/ods)
+  INSTALL_DIR       Installation directory (highest precedence)
+  ODS_HOME          Legacy installation directory override
+  ODS_SCRIPT_HINT   Populated install hint (must contain .env)
+  ODS_INSTALL_DIR   Legacy macOS installation directory override
+
+Without an override, ods-cli uses the install beside its resolved script or
+symlink target when compose metadata is present, then falls back to ~/ods.
 
 EOF
 }
@@ -6519,7 +6722,7 @@ case "${1:-help}" in
     stt)         shift; cmd_stt "$@" ;;
     backup)      shift; cmd_backup "$@" ;;
     restore)     shift; cmd_restore "$@" ;;
-    rollback)    cmd_rollback ;;
+    rollback)    shift; cmd_rollback "$@" ;;
     logs|log|l)  shift; cmd_logs "$@" ;;
     restart|r)   shift; cmd_restart "$@" ;;
     repair|fix)  shift; cmd_repair "$@" ;;

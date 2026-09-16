@@ -105,6 +105,44 @@ except Exception:
     fi
 }
 
+# A stopped container can retain a Docker Desktop file-bind identity whose
+# source disappeared when the installer refreshed the same install tree. A
+# plain compose up tries to start that stale container and fails before the
+# service can be healthy. Recreate only compose-owned services that are already
+# exited; running services and their dependencies remain untouched.
+_phase11_recreate_exited_services() {
+    local exited_output service
+    local -a exited_services=()
+    local -A observed_services=()
+
+    if ! exited_output="$($DOCKER_COMPOSE_CMD "${COMPOSE_FLAGS_ARR[@]}" \
+        ps --status exited --services 2>>"$LOG_FILE")"; then
+        log "Could not enumerate exited compose services for bounded launch recovery."
+        return 1
+    fi
+
+    while IFS= read -r service; do
+        [[ -n "$service" ]] || continue
+        if [[ ! "$service" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$ ]]; then
+            log "Refusing malformed exited compose service name during launch recovery."
+            return 1
+        fi
+        [[ -z "${observed_services[$service]:-}" ]] || continue
+        observed_services[$service]=1
+        exited_services+=("$service")
+        if (( ${#exited_services[@]} > 64 )); then
+            log "Refusing more than 64 exited compose services during launch recovery."
+            return 1
+        fi
+    done <<< "$exited_output"
+
+    (( ${#exited_services[@]} > 0 )) || return 0
+    ai_warn "Recreating exited service container(s) with stale runtime state: ${exited_services[*]}"
+    $DOCKER_COMPOSE_CMD "${COMPOSE_FLAGS_ARR[@]}" up -d --no-deps \
+        --force-recreate --no-build --pull never "${exited_services[@]}" \
+        >> "$LOG_FILE" 2>&1
+}
+
 _phase11_download_hf_artifact() {
     local url="$1" destination="$2" log_file="$3"
     local helper="$INSTALL_DIR/scripts/download-hf-artifact.py"
@@ -346,7 +384,10 @@ else
 
         [[ "$(uname -s 2>/dev/null || echo unknown)" == "Linux" ]] || return 0
         command -v systemctl >/dev/null 2>&1 || return 0
-        command -v sudo >/dev/null 2>&1 || return 0
+        ods_sudo_available || {
+            ai_warn "Skipping $service_label firewall rule; privileged firewall access is unavailable."
+            return 0
+        }
         [[ "$port" =~ ^[0-9]+$ ]] || {
             ai_warn "Skipping $service_label firewall rule; invalid port: ${port:-unset}"
             return 0
@@ -379,9 +420,9 @@ else
 
         for subnet in "${subnets[@]}"; do
             if command -v ufw >/dev/null 2>&1 && systemctl is-active --quiet ufw 2>/dev/null; then
-                if sudo ufw status 2>/dev/null | grep -F "${port}/tcp" | grep -F "$subnet" >/dev/null; then
+                if ods_sudo ufw status 2>/dev/null | grep -F "${port}/tcp" | grep -F "$subnet" >/dev/null; then
                     ai_ok "UFW already allows $service_label (port $port) from $network_name subnet $subnet"
-                elif sudo ufw allow from "$subnet" to any port "$port" proto tcp comment "$rule_label" 2>&1 | tee -a "$LOG_FILE" >/dev/null; then
+                elif ods_sudo ufw allow from "$subnet" to any port "$port" proto tcp comment "$rule_label" 2>&1 | tee -a "$LOG_FILE" >/dev/null; then
                     ai_ok "UFW: allowed $service_label (port $port) from $network_name subnet $subnet"
                 else
                     ai_warn "UFW: failed to auto-add $service_label rule - run manually:"
@@ -389,10 +430,10 @@ else
                 fi
             elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
                 fw_rule="rule family=\"ipv4\" source address=\"$subnet\" port protocol=\"tcp\" port=\"$port\" accept"
-                if sudo firewall-cmd --query-rich-rule="$fw_rule" >/dev/null 2>&1; then
+                if ods_sudo firewall-cmd --query-rich-rule="$fw_rule" >/dev/null 2>&1; then
                     ai_ok "firewalld already allows $service_label (port $port) from $network_name subnet $subnet"
-                elif sudo firewall-cmd --permanent --add-rich-rule="$fw_rule" 2>&1 | tee -a "$LOG_FILE" >/dev/null \
-                  && sudo firewall-cmd --reload 2>&1 | tee -a "$LOG_FILE" >/dev/null; then
+                elif ods_sudo firewall-cmd --permanent --add-rich-rule="$fw_rule" 2>&1 | tee -a "$LOG_FILE" >/dev/null \
+                  && ods_sudo firewall-cmd --reload 2>&1 | tee -a "$LOG_FILE" >/dev/null; then
                     ai_ok "firewalld: allowed $service_label (port $port) from $network_name subnet $subnet"
                 else
                     ai_warn "firewalld: failed to auto-add $service_label rule - run manually:"
@@ -870,7 +911,7 @@ else
         fi
         # NVIDIA ComfyUI also needs output/input/workflows bind-mount dirs
         if [[ "$GPU_BACKEND" == "nvidia" ]]; then
-            mkdir -p "$INSTALL_DIR/data/comfyui"/{output,input,workflows}
+            mkdir -p "$INSTALL_DIR/data/comfyui"/{output,input,workflows,user}
         fi
 
         SDXL_MODEL="sdxl_lightning_4step.safetensors"
@@ -1014,7 +1055,7 @@ MODELS_INI_EOF
         if [[ -f "$_hermes_tpl" ]]; then
             # Model name: cloud mode uses the routed model id; Lemonade
             # prefixes GGUF files with "extra."; llama.cpp uses the file name.
-            _hermes_switchboard_mode="$(printf '%s' "${ODS_MODEL_SWITCHBOARD:-observe}" | tr '[:upper:]' '[:lower:]')"
+            _hermes_switchboard_mode="$(printf '%s' "${ODS_MODEL_SWITCHBOARD:-enabled}" | tr '[:upper:]' '[:lower:]')"
             if [[ "$_hermes_switchboard_mode" == "enabled" ]]; then
                 _hermes_model="ods/current"
             elif [[ "${ODS_MODE:-local}" == "cloud" ]]; then
@@ -1136,6 +1177,12 @@ MODELS_INI_EOF
         ai_ok "All service dependencies satisfied"
     fi
 
+    # Pixel's edge compose fragment requires the exact numeric GID of the
+    # private ingress group. Resolve it before Compose interpolation/validation.
+    if ! ods_pixel_prepare_runtime_identity; then
+        exit 1
+    fi
+
     # ── Compose syntax validation ──────────────────────────────
     ai "Validating compose stack configuration..."
     if ! $DOCKER_COMPOSE_CMD "${COMPOSE_FLAGS_ARR[@]}" config --quiet 1>/dev/null 2>"$LOG_FILE.compose-check"; then
@@ -1160,7 +1207,7 @@ MODELS_INI_EOF
     compose_ok=false
     # Build local images individually so every failure is reported before the
     # installer refuses to launch any potentially stale image.
-    _candidate_build_services=(dashboard dashboard-api model-router remote-provider-egress remote-provider-ssh-tunnel ape token-spy privacy-shield brave-search)
+    _candidate_build_services=(dashboard dashboard-api model-router remote-provider-egress remote-provider-ssh-tunnel ape token-spy privacy-shield brave-search pixel-edge pixel-inference)
     [[ "$ENABLE_COMFYUI" == "true" ]] && _candidate_build_services+=(comfyui)
     [[ "$GPU_BACKEND" == "amd" ]] && _candidate_build_services+=(llama-server)
     if ! _enabled_compose_services="$($DOCKER_COMPOSE_CMD "${COMPOSE_FLAGS_ARR[@]}" config --services 2>>"$LOG_FILE")"; then
@@ -1194,6 +1241,13 @@ MODELS_INI_EOF
     if ! _phase11_pre_pull_compose_images; then
         exit 1
     fi
+    # Install and verify the host Pixel gateway/ingress before Open WebUI is
+    # launched with Pixel as its default provider. This fails closed: users
+    # never receive a selectable but nonfunctional default agent.
+    if ! ods_pixel_install_default_agent; then
+        ai_bad "Pixel default-agent setup failed before the ODS stack launch."
+        exit 1
+    fi
     _phase11_write_compose_launch_record
     for _attempt in 1 2 3; do
         $DOCKER_COMPOSE_CMD "${COMPOSE_FLAGS_ARR[@]}" up -d --remove-orphans --no-build --pull never >> "$LOG_FILE" 2>&1 &
@@ -1203,6 +1257,9 @@ MODELS_INI_EOF
             break
         fi
         if [[ $_attempt -lt 3 ]]; then
+            if ! _phase11_recreate_exited_services; then
+                log "Bounded exited-service recreation did not complete; continuing the normal launch retry."
+            fi
             printf "\r  ${AMB}⚠${NC} %-60s\n" "Some services still starting..."
             ai_warn "Some containers need more time. Waiting 30s before retry..."
             sleep 30
@@ -1215,7 +1272,16 @@ MODELS_INI_EOF
     $DOCKER_CMD start $($DOCKER_CMD ps -a --filter status=created -q) 2>/dev/null || true
     # Step 2: wait for services to stabilize, then compose pass
     sleep 10
-    $DOCKER_COMPOSE_CMD "${COMPOSE_FLAGS_ARR[@]}" up -d --remove-orphans --no-build --pull never >> "$LOG_FILE" 2>&1 || true
+    # Preserve the recovery result. A successful recovery must be allowed to
+    # clear an earlier transient compose failure; a failed recovery must not
+    # be hidden behind the installer success path.
+    _phase11_recovery_compose_ok=false
+    if $DOCKER_COMPOSE_CMD "${COMPOSE_FLAGS_ARR[@]}" up -d --remove-orphans --no-build --pull never >> "$LOG_FILE" 2>&1; then
+        _phase11_recovery_compose_ok=true
+    fi
+    if ! $compose_ok && $_phase11_recovery_compose_ok; then
+        compose_ok=true
+    fi
     # Step 3: catch any stragglers from the second pass
     $DOCKER_CMD start $($DOCKER_CMD ps -a --filter status=created -q) 2>/dev/null || true
 
@@ -1224,13 +1290,23 @@ MODELS_INI_EOF
     # started it before compose created ods-network, so restart it here to
     # let the safer scoped bind take effect.
     if [[ -z "${ODS_AGENT_BIND:-}" ]] \
-      && [[ "$(uname -s 2>/dev/null || echo unknown)" == "Linux" ]] \
-      && command -v systemctl >/dev/null 2>&1 \
-      && sudo -n systemctl is-enabled ods-host-agent.service >/dev/null 2>&1; then
-        if sudo -n systemctl restart ods-host-agent.service 2>&1 | tee -a "$LOG_FILE" >/dev/null; then
-            ai_ok "Restarted ods-host-agent after ods-network creation"
-        else
-            ai_warn "ods-host-agent restart after network creation failed (non-fatal)"
+      && [[ "$(uname -s 2>/dev/null || echo unknown)" == "Linux" ]]; then
+        if command -v systemctl >/dev/null 2>&1 \
+          && systemctl cat ods-host-agent.service >/dev/null 2>&1 \
+          && systemctl is-enabled ods-host-agent.service >/dev/null 2>&1 \
+          && ods_sudo_available; then
+            if ods_sudo systemctl restart ods-host-agent.service 2>&1 | tee -a "$LOG_FILE" >/dev/null; then
+                ai_ok "Restarted ods-host-agent after ods-network creation"
+            else
+                ai_warn "ods-host-agent restart after network creation failed (non-fatal)"
+            fi
+        elif [[ -s "$INSTALL_DIR/data/ods-host-agent.pid" ]]; then
+            if ODS_AGENT_FORCE_SESSION=true "$INSTALL_DIR/ods-cli" agent restart \
+              2>&1 | tee -a "$LOG_FILE" >/dev/null; then
+                ai_ok "Restarted session host agent after ods-network creation"
+            else
+                ai_warn "Session host-agent restart after network creation failed (non-fatal)"
+            fi
         fi
     fi
 
