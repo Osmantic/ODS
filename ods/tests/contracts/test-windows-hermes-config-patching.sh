@@ -157,6 +157,27 @@ else
     fail "install-windows.ps1 must clear LASTEXITCODE and exit 0 on the success path"
 fi
 
+# ---------------------------------------------------------------------------
+# Values interpolated into a .NET -replace *replacement* must have '$' doubled.
+# '$&' otherwise splices the whole matched line into the value and '$$'
+# collapses to '$' (#2928).
+# ---------------------------------------------------------------------------
+if grep -q "\$modelReplacement = \$Model.Replace('\$', '\$\$')" "$PHASE" \
+   && grep -q "\$baseUrlReplacement = \$BaseUrl.Replace('\$', '\$\$')" "$PHASE" \
+   && grep -q 'default: `"\$modelReplacement`""' "$PHASE" \
+   && grep -q 'base_url: `"\$baseUrlReplacement`""' "$PHASE"; then
+    pass "Hermes config patching escapes '\$' before regex replacement"
+else
+    fail "Update-HermesConfigFile must double '\$' in model/base_url before -replace"
+fi
+
+if grep -q "\$ggufReplacement = \"\$(\$tierConfig.GgufFile)\".Replace('\$', '\$\$')" "$MONO" \
+   && grep -q "\$llmModelReplacement = \"\$(\$tierConfig.LlmModel)\".Replace('\$', '\$\$')" "$MONO"; then
+    pass "Bootstrap .env patching escapes '\$' before regex replacement"
+else
+    fail "install-windows.ps1 must double '\$' in GGUF_FILE/LLM_MODEL before -replace"
+fi
+
 echo "------------------------------------------------------------"
 echo "PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]] || exit 1

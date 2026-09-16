@@ -1,0 +1,27 @@
+name: Config migration version ceiling
+
+on:
+  pull_request:
+    paths:
+      - 'ods/scripts/migrate-config.sh'
+      - 'ods/migrations/**'
+      - 'ods/tests/test-migration-version-ceiling.py'
+      - '.github/workflows/test-migration-ceiling.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  migrations:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Exercise shipped migration commands in temporary installs
+        run: python ods/tests/test-migration-version-ceiling.py

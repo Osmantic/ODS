@@ -701,7 +701,7 @@ echo "[contract] Linux AMD/Lemonade avoids Whisper port 9000"
 if grep -q 'AMD/Lemonade detected; reserving host port 9000' installers/phases/04-requirements.sh \
     && grep -q 'AMD/Lemonade detected; Whisper reassigned to host port' installers/phases/06-directories.sh \
     && grep -q 'WHISPER_PORT_VALUE="9100"' installers/phases/06-directories.sh \
-    && grep -q 'WHISPER_PORT=${WHISPER_PORT_VALUE}' installers/phases/06-directories.sh; then
+    && grep -qF 'WHISPER_PORT=$(dotenv_value "${WHISPER_PORT_VALUE}")' installers/phases/06-directories.sh; then
     pass "Linux AMD/Lemonade defaults Whisper to alternate host port"
 else
     fail "Linux AMD/Lemonade must avoid Lemonade host port 9000 collision"
