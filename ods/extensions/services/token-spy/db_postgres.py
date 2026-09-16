@@ -8,7 +8,7 @@ import os
 import logging
 from datetime import date, datetime, timedelta
 from decimal import Decimal
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 from uuid import UUID, uuid4
 
 from psycopg2.extras import RealDictCursor, register_uuid
@@ -437,11 +437,16 @@ def query_report(start: str, end: str) -> dict:
         day_row["cache_read_tokens"] += cache_read
         day_row["cache_write_tokens"] += cache_write
 
-        for key, collection, base in (
+        # Deliberately heterogeneous: the model bucket is keyed by a 4-tuple
+        # while the service and source buckets are keyed by a plain string, so
+        # the element type is spelled out rather than inferred as a union that
+        # setdefault cannot accept.
+        aggregates: tuple[tuple[Any, dict[Any, dict], dict], ...] = (
             ((model, provider, service, source), models, {"model": model, "provider": provider, "service": service, "cost_source": source}),
             (service, services, {"service": service}),
             (source, sources, {"source": source}),
-        ):
+        )
+        for key, collection, base in aggregates:
             target = collection.setdefault(key, {
                 **base,
                 "requests": 0,

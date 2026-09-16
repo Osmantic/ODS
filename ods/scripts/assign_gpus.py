@@ -16,7 +16,7 @@ import math
 import sys
 from dataclasses import dataclass
 from itertools import combinations
-from typing import Optional
+from typing import Any, Optional
 
 
 #  Constants
@@ -410,14 +410,16 @@ def build_output(result: AssignmentResult) -> dict:
     services = {}
 
     for name, assignment in result.services.items():
-        entry = {
+        # Annotated because the literal below infers a list-only value type,
+        # which the parallelism mapping added further down does not satisfy.
+        entry: dict[str, Any] = {
             "gpus": [g.uuid for g in assignment.gpus],
             "gpu_indices": [g.index for g in assignment.gpus],
         }
 
         if assignment.parallelism:
             p = assignment.parallelism
-            para = {
+            para: dict[str, Any] = {
                 "mode":                   p.mode,
                 "tensor_parallel_size":   p.tensor_parallel_size,
                 "pipeline_parallel_size": p.pipeline_parallel_size,

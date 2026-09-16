@@ -30,29 +30,46 @@ jobs:
       - name: Install mypy
         run: pip install mypy
 
-      - name: Type check dashboard-api
+      # The only step still allowed to fail. dashboard-api carries a large
+      # backlog of pre-existing errors spread over ~26 files (a third of them in
+      # its own test files), which is a cleanup in its own right rather than
+      # something to bundle into the change that made the other three blocking.
+      # The live count goes to the job summary so the debt stays visible instead
+      # of being a yellow annotation nobody reads. Drop continue-on-error here
+      # once the backlog reaches zero — see #3234.
+      - name: Type check dashboard-api (non-blocking, tracked backlog)
         continue-on-error: true
         working-directory: ods/extensions/services/dashboard-api
         run: |
           pip install -r requirements.txt
-          mypy . --ignore-missing-imports --no-strict-optional --check-untyped-defs
+          set +e
+          mypy . --ignore-missing-imports --no-strict-optional --check-untyped-defs \
+            | tee /tmp/mypy-dashboard-api.txt
+          status=${PIPESTATUS[0]}
+          set -e
+          count=$(grep -c ' error: ' /tmp/mypy-dashboard-api.txt || true)
+          {
+            echo "### mypy: dashboard-api (non-blocking)"
+            echo ""
+            echo "Outstanding type errors: **${count}**"
+            echo ""
+            echo "This step does not gate merges yet; see #3234."
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 0
 
       - name: Type check token-spy
-        continue-on-error: true
         working-directory: ods/extensions/services/token-spy
         run: |
           pip install -r requirements.txt
           mypy . --ignore-missing-imports --no-strict-optional --check-untyped-defs
 
       - name: Type check privacy-shield
-        continue-on-error: true
         working-directory: ods/extensions/services/privacy-shield
         run: |
           pip install -r requirements.txt
           mypy . --ignore-missing-imports --no-strict-optional --check-untyped-defs
 
       - name: Type check scripts
-        continue-on-error: true
         working-directory: ods/scripts
         run: |
           mypy *.py --ignore-missing-imports --no-strict-optional --check-untyped-defs
