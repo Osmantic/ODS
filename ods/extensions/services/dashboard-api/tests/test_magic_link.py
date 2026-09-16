@@ -1211,6 +1211,69 @@ def test_revoke_short_prefix_rejected(magic_link_client):
     assert resp.status_code == 400
 
 
+def test_revoke_rejects_prefix_shorter_than_the_list_shows(magic_link_client):
+    """A 4-hex prefix is only a 65k space and the list API shows 8 (#4197)."""
+    resp = magic_link_client.delete(
+        "/api/auth/magic-link/dead",
+        headers=magic_link_client.auth_headers,
+    )
+    assert resp.status_code == 400
+
+
+def test_revoke_refuses_an_ambiguous_prefix(magic_link_client, magic_link_module):
+    """Two active tokens sharing a prefix must revoke neither.
+
+    The old loop took the first match and reported success, so a colliding
+    prefix silently revoked the wrong person's access while telling the admin
+    the right one was gone (#4197).
+    """
+    with magic_link_module._STORE_LOCK:
+        store = magic_link_module._ensure_store()
+        store["tokens"] = [
+            {
+                "token_hash": "abcdef00" + "1" * 56,
+                "target_username": "alice",
+                "created_at": magic_link_module._now_iso(),
+                "expires_at": None,
+                "redeemed_at": None,
+                "revoked_at": None,
+            },
+            {
+                "token_hash": "abcdef00" + "2" * 56,
+                "target_username": "bob",
+                "created_at": magic_link_module._now_iso(),
+                "expires_at": None,
+                "redeemed_at": None,
+                "revoked_at": None,
+            },
+        ]
+        magic_link_module._write_store(store)
+
+    resp = magic_link_client.delete(
+        "/api/auth/magic-link/abcdef00",
+        headers=magic_link_client.auth_headers,
+    )
+    assert resp.status_code == 409
+    assert "share that prefix" in resp.json()["detail"]
+
+    # Neither token may have been touched.
+    with magic_link_module._STORE_LOCK:
+        store = magic_link_module._ensure_store()
+    assert [t["revoked_at"] for t in store["tokens"]] == [None, None]
+
+    # Disambiguating revokes exactly the intended one.
+    resp = magic_link_client.delete(
+        "/api/auth/magic-link/" + "abcdef00" + "1" * 8,
+        headers=magic_link_client.auth_headers,
+    )
+    assert resp.status_code == 200
+    with magic_link_module._STORE_LOCK:
+        store = magic_link_module._ensure_store()
+    by_user = {t["target_username"]: t["revoked_at"] for t in store["tokens"]}
+    assert by_user["alice"] is not None
+    assert by_user["bob"] is None
+
+
 def test_revoke_unknown_prefix_returns_404(magic_link_client):
     resp = magic_link_client.delete(
         "/api/auth/magic-link/deadbeef",
