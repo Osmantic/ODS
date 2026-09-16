@@ -216,3 +216,26 @@ class TestShortSpanAtDateMax:
         db = load_sqlite_db(tmp_path, monkeypatch)
         with pytest.raises(ValueError, match="out of range"):
             db._parse_report_dates("9999-12-01", "9999-12-31")
+
+
+@pytest.mark.parametrize("suffix", [".000Z", ".001Z", ".999Z", "Z"])
+def test_report_partitions_events_at_midnight(tmp_path, monkeypatch, suffix):
+    db = load_sqlite_db(tmp_path, monkeypatch)
+    insert_usage(db, "2026-05-01T00:00:00" + suffix, input_tokens=11)
+    insert_usage(db, "2026-05-01T23:59:59.999Z", input_tokens=13)
+    insert_usage(db, "2026-05-02T00:00:00" + suffix, input_tokens=17)
+
+    first = db.query_report("2026-05-01", "2026-05-01")
+    second = db.query_report("2026-05-02", "2026-05-02")
+    together = db.query_report("2026-05-01", "2026-05-02")
+
+    assert first["summary"]["input_tokens"] == 24
+    assert second["summary"]["input_tokens"] == 17
+    assert together["summary"]["input_tokens"] == 41
+    for report, requests in ((first, 2), (second, 1), (together, 3)):
+        assert report["summary"]["requests"] == requests
+        assert sum(day["requests"] for day in report["daily"]) == requests
+        assert sum(model["requests"] for model in report["models"]) == requests
+        assert sum(service["requests"] for service in report["services"]) == requests
+    assert first["summary"]["spend_usd"] + second["summary"]["spend_usd"] == pytest.approx(together["summary"]["spend_usd"])
+    db._get_conn().close()
