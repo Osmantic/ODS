@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import struct
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 logger = logging.getLogger(__name__)
 
@@ -88,20 +88,28 @@ _FILE_TYPE_LABELS = {
 
 
 class _Reader:
-    def __init__(self, data: bytes):
-        self.data = data
+    """Bound bytes materialized while seeking over unsampled metadata."""
+
+    def __init__(self, source: BinaryIO, budget: int, size: int):
+        self.source = source
+        self.remaining = budget
+        self.size = size
         self.offset = 0
 
     def read(self, size: int) -> bytes:
-        if self.offset + size > len(self.data):
+        if size > self.remaining:
+            raise ValueError("GGUF metadata read budget exceeded")
+        data = self.source.read(size)
+        if len(data) != size:
             raise ValueError("GGUF metadata ended unexpectedly")
-        chunk = self.data[self.offset:self.offset + size]
+        self.remaining -= size
         self.offset += size
-        return chunk
+        return data
 
     def skip(self, size: int) -> None:
-        if self.offset + size > len(self.data):
+        if self.offset + size > self.size:
             raise ValueError("GGUF metadata ended unexpectedly")
+        self.source.seek(size, 1)
         self.offset += size
 
     def unpack(self, fmt: str):
@@ -204,7 +212,11 @@ def _first_value(metadata: dict[str, Any], suffixes: tuple[str, ...]) -> Any:
 
 
 def inspect_gguf(path: Path | str, max_metadata_bytes: int = 8 * 1024 * 1024) -> dict[str, Any]:
-    """Return normalized GGUF metadata, degrading to ``unknown`` on failure."""
+    """Inspect metadata with a bounded read budget, skipping unsampled tails.
+
+    ``max_metadata_bytes`` bounds materialized bytes, not skipped file offsets.
+    Tensor data is never read. Failures degrade to ``unknown``.
+    """
     p = Path(path)
     result: dict[str, Any] = {
         "path": str(p),
@@ -221,20 +233,18 @@ def inspect_gguf(path: Path | str, max_metadata_bytes: int = 8 * 1024 * 1024) ->
     try:
         result["size_bytes"] = p.stat().st_size
         with p.open("rb") as f:
-            data = f.read(max_metadata_bytes)
-        reader = _Reader(data)
-        if reader.read(4) != b"GGUF":
-            result["error"] = "not a GGUF file"
-            return result
-        version = reader.unpack("<I")
-        tensor_count = reader.unpack("<Q")
-        metadata_count = reader.unpack("<Q")
-        metadata: dict[str, Any] = {}
-        for _ in range(metadata_count):
-            key = reader.string()
-            value_type = reader.unpack("<I")
-            metadata[key] = _read_value(reader, value_type)
-
+            reader = _Reader(f, max_metadata_bytes, result["size_bytes"])
+            if reader.read(4) != b"GGUF":
+                result["error"] = "not a GGUF file"
+                return result
+            version = reader.unpack("<I")
+            tensor_count = reader.unpack("<Q")
+            metadata_count = reader.unpack("<Q")
+            metadata: dict[str, Any] = {}
+            for _ in range(metadata_count):
+                key = reader.string()
+                value_type = reader.unpack("<I")
+                metadata[key] = _read_value(reader, value_type)
         file_type = metadata.get("general.file_type")
         architecture = metadata.get("general.architecture", "unknown")
         result.update({
