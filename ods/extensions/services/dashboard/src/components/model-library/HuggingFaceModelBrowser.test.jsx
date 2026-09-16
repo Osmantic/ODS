@@ -13,7 +13,7 @@ describe('HuggingFaceModelBrowser', () => {
     vi.restoreAllMocks()
   })
 
-  test('aborts an in-flight repository request when its dialog closes', async () => {
+  test.each(['close', 'unmount'])('aborts repository requests on %s', async action => {
     vi.useFakeTimers()
     let detailsSignal
     const fetchMock = vi.fn((url, options = {}) => {
@@ -46,7 +46,7 @@ describe('HuggingFaceModelBrowser', () => {
     })
     vi.stubGlobal('fetch', fetchMock)
 
-    render(<HuggingFaceModelBrowser gpu={{ vramTotal: 16 }} />)
+    const { unmount } = render(<HuggingFaceModelBrowser gpu={{ vramTotal: 16 }} />)
     await act(async () => vi.advanceTimersByTimeAsync(350))
     vi.useRealTimers()
 
@@ -54,7 +54,8 @@ describe('HuggingFaceModelBrowser', () => {
     expect(detailsSignal).toBeDefined()
     expect(detailsSignal.aborted).toBe(false)
 
-    fireEvent.click(screen.getByTitle('Close'))
+    if (action === 'close') fireEvent.click(screen.getByTitle('Close'))
+    else unmount()
 
     expect(detailsSignal.aborted).toBe(true)
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
