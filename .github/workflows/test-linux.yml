@@ -118,6 +118,9 @@ jobs:
       - name: Health Check Tests
         run: bash tests/test-health-check.sh
 
+      - name: Update Abort Exit Codes
+        run: bash tests/test-update-abort-exit-codes.sh
+
       - name: QR Code Helper Tests
         run: bash tests/test-qrcode-helper.sh
 

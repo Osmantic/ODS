@@ -599,6 +599,10 @@ except Exception as e:
 # Version source precedence (single source of truth policy):
 #   installed: ODS_VERSION in .env  >  .version file  >  manifest.json ods_version
 #   target:    manifest.json ods_version  (post-pull reflects the incoming release)
+# Returns: 0 proceed, 1 refused (hard compatibility block), 2 operator declined.
+# cmd_update maps 1 to a non-zero exit and 2 to 0 — a person answering "no" is
+# not a failed update, but the tool refusing one is, and automation has to be
+# able to tell those apart (#4179).
 _check_version_compat() {
     local force="${1:-false}"
 
@@ -667,7 +671,7 @@ _check_version_compat() {
             echo ""
             if [[ ! $REPLY =~ ^[Yy]$ ]]; then
                 log "Update cancelled."
-                return 1
+                return 2
             fi
         fi
         echo ""
@@ -720,7 +724,7 @@ _check_version_compat() {
             echo ""
             if [[ ! $REPLY =~ ^[Yy]$ ]]; then
                 log "Update cancelled."
-                return 1
+                return 2
             fi
             warn "Proceeding — back up your data first: ods backup"
         fi
@@ -2006,8 +2010,15 @@ cmd_update() {
     read -ra flags <<< "$flags_str"
 
     # Version compatibility check — warn on major version jumps before touching anything
-    if ! _check_version_compat "$force_flag"; then
+    local _compat_rc=0
+    _check_version_compat "$force_flag" || _compat_rc=$?
+    if [[ "$_compat_rc" -eq 2 ]]; then
+        # Operator answered "no" at the prompt. Their choice, not a failure.
         exit 0
+    elif [[ "$_compat_rc" -ne 0 ]]; then
+        # The tool refused (installed version below min_compatible_ods_version).
+        # Exiting 0 here told every caller the update had succeeded.
+        exit 1
     fi
 
     # Show what we're updating from/to (if versions were resolved)
@@ -2027,7 +2038,10 @@ cmd_update() {
         fi
     elif [[ -x "$INSTALL_DIR/ods-backup.sh" ]]; then
         log "Creating pre-update backup (${_snap_label})..."
-        if ! "$INSTALL_DIR/ods-backup.sh" "$_snap_label"; then
+        # --description is the flag ods-backup.sh actually accepts; a bare
+        # positional hits its `*)` catch-all ("Unknown option") and exits 1, so
+        # this safety net has never produced a backup (#4175).
+        if ! "$INSTALL_DIR/ods-backup.sh" --description "$_snap_label"; then
             warn "Pre-update backup failed; proceeding without safety net."
         fi
     else
