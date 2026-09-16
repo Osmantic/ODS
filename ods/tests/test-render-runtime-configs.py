@@ -32,8 +32,7 @@ def run_renderer(*args: str) -> dict[str, object]:
         [sys.executable, str(SCRIPT), *args],
         cwd=ROOT,
         text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         check=True,
     )
     return json.loads(proc.stdout)
@@ -196,8 +195,7 @@ def test_remote_projection_requires_cloud_mode() -> None:
         ],
         cwd=ROOT,
         text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
     )
     assert proc.returncode == 2
     assert "ODS_MODE=cloud" in proc.stderr
@@ -223,8 +221,7 @@ def test_remote_projection_rejects_unsafe_model_id() -> None:
         ],
         cwd=ROOT,
         text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
     )
     assert proc.returncode == 2
     assert "model id without spaces" in proc.stderr
@@ -242,8 +239,7 @@ def test_explicit_cloud_switchboard_render_fails_closed() -> None:
         ],
         cwd=ROOT,
         text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
     )
     assert proc.returncode == 2
     assert "local-runtime-only" in proc.stderr
@@ -505,8 +501,7 @@ def test_write_mode_writes_under_output_root() -> None:
             ],
             cwd=ROOT,
             text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             check=True,
         )
         payload = json.loads(proc.stdout)

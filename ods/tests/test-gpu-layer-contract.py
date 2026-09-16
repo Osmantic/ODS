@@ -61,8 +61,7 @@ New-ODSEnv -InstallDir $env:ODS_TEST_DIR -TierConfig $tier -Tier "3" -GpuBackend
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
         env=env,
         text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         check=True,
     )
 
@@ -130,8 +129,7 @@ def run_macos_generator(install_dir: Path, force: bool, override: str | None = N
         cwd=ROOT,
         env=env,
         text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         check=True,
     )
 

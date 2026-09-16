@@ -59,8 +59,7 @@ def render_compose(**overrides: str) -> dict:
         cwd=ROOT,
         env=env,
         text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         check=True,
     )
     return json.loads(result.stdout)
@@ -144,8 +143,7 @@ New-ODSEnv -InstallDir $env:ODS_TEST_DIR -TierConfig $tier -Tier "3" -GpuBackend
             ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
             env=env,
             text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             check=True,
         )
         assert_embedding_env(read_env(Path(temp_dir) / ".env"))
@@ -159,8 +157,7 @@ New-ODSEnv -InstallDir $env:ODS_TEST_DIR -TierConfig $tier -Tier "3" -GpuBackend
             ["pwsh", "-NoProfile", "-NonInteractive", "-Command", legacy_script],
             env=env,
             text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             check=True,
         )
         legacy_values = read_env(legacy_dir / ".env")
@@ -177,8 +174,7 @@ New-ODSEnv -InstallDir $env:ODS_TEST_DIR -TierConfig $tier -Tier "3" -GpuBackend
             ["pwsh", "-NoProfile", "-NonInteractive", "-Command", legacy_script],
             env=env,
             text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             check=True,
         )
         empty_values = read_env(empty_override_dir / ".env")
@@ -203,8 +199,7 @@ def test_macos_env_generator_renders_embedding_contract() -> None:
             cwd=ROOT,
             env=env,
             text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             check=True,
         )
         env_path = Path(temp_dir) / ".env"
@@ -231,8 +226,7 @@ def test_macos_env_generator_renders_embedding_contract() -> None:
             cwd=ROOT,
             env=env,
             text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             check=True,
         )
         assert_embedding_env(read_env(env_path))
@@ -254,8 +248,7 @@ def test_macos_env_generator_renders_embedding_contract() -> None:
             cwd=ROOT,
             env=env,
             text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             check=True,
         )
         empty_values = read_env(empty_override_dir / ".env")

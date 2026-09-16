@@ -115,8 +115,7 @@ def test_macos_generator_backfills_then_preserves_token() -> None:
             cwd=ROOT,
             check=True,
             text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
         )
         first = read_env(env_path)[TOKEN_KEY]
         assert_valid_token(first)
@@ -129,8 +128,7 @@ def test_macos_generator_backfills_then_preserves_token() -> None:
             env=process_env,
             check=True,
             text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
         )
         assert read_env(env_path)[TOKEN_KEY] == first
 
@@ -164,8 +162,7 @@ New-ODSEnv -InstallDir $env:ODS_TEST_DIR -TierConfig $tier -Tier "3" -GpuBackend
             env=env,
             check=True,
             text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
         )
 
         token = read_env(Path(temp_dir) / ".env")[TOKEN_KEY]
@@ -198,8 +195,7 @@ Write-Output "$first`n$second"
             env=env,
             check=True,
             text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
         )
         tokens = [
             line.strip()
