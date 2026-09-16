@@ -406,7 +406,7 @@ def _load_plan(command):
 
 def test_receipted_dispatch_terminalizes_before_success_and_replays():
     command = host_work.parse_lifecycle_work_request(
-        work_request("verify", ["documents"], {"serviceIds": ["documents"]})
+        work_request("stage", ["documents"], payload_for("stage", ["documents"]))
     )
     store = _begun_store(command)
     seen = []
@@ -434,6 +434,80 @@ def test_receipted_dispatch_terminalizes_before_success_and_replays():
     assert snapshot.state == "completed"
     assert snapshot.terminal_receipt is not None
     assert snapshot.terminal_receipt.evidence_hash == EVIDENCE_HASH
+
+
+def test_completed_verify_replay_rebinds_plan_and_checks_current_evidence():
+    command = host_work.parse_lifecycle_work_request(
+        work_request("verify", ["documents"], payload_for("verify", ["documents"]))
+    )
+    store = _begun_store(command)
+    seen = []
+    loaded = []
+
+    def load_plan(value):
+        loaded.append(value)
+        return _load_plan(value)
+
+    first = host_work.dispatch_receipted_lifecycle_work(
+        command, lambda value: seen.append(value) or EVIDENCE_HASH, store, load_plan
+    )
+    terminal = store.terminal
+    replay = host_work.dispatch_receipted_lifecycle_work(
+        command, lambda value: seen.append(value) or EVIDENCE_HASH, store, load_plan
+    )
+
+    assert replay == first
+    assert len(seen) == 2
+    assert loaded == [command, command]
+    assert all(value.plan_material.bound is True for value in seen)
+    assert store.terminal is terminal
+
+
+def test_completed_verify_replay_refuses_changed_or_failed_current_state():
+    command = host_work.parse_lifecycle_work_request(
+        work_request("verify", ["documents"], payload_for("verify", ["documents"]))
+    )
+    store = _begun_store(command)
+    host_work.dispatch_receipted_lifecycle_work(
+        command, lambda _value: EVIDENCE_HASH, store, _load_plan
+    )
+    terminal = store.terminal
+
+    with pytest.raises(host_work.LifecycleWorkExecutionError) as changed:
+        host_work.dispatch_receipted_lifecycle_work(
+            command, lambda _value: "9" * 64, store, _load_plan
+        )
+    assert changed.value.code == "lifecycle-work-verify-current-mismatch"
+
+    def unhealthy(_value):
+        raise host_work.LifecycleWorkExecutionError("lifecycle-work-unhealthy")
+
+    with pytest.raises(host_work.LifecycleWorkExecutionError) as failed:
+        host_work.dispatch_receipted_lifecycle_work(
+            command, unhealthy, store, _load_plan
+        )
+    assert failed.value.code == "lifecycle-work-unhealthy"
+    assert store.terminal is terminal
+
+
+def test_completed_verify_replay_requires_current_plan_binding():
+    command = host_work.parse_lifecycle_work_request(
+        work_request("verify", ["documents"], payload_for("verify", ["documents"]))
+    )
+    store = _begun_store(command)
+    host_work.dispatch_receipted_lifecycle_work(
+        command, lambda _value: EVIDENCE_HASH, store, _load_plan
+    )
+    terminal = store.terminal
+    with pytest.raises(host_work.LifecycleWorkValidationError) as caught:
+        host_work.dispatch_receipted_lifecycle_work(
+            command,
+            lambda _value: (_ for _ in ()).throw(AssertionError("dispatched")),
+            store,
+            lambda value: replace(_load_plan(value), plan_hash="8" * 64),
+        )
+    assert caught.value.code == "lifecycle-work-plan-mismatch"
+    assert store.terminal is terminal
 
 
 def test_started_observer_terminalizes_exact_completion_without_dispatch():

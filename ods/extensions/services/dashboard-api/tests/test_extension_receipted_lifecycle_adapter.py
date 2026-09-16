@@ -341,6 +341,70 @@ def test_completed_replay_uses_terminal_receipt_without_rerunning_worker() -> No
     assert receipts.calls.count("begin:apply:aider") == 1
 
 
+def test_completed_verify_replay_requires_fresh_matching_worker_evidence() -> None:
+    events: list[str] = []
+    seen: list[LifecycleWorkRequest] = []
+    receipts = StubReceipts()
+    lifecycle, lock_factory = adapter(
+        events, receipts, _success_worker(seen, events)
+    )
+    with lock_factory.lock_services(BINDING, ["aider"]):
+        first = lifecycle.verify_all(BINDING, ["aider"])
+        replay = lifecycle.verify_all(BINDING, ["aider"])
+
+    assert replay == first
+    assert len(seen) == 2
+    assert all(work.operation_key == "verify" for work in seen)
+    assert receipts.calls.count("begin:verify") == 1
+    assert receipts.calls.count("finish:verify:completed") == 1
+
+
+def test_completed_verify_replay_refuses_changed_current_evidence() -> None:
+    events: list[str] = []
+    receipts = StubReceipts()
+    calls = 0
+
+    def changed(_grant: LeaseGrant, _work: LifecycleWorkRequest) -> LifecycleWorkResult:
+        nonlocal calls
+        calls += 1
+        return LifecycleWorkResult(EVIDENCE_HASH if calls == 1 else "6" * 64)
+
+    lifecycle, lock_factory = adapter(events, receipts, changed)
+    with lock_factory.lock_services(BINDING, ["aider"]):
+        lifecycle.verify_all(BINDING, ["aider"])
+        with pytest.raises(ReceiptedLifecycleAdapterError) as caught:
+            lifecycle.verify_all(BINDING, ["aider"])
+
+    assert caught.value.code == "lifecycle-verify-current-mismatch"
+    assert calls == 2
+    assert receipts.calls.count("finish:verify:completed") == 1
+    assert receipts.states["verify"][1].evidence_hash == EVIDENCE_HASH
+
+
+def test_completed_verify_replay_fails_closed_on_worker_error() -> None:
+    events: list[str] = []
+    receipts = StubReceipts()
+    calls = 0
+
+    def failed(_grant: LeaseGrant, _work: LifecycleWorkRequest) -> LifecycleWorkResult:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise ExtensionLeaseError("lease-not-active", retryable=True)
+        return LifecycleWorkResult(EVIDENCE_HASH)
+
+    lifecycle, lock_factory = adapter(events, receipts, failed)
+    with lock_factory.lock_services(BINDING, ["aider"]):
+        lifecycle.verify_all(BINDING, ["aider"])
+        with pytest.raises(ReceiptedLifecycleAdapterError) as caught:
+            lifecycle.verify_all(BINDING, ["aider"])
+
+    assert caught.value.code == "lifecycle-lease-not-active"
+    assert caught.value.retryable is True
+    assert calls == 2
+    assert receipts.calls.count("finish:verify:completed") == 1
+
+
 def test_started_replay_requires_observation_and_never_reruns_worker() -> None:
     events: list[str] = []
     calls = 0

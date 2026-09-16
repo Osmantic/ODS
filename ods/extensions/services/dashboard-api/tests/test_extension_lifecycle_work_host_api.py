@@ -634,7 +634,17 @@ def test_success_is_exact_synchronous_bound_and_token_free(host_server, host_req
     replay_status, replay = host_request("/v1/extension/lifecycle-work", request)
     assert replay_status == 200
     assert replay == result
-    assert len(seen) == 1
+    assert len(seen) == 2
+    assert active_at_response == [False, False]
+    assert lock.locked()
+
+    agent._extension_lifecycle_work_dispatcher = lambda _command: "9" * 64
+    drift_status, drift = host_request("/v1/extension/lifecycle-work", request)
+    assert drift_status == 503
+    assert drift == {"error": {"code": "lifecycle-work-operation-failed"}}
+    snapshot_status, snapshot = receipt_snapshot(agent, host_request, request)
+    assert snapshot_status == 200
+    assert snapshot["terminalReceipt"]["evidenceHash"] == EVIDENCE_HASH
 
 
 @pytest.mark.parametrize(

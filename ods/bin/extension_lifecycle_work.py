@@ -432,6 +432,31 @@ def _terminalize_failed_receipt(
         ) from exc
 
 
+def _load_bound_command(
+    command: LifecycleWorkCommand,
+    plan_loader: Callable[[LifecycleWorkCommand], LifecycleWorkCommand],
+) -> LifecycleWorkCommand:
+    bound_command = plan_loader(command)
+    if (
+        not isinstance(bound_command, LifecycleWorkCommand)
+        or bound_command.plan_material is None
+        or any(
+            getattr(bound_command, field_name) != getattr(command, field_name)
+            for field_name in (
+                "transaction_id",
+                "plan_hash",
+                "operation_key",
+                "request_hash",
+                "service_ids",
+                "payload",
+                "timeout_seconds",
+            )
+        )
+    ):
+        raise LifecycleWorkValidationError("lifecycle-work-plan-mismatch")
+    return bound_command
+
+
 def dispatch_receipted_lifecycle_work(
     command: LifecycleWorkCommand,
     dispatcher: Callable[[LifecycleWorkCommand], str] | None,
@@ -447,10 +472,13 @@ def dispatch_receipted_lifecycle_work(
 
     The Dashboard publishes the immutable started receipt before submitting
     host work.  The host verifies that exact binding and publishes the matching
-    terminal receipt before returning.  A completed terminal is replayed
-    without another dispatcher call; a failed terminal is never retried.  An
-    optional typed observer may recover exact durable completion from a
-    started-only receipt before the dispatcher is invoked. Observer failures
+    terminal receipt before returning. A completed verify terminal is a
+    historical receipt, not current health: replay rebinds the plan and runs
+    the read-only verifier again without changing the receipt. Other completed
+    terminals replay without another dispatcher call; failed terminals are
+    never retried. An optional typed observer may recover exact durable
+    completion from a started-only receipt before the dispatcher is invoked.
+    Observer failures
     remain retriable by default for existing callers. The opt-in failure gate
     terminalizes them for bounded, attested library image preparation.
     """
@@ -479,6 +507,23 @@ def dispatch_receipted_lifecycle_work(
     terminal = _terminal_from_snapshot(snapshot, command)
     if terminal is not None:
         if terminal.outcome == "completed":
+            if command.operation_key == "verify":
+                try:
+                    current = dispatch_lifecycle_work(
+                        _load_bound_command(command, plan_loader), dispatcher
+                    )
+                except LifecycleWorkError:
+                    raise
+                except Exception as exc:
+                    raise LifecycleWorkExecutionError(
+                        "lifecycle-work-operation-failed"
+                    ) from exc
+                if not hmac.compare_digest(
+                    current["evidenceHash"], terminal.evidence_hash
+                ):
+                    raise LifecycleWorkExecutionError(
+                        "lifecycle-work-verify-current-mismatch"
+                    )
             return _completed_result(command, terminal.evidence_hash)
         raise LifecycleWorkExecutionError("lifecycle-work-terminal-failed")
 
@@ -540,24 +585,7 @@ def dispatch_receipted_lifecycle_work(
             return _completed_result(command, validated.evidence_hash)
 
     try:
-        bound_command = plan_loader(command)
-        if (
-            not isinstance(bound_command, LifecycleWorkCommand)
-            or bound_command.plan_material is None
-            or any(
-                getattr(bound_command, field_name) != getattr(command, field_name)
-                for field_name in (
-                    "transaction_id",
-                    "plan_hash",
-                    "operation_key",
-                    "request_hash",
-                    "service_ids",
-                    "payload",
-                    "timeout_seconds",
-                )
-            )
-        ):
-            raise LifecycleWorkValidationError("lifecycle-work-plan-mismatch")
+        bound_command = _load_bound_command(command, plan_loader)
         result = dispatch_lifecycle_work(bound_command, dispatcher)
     except LifecycleWorkUncertainEffect:
         # The observer must classify the real effects on a future attempt.

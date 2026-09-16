@@ -168,11 +168,18 @@ its exact response-loss recovery anchor. A started receipt must already exist;
 the host publishes a completed terminal after proof, or a failed terminal for
 a pre-effect failure, before replying. A typed uncertain effect instead leaves
 the started receipt intact for current-state observation and recovery. An exact
-completed replay never dispatches work again. A started-only
-receipt still requires durable side-effect observation and cannot be replayed
-or declared failed by inference. General apply, health verification, and
-composite compensation operations and the production executor therefore remain
+completed replay normally avoids redispatch. `verify` is different: its
+terminal records historical evidence, so an exact replay must rebind the
+current plan and rerun the verifier under the active lease. A mismatch or
+unavailable current check fails closed without rewriting the completed
+receipt. A started-only receipt still requires durable side-effect observation
+and cannot be replayed or declared failed by inference. General apply, health
+verification, and composite compensation operations and the production
+executor therefore remain
 disabled; the exact canary operations activated below are the only exceptions.
+The future verifier must hash stable current-state identity, health, and
+functional evidence, not observation timestamps, so a healthy recheck can
+match its historical receipt without accepting a degraded state.
 
 Every receipted `apply:<serviceId>` now requires a started-state observer
 before any dispatcher may run. After a possible file/container effect, the
@@ -190,10 +197,12 @@ filesystem custody, and accepts only the operation, service order, definitions,
 and artifact digests contained in that plan for the transaction's current
 phase. The lifecycle request continues to carry only the closed typed operation
 reference; request-supplied definition or Compose material cannot become host
-authorization. Exact completed replays do not reload the plan or redispatch. A
-plan mismatch is terminalized as failed, while an unavailable loader leaves a
-started receipt for explicit recovery. The bound material remains in process
-and contains no lease credential or secret.
+authorization. Completed `verify` replays reload the plan and recheck current
+evidence; other completed operations do not. A pre-terminal plan mismatch is
+terminalized as failed, while an unavailable loader leaves a started receipt
+for explicit recovery. A mismatch after a completed verify receipt fails
+closed without changing that historical receipt. The bound material remains in
+process and contains no lease credential or secret.
 
 The general production dispatcher and transaction executor remain disabled
 until real installed-state observation, idempotent apply effects, and crash

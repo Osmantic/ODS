@@ -9,6 +9,7 @@ per adapter invocation and only after a started receipt is established.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import re
 from collections.abc import Callable
@@ -323,6 +324,13 @@ class ReceiptedLifecycleAdapter:
             )
 
         grant = self._custody.current_grant(binding, service_ids)
+        work = LifecycleWorkRequest(
+            binding=binding,
+            operation_key=operation_key,
+            service_ids=service_ids,
+            request_hash=request_hash,
+            payload=_canonical_clone(payload),
+        )
         try:
             initial = self._receipts.snapshot(
                 binding.transaction_id, binding.plan_hash, operation_key
@@ -335,6 +343,8 @@ class ReceiptedLifecycleAdapter:
             binding, initial, operation_key, request_hash, service_ids
         )
         if replay is not None:
+            if operation_key == "verify":
+                self._recheck_completed_verify(grant, work, replay["evidenceHash"])
             return replay
 
         began = self._begin(
@@ -343,13 +353,6 @@ class ReceiptedLifecycleAdapter:
         if began.kind != "started":
             _fail("lifecycle-receipt-begin-conflict")
 
-        work = LifecycleWorkRequest(
-            binding=binding,
-            operation_key=operation_key,
-            service_ids=service_ids,
-            request_hash=request_hash,
-            payload=_canonical_clone(payload),
-        )
         try:
             result = self._worker(grant, work)
             if (
@@ -425,6 +428,28 @@ class ReceiptedLifecycleAdapter:
             result.evidence_hash,
         )
         return self._from_terminal(binding, terminal)
+
+    def _recheck_completed_verify(
+        self,
+        grant: LeaseGrant,
+        work: LifecycleWorkRequest,
+        evidence_hash: str,
+    ) -> None:
+        """Require current evidence; never turn a historical receipt into health."""
+
+        try:
+            result = self._worker(grant, work)
+            if (
+                not isinstance(result, LifecycleWorkResult)
+                or not isinstance(result.evidence_hash, str)
+                or _HASH_RE.fullmatch(result.evidence_hash) is None
+            ):
+                raise ReceiptedLifecycleAdapterError("worker-invalid-result")
+        except Exception as worker_error:
+            code, retryable, ambiguous = _worker_failure(worker_error)
+            _fail(f"lifecycle-{code}", retryable=retryable, ambiguous=ambiguous)
+        if not hmac.compare_digest(result.evidence_hash, evidence_hash):
+            _fail("lifecycle-verify-current-mismatch")
 
     def _initial_snapshot(
         self,

@@ -885,15 +885,15 @@ def test_receipted_host_dispatch_uses_the_real_durable_store(tmp_path):
     )
     second = host_work.dispatch_receipted_lifecycle_work(
         command,
-        lambda _value: (_ for _ in ()).throw(AssertionError("replayed work")),
+        lambda value: calls.append(value) or EVIDENCE_HASH,
         store,
-        lambda _value: (_ for _ in ()).throw(AssertionError("reloaded plan")),
+        lambda value: replace(value, plan_material={"bound": True}),
     )
     snapshot = store.snapshot(command.transaction_id, command.operation_key)
 
     assert first == second
-    assert len(calls) == 1
-    assert calls[0].plan_material == {"bound": True}
+    assert len(calls) == 2
+    assert all(call.plan_material == {"bound": True} for call in calls)
     assert snapshot.state == "completed"
     assert snapshot.terminal_receipt is not None
     assert snapshot.terminal_receipt.evidence_hash == EVIDENCE_HASH
