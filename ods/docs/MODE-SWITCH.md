@@ -136,6 +136,13 @@ Install in cloud mode (skips GPU detection and model download):
 
 This sets `ODS_MODE=cloud`, `LLM_API_URL=http://litellm:4000`, and auto-enables the LiteLLM extension.
 
+An ordinary installer rerun preserves the valid `ODS_MODE` already stored in
+the owner-controlled `.env`. This prevents an upgrade or repair rerun from
+silently moving a configured cloud, hybrid, or Lemonade installation back to
+local inference. An explicit operator selection still wins: use `--cloud`, a
+Lemonade option, or set `ODS_MODE` in the installer environment when you
+intentionally want to change the mode.
+
 ---
 
 ## Model Management
