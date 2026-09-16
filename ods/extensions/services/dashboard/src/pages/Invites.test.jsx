@@ -251,7 +251,7 @@ describe('Invites', () => {
     expect(screen.getByRole('button', { name: 'New guest invite' })).toBeEnabled()
   })
 
-  test('keeps listed invites when owner-card status is unreachable', async () => {
+  test.each(['network', 'HTTP', 'JSON', 'null'])('keeps listed invites after an owner-card %s failure', async (failure) => {
     const fetchMock = vi.fn(async (url) => {
       if (url === '/api/auth/magic-link/list') {
         return response({
@@ -272,6 +272,9 @@ describe('Invites', () => {
         })
       }
       if (url === '/api/auth/magic-link/owner-card/status') {
+        if (failure === 'HTTP') return { ok: false, status: 503, json: async () => ({}) }
+        if (failure === 'JSON') return { ok: true, json: async () => { throw new SyntaxError('invalid JSON') } }
+        if (failure === 'null') return response(null)
         throw new TypeError('owner status connection failed')
       }
       throw new Error(`unexpected request: ${url}`)
