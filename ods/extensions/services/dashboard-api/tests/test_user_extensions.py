@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import yaml
+import pytest
 
 from user_extensions import (
     _reset_cache,
@@ -31,6 +32,27 @@ def _make_manifest(service_id: str, port: int = 8080, health: str = "/health",
 
 
 class TestScanUserExtensions:
+
+    @pytest.mark.parametrize("field", ["port", "external_port_default", "health_port"])
+    @pytest.mark.parametrize("value", [-1, 65536, True, 8080.5, float("inf"), None, "broken"])
+    def test_bad_port_field_cannot_change_probe_target(self, tmp_path, field, value):
+        manifest = _make_manifest("bad-port")
+        manifest["service"][field] = value
+        ext = tmp_path / "bad-port"
+        _write_manifest(ext, manifest)
+        (ext / "compose.yaml").write_text("services: {}\n")
+        assert scan_user_extension_services(tmp_path) == {}
+
+    def test_valid_health_port_and_unpublished_external_port(self, tmp_path):
+        manifest = _make_manifest("internal")
+        manifest["service"].update(health_port="9091", external_port_default=0)
+        ext = tmp_path / "internal"
+        _write_manifest(ext, manifest)
+        (ext / "compose.yaml").write_text("services: {}\n")
+        result = scan_user_extension_services(tmp_path)["internal"]
+        assert result["port"] == 8080
+        assert result["health_port"] == 9091
+        assert result["external_port"] == 0
 
     def test_scan_empty_dir(self, tmp_path):
         """Empty directory returns empty dict."""
@@ -139,6 +161,17 @@ class TestScanUserExtensions:
         result = scan_user_extension_services(user_dir)
         assert result["my-ext"]["name"] == "my-ext"
 
+    def test_scan_out_of_range_port_skipped(self, tmp_path):
+        """Manifests with ports <= 0 or > 65535 are skipped."""
+        user_dir = tmp_path / "user"
+        ext_dir = user_dir / "bad-port"
+        _write_manifest(ext_dir, _make_manifest("bad-port", port=-1))
+        (ext_dir / "compose.yaml").write_text("services: {}\n")
+        assert scan_user_extension_services(user_dir) == {}
+
+        _write_manifest(ext_dir, _make_manifest("bad-port", port=70000))
+        assert scan_user_extension_services(user_dir) == {}
+
     def test_scan_symlink_skipped(self, tmp_path):
         """Symlinked directories in user-extensions are skipped."""
         user_dir = tmp_path / "user"
@@ -228,3 +261,24 @@ class TestCaching:
 
         r2 = get_user_services_cached(user_dir, ttl=300.0)
         assert r2 == {}
+
+    def test_cache_keys_by_directory_path(self, tmp_path):
+        """Caching isolates entries per directory path."""
+        dir1 = tmp_path / "user1"
+        dir2 = tmp_path / "user2"
+
+        ext1 = dir1 / "ext1"
+        _write_manifest(ext1, _make_manifest("ext1"))
+        (ext1 / "compose.yaml").write_text("services: {}\n")
+
+        ext2 = dir2 / "ext2"
+        _write_manifest(ext2, _make_manifest("ext2"))
+        (ext2 / "compose.yaml").write_text("services: {}\n")
+
+        r1 = get_user_services_cached(dir1, ttl=300.0)
+        assert "ext1" in r1
+        assert "ext2" not in r1
+
+        r2 = get_user_services_cached(dir2, ttl=300.0)
+        assert "ext2" in r2
+        assert "ext1" not in r2
