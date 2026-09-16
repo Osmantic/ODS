@@ -17,6 +17,18 @@ function fireAppInstalled() {
 }
 
 describe('usePwaInstallPrompt', () => {
+  test('releases the pending guard after a rejected browser prompt for a fresh offer', async () => {
+    const { result } = renderHook(() => usePwaInstallPrompt())
+    let event
+    act(() => { event = fireBeforeInstall() })
+    event.prompt.mockRejectedValueOnce(new globalThis.DOMException('Prompt rejected', 'InvalidStateError'))
+    await act(async () => { expect(await result.current.promptInstall()).toEqual({ outcome: 'error' }) })
+    let fresh
+    act(() => { fresh = fireBeforeInstall() })
+    await act(async () => { expect(await result.current.promptInstall()).toEqual({ outcome: 'accepted' }) })
+    expect(fresh.prompt).toHaveBeenCalledOnce()
+    expect(result.current.installed).toBe(true)
+  })
   beforeEach(() => {
     globalThis.localStorage.clear()
     globalThis.sessionStorage.clear()
