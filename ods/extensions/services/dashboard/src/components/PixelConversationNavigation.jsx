@@ -5,6 +5,7 @@ import { conversationLabels } from '../lib/pixelConversationLabels'
 import PixelConversationRow, {ConversationTitle} from './PixelConversationRow'
 
 import { exportConversation } from '../lib/pixelConversationExport'
+import { downloadPrintableConversation } from '../lib/pixelPrintableConversation'
 
 export default function PixelConversationNavigation({ collapsed }) {
   const [chats, setChats] = useState(readConversations)
@@ -55,6 +56,9 @@ export default function PixelConversationNavigation({ collapsed }) {
     return <div className="rail-conversations">{items.length ? items.map(chat => <PixelConversationRow key={chat.chatId} chat={chat} title={conversationTitle(chat)} onSaved={() => archiveToggle.current?.focus()} onDelete={event => {trigger.current=event.currentTarget;setDeleteError('');setPending(chat)}} onExport={() => {
       try { exportConversation(chat.chatId); setExportError('') }
       catch { setExportError('This conversation could not be exported. Your saved history is unchanged.') }
+    }} onPrint={() => {
+      try { downloadPrintableConversation(chat.chatId); setExportError('') }
+      catch { setExportError('The printable transcript could not be downloaded. Your saved history is unchanged.') }
     }}><button className={`conversation-link ${chat.chatId === active ? 'active' : ''}`} title={conversationTitle(chat)} aria-current={chat.chatId === active ? 'page' : undefined} onClick={() => window.dispatchEvent(new CustomEvent(SELECT_EVENT, { detail: chat.chatId }))}><ConversationTitle title={conversationTitle(chat)}/>{chat.inFlight && <span className="rail-task-running" role="status" aria-label="Working"/>}</button></PixelConversationRow>) : <span className="rail-empty">{empty}</span>}</div>
 
   }
