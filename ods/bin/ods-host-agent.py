@@ -6634,7 +6634,9 @@ def _get_extension_artifact_stage_runtime():
                 _artifact_stage_runtime_module.build_artifact_stage_runtime(
                     data_dir=DATA_DIR,
                     builtin_root=EXTENSIONS_DIR,
-                    library_root=EXTENSIONS_DIR,
+                    # The installer and Dashboard install path use this
+                    # bundled, secured library—not built-in service IDs.
+                    library_root=DATA_DIR / "extensions-library",
                     user_root=USER_EXTENSIONS_DIR,
                 )
             )

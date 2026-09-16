@@ -43,6 +43,15 @@ def _identity(info: os.stat_result) -> tuple[int, int, int, int, int, int]:
     )
 
 
+def _check_runtime_custody(info: os.stat_result) -> None:
+    # The Git-index catalog has no host owner. A live Linux payload does:
+    # group/other writers can bypass an ODS transaction's service lock.
+    if os.name == "posix" and (
+        info.st_uid != os.geteuid() or info.st_mode & 0o022
+    ):
+        _fail("library-tree-custody-invalid")
+
+
 def _name(path: Path, root: Path) -> str:
     relative = path.relative_to(root).as_posix()
     if (
@@ -56,6 +65,7 @@ def _name(path: Path, root: Path) -> str:
 
 
 def _read_file(path: Path, before: os.stat_result, remaining: int) -> bytes:
+    _check_runtime_custody(before)
     if (
         not stat.S_ISREG(before.st_mode)
         or before.st_nlink != 1
@@ -74,6 +84,7 @@ def _read_file(path: Path, before: os.stat_result, remaining: int) -> bytes:
         opened = os.fstat(descriptor)
         if _identity(opened) != _identity(before) or not stat.S_ISREG(opened.st_mode):
             _fail("library-tree-file-drift")
+        _check_runtime_custody(opened)
         content = bytearray()
         while len(content) < opened.st_size:
             chunk = os.read(descriptor, min(1024 * 1024, opened.st_size - len(content)))
@@ -139,6 +150,7 @@ def digest_extension_tree(root: Any) -> str:
         _fail("library-tree-root-unavailable")
     if not stat.S_ISDIR(root_info.st_mode) or root.is_symlink():
         _fail("library-tree-root-invalid")
+    _check_runtime_custody(root_info)
     paths = _bounded_paths(root)
     digest = hashlib.sha256(_DOMAIN)
     total = 0
@@ -151,6 +163,7 @@ def digest_extension_tree(root: Any) -> str:
         except OSError:
             _fail("library-tree-entry-drift")
         if stat.S_ISDIR(before.st_mode):
+            _check_runtime_custody(before)
             digest.update(b"D\0" + name.encode("utf-8") + b"\0")
         elif stat.S_ISREG(before.st_mode):
             content = _read_file(path, before, MAX_TREE_BYTES - total)

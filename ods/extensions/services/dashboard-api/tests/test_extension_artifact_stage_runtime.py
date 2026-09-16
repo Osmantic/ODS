@@ -129,9 +129,10 @@ class ArtifactStageRuntimeTests(unittest.TestCase):
             data = base / "data"
             stage = data / "assistant-first" / "artifact-stage"
             builtins = base / "extensions"
+            library = data / "extensions-library"
             users = data / "user-extensions"
             other_users = data / "other-user-extensions"
-            for path in (stage, builtins, users, other_users):
+            for path in (stage, builtins, library, users, other_users):
                 _private_directory(path)
 
             agent_path = BIN_DIR / "ods-host-agent.py"
@@ -155,12 +156,17 @@ class ArtifactStageRuntimeTests(unittest.TestCase):
                 replay = agent._get_extension_artifact_stage_runtime()
                 self.assertIs(first, replay)
                 self.assertEqual(first.root, stage)
+                self.assertEqual(first.dispatcher._roots.builtin, builtins)
+                self.assertEqual(first.dispatcher._roots.library, library)
+                self.assertEqual(first.dispatcher._roots.user, users)
                 self.assertIsNone(agent._extension_lifecycle_work_dispatcher)
 
                 agent.USER_EXTENSIONS_DIR = other_users
                 rebound = agent._get_extension_artifact_stage_runtime()
                 self.assertIsNot(rebound, first)
                 self.assertEqual(rebound.root, stage)
+                self.assertEqual(rebound.dispatcher._roots.library, library)
+                self.assertEqual(rebound.dispatcher._roots.user, other_users)
                 self.assertIsNone(agent._extension_lifecycle_work_dispatcher)
             finally:
                 sys.modules.pop(spec.name, None)

@@ -20,6 +20,10 @@ from extension_document_digest import (
     CanonicalDocumentError,
     canonical_document_sha256,
 )
+from extension_library_tree_digest import (
+    LibraryTreeDigestError,
+    digest_extension_tree,
+)
 from extension_lifecycle_plan import PlannedDefinition
 
 
@@ -115,6 +119,13 @@ def _validate_plan(definition: PlannedDefinition) -> tuple[str, tuple[str, ...]]
         or _DIGEST_RE.fullmatch(definition.definition_sha256) is None
     ):
         _fail("artifact-plan-invalid", field="definitionSha256")
+    tree_digest = definition.source_tree_sha256
+    if tree_digest is not None and (
+        source != "library"
+        or not isinstance(tree_digest, str)
+        or _DIGEST_RE.fullmatch(tree_digest) is None
+    ):
+        _fail("artifact-plan-invalid", field="sourceTreeSha256")
 
     compose_file = definition.compose_file
     compose_digest = definition.compose_sha256
@@ -335,6 +346,21 @@ def verify_planned_definition(
     root = _selected_root(roots, source)
     _validate_platform()
 
+    def verify_library_tree() -> None:
+        expected = definition.source_tree_sha256
+        if expected is None:
+            return
+        try:
+            actual = digest_extension_tree(root / definition.service_id)
+        except LibraryTreeDigestError:
+            _fail("artifact-library-tree-invalid", field="sourceTreeSha256")
+        if actual != expected:
+            _fail("artifact-library-tree-mismatch", field="sourceTreeSha256")
+
+    # The plan binds the entire library payload, not only manifest/Compose.
+    # Effect adapters must re-prove or consume a staged copy before mutation.
+    verify_library_tree()
+
     with ExitStack() as stack:
         root_descriptor = _open_root(root)
         stack.callback(os.close, root_descriptor)
@@ -373,6 +399,8 @@ def verify_planned_definition(
                 expected_digest=definition.compose_sha256,
                 field="compose",
             )
+
+        verify_library_tree()
 
     return VerifiedDefinitionArtifacts(
         service_id=definition.service_id,

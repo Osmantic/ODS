@@ -497,13 +497,19 @@ class ArtifactStageAdapterIntegrationTests(unittest.TestCase):
 
             first_dir = roots["builtin"] / "first"
             first_dir.mkdir(mode=0o700)
-            (first_dir / "manifest.yaml").write_bytes(first_manifest)
+            first_file = first_dir / "manifest.yaml"
+            first_file.write_bytes(first_manifest)
+            first_file.chmod(0o600)
             second_dir = roots["user"] / "second"
             second_dir.mkdir(mode=0o700)
-            (second_dir / "manifest.yaml").write_bytes(second_manifest)
+            second_file = second_dir / "manifest.yaml"
+            second_file.write_bytes(second_manifest)
+            second_file.chmod(0o600)
             compose_dir = second_dir / "nested"
             compose_dir.mkdir(mode=0o700)
-            (compose_dir / "compose.yaml").write_bytes(second_compose)
+            compose_file = compose_dir / "compose.yaml"
+            compose_file.write_bytes(second_compose)
+            compose_file.chmod(0o600)
 
             store = staging.ArtifactStageStore(stage_root)
             dispatcher = adapter.ArtifactStageAdapter(

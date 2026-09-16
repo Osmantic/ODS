@@ -484,6 +484,19 @@ installable. The existing one-click UI still copies the live library tree
 using its legacy receipt and asynchronous start path. A future bridge must
 re-prove or stage the exact indexed payload before calling that logic.
 
+For a plan-bound library tree, the host artifact-stage verifier now hashes the
+complete live definition before and after opening its manifest and Compose
+bytes. A changed supporting config, hook, build context, or document refuses
+stage publication rather than passing a manifest-only check. The live Linux
+tree check also refuses files or directories outside the host owner's custody
+or writable by another account. The immutable
+artifact bundle still contains only the manifest and Compose bytes, not the
+entire library tree. This is a pre-stage guard, not an apply bridge: a future
+effect must consume an exact full-tree snapshot or re-prove the same approved
+payload under host exclusion before changing active files or starting an app.
+The host stage factory now selects the installer's secured
+`data/extensions-library` as its library root, distinct from built-in services.
+
 A dormant SearXNG Compose-effect substrate now consumes the exact plan-bound
 application identity, immutable staged definition/Compose bytes, validated
 configuration metadata, and an owner-private secret-use callback. It writes

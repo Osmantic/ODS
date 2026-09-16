@@ -23,6 +23,7 @@ if str(BIN_DIR) not in sys.path:
     sys.path.insert(0, str(BIN_DIR))
 
 from extension_document_digest import canonical_document_sha256  # noqa: E402
+from extension_library_tree_digest import digest_extension_tree  # noqa: E402
 
 TRANSACTION_ID = "txn-" + "1" * 24
 OTHER_TRANSACTION_ID = "txn-" + "2" * 24
@@ -334,7 +335,8 @@ def bind_fixture_plan(agent, command):
             data_schema_version="1",
             definition_sha256=canonical_document_sha256(
                 (
-                    agent.EXTENSIONS_DIR
+                    agent.DATA_DIR
+                    / "extensions-library"
                     / operation.service_id
                     / "manifest.yaml"
                 ).read_bytes()
@@ -345,6 +347,9 @@ def bind_fixture_plan(agent, command):
             images=(),
             builds=(),
             canonical_document=b"fixture-only\n",
+            source_tree_sha256=digest_extension_tree(
+                agent.DATA_DIR / "extensions-library" / operation.service_id
+            ),
         )
         for operation in operations
     )
@@ -441,6 +446,16 @@ def host_server(tmp_path):
     agent.DATA_DIR = agent.INSTALL_DIR / "data"
     agent.DATA_DIR.mkdir(mode=0o700)
     agent.DATA_DIR.chmod(0o700)
+    library = agent.DATA_DIR / "extensions-library"
+    library.mkdir(mode=0o700)
+    library.chmod(0o700)
+    for service_id in ("documents", "voice", "dashboard", "searxng"):
+        extension = library / service_id
+        extension.mkdir(mode=0o700)
+        extension.chmod(0o700)
+        manifest = extension / "manifest.yaml"
+        manifest.write_text("service: {}\n", encoding="utf-8")
+        manifest.chmod(0o600)
     config_root = agent.INSTALL_DIR / "config"
     config_root.mkdir(mode=0o700)
     config_root.chmod(0o700)

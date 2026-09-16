@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -14,6 +15,16 @@ if str(BIN) not in sys.path:
     sys.path.insert(0, str(BIN))
 
 import extension_library_tree_digest as tree  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def private_tree_fixture_umask():
+    """Tree fixtures must model host-owned files under any runner umask."""
+    previous = os.umask(0o077)
+    try:
+        yield
+    finally:
+        os.umask(previous)
 
 
 def test_bytes_paths_and_empty_directories_are_bound(tmp_path):
@@ -125,6 +136,25 @@ def test_symlink_and_oversized_payload_fail_closed(tmp_path, monkeypatch):
         pytest.skip("symlink creation unavailable")
     with pytest.raises(tree.LibraryTreeDigestError, match="library-tree-entry-invalid"):
         tree.digest_extension_tree(root)
+
+
+def test_group_writable_runtime_payload_is_refused(tmp_path):
+    if os.name != "posix":
+        pytest.skip("Linux host custody only")
+    root = tmp_path / "extension"
+    root.mkdir()
+    source = root / "README.md"
+    source.write_bytes(b"approved\n")
+    expected = tree.digest_extension_tree(root)
+    source.chmod(0o660)
+    with pytest.raises(tree.LibraryTreeDigestError, match="library-tree-custody-invalid"):
+        tree.digest_extension_tree(root)
+    source.chmod(0o600)
+    root.chmod(0o770)
+    with pytest.raises(tree.LibraryTreeDigestError, match="library-tree-custody-invalid"):
+        tree.digest_extension_tree(root)
+    root.chmod(0o700)
+    assert tree.digest_extension_tree(root) == expected
 
 
 def test_entry_limit_stops_enumeration_before_file_content(tmp_path, monkeypatch):
