@@ -150,7 +150,7 @@ if [[ "$WORKER_COUNT" -eq 0 ]]; then
     exit 0
 fi
 
-awk -F '\t' -v max_age="$MAX_AGE_SECONDS" '$2 >= max_age {print}' \
+awk -F '\t' -v max_age="$MAX_AGE_SECONDS" '($2 + 0) >= 0 && ($2 + 0) >= (max_age + 0) {print}' \
     "$WORKERS_FILE" > "$CANDIDATES_FILE"
 
 if [[ "$WORKER_COUNT" -gt "$MAX_COUNT" ]]; then
