@@ -1486,7 +1486,7 @@ export default function Pixel({ systemStatus = null }) {
         </div>
 
         <PixelCommandSearch onInsert={insertComposerText} onNewTask={startNewChat}/>
-        <PixelSelectionActions disabled={isDisabled} conversationId={chatIdRef.current} onInsert={insertComposerText}/>
+        <PixelSelectionActions disabled={isDisabled} conversationId={chatIdRef.current} onInsert={insertComposerText} input={input} limit={MAX_INPUT_LEN}/>
         {workspaceOpen && (
           <aside aria-label="Preview panel" style={{'--preview-width':`${previewWidth}px`}} className={`pixel-preview-panel ${previewCollapsed ? 'is-collapsed' : ''} flex shrink-0 flex-col border-theme-border bg-theme-bg`}>
             {!previewCollapsed && <PanelResizeHandle width={previewWidth} onResize={setPreviewWidth} label="Resize preview panel" container=".pixel-chat-preview-layout" minimum={240} />}
