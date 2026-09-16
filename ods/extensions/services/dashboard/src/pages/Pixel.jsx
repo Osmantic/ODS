@@ -14,6 +14,7 @@ import { pixelHeaderPose, pixelReplyPose } from '../lib/pixelMascotState'
 import PixelComposerTools from '../components/PixelComposerTools'
 import PixelTextFileInput from '../components/PixelTextFileInput'
 import PixelDraftPreview from '../components/PixelDraftPreview'
+import PixelKeyboardHelp from '../components/PixelKeyboardHelp'
 import PixelDictation from '../components/PixelDictation'
 import PixelCommandSearch, { OPEN_PIXEL_SEARCH } from '../components/PixelCommandSearch'
 import PixelConversationImport from '../components/PixelConversationImport'
@@ -1467,6 +1468,7 @@ export default function Pixel({ systemStatus = null }) {
             <PixelComposerTools input={input} disabled={isDisabled} onInsert={insertComposerText}>
               <PixelTextFileInput key={`file-input-${chatIdRef.current}`} input={input} disabled={isDisabled} limit={MAX_INPUT_LEN} onInsert={insertComposerText}/>
               <PixelDraftPreview key={`draft-preview-${chatIdRef.current}`} input={input}/>
+              <PixelKeyboardHelp sendMode={sendKey.mode}/>
             </PixelComposerTools>
             <div className="pixel-composer-limits">
               {activeContext && <span title="Model context window shared by instructions, conversation, tools, and reply">{activeContext}</span>}
