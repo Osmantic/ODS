@@ -52,3 +52,30 @@ it('reports download failure without dismissing the storage warning or losing th
   expect(screen.getByText(/Recovery download could not start/)).toBeVisible()
   expect(screen.getByPlaceholderText(/^Message .+\.\.\.$/)).toHaveValue('Keep this draft')
 })
+
+
+it('requests browser leave confirmation only while live text cannot be saved', async () => {
+  const beforeUnload = () => {
+    const event = new Event('beforeunload', {cancelable:true})
+    window.dispatchEvent(event)
+    return event.defaultPrevented
+  }
+  const {unmount} = render(<Pixel/>)
+  await screen.findByText('Available')
+  const input = screen.getByPlaceholderText(/^Message .+\.\.\.$/)
+  fireEvent.change(input, {target:{value:'Saved draft'}})
+  expect(beforeUnload()).toBe(false)
+  const failure = vi.spyOn(window.Storage.prototype,'setItem').mockImplementation(() => {throw new globalThis.DOMException('Full','QuotaExceededError')})
+  fireEvent.change(input, {target:{value:'Only in this tab'}})
+  await screen.findByText(/Your browser could not save this conversation/)
+  expect(beforeUnload()).toBe(true)
+  // A started download does not prove that a file was saved to disk.
+  fireEvent.click(screen.getByRole('button',{name:'Download recovery copy'}))
+  expect(beforeUnload()).toBe(true)
+  failure.mockRestore()
+  fireEvent.change(input, {target:{value:'Storage works again'}})
+  await waitFor(() => expect(screen.queryByText(/Your browser could not save this conversation/)).not.toBeInTheDocument())
+  expect(beforeUnload()).toBe(false)
+  unmount()
+  expect(beforeUnload()).toBe(false)
+})

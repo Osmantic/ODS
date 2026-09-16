@@ -1,8 +1,10 @@
 import {useState} from 'react'
+import {useBeforeUnload} from '../hooks/useBeforeUnload'
 import {downloadConversation} from '../lib/pixelConversationExport'
 
 export default function PixelConversationRecovery({error,chatId,messages,draft}) {
   const [downloadError,setDownloadError] = useState('')
+  useBeforeUnload(Boolean(error && (draft || messages.some(message => message.content))))
   function download() {
     // Capture live text at click time, without depending on successful storage
     // or exporting task/publication metadata as recoverable execution authority.
