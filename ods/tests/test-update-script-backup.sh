@@ -93,8 +93,9 @@ fi
 # ---------------------------------------------------------------------------
 rm -rf "$BACKUPS"
 mkdir -p "$BACKUPS"
+# Name them the way cmd_backup does: backup-<YYYYmmdd-HHMMSS>.
 for i in 01 02 03 04 05; do
-    mkdir -p "$BACKUPS/backup-2020010${i#0}-00000$i"
+    mkdir -p "$BACKUPS/backup-2020010${i#0}-00000${i#0}"
 done
 
 output=$(MAX_BACKUPS=3 run_backup rotate)

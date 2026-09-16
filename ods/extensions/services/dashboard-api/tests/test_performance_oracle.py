@@ -416,6 +416,48 @@ def test_host_scoped_app_compatibility_applies_only_to_matching_host():
     assert strixy["agentViability"]["status"] == "unknown"
 
 
+def test_pixel_compatibility_is_explicit_and_host_scoped():
+    model = {
+        "id": "pixel-probe-model",
+        "app_compatibility": {
+            "agent_viability": {"status": "verified"},
+            "pixel_agent": {
+                "status": "not_agent_viable",
+                "label": "Pixel capability blocked on Windows",
+                "reason": "A real Pixel tool-loop probe failed.",
+                "hostScope": ["windows-laptop"],
+            },
+        },
+    }
+
+    windows_laptop = model_app_compatibility(
+        model,
+        runtime_context={"host": "windows-laptop", "hosts": ["windows-laptop"]},
+    )
+    tower2 = model_app_compatibility(
+        model,
+        runtime_context={"host": "tower2", "hosts": ["tower2"]},
+    )
+
+    assert windows_laptop["agentViability"]["status"] == "verified"
+    assert windows_laptop["pixelAgent"]["status"] == "not_agent_viable"
+    assert "real Pixel tool-loop probe" in windows_laptop["pixelAgent"]["reason"]
+    assert "agent-viability" not in windows_laptop
+    assert "pixel-agent" not in windows_laptop
+    assert tower2["agentViability"]["status"] == "verified"
+    assert tower2["pixelAgent"]["status"] == "unknown"
+
+
+def test_missing_pixel_compatibility_is_never_inferred_from_generic_agent_status():
+    compatibility = model_app_compatibility({
+        "id": "generic-only",
+        "app_compatibility": {"agent_viability": {"status": "verified"}},
+    })
+
+    assert compatibility["agentViability"]["status"] == "verified"
+    assert compatibility["pixelAgent"]["status"] == "unknown"
+
+
 def test_model_payload_applies_scoped_app_compatibility_from_install_env(data_dir, tmp_path):
     install_dir = tmp_path / "ods"
     (install_dir / "data" / "models").mkdir(parents=True)
@@ -546,7 +588,7 @@ def test_real_catalog_gemma_perplexica_block_is_global():
     assert tower2["perplexica"]["status"] == "unsupported_until_revalidated"
 
 
-def test_real_catalog_granite32_perplexica_block_is_tower2_and_m5_scoped():
+def test_real_catalog_granite32_perplexica_block_includes_tower3_after_live_failure():
     by_id = {model["id"]: model for model in _official_model_catalog()}
     model = by_id["granite3.2-2b-instruct-q4"]
 
@@ -566,11 +608,17 @@ def test_real_catalog_granite32_perplexica_block_is_tower2_and_m5_scoped():
         model,
         runtime_context={"host": "m5-mbp", "hosts": ["m5-mbp"]},
     )
+    tower3 = model_app_compatibility(
+        model,
+        runtime_context={"host": "tower3", "hosts": ["tower3"]},
+    )
 
     assert windows_laptop["perplexica"]["status"] == "unknown"
     assert strix_halo["perplexica"]["status"] == "unknown"
     assert tower2["perplexica"]["status"] == "unsupported_until_revalidated"
     assert m5_mbp["perplexica"]["status"] == "unsupported_until_revalidated"
+    assert tower3["perplexica"]["status"] == "unsupported_until_revalidated"
+    assert "Tower3" in tower3["perplexica"]["reason"]
 
 
 def test_real_catalog_smollm3_perplexica_block_is_global():
@@ -851,11 +899,12 @@ def test_real_catalog_has_six_windows_8gb_release_swap_candidates(data_dir, tmp_
         if model["id"] != "qwen3.5-9b-q4"
         and model["status"] in {"available", "downloaded"}
         and model["fitsVram"] is not False
-        and model["contextLength"] >= 64000
-        and all(
-            not _compatibility_blocks_release_coverage(entry)
-            for entry in model["appCompatibility"].values()
-        )
+            and model["contextLength"] >= 64000
+            and all(
+                not _compatibility_blocks_release_coverage(entry)
+                for key, entry in model["appCompatibility"].items()
+                if key != "pixelAgent"
+            )
     ]
     candidate_ids = {model["id"] for model in candidates}
     by_id = {model["id"]: model for model in candidates}
@@ -875,6 +924,9 @@ def test_real_catalog_has_six_windows_8gb_release_swap_candidates(data_dir, tmp_
     assert by_id["qwen3.5-4b-q4"]["appCompatibility"]["agentViability"]["status"] == (
         "verified"
     )
+    assert by_id["qwen3.5-4b-q4"]["appCompatibility"]["pixelAgent"]["status"] == (
+        "not_agent_viable"
+    )
     assert all_by_id["smollm3-3b-q4"]["contextLength"] == 65536
     assert all_by_id["qwen3-4b-128k-q4"]["contextLength"] == 131072
     assert by_id["qwen2.5-coder-3b-128k-q4"]["contextLength"] == 128000
@@ -883,6 +935,9 @@ def test_real_catalog_has_six_windows_8gb_release_swap_candidates(data_dir, tmp_
     )
     assert by_id["qwen2.5-coder-3b-128k-q4"]["appCompatibility"]["agentViability"]["status"] == (
         "verified"
+    )
+    assert by_id["qwen2.5-coder-3b-128k-q4"]["appCompatibility"]["pixelAgent"]["status"] == (
+        "not_agent_viable"
     )
     assert "qwen3-4b-instruct-2507-q4" in candidate_ids
     assert by_id["qwen3-4b-instruct-2507-q4"]["contextLength"] >= 64000
@@ -975,7 +1030,12 @@ def test_real_catalog_scopes_qwen25_coder_3b_host_failures():
     assert windows["hermesTalk"]["status"] == "unknown"
     assert windows["opencode"]["status"] == "unknown"
     assert windows["agentViability"]["status"] == "verified"
-    assert not any(_compatibility_blocks_release_coverage(entry) for entry in windows.values())
+    assert windows["pixelAgent"]["status"] == "not_agent_viable"
+    assert not any(
+        _compatibility_blocks_release_coverage(entry)
+        for key, entry in windows.items()
+        if key != "pixelAgent"
+    )
 
 
 def test_installer_recommended_model_survives_bootstrap_env(data_dir, tmp_path):
@@ -1013,6 +1073,7 @@ def test_installer_recommended_model_survives_bootstrap_env(data_dir, tmp_path):
     assert payload["configuredModel"] == "qwen3.5-9b-q4"
     assert payload["hermesMinimumContext"] == 65536
     assert payload["hermesTargetContext"] == 131072
+    assert payload["pixelMinimumContext"] == 16384
     assert by_id["qwen3.5-2b-q4"]["status"] == "loaded"
     assert by_id["qwen3.5-9b-q4"]["contextLength"] == 65536
     assert by_id["qwen3.5-9b-q4"]["recommended"] is True
@@ -1143,6 +1204,10 @@ def test_downloaded_gguf_header_replaces_stale_hub_context(
             "readable": True,
             "context_length": 131072,
             "quantization": "Q4_K_M",
+            "block_count": 36,
+            "attention_head_count_kv": 8,
+            "embedding_length": 4096,
+            "attention_head_count": 32,
         },
     )
 
@@ -1162,6 +1227,8 @@ def test_downloaded_gguf_header_replaces_stale_hub_context(
     assert model["metadata"]["contextSource"] == "gguf_file"
     assert model["contextOptions"][-1]["contextLength"] == 131072
     assert model["contextOptions"][-1]["fullContext"] is True
+    assert model["estimatedRequired"] == 1.61
+    assert model["contextOptions"][-1]["estimatedRequired"] == 18.49
 
 
 def test_configured_model_prefers_env_file_over_stale_process_env(data_dir, tmp_path, monkeypatch):
