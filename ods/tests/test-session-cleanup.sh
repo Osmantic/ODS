@@ -99,6 +99,25 @@ else
 fi
 
 # ============================================================================
+# Test 4b: Empty active index still removes orphaned session files
+# ============================================================================
+EMPTY_INDEX_DIR="$TEMP_DIR/empty-active-index"
+mkdir -p "$EMPTY_INDEX_DIR"
+printf '{}\n' > "$EMPTY_INDEX_DIR/sessions.json"
+printf '{"orphaned":true}\n' > "$EMPTY_INDEX_DIR/orphaned.jsonl"
+
+empty_index_exit=0
+empty_index_output=$(SESSIONS_DIR="$EMPTY_INDEX_DIR" MAX_SIZE=100 \
+    bash "$SESSION_CLEANUP_SCRIPT" 2>&1) || empty_index_exit=$?
+if [[ $empty_index_exit -eq 0 ]] \
+    && [[ ! -f "$EMPTY_INDEX_DIR/orphaned.jsonl" ]] \
+    && echo "$empty_index_output" | grep -q "Active sessions found: 0"; then
+    pass "Empty active index removes orphaned sessions"
+else
+    fail "Empty active index cleanup failed (exit $empty_index_exit)"
+fi
+
+# ============================================================================
 # Test 5: Behavioral test - removes inactive sessions
 # ============================================================================
 # Create inactive session file (not in sessions.json)

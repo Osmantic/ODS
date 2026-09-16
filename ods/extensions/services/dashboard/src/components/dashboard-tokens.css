@@ -1,0 +1,48 @@
+.dashboard-tokens { container-type:inline-size; min-width:0; color:#c9ccce; }
+.dashboard-token-toolbar { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+.dashboard-token-actions { display:flex; align-items:center; gap:10px; }
+.dashboard-token-period { display:flex; gap:2px; }
+.dashboard-token-period button { padding:7px; color:#93989b; min-width:34px; border-radius:5px; }
+.dashboard-token-period button[aria-pressed=true] { background:#292c2e; color:#e0e4e8; }
+.dashboard-token-summary { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:24px 16px; padding:24px 0; border-bottom:1px solid #292b2c; margin-bottom:24px; }
+.dashboard-token-total { display:flex; flex-direction:column; gap:7px; min-width:0; color:#999fa3; font-size:11px; }
+.dashboard-token-total strong { color:#dedfdf; font-size:clamp(20px,5.5cqi,28px); font-weight:550; letter-spacing:-.7px; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
+.dashboard-token-total small { font-size:10px; color:#858a8d; }
+.dashboard-token-notice { color:#999fa3; font-size:11px; line-height:1.6; padding:10px 0; border-bottom:1px solid #292b2c; }
+.dashboard-token-layout { display:grid; gap:24px; min-width:0; }
+.dashboard-tokens h3 { font-size:11px; font-weight:500; color:#aeb2b5; margin:0; }
+.token-trend { min-width:0; }
+.token-trend header { display:flex; align-items:baseline; justify-content:space-between; gap:12px; }
+.token-trend header > span { font-size:10px; color:#858a8d; }
+.token-trend-legend { display:flex; align-items:center; min-height:24px; gap:14px; margin:12px 0 6px; font-size:10px; color:#999fa3; }
+.token-trend-legend span { display:flex; align-items:center; gap:6px; }
+.token-trend-legend button { display:flex; align-items:center; gap:6px; font-size:10px; padding:3px 5px; border-bottom:1px solid transparent; color:#8f969a; }
+.token-trend-legend button[aria-pressed=true] { color:#d5dade; border-bottom-color:#a6aeb3; }
+.token-window-toolbar { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px; margin:14px 0 22px; }
+.token-window-toolbar > div { display:flex; gap:4px; }
+.token-window-toolbar button { color:#939ca3; padding:6px 9px; border-radius:5px; font-size:10px; }
+.token-window-toolbar button[aria-pressed=true] { color:#d6dbde; background:#272b2e; }
+.token-window-toolbar > span { color:#879198; font-size:10px; }
+.token-chart-scale > span { float:right; font-size:9px; color:#7f888e; }
+.token-trend-legend i { width:12px; height:2px; }
+.token-trend svg { display:block; width:100%; height:130px; overflow:visible; }
+.token-chart-scale { color:#909699; font-size:10px; margin:7px 0; padding-left:8px; }
+.token-chart-ceiling { stroke:#777b7d; stroke-dasharray:5 5; stroke-width:1; }
+.token-chart-grid { stroke:#222526; stroke-width:1; }
+.token-chart-dates { display:flex; justify-content:space-between; font-size:10px; color:#909699; }
+.token-chart-reading { min-height:30px; margin-top:10px; color:#909699; font-size:10px; line-height:1.6; }
+.token-trend .dashboard-empty { min-height:160px; display:grid; place-items:center; text-align:center; font-size:11px; color:#999fa3; }
+.token-distribution { margin-top:16px; padding-top:20px; border-top:1px solid #292b2c; }
+.dashboard-token-breakdown > div { display:flex; align-items:center; justify-content:space-between; gap:14px; padding:12px 0; }
+.dashboard-token-breakdown dt { color:#999fa3; font-size:11px; min-width:70px; }
+.dashboard-token-breakdown dd { font-size:11px; font-variant-numeric:tabular-nums; min-width:56px; text-align:right; }
+.token-distribution-track { flex:1; height:3px; background:#252829; }
+.token-distribution-track i { display:block; height:100%; background:#a5aaad; }
+.dashboard-token-data { margin-top:18px; padding-top:14px; border-top:1px solid #292b2c; color:#9ca2a6; font-size:11px; }
+.dashboard-token-data summary { cursor:pointer; }
+.dashboard-tokens :is(button,summary,[tabindex]):focus-visible { outline:1px solid #bfc4c7; outline-offset:3px; }
+@container (min-width:600px) {
+  .dashboard-token-summary { grid-template-columns:repeat(4,minmax(0,1fr)); }
+  .dashboard-token-layout { grid-template-columns:minmax(0,1.35fr) minmax(0,1fr); gap:24px; }
+  .dashboard-token-total strong { font-size:25px; }
+}
