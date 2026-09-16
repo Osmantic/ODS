@@ -412,8 +412,20 @@ Container health does not gate `APPLIED`: an exited, restarting, or unhealthy
 but exactly identified container remains a mutation that recovery must find
 and compensate. Canonical record parsing rejects duplicate keys and
 noncanonical or oversized bytes. This contract remains pure and dormant: no
-host probe, active-record writer, Docker invocation, transaction observer, or
-production executor is enabled in this phase.
+active-record writer, transaction observer, or production executor is enabled
+in this phase.
+
+A separate, unselected host-side adapter now collects candidate current
+evidence read-only under a caller-held active lease. It loads the exact plan,
+active record, and receipt; hashes owner-held `manifest.yaml`, `compose.yaml`,
+and nonsecret `configuration.json` in the fixed application root; and probes
+both stopped and running Docker containers by managed identity, Compose
+service, and expected name. It probes twice and rejects changed evidence,
+unavailable Docker, links, malformed records, and unqualified file custody.
+It then invokes the pure classifier and never treats container health as proof
+of application success. The application file convention is not yet published
+by a generic apply effect, the adapter is not selected by the production host,
+and this source-only probe does not make extension installation live.
 
 A dormant fixed-root active-application record store now provides the
 owner-private persistence layer for the canonical records produced and parsed
