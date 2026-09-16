@@ -26,9 +26,10 @@ FROM nginx:alpine
 # Copy built app from builder stage
 COPY --from=builder /app/dist /usr/share/nginx/html
 
-# Copy nginx configuration
-# B1 fix: Copy directly to conf.d (not templates) since we override ENTRYPOINT
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+# Preserve an immutable nginx template. The entrypoint renders a fresh active
+# config from it on every container start so runtime substitutions are
+# restart-safe and can follow a changed preview port or API key.
+COPY nginx.conf /etc/nginx/conf.d/default.conf.template
 
 # Copy entrypoint script for runtime auth configuration
 COPY entrypoint.sh /entrypoint.sh
@@ -41,9 +42,8 @@ RUN addgroup -g 1000 odser && \
     chown -R odser:odser /var/cache/nginx && \
     chown -R odser:odser /var/log/nginx && \
     chown -R odser:odser /etc/nginx/conf.d && \
-    touch /var/run/nginx.pid && \
-    chown -R odser:odser /var/run/nginx.pid && \
-    sed -i '/^user/d' /etc/nginx/nginx.conf
+    sed -i '/^user/d' /etc/nginx/nginx.conf && \
+    sed -i 's|^pid[[:space:]].*;|pid /tmp/nginx.pid;|' /etc/nginx/nginx.conf
 
 USER odser
 

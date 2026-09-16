@@ -55,7 +55,17 @@ async def _read_workflow_pages(session, headers: dict) -> list[dict]:
     while True:
         async with session.get(f"{N8N_URL}/api/v1/workflows", headers=headers, params=params) as resp:
             if resp.status != 200:
-                logger.warning("Failed to fetch n8n workflow page: HTTP %s", resp.status)
+                if resp.status in (401, 403):
+                    logger.warning(
+                        "n8n rejected the workflow listing (HTTP %s): %s. The n8n "
+                        "public API requires an API key — create one in n8n "
+                        "(Settings > n8n API) and set N8N_API_KEY in .env.",
+                        resp.status,
+                        "N8N_API_KEY is not set" if not N8N_API_KEY
+                        else "the configured N8N_API_KEY was refused",
+                    )
+                else:
+                    logger.warning("n8n returned HTTP %s for %s/api/v1/workflows", resp.status, N8N_URL)
                 return []
             data = await resp.json()
         workflows.extend(data.get("data", []))
@@ -101,7 +111,9 @@ async def check_workflow_dependencies(deps: list[str], health_cache: dict[str, b
             health_cache[resolved] = healthy
             results[dep] = healthy
         else:
-            results[dep] = True
+            # An undeclared/uninstalled service has no health evidence.
+            # Keep the catalog and enable prerequisite unavailable.
+            results[dep] = False
     return results
 
 
