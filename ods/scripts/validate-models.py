@@ -47,6 +47,8 @@ def env_value(root: Path, key: str, default: str = "") -> str:
     prefix = f"{key}="
     for raw in env_path.read_text(encoding="utf-8", errors="replace").splitlines():
         line = raw.strip()
+        if line.startswith("export ") and len(line) > 7:
+            line = line[7:].lstrip()
         if not line.startswith(prefix):
             continue
         value = line[len(prefix):].strip()
