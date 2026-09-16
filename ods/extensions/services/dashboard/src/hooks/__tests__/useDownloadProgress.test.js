@@ -183,7 +183,7 @@ describe('useDownloadProgress', () => {
       await act(async () => {})
       expect(fetch).toHaveBeenCalledTimes(1)
 
-      await act(async () => { await vi.advanceTimersByTimeAsync(30000) })
+      await act(async () => { await vi.advanceTimersByTimeAsync(10000) })
       expect(fetch).toHaveBeenCalledTimes(1)
 
       await act(async () => {
@@ -331,6 +331,27 @@ describe('useDownloadProgress', () => {
     expect(result.current.formatBytes(512)).toBe('512 B')
     expect(result.current.formatBytes(0)).toBe('0 B')
     expect(result.current.formatBytes(null)).toBe('0 B')
+  })
+
+  test('releases a stalled body by its deadline and rejects its late progress', async () => {
+    vi.useFakeTimers()
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const oldBody = deferred()
+    let oldSignal
+    fetch.mockImplementationOnce((_url, options) => {
+      oldSignal = options.signal
+      return Promise.resolve({ ok: true, json: () => oldBody.promise })
+    }).mockResolvedValue({ ok: true, json: async () => ({ status: 'downloading', model: 'fresh', percent: 25 }) })
+    const { result, unmount } = renderHook(() => useDownloadProgress())
+    await act(async () => { await vi.advanceTimersByTimeAsync(15000) })
+    expect(oldSignal.aborted).toBe(true)
+    await act(async () => { await result.current.refresh() })
+    expect(result.current.progress.model).toBe('fresh')
+    await act(async () => { oldBody.resolve({ status: 'idle' }) })
+    expect(result.current.progress.model).toBe('fresh')
+    unmount()
+    expect(vi.getTimerCount()).toBe(0)
+    vi.useRealTimers()
   })
 
   test('formatEta formats minutes and seconds', () => {

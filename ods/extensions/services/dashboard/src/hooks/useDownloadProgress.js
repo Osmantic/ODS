@@ -3,6 +3,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 const TERMINAL_DOWNLOAD_STATUSES = new Set(['failed', 'error', 'cancelled'])
 // Allow the API's 30-second host-agent request to settle before giving up.
 const CANCEL_ACK_TIMEOUT_MS = 45000
+const PROGRESS_TIMEOUT_MS = 15000
 
 function isTerminalProgress(progress) {
   return TERMINAL_DOWNLOAD_STATUSES.has(progress?.status)
@@ -32,18 +33,28 @@ export function useDownloadProgress(pollIntervalMs = 1000) {
   const [cancelError, setCancelError] = useState(null)
   const [isCancelling, setIsCancelling] = useState(false)
   const lastCompleteKeyRef = useRef(null)
-  const progressInFlightRef = useRef(false)
+  const progressInFlightRef = useRef(null)
   const cancelInFlightRef = useRef(false)
 
   const fetchProgress = useCallback(async () => {
     if (progressInFlightRef.current) return null
-    progressInFlightRef.current = true
+    const controller = new AbortController()
+    progressInFlightRef.current = controller
+    let rejectAbort
+    const aborted = new Promise((_, reject) => {
+      rejectAbort = () => reject(new Error('Download status request timed out'))
+      controller.signal.addEventListener('abort', rejectAbort, { once: true })
+    })
+    const timeout = setTimeout(() => controller.abort(), PROGRESS_TIMEOUT_MS)
 
     try {
-      const response = await fetch('/api/models/download-status')
-      if (!response.ok) return
-      
-      const data = await response.json()
+      const pending = (async () => {
+        const response = await fetch('/api/models/download-status', { signal: controller.signal })
+        if (!response.ok) throw new Error(`Download status unavailable (HTTP ${response.status})`)
+        return response.json()
+      })()
+      const data = await Promise.race([pending, aborted])
+      if (progressInFlightRef.current !== controller) return null
       
       if (data.status === 'downloading' || data.status === 'verifying') {
         const downloaded = data.bytesDownloaded || 0
@@ -93,16 +104,22 @@ export function useDownloadProgress(pollIntervalMs = 1000) {
         })
       }
       return data
-    } catch {
-      // Silently fail - API might not be available
+    } catch (error) {
+      if (progressInFlightRef.current === controller) console.warn('Download progress unavailable:', error)
       return null
     } finally {
-      progressInFlightRef.current = false
+      clearTimeout(timeout)
+      controller.signal.removeEventListener('abort', rejectAbort)
+      if (progressInFlightRef.current === controller) progressInFlightRef.current = null
     }
   }, [])
 
   useEffect(() => {
     void fetchProgress()
+    return () => {
+      progressInFlightRef.current?.abort()
+      progressInFlightRef.current = null
+    }
   }, [fetchProgress])
 
   useEffect(() => {
