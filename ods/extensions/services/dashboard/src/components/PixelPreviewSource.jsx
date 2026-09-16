@@ -19,6 +19,7 @@ export default function PixelPreviewSource({ preview, file }) {
   const [copied, setCopied] = useState(false)
   const [attempt, setAttempt] = useState(0)
   const [wrapLines, setWrapLines] = useState(false)
+  const [textSize, setTextSize] = useState('default')
   const codeRef = useRef(null)
   const plain = source !== null && needsPlainSource(source)
   const copyRevision = useRef(0)
@@ -53,14 +54,19 @@ export default function PixelPreviewSource({ preview, file }) {
       setCopied(false); setError('Clipboard access failed. You can select and copy the code manually.')
     }
   }
-  return <section className="pixel-preview-source pixel-original-source" data-wrap-lines={wrapLines} aria-label={path === 'index.html' ? 'Published HTML source' : `Source: ${path}`}>
+  return <section className="pixel-preview-source pixel-original-source" data-wrap-lines={wrapLines} data-source-size={textSize} aria-label={path === 'index.html' ? 'Published HTML source' : `Source: ${path}`}>
     {source === null && binarySize === null && !error && <p role="status">Verifying source…</p>}
     {binarySize !== null && <p role="status">Binary asset. Its bytes are verified; no text source is available.</p>}
     {error && <div role="alert"><p>{error}</p><button type="button" onClick={() => setAttempt(value => value + 1)}>Retry source</button></div>}
     <div className="pixel-code-block">
       <header className="code-block-header"><PixelLanguageBadge path={path}/><span title={path}>{path}</span><PixelArtifactDownload key={`${preview.siteId}/${path}/${expectedDigest}`} preview={preview} file={{path, sha256:expectedDigest, bytes:file?.bytes}}/>{language && <button type="button" aria-label="Copy code" onClick={copy} disabled={source === null}>{copied ? 'Copied' : 'Copy'}</button>}</header>
       {source !== null && <>
-        <div className="p-2 text-xs"><button type="button" aria-pressed={wrapLines} onClick={() => setWrapLines(value => !value)}>Wrap lines</button></div>
+        <div className="flex flex-wrap items-center gap-3 p-2 text-xs">
+          <button type="button" aria-pressed={wrapLines} onClick={() => setWrapLines(value => !value)}>Wrap lines</button>
+          <label>Source text size <select className="rounded border border-theme-border bg-theme-bg p-1" value={textSize} onChange={event => setTextSize(event.target.value)}>
+            <option value="default">Default</option><option value="comfortable">Comfortable</option><option value="large">Large</option><option value="extra-large">Extra large</option>
+          </select></label>
+        </div>
         <PixelSourceExcerpt key={`excerpt/${preview.siteId}/${path}/${expectedDigest}`} source={source}/>
         {plain ? <p role="status">Large source is shown as plain text. Use browser find or download the file; line search and highlighting are disabled.</p> : <PixelSourceFind key={`find/${preview.siteId}/${path}/${expectedDigest}`} source={source} codeRef={codeRef}/>}
         <pre ref={codeRef} tabIndex={0} aria-label={`Code for ${path}`}><PixelCodeLines source={source} language={language}/></pre>
