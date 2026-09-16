@@ -42,6 +42,29 @@ def test_usage_readiness_requires_auth(test_client):
     assert resp.status_code == 401
 
 
+def test_usage_timeline_requires_auth(test_client):
+    assert test_client.get("/api/usage/timeline").status_code == 401
+
+
+def test_usage_timeline_returns_only_aggregated_observations(test_client, monkeypatch):
+    import routers.usage as usage_router
+    payload = {"source":{"status":"ok"},"points":[{"date":"2026-09-08T10:01:00Z","requests":2,"input_tokens":30,"output_tokens":4}]}
+    monkeypatch.setattr(usage_router,"_request_token_timeline",lambda:payload)
+    response = test_client.get("/api/usage/timeline",headers=test_client.auth_headers)
+    assert response.status_code == 200
+    assert response.json() == payload
+
+
+def test_usage_timeline_failure_does_not_leak_upstream_details(test_client, monkeypatch):
+    import routers.usage as usage_router
+    def fail():
+        raise OSError("private upstream credentials")
+    monkeypatch.setattr(usage_router,"_request_token_timeline",fail)
+    response = test_client.get("/api/usage/timeline",headers=test_client.auth_headers)
+    assert response.status_code == 503
+    assert "private" not in response.text
+
+
 def test_runtime_model_name_uses_live_persisted_state(monkeypatch):
     import routers.usage as usage_router
 

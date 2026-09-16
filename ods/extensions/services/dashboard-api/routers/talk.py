@@ -201,6 +201,8 @@ async def _stream_vision_chat(image_bytes: bytes, content_type: str, prompt_text
     yield _sse_event("session", {"session_id": "vision-oneshot"})
 
     accumulated: list[str] = []
+    completed = False
+    warning = None
     timeout = httpx.Timeout(connect=10.0, read=180.0, write=30.0, pool=10.0)
     headers = {"Content-Type": "application/json", "Accept": "text/event-stream"}
     key = _vision_backend_key()
@@ -225,18 +227,37 @@ async def _stream_vision_chat(image_bytes: bytes, content_type: str, prompt_text
                         continue
                     payload_str = raw[5:].strip()
                     if payload_str == "[DONE]":
+                        completed = True
                         break
                     try:
                         chunk = json.loads(payload_str)
                     except json.JSONDecodeError:
                         continue
+                    if isinstance(chunk, dict) and chunk.get("error") is not None:
+                        yield _sse_event("error", {"status_code": 502, "detail": "The vision model returned an error before completing."})
+                        yield _sse_event("done", {})
+                        return
                     delta = chunk.get("choices", [{}])[0].get("delta", {})
                     text = delta.get("content")
                     if isinstance(text, str) and text:
                         accumulated.append(text)
                         yield _sse_event("delta", {"text": text})
+                    finish_reason = chunk.get("choices", [{}])[0].get("finish_reason")
+                    if finish_reason in ("stop", "length"):
+                        completed = True
+                        if finish_reason == "length":
+                            warning = "The vision answer reached its token limit and may be incomplete."
+                    elif finish_reason is not None:
+                        yield _sse_event("error", {"status_code": 502, "detail": "The vision model stopped without a completed text answer."})
+                        yield _sse_event("done", {})
+                        return
     except (httpx.ReadTimeout, httpx.ConnectError, httpx.HTTPError) as exc:
         yield _sse_event("error", {"status_code": 502, "detail": f"Vision model unavailable: {exc}"})
+        yield _sse_event("done", {})
+        return
+
+    if not completed:
+        yield _sse_event("error", {"status_code": 502, "detail": "The vision response ended before completing. Please try again."})
         yield _sse_event("done", {})
         return
 
@@ -245,7 +266,7 @@ async def _stream_vision_chat(image_bytes: bytes, content_type: str, prompt_text
         "session_id": "vision-oneshot",
         "text": final_text,
         "status": "ok",
-        "warning": None,
+        "warning": warning,
     })
     yield _sse_event("done", {})
 

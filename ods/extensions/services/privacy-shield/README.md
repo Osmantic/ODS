@@ -55,11 +55,17 @@ Environment variables (set in `.env`):
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `SHIELD_PORT` | 8085 | Port for Privacy Shield API |
+| `SHIELD_PORT` | 8085 | Published host port for the Privacy Shield API; the Compose container listens on 8085 |
 | `TARGET_API_URL` | http://llama-server:8080/v1 | Upstream LLM API to proxy |
 | `PII_CACHE_ENABLED` | true | Enable session PII caching |
 | `PII_CACHE_SIZE` | 1000 | Max cached sessions |
 | `PII_CACHE_TTL` | 300 | Session TTL in seconds |
+
+For example, `SHIELD_PORT=18085` publishes `127.0.0.1:18085` while Docker
+health checks and dashboard requests continue to use `privacy-shield:8085`.
+Recreate the Privacy Shield container after changing the published port.
+When running `proxy.py` directly outside Compose, `SHIELD_PORT` still selects
+the process's listening port.
 
 ### API Usage
 
