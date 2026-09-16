@@ -1214,13 +1214,28 @@ MODELS_INI_EOF
     # Safety net: when --no-build hits a missing image, compose aborts before
     # starting other containers. Some end up in "Created", others never got
     # past "Creating" because their dependencies weren't ready yet.
+    #
+    # Read the IDs into an array first. An unquoted $(...) that expands to
+    # nothing leaves `docker start` with no arguments, which is itself an
+    # error ("requires at least 1 argument") — indistinguishable, once
+    # stderr is discarded, from a container that genuinely failed to start.
+    _start_created_containers() {
+        local _label="$1"
+        local -a _created=()
+        mapfile -t _created < <($DOCKER_CMD ps -a --filter status=created -q)
+        [[ ${#_created[@]} -eq 0 ]] && return 0
+        if ! $DOCKER_CMD start "${_created[@]}" >> "$LOG_FILE" 2>&1; then
+            ai_warn "Some created containers did not start ($_label); see $LOG_FILE"
+        fi
+    }
+
     # Step 1: start any containers already in Created state
-    $DOCKER_CMD start $($DOCKER_CMD ps -a --filter status=created -q) 2>/dev/null || true
+    _start_created_containers "step 1"
     # Step 2: wait for services to stabilize, then compose pass
     sleep 10
     $DOCKER_COMPOSE_CMD "${COMPOSE_FLAGS_ARR[@]}" up -d --remove-orphans --no-build --pull never >> "$LOG_FILE" 2>&1 || true
     # Step 3: catch any stragglers from the second pass
-    $DOCKER_CMD start $($DOCKER_CMD ps -a --filter status=created -q) 2>/dev/null || true
+    _start_created_containers "step 3"
 
     # If ODS_AGENT_BIND is unset, the Linux host-agent binds to the ODS
     # Docker network gateway once that network exists. Phase 07 may have
