@@ -132,4 +132,23 @@ describe('useVersion', () => {
     expect(result.current.error).toBeNull()
     expect(result.current.version.latest).toBe('2.1.0')
   })
+
+  test.each(['HTTP', 'JSON'])('retains a dismissed snapshot after a %s failure', async (failure) => {
+    vi.useFakeTimers()
+    fetch.mockResolvedValueOnce({ ok: true, json: async () => ({ current: '1', latest: '2', update_available: true }) })
+      .mockResolvedValueOnce(failure === 'HTTP'
+        ? { ok: false }
+        : { ok: true, json: async () => { throw new SyntaxError('invalid version JSON') } })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ current: '1', latest: '3', update_available: true }) })
+    const { result, unmount } = renderHook(() => useVersion())
+    await act(async () => { await Promise.resolve() })
+    act(() => result.current.dismissUpdate())
+    await act(async () => { await vi.advanceTimersByTimeAsync(30 * 60 * 1000) })
+    expect(result.current.version).toMatchObject({ latest: '2', update_available: false })
+    expect(result.current.error).toBeTruthy()
+    await act(async () => { await vi.advanceTimersByTimeAsync(30 * 60 * 1000) })
+    expect(result.current.version).toMatchObject({ latest: '3', update_available: true })
+    expect(result.current.error).toBeNull()
+    unmount()
+  })
 })
