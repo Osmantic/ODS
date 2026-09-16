@@ -79,7 +79,9 @@ class MemoryReceiptStore:
         state = (
             self.terminal.outcome
             if self.terminal is not None
-            else "started" if self.started is not None else "absent"
+            else "started"
+            if self.started is not None
+            else "absent"
         )
         return SimpleNamespace(
             transaction_id=transaction_id,
@@ -448,9 +450,11 @@ def test_started_observer_terminalizes_exact_completion_without_dispatch():
         lambda value: dispatched.append(value) or EVIDENCE_HASH,
         store,
         lambda value: loaded.append(value) or _load_plan(value),
-        lambda value: observed.append(value)
-        or host_work.LifecycleWorkStartedObservation(
-            state="completed", evidence_hash=EVIDENCE_HASH
+        lambda value: (
+            observed.append(value)
+            or host_work.LifecycleWorkStartedObservation(
+                state="completed", evidence_hash=EVIDENCE_HASH
+            )
         ),
     )
 
@@ -631,6 +635,91 @@ def test_terminal_replay_bypasses_started_observer():
     assert replay == first
 
 
+def test_apply_refuses_dispatch_without_current_state_observer():
+    command = host_work.parse_lifecycle_work_request(
+        work_request(
+            "apply:documents",
+            ["documents"],
+            payload_for("apply:documents", ["documents"]),
+        )
+    )
+    store = _begun_store(command)
+    calls = []
+    with pytest.raises(host_work.LifecycleWorkUnavailable) as caught:
+        host_work.dispatch_receipted_lifecycle_work(
+            command,
+            lambda value: calls.append(value) or EVIDENCE_HASH,
+            store,
+            _load_plan,
+        )
+    assert caught.value.code == "lifecycle-work-started-observer-unavailable"
+    assert calls == []
+    assert (
+        store.snapshot(command.transaction_id, command.operation_key).state == "started"
+    )
+
+
+def test_uncertain_apply_preserves_started_receipt_until_observation_recovers():
+    command = host_work.parse_lifecycle_work_request(
+        work_request(
+            "apply:documents",
+            ["documents"],
+            payload_for("apply:documents", ["documents"]),
+        )
+    )
+    store = _begun_store(command)
+    calls = []
+
+    def uncertain(value):
+        calls.append(value)
+        raise host_work.LifecycleWorkUncertainEffect(
+            "lifecycle-work-compose-runner-failed"
+        )
+
+    def missing(_value):
+        return host_work.LifecycleWorkStartedObservation("missing")
+
+    with pytest.raises(host_work.LifecycleWorkUncertainEffect):
+        host_work.dispatch_receipted_lifecycle_work(
+            command, uncertain, store, _load_plan, missing
+        )
+    assert (
+        store.snapshot(command.transaction_id, command.operation_key).state == "started"
+    )
+    assert len(calls) == 1
+
+    def partial(_value):
+        raise host_work.LifecycleWorkExecutionError("application-evidence-partial")
+
+    with pytest.raises(host_work.LifecycleWorkExecutionError) as refused:
+        host_work.dispatch_receipted_lifecycle_work(
+            command,
+            uncertain,
+            store,
+            _load_plan,
+            partial,
+            terminalize_observer_failure=True,
+        )
+    assert refused.value.code == "application-evidence-partial"
+    assert (
+        store.snapshot(command.transaction_id, command.operation_key).state == "started"
+    )
+    assert len(calls) == 1
+
+    def completed(_value):
+        return host_work.LifecycleWorkStartedObservation("completed", EVIDENCE_HASH)
+
+    recovered = host_work.dispatch_receipted_lifecycle_work(
+        command, uncertain, store, _load_plan, completed
+    )
+    assert recovered["evidenceHash"] == EVIDENCE_HASH
+    assert (
+        store.snapshot(command.transaction_id, command.operation_key).state
+        == "completed"
+    )
+    assert len(calls) == 1
+
+
 def test_receipted_dispatch_requires_plan_binding_before_the_worker():
     command = host_work.parse_lifecycle_work_request(
         work_request("verify", ["documents"], {"serviceIds": ["documents"]})
@@ -682,6 +771,60 @@ def test_receipted_dispatch_requires_plan_binding_before_the_worker():
     assert worker_calls == []
 
 
+def test_completed_apply_replay_needs_no_observer_or_new_dispatch():
+    command = host_work.parse_lifecycle_work_request(
+        work_request(
+            "apply:documents",
+            ["documents"],
+            payload_for("apply:documents", ["documents"]),
+        )
+    )
+    store = _begun_store(command)
+    first = host_work.dispatch_receipted_lifecycle_work(
+        command,
+        lambda _value: EVIDENCE_HASH,
+        store,
+        _load_plan,
+        lambda _value: host_work.LifecycleWorkStartedObservation("missing"),
+    )
+    replay = host_work.dispatch_receipted_lifecycle_work(
+        command,
+        lambda _value: (_ for _ in ()).throw(AssertionError("redispatched")),
+        store,
+        _load_plan,
+    )
+    assert replay == first
+
+
+def test_uncertain_observer_failure_cannot_be_terminalized():
+    command = host_work.parse_lifecycle_work_request(
+        work_request(
+            "apply:documents",
+            ["documents"],
+            payload_for("apply:documents", ["documents"]),
+        )
+    )
+    store = _begun_store(command)
+    calls = []
+
+    def uncertain(_value):
+        raise host_work.LifecycleWorkUncertainEffect("application-evidence-partial")
+
+    with pytest.raises(host_work.LifecycleWorkUncertainEffect):
+        host_work.dispatch_receipted_lifecycle_work(
+            command,
+            lambda value: calls.append(value) or EVIDENCE_HASH,
+            store,
+            _load_plan,
+            uncertain,
+            terminalize_observer_failure=True,
+        )
+    assert calls == []
+    assert store.snapshot(command.transaction_id, command.operation_key).state == (
+        "started"
+    )
+
+
 def test_receipted_dispatch_requires_the_exact_started_binding():
     command = host_work.parse_lifecycle_work_request(
         work_request("verify", ["documents"], {"serviceIds": ["documents"]})
@@ -723,9 +866,7 @@ def test_receipted_dispatch_requires_the_exact_started_binding():
         (None, "lifecycle-work-invalid-result"),
     ],
 )
-def test_receipted_dispatch_durably_fails_and_never_replays(
-    failure, failure_code
-):
+def test_receipted_dispatch_durably_fails_and_never_replays(failure, failure_code):
     command = host_work.parse_lifecycle_work_request(
         work_request("verify", ["documents"], {"serviceIds": ["documents"]})
     )
@@ -923,10 +1064,12 @@ def test_reserve_and_release_dispatch_are_symmetric():
     """reserve:<id> and release dispatch must behave symmetrically through
     dispatch_lifecycle_work: both call dispatcher, both return same schema."""
     for op_key, svc_ids, payload in [
-        ("reserve:documents", ["documents"],
-         {"operation": {"serviceId": "documents", "definitionHash": "4" * 64}}),
-        ("release", ["documents", "voice"],
-         {"serviceIds": ["documents", "voice"]}),
+        (
+            "reserve:documents",
+            ["documents"],
+            {"operation": {"serviceId": "documents", "definitionHash": "4" * 64}},
+        ),
+        ("release", ["documents", "voice"], {"serviceIds": ["documents", "voice"]}),
     ]:
         command = host_work.parse_lifecycle_work_request(
             work_request(op_key, svc_ids, payload)

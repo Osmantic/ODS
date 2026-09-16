@@ -76,6 +76,15 @@ class LifecycleWorkExecutionError(LifecycleWorkError):
     """The dispatcher failed or returned unverifiable evidence."""
 
 
+class LifecycleWorkUncertainEffect(LifecycleWorkExecutionError):
+    """Mutation may have begun; retain the started receipt for observation.
+
+    An apply dispatcher must use this typed error after the first possible
+    file/container effect. A failed terminal would otherwise make a partial
+    change unreplayable and could hide work needed by compensation.
+    """
+
+
 @dataclass(frozen=True)
 class LifecycleWorkCommand:
     """Validated command passed to a host-owned dispatcher without a token."""
@@ -341,9 +350,7 @@ def _terminal_from_snapshot(snapshot: Any, command: LifecycleWorkCommand) -> Any
     if state == "absent":
         if started is not None or terminal is not None:
             raise LifecycleWorkValidationError("lifecycle-work-receipt-mismatch")
-        raise LifecycleWorkValidationError(
-            "lifecycle-work-started-receipt-required"
-        )
+        raise LifecycleWorkValidationError("lifecycle-work-started-receipt-required")
     _require_receipt_binding(started, command)
     if state == "started":
         if terminal is not None:
@@ -455,9 +462,7 @@ def dispatch_receipted_lifecycle_work(
     if not callable(plan_loader):
         raise LifecycleWorkUnavailable("lifecycle-work-plan-loader-unavailable")
     if started_observer is not None and not callable(started_observer):
-        raise LifecycleWorkUnavailable(
-            "lifecycle-work-started-observer-unavailable"
-        )
+        raise LifecycleWorkUnavailable("lifecycle-work-started-observer-unavailable")
     if type(terminalize_observer_failure) is not bool:
         _invalid()
     if receipt_store is None or not callable(getattr(receipt_store, "snapshot", None)):
@@ -477,13 +482,23 @@ def dispatch_receipted_lifecycle_work(
             return _completed_result(command, terminal.evidence_hash)
         raise LifecycleWorkExecutionError("lifecycle-work-terminal-failed")
 
+    if command.operation_key.startswith("apply:") and started_observer is None:
+        # Only a started-only apply receipt could mean a partial effect.
+        # An exact completed terminal has already replayed above without
+        # requiring an observer or another worker call.
+        raise LifecycleWorkUnavailable("lifecycle-work-started-observer-unavailable")
+
     if started_observer is not None:
         try:
-            observation = _require_started_observation(
-                started_observer(command)
-            )
+            observation = _require_started_observation(started_observer(command))
+        except LifecycleWorkUncertainEffect:
+            # The opt-in observer-failure terminalization flag must not turn
+            # an ambiguous current-state probe into a false failed terminal.
+            raise
         except LifecycleWorkError as observer_error:
-            if terminalize_observer_failure:
+            if terminalize_observer_failure and not command.operation_key.startswith(
+                "apply:"
+            ):
                 _terminalize_failed_receipt(
                     receipt_store, snapshot, command, observer_error
                 )
@@ -492,7 +507,9 @@ def dispatch_receipted_lifecycle_work(
             observer_error = LifecycleWorkExecutionError(
                 "lifecycle-work-started-observer-unavailable"
             )
-            if terminalize_observer_failure:
+            if terminalize_observer_failure and not command.operation_key.startswith(
+                "apply:"
+            ):
                 _terminalize_failed_receipt(
                     receipt_store, snapshot, command, observer_error
                 )
@@ -542,10 +559,12 @@ def dispatch_receipted_lifecycle_work(
         ):
             raise LifecycleWorkValidationError("lifecycle-work-plan-mismatch")
         result = dispatch_lifecycle_work(bound_command, dispatcher)
+    except LifecycleWorkUncertainEffect:
+        # The observer must classify the real effects on a future attempt.
+        # Never publish a terminal failure from an ambiguous mutation.
+        raise
     except LifecycleWorkError as dispatch_error:
-        _terminalize_failed_receipt(
-            receipt_store, snapshot, command, dispatch_error
-        )
+        _terminalize_failed_receipt(receipt_store, snapshot, command, dispatch_error)
         raise dispatch_error
 
     evidence_hash = result["evidenceHash"]
@@ -579,6 +598,7 @@ __all__ = [
     "LifecycleWorkError",
     "LifecycleWorkExecutionError",
     "LifecycleWorkStartedObservation",
+    "LifecycleWorkUncertainEffect",
     "LifecycleWorkUnavailable",
     "LifecycleWorkValidationError",
     "FAILURE_SCHEMA",

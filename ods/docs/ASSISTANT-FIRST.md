@@ -165,12 +165,23 @@ Phase 5 gates.
 
 The dormant lifecycle-work boundary now uses the existing host receipt store as
 its exact response-loss recovery anchor. A started receipt must already exist;
-the host publishes the matching completed or failed terminal before replying,
-and an exact completed replay never dispatches work again. A started-only
+the host publishes a completed terminal after proof, or a failed terminal for
+a pre-effect failure, before replying. A typed uncertain effect instead leaves
+the started receipt intact for current-state observation and recovery. An exact
+completed replay never dispatches work again. A started-only
 receipt still requires durable side-effect observation and cannot be replayed
 or declared failed by inference. General apply, health verification, and
 composite compensation operations and the production executor therefore remain
 disabled; the exact canary operations activated below are the only exceptions.
+
+Every receipted `apply:<serviceId>` now requires a started-state observer
+before any dispatcher may run. After a possible file/container effect, the
+dispatcher can raise `LifecycleWorkUncertainEffect`; the receipt stays started,
+and a retry must first classify actual state. An observer that finds partial or
+contradictory state refuses redispatch. The image-preparation observer-failure
+terminalization option cannot terminalize an apply observation failure. This
+contract alone does not publish
+application records or select generic apply in production.
 
 Future host work is also bound to the exact approved transaction before a
 dispatcher can run. The host loads the owner-private transaction store shared
@@ -476,7 +487,10 @@ secret is provided only inside the host secret-store callback, and command
 output is discarded so it cannot enter a receipt or response. File replay
 still invokes Compose: matching files alone never establish `APPLIED` or
 health. A failed or ambiguous runner leaves partial files for explicit
-observation and compensation rather than claiming a clean absence.
+observation and compensation rather than claiming a clean absence. The dormant
+effect now raises a typed uncertain-effect error after the first possible file
+publication, so a future receipted host dispatcher cannot terminalize that
+partial state as a clean failure.
 
 This substrate remains unregistered in the host agent. Before it can be made
 live, the integration must re-prove the current transaction and configuration,

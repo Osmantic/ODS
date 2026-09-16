@@ -57,6 +57,7 @@ from extension_image_artifact_runtime import (
 from extension_lifecycle_work import (
     LifecycleWorkCommand,
     LifecycleWorkExecutionError,
+    LifecycleWorkUncertainEffect,
     LifecycleWorkValidationError,
 )
 
@@ -85,6 +86,10 @@ _Runner = Callable[[tuple[str, ...], dict[str, str], int], bool]
 
 class ComposeApplyEffectError(LifecycleWorkExecutionError):
     """Value-free, stable effect failure; never retain a secret-bearing cause."""
+
+
+class ComposeApplyUncertainEffect(LifecycleWorkUncertainEffect):
+    """Files or Docker may have changed; only current observation can decide."""
 
 
 def _deny(code: str) -> None:
@@ -488,6 +493,8 @@ class ComposeApplyEffect:
         root = _open_install(self._root)
         directory = root
         lock = -1
+        effect_may_have_started = False
+        uncertain_code: str | None = None
         try:
             for name in _ROOT_PARTS:
                 child = _open_owned_child(directory, name)
@@ -496,6 +503,14 @@ class ComposeApplyEffect:
                 directory = child
             lock = _lock_active(directory)
             _assert_active_entries(directory)
+            # Reject an already unsafe or drifted target before the first
+            # possible publication. _publish rechecks under the same lock;
+            # a later race/failure is still an uncertain effect.
+            _read_exact(directory, _COMPOSE_NAME, compose)
+            _read_exact(directory, _OVERRIDE_NAME, override)
+            # A failed publication can still have changed the active file.
+            # After this point a failed terminal receipt is never justified.
+            effect_may_have_started = True
             created_compose = _publish(directory, _COMPOSE_NAME, compose)
             created_override = _publish(directory, _OVERRIDE_NAME, override)
             active = self._root.joinpath(*_ROOT_PARTS)
@@ -562,9 +577,20 @@ class ComposeApplyEffect:
                 if created_compose or created_override
                 else "replayed",
             )
+        except ComposeApplyEffectError as exc:
+            if not effect_may_have_started:
+                raise
+            uncertain_code = exc.code
         finally:
             if lock >= 0:
                 os.close(lock)
             if directory != root:
                 os.close(directory)
             os.close(root)
+        if uncertain_code is not None:
+            # Raise outside the handler so no secret-bearing exception chain
+            # crosses the host receipt boundary.
+            raise ComposeApplyUncertainEffect(uncertain_code) from None
+        raise ComposeApplyUncertainEffect(
+            "lifecycle-work-compose-effect-uncertain"
+        ) from None

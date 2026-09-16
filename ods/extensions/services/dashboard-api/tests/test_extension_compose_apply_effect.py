@@ -293,9 +293,11 @@ def test_concurrent_retries_serialize_entire_compose_effect(install):
 def test_runner_failure_leaves_partial_files_for_explicit_recovery(install):
     command, staged, config, identity = _inputs()
     action = effect.ComposeApplyEffect(install, lambda *args: False)
-    with pytest.raises(effect.ComposeApplyEffectError) as caught:
+    with pytest.raises(effect.ComposeApplyUncertainEffect) as caught:
         action.apply(command, staged, config, identity, FakeSecrets())
     assert str(caught.value) == "lifecycle-work-compose-runner-failed"
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
     assert (_active(install) / "compose.yaml").is_file()
     assert (_active(install) / "compose.override.yaml").is_file()
 
@@ -399,7 +401,7 @@ def test_secret_callback_error_never_escapes_raw_value(install):
     def failing(*args):
         raise RuntimeError(SECRET)
 
-    with pytest.raises(effect.ComposeApplyEffectError) as caught:
+    with pytest.raises(effect.ComposeApplyUncertainEffect) as caught:
         effect.ComposeApplyEffect(install, failing).apply(
             command, staged, config, identity, FakeSecrets()
         )
