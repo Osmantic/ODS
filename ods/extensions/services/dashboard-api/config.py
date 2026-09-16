@@ -599,7 +599,7 @@ def _detect_container_default_gateway(route_path: str = "/proc/net/route") -> st
     default DOCKER-ISOLATION-STAGE-2 iptables rules.
     """
     try:
-        with open(route_path, "r", encoding="utf-8") as f:
+        with open(route_path, encoding="utf-8") as f:
             for line in f.readlines()[1:]:
                 fields = line.strip().split()
                 # destination == 0.0.0.0 AND flags has RTF_GATEWAY (0x2)

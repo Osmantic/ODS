@@ -30,7 +30,7 @@ def run_command(cmd: list[str], timeout: int = 5) -> tuple[bool, str]:
 def _read_sysfs(path: str) -> Optional[str]:
     """Read a sysfs file, returning None on failure."""
     try:
-        with open(path, "r") as f:
+        with open(path) as f:
             return f.read().strip()
     except (OSError, IOError):
         return None

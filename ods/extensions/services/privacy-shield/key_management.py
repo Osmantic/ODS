@@ -15,7 +15,7 @@ def load_persisted_key(path: str) -> Optional[str]:
     try:
         if not os.path.exists(path):
             return None
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             key = f.read().strip()
         return key or None
     except Exception:

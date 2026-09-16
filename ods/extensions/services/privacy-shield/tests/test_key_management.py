@@ -27,7 +27,7 @@ class TestKeyManagement(unittest.TestCase):
             key_path = os.path.join(d, "shield_api_key")
             key = resolve_shield_api_key(None, key_path)
             self.assertTrue(isinstance(key, str) and len(key) > 0)
-            with open(key_path, "r", encoding="utf-8") as f:
+            with open(key_path, encoding="utf-8") as f:
                 self.assertEqual(f.read().strip(), key)
 
 
