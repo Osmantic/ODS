@@ -5,7 +5,8 @@ import { useState, useEffect } from 'react'
 function readDismissedVersion() {
   try {
     return globalThis.localStorage?.getItem('dismissed-update') ?? null
-  } catch {
+  } catch (error) {
+    if (!(error instanceof globalThis.DOMException)) throw error
     return null
   }
 }
@@ -13,7 +14,8 @@ function readDismissedVersion() {
 function storeDismissedVersion(version) {
   try {
     globalThis.localStorage?.setItem('dismissed-update', version)
-  } catch {
+  } catch (error) {
+    if (!(error instanceof globalThis.DOMException)) throw error
     // Persistence is best-effort when storage is blocked or quota-limited.
   }
 }

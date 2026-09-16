@@ -137,4 +137,17 @@ describe('useVersion', () => {
     expect(result.current.error).toBeTruthy()
     expect(result.current.version).toBeNull()
   })
+
+  test('loads and dismisses the banner when the localStorage getter itself is denied', async () => {
+    vi.spyOn(globalThis, 'localStorage', 'get').mockImplementation(() => {
+      throw new globalThis.DOMException('Storage denied', 'SecurityError')
+    })
+    fetch.mockResolvedValue({ ok: true, json: async () => ({ current: '1', latest: '2', update_available: true }) })
+    const { result } = renderHook(() => useVersion())
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    expect(result.current.version.latest).toBe('2')
+    expect(result.current.error).toBeNull()
+    act(() => result.current.dismissUpdate())
+    expect(result.current.version.update_available).toBe(false)
+  })
 })
