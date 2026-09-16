@@ -74,11 +74,15 @@ _CANARY_SCHEMA_HASH = hashlib.sha256(
     ).encode("utf-8")
 ).hexdigest()
 _ROOT_PARTS = (".ods-assistant-first", "applications", CANARY_SERVICE_ID)
+_MANIFEST_NAME = "manifest.yaml"
+_CONFIG_NAME = "configuration.json"
 _COMPOSE_NAME = "compose.yaml"
 _OVERRIDE_NAME = "compose.override.yaml"
 _LOCK_NAME = ".apply.lock"
+_CONFIG_SCHEMA = "ods.assistant-first.active-configuration.v1"
 _MAX_COMPOSE_BYTES = 1024 * 1024
 _MAX_OVERRIDE_BYTES = 4096
+_MAX_CONFIG_BYTES = 4096
 _DIR_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
 _FILE_FLAGS = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
 _Runner = Callable[[tuple[str, ...], dict[str, str], int], bool]
@@ -104,7 +108,9 @@ def _fail(code: str) -> None:
 class ComposeApplyResult:
     service_id: str
     identity_sha256: str
+    definition_sha256: str
     compose_sha256: str
+    config_sha256: str
     override_sha256: str
     outcome: str  # file custody only; not APPLIED or healthy
 
@@ -132,7 +138,7 @@ def _verified_file(value: Any, expected_path: str, expected_digest: str) -> byte
 
 def _validate_inputs(
     command: Any, staged: Any, configuration: Any, identity: Any
-) -> bytes:
+) -> tuple[bytes, bytes]:
     if type(command) is not LifecycleWorkCommand:
         _deny("lifecycle-work-command-invalid")
     if command.operation_key != "apply:searxng" or command.service_ids != (
@@ -186,7 +192,9 @@ def _validate_inputs(
         or definition.definition_source != "builtin"
     ):
         _deny("lifecycle-work-compose-stage-mismatch")
-    _verified_file(definition.manifest, "manifest.yaml", CANARY_DEFINITION_SHA256)
+    manifest = _verified_file(
+        definition.manifest, _MANIFEST_NAME, CANARY_DEFINITION_SHA256
+    )
     compose = _verified_file(definition.compose, "compose.yaml", CANARY_COMPOSE_SHA256)
     if (
         type(configuration) is not BoundConfiguration
@@ -198,7 +206,36 @@ def _validate_inputs(
         or type(configuration.secret_reference) is not str
     ):
         _deny("lifecycle-work-compose-configuration-mismatch")
-    return compose
+    return manifest, compose
+
+
+def _configuration_bytes(
+    identity: ApplicationIdentity, configuration: BoundConfiguration
+) -> bytes:
+    """Persist only plan-bound, secret-free active configuration metadata."""
+    payload = {
+        "identitySha256": identity.identity_sha256,
+        "planHash": identity.plan_sha256,
+        "port": configuration.port,
+        "schema": _CONFIG_SCHEMA,
+        "schemaHash": configuration.schema_hash,
+        "serviceId": identity.service_id,
+        "transactionId": identity.transaction_id,
+        "usedDefaultPort": configuration.used_default_port,
+    }
+    raw = (
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    ).encode("utf-8")
+    if not 0 < len(raw) <= _MAX_CONFIG_BYTES:
+        _deny("lifecycle-work-compose-configuration-mismatch")
+    return raw
 
 
 def _override_bytes(identity: ApplicationIdentity, port: int) -> bytes:
@@ -335,7 +372,9 @@ def _assert_active_entries(directory: int) -> None:
         entries = set(os.listdir(directory))
     except OSError:
         _fail("lifecycle-work-compose-custody-invalid")
-    if not entries.issubset({_LOCK_NAME, _COMPOSE_NAME, _OVERRIDE_NAME}):
+    if not entries.issubset(
+        {_LOCK_NAME, _MANIFEST_NAME, _CONFIG_NAME, _COMPOSE_NAME, _OVERRIDE_NAME}
+    ):
         _fail("lifecycle-work-compose-file-drift")
 
 
@@ -483,13 +522,15 @@ class ComposeApplyEffect:
         identity: ApplicationIdentity,
         secret_store: Any,
     ) -> ComposeApplyResult:
-        compose = _validate_inputs(command, staged, configuration, identity)
+        manifest, compose = _validate_inputs(command, staged, configuration, identity)
         _platform()
         if not callable(self._runner) or not callable(
             getattr(secret_store, "invoke_with_secrets", None)
         ):
             _deny("lifecycle-work-compose-consumer-invalid")
         override = _override_bytes(identity, configuration.port)
+        config_metadata = _configuration_bytes(identity, configuration)
+        config_sha256 = canonical_document_sha256(config_metadata)
         root = _open_install(self._root)
         directory = root
         lock = -1
@@ -506,11 +547,15 @@ class ComposeApplyEffect:
             # Reject an already unsafe or drifted target before the first
             # possible publication. _publish rechecks under the same lock;
             # a later race/failure is still an uncertain effect.
+            _read_exact(directory, _MANIFEST_NAME, manifest)
+            _read_exact(directory, _CONFIG_NAME, config_metadata)
             _read_exact(directory, _COMPOSE_NAME, compose)
             _read_exact(directory, _OVERRIDE_NAME, override)
             # A failed publication can still have changed the active file.
             # After this point a failed terminal receipt is never justified.
             effect_may_have_started = True
+            created_manifest = _publish(directory, _MANIFEST_NAME, manifest)
+            created_config = _publish(directory, _CONFIG_NAME, config_metadata)
             created_compose = _publish(directory, _COMPOSE_NAME, compose)
             created_override = _publish(directory, _OVERRIDE_NAME, override)
             active = self._root.joinpath(*_ROOT_PARTS)
@@ -571,10 +616,15 @@ class ComposeApplyEffect:
             return ComposeApplyResult(
                 service_id=CANARY_SERVICE_ID,
                 identity_sha256=identity.identity_sha256,
+                definition_sha256=identity.definition_sha256,
                 compose_sha256=identity.compose_sha256,
+                config_sha256=config_sha256,
                 override_sha256="sha256:" + hashlib.sha256(override).hexdigest(),
                 outcome="materialized"
-                if created_compose or created_override
+                if created_manifest
+                or created_config
+                or created_compose
+                or created_override
                 else "replayed",
             )
         except ComposeApplyEffectError as exc:

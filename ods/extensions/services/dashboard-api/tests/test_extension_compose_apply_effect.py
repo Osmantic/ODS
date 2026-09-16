@@ -22,6 +22,7 @@ if str(BIN) not in sys.path:
     sys.path.insert(0, str(BIN))
 
 import extension_application_identity as application_identity
+import extension_application_observation_adapter as observation_adapter
 import extension_compose_apply_effect as effect
 import extension_configuration_effect_runtime as configuration_runtime
 import extension_document_digest as document_digest
@@ -193,7 +194,25 @@ def test_exact_files_fixed_argv_and_secret_only_in_temporary_runner_env(install)
     active = _active(install)
     assert result.outcome == "materialized"
     assert result.identity_sha256 == identity.identity_sha256
+    assert result.definition_sha256 == CANARY_DEFINITION_SHA256
     assert result.compose_sha256 == CANARY_COMPOSE_SHA256
+    assert (active / "manifest.yaml").read_bytes() == staged.definitions[
+        0
+    ].manifest.content
+    metadata = (active / "configuration.json").read_bytes()
+    assert result.config_sha256 == document_digest.canonical_document_sha256(metadata)
+    assert json.loads(metadata) == {
+        "identitySha256": identity.identity_sha256,
+        "planHash": identity.plan_sha256,
+        "port": 9988,
+        "schema": "ods.assistant-first.active-configuration.v1",
+        "schemaHash": SCHEMA,
+        "serviceId": "searxng",
+        "transactionId": TXN,
+        "usedDefaultPort": False,
+    }
+    assert REFERENCE.encode() not in metadata
+    assert SECRET.encode() not in metadata
     assert (active / "compose.yaml").read_bytes() == staged.definitions[
         0
     ].compose.content
@@ -207,7 +226,12 @@ def test_exact_files_fixed_argv_and_secret_only_in_temporary_runner_env(install)
     assert "ports" not in service_override
     assert all(
         stat.S_IMODE((active / name).stat().st_mode) == 0o600
-        for name in ("compose.yaml", "compose.override.yaml")
+        for name in (
+            "manifest.yaml",
+            "configuration.json",
+            "compose.yaml",
+            "compose.override.yaml",
+        )
     )
     assert calls == [
         (
@@ -248,7 +272,12 @@ def test_replay_runs_idempotent_compose_again_without_replacing_files(install):
     first = action.apply(command, staged, config, identity, FakeSecrets())
     inodes = tuple(
         (_active(install) / name).stat().st_ino
-        for name in ("compose.yaml", "compose.override.yaml")
+        for name in (
+            "manifest.yaml",
+            "configuration.json",
+            "compose.yaml",
+            "compose.override.yaml",
+        )
     )
     second = action.apply(command, staged, config, identity, FakeSecrets())
     assert first.outcome == "materialized"
@@ -256,7 +285,24 @@ def test_replay_runs_idempotent_compose_again_without_replacing_files(install):
     assert len(calls) == 2  # file replay is not installed-state observation
     assert inodes == tuple(
         (_active(install) / name).stat().st_ino
-        for name in ("compose.yaml", "compose.override.yaml")
+        for name in (
+            "manifest.yaml",
+            "configuration.json",
+            "compose.yaml",
+            "compose.override.yaml",
+        )
+    )
+
+
+def test_published_files_supply_current_observer_digests(install):
+    command, staged, config, identity = _inputs()
+    result = effect.ComposeApplyEffect(install, lambda *args: True).apply(
+        command, staged, config, identity, FakeSecrets()
+    )
+    assert observation_adapter._current_files(install, "searxng") == (
+        result.definition_sha256,
+        result.compose_sha256,
+        result.config_sha256,
     )
 
 
@@ -298,6 +344,8 @@ def test_runner_failure_leaves_partial_files_for_explicit_recovery(install):
     assert str(caught.value) == "lifecycle-work-compose-runner-failed"
     assert caught.value.__cause__ is None
     assert caught.value.__context__ is None
+    assert (_active(install) / "manifest.yaml").is_file()
+    assert (_active(install) / "configuration.json").is_file()
     assert (_active(install) / "compose.yaml").is_file()
     assert (_active(install) / "compose.override.yaml").is_file()
 
@@ -335,16 +383,20 @@ def test_invalid_inputs_do_not_invoke_secret_or_runner(install, change):
     assert secret.requests == []
 
 
-def test_symlink_or_hardlink_collision_fails_closed(install, tmp_path):
+@pytest.mark.parametrize(
+    "name",
+    ("manifest.yaml", "configuration.json", "compose.yaml", "compose.override.yaml"),
+)
+def test_symlink_or_hardlink_collision_fails_closed(install, tmp_path, name):
     command, staged, config, identity = _inputs()
     active = _active(install)
     active.mkdir(parents=True, mode=0o700)
     for directory in (active.parent.parent, active.parent, active):
         directory.chmod(0o700)
     foreign = tmp_path / "foreign"
-    foreign.write_bytes(staged.definitions[0].compose.content)
+    foreign.write_bytes(b"foreign")
     for linked in ("symlink", "hardlink"):
-        target = active / "compose.yaml"
+        target = active / name
         if linked == "symlink":
             target.symlink_to(foreign)
         else:
@@ -354,6 +406,25 @@ def test_symlink_or_hardlink_collision_fails_closed(install, tmp_path):
                 command, staged, config, identity, FakeSecrets()
             )
         target.unlink()
+
+
+def test_preexisting_config_drift_refuses_before_any_publication(install):
+    command, staged, config, identity = _inputs()
+    active = _active(install)
+    active.mkdir(parents=True, mode=0o700)
+    for directory in (active.parent.parent, active.parent, active):
+        directory.chmod(0o700)
+    (active / "configuration.json").write_bytes(b"{}\n")
+    (active / "configuration.json").chmod(0o600)
+    calls = []
+    with pytest.raises(effect.ComposeApplyEffectError) as caught:
+        effect.ComposeApplyEffect(
+            install, lambda *args: calls.append(True) or True
+        ).apply(command, staged, config, identity, FakeSecrets())
+    assert str(caught.value) == "lifecycle-work-compose-file-drift"
+    assert calls == []
+    assert not (active / "manifest.yaml").exists()
+    assert not (active / "compose.yaml").exists()
 
 
 def test_lockfile_collision_or_unsafe_mode_fails_before_runner(install, tmp_path):
