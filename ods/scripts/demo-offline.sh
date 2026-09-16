@@ -378,7 +378,7 @@ while true; do
     print_header
     print_menu
 
-    read -r choice
+    read -r choice || break
 
     case "${choice,,}" in
         1) demo_chat ;;
