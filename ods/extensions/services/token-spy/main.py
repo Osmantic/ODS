@@ -691,11 +691,10 @@ async def proxy_messages(request: Request):
             client, raw_body, forward_headers, model, sys_analysis, msg_analysis,
             tools, start,
         )
-    else:
-        return await _handle_non_streaming(
-            client, raw_body, forward_headers, model, sys_analysis, msg_analysis,
-            tools, start,
-        )
+    return await _handle_non_streaming(
+        client, raw_body, forward_headers, model, sys_analysis, msg_analysis,
+        tools, start,
+    )
 
 
 async def _handle_streaming(client, raw_body, headers, model, sys_analysis,
@@ -920,11 +919,10 @@ async def proxy_chat_completions(request: Request):
             client, raw_body, forward_headers, model, sys_analysis, msg_analysis,
             tools, start, filter_result=filter_result,
         )
-    else:
-        return await _handle_openai_non_streaming(
-            client, raw_body, forward_headers, model, sys_analysis, msg_analysis,
-            tools, start, filter_result=filter_result,
-        )
+    return await _handle_openai_non_streaming(
+        client, raw_body, forward_headers, model, sys_analysis, msg_analysis,
+        tools, start, filter_result=filter_result,
+    )
 
 
 async def _handle_openai_streaming(client, raw_body, headers, model, sys_analysis,

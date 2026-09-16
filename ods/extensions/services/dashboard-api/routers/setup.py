@@ -218,9 +218,8 @@ async def chat(request: ChatRequest, api_key: str = Depends(verify_api_key)):
                     # Strip thinking model tags — content may contain <think>...</think> blocks
                     response_text = re.sub(r'<think>[\s\S]*?</think>\s*', '', response_text).strip()
                     return {"response": response_text, "success": True}
-                else:
-                    error_text = await resp.text()
-                    raise HTTPException(status_code=resp.status, detail=f"LLM error: {error_text}")
+                error_text = await resp.text()
+                raise HTTPException(status_code=resp.status, detail=f"LLM error: {error_text}")
     except aiohttp.ClientError:
         logger.exception("Cannot reach LLM backend")
         raise HTTPException(status_code=503, detail="Cannot reach LLM backend")

@@ -356,16 +356,15 @@ def select_parallelism(subset: Subset) -> LlamaParallelism:
                 gpu_memory_utilization=0.92,
                 tensor_split=split,
             )
-        else:
-            tp = largest_pow2_divisor(n)
-            pp = n // tp
-            return LlamaParallelism(
-                mode="hybrid",
-                tensor_parallel_size=tp,
-                pipeline_parallel_size=pp,
-                gpu_memory_utilization=0.93,
-                tensor_split=split,
-            )
+        tp = largest_pow2_divisor(n)
+        pp = n // tp
+        return LlamaParallelism(
+            mode="hybrid",
+            tensor_parallel_size=tp,
+            pipeline_parallel_size=pp,
+            gpu_memory_utilization=0.93,
+            tensor_split=split,
+        )
 
     # Cross-NUMA PCIe
     if rank <= 10:
@@ -384,24 +383,22 @@ def select_parallelism(subset: Subset) -> LlamaParallelism:
             pipeline_parallel_size=n,
             gpu_memory_utilization=0.95,
         )
-    else:
-        if rank >= 40:
-            tp = largest_pow2_divisor(n)
-            pp = n // tp
-            return LlamaParallelism(
-                mode="hybrid",
-                tensor_parallel_size=tp,
-                pipeline_parallel_size=pp,
-                gpu_memory_utilization=0.93,
-                tensor_split=split,
-            )
-        else:
-            return LlamaParallelism(
-                mode="pipeline",
-                tensor_parallel_size=1,
-                pipeline_parallel_size=n,
-                gpu_memory_utilization=0.95,
-            )
+    if rank >= 40:
+        tp = largest_pow2_divisor(n)
+        pp = n // tp
+        return LlamaParallelism(
+            mode="hybrid",
+            tensor_parallel_size=tp,
+            pipeline_parallel_size=pp,
+            gpu_memory_utilization=0.93,
+            tensor_split=split,
+        )
+    return LlamaParallelism(
+        mode="pipeline",
+        tensor_parallel_size=1,
+        pipeline_parallel_size=n,
+        gpu_memory_utilization=0.95,
+    )
 
 
 #  Phase 4: Build Output JSON

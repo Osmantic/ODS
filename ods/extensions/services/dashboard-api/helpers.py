@@ -1060,7 +1060,7 @@ def get_cpu_metrics() -> dict:
     _system = platform.system()
     if _system == "Linux":
         return _get_cpu_metrics_linux()
-    elif _system == "Darwin":
+    if _system == "Darwin":
         return _get_cpu_metrics_darwin()
     return {"percent": 0, "temp_c": None}
 
@@ -1143,6 +1143,6 @@ def get_ram_metrics() -> dict:
     _system = platform.system()
     if _system == "Linux":
         return _get_ram_metrics_linux()
-    elif _system == "Darwin":
+    if _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}

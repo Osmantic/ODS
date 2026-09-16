@@ -845,15 +845,13 @@ def get_gpu_tier(vram_gb: float, memory_type: str = "discrete") -> str:
     if memory_type == "unified":
         if vram_gb >= 90:
             return "Strix Halo 90+"
-        else:
-            return "Strix Halo Compact"
+        return "Strix Halo Compact"
     if vram_gb >= 80:
         return "Professional"
-    elif vram_gb >= 24:
+    if vram_gb >= 24:
         return "Prosumer"
-    elif vram_gb >= 16:
+    if vram_gb >= 16:
         return "Standard"
-    elif vram_gb >= 8:
+    if vram_gb >= 8:
         return "Entry"
-    else:
-        return "Minimal"
+    return "Minimal"

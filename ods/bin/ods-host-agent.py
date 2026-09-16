@@ -11251,7 +11251,7 @@ def _capture_managed_opencode_state() -> dict:
                 return {"system": system, "active": False, "target": target}
             raise RuntimeError(f"Could not inspect managed OpenCode: {detail[:300]}")
         return {"system": system, "active": True, "target": target}
-    elif system == "Linux":
+    if system == "Linux":
         user_env = _opencode_user_service_env()
         status = subprocess.run(
             ["systemctl", "--user", "is-active", "--quiet", "opencode-web.service"],
@@ -11266,7 +11266,7 @@ def _capture_managed_opencode_state() -> dict:
             return {"system": system, "active": False, "env": user_env}
         detail = (status.stderr or status.stdout or "").strip()
         raise RuntimeError(f"Could not inspect managed OpenCode: {detail[:300]}")
-    elif system == "Windows":
+    if system == "Windows":
         return {"system": system, "active": _run_windows_opencode_control("inspect")}
     return {"system": system, "active": False}
 

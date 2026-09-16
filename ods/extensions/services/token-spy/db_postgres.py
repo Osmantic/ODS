@@ -221,13 +221,13 @@ def _detect_provider(model: str) -> str:
     model_lower = model.lower()
     if "claude" in model_lower:
         return "anthropic"
-    elif "kimi" in model_lower:
+    if "kimi" in model_lower:
         return "moonshot"
-    elif "gpt" in model_lower or "o1" in model_lower:
+    if "gpt" in model_lower or "o1" in model_lower:
         return "openai"
-    elif "gemini" in model_lower:
+    if "gemini" in model_lower:
         return "google"
-    elif "qwen" in model_lower:
+    if "qwen" in model_lower:
         return "alibaba"
     return "unknown"
 

@@ -76,7 +76,7 @@ def test_talk_message_rejects_incompatible_model_before_hermes(talk_client, monk
 
     async def fake_submit(session_key, text):
         calls.append((session_key, text))
-        return None
+        return
 
     monkeypatch.setattr("hermes_bridge.submit_prompt", fake_submit)
     async def incompatible_model():

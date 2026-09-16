@@ -215,9 +215,8 @@ async def enable_workflow(workflow_id: str, api_key: str = Depends(verify_api_ke
                         async with session.patch(f"{N8N_URL}/api/v1/workflows/{n8n_id}", headers=headers, json={"active": True}) as activate_resp:
                             activated = activate_resp.status == 200
                     return {"status": "success", "workflowId": workflow_id, "n8nId": n8n_id, "activated": activated, "message": f"{wf_info['name']} is now active!"}
-                else:
-                    error_text = await resp.text()
-                    raise HTTPException(status_code=resp.status, detail=f"n8n API error: {error_text}")
+                error_text = await resp.text()
+                raise HTTPException(status_code=resp.status, detail=f"n8n API error: {error_text}")
     except asyncio.TimeoutError:
         raise HTTPException(status_code=504, detail="n8n workflow add timed out")
     except aiohttp.ClientError as e:
@@ -249,9 +248,8 @@ async def _remove_workflow(workflow_id: str):
             async with session.delete(f"{N8N_URL}/api/v1/workflows/{n8n_wf['id']}", headers=headers) as resp:
                 if resp.status in (200, 204):
                     return {"status": "success", "workflowId": workflow_id, "message": f"{wf_info['name']} has been removed"}
-                else:
-                    error_text = await resp.text()
-                    raise HTTPException(status_code=resp.status, detail=f"n8n API error: {error_text}")
+                error_text = await resp.text()
+                raise HTTPException(status_code=resp.status, detail=f"n8n API error: {error_text}")
     except asyncio.TimeoutError:
         raise HTTPException(status_code=504, detail="n8n workflow remove timed out")
     except aiohttp.ClientError as e:
@@ -300,8 +298,7 @@ async def workflow_executions(workflow_id: str, limit: int = 20, api_key: str = 
                 if resp.status == 200:
                     data = await resp.json()
                     return {"workflowId": workflow_id, "n8nId": n8n_wf["id"], "executions": data.get("data", [])}
-                else:
-                    return {"executions": [], "error": "Failed to fetch executions"}
+                return {"executions": [], "error": "Failed to fetch executions"}
     except (aiohttp.ClientError, OSError, json.JSONDecodeError):
         logger.exception("Failed to fetch workflow executions")
         return {"executions": [], "error": "Failed to fetch executions"}
