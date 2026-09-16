@@ -44,8 +44,9 @@ _pkg_retry() {
     while (( attempt <= max )); do
         if _pkg_run "$@"; then
             return 0
+        else
+            status=$?
         fi
-        status=$?
         if (( attempt >= max )); then
             return "$status"
         fi
