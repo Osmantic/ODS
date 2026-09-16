@@ -1,4 +1,4 @@
-"""Source-only Docker observation for future host-owned data quiescence.
+"""Read-only Docker observation for host-owned extension-data quiescence.
 
 This is deliberately not a production restore dispatcher or a complete
 quiescence proof. The host must supply a token-authenticated lease-status
@@ -114,7 +114,7 @@ def _inode_prefixes(
 
 
 class DockerQuiescenceObserver:
-    """Repeated, read-only fail-closed observation for an admitted restore."""
+    """Repeated, read-only fail-closed observation for admitted data work."""
 
     def __init__(
         self, command: LifecycleWorkCommand, install_dir: Path,
@@ -124,7 +124,7 @@ class DockerQuiescenceObserver:
     ) -> None:
         if sys.platform != "linux" or not isinstance(command, LifecycleWorkCommand):
             _fail("lifecycle-work-data-quiescence-platform-unsupported")
-        if command.operation_key != "restore" or not callable(run) or not callable(status):
+        if command.operation_key not in {"backup", "restore"} or not callable(run) or not callable(status):
             _fail("lifecycle-work-data-quiescence-scope-invalid")
         if (
             not isinstance(admission, dict) or frozenset(admission) != _LEASE_KEYS

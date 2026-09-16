@@ -32,12 +32,18 @@ The resulting container graph contains `dashboard`, `dashboard-api`,
 public name. Cloud and external-provider modes replace the managed inference
 services with their single selected route.
 
+Fresh Assistant First also includes the bundled SearXNG search provider so
+the assistant can search on first boot. An explicitly selected `parallel-free`
+provider omits that container; an older installation's saved search choice is
+preserved on rerun. SearXNG is first-boot support, not a library application
+installed on demand.
+
 `model-router` remains provisional until a real installed journey proves the
 assistant, model switching, and recovery paths can operate without it.
 
 ## What is absent
 
-Open WebUI, SearXNG, Perplexica, remote-provider transport, voice, RAG,
+Open WebUI, Perplexica, remote-provider transport, voice, RAG,
 workflows, image generation, observability, privacy tools, and other optional
 applications are structurally absent from the resolved first-boot graph. Image
 discovery reads that exact graph, so an unselected application's image is not
@@ -341,6 +347,15 @@ effect. Receipts expose only bound evidence hashes, never backed-up bytes. The
 runtime has no process, network, container, Docker, Compose, or secret-store
 authority, and it cannot make conversational extension installation live by
 itself.
+
+For non-SearXNG extension data, the selected generic `backup` route now requires
+a fresh active host lease and a pinned local-Docker witness before a new
+snapshot starts and again before its temporary archive is published. Any
+active scoped service, overlapping running container mount, unverifiable
+Docker state, or lease loss refuses publication. A previously sealed exact
+archive can still be replayed without another capture. This does not rule out
+non-Docker writers or establish a cross-path point-in-time snapshot; generic
+`restore`, apply, and conversational execution remain disabled.
 
 The exact `configure` host operation is now activated only for that same
 SearXNG Manifest v2 canary. Required `source: generated` string secrets are

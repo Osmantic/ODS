@@ -1,7 +1,8 @@
 """Receipted generic, immutable extension-data backup; no live restore effect.
 
-The selected host route stores the attested old/new path union before apply.
-It does not establish a point-in-time snapshot across active external writers,
+The selected host route requires an admitted lease-bound Docker witness for
+new snapshots of the attested old/new path union. This still does not establish
+a point-in-time snapshot across non-Docker or active external writers,
 so neither this archive nor a green receipt qualifies generic rollback yet.
 """
 
@@ -68,9 +69,14 @@ class StreamBackupDispatcher:
     def __init__(self, store: StreamSnapshotStore) -> None:
         self._store = store
 
-    def __call__(self, command: LifecycleWorkCommand) -> str:
+    def __call__(self, command: LifecycleWorkCommand, *,
+                 witness: Callable[[], bool] | None = None) -> str:
         _bound(command)
-        return _evidence(command, self._store.backup(command))
+        if not callable(witness):
+            raise LifecycleWorkExecutionError(
+                "lifecycle-work-data-quiescence-witness-required"
+            ) from None
+        return _evidence(command, self._store.backup(command, quiescence=witness))
 
 
 class StreamBackupStartedObserver:

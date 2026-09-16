@@ -1,4 +1,4 @@
-"""Source-only host Docker observation tests; no live restore is selected."""
+"""Host Docker observation tests; only generic backup is selected."""
 
 from __future__ import annotations
 
@@ -17,6 +17,8 @@ if str(BIN_DIR) not in sys.path:
 import extension_data_docker_quiescence as quiescence  # noqa: E402
 from extension_operation_leases import LEASE_SCHEMA  # noqa: E402
 from test_extension_data_restore_journal import _ready  # noqa: E402
+from test_extension_data_scope_contract import command as generic_command  # noqa: E402
+from test_extension_data_stream_snapshot import _roots  # noqa: E402
 from test_extension_operation_leases import FakeClock, make_manager  # noqa: E402
 
 
@@ -78,6 +80,23 @@ def test_stopped_compose_services_and_no_running_mounts_are_observable(tmp_path:
     assert observer() is True
     assert len(fake.calls) == len(command.service_ids) + 1
     assert all(argv[:2] == ["container", "ls"] for argv in fake.calls)
+
+
+@linux_effect
+def test_backup_uses_the_same_lease_bound_scoped_docker_observation(tmp_path: Path):
+    install, _data, _backup, _alpha = _roots(tmp_path)
+    command = generic_command(
+        actions=("install", "install"),
+        selected_paths=(["data/alpha"], ["data/beta"]), prior_paths=[],
+    )
+    fake = FakeDocker(states={"alpha": b"exited\n"})
+    admission = _admission(command)
+    observer = quiescence.DockerQuiescenceObserver(
+        command, install, admission, fake,
+        lambda: _status(command, admission),
+    )
+    assert observer() is True
+    assert len(fake.calls) == len(command.service_ids) + 1
 
 
 @linux_effect

@@ -7397,11 +7397,11 @@ class _ExtensionMutationAdmission:
             )
         return status
 
-    def docker_restore_observer(self, command, run=None):
+    def docker_data_observer(self, command, run=None):
         """Build a Docker witness from the active lease and fixed install root.
 
         The default transport pins the local daemon. An injected runner is
-        reserved for isolated source tests, not production restore selection.
+        reserved for isolated source tests, not production request selection.
         """
         self.active_lease_status()
         try:
@@ -7428,6 +7428,10 @@ class _ExtensionMutationAdmission:
             run,
             self.active_lease_status,
         )
+
+    def docker_restore_observer(self, command, run=None):
+        """Compatibility alias for the still-unselected generic restore."""
+        return self.docker_data_observer(command, run)
 
     def __exit__(self, exc_type, exc_value, traceback) -> bool:
         if self._lease_context is not None:
@@ -7981,7 +7985,10 @@ class AgentHandler(BaseHTTPRequestHandler):
                     if command.operation_key == "backup" and command.service_ids != ("searxng",):
                         runtime = _get_extension_data_stream_backup_runtime()
                         if runtime is not None:
-                            dispatcher = runtime.backup_dispatcher
+                            dispatcher = lambda loaded: runtime.backup_dispatcher(
+                                loaded,
+                                witness=admission.docker_data_observer(loaded),
+                            )
                             started_observer = runtime.backup_started_observer
                     elif command.service_ids == ("searxng",):
                         runtime = _get_extension_data_backup_runtime()

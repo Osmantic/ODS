@@ -1,12 +1,14 @@
-"""Streaming, immutable multi-path snapshots for future generic extension effects.
+"""Streaming, immutable multi-path snapshots for generic extension data.
 
-This source-only backend is not selected by the host agent.  It captures the
+The host selects this backend only for admitted generic backup. It captures the
 old/new data union from an attested plan into a private tar file, streaming
 regular-file contents without embedding them in JSON or keeping them in
 memory.  The archive ends with a canonical metadata index and is hard-link
-published only after every source identity check and fsync succeeds.  Generic
-restore, service quiescence, and production executor wiring remain disabled
-until a reviewed paired backend and live qualification exist.
+published only after every source identity check, the selected route's two
+Docker/lease quiescence observations, and fsync succeed. Generic restore and
+the production transaction executor remain disabled until paired effects and
+live qualification exist. Direct store callers are source-only and do not
+constitute a host-authorized backup.
 """
 
 from __future__ import annotations
@@ -23,7 +25,7 @@ import tarfile
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 from extension_data_backup_runtime import (
     DataBackupRuntimeError,
@@ -79,6 +81,19 @@ def _fail(code: str, cause: BaseException | None = None) -> None:
     if cause is None:
         raise StreamSnapshotError(code) from None
     raise StreamSnapshotError(code) from cause
+
+
+def _require_quiescence(witness: Callable[[], bool]) -> None:
+    if not callable(witness):
+        _fail("lifecycle-work-data-quiescence-witness-required")
+    try:
+        quiet = witness()
+    except LifecycleWorkExecutionError:
+        raise
+    except Exception as exc:
+        _fail("lifecycle-work-data-quiescence-unavailable", exc)
+    if quiet is not True:
+        _fail("lifecycle-work-data-quiescence-active-writer")
 
 
 def _canonical(value: Any) -> bytes:
@@ -611,7 +626,8 @@ class StreamSnapshotStore:
         _close_quietly(install)
         _close_quietly(root)
 
-    def backup(self, command: LifecycleWorkCommand) -> StreamSnapshotReceipt:
+    def backup(self, command: LifecycleWorkCommand, *,
+               quiescence: Callable[[], bool] | None = None) -> StreamSnapshotReceipt:
         scope = bind_data_scope(command)
         if scope.operation_key != "backup":
             _fail("lifecycle-work-data-snapshot-scope-invalid")
@@ -629,6 +645,8 @@ class StreamSnapshotStore:
                 return self.verify(command)
             verify_installed_prior_data(scope, install_dir=self.install_dir, data_dir=self.data_dir)
             install = _open_absolute_directory(self.install_dir, private=False)
+            if quiescence is not None:
+                _require_quiescence(quiescence)
             temporary_name = f".tmp-{command.transaction_id}-{secrets.token_hex(16)}.tar"
             temp = os.open(
                 temporary_name,
@@ -650,6 +668,10 @@ class StreamSnapshotStore:
                         _tar_info(INDEX_MEMBER, mode=_SEALED_MODE, size=len(index_bytes), directory=False),
                         io.BytesIO(index_bytes),
                     )
+            # A changed Docker/lease observation must refuse before the
+            # temporary inode can be sealed or linked into durable state.
+            if quiescence is not None:
+                _require_quiescence(quiescence)
             if os.fstat(temp).st_size > _MAX_ARCHIVE_BYTES:
                 _fail("lifecycle-work-data-snapshot-size-limit")
             os.fchmod(temp, _SEALED_MODE)
