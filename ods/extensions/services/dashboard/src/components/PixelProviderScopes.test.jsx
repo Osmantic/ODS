@@ -1,0 +1,156 @@
+import { act, cleanup, fireEvent, screen, waitFor } from '@testing-library/react'
+import { createElement } from 'react'
+import { render } from '../test/test-utils'
+import PixelProviderScopes from './PixelProviderScopes.jsx'
+import {mockHttpCrypto} from '../test/httpCrypto'
+
+const response = value => ({ ok: true, json: async () => value })
+const taskId = '8d23bf56-9f23-4afd-9cd6-c24e6e2931b8'
+const initial = () => ({ schemaVersion: 1, chatId: 'Chat_A', revision: 1, taskId,
+  taskSelection: null, conversationSelection: null, defaultSnapshot: null, defaultSelection: null,
+  effectiveScope: null, effectiveSelection: null, runtimeStatus: 'preference-only', checkpointApproval: 'required-each-handoff-run' })
+async function setup({ kind = 'local', mutate, state = initial(), sending = false } = {}) {
+  const config = { enabled: true, revision: 3, roles: { handoff: 'stronger' }, providers: [
+    { id: 'stronger', label: 'Stronger', model: 'glm', baseUrl: 'https://tower.example/v1', kind, enabled: true }] }
+  const fetchMock = vi.fn(async (url, options) => {
+    if (url === '/api/pixel/providers') return response({ configuration: config })
+    if (url.endsWith('/status')) return response(state)
+    if (mutate) return mutate(url, options)
+    return response({ ...state, revision: state.revision + 1 })
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  const view = render(createElement(PixelProviderScopes, { chatId: 'Chat_A', sending }))
+  fireEvent.click(screen.getByRole('button', { name: 'Handoff scope' }))
+  await screen.findByLabelText('Preference scope')
+  return { fetchMock, ...view }
+}
+beforeEach(() => {
+  window.HTMLDialogElement.prototype.showModal = function () {this.open = true}
+  window.HTMLDialogElement.prototype.close = function () {this.open = false}
+})
+afterEach(() => {
+  cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals()
+  delete window.HTMLDialogElement.prototype.showModal
+  delete window.HTMLDialogElement.prototype.close
+})
+
+it('begins a new preference task on an HTTP LAN origin', async () => {
+  const {fetchMock} = await setup({state:{...initial(),taskId:null}})
+  mockHttpCrypto(taskId)
+  fireEvent.click(screen.getByRole('button', {name:'Begin task'}))
+  await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => url.endsWith('/begin'))).toBe(true))
+  const call = fetchMock.mock.calls.find(([url]) => url.endsWith('/begin'))
+  expect(JSON.parse(call[1].body).taskId).toBe(taskId)
+})
+
+it('only reads on open and reload; never begins or approves work implicitly', async () => {
+  const { fetchMock } = await setup()
+  expect(fetchMock.mock.calls.every(([url]) => url.endsWith('/status') || url === '/api/pixel/providers')).toBe(true)
+  expect(screen.getByRole('button', { name: 'Save handoff preference' })).toBeDisabled()
+  expect(screen.getByText(/not an active route/)).toBeInTheDocument()
+})
+
+it('saves exact owner task and provider revisions without a checkpoint approval', async () => {
+  const { fetchMock } = await setup()
+  fireEvent.click(screen.getByLabelText('I reviewed this recipient, duration and return behavior'))
+  fireEvent.click(screen.getByRole('button', { name: 'Save handoff preference' }))
+  await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => url.endsWith('/select'))).toBe(true))
+  const body = JSON.parse(fetchMock.mock.calls.find(([url]) => url.endsWith('/select'))[1].body)
+  expect(body).toEqual({ chatId: 'Chat_A', taskId, expectedRevision: 1, scope: 'task',
+    providerId: 'stronger', providerRevision: 3, allowCloud: false, acceptUnknownCost: false })
+})
+
+it('requires a separate explicit begin and keeps task scope disabled without it', async () => {
+  const state = { ...initial(), taskId: null }
+  const { fetchMock } = await setup({ state, mutate: async (_url, options) => response({ ...state, revision: 2, taskId: JSON.parse(options.body).taskId }) })
+  fireEvent.click(screen.getByLabelText('I reviewed this recipient, duration and return behavior'))
+  expect(screen.getByRole('button', { name: 'Save handoff preference' })).toBeDisabled()
+  fireEvent.click(screen.getByRole('button', { name: 'Begin task' }))
+  await waitFor(() => expect(screen.getByRole('button', { name: 'End task' })).toBeEnabled())
+  expect(fetchMock.mock.calls.filter(([url]) => url.endsWith('/begin'))).toHaveLength(1)
+})
+
+it('cloud needs review and both consents; changing scope clears them', async () => {
+  await setup({ kind: 'cloud' })
+  fireEvent.click(screen.getByLabelText('I reviewed this recipient, duration and return behavior'))
+  fireEvent.click(screen.getByLabelText(/Allow cloud conversation/))
+  expect(screen.getByRole('button', { name: 'Save handoff preference' })).toBeDisabled()
+  fireEvent.click(screen.getByLabelText(/Accept unknown provider cost/))
+  expect(screen.getByRole('button', { name: 'Save handoff preference' })).toBeEnabled()
+  fireEvent.change(screen.getByLabelText('Preference scope'), { target: { value: 'default' } })
+  expect(screen.getByRole('button', { name: 'Save handoff preference' })).toBeDisabled()
+  expect(screen.getByRole('button', { name: 'Reset new-task default' })).toBeInTheDocument()
+})
+
+it('ambiguous mutation is not replayed and requires explicit reload', async () => {
+  const { fetchMock } = await setup({ mutate: async () => { throw new Error('lost reply') } })
+  fireEvent.click(screen.getByRole('button', { name: 'Return from selected scope' }))
+  await screen.findByRole('alert')
+  expect(screen.getByRole('button', { name: 'Return from selected scope' })).toBeDisabled()
+  expect(fetchMock.mock.calls.filter(([url]) => url.endsWith('/return'))).toHaveLength(1)
+  fireEvent.click(screen.getByRole('button', { name: 'Reload preferences' }))
+  await waitFor(() => expect(screen.queryByRole('alert')).toBeNull())
+  expect(screen.getByLabelText('I reviewed this recipient, duration and return behavior')).not.toBeChecked()
+})
+
+it('prevents UI changes while a run is active and closes on chat identity change', async () => {
+  const { rerender } = await setup({ sending: true })
+  expect(screen.getByRole('button', { name: 'End task' })).toBeDisabled()
+  rerender(createElement(PixelProviderScopes, { chatId: 'Chat_B', sending: false }))
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+})
+
+it.each(['inspection', 'mutation'])('honors a reopen inspection after an older %s settles', async operation => {
+  let finishOld
+  const pending = new Promise(resolve => { finishOld = resolve })
+  const {fetchMock} = await setup({mutate: async () => pending})
+  const handler = fetchMock.getMockImplementation()
+  let reads = 0
+  fetchMock.mockImplementation((url, options) => {
+    if (url.endsWith('/status')) {
+      reads++
+      if (operation === 'inspection' && reads === 1) return pending
+      return Promise.resolve(response({...initial(), taskId:null, revision:5}))
+    }
+    return handler(url, options)
+  })
+  fireEvent.click(screen.getByRole('button', {name:operation === 'inspection' ? 'Reload preferences' : 'Return from selected scope'}))
+  fireEvent.click(screen.getByRole('button', {name:'Close scope controls'}))
+  fireEvent.click(screen.getByRole('button', {name:'Handoff scope'}))
+  await act(async () => finishOld(response({...initial(), revision:2})))
+  await waitFor(() => expect(screen.getByRole('button', {name:'Begin task'})).toBeEnabled())
+  expect(screen.getByRole('button', {name:'End task'})).toBeDisabled()
+  expect(reads).toBe(operation === 'inspection' ? 2 : 1)
+  expect(fetchMock.mock.calls.filter(([url]) => url.endsWith('/return'))).toHaveLength(operation === 'mutation' ? 1 : 0)
+  expect(screen.getByLabelText('I reviewed this recipient, duration and return behavior')).not.toBeChecked()
+})
+
+it('drops a queued inspection when the reopened panel is closed again', async () => {
+  let finishOld
+  const pending = new Promise(resolve => { finishOld = resolve })
+  const {fetchMock} = await setup({mutate: async () => pending})
+  fireEvent.click(screen.getByRole('button', {name:'Return from selected scope'}))
+  fireEvent.click(screen.getByRole('button', {name:'Close scope controls'}))
+  fireEvent.click(screen.getByRole('button', {name:'Handoff scope'}))
+  fireEvent.click(screen.getByRole('button', {name:'Close scope controls'}))
+  await act(async () => finishOld(response({...initial(), revision:2})))
+  expect(screen.queryByRole('dialog')).toBeNull()
+  expect(fetchMock.mock.calls.filter(([url]) => url.endsWith('/status'))).toHaveLength(1)
+  expect(fetchMock.mock.calls.filter(([url]) => url.endsWith('/return'))).toHaveLength(1)
+})
+
+it('uses the browser modal boundary and closes it on native cancel without saving consent', async () => {
+  const show = vi.spyOn(window.HTMLDialogElement.prototype,'showModal')
+  const {fetchMock} = await setup({kind:'cloud'})
+  const dialog = screen.getByRole('dialog',{name:'Choose handoff scope'})
+  expect(dialog.tagName).toBe('DIALOG')
+  expect(show).toHaveBeenCalledOnce()
+  fireEvent.click(screen.getByLabelText('I reviewed this recipient, duration and return behavior'))
+  fireEvent(dialog,new Event('cancel',{cancelable:true}))
+  expect(screen.queryByRole('dialog')).toBeNull()
+  expect(screen.getByRole('button',{name:'Handoff scope'})).toHaveFocus()
+  fireEvent.click(screen.getByRole('button',{name:'Handoff scope'}))
+  await screen.findByLabelText('Preference scope')
+  expect(screen.getByLabelText('I reviewed this recipient, duration and return behavior')).not.toBeChecked()
+  expect(fetchMock.mock.calls.every(([url]) => url.endsWith('/status') || url === '/api/pixel/providers')).toBe(true)
+})

@@ -11,6 +11,7 @@ import importlib
 import json
 import sys
 import threading
+import time
 import uuid
 from pathlib import Path
 
@@ -92,7 +93,11 @@ def router(tmp_path, monkeypatch):
         doc["seq"] = route_seq if seq is None else seq
         if mutate:
             mutate(doc)
-        state_path.write_text(json.dumps(doc), encoding="utf-8")
+        # Match Switchboard's publication boundary so concurrent requests never
+        # observe the destination between truncation and a completed write.
+        staged = state_path.with_name(f".{state_path.name}.{uuid.uuid4().hex}.tmp")
+        staged.write_text(json.dumps(doc), encoding="utf-8")
+        staged.replace(state_path)
         mod._state_cache["mtime"] = None
 
     client = TestClient(mod.app)
@@ -101,6 +106,8 @@ def router(tmp_path, monkeypatch):
         transport=httpx.MockTransport(upstream_handler)
     )
     mod._inflight = 0
+    mod._waiting = 0
+    mod._swap_gate = None
     yield mod, client, write_state, calls
     client.__exit__(None, None, None)
 
@@ -333,6 +340,66 @@ class TestForwarding:
         assert resp.json()["error"]["type"] == "model_swap_in_progress"
         assert "Retry-After" in resp.headers
 
+    def test_swap_gate_queues_new_request_until_owner_reopens(self, router):
+        _mod, client, write_state, calls = router
+        write_state()
+        headers = {"Authorization": "Bearer internal-secret"}
+        token = "0123456789abcdef0123456789abcdef"
+
+        closed = client.post("/internal/model-swap/admission", headers=headers, json={
+            "action": "begin", "token": token, "leaseSeconds": 30,
+        })
+        assert closed.status_code == 200
+        assert closed.json()["status"] == "closed"
+
+        result = {}
+
+        def make_request():
+            result["response"] = client.post("/v1/chat/completions", json={
+                "model": "ods/current", "messages": [],
+            })
+
+        worker = threading.Thread(target=make_request)
+        worker.start()
+        for _ in range(100):
+            health = client.get("/health").json()
+            if health["queuedRequests"] == 1:
+                break
+            time.sleep(0.01)
+        assert health["modelSwapGateActive"] is True
+        assert health["activeRequests"] == 0
+        assert health["queuedRequests"] == 1
+        assert calls == []
+
+        opened = client.post("/internal/model-swap/admission", headers=headers, json={
+            "action": "end", "token": token,
+        })
+        assert opened.status_code == 200
+        worker.join(5)
+        assert not worker.is_alive()
+        assert result["response"].status_code == 200
+        assert len(calls) == 1
+
+    def test_swap_gate_is_authenticated_and_single_owner(self, router):
+        mod, client, write_state, calls = router
+        first = "0123456789abcdef0123456789abcdef"
+        second = "fedcba9876543210fedcba9876543210"
+        payload = {"action": "begin", "token": first, "leaseSeconds": 30}
+        assert client.post("/internal/model-swap/admission", json=payload).status_code == 401
+        headers = {"Authorization": "Bearer internal-secret"}
+        assert client.post(
+            "/internal/model-swap/admission", headers=headers, json=payload
+        ).status_code == 200
+        conflict = client.post("/internal/model-swap/admission", headers=headers, json={
+            "action": "begin", "token": second, "leaseSeconds": 30,
+        })
+        assert conflict.status_code == 409
+        wrong_end = client.post("/internal/model-swap/admission", headers=headers, json={
+            "action": "end", "token": second,
+        })
+        assert wrong_end.status_code == 409
+        assert client.get("/health").json()["modelSwapGateActive"] is True
+
     def test_fragmented_sse_is_framed_before_rewrite(self, router):
         mod, client, write_state, calls = router
         write_state()
@@ -373,6 +440,9 @@ class TestForwarding:
         worker.start()
         assert started.wait(5)
         assert mod._inflight == 1
+        health = client.get("/health").json()
+        assert health["activeRequests"] == 1
+        assert health["queuedRequests"] == 0
         release.set()
         worker.join(5)
         assert not worker.is_alive()
@@ -726,6 +796,9 @@ class TestProbeKeyLifecycleAndInstance:
         assert first["instanceId"] == second["instanceId"] == mod.INSTANCE_ID
         assert uuid.UUID(first["instanceId"])
         assert first["probeKeyConfigured"] is True  # fixture env key
+        assert first["activeRequests"] == 0
+        assert first["queuedRequests"] == 0
+        assert first["modelSwapGateActive"] is False
 
 
 class TestEndpointsReload:
@@ -859,7 +932,7 @@ class TestRoutedTelemetry:
         assert event["user_message_count"] == 1
         assert event["assistant_message_count"] == 1
         assert event["tool_count"] == 1
-        assert event["input_tokens"] == 20
+        assert event["input_tokens"] == 17
         assert event["output_tokens"] == 5
         assert event["cache_read_tokens"] == 3
         assert event["stop_reason"] == "stop"
@@ -1002,3 +1075,72 @@ class TestRoutedTelemetry:
             "authorization": "Bearer shared-secret",
             "body": {"model": "Concrete.gguf"},
         }]
+
+
+@pytest.mark.parametrize("responses", [False, True], ids=["chat", "responses"])
+@pytest.mark.parametrize("cached,written,expected", [
+    (0, 0, (20, 0, 0)),
+    (8, 0, (12, 8, 0)),
+    (20, 0, (0, 20, 0)),
+    (8, 4, (8, 8, 4)),
+    (30, 4, (0, 20, 0)),
+])
+def test_routed_cache_categories_partition_prompt_total(router, responses, cached, written, expected):
+    mod, client, write_state, _ = router
+    write_state()
+    recorder = _RecordingTelemetry()
+    mod.app.state.telemetry = recorder
+    usage = ({
+        "input_tokens": 20, "output_tokens": 5,
+        "input_tokens_details": {"cached_tokens": cached},
+    } if responses else {
+        "prompt_tokens": 20, "completion_tokens": 5,
+        "prompt_tokens_details": {"cached_tokens": cached},
+    })
+    usage["cache_write_tokens"] = written
+    upstream = {"model": "Concrete.gguf", "usage": usage}
+    asyncio.run(mod.app.state.http.aclose())
+    mod.app.state.http = httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda _: httpx.Response(200, json=upstream))
+    )
+    path = "/v1/responses" if responses else "/v1/chat/completions"
+    response = client.post(path, json={"model": "default", "messages": []})
+    assert response.status_code == 200
+    # Client-visible provider usage retains its original inclusive contract.
+    assert response.json()["usage"] == usage
+    assert len(recorder.events) == 1
+    event = recorder.events[0]
+    categories = tuple(event[key] for key in (
+        "input_tokens", "cache_read_tokens", "cache_write_tokens"
+    ))
+    assert categories == expected
+    assert sum(categories) + event["output_tokens"] == 25
+
+
+@pytest.mark.parametrize("late_cache", [False, True])
+def test_stream_cache_partition_uses_final_aggregate(router, late_cache):
+    mod, client, write_state, _ = router
+    write_state()
+    recorder = _RecordingTelemetry()
+    mod.app.state.telemetry = recorder
+    snapshots = [
+        {"prompt_tokens": 20, "completion_tokens": 1},
+        {"prompt_tokens": 20, "completion_tokens": 5,
+         "prompt_tokens_details": {"cached_tokens": 8}, "cache_write_tokens": 4},
+    ]
+    if not late_cache:
+        snapshots.reverse()
+    chunks = [
+        ("data: " + json.dumps({"model": "Concrete.gguf", "usage": usage}) + "\n\n").encode()
+        for usage in snapshots
+    ]
+    _set_stream_upstream(mod, chunks + [b"data: [DONE]\n\n"])
+    response = client.post("/v1/chat/completions", json={
+        "model": "default", "messages": [], "stream": True,
+    })
+    assert response.status_code == 200
+    assert len(recorder.events) == 1
+    event = recorder.events[0]
+    assert [event[key] for key in (
+        "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens"
+    )] == [8, 5, 8, 4]

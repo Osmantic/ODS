@@ -80,7 +80,10 @@ else
     fail "python3 not available — skipped JSON contract (unexpected on CI)"
 fi
 
-# Podman compatibility shims are intentionally not accepted as Docker Engine.
+# Podman is a supported ODS runtime (installers/phases/05-docker.sh detects
+# and configures it — see podman-registries.sh and _runtime_is_podman()).
+# Preflight must probe it the same way it probes Docker Engine, not fail it
+# out as unsupported.
 if command -v python3 >/dev/null 2>&1; then
     PODMAN_TMP="$(mktemp -d)"
     cat >"$PODMAN_TMP/docker" <<'EOF'
@@ -88,6 +91,23 @@ if command -v python3 >/dev/null 2>&1; then
 case "${1:-}" in
   --version)
     echo "podman version 5.0.0"
+    ;;
+  info)
+    # Non-rootless SecurityOptions so ROOTLESS_SUBID stays out of this fixture.
+    if [[ "${2:-}" == "--format" ]]; then
+        echo "[]"
+    else
+        echo "host: {security: {rootless: false}}"
+    fi
+    exit 0
+    ;;
+  compose)
+    if [[ "${2:-}" == "version" ]]; then
+        echo "Docker Compose version v2.29.1 (podman)"
+        exit 0
+    fi
+    echo "podman shim compose: unhandled args: $*" >&2
+    exit 125
     ;;
   *)
     echo "podman shim called: $*" >&2
@@ -107,17 +127,17 @@ with open(path, encoding="utf-8") as f:
     report = json.load(f)
 checks = {c["id"]: c for c in report["checks"]}
 assert checks["DOCKER_INSTALLED"]["status"] == "pass"
-assert checks["DOCKER_ENGINE"]["status"] == "fail"
-assert checks["DOCKER_DAEMON"]["status"] == "fail"
-assert checks["COMPOSE_CLI"]["status"] == "fail"
+assert checks["DOCKER_ENGINE"]["status"] == "pass"
+assert checks["DOCKER_DAEMON"]["status"] == "pass"
+assert checks["COMPOSE_CLI"]["status"] == "pass"
 assert "Podman" in checks["DOCKER_ENGINE"]["message"]
-assert report["summary"]["exit_ok"] is False
+assert checks["ROOTLESS_SUBID"]["status"] == "pass"
 print("ok")
 PY
     then
-        pass "Podman docker shim fails loud as unsupported runtime"
+        pass "Podman docker shim probes as a supported runtime, not a fail-loud one"
     else
-        fail "Podman docker shim did not produce the expected fail-loud checks"
+        fail "Podman docker shim did not produce the expected supported-runtime checks"
     fi
     rm -rf "$PODMAN_TMP"
 else
