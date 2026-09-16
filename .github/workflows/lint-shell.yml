@@ -67,10 +67,12 @@ jobs:
           # shell scripts. Excludes: demo-offline.sh (echo'd documentation,
           # never executed) and test-extension-audit.sh (heredoc compose YAML
           # fixtures with container-internal localhost).
-          # Note: extensionless scripts (e.g. ods-cli) are not scanned by
-          # this glob; coverage is limited to *.sh / *.bash. ods-cli's
-          # localhost sites were handled by the earlier localhost-to-127.0.0.1 sweep.
-          matches=$(find ods -type f \( -name '*.sh' -o -name '*.bash' \) \
+          # Covers *.sh / *.bash plus first-party extensionless scripts.
+          # ods-cli was cleaned up by the earlier localhost-to-127.0.0.1
+          # sweep but was not scanned afterwards, so nothing stopped the
+          # pattern from coming back; it is included explicitly now.
+          matches=$(find ods -type f \
+            \( -name '*.sh' -o -name '*.bash' -o -path 'ods/ods-cli' \) \
             ! -path 'ods/scripts/demo-offline.sh' \
             ! -path 'ods/tests/test-extension-audit.sh' \
             -exec grep -nE 'curl[^|]*http://localhost:' {} + || true)
