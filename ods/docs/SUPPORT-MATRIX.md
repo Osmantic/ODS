@@ -28,6 +28,23 @@ classes, and any deferred or skipped phases.
 - `Tier B` — supported (works end-to-end, broader validation ongoing)
 - `Tier C` — experimental or planned (installer diagnostics only, no runtime)
 
+## Agent selection matrix
+
+The ODS platform matrix above is broader than Pixel's current qualification.
+Agent gating never changes whether the rest of ODS is supported.
+
+| Host/runtime | Default agent result |
+|--------------|----------------------|
+| Ubuntu 24.04 or Debian 12, PID1 systemd, ODS-managed local/cloud/hybrid/Lemonade route, separately authorized Pixel use | Pixel preferred; Hermes remains rollback |
+| WSL2 running a qualified distro with systemd and the same authorization/managed-route conditions | Pixel preferred; Hermes remains rollback |
+| Qualified Pixel host using generic external-model reuse outside the ODS LiteLLM gateway | Hermes fallback; explicit Pixel fails closed |
+| Other supported Linux distributions or WSL1 | Hermes fallback |
+| Windows native installer or macOS | Hermes fallback |
+
+See [PIXEL.md](PIXEL.md) for the exact license acknowledgement and technical
+qualification gate. Do not describe Pixel as generally distributed with ODS
+while its proprietary license remains unchanged.
+
 ## Platform Matrix (detailed)
 
 | Platform | GPU Path | Installer Tier | Notes |
@@ -57,6 +74,8 @@ classes, and any deferred or skipped phases.
 ## Current Truth
 
 - **Linux, Windows, and macOS are fully supported.**
+- Pixel's conditional Ubuntu 24.04/Debian 12 systemd qualification is an agent
+  tier, not the ODS platform boundary; supported hosts outside it use Hermes.
 - Linux + NVIDIA is supported and validated on real high-memory NVIDIA hardware; broader distro coverage now runs through CI, private Docker containers, and private Incus VMs.
 - Windows installs via `.\install.ps1` with Docker Desktop + WSL2 backend. Windows AMD local inference is host-managed and uses Vulkan today, either through legacy Lemonade Server or native `llama-server` fallback. Windows support is not inferred from Linux/macOS; treat it as release-current only when a Windows fleet target produces artifacts for that candidate.
 - Windows native installer UX is Tier B (delegated via Docker Desktop + WSL2).

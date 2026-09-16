@@ -6,6 +6,7 @@ Collects real-time metrics on agent swarms, sessions, and throughput.
 import asyncio
 import json
 import logging
+import math
 from datetime import datetime, timedelta, timezone
 from typing import List
 import os
@@ -50,6 +51,7 @@ class ClusterStatus:
     async def refresh(self):
         """Query cluster status from smart proxy"""
         logger.debug("Refreshing cluster status from proxy")
+        nodes = []
         try:
             proc = await asyncio.create_subprocess_exec(
                 "curl", "-s", "--max-time", "4", f"http://localhost:{os.environ.get('CLUSTER_PROXY_PORT', '9199')}/status",
@@ -60,12 +62,10 @@ class ClusterStatus:
 
             if proc.returncode == 0:
                 data = json.loads(stdout.decode())
-                self.nodes = data.get("nodes", [])
-                self.total_gpus = len(self.nodes)
-                self.active_gpus = sum(1 for n in self.nodes if n.get("healthy", False))
-                self.failover_ready = self.active_gpus > 1
-                logger.debug("Cluster status: %d/%d GPUs active, failover_ready=%s",
-                           self.active_gpus, self.total_gpus, self.failover_ready)
+                if isinstance(data, dict):
+                    nodes_data = data.get("nodes")
+                    if isinstance(nodes_data, list):
+                        nodes = [node for node in nodes_data if isinstance(node, dict)]
         except FileNotFoundError:
             logger.debug("Cluster proxy not available: curl command not found")
         except asyncio.TimeoutError:
@@ -74,8 +74,17 @@ class ClusterStatus:
             logger.debug("Cluster proxy health check timed out after 5s")
         except OSError as e:
             logger.debug("Cluster proxy connection failed: %s", e)
-        except json.JSONDecodeError as e:
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
             logger.warning("Cluster proxy returned invalid JSON: %s", e)
+
+        # Only the latest successful response can establish readiness. A failed
+        # poll must not leave a previously healthy cluster reported as ready.
+        self.nodes = nodes
+        self.total_gpus = len(nodes)
+        self.active_gpus = sum(1 for node in nodes if node.get("healthy") is True)
+        self.failover_ready = self.active_gpus > 1
+        logger.debug("Cluster status: %d/%d GPUs active, failover_ready=%s",
+                     self.active_gpus, self.total_gpus, self.failover_ready)
 
     def to_dict(self) -> dict:
         return {
@@ -94,10 +103,19 @@ class ThroughputMetrics:
         self.data_points: List[dict] = []
 
     def add_sample(self, tokens_per_sec: float):
-        """Add a new throughput sample"""
+        """Record finite nonnegative measurements; invalid data is not zero usage."""
+        if isinstance(tokens_per_sec, bool):
+            return
+        try:
+            val = float(tokens_per_sec)
+        except (TypeError, ValueError, OverflowError):
+            return
+        if not math.isfinite(val) or val < 0:
+            return
+
         self.data_points.append({
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "tokens_per_sec": tokens_per_sec
+            "tokens_per_sec": val
         })
 
         # Prune old data
@@ -113,9 +131,12 @@ class ThroughputMetrics:
             return {"current": 0, "average": 0, "peak": 0, "history": []}
 
         values = [p["tokens_per_sec"] for p in self.data_points]
+        total = sum(values)
+        average = (total / len(values) if math.isfinite(total)
+                   else sum(value / len(values) for value in values))
         return {
             "current": values[-1] if values else 0,
-            "average": sum(values) / len(values),
+            "average": average,
             "peak": max(values) if values else 0,
             "history": self.data_points[-30:]  # Last 30 points
         }

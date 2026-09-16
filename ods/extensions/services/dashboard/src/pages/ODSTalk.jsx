@@ -645,9 +645,9 @@ export default function ODSTalk() {
   const canSend = (input.trim().length > 0 || pendingAttachment) && !sending && status === 'ready'
 
   return (
-    <div className="min-h-dvh bg-[#f8faf8] text-zinc-950 antialiased">
+    <div className="pixel-app ods-talk min-h-dvh bg-theme-bg text-theme-text antialiased">
       <div className="mx-auto flex min-h-dvh w-full max-w-2xl flex-col">
-        <header className="sticky top-0 z-10 border-b border-zinc-200 bg-[#f8faf8]/95 px-4 py-3 backdrop-blur">
+        <header className="sticky top-0 z-10 border-b border-theme-border bg-theme-bg px-4 py-3">
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0">
               <h1 className="text-base font-semibold leading-tight tracking-normal">ODS Talk</h1>
@@ -710,7 +710,7 @@ export default function ODSTalk() {
           </div>
         )}
 
-        <form onSubmit={submit} className="sticky bottom-0 border-t border-zinc-200 bg-[#f8faf8]/95 p-3 backdrop-blur">
+        <form onSubmit={submit} className="sticky bottom-0 bg-theme-bg p-3">
           {/* Attachment preview strip — appears above the input bar between
               pick and send. Shows a thumbnail for images, a generic icon for
               text/code files, with an X to discard. */}
