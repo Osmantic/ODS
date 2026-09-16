@@ -46,7 +46,9 @@ def resolve_shield_api_key(env_key: Optional[str], key_path: str) -> str:
     3) Generated key (persisted for future reuse)
     """
 
-    if env_key:
+    # A whitespace-only setting is absent. A nonempty credential remains
+    # byte-for-byte identical to the caller's configured secret.
+    if isinstance(env_key, str) and env_key.strip():
         return env_key
 
     persisted = load_persisted_key(key_path)

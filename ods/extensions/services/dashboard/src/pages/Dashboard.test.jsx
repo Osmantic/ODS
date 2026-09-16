@@ -164,6 +164,14 @@ describe('Dashboard system overview', () => {
     expect(screen.getByText('Accumulated Output')).toBeInTheDocument()
   })
 
+  it.each([[8.25, '8.3 tok/s'], [0, '0.0 tok/s'], [null, '—'], [undefined, '—']])('shows a real compact throughput reading for %s', async (tokensPerSecond, expected) => {
+    render(<Dashboard compact status={{...baseStatus, inference:{...baseStatus.inference, tokensPerSecond}}} loading={false}/>)
+    const row = screen.getByText('Tokens / second').closest('.dashboard-metric-row')
+    expect(within(row).getByText(expected)).toBeVisible()
+    expect(within(row).getByText(tokensPerSecond == null ? 'telemetry unavailable' : 'runtime reading')).toBeVisible()
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/features'))
+  })
+
   it('uses theme-responsive surfaces instead of fixed dark dashboard panels', async () => {
     await renderDashboard()
 
@@ -502,6 +510,25 @@ describe('Dashboard system overview', () => {
 
     const row = await screen.findByTestId('service-row-ape')
     expect(within(row).getAllByText('—')).toHaveLength(2)
+  })
+
+  it('shows measured auxiliary containers without granting service restart actions', async () => {
+    mockResources = {
+      services: [{
+        id: 'librechat-mongodb', name: 'librechat-mongodb', type: 'docker',
+        restartable: false,
+        restart_unavailable_reason: 'Service is not declared in the active manifest set',
+        container: { container_name: 'ods-librechat-mongodb', cpu_percent: 4, memory_used_mb: 256 },
+        disk: null,
+      }],
+    }
+    await renderDashboard({ ...baseStatus, services: [] })
+    const row = await screen.findByTestId('service-row-librechat-mongodb')
+    expect(within(row).getByText('4.0%')).toBeInTheDocument()
+    expect(within(row).getByText('256 MB')).toBeInTheDocument()
+    expect(within(row).queryByRole('button', { name: /actions/ })).not.toBeInTheDocument()
+    expect(within(row).getByTitle('Service is not declared in the active manifest set')).toBeInTheDocument()
+    expect(restartCalls).toHaveLength(0)
   })
 
   it('restarts a service from the row actions menu', async () => {
