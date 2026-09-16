@@ -24,8 +24,13 @@ jobs:
 
       - name: Run ShellCheck on ods shell scripts
         run: |
-          # Find all .sh files under ods/
+          # Find all .sh files under ods/, plus first-party extensionless
+          # scripts. ods-cli is the largest shell file in the tree and was
+          # invisible to this job for as long as the glob was '*.sh' only.
           shfiles=$(find ods/ -name '*.sh' -type f)
+          for extensionless in ods/ods-cli; do
+            [ -f "$extensionless" ] && shfiles="$shfiles"$'\n'"$extensionless"
+          done
 
           if [ -z "$shfiles" ]; then
             echo "No .sh files found under ods/"
