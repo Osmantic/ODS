@@ -471,3 +471,26 @@ it('saves a favorite across page mounts and filters without lifecycle calls', as
   expect(fetchMock.mock.calls.every(([, init]) => !init?.method)).toBe(true)
   localStorage.removeItem('ods-extension-favorites-v1')
 })
+
+it('combines favorites with compact library views and leaves collections unfiltered', async () => {
+  localStorage.removeItem('ods-extension-favorites-v1')
+  const fetchMock = installFetchMock({
+    extensions: [
+      { id: 'alpha', name: 'Alpha', status: 'enabled', features: [baseFeature] },
+      { id: 'beta', name: 'Beta', status: 'not_installed', features: [baseFeature] },
+    ], summary: baseSummary({ total: 2, installed: 1, not_installed: 1 }),
+  }, [{ id: 'starter', name: 'Starter kit', services: ['beta'] }])
+  render(<Extensions compact />)
+  fireEvent.click(await screen.findByRole('button', { name: 'Favorite Alpha' }))
+  fireEvent.click(screen.getByLabelText('Favorites only'))
+  expect(screen.queryByRole('heading', { name: 'Beta' })).not.toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: 'Available 1' }))
+  expect(screen.getByText('No extensions match')).toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: 'Installed 1' }))
+  expect(screen.getByRole('heading', { name: 'Alpha' })).toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: 'Starter collections 1' }))
+  expect(screen.queryByLabelText('Favorites only')).not.toBeInTheDocument()
+  expect(screen.getByText('Starter kit')).toBeInTheDocument()
+  expect(fetchMock.mock.calls.every(([, init]) => !init?.method)).toBe(true)
+  localStorage.removeItem('ods-extension-favorites-v1')
+})
