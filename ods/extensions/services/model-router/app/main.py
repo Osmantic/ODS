@@ -847,7 +847,13 @@ async def list_models() -> dict[str, Any]:
 @app.get("/internal/route-evidence/{probe_id}")
 async def route_evidence(probe_id: str, request: Request) -> Response:
     provided = request.headers.get("authorization", "")
-    if not INTERNAL_KEY or provided != f"Bearer {INTERNAL_KEY}":
+    # Constant-time, and compared as UTF-8 bytes for the same reason as
+    # dashboard-api's verify_api_key: compare_digest raises TypeError on a
+    # non-ASCII str, and this header is attacker-controlled, so comparing as
+    # str would turn an unauthenticated request into a 500 instead of a 401.
+    if not INTERNAL_KEY or not hmac.compare_digest(
+        provided.encode("utf-8"), f"Bearer {INTERNAL_KEY}".encode("utf-8")
+    ):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     record = _evidence.get(probe_id)
     if record is None or time.monotonic() - record["storedAt"] > EVIDENCE_TTL_SECONDS:
