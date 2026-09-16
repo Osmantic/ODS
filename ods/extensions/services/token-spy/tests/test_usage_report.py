@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import importlib.util
 
 import pytest
 from datetime import date, datetime, timedelta, timezone
