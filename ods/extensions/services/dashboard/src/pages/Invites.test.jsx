@@ -252,7 +252,7 @@ describe('Invites', () => {
   })
 })
 
-test('searches access inventory and combines lifecycle filters without mutating credentials', async () => {
+test.each(['factory north', ' ALICE ', 'owner-id'])('searches access inventory by %s and combines filters without mutating credentials', async query => {
   const tokens = [
     { token_hash_prefix: 'owner-id', target_username: 'Alice', token_type: 'owner', note: 'Factory North', expires_at: null, redemption_count: 2, reusable: true },
     { token_hash_prefix: 'guest-id', target_username: 'Bob', note: 'Workshop', expires_at: '2000-01-01T00:00:00Z', redemption_count: 0 },
@@ -262,7 +262,7 @@ test('searches access inventory and combines lifecycle filters without mutating 
   vi.stubGlobal('fetch', fetchMock)
   render(<Invites />)
   await screen.findByText('Alice')
-  fireEvent.change(screen.getByLabelText('Search access links'), { target: { value: 'factory north' } })
+  fireEvent.change(screen.getByLabelText('Search access links'), { target: { value: query } })
   expect(screen.getByText('Alice')).toBeInTheDocument()
   expect(screen.queryByText('Bob')).not.toBeInTheDocument()
   fireEvent.change(screen.getByLabelText('Access link status'), { target: { value: 'expired' } })
