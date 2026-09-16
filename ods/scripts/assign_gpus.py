@@ -58,12 +58,12 @@ class LlamaParallelism:
     tensor_parallel_size:     int
     pipeline_parallel_size:   int
     gpu_memory_utilization:   float
-    tensor_split:             Optional[list] = None
+    tensor_split:             list | None = None
 
 @dataclass
 class ServiceAssignment:
     gpus:        list
-    parallelism: Optional[LlamaParallelism] = None
+    parallelism: LlamaParallelism | None = None
 
 @dataclass
 class AssignmentResult:

@@ -283,7 +283,7 @@ def _args_hash(args: dict) -> str:
     return hashlib.sha256(canon.encode("utf-8")).hexdigest()[:16]
 
 
-def _grant_key(session_id: Optional[str], tool_name: str, intent: str,
+def _grant_key(session_id: str | None, tool_name: str, intent: str,
                args_hash: str) -> str:
     """Tight one-shot-grant key: scope + tool + intent + args fingerprint."""
     scope = session_id or "_global"
@@ -434,7 +434,7 @@ def save_state() -> None:
 _session_request_times: dict[str, deque] = {}
 
 
-def check_rate_limit(policy: dict, session_id: Optional[str]) -> bool:
+def check_rate_limit(policy: dict, session_id: str | None) -> bool:
     """Return True if the request is within the legacy per-minute limit."""
     limit = policy.get("rate_limit", {}).get("requests_per_minute", RATE_LIMIT)
     key = session_id or "_global"
@@ -451,7 +451,7 @@ def check_rate_limit(policy: dict, session_id: Optional[str]) -> bool:
     return True
 
 
-def _tier_spec(raw: Any) -> Optional[tuple[int, str]]:
+def _tier_spec(raw: Any) -> tuple[int, str] | None:
     """Normalise a configured tier value to (limit, action) or None."""
     if isinstance(raw, bool):  # guard: bool is an int subclass
         return None
@@ -480,7 +480,7 @@ def _intent_window_config(policy: dict, intent: str) -> dict[str, Any]:
 
 
 def check_windowed_limits(
-    policy: dict, session_id: Optional[str], intent: str, now: float,
+    policy: dict, session_id: str | None, intent: str, now: float,
 ) -> tuple[str, str]:
     """Evaluate sliding-window caps for (scope, intent).
 
@@ -502,7 +502,7 @@ def check_windowed_limits(
     with _STATE_LOCK:
         tiers = _state["windows"].setdefault(key, {})
         # First pass: evaluate every configured tier against pruned samples.
-        worst: Optional[tuple[str, str]] = None
+        worst: tuple[str, str] | None = None
         for tier_name, span in WINDOW_TIERS.items():
             spec = _tier_spec(cfg.get(tier_name))
             if spec is None:
@@ -534,8 +534,8 @@ def check_windowed_limits(
 
 
 def consume_grant(
-    session_id: Optional[str], tool_name: str, intent: str, args: dict,
-) -> Optional[dict[str, Any]]:
+    session_id: str | None, tool_name: str, intent: str, args: dict,
+) -> dict[str, Any] | None:
     """Atomically consume a one-shot approval grant for this exact action.
 
     Returns the consumed grant record (so the caller can audit it) or None if
@@ -550,7 +550,7 @@ def consume_grant(
 
 
 def record_window_sample(
-    policy: dict, session_id: Optional[str], intent: str, now: float,
+    policy: dict, session_id: str | None, intent: str, now: float,
 ) -> None:
     """Record one window sample for (scope, intent) without re-evaluating the
     caps. Used after a one-shot grant is consumed so the approved retry is
@@ -743,7 +743,7 @@ app.add_middleware(
 )
 
 
-async def verify_api_key(x_api_key: Optional[str] = Header(None)):
+async def verify_api_key(x_api_key: str | None = Header(None)):
     # Compared as UTF-8 bytes: compare_digest raises TypeError on non-ASCII
     # str, which would turn an unauthenticated request into a 500 not a 401.
     if API_KEY and not secrets.compare_digest(
@@ -756,8 +756,8 @@ async def verify_api_key(x_api_key: Optional[str] = Header(None)):
 class VerifyRequest(BaseModel):
     tool_name: str
     args: dict[str, Any] = {}
-    session_id: Optional[str] = None
-    agent_id: Optional[str] = None
+    session_id: str | None = None
+    agent_id: str | None = None
 
 
 class VerifyResponse(BaseModel):
@@ -769,19 +769,19 @@ class VerifyResponse(BaseModel):
     # Additive, OPTIONAL fields (issue #1269). decision == "require_approval"
     # is the third decision tier; approval_token is only set in that case.
     decision: str = "allow"
-    approval_token: Optional[str] = None
+    approval_token: str | None = None
 
 
 class ApproveRequest(BaseModel):
     approval_token: str
-    approver: Optional[str] = None
+    approver: str | None = None
 
 
 class ApproveResponse(BaseModel):
     granted: bool
     reason: str
-    tool_name: Optional[str] = None
-    intent: Optional[str] = None
+    tool_name: str | None = None
+    intent: str | None = None
 
 
 @app.get("/health")
@@ -854,7 +854,7 @@ async def verify(req: VerifyRequest, request: Request, api_key: str = Depends(ve
 
     # 4) Windowed multi-tier caps — only consulted for policy-allowed calls so
     #    an explicit policy deny is never softened to require_approval.
-    grant_used: Optional[dict[str, Any]] = None
+    grant_used: dict[str, Any] | None = None
     if allowed and not warming:
         w_decision, w_reason = check_windowed_limits(
             policy, req.session_id, intent, now)
@@ -888,7 +888,7 @@ async def verify(req: VerifyRequest, request: Request, api_key: str = Depends(ve
             decision = "require_approval"
             reason = w_reason
 
-    approval_token: Optional[str] = None
+    approval_token: str | None = None
     if decision == "require_approval":
         approval_token = f"appr_{secrets.token_urlsafe(24)}"
         with _STATE_LOCK:

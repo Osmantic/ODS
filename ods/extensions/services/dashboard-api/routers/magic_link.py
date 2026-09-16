@@ -118,7 +118,7 @@ class GenerateRequest(BaseModel):
         pattern=r"^(chat|hermes)$",
         description="Redirect target after redemption. chat lands in Open WebUI; hermes lands in the Hermes Agent.",
     )
-    expires_in: Optional[int] = Field(
+    expires_in: int | None = Field(
         default=None,
         ge=MIN_EXPIRY_SECONDS,
         le=MAX_EXPIRY_SECONDS,
@@ -138,7 +138,7 @@ class GenerateRequest(BaseModel):
         pattern=r"^(auto|lan|public)$",
         description="auto uses the normal URL policy; lan forces .local URLs; public uses ODS_PUBLIC_URL when configured.",
     )
-    note: Optional[str] = Field(
+    note: str | None = Field(
         default=None,
         max_length=200,
         description="Free-form note shown in the admin list (e.g. 'for mom').",
@@ -177,7 +177,7 @@ class GenerateRequest(BaseModel):
 class GenerateResponse(BaseModel):
     token: str  # plaintext — returned ONCE on generation, never persisted in cleartext
     url: str
-    expires_at: Optional[str]
+    expires_at: str | None
     target_username: str
     scope: str
     reusable: bool
@@ -193,11 +193,11 @@ class TokenSummary(BaseModel):
     token_type: str
     url_mode: str
     created_at: str
-    expires_at: Optional[str]
+    expires_at: str | None
     redemption_count: int
-    last_redeemed_at: Optional[str]
-    revoked_at: Optional[str]
-    note: Optional[str]
+    last_redeemed_at: str | None
+    revoked_at: str | None
+    note: str | None
 
 
 # --- Token storage helpers (file-backed, locked) ---
@@ -297,7 +297,7 @@ def _normalize_record(record: dict) -> dict:
     return record
 
 
-def _is_expired(token_record: dict, now: Optional[datetime] = None) -> bool:
+def _is_expired(token_record: dict, now: datetime | None = None) -> bool:
     token_record = _normalize_record(token_record)
     if token_record["token_type"] == "owner" or not token_record.get("expires_at"):
         return False
@@ -330,7 +330,7 @@ def _prune(store: dict) -> dict:
     return store
 
 
-def _find_by_hash(store: dict, token_hash: str) -> Optional[dict]:
+def _find_by_hash(store: dict, token_hash: str) -> dict | None:
     for record in store.get("tokens", []):
         if record["token_hash"] == token_hash:
             return record
@@ -376,7 +376,7 @@ def _record_failure(ip: str) -> None:
 # --- QR code generation ---
 
 
-def _qr_data_url(text: str) -> Optional[str]:
+def _qr_data_url(text: str) -> str | None:
     """Return a data: URL for a QR code of `text`, or None if the qrcode lib isn't installed.
 
     The admin-side dashboard uses this to display the magic link as a scannable
@@ -528,7 +528,7 @@ def _magic_link_url(token: str, url_mode: str = "auto") -> str:
     return f"{base}/magic-link/{token}"
 
 
-def _cookie_domain(url_mode: str = "auto") -> Optional[str]:
+def _cookie_domain(url_mode: str = "auto") -> str | None:
     """Cookie Domain attribute. Empty/None = host-only cookie.
 
     ODS_COOKIE_DOMAIN can override the parent domain used for subdomain SSO.
@@ -545,7 +545,7 @@ def _cookie_domain(url_mode: str = "auto") -> Optional[str]:
     return f"{_device_name()}.local"
 
 
-def _ods_proxy_service() -> Optional[dict]:
+def _ods_proxy_service() -> dict | None:
     """Return ods-proxy service config, refreshing once for post-enable state.
 
     dashboard-api loads extension manifests at process startup, but `ods

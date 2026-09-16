@@ -20,14 +20,14 @@ class LLMProvider(ABC):
     - Cost calculation (pricing per model)
     """
 
-    def __init__(self, config: Optional[Dict[str, Any]] = None):
+    def __init__(self, config: Dict[str, Any] | None = None):
         """Initialize provider with optional configuration.
 
         Args:
             config: Provider-specific configuration (base_url overrides, etc.)
         """
         self.config = config or {}
-        self._client: Optional[httpx.AsyncClient] = None
+        self._client: httpx.AsyncClient | None = None
 
     @property
     @abstractmethod
@@ -102,8 +102,8 @@ class LLMProvider(ABC):
 
     @abstractmethod
     def extract_usage_from_stream(
-        self, line: str, event_type: Optional[str] = None
-    ) -> Optional[Dict[str, Any]]:
+        self, line: str, event_type: str | None = None
+    ) -> Dict[str, Any] | None:
         """Extract usage from a single SSE stream line.
 
         Args:

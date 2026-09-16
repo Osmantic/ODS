@@ -34,7 +34,7 @@ _GITHUB_RELEASES_PAGE = f"https://github.com/{_GITHUB_REPOSITORY}/releases"
 _GITHUB_HEADERS = {"Accept": "application/vnd.github.v3+json"}
 _VERSION_CACHE_TTL = 300.0
 _version_cache: dict[str, object] = {"expires_at": 0.0, "payload": None}
-_version_refresh_task: Optional[asyncio.Task] = None
+_version_refresh_task: asyncio.Task | None = None
 
 
 def _read_utf8(path: Path) -> str:
@@ -124,7 +124,7 @@ def _get_update_agent_status(timeout: int = 5) -> dict:
     return parsed if isinstance(parsed, dict) else {"status": "unknown", "output": raw}
 
 
-def _get_cached_release_payload(allow_stale: bool = False) -> Optional[dict]:
+def _get_cached_release_payload(allow_stale: bool = False) -> dict | None:
     payload = _version_cache.get("payload")
     if payload is None:
         return None
@@ -133,7 +133,7 @@ def _get_cached_release_payload(allow_stale: bool = False) -> Optional[dict]:
     return None
 
 
-def _normalize_version(value: Optional[str]) -> str:
+def _normalize_version(value: str | None) -> str:
     """Normalize a version string for comparison and display.
 
     GitHub release tags are ``vX.Y.Z`` while ``.env``/``.version`` may store
@@ -143,7 +143,7 @@ def _normalize_version(value: Optional[str]) -> str:
     return (value or "").strip().lstrip("v")
 
 
-def _build_version_result(current: str, payload: Optional[dict]) -> dict:
+def _build_version_result(current: str, payload: dict | None) -> dict:
     current = _normalize_version(current)
     result = {
         "current": current,
@@ -171,7 +171,7 @@ def _build_version_result(current: str, payload: Optional[dict]) -> dict:
     return result
 
 
-async def _refresh_release_cache() -> Optional[dict]:
+async def _refresh_release_cache() -> dict | None:
     global _version_cache
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
@@ -287,10 +287,10 @@ async def get_update_dry_run():
     current = _normalize_version(current)
 
     # ── latest version from GitHub ────────────────────────────────────────────
-    latest: Optional[str] = None
-    changelog_url: Optional[str] = None
+    latest: str | None = None
+    changelog_url: str | None = None
     update_available = False
-    version_check_error: Optional[str] = None
+    version_check_error: str | None = None
 
     try:
         async with httpx.AsyncClient(timeout=8.0) as client:

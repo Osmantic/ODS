@@ -79,11 +79,11 @@ def _is_int(v: Any) -> bool:
     return isinstance(v, int) and not isinstance(v, bool)
 
 
-def _as_mapping(v: Any) -> Optional[Mapping[str, Any]]:
+def _as_mapping(v: Any) -> Mapping[str, Any] | None:
     return v if isinstance(v, Mapping) else None
 
 
-def _as_sequence(v: Any) -> Optional[Sequence[Any]]:
+def _as_sequence(v: Any) -> Sequence[Any] | None:
     return v if isinstance(v, Sequence) and not isinstance(v, (str, bytes, bytearray)) else None
 
 

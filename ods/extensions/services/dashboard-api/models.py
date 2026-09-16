@@ -15,7 +15,7 @@ class GPUInfo(BaseModel):
     memory_percent: float
     utilization_percent: int
     temperature_c: int
-    power_w: Optional[float] = None
+    power_w: float | None = None
     memory_type: str = "discrete"
     gpu_backend: str = GPU_BACKEND
     gpu_count: int = 1
@@ -30,13 +30,13 @@ class ServiceStatus(BaseModel):
     port: int
     external_port: int
     status: str  # "healthy", "unhealthy", "unknown", "degraded", "down", "not_deployed"
-    response_time_ms: Optional[float] = None
+    response_time_ms: float | None = None
 
 
 class NodeCapabilities(BaseModel):
     ods_version: str
-    gpu: Optional[GPUInfo] = None
-    loaded_model: Optional[str] = None
+    gpu: GPUInfo | None = None
+    loaded_model: str | None = None
     services: list[ServiceStatus] = []
     service_count: int = 0
     running_service_count: int = 0
@@ -53,25 +53,25 @@ class ModelInfo(BaseModel):
     name: str
     size_gb: float
     context_length: int
-    quantization: Optional[str] = None
+    quantization: str | None = None
 
 
 class BootstrapStatus(BaseModel):
     active: bool
-    model_name: Optional[str] = None
-    percent: Optional[float] = None
-    downloaded_gb: Optional[float] = None
-    total_gb: Optional[float] = None
-    speed_mbps: Optional[float] = None
-    eta_seconds: Optional[int] = None
+    model_name: str | None = None
+    percent: float | None = None
+    downloaded_gb: float | None = None
+    total_gb: float | None = None
+    speed_mbps: float | None = None
+    eta_seconds: int | None = None
 
 
 class FullStatus(BaseModel):
     timestamp: str
-    gpu: Optional[GPUInfo] = None
+    gpu: GPUInfo | None = None
     services: list[ServiceStatus]
     disk: DiskUsage
-    model: Optional[ModelInfo] = None
+    model: ModelInfo | None = None
     bootstrap: BootstrapStatus
     uptime_seconds: int
 
@@ -98,15 +98,15 @@ class PersonaRequest(BaseModel):
 
 class ChatRequest(BaseModel):
     message: str = Field(..., max_length=100000)
-    system: Optional[str] = Field(None, max_length=10000)
+    system: str | None = Field(None, max_length=10000)
 
 
 class VersionInfo(BaseModel):
     current: str
-    latest: Optional[str] = None
+    latest: str | None = None
     update_available: bool = False
-    changelog_url: Optional[str] = None
-    checked_at: Optional[str] = None
+    changelog_url: str | None = None
+    checked_at: str | None = None
 
 
 class UpdateAction(BaseModel):
@@ -135,7 +135,7 @@ class IndividualGPU(BaseModel):
     memory_percent: float
     utilization_percent: int
     temperature_c: int
-    power_w: Optional[float] = None
+    power_w: float | None = None
     memory_type: str = "discrete"
     assigned_services: list[str] = []
     memory_usage_available: bool = True
@@ -147,16 +147,16 @@ class MultiGPUStatus(BaseModel):
     gpu_count: int
     backend: str  # "nvidia", "amd", "apple"
     gpus: list[IndividualGPU]
-    topology: Optional[dict] = None
-    assignment: Optional[dict] = None
-    split_mode: Optional[str] = None
-    tensor_split: Optional[str] = None
+    topology: dict | None = None
+    assignment: dict | None = None
+    split_mode: str | None = None
+    tensor_split: str | None = None
     aggregate: GPUInfo
 
 
 class AmdRuntimeStatus(BaseModel):
     available: bool
-    reason: Optional[str] = None
+    reason: str | None = None
     runtime: str = "none"
     location: str = "none"
     runtimeMode: str = "unknown"
@@ -164,12 +164,12 @@ class AmdRuntimeStatus(BaseModel):
     selectedBackend: str = "none"
     supportedBackends: list[str] = Field(default_factory=list)
     defaultBackend: str = "none"
-    apiBase: Optional[str] = None
-    healthUrl: Optional[str] = None
-    health: Optional[str] = None
+    apiBase: str | None = None
+    healthUrl: str | None = None
+    health: str | None = None
     version: str = "unknown"
-    loadedModel: Optional[str] = None
-    modelCount: Optional[int] = None
+    loadedModel: str | None = None
+    modelCount: int | None = None
     capabilities: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
 
@@ -177,37 +177,37 @@ class AmdRuntimeStatus(BaseModel):
 class ModelLibraryEntry(BaseModel):
     id: str
     name: str
-    gguf: Optional[str] = None
-    ggufParts: Optional[list[dict[str, Any]]] = None
-    downloadUrl: Optional[str] = None
-    downloadSha256: Optional[str] = None
-    llmModelName: Optional[str] = None
+    gguf: str | None = None
+    ggufParts: list[dict[str, Any]] | None = None
+    downloadUrl: str | None = None
+    downloadSha256: str | None = None
+    llmModelName: str | None = None
     size: str
     sizeGb: float
     vramRequired: float
-    estimatedRequired: Optional[float] = None
+    estimatedRequired: float | None = None
     contextLength: int
-    maxContextLength: Optional[int] = None
+    maxContextLength: int | None = None
     contextOptions: list[dict[str, Any]] = Field(default_factory=list)
     specialty: str
     description: str
-    tokensPerSec: Optional[float] = None
-    tokensPerSecEstimate: Optional[float] = None
-    quantization: Optional[str] = None
-    architecture: Optional[str] = None
-    activeParamsB: Optional[float] = None
-    publisher: Optional[dict[str, str]] = None
+    tokensPerSec: float | None = None
+    tokensPerSecEstimate: float | None = None
+    quantization: str | None = None
+    architecture: str | None = None
+    activeParamsB: float | None = None
+    publisher: dict[str, str] | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     appCompatibility: dict[str, Any] = Field(default_factory=dict)
     status: str  # "loaded", "downloaded", "available"
-    modelOperation: Optional[dict[str, Any]] = None
+    modelOperation: dict[str, Any] | None = None
     recommended: bool = False
     configured: bool = False
-    recommendation: Optional[dict[str, Any]] = None
+    recommendation: dict[str, Any] | None = None
     fitsVram: bool
     fitsCurrentVram: bool
-    performance: Optional[dict[str, Any]] = None
-    performanceLabel: Optional[str] = None
+    performance: dict[str, Any] | None = None
+    performanceLabel: str | None = None
 
 
 class ModelLibraryGpu(BaseModel):
@@ -218,16 +218,16 @@ class ModelLibraryGpu(BaseModel):
 
 class ModelLibraryResponse(BaseModel):
     models: list[ModelLibraryEntry]
-    gpu: Optional[ModelLibraryGpu] = None
-    currentModel: Optional[str] = None
-    activationReadyModel: Optional[str] = None
-    loadedModel: Optional[str] = None
-    configuredModel: Optional[str] = None
+    gpu: ModelLibraryGpu | None = None
+    currentModel: str | None = None
+    activationReadyModel: str | None = None
+    loadedModel: str | None = None
+    configuredModel: str | None = None
     hermesMinimumContext: int = HERMES_MIN_CONTEXT
     hermesTargetContext: int = HERMES_TARGET_CONTEXT
-    recommendationPolicy: Optional[str] = None
+    recommendationPolicy: str | None = None
     recommendationAlternatives: list[dict[str, Any]] = Field(default_factory=list)
-    modelLifecycle: Optional[dict[str, Any]] = None
+    modelLifecycle: dict[str, Any] | None = None
     odsMode: str = "unknown"
     configuredMode: str = "unknown"
     llmBackend: str = "unknown"

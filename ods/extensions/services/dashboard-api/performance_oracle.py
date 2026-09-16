@@ -282,7 +282,7 @@ def _scope_values(raw: dict[str, Any], *keys: str) -> list[str]:
 
 def model_compatibility_runtime_context(
     install_dir: str | Path | None = None,
-    gpu_info: Optional[GPUInfo] = None,
+    gpu_info: GPUInfo | None = None,
     runtime: str | None = None,
 ) -> dict[str, Any]:
     def runtime_value(key: str) -> str:
@@ -341,7 +341,7 @@ def _context_values(context: dict[str, Any], *keys: str) -> set[str]:
     return values
 
 
-def _compatibility_scope_matches(raw: Any, runtime_context: Optional[dict[str, Any]]) -> bool:
+def _compatibility_scope_matches(raw: Any, runtime_context: dict[str, Any] | None) -> bool:
     if not isinstance(raw, dict):
         return True
     context = runtime_context or model_compatibility_runtime_context()
@@ -364,7 +364,7 @@ def _compatibility_scope_matches(raw: Any, runtime_context: Optional[dict[str, A
 def _app_compatibility_entry(
     raw: Any,
     default_label: str,
-    runtime_context: Optional[dict[str, Any]] = None,
+    runtime_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if isinstance(raw, dict) and not _compatibility_scope_matches(raw, runtime_context):
         return {
@@ -425,7 +425,7 @@ def _app_compatibility_default_label(key: Any) -> str:
     return f"{label} untested"
 
 
-def _exact_performance_agent_block(performance: Optional[dict[str, Any]]) -> dict[str, Any] | None:
+def _exact_performance_agent_block(performance: dict[str, Any] | None) -> dict[str, Any] | None:
     if not isinstance(performance, dict):
         return None
     if performance.get("source") not in {"measured_local", "published_exact"}:
@@ -449,8 +449,8 @@ def _exact_performance_agent_block(performance: Optional[dict[str, Any]]) -> dic
 
 def model_app_compatibility(
     model: dict[str, Any],
-    performance: Optional[dict[str, Any]] = None,
-    runtime_context: Optional[dict[str, Any]] = None,
+    performance: dict[str, Any] | None = None,
+    runtime_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     raw = model.get("app_compatibility") if isinstance(model.get("app_compatibility"), dict) else {}
     hermes_talk = _app_compatibility_entry(raw.get("hermes_talk"), "ODS Talk untested", runtime_context)
@@ -486,7 +486,7 @@ def model_app_compatibility(
 def _agent_viability_entry(
     raw: Any,
     hermes_talk: dict[str, Any],
-    runtime_context: Optional[dict[str, Any]] = None,
+    runtime_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if raw:
         return _app_compatibility_entry(raw, "Agent viability untested", runtime_context)
@@ -618,7 +618,7 @@ def find_catalog_model(catalog: list[dict[str, Any]], model_name: str | None, gg
     return next((model for model in catalog if current_model_matches(model, model_name, gguf)), None)
 
 
-def _hardware_match(gpu_info: Optional[GPUInfo], context_length: Optional[int],
+def _hardware_match(gpu_info: GPUInfo | None, context_length: int | None,
                     quantization: str | None, runtime: str | None = None) -> dict[str, Any]:
     if not gpu_info:
         return {
@@ -667,7 +667,7 @@ def _selector_required_memory_gb(model: dict[str, Any]) -> float:
     return required_model_memory_gb(model)
 
 
-def _matching_runtime_profile(model: dict[str, Any], gpu_info: Optional[GPUInfo],
+def _matching_runtime_profile(model: dict[str, Any], gpu_info: GPUInfo | None,
                               system_ram_gb: int | None = None) -> dict[str, Any] | None:
     if not gpu_info:
         return None
@@ -752,7 +752,7 @@ def _context_memory_required_gb(
 def _context_options(
     model: dict[str, Any],
     runtime_profile: dict[str, Any] | None,
-    gpu_info: Optional[GPUInfo],
+    gpu_info: GPUInfo | None,
 ) -> list[dict[str, Any]]:
     context_limit_known = model.get("context_limit_known") is not False
     try:
@@ -797,7 +797,7 @@ def _context_options(
     ]
 
 
-def _usable_model_memory_gb(gpu_info: Optional[GPUInfo]) -> float:
+def _usable_model_memory_gb(gpu_info: GPUInfo | None) -> float:
     if not gpu_info:
         return 0.0
     total_gb = gpu_info.memory_total_mb / 1024
@@ -826,7 +826,7 @@ def _tokens_performance(source: str, label: str, tokens_per_second: float, confi
     }
 
 
-def _sample_tps(sample: Optional[dict[str, Any]]) -> Optional[float]:
+def _sample_tps(sample: dict[str, Any] | None) -> float | None:
     if not sample:
         return None
     try:
@@ -836,7 +836,7 @@ def _sample_tps(sample: Optional[dict[str, Any]]) -> Optional[float]:
     return tps if is_plausible_single_request_tps(tps) else None
 
 
-def _exact_sample(model: dict[str, Any], gpu_info: Optional[GPUInfo], context_length: Optional[int]) -> Optional[dict[str, Any]]:
+def _exact_sample(model: dict[str, Any], gpu_info: GPUInfo | None, context_length: int | None) -> dict[str, Any] | None:
     if not gpu_info:
         return None
     for alias in _model_aliases(model):
@@ -853,10 +853,10 @@ def _exact_sample(model: dict[str, Any], gpu_info: Optional[GPUInfo], context_le
     return None
 
 
-def _published_exact(model: dict[str, Any], gpu_info: Optional[GPUInfo], context_length: Optional[int],
+def _published_exact(model: dict[str, Any], gpu_info: GPUInfo | None, context_length: int | None,
                      quantization: str | None, flags: dict[str, str],
                      runtime: str | None,
-                     evidence: list[dict[str, Any]]) -> Optional[dict[str, Any]]:
+                     evidence: list[dict[str, Any]]) -> dict[str, Any] | None:
     if not gpu_info or not context_length:
         return None
     model_keys = {normalize_key(alias) for alias in _model_aliases(model)}
@@ -886,7 +886,7 @@ def _published_exact(model: dict[str, Any], gpu_info: Optional[GPUInfo], context
     return None
 
 
-def _best_calibration_sample(gpu_info: Optional[GPUInfo]) -> Optional[dict[str, Any]]:
+def _best_calibration_sample(gpu_info: GPUInfo | None) -> dict[str, Any] | None:
     if not gpu_info:
         return None
     best = None
@@ -915,8 +915,8 @@ def _model_decode_mb(model: dict[str, Any], metadata: dict[str, Any]) -> float:
 
 
 def _predicted_from_calibration(model: dict[str, Any], metadata: dict[str, Any],
-                                calibration: Optional[dict[str, Any]],
-                                hardware_match: dict[str, Any]) -> Optional[dict[str, Any]]:
+                                calibration: dict[str, Any] | None,
+                                hardware_match: dict[str, Any]) -> dict[str, Any] | None:
     base_tps = _sample_tps(calibration)
     if not calibration or not base_tps:
         return None
@@ -941,8 +941,8 @@ def _predicted_from_calibration(model: dict[str, Any], metadata: dict[str, Any],
     )
 
 
-def evaluate_performance(model: dict[str, Any], gpu_info: Optional[GPUInfo], metadata: dict[str, Any],
-                         is_loaded: bool, live_tps: float, context_length: Optional[int],
+def evaluate_performance(model: dict[str, Any], gpu_info: GPUInfo | None, metadata: dict[str, Any],
+                         is_loaded: bool, live_tps: float, context_length: int | None,
                          flags: dict[str, str], evidence: list[dict[str, Any]],
                          fits_total: bool, runtime: str | None = None) -> dict[str, Any]:
     quantization = metadata.get("quantization")
@@ -997,8 +997,8 @@ def evaluate_performance(model: dict[str, Any], gpu_info: Optional[GPUInfo], met
     return _default_performance("benchmark_required", "benchmark required", hardware_match)
 
 
-def build_sample_signature(model: dict[str, Any], gpu_info: Optional[GPUInfo],
-                           context_length: Optional[int], install_dir: str | Path,
+def build_sample_signature(model: dict[str, Any], gpu_info: GPUInfo | None,
+                           context_length: int | None, install_dir: str | Path,
                            gguf_path: Path | None = None) -> dict[str, Any]:
     metadata = inspect_gguf(gguf_path) if gguf_path else {}
     return {
@@ -1031,7 +1031,7 @@ def _recommendation_from_env(install_dir: str | Path) -> dict[str, Any]:
     }
 
 
-def _host_amd_runtime_gpu_from_env(install_dir: str | Path, system_ram_gb: int) -> Optional[GPUInfo]:
+def _host_amd_runtime_gpu_from_env(install_dir: str | Path, system_ram_gb: int) -> GPUInfo | None:
     """Build a conservative GPU surrogate for Windows AMD native runtimes.
 
     On Windows AMD installs, dashboard-api runs inside Docker while Lemonade or
@@ -1079,7 +1079,7 @@ def _host_amd_runtime_gpu_from_env(install_dir: str | Path, system_ram_gb: int) 
     )
 
 
-def _catalog_fit_reason(model: dict[str, Any], gpu_info: Optional[GPUInfo], configured: bool) -> str:
+def _catalog_fit_reason(model: dict[str, Any], gpu_info: GPUInfo | None, configured: bool) -> str:
     runtime_profile = model.get("_runtime_profile") if isinstance(model.get("_runtime_profile"), dict) else None
     context_k = int(_effective_context_length(model, runtime_profile) / 1024) if _effective_context_length(model, runtime_profile) else 0
     required = _effective_required_memory_gb(model, runtime_profile)
@@ -1164,7 +1164,7 @@ def _recommendation_score(model: dict[str, Any], capacity_gb: float, profile: st
     return specialty_weight + family_bonus + context_bonus + capability - headroom_penalty
 
 
-def rank_pre_download_models(catalog: list[dict[str, Any]], gpu_info: Optional[GPUInfo],
+def rank_pre_download_models(catalog: list[dict[str, Any]], gpu_info: GPUInfo | None,
                              profile: str = "qwen", installable_only: bool = False,
                              limit: int = 3, system_ram_gb: int | None = None) -> list[dict[str, Any]]:
     """Rank catalog entries before any model is installed.
@@ -1216,7 +1216,7 @@ def rank_pre_download_models(catalog: list[dict[str, Any]], gpu_info: Optional[G
     return [item["model"] for item in ranked[:max(limit, 1)]]
 
 
-def select_pre_download_model(catalog: list[dict[str, Any]], gpu_info: Optional[GPUInfo]) -> dict[str, Any] | None:
+def select_pre_download_model(catalog: list[dict[str, Any]], gpu_info: GPUInfo | None) -> dict[str, Any] | None:
     """Select the best catalog candidate when no installer choice exists.
 
     This uses the project-maintained `vram_required_gb` compatibility field,
@@ -1227,7 +1227,7 @@ def select_pre_download_model(catalog: list[dict[str, Any]], gpu_info: Optional[
     return ranked[0] if ranked else None
 
 
-def _recommendation_alternative(model: dict[str, Any], gpu_info: Optional[GPUInfo]) -> dict[str, Any]:
+def _recommendation_alternative(model: dict[str, Any], gpu_info: GPUInfo | None) -> dict[str, Any]:
     runtime_profile = model.get("_runtime_profile") if isinstance(model.get("_runtime_profile"), dict) else _matching_runtime_profile(model, gpu_info)
     context = _effective_context_length(model, runtime_profile)
     vram_required = float(model.get("vram_required_gb") or 0)
@@ -1264,9 +1264,9 @@ def _downloaded_catalog_path(model: dict[str, Any], downloaded_files: dict[str, 
     return bool(path), path, {gguf} if path else set()
 
 
-def build_models_payload(gpu_info: Optional[GPUInfo], loaded_model: Optional[str], live_tps: float,
+def build_models_payload(gpu_info: GPUInfo | None, loaded_model: str | None, live_tps: float,
                          install_dir: str | Path, data_dir: str | Path | None = None,
-                         context_length: Optional[int] = None,
+                         context_length: int | None = None,
                          catalog: list[dict[str, Any]] | None = None,
                          evidence: list[dict[str, Any]] | None = None,
                          downloaded_files_override: dict[str, Any] | None = None) -> dict[str, Any]:

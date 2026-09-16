@@ -31,8 +31,8 @@ DB_PASSWORD = os.environ.get("DB_PASSWORD", "")
 SINGLE_TENANT_SLUG = os.environ.get("SINGLE_TENANT_SLUG", "default")
 
 # Connection pool
-_pool: Optional[pool.ThreadedConnectionPool] = None
-_tenant_id: Optional[UUID] = None
+_pool: pool.ThreadedConnectionPool | None = None
+_tenant_id: UUID | None = None
 _agent_cache: dict[str, UUID] = {}
 
 EventCursor = Tuple[datetime, UUID]

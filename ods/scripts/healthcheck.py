@@ -68,8 +68,8 @@ class Result:
     target: str
     kind: str  # http|tcp
     detail: str
-    status: Optional[int] = None
-    elapsed_ms: Optional[int] = None
+    status: int | None = None
+    elapsed_ms: int | None = None
 
     def to_json(self) -> str:
         return json.dumps(
@@ -177,10 +177,10 @@ def check_http(
     *,
     method: str,
     timeout: float,
-    allowed_status: Optional[Set[int]],
-    body_regex: Optional[re.Pattern[str]],
+    allowed_status: Set[int] | None,
+    body_regex: re.Pattern[str] | None,
     user_agent: str,
-) -> Tuple[bool, str, Optional[int]]:
+) -> Tuple[bool, str, int | None]:
     """Check HTTP endpoint matches expected status and optional body regex."""
 
     # If a body regex is provided, we must use GET.
@@ -194,7 +194,7 @@ def check_http(
     else:
         try_methods = [method.upper()]
 
-    last_err: Optional[str] = None
+    last_err: str | None = None
 
     for m in try_methods:
         try:
@@ -324,7 +324,7 @@ def main(argv: Sequence[str]) -> int:
             print("[FAIL] --retries out of range")
         return 2
 
-    allowed_status: Optional[Set[int]]
+    allowed_status: Set[int] | None
     if kind == "http":
         if args.expect_status is None:
             allowed_status = {200}
@@ -341,7 +341,7 @@ def main(argv: Sequence[str]) -> int:
     else:
         allowed_status = None
 
-    body_re: Optional[re.Pattern[str]] = None
+    body_re: re.Pattern[str] | None = None
     if args.expect_body_regex:
         try:
             body_re = re.compile(args.expect_body_regex)

@@ -27,7 +27,7 @@ def run_command(cmd: list[str], timeout: int = 5) -> tuple[bool, str]:
         return False, str(e)
 
 
-def _read_sysfs(path: str) -> Optional[str]:
+def _read_sysfs(path: str) -> str | None:
     """Read a sysfs file, returning None on failure."""
     try:
         with open(path, "r") as f:
@@ -36,7 +36,7 @@ def _read_sysfs(path: str) -> Optional[str]:
         return None
 
 
-def _read_meminfo_mb() -> Optional[tuple[int, int]]:
+def _read_meminfo_mb() -> tuple[int, int] | None:
     """Return (used_mb, total_mb) from /proc/meminfo, or None on failure.
 
     Used as a fallback for unified-memory NVIDIA GPUs (GB10, GB200) where
@@ -61,7 +61,7 @@ def _read_meminfo_mb() -> Optional[tuple[int, int]]:
     return used_mb, total_mb
 
 
-def _find_amd_gpu_sysfs() -> Optional[str]:
+def _find_amd_gpu_sysfs() -> str | None:
     """Find the sysfs base path for an AMD GPU device."""
     import glob
     for card_dir in sorted(glob.glob("/sys/class/drm/card*/device")):
@@ -71,14 +71,14 @@ def _find_amd_gpu_sysfs() -> Optional[str]:
     return None
 
 
-def _find_hwmon_dir(device_path: str) -> Optional[str]:
+def _find_hwmon_dir(device_path: str) -> str | None:
     """Find the hwmon directory for an AMD GPU device."""
     import glob
     hwmon_dirs = sorted(glob.glob(f"{device_path}/hwmon/hwmon*"))
     return hwmon_dirs[0] if hwmon_dirs else None
 
 
-def get_gpu_info_amd() -> Optional[GPUInfo]:
+def get_gpu_info_amd() -> GPUInfo | None:
     """Get GPU metrics from amdgpu sysfs."""
     base = _find_amd_gpu_sysfs()
     if not base:
@@ -145,7 +145,7 @@ def get_gpu_info_amd() -> Optional[GPUInfo]:
         return None
 
 
-def get_gpu_info_nvidia() -> Optional[GPUInfo]:
+def get_gpu_info_nvidia() -> GPUInfo | None:
     """Get GPU metrics from nvidia-smi.
 
     Handles multi-GPU systems by summing VRAM across all GPUs and
@@ -231,7 +231,7 @@ def get_gpu_info_nvidia() -> Optional[GPUInfo]:
         mem_total = sum(g["mem_total"] for g in gpus)
         avg_util = round(sum(g["util"] for g in gpus) / len(gpus))
         max_temp = max(g["temp"] for g in gpus)
-        total_power: Optional[float] = None
+        total_power: float | None = None
         power_values = [g["power_w"] for g in gpus if g["power_w"] is not None]
         if power_values:
             total_power = round(sum(power_values), 1)
@@ -265,7 +265,7 @@ def get_gpu_info_nvidia() -> Optional[GPUInfo]:
     return None
 
 
-def get_gpu_info_apple() -> Optional[GPUInfo]:
+def get_gpu_info_apple() -> GPUInfo | None:
     """Get GPU metrics for Apple Silicon via system_profiler (native) or env vars (container)."""
     gpu_backend = os.environ.get("GPU_BACKEND", "").lower()
 
@@ -367,7 +367,7 @@ def get_gpu_info_apple() -> Optional[GPUInfo]:
     return None
 
 
-def _get_windows_host_gpu_payload() -> Optional[dict]:
+def _get_windows_host_gpu_payload() -> dict | None:
     """Read and minimally validate the versioned Windows host GPU payload."""
     if os.environ.get("GPU_BACKEND", "").lower() != "amd":
         return None
@@ -385,7 +385,7 @@ def _get_windows_host_gpu_payload() -> Optional[dict]:
         return None
 
 
-def get_gpu_info_windows_host() -> Optional[GPUInfo]:
+def get_gpu_info_windows_host() -> GPUInfo | None:
     """Read aggregate Windows AMD counters through the host agent."""
     payload = _get_windows_host_gpu_payload()
     if payload is None:
@@ -418,7 +418,7 @@ def get_gpu_info_windows_host() -> Optional[GPUInfo]:
     )
 
 
-def get_gpu_info_windows_host_detailed() -> Optional[list[IndividualGPU]]:
+def get_gpu_info_windows_host_detailed() -> list[IndividualGPU] | None:
     """Read per-adapter Windows AMD counters when the host supports them."""
     payload = _get_windows_host_gpu_payload()
     if payload is None or not isinstance(payload.get("gpus"), list):
@@ -456,7 +456,7 @@ def get_gpu_info_windows_host_detailed() -> Optional[list[IndividualGPU]]:
     return result or None
 
 
-def get_gpu_info() -> Optional[GPUInfo]:
+def get_gpu_info() -> GPUInfo | None:
     """Get GPU metrics. Tries the configured backend first, then auto-detects."""
     gpu_backend = os.environ.get("GPU_BACKEND", "").lower()
 
@@ -504,7 +504,7 @@ def get_gpu_info() -> Optional[GPUInfo]:
 # Topology — read from file written by installer / ods-cli
 # ============================================================================
 
-def read_gpu_topology() -> Optional[dict]:
+def read_gpu_topology() -> dict | None:
     """Read GPU topology from config/gpu-topology.json if it exists.
 
     The file is written by the installer (03-features.sh) and refreshed by
@@ -527,7 +527,7 @@ def read_gpu_topology() -> Optional[dict]:
 # Assignment decoding helpers
 # ============================================================================
 
-def decode_gpu_assignment() -> Optional[dict]:
+def decode_gpu_assignment() -> dict | None:
     """Decode GPU_ASSIGNMENT_JSON_B64, preferring the live .env file over the
     container startup environment so reassignments are reflected without restart."""
     found, b64 = _read_env_var_from_file_state("GPU_ASSIGNMENT_JSON_B64")
@@ -617,7 +617,7 @@ def _infer_gpu_services_from_processes() -> dict[str, list[str]]:
 # Per-GPU detailed detection
 # ============================================================================
 
-def get_gpu_info_nvidia_detailed() -> Optional[list[IndividualGPU]]:
+def get_gpu_info_nvidia_detailed() -> list[IndividualGPU] | None:
     """Return one IndividualGPU per NVIDIA GPU, with assigned_services populated.
 
     Returns None if nvidia-smi is unavailable or returns no data.
@@ -707,7 +707,7 @@ def _find_hwmon_temp(hwmon_dir: str) -> int:
     return int(temp_str) // 1000 if temp_str else 0
 
 
-def _find_hwmon_power(hwmon_dir: str) -> Optional[float]:
+def _find_hwmon_power(hwmon_dir: str) -> float | None:
     """Read GPU power: power1_average → power1_input fallback (microwatts → watts)."""
     for attr in ("power1_average", "power1_input"):
         power_str = _read_sysfs(f"{hwmon_dir}/{attr}")
@@ -716,7 +716,7 @@ def _find_hwmon_power(hwmon_dir: str) -> Optional[float]:
     return None
 
 
-def get_gpu_info_amd_detailed() -> Optional[list[IndividualGPU]]:
+def get_gpu_info_amd_detailed() -> list[IndividualGPU] | None:
     """Return one IndividualGPU per AMD GPU by iterating all amdgpu sysfs cards.
 
     Uses topology JSON (if available) for stable UUIDs and assignment mapping.

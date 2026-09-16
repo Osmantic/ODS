@@ -47,7 +47,7 @@ SESSION_COOKIE_NAME = "ods-session"
 SESSION_TTL_SECONDS = 12 * 3600
 
 
-def _cookie_domain() -> Optional[str]:
+def _cookie_domain() -> str | None:
     """Cookie ``Domain`` attribute. Empty/None = host-only cookie.
 
     ODS_COOKIE_DOMAIN is set by the installer to ``<ODS_DEVICE_NAME>.local``

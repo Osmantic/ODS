@@ -130,7 +130,7 @@ _SETTINGS_SUMMARY_CACHE_TTL = 5.0
 _SETTINGS_CONFIG_CACHE_TTL = 15.0
 _SETTINGS_ENV_CACHE_TTL = 5.0
 _SERVICE_POLL_INTERVAL = 10.0  # background health check interval
-_host_agent_probe_state: dict[str, Optional[str]] = {
+_host_agent_probe_state: dict[str, str | None] = {
     "last_success_at": None,
     "last_error": None,
 }
@@ -231,7 +231,7 @@ def _normalize_timestamp_precision(timestamp: str) -> str:
     return timestamp
 
 
-def _service_by_id(statuses: list[ServiceStatus], service_id: str) -> Optional[ServiceStatus]:
+def _service_by_id(statuses: list[ServiceStatus], service_id: str) -> ServiceStatus | None:
     for service in statuses:
         if service.id == service_id:
             return service
@@ -251,7 +251,7 @@ def _readiness_check(
     ready: bool,
     status: str,
     detail: str,
-    repair: Optional[str] = None,
+    repair: str | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "id": check_id,
@@ -269,11 +269,11 @@ def _readiness_check(
 def _build_readiness_payload(
     *,
     service_statuses: list[ServiceStatus],
-    loaded_model: Optional[str],
-    context_size: Optional[int],
+    loaded_model: str | None,
+    context_size: int | None,
     bootstrap_info: BootstrapStatus,
     host_agent: dict[str, Any],
-    stt_model_cached: Optional[bool],
+    stt_model_cached: bool | None,
     stt_model_name: str,
 ) -> dict[str, Any]:
     checks: list[dict[str, Any]] = []
@@ -408,7 +408,7 @@ def _build_readiness_payload(
     }
 
 
-async def _check_stt_model_cached() -> tuple[Optional[bool], str]:
+async def _check_stt_model_cached() -> tuple[bool | None, str]:
     model_name = os.environ.get("AUDIO_STT_MODEL") or _read_env_from_file("AUDIO_STT_MODEL") or "Systran/faster-whisper-base"
     whisper_cfg = SERVICES.get("whisper")
     if not whisper_cfg:
@@ -425,7 +425,7 @@ async def _check_stt_model_cached() -> tuple[Optional[bool], str]:
         return False, model_name
 
 
-def _read_install_date() -> Optional[str]:
+def _read_install_date() -> str | None:
     install_root = _resolve_install_root()
     env_file = install_root / ".env"
     if env_file.exists():
@@ -491,7 +491,7 @@ def _infer_gpu_count(gpu_info) -> int:
     return 1
 
 
-def _serialize_gpu(gpu_info) -> Optional[dict]:
+def _serialize_gpu(gpu_info) -> dict | None:
     if not gpu_info:
         return None
 
@@ -516,7 +516,7 @@ def _serialize_gpu(gpu_info) -> Optional[dict]:
     return gpu_data
 
 
-def _serialize_model(model_info) -> Optional[dict]:
+def _serialize_model(model_info) -> dict | None:
     if not model_info:
         return None
     return {
@@ -527,10 +527,10 @@ def _serialize_model(model_info) -> Optional[dict]:
 
 def _build_model_readiness_payload(
     *,
-    model_info: Optional[ModelInfo],
+    model_info: ModelInfo | None,
     bootstrap_info: BootstrapStatus,
-    loaded_model: Optional[str],
-    runtime_context: Optional[int],
+    loaded_model: str | None,
+    runtime_context: int | None,
 ) -> dict[str, Any]:
     configured_context = model_info.context_length if model_info else None
     effective_context = runtime_context or configured_context
@@ -627,7 +627,7 @@ def _service_semantics(service_id: str, status: str) -> dict:
     }
 
 
-def _service_public_url(service_id: str, port: int | None) -> Optional[str]:
+def _service_public_url(service_id: str, port: int | None) -> str | None:
     if not port:
         return None
     config = SERVICES.get(service_id, {})
@@ -883,9 +883,9 @@ def _call_agent_env_update(raw_text: str) -> dict[str, Any]:
 
 def _build_settings_env_payload(
     *,
-    raw_text: Optional[str] = None,
-    backup_path: Optional[str] = None,
-    apply_plan: Optional[dict[str, Any]] = None,
+    raw_text: str | None = None,
+    backup_path: str | None = None,
+    apply_plan: dict[str, Any] | None = None,
 ) -> dict:
     env_path = _resolve_runtime_env_path()
     if raw_text is None:

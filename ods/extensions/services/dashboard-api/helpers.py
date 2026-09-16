@@ -70,8 +70,8 @@ logger = logging.getLogger(__name__)
 # Re-using sessions avoids creating/destroying TCP connections every
 # poll cycle and prevents file-descriptor exhaustion.
 
-_aio_session: Optional[aiohttp.ClientSession] = None
-_aio_session_lock: Optional[asyncio.Lock] = None
+_aio_session: aiohttp.ClientSession | None = None
+_aio_session_lock: asyncio.Lock | None = None
 _HEALTH_TIMEOUT = aiohttp.ClientTimeout(total=30)
 # Short timeout for the catalog fan-out: one slow probe must not stall the
 # whole Extensions page (frontend aborts after 8 s).
@@ -100,8 +100,8 @@ async def _get_aio_session() -> aiohttp.ClientSession:
 
 
 # Shared httpx client for llama-server requests (connection pooling)
-_httpx_client: Optional[httpx.AsyncClient] = None
-_httpx_client_lock: Optional[asyncio.Lock] = None
+_httpx_client: httpx.AsyncClient | None = None
+_httpx_client_lock: asyncio.Lock | None = None
 
 
 def _get_httpx_client_lock() -> asyncio.Lock:
@@ -276,9 +276,9 @@ def _write_json_file(path: Path, data) -> None:
 
 
 def _performance_key(backend: str, gpu_name: str, model_name: str,
-                     context_length: Optional[int] = None,
-                     gguf: Optional[str] = None,
-                     vram_total_mb: Optional[int] = None) -> str:
+                     context_length: int | None = None,
+                     gguf: str | None = None,
+                     vram_total_mb: int | None = None) -> str:
     parts = [
         _normalize_perf_key(backend or "unknown"),
         _normalize_perf_key(gpu_name),
@@ -294,20 +294,20 @@ def _performance_key(backend: str, gpu_name: str, model_name: str,
 
 
 def record_model_performance(
-    model_name: Optional[str],
-    gpu_name: Optional[str],
+    model_name: str | None,
+    gpu_name: str | None,
     backend: str,
     tokens_per_second: float,
     *,
-    model_id: Optional[str] = None,
-    gguf: Optional[str] = None,
-    quantization: Optional[str] = None,
-    architecture: Optional[str] = None,
-    context_length: Optional[int] = None,
-    decode_read_mb: Optional[float] = None,
-    vram_total_mb: Optional[int] = None,
-    os_name: Optional[str] = None,
-    flags: Optional[dict] = None,
+    model_id: str | None = None,
+    gguf: str | None = None,
+    quantization: str | None = None,
+    architecture: str | None = None,
+    context_length: int | None = None,
+    decode_read_mb: float | None = None,
+    vram_total_mb: int | None = None,
+    os_name: str | None = None,
+    flags: dict | None = None,
     source: str = "local_metric",
 ) -> None:
     """Persist observed throughput for this exact machine/model pair."""
@@ -359,10 +359,10 @@ def get_recorded_model_performance(
     gpu_name: str,
     backend: str,
     *,
-    context_length: Optional[int] = None,
-    gguf: Optional[str] = None,
-    vram_total_mb: Optional[int] = None,
-) -> Optional[dict]:
+    context_length: int | None = None,
+    gguf: str | None = None,
+    vram_total_mb: int | None = None,
+) -> dict | None:
     data = _read_json_file(_PERF_FILE, {"samples": {}})
     keys = [
         _performance_key(backend, gpu_name, model_name, context_length, gguf, vram_total_mb),
@@ -385,7 +385,7 @@ def get_model_performance_samples() -> list[dict]:
 
 # --- LLM Metrics ---
 
-async def get_llama_metrics(model_hint: Optional[str] = None) -> dict:
+async def get_llama_metrics(model_hint: str | None = None) -> dict:
     """Get inference metrics from llama-server Prometheus /metrics endpoint.
 
     Accepts an optional *model_hint* so callers that already resolved the
@@ -526,7 +526,7 @@ async def get_llama_metrics(model_hint: Optional[str] = None) -> dict:
         }
 
 
-async def get_loaded_model() -> Optional[str]:
+async def get_loaded_model() -> str | None:
     """Query llama-server for actually loaded model name."""
     if "llama-server" not in SERVICES:
         return None
@@ -557,7 +557,7 @@ async def get_loaded_model() -> Optional[str]:
     return None
 
 
-async def get_llama_context_size(model_hint: Optional[str] = None) -> Optional[int]:
+async def get_llama_context_size(model_hint: str | None = None) -> int | None:
     """Query llama-server /props for the actual n_ctx.
 
     Accepts an optional *model_hint* to skip the redundant
@@ -586,7 +586,7 @@ async def get_llama_context_size(model_hint: Optional[str] = None) -> Optional[i
 # Keeps health checking decoupled from request handling so slow DNS
 # lookups (Docker Desktop) never block API responses.
 
-_services_cache: Optional[list] = None  # list[ServiceStatus], set by poll loop
+_services_cache: list | None = None  # list[ServiceStatus], set by poll loop
 
 
 def _normalize_cached_service_status(status: ServiceStatus) -> ServiceStatus:
@@ -614,7 +614,7 @@ def set_services_cache(statuses: list) -> None:
     _services_cache = [_normalize_cached_service_status(status) for status in statuses]
 
 
-def get_cached_services() -> Optional[list]:
+def get_cached_services() -> list | None:
     """Read cached health check results. Returns None if no poll has completed yet."""
     return _services_cache
 
@@ -625,7 +625,7 @@ async def check_service_health(
     service_id: str,
     config: dict,
     *,
-    timeout: Optional[aiohttp.ClientTimeout] = None,
+    timeout: aiohttp.ClientTimeout | None = None,
 ) -> ServiceStatus:
     """Check if a service is healthy by hitting its health endpoint.
 
@@ -813,7 +813,7 @@ def get_disk_usage() -> DiskUsage:
     return DiskUsage(path=path, used_gb=round(used / (1024**3), 2), total_gb=round(total / (1024**3), 2), percent=percent)
 
 
-def get_model_info() -> Optional[ModelInfo]:
+def get_model_info() -> ModelInfo | None:
     """Get current model info from .env config."""
     env_path = Path(INSTALL_DIR) / ".env"
     if env_path.exists():

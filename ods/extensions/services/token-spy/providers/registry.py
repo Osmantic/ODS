@@ -26,7 +26,7 @@ class ProviderRegistry:
         cls._providers[name.lower()] = provider_class
 
     @classmethod
-    def get(cls, name: str, config: Optional[Dict[str, Any]] = None) -> LLMProvider:
+    def get(cls, name: str, config: Dict[str, Any] | None = None) -> LLMProvider:
         """Get a provider instance by name.
 
         Creates a new instance with the given config. Does not cache
@@ -58,7 +58,7 @@ class ProviderRegistry:
         return cls._instances[name_lower]
 
     @classmethod
-    def get_or_none(cls, name: str, config: Optional[Dict[str, Any]] = None) -> Optional[LLMProvider]:
+    def get_or_none(cls, name: str, config: Dict[str, Any] | None = None) -> LLMProvider | None:
         """Get a provider instance or None if not found.
 
         Same as get() but returns None instead of raising ValueError.

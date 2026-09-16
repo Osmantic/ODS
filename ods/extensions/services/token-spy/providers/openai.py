@@ -172,8 +172,8 @@ class OpenAICompatibleProvider(LLMProvider):
         }
 
     def extract_usage_from_stream(
-        self, line: str, event_type: Optional[str] = None
-    ) -> Optional[Dict[str, Any]]:
+        self, line: str, event_type: str | None = None
+    ) -> Dict[str, Any] | None:
         """Extract usage from OpenAI SSE stream.
 
         OpenAI streaming:

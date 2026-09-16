@@ -480,7 +480,7 @@ def _host_part_is_loopback(host: str) -> bool:
     return bool(_LOOPBACK_VAR_DEFAULT_RE.fullmatch(host))
 
 
-def _split_port_host(port_str: str) -> tuple[Optional[str], str]:
+def _split_port_host(port_str: str) -> tuple[str | None, str]:
     """Split a list-form port string into (host_part, rest).
 
     Naive ``str.split(":")`` is wrong for the sanctioned ``${VAR:-127.0.0.1}``
@@ -1089,8 +1089,8 @@ def _extensions_lock_path() -> Path:
 
 @router.get("/api/extensions/catalog")
 async def extensions_catalog(
-    category: Optional[str] = None,
-    gpu_compatible: Optional[bool] = None,
+    category: str | None = None,
+    gpu_compatible: bool | None = None,
     api_key: str = Depends(verify_api_key),
 ):
     """Get the extensions catalog with computed status."""
@@ -1335,7 +1335,7 @@ async def extension_detail(
     }
 
     # See extensions_catalog: same rationale for inlining the install error.
-    error_message: Optional[str] = None
+    error_message: str | None = None
     if status == "error":
         _progress = _read_progress(service_id)
         if _progress and _progress.get("error"):
