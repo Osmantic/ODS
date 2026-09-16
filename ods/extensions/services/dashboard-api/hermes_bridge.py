@@ -46,7 +46,7 @@ DEFAULT_TIMEOUT_SECONDS = 180
 
 
 def _env_int(name: str, default: int, *, minimum: int = 1) -> int:
-    raw = os.environ.get(name, "")
+    raw = os.environ.get(name, "").strip()
     if raw.isdigit():
         return max(minimum, int(raw))
     return default
@@ -88,10 +88,7 @@ def _base_url() -> str:
 
 
 def _request_timeout() -> int:
-    raw = os.environ.get("ODS_TALK_HERMES_TIMEOUT", "")
-    if raw.isdigit():
-        return max(10, int(raw))
-    return DEFAULT_TIMEOUT_SECONDS
+    return _env_int("ODS_TALK_HERMES_TIMEOUT", DEFAULT_TIMEOUT_SECONDS, minimum=10)
 
 
 def talk_session_key(cookie_value: str) -> str:

@@ -30,6 +30,7 @@ log_error() { echo -e "${RED}[ERROR]${NC} $*"; }
 
 # Source shared rsync utilities
 . "$ODS_DIR/lib/rsync.sh"
+. "$ODS_DIR/lib/backup-paths.sh"
 
 # Convert bytes to a human-friendly string (best-effort)
 fmt_bytes() {
@@ -47,7 +48,8 @@ fmt_bytes() {
 free_bytes_for_path() {
     local path="$1"
     # df -P gives POSIX output; field 4 = available 1K-blocks
-    df -Pk "$path" 2>/dev/null | awk 'NR==2 { print $4 * 1024 }'
+    # Older mawk prints large integers in exponent notation with plain print.
+    df -Pk "$path" 2>/dev/null | awk 'NR==2 { printf "%.0f\n", $4 * 1024 }'
 }
 
 # Estimate bytes needed for a backup type (rough but safe)
@@ -58,20 +60,12 @@ estimate_backup_bytes() {
 
     # user data volumes
     if [[ "$backup_type" == "full" || "$backup_type" == "user-data" ]]; then
-        local -a user_data_paths=(
-            "data/open-webui"
-            "data/n8n"
-            "data/qdrant"
-            "data/openclaw"
-            "data/litellm"
-            "data/livekit"
-            "data/ollama"
-        )
+        local -a user_data_paths=("${ODS_USER_DATA_PATHS[@]}")
 
         for p in "${user_data_paths[@]}"; do
             if [[ -d "$ODS_DIR/$p" ]]; then
                 local b
-                b=$(du -sk "$ODS_DIR/$p" 2>/dev/null | awk '{print $1 * 1024}')
+                b=$(du -sk "$ODS_DIR/$p" 2>/dev/null | awk '{printf "%.0f\n", $1 * 1024}')
                 total=$(( total + ${b:-0} ))
             fi
         done
@@ -81,7 +75,7 @@ estimate_backup_bytes() {
     if [[ "$backup_type" == "full" || "$backup_type" == "config" ]]; then
         if [[ -d "$ODS_DIR/config" ]]; then
             local b
-            b=$(du -sk "$ODS_DIR/config" 2>/dev/null | awk '{print $1 * 1024}')
+            b=$(du -sk "$ODS_DIR/config" 2>/dev/null | awk '{printf "%.0f\n", $1 * 1024}')
             total=$(( total + ${b:-0} ))
         fi
         for f in "$ODS_DIR"/.env "$ODS_DIR"/.version "$ODS_DIR"/docker-compose*.y*ml "$ODS_DIR"/ods-preflight.sh "$ODS_DIR"/ods-update.sh; do
@@ -97,14 +91,14 @@ estimate_backup_bytes() {
     if [[ "$backup_type" == "full" ]]; then
         if [[ -d "$ODS_DIR/models" ]]; then
             local b
-            b=$(du -sk "$ODS_DIR/models" 2>/dev/null | awk '{print $1 * 1024}')
+            b=$(du -sk "$ODS_DIR/models" 2>/dev/null | awk '{printf "%.0f\n", $1 * 1024}')
             total=$(( total + ${b:-0} ))
         fi
-        local -a cache_paths=("data/whisper/cache" "data/kokoro/cache")
+        local -a cache_paths=("${ODS_BACKUP_CACHE_PATHS[@]}")
         for p in "${cache_paths[@]}"; do
             if [[ -d "$ODS_DIR/$p" ]]; then
                 local b
-                b=$(du -sk "$ODS_DIR/$p" 2>/dev/null | awk '{print $1 * 1024}')
+                b=$(du -sk "$ODS_DIR/$p" 2>/dev/null | awk '{printf "%.0f\n", $1 * 1024}')
                 total=$(( total + ${b:-0} ))
             fi
         done
@@ -127,7 +121,7 @@ ensure_backup_space() {
     local free
     free=$(free_bytes_for_path "$BACKUP_ROOT")
 
-    if [[ -n "$free" && "$free" -gt 0 && "$free" -lt "$need" ]]; then
+    if [[ -n "$free" && "$free" -lt "$need" ]]; then
         log_error "Not enough disk space in $(dirname "$BACKUP_ROOT") to create backup."
         log_error "Need ~$(fmt_bytes "$need"), have ~$(fmt_bytes "$free")."
         log_error "Free up space or use --output to write backups to another disk."
@@ -147,10 +141,18 @@ collect_backups() {
     COLLECTED_BACKUPS=()
     local entry base
     while IFS= read -r -d '' entry; do
-        base=$(basename "$entry")
-        [[ "$base" =~ ^([A-Za-z0-9_]+-)?[0-9]{8}-[0-9]{6}(\.tar\.gz)?$ ]] || continue
-        COLLECTED_BACKUPS+=("$entry")
-    done < <(find "$BACKUP_ROOT" -maxdepth 1 \( -type d -o -name "*.tar.gz" \) -print0 2>/dev/null | sort -z -r)
+        COLLECTED_BACKUPS+=("${entry#*$'\t'}")
+    done < <(
+        while IFS= read -r -d '' entry; do
+            base=$(basename "$entry")
+            # Keep the existing ID shapes, including multi-segment labels.
+            [[ "$base" =~ ^([A-Za-z0-9_][A-Za-z0-9_-]*-)?([0-9]{8}-[0-9]{6})(\.tar\.gz)?$ ]] || continue
+            # Sort by the embedded creation timestamp before the optional
+            # label. NUL records preserve whitespace in the backup root.
+            printf '%s\t%s\0' "${BASH_REMATCH[2]}" "$entry"
+        done < <(find "$BACKUP_ROOT" -maxdepth 1 \( -type d -o -name "*.tar.gz" \) -print0 2>/dev/null) \
+            | LC_ALL=C sort -z -r
+    )
 }
 
 # Show usage
@@ -168,7 +170,7 @@ Commands:
 OPTIONS:
     -h, --help              Show this help message
     -o, --output DIR        Custom backup directory (default: .backups/)
-    -t, --type TYPE         Backup type: full, user-data, config (default: full)
+    -t, --type TYPE         Backup type: full, user-data, config (default: user-data)
     -c, --compress          Compress backup to .tar.gz
     -l, --list              List existing backups
     -d, --delete ID         Delete specific backup by ID
@@ -262,9 +264,12 @@ delete_backup() {
         return 1
     fi
 
-    read -rp "Are you sure you want to delete backup $(basename "$target")? [y/N] " confirm
+    read -rp "Are you sure you want to delete backup $(basename "$target")? [y/N] " confirm || confirm=""
     if [[ "$confirm" =~ ^[Yy]$ ]]; then
-        rm -rf "$target"
+        if ! rm -rf -- "$target"; then
+            log_error "Failed to delete backup: $(basename "$target")"
+            return 1
+        fi
         log_success "Deleted backup: $(basename "$target")"
     else
         log_info "Deletion cancelled"
@@ -288,6 +293,12 @@ create_manifest() {
     [[ "$backup_type" == "full" || "$backup_type" == "config" ]] && has_config="true"
     [[ "$backup_type" == "full" ]] && has_cache="true"
 
+    local user_data_paths_json
+    user_data_paths_json=$(
+        printf '%s\n' "${ODS_USER_DATA_PATHS[@]}" \
+            | jq -R -s 'split("\n") | map(select(length > 0))'
+    )
+
     jq -n \
         --arg mv "1.0" \
         --arg bd "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
@@ -299,6 +310,7 @@ create_manifest() {
         --argjson ud "$has_user_data" \
         --argjson cfg "$has_config" \
         --argjson ca "$has_cache" \
+        --argjson udp "$user_data_paths_json" \
         '{
           manifest_version: $mv,
           backup_date: $bd,
@@ -308,15 +320,16 @@ create_manifest() {
           hostname: $hn,
           description: $desc,
           contents: { user_data: $ud, config: $cfg, cache: $ca },
-          paths: {
-            data_open_webui: "data/open-webui",
-            data_n8n: "data/n8n",
-            data_qdrant: "data/qdrant",
-            data_openclaw: "data/openclaw",
-            env: ".env",
-            compose: "docker-compose.yml",
-            config: "config"
-          }
+          paths: (
+            {
+              env: ".env",
+              compose: "docker-compose.yml",
+              config: "config"
+            }
+            + ($udp
+              | map({key: (gsub("[^A-Za-z0-9_]"; "_")), value: .})
+              | from_entries)
+          )
         }' > "$backup_dir/manifest.json"
     log_info "Created backup manifest"
 }
@@ -326,15 +339,7 @@ backup_user_data() {
     local backup_dir="$1"
     log_info "Backing up user data volumes..."
 
-    local user_data_paths=(
-        "data/open-webui"
-        "data/n8n"
-        "data/qdrant"
-        "data/openclaw"
-        "data/litellm"
-        "data/livekit"
-        "data/ollama"
-    )
+    local user_data_paths=("${ODS_USER_DATA_PATHS[@]}")
 
     for path in "${user_data_paths[@]}"; do
         local full_path="$ODS_DIR/$path"
@@ -414,11 +419,9 @@ backup_cache() {
         log_success "Backed up: models/"
     fi
 
-    # Docker volumes that contain cache data
-    local cache_paths=(
-        "data/whisper/cache"
-        "data/kokoro/cache"
-    )
+    # Bind-mounted cache directories (lib/backup-paths.sh): the GGUF weights
+    # and the STT/embeddings model caches the user-data type deliberately skips.
+    local cache_paths=("${ODS_BACKUP_CACHE_PATHS[@]}")
 
     for path in "${cache_paths[@]}"; do
         if [[ -d "$ODS_DIR/$path" ]]; then
@@ -483,7 +486,10 @@ do_backup() {
 
     # Generate backup ID
     local backup_id
-    backup_id=$(date +%Y%m%d-%H%M%S)
+    # Include the process ID so concurrent invocations cannot share one
+    # second-granularity directory. A merged directory would make either
+    # snapshot incomplete and could make a later restore select mixed data.
+    backup_id="backup-$$-$(date +%Y%m%d-%H%M%S)"
     local backup_dir="$BACKUP_ROOT/$backup_id"
 
     log_info "Starting $backup_type backup: $backup_id"
@@ -676,7 +682,7 @@ main() {
     # Delete mode
     if [[ -n "$delete_id" ]]; then
         delete_backup "$delete_id"
-        exit 0
+        exit $?
     fi
 
     # Verify mode
@@ -696,7 +702,7 @@ main() {
     if [[ "$has_compose" == "false" && ! -d "$ODS_DIR/data" ]]; then
         log_warn "This doesn't appear to be a ODS directory"
         log_warn "Expected: docker-compose.yml or data/ directory"
-        read -rp "Continue anyway? [y/N] " confirm
+        read -rp "Continue anyway? [y/N] " confirm || confirm=""
         if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
             exit 1
         fi
@@ -709,4 +715,6 @@ main() {
     do_backup "$backup_type" "$compress" "$description"
 }
 
-main "$@"
+if [[ "${ODS_BACKUP_SOURCE_ONLY:-false}" != "true" ]]; then
+    main "$@"
+fi

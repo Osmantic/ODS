@@ -36,9 +36,11 @@ rsync_with_progress() {
     # Use --info=progress2 for compact single-line progress updates
     # Fallback to basic rsync if progress2 not supported
     if rsync --help 2>/dev/null | grep -q "info=progress2"; then
-        rsync -a --delete --info=progress2 "$src" "$dest"
+        rsync -a --info=progress2 "$src" "$dest"
     else
         # Fallback: use --progress for older rsync versions
-        rsync -a --delete --progress "$src" "$dest" 2>/dev/null || rsync -a --delete "$src" "$dest"
+        # A transfer failure is not evidence that --progress is unsupported.
+        # Preserve its diagnostic and status instead of silently copying again.
+        rsync -a --progress "$src" "$dest"
     fi
 }

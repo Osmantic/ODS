@@ -123,6 +123,20 @@ describe('TemplatePreview apply result', () => {
     expect(screen.queryByText(/all services.*already active/i)).not.toBeInTheDocument()
   })
 
+  test('does not replace the current preview with a late old response body', async () => {
+    let finishOld
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: () => new Promise(resolve => { finishOld = resolve }) })
+      .mockResolvedValueOnce(response({ changes: { to_enable: ['current-service'] }, warnings: [] })))
+    const { rerender } = render(<TemplatePreview template={template} onClose={vi.fn()} />)
+    await waitFor(() => expect(finishOld).toBeTypeOf('function'))
+    rerender(<TemplatePreview template={{ ...template, id: 'current' }} onClose={vi.fn()} />)
+    expect(await screen.findByText('current-service')).toBeVisible()
+    await act(async () => { finishOld({ changes: { to_enable: ['obsolete-service'] } }) })
+    expect(screen.queryByText('obsolete-service')).not.toBeInTheDocument()
+    expect(screen.getByText('current-service')).toBeVisible()
+  })
+
   test('shows targeted restart recovery when a service failed to start', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(response({
