@@ -149,11 +149,11 @@ except OSError:
 secret_word = r"(?:KEY|TOKEN|SECRET|PASSWORD|PASS|SALT|AUTH|CREDENTIAL)"
 
 patterns = [
-    (re.compile(r"(?i)(Bearer\s+)[A-Za-z0-9._~+/=-]+"), r"\1[REDACTED]"),
-    (re.compile(r"(?i)((?:authorization|x-api-key|api-key|apikey)\s*[:=]\s*)([\"']?)[^\"'\s,}]+"), r"\1\2[REDACTED]"),
+    (re.compile(r"(?i)((?:authorization|x-api-key|api-key|apikey)\s*[:=]\s*)(?:(?:Bearer|Basic|Token)\s+)?([\"']?)[^\"'\s,}]+"), r"\1\2[REDACTED]"),
+    (re.compile(r"(?i)((?:Bearer|Basic|Token)\s+)[A-Za-z0-9._~+/=-]+"), r"\1[REDACTED]"),
     # Database and broker connection strings carry credentials too (including
     # schemes such as mongodb+srv), not only HTTP URLs.
-    (re.compile(r"(?i)([a-z][a-z0-9+.-]*://)([^/\s:@]*):([^@\s/]+)@"), r"\1[REDACTED]@"),
+    (re.compile(r"(?i)([a-z][a-z0-9+.-]*://)(?:[^/\s:@]*:)?([^@\s/]+)@"), r"\1[REDACTED]@"),
     (
         re.compile(rf"(?im)^([ \t]*(?:export[ \t]+)?[A-Za-z_][A-Za-z0-9_]*{secret_word}[A-Za-z0-9_]*[ \t]*=[ \t]*).*$"),
         r"\1[REDACTED]",
