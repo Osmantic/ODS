@@ -30,6 +30,7 @@ import AssistantIdentitySettings from '../components/settings/AssistantIdentityS
 import { useTheme } from '../contexts/ThemeContext'
 import { WALLPAPERS } from '../lib/wallpapers'
 import CustomWallpaperPicker from '../components/CustomWallpaperPicker'
+import { isCustomWallpaper } from '../lib/customWallpapers'
 import '../wallpaper-themes.css'
 import { dashboardHost, serviceUrl } from '../lib/serviceUrls'
 import {
@@ -516,12 +517,27 @@ function SystemIdentityCard({ version, className = '' }) {
 
 function AppearanceCard({ theme, themes, labels, onThemeChange, className = '', showHeading = true }) {
   const {wallpapers = WALLPAPERS} = useTheme()
+  const [query, setQuery] = useState('')
+  const [source, setSource] = useState('all')
+  const shown = themes.filter(id => {
+    if (!(labels[id] || id).toLocaleLowerCase().includes(query.trim().toLocaleLowerCase())) return false
+    if (source === 'custom') return isCustomWallpaper(id)
+    if (source === 'builtin') return !isCustomWallpaper(id)
+    return source !== 'video' || wallpapers.find(item => item.id === id)?.kind === 'video'
+  })
   return (
     <PremiumCard className={`p-5 lg:p-6 ${className}`}>
       {showHeading && <CardIntro icon={Palette} title="Appearance" description="Pixel’s minimal interface is shared across ODS." />}
       <div className="wallpaper-intro"><h3>Make it yours</h3><p>Pixel by default. A different atmosphere when you want it.</p></div>
+      <div role="search" aria-label="Filter wallpapers" className="mb-3 flex flex-wrap items-center gap-2 text-sm">
+        <input type="search" aria-label="Search wallpapers" placeholder="Find a wallpaper…" className="min-w-0 rounded border border-theme-border bg-theme-bg p-2" value={query} onChange={event => setQuery(event.target.value)}/>
+        <select aria-label="Wallpaper source" className="rounded border border-theme-border bg-theme-bg p-2" value={source} onChange={event => setSource(event.target.value)}><option value="all">All wallpapers</option><option value="builtin">Built-in</option><option value="custom">My wallpapers</option><option value="video">Videos</option></select>
+        {(query || source !== 'all') && <button type="button" onClick={() => {setQuery(''); setSource('all')}}>Clear wallpaper filters</button>}
+        <span role="status">Showing {shown.length} of {themes.length} wallpapers</span>
+      </div>
+      {!shown.length && <p className="wallpaper-note">No wallpapers match these filters.</p>}
       <div className="wallpaper-gallery" aria-label="Workspace themes">
-        {themes.map(themeId => (
+        {shown.map(themeId => (
           <button
             key={themeId}
             type="button"
