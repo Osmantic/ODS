@@ -416,6 +416,7 @@ jobs:
         run: |
           bash tests/test-linux-install-preflight.sh
           bash tests/test-preflight-dashboard-port.sh
+          python3 tests/test_preflight_tier_thresholds.py
 
       - name: Installer Simulation Harness
         run: |
