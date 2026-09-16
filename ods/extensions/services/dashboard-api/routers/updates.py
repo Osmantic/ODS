@@ -13,7 +13,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException
 
 from config import INSTALL_DIR
-from env_values import strip_matching_quotes
+from env_values import parse_env_value
 from host_agent_client import (
     AgentHTTPError,
     AgentUnavailable,
@@ -49,7 +49,7 @@ def _read_current_version() -> str:
         try:
             for line in _read_utf8(env_file).splitlines():
                 if line.startswith("ODS_VERSION="):
-                    return strip_matching_quotes(line.split("=", 1)[1])
+                    return parse_env_value(line.split("=", 1)[1])
         except OSError:
             pass
     version_file = Path(INSTALL_DIR) / ".version"
@@ -275,7 +275,7 @@ async def get_update_dry_run():
     if env_file.exists():
         for line in _read_utf8(env_file).splitlines():
             if line.startswith("ODS_VERSION="):
-                current = strip_matching_quotes(line.split("=", 1)[1])
+                current = parse_env_value(line.split("=", 1)[1])
                 break
     if current == "0.0.0" and version_file.exists():
         try:

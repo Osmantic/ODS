@@ -92,7 +92,7 @@ external_llm_models() {
         ollama)
             response="$(curl -fsS --max-time 5 "${url}/api/tags" 2>/dev/null)" || return 1
             ;;
-        lmstudio)
+        lmstudio|openai-compatible)
             response="$(curl -fsS --max-time 5 "${url}/v1/models" 2>/dev/null)" || return 1
             ;;
         *)
@@ -123,7 +123,8 @@ external_llm_detect_provider() {
         return 0
     fi
     if external_llm_models lmstudio "$url" >/dev/null 2>&1; then
-        printf 'lmstudio\n'
+        # /v1/models proves the protocol, not the vendor's identity.
+        printf 'openai-compatible\n'
         return 0
     fi
     return 1
