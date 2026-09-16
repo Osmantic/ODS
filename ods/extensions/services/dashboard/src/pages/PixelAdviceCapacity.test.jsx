@@ -7,6 +7,9 @@ const prefix = 'Advisory response (untrusted; evaluate before acting):\n'
 let answer
 
 beforeEach(() => {
+  // jsdom does not implement the native-dialog API used by the parallel modal PR.
+  Object.defineProperty(globalThis.HTMLDialogElement.prototype, 'showModal', {configurable:true, value:vi.fn(function () { this.setAttribute('open', '') })})
+  Object.defineProperty(globalThis.HTMLDialogElement.prototype, 'close', {configurable:true, value:vi.fn(function () { this.removeAttribute('open') })})
   answer = 'Retain the complete answer.'
   localStorage.clear()
   localStorage.setItem('ods.pixel.advice.job.v1', id)
