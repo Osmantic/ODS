@@ -141,4 +141,8 @@ def run_runtime_activation(
     }
 
 
-__all__ = ["PHASES", "run_runtime_activation", "result"]
+__all__ = [
+    "PHASES",
+    "result",
+    "run_runtime_activation",
+]
