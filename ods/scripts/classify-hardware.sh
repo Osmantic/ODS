@@ -83,6 +83,7 @@ OVERLAY_MAP = {
 
 # --- Pass 1: Match known_gpus by device_id then name_patterns ---
 selected = None
+id_selected = False
 best_name_len = 0          # longest matching pattern wins (prevents "XT" matching "XTX")
 best_id_vram_diff = None   # closest VRAM wins for device_id-only fallback
 combined_name = f"{gpu_name} {cpu_name}".strip().lower()
@@ -105,6 +106,7 @@ for entry in db.get("known_gpus", []):
         if match_len > best_name_len:
             selected = entry
             best_name_len = match_len
+            id_selected = True
     elif id_matched and best_name_len == 0:
         # Device ID matched but name didn't — use VRAM proximity as tiebreaker
         entry_vram = entry.get("specs", {}).get("memory_mb", 0)
@@ -117,9 +119,11 @@ for entry in db.get("known_gpus", []):
         if best_id_vram_diff is None or diff < best_id_vram_diff:
             selected = entry
             best_id_vram_diff = diff
-    elif name_matched and not selected:
-        selected = entry
-        best_name_len = match_len
+            id_selected = True
+    elif name_matched and not id_selected:
+        if match_len > best_name_len:
+            selected = entry
+            best_name_len = match_len
 
 # --- Pass 2: Heuristic fallback (threshold-based, top-down) ---
 if not selected:
