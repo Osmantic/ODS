@@ -2489,7 +2489,7 @@ async def proxy_other(request: Request, path: str):
         resp = await client.request(
             method=request.method,
             url=f"/{path}",
-            content=body if body else None,
+            content=body or None,
             headers=headers,
         )
         return Response(

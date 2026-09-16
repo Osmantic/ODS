@@ -818,7 +818,7 @@ def print_human_report(payload: dict[str, Any]) -> None:
         if requested
         else f"Scope: all extensions ({summary['services_audited']})"
     )
-    print("")
+    print()
 
     for issue in payload["global_issues"]:
         prefix = "ERROR" if issue["severity"] == "error" else "WARN"
@@ -826,7 +826,7 @@ def print_human_report(payload: dict[str, Any]) -> None:
         print(f"{prefix} global {issue['code']}: {issue['message']}{location}")
 
     if payload["global_issues"]:
-        print("")
+        print()
 
     for item in payload["services"]:
         label = item["status"].upper()
@@ -839,7 +839,7 @@ def print_human_report(payload: dict[str, Any]) -> None:
     if not payload["services"] and not payload["global_issues"]:
         print("No services matched the requested scope.")
 
-    print("")
+    print()
     print(
         "Summary: "
         f"{summary['services_audited']} services, "

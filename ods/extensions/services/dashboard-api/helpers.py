@@ -541,7 +541,7 @@ async def get_loaded_model() -> Optional[str]:
         if LLM_BACKEND == "lemonade":
             resp = await client.get(f"http://{host}:{port}{_LLM_API_PREFIX}/health")
             loaded = resp.json().get("model_loaded")
-            return loaded if loaded else None
+            return loaded or None
 
         # llama.cpp: /v1/models returns the loaded model with status info.
         resp = await client.get(f"http://{host}:{port}{_LLM_API_PREFIX}/models")

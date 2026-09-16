@@ -198,7 +198,7 @@ def render_card(
 
     rows = [
         ("network", ssid),
-        ("password", password if password else "(open)"),
+        ("password", password or "(open)"),
         (fallback_url_label, right_url),
     ]
     # The value column starts at x=MARGIN+240 and must fit within the right

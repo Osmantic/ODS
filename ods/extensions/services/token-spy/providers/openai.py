@@ -215,7 +215,7 @@ class OpenAICompatibleProvider(LLMProvider):
             if finish_reason:
                 result["stop_reason"] = finish_reason
 
-        return result if result else None
+        return result or None
 
     def get_auth_headers(self, request_headers: Dict[str, str]) -> Dict[str, str]:
         """Extract Authorization header for OpenAI-compatible APIs."""

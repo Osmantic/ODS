@@ -62,8 +62,7 @@ class DataProcessor:
 
     def save(self, filename):
         with open(filename, 'w') as f:
-            for item in self.data:
-                f.write(item + '\n')
+            f.writelines(item + '\n' for item in self.data)
 
 
 if __name__ == '__main__':

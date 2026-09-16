@@ -4734,7 +4734,7 @@ def _find_update_bash() -> str | None:
         return None
 
     bash = _find_usable_bash()
-    _update_usable_bash = bash if bash else False
+    _update_usable_bash = bash or False
     return bash
 
 

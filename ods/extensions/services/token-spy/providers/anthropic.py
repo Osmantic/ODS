@@ -246,7 +246,7 @@ class AnthropicProvider(LLMProvider):
             if delta.get("stop_reason"):
                 result["stop_reason"] = delta["stop_reason"]
 
-        return result if result else None
+        return result or None
 
     def get_auth_headers(self, request_headers: Dict[str, str]) -> Dict[str, str]:
         """Extract Anthropic-specific headers to forward."""
