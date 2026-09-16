@@ -165,7 +165,8 @@ if [[ "$(uname -s)" == "Linux" ]]; then
             log_error "System service cleanup failed; installation retained"
             exit 1
         fi
-    elif [[ -e /etc/systemd/system/ods-host-agent.service || -e /etc/systemd/system/ods-mdns.service ]]; then
+    elif [[ -e "${ODS_UNINSTALL_SYSTEMD_DIR:-/etc/systemd/system}/ods-host-agent.service" \
+         || -e "${ODS_UNINSTALL_SYSTEMD_DIR:-/etc/systemd/system}/ods-mdns.service" ]]; then
         log_error "System service uninstall helper is missing; installation retained"
         exit 1
     fi

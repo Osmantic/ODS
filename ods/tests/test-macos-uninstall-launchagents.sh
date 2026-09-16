@@ -99,9 +99,17 @@ run_uninstall() {
     local stub_dir="$3"
     local out_file="$4"
 
+    # The uninstaller checks the system unit directory before deciding whether
+    # it needs lib/system-uninstall.sh. Without an override it reads the real
+    # /etc/systemd/system, so a machine that runs ODS answers instead of the
+    # fixture and the Linux scenario aborts with "helper is missing".
+    local systemd_dir="${ODS_UNINSTALL_SYSTEMD_DIR:-$TMP_DIR/systemd-empty}"
+    mkdir -p "$systemd_dir"
+
     HOME="$home_dir" \
     INSTALL_DIR="$install_dir" \
     PATH="$stub_dir:$PATH" \
+    ODS_UNINSTALL_SYSTEMD_DIR="$systemd_dir" \
     LAUNCHCTL_LOG="${LAUNCHCTL_LOG:?}" \
     UNAME_S="${UNAME_S:-Darwin}" \
     LOADED_LABELS="${LOADED_LABELS:-}" \
@@ -191,6 +199,25 @@ main() {
     [[ ! -s "$TMP_DIR/launchctl5.log" ]] \
         || fail "Linux uninstall must never invoke launchctl"
     pass "Linux uninstall path never touches launchctl"
+
+    # ── Scenario 6: system units present without the cleanup helper ──
+    # The uninstaller must refuse rather than delete an installation whose
+    # system services it cannot retire.
+    local install6="$TMP_DIR/install6" home6="$TMP_DIR/home6"
+    make_install "$install6"
+    rm -f "$install6/lib/system-uninstall.sh"
+    mkdir -p "$home6" "$TMP_DIR/systemd-owned"
+    printf '[Unit]\n' > "$TMP_DIR/systemd-owned/ods-host-agent.service"
+    if LAUNCHCTL_LOG="$TMP_DIR/launchctl6.log" UNAME_S="Linux" \
+        ODS_UNINSTALL_SYSTEMD_DIR="$TMP_DIR/systemd-owned" \
+        run_uninstall "$install6" "$home6" "$stub_dir" "$TMP_DIR/out6.log"; then
+        fail "uninstall must refuse when system units exist without the cleanup helper"
+    fi
+    grep -qi "System service uninstall helper is missing" "$TMP_DIR/out6.log" \
+        || fail "refusal must name the missing cleanup helper"
+    [[ -f "$install6/ods-uninstall.sh" ]] \
+        || fail "refused uninstall must retain the installation"
+    pass "system units without the cleanup helper stop the uninstall"
 }
 
 main "$@"
