@@ -171,11 +171,11 @@ def text_to_speech(req: TTSRequest):
     except ValueError as e:
         # Validation errors — safe to expose
         logger.warning(f"TTS validation failed: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         # Internal errors — log full trace, return generic message
         logger.exception(f"TTS generation failed: {e}")
-        raise HTTPException(status_code=500, detail="TTS generation failed. Please try again.")
+        raise HTTPException(status_code=500, detail="TTS generation failed. Please try again.") from e
 
 
 @app.post("/tts/stream")
@@ -193,10 +193,10 @@ def text_to_speech_stream(req: TTSRequest):
         return future.result()
     except ValueError as e:
         logger.warning(f"TTS stream validation failed: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         logger.exception(f"TTS stream failed: {e}")
-        raise HTTPException(status_code=500, detail="TTS generation failed. Please try again.")
+        raise HTTPException(status_code=500, detail="TTS generation failed. Please try again.") from e
 
 
 def _generate_audio_stream_sync(text: str, voice_preset: str) -> Response:

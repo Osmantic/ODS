@@ -2046,8 +2046,8 @@ async def benchmark_model(model_id: str, body: dict[str, Any] | None = None, api
     if isinstance(body, dict) and body.get("max_tokens"):
         try:
             max_tokens = int(body["max_tokens"])
-        except (TypeError, ValueError):
-            raise HTTPException(status_code=400, detail="max_tokens must be an integer")
+        except (TypeError, ValueError) as e:
+            raise HTTPException(status_code=400, detail="max_tokens must be an integer") from e
     try:
         return await _run_current_model_benchmark(model_id, max_tokens)
     except httpx.HTTPStatusError as exc:

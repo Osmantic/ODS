@@ -188,8 +188,8 @@ async def enable_workflow(workflow_id: str, api_key: str = Depends(verify_api_ke
             raise HTTPException(status_code=400, detail="Invalid workflow file path")
     except HTTPException:
         raise
-    except (OSError, ValueError):
-        raise HTTPException(status_code=400, detail="Invalid workflow file path")
+    except (OSError, ValueError) as e:
+        raise HTTPException(status_code=400, detail="Invalid workflow file path") from e
 
     if not workflow_file.exists():
         raise HTTPException(status_code=404, detail=f"Workflow file not found: {wf_info['file']}")
@@ -198,7 +198,7 @@ async def enable_workflow(workflow_id: str, api_key: str = Depends(verify_api_ke
         with open(workflow_file) as f:
             workflow_data = json.load(f)
     except (OSError, json.JSONDecodeError) as e:
-        raise HTTPException(status_code=500, detail=f"Failed to read workflow: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to read workflow: {e}") from e
 
     try:
         headers = {"Content-Type": "application/json"}
@@ -218,10 +218,10 @@ async def enable_workflow(workflow_id: str, api_key: str = Depends(verify_api_ke
                 else:
                     error_text = await resp.text()
                     raise HTTPException(status_code=resp.status, detail=f"n8n API error: {error_text}")
-    except asyncio.TimeoutError:
-        raise HTTPException(status_code=504, detail="n8n workflow add timed out")
+    except asyncio.TimeoutError as e:
+        raise HTTPException(status_code=504, detail="n8n workflow add timed out") from e
     except aiohttp.ClientError as e:
-        raise HTTPException(status_code=503, detail=f"Cannot reach n8n: {e}")
+        raise HTTPException(status_code=503, detail=f"Cannot reach n8n: {e}") from e
 
 
 async def _remove_workflow(workflow_id: str):
@@ -252,10 +252,10 @@ async def _remove_workflow(workflow_id: str):
                 else:
                     error_text = await resp.text()
                     raise HTTPException(status_code=resp.status, detail=f"n8n API error: {error_text}")
-    except asyncio.TimeoutError:
-        raise HTTPException(status_code=504, detail="n8n workflow remove timed out")
+    except asyncio.TimeoutError as e:
+        raise HTTPException(status_code=504, detail="n8n workflow remove timed out") from e
     except aiohttp.ClientError as e:
-        raise HTTPException(status_code=503, detail=f"Cannot reach n8n: {e}")
+        raise HTTPException(status_code=503, detail=f"Cannot reach n8n: {e}") from e
 
 
 @router.post("/api/workflows/{workflow_id}/disable")

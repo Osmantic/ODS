@@ -521,7 +521,7 @@ def _scan_compose_content(
     try:
         data = yaml.safe_load(compose_path.read_text(encoding="utf-8"))
     except (yaml.YAMLError, OSError) as e:
-        raise HTTPException(status_code=400, detail=f"Invalid compose file: {e}")
+        raise HTTPException(status_code=400, detail=f"Invalid compose file: {e}") from e
 
     if not isinstance(data, dict):
         raise HTTPException(
@@ -2439,7 +2439,7 @@ def uninstall_extension(service_id: str, include_data_info: bool = Query(True), 
             shutil.rmtree(ext_dir)
         except OSError as e:
             logger.error("Failed to remove extension %s: %s", service_id, e)
-            raise HTTPException(status_code=500, detail=f"Failed to remove extension files: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to remove extension files: {e}") from e
         _call_agent_invalidate_compose_cache()
 
         backup = _extension_backup_dir(service_id)

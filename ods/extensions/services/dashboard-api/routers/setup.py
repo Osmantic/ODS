@@ -221,9 +221,9 @@ async def chat(request: ChatRequest, api_key: str = Depends(verify_api_key)):
                 else:
                     error_text = await resp.text()
                     raise HTTPException(status_code=resp.status, detail=f"LLM error: {error_text}")
-    except aiohttp.ClientError:
+    except aiohttp.ClientError as e:
         logger.exception("Cannot reach LLM backend")
-        raise HTTPException(status_code=503, detail="Cannot reach LLM backend")
+        raise HTTPException(status_code=503, detail="Cannot reach LLM backend") from e
 
 
 # ---------------------------------------------------------------------------

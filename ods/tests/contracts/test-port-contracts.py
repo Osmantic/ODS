@@ -16,7 +16,7 @@ try:
     import yaml
 except ModuleNotFoundError as exc:
     print(f"[FAIL] Missing Python dependency: {exc}")
-    raise SystemExit(1)
+    raise SystemExit(1) from exc
 
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
