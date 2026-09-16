@@ -45,7 +45,7 @@ services:
     restart: unless-stopped
 
     # Drop privileges
-    user: "${UID:-1000}:${GID:-1000}"
+    user: "${ODS_UID:-1000}:${ODS_GID:-1000}"
     security_opt:
       - no-new-privileges:true
 

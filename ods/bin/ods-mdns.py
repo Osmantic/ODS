@@ -319,6 +319,9 @@ class Announcer:
         self.last_signature = signature
 
     def _teardown(self) -> None:
+        # The signature describes live registrations, not the last successful
+        # attempt. A failed rename followed by reverting .env must republish.
+        self.last_signature = None
         if self.zc is None:
             return
         for info in self.registered:

@@ -16,6 +16,17 @@ _HEALTH_PATH_REJECT = ("..", "@", "?", "#", "http://", "https://")
 _SERVICE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
 
+def _manifest_port(value: Any, *, allow_zero: bool = False) -> int:
+    if type(value) is not int and not (
+        isinstance(value, str) and re.fullmatch(r"[0-9]{1,5}", value.strip())
+    ):
+        raise ValueError("port must be an integer")
+    port = int(value)
+    if not (0 if allow_zero else 1) <= port <= 65535:
+        raise ValueError("port outside valid range")
+    return port
+
+
 def scan_user_extension_services(
     user_ext_dir: Path,
 ) -> dict[str, dict[str, Any]]:
@@ -77,20 +88,23 @@ def scan_user_extension_services(
                     continue
 
             port = svc.get("port", 0)
-            name = svc.get("name", service_id)
+            port_int = _manifest_port(port)
+            # Zero is the manifest's valid sentinel for no published host port.
+            ext_port = _manifest_port(svc.get("external_port_default", port_int), allow_zero=True)
+            name = str(svc.get("name") or service_id)
 
             # Host = service_id (Docker DNS). Never trust manifest host_env/default_host.
             services[service_id] = {
                 "host": service_id,
-                "port": int(port),
-                "external_port": int(svc.get("external_port_default", port)),
+                "port": port_int,
+                "external_port": ext_port,
                 "health": health,
                 "name": name,
                 # Optional: extensions whose health endpoint lives on a
                 # secondary port (e.g. milvus 9091) need an explicit
                 # health_port; check_service_health() falls back to "port"
                 # when absent.
-                **({"health_port": int(svc["health_port"])} if "health_port" in svc else {}),
+                **({"health_port": _manifest_port(svc["health_port"])} if "health_port" in svc else {}),
             }
         except (TypeError, ValueError) as exc:
             logger.warning("Skipping extension %s: invalid manifest value: %s", service_id, exc)
@@ -101,7 +115,7 @@ def scan_user_extension_services(
 
 # --- TTL Cache ---
 
-_cache: dict[str, Any] = {"result": {}, "timestamp": float("-inf")}
+_cache: dict[str, Any] = {}
 _cache_lock = threading.Lock()
 
 
@@ -110,22 +124,25 @@ def get_user_services_cached(
 ) -> dict[str, dict[str, Any]]:
     """Return cached result of ``scan_user_extension_services()``.
 
-    Re-scans when *ttl* seconds have elapsed since the last scan.
+    Re-scans when *ttl* seconds have elapsed since the last scan for the given directory.
     """
+    cache_key = str(user_ext_dir.resolve()) if hasattr(user_ext_dir, "resolve") else str(user_ext_dir)
     with _cache_lock:
         now = time.monotonic()
-        if now - _cache["timestamp"] < ttl:
-            return _cache["result"].copy()
+        entry = _cache.get(cache_key)
+        if entry and (now - entry["timestamp"] < ttl):
+            return entry["result"].copy()
 
     result = scan_user_extension_services(user_ext_dir)
     with _cache_lock:
-        _cache["result"] = result
-        _cache["timestamp"] = time.monotonic()
+        _cache[cache_key] = {
+            "result": result,
+            "timestamp": time.monotonic(),
+        }
     return result.copy()
 
 
 def _reset_cache() -> None:
     """Clear the cached scan result. Used for test isolation."""
     with _cache_lock:
-        _cache["result"] = {}
-        _cache["timestamp"] = float("-inf")
+        _cache.clear()

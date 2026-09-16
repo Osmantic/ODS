@@ -711,15 +711,11 @@ def test_setup_test_no_script_fallback(test_client, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_chat_success(test_client, monkeypatch):
+def test_chat_success(test_client, monkeypatch, tmp_path):
     """POST /api/chat with mocked LLM → 200, returns response."""
-    import routers.setup as setup_router
-
-    monkeypatch.setattr(
-        setup_router,
-        "read_live_env_value",
-        lambda key, default="": "new-live-model" if key == "LLM_MODEL" else default,
-    )
+    import config
+    monkeypatch.setattr(config, "INSTALL_DIR", str(tmp_path))
+    (tmp_path/".env").write_text("LLM_API_URL=http://fixture:8080/v1\nLLM_MODEL=new-live-model\n")
     resp_mock = AsyncMock()
     resp_mock.status = 200
     resp_mock.json = AsyncMock(return_value={
@@ -750,8 +746,11 @@ def test_chat_success(test_client, monkeypatch):
     assert session_mock.post.call_args.kwargs["json"]["model"] == "new-live-model"
 
 
-def test_chat_llm_error(test_client, monkeypatch):
+def test_chat_llm_error(test_client, monkeypatch, tmp_path):
     """POST /api/chat when LLM returns non-200 → HTTPException."""
+    import config
+    monkeypatch.setattr(config, "INSTALL_DIR", str(tmp_path))
+    (tmp_path/".env").write_text("LLM_API_URL=http://fixture:8080/v1\n")
     resp_mock = AsyncMock()
     resp_mock.status = 500
     resp_mock.text = AsyncMock(return_value="internal error")
@@ -776,9 +775,12 @@ def test_chat_llm_error(test_client, monkeypatch):
     assert resp.status_code == 500
 
 
-def test_chat_connection_error(test_client, monkeypatch):
+def test_chat_connection_error(test_client, monkeypatch, tmp_path):
     """POST /api/chat when LLM is unreachable → 503."""
     import aiohttp
+    import config
+    monkeypatch.setattr(config, "INSTALL_DIR", str(tmp_path))
+    (tmp_path/".env").write_text("LLM_API_URL=http://fixture:8080/v1\n")
 
     session_mock = MagicMock()
     session_mock.post = MagicMock(side_effect=aiohttp.ClientError("refused"))
@@ -794,6 +796,7 @@ def test_chat_connection_error(test_client, monkeypatch):
         )
 
     assert resp.status_code == 503
+    session_mock.post.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

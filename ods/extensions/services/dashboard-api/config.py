@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 
 import yaml
 
-from env_values import strip_matching_quotes
+from env_values import parse_env_value
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +100,7 @@ def _find_env_file_value(key: str) -> tuple[bool, str]:
         for line in env_path.read_text(encoding="utf-8").splitlines():
             if line.startswith(f"{key}="):
                 found = True
-                value = strip_matching_quotes(line.split("=", 1)[1])
+                value = parse_env_value(line.split("=", 1)[1])
     except (OSError, UnicodeError):
         pass
     return found, value
@@ -119,14 +119,29 @@ def read_live_env_value(key: str, default: str = "") -> str:
     return os.environ.get(key, "") or default
 
 
+def read_live_env_values(keys: tuple[str, ...]) -> dict[str, str]:
+    """Read one persisted snapshot so a route and its credential cannot diverge."""
+    values = {key: os.environ.get(key, "") for key in keys}
+    try:
+        text = (Path(INSTALL_DIR) / ".env").read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return values
+    for line in text.splitlines():
+        key, separator, raw = line.partition("=")
+        if separator and key in values:
+            values[key] = parse_env_value(raw)
+    return values
+
+
 def _apply_host_native_llm_service_override(
     services: dict[str, dict[str, Any]],
     gpu_backend: str,
     environment: Mapping[str, str] | None = None,
 ) -> None:
-    """Route Windows AMD dashboard probes to the host-native LLM endpoint."""
+    """Route host-inference probes independently of WSL's GPU exposure."""
     env = environment if environment is not None else os.environ
-    if str(gpu_backend).lower() != "amd":
+    lemonade = str(env.get("LLM_BACKEND", "")).strip().lower() == "lemonade"
+    if str(gpu_backend).lower() != "amd" and not lemonade:
         return
     if str(env.get("AMD_INFERENCE_LOCATION", "")).lower() != "host":
         return
@@ -134,8 +149,14 @@ def _apply_host_native_llm_service_override(
     if not service:
         return
 
+    # The generic LLM URL can be LiteLLM. Its model aliases do not identify
+    # the model loaded by Lemonade; use the configured inference endpoint.
+    lemonade_url = (
+        env.get("LEMONADE_CONTAINER_BASE_URL") or env.get("LEMONADE_BASE_URL")
+    ) if lemonade else None
     configured_url = (
-        env.get("OLLAMA_URL")
+        lemonade_url
+        or env.get("OLLAMA_URL")
         or env.get("LLM_URL")
         or env.get("LLM_API_URL")
         or f"http://host.docker.internal:{env.get('AMD_INFERENCE_PORT', '8080')}"
@@ -281,14 +302,112 @@ def _resolve_public_service_url(
 
 # --- Manifest Loading ---
 
+MAX_MANIFEST_DEPTH = 32
+MAX_MANIFEST_NODES = 10_000
+MAX_MANIFEST_BYTES = 1_048_576
+
+
+class _ManifestLoader(yaml.SafeLoader):
+    """Bound composition before recursive parsing or YAML merge expansion."""
+
+    def __init__(self, stream):
+        super().__init__(stream)
+        self.manifest_depth = -1
+        self.manifest_nodes = 0
+
+    def compose_node(self, parent, index):
+        self.manifest_depth += 1
+        self.manifest_nodes += 1
+        try:
+            if self.manifest_depth > MAX_MANIFEST_DEPTH:
+                raise ValueError(f"Manifest nesting exceeds {MAX_MANIFEST_DEPTH} levels")
+            if self.manifest_nodes > MAX_MANIFEST_NODES:
+                raise ValueError("Manifest structure exceeds node limit")
+            return super().compose_node(parent, index)
+        finally:
+            self.manifest_depth -= 1
+
+
+def _validate_yaml_graph(root) -> None:
+    # Memoize subtree size and height, counting each alias occurrence toward
+    # expanded size without actually expanding it. Validate before constructors
+    # flatten merge keys, which can otherwise allocate exponentially many pairs.
+    memo = {}
+    active = set()
+
+    def visit(node):
+        marker = id(node)
+        if marker in active:
+            raise ValueError("Manifest contains a cyclic structure")
+        if marker in memo:
+            return memo[marker]
+        active.add(marker)
+        if isinstance(node, yaml.MappingNode):
+            children = (child for pair in node.value for child in pair)
+        elif isinstance(node, yaml.SequenceNode):
+            children = iter(node.value)
+        else:
+            children = iter(())
+        size, height = 1, 0
+        for child in children:
+            child_size, child_height = visit(child)
+            size += child_size
+            height = max(height, child_height + 1)
+            if size > MAX_MANIFEST_NODES:
+                raise ValueError("Manifest alias expansion exceeds node limit")
+            if height > MAX_MANIFEST_DEPTH:
+                raise ValueError(f"Manifest nesting exceeds {MAX_MANIFEST_DEPTH} levels")
+        active.remove(marker)
+        memo[marker] = size, height
+        return size, height
+
+    visit(root)
+
+
+def _validate_manifest_depth(value: Any, *, depth: int = 0, active: set[int] | None = None) -> None:
+    """Reject pathological nested or cyclic YAML/JSON structures early."""
+    if depth > MAX_MANIFEST_DEPTH:
+        raise ValueError(f"Manifest nesting exceeds {MAX_MANIFEST_DEPTH} levels")
+    if not isinstance(value, (dict, list)):
+        return
+    active = active if active is not None else set()
+    marker = id(value)
+    if marker in active:
+        raise ValueError("Manifest contains a cyclic structure")
+    active.add(marker)
+    try:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                _validate_manifest_depth(key, depth=depth + 1, active=active)
+                _validate_manifest_depth(item, depth=depth + 1, active=active)
+        else:
+            for item in value:
+                _validate_manifest_depth(item, depth=depth + 1, active=active)
+    finally:
+        active.remove(marker)
+
 
 def _read_manifest_file(path: Path) -> dict[str, Any]:
     """Load a JSON or YAML extension manifest file."""
-    text = path.read_text()
-    if path.suffix.lower() == ".json":
-        data = json.loads(text)
-    else:
-        data = yaml.safe_load(text)
+    with path.open("rb") as stream:
+        raw = stream.read(MAX_MANIFEST_BYTES + 1)
+    if len(raw) > MAX_MANIFEST_BYTES:
+        raise ValueError("Manifest exceeds size limit")
+    text = raw.decode("utf-8")
+    try:
+        if path.suffix.lower() == ".json":
+            data = json.loads(text)
+        else:
+            loader = _ManifestLoader(text)
+            try:
+                node = loader.get_single_node()
+                _validate_yaml_graph(node)
+                data = loader.construct_document(node) if node is not None else None
+            finally:
+                loader.dispose()
+    except RecursionError as exc:
+        raise ValueError(f"Manifest nesting exceeds {MAX_MANIFEST_DEPTH} levels") from exc
+    _validate_manifest_depth(data)
     if not isinstance(data, dict):
         raise ValueError("Manifest root must be an object")
     return data
@@ -391,6 +510,7 @@ def load_extension_manifests(
                     "depends_on": service.get("depends_on", []),
                     "category": service.get("category", "optional"),
                     "host_network": bool(service.get("host_network", False)),
+                    "socket_only": bool(service.get("socket_only", False)),
                     "setup_hook": service.get("setup_hook", ""),
                     "hooks": service.get("hooks", {}),
                     "gpu_backends": service.get("gpu_backends", []),
@@ -583,6 +703,15 @@ def _running_inside_container() -> bool:
     return any(marker in cgroup for marker in ("docker", "containerd", "kubepods", "podman"))
 
 
+def _running_under_wsl(release_path: str = "/proc/sys/kernel/osrelease") -> bool:
+    """Return whether the dashboard container shares a WSL Linux kernel."""
+    try:
+        release = Path(release_path).read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return "microsoft" in release.casefold()
+
+
 def _detect_container_default_gateway(route_path: str = "/proc/net/route") -> str:
     """Return this container's default-gateway IP, or empty on failure.
 
@@ -627,9 +756,10 @@ def _resolve_agent_host() -> str:
 
     Priority:
       1. ODS_AGENT_HOST env (explicit operator override)
-      2. The container's own default-gateway IP (works regardless of which
-         Docker network the container is on)
-      3. host.docker.internal (legacy fallback — broken on custom networks
+      2. host.docker.internal under WSL/Docker Desktop, whose compose gateway
+         belongs to Docker Desktop and is not an address the WSL host can bind
+      3. The container's own default-gateway IP on native Linux
+      4. host.docker.internal (legacy fallback — broken on custom networks
          under default Docker iptables, but kept so explicit operator setups
          relying on it don't silently change)
     """
@@ -637,6 +767,9 @@ def _resolve_agent_host() -> str:
     if explicit:
         return explicit
     if _running_inside_container():
+        if _running_under_wsl():
+            logger.info("Resolved ODS_AGENT_HOST=host.docker.internal for WSL")
+            return "host.docker.internal"
         gw = _detect_container_default_gateway()
         if gw:
             logger.info("Resolved ODS_AGENT_HOST=%s via /proc/net/route", gw)
