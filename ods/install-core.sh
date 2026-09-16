@@ -119,7 +119,7 @@ ENABLE_ODS_PROXY=false
 ENABLE_TAILSCALE=false
 ENABLE_BRAVE_SEARCH=false
 # Langfuse (LLM observability) defaults OFF on all tiers because its
-# clickhouse + postgres + minio stack adds ~500MB baseline memory that is
+# clickhouse + postgres + seaweedfs stack adds ~500MB baseline memory that is
 # nontrivial even on Tier 3+ systems. Users opt in via --langfuse, --all,
 # the Custom menu, or post-install `ods enable langfuse`.
 ENABLE_LANGFUSE=false

@@ -48,7 +48,7 @@ $enablePrivacyShield = $true
 $enableBraveSearch   = $false
 $enableODSProxy    = $false
 $enableRemoteAccess  = $false
-# Langfuse defaults OFF on all tiers because its clickhouse + postgres + minio
+# Langfuse defaults OFF on all tiers because its clickhouse + postgres + seaweedfs
 # stack adds ~500MB baseline memory. Opt in via -Langfuse, -All, the Custom
 # menu, or post-install `ods enable langfuse`. -NoLangfuse is honored as an
 # explicit override so a -All run can still suppress Langfuse.

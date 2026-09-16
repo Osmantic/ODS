@@ -144,7 +144,7 @@ else
     mkdir -p "$INSTALL_DIR"/{config,data,models}
     mkdir -p "$INSTALL_DIR"/data/{open-webui,whisper,tts,n8n,qdrant,models,privacy-shield,ape,token-spy,hermes,persona}
     mkdir -p "$INSTALL_DIR"/data/hermes-proxy/{caddy-data,caddy-config}
-    mkdir -p "$INSTALL_DIR"/data/langfuse/{postgres,clickhouse,redis,minio}
+    mkdir -p "$INSTALL_DIR"/data/langfuse/{postgres,clickhouse,redis,seaweedfs}
     mkdir -p "$INSTALL_DIR"/config/{n8n,litellm,openclaw,searxng}
 
     _phase06_repair_host_path() {
@@ -586,8 +586,8 @@ raise SystemExit(1)' 2>/dev/null && return 0
     LANGFUSE_DB_PASSWORD=$(_phase06_env_hex_secret LANGFUSE_DB_PASSWORD 16)
     LANGFUSE_CLICKHOUSE_PASSWORD=$(_phase06_env_hex_secret LANGFUSE_CLICKHOUSE_PASSWORD 16)
     LANGFUSE_REDIS_PASSWORD=$(_phase06_env_hex_secret LANGFUSE_REDIS_PASSWORD 16)
-    LANGFUSE_MINIO_ACCESS_KEY=$(_phase06_env_hex_secret LANGFUSE_MINIO_ACCESS_KEY 16)
-    LANGFUSE_MINIO_SECRET_KEY=$(_phase06_env_hex_secret LANGFUSE_MINIO_SECRET_KEY 32)
+    LANGFUSE_S3_ACCESS_KEY=$(_phase06_env_hex_secret LANGFUSE_S3_ACCESS_KEY 16)
+    LANGFUSE_S3_SECRET_KEY=$(_phase06_env_hex_secret LANGFUSE_S3_SECRET_KEY 32)
     LANGFUSE_PROJECT_PUBLIC_KEY=$(_phase06_env_hex_secret LANGFUSE_PROJECT_PUBLIC_KEY 16 "pk-lf-ods-")
     LANGFUSE_PROJECT_SECRET_KEY=$(_phase06_env_hex_secret LANGFUSE_PROJECT_SECRET_KEY 16 "sk-lf-ods-")
     LANGFUSE_INIT_PROJECT_ID=$(_phase06_env_hex_secret LANGFUSE_INIT_PROJECT_ID 16)
@@ -1116,8 +1116,8 @@ LANGFUSE_ENCRYPTION_KEY=${LANGFUSE_ENCRYPTION_KEY}
 LANGFUSE_DB_PASSWORD=${LANGFUSE_DB_PASSWORD}
 LANGFUSE_CLICKHOUSE_PASSWORD=${LANGFUSE_CLICKHOUSE_PASSWORD}
 LANGFUSE_REDIS_PASSWORD=${LANGFUSE_REDIS_PASSWORD}
-LANGFUSE_MINIO_ACCESS_KEY=${LANGFUSE_MINIO_ACCESS_KEY}
-LANGFUSE_MINIO_SECRET_KEY=${LANGFUSE_MINIO_SECRET_KEY}
+LANGFUSE_S3_ACCESS_KEY=${LANGFUSE_S3_ACCESS_KEY}
+LANGFUSE_S3_SECRET_KEY=${LANGFUSE_S3_SECRET_KEY}
 LANGFUSE_PROJECT_PUBLIC_KEY=${LANGFUSE_PROJECT_PUBLIC_KEY}
 LANGFUSE_PROJECT_SECRET_KEY=${LANGFUSE_PROJECT_SECRET_KEY}
 LANGFUSE_INIT_PROJECT_ID=${LANGFUSE_INIT_PROJECT_ID}

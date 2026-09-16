@@ -99,16 +99,12 @@ jobs:
           LANGFUSE_CLICKHOUSE_PORT=9005
           LANGFUSE_CLICKHOUSE_HTTP=8124
           LANGFUSE_REDIS_PORT=6380
-          LANGFUSE_MINIO_PORT=9010
-          LANGFUSE_MINIO_CONSOLE_PORT=9011
           LANGFUSE_ENCRYPTION_KEY=test-key-32chars-long-enough-here
           LANGFUSE_SALT=test-salt-value
           LANGFUSE_NEXTAUTH_SECRET=test-nextauth-secret
           LANGFUSE_NEXTAUTH_URL=http://localhost:3005
           LANGFUSE_POSTGRES_PASSWORD=test-pg-pass
           LANGFUSE_CLICKHOUSE_PASSWORD=test-ch-pass
-          LANGFUSE_MINIO_ROOT_USER=minio
-          LANGFUSE_MINIO_ROOT_PASSWORD=test-minio-pass
           LANGFUSE_TELEMETRY_ENABLED=false
           ENVEOF
           '

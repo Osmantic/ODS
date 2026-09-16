@@ -110,7 +110,7 @@ ENABLE_ODS_PROXY=false
 ENABLE_TAILSCALE=false
 ENABLE_SEARXNG=false
 ENABLE_WEB_SEARCH=false
-# Langfuse defaults OFF because its clickhouse + postgres + minio stack adds
+# Langfuse defaults OFF because its clickhouse + postgres + seaweedfs stack adds
 # ~500MB baseline memory. Enable via --langfuse, --all, or post-install
 # `ods enable langfuse`. --no-langfuse honored as explicit override so a
 # --all run can still suppress Langfuse.
@@ -1596,7 +1596,7 @@ else
     mkdir -p "${INSTALL_DIR}/data/langfuse/postgres"
     mkdir -p "${INSTALL_DIR}/data/langfuse/clickhouse"
     mkdir -p "${INSTALL_DIR}/data/langfuse/redis"
-    mkdir -p "${INSTALL_DIR}/data/langfuse/minio"
+    mkdir -p "${INSTALL_DIR}/data/langfuse/seaweedfs"
     mkdir -p "${INSTALL_DIR}/bin"
     ai_ok "Created directory structure"
 
