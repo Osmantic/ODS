@@ -1,0 +1,43 @@
+# Explicit opt-in overlay. Never added to the default install's port exposure.
+# Included only after explicit activation, alongside normal ODS Compose files.
+# Start only
+# pixel-inference. Forward this loopback port over authenticated SSH or place
+# an explicitly configured authenticated TLS ingress in front of it.
+services:
+  pixel-inference:
+    build:
+      context: .
+      dockerfile: extensions/services/pixel-inference/Dockerfile
+    image: ods-pixel-inference:local
+    container_name: ods-pixel-inference
+    user: "${ODS_UID:-1000}:${ODS_GID:-1000}"
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      - ODS_INFERENCE_STATE_DIR=/state
+      - ODS_INFERENCE_ROUTER_URL=http://model-router:9099
+      - PYTHONDONTWRITEBYTECODE=1
+    volumes:
+      - type: bind
+        source: ${ODS_DATA_DIR:-./data}/pixel-inference
+        target: /state
+        read_only: true
+        bind:
+          create_host_path: false
+    ports:
+      - "127.0.0.1:${PIXEL_INFERENCE_PORT:-4005}:8093"
+    depends_on:
+      model-router:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8093/health', timeout=4)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M

@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import tempfile
@@ -19,7 +20,7 @@ import httpx
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.responses import RedirectResponse
 
-from env_values import strip_matching_quotes
+from env_values import parse_env_value
 from config import (
     DATA_DIR,
     INSTALL_DIR,
@@ -46,6 +47,7 @@ from host_agent_client import (
     request_json as request_agent_json,
 )
 from models import ModelLibraryGpu, ModelLibraryResponse
+from pixel_runtime_state import pixel_stream_active
 from performance_oracle import (
     build_models_payload,
     build_sample_signature,
@@ -333,7 +335,7 @@ def _read_active_model() -> Optional[str]:
     try:
         for line in _ENV_PATH.read_text(encoding="utf-8").splitlines():
             if line.startswith("GGUF_FILE="):
-                return strip_matching_quotes(line.split("=", 1)[1])
+                return parse_env_value(line.split("=", 1)[1])
     except OSError:
         pass
     return None
@@ -1024,13 +1026,23 @@ async def _hf_repo_details(repo_id: str) -> dict[str, Any]:
 def _hf_local_filename(repo_id: str, remote_filename: str, revision: str) -> str:
     repo_slug = re.sub(r"[^A-Za-z0-9._-]+", "-", repo_id).strip("-._")
     basename = Path(remote_filename).name
-    stem = re.sub(r"[^A-Za-z0-9._-]+", "-", Path(basename).stem).strip("-._")
+    split = _HF_SPLIT_GGUF_RE.fullmatch(basename)
+    stem = split.group("prefix") if split else Path(basename).stem
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "-", stem).strip("-._")
+    suffix = ".gguf"
+    identity = remote_filename
+    if split:
+        # llama.cpp derives sibling paths from a shared prefix followed by
+        # -00001-of-00002.gguf. Keep the digest common to the complete set and
+        # before that suffix, including when long names must be shortened.
+        suffix = f"-{split.group('part')}-of-{split.group('total')}.gguf"
+        identity = Path(remote_filename).with_name(f"{split.group('prefix')}-of-{split.group('total')}.gguf").as_posix()
     digest = hashlib.sha256(
-        f"{repo_id}\n{revision}\n{remote_filename}".encode("utf-8")
+        f"{repo_id}\n{revision}\n{identity}".encode("utf-8")
     ).hexdigest()[:8]
-    filename = f"hf-{repo_slug}-{stem}-{digest}.gguf"
+    filename = f"hf-{repo_slug}-{stem}-{digest}{suffix}"
     if len(filename) > 220:
-        filename = f"hf-{repo_slug[:60]}-{stem[:120]}-{digest}.gguf"
+        filename = f"hf-{repo_slug[:60]}-{stem[:120]}-{digest}{suffix}"
     return filename
 
 
@@ -1620,6 +1632,8 @@ def _call_agent_model(
     except AgentHTTPError as exc:
         if exc.status_code == 409:
             raise HTTPException(status_code=409, detail=_agent_http_detail(exc)) from exc
+        if exc.status_code == 400:
+            raise HTTPException(status_code=400, detail=_agent_http_detail(exc)) from exc
         raise HTTPException(status_code=502, detail=exc.detail) from exc
     except AgentUnavailable as exc:
         raise HTTPException(status_code=503, detail=f"Host agent unreachable: {exc}") from exc
@@ -1725,35 +1739,6 @@ def _find_normalized_model(model_id: str) -> Optional[dict]:
     return find_catalog_model(load_model_catalog(INSTALL_DIR), model_id, None)
 
 
-def _parse_llama_metric_counters(text: str) -> dict:
-    counters = {}
-    for line in text.splitlines():
-        if not line or line.startswith("#"):
-            continue
-        parts = line.split()
-        if len(parts) < 2:
-            continue
-        name = parts[0]
-        try:
-            value = float(parts[-1])
-        except ValueError:
-            continue
-        if "tokens_predicted_total" in name:
-            counters["tokens_predicted_total"] = value
-        elif "tokens_predicted_seconds_total" in name:
-            counters["tokens_predicted_seconds_total"] = value
-    return counters
-
-
-async def _fetch_llama_counters(host: str, port: int, model_name: str) -> dict:
-    metrics_port = int(read_env_value("LLAMA_METRICS_PORT", INSTALL_DIR) or port)
-    params = {"model": model_name} if model_name else {}
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        resp = await client.get(f"http://{host}:{metrics_port}/metrics", params=params)
-        resp.raise_for_status()
-        return _parse_llama_metric_counters(resp.text)
-
-
 async def _fetch_llama_loaded_model(host: str, port: int, api_prefix: str) -> str | None:
     base_url = _configured_llm_base_url(host, port)
     lemonade_api = api_prefix == "/api/v1"
@@ -1799,20 +1784,25 @@ async def _fetch_llama_loaded_model(host: str, port: int, api_prefix: str) -> st
     return None
 
 
-def _completion_text_and_usage(data: dict) -> tuple[str, int]:
-    if not isinstance(data, dict):
-        return "", 0
-    usage = data.get("usage") or {}
-    completion_tokens = int(usage.get("completion_tokens") or 0)
-    choices = data.get("choices") or []
-    text = ""
-    if choices:
-        first = choices[0] or {}
-        message = first.get("message") or {}
-        text = first.get("text") or message.get("content") or ""
-    if completion_tokens <= 0 and text:
-        completion_tokens = max(len(text.split()), 1)
-    return text, completion_tokens
+def _benchmark_measurement(data: Any, wall_seconds: float) -> tuple[int, float, str]:
+    """Use a matched pair of request measurements; server totals include peers."""
+    data = data if isinstance(data, dict) else {}
+    timings = data.get("timings")
+    if isinstance(timings, dict):
+        tokens = timings.get("predicted_n")
+        milliseconds = timings.get("predicted_ms")
+        if (type(tokens) is int and tokens > 0
+                and type(milliseconds) in (int, float)
+                and math.isfinite(milliseconds) and milliseconds > 0):
+            return tokens, milliseconds / 1000.0, "request timings"
+    usage = data.get("usage")
+    tokens = usage.get("completion_tokens") if isinstance(usage, dict) else None
+    if type(tokens) is int and tokens > 0:
+        return tokens, wall_seconds, "request usage / wall time"
+    raise HTTPException(
+        status_code=502,
+        detail="Benchmark completed but no valid request token count was reported; result was not saved",
+    )
 
 
 async def _run_current_model_benchmark(model_id: str, max_tokens: int) -> dict:
@@ -1862,11 +1852,6 @@ async def _run_current_model_benchmark(model_id: str, max_tokens: int) -> dict:
         "context length, and GPU memory bandwidth. Continue until the token budget ends."
     )
 
-    before = {}
-    try:
-        before = await _fetch_llama_counters(host, port, loaded_model)
-    except httpx.HTTPError as exc:
-        logger.debug("Benchmark metrics pre-read failed: %s", exc)
     started = time.perf_counter()
     async with httpx.AsyncClient(timeout=max(60.0, max_tokens * 3.0)) as client:
         resp = await client.post(
@@ -1882,27 +1867,7 @@ async def _run_current_model_benchmark(model_id: str, max_tokens: int) -> dict:
         resp.raise_for_status()
         response_data = resp.json()
     wall_seconds = max(time.perf_counter() - started, 0.001)
-    after = {}
-    try:
-        after = await _fetch_llama_counters(host, port, loaded_model)
-    except httpx.HTTPError as exc:
-        logger.debug("Benchmark metrics post-read failed: %s", exc)
-
-    generated = after.get("tokens_predicted_total", 0) - before.get("tokens_predicted_total", 0)
-    generate_seconds = after.get("tokens_predicted_seconds_total", 0) - before.get("tokens_predicted_seconds_total", 0)
-    _, fallback_tokens = _completion_text_and_usage(response_data)
-    timings = response_data.get("timings") if isinstance(response_data, dict) else {}
-    if generated <= 0 and isinstance(timings, dict):
-        generated = int(timings.get("predicted_n") or 0)
-    if generate_seconds <= 0 and isinstance(timings, dict):
-        timing_ms = float(timings.get("predicted_ms") or 0)
-        generate_seconds = timing_ms / 1000.0 if timing_ms > 0 else 0
-    if generated <= 0:
-        generated = fallback_tokens
-    if generate_seconds <= 0:
-        generate_seconds = wall_seconds
-    if generated <= 0:
-        raise HTTPException(status_code=502, detail="Benchmark completed but no generated token count was reported")
+    generated, generate_seconds, method = _benchmark_measurement(response_data, wall_seconds)
 
     tokens_per_second = round(generated / generate_seconds, 2)
     if not is_plausible_single_request_tps(tokens_per_second):
@@ -1943,7 +1908,7 @@ async def _run_current_model_benchmark(model_id: str, max_tokens: int) -> dict:
         "generateSeconds": round(generate_seconds, 3),
         "wallSeconds": round(wall_seconds, 3),
         "source": "local_benchmark",
-        "method": "llama-server OpenAI chat completion + Prometheus counters",
+        "method": method,
     }
 
 
@@ -2018,6 +1983,16 @@ def load_model(
         if configured_context is not None:
             response["context_length"] = configured_context
         return response
+
+    if pixel_stream_active():
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "pixel_chat_active",
+                "message": "Pixel is working. Stop the active response before changing models.",
+                "requestedModelId": model_id,
+            },
+        )
 
     bootstrap_conflict = _bootstrap_upgrade_download_conflict()
     if bootstrap_conflict is not None:

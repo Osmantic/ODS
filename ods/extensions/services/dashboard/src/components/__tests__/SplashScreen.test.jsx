@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen } from '@testing-library/react'
 import SplashScreen from '../SplashScreen' // eslint-disable-line no-unused-vars
 
 vi.mock('gsap', () => {
@@ -9,6 +9,8 @@ vi.mock('gsap', () => {
       add: vi.fn(() => timeline),
       progress: vi.fn(() => timeline),
       timeScale: vi.fn(() => timeline),
+      totalTime: vi.fn(() => timeline),
+      paused: vi.fn(() => timeline),
     }
 
     return timeline
@@ -36,9 +38,14 @@ vi.mock('gsap/CustomEase', () => ({
   },
 }))
 
+if (!HTMLDialogElement.prototype.showModal) HTMLDialogElement.prototype.showModal = function () {}
+if (!HTMLDialogElement.prototype.close) HTMLDialogElement.prototype.close = function () {}
+
 describe('SplashScreen', () => {
   beforeEach(() => {
     vi.useFakeTimers()
+    vi.spyOn(HTMLDialogElement.prototype, 'showModal').mockImplementation(function () { this.setAttribute('open', '') })
+    vi.spyOn(HTMLDialogElement.prototype, 'close').mockImplementation(function () { this.removeAttribute('open') })
     vi.stubGlobal('requestAnimationFrame', vi.fn(() => 1))
     vi.stubGlobal('cancelAnimationFrame', vi.fn())
     vi.stubGlobal('matchMedia', vi.fn(() => ({
@@ -54,6 +61,7 @@ describe('SplashScreen', () => {
   afterEach(() => {
     vi.useRealTimers()
     vi.restoreAllMocks()
+    vi.unstubAllGlobals()
   })
 
   test('renders accessible loading dialog with skip control', () => {
@@ -62,10 +70,33 @@ describe('SplashScreen', () => {
     expect(screen.getByRole('dialog', { name: 'ODS' })).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'ODS', level: 1 })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Skip splash screen' })).toBeInTheDocument()
+    expect(container.querySelector('.ods-opening-orb')).toHaveAttribute('aria-hidden', 'true')
     expect(container.querySelectorAll('.ell')).toHaveLength(31)
   })
 
-  test('completes immediately when reduced motion is requested', () => {
+  test('uses browser modal isolation and releases it on unmount', () => {
+    const view = render(<SplashScreen preview onComplete={() => {}} />)
+    const dialog = screen.getByRole('dialog', { name: 'ODS' })
+    expect(dialog.tagName).toBe('DIALOG')
+    expect(dialog).toHaveAttribute('open')
+    view.unmount()
+    expect(dialog).not.toHaveAttribute('open')
+  })
+
+  test('Escape keeps modal isolation during the exit animation and completes once', () => {
+    const onComplete = vi.fn()
+    render(<SplashScreen preview onComplete={onComplete} />)
+    const dialog = screen.getByRole('dialog', { name: 'ODS' })
+    const event = new Event('cancel', { cancelable: true })
+    fireEvent(dialog, event)
+    expect(event.defaultPrevented).toBe(true)
+    expect(dialog).toHaveAttribute('open')
+    expect(onComplete).not.toHaveBeenCalled()
+    act(() => vi.advanceTimersByTime(400))
+    expect(onComplete).toHaveBeenCalledTimes(1)
+  })
+
+  test('completes immediately when reduced motion is requested' , () => {
     const onComplete = vi.fn()
     globalThis.matchMedia = vi.fn(() => ({
       matches: true,
@@ -88,8 +119,28 @@ describe('SplashScreen', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Skip splash screen' }))
     fireEvent.keyDown(window, { key: 'Escape' })
-    vi.advanceTimersByTime(300)
+    act(() => vi.advanceTimersByTime(400))
 
     expect(onComplete).toHaveBeenCalledTimes(1)
+  })
+
+  test('finishes on time even when the parent refreshes its callback', () => {
+    const onComplete = vi.fn()
+    const view = render(<SplashScreen onComplete={() => {}} />)
+    act(() => vi.advanceTimersByTime(2000))
+    view.rerender(<SplashScreen onComplete={onComplete} />)
+    act(() => vi.advanceTimersByTime(1600))
+    expect(onComplete).toHaveBeenCalledTimes(1)
+  })
+
+  test('preview stays open until dismissed and cleans its exit timer on unmount', () => {
+    const onComplete = vi.fn()
+    const view = render(<SplashScreen preview onComplete={onComplete} />)
+    act(() => vi.advanceTimersByTime(10000))
+    expect(onComplete).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', {name: 'Skip splash screen'}))
+    view.unmount()
+    act(() => vi.advanceTimersByTime(400))
+    expect(onComplete).not.toHaveBeenCalled()
   })
 })
