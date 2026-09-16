@@ -33,13 +33,11 @@ class LLMProvider(ABC):
     @abstractmethod
     def name(self) -> str:
         """Provider identifier (anthropic, openai, google, etc.)"""
-        pass
 
     @property
     @abstractmethod
     def default_base_url(self) -> str:
         """Default API base URL for this provider."""
-        pass
 
     @property
     def base_url(self) -> str:
@@ -50,7 +48,6 @@ class LLMProvider(ABC):
     @abstractmethod
     def api_endpoint(self) -> str:
         """Primary API endpoint path (e.g., /v1/messages or /v1/chat/completions)."""
-        pass
 
     @abstractmethod
     def get_model_pricing(self, model: str) -> Dict[str, float]:
@@ -60,7 +57,6 @@ class LLMProvider(ABC):
             Dict with keys: input, output, cache_read, cache_write
             Values are USD per 1M tokens, 0.0 if unknown.
         """
-        pass
 
     @abstractmethod
     def analyze_request(self, body: Dict[str, Any]) -> Dict[str, Any]:
@@ -76,7 +72,6 @@ class LLMProvider(ABC):
             - conversation_history_chars: Total serialized message chars
             - tool_count: Number of tools defined
         """
-        pass
 
     @abstractmethod
     def rewrite_request(self, body: Dict[str, Any]) -> Dict[str, Any]:
@@ -85,7 +80,6 @@ class LLMProvider(ABC):
         E.g., convert 'developer' role to 'system' for Moonshot.
         Returns the potentially modified body (may modify in place).
         """
-        pass
 
     @abstractmethod
     def extract_usage_from_response(self, response: Dict[str, Any]) -> Dict[str, Any]:
@@ -98,7 +92,6 @@ class LLMProvider(ABC):
             - cache_write_tokens: Tokens written to cache (0 if not supported)
             - stop_reason: Why generation stopped (optional)
         """
-        pass
 
     @abstractmethod
     def extract_usage_from_stream(
@@ -114,7 +107,6 @@ class LLMProvider(ABC):
             Partial usage dict if this line contains usage info, None otherwise.
             Can return partial updates that get merged with existing usage.
         """
-        pass
 
     def get_auth_headers(self, request_headers: Dict[str, str]) -> Dict[str, str]:
         """Extract and return authentication headers to forward.

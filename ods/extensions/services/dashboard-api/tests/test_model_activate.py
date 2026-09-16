@@ -1448,7 +1448,7 @@ class TestComposeRestartLlamaServer:
     ):
         recreated = []
         monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
-        monkeypatch.setattr(_mod, "resolve_compose_flags", lambda: [])
+        monkeypatch.setattr(_mod, "resolve_compose_flags", list)
         monkeypatch.setattr(
             _mod,
             "_recreate_llama_server",

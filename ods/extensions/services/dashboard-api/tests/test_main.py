@@ -879,7 +879,7 @@ class TestStatusEndpoint:
         monkeypatch.setattr("main.get_model_info", lambda: ModelInfo(name="T", size_gb=1.0, context_length=4096))
         monkeypatch.setattr("main.get_bootstrap_status", lambda: BootstrapStatus(active=False))
         monkeypatch.setattr("main.get_uptime", lambda: 3600)
-        monkeypatch.setattr("main.get_cached_services", lambda: [])
+        monkeypatch.setattr("main.get_cached_services", list)
         monkeypatch.setattr("main.get_all_services", AsyncMock(return_value=[]))
 
         resp = test_client.get("/status", headers=test_client.auth_headers)

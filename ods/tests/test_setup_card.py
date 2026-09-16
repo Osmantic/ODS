@@ -257,8 +257,8 @@ def test_qr_has_four_module_quiet_zone():
     white = (255, 255, 255)
     # With border=4 on a version-1 QR, the top quiet zone is ~33 px after
     # scaling to 240 px. A one-module border is only ~10 px and fails here.
-    for x in range(0, 240):
-        for y in range(0, 24):
+    for x in range(240):
+        for y in range(24):
             assert img.getpixel((x, y)) == white
 
 
