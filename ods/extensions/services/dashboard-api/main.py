@@ -26,13 +26,15 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlparse
 
 import httpx
-from fastapi import FastAPI, Depends, HTTPException, Body
+from fastapi import FastAPI, Depends, HTTPException, Body, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 # --- Local modules ---
-from env_values import strip_matching_quotes
+from env_values import parse_env_value, quote_env_value
 from config import (
     SERVICES, DATA_DIR, INSTALL_DIR, SIDEBAR_ICONS, MANIFEST_ERRORS, ALWAYS_ON_SERVICES,
     AGENT_HOST, AGENT_PORT, AGENT_URL, ODS_AGENT_KEY,
@@ -50,7 +52,7 @@ from helpers import (
     get_disk_usage, dir_size_gb, get_model_info, get_bootstrap_status,
     get_uptime, get_cpu_metrics, get_ram_metrics,
     get_llama_metrics, get_loaded_model, get_llama_context_size,
-    _get_httpx_client,
+    _get_httpx_client, shutdown_service_health_client, shutdown_llm_client,
 )
 from context_policy import HERMES_MIN_CONTEXT, HERMES_TARGET_CONTEXT
 from host_agent_client import (
@@ -72,6 +74,15 @@ from routers import (
     tailscale,
     usage,
     node,
+    pixel,
+    pixel_providers,
+    pixel_settings,
+    portal_identity,
+    pixel_advice,
+    pixel_handoff,
+    pixel_scopes,
+    pixel_advice_runtime,
+    pixel_sharing,
 )
 from settings import (
     _ENV_ASSIGNMENT_RE, _ENV_COMMENTED_ASSIGNMENT_RE, _SETTINGS_APPLY_ALLOWED_SERVICES, _parse_env_text, _read_env_map_from_path,
@@ -150,7 +161,7 @@ def _read_installed_version() -> str:
         try:
             for line in env_file.read_text().splitlines():
                 if line.startswith("ODS_VERSION="):
-                    env_version = strip_matching_quotes(line.split("=", 1)[1])
+                    env_version = parse_env_value(line.split("=", 1)[1])
                     if env_version:
                         return env_version
         except OSError:
@@ -800,6 +811,7 @@ def _build_env_sections(schema_keys: list[str]) -> list[dict[str, Any]]:
 def _render_env_from_values(values: dict[str, str]) -> str:
     example_path = _resolve_template_path(".env.example")
     seen: set[str] = set()
+    assigned: set[str] = set()
     output_lines: list[str] = []
 
     if example_path.exists():
@@ -816,15 +828,28 @@ def _render_env_from_values(values: dict[str, str]) -> str:
 
         if assignment:
             key = assignment.group(1)
-            output_lines.append(f"{key}={values.get(key, '')}")
             seen.add(key)
+            if key in assigned:
+                output_lines.append(f"# {line}")
+                continue
+            output_lines.append(f"{key}={quote_env_value(values.get(key, ''))}")
+            assigned.add(key)
             continue
 
         if commented_assignment:
             key = commented_assignment.group(1)
+            # Only the first occurrence of a key becomes the assignment.
+            # .env.example repeats some keys as alternatives (VIDEO_GID,
+            # LLAMA_CPU_LIMIT, WHISPER_ACCELERATION, ...) and a prose comment
+            # can look like "# ODS_MODE=cloud and ..."; rewriting every match
+            # produced duplicate assignments that validate-env.sh rejects.
+            if key in assigned:
+                output_lines.append(line)
+                continue
             seen.add(key)
             if key in values:
-                output_lines.append(f"{key}={values[key]}")
+                output_lines.append(f"{key}={quote_env_value(values[key])}")
+                assigned.add(key)
             else:
                 output_lines.append(line)
             continue
@@ -840,7 +865,7 @@ def _render_env_from_values(values: dict[str, str]) -> str:
             "# Values below were preserved because they are not part of .env.example.",
         ])
         for key, value in extras:
-            output_lines.append(f"{key}={value}")
+            output_lines.append(f"{key}={quote_env_value(value)}")
 
     return "\n".join(output_lines).rstrip() + "\n"
 
@@ -1050,7 +1075,13 @@ async def _lifespan(app: FastAPI):
             await hermes_bridge.shutdown_pool()
         except Exception:
             logger.debug("hermes_bridge.shutdown_pool raised at app shutdown", exc_info=True)
-        await shutdown_agent_clients()
+        try:
+            await shutdown_agent_clients()
+        finally:
+            try:
+                await shutdown_service_health_client()
+            finally:
+                await shutdown_llm_client()
 
 
 app = FastAPI(
@@ -1089,6 +1120,71 @@ app.add_middleware(
     allow_headers=["Authorization", "Content-Type", "X-Requested-With"],
 )
 
+# --- CSRF ---
+#
+# CORS is not a CSRF defence. It governs whether a page may *read* a response,
+# not whether the request runs. A cross-site form POST is a "simple request",
+# so the browser sends it without a preflight, the endpoint executes, and the
+# attacker page simply never sees the reply.
+#
+# That matters here more than in a typical API because the dashboard container
+# supplies the credential itself: nginx.conf sets
+# `proxy_set_header Authorization "Bearer ${DASHBOARD_API_KEY}"` on every
+# /api/ request, and verify_api_key reads only that header. No cookie and no
+# prior session are involved, so a page on any origin the owner happens to
+# visit can drive state-changing routes on the loopback dashboard.
+#
+# The check is Origin against Host rather than a fixed allowlist, because the
+# dashboard is reached at several legitimate origins — localhost:3001, a LAN
+# IP, and dashboard.<device>.local through ods-proxy. Both nginx and Caddy
+# preserve the browser's Host, so "Origin names the same host:port as Host"
+# identifies a same-origin request in every one of those shapes without
+# enumerating them.
+#
+# Requests with no Origin header are left alone: that is ods-cli, the host
+# agent, and every other non-browser caller. Browsers attach Origin to all
+# cross-site POSTs, which is the case being defended against.
+
+_STATE_CHANGING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+
+def _origin_matches_host(origin: str, host_header: str | None) -> bool:
+    """True when Origin names the same host:port as the Host header."""
+    if not host_header:
+        return False
+    try:
+        parsed = urlparse(origin)
+    except ValueError:
+        return False
+    if not parsed.hostname:
+        return False
+    return parsed.netloc == host_header
+
+
+@app.middleware("http")
+async def enforce_same_origin_for_state_changes(request: Request, call_next):
+    """Reject cross-site state-changing requests before the route runs."""
+    if request.method in _STATE_CHANGING_METHODS:
+        origin = request.headers.get("origin")
+        # Sec-Fetch-Site is set by the browser and cannot be forged by page
+        # script, so it stands on its own when present.
+        cross_site = request.headers.get("sec-fetch-site") == "cross-site"
+        if origin is not None or cross_site:
+            same_origin = origin is not None and (
+                _origin_matches_host(origin, request.headers.get("host"))
+                or origin in get_allowed_origins()
+            )
+            if cross_site or not same_origin:
+                logger.warning(
+                    "Blocked cross-origin %s %s (origin=%r)",
+                    request.method, request.url.path, origin,
+                )
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": "Cross-origin state-changing request rejected."},
+                )
+    return await call_next(request)
+
 # --- Include Routers ---
 
 app.include_router(workflows.router)
@@ -1114,6 +1210,15 @@ app.include_router(talk.router)
 app.include_router(tailscale.router)
 app.include_router(usage.router)
 app.include_router(node.router)
+app.include_router(pixel.router)
+app.include_router(pixel_providers.router)
+app.include_router(pixel_settings.router)
+app.include_router(portal_identity.router)
+app.include_router(pixel_advice.router)
+app.include_router(pixel_handoff.router)
+app.include_router(pixel_scopes.router)
+app.include_router(pixel_advice_runtime.router)
+app.include_router(pixel_sharing.router)
 
 
 # ================================================================
@@ -1422,11 +1527,12 @@ async def _build_api_status() -> dict:
 
     model_data = None
     if model_info:
+        runtime_model_name = loaded_model or model_info.name
         model_data = {
-            "name": model_info.name,
-            "currentModel": model_info.name,
+            "name": runtime_model_name,
+            "currentModel": runtime_model_name,
             "configuredModel": model_info.name,
-            "loadedModel": loaded_model or model_info.name,
+            "loadedModel": runtime_model_name,
             "tokensPerSecond": llama_metrics_data.get("tokens_per_second") or None,
             "contextLength": context_size or model_info.context_length,
         }
@@ -1450,7 +1556,7 @@ async def _build_api_status() -> dict:
         "gpu": gpu_data, "services": services_data, "model": model_data,
         "bootstrap": bootstrap_data, "uptime": uptime,
         "version": app.version, "tier": tier,
-        "currentModel": configured_model_name,
+        "currentModel": loaded_model_name,
         "loadedModel": loaded_model_name,
         "configuredModel": configured_model_name,
         "cpu": cpu_metrics, "ram": ram_metrics,

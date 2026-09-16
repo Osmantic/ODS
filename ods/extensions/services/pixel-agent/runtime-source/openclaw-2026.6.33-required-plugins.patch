@@ -1,0 +1,1161 @@
+diff --git a/src/agents/agent-tools.before-tool-call.ts b/src/agents/agent-tools.before-tool-call.ts
+index 9c9ad52a..f616e63a 100644
+--- a/src/agents/agent-tools.before-tool-call.ts
++++ b/src/agents/agent-tools.before-tool-call.ts
+@@ -40,6 +40,7 @@ import { createSubsystemLogger } from "../logging/subsystem.js";
+ import { getGlobalHookRunnerRegistry } from "../plugins/hook-runner-global-state.js";
+ import { getGlobalHookRunner } from "../plugins/hook-runner-global.js";
+ import { deriveToolParams } from "../plugins/host-tool-param-parsers.js";
++import { assertRequiredPluginRuntime } from "../plugins/required-plugins.js";
+ import { copyPluginToolMeta, getPluginToolMeta } from "../plugins/tools.js";
+ import {
+   getTrustedToolPolicyDiagnosticEntries,
+@@ -1115,6 +1116,7 @@ export async function runBeforeToolCallHook(args: {
+ 
+   const hookRunner = getGlobalHookRunner();
+   try {
++    assertRequiredPluginRuntime(args.ctx?.config);
+     const hasBeforeToolCallHooks = hookRunner?.hasHooks("before_tool_call") === true;
+     const policyRegistry = getGlobalHookRunnerRegistry() ?? undefined;
+     const shouldRunTrustedPolicies = hasTrustedToolPolicies(policyRegistry);
+diff --git a/src/agents/agent-tools.required-plugins.test.ts b/src/agents/agent-tools.required-plugins.test.ts
+new file mode 100644
+index 00000000..92049945
+--- /dev/null
++++ b/src/agents/agent-tools.required-plugins.test.ts
+@@ -0,0 +1,96 @@
++import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
++import type { OpenClawConfig } from "../config/types.openclaw.js";
++
++let tools: typeof import("./agent-tools.before-tool-call.js");
++let hooks: typeof import("../plugins/hook-runner-global.js");
++let runtime: typeof import("../plugins/runtime.js");
++let required: typeof import("../plugins/required-plugins.js");
++let empty: typeof import("../plugins/registry-empty.js");
++let records: typeof import("../plugins/status.test-helpers.js");
++const config: OpenClawConfig = {
++  plugins: {
++    entries: {
++      guard: { enabled: true, hooks: { allowConversationAccess: true } },
++    },
++  },
++};
++
++beforeAll(async () => {
++  vi.resetModules();
++  vi.stubEnv(
++    "OPENCLAW_REQUIRED_PLUGINS",
++    JSON.stringify({
++      version: 1,
++      plugins: [{ id: "guard", hooks: ["before_tool_call"] }],
++    }),
++  );
++  [tools, hooks, runtime, required, empty, records] = await Promise.all([
++    import("./agent-tools.before-tool-call.js"),
++    import("../plugins/hook-runner-global.js"),
++    import("../plugins/runtime.js"),
++    import("../plugins/required-plugins.js"),
++    import("../plugins/registry-empty.js"),
++    import("../plugins/status.test-helpers.js"),
++  ]);
++});
++afterEach(() => {
++  hooks.resetGlobalHookRunner();
++  runtime.resetPluginRuntimeStateForTest();
++});
++afterAll(() => {
++  vi.unstubAllEnvs();
++  vi.resetModules();
++});
++
++function installGuard() {
++  const registry = empty.createEmptyPluginRegistry();
++  const handler = vi.fn(() => undefined);
++  registry.plugins.push(records.createPluginRecord({ id: "guard" }));
++  registry.typedHooks.push({
++    pluginId: "guard",
++    hookName: "before_tool_call",
++    handler,
++    source: "fixture",
++  });
++  runtime.setActivePluginRegistry(registry);
++  hooks.initializeGlobalHookRunner(registry);
++  required.completeRequiredPluginLoad(registry, config, required.beginRequiredPluginLoad());
++  return { registry, handler };
++}
++const call = () => tools.runBeforeToolCallHook({ toolName: "read", params: {}, ctx: { config } });
++
++describe("mandatory tool-call admission", () => {
++  it("blocks even when no hook runner exists", async () => {
++    hooks.resetGlobalHookRunner();
++    runtime.resetPluginRuntimeStateForTest();
++    expect(await call()).toMatchObject({ blocked: true, kind: "failure" });
++  });
++
++  it("uses actual composed hooks when an unrelated scoped registry becomes active", async () => {
++    const { registry, handler } = installGuard();
++    runtime.pinActivePluginChannelRegistry(registry);
++    const scoped = empty.createEmptyPluginRegistry();
++    runtime.setActivePluginRegistry(scoped);
++    hooks.initializeGlobalHookRunner(scoped);
++    expect(await call()).toMatchObject({ blocked: false });
++    expect(handler).toHaveBeenCalledTimes(1);
++  });
++
++  it("blocks retained permissive hooks after a failed reload and admits a verified repair", async () => {
++    const { registry, handler } = installGuard();
++    runtime.pinActivePluginChannelRegistry(registry);
++    required.beginRequiredPluginLoad();
++    expect(() =>
++      required.completeRequiredPluginLoad(
++        empty.createEmptyPluginRegistry(),
++        config,
++        required.beginRequiredPluginLoad(),
++      ),
++    ).toThrow();
++    expect(await call()).toMatchObject({ blocked: true, kind: "failure" });
++    expect(handler).not.toHaveBeenCalled();
++    required.completeRequiredPluginLoad(registry, config, required.beginRequiredPluginLoad());
++    expect(await call()).toMatchObject({ blocked: false });
++    expect(handler).toHaveBeenCalledTimes(1);
++  });
++});
+diff --git a/src/agents/embedded-agent-runner/run.ts b/src/agents/embedded-agent-runner/run.ts
+index 9e7e9590..28f495a0 100644
+--- a/src/agents/embedded-agent-runner/run.ts
++++ b/src/agents/embedded-agent-runner/run.ts
+@@ -34,6 +34,7 @@ import { formatErrorMessage, toErrorObject } from "../../infra/errors.js";
+ import { buildAgentHookContextChannelFields } from "../../plugins/hook-agent-context.js";
+ import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
+ import { resolveProviderAuthProfileId } from "../../plugins/provider-runtime.js";
++import { assertRequiredPluginRuntime } from "../../plugins/required-plugins.js";
+ import { enqueueCommandInLane, getCommandLaneSnapshot } from "../../process/command-queue.js";
+ import type { CommandQueueEnqueueOptions } from "../../process/command-queue.types.js";
+ import { createAgentHarnessTaskRuntimeScope } from "../../tasks/agent-harness-task-runtime-scope.js";
+@@ -971,6 +972,7 @@ async function runEmbeddedAgentInternal(
+         workspaceDir: resolvedWorkspace,
+         allowGatewaySubagentBinding: params.allowGatewaySubagentBinding,
+       });
++      assertRequiredPluginRuntime(params.config);
+       startupStages.mark("runtime-plugins");
+       notifyExecutionPhase("runtime_plugins");
+ 
+diff --git a/src/agents/embedded-agent-runner/run/attempt.ts b/src/agents/embedded-agent-runner/run/attempt.ts
+index 9dd0ec3e..728e8472 100644
+--- a/src/agents/embedded-agent-runner/run/attempt.ts
++++ b/src/agents/embedded-agent-runner/run/attempt.ts
+@@ -69,6 +69,7 @@ import {
+   resolveProviderTextTransforms,
+   transformProviderSystemPrompt,
+ } from "../../../plugins/provider-runtime.js";
++import { assertRequiredPluginRuntime } from "../../../plugins/required-plugins.js";
+ import { getPluginToolMeta } from "../../../plugins/tools.js";
+ import { isSubagentSessionKey } from "../../../routing/session-key.js";
+ import { annotateInterSessionPromptText } from "../../../sessions/input-provenance.js";
+@@ -837,6 +838,7 @@ async function loadAttemptSessionEntryAfterQuotaMaintenance(params: {
+ export async function runEmbeddedAttempt(
+   params: EmbeddedRunAttemptParams,
+ ): Promise<EmbeddedRunAttemptResult> {
++  assertRequiredPluginRuntime(params.config);
+   const resolvedWorkspace = resolveUserPath(params.workspaceDir);
+   const runAbortController = new AbortController();
+   configureEmbeddedAttemptHttpRuntime({ timeoutMs: params.timeoutMs });
+@@ -3052,6 +3054,7 @@ export async function runEmbeddedAttempt(
+ 
+       const innerStreamFn = activeSession.agent.streamFn;
+       activeSession.agent.streamFn = (model, context, options) => {
++        assertRequiredPluginRuntime(params.config);
+         const signal = runAbortController.signal as AbortSignal & { reason?: unknown };
+         if (yieldDetected && signal.aborted && signal.reason === "sessions_yield") {
+           return createYieldAbortedResponse(model) as unknown as Awaited<
+@@ -4309,6 +4312,7 @@ export async function runEmbeddedAttempt(
+             }
+           };
+ 
++          assertRequiredPluginRuntime(params.config);
+           if (hookRunner?.hasHooks("before_agent_run")) {
+             const beforeRunMessages = cloneHookMessages(hookMessagesForCurrentPrompt);
+             let beforeRunResult:
+diff --git a/src/gateway/config-reload.ts b/src/gateway/config-reload.ts
+index 9e16dda1..48db88aa 100644
+--- a/src/gateway/config-reload.ts
++++ b/src/gateway/config-reload.ts
+@@ -10,6 +10,10 @@ import {
+   loadInstalledPluginIndexInstallRecords,
+   loadInstalledPluginIndexInstallRecordsSync,
+ } from "../plugins/installed-plugin-index-records.js";
++import {
++  assertRequiredPluginConfiguration,
++  beginRequiredPluginLoad,
++} from "../plugins/required-plugins.js";
+ import { bumpSkillsSnapshotVersion } from "../skills/runtime/refresh-state.js";
+ import { diffConfigPaths } from "./config-diff.js";
+ import {
+@@ -213,6 +217,14 @@ export function startGatewayConfigReloader(opts: {
+     nextCompareConfig: OpenClawConfig,
+     afterWrite?: ConfigWriteNotification["afterWrite"],
+   ) => {
++    try {
++      assertRequiredPluginConfiguration(nextConfig);
++    } catch (error) {
++      // Rejecting a snapshot alone leaves old pinned hooks usable. A rejected
++      // mandatory configuration holds admission until a verified reload/restart.
++      beginRequiredPluginLoad();
++      throw error;
++    }
+     const configChangedPaths = diffConfigPaths(currentCompareConfig, nextCompareConfig);
+     const configPluginInstallTimestampNoopPaths = listPluginInstallTimestampMetadataPaths(
+       currentCompareConfig,
+diff --git a/src/gateway/server-channels.required-plugins.test.ts b/src/gateway/server-channels.required-plugins.test.ts
+new file mode 100644
+index 00000000..15341df2
+--- /dev/null
++++ b/src/gateway/server-channels.required-plugins.test.ts
+@@ -0,0 +1,223 @@
++import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
++import type { ChannelId, ChannelPlugin } from "../channels/plugins/types.js";
++import type { OpenClawConfig } from "../config/types.openclaw.js";
++import type { SubsystemLogger } from "../logging/subsystem.js";
++import type { RuntimeEnv } from "../runtime.js";
++
++let channels: typeof import("./server-channels.js");
++let health: typeof import("./channel-health-monitor.js");
++let hooks: typeof import("../plugins/hook-runner-global.js");
++let runtime: typeof import("../plugins/runtime.js");
++let required: typeof import("../plugins/required-plugins.js");
++let empty: typeof import("../plugins/registry-empty.js");
++let records: typeof import("../plugins/status.test-helpers.js");
++let logging: typeof import("../logging/subsystem.js");
++const managers: Array<ReturnType<typeof channels.createChannelManager>> = [];
++const monitors: Array<ReturnType<typeof health.startChannelHealthMonitor>> = [];
++const config: OpenClawConfig = {
++  plugins: { entries: { guard: { enabled: true, hooks: { allowConversationAccess: true } } } },
++};
++
++beforeAll(async () => {
++  vi.resetModules();
++  vi.stubEnv(
++    "OPENCLAW_REQUIRED_PLUGINS",
++    JSON.stringify({
++      version: 1,
++      plugins: [{ id: "guard", hooks: ["before_agent_run"] }],
++    }),
++  );
++  [channels, health, hooks, runtime, required, empty, records, logging] = await Promise.all([
++    import("./server-channels.js"),
++    import("./channel-health-monitor.js"),
++    import("../plugins/hook-runner-global.js"),
++    import("../plugins/runtime.js"),
++    import("../plugins/required-plugins.js"),
++    import("../plugins/registry-empty.js"),
++    import("../plugins/status.test-helpers.js"),
++    import("../logging/subsystem.js"),
++  ]);
++});
++afterEach(async () => {
++  for (const monitor of monitors.splice(0)) {
++    monitor.stop();
++  }
++  const stops = managers.splice(0).map((manager) => manager.stopChannel("discord"));
++  await vi.advanceTimersByTimeAsync(6000);
++  await Promise.all(stops);
++  vi.clearAllTimers();
++  vi.useRealTimers();
++  hooks.resetGlobalHookRunner();
++  runtime.resetPluginRuntimeStateForTest();
++});
++afterAll(() => {
++  vi.unstubAllEnvs();
++  vi.resetModules();
++});
++
++function deferred<T>() {
++  let resolve!: (value: T) => void;
++  const promise = new Promise<T>((done) => {
++    resolve = done;
++  });
++  return { promise, resolve };
++}
++
++function fixture(
++  options: {
++    isConfigured?: () => Promise<boolean>;
++    deferStartupAccountStartsUntil?: Promise<void>;
++    startupTrace?: Parameters<typeof channels.createChannelManager>[0]["startupTrace"];
++  } = {},
++) {
++  vi.useFakeTimers();
++  const startAccount = vi.fn(
++    ({ abortSignal }: { abortSignal: AbortSignal }) =>
++      new Promise<void>((resolve) => {
++        abortSignal.addEventListener("abort", () => resolve(), { once: true });
++      }),
++  );
++  const plugin: ChannelPlugin = {
++    id: "discord",
++    meta: {
++      id: "discord",
++      label: "Fixture",
++      selectionLabel: "Fixture",
++      docsPath: "/fixture",
++      blurb: "fixture",
++    },
++    capabilities: { chatTypes: ["direct"] },
++    config: {
++      listAccountIds: () => ["default"],
++      resolveAccount: () => ({ enabled: true }),
++      isEnabled: () => true,
++      describeAccount: () => ({ accountId: "default", configured: true, enabled: true }),
++      ...(options.isConfigured ? { isConfigured: options.isConfigured } : {}),
++    },
++    gateway: { startAccount },
++  };
++  const registry = empty.createEmptyPluginRegistry();
++  registry.channels.push({ pluginId: "fixture-channel", source: "fixture", plugin });
++  registry.plugins.push(records.createPluginRecord({ id: "guard" }));
++  registry.typedHooks.push({
++    pluginId: "guard",
++    hookName: "before_agent_run",
++    handler: () => undefined,
++    source: "fixture",
++  });
++  runtime.setActivePluginRegistry(registry);
++  hooks.initializeGlobalHookRunner(registry);
++  const ready = () =>
++    required.completeRequiredPluginLoad(registry, config, required.beginRequiredPluginLoad());
++  ready();
++  const log = logging.createSubsystemLogger("gateway/required-channel-test");
++  const manager = channels.createChannelManager({
++    getRuntimeConfig: () => config,
++    channelLogs: { discord: log } as Record<ChannelId, SubsystemLogger>,
++    channelRuntimeEnvs: { discord: logging.runtimeForLogger(log) } as Record<ChannelId, RuntimeEnv>,
++    ...(options.startupTrace ? { startupTrace: options.startupTrace } : {}),
++    ...(options.deferStartupAccountStartsUntil
++      ? { deferStartupAccountStartsUntil: options.deferStartupAccountStartsUntil }
++      : {}),
++  });
++  managers.push(manager);
++  return { manager, startAccount, ready };
++}
++
++describe("required plugins gate channel account admission", () => {
++  it("holds an early health restart despite a configured account snapshot, then repairs", async () => {
++    const { manager, startAccount, ready } = fixture();
++    required.beginRequiredPluginLoad();
++    expect(manager.getRuntimeSnapshot().channelAccounts.discord?.default).toMatchObject({
++      enabled: true,
++      configured: true,
++    });
++    expect(manager.getRuntimeSnapshot().channelAccounts.discord?.default.running).not.toBe(true);
++    monitors.push(
++      health.startChannelHealthMonitor({
++        channelManager: manager,
++        checkIntervalMs: 10,
++        startupGraceMs: 0,
++        cooldownCycles: 0,
++      }),
++    );
++    await vi.advanceTimersByTimeAsync(20);
++    expect(startAccount).not.toHaveBeenCalled();
++    ready();
++    await vi.advanceTimersByTimeAsync(20);
++    expect(startAccount).toHaveBeenCalledTimes(1);
++  });
++
++  it("rechecks after asynchronous account configuration before bootstrapping transport", async () => {
++    const configured = deferred<boolean>();
++    const reached = deferred<void>();
++    const { manager, startAccount } = fixture({
++      isConfigured: () => {
++        reached.resolve();
++        return configured.promise;
++      },
++    });
++    const starting = manager.startChannel("discord", "default");
++    await reached.promise;
++    required.beginRequiredPluginLoad();
++    configured.resolve(true);
++    await expect(starting).rejects.toThrow("Required plugin runtime is not ready");
++    expect(startAccount).not.toHaveBeenCalled();
++  });
++
++  it("rechecks account startup after the gateway handoff wait", async () => {
++    const handoff = deferred<void>();
++    const { manager, startAccount } = fixture({ deferStartupAccountStartsUntil: handoff.promise });
++    await manager.startChannels();
++    expect(startAccount).not.toHaveBeenCalled();
++    required.beginRequiredPluginLoad();
++    handoff.resolve();
++    await vi.advanceTimersByTimeAsync(1);
++    expect(startAccount).not.toHaveBeenCalled();
++    expect(manager.getRuntimeSnapshot().channelAccounts.discord?.default.lastError).toContain(
++      "Required plugin runtime is not ready",
++    );
++  });
++
++  it("reports a traced approval admission hold as failed startup before handoff", async () => {
++    const { manager, startAccount } = fixture({
++      startupTrace: {
++        measure: async (name, run) => {
++          if (name.endsWith(".approval-bootstrap")) {
++            required.beginRequiredPluginLoad();
++          }
++          return await run();
++        },
++      },
++    });
++    await expect(manager.startChannel("discord", "default")).rejects.toThrow(
++      "Required plugin runtime is not ready",
++    );
++    expect(startAccount).not.toHaveBeenCalled();
++    expect(manager.getRuntimeSnapshot().channelAccounts.discord?.default).toMatchObject({
++      running: false,
++      restartPending: false,
++    });
++  });
++
++  it("permits explicit recovery without a health monitor and keeps a manual stop stopped", async () => {
++    const handoff = deferred<void>();
++    const { manager, startAccount, ready } = fixture({
++      deferStartupAccountStartsUntil: handoff.promise,
++    });
++    await manager.startChannels();
++    required.beginRequiredPluginLoad();
++    handoff.resolve();
++    await vi.advanceTimersByTimeAsync(6000);
++    expect(startAccount).not.toHaveBeenCalled();
++    ready();
++    await manager.startChannel("discord", "default");
++    await vi.advanceTimersByTimeAsync(0);
++    expect(startAccount).toHaveBeenCalledTimes(1);
++    const stopping = manager.stopChannel("discord", "default");
++    await vi.advanceTimersByTimeAsync(6000);
++    await stopping;
++    expect(manager.isManuallyStopped("discord", "default")).toBe(true);
++    expect(startAccount).toHaveBeenCalledTimes(1);
++  });
++});
+diff --git a/src/gateway/server-channels.ts b/src/gateway/server-channels.ts
+index 7ddcc98b..895d2001 100644
+--- a/src/gateway/server-channels.ts
++++ b/src/gateway/server-channels.ts
+@@ -16,6 +16,7 @@ import {
+ } from "../logging/subsystem.js";
+ import { withPluginHttpRouteRegistry } from "../plugins/http-registry.js";
+ import type { PluginRegistry } from "../plugins/registry.js";
++import { assertRequiredPluginRuntime } from "../plugins/required-plugins.js";
+ import type { PluginRuntimeChannel } from "../plugins/runtime/types-channel.js";
+ import { resolveAccountEntry, resolveNormalizedAccountEntry } from "../routing/account-lookup.js";
+ import {
+@@ -430,6 +431,9 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
+     }
+     const { preserveRestartAttempts = false, preserveManualStop = false } = optsValue;
+     const cfg = getRuntimeConfig();
++    // Health/retry entrypoints can run before HTTP readiness. Configuration
++    // already exposes accounts then; an empty-runtime assumption is unsafe.
++    assertRequiredPluginRuntime(cfg);
+     resetDirectoryCache({ channel: channelId, accountId });
+     const store = getStore(channelId);
+     const accountIds = accountId
+@@ -572,6 +576,9 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
+             }),
+           );
+           channelRuntimeForTask = scopedChannelRuntime.channelRuntime;
++          // Account/runtime preparation can yield across a rejected reload.
++          // Refuse new transport work, while keeping stop/cleanup ungated.
++          assertRequiredPluginRuntime(getRuntimeConfig());
+ 
+           if (!preserveRestartAttempts) {
+             restartAttempts.delete(rKey);
+@@ -579,16 +586,22 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
+           try {
+             stopApprovalBootstrap = await measureStartup(
+               `channels.${channelId}.approval-bootstrap`,
+-              () =>
+-                startChannelApprovalHandlerBootstrap({
++              () => {
++                assertRequiredPluginRuntime(getRuntimeConfig());
++                return startChannelApprovalHandlerBootstrap({
+                   plugin,
+                   cfg,
+                   accountId: id,
+                   channelRuntime: channelRuntimeForTask,
+                   logger: log,
+-                }),
++                  assertCanStart: () => assertRequiredPluginRuntime(getRuntimeConfig()),
++                });
++              },
+             );
+           } catch (error) {
++            // Optional approval failures stay optional, but a managed admission
++            // hold must reach the account-start cleanup instead of reporting ready.
++            assertRequiredPluginRuntime(getRuntimeConfig());
+             log.error?.(`[${id}] native approval bootstrap failed: ${formatErrorMessage(error)}`);
+           }
+           setRuntime(channelId, id, {
+@@ -615,8 +628,10 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
+               if (abort.signal.aborted || manuallyStopped.has(rKey)) {
+                 return;
+               }
+-              const runStartAccount = () =>
+-                startAccount({
++              const runStartAccount = () => {
++                // Startup handoff and tracing may defer this actual dispatch.
++                assertRequiredPluginRuntime(getRuntimeConfig());
++                return startAccount({
+                   cfg,
+                   accountId: id,
+                   account,
+@@ -627,6 +642,7 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
+                   setStatus: (next) => setRuntimeFromTaskStatus(channelId, id, next, abort.signal),
+                   ...(channelRuntimeForTask ? { channelRuntime: channelRuntimeForTask } : {}),
+                 });
++              };
+               const routeRegistry = getPluginHttpRouteRegistry?.();
+               startAccountTask = routeRegistry
+                 ? withPluginHttpRouteRegistry(routeRegistry, runStartAccount)
+diff --git a/src/gateway/server-plugin-bootstrap.ts b/src/gateway/server-plugin-bootstrap.ts
+index 93f6d197..6ab4efd7 100644
+--- a/src/gateway/server-plugin-bootstrap.ts
++++ b/src/gateway/server-plugin-bootstrap.ts
+@@ -49,6 +49,7 @@ type GatewayPluginBootstrapParams = {
+   pluginIds?: string[];
+   pluginLookUpTable?: PluginLookUpTable;
+   preferSetupRuntimeForChannelPlugins?: boolean;
++  requiredLoadGeneration?: number;
+   suppressPluginInfoLogs?: boolean;
+   logDiagnostics?: boolean;
+   startupTrace?: GatewayStartupTrace;
+@@ -130,6 +131,7 @@ export function prepareGatewayPluginLoad(params: GatewayPluginBootstrapParams) {
+     pluginIds: params.pluginIds,
+     pluginLookUpTable: params.pluginLookUpTable,
+     preferSetupRuntimeForChannelPlugins: params.preferSetupRuntimeForChannelPlugins,
++    requiredLoadGeneration: params.requiredLoadGeneration,
+     suppressPluginInfoLogs: params.suppressPluginInfoLogs,
+     startupTrace: params.startupTrace,
+   });
+diff --git a/src/gateway/server-plugins.ts b/src/gateway/server-plugins.ts
+index 1250530c..fff931b5 100644
+--- a/src/gateway/server-plugins.ts
++++ b/src/gateway/server-plugins.ts
+@@ -18,6 +18,12 @@ import { loadPluginLookUpTable, type PluginLookUpTable } from "../plugins/plugin
+ import { getPluginModuleLoaderStats } from "../plugins/plugin-module-loader-cache.js";
+ import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
+ import type { PluginRegistryParams } from "../plugins/registry-types.js";
++import {
++  assertRequiredPluginConfiguration,
++  beginRequiredPluginLoad,
++  completeRequiredPluginLoad,
++  getRequiredPluginRequirements,
++} from "../plugins/required-plugins.js";
+ import { setActivePluginRegistry } from "../plugins/runtime.js";
+ import { getPluginRuntimeGatewayRequestScope } from "../plugins/runtime/gateway-request-scope.js";
+ import { createPluginRuntimeLoaderLogger } from "../plugins/runtime/load-context.js";
+@@ -730,6 +736,7 @@ export function loadGatewayPlugins(params: {
+   pluginIds?: string[];
+   pluginLookUpTable?: PluginLookUpTable;
+   preferSetupRuntimeForChannelPlugins?: boolean;
++  requiredLoadGeneration?: number;
+   suppressPluginInfoLogs?: boolean;
+   startupTrace?: {
+     detail: (name: string, metrics: ReadonlyArray<readonly [string, number | string]>) => void;
+@@ -772,7 +779,7 @@ export function loadGatewayPlugins(params: {
+           });
+   const resolvedConfigMs = performance.now() - started;
+   const resolvedConfig = autoEnabled.config;
+-  const pluginIds = params.pluginIds ?? [
++  let pluginIds = params.pluginIds ?? [
+     ...(
+       params.pluginLookUpTable ??
+       loadPluginLookUpTable({
+@@ -783,10 +790,24 @@ export function loadGatewayPlugins(params: {
+       })
+     ).startup.pluginIds,
+   ];
++  const fullRuntimeLoad = params.preferSetupRuntimeForChannelPlugins !== true;
++  const requiredLoadGeneration = fullRuntimeLoad
++    ? (params.requiredLoadGeneration ?? beginRequiredPluginLoad())
++    : undefined;
++  if (requiredLoadGeneration !== undefined) {
++    assertRequiredPluginConfiguration(resolvedConfig);
++    pluginIds = uniqueStrings([
++      ...pluginIds,
++      ...getRequiredPluginRequirements().map((plugin) => plugin.id),
++    ]);
++  }
+   const pluginIdsMs = performance.now() - started;
+   if (pluginIds.length === 0) {
+     clearActivatedPluginRuntimeState();
+     const pluginRegistry = createEmptyPluginRegistry();
++    if (requiredLoadGeneration !== undefined) {
++      completeRequiredPluginLoad(pluginRegistry, resolvedConfig, requiredLoadGeneration);
++    }
+     setActivePluginRegistry(pluginRegistry, undefined, "gateway-bindable", params.workspaceDir);
+     params.startupTrace?.detail("plugins.gateway-load", [
+       ["autoEnableMs", autoEnableMs],
+@@ -834,6 +855,9 @@ export function loadGatewayPlugins(params: {
+       ? { manifestRegistry: params.pluginLookUpTable.manifestRegistry }
+       : {}),
+   });
++  if (requiredLoadGeneration !== undefined) {
++    completeRequiredPluginLoad(pluginRegistry, resolvedConfig, requiredLoadGeneration);
++  }
+   const loadMs = performance.now() - beforeLoad;
+   const loaderStatsAfter = getPluginModuleLoaderStats();
+   const pluginMethods = Object.keys(pluginRegistry.gatewayHandlers);
+diff --git a/src/gateway/server.impl.ts b/src/gateway/server.impl.ts
+index 3df5dd95..379e0a47 100644
+--- a/src/gateway/server.impl.ts
++++ b/src/gateway/server.impl.ts
+@@ -49,6 +49,12 @@ import type { PluginHookGatewayCronService } from "../plugins/hook-types.js";
+ import { loadInstalledPluginIndexInstallRecordsSync } from "../plugins/installed-plugin-index-records.js";
+ import { cleanupRetainedManagedNpmInstallGenerations } from "../plugins/managed-npm-retention.js";
+ import { clearPluginMetadataLifecycleCaches } from "../plugins/plugin-metadata-lifecycle.js";
++import {
++  assertRequiredPluginConfiguration,
++  assertRequiredPluginRuntime,
++  beginRequiredPluginLoad,
++  getRequiredPluginRequirements,
++} from "../plugins/required-plugins.js";
+ import {
+   pinActivePluginChannelRegistry,
+   pinActivePluginHttpRouteRegistry,
+@@ -701,6 +707,10 @@ export async function startGatewayServer(
+     startupLastGoodSnapshot = startupSnapshot;
+   }
+   setRuntimeConfigSnapshot(cfgAtStart, startupLastGoodSnapshot.sourceConfig);
++  // Hold early background agent/tool entrypoints too, before any setup registry
++  // or maintenance service can make hooks appear usable during bootstrap.
++  beginRequiredPluginLoad();
++  assertRequiredPluginConfiguration(cfgAtStart);
+   const { prepareGatewayPluginBootstrap } = await loadStartupPluginsModule();
+   const pluginBootstrap = await startupTrace.measure("plugins.bootstrap", () =>
+     prepareGatewayPluginBootstrap({
+@@ -721,8 +731,8 @@ export async function startGatewayServer(
+     startupPluginIds,
+     pluginLookUpTable,
+     baseMethods,
+-    runtimePluginsLoaded,
+   } = pluginBootstrap;
++  let { runtimePluginsLoaded } = pluginBootstrap;
+   const coreGatewayMethodNames = listCoreGatewayMethodNames();
+   setCurrentPluginMetadataSnapshot(pluginLookUpTable, {
+     config: startupActivationSourceConfig,
+@@ -1333,6 +1343,8 @@ export async function startGatewayServer(
+       changedPaths: readonly string[];
+       beforeReplace: (channels: ReadonlySet<ChannelId>) => Promise<void>;
+     }): Promise<GatewayPluginReloadResult> => {
++      const requiredLoadGeneration = beginRequiredPluginLoad();
++      assertRequiredPluginConfiguration(params.nextConfig);
+       const beforeChannelTargets = listAttachedChannelConfigTargets();
+       const beforeChannelIds = new Set(beforeChannelTargets.keys());
+       const [{ loadPluginLookUpTable }, { prepareGatewayPluginLoad }, { startPluginServices }] =
+@@ -1378,6 +1390,7 @@ export async function startGatewayServer(
+         workspaceDir: defaultWorkspaceDir,
+       });
+       const loaded = prepareGatewayPluginLoad({
++        requiredLoadGeneration,
+         cfg: params.nextConfig,
+         workspaceDir: defaultWorkspaceDir,
+         log,
+@@ -1537,6 +1550,30 @@ export async function startGatewayServer(
+       }
+     }
+ 
++    if (getRequiredPluginRequirements().length > 0) {
++      // Managed gateways cannot listen before mandatory hooks exist. Load once
++      // here, with host services/context prepared, and skip the post-listen load.
++      // Optional plugins remain optional; their service start still happens later.
++      const { loadGatewayStartupPluginRuntime } = await loadStartupPluginsModule();
++      const loaded = await startupTrace.measure("plugins.required-prebind", () =>
++        loadGatewayStartupPluginRuntime({
++          cfg: gatewayPluginConfigAtStart,
++          activationSourceConfig: startupActivationSourceConfig,
++          workspaceDir: defaultWorkspaceDir,
++          log,
++          baseMethods,
++          coreGatewayMethodNames,
++          hostServices: pluginHostServices,
++          startupPluginIds,
++          pluginLookUpTable,
++          startupTrace,
++        }),
++      );
++      replaceAttachedPluginRuntime(loaded);
++      runtimePluginsLoaded = true;
++      assertRequiredPluginRuntime(gatewayPluginConfigAtStart);
++    }
++
+     const [{ attachGatewayWsHandlers }, { listPluginNodeCapabilities }] =
+       await startupTrace.measure("gateway.ws-imports", () =>
+         Promise.all([
+diff --git a/src/infra/approval-handler-bootstrap.test.ts b/src/infra/approval-handler-bootstrap.test.ts
+index 8527e2f2..264a28c4 100644
+--- a/src/infra/approval-handler-bootstrap.test.ts
++++ b/src/infra/approval-handler-bootstrap.test.ts
+@@ -43,6 +43,7 @@ describe("startChannelApprovalHandlerBootstrap", () => {
+   const startTestBootstrap = (params: {
+     channelRuntime: ReturnType<typeof createRuntimeChannel>;
+     logger?: unknown;
++    assertCanStart?: () => void;
+   }) =>
+     startChannelApprovalHandlerBootstrap({
+       plugin: createApprovalPlugin(),
+@@ -50,6 +51,7 @@ describe("startChannelApprovalHandlerBootstrap", () => {
+       accountId: "default",
+       channelRuntime: params.channelRuntime,
+       logger: params.logger as never,
++      ...(params.assertCanStart ? { assertCanStart: params.assertCanStart } : {}),
+     });
+ 
+   const registerApprovalContext = (
+@@ -347,4 +349,76 @@ describe("startChannelApprovalHandlerBootstrap", () => {
+ 
+     await cleanup();
+   });
++
++  it("keeps deferred context registration held and retries only after admission repairs", async () => {
++    vi.useFakeTimers();
++    const channelRuntime = createRuntimeChannel();
++    const start = vi.fn().mockResolvedValue(undefined);
++    const stop = vi.fn().mockResolvedValue(undefined);
++    createChannelApprovalHandlerFromCapability.mockResolvedValue({ start, stop });
++    let held = false;
++    const cleanup = await startTestBootstrap({
++      channelRuntime,
++      assertCanStart: () => {
++        if (held) {
++          throw new Error("required runtime held");
++        }
++      },
++    });
++    held = true;
++    const lease = registerApprovalContext(channelRuntime);
++    try {
++      await vi.advanceTimersByTimeAsync(2000);
++      expect(createChannelApprovalHandlerFromCapability).not.toHaveBeenCalled();
++      expect(start).not.toHaveBeenCalled();
++      held = false;
++      await vi.advanceTimersByTimeAsync(1000);
++      expect(start).toHaveBeenCalledTimes(1);
++    } finally {
++      await cleanup();
++      lease.dispose();
++      vi.useRealTimers();
++    }
++    expect(stop).toHaveBeenCalledTimes(1);
++  });
++
++  it("rechecks admission after an asynchronous handler factory and cleans the rejected handler", async () => {
++    vi.useFakeTimers();
++    const channelRuntime = createRuntimeChannel();
++    const start = vi.fn().mockResolvedValue(undefined);
++    const stop = vi.fn().mockResolvedValue(undefined);
++    let resolveHandler!: (handler: { start: typeof start; stop: typeof stop }) => void;
++    createChannelApprovalHandlerFromCapability.mockReturnValue(
++      new Promise<{ start: typeof start; stop: typeof stop }>((resolve) => {
++        resolveHandler = resolve;
++      }),
++    );
++    let held = false;
++    const cleanup = await startTestBootstrap({
++      channelRuntime,
++      assertCanStart: () => {
++        if (held) {
++          throw new Error("required runtime held");
++        }
++      },
++    });
++    const lease = registerApprovalContext(channelRuntime);
++    try {
++      await vi.advanceTimersByTimeAsync(0);
++      expect(createChannelApprovalHandlerFromCapability).toHaveBeenCalledTimes(1);
++      held = true;
++      resolveHandler({ start, stop });
++      await vi.advanceTimersByTimeAsync(0);
++      expect(start).not.toHaveBeenCalled();
++      expect(stop).toHaveBeenCalledTimes(1);
++      await cleanup();
++      held = false;
++      await vi.advanceTimersByTimeAsync(2000);
++      expect(start).not.toHaveBeenCalled();
++    } finally {
++      await cleanup();
++      lease.dispose();
++      vi.useRealTimers();
++    }
++  });
+ });
+diff --git a/src/infra/approval-handler-bootstrap.ts b/src/infra/approval-handler-bootstrap.ts
+index 09220007..0a4bfe29 100644
+--- a/src/infra/approval-handler-bootstrap.ts
++++ b/src/infra/approval-handler-bootstrap.ts
+@@ -47,6 +47,8 @@ export async function startChannelApprovalHandlerBootstrap(params: {
+   accountId: string;
+   channelRuntime?: ChannelRuntimeSurface;
+   logger?: ReturnType<typeof createSubsystemLogger>;
++  /** Recheck caller-owned admission for deferred contexts, factories and retries. */
++  assertCanStart?: () => void;
+ }): Promise<() => Promise<void>> {
+   const capability = resolveChannelApprovalCapability(params.plugin);
+   if (!capability?.nativeRuntime || !params.channelRuntime) {
+@@ -86,6 +88,7 @@ export async function startChannelApprovalHandlerBootstrap(params: {
+     if (generation !== activeGeneration) {
+       return;
+     }
++    params.assertCanStart?.();
+     const handler = await createChannelApprovalHandlerFromCapability({
+       capability,
+       label: `${params.plugin.id}/native-approvals`,
+@@ -106,6 +109,9 @@ export async function startChannelApprovalHandlerBootstrap(params: {
+     }
+     activeHandler = handler as ApprovalBootstrapHandler;
+     try {
++      // Factory resolution can outlive the caller's admission. Stop a rejected
++      // handler using the same cleanup as failed starts; never gate cleanup.
++      params.assertCanStart?.();
+       await handler.start();
+     } catch (error) {
+       if (activeHandler === handler) {
+diff --git a/src/plugins/required-plugins.test.ts b/src/plugins/required-plugins.test.ts
+new file mode 100644
+index 00000000..e3ab202e
+--- /dev/null
++++ b/src/plugins/required-plugins.test.ts
+@@ -0,0 +1,188 @@
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++import type { OpenClawConfig } from "../config/types.openclaw.js";
++import type { GlobalHookRunnerRegistry } from "./hook-registry.types.js";
++
++const live = vi.hoisted(() => ({ registry: null as GlobalHookRunnerRegistry | null }));
++vi.mock("./hook-runner-global-state.js", () => ({
++  getGlobalHookRunnerRegistry: () => live.registry,
++}));
++
++const policy = { version: 1, plugins: [{ id: "guard", hooks: ["before_agent_run"] }] };
++const config: OpenClawConfig = {
++  plugins: {
++    entries: {
++      guard: { enabled: true, hooks: { allowConversationAccess: true } },
++    },
++  },
++};
++function registry(): GlobalHookRunnerRegistry {
++  return {
++    hooks: [],
++    plugins: [{ id: "guard", status: "loaded" }],
++    typedHooks: [
++      {
++        pluginId: "guard",
++        hookName: "before_agent_run",
++        handler: () => undefined,
++        source: "fixture",
++      },
++    ],
++  };
++}
++
++beforeEach(() => {
++  vi.resetModules();
++  vi.stubEnv("OPENCLAW_REQUIRED_PLUGINS", JSON.stringify(policy));
++  live.registry = registry();
++});
++afterEach(() => {
++  vi.unstubAllEnvs();
++  live.registry = null;
++  vi.resetModules();
++});
++
++describe("launcher-required plugins", () => {
++  it.each([false, true])(
++    "rejects stale completion after newer decision (newer completed=%s)",
++    async (completed) => {
++      const mod = await import("./required-plugins.js");
++      const older = mod.beginRequiredPluginLoad();
++      const newer = mod.beginRequiredPluginLoad();
++      if (completed) {
++        mod.completeRequiredPluginLoad(registry(), config, newer);
++      }
++      expect(() => mod.completeRequiredPluginLoad(registry(), config, older)).toThrow("Superseded");
++      expect(() => mod.assertRequiredPluginRuntime(config)).toThrow("runtime is not ready");
++      const repair = mod.beginRequiredPluginLoad();
++      mod.completeRequiredPluginLoad(registry(), config, repair);
++      expect(() => mod.assertRequiredPluginRuntime(config)).not.toThrow();
++    },
++  );
++
++  it("leaves legacy behavior unchanged without launcher policy", async () => {
++    vi.stubEnv("OPENCLAW_REQUIRED_PLUGINS", undefined);
++    const mod = await import("./required-plugins.js");
++    live.registry = null;
++    mod.beginRequiredPluginLoad();
++    mod.completeRequiredPluginLoad(
++      { hooks: [], typedHooks: [], plugins: [] },
++      {},
++      mod.beginRequiredPluginLoad(),
++    );
++    expect(() => mod.assertRequiredPluginRuntime(undefined)).not.toThrow();
++    expect(mod.getRequiredPluginRequirements()).toEqual([]);
++  });
++
++  it.each([
++    "",
++    "not-json",
++    "null",
++    "[]",
++    " ".repeat(16_385),
++    JSON.stringify({ version: 1, plugins: [] }),
++    JSON.stringify({ ...policy, extra: true }),
++    JSON.stringify({ ...policy, version: 2 }),
++    JSON.stringify({ ...policy, plugins: [...policy.plugins, ...policy.plugins] }),
++    JSON.stringify({ version: 1, plugins: [{ id: "guard", hooks: [] }] }),
++    JSON.stringify({ version: 1, plugins: [{ id: "guard", hooks: ["invented"] }] }),
++    JSON.stringify({ version: 1, plugins: [{ id: "guard", hooks: [null] }] }),
++    JSON.stringify({
++      version: 1,
++      plugins: [{ id: "guard", hooks: ["before_agent_run", "before_agent_run"] }],
++    }),
++    JSON.stringify({
++      version: 1,
++      plugins: [{ id: "guard\ninjected", hooks: ["before_agent_run"] }],
++    }),
++  ])("rejects malformed policy case %# without echoing input", async (raw) => {
++    vi.stubEnv("OPENCLAW_REQUIRED_PLUGINS", raw);
++    const mod = await import("./required-plugins.js");
++    expect(() => mod.getRequiredPluginRequirements()).toThrow(
++      "Invalid OPENCLAW_REQUIRED_PLUGINS launcher policy",
++    );
++  });
++
++  it("freezes the launcher contract before plugin code can change the environment", async () => {
++    const mod = await import("./required-plugins.js");
++    vi.stubEnv("OPENCLAW_REQUIRED_PLUGINS", undefined);
++    const required = mod.getRequiredPluginRequirements();
++    expect(required).toEqual(policy.plugins);
++    expect(Object.isFrozen(required)).toBe(true);
++    expect(Object.isFrozen(required[0].hooks)).toBe(true);
++    expect(() => mod.assertRequiredPluginConfiguration({})).toThrow();
++  });
++
++  it.each<OpenClawConfig | undefined>([
++    undefined,
++    {},
++    { plugins: { enabled: false } },
++    { plugins: { entries: { guard: { enabled: false } } } },
++    { plugins: { ...config.plugins, deny: ["guard"] } },
++    { plugins: { ...config.plugins, allow: ["another"] } },
++    { plugins: { entries: { guard: { enabled: true } } } },
++    {
++      plugins: { entries: { guard: { enabled: true, hooks: { allowConversationAccess: false } } } },
++    },
++  ])("refuses removed configuration or permissions %#", async (candidate) => {
++    const mod = await import("./required-plugins.js");
++    expect(() => mod.assertRequiredPluginRuntime(candidate)).toThrow(
++      "Required plugin configuration unavailable",
++    );
++  });
++
++  it.each(["error", "disabled"] as const)("refuses required plugin status %s", async (status) => {
++    const mod = await import("./required-plugins.js");
++    const candidate = registry();
++    candidate.plugins[0].status = status;
++    expect(() =>
++      mod.completeRequiredPluginLoad(candidate, config, mod.beginRequiredPluginLoad()),
++    ).toThrow("did not load");
++  });
++
++  it("requires a callable typed hook owned by the loaded plugin", async () => {
++    const mod = await import("./required-plugins.js");
++    const candidate = registry();
++    candidate.typedHooks[0].pluginId = "other";
++    expect(() =>
++      mod.completeRequiredPluginLoad(candidate, config, mod.beginRequiredPluginLoad()),
++    ).toThrow("hook unavailable");
++    candidate.typedHooks[0].pluginId = "guard";
++    Reflect.set(candidate.typedHooks[0], "handler", "not-callable");
++    expect(() =>
++      mod.completeRequiredPluginLoad(candidate, config, mod.beginRequiredPluginLoad()),
++    ).toThrow("hook unavailable");
++  });
++
++  it("ignores optional plugin failures", async () => {
++    const mod = await import("./required-plugins.js");
++    const candidate = registry();
++    candidate.plugins.push({ id: "optional", status: "error" });
++    mod.beginRequiredPluginLoad();
++    mod.completeRequiredPluginLoad(candidate, config, mod.beginRequiredPluginLoad());
++    expect(() => mod.assertRequiredPluginRuntime(config)).not.toThrow();
++  });
++
++  it("keeps failed reload closed despite retained good hooks, then permits repair", async () => {
++    const mod = await import("./required-plugins.js");
++    mod.completeRequiredPluginLoad(registry(), config, mod.beginRequiredPluginLoad());
++    mod.beginRequiredPluginLoad();
++    const broken = registry();
++    broken.typedHooks = [];
++    expect(() =>
++      mod.completeRequiredPluginLoad(broken, config, mod.beginRequiredPluginLoad()),
++    ).toThrow("hook unavailable");
++    expect(() => mod.assertRequiredPluginRuntime(config)).toThrow("runtime is not ready");
++    mod.completeRequiredPluginLoad(registry(), config, mod.beginRequiredPluginLoad());
++    expect(() => mod.assertRequiredPluginRuntime(config)).not.toThrow();
++  });
++
++  it("detects disappearing composed hooks on each run", async () => {
++    const mod = await import("./required-plugins.js");
++    mod.completeRequiredPluginLoad(registry(), config, mod.beginRequiredPluginLoad());
++    expect(() => mod.assertRequiredPluginRuntime(config)).not.toThrow();
++    live.registry = { ...registry(), typedHooks: [] };
++    expect(() => mod.assertRequiredPluginRuntime(config)).toThrow("hook unavailable");
++    live.registry = null;
++    expect(() => mod.assertRequiredPluginRuntime(config)).toThrow("did not load");
++  });
++});
+diff --git a/src/plugins/required-plugins.ts b/src/plugins/required-plugins.ts
+new file mode 100644
+index 00000000..5e979c0b
+--- /dev/null
++++ b/src/plugins/required-plugins.ts
+@@ -0,0 +1,142 @@
++// Managed launchers may require security hooks independently of owner-editable config.
++import { z } from "zod";
++import type { OpenClawConfig } from "../config/types.openclaw.js";
++import type { GlobalHookRunnerRegistry } from "./hook-registry.types.js";
++import { getGlobalHookRunnerRegistry } from "./hook-runner-global-state.js";
++import { isConversationHookName, isPluginHookName, type PluginHookName } from "./hook-types.js";
++
++const requirementSchema = z.strictObject({
++  version: z.literal(1),
++  plugins: z
++    .array(
++      z.strictObject({
++        id: z.string().min(1).max(256).regex(/^\S+$/u),
++        hooks: z.array(z.custom<PluginHookName>(isPluginHookName)).min(1).max(64),
++      }),
++    )
++    .min(1)
++    .max(64),
++});
++
++// Capture once, before plugin execution. Owner config/reloads cannot remove the
++// launcher's requirements, and hot paths never reread files or process.env.
++const launchRequirements = process.env.OPENCLAW_REQUIRED_PLUGINS;
++let requirements:
++  | ReadonlyArray<{ readonly id: string; readonly hooks: readonly PluginHookName[] }>
++  | undefined;
++let gatewayLoadState: "unmanaged" | "loading" | "ready" = "unmanaged";
++let loadGeneration = 0;
++
++export function getRequiredPluginRequirements() {
++  if (requirements !== undefined) {
++    return requirements;
++  }
++  if (launchRequirements === undefined) {
++    requirements = Object.freeze([]);
++    return requirements;
++  }
++  try {
++    if (Buffer.byteLength(launchRequirements, "utf8") > 16_384) {
++      throw new Error("oversized requirements");
++    }
++    const parsed = requirementSchema.parse(JSON.parse(launchRequirements));
++    if (
++      new Set(parsed.plugins.map((plugin) => plugin.id)).size !== parsed.plugins.length ||
++      parsed.plugins.some((plugin) => new Set(plugin.hooks).size !== plugin.hooks.length)
++    ) {
++      throw new Error("duplicate requirements");
++    }
++    requirements = Object.freeze(
++      parsed.plugins.map((plugin) =>
++        Object.freeze({
++          id: plugin.id,
++          hooks: Object.freeze(plugin.hooks),
++        }),
++      ),
++    );
++    return requirements;
++  } catch {
++    // Do not echo launcher input; diagnostics must not disclose accidental secrets.
++    throw new Error("Invalid OPENCLAW_REQUIRED_PLUGINS launcher policy");
++  }
++}
++
++export function assertRequiredPluginConfiguration(config: OpenClawConfig | undefined): void {
++  for (const required of getRequiredPluginRequirements()) {
++    const plugins = config?.plugins;
++    if (
++      plugins?.enabled === false ||
++      plugins?.entries?.[required.id]?.enabled !== true ||
++      plugins?.deny?.includes(required.id) ||
++      (plugins?.allow && plugins.allow.length > 0 && !plugins.allow.includes(required.id)) ||
++      (required.hooks.some(isConversationHookName) &&
++        plugins?.entries?.[required.id]?.hooks?.allowConversationAccess !== true)
++    ) {
++      throw new Error(`Required plugin configuration unavailable: ${required.id}`);
++    }
++  }
++}
++
++function assertRequiredPluginRegistry(registry: GlobalHookRunnerRegistry | null): void {
++  for (const required of getRequiredPluginRequirements()) {
++    const matching = registry?.plugins.filter((plugin) => plugin.id === required.id) ?? [];
++    if (matching.length !== 1 || matching[0].status !== "loaded") {
++      throw new Error(`Required plugin did not load: ${required.id}`);
++    }
++    for (const hookName of required.hooks) {
++      if (
++        !registry?.typedHooks.some(
++          (hook) =>
++            hook.pluginId === required.id &&
++            hook.hookName === hookName &&
++            typeof hook.handler === "function",
++        )
++      ) {
++        throw new Error(`Required plugin hook unavailable: ${required.id}/${hookName}`);
++      }
++    }
++  }
++}
++
++export function beginRequiredPluginLoad(): number {
++  if (getRequiredPluginRequirements().length > 0) {
++    // Remain closed if loading throws. Pinned old registries must not conceal a
++    // failed replacement; only a complete successful gateway reload reopens it.
++    gatewayLoadState = "loading";
++    loadGeneration += 1;
++  }
++  return loadGeneration;
++}
++
++export function completeRequiredPluginLoad(
++  registry: GlobalHookRunnerRegistry,
++  config: OpenClawConfig,
++  generation: number,
++): void {
++  if (getRequiredPluginRequirements().length > 0) {
++    gatewayLoadState = "loading";
++    // A later rejected config or overlapping reload invalidates this attempt.
++    // An older completion must never reopen admission over the newer decision.
++    if (generation !== loadGeneration) {
++      throw new Error("Superseded required plugin reload");
++    }
++  }
++  assertRequiredPluginConfiguration(config);
++  assertRequiredPluginRegistry(registry);
++  if (getRequiredPluginRequirements().length > 0) {
++    gatewayLoadState = "ready";
++  }
++}
++
++export function assertRequiredPluginRuntime(config: OpenClawConfig | undefined): void {
++  if (getRequiredPluginRequirements().length === 0) {
++    return;
++  }
++  assertRequiredPluginConfiguration(config);
++  if (gatewayLoadState === "loading") {
++    throw new Error("Required plugin runtime is not ready");
++  }
++  // Scoped harness/memory registries are intentionally partial. Check the same
++  // composed live registry the dispatcher uses, never an individual setter.
++  assertRequiredPluginRegistry(getGlobalHookRunnerRegistry());
++}
