@@ -44,8 +44,14 @@ def _pump(source: socket.socket, destination: socket.socket) -> None:
             if not data:
                 break
             destination.sendall(data)
-    except (ConnectionError, OSError):
-        pass
+    except OSError:
+        # An I/O failure ends the tunnel, including the other pump's blocked
+        # recv/send. A normal EOF still permits a response after a half-close.
+        for connection in (source, destination):
+            try:
+                connection.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
     finally:
         try:
             destination.shutdown(socket.SHUT_WR)
@@ -72,11 +78,6 @@ def _enable_tcp_keepalive(connection: socket.socket) -> None:
 
 class LlmBridgeHandler(socketserver.BaseRequestHandler):
     def handle(self) -> None:
-        peer = str(self.client_address[0])
-        if not peer_is_allowed(peer, self.server.allowed_networks):  # type: ignore[attr-defined]
-            logger.warning("Rejected bridge client outside the peer allowlist: %s", peer)
-            return
-
         server = self.server
         try:
             upstream = socket.create_connection(
@@ -130,6 +131,14 @@ class LlmBridgeServer(socketserver.ThreadingTCPServer):
         self.allowed_networks = parse_allowed_networks(allowed_peers)
         self._connection_slots = threading.BoundedSemaphore(self.max_connections)
         super().__init__(server_address, LlmBridgeHandler)
+
+    def verify_request(self, request: socket.socket, client_address) -> bool:
+        # socketserver calls this before process_request can wait for a slot.
+        peer = str(client_address[0])
+        if not peer_is_allowed(peer, self.allowed_networks):
+            logger.warning("Rejected bridge client outside the peer allowlist: %s", peer)
+            return False
+        return True
 
     def process_request(self, request: socket.socket, client_address) -> None:
         if not self._connection_slots.acquire(timeout=self.connection_slot_timeout):
