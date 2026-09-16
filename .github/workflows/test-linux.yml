@@ -118,6 +118,9 @@ jobs:
       - name: Health Check Tests
         run: bash tests/test-health-check.sh
 
+      - name: Update Rollback Tests
+        run: bash tests/test-update-rollback-restart-failure.sh
+
       - name: QR Code Helper Tests
         run: bash tests/test-qrcode-helper.sh
 
