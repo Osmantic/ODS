@@ -8,6 +8,7 @@ import asyncio
 import hashlib
 import hmac
 import importlib
+import inspect
 import json
 import sys
 import threading
@@ -600,6 +601,48 @@ class TestModelsAndEvidence:
         wrong = client.get("/internal/route-evidence/x",
                            headers={"Authorization": "Bearer nope"})
         assert wrong.status_code == 401
+
+    def test_evidence_auth_is_constant_time(self, router):
+        """The internal key is compared with hmac.compare_digest, not `!=`.
+
+        A plain `!=` on a bearer token short-circuits at the first differing
+        byte, so response time leaks how much of the key a caller guessed
+        correctly (#4194). Timing cannot be asserted reliably in a unit test,
+        so this pins the property at the source: the handler must not compare
+        the key with an equality operator.
+        """
+        mod, client, write_state, calls = router
+        source = inspect.getsource(mod.route_evidence)
+        assert "compare_digest" in source, (
+            "route_evidence must compare the internal key in constant time"
+        )
+        assert "!= f\"Bearer" not in source, (
+            "route_evidence must not use a short-circuiting string compare"
+        )
+
+    def test_evidence_rejects_non_ascii_auth_header(self, router):
+        """A non-ASCII Authorization header is a 401, never a 500.
+
+        HTTP headers are latin-1 on the wire, so a raw 0xE9 byte reaches the
+        handler as a non-ASCII `str`. compare_digest raises TypeError on such a
+        str, so the comparison operates on UTF-8 bytes instead — otherwise this
+        attacker-supplied header turns an unauthenticated request into a 500.
+        Sent as bytes because httpx refuses to encode a non-ASCII str header.
+        """
+        mod, client, write_state, calls = router
+        resp = client.get(
+            "/internal/route-evidence/x",
+            headers={"Authorization": b"Bearer \xe9\xe9\xe9"},
+        )
+        assert resp.status_code == 401
+
+    def test_evidence_accepts_the_correct_key(self, router):
+        """The fix must not break the authorised path: a valid key gets past
+        auth and is answered on its own merits (404 for an unknown probe)."""
+        mod, client, write_state, calls = router
+        resp = client.get("/internal/route-evidence/unknown-probe",
+                          headers={"Authorization": "Bearer internal-secret"})
+        assert resp.status_code == 404
 
     def test_health_reports_route_presence(self, router):
         mod, client, write_state, calls = router
