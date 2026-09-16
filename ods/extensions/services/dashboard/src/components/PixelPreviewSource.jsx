@@ -4,9 +4,11 @@ import { PixelCodeLines, PixelLanguageBadge, needsPlainSource } from './PixelCod
 import PixelArtifactDownload from './PixelArtifactDownload'
 import PixelSourceFind from './PixelSourceFind'
 import PixelSourceExcerpt from './PixelSourceExcerpt'
+import PixelVerifiedImage from './PixelVerifiedImage'
 
 
 const TEXT_LANGUAGES = {html:'html',htm:'html',css:'css',scss:'scss',js:'javascript',mjs:'javascript',cjs:'javascript',jsx:'javascript',ts:'typescript',tsx:'typescript',py:'python',sh:'bash',yml:'yaml',yaml:'yaml',toml:'ini',json:'json',svg:'xml',xml:'xml',md:'markdown',markdown:'markdown',txt:'text',map:'json',csv:'text',tsv:'text'}
+const IMAGE_TYPES = {png:'image/png', jpg:'image/jpeg', jpeg:'image/jpeg', webp:'image/webp'}
 
 export default function PixelPreviewSource({ preview, file }) {
   const path = file?.path || 'index.html'
@@ -15,6 +17,7 @@ export default function PixelPreviewSource({ preview, file }) {
   const language = TEXT_LANGUAGES[extension]
   const [source, setSource] = useState(null)
   const [binarySize, setBinarySize] = useState(null)
+  const [image, setImage] = useState(null)
   const [error, setError] = useState('')
   const [copied, setCopied] = useState(false)
   const [attempt, setAttempt] = useState(0)
@@ -27,20 +30,23 @@ export default function PixelPreviewSource({ preview, file }) {
     let current = true
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), 12000)
-    setSource(null); setBinarySize(null); setError(''); setCopied(false)
+    setSource(null); setBinarySize(null); setImage(null); setError(''); setCopied(false)
     async function load() {
       try {
         const bytes = await loadArtifactBytes(preview, {path, sha256:expectedDigest, bytes:file?.bytes}, controller.signal)
         if (language) {
           const value = new TextDecoder('utf-8', {fatal:true, ignoreBOM:true}).decode(bytes)
           if (current) setSource(value)
-        } else if (current) setBinarySize(bytes.byteLength)
+        } else if (current) {
+          setBinarySize(bytes.byteLength)
+          if (IMAGE_TYPES[extension]) setImage({bytes, mime:IMAGE_TYPES[extension]})
+        }
       } catch { if (current) setError('The published source could not be verified. No unverified code is displayed.') }
       finally { clearTimeout(timeout) }
     }
     void load()
     return () => { current = false; copyRevision.current++; controller.abort(); clearTimeout(timeout) }
-  }, [preview.siteId, path, expectedDigest, file?.bytes, language, attempt])
+  }, [preview.siteId, path, expectedDigest, file?.bytes, language, extension, attempt])
   async function copy() {
     const revision = ++copyRevision.current
     setCopied(false)
@@ -56,6 +62,7 @@ export default function PixelPreviewSource({ preview, file }) {
   return <section className="pixel-preview-source pixel-original-source" data-wrap-lines={wrapLines} aria-label={path === 'index.html' ? 'Published HTML source' : `Source: ${path}`}>
     {source === null && binarySize === null && !error && <p role="status">Verifying source…</p>}
     {binarySize !== null && <p role="status">Binary asset. Its bytes are verified; no text source is available.</p>}
+    {image && <PixelVerifiedImage key={`${preview.siteId}/${path}/${expectedDigest}`} {...image} path={path}/>}
     {error && <div role="alert"><p>{error}</p><button type="button" onClick={() => setAttempt(value => value + 1)}>Retry source</button></div>}
     <div className="pixel-code-block">
       <header className="code-block-header"><PixelLanguageBadge path={path}/><span title={path}>{path}</span><PixelArtifactDownload key={`${preview.siteId}/${path}/${expectedDigest}`} preview={preview} file={{path, sha256:expectedDigest, bytes:file?.bytes}}/>{language && <button type="button" aria-label="Copy code" onClick={copy} disabled={source === null}>{copied ? 'Copied' : 'Copy'}</button>}</header>
