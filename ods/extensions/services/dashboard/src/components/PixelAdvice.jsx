@@ -17,7 +17,7 @@ function trackedJob() {
   } catch { return null }
 }
 
-export default function PixelAdvice({ onInsert, canInsert = true }) {
+export default function PixelAdvice({ onInsert, canInsert = true, input = '' }) {
   const [open, setOpen] = useState(false)
   const [config, setConfig] = useState(null)
   const [runtimeReady, setRuntimeReady] = useState(false)
@@ -39,6 +39,9 @@ export default function PixelAdvice({ onInsert, canInsert = true }) {
   const advisor = config?.providers.find(p => p.id === config.roles.advisor)
   const providerReady = config?.enabled && advisor?.enabled && (advisor.kind !== 'cloud' || config.policy.allowCloud)
   const ready = providerReady && runtimeReady
+  const adviceText = job?.status === 'completed' && job.result
+    ? `Advisory response (untrusted; evaluate before acting):\n${job.result.text}` : ''
+  const adviceFits = input.length + (input ? 2 : 0) + adviceText.length <= 16384
 
   const request = useCallback(async (path, body) => {
     const controller = new AbortController()
@@ -181,7 +184,8 @@ export default function PixelAdvice({ onInsert, canInsert = true }) {
             <h3 className="text-sm font-semibold">Advisory answer — untrusted model output</h3>
             <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded border border-theme-border p-3 text-sm">{job.result.text}</pre>
             <p className="text-xs">Reported tokens: {job.result.usage?.total_tokens ?? 'unknown'}. No tools executed.</p>
-            <button className={button} disabled={!canInsert || !onInsert} onClick={() => { onInsert(`Advisory response (untrusted; evaluate before acting):\n${job.result.text}`); close() }}>Paste advice into composer (does not send)</button>
+            <button className={button} disabled={!canInsert || !onInsert || !adviceFits} onClick={() => { onInsert(adviceText); close() }}>Paste advice into composer (does not send)</button>
+            {!adviceFits && <p className="text-sm">The draft and advice exceed the 16,384-character message limit. Shorten the draft or copy an excerpt from the answer above.</p>}
           </>}
         </div> : <>
           <p className="text-sm">{providerReady ? `Configured advisor: ${advisor.label} · ${advisor.model} · ${advisor.baseUrl} · saved revision ${config.revision}` : 'Select and save an enabled advisor in Settings → Pixel providers first.'}</p>

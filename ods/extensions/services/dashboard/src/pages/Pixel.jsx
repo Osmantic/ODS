@@ -1250,7 +1250,7 @@ export default function Pixel({ systemStatus = null }) {
               row?.scrollIntoView?.({block:'start', behavior:'auto'})
               row?.focus?.({preventScroll:true})
             }}/>
-            <PixelAdvice canInsert={!sending} onInsert={text => setInput(current => current ? `${current}\n\n${text}` : text)} />
+            <PixelAdvice input={input} canInsert={!sending} onInsert={text => setInput(current => current ? `${current}\n\n${text}` : text)} />
             <PixelHandoffApproval label="Approvals" />
             <PixelProviderScopes chatId={chatIdRef.current} sending={sending} />
           </div></details>
