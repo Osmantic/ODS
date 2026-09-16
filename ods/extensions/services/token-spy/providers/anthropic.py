@@ -127,7 +127,7 @@ class AnthropicProvider(LLMProvider):
 
         total_chars = 0
         base_chars = 0
-        workspace_chars = {k: 0 for k in self.WORKSPACE_FILE_MAP.values()}
+        workspace_chars = dict.fromkeys(self.WORKSPACE_FILE_MAP.values(), 0)
 
         for block in blocks:
             if not isinstance(block, dict):
