@@ -213,7 +213,7 @@ function Get-ODSComposeSensitiveEnvValues {
             $key = $Matches[1]
             $value = $Matches[2].Trim().Trim('"').Trim("'")
             # USER|EMAIL|BEARER cover schema secret:true keys the shorter set
-            # missed - N8N_USER, LANGFUSE_INIT_USER_EMAIL, LANGFUSE_MINIO_ROOT_USER -
+            # missed - N8N_USER, LANGFUSE_INIT_USER_EMAIL -
             # whose values would otherwise ship in the shareable failure report.
             # Keep in sync with ConvertTo-ODSComposeRedactedLine below and the
             # Linux support bundle's redaction set.

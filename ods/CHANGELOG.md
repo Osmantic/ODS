@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+- Langfuse now uses SeaweedFS instead of MinIO (end of life) for its S3
+  event store. The `.env` keys are renamed to `LANGFUSE_S3_ACCESS_KEY` and
+  `LANGFUSE_S3_SECRET_KEY`. Existing MinIO bucket data in
+  `data/langfuse/minio/` is not migrated; the new store starts empty.
+
 ## [2.6.0] - 2026-07-28
 
 ### Added
