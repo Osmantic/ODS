@@ -406,6 +406,37 @@ wait_for_healthy() {
     return 1
 }
 
+# _compose_restart [compose_flags]
+#   Brings the stack down and back up, falling back to compose v1.
+#
+#   A failed `down` is survivable — containers may already be stopped — so it is
+#   only warned about. A failed `up` means the stack is NOT running, which the
+#   caller has to know about: previously the v1 fallback was a bare command, so
+#   under `set -euo pipefail` its failure killed the script on the spot, with no
+#   error and no recovery guidance (#4182).
+_compose_restart() {
+    local flags="${1:-}"
+
+    # $flags is a pre-split argument list ("-f a.yml -f b.yml"), not one word,
+    # so it is deliberately unquoted here.
+    # shellcheck disable=SC2086
+    if ! docker compose ${flags} down --remove-orphans; then
+        log_warn "docker compose v2 down failed, trying v1..."
+        # shellcheck disable=SC2086
+        docker-compose ${flags} down --remove-orphans \
+            || log_warn "docker-compose v1 down also failed (non-fatal); bringing the stack up anyway"
+    fi
+
+    # shellcheck disable=SC2086
+    if ! docker compose ${flags} up -d; then
+        log_warn "docker compose v2 up failed, trying v1..."
+        # shellcheck disable=SC2086
+        docker-compose ${flags} up -d || return 1
+    fi
+
+    return 0
+}
+
 # _update_rollback <reason> <snap_dir> [compose_flags]
 #   Restores the given snapshot and restarts services.
 #   Called when cmd_update encounters a non-zero exit at any step.
@@ -427,25 +458,18 @@ _update_rollback() {
     fi
 
     cd "$INSTALL_DIR"
-    if [[ -n "${compose_flags_arg}" ]]; then
-        if ! docker compose ${compose_flags_arg} down --remove-orphans; then
-            log_warn "docker compose v2 down failed, trying v1..."
-            docker-compose ${compose_flags_arg} down --remove-orphans
-        fi
-        if ! docker compose ${compose_flags_arg} up -d; then
-            log_warn "docker compose v2 up failed, trying v1..."
-            docker-compose ${compose_flags_arg} up -d
-        fi
-    else
-        if ! docker compose down --remove-orphans; then
-            log_warn "docker compose v2 down failed, trying v1..."
-            docker-compose down --remove-orphans
-        fi
-        if ! docker compose up -d; then
-            log_warn "docker compose v2 up failed, trying v1..."
-            docker-compose up -d
-        fi
+    if ! _compose_restart "$compose_flags_arg"; then
+        local up_hint="docker compose up -d"
+        [[ -n "${compose_flags_arg}" ]] && up_hint="docker compose ${compose_flags_arg} up -d"
+        log_error "CRITICAL: Snapshot was restored but the services did not come back up."
+        log_error "  Snapshot : ${snap_dir_arg}"
+        log_error "  Steps    :"
+        log_error "    1. cd \"${INSTALL_DIR}\""
+        log_error "    2. ${up_hint}"
+        log_error "    3. ./ods-update.sh health"
+        return 1
     fi
+
     log_warn "Rollback complete. Run 'ods-update.sh health' to verify."
 }
 
@@ -692,23 +716,11 @@ cmd_update() {
     # ── Step 4: restart services ──────────────────────────────────────────────
     log_info "Restarting services..."
     cd "$INSTALL_DIR"
-    if [[ -n "${compose_flags}" ]]; then
-        if ! docker compose ${compose_flags} down --remove-orphans; then
-            log_warn "docker compose v2 down failed, trying v1..."
-            docker-compose ${compose_flags} down --remove-orphans
-        fi
-        if ! docker compose ${compose_flags} up -d; then
-            log_warn "docker compose v2 up failed, trying v1..."
-            docker-compose ${compose_flags} up -d
-        fi
-    elif [[ -f "${INSTALL_DIR}/docker-compose.yml" ]]; then
-        if ! docker compose down --remove-orphans; then
-            log_warn "docker compose v2 down failed, trying v1..."
-            docker-compose down --remove-orphans
-        fi
-        if ! docker compose up -d; then
-            log_warn "docker compose v2 up failed, trying v1..."
-            docker-compose up -d
+    if [[ -n "${compose_flags}" || -f "${INSTALL_DIR}/docker-compose.yml" ]]; then
+        if ! _compose_restart "$compose_flags"; then
+            # Do not die here: Step 5's health check is what turns a dead stack
+            # into a rollback. Previously this path exited before reaching it.
+            log_warn "Service restart failed; the health check below will catch it."
         fi
     else
         log_warn "No compose files found. Skipping container restart."
