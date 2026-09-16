@@ -7113,7 +7113,15 @@ class AgentHandler(BaseHTTPRequestHandler):
                         # Also kills the active curl process when cancel is requested.
                         _stop_progress = threading.Event()
 
-                        def _poll_progress():
+                        # Bind the per-part values as defaults: the closure would
+                        # otherwise read whatever the loop variables hold when the
+                        # thread runs, not the part it was started for.
+                        def _poll_progress(
+                            _stop_progress=_stop_progress,
+                            part_tmp=part_tmp,
+                            part_label=part_label,
+                            part_total=part_total,
+                        ):
                             while not _stop_progress.is_set():
                                 if _model_download_cancel.is_set():
                                     proc_ref = _model_download_proc
