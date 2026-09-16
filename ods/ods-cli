@@ -3295,10 +3295,20 @@ META
                 error "Archive contains unsafe paths (absolute or ../) — refusing to import"
             fi
 
-            # Validate archive structure
+            # Validate archive structure. archive_name is taken from attacker-
+            # controlled tar metadata and is later interpolated into rm -rf, so
+            # constrain it to a single plain directory name. A bare ".." entry
+            # slips past the path-traversal grep above (that pattern needs a
+            # trailing slash) and would otherwise make the removal below target
+            # the parent of PRESETS_DIR.
             local archive_name
             archive_name=$(tar tzf "$archive" 2>/dev/null | sed -n '1p' | cut -d/ -f1)
             [[ -z "$archive_name" ]] && error "Invalid archive structure"
+            if [[ "$archive_name" == "." || "$archive_name" == ".." ]] \
+                || [[ "$archive_name" != "${archive_name##*/}" ]] \
+                || [[ ! "$archive_name" =~ ^[A-Za-z0-9._-]+$ ]]; then
+                error "Archive has an unsafe top-level name ('${archive_name}') — refusing to import"
+            fi
 
             # Check if preset already exists
             if [[ -d "${PRESETS_DIR}/${archive_name}" ]]; then
