@@ -458,6 +458,9 @@ jobs:
       - name: Update Backup Retention By Creation Time
         run: bash tests/test-update-backup-retention-labels.sh
 
+      - name: Backup and Restore Disk Space Preflight
+        run: bash tests/test-disk-space-preflight.sh
+
       - name: Backup Data Coverage Contract
         run: |
           command -v rsync
