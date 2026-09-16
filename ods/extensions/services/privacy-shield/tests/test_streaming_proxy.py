@@ -41,9 +41,9 @@ TEST_KEY = "test-shield-key-abcdef0123456789"
 os.environ["SHIELD_API_KEY"] = TEST_KEY
 os.environ.setdefault("PII_CACHE_ENABLED", "false")  # deterministic PII map
 
-from fastapi.testclient import TestClient  # noqa: E402
+from fastapi.testclient import TestClient
 
-import proxy  # noqa: E402
+import proxy
 
 AUTH = {"Authorization": f"Bearer {TEST_KEY}"}
 EMAIL = "alice.streaming@example.com"
@@ -365,7 +365,7 @@ class TestWebSocketAuth:
 
     def test_websocket_no_token_rejected_no_upstream(self, client, monkeypatch):
         try:
-            import websockets  # noqa: F401
+            import websockets
         except ModuleNotFoundError:
             pytest.skip("websockets lib unavailable")
         self._block_upstream(monkeypatch)
@@ -380,7 +380,7 @@ class TestWebSocketAuth:
 
     def test_websocket_invalid_token_rejected_no_upstream(self, client, monkeypatch):
         try:
-            import websockets  # noqa: F401
+            import websockets
         except ModuleNotFoundError:
             pytest.skip("websockets lib unavailable")
         self._block_upstream(monkeypatch)
@@ -400,7 +400,7 @@ class TestWebSocketAuth:
         secrets.compare_digest on the pre-auth path — and must not reach
         upstream."""
         try:
-            import websockets  # noqa: F401
+            import websockets
         except ModuleNotFoundError:
             pytest.skip("websockets lib unavailable")
         self._block_upstream(monkeypatch)

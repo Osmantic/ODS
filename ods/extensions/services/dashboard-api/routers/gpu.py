@@ -69,7 +69,7 @@ def _apple_info_to_individual(info: GPUInfo) -> IndividualGPU:
     )
 
 
-def _get_raw_gpus(gpu_backend: str) -> Optional[list[IndividualGPU]]:
+def _get_raw_gpus(gpu_backend: str) -> list[IndividualGPU] | None:
     """Return per-GPU list from the appropriate backend, with fallback."""
     if gpu_backend == "apple":
         info = get_gpu_info_apple()
@@ -97,7 +97,7 @@ def _env_int(name: str, default: int = 0) -> int:
         return default
 
 
-def _amd_host_runtime_fallback_gpus() -> Optional[list[IndividualGPU]]:
+def _amd_host_runtime_fallback_gpus() -> list[IndividualGPU] | None:
     """Represent a healthy host-backed AMD runtime when container GPU sysfs is absent.
 
     Windows Docker Desktop installs route inference through a host Lemonade or
@@ -174,7 +174,7 @@ def _join_url(base_url: str, path: str) -> str:
     return f"{base}{suffix}"
 
 
-def _runtime_port() -> tuple[int, Optional[str]]:
+def _runtime_port() -> tuple[int, str | None]:
     raw = _clean_env("AMD_INFERENCE_PORT")
     if not raw:
         return 8080, None
@@ -187,7 +187,7 @@ def _runtime_port() -> tuple[int, Optional[str]]:
     return 8080, "amd_port_invalid"
 
 
-def _split_backend_list(raw: str) -> tuple[list[str], Optional[str]]:
+def _split_backend_list(raw: str) -> tuple[list[str], str | None]:
     if not raw:
         return [], None
 
@@ -256,7 +256,7 @@ def _runtime_health_path(runtime: str, api_path: str) -> str:
     return "/health"
 
 
-def _probe_amd_health(health_url: str) -> tuple[str, str, Optional[str]]:
+def _probe_amd_health(health_url: str) -> tuple[str, str, str | None]:
     request = urllib.request.Request(health_url, method="GET")
     try:
         with urllib.request.urlopen(request, timeout=2.0) as response:
@@ -287,7 +287,7 @@ def _external_lemonade_warning(prefix: str, exc: LemonadeClientError) -> str:
     return f"{prefix}_{exc.kind}"
 
 
-def _loaded_model_from_health(payload: dict) -> Optional[str]:
+def _loaded_model_from_health(payload: dict) -> str | None:
     for key in ("model_loaded", "loaded_model", "active_model", "model"):
         value = payload.get(key)
         if value:
@@ -295,7 +295,7 @@ def _loaded_model_from_health(payload: dict) -> Optional[str]:
     return None
 
 
-async def _probe_external_lemonade(api_base: str, api_path: str) -> tuple[str, str, list[str], Optional[str], Optional[int]]:
+async def _probe_external_lemonade(api_base: str, api_path: str) -> tuple[str, str, list[str], str | None, int | None]:
     settings = LemonadeSettings(
         base_url=normalize_base_url(api_base, api_path),
         api_base_path=api_path,
@@ -313,7 +313,7 @@ async def _probe_external_lemonade(api_base: str, api_path: str) -> tuple[str, s
 
         version = str(health_payload.get("version") or "unknown")
         loaded_model = _loaded_model_from_health(health_payload)
-        model_count: Optional[int] = None
+        model_count: int | None = None
         try:
             model_count = len(await client.models())
         except LemonadeClientError as exc:
@@ -458,8 +458,8 @@ async def amd_runtime():
     base_url = _runtime_base_url(runtime, location, port)
     api_base = _join_url(base_url, api_path)
     health_url = _join_url(base_url, _runtime_health_path(runtime, api_path))
-    loaded_model: Optional[str] = None
-    model_count: Optional[int] = None
+    loaded_model: str | None = None
+    model_count: int | None = None
     if runtime == "lemonade" and _external_lemonade_active():
         health, version, probe_warnings, loaded_model, model_count = await _probe_external_lemonade(api_base, api_path)
         warnings.extend(probe_warnings)

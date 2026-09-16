@@ -190,7 +190,7 @@ def _ensure_agent_in_settings(settings: dict, agent_name: str):
 def load_settings() -> dict:
     """Load settings from disk, merging with defaults for missing keys."""
     try:
-        with open(SETTINGS_PATH, "r") as f:
+        with open(SETTINGS_PATH) as f:
             data = json.load(f)
         # Merge defaults for any missing top-level keys
         for k, v in _DEFAULT_SETTINGS.items():
@@ -1131,9 +1131,7 @@ def _get_local_session_status(agent: str) -> dict:
             pass  # skip malformed JSONL lines
 
     limit = get_agent_setting(agent, "session_char_limit") or AUTO_RESET_HISTORY_CHARS
-    if tool_results >= 480:
-        rec = "reset_recommended"
-    elif history_chars > limit:
+    if tool_results >= 480 or history_chars > limit:
         rec = "reset_recommended"
     elif history_chars > limit * 0.8:
         rec = "compact_soon"
@@ -1409,7 +1407,7 @@ def _kill_session(agent: str, reason: str = "manual") -> dict:
     # Clean sessions.json reference (best-effort)
     sessions_json = f"{sessions_dir}/sessions.json"
     try:
-        with open(sessions_json, "r") as f:
+        with open(sessions_json) as f:
             data = json.load(f)
         to_remove = [k for k, v in data.items() if isinstance(v, dict) and v.get("sessionId") == largest]
         for k in to_remove:
@@ -1668,7 +1666,7 @@ def _update_timer_interval(minutes: int):
     import subprocess
     timer_path = os.environ.get("SESSION_TIMER_PATH", "/etc/systemd/system/openclaw-session-cleanup.timer")
     try:
-        with open(timer_path, "r") as f:
+        with open(timer_path) as f:
             timer_content = f.read()
         import re as _re
         new_content = _re.sub(
@@ -2489,7 +2487,7 @@ async def proxy_other(request: Request, path: str):
         resp = await client.request(
             method=request.method,
             url=f"/{path}",
-            content=body if body else None,
+            content=body or None,
             headers=headers,
         )
         return Response(

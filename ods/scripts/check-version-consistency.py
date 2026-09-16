@@ -72,7 +72,7 @@ def main() -> int:
         release = manifest.get("release") if isinstance(manifest.get("release"), dict) else {}
         release_version = str(release.get("version", "")).strip()
         release_date = str(release.get("date", "")).strip()
-    except Exception as exc:  # noqa: BLE001 - gate should report cleanly
+    except Exception as exc:
         print(f"[FAIL] version consistency: cannot read manifest.json: {exc}")
         return 1
 

@@ -69,8 +69,8 @@ def test_wifi_qr_payload_escapes_special_chars():
 
 def _have_pillow_and_qrcode():
     try:
-        import PIL  # noqa: F401
-        import qrcode  # noqa: F401
+        import PIL
+        import qrcode
         return True
     except ImportError:
         return False

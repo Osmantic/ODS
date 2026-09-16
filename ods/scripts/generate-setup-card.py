@@ -82,8 +82,8 @@ def build_wifi_qr_payload(ssid: str, password: str, security: str = "WPA") -> st
 
 def render_qr(text: str, target_px: int):
     """Return a Pillow Image of the QR sized to ~target_px x target_px."""
-    import qrcode  # noqa: PLC0415 — lazy import keeps --help fast
-    from PIL import Image  # noqa: PLC0415
+    import qrcode
+    from PIL import Image
     from qrcode.constants import ERROR_CORRECT_M
 
     # ERROR_CORRECT_M handles ~15% damage which is fine for a printed card.
@@ -123,7 +123,7 @@ def render_card(
     owner_url: str | None = None,
 ):
     """Compose the full card image. Returns a Pillow Image."""
-    from PIL import Image, ImageDraw  # noqa: PLC0415
+    from PIL import Image, ImageDraw
 
     if mode not in {"setup", "factory-owner"}:
         raise ValueError("mode must be setup or factory-owner")
@@ -198,7 +198,7 @@ def render_card(
 
     rows = [
         ("network", ssid),
-        ("password", password if password else "(open)"),
+        ("password", password or "(open)"),
         (fallback_url_label, right_url),
     ]
     # The value column starts at x=MARGIN+240 and must fit within the right
@@ -274,7 +274,7 @@ def _load_font(size: int, bold: bool = False, monospace: bool = False):
     pretty. The card is meant to be printed, so we look for common system
     fonts first.
     """
-    from PIL import ImageFont  # noqa: PLC0415
+    from PIL import ImageFont
 
     candidates: list[str] = []
     if monospace:
@@ -345,8 +345,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     try:
-        import PIL  # noqa: F401, PLC0415
-        import qrcode  # noqa: F401, PLC0415
+        import PIL
+        import qrcode
     except ImportError as exc:
         print(f"error: missing dependency: {exc.name}. "
               "Install with: pip install 'qrcode[pil]'", file=sys.stderr)

@@ -12,8 +12,8 @@ _BIN_DIR = Path(__file__).resolve().parents[4] / "bin"
 if str(_BIN_DIR) not in sys.path:
     sys.path.insert(0, str(_BIN_DIR))
 
-from model_switchboard import adapters as ad  # noqa: E402
-from model_switchboard import reconciler as rc  # noqa: E402
+from model_switchboard import adapters as ad
+from model_switchboard import reconciler as rc
 
 
 def _proof_result(identity="M.gguf", **overrides):

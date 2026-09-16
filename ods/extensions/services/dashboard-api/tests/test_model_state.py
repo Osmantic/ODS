@@ -16,7 +16,7 @@ _BIN_DIR = Path(__file__).resolve().parents[4] / "bin"
 if str(_BIN_DIR) not in sys.path:
     sys.path.insert(0, str(_BIN_DIR))
 
-from model_switchboard import state as sb  # noqa: E402
+from model_switchboard import state as sb
 
 _SCHEMA_PATH = Path(__file__).resolve().parents[4] / "config" / "model-state.schema.v1.json"
 

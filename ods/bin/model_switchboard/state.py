@@ -515,7 +515,7 @@ def migrate_env_identity(env: dict[str, str]) -> dict[str, Any] | None:
 
     catalog_guess = llm_model
     if not catalog_guess:
-        stem = runtime_id[len("extra."):] if runtime_id.startswith("extra.") else runtime_id
+        stem = runtime_id.removeprefix("extra.")
         if stem.lower().endswith(".gguf"):
             stem = stem[: -len(".gguf")]
         catalog_guess = stem

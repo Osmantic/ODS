@@ -12,11 +12,11 @@ class ProviderRegistry:
     or by calling ProviderRegistry.register() directly.
     """
 
-    _providers: Dict[str, Type[LLMProvider]] = {}
-    _instances: Dict[str, LLMProvider] = {}  # Cached instances
+    _providers: dict[str, type[LLMProvider]] = {}
+    _instances: dict[str, LLMProvider] = {}  # Cached instances
 
     @classmethod
-    def register(cls, name: str, provider_class: Type[LLMProvider]) -> None:
+    def register(cls, name: str, provider_class: type[LLMProvider]) -> None:
         """Register a provider class by name.
 
         Args:
@@ -26,7 +26,7 @@ class ProviderRegistry:
         cls._providers[name.lower()] = provider_class
 
     @classmethod
-    def get(cls, name: str, config: Optional[Dict[str, Any]] = None) -> LLMProvider:
+    def get(cls, name: str, config: dict[str, Any] | None = None) -> LLMProvider:
         """Get a provider instance by name.
 
         Creates a new instance with the given config. Does not cache
@@ -58,7 +58,7 @@ class ProviderRegistry:
         return cls._instances[name_lower]
 
     @classmethod
-    def get_or_none(cls, name: str, config: Optional[Dict[str, Any]] = None) -> Optional[LLMProvider]:
+    def get_or_none(cls, name: str, config: dict[str, Any] | None = None) -> LLMProvider | None:
         """Get a provider instance or None if not found.
 
         Same as get() but returns None instead of raising ValueError.
@@ -69,7 +69,7 @@ class ProviderRegistry:
             return None
 
     @classmethod
-    def list_providers(cls) -> List[str]:
+    def list_providers(cls) -> list[str]:
         """List all registered provider names."""
         return list(cls._providers.keys())
 
@@ -105,7 +105,7 @@ def register_provider(name: str):
         class MyCloudProvider(LLMProvider):
             ...
     """
-    def decorator(cls: Type[LLMProvider]) -> Type[LLMProvider]:
+    def decorator(cls: type[LLMProvider]) -> type[LLMProvider]:
         ProviderRegistry.register(name, cls)
         return cls
     return decorator

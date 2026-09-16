@@ -1573,16 +1573,16 @@ class TestRecreateLlamaServerFromInspect:
         argv, calls = self._capture_recreate(monkeypatch, inspect_config, env)
 
         assert ["docker", "stop", "ods-llama-server"] in calls
-        assert ["--device", "/dev/dri:/dev/dri:rwm"] == argv[
+        assert argv[
             argv.index("--device"):argv.index("--device") + 2
-        ]
+        ] == ["--device", "/dev/dri:/dev/dri:rwm"]
         second_device = argv.index("--device", argv.index("--device") + 1)
         assert argv[second_device:second_device + 2] == [
             "--device", "/dev/kfd:/dev/kfd:rwm",
         ]
         assert argv.count("--group-add") == 2
         assert "44" in argv and "109" in argv
-        assert ["--runtime", "runc"] == argv[argv.index("--runtime"):argv.index("--runtime") + 2]
+        assert argv[argv.index("--runtime"):argv.index("--runtime") + 2] == ["--runtime", "runc"]
         assert "--read-only" in argv
         assert "--security-opt" in argv and "no-new-privileges:true" in argv
         assert argv[argv.index("--health-cmd"):argv.index("--health-cmd") + 2] == [
@@ -4720,18 +4720,18 @@ class TestModelActivateRollback:
             )
         )
         old_env = (
-            "ODS_MODE=lemonade\r\n"
-            "GPU_BACKEND=amd\r\n"
-            "LLM_BACKEND=lemonade\r\n"
-            "AMD_INFERENCE_RUNTIME=lemonade\r\n"
-            "AMD_INFERENCE_LOCATION=host\r\n"
-            "AMD_INFERENCE_PORT=8080\r\n"
-            "GGUF_FILE=old-model.gguf\r\n"
-            "LLM_MODEL=old-model\r\n"
-            "LEMONADE_MODEL=Old-Model\r\n"
-            "CTX_SIZE=2048\r\n"
-            "LITELLM_LEMONADE_API_KEY=sk-inline-from-env-file-67890\r\n"
-        ).encode()
+            b"ODS_MODE=lemonade\r\n"
+            b"GPU_BACKEND=amd\r\n"
+            b"LLM_BACKEND=lemonade\r\n"
+            b"AMD_INFERENCE_RUNTIME=lemonade\r\n"
+            b"AMD_INFERENCE_LOCATION=host\r\n"
+            b"AMD_INFERENCE_PORT=8080\r\n"
+            b"GGUF_FILE=old-model.gguf\r\n"
+            b"LLM_MODEL=old-model\r\n"
+            b"LEMONADE_MODEL=Old-Model\r\n"
+            b"CTX_SIZE=2048\r\n"
+            b"LITELLM_LEMONADE_API_KEY=sk-inline-from-env-file-67890\r\n"
+        )
         old_yaml = b"model_list:\r\n  - model_name: old\r\n"
         env_path.write_bytes(old_env)
         lemonade_yaml.write_bytes(old_yaml)

@@ -64,7 +64,7 @@ def _is_blocking(verdict):
 
 def _has_lifecycle(verdict):
     has_scope = "hostScope" in verdict or verdict.get("globalScope") is True
-    return LIFECYCLE_REQUIRED <= set(verdict) and has_scope
+    return set(verdict) >= LIFECYCLE_REQUIRED and has_scope
 
 
 def test_lifecycle_bearing_verdicts_are_well_formed():

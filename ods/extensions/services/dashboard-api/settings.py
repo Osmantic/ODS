@@ -130,7 +130,7 @@ def _parse_env_text(raw_text: str) -> tuple[dict[str, str], list[dict[str, Any]]
 # ── Value helpers ──────────────────────────────────────────────────────────────
 
 
-def _normalize_bool(value: Any) -> Optional[str]:
+def _normalize_bool(value: Any) -> str | None:
     if isinstance(value, bool):
         return "true" if value else "false"
     text = str(value).strip().lower()
@@ -175,7 +175,7 @@ def _humanize_env_key(key: str) -> str:
     return key.replace("_", " ").title().replace("Llm", "LLM").replace("Api", "API").replace("Gpu", "GPU")
 
 
-def _is_secret_field(key: str, definition: Optional[dict[str, Any]] = None) -> bool:
+def _is_secret_field(key: str, definition: dict[str, Any] | None = None) -> bool:
     if definition is not None and "secret" in definition:
         return bool(definition.get("secret"))
 
@@ -244,7 +244,7 @@ def _build_env_fields(
 def _validate_env_values(
     values: dict[str, str],
     fields: dict[str, dict[str, Any]],
-    parse_issues: Optional[list[dict[str, Any]]] = None,
+    parse_issues: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     issues = list(parse_issues or [])
 
@@ -327,7 +327,7 @@ def _validate_env_values(
 def _serialize_form_values(
     raw_values: dict[str, Any],
     fields: dict[str, dict[str, Any]],
-    current_values: Optional[dict[str, str]] = None,
+    current_values: dict[str, str] | None = None,
 ) -> dict[str, str]:
     serialized: dict[str, str] = {}
     current_values = current_values or {}
@@ -351,9 +351,7 @@ def _serialize_form_values(
         if field_type == "boolean":
             normalized = _normalize_bool(value)
             serialized[key] = normalized if normalized is not None else str(value).strip()
-        elif field_type == "integer":
-            serialized[key] = str(value).strip()
-        elif key == "N_GPU_LAYERS":
+        elif field_type == "integer" or key == "N_GPU_LAYERS":
             serialized[key] = str(value).strip()
         else:
             serialized[key] = str(value)
@@ -373,7 +371,7 @@ def _empty_value_unsets_env_key(key: str, field: dict[str, Any]) -> bool:
 # ── Apply-plan helpers ─────────────────────────────────────────────────────────
 
 
-def _match_apply_service(key: str) -> Optional[str]:
+def _match_apply_service(key: str) -> str | None:
     if key.endswith("_PUBLIC_URL") or key == "ODS_SERVICE_PUBLIC_URLS":
         return None
     if key in _LLAMA_APPLY_KEYS or key.startswith(("LLAMA_", "GGUF_")):
@@ -427,7 +425,7 @@ def _match_apply_service(key: str) -> Optional[str]:
 def _build_apply_summary(
     services: list[str],
     manual_keys: list[str],
-    inactive_services: Optional[list[str]] = None,
+    inactive_services: list[str] | None = None,
 ) -> str:
     inactive_services = inactive_services or []
     parts: list[str] = []
@@ -447,7 +445,7 @@ def _build_apply_summary(
 def _compute_env_apply_plan(
     previous_values: dict[str, str],
     next_values: dict[str, str],
-    active_services: Optional[set[str]] = None,
+    active_services: set[str] | None = None,
 ) -> dict[str, Any]:
     changed_keys = sorted(
         key for key in set(previous_values) | set(next_values)

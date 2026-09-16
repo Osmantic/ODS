@@ -9,14 +9,14 @@ import os
 import sys
 import tempfile
 from pathlib import Path
-from typing import Iterator
+from collections.abc import Iterator
 
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "bin"))
 sys.path.insert(0, str(ROOT / "extensions" / "services" / "remote-provider-ssh-tunnel"))
 
-from remote_provider.ssh_supervisor import SSH_SUPERVISOR_PLAN_SCHEMA  # noqa: E402
+from remote_provider.ssh_supervisor import SSH_SUPERVISOR_PLAN_SCHEMA
 
 
 BASE_COMPOSE = ROOT / "docker-compose.base.yml"

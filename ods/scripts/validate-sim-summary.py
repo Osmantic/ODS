@@ -32,9 +32,10 @@ import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Union
+from typing import Any, Dict, List, Optional, Union
+from collections.abc import Mapping, Sequence
 
-Json = Union[None, bool, int, float, str, List["Json"], Dict[str, "Json"]]
+Json = Union[None, bool, int, float, str, list["Json"], dict[str, "Json"]]
 
 
 # -----------------------------
@@ -54,7 +55,7 @@ class ValidationIssue:
 class Validator:
     def __init__(self, *, strict: bool = False) -> None:
         self.strict = strict
-        self.issues: List[ValidationIssue] = []
+        self.issues: list[ValidationIssue] = []
 
     def add(self, path: str, message: str) -> None:
         self.issues.append(ValidationIssue(path=path, message=message))
@@ -79,11 +80,11 @@ def _is_int(v: Any) -> bool:
     return isinstance(v, int) and not isinstance(v, bool)
 
 
-def _as_mapping(v: Any) -> Optional[Mapping[str, Any]]:
+def _as_mapping(v: Any) -> Mapping[str, Any] | None:
     return v if isinstance(v, Mapping) else None
 
 
-def _as_sequence(v: Any) -> Optional[Sequence[Any]]:
+def _as_sequence(v: Any) -> Sequence[Any] | None:
     return v if isinstance(v, Sequence) and not isinstance(v, (str, bytes, bytearray)) else None
 
 

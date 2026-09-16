@@ -36,7 +36,7 @@ def estimated_param_billions(model: dict[str, Any]) -> float:
     ):
         numbers.extend(
             float(match)
-            for match in re.findall(r"(\d+(?:\.\d+)?)\s*b", str(text or ""), re.I)
+            for match in re.findall(r"(\d+(?:\.\d+)?)\s*b", str(text or ""), re.IGNORECASE)
         )
     if numbers:
         return max(numbers)

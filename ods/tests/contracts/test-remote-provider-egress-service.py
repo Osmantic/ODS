@@ -13,7 +13,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "bin"))
 
-from remote_provider.egress import (  # noqa: E402
+from remote_provider.egress import (
     EgressError,
     prepare_upstream_request,
     provider_secret_status,
@@ -21,7 +21,7 @@ from remote_provider.egress import (  # noqa: E402
     upstream_base_url_for_route,
     validate_direct_provider_resolution,
 )
-from remote_provider.egress_probe import (  # noqa: E402
+from remote_provider.egress_probe import (
     PROBE_RESPONSE_SCHEMA,
     probe_route_response,
 )

@@ -200,7 +200,7 @@ def _safe_return_path(return_url: str) -> str | None:
     return candidate
 
 
-def _nonce_path(state: str) -> Optional[Path]:
+def _nonce_path(state: str) -> Path | None:
     """Resolve ``state`` to a nonce file path, or ``None`` if the state
     is malformed or would escape the nonce directory.
 
@@ -275,7 +275,7 @@ def _atomic_write_0600(target: Path, data: str) -> None:
     tmp.replace(target)
 
 
-def _success_page(skill: str, return_url: Optional[str] = None) -> str:
+def _success_page(skill: str, return_url: str | None = None) -> str:
     """The HTML the user sees after authorising. Friendly, clear about
     what just happened, with a button back into ODS Talk if we know
     where to send them."""

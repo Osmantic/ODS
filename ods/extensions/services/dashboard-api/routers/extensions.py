@@ -239,9 +239,7 @@ def _cleanup_stale_progress() -> None:
     for f in progress_dir.glob("*.json"):
         try:
             data = json.loads(f.read_text(encoding="utf-8"))
-            if data.get("status") == "started" and _is_stale(data.get("updated_at", ""), 900):
-                f.unlink(missing_ok=True)
-            elif _is_stale(data.get("updated_at", ""), 3600):
+            if data.get("status") == "started" and _is_stale(data.get("updated_at", ""), 900) or _is_stale(data.get("updated_at", ""), 3600):
                 f.unlink(missing_ok=True)
         except (json.JSONDecodeError, OSError):
             pass
@@ -480,7 +478,7 @@ def _host_part_is_loopback(host: str) -> bool:
     return bool(_LOOPBACK_VAR_DEFAULT_RE.fullmatch(host))
 
 
-def _split_port_host(port_str: str) -> tuple[Optional[str], str]:
+def _split_port_host(port_str: str) -> tuple[str | None, str]:
     """Split a list-form port string into (host_part, rest).
 
     Naive ``str.split(":")`` is wrong for the sanctioned ``${VAR:-127.0.0.1}``
@@ -781,7 +779,7 @@ def _copytree_safe(src: Path, dst: Path) -> None:
 
 def _get_service_data_info(service_id: str) -> dict | None:
     """Return data directory info for a service, or None if no data dir exists."""
-    from helpers import dir_size_gb  # noqa: PLC0415 — deferred to avoid circular import at module level
+    from helpers import dir_size_gb
     data_path = (Path(DATA_DIR) / service_id).resolve()
     if not data_path.is_relative_to(Path(DATA_DIR).resolve()):
         return None
@@ -1089,8 +1087,8 @@ def _extensions_lock_path() -> Path:
 
 @router.get("/api/extensions/catalog")
 async def extensions_catalog(
-    category: Optional[str] = None,
-    gpu_compatible: Optional[bool] = None,
+    category: str | None = None,
+    gpu_compatible: bool | None = None,
     api_key: str = Depends(verify_api_key),
 ):
     """Get the extensions catalog with computed status."""
@@ -1335,7 +1333,7 @@ async def extension_detail(
     }
 
     # See extensions_catalog: same rationale for inlining the install error.
-    error_message: Optional[str] = None
+    error_message: str | None = None
     if status == "error":
         _progress = _read_progress(service_id)
         if _progress and _progress.get("error"):
@@ -2498,7 +2496,7 @@ def purge_extension_data(
         if not body.confirm:
             raise HTTPException(status_code=400, detail="Confirmation required: set confirm=true")
 
-        from helpers import dir_size_gb, invalidate_dir_size_cache  # noqa: PLC0415
+        from helpers import dir_size_gb, invalidate_dir_size_cache
         size_gb = dir_size_gb(data_path)
 
         shutil.rmtree(data_path, ignore_errors=True)
@@ -2519,7 +2517,7 @@ def purge_extension_data(
 @router.get("/api/storage/orphaned")
 def orphaned_storage(api_key: str = Depends(verify_api_key)):
     """Find data directories not belonging to any known service."""
-    from helpers import dir_size_gb  # noqa: PLC0415
+    from helpers import dir_size_gb
 
     data_path = Path(DATA_DIR)
     if not data_path.is_dir():

@@ -18,7 +18,7 @@ import tempfile
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Callable
+from collections.abc import Callable
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -561,8 +561,7 @@ def render_model_router_endpoints(inputs: RenderInputs) -> RenderedFile:
         # endpoints.json stores the server base WITHOUT a trailing /v1: the
         # router appends the full OpenAI path (/v1/chat/completions, ...).
         base = (url or fallback).rstrip("/")
-        if base.endswith("/v1"):
-            base = base[: -len("/v1")]
+        base = base.removesuffix("/v1")
         return base
 
     endpoints = [

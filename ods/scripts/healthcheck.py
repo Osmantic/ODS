@@ -54,7 +54,8 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from typing import List, Optional, Sequence, Set, Tuple
+from typing import List, Optional, Set, Tuple
+from collections.abc import Sequence
 
 
 # -----------------------------
@@ -68,8 +69,8 @@ class Result:
     target: str
     kind: str  # http|tcp
     detail: str
-    status: Optional[int] = None
-    elapsed_ms: Optional[int] = None
+    status: int | None = None
+    elapsed_ms: int | None = None
 
     def to_json(self) -> str:
         return json.dumps(
@@ -90,7 +91,7 @@ class Result:
 # -----------------------------
 
 
-def _parse_target(raw: str) -> Tuple[str, str]:
+def _parse_target(raw: str) -> tuple[str, str]:
     """Return (kind, normalized_target)."""
     if raw.startswith("http://") or raw.startswith("https://"):
         return ("http", raw)
@@ -105,7 +106,7 @@ def _parse_target(raw: str) -> Tuple[str, str]:
     raise ValueError("target must be http(s) URL, tcp://host:port, or host:port")
 
 
-def _parse_host_port(raw: str) -> Tuple[str, int]:
+def _parse_host_port(raw: str) -> tuple[str, int]:
     host, port_s = raw.rsplit(":", 1)
     host = host.strip()
     if not host:
@@ -119,9 +120,9 @@ def _parse_host_port(raw: str) -> Tuple[str, int]:
     return (host, port)
 
 
-def _parse_expected_status(expr: str) -> Set[int]:
+def _parse_expected_status(expr: str) -> set[int]:
     """Parse '200,204,3xx,401-403' => allowed status codes set."""
-    allowed: Set[int] = set()
+    allowed: set[int] = set()
     for part in (p.strip() for p in expr.split(",") if p.strip()):
         if part.endswith("xx") and len(part) == 3 and part[0].isdigit():
             base = int(part[0]) * 100
@@ -147,12 +148,12 @@ def _parse_expected_status(expr: str) -> Set[int]:
 # -----------------------------
 
 
-def check_tcp(host: str, port: int, timeout: float) -> Tuple[bool, str]:
+def check_tcp(host: str, port: int, timeout: float) -> tuple[bool, str]:
     """Check TCP port is open."""
     try:
         with socket.create_connection((host, port), timeout=timeout):
             return (True, "tcp connect ok")
-    except socket.timeout:
+    except TimeoutError:
         return (False, "tcp connect timeout")
     except ConnectionRefusedError:
         return (False, "tcp connection refused")
@@ -177,24 +178,24 @@ def check_http(
     *,
     method: str,
     timeout: float,
-    allowed_status: Optional[Set[int]],
-    body_regex: Optional[re.Pattern[str]],
+    allowed_status: set[int] | None,
+    body_regex: re.Pattern[str] | None,
     user_agent: str,
-) -> Tuple[bool, str, Optional[int]]:
+) -> tuple[bool, str, int | None]:
     """Check HTTP endpoint matches expected status and optional body regex."""
 
     # If a body regex is provided, we must use GET.
     if body_regex is not None:
         method = "GET"
 
-    try_methods: List[str]
+    try_methods: list[str]
     if method.upper() == "HEAD":
         # Prefer HEAD, fallback to GET if HEAD isn't supported.
         try_methods = ["HEAD", "GET"]
     else:
         try_methods = [method.upper()]
 
-    last_err: Optional[str] = None
+    last_err: str | None = None
 
     for m in try_methods:
         try:
@@ -236,7 +237,7 @@ def check_http(
         except urllib.error.URLError as exc:
             last_err = f"http {m}: URLError {exc.reason}"
             continue
-        except socket.timeout:
+        except TimeoutError:
             last_err = f"http {m}: timeout"
             continue
 
@@ -324,7 +325,7 @@ def main(argv: Sequence[str]) -> int:
             print("[FAIL] --retries out of range")
         return 2
 
-    allowed_status: Optional[Set[int]]
+    allowed_status: set[int] | None
     if kind == "http":
         if args.expect_status is None:
             allowed_status = {200}
@@ -341,7 +342,7 @@ def main(argv: Sequence[str]) -> int:
     else:
         allowed_status = None
 
-    body_re: Optional[re.Pattern[str]] = None
+    body_re: re.Pattern[str] | None = None
     if args.expect_body_regex:
         try:
             body_re = re.compile(args.expect_body_regex)

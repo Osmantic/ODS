@@ -134,7 +134,7 @@ def validate_invariant(issues: Issues, invariant: Any, path: str) -> None:
         if nonempty_string(json_path):
             try:
                 enum_value = resolve_json_path(load_json(target_path), str(json_path))
-            except Exception as exc:  # noqa: BLE001 - contract validator should report cleanly
+            except Exception as exc:
                 issues.add(f"{path}.json_path", f"could not resolve {json_path!r}: {exc}")
                 return
             issues.require(isinstance(enum_value, list), f"{path}.json_path", "must resolve to an array")

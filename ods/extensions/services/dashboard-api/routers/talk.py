@@ -14,7 +14,8 @@ import contextlib
 import json
 import logging
 import os
-from typing import Any, AsyncIterator
+from typing import Any
+from collections.abc import AsyncIterator
 
 import httpx
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
@@ -344,22 +345,21 @@ async def _stream_speech(text: str) -> AsyncIterator[bytes]:
     }
     timeout = httpx.Timeout(connect=10.0, read=180.0, write=30.0, pool=10.0)
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            async with client.stream(
-                "POST",
-                f"{_tts_url()}/v1/audio/speech",
-                json=payload,
-            ) as resp:
-                if resp.status_code >= 400:
-                    body = await resp.aread()
-                    logger.warning(
-                        "kokoro returned %s for /v1/audio/speech: %s",
-                        resp.status_code, body.decode("utf-8", errors="replace")[:200],
-                    )
-                    return
-                async for chunk in resp.aiter_bytes():
-                    if chunk:
-                        yield chunk
+        async with httpx.AsyncClient(timeout=timeout) as client, client.stream(
+            "POST",
+            f"{_tts_url()}/v1/audio/speech",
+            json=payload,
+        ) as resp:
+            if resp.status_code >= 400:
+                body = await resp.aread()
+                logger.warning(
+                    "kokoro returned %s for /v1/audio/speech: %s",
+                    resp.status_code, body.decode("utf-8", errors="replace")[:200],
+                )
+                return
+            async for chunk in resp.aiter_bytes():
+                if chunk:
+                    yield chunk
     except (httpx.HTTPError, httpx.StreamError) as exc:
         # Mid-stream errors: log + return. The browser sees the response
         # close early and plays whatever audio it already buffered.
@@ -386,7 +386,7 @@ async def _send_to_hermes(session_key: str, text: str) -> dict[str, Any]:
 def _sse_event(event_type: str, data: dict[str, Any]) -> bytes:
     """Encode one Server-Sent Events frame."""
     payload = {"type": event_type, **data}
-    return f"data: {json.dumps(payload, separators=(',', ':'))}\n\n".encode("utf-8")
+    return f"data: {json.dumps(payload, separators=(',', ':'))}\n\n".encode()
 
 
 # SSE comment frame — clients ignore lines starting with ``:``. Used as a

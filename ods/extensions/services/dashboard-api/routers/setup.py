@@ -172,7 +172,7 @@ async def run_setup_diagnostics(api_key: str = Depends(verify_api_key)):
                 # emitting a sentinel into a dead stream and CancelledError must
                 # propagate so the runtime can finalize the task tree.
                 raise
-            except Exception as exc:  # noqa: BLE001 — sentinel contract requires *some* terminal signal
+            except Exception as exc:
                 # The frontend SetupWizard parser treats absence of a sentinel as
                 # failure, so even when the runner blows up unexpectedly we still
                 # close the stream with a FAIL sentinel rather than leaving the

@@ -49,9 +49,9 @@ def _import_zeroconf_or_die() -> None:
     exit cleanly without the package installed."""
     global IPVersion, ServiceInfo, Zeroconf
     try:
-        from zeroconf import IPVersion as _IPVersion  # noqa: PLC0415
-        from zeroconf import ServiceInfo as _ServiceInfo  # noqa: PLC0415
-        from zeroconf import Zeroconf as _Zeroconf  # noqa: PLC0415
+        from zeroconf import IPVersion as _IPVersion
+        from zeroconf import ServiceInfo as _ServiceInfo
+        from zeroconf import Zeroconf as _Zeroconf
     except ImportError:
         print(
             "ERROR: `zeroconf` Python package not installed. "

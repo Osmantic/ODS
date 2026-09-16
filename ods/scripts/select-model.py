@@ -158,7 +158,7 @@ def estimated_param_billions(model: dict[str, Any]) -> float:
             pass
     numbers: list[float] = []
     for text in (model.get("id"), model.get("name"), model.get("llm_model_name"), model.get("gguf_file")):
-        numbers.extend(float(match) for match in re.findall(r"(\d+(?:\.\d+)?)\s*b", str(text or ""), re.I))
+        numbers.extend(float(match) for match in re.findall(r"(\d+(?:\.\d+)?)\s*b", str(text or ""), re.IGNORECASE))
     if numbers:
         return max(numbers)
     size_mb = float(model.get("size_mb") or 0)

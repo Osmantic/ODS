@@ -316,7 +316,7 @@ async def proxy(request: Request, path: str):
         return JSONResponse(
             status_code=504, content={"error": "Gateway timeout", "shield": "active"}
         )
-    except Exception as exc:  # noqa: BLE001 - sanitized below
+    except Exception as exc:
         logger.error("Privacy shield connect error: %s", _sanitize_error(exc))
         return JSONResponse(
             status_code=500,
@@ -417,7 +417,7 @@ async def proxy(request: Request, path: str):
                     yield chunk
         except httpx.TimeoutException:
             logger.warning("Privacy shield upstream timeout mid-stream")
-        except Exception as exc:  # noqa: BLE001 - sanitized below
+        except Exception as exc:
             logger.error("Privacy shield stream error: %s", _sanitize_error(exc))
         finally:
             await chunks.aclose()
@@ -509,7 +509,7 @@ async def proxy_websocket(client_ws: WebSocket, path: str):
             async with anyio.create_task_group() as tg:
                 tg.start_soon(client_to_upstream)
                 tg.start_soon(upstream_to_client)
-    except Exception as exc:  # noqa: BLE001 - sanitized
+    except Exception as exc:
         logger.error("WebSocket passthrough error: %s", _sanitize_error(exc))
         try:
             await client_ws.close(code=1011)

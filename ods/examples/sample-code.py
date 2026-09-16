@@ -32,7 +32,7 @@ def process_users(user_list):
 
 def read_config(path):
     """Read configuration from JSON file."""
-    with open(path, 'r') as f:
+    with open(path) as f:
         data = json.load(f)
     return data
 
@@ -62,8 +62,7 @@ class DataProcessor:
 
     def save(self, filename):
         with open(filename, 'w') as f:
-            for item in self.data:
-                f.write(item + '\n')
+            f.writelines(item + '\n' for item in self.data)
 
 
 if __name__ == '__main__':

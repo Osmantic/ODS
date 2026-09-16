@@ -92,7 +92,7 @@ def _post_agent_json(path: str, body: dict, timeout: int = 65) -> dict:
 @router.get("/api/services/resources")
 async def service_resources(api_key: str = Depends(verify_api_key)):
     """Get per-service resource metrics (CPU, RAM, disk)."""
-    from main import _cache  # noqa: PLC0415 — deferred import to avoid circular dependency
+    from main import _cache
 
     container_stats = _cache.get("service_resources_containers")
     disk_usage = _cache.get("service_resources_disk")
@@ -207,6 +207,6 @@ async def restart_service(service_id: str, api_key: str = Depends(verify_api_key
         body,
     )
 
-    from main import _cache  # noqa: PLC0415 — deferred import to avoid circular dependency
+    from main import _cache
     _cache.invalidate("service_resources_containers")
     return result

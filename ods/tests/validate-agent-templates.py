@@ -136,7 +136,7 @@ def test_template(name: str, config: dict) -> dict:
                 results["failed"] += 1
                 print(f"  [FAIL] {test_prompt[:40]}... (HTTP {response.status_code})")
 
-        except Exception as exc:  # noqa: BLE001 - diagnostic script should continue
+        except Exception as exc:
             results["tests"].append(
                 {
                     "prompt": test_prompt[:50],

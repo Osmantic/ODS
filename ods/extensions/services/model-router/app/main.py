@@ -34,7 +34,8 @@ import time
 import uuid
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any
+from collections.abc import AsyncIterator
 
 import httpx
 from fastapi import FastAPI, Request, Response
@@ -113,7 +114,7 @@ _inflight_lock = asyncio.Lock()
 _state_cache: dict[str, Any] = {"mtime": None, "doc": None}
 _endpoints_cache: dict[str, Any] = {"mtime": None, "endpoints": {}}
 _probe_key_cache: dict[str, Any] = {"mtime": None, "key": ""}
-_evidence: "OrderedDict[str, dict[str, Any]]" = OrderedDict()
+_evidence: OrderedDict[str, dict[str, Any]] = OrderedDict()
 
 
 class _TelemetrySink:

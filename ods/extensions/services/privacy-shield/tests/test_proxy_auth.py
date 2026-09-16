@@ -14,9 +14,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 TEST_KEY = "test-shield-key-abcdef0123456789"
 os.environ["SHIELD_API_KEY"] = TEST_KEY
 
-from fastapi.testclient import TestClient  # noqa: E402
+from fastapi.testclient import TestClient
 
-import proxy  # noqa: E402
+import proxy
 
 
 @pytest.fixture

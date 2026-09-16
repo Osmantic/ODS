@@ -11,11 +11,11 @@ import secrets
 from typing import Optional
 
 
-def load_persisted_key(path: str) -> Optional[str]:
+def load_persisted_key(path: str) -> str | None:
     try:
         if not os.path.exists(path):
             return None
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             key = f.read().strip()
         return key or None
     except Exception:
@@ -37,7 +37,7 @@ def persist_key(path: str, key: str) -> None:
         logging.exception("Failed to persist generated SHIELD_API_KEY")
 
 
-def resolve_shield_api_key(env_key: Optional[str], key_path: str) -> str:
+def resolve_shield_api_key(env_key: str | None, key_path: str) -> str:
     """Resolve the API key used by Privacy Shield.
 
     Precedence:

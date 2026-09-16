@@ -151,9 +151,7 @@ def _ensure_provider_timeout(lines: list[str], provider: str = "custom", timeout
         return
 
     existing = _key_value(lines, provider_block, "request_timeout_seconds", 4)
-    if existing is None:
-        _set_key(lines, provider_block, "request_timeout_seconds", str(timeout_seconds), 4)
-    elif timeout_seconds != 180 and existing == "180":
+    if existing is None or timeout_seconds != 180 and existing == "180":
         _set_key(lines, provider_block, "request_timeout_seconds", str(timeout_seconds), 4)
 
 

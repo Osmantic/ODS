@@ -27,7 +27,7 @@ os.environ.setdefault("ODS_MODE", "local")
 
 if "fcntl" not in sys.modules:
     try:
-        import fcntl  # type: ignore # noqa: F401
+        import fcntl  # type: ignore
     except ModuleNotFoundError:
         sys.modules["fcntl"] = types.SimpleNamespace(
             LOCK_EX=0,

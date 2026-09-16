@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Any, Mapping, Optional, Sequence
+from typing import Any, Optional
+from collections.abc import Mapping, Sequence
 
 import httpx
 
@@ -40,7 +41,7 @@ class LemonadeSettings:
     timeout: float = 20.0
 
     @classmethod
-    def from_env(cls, environ: Optional[Mapping[str, str]] = None) -> "LemonadeSettings":
+    def from_env(cls, environ: Mapping[str, str] | None = None) -> LemonadeSettings:
         env = environ or os.environ
         base_url = (
             env.get("LEMONADE_CONTAINER_BASE_URL")
@@ -77,8 +78,8 @@ class LemonadeClientError(RuntimeError):
         kind: str,
         message: str,
         *,
-        status_code: Optional[int] = None,
-        payload: Optional[dict[str, Any]] = None,
+        status_code: int | None = None,
+        payload: dict[str, Any] | None = None,
     ):
         super().__init__(message)
         self.kind = kind
@@ -103,15 +104,15 @@ class LemonadeClient:
 
     def __init__(
         self,
-        settings: Optional[LemonadeSettings] = None,
+        settings: LemonadeSettings | None = None,
         *,
-        client: Optional[httpx.AsyncClient] = None,
+        client: httpx.AsyncClient | None = None,
     ):
         self.settings = settings or LemonadeSettings.from_env()
         self._client = client
         self._owns_client = client is None
 
-    async def __aenter__(self) -> "LemonadeClient":
+    async def __aenter__(self) -> LemonadeClient:
         await self._ensure_client()
         return self
 
@@ -141,8 +142,8 @@ class LemonadeClient:
         method: str,
         path: str,
         *,
-        json: Optional[dict[str, Any]] = None,
-        timeout: Optional[float] = None,
+        json: dict[str, Any] | None = None,
+        timeout: float | None = None,
     ) -> dict[str, Any]:
         client = await self._ensure_client()
         # httpx treats an explicit `timeout=None` as "no timeout" rather than
@@ -198,7 +199,7 @@ class LemonadeClient:
         *,
         max_tokens: int = 16,
         stream: bool = False,
-        extra_body: Optional[dict[str, Any]] = None,
+        extra_body: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         body: dict[str, Any] = {
             "model": model,

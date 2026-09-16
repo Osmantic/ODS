@@ -18,7 +18,8 @@ suite.
 
 from __future__ import annotations
 
-from typing import Any, Callable, Protocol
+from typing import Any, Protocol
+from collections.abc import Callable
 
 
 def result(ok: bool, detail: str = "", **extras: Any) -> dict[str, Any]:

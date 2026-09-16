@@ -8,7 +8,8 @@ stdlib and does not perform network I/O.
 
 from __future__ import annotations
 
-from typing import Any, Callable, Protocol
+from typing import Any, Protocol
+from collections.abc import Callable
 
 
 PHASES = ("stage", "validate", "commit", "prove")

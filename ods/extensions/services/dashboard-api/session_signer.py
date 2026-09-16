@@ -122,7 +122,7 @@ def issue(ttl_seconds: int = 12 * 3600) -> str:
     return f"{payload}.{signature}"
 
 
-def verify(cookie_value: str) -> Tuple[bool, str]:
+def verify(cookie_value: str) -> tuple[bool, str]:
     """Validate a signed cookie. Returns (ok, reason).
 
     Reasons (when ok is False):

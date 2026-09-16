@@ -12,7 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "bin"))
 
-from remote_provider.policy import (  # noqa: E402
+from remote_provider.policy import (
     ACTIVATION_RECEIPT_SCHEMA,
     FORBIDDEN_PUBLIC_SECRET_ENV,
     INTERNAL_EGRESS_BASE_URL,
@@ -28,7 +28,7 @@ from remote_provider.policy import (  # noqa: E402
     public_activation_receipt,
     validate_public_env_keys,
 )
-from remote_provider.transport import (  # noqa: E402
+from remote_provider.transport import (
     DEFAULT_SSH_CONTROL_LISTEN_PORT,
     DEFAULT_SSH_IDENTITY_PATH,
     DEFAULT_SSH_INFERENCE_LISTEN_PORT,
@@ -37,23 +37,23 @@ from remote_provider.transport import (  # noqa: E402
     TransportError,
     build_ssh_tunnel_specs,
 )
-from remote_provider.ssh_supervisor import (  # noqa: E402
+from remote_provider.ssh_supervisor import (
     SSH_SUPERVISOR_PLAN_SCHEMA,
     ssh_secret_status,
     ssh_supervisor_plan,
 )
-from remote_provider.reconciler import (  # noqa: E402
+from remote_provider.reconciler import (
     PHASES,
     FakeActivationAdapter,
     result,
     run_activation_transaction,
 )
-from remote_provider.lifecycle import (  # noqa: E402
+from remote_provider.lifecycle import (
     LIFECYCLE_OPERATION_SCHEMA,
     LifecycleError,
     plan_lifecycle_operation,
 )
-from remote_provider.probe import (  # noqa: E402
+from remote_provider.probe import (
     PROBE_RECEIPT_SCHEMA,
     ProbeError,
     probe_direct_provider,
@@ -171,7 +171,7 @@ def test_policy_document_shape() -> None:
     )
     forbidden = set(policy["secret_custody"]["public_env_forbidden"])
     assert_true(
-        FORBIDDEN_PUBLIC_SECRET_ENV <= forbidden,
+        forbidden >= FORBIDDEN_PUBLIC_SECRET_ENV,
         "policy must list every forbidden public secret key",
     )
     schema_text = (ROOT / ".env.schema.json").read_text(encoding="utf-8")

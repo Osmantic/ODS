@@ -98,7 +98,7 @@ _STALE_ACTIVE_BOOTSTRAP_STATUS_SECONDS = float(
 _ACTIVE_BOOTSTRAP_STATUSES = {"starting", "downloading", "verifying", "swapping"}
 _agent_model_status_cache_lock = threading.Lock()
 _agent_model_status_cache_at = 0.0
-_agent_model_status_cache_value: Optional[dict] = None
+_agent_model_status_cache_value: dict | None = None
 _GPU_VRAM_EXCEPTIONS = (
     ImportError,
     FileNotFoundError,
@@ -108,7 +108,7 @@ _GPU_VRAM_EXCEPTIONS = (
 )
 
 
-def _model_lifecycle_from_agent_status(status: Optional[dict]) -> Optional[dict[str, Any]]:
+def _model_lifecycle_from_agent_status(status: dict | None) -> dict[str, Any] | None:
     if not isinstance(status, dict):
         return None
     operation = status.get("activeOperation")
@@ -125,7 +125,7 @@ def _model_lifecycle_from_agent_status(status: Optional[dict]) -> Optional[dict[
     }
 
 
-def _annotate_model_lifecycle(payload: dict[str, Any], lifecycle: Optional[dict[str, Any]]) -> None:
+def _annotate_model_lifecycle(payload: dict[str, Any], lifecycle: dict[str, Any] | None) -> None:
     if not lifecycle:
         return
     payload["modelLifecycle"] = lifecycle
@@ -326,7 +326,7 @@ def _is_final_gguf_file(path: Path) -> bool:
         return False
 
 
-def _read_active_model() -> Optional[str]:
+def _read_active_model() -> str | None:
     """Read the currently active GGUF_FILE from .env."""
     if not _ENV_PATH.exists():
         return None
@@ -560,7 +560,7 @@ async def _await_or_default(coro, default, label: str, timeout_seconds: float = 
         return default
 
 
-def _get_gpu_vram() -> Optional[ModelLibraryGpu]:
+def _get_gpu_vram() -> ModelLibraryGpu | None:
     """Get GPU VRAM info for model compatibility gating."""
     try:
         from gpu import get_gpu_info
@@ -1026,7 +1026,7 @@ def _hf_local_filename(repo_id: str, remote_filename: str, revision: str) -> str
     basename = Path(remote_filename).name
     stem = re.sub(r"[^A-Za-z0-9._-]+", "-", Path(basename).stem).strip("-._")
     digest = hashlib.sha256(
-        f"{repo_id}\n{revision}\n{remote_filename}".encode("utf-8")
+        f"{repo_id}\n{revision}\n{remote_filename}".encode()
     ).hexdigest()[:8]
     filename = f"hf-{repo_slug}-{stem}-{digest}.gguf"
     if len(filename) > 220:
@@ -1060,7 +1060,7 @@ def _hf_import_record(details: dict[str, Any], artifact: dict[str, Any]) -> dict
     total_size = sum(item["sizeBytes"] for item in remote_files)
     quantization = artifact.get("quantization") or "unknown"
     digest = hashlib.sha256(
-        f"{repo_id}\n{revision}\n{artifact['id']}".encode("utf-8")
+        f"{repo_id}\n{revision}\n{artifact['id']}".encode()
     ).hexdigest()[:12]
     model_id = f"hf-{re.sub(r'[^a-z0-9]+', '-', repo_id.lower()).strip('-')[:72]}-{digest}"
     declared_context = details.get("contextLength")
@@ -1415,14 +1415,14 @@ def model_download_status(api_key: str = Depends(verify_api_key)):
         return status
 
 
-def _idle_download_status(last_terminal_status: Optional[dict] = None) -> dict:
+def _idle_download_status(last_terminal_status: dict | None = None) -> dict:
     status = {"status": "idle", "active": False, "isDownloading": False}
     if last_terminal_status:
         status["lastTerminalStatus"] = last_terminal_status
     return status
 
 
-def _parse_status_updated_at(value: Any) -> Optional[datetime]:
+def _parse_status_updated_at(value: Any) -> datetime | None:
     if not isinstance(value, str) or not value.strip():
         return None
     try:
@@ -1454,7 +1454,7 @@ def _is_cancelled_download_status(status: Any) -> bool:
     return key in {"cancelled", "canceled"}
 
 
-def _read_bootstrap_status_file() -> Optional[dict[str, Any]]:
+def _read_bootstrap_status_file() -> dict[str, Any] | None:
     status_path = Path(DATA_DIR) / "bootstrap-status.json"
     if not status_path.exists():
         return None
@@ -1544,7 +1544,7 @@ def _bootstrap_upgrade_download_conflict() -> dict[str, Any] | None:
     }
 
 
-def _get_agent_model_status(timeout: int = 5) -> Optional[dict]:
+def _get_agent_model_status(timeout: int = 5) -> dict | None:
     """Return host-agent-normalized model download status when reachable."""
     global _agent_model_status_cache_at, _agent_model_status_cache_value
 
@@ -1627,7 +1627,7 @@ def _call_agent_model(
         raise HTTPException(status_code=502, detail=f"Invalid host agent response: {exc}") from exc
 
 
-def _find_model_in_library(model_id: str) -> Optional[dict]:
+def _find_model_in_library(model_id: str) -> dict | None:
     """Look up a model by ID in the library catalog."""
     for model in _load_library():
         if model.get("id") == model_id:
@@ -1681,7 +1681,7 @@ def _resolve_local_gguf_filename(model_id: str) -> str | None:
     return None
 
 
-def _find_local_gguf_model(model_id: str) -> Optional[dict]:
+def _find_local_gguf_model(model_id: str) -> dict | None:
     """Return a synthetic activation record for a manually installed GGUF."""
     gguf_file = _resolve_local_gguf_filename(model_id)
     if not gguf_file:
@@ -1717,11 +1717,11 @@ def _find_local_gguf_model(model_id: str) -> Optional[dict]:
     }
 
 
-def _find_loadable_model(model_id: str) -> Optional[dict]:
+def _find_loadable_model(model_id: str) -> dict | None:
     return _find_model_in_library(model_id) or _find_local_gguf_model(model_id)
 
 
-def _find_normalized_model(model_id: str) -> Optional[dict]:
+def _find_normalized_model(model_id: str) -> dict | None:
     return find_catalog_model(load_model_catalog(INSTALL_DIR), model_id, None)
 
 

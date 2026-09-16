@@ -93,8 +93,8 @@ def _load_models():
 
 class TTSRequest(BaseModel):
     text: str = Field(..., max_length=MAX_TEXT_LENGTH, description="Text to synthesize (max 10K chars)")
-    voice_preset: Optional[str] = "v2/en_speaker_6"
-    output_format: Optional[str] = "wav"  # wav, mp3, ogg, flac
+    voice_preset: str | None = "v2/en_speaker_6"
+    output_format: str | None = "wav"  # wav, mp3, ogg, flac
 
     @field_validator("output_format")
     @classmethod
