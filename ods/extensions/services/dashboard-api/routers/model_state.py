@@ -134,7 +134,7 @@ async def get_model_state(
         raw = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return _invalid_response([], exists=False)
-    except OSError as exc:
+    except (OSError, UnicodeError) as exc:
         logger.warning("model-state read failed: %s", exc)
         return _invalid_response([f"read failed: {exc}"])
 
@@ -148,6 +148,10 @@ async def get_model_state(
         doc = json.loads(raw)
     except ValueError as exc:
         return _invalid_response([f"not valid JSON: {exc}"])
+
+    if not isinstance(doc, dict):
+        return _invalid_response(["document root must be a JSON object"])
+
     errors = _validate_document(doc)
     if errors:
         return _invalid_response(errors)

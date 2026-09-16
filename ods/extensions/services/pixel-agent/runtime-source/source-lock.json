@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "upstreamCommit": "7af0cfc9c5488e03c4e2f528bdc7ac9f7778b35e",
+  "sourceTree": "dfba3c7a7c74ec7e52774d7f4a8ef376b8536ca7",
+  "runtimeVersion": "2026.6.33",
+  "nodeVersion": "v22.23.1",
+  "packageManager": "pnpm@11.2.2",
+  "patches": [
+    {
+      "file": "openclaw-2026.6.33-required-plugins.patch",
+      "sha256": "68f327263b8590bc505eda60ad77b03044c07cc4ae1ed957b5a2fdfedc094e52"
+    },
+    {
+      "file": "openclaw-2026.6.33-command-lifecycle.patch",
+      "sha256": "4c8534b0e7ec56661fb7afeb8d0111a84068cd2fe4171ffd67e2754ece2391c9"
+    }
+  ]
+}

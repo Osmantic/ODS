@@ -9,12 +9,20 @@ import { TemplatePicker } from '../components/TemplatePicker'
 import { getTemplateStatus } from '../lib/templates'
 import { serviceUrl } from '../lib/serviceUrls'
 import { createRecoveryTracker } from '../utils/recoveryTracker'
+import MetalMetricIcon from '../components/MetalMetricIcon'
+import FittedLibraryPage from '../components/FittedLibraryPage'
+import './extensions-refined.css'
 
 // Re-export so existing importers of getTemplateStatus from this module keep working.
 export { getTemplateStatus }
 
 // API/backend services with no user-facing web UI — show badge instead of port link.
 const HEADLESS_EXTENSIONS = new Set(['embeddings', 'tts', 'whisper', 'privacy-shield'])
+const UPDATE_CONFIRMATION_STATES = {
+  update_state_unknown: 'unknown',
+  locally_modified: 'modified',
+  untracked_install: 'untracked',
+}
 
 // Auth: nginx injects "Authorization: Bearer ${DASHBOARD_API_KEY}" via
 // proxy_set_header for all /api/ requests (see nginx.conf).  All fetches
@@ -35,6 +43,9 @@ const ICON_MAP = {
   Database, Cpu, Workflow, Plug, Image, MessageSquare, Code,
   FileText, Shield, Globe, Music, Video, Search, Puzzle, Box,
 }
+const CATEGORY_ICONS = { ai:Cpu, tools:Workflow, search:Search, media:Image, audio:Music, voice:Music, video:Video, security:Shield, development:Code, storage:Database, automation:Workflow, networking:Globe, chat:MessageSquare, integration:Plug, integrations:Plug, monitoring:Cpu, productivity:FileText, infrastructure:Box }
+const SERVICE_ICONS = { searxng:Search, perplexica:Search, comfyui:Image, whisper:Music, tts:Music, embeddings:Database, litellm:Workflow, hermes:MessageSquare, 'hermes-proxy':Shield, 'privacy-shield':Shield, 'open-webui':MessageSquare, n8n:Workflow, opencode:Code, 'model-router':Workflow, 'token-spy':FileText }
+export const extensionIcon = ext => SERVICE_ICONS[ext.id] || ICON_MAP[ext.features?.[0]?.icon] || CATEGORY_ICONS[ext.features?.[0]?.category?.toLowerCase()] || Puzzle
 
 const friendlyError = (detail) => {
   if (!detail || typeof detail !== 'string') return detail
@@ -83,13 +94,14 @@ const STATUS_DESCRIPTIONS = {
   error:         'Installation or startup failed \u2014 click for details',
 }
 
-export default function Extensions() {
+export default function Extensions({ compact = false }) {
   const [catalog, setCatalog] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [search, setSearch] = useState('')
   const [category, setCategory] = useState('all')
   const [statusFilter, setStatusFilter] = useState('all')
+  const [libraryView, setLibraryView] = useState('all')
   const [expanded, setExpanded] = useState(null)
   const [mutating, setMutating] = useState(null)
   const [confirm, setConfirm] = useState(null)
@@ -99,7 +111,6 @@ export default function Extensions() {
   const [progressMap, setProgressMap] = useState({})
   const [depConfirm, setDepConfirm] = useState(null)
   const [templates, setTemplates] = useState([])
-  const [templatesOpen, setTemplatesOpen] = useState(false)
   const [pollingLost, setPollingLost] = useState(false)
   const installProgressRef = useRef(null)
   const activePollers = useRef({})
@@ -265,6 +276,20 @@ export default function Extensions() {
           setDepConfirm({ ext, missingDeps: detail.missing_dependencies })
           return
         }
+        if (action === 'update' && !force && res.status === 409 && detail?.force_available === true
+          && Object.hasOwn(UPDATE_CONFIRMATION_STATES, detail.code)) {
+          const ext = extensions.find(e => e.id === serviceId)
+          if (ext) {
+            // The server inspected newer state than the catalog. Reopen
+            // review with that reason; never automatically resend with force.
+            requestAction({
+              ...ext,
+              update_status: UPDATE_CONFIRMATION_STATES[detail.code],
+              locally_modified: detail.code === 'locally_modified',
+            }, 'update')
+            return
+          }
+        }
         throw new Error((typeof detail === 'string' ? detail : detail?.message) || `Failed to ${action}`)
       }
       const data = await res.json()
@@ -305,7 +330,9 @@ export default function Extensions() {
       disable: `Disable ${ext.name}? The service will be stopped.`,
       uninstall: `Remove ${ext.name}? You can reinstall it from the library.`,
       purge: `Permanently delete all data for ${ext.name}? This cannot be undone.`,
-      update: ext.locally_modified
+      update: ext.update_status === 'unknown'
+        ? `ODS could not inspect the installed files for ${ext.name}. Refresh from the ODS library? This replaces the installed definition, including any local changes, and retains the current files as a rollback backup.`
+        : ext.locally_modified
         ? `Update ${ext.name} from the ODS library? Local definition changes will be replaced, but retained as a rollback backup.`
         : ext.update_status === 'untracked'
         ? `Refresh this legacy ${ext.name} install from the ODS library and begin tracking future updates? The current definition will be retained as a rollback backup.`
@@ -323,8 +350,13 @@ export default function Extensions() {
     )
   }
 
-  const extensions = catalog?.extensions || []
-  const summary = catalog?.summary || {}
+  const allExtensions = catalog?.extensions || []
+  const extensions = allExtensions.filter(ext => !['incompatible', 'unsupported'].includes(ext.status) && ext.compatible !== false)
+  const unsupportedIds = new Set(allExtensions.filter(ext => !extensions.includes(ext)).map(ext => ext.id))
+  const summary = {
+    not_installed: extensions.filter(ext => ext.status === 'not_installed').length,
+    updates_available: extensions.filter(ext => ext.update_available).length,
+  }
 
   // Derive unique categories from features
   const categories = ['all', ...new Set(
@@ -333,28 +365,35 @@ export default function Extensions() {
       .filter(Boolean)
   )]
 
-  const STATUS_FILTERS = ['all', 'enabled', 'cli_installed', 'stopped', 'unhealthy', 'disabled', 'installing', 'setting_up', 'error', 'not_installed', 'incompatible']
+  const STATUS_FILTERS = ['all', 'enabled', 'cli_installed', 'stopped', 'unhealthy', 'disabled', 'installing', 'setting_up', 'error', 'not_installed']
   const STATUS_LABELS = { all: 'All', enabled: 'Enabled', cli_installed: 'CLI Installed', stopped: 'Stopped', unhealthy: 'Unhealthy', disabled: 'Disabled', installing: 'Installing', setting_up: 'Setting Up', error: 'Error', not_installed: 'Not Installed', incompatible: 'Incompatible' }
 
   // Filter extensions
   const query = search.toLowerCase()
   const filtered = extensions.filter(ext => {
+    if (libraryView === 'installed' && ['not_installed','incompatible'].includes(ext.status)) return false
+    if (libraryView === 'available' && ext.status !== 'not_installed') return false
+    if (libraryView === 'updates' && !ext.update_available) return false
     if (statusFilter !== 'all' && ext.status !== statusFilter) return false
     if (category !== 'all' && !ext.features?.some(f => f.category === category)) return false
     if (query && !ext.name.toLowerCase().includes(query) && !ext.description?.toLowerCase().includes(query)) return false
     return true
   })
+  const collections = templates
+    .filter(template => !(template.services || []).some(id => unsupportedIds.has(id)))
+    .map(template => ({...template, _status: getTemplateStatus(template, extensions)}))
+    .filter(template => template._status !== 'applied')
+  const filteredCollections = collections.filter(template => !query || `${template.name} ${template.description || ''}`.toLowerCase().includes(query))
+  const showingCollections = libraryView === 'collections'
 
   return (
-    <div className="p-8">
-      <div className="mb-8 flex items-start justify-between">
+    <div className="extensions-refined p-8">
+      <div className="extensions-toolbar mb-8 flex items-start justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-theme-text">Extensions</h1>
-          <p className="mt-1 text-theme-text-secondary">
-            Browse and discover add-on services.
-          </p>
+          {!compact && <h1 className="text-2xl font-bold text-theme-text">Extensions</h1>}
+          <h2 className="extensions-library-title">Your library</h2>
         </div>
-        <div className="liquid-metal-frame liquid-metal-frame--soft flex items-center gap-4 text-xs text-theme-text-muted font-mono bg-theme-card border border-theme-border rounded-lg px-3 py-2">
+        <div className="extensions-agent flex items-center gap-4 text-xs text-theme-text-muted">
           {catalog?.agent_available !== undefined && (
             <div className="flex items-center gap-1.5">
               <span className={`w-1.5 h-1.5 rounded-full ${catalog.agent_available ? 'bg-emerald-400' : 'bg-red-500'}`} />
@@ -365,11 +404,11 @@ export default function Extensions() {
           )}
           <button
             onClick={fetchCatalog}
+            aria-label="Refresh extensions"
             disabled={refreshing}
             className="text-theme-text-muted/65 hover:text-theme-text transition-colors disabled:opacity-50 flex items-center gap-1.5 uppercase tracking-[0.16em]"
           >
-            <RefreshCw size={12} className={refreshing ? 'animate-spin' : ''} />
-            Refresh
+            <MetalMetricIcon icon={RefreshCw} size={14} className={refreshing ? 'animate-spin' : ''} />
           </button>
         </div>
       </div>
@@ -381,42 +420,17 @@ export default function Extensions() {
         </div>
       )}
 
-      {/* Summary bar */}
-      <div className="bg-theme-card border border-theme-border rounded-xl p-4 mb-6 liquid-metal-frame liquid-metal-frame--soft">
-        <div className="flex flex-wrap items-center gap-6 text-sm">
-          <SummaryItem label="Total" value={summary.total || extensions.length} color="bg-theme-text-muted" />
-          <SummaryItem label="Installed" value={summary.installed ?? 0} color="bg-green-500" />
-          <SummaryItem label="Stopped" value={summary.stopped ?? 0} color="bg-red-500" />
-          <SummaryItem label="Unhealthy" value={summary.unhealthy ?? 0} color="bg-amber-500" />
-          <SummaryItem label="Available" value={summary.not_installed ?? 0} color="bg-theme-accent" />
-          <SummaryItem label="Updates" value={summary.updates_available ?? 0} color="bg-cyan-400" />
-          <SummaryItem label="Installing" value={summary.installing ?? 0} color="bg-blue-500" />
-          <SummaryItem label="Error" value={summary.error ?? 0} color="bg-red-500" />
-          <SummaryItem label="Incompatible" value={summary.incompatible ?? 0} color="bg-orange-500" />
-
-          {/* Status legend */}
-          <div className="relative ml-auto group/legend" data-tooltip>
-            <div className="flex items-center justify-center w-6 h-6 rounded-full border border-theme-border bg-theme-bg/80 text-theme-text-muted cursor-help transition-colors group-hover/legend:text-theme-text group-hover/legend:border-theme-text-muted">
-              <Info size={13} />
-            </div>
-            <div className="pointer-events-none absolute top-[calc(100%+0.5rem)] right-0 z-50 w-96 rounded-lg border border-theme-border bg-theme-card/95 px-4 py-3 opacity-0 shadow-2xl transition-all duration-150 translate-y-1 group-hover/legend:translate-y-0 group-hover/legend:opacity-100">
-              <h4 className="text-[10px] font-semibold text-theme-text-secondary uppercase tracking-[0.18em] mb-2.5">Status Legend</h4>
-              <div className="grid grid-cols-[5.5rem_1fr] gap-y-2 gap-x-3 items-baseline">
-                {Object.entries(STATUS_DESCRIPTIONS).map(([key, desc]) => (
-                  <div key={key} className="contents">
-                    <span className={`text-[9px] px-1.5 py-0.5 rounded-full uppercase tracking-wider text-center ${STATUS_STYLES[key]}`}>
-                      {key.replace(/_/g, ' ')}
-                    </span>
-                    <span className="text-[11px] leading-4 text-theme-text-secondary">{desc}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
+      <nav className="extensions-library-tabs" aria-label="Library views">
+        {[['all','All',extensions.length],['installed','Installed',extensions.filter(ext => !['not_installed','incompatible'].includes(ext.status)).length],['available','Available',summary.not_installed ?? 0],['updates','Updates',summary.updates_available ?? 0]].map(([id,label,count]) => <button key={id} aria-label={`${label} ${count}`} aria-pressed={libraryView === id} onClick={() => {setLibraryView(id);setStatusFilter('all')}}>{label}<span>{count}</span></button>)}
+        {collections.length > 0 && <button aria-label={`Starter collections ${collections.length}`} aria-pressed={showingCollections} onClick={() => {setLibraryView('collections');setStatusFilter('all');setCategory('all')}}>Collections<span>{collections.length}</span></button>}
+      </nav>
 
       {/* Status filter row */}
+      {compact ? <div className="portal-extension-filters">
+        <div className="extensions-search"><Search size={15} aria-hidden="true"/><input aria-label="Search extensions" placeholder="Find an extension…" value={search} onChange={event => setSearch(event.target.value)} /></div>
+        {!showingCollections && <><label>Status<select value={statusFilter} onChange={event => setStatusFilter(event.target.value)}>{STATUS_FILTERS.map(value => <option key={value} value={value}>{STATUS_LABELS[value]}</option>)}</select></label>
+        <label>Category<select value={category} onChange={event => setCategory(event.target.value)}>{categories.map(value => <option key={value} value={value}>{value === 'all' ? 'All categories' : value}</option>)}</select></label></>}
+      </div> : <>
       <div className="flex flex-wrap gap-1.5 mb-3">
         {STATUS_FILTERS.map(s => (
           <button
@@ -460,6 +474,7 @@ export default function Extensions() {
       </div>
 
       {/* Agent offline banner */}
+      </>}
       {catalog?.agent_available === false && (
         <div className="mb-4 rounded-xl border border-amber-500/20 bg-amber-500/[0.06] px-4 py-3 text-[11px] text-amber-300/80 flex items-center gap-2.5">
           <span className="shrink-0 text-amber-400">!</span>
@@ -477,32 +492,18 @@ export default function Extensions() {
         </div>
       )}
 
-      {/* Card grid */}
-      {(() => {
-        const enrichedTemplates = templates
-          .map(t => ({ ...t, _status: getTemplateStatus(t, extensions) }))
-          .filter(t => t._status !== 'applied')
-        if (enrichedTemplates.length === 0) return null
-        return (
-          <div className="mb-4">
-            <button onClick={() => setTemplatesOpen(!templatesOpen)} className="flex items-center gap-2 text-sm text-theme-text-muted hover:text-theme-text transition-colors mb-2">
-              {templatesOpen ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-              Quick Start Templates ({enrichedTemplates.length})
-            </button>
-            {templatesOpen && <TemplatePicker templates={enrichedTemplates} onApplied={fetchCatalog} />}
-          </div>
-        )
-      })()}
-
-      {filtered.length === 0 ? (
+      <div className="extensions-results"><span>{showingCollections ? 'Starter collections' : libraryView === 'all' ? 'Explore extensions' : libraryView === 'installed' ? 'In your workspace' : libraryView === 'updates' ? 'Ready to update' : 'Available to install'}</span><span>{showingCollections ? filteredCollections.length : filtered.length} results</span></div>
+      {(showingCollections ? filteredCollections : filtered).length === 0 ? (
         <div className="flex flex-col items-center justify-center py-16 text-theme-text-muted/50">
           <Package size={40} className="mb-4 opacity-30" />
-          <p className="text-sm font-semibold text-theme-text-muted/60">No extensions match</p>
+          <p className="text-sm font-semibold text-theme-text-muted/60">{showingCollections ? 'No collections match' : 'No extensions match'}</p>
           <p className="text-[10px] uppercase tracking-[0.14em] text-theme-text-muted/40 mt-1.5">Try adjusting your search or filters</p>
         </div>
-      ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 liquid-metal-sequence-grid liquid-metal-sequence-grid--services">
-          {filtered.map(ext => (
+      ) : showingCollections ? <FittedLibraryPage key={`collections:${search}`} items={filteredCollections} label="Collection library">{items => <TemplatePicker templates={items} onApplied={fetchCatalog} variant="library"/>}</FittedLibraryPage> : (
+        <FittedLibraryPage key={`${libraryView}:${search}:${statusFilter}:${category}`} items={filtered} label="Extension library">
+        {items => (
+        <div className="extensions-list" aria-label="Extension library">
+          {items.map(ext => (
             <ExtensionCard
               key={ext.id}
               ext={ext}
@@ -516,6 +517,8 @@ export default function Extensions() {
             />
           ))}
         </div>
+        )}
+        </FittedLibraryPage>
       )}
 
       {/* Detail modal */}
@@ -544,7 +547,7 @@ export default function Extensions() {
               <button
                 onClick={() => handleMutation(confirm.ext.id, confirm.action, {
                   force: confirm.action === 'update' && (
-                    confirm.ext.locally_modified || confirm.ext.update_status === 'untracked'
+                    confirm.ext.locally_modified || ['untracked', 'unknown'].includes(confirm.ext.update_status)
                   ),
                 })}
                 className={`px-4 py-2 text-[10px] font-semibold uppercase tracking-[0.08em] rounded-lg transition-colors ${
@@ -582,16 +585,6 @@ export default function Extensions() {
           </div>
         </div>
       )}
-    </div>
-  )
-}
-
-function SummaryItem({ label, value, color }) {
-  return (
-    <div className="flex items-center gap-2">
-      <span className={`w-1.5 h-1.5 rounded-full ${color}`} />
-      <span className="text-[10px] font-semibold uppercase tracking-[0.13em] text-theme-text-muted/55">{label}</span>
-      <span className="text-theme-text font-medium font-mono">{value}</span>
     </div>
   )
 }
@@ -655,8 +648,7 @@ function LlmSwapBadge({ llm }) {
 }
 
 function ExtensionCard({ ext, gpuBackend, agentAvailable, onDetails, onConsole, onAction, mutating, progressData }) {
-  const iconName = ext.features?.[0]?.icon
-  const Icon = (iconName && ICON_MAP[iconName]) || Package
+  const Icon = extensionIcon(ext)
   const status = ext.status || 'not_installed'
   const statusStyle = STATUS_STYLES[status] || STATUS_STYLES.not_installed
   const isMutating = mutating === ext.id
@@ -675,36 +667,20 @@ function ExtensionCard({ ext, gpuBackend, agentAvailable, onDetails, onConsole, 
   const showRemove = isUserExt && (status === 'disabled' || isError)
   const showInstall = status === 'not_installed' && ext.installable
   const showUpdate = isUserExt && ext.installable && (
-    ext.update_available || ext.update_status === 'untracked'
+    ext.update_available || ext.locally_modified || ['untracked', 'unknown'].includes(ext.update_status)
   )
   const showRollback = isUserExt && ext.rollback_available
+  const launchUrl = serviceUrl(ext)
+  const launchPort = ext.external_port ?? ext.external_port_default ?? ext.port
 
   return (
-    <div className={`bg-theme-card border rounded-xl transition-all liquid-metal-frame liquid-metal-sequence-card flex flex-col ${
-      isCore ? 'border-theme-border/60 opacity-70' : 'border-theme-border'
-    }`}>
+    <article className="extension-entry">
       {/* Card body */}
-      <div className="p-4 pb-3 flex-1">
-        <div className="flex items-start justify-between mb-2">
+      <div className="extension-body">
+        <div className="extension-heading flex items-start justify-between mb-2">
           <div className="flex items-center gap-2.5">
-            <div className={`p-1.5 rounded-lg ${
-              (status === 'enabled' || status === 'cli_installed') ? 'bg-green-500/10' :
-              status === 'stopped' ? 'bg-red-500/10' :
-              status === 'unhealthy' ? 'bg-amber-500/10' :
-              status === 'incompatible' ? 'bg-orange-500/10' :
-              (status === 'installing' || status === 'setting_up') ? 'bg-blue-500/10' :
-              status === 'error' ? 'bg-red-500/10' :
-              'bg-theme-bg border border-theme-border/30'
-            }`}>
-              <Icon size={16} className={
-                (status === 'enabled' || status === 'cli_installed') ? 'text-green-400' :
-                status === 'stopped' ? 'text-red-400' :
-                status === 'unhealthy' ? 'text-amber-400' :
-                status === 'incompatible' ? 'text-orange-400' :
-                (status === 'installing' || status === 'setting_up') ? 'text-blue-400' :
-                status === 'error' ? 'text-red-400' :
-                'text-theme-text-muted'
-              } />
+            <div className="extension-symbol">
+              <MetalMetricIcon icon={Icon} size={19}/>
             </div>
             <div>
               <h3 className="text-sm font-semibold text-theme-text leading-tight">{ext.name}</h3>
@@ -728,6 +704,7 @@ function ExtensionCard({ ext, gpuBackend, agentAvailable, onDetails, onConsole, 
             {isToggleable && (
               <button
                 disabled={actionDisabled}
+                aria-label={`${status === 'disabled' ? 'Enable' : 'Disable'} ${ext.name}`}
                 title={disabledTitle}
                 onClick={() => onAction(ext, status === 'disabled' ? 'enable' : 'disable')}
                 className={`relative inline-flex h-[18px] w-[32px] shrink-0 rounded-full transition-colors disabled:opacity-50 ${
@@ -788,7 +765,7 @@ function ExtensionCard({ ext, gpuBackend, agentAvailable, onDetails, onConsole, 
       })()}
 
       {/* Card footer */}
-      <div className="border-t border-theme-border/40 px-4 py-2.5 flex flex-wrap items-center justify-between gap-2 bg-theme-bg/30">
+      <div className="extension-actions flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-wrap gap-1.5">
           {showInstall && (
             <button
@@ -807,7 +784,7 @@ function ExtensionCard({ ext, gpuBackend, agentAvailable, onDetails, onConsole, 
               onClick={() => onAction(ext, 'update')}
               className="flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] rounded-lg bg-cyan-500/15 text-cyan-300 hover:bg-cyan-500/25 transition-colors disabled:opacity-50"
             >
-              {isMutating ? <Loader2 size={12} className="animate-spin" /> : <><RefreshCw size={12} /> {ext.update_status === 'untracked' ? 'Refresh' : 'Update'}</>}
+              {isMutating ? <Loader2 size={12} className="animate-spin" /> : <><RefreshCw size={12} /> {ext.update_available ? 'Update' : 'Refresh'}</>}
             </button>
           )}
           {showRollback && (
@@ -884,22 +861,22 @@ function ExtensionCard({ ext, gpuBackend, agentAvailable, onDetails, onConsole, 
         </div>
         <div className="flex items-center gap-2">
           <DependencyBadges dependsOn={ext.depends_on} dependencyStatus={ext.dependency_status} />
-          {status === 'enabled' && (ext.external_port_default || ext.port) && (ext.external_port_default || ext.port) !== 0 ? (
+          {status === 'enabled' && launchUrl ? (
             HEADLESS_EXTENSIONS.has(ext.id) ? (
               <span className="px-2 py-1 text-[9px] font-mono uppercase tracking-[0.12em] text-theme-text-muted/45">
                 API service
               </span>
             ) : (
               <a
-                href={serviceUrl({ ...ext, port: ext.external_port_default || ext.port })}
+                href={launchUrl}
                 target="_blank"
                 rel="noopener noreferrer"
                 onClick={e => e.stopPropagation()}
                 className="flex items-center gap-1 px-2 py-1.5 text-[10px] font-mono text-theme-text-secondary hover:text-theme-text hover:bg-theme-surface-hover/40 rounded-lg transition-colors"
-                title={`Open on port ${ext.external_port_default || ext.port}`}
+                title={launchPort ? "Open on port " + launchPort : "Open service"}
               >
                 <ExternalLink size={11} />
-                :{ext.external_port_default || ext.port}
+                {launchPort ? ":" + launchPort : "Open service"}
               </a>
             )
           ) : null}
@@ -921,13 +898,14 @@ function ExtensionCard({ ext, gpuBackend, agentAvailable, onDetails, onConsole, 
           )}
           <button
             onClick={onDetails}
+            aria-label={`Details for ${ext.name}`}
             className="flex items-center gap-1 px-2 py-1.5 text-[10px] text-theme-text-secondary hover:text-theme-text hover:bg-theme-surface-hover/40 rounded-lg transition-colors"
           >
-            <Info size={11} />
+            <MetalMetricIcon icon={Info} size={14} /><span>Details</span>
           </button>
         </div>
       </div>
-    </div>
+    </article>
   )
 }
 
@@ -941,8 +919,7 @@ function DetailModal({ ext, gpuBackend, onClose }) {
 
   if (!ext) return null
 
-  const iconName = ext.features?.[0]?.icon
-  const Icon = (iconName && ICON_MAP[iconName]) || Package
+  const Icon = extensionIcon(ext)
   const envVars = ext.env_vars || []
   const deps = ext.depends_on || []
   const features = ext.features || []
@@ -959,7 +936,7 @@ function DetailModal({ ext, gpuBackend, onClose }) {
         {/* Header */}
         <div className="sticky top-0 bg-theme-card border-b border-theme-border p-4 flex items-center justify-between rounded-t-xl">
           <div className="flex items-center gap-3">
-            <Icon size={22} className="text-theme-text-muted" />
+            <MetalMetricIcon icon={Icon} size={22}/>
             <div>
               <h3 className="text-lg font-semibold text-theme-text">{ext.name}</h3>
               <span
@@ -973,7 +950,7 @@ function DetailModal({ ext, gpuBackend, onClose }) {
               </div>
             </div>
           </div>
-          <button onClick={onClose} autoFocus className="text-theme-text-muted hover:text-theme-text-secondary transition-colors p-1">
+          <button onClick={onClose} aria-label="Close extension details" autoFocus className="text-theme-text-muted hover:text-theme-text-secondary transition-colors p-1">
             <X size={18} />
           </button>
         </div>
@@ -1070,15 +1047,12 @@ function DetailModal({ ext, gpuBackend, onClose }) {
           {/* Login / Credentials */}
           {envVars.some(v => /password|secret|token|key/i.test(v.key || '')) && (
             <div>
-              <h4 className="text-xs font-medium text-theme-text-muted uppercase tracking-wider mb-2">Login Credentials</h4>
-              <p className="text-xs text-theme-text-muted mb-2">Run this in your terminal to see login info:</p>
+              <h4 className="text-xs font-medium text-theme-text-muted uppercase tracking-wider mb-2">Configured Credentials</h4>
+              <p className="text-xs text-theme-text-muted mb-2">Run this from your ODS installation directory to view the configured values:</p>
               <CopyableCommand command={
-                `docker exec ods-${ext.id} env | grep -iE "${envVars.filter(v => /username|password|secret|token|key|user|email/i.test(v.key || '')).map(v => v.key).join('|')}"`
+                `grep -E '^[[:space:]]*(export[[:space:]]+)?(${envVars.filter(v => /username|password|secret|token|key|user|email/i.test(v.key || '')).map(v => v.key).join('|')})[[:space:]]*=' .env`
               } />
-              <p className="text-xs text-theme-text-muted mt-1.5">Or check your .env file directly:</p>
-              <CopyableCommand command={
-                `grep -E "${envVars.filter(v => /username|password|secret|token|key|user|email/i.test(v.key || '')).map(v => v.key).join('|')}" .env`
-              } />
+              <p className="text-xs text-theme-text-muted mt-1.5">A password changed inside an application may differ from its initial value in .env.</p>
             </div>
           )}
 
@@ -1099,6 +1073,8 @@ function DetailModal({ ext, gpuBackend, onClose }) {
 function ConsoleModal({ ext, onClose }) {
   const [logs, setLogs] = useState('')
   const [loading, setLoading] = useState(true)
+  const [fetchingLogs, setFetchingLogs] = useState(false)
+  const logRequestInFlight = useRef(false)
   const [error, setError] = useState(null)
   const [disconnected, setDisconnected] = useState(false)
   const [atBottom, setAtBottom] = useState(true)
@@ -1144,6 +1120,12 @@ function ConsoleModal({ ext, onClose }) {
 
     const poll = async () => {
       if (!active) return
+      if (logRequestInFlight.current) {
+        setTimeout(poll, 2000)
+        return
+      }
+      logRequestInFlight.current = true
+      setFetchingLogs(true)
       try {
         const res = await fetch(`/api/extensions/${ext.id}/logs`, {
           method: 'POST',
@@ -1164,6 +1146,8 @@ function ConsoleModal({ ext, onClose }) {
         setError(err.message)
       } finally {
         setLoading(false)
+        logRequestInFlight.current = false
+        setFetchingLogs(false)
       }
       if (active) {
         const delay = failCount > 0 ? Math.min(2000 * Math.pow(2, failCount - 1), 30000) : 2000
@@ -1198,6 +1182,9 @@ function ConsoleModal({ ext, onClose }) {
   }
 
   const fetchLogsOnce = async () => {
+    if (logRequestInFlight.current) return
+    logRequestInFlight.current = true
+    setFetchingLogs(true)
     try {
       const res = await fetch(`/api/extensions/${ext.id}/logs`, {
         method: 'POST',
@@ -1213,6 +1200,9 @@ function ConsoleModal({ ext, onClose }) {
       setDisconnected(false)
     } catch (err) {
       setError(err.message)
+    } finally {
+      logRequestInFlight.current = false
+      setFetchingLogs(false)
     }
   }
 
@@ -1295,7 +1285,7 @@ function ConsoleModal({ ext, onClose }) {
           <span className={`text-[10px] ${disconnected ? 'text-red-400' : 'text-theme-text-muted'}`}>
             {disconnected ? 'Reconnecting...' : 'Auto-refreshing every 2s'}
           </span>
-          <button onClick={fetchLogsOnce} className="text-xs text-theme-text-muted hover:text-theme-text-secondary transition-colors" title="Refresh now">
+          <button onClick={fetchLogsOnce} disabled={fetchingLogs} className="text-xs text-theme-text-muted hover:text-theme-text-secondary transition-colors disabled:opacity-50" title="Refresh now">
             <RefreshCw size={12} />
           </button>
         </div>

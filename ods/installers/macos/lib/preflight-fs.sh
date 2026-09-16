@@ -32,10 +32,33 @@ _resolve_existing_parent() {
     printf '%s' "$p"
 }
 
-# Detect filesystem type at INSTALL_DIR's parent (where .env will live).
-# BSD `stat -f %T` returns short personality strings (apfs, hfs, msdos, exfat,
-# ntfs). diskutil gives a richer "File System Personality" line we fall back
-# to when stat returns something unexpected.
+# BSD stat's %T is a file-type marker ("/" for directories), not a
+# filesystem type. Read the kernel mount table and choose the nearest
+# containing mount after resolving existing symlinked path components.
+_macos_mount_filesystem_type() {
+    local probe="$1" candidate mounts line suffix prefix fs_type
+    candidate="$(cd "$probe" && pwd -P)" || return 1
+    mounts="$(LC_ALL=C mount 2>/dev/null)" || return 1
+    while :; do
+        while IFS= read -r line; do
+            [[ "$line" == *" ("*")" ]] || continue
+            suffix="${line##* (}"
+            prefix="${line%" ($suffix"}"
+            [[ "$prefix" == *" on $candidate" ]] || continue
+            fs_type="${suffix%%,*}"
+            fs_type="${fs_type%)}"
+            [[ "$fs_type" =~ ^[A-Za-z0-9_]+$ ]] || continue
+            printf '%s\n' "$fs_type"
+            return 0
+        done <<< "$mounts"
+        [[ "$candidate" == / ]] && break
+        candidate="${candidate%/*}"
+        [[ -n "$candidate" ]] || candidate=/
+    done
+    return 1
+}
+
+# Detect the filesystem containing the nearest existing installation parent.
 test_install_dir_filesystem() {
     local install_dir="${1:-$INSTALL_DIR}"
     INSTALL_FS_TYPE=""
@@ -45,24 +68,15 @@ test_install_dir_filesystem() {
     probe="$(_resolve_existing_parent "$install_dir")"
 
     local fs_type=""
-    fs_type=$(stat -f %T "$probe" 2>/dev/null || true)
+    fs_type="$(_macos_mount_filesystem_type "$probe" || true)"
 
-    # `stat -f %T` on macOS sometimes returns just a short tag; cross-check
-    # with diskutil for stable personality identification.
-    if command -v diskutil >/dev/null 2>&1; then
-        # `diskutil info` only accepts mount points or device IDs. Subpaths
-        # (e.g. /Volumes/X/ods) make it exit non-zero, which under
-        # `set -euo pipefail` would silently kill the entire installer. The
-        # personality lookup is an optional refinement on top of `stat -f %T`,
-        # so swallow non-zero — empty personality just means we keep the stat
-        # value.
-        local personality=""
-        personality=$(diskutil info "$probe" 2>/dev/null \
+    # Retain diskutil as an optional fallback if the mount table is unavailable.
+    # A subdirectory may not be accepted by diskutil; never treat an error as a
+    # filesystem name or let an optional probe abort a strict-shell installer.
+    if [[ -z "$fs_type" ]] && command -v diskutil >/dev/null 2>&1; then
+        fs_type=$(LC_ALL=C diskutil info "$probe" 2>/dev/null \
             | awk -F': *' '/File System Personality/ {print $2; exit}' \
             | tr '[:upper:]' '[:lower:]' || true)
-        if [[ -n "$personality" ]]; then
-            fs_type="$personality"
-        fi
     fi
 
     INSTALL_FS_TYPE="${fs_type:-unknown}"
