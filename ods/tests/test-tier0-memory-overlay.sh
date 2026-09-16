@@ -85,6 +85,11 @@ if grep -qE '^TIER=\$\{TIER\}$' "$ROOT_DIR/installers/phases/06-directories.sh";
 else
     fail "phase 06 does not write TIER, so later resolutions fall back to tier 1"
 fi
+if grep -qE '^TIER=\$\{tier\}$' "$ROOT_DIR/installers/macos/lib/env-generator.sh"; then
+    pass "the macOS generator records TIER too"
+else
+    fail "the macOS generator does not write TIER, so macOS resolutions fall back to tier 1"
+fi
 if grep -q '"TIER"' "$ROOT_DIR/.env.schema.json"; then
     pass "TIER is declared in .env.schema.json"
 else
