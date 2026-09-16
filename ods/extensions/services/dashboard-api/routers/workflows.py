@@ -86,6 +86,25 @@ async def check_workflow_dependencies(deps: list[str], health_cache: dict[str, b
     return results
 
 
+def find_n8n_workflow(n8n_workflows: list[dict], catalog_name: str) -> dict | None:
+    """Return the n8n workflow for a catalog entry, matched by exact name.
+
+    This replaces a substring match (`catalog_name in n8n_name`) that took the
+    first hit. Every one of the shipped catalog entries has a `name` identical
+    to the `name` inside its template JSON, so the loose match bought nothing —
+    it only created the chance to act on a workflow the operator did not mean.
+
+    The realistic collision is a workflow the *user* owns: n8n's own duplicate
+    action names a copy "<name> copy", which contains the catalog name, so
+    disabling an ODS workflow could delete the user's copy instead (#4191).
+    """
+    target = catalog_name.strip().lower()
+    for workflow in n8n_workflows:
+        if workflow.get("name", "").strip().lower() == target:
+            return workflow
+    return None
+
+
 async def check_n8n_available() -> bool:
     """Check if n8n is responding."""
     try:
@@ -118,17 +137,11 @@ async def api_workflows(api_key: str = Depends(verify_api_key)):
     """Get workflow catalog with status and dependency info."""
     catalog = load_workflow_catalog()
     n8n_workflows = await get_n8n_workflows()
-    n8n_by_name = {w.get("name", "").lower(): w for w in n8n_workflows}
 
     workflows = []
     health_cache: dict[str, bool] = {}
     for wf in catalog.get("workflows", []):
-        wf_name_lower = wf["name"].lower()
-        installed = None
-        for n8n_name, n8n_wf in n8n_by_name.items():
-            if wf_name_lower in n8n_name or n8n_name in wf_name_lower:
-                installed = n8n_wf
-                break
+        installed = find_n8n_workflow(n8n_workflows, wf["name"])
 
         dep_status = await check_workflow_dependencies(wf.get("dependencies", []), health_cache)
         all_deps_met = all(dep_status.values())
@@ -200,6 +213,32 @@ async def enable_workflow(workflow_id: str, api_key: str = Depends(verify_api_ke
     except (OSError, json.JSONDecodeError) as e:
         raise HTTPException(status_code=500, detail=f"Failed to read workflow: {e}")
 
+    # Re-enabling an already-installed workflow used to POST a second copy into
+    # n8n every time, leaving duplicates that share a name — and an ambiguous
+    # name is exactly what disable then has to resolve (#4188). Activate what is
+    # already there instead.
+    existing = find_n8n_workflow(await get_n8n_workflows(), wf_info["name"])
+    if existing:
+        headers = {"Content-Type": "application/json"}
+        if N8N_API_KEY:
+            headers["X-N8N-API-KEY"] = N8N_API_KEY
+        n8n_id = existing.get("id")
+        activated = bool(existing.get("active"))
+        if n8n_id and not activated:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
+                async with session.patch(
+                    f"{N8N_URL}/api/v1/workflows/{n8n_id}", headers=headers, json={"active": True}
+                ) as activate_resp:
+                    activated = activate_resp.status == 200
+        return {
+            "status": "success",
+            "workflowId": workflow_id,
+            "n8nId": n8n_id,
+            "activated": activated,
+            "alreadyInstalled": True,
+            "message": f"{wf_info['name']} is already installed; it is now active!",
+        }
+
     try:
         headers = {"Content-Type": "application/json"}
         if N8N_API_KEY:
@@ -232,12 +271,7 @@ async def _remove_workflow(workflow_id: str):
     if not wf_info:
         raise HTTPException(status_code=404, detail=f"Workflow not found: {workflow_id}")
 
-    n8n_wf = None
-    wf_name_lower = wf_info["name"].lower()
-    for wf in n8n_workflows:
-        if wf_name_lower in wf.get("name", "").lower():
-            n8n_wf = wf
-            break
+    n8n_wf = find_n8n_workflow(n8n_workflows, wf_info["name"])
     if not n8n_wf:
         raise HTTPException(status_code=404, detail="Workflow not installed in n8n")
 
@@ -282,12 +316,7 @@ async def workflow_executions(workflow_id: str, limit: int = 20, api_key: str = 
     if not wf_info:
         raise HTTPException(status_code=404, detail=f"Workflow not found: {workflow_id}")
 
-    n8n_wf = None
-    wf_name_lower = wf_info["name"].lower()
-    for wf in n8n_workflows:
-        if wf_name_lower in wf.get("name", "").lower():
-            n8n_wf = wf
-            break
+    n8n_wf = find_n8n_workflow(n8n_workflows, wf_info["name"])
     if not n8n_wf:
         return {"executions": [], "message": "Workflow not installed"}
 

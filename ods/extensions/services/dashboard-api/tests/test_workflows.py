@@ -507,6 +507,10 @@ def test_workflow_enable_file_not_found(test_client, tmp_path, monkeypatch):
     workflow_dir.mkdir()
     monkeypatch.setattr(wf_mod, "WORKFLOW_DIR", workflow_dir)
 
+    # enable now asks n8n what is already installed before creating anything
+    # (#4188). These cases exercise the create path, so: nothing installed.
+    monkeypatch.setattr(wf_mod, "get_n8n_workflows", AsyncMock(return_value=[]))
+
     resp = test_client.post(
         "/api/workflows/file-wf/enable",
         headers=test_client.auth_headers,
@@ -664,6 +668,10 @@ def test_workflow_enable_success(test_client, tmp_path, monkeypatch):
     (workflow_dir / "ok-wf.json").write_text(json.dumps({"name": "OK Workflow", "nodes": []}))
     monkeypatch.setattr(wf_mod, "WORKFLOW_DIR", workflow_dir)
 
+    # enable now asks n8n what is already installed before creating anything
+    # (#4188). These cases exercise the create path, so: nothing installed.
+    monkeypatch.setattr(wf_mod, "get_n8n_workflows", AsyncMock(return_value=[]))
+
     # Mock n8n POST (create) → 201 with id
     create_resp = AsyncMock()
     create_resp.status = 201
@@ -720,6 +728,10 @@ def test_workflow_enable_n8n_error(test_client, tmp_path, monkeypatch):
     (workflow_dir / "err-wf.json").write_text(json.dumps({"name": "Err"}))
     monkeypatch.setattr(wf_mod, "WORKFLOW_DIR", workflow_dir)
 
+    # enable now asks n8n what is already installed before creating anything
+    # (#4188). These cases exercise the create path, so: nothing installed.
+    monkeypatch.setattr(wf_mod, "get_n8n_workflows", AsyncMock(return_value=[]))
+
     create_resp = AsyncMock()
     create_resp.status = 400
     create_resp.text = AsyncMock(return_value="validation error")
@@ -761,6 +773,10 @@ def test_workflow_enable_n8n_unreachable(test_client, tmp_path, monkeypatch):
     workflow_dir.mkdir()
     (workflow_dir / "net-wf.json").write_text(json.dumps({"name": "Net"}))
     monkeypatch.setattr(wf_mod, "WORKFLOW_DIR", workflow_dir)
+
+    # enable now asks n8n what is already installed before creating anything
+    # (#4188). These cases exercise the create path, so: nothing installed.
+    monkeypatch.setattr(wf_mod, "get_n8n_workflows", AsyncMock(return_value=[]))
 
     session_mock = AsyncMock()
     session_mock.post = MagicMock(side_effect=aiohttp.ClientError("refused"))
@@ -938,3 +954,105 @@ def test_workflow_enable_rejects_path_traversal_in_catalog_file(test_client, mon
     )
     assert resp.status_code == 400
     assert resp.json()["detail"] == "Invalid workflow file path"
+
+
+# ---------------------------------------------------------------------------
+# Name matching (#4191) and idempotent enable (#4188)
+# ---------------------------------------------------------------------------
+
+
+def test_find_n8n_workflow_matches_exact_name_only():
+    """A user's "<name> copy" must never be mistaken for the catalog workflow.
+
+    n8n's own duplicate action produces exactly that name, and the previous
+    substring match with first-match-wins meant disable could delete the user's
+    copy instead of the ODS-managed workflow (#4191).
+    """
+    import routers.workflows as wf_mod
+
+    user_copy = {"id": "user-1", "name": "Daily Digest copy"}
+    ours = {"id": "ods-1", "name": "Daily Digest"}
+
+    # Ordered so a first-match-wins substring search would return the copy.
+    assert wf_mod.find_n8n_workflow([user_copy, ours], "Daily Digest") is ours
+    assert wf_mod.find_n8n_workflow([user_copy], "Daily Digest") is None
+
+    # Case and surrounding whitespace are still tolerated.
+    assert wf_mod.find_n8n_workflow([{"id": "x", "name": "  daily DIGEST "}],
+                                    "Daily Digest")["id"] == "x"
+
+    # A catalog name that merely contains an installed name is not a match.
+    assert wf_mod.find_n8n_workflow([{"id": "y", "name": "Digest"}],
+                                    "Daily Digest") is None
+
+
+def test_enable_existing_workflow_does_not_create_a_duplicate(
+    test_client, tmp_path, monkeypatch
+):
+    """Re-enabling an installed workflow activates it instead of POSTing again.
+
+    enable_workflow used to create unconditionally, so every re-enable left
+    another copy in n8n sharing the same name (#4188) — which is precisely the
+    ambiguity #4191's matcher then has to resolve.
+    """
+    import routers.workflows as wf_mod
+
+    catalog = {
+        "workflows": [
+            {"id": "dup-wf", "name": "Dup Workflow", "description": "t",
+             "file": "dup-wf.json", "dependencies": []}
+        ],
+        "categories": {},
+    }
+    catalog_file = tmp_path / "catalog.json"
+    catalog_file.write_text(json.dumps(catalog))
+    monkeypatch.setattr(wf_mod, "WORKFLOW_CATALOG_FILE", catalog_file)
+
+    workflow_dir = tmp_path / "workflows"
+    workflow_dir.mkdir()
+    (workflow_dir / "dup-wf.json").write_text(
+        json.dumps({"name": "Dup Workflow", "nodes": []})
+    )
+    monkeypatch.setattr(wf_mod, "WORKFLOW_DIR", workflow_dir)
+
+    # Already installed in n8n, currently inactive.
+    monkeypatch.setattr(
+        wf_mod, "get_n8n_workflows",
+        AsyncMock(return_value=[{"id": "existing-1", "name": "Dup Workflow", "active": False}]),
+    )
+
+    posted: list = []
+    patched: list = []
+
+    class _Resp:
+        status = 200
+
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def json(self): return {"data": {"id": "existing-1"}}
+        async def text(self): return ""
+
+    class _Session:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+
+        def post(self, *a, **kw):
+            posted.append(a)
+            return _Resp()
+
+        def patch(self, url, *a, **kw):
+            patched.append(url)
+            return _Resp()
+
+    monkeypatch.setattr(wf_mod.aiohttp, "ClientSession", lambda *a, **kw: _Session())
+
+    resp = test_client.post("/api/workflows/dup-wf/enable",
+                            headers={"Authorization": "Bearer test-key-12345"})
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["alreadyInstalled"] is True
+    assert body["n8nId"] == "existing-1"
+    assert body["activated"] is True
+    assert posted == [], "a duplicate workflow was created in n8n"
+    assert any("existing-1" in url for url in patched), "the existing workflow was not activated"
