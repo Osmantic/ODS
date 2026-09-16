@@ -23,7 +23,7 @@ describe('Invites', () => {
     vi.restoreAllMocks()
   })
 
-  test('renders Setup / Owner first and revokes active owner cards', async () => {
+  test('renders Owner access and revokes active owner cards', async () => {
     let listCount = 0
     const fetchMock = vi.fn(async (url, options = {}) => {
       if (url === '/api/auth/magic-link/list') {
@@ -57,8 +57,8 @@ describe('Invites', () => {
 
     render(<Invites />)
 
-    expect(await screen.findByRole('heading', { name: 'Setup / Owner' })).toBeInTheDocument()
-    expect(screen.getByText('Factory owner card')).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Owner access' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Owner cards' })).toBeInTheDocument()
     expect(screen.getAllByText('owner').length).toBeGreaterThan(0)
     expect(screen.getByText('revoke-only')).toBeInTheDocument()
 
@@ -103,7 +103,7 @@ describe('Invites', () => {
     render(<Invites />)
 
     await screen.findByText('No owner cards yet')
-    fireEvent.click(screen.getByRole('button', { name: 'Create owner card' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Print owner card' }))
     fireEvent.change(screen.getByPlaceholderText('alice'), { target: { value: 'mike' } })
     fireEvent.click(screen.getByRole('button', { name: 'Generate owner QR' }))
 
@@ -151,7 +151,7 @@ describe('Invites', () => {
     render(<Invites />)
 
     await screen.findByText('No owner cards yet')
-    fireEvent.click(screen.getByRole('button', { name: 'Create owner card' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Print owner card' }))
     fireEvent.change(screen.getByPlaceholderText('alice'), { target: { value: 'mike' } })
     fireEvent.click(screen.getByRole('button', { name: 'Generate owner QR' }))
 
@@ -196,7 +196,7 @@ describe('Invites', () => {
     render(<Invites />)
 
     await screen.findByText('No guest invites yet')
-    fireEvent.click(screen.getByRole('button', { name: 'Create guest invite' }))
+    fireEvent.click(screen.getByRole('button', { name: 'New guest invite' }))
     fireEvent.change(screen.getByPlaceholderText('alice'), { target: { value: 'bob' } })
     fireEvent.click(screen.getByRole('button', { name: 'Generate' }))
 
@@ -248,6 +248,6 @@ describe('Invites', () => {
 
     expect(await screen.findByText(/ODS Talk owner cards require ods-proxy/i)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Print owner card' })).toBeDisabled()
-    expect(screen.getByRole('button', { name: 'Create owner card' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'New guest invite' })).toBeEnabled()
   })
 })

@@ -255,7 +255,13 @@ CURLSTUB
     else
         fail "core service with missing container vanished from JSON"
     fi
-    if echo "$core_json" | grep -q "container not found"; then
+    # JSON is machine-only; check the explanatory text in human mode.
+    set +e
+    core_human=$(cd "$SANDBOX" && PATH="$SANDBOX/bin:$PATH" INSTALL_DIR="$SANDBOX" \
+        bash scripts/health-check.sh 2>&1)
+    human_exit=$?
+    set -e
+    if [[ "$human_exit" -eq 2 ]] && echo "$core_human" | grep -q "container not found"; then
         pass "container-not-found state reaches the human-readable output"
     else
         fail "container-not-found message missing from output"

@@ -21,6 +21,9 @@ const statusPayload = {
       baseUrl: 'http://127.0.0.1:8000/v1',
       model: 'qwen/remote:latest',
       transport: 'ssh',
+      contextLength: 32768,
+      maxTokens: 4096,
+      reasoning: false,
     },
     projection: {
       publicModel: 'ods/current',
@@ -42,6 +45,19 @@ const statusPayload = {
       },
     },
     errors: [],
+  },
+  activation: {
+    valid: true,
+    active: true,
+    proven: true,
+    reason: 'active_and_proven',
+    gateway: 'litellm-cloud',
+    publicModel: 'ods/current',
+    model: 'qwen/remote:latest',
+    contextLength: 32768,
+    maxTokens: 4096,
+    reasoning: false,
+    pixel: 'reconciled',
   },
   peer: {
     configured: false,
@@ -76,8 +92,29 @@ const statusPayload = {
   availableActions: {
     configure: true,
     test: true,
+    enable: false,
     disable: true,
     remove: true,
+  },
+}
+
+const driftedStatusPayload = {
+  ...statusPayload,
+  status: 'degraded',
+  activation: {
+    ...statusPayload.activation,
+    valid: false,
+    proven: false,
+    reason: 'consumer_drift',
+    pixel: 'drifted',
+  },
+  capabilities: {
+    ...statusPayload.capabilities,
+    inference: false,
+  },
+  availableActions: {
+    ...statusPayload.availableActions,
+    enable: true,
   },
 }
 
@@ -186,6 +223,9 @@ const configurePlanPayload = {
       baseUrl: 'https://gpu.example.test/v1',
       model: 'qwen/remote:latest',
       transport: 'direct',
+      contextLength: 32768,
+      maxTokens: 4096,
+      reasoning: false,
     },
   },
   writes: {
@@ -206,6 +246,13 @@ const configureApplyPayload = {
   applied: true,
   mutated: true,
   rollback: { attempted: false, ok: null },
+  activation: {
+    active: true,
+    proven: true,
+    publicModel: 'ods/current',
+    model: 'qwen/remote:latest',
+    pixel: 'reconciled',
+  },
   probe: {
     ok: true,
     endpoint: '/v1/models',
@@ -250,6 +297,12 @@ const disableApplyPayload = {
     removesSecrets: false,
   },
   secretRefs: {},
+}
+
+const enableApplyPayload = {
+  ...disableApplyPayload,
+  action: 'enable',
+  route: { enabled: true },
 }
 
 const removeApplyPayload = {
@@ -301,6 +354,25 @@ test('renders remote provider status and proof receipt', async () => {
   expect(screen.getByRole('button', { name: /test route/i })).toBeEnabled()
 })
 
+test('compact views keep the connection draft and never apply changes on navigation', async () => {
+  globalThis.fetch.mockResolvedValue(response(statusPayload))
+  render(createElement(RemoteProvider, { compact: true }))
+  await screen.findByRole('button', { name: 'Connection', exact: true })
+  expect(screen.queryByRole('heading', { name: 'Egress' })).toBeNull()
+  // The tab exists before the status-to-form effect has hydrated the fields.
+  // Start this navigation test from a fully loaded connection draft.
+  await waitFor(() => expect(screen.getByLabelText('Base URL')).toHaveValue(statusPayload.routeState.provider.baseUrl))
+  fireEvent.change(screen.getByLabelText('Base URL'), { target: { value: 'https://draft.example/v1' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Diagnostics', exact: true }))
+  expect(screen.getByRole('heading', { name: 'Egress' })).toBeVisible()
+  expect(screen.queryByRole('textbox', { name: 'Base URL' })).toBeNull()
+  fireEvent.click(screen.getByRole('button', { name: 'Peer models', exact: true }))
+  expect(screen.getByRole('heading', { name: 'ODS Peer Models' })).toBeVisible()
+  fireEvent.click(screen.getByRole('button', { name: 'Connection', exact: true }))
+  expect(screen.getByLabelText('Base URL')).toHaveValue('https://draft.example/v1')
+  expect(globalThis.fetch.mock.calls.some(([, options]) => options?.method === 'POST')).toBe(false)
+})
+
 test('runs configured route probe and shows proof recording result', async () => {
   globalThis.fetch
     .mockResolvedValueOnce(response(statusPayload))
@@ -342,6 +414,9 @@ test('plans direct provider configuration without rendering secret material', as
       transport: 'direct',
       baseUrl: 'https://gpu.example.test/v1',
       model: 'qwen/remote:latest',
+      contextLength: 32768,
+      maxTokens: 4096,
+      reasoning: false,
     },
     secrets: {
       apiKey: 'unit-test-provider-token',
@@ -396,6 +471,28 @@ test('applies disable lifecycle action and refreshes status', async () => {
   })
   expect(requestBody(1)).toEqual({ action: 'disable' })
   expect(screen.getByText('Disable applied')).toBeInTheDocument()
+})
+
+test('offers one-click reconciliation when the active consumer drifted', async () => {
+  globalThis.fetch
+    .mockResolvedValueOnce(response(driftedStatusPayload))
+    .mockResolvedValueOnce(response(enableApplyPayload))
+    .mockResolvedValueOnce(response(statusPayload))
+
+  render(createElement(RemoteProvider))
+
+  expect(await screen.findByText(/ODS and Pixel are not using its exact model contract/i)).toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: /^reconcile route$/i }))
+
+  await waitFor(() => {
+    expect(globalThis.fetch.mock.calls.map(call => call[0])).toEqual([
+      '/api/remote-provider/status',
+      '/api/remote-provider/apply',
+      '/api/remote-provider/status',
+    ])
+  })
+  expect(requestBody(1)).toEqual({ action: 'enable' })
+  expect(screen.getByText('Enable applied')).toBeInTheDocument()
 })
 
 test('confirms remove before deleting route state and stored secrets', async () => {
@@ -558,4 +655,78 @@ test('confirms peer model delete before proxying removal', async () => {
   expect(confirmSpy).toHaveBeenCalledWith('Delete Remote Qwen from the remote ODS peer?')
   expect(globalThis.fetch.mock.calls[3][0]).toBe('/api/remote-provider/peer/models/Qwen%2FQwen%203.5%209B')
   expect(globalThis.fetch.mock.calls[3][1].method).toBe('DELETE')
+})
+
+
+test.each(['apply', 'refresh'])('keeps newer edits while configure %s is pending', async pendingStage => {
+  let finishApply
+  let finishRefresh
+  const apply = new Promise(resolve => { finishApply = resolve })
+  const refresh = new Promise(resolve => { finishRefresh = resolve })
+  globalThis.fetch
+    .mockResolvedValueOnce(response(statusPayload))
+    .mockReturnValueOnce(apply)
+    .mockReturnValueOnce(refresh)
+
+  render(createElement(RemoteProvider))
+  await fillConfigureForm()
+  fireEvent.click(screen.getByRole('button', { name: 'Configure', exact: true }))
+  await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledTimes(2))
+  if (pendingStage === 'refresh') {
+    await act(async () => { finishApply(response(configureApplyPayload)) })
+    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledTimes(3))
+  }
+
+  fireEvent.change(screen.getByLabelText('Base URL'), { target: { value: 'https://next.example/v1' } })
+  fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'next-provider-token' } })
+  await act(async () => {
+    finishApply(response(configureApplyPayload))
+    finishRefresh(response(statusPayload))
+  })
+
+  expect(screen.getByLabelText('Base URL')).toHaveValue('https://next.example/v1')
+  expect(screen.getByLabelText('API key')).toHaveValue('next-provider-token')
+  expect(screen.getByRole('button', { name: 'Configure', exact: true })).toBeEnabled()
+  expect(requestBody(1).provider.baseUrl).toBe('https://gpu.example.test/v1')
+})
+
+test.each([
+  ['truncated JSON', () => new globalThis.Response('{"applied":'), /response could not be read/],
+  ['interrupted transfer', () => new globalThis.Response(new globalThis.ReadableStream({
+    start(controller) { controller.error(new TypeError('terminated')) },
+  })), /response could not be read/],
+  ['aborted body', () => new globalThis.Response(new globalThis.ReadableStream({
+    start(controller) { controller.error(new globalThis.DOMException('Aborted', 'AbortError')) },
+  })), /Request timed out/],
+])('preserves the connection draft after a 200 with %s', async (_name, brokenResponse, message) => {
+  globalThis.fetch.mockResolvedValue(response(statusPayload))
+    .mockResolvedValueOnce(response(statusPayload))
+    .mockResolvedValueOnce(brokenResponse())
+  render(createElement(RemoteProvider))
+  await fillConfigureForm()
+  fireEvent.click(screen.getByRole('button', { name: 'Configure', exact: true }))
+
+  expect(await screen.findByText(message)).toBeInTheDocument()
+  expect(screen.getByLabelText('Base URL')).toHaveValue('https://gpu.example.test/v1')
+  expect(screen.getByLabelText('API key')).toHaveValue('unit-test-provider-token')
+  expect(screen.getByRole('button', { name: 'Configure', exact: true })).toBeEnabled()
+  expect(screen.queryByText('Unknown completed')).not.toBeInTheDocument()
+  // An unreadable receipt does not justify another mutation or a success refresh.
+  expect(globalThis.fetch).toHaveBeenCalledTimes(2)
+
+  fireEvent.click(screen.getByRole('button', { name: 'Refresh', exact: true }))
+  await screen.findByRole('heading', { name: 'Remote GPU' })
+  expect(screen.getByLabelText('API key')).toHaveValue('unit-test-provider-token')
+  expect(screen.getByLabelText('Base URL')).toHaveValue('https://gpu.example.test/v1')
+  expect(globalThis.fetch.mock.calls.filter(([, options]) => options?.method === 'POST')).toHaveLength(1)
+})
+
+test('keeps the HTTP status when an error response is not JSON', async () => {
+  globalThis.fetch.mockResolvedValueOnce(response(statusPayload))
+    .mockResolvedValueOnce(new globalThis.Response('<html>Bad Gateway</html>', { status: 502 }))
+  render(createElement(RemoteProvider))
+  await fillConfigureForm()
+  fireEvent.click(screen.getByRole('button', { name: 'Configure', exact: true }))
+  expect(await screen.findByText('Request failed (502)')).toBeInTheDocument()
+  expect(screen.getByLabelText('API key')).toHaveValue('unit-test-provider-token')
 })

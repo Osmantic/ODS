@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertCircle,
   CheckCircle2,
@@ -17,8 +17,11 @@ import {
 } from 'lucide-react'
 
 const REQUEST_TIMEOUT_MS = 12000
-const PROBE_TIMEOUT_MS = 22000
-const LIFECYCLE_TIMEOUT_MS = 30000
+// A successful SSH/provider probe also commits the proven route through
+// LiteLLM and the managed Pixel runtime. That bounded transaction can include
+// container recreation and a Pixel gateway restart.
+const PROBE_TIMEOUT_MS = 1805000
+const LIFECYCLE_TIMEOUT_MS = 1805000
 const PEER_MODELS_TIMEOUT_MS = 30000
 const PEER_MODEL_LOAD_TIMEOUT_MS = 2705000
 const PEER_DOWNLOAD_POLL_MS = 2000
@@ -26,6 +29,9 @@ const INITIAL_FORM = {
   baseUrl: '',
   model: '',
   apiKey: '',
+  contextLength: '32768',
+  maxTokens: '4096',
+  reasoning: false,
 }
 
 const STATUS_META = {
@@ -74,6 +80,9 @@ function configurePayload(form) {
       transport: 'direct',
       baseUrl: form.baseUrl.trim(),
       model: form.model.trim(),
+      contextLength: Number(form.contextLength),
+      maxTokens: Number(form.maxTokens),
+      reasoning: form.reasoning,
     },
     secrets: {
       apiKey: form.apiKey.trim(),
@@ -134,6 +143,8 @@ function peerDownloadSummary(status) {
 function lifecycleTitle(result) {
   const action = titleize(result?.action)
   if (result?.applied) return `${action} applied`
+  if (result?.staged) return `${action} staged - route proof required`
+  if (result?.action === 'test' && result?.probe) return 'Test completed'
   if (result?.ok) return `${action} plan ready`
   return `${action} completed`
 }
@@ -141,7 +152,13 @@ function lifecycleTitle(result) {
 async function responsePayload(response) {
   try {
     return await response.json()
-  } catch {
+  } catch (error) {
+    // A 2xx header is not a completed receipt. Keep the form dirty when its
+    // body is lost: the server may already have applied the operation.
+    if (response.ok) {
+      if (error?.name === 'AbortError') throw error
+      throw new Error('Remote GPU response could not be read. Refresh status before trying again.')
+    }
     return {}
   }
 }
@@ -183,9 +200,9 @@ function StatusPill({ status }) {
   )
 }
 
-function Panel({ icon: Icon, title, children, actions = null, className = '' }) {
+function Panel({ icon: Icon, title, children, actions = null, className = '', hidden = false }) {
   return (
-    <section className={`rounded-lg border border-theme-border bg-theme-card p-4 shadow-sm ${className}`}>
+    <section hidden={hidden} className={`remote-provider-panel rounded-lg border border-theme-border bg-theme-card p-4 shadow-sm ${className}`}>
       <div className="mb-4 flex items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <Icon size={18} className="text-theme-accent" />
@@ -235,7 +252,7 @@ function TextInput({ label, value, onChange, type = 'text', autoComplete = 'off'
 
 function Field({ label, value, tone = 'text-theme-text' }) {
   return (
-    <div className="flex items-center justify-between gap-4 text-sm">
+    <div className="remote-field-row flex items-center justify-between gap-4 text-sm">
       <span className="text-theme-text-muted">{label}</span>
       <span className={`text-right font-medium ${tone}`}>{valueOrDash(value)}</span>
     </div>
@@ -262,6 +279,13 @@ function LifecycleSummary({ result }) {
           label="Probe"
           value={`HTTP ${result.probe.httpStatus ?? 'unknown'} at ${result.probe.endpoint || '/v1/models'}`}
           tone="text-emerald-300"
+        />
+      )}
+      {result.activation && (
+        <Field
+          label="Consumer activation"
+          value={result.activation.proven ? `${result.activation.publicModel || 'ods/current'} proven` : titleize(result.activation.reason)}
+          tone={result.activation.proven ? 'text-emerald-300' : 'text-amber-300'}
         />
       )}
       {result.rollback?.attempted && (
@@ -294,7 +318,8 @@ function LoadingState() {
   )
 }
 
-export default function RemoteProvider() {
+export default function RemoteProvider({ compact = false }) {
+  const [view, setView] = useState('connection')
   const [statusData, setStatusData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -302,7 +327,7 @@ export default function RemoteProvider() {
   const [testResult, setTestResult] = useState(null)
   const [testError, setTestError] = useState(null)
   const [form, setForm] = useState(INITIAL_FORM)
-  const [formDirty, setFormDirty] = useState(false)
+  const formEdit = useRef({ dirty: false, revision: 0 })
   const [planning, setPlanning] = useState(false)
   const [applyingAction, setApplyingAction] = useState(null)
   const [planResult, setPlanResult] = useState(null)
@@ -319,6 +344,17 @@ export default function RemoteProvider() {
     try {
       const payload = await fetchJson('/api/remote-provider/status')
       setStatusData(payload)
+      const provider = payload?.routeState?.provider
+      if (!formEdit.current.dirty && provider) {
+        setForm(current => ({
+          ...current,
+          baseUrl: provider.baseUrl || '',
+          model: provider.model || '',
+          contextLength: String(provider.contextLength || 32768),
+          maxTokens: String(provider.maxTokens || 4096),
+          reasoning: provider.reasoning === true,
+        }))
+      }
       setError(null)
       return payload
     } catch (err) {
@@ -382,18 +418,10 @@ export default function RemoteProvider() {
     return () => window.clearInterval(interval)
   }, [loadPeerModels, peerDownloadStatus, statusData?.capabilities?.odsPeerLifecycle])
 
-  useEffect(() => {
-    const provider = statusData?.routeState?.provider
-    if (formDirty || !provider) return
-    setForm(current => ({
-      ...current,
-      baseUrl: provider.baseUrl || '',
-      model: provider.model || '',
-    }))
-  }, [formDirty, statusData])
 
   const updateForm = (key, value) => {
-    setFormDirty(true)
+    formEdit.current.dirty = true
+    formEdit.current.revision += 1
     setForm(current => ({ ...current, [key]: value }))
   }
 
@@ -435,12 +463,13 @@ export default function RemoteProvider() {
     setTestResult(null)
     setTestError(null)
     try {
+      const submittedRevision = formEdit.current.revision
       const payload = action === 'configure' ? configurePayload(form) : { action }
       const result = await fetchJson('/api/remote-provider/apply', jsonOptions(payload), LIFECYCLE_TIMEOUT_MS)
       setLifecycleResult(result)
-      if (action === 'configure') {
+      if (action === 'configure' && formEdit.current.revision === submittedRevision) {
         setForm(current => ({ ...current, apiKey: '' }))
-        setFormDirty(false)
+        formEdit.current.dirty = false
       }
       await loadStatus({ quiet: true })
     } catch (err) {
@@ -491,14 +520,32 @@ export default function RemoteProvider() {
   const provider = routeState.provider || {}
   const routeStatus = routeState.status || {}
   const egress = statusData?.egress || {}
+  const activation = statusData?.activation || {}
   const sshSupervisor = statusData?.sshSupervisor || {}
   const peer = statusData?.peer || {}
   const testEnabled = Boolean(statusData?.availableActions?.test)
+  const enableAvailable = Boolean(statusData?.availableActions?.enable)
   const statusMeta = STATUS_META[statusData?.status] || STATUS_META.unknown
   const lifecycleBusy = planning || Boolean(applyingAction)
-  const configureReady = Boolean(form.baseUrl.trim() && form.model.trim() && form.apiKey.trim()) && !lifecycleBusy
+  const contextLength = Number(form.contextLength)
+  const maxTokens = Number(form.maxTokens)
+  const configureReady = Boolean(
+    form.baseUrl.trim()
+    && form.model.trim()
+    && form.apiKey.trim()
+    && Number.isInteger(contextLength)
+    && contextLength >= 16384
+    && Number.isInteger(maxTokens)
+    && maxTokens >= 1
+    && maxTokens <= contextLength,
+  ) && !lifecycleBusy
   const proofReceipt = testResult?.probe || routeStatus.lastProbe
   const proofRecorded = testResult?.routeProof?.recorded
+  const consumerDrift = activation.reason === 'consumer_drift'
+  let enableActionLabel = routeState.enabled ? 'Reconcile route' : 'Enable route'
+  if (applyingAction === 'enable') {
+    enableActionLabel = routeState.enabled ? 'Reconciling' : 'Enabling'
+  }
   const peerReady = Boolean(statusData?.capabilities?.odsPeerLifecycle)
   const peerModels = Array.isArray(peerModelsData?.models) ? peerModelsData.models : []
   const peerBusy = peerModelsLoading || Boolean(peerAction)
@@ -512,12 +559,12 @@ export default function RemoteProvider() {
   if (loading) return <LoadingState />
 
   return (
-    <div className="p-3 sm:p-6 lg:p-8">
+    <div className={`${compact ? 'remote-settings-content' : ''} p-3 sm:p-6 lg:p-8`}>
       <header className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-theme-text">Remote GPU</h1>
+          {!compact && <h1 className="text-2xl font-bold text-theme-text">Remote GPU</h1>}
           <p className="mt-1 text-sm text-theme-text-muted">
-            Switchboard route, egress health, and SSH tunnel proof.
+            {provider.model ? `Current model: ${provider.model}` : 'Remote inference connection'}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -530,6 +577,11 @@ export default function RemoteProvider() {
             <RefreshCw size={16} />
             Refresh
           </button>
+          {enableAvailable && (
+            <ActionButton icon={RefreshCw} onClick={() => applyLifecycle('enable')} disabled={lifecycleBusy} primary>
+              {enableActionLabel}
+            </ActionButton>
+          )}
           <button
             type="button"
             onClick={runProbe}
@@ -541,6 +593,9 @@ export default function RemoteProvider() {
           </button>
         </div>
       </header>
+      {compact && <nav className="settings-view-tabs" aria-label="Remote GPU views">
+        {[['connection', 'Connection'], ['models', 'Peer models'], ['diagnostics', 'Diagnostics']].map(([id, label]) => <button key={id} type="button" aria-pressed={view === id} onClick={() => setView(id)}>{label}</button>)}
+      </nav>}
 
       {error && (
         <div className="mb-4 flex items-center gap-2 rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-200">
@@ -570,14 +625,28 @@ export default function RemoteProvider() {
           {lifecycleError}
         </div>
       )}
+      {consumerDrift && (
+        <div className="mb-4 flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-100" role="status">
+          <AlertCircle className="mt-0.5 shrink-0" size={16} />
+          <span>
+            The provider route is reachable, but ODS and Pixel are not using its exact model contract.
+            Reconcile the route to restore the configured remote model without re-entering its stored secret.
+          </span>
+        </div>
+      )}
 
       <div className="grid gap-4 lg:grid-cols-2">
-        <Panel icon={Route} title="Route">
+        <Panel hidden={compact && view !== 'diagnostics'} icon={Route} title="Route">
           <Field label="State" value={routeState.enabled ? 'Enabled' : 'Disabled'} tone={routeState.enabled ? 'text-emerald-300' : 'text-zinc-400'} />
           <Field label="Mode" value={routeState.mode} />
           <Field label="Transport" value={provider.transport} />
           <Field label="Model" value={provider.model} />
+          <Field label="Context" value={provider.contextLength} />
+          <Field label="Max output" value={provider.maxTokens} />
+          <Field label="Reasoning" value={boolLabel(provider.reasoning)} />
           <Field label="Proof" value={titleize(routeStatus.reason)} tone={routeStatus.proven ? 'text-emerald-300' : 'text-amber-300'} />
+          <Field label="Consumer route" value={titleize(activation.reason)} tone={activation.proven ? 'text-emerald-300' : 'text-amber-300'} />
+          <Field label="Pixel route" value={titleize(activation.pixel)} />
           <ProbeReceipt receipt={proofReceipt} />
           {Array.isArray(routeState.errors) && routeState.errors.length > 0 && (
             <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-200">
@@ -586,7 +655,7 @@ export default function RemoteProvider() {
           )}
         </Panel>
 
-        <Panel icon={Cloud} title="Egress">
+        <Panel hidden={compact && view !== 'diagnostics'} icon={Cloud} title="Egress">
           <Field label="Status" value={titleize(egress.status)} tone={egress.ready ? 'text-emerald-300' : 'text-amber-300'} />
           <Field label="Ready" value={boolLabel(egress.ready)} />
           <Field label="Reachable" value={boolLabel(egress.reachable)} />
@@ -595,7 +664,7 @@ export default function RemoteProvider() {
           <Field label="Reason" value={titleize(egress.reason)} />
         </Panel>
 
-        <Panel icon={Server} title="SSH Tunnel">
+        <Panel hidden={compact && view !== 'diagnostics'} icon={Server} title="SSH Tunnel">
           <Field label="Status" value={titleize(sshSupervisor.status)} tone={sshSupervisor.ready ? 'text-emerald-300' : 'text-amber-300'} />
           <Field label="Ready" value={boolLabel(sshSupervisor.ready)} />
           <Field label="Ready to start" value={boolLabel(sshSupervisor.readyToStart)} />
@@ -604,7 +673,7 @@ export default function RemoteProvider() {
           <Field label="Missing secrets" value={(sshSupervisor.missingSecrets || []).length} />
         </Panel>
 
-        <Panel icon={ShieldCheck} title="Capabilities">
+        <Panel hidden={compact && view !== 'diagnostics'} icon={ShieldCheck} title="Capabilities">
           <Field label="Inference" value={boolLabel(statusData?.capabilities?.inference)} tone={statusData?.capabilities?.inference ? 'text-emerald-300' : 'text-zinc-400'} />
           <Field label="ODS peer lifecycle" value={boolLabel(statusData?.capabilities?.odsPeerLifecycle)} />
           <Field label="Available test" value={boolLabel(testEnabled)} />
@@ -618,6 +687,7 @@ export default function RemoteProvider() {
         <Panel
           icon={Cloud}
           title="ODS Peer Models"
+          hidden={compact && view !== 'models'}
           className="lg:col-span-2"
           actions={(
             <ActionButton icon={RefreshCw} onClick={() => loadPeerModels()} disabled={!peerReady || peerBusy}>
@@ -735,7 +805,7 @@ export default function RemoteProvider() {
           )}
         </Panel>
 
-        <Panel icon={KeyRound} title="Configure" className="lg:col-span-2">
+        <Panel hidden={compact && view !== 'connection'} icon={KeyRound} title="Configure" className="lg:col-span-2">
           <div className="grid gap-3 md:grid-cols-[1.2fr_1fr_1fr]">
             <TextInput
               label="Base URL"
@@ -756,6 +826,28 @@ export default function RemoteProvider() {
               type="password"
               autoComplete="new-password"
             />
+          </div>
+          <div className="grid gap-3 md:grid-cols-[1fr_1fr_1fr]">
+            <TextInput
+              label="Context window"
+              value={form.contextLength}
+              onChange={value => updateForm('contextLength', value)}
+              type="number"
+            />
+            <TextInput
+              label="Max output tokens"
+              value={form.maxTokens}
+              onChange={value => updateForm('maxTokens', value)}
+              type="number"
+            />
+            <label className="flex h-10 items-center gap-2 self-end rounded-lg border border-theme-border bg-theme-bg px-3 text-sm text-theme-text">
+              <input
+                type="checkbox"
+                checked={form.reasoning}
+                onChange={event => updateForm('reasoning', event.target.checked)}
+              />
+              Reasoning route
+            </label>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <ActionButton icon={ClipboardCheck} onClick={planConfigure} disabled={!configureReady}>
