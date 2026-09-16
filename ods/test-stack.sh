@@ -88,11 +88,11 @@ run_suite() {
     local name="$1"
     local script="$2"
     local args="${3:-}"
-    
+
     echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${BOLD}Running: $name${NC}"
     echo ""
-    
+
     if [[ -x "$script" ]]; then
         if $script $args; then
             SUITE_PASSED=$((SUITE_PASSED + 1))
@@ -135,7 +135,7 @@ if $VOICE || $STRESS; then
     echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${BOLD}Voice Pipeline Health Check${NC}"
     echo ""
-    
+
     # Quick voice health
     if _ae_require_key; then
         voice_url="http://127.0.0.1:${DASHBOARD_API_PORT}/api/voice/status"
@@ -189,7 +189,7 @@ if $STRESS; then
         echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
         echo -e "${BOLD}Stress Test (10 concurrent, 1 round)${NC}"
         echo ""
-        
+
         cd "$TESTS_DIR"
         if "$PYTHON_CMD" voice-stress-test.py --concurrent 10 --rounds 1 --skip-check; then
             SUITE_PASSED=$((SUITE_PASSED + 1))
