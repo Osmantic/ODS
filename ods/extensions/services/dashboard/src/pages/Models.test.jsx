@@ -1206,6 +1206,7 @@ test.each([false, true])('compares catalog models without starting a download or
   render(<MemoryRouter><Models compact={compact} /></MemoryRouter>)
   fireEvent.click(screen.getByText('Compare models'))
   fireEvent.change(screen.getByLabelText('Comparison model 1'), { target: { value: 'qwen3.5-9b-q4' } })
+  expect(within(screen.getByLabelText('Comparison model 2')).getByRole('option', { name: state.models[0].name })).toBeDisabled()
   fireEvent.change(screen.getByLabelText('Comparison model 2'), { target: { value: 'tiny' } })
   const table = within(screen.getByRole('table', { name: 'Model comparison' }))
   expect(table.getByText('7 GB')).toBeInTheDocument()
