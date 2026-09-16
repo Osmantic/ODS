@@ -1,0 +1,122 @@
+{
+  "producer": "token-spy/db.py log_usage + query_report at beta 3c186f3f",
+  "report": {
+    "period": {
+      "start": "2026-01-01",
+      "end": "2026-01-02"
+    },
+    "summary": {
+      "spend_usd": 0.125,
+      "requests": 3,
+      "input_tokens": 30,
+      "output_tokens": 15,
+      "cache_read_tokens": 6,
+      "cache_write_tokens": 3,
+      "total_tokens": 54,
+      "tracked_providers": 3,
+      "billing_providers": 1,
+      "local_providers": 1,
+      "untracked_providers": 1,
+      "paid_cost_usd": 0.125,
+      "local_cost_usd": 0.0
+    },
+    "daily": [
+      {
+        "date": "2026-01-01",
+        "spend_usd": 0.125,
+        "requests": 3,
+        "input_tokens": 30,
+        "output_tokens": 15,
+        "cache_read_tokens": 6,
+        "cache_write_tokens": 3
+      },
+      {
+        "date": "2026-01-02",
+        "spend_usd": 0,
+        "requests": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0
+      }
+    ],
+    "models": [
+      {
+        "model": "priced_from_tokens-model",
+        "provider": "configured",
+        "service": "pixel",
+        "cost_source": "priced_from_tokens",
+        "requests": 1,
+        "input_tokens": 10,
+        "output_tokens": 5,
+        "cache_read_tokens": 2,
+        "cache_write_tokens": 1,
+        "cost_usd": 0.125
+      },
+      {
+        "model": "local_zero_cost-model",
+        "provider": "local",
+        "service": "pixel",
+        "cost_source": "local_zero_cost",
+        "requests": 1,
+        "input_tokens": 10,
+        "output_tokens": 5,
+        "cache_read_tokens": 2,
+        "cache_write_tokens": 1,
+        "cost_usd": 0.0
+      },
+      {
+        "model": "untracked-model",
+        "provider": "unknown",
+        "service": "pixel",
+        "cost_source": "untracked",
+        "requests": 1,
+        "input_tokens": 10,
+        "output_tokens": 5,
+        "cache_read_tokens": 2,
+        "cache_write_tokens": 1,
+        "cost_usd": 0.0
+      }
+    ],
+    "services": [
+      {
+        "service": "pixel",
+        "requests": 3,
+        "input_tokens": 30,
+        "output_tokens": 15,
+        "cache_read_tokens": 6,
+        "cache_write_tokens": 3,
+        "cost_usd": 0.125
+      }
+    ],
+    "sources": [
+      {
+        "source": "local_zero_cost",
+        "requests": 1,
+        "input_tokens": 10,
+        "output_tokens": 5,
+        "cache_read_tokens": 2,
+        "cache_write_tokens": 1,
+        "cost_usd": 0.0
+      },
+      {
+        "source": "priced_from_tokens",
+        "requests": 1,
+        "input_tokens": 10,
+        "output_tokens": 5,
+        "cache_read_tokens": 2,
+        "cache_write_tokens": 1,
+        "cost_usd": 0.125
+      },
+      {
+        "source": "untracked",
+        "requests": 1,
+        "input_tokens": 10,
+        "output_tokens": 5,
+        "cache_read_tokens": 2,
+        "cache_write_tokens": 1,
+        "cost_usd": 0.0
+      }
+    ]
+  }
+}
