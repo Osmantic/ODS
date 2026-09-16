@@ -19,6 +19,7 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable
+from urllib.parse import urlsplit
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -92,7 +93,7 @@ class RenderInputs:
     remote_llm_base_url: str = ""
     remote_llm_model: str = ""
     # Switchboard rollout mode: legacy | observe | enabled (plan section 8)
-    switchboard_mode: str = "observe"
+    switchboard_mode: str = "enabled"
 
 
 @dataclass(frozen=True)
@@ -146,17 +147,32 @@ def opencode_key(inputs: RenderInputs) -> str:
 
 def render_litellm_local(inputs: RenderInputs) -> RenderedFile:
     content = """model_list:
+  - model_name: ods/current
+    litellm_params:
+      model: openai/default
+      api_base: http://llama-server:8080/v1
+      api_key: not-needed
+      extra_body:
+        chat_template_kwargs:
+          enable_thinking: false
+
   - model_name: default
     litellm_params:
       model: openai/default
       api_base: http://llama-server:8080/v1
       api_key: not-needed
+      extra_body:
+        chat_template_kwargs:
+          enable_thinking: false
 
   - model_name: "*"
     litellm_params:
       model: openai/*
       api_base: http://llama-server:8080/v1
       api_key: not-needed
+      extra_body:
+        chat_template_kwargs:
+          enable_thinking: false
 
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
@@ -164,10 +180,48 @@ general_settings:
 litellm_settings:
   drop_params: true
   set_verbose: false
-  request_timeout: 120
-  stream_timeout: 60
+  request_timeout: 900
+  stream_timeout: 900
 """
     return RenderedFile("litellm-local", "config/litellm/local.yaml", content)
+
+
+def render_litellm_external(inputs: RenderInputs) -> RenderedFile:
+    """Bind a selected local/LAN OpenAI-compatible model behind ODS auth."""
+    model = inputs.model
+    raw_base = inputs.llm_base_url
+    if not model or len(model) > 512 or any(ord(c) < 32 or ord(c) == 127 for c in model):
+        raise ValueError("external gateway requires a nonempty model without control characters")
+    parsed = urlsplit(raw_base)
+    _ = parsed.port  # Reject malformed/out-of-range ports before rendering.
+    if (
+        parsed.scheme not in {"http", "https"} or not parsed.hostname
+        or parsed.username is not None or parsed.password is not None
+        or parsed.query or parsed.fragment
+        or parsed.path.rstrip("/") not in {"", "/v1", "/api/v1"}
+        or any(ord(c) <= 32 or ord(c) == 127 for c in raw_base)
+    ):
+        raise ValueError("external gateway requires a credential-free HTTP(S) API base")
+    base = normalize_openai_base_url(raw_base)
+    entries = []
+    for alias in dict.fromkeys((PUBLIC_MODEL_ALIAS, "default", model, "*")):
+        entries.append(f"""  - model_name: {yaml_scalar(alias)}
+    litellm_params:
+      model: {yaml_scalar('openai/' + model)}
+      api_base: {yaml_scalar(base)}
+      api_key: not-needed
+""")
+    content = "model_list:\n" + "\n".join(entries) + """
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+
+litellm_settings:
+  drop_params: true
+  set_verbose: false
+  request_timeout: 900
+  stream_timeout: 900
+"""
+    return RenderedFile("litellm-external", "config/litellm/local.yaml", content)
 
 
 def render_litellm_local_native(inputs: RenderInputs) -> RenderedFile:
@@ -175,6 +229,15 @@ def render_litellm_local_native(inputs: RenderInputs) -> RenderedFile:
     model = inputs.gguf_file or inputs.model
     api_base = inputs.llm_base_url.rstrip("/") or "http://host.docker.internal:8080/v1"
     content = f"""model_list:
+  - model_name: ods/current
+    litellm_params:
+      model: openai/{model}
+      api_base: {api_base}
+      api_key: not-needed
+      extra_body:
+        chat_template_kwargs:
+          enable_thinking: false
+
   - model_name: default
     litellm_params:
       model: openai/{model}
@@ -296,11 +359,23 @@ litellm_settings:
 
 def render_litellm_hybrid(inputs: RenderInputs) -> RenderedFile:
     content = """model_list:
+  - model_name: ods/current
+    litellm_params:
+      model: openai/default
+      api_base: http://llama-server:8080/v1
+      api_key: not-needed
+      extra_body:
+        chat_template_kwargs:
+          enable_thinking: false
+
   - model_name: local
     litellm_params:
       model: openai/default
       api_base: http://llama-server:8080/v1
       api_key: not-needed
+      extra_body:
+        chat_template_kwargs:
+          enable_thinking: false
 
   - model_name: cloud
     litellm_params:
@@ -324,6 +399,9 @@ def render_litellm_hybrid(inputs: RenderInputs) -> RenderedFile:
       model: openai/default
       api_base: http://llama-server:8080/v1
       api_key: not-needed
+      extra_body:
+        chat_template_kwargs:
+          enable_thinking: false
 
 router_settings:
   routing_strategy: simple-shuffle
@@ -338,8 +416,8 @@ general_settings:
 litellm_settings:
   drop_params: true
   set_verbose: false
-  request_timeout: 120
-  stream_timeout: 60
+  request_timeout: 900
+  stream_timeout: 900
 """
     return RenderedFile("litellm-hybrid", "config/litellm/hybrid.yaml", content)
 
@@ -349,6 +427,15 @@ def render_litellm_lemonade(inputs: RenderInputs) -> RenderedFile:
     model = lemonade_model_id(inputs)
     api_base = inputs.lemonade_api_base.rstrip("/") or "http://llama-server:8080/api/v1"
     content = f"""model_list:
+  - model_name: ods/current
+    litellm_params:
+      model: openai/{model}
+      api_base: {api_base}
+      api_key: {inputs.litellm_key}
+      extra_body:
+        chat_template_kwargs:
+          enable_thinking: false
+
   - model_name: default
     litellm_params:
       model: openai/{model}
@@ -618,6 +705,7 @@ RENDERERS: dict[str, Callable[[RenderInputs], RenderedFile]] = {
     "opencode": render_opencode,
     "litellm-local": render_litellm_local,
     "litellm-local-native": render_litellm_local_native,
+    "litellm-external": render_litellm_external,
     "litellm-cloud": render_litellm_cloud,
     "litellm-hybrid": render_litellm_hybrid,
     "litellm-lemonade": render_litellm_lemonade,
@@ -636,10 +724,10 @@ def parse_remote_enabled(value: str) -> bool:
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--surface", choices=["all", *sorted(RENDERERS)], default="all")
-    parser.add_argument(
+    switchboard_mode = parser.add_argument(
         "--switchboard-mode",
         choices=["legacy", "observe", "enabled"],
-        default=os.environ.get("ODS_MODEL_SWITCHBOARD", "observe"),
+        default=os.environ.get("ODS_MODEL_SWITCHBOARD", "enabled"),
     )
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument("--gguf-file", default=DEFAULT_GGUF)
@@ -648,15 +736,22 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--gpu-backend", choices=["amd", "apple", "cpu", "nvidia"], default="nvidia")
     parser.add_argument("--ods-mode", choices=["local", "cloud", "hybrid", "lemonade"], default="local")
     parser.add_argument("--llm-base-url", default="http://llama-server:8080/v1")
-    parser.add_argument("--litellm-key", default=DEFAULT_LITELLM_KEY)
+    parser.add_argument(
+        "--litellm-key",
+        default=os.environ.get("ODS_RENDER_LITELLM_KEY", DEFAULT_LITELLM_KEY),
+        help=(
+            "LiteLLM credential used in generated private config. Production callers "
+            "should use ODS_RENDER_LITELLM_KEY so the value is not exposed in argv."
+        ),
+    )
     parser.add_argument("--opencode-port", type=int, default=3003)
     parser.add_argument("--context-length", type=int, default=DEFAULT_CONTEXT)
-    parser.add_argument(
+    remote_enabled = parser.add_argument(
         "--remote-llm-enabled",
         choices=["", "true", "false"],
         default=os.environ.get("REMOTE_LLM_ENABLED", "false").strip().lower(),
     )
-    parser.add_argument(
+    remote_transport = parser.add_argument(
         "--remote-llm-transport",
         choices=["", "direct", "ssh"],
         default=os.environ.get("REMOTE_LLM_TRANSPORT", ""),
@@ -669,16 +764,33 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--remote-llm-model",
         default=os.environ.get("REMOTE_LLM_MODEL", ""),
     )
-    parser.add_argument("--format", choices=["json", "paths"], default="json")
+    parser.add_argument(
+        "--format",
+        choices=["json", "paths"],
+        default=None,
+        help=(
+            "Output format. Defaults to json for dry runs and secret-free paths "
+            "for --write."
+        ),
+    )
     parser.add_argument("--output-root", default=".", help="Root directory used with --write")
     parser.add_argument("--write", action="store_true", help="Write rendered files under --output-root")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    # argparse checks explicit choices, but not string defaults from the
+    # environment. A typo must not silently select a different routing mode
+    # and overwrite working runtime configs. Validate effective values so an
+    # explicit valid CLI override can still repair a bad environment default.
+    for action in (switchboard_mode, remote_enabled, remote_transport):
+        value = getattr(args, action.dest)
+        if value not in action.choices:
+            parser.error(f"{action.option_strings[0]}: invalid choice {value!r}; choose from {action.choices}")
+    return args
 
 
 def select_surfaces(
     surface: str,
     ods_mode: str = "local",
-    switchboard_mode: str = "observe",
+    switchboard_mode: str = "enabled",
     remote_llm_enabled: bool = False,
 ) -> list[str]:
     if surface == "all":
@@ -728,9 +840,25 @@ def validate_remote_inputs(inputs: RenderInputs) -> None:
         )
 
 
+def validate_render_inputs(inputs: RenderInputs) -> None:
+    if inputs.context_length <= 0:
+        raise ValueError(f"context length must be positive: {inputs.context_length}")
+    if not (1 <= inputs.opencode_port <= 65535):
+        raise ValueError(f"opencode port must be between 1 and 65535: {inputs.opencode_port}")
+    for label, value in {
+        "model": inputs.model,
+        "gguf_file": inputs.gguf_file,
+        "llm_base_url": inputs.llm_base_url,
+        "litellm_key": inputs.litellm_key,
+    }.items():
+        if any(ord(char) < 32 or ord(char) == 127 for char in value):
+            raise ValueError(f"{label} cannot contain control characters or newlines")
+    validate_remote_inputs(inputs)
+
+
 def render(args: argparse.Namespace) -> dict[str, object]:
     inputs = RenderInputs(
-        switchboard_mode=getattr(args, 'switchboard_mode', 'observe'),
+        switchboard_mode=getattr(args, 'switchboard_mode', 'enabled'),
         model=args.model,
         gguf_file=args.gguf_file,
         lemonade_model_id=args.lemonade_model_id,
@@ -746,7 +874,7 @@ def render(args: argparse.Namespace) -> dict[str, object]:
         remote_llm_base_url=args.remote_llm_base_url,
         remote_llm_model=args.remote_llm_model,
     )
-    validate_remote_inputs(inputs)
+    validate_render_inputs(inputs)
     if args.surface == "litellm-switchboard" and inputs.ods_mode == "cloud":
         raise ValueError(
             "litellm-switchboard is local-runtime-only and cannot be rendered "
@@ -784,7 +912,8 @@ def main(argv: list[str]) -> int:
     except ValueError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
-    if args.format == "paths":
+    output_format = args.format or ("paths" if args.write else "json")
+    if output_format == "paths":
         for item in payload["files"]:
             print(item["path"])
     else:

@@ -1,10 +1,10 @@
 """Setup wizard, persona management, and chat endpoints."""
 
 import asyncio
-import json
 import logging
 import os
 import re
+import signal
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 
-from config import SERVICES, PERSONAS, SETUP_CONFIG_DIR, INSTALL_DIR, read_live_env_value
+from config import SERVICES, PERSONAS, INSTALL_DIR
 from host_agent_client import (
     AgentHTTPError,
     AgentProtocolError,
@@ -22,6 +22,7 @@ from host_agent_client import (
 )
 from models import PersonaRequest, ChatRequest
 from security import verify_api_key
+from setup_chat_route import resolve_chat_route
 
 logger = logging.getLogger(__name__)
 
@@ -30,42 +31,36 @@ router = APIRouter(tags=["setup"])
 
 def get_active_persona_prompt() -> str:
     """Get the system prompt for the active persona."""
-    persona_file = SETUP_CONFIG_DIR / "persona.json"
-    if persona_file.exists():
-        try:
-            with open(persona_file) as f:
-                data = json.load(f)
-                return data.get("system_prompt", PERSONAS["general"]["system_prompt"])
-        except (FileNotFoundError, PermissionError, json.JSONDecodeError):
-            logger.debug("Failed to read persona.json, using default prompt")
+    try:
+        state = request_agent_json("GET", "/v1/setup/state", timeout=5)
+    except (AgentHTTPError, AgentUnavailable, AgentProtocolError) as exc:
+        logger.warning("Could not read persona state from host agent: %s", exc)
+        return PERSONAS["general"]["system_prompt"]
+    persona_data = state.get("persona_data")
+    if isinstance(persona_data, dict):
+        prompt = persona_data.get("system_prompt")
+        if isinstance(prompt, str) and prompt:
+            return prompt
     return PERSONAS["general"]["system_prompt"]
 
 
 @router.get("/api/setup/status")
 async def setup_status(api_key: str = Depends(verify_api_key)):
     """Check if this is a first-run scenario."""
-    setup_complete_file = SETUP_CONFIG_DIR / "setup-complete.json"
-    first_run = not setup_complete_file.exists()
-
-    step = 0
-    progress_file = SETUP_CONFIG_DIR / "setup-progress.json"
-    if progress_file.exists():
-        try:
-            with open(progress_file) as f:
-                step = json.load(f).get("step", 0)
-        except (FileNotFoundError, PermissionError, json.JSONDecodeError):
-            logger.debug("Failed to read setup-progress.json")
-
-    persona = None
-    persona_file = SETUP_CONFIG_DIR / "persona.json"
-    if persona_file.exists():
-        try:
-            with open(persona_file) as f:
-                persona = json.load(f).get("persona")
-        except (FileNotFoundError, PermissionError, json.JSONDecodeError):
-            logger.debug("Failed to read persona.json for setup status")
-
-    return {"first_run": first_run, "step": step, "persona": persona, "personas_available": list(PERSONAS.keys())}
+    state = await asyncio.to_thread(_call_agent, "/v1/setup/state", "GET", None, 10)
+    first_run = state.get("first_run") is not False
+    step = state.get("step", 0)
+    if not isinstance(step, int) or isinstance(step, bool) or step < 0:
+        step = 0
+    persona = state.get("persona")
+    if not isinstance(persona, str):
+        persona = None
+    return {
+        "first_run": first_run,
+        "step": step,
+        "persona": persona,
+        "personas_available": list(PERSONAS.keys()),
+    }
 
 
 @router.post("/api/setup/persona")
@@ -75,18 +70,18 @@ async def setup_persona(request: PersonaRequest, api_key: str = Depends(verify_a
         raise HTTPException(status_code=400, detail=f"Invalid persona. Choose from: {list(PERSONAS.keys())}")
 
     persona_info = PERSONAS[request.persona]
-    SETUP_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-
     persona_data = {
         "persona": request.persona, "name": persona_info["name"],
         "system_prompt": persona_info["system_prompt"], "icon": persona_info["icon"],
         "selected_at": datetime.now(timezone.utc).isoformat()
     }
-    with open(SETUP_CONFIG_DIR / "persona.json", "w") as f:
-        json.dump(persona_data, f, indent=2)
-
-    with open(SETUP_CONFIG_DIR / "setup-progress.json", "w") as f:
-        json.dump({"step": 2, "persona_selected": True}, f)
+    await asyncio.to_thread(
+        _call_agent,
+        "/v1/setup/persona",
+        "POST",
+        persona_data,
+        10,
+    )
 
     return {"success": True, "persona": request.persona, "name": persona_info["name"], "message": f"Great choice! Your assistant is now a {persona_info['name']}."}
 
@@ -94,14 +89,13 @@ async def setup_persona(request: PersonaRequest, api_key: str = Depends(verify_a
 @router.post("/api/setup/complete")
 async def setup_complete(api_key: str = Depends(verify_api_key)):
     """Mark the first-run setup as complete."""
-    SETUP_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-
-    with open(SETUP_CONFIG_DIR / "setup-complete.json", "w") as f:
-        json.dump({"completed_at": datetime.now(timezone.utc).isoformat(), "version": "1.0.0"}, f, indent=2)
-
-    progress_file = SETUP_CONFIG_DIR / "setup-progress.json"
-    if progress_file.exists():
-        progress_file.unlink()
+    await asyncio.to_thread(
+        _call_agent,
+        "/v1/setup/complete",
+        "POST",
+        {},
+        10,
+    )
 
     return {"success": True, "redirect": "/", "message": "Setup complete! Welcome to ODS."}
 
@@ -159,12 +153,15 @@ async def run_setup_diagnostics(api_key: str = Depends(verify_api_key)):
         process = await asyncio.create_subprocess_exec(
             "bash", str(script_path),
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+            start_new_session=os.name == "posix",
         )
+        completed = False
         try:
             try:
                 async for line in process.stdout:
                     yield line.decode()
                 await process.wait()
+                completed = True
                 # Emit the human-readable trailer AND the machine-readable sentinel
                 # as a SINGLE chunk. Starlette's StreamingResponse finalizes the
                 # HTTP stream as soon as the async generator exits; when trailer
@@ -188,9 +185,14 @@ async def run_setup_diagnostics(api_key: str = Depends(verify_api_key)):
                 logger.exception("run_setup_diagnostics generator raised: %s", exc)
                 yield f"\nDiagnostic runner error: {exc}\n__ODS_RESULT__:FAIL:1\n"
         finally:
-            if process.returncode is None:
+            if not completed:
                 try:
-                    process.kill()
+                    # Shell diagnostics spawn curl and other descendants that
+                    # can keep stdout open after the shell itself has exited.
+                    if os.name == "posix":
+                        os.killpg(process.pid, signal.SIGKILL)
+                    else:
+                        process.kill()
                 except OSError:
                     pass
                 await process.wait()
@@ -201,11 +203,16 @@ async def run_setup_diagnostics(api_key: str = Depends(verify_api_key)):
 @router.post("/api/chat")
 async def chat(request: ChatRequest, api_key: str = Depends(verify_api_key)):
     """Simple chat endpoint for the setup wizard QuickWin step."""
-    system_prompt = request.system or get_active_persona_prompt()
+    system_prompt = request.system
+    if not system_prompt:
+        system_prompt = await asyncio.to_thread(get_active_persona_prompt)
 
     _llm = SERVICES.get("llama-server", {})
-    llm_url = os.environ.get("OLLAMA_URL", f"http://{_llm.get('host', 'llama-server')}:{_llm.get('port', 0)}")
-    model = read_live_env_value("LLM_MODEL", "qwen3-coder-next")
+    try:
+        llm_url, model, headers = resolve_chat_route(
+            f"http://{_llm.get('host', 'llama-server')}:{_llm.get('port', 0)}")
+    except ValueError:
+        raise HTTPException(status_code=503, detail="Invalid LLM route configuration")
 
     payload = {
         "model": model,
@@ -215,8 +222,7 @@ async def chat(request: ChatRequest, api_key: str = Depends(verify_api_key)):
 
     try:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
-            _api_path = os.environ.get("LLM_API_BASE_PATH", "/v1")
-            async with session.post(f"{llm_url}{_api_path}/chat/completions", json=payload, headers={"Content-Type": "application/json"}) as resp:
+            async with session.post(llm_url, json=payload, headers=headers, allow_redirects=False) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     choices = data.get("choices") or [{}]
@@ -227,7 +233,7 @@ async def chat(request: ChatRequest, api_key: str = Depends(verify_api_key)):
                 else:
                     error_text = await resp.text()
                     raise HTTPException(status_code=resp.status, detail=f"LLM error: {error_text}")
-    except aiohttp.ClientError:
+    except (aiohttp.ClientError, asyncio.TimeoutError):
         logger.exception("Cannot reach LLM backend")
         raise HTTPException(status_code=503, detail="Cannot reach LLM backend")
 
@@ -320,7 +326,8 @@ async def setup_network_status() -> dict:
     Always returns 200 even on non-Linux — the response carries
     `platform_supported: false` so the wizard can render a fallback.
     """
-    return await asyncio.to_thread(_call_agent, "/v1/network/status", "GET", None, 10)
+    # Host: one status query (5s) + one address query for all devices (5s).
+    return await asyncio.to_thread(_call_agent, "/v1/network/status", "GET", None, 15)
 
 
 class WifiForgetRequest(BaseModel):
@@ -342,5 +349,6 @@ async def setup_wifi_forget(payload: WifiForgetRequest) -> dict:
         "/v1/network/wifi-forget",
         "POST",
         {"connection": payload.connection},
-        15,
+        # Host verifies the profile type (10s), then deletes it (15s).
+        30,
     )

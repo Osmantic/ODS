@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
 
 // Auth: nginx injects Authorization header for all /api/ requests (see nginx.conf).
 
@@ -10,34 +10,48 @@ export function useGPUDetailed() {
   const [topology, setTopology] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
-  const fetchInFlight = useRef(false)
-  const hasFetched = useRef(false)
 
   useEffect(() => {
+    // Each effect lifetime owns its poll; StrictMode cleanup must not block
+    // the replacement lifetime or release its in-flight guard.
+    let fetchInFlight = false
+    let disposed = false
+    let hasFetched = false
+    let activeController = null
     const fetchAll = async () => {
-      if (document.hidden && hasFetched.current) return
-      if (fetchInFlight.current) return
-      fetchInFlight.current = true
+      if (disposed || (document.hidden && hasFetched) || fetchInFlight) return
+      fetchInFlight = true
+      const controller = new AbortController()
+      activeController = controller
+      let rejectAbort
+      const aborted = new Promise((_, reject) => {
+        rejectAbort = () => reject(new Error('GPU status request timed out'))
+        controller.signal.addEventListener('abort', rejectAbort, {once:true})
+      })
+      const timer = setTimeout(() => controller.abort(), 15000)
       try {
-        const [detRes, histRes, topoRes] = await Promise.all([
-          fetch('/api/gpu/detailed'),
-          fetch('/api/gpu/history'),
-          fetch('/api/gpu/topology'),
-        ])
-        const failures = []
-        if (detRes.ok) setDetailed(await detRes.json())
-        else failures.push(`details HTTP ${detRes.status}`)
-        if (histRes.ok) setHistory(await histRes.json())
-        else failures.push(`history HTTP ${histRes.status}`)
-        if (topoRes.ok) setTopology(await topoRes.json())
-        else failures.push(`topology HTTP ${topoRes.status}`)
-        setError(failures.length > 0 ? `GPU status unavailable: ${failures.join(', ')}` : null)
+        const snapshot = Promise.all(['detailed', 'history', 'topology'].map(async endpoint => {
+          const response = await fetch(`/api/gpu/${endpoint}`, {signal:controller.signal})
+          return response.ok ? response.json() : undefined
+        }))
+        const [details, samples, links] = await Promise.race([snapshot, aborted])
+        if (disposed) return
+        if (details !== undefined) setDetailed(details)
+        if (samples !== undefined) setHistory(samples)
+        if (links !== undefined) setTopology(links)
+        hasFetched = true
+        setError(null)
       } catch (err) {
-        setError(err.message)
+        if (!disposed) setError(err.message)
       } finally {
-        hasFetched.current = true
-        fetchInFlight.current = false
-        setLoading(false)
+        clearTimeout(timer)
+        controller.signal.removeEventListener('abort', rejectAbort)
+        // Promise.all rejects as soon as one endpoint fails. Release its
+        // still-pending siblings too, rather than dropping their deadline.
+        controller.abort()
+        if (activeController === controller) activeController = null
+        fetchInFlight = false
+        if (!disposed) setLoading(false)
       }
     }
 
@@ -46,6 +60,8 @@ export function useGPUDetailed() {
     const onVisibility = () => { if (!document.hidden) fetchAll() }
     document.addEventListener('visibilitychange', onVisibility)
     return () => {
+      disposed = true
+      activeController?.abort()
       clearInterval(interval)
       document.removeEventListener('visibilitychange', onVisibility)
     }

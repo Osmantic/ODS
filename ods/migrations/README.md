@@ -13,6 +13,13 @@ When ODS is updated between versions, configuration files (`.env`, `docker-compo
 3. **Safe Migration**: Each migration creates a backup before making changes
 4. **Incremental**: Migrations run in order (v0.1.0 → v0.2.0 → v0.3.0)
 
+Both `check` and `migrate` select scripts newer than `.migration-state` and no
+newer than the installation's `.version`. A newer script bundle can therefore
+inspect an older installation without applying future configuration changes.
+An upgrade to that later version makes its scripts eligible. Downgrades do not
+run forward migrations or roll configuration back; use the saved backup for
+configuration recovery.
+
 ## Usage
 
 ```bash

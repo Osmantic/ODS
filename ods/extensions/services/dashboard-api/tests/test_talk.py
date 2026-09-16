@@ -1184,5 +1184,8 @@ def test_ods_talk_hermes_timeout_is_env_configurable(monkeypatch):
     monkeypatch.setenv("ODS_TALK_HERMES_TIMEOUT", "900")
     assert hermes_bridge._request_timeout() == 900
 
+    monkeypatch.setenv("ODS_TALK_HERMES_TIMEOUT", " 600 ")
+    assert hermes_bridge._request_timeout() == 600
+
     monkeypatch.setenv("ODS_TALK_HERMES_TIMEOUT", "5")
     assert hermes_bridge._request_timeout() == 10
