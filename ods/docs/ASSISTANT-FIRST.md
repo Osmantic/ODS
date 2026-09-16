@@ -580,12 +580,18 @@ completed verification receipt, and replay checks fresh evidence again. This
 is a source-level pilot check, not a claim that the app's real user journey or
 the full extension library has been qualified.
 
-Crash recovery moves a transaction from `applying` to `reconciling`. The
-read-only application observer may rebind the original approved apply request
-in that recovery state and classify its current mutation as `ABSENT` or
-`APPLIED`; the mutating apply identity and dispatcher still require `applying`.
-This source contract does not yet expose a transaction-wide observation route
-or enable the Dashboard executor.
+Crash recovery moves a transaction from `applying` to `reconciling`. A separate
+authenticated host route can rebind the original attested apply request under
+the existing transaction-wide lease in `applying`, `verifying`, or
+`reconciling`, then classify its current mutation as `ABSENT` or `APPLIED`.
+The mutating apply identity and dispatcher still require `applying`. The
+Dashboard observation client validates each exact response, and a source-only
+observer assembles the complete applied-service prefix, rejecting unknown,
+drifted, or non-prefix states. The host route selects no Compose effect or
+receipt transition. It is currently limited to the reviewed one-service
+extensions-library apply set; it has not qualified arbitrary extensions.
+The production Dashboard executor remains disabled, so this is not yet a
+working conversational install or recovery journey.
 
 ## Evidence boundary
 

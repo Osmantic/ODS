@@ -13,6 +13,7 @@ import hashlib
 import json
 import re
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 from extension_lease_client import (
@@ -38,6 +39,8 @@ from host_agent_client import (
 
 RESULT_SCHEMA = "ods.extension-lifecycle-work-result.v1"
 HOST_WORK_PATH = "/v1/extension/lifecycle-work"
+HOST_OBSERVATION_PATH = "/v1/extension/application-observation"
+OBSERVATION_SCHEMA = "ods.extension-application-observation-result.v1"
 MAX_REQUEST_BYTES = 40 * 1024
 MAX_RESPONSE_BYTES = 16 * 1024
 MAX_SERVICE_IDS = 64
@@ -84,6 +87,18 @@ _RESPONSE_KEYS = frozenset(
         "evidenceHash",
     }
 )
+_OBSERVATION_KEYS = frozenset({
+    "schema", "transactionId", "planHash", "operationKey", "requestHash",
+    "serviceId", "classification", "identityHash", "recordHash",
+})
+
+
+@dataclass(frozen=True)
+class ApplicationObservationResult:
+    service_id: str
+    classification: str
+    identity_hash: str
+    record_hash: str | None
 
 
 class LifecycleHostWorkError(RuntimeError):
@@ -347,10 +362,75 @@ class ExtensionLifecycleWorkClient:
             _fail("host-work-operation-ambiguous", ambiguous=True)
         return _validate_response(response, request)
 
+    def observe_application(
+        self, grant: LeaseGrant, request: LifecycleWorkRequest
+    ) -> ApplicationObservationResult:
+        """Read current host evidence without beginning or finishing a receipt."""
+        unsigned, _apply_timeout = _validated_request(request)
+        if (
+            not request.operation_key.startswith("apply:")
+            or len(request.service_ids) != 1
+            or request.operation_key != f"apply:{request.service_ids[0]}"
+        ):
+            _fail("host-work-invalid-request")
+        try:
+            lease = _lease_authorization_payload(
+                grant, request.binding, request.service_ids
+            )
+        except ExtensionLeaseError:
+            _fail("host-work-invalid-lease")
+        body = {**unsigned, "lease": lease}
+        _canonical_bytes(body, limit=MAX_REQUEST_BYTES)
+        try:
+            response = self._request(
+                "POST",
+                HOST_OBSERVATION_PATH,
+                payload=body,
+                timeout=120.0,
+                max_response_bytes=MAX_RESPONSE_BYTES,
+            )
+        except AgentClientError as error:
+            _translate_transport_error(error)
+        except Exception:
+            _fail("host-work-observation-unavailable", ambiguous=True)
+        if not isinstance(response, dict) or set(response) != _OBSERVATION_KEYS:
+            _fail("host-work-invalid-observation", ambiguous=True)
+        if (
+            response["schema"] != OBSERVATION_SCHEMA
+            or response["transactionId"] != request.binding.transaction_id
+            or response["planHash"] != request.binding.plan_hash
+            or response["operationKey"] != request.operation_key
+            or response["requestHash"] != request.request_hash
+            or response["serviceId"] != request.service_ids[0]
+            or type(response["classification"]) is not str
+            or response["classification"] not in {"ABSENT", "APPLIED"}
+            or type(response["identityHash"]) is not str
+            or _HASH_RE.fullmatch(response["identityHash"]) is None
+            or (
+                response["recordHash"] is not None
+                and (
+                    type(response["recordHash"]) is not str
+                    or _HASH_RE.fullmatch(response["recordHash"]) is None
+                )
+            )
+            or (
+                response["classification"] == "APPLIED"
+                and response["recordHash"] is None
+            )
+        ):
+            _fail("host-work-invalid-observation", ambiguous=True)
+        return ApplicationObservationResult(
+            service_id=response["serviceId"],
+            classification=response["classification"],
+            identity_hash=response["identityHash"],
+            record_hash=response["recordHash"],
+        )
+
     __call__ = run
 
 
 __all__ = [
+    "ApplicationObservationResult",
     "ExtensionLifecycleWorkClient",
     "LifecycleHostWorkError",
 ]

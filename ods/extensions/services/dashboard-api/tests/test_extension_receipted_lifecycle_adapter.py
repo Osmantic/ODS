@@ -26,6 +26,7 @@ from extension_receipted_lifecycle_adapter import (
     LifecycleWorkResult,
     ReceiptedLifecycleAdapter,
     ReceiptedLifecycleAdapterError,
+    build_apply_observation_request,
 )
 from extension_transaction_executor import ExecutionBinding, TransactionExecutor
 
@@ -317,10 +318,9 @@ def test_request_hash_binds_the_complete_operation_payload() -> None:
             events, receipts, _success_worker(seen, events)
         )
         with lock_factory.lock_services(BINDING, ["aider"]):
-            lifecycle.apply_one(
-                BINDING,
-                {"serviceId": "aider", "action": action, "version": "1.2.3"},
-            )
+            operation = {"serviceId": "aider", "action": action, "version": "1.2.3"}
+            lifecycle.apply_one(BINDING, operation)
+        assert build_apply_observation_request(BINDING, operation) == seen[0]
         hashes.append(seen[0].request_hash)
     assert hashes[0] != hashes[1]
 
@@ -831,7 +831,10 @@ def test_adapter_is_the_only_new_dormant_importer_and_production_stays_disabled(
         in path.read_text(encoding="utf-8")
     }
 
-    assert importers == {"extension_lifecycle_work_client.py"}
+    assert importers == {
+        "extension_lifecycle_work_client.py",
+        "extension_transaction_application_observer.py",
+    }
     assert "extension_receipted_lifecycle_adapter" not in production
     assert "executor=None" in production
     for forbidden in (

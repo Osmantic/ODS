@@ -220,6 +220,164 @@ def receipt_snapshot(agent, host_request, request):
     )
 
 
+def test_application_observation_route_is_leased_and_never_dispatches_apply(
+    host_server, host_request,
+):
+    agent, _listener = host_server
+    receipt_root = agent.DATA_DIR / agent._LIFECYCLE_RECEIPT_ROOT_NAME
+    receipt_root.mkdir(mode=0o700)
+    agent._load_extension_observation_plan = lambda command: command
+    calls = []
+
+    def observer_factory(_receipts, active_lease):
+        def observe(command):
+            assert active_lease() is True
+            calls.append(command.operation_key)
+            return agent._application_observation_module.ObservationResult(
+                service_id="gitea",
+                classification="APPLIED",
+                identity_sha256="a" * 64,
+                record_sha256="b" * 64,
+                containers=(),
+            )
+
+        return observe
+
+    agent._get_extension_application_observer = observer_factory
+    agent._extension_lifecycle_work_dispatcher = lambda _command: pytest.fail(
+        "observation selected a mutating dispatcher"
+    )
+    grant = acquire_lease(agent, host_request, ["gitea"])
+    request = work_request(
+        agent._extension_lifecycle_work.REQUEST_SCHEMA,
+        lease_evidence(agent, grant),
+        operation_key="apply:gitea",
+        service_ids=["gitea"],
+        payload={"operation": {"serviceId": "gitea", "action": "install"}},
+    )
+    for _ in range(2):
+        status, result = host_request(
+            "/v1/extension/application-observation", request
+        )
+        assert status == 200
+        assert result == {
+            "schema": agent._APPLICATION_OBSERVATION_SCHEMA,
+            "transactionId": TRANSACTION_ID,
+            "planHash": PLAN_HASH,
+            "operationKey": "apply:gitea",
+            "requestHash": request["requestHash"],
+            "serviceId": "gitea",
+            "classification": "APPLIED",
+            "identityHash": "a" * 64,
+            "recordHash": "b" * 64,
+        }
+    assert calls == ["apply:gitea", "apply:gitea"]
+
+
+def test_application_observation_route_rejects_wrong_plan_and_non_apply(
+    host_server, host_request,
+):
+    agent, _listener = host_server
+    grant = acquire_lease(agent, host_request, ["gitea"])
+    lease = lease_evidence(agent, grant)
+    request = work_request(
+        agent._extension_lifecycle_work.REQUEST_SCHEMA,
+        lease,
+        operation_key="apply:gitea",
+        service_ids=["gitea"],
+        payload={"operation": {"serviceId": "gitea", "action": "install"}},
+    )
+    agent._load_extension_observation_plan = lambda _command: (_ for _ in ()).throw(
+        agent._extension_lifecycle_work.LifecycleWorkValidationError(
+            "lifecycle-work-plan-mismatch"
+        )
+    )
+    status, result = host_request("/v1/extension/application-observation", request)
+    assert status == 409
+    assert result == {"error": {"code": "application-observation-plan-mismatch"}}
+    assert not (agent.DATA_DIR / agent._LIFECYCLE_RECEIPT_ROOT_NAME).exists()
+
+    non_apply = work_request(
+        agent._extension_lifecycle_work.REQUEST_SCHEMA,
+        lease,
+        operation_key="verify",
+        service_ids=["gitea"],
+        payload={"serviceIds": ["gitea"]},
+    )
+    status, result = host_request("/v1/extension/application-observation", non_apply)
+    assert status == 422
+    assert result == {"error": {"code": "invalid-application-observation-request"}}
+
+    wrong_lease = dict(request, lease=lease_evidence(
+        agent, grant, planHash=OTHER_PLAN_HASH
+    ))
+    status, result = host_request("/v1/extension/application-observation", wrong_lease)
+    assert status == 403
+    assert result == {"error": {"code": "lease-binding-mismatch"}}
+
+
+def test_application_observation_route_fails_closed_without_receipt_mutation(
+    host_server, host_request,
+):
+    agent, _listener = host_server
+    receipt_root = agent.DATA_DIR / agent._LIFECYCLE_RECEIPT_ROOT_NAME
+    receipt_root.mkdir(mode=0o700)
+    agent._load_extension_observation_plan = lambda command: command
+    receipt_store = agent._lifecycle_receipt_store
+    assert receipt_store.states == {}
+
+    def unavailable(_command):
+        raise agent._application_observation_module.ApplicationObservationError(
+            "application-evidence-current-drift"
+        )
+
+    agent._get_extension_application_observer = lambda *_args: unavailable
+    grant = acquire_lease(agent, host_request, ["gitea"])
+    request = work_request(
+        agent._extension_lifecycle_work.REQUEST_SCHEMA,
+        lease_evidence(agent, grant),
+        operation_key="apply:gitea",
+        service_ids=["gitea"],
+        payload={"operation": {"serviceId": "gitea", "action": "install"}},
+    )
+    status, result = host_request("/v1/extension/application-observation", request)
+    assert status == 503
+    assert result == {"error": {"code": "application-observation-unavailable"}}
+    assert receipt_store.states == {}
+
+
+def test_application_observation_route_requires_auth_and_feature_gate(
+    host_server, host_request,
+):
+    agent, _listener = host_server
+    request = work_request(
+        agent._extension_lifecycle_work.REQUEST_SCHEMA,
+        operation_key="apply:gitea",
+        service_ids=["gitea"],
+        payload={"operation": {"serviceId": "gitea", "action": "install"}},
+    )
+    status, _body = host_request(
+        "/v1/extension/application-observation", request, token="wrong-key"
+    )
+    assert status == 403
+    agent.ASSISTANT_TRANSACTIONS_ENABLED = False
+    status, body = host_request("/v1/extension/application-observation", request)
+    assert status == 404
+    assert body == {"error": {"code": "not-found"}}
+    assert agent._lifecycle_receipt_store.states == {}
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux observer custody")
+def test_host_composes_observer_without_library_apply_dispatcher(host_server):
+    agent, _listener = host_server
+    observer = agent._get_extension_application_observer(
+        agent._lifecycle_receipt_store, lambda: True
+    )
+    assert type(observer) is agent._application_observation_adapter_module.ApplicationObservationAdapter
+    assert observer._loader is agent._load_extension_observation_plan
+    assert agent._extension_lifecycle_work_dispatcher is None
+
+
 def bind_fixture_plan(agent, command):
     if command.operation_key == "configure":
         plan = agent._extension_lifecycle_plan
@@ -1153,6 +1311,33 @@ def test_host_plan_loader_reads_exact_transaction_and_passes_only_store_result(
         ("read", TRANSACTION_ID),
         ("bind", command, stored, False),
     ]
+
+
+def test_host_observation_loader_requires_attested_read_only_apply(host_server):
+    agent, _listener = host_server
+    request = work_request(
+        agent._extension_lifecycle_work.REQUEST_SCHEMA,
+        operation_key="apply:gitea",
+        service_ids=["gitea"],
+        payload={"operation": {"serviceId": "gitea", "action": "install"}},
+    )
+    command = agent._extension_lifecycle_work.parse_lifecycle_work_request(request)
+    stored = {"transactionId": TRANSACTION_ID}
+    seen = []
+    agent._get_extension_transaction_store = lambda: SimpleNamespace(
+        read=lambda _transaction_id: stored
+    )
+
+    def bind(value, transaction, *, require_attested_approval,
+             read_only_observation=False):
+        seen.append((value, transaction, require_attested_approval,
+                     read_only_observation))
+        return replace(value, plan_material={"approved": True})
+
+    agent._extension_lifecycle_plan = SimpleNamespace(bind_lifecycle_plan=bind)
+    bound = agent._load_extension_observation_plan(command)
+    assert bound.plan_material == {"approved": True}
+    assert seen == [(command, stored, True, True)]
 
 
 @pytest.mark.parametrize(

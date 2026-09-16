@@ -148,6 +148,15 @@ except Exception:  # pragma: no cover - import environment dependent
     _library_application_runtime_module = None
 
 try:
+    import extension_application_observation as _application_observation_module
+    import extension_application_observation_adapter as _application_observation_adapter_module
+    import extension_application_record_store as _application_record_store_module
+except Exception:  # pragma: no cover - import environment dependent
+    _application_observation_module = None
+    _application_observation_adapter_module = None
+    _application_record_store_module = None
+
+try:
     import extension_library_verify_runtime as _library_verify_runtime_module
 except Exception:  # pragma: no cover - import environment dependent
     _library_verify_runtime_module = None
@@ -205,6 +214,7 @@ _FINISH_RECEIPT_KEYS = _BEGIN_RECEIPT_KEYS | frozenset({"outcome", "evidenceHash
 _SNAPSHOT_RECEIPT_KEYS = frozenset({
     "schema", "transactionId", "planHash", "operationKey",
 })
+_APPLICATION_OBSERVATION_SCHEMA = "ods.extension-application-observation-result.v1"
 
 # Lazy store state — only instantiated inside an authenticated,
 # gate-enabled receipt call.
@@ -6920,8 +6930,15 @@ def _get_extension_transaction_store():
         return _extension_transaction_store
 
 
-def _load_extension_lifecycle_plan(command):
+def _load_extension_lifecycle_plan(command, *, read_only_observation=False):
     """Bind a validated command to one exact stored owner approval."""
+    if type(read_only_observation) is not bool or (
+        read_only_observation
+        and not command.operation_key.startswith("apply:")
+    ):
+        raise _extension_lifecycle_work.LifecycleWorkValidationError(
+            "lifecycle-work-plan-mismatch"
+        )
     if _extension_lifecycle_plan is None or _extension_transactions is None:
         raise _extension_lifecycle_work.LifecycleWorkUnavailable(
             "lifecycle-work-plan-loader-unavailable"
@@ -6940,10 +6957,15 @@ def _load_extension_lifecycle_plan(command):
             command.operation_key == "download-and-verify"
             and command.service_ids != ("searxng",)
         )
+        options = {
+            "require_attested_approval": (
+                require_attested or read_only_observation
+            ),
+        }
+        if read_only_observation:
+            options["read_only_observation"] = True
         return _extension_lifecycle_plan.bind_lifecycle_plan(
-            command,
-            transaction,
-            require_attested_approval=require_attested,
+            command, transaction, **options
         )
     except _extension_lifecycle_work.LifecycleWorkError:
         raise
@@ -6958,6 +6980,33 @@ def _load_extension_lifecycle_plan(command):
 
 
 _extension_lifecycle_plan_loader = _load_extension_lifecycle_plan
+
+
+def _load_extension_observation_plan(command):
+    """Rebind only a prior apply request for current-state observation."""
+    return _load_extension_lifecycle_plan(
+        command, read_only_observation=True
+    )
+
+
+def _get_extension_application_observer(receipt_store, active_lease):
+    """Compose the observer alone; never select a mutating apply runtime."""
+    if (
+        _application_observation_adapter_module is None
+        or _application_record_store_module is None
+        or not callable(active_lease)
+    ):
+        return None
+    records = _application_record_store_module.ApplicationRecordStore(
+        INSTALL_DIR / ".ods-assistant-first" / "applications"
+    )
+    return _application_observation_adapter_module.ApplicationObservationAdapter(
+        INSTALL_DIR,
+        records,
+        receipt_store,
+        _load_extension_observation_plan,
+        active_lease,
+    )
 
 
 def _receipt_store_response(handler, status_code: int, body: dict) -> None:
@@ -7967,6 +8016,174 @@ class AgentHandler(BaseHTTPRequestHandler):
             )
             return
         json_response(self, 200, result, no_store=True)
+
+    def _handle_application_observation(self) -> None:
+        """Classify one approved library apply without selecting its effect."""
+        if not check_auth(self):
+            return
+        if not ASSISTANT_TRANSACTIONS_ENABLED:
+            json_response(self, 404, {"error": {"code": "not-found"}}, no_store=True)
+            return
+        if (
+            _extension_lifecycle_work is None
+            or _application_observation_module is None
+            or _application_observation_adapter_module is None
+            or _application_record_store_module is None
+        ):
+            json_response(
+                self, 503,
+                {"error": {"code": "application-observation-unavailable"}},
+                no_store=True,
+            )
+            return
+        body = _read_lifecycle_work_body(self)
+        if body is None:
+            return
+        if set(body) != _extension_lifecycle_work.REQUEST_KEYS | {"lease"}:
+            json_response(
+                self, 422,
+                {"error": {"code": "invalid-application-observation-request"}},
+                no_store=True,
+            )
+            return
+        lease_evidence = _parse_extension_mutation_lease(self, body)
+        if lease_evidence is _EXTENSION_MUTATION_LEASE_REJECTED:
+            return
+        if lease_evidence is _EXTENSION_MUTATION_LEASE_ABSENT:
+            json_response(
+                self, 422, {"error": {"code": "invalid-lease-request"}},
+                no_store=True,
+            )
+            return
+        try:
+            command = _extension_lifecycle_work.parse_lifecycle_work_request(
+                {key: body[key] for key in _extension_lifecycle_work.REQUEST_KEYS}
+            )
+        except _extension_lifecycle_work.LifecycleWorkValidationError:
+            json_response(
+                self, 422,
+                {"error": {"code": "invalid-application-observation-request"}},
+                no_store=True,
+            )
+            return
+        if (
+            command.transaction_id != lease_evidence.transaction_id
+            or command.plan_hash != lease_evidence.plan_hash
+        ):
+            json_response(
+                self, 403, {"error": {"code": "lease-binding-mismatch"}},
+                no_store=True,
+            )
+            return
+        approved = getattr(
+            _library_application_runtime_module, "APPROVED_LIBRARY_SERVICES", None
+        )
+        service_id = command.service_ids[0] if len(command.service_ids) == 1 else None
+        if (
+            type(approved) is not frozenset
+            or service_id not in approved
+            or command.operation_key != f"apply:{service_id}"
+            or command.payload
+            != {"operation": {"serviceId": service_id, "action": "install"}}
+        ):
+            json_response(
+                self, 422,
+                {"error": {"code": "invalid-application-observation-request"}},
+                no_store=True,
+            )
+            return
+        try:
+            admission = _ExtensionMutationAdmission(
+                self, lease_evidence, command.service_ids
+            )
+            with admission:
+                # Reject a wrong or unattested plan before constructing stores.
+                _load_extension_observation_plan(command)
+                receipt_root = DATA_DIR / _LIFECYCLE_RECEIPT_ROOT_NAME
+                if not receipt_root.is_dir():
+                    raise _extension_lifecycle_work.LifecycleWorkUnavailable(
+                        "application-observation-unavailable"
+                    )
+                receipt_store = _get_lifecycle_receipt_store()
+                if receipt_store is None:
+                    raise _extension_lifecycle_work.LifecycleWorkUnavailable(
+                        "application-observation-unavailable"
+                    )
+
+                def active_application_lease():
+                    return admission.active_lease_status()["active"] is True
+
+                observer = _get_extension_application_observer(
+                    receipt_store, active_application_lease
+                )
+                if observer is None:
+                    raise _extension_lifecycle_work.LifecycleWorkUnavailable(
+                        "application-observation-unavailable"
+                    )
+                result = observer(command)
+                if (
+                    type(result) is not _application_observation_module.ObservationResult
+                    or result.service_id != service_id
+                    or result.classification not in {"ABSENT", "APPLIED"}
+                    or type(result.identity_sha256) is not str
+                    or _LIFECYCLE_RECEIPT_PLAN_HASH_RE.fullmatch(
+                        result.identity_sha256
+                    ) is None
+                    or (
+                        result.record_sha256 is not None
+                        and (
+                            type(result.record_sha256) is not str
+                            or _LIFECYCLE_RECEIPT_PLAN_HASH_RE.fullmatch(
+                                result.record_sha256
+                            ) is None
+                        )
+                    )
+                    or (result.classification == "APPLIED" and result.record_sha256 is None)
+                    or active_application_lease() is not True
+                ):
+                    raise _extension_lifecycle_work.LifecycleWorkExecutionError(
+                        "application-observation-invalid"
+                    )
+        except _ExtensionMutationAdmissionRejected:
+            return
+        except _extension_lifecycle_work.LifecycleWorkValidationError:
+            json_response(
+                self, 409,
+                {"error": {"code": "application-observation-plan-mismatch"}},
+                no_store=True,
+            )
+            return
+        except Exception as exc:
+            if (
+                _extension_leases is not None
+                and isinstance(exc, _extension_leases.LeaseError)
+            ):
+                _extension_mutation_lease_error(self, exc)
+                return
+            logger.error(
+                "Application observation failed (%s)", type(exc).__name__
+            )
+            json_response(
+                self, 503,
+                {"error": {"code": "application-observation-unavailable"}},
+                no_store=True,
+            )
+            return
+        json_response(
+            self, 200,
+            {
+                "schema": _APPLICATION_OBSERVATION_SCHEMA,
+                "transactionId": command.transaction_id,
+                "planHash": command.plan_hash,
+                "operationKey": command.operation_key,
+                "requestHash": command.request_hash,
+                "serviceId": service_id,
+                "classification": result.classification,
+                "identityHash": result.identity_sha256,
+                "recordHash": result.record_sha256,
+            },
+            no_store=True,
+        )
 
     def _handle_lifecycle_work(self) -> None:
         """Authorize one exact synchronous command for an injected dispatcher."""
@@ -8995,6 +9212,13 @@ class AgentHandler(BaseHTTPRequestHandler):
                 )
             else:
                 self._handle_lifecycle_work()
+        elif lease_path == "/v1/extension/application-observation":
+            if self.path != lease_path:
+                json_response(
+                    self, 404, {"error": {"code": "not-found"}}, no_store=True,
+                )
+            else:
+                self._handle_application_observation()
         elif self.path in {
             "/v1/assistant-first/secrets/stage",
             "/v1/assistant-first/secrets/status",

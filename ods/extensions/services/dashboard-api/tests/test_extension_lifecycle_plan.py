@@ -326,10 +326,13 @@ def test_apply_recovery_binding_is_read_only_and_keeps_original_plan() -> None:
     )
     assert bound.plan_material.state == "reconciling"
     assert bound.request_hash == parsed.request_hash
+    verifying = lifecycle_plan.bind_lifecycle_plan(
+        parsed, transaction("verifying"), read_only_observation=True
+    )
+    assert verifying.plan_material.state == "verifying"
+    assert verifying.request_hash == parsed.request_hash
     with pytest.raises(lifecycle_work.LifecycleWorkValidationError):
-        lifecycle_plan.bind_lifecycle_plan(
-            parsed, transaction("verifying"), read_only_observation=True
-        )
+        lifecycle_plan.bind_lifecycle_plan(parsed, transaction("verifying"))
     with pytest.raises(lifecycle_work.LifecycleWorkValidationError):
         lifecycle_plan.bind_lifecycle_plan(
             parsed, stored, read_only_observation=1  # type: ignore[arg-type]

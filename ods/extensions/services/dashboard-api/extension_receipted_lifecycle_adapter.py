@@ -173,6 +173,32 @@ def _hash(value: dict[str, Any]) -> str:
     return hashlib.sha256(_canonical_bytes(value)).hexdigest()
 
 
+def build_apply_observation_request(
+    binding: ExecutionBinding, operation: dict[str, Any]
+) -> LifecycleWorkRequest:
+    """Recreate the original apply request without beginning a receipt."""
+    if not isinstance(binding, ExecutionBinding):
+        _fail("lifecycle-invalid-binding")
+    service_id, cloned = _operation(operation)
+    operation_key = f"apply:{service_id}"
+    payload = {"operation": cloned}
+    unsigned = {
+        "schema": REQUEST_SCHEMA,
+        "transactionId": binding.transaction_id,
+        "planHash": binding.plan_hash,
+        "operationKey": operation_key,
+        "serviceIds": [service_id],
+        "payload": payload,
+    }
+    return LifecycleWorkRequest(
+        binding=binding,
+        operation_key=operation_key,
+        service_ids=(service_id,),
+        request_hash=_hash(unsigned),
+        payload=payload,
+    )
+
+
 def _worker_failure(error: Exception) -> tuple[str, bool, bool]:
     raw_code = getattr(error, "code", None)
     code = raw_code if isinstance(raw_code, str) else "worker-internal"
@@ -632,6 +658,7 @@ class ReceiptedLifecycleAdapter:
 
 
 __all__ = [
+    "build_apply_observation_request",
     "LifecycleWorkRequest",
     "LifecycleWorkResult",
     "ReceiptedLifecycleAdapter",

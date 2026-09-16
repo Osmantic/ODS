@@ -847,14 +847,15 @@ class TestApplicationRecordStore:
                     and node.module == "extension_application_record_store"
                 ):
                     importers.append(path.relative_to(ODS_ROOT).as_posix())
-        # The read-only collector and library verifier, bounded application
-        # runtime, and Compose effect may consume the store. The transaction
-        # executor still has no direct store authority.
+        # The read-only collector, narrow host observation boundary, library
+        # verifier, bounded application runtime, and Compose effect may consume
+        # the store. The transaction executor still has no direct store authority.
         assert sorted(importers) == [
             "bin/extension_application_observation_adapter.py",
             "bin/extension_library_application_runtime.py",
             "bin/extension_library_compose_apply_effect.py",
             "bin/extension_library_verify_runtime.py",
+            "bin/ods-host-agent.py",
         ]
         source = module.read_text(encoding="utf-8")
         assert "subprocess" not in source

@@ -10,7 +10,7 @@ Covers:
 - Value leakage
 - Tampered frozen dataclasses
 - Deterministic output
-- No production import/wiring and executor remains None
+- Narrow host observation import while the production executor remains None
 """
 
 from __future__ import annotations
@@ -1281,17 +1281,22 @@ def test_result_as_dict_deterministic():
 
 
 # ===================================================================
-# 13. Source-level tests: no production import/wiring, executor is None
+# 13. Source-level tests: narrow host import, executor remains disabled
 # ===================================================================
 
 
-def test_module_not_imported_by_host_agent():
-    """Prove ods-host-agent.py does not import our module."""
+def test_module_is_imported_only_for_host_observation_boundary():
+    """The reviewed host route may observe; it must not enable execution."""
     host_agent = BIN_DIR / "ods-host-agent.py"
     if not host_agent.exists():
         pytest.skip("ods-host-agent.py not present")
     source = host_agent.read_text(encoding="utf-8")
-    assert "extension_application_observation" not in source
+    assert "import extension_application_observation as _application_observation_module" in source
+    assert "def _handle_application_observation(self)" in source
+    production = (
+        Path(__file__).resolve().parents[1] / "extension_transaction_production.py"
+    ).read_text(encoding="utf-8")
+    assert "executor=None" in production
 
 
 def test_module_not_imported_by_runtime():

@@ -17,9 +17,12 @@ from extension_lease_client import (
     LeaseGrant,
 )
 from extension_lifecycle_work_client import (
+    HOST_OBSERVATION_PATH,
     HOST_WORK_PATH,
     MAX_RESPONSE_BYTES,
+    OBSERVATION_SCHEMA,
     RESULT_SCHEMA,
+    ApplicationObservationResult,
     ExtensionLifecycleWorkClient,
     LifecycleHostWorkError,
 )
@@ -167,6 +170,64 @@ def test_client_sends_exact_leased_request_and_returns_only_evidence() -> None:
         },
     }
     assert LEASE_TOKEN not in repr(result)
+
+
+def test_client_observes_one_original_apply_under_existing_lease() -> None:
+    request = work_request(
+        "apply:documents", ("documents",),
+        {"operation": dict(DOCUMENT_OPERATION)},
+    )
+    response = {
+        "schema": OBSERVATION_SCHEMA,
+        "transactionId": TRANSACTION_ID,
+        "planHash": PLAN_HASH,
+        "operationKey": "apply:documents",
+        "requestHash": request.request_hash,
+        "serviceId": "documents",
+        "classification": "APPLIED",
+        "identityHash": "a" * 64,
+        "recordHash": "b" * 64,
+    }
+    client, calls = recording_client(response)
+    observed = client.observe_application(grant(), request)
+    assert observed == ApplicationObservationResult(
+        "documents", "APPLIED", "a" * 64, "b" * 64
+    )
+    assert len(calls) == 1
+    method, path, kwargs = calls[0]
+    assert (method, path) == ("POST", HOST_OBSERVATION_PATH)
+    assert kwargs["timeout"] == 120.0
+    assert kwargs["payload"]["lease"]["leaseToken"] == LEASE_TOKEN
+    assert LEASE_TOKEN not in repr(observed)
+
+
+@pytest.mark.parametrize("change", [
+    {"classification": "UNKNOWN"},
+    {"classification": ["APPLIED"]},
+    {"recordHash": None},
+    {"serviceId": "voice"},
+    {"requestHash": "0" * 64},
+])
+def test_client_rejects_unbound_or_ambiguous_observation(change) -> None:
+    request = work_request(
+        "apply:documents", ("documents",),
+        {"operation": dict(DOCUMENT_OPERATION)},
+    )
+    response = {
+        "schema": OBSERVATION_SCHEMA,
+        "transactionId": TRANSACTION_ID,
+        "planHash": PLAN_HASH,
+        "operationKey": "apply:documents",
+        "requestHash": request.request_hash,
+        "serviceId": "documents",
+        "classification": "APPLIED",
+        "identityHash": "a" * 64,
+        "recordHash": "b" * 64,
+        **change,
+    }
+    client, _calls = recording_client(response)
+    with pytest.raises(LifecycleHostWorkError):
+        client.observe_application(grant(), request)
 
 
 @pytest.mark.parametrize(
@@ -550,7 +611,7 @@ def test_request_and_grant_representations_redact_sensitive_values() -> None:
     assert "lease_token=<redacted>" in repr(held_grant)
 
 
-def test_client_has_no_logging_persistence_retry_or_production_importer() -> None:
+def test_client_has_no_logging_persistence_retry_or_executor_importer() -> None:
     source_root = Path(__file__).resolve().parents[1]
     module = source_root / "extension_lifecycle_work_client.py"
     text = module.read_text(encoding="utf-8")
@@ -572,7 +633,7 @@ def test_client_has_no_logging_persistence_retry_or_production_importer() -> Non
         and path != module
         and "extension_lifecycle_work_client" in path.read_text(encoding="utf-8")
     }
-    assert importers == set()
+    assert importers == {"extension_transaction_application_observer.py"}
 
     production = (source_root / "extension_transaction_production.py").read_text(
         encoding="utf-8"

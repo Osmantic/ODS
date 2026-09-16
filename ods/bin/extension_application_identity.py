@@ -131,7 +131,8 @@ def _verify_apply_command(
     if _SERVICE_ID_RE.fullmatch(suffix) is None:
         _bad("service-id-invalid")
     if material.state != "applying" and not (
-        read_only_observation and material.state == "reconciling"
+        read_only_observation
+        and material.state in {"verifying", "reconciling"}
     ):
         _bad("plan-material-invalid")
 
@@ -261,10 +262,10 @@ def produce_application_identity(
 def produce_application_observation_identity(
     command: LifecycleWorkCommand,
 ) -> ApplicationIdentity:
-    """Derive the original apply identity during read-only crash recovery.
+    """Derive the original apply identity for read-only current-state checks.
 
     Mutating apply callers must keep using ``produce_application_identity``,
-    which refuses a transaction that has entered reconciliation.
+    which refuses verifying and reconciling transaction states.
     """
 
     _verify_apply_command(command, read_only_observation=True)

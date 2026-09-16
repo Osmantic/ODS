@@ -205,8 +205,17 @@ def test_read_only_recovery_identity_does_not_authorize_apply() -> None:
     assert app_id.produce_application_observation_identity(
         recovering
     ) == app_id.produce_application_identity(applying)
-    wrong_state = replace(
+    verifying = replace(
         applying, plan_material=replace(applying.plan_material, state="verifying")
+    )
+    assert app_id.produce_application_observation_identity(
+        verifying
+    ) == app_id.produce_application_identity(applying)
+    with pytest.raises(app_id.ApplicationIdentityError) as caught:
+        app_id.produce_application_identity(verifying)
+    assert caught.value.code == "plan-material-invalid"
+    wrong_state = replace(
+        applying, plan_material=replace(applying.plan_material, state="committed")
     )
     with pytest.raises(app_id.ApplicationIdentityError) as caught:
         app_id.produce_application_observation_identity(wrong_state)

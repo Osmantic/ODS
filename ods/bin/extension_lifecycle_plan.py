@@ -576,7 +576,9 @@ def bind_lifecycle_plan(
 
     prefix = command.operation_key.partition(":")[0]
     if state not in _ALLOWED_STATES.get(prefix, frozenset()) and not (
-        read_only_observation and prefix == "apply" and state == "reconciling"
+        read_only_observation
+        and prefix == "apply"
+        and state in {"verifying", "reconciling"}
     ):
         _reject()
     _expected_request(command, operations)
