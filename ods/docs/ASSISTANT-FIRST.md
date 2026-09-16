@@ -497,6 +497,19 @@ payload under host exclusion before changing active files or starting an app.
 The host stage factory now selects the installer's secured
 `data/extensions-library` as its library root, distinct from built-in services.
 
+A dormant pre-effect bridge now closes the payload-custody gap without storing
+up to 50 MiB in every immutable stage bundle. Under a future host-admission
+window, it accepts only an attested Manifest v2 `applying` command, matches that
+command to the complete immutable stage batch, and snapshots every approved
+library file plus executable bits through no-follow, owner-custodied
+descriptors. Its tree digest must equal the exact approved
+`sourceTreeSha256`, and its manifest/Compose bytes must equal the staged bytes.
+The returned object contains the complete in-memory payload for a later
+materializer; that materializer must consume those bytes and must not reopen
+the live library tree. Manifest v1 warning-only entries are refused. The bridge
+is not registered, writes no active files, and grants no Compose, hook, service,
+or health authority.
+
 A dormant SearXNG Compose-effect substrate now consumes the exact plan-bound
 application identity, immutable staged definition/Compose bytes, validated
 configuration metadata, and an owner-private secret-use callback. It writes

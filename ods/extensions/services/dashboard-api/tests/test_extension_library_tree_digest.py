@@ -57,6 +57,52 @@ def test_added_install_receipt_is_excluded_but_other_files_are_not(tmp_path):
     assert tree.digest_extension_tree(root) != baseline
 
 
+def test_snapshot_captures_exact_bytes_modes_and_empty_directories(tmp_path):
+    if os.name != "posix":
+        pytest.skip("Linux descriptor snapshot only")
+    root = tmp_path / "extension"
+    root.mkdir()
+    (root / "assets").mkdir()
+    manifest = root / "manifest.yaml"
+    manifest.write_bytes(b"service: one\n")
+    hook = root / "hook.sh"
+    hook.write_bytes(b"#!/bin/sh\nexit 0\n")
+    hook.chmod(0o700)
+    (root / ".ods-library-receipt.json").write_bytes(b"ignored\n")
+
+    snapshot = tree.snapshot_extension_tree(root)
+
+    assert snapshot.digest == tree.digest_extension_tree(root)
+    assert snapshot.directories == ("assets",)
+    assert snapshot.total_bytes == len(manifest.read_bytes()) + len(hook.read_bytes())
+    assert [
+        (item.relative_path, item.content, item.executable) for item in snapshot.files
+    ] == [
+        ("hook.sh", b"#!/bin/sh\nexit 0\n", True),
+        ("manifest.yaml", b"service: one\n", False),
+    ]
+
+
+def test_snapshot_refuses_symlink_and_group_writable_payload(tmp_path):
+    if os.name != "posix":
+        pytest.skip("Linux descriptor snapshot only")
+    root = tmp_path / "extension"
+    root.mkdir()
+    source = root / "manifest.yaml"
+    source.write_bytes(b"service: one\n")
+    source.chmod(0o660)
+    with pytest.raises(tree.LibraryTreeDigestError):
+        tree.snapshot_extension_tree(root)
+    source.chmod(0o600)
+    link = root / "linked"
+    try:
+        link.symlink_to(source)
+    except OSError:
+        pytest.skip("symlink creation unavailable")
+    with pytest.raises(tree.LibraryTreeDigestError):
+        tree.snapshot_extension_tree(root)
+
+
 def test_crlf_bytes_are_hashed_without_platform_text_translation(tmp_path):
     root = tmp_path / "extension"
     root.mkdir()
@@ -147,11 +193,15 @@ def test_group_writable_runtime_payload_is_refused(tmp_path):
     source.write_bytes(b"approved\n")
     expected = tree.digest_extension_tree(root)
     source.chmod(0o660)
-    with pytest.raises(tree.LibraryTreeDigestError, match="library-tree-custody-invalid"):
+    with pytest.raises(
+        tree.LibraryTreeDigestError, match="library-tree-custody-invalid"
+    ):
         tree.digest_extension_tree(root)
     source.chmod(0o600)
     root.chmod(0o770)
-    with pytest.raises(tree.LibraryTreeDigestError, match="library-tree-custody-invalid"):
+    with pytest.raises(
+        tree.LibraryTreeDigestError, match="library-tree-custody-invalid"
+    ):
         tree.digest_extension_tree(root)
     root.chmod(0o700)
     assert tree.digest_extension_tree(root) == expected

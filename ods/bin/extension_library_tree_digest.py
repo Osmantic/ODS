@@ -12,10 +12,11 @@ import os
 import stat
 import subprocess
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 MAX_TREE_BYTES = 50 * 1024 * 1024
 MAX_TREE_ENTRIES = 4096
+MAX_TREE_DEPTH = 64
 _RECEIPT = ".ods-library-receipt.json"
 _DOMAIN = b"ods-extension-library-tree-v1\0"
 
@@ -24,6 +25,21 @@ class LibraryTreeDigestError(ValueError):
     def __init__(self, code: str) -> None:
         super().__init__(code)
         self.code = code
+
+
+class LibraryTreeFile(NamedTuple):
+    relative_path: str
+    content: bytes
+    executable: bool
+
+
+class LibraryTreeSnapshot(NamedTuple):
+    """Approved payload bytes; a later effect must consume these, not live paths."""
+
+    digest: str
+    directories: tuple[str, ...]
+    files: tuple[LibraryTreeFile, ...]
+    total_bytes: int
 
 
 def _fail(code: str) -> None:
@@ -46,9 +62,7 @@ def _identity(info: os.stat_result) -> tuple[int, int, int, int, int, int]:
 def _check_runtime_custody(info: os.stat_result) -> None:
     # The Git-index catalog has no host owner. A live Linux payload does:
     # group/other writers can bypass an ODS transaction's service lock.
-    if os.name == "posix" and (
-        info.st_uid != os.geteuid() or info.st_mode & 0o022
-    ):
+    if os.name == "posix" and (info.st_uid != os.geteuid() or info.st_mode & 0o022):
         _fail("library-tree-custody-invalid")
 
 
@@ -176,6 +190,193 @@ def digest_extension_tree(root: Any) -> str:
     return "sha256:" + digest.hexdigest()
 
 
+def _snapshot_directory_flags() -> int:
+    return os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+
+
+def _snapshot_root(root: Path) -> int:
+    """Open every ancestor without following a symlink; retain the root inode."""
+
+    descriptor = -1
+    try:
+        descriptor = os.open(root.anchor, _snapshot_directory_flags())
+        for part in root.parts[1:]:
+            child = os.open(part, _snapshot_directory_flags(), dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = child
+        info = os.fstat(descriptor)
+        if not stat.S_ISDIR(info.st_mode):
+            _fail("library-tree-root-invalid")
+        _check_runtime_custody(info)
+        return descriptor
+    except (OSError, LibraryTreeDigestError):
+        if descriptor >= 0:
+            os.close(descriptor)
+        _fail("library-tree-root-invalid")
+
+
+def _snapshot_relative_directory(root_descriptor: int, relative: str) -> int:
+    descriptor = os.dup(root_descriptor)
+    try:
+        if relative:
+            for part in relative.split("/"):
+                child = os.open(part, _snapshot_directory_flags(), dir_fd=descriptor)
+                os.close(descriptor)
+                descriptor = child
+                _check_runtime_custody(os.fstat(descriptor))
+        return descriptor
+    except (OSError, LibraryTreeDigestError):
+        os.close(descriptor)
+        _fail("library-tree-entry-drift")
+
+
+def _snapshot_file(
+    parent: int, name: str, before: os.stat_result, remaining: int
+) -> bytes:
+    _check_runtime_custody(before)
+    if (
+        not stat.S_ISREG(before.st_mode)
+        or before.st_nlink != 1
+        or before.st_size < 0
+        or before.st_size > remaining
+    ):
+        _fail("library-tree-file-invalid")
+    flags = (
+        os.O_RDONLY
+        | os.O_NOFOLLOW
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+    try:
+        descriptor = os.open(name, flags, dir_fd=parent)
+    except OSError:
+        _fail("library-tree-file-unavailable")
+    try:
+        opened = os.fstat(descriptor)
+        if _identity(opened) != _identity(before) or not stat.S_ISREG(opened.st_mode):
+            _fail("library-tree-file-drift")
+        content = bytearray()
+        while len(content) < opened.st_size:
+            chunk = os.read(descriptor, min(1024 * 1024, opened.st_size - len(content)))
+            if not chunk:
+                _fail("library-tree-file-drift")
+            content.extend(chunk)
+        if _identity(os.fstat(descriptor)) != _identity(before):
+            _fail("library-tree-file-drift")
+        after = os.stat(name, dir_fd=parent, follow_symlinks=False)
+        if _identity(after) != _identity(before):
+            _fail("library-tree-file-drift")
+        return bytes(content)
+    except OSError:
+        _fail("library-tree-file-drift")
+    finally:
+        os.close(descriptor)
+
+
+def snapshot_extension_tree(root: Any) -> LibraryTreeSnapshot:
+    """Capture one bounded, owner-controlled tree through no-follow descriptors.
+
+    The exact file bytes and executable bits are kept in memory for a future
+    host-owned materializer. A caller must still bind ``digest`` to the approved
+    plan and check the staged manifest/Compose bytes before any effect.
+    """
+
+    if (
+        os.name != "posix"
+        or not hasattr(os, "O_DIRECTORY")
+        or not hasattr(os, "O_NOFOLLOW")
+        or os.open not in os.supports_dir_fd
+        or os.stat not in os.supports_dir_fd
+        or os.stat not in os.supports_follow_symlinks
+    ):
+        _fail("library-tree-platform-unsupported")
+    if (
+        not isinstance(root, Path)
+        or not root.is_absolute()
+        or root == Path(root.anchor)
+        or ".." in root.parts
+    ):
+        _fail("library-tree-root-invalid")
+    descriptor = _snapshot_root(root)
+    try:
+        original = os.fstat(descriptor)
+        pending = [""]
+        directories: list[str] = []
+        files: list[LibraryTreeFile] = []
+        total = 0
+        entries_seen = 0
+        while pending:
+            relative = pending.pop()
+            parent = _snapshot_relative_directory(descriptor, relative)
+            try:
+                with os.scandir(parent) as iterator:
+                    entries = list(iterator)
+                for entry in entries:
+                    name = f"{relative}/{entry.name}" if relative else entry.name
+                    if not name or any(
+                        part in {"", ".", ".."} for part in name.split("/")
+                    ):
+                        _fail("library-tree-path-invalid")
+                    try:
+                        name.encode("utf-8", "strict")
+                        before = entry.stat(follow_symlinks=False)
+                    except (OSError, UnicodeError):
+                        _fail("library-tree-entry-drift")
+                    entries_seen += 1
+                    if entries_seen > MAX_TREE_ENTRIES:
+                        _fail("library-tree-entry-limit")
+                    if name == _RECEIPT:
+                        continue
+                    if stat.S_ISDIR(before.st_mode):
+                        _check_runtime_custody(before)
+                        if len(name.split("/")) > MAX_TREE_DEPTH:
+                            _fail("library-tree-entry-limit")
+                        child = os.open(
+                            entry.name, _snapshot_directory_flags(), dir_fd=parent
+                        )
+                        try:
+                            if _identity(os.fstat(child)) != _identity(before):
+                                _fail("library-tree-entry-drift")
+                        finally:
+                            os.close(child)
+                        directories.append(name)
+                        pending.append(name)
+                    elif stat.S_ISREG(before.st_mode):
+                        _check_runtime_custody(before)
+                        content = _snapshot_file(
+                            parent, entry.name, before, MAX_TREE_BYTES - total
+                        )
+                        total += len(content)
+                        files.append(
+                            LibraryTreeFile(name, content, bool(before.st_mode & 0o111))
+                        )
+                    else:
+                        _fail("library-tree-entry-invalid")
+            except OSError:
+                _fail("library-tree-entry-drift")
+            finally:
+                os.close(parent)
+        if _identity(os.fstat(descriptor)) != _identity(original):
+            _fail("library-tree-root-drift")
+        digest = hashlib.sha256(_DOMAIN)
+        records = [(name, None) for name in directories] + [
+            (item.relative_path, item) for item in files
+        ]
+        for name, item in sorted(records, key=lambda pair: pair[0]):
+            if item is None:
+                digest.update(b"D\0" + name.encode("utf-8") + b"\0")
+            else:
+                _file_hash(digest, name, item.content, item.executable)
+        return LibraryTreeSnapshot(
+            digest="sha256:" + digest.hexdigest(),
+            directories=tuple(sorted(directories)),
+            files=tuple(sorted(files, key=lambda item: item.relative_path)),
+            total_bytes=total,
+        )
+    finally:
+        os.close(descriptor)
+
+
 def _git(repository: Path, *argv: str) -> subprocess.CompletedProcess[bytes]:
     try:
         return subprocess.run(
@@ -271,7 +472,10 @@ def digest_indexed_extension_tree(repository: Any, root: Any) -> str:
 
 
 __all__ = [
+    "LibraryTreeFile",
+    "LibraryTreeSnapshot",
     "LibraryTreeDigestError",
     "digest_extension_tree",
     "digest_indexed_extension_tree",
+    "snapshot_extension_tree",
 ]
