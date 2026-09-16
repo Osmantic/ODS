@@ -823,6 +823,16 @@ if model_stores_overlay.exists():
     if active_mount:
         resolved.append(str(active_mount.relative_to(script_dir)))
 
+# Tier 0 memory overlay for machines below 8GB RAM. compose-select.sh adds it
+# while the installer runs, but every later resolution goes through this
+# script (installer refresh, ods-cli enable/disable, host agent, ods-update),
+# and dropping it there leaves those machines on the base limits. Applied
+# before docker-compose.override.yml so operator overrides still win.
+if tier in ("0", "T0"):
+    tier0_overlay = script_dir / "docker-compose.tier0.yml"
+    if tier0_overlay.exists():
+        resolved.append("docker-compose.tier0.yml")
+
 # Include docker-compose.override.yml if it exists (user customizations).
 # Even though the operator placed this file themselves, the resolver runs
 # under installer/CI and may handle composes from sources the operator
