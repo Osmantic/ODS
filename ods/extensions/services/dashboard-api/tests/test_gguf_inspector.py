@@ -80,6 +80,9 @@ def test_full_metadata_is_normalized(tmp_path):
         ("llama.embedding_length", U32, 4096),
         ("llama.attention.head_count", U32, 32),
         ("llama.attention.head_count_kv", U32, 8),
+        ("llama.attention.key_length", U32, 128),
+        ("llama.attention.value_length", U32, 96),
+        ("llama.rope.dimension_count", U32, 64),
     ]
     path = _write(tmp_path, "model.gguf", build_gguf(kvs, tensor_count=291))
 
@@ -99,7 +102,21 @@ def test_full_metadata_is_normalized(tmp_path):
     assert result["embedding_length"] == 4096
     assert result["attention_head_count"] == 32
     assert result["attention_head_count_kv"] == 8
+    assert result["attention_key_length"] == 128
+    assert result["attention_value_length"] == 96
+    assert result["rope_dimension_count"] == 64
     assert result["size_bytes"] == path.stat().st_size
+
+
+def test_per_layer_kv_head_counts_are_preserved(tmp_path):
+    path = _write(tmp_path, "hybrid.gguf", build_gguf([
+        ("general.architecture", STR, "qwen35"),
+        ("qwen35.attention.head_count_kv", ARR, (U32, [0, 2, 0, 2])),
+    ]))
+
+    result = inspect_gguf(path)
+
+    assert result["attention_head_count_kv"] == [0, 2, 0, 2]
 
 
 def test_expert_count_accepts_alternate_suffix(tmp_path):

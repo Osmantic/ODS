@@ -184,3 +184,15 @@ class TestVerify:
         ok, reason = session_signer.verify(cookie)
         assert ok is False
         assert reason == "malformed"
+def test_malformed_expiry_does_not_compute_hmac(monkeypatch):
+    def unexpected_sign(_payload):
+        raise AssertionError("Malformed timestamp reached HMAC")
+    monkeypatch.setattr(session_signer, "_sign", unexpected_sign)
+    for expiry in ("not-a-number", "9" * 5000):
+        assert session_signer.verify(f"id.{expiry}.signature") == (False, "malformed")
+
+
+def test_parseable_expiry_still_requires_a_signature():
+    future = int(time.time()) + 3600
+    assert session_signer.verify(f"id.{future}.forged") == (False, "bad-signature")
+    assert session_signer.verify("id.1.forged") == (False, "bad-signature")

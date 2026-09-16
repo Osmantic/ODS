@@ -1,0 +1,5 @@
+# Match the existing ODS model-router runtime range.
+fastapi>=0.109.0,<0.120.0
+uvicorn[standard]>=0.27.0,<0.30.0
+httpx>=0.27.0,<0.29.0
+async-timeout>=4.0.3,<6; python_version < '3.11'
