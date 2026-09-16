@@ -99,8 +99,8 @@ grep -q "extensions\[/\\\\\\\\\]services\[/\\\\\\\\\]" "$ODS_PS1" \
 pass "Update-ComposeFlags removes only the toggled service's fragments"
 
 info "Static: Update-ComposeFlags does not delegate to the Linux resolver"
-# resolve-compose-stack.sh emits neither docker-compose.tier0.yml nor the
-# Windows AMD overlay, so its output is not a superset of the Windows stack.
+# resolve-compose-stack.sh does not emit the Windows AMD overlay, so its
+# output is not a superset of the Windows stack.
 if grep -q '\$resolverScript' "$ODS_PS1"; then
     fail "Update-ComposeFlags still invokes resolve-compose-stack.sh"
 fi
