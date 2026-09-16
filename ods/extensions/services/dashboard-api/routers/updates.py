@@ -163,10 +163,19 @@ def _build_version_result(current: str, payload: Optional[dict]) -> dict:
     result["changelog_url"] = payload.get("changelog_url")
     result["checked_at"] = payload.get("checked_at") or result["checked_at"]
 
-    current_parts = [int(x) for x in current.split(".") if x.isdigit()][:3]
-    latest_parts = [int(x) for x in latest.split(".") if x.isdigit()][:3]
-    current_parts += [0] * (3 - len(current_parts))
-    latest_parts += [0] * (3 - len(latest_parts))
+    def _parse_version_tuple(ver_str: str) -> list[int]:
+        parts = []
+        for segment in ver_str.split("."):
+            m = re.match(r"^(\d+)", segment)
+            if m:
+                parts.append(int(m.group(1)))
+            if len(parts) >= 3:
+                break
+        parts += [0] * (3 - len(parts))
+        return parts[:3]
+
+    current_parts = _parse_version_tuple(current)
+    latest_parts = _parse_version_tuple(latest)
     result["update_available"] = latest_parts > current_parts
     return result
 
