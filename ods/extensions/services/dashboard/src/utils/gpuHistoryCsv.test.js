@@ -1,5 +1,7 @@
-import { describe, expect, it } from 'vitest'
-import { gpuHistoryToCsv } from './gpuHistoryCsv'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { downloadGpuHistoryCsv, gpuHistoryToCsv } from './gpuHistoryCsv'
+
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
 describe('gpuHistoryToCsv', () => {
   it('exports aligned long-form rows in timestamp and numeric GPU order', () => {
@@ -40,5 +42,30 @@ describe('gpuHistoryToCsv', () => {
     })
 
     expect(csv).toContain("'=unsafe,\"'@gpu,0\",,,,")
+  })
+
+  it('preserves numeric temperatures and represents nonfinite telemetry as a gap', () => {
+    expect(gpuHistoryToCsv({ timestamps: ['sample'], gpus: { 0: {
+      utilization: [NaN], temperature: [-5], power_w: [Infinity],
+    } } })).toContain('sample,0,,,-5,\r\n')
+  })
+
+  it('keeps the generated download URL alive until the browser has consumed the click', () => {
+    const create = vi.fn(() => 'blob:gpu-history')
+    const revoke = vi.fn()
+    vi.stubGlobal('URL', Object.assign(URL, { createObjectURL: create, revokeObjectURL: revoke }))
+    vi.spyOn(window.HTMLAnchorElement.prototype, 'click').mockImplementation(function () {
+      expect(this.isConnected).toBe(true)
+      expect(this.download).toBe('ods-gpu-history-2026-09-16T00-00-00Z.csv')
+      expect(revoke).not.toHaveBeenCalled()
+    })
+    let release
+    vi.spyOn(globalThis, 'setTimeout').mockImplementation(callback => { release = callback; return 1 })
+    downloadGpuHistoryCsv({ timestamps: ['sample'], gpus: { 0: {} } }, new Date('2026-09-16T00:00:00Z'))
+    expect(create.mock.calls[0][0].type).toBe('text/csv;charset=utf-8')
+    expect(document.querySelector('a[download]')).toBeNull()
+    expect(revoke).not.toHaveBeenCalled()
+    release()
+    expect(revoke).toHaveBeenCalledWith('blob:gpu-history')
   })
 })

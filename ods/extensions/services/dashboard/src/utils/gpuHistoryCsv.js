@@ -9,6 +9,7 @@ const COLUMNS = [
 
 function csvCell(value) {
   if (value == null) return ''
+  if (typeof value === 'number') return Number.isFinite(value) ? String(value) : ''
   let text = String(value)
   if (/^[=+\-@]/.test(text)) text = `'${text}`
   if (/[",\r\n]/.test(text)) return `"${text.replaceAll('"', '""')}"`
@@ -63,7 +64,7 @@ export function downloadGpuHistoryCsv(history, now = new Date()) {
     link.click()
   } finally {
     link.remove()
-    window.URL.revokeObjectURL(url)
+    setTimeout(() => window.URL.revokeObjectURL(url), 1000)
   }
   return filename
 }
