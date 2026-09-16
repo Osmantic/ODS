@@ -11,7 +11,8 @@ import socket
 from dataclasses import dataclass
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
+from collections.abc import Mapping
 from urllib.parse import urlsplit, urlunsplit
 
 from .policy import (

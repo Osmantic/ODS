@@ -32,7 +32,8 @@ import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Union
+from typing import Any, Dict, List, Optional, Union
+from collections.abc import Mapping, Sequence
 
 Json = Union[None, bool, int, float, str, List["Json"], Dict[str, "Json"]]
 

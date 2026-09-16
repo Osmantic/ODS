@@ -14,7 +14,8 @@ import contextlib
 import json
 import logging
 import os
-from typing import Any, AsyncIterator
+from typing import Any
+from collections.abc import AsyncIterator
 
 import httpx
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile

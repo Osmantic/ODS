@@ -18,7 +18,7 @@ import tempfile
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Callable
+from collections.abc import Callable
 
 
 ROOT = Path(__file__).resolve().parents[1]

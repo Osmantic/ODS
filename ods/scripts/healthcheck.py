@@ -54,7 +54,8 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from typing import List, Optional, Sequence, Set, Tuple
+from typing import List, Optional, Set, Tuple
+from collections.abc import Sequence
 
 
 # -----------------------------

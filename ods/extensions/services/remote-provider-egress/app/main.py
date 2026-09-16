@@ -10,7 +10,8 @@ from __future__ import annotations
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, AsyncIterator, Mapping
+from typing import Any
+from collections.abc import AsyncIterator, Mapping
 
 import httpx
 from fastapi import FastAPI, Request, Response

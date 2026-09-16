@@ -10,7 +10,8 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any
+from collections.abc import Callable, Mapping, Sequence
 
 from remote_provider.ssh_supervisor import (
     SSH_SUPERVISOR_PLAN_SCHEMA,

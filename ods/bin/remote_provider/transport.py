@@ -9,7 +9,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import PurePosixPath
-from typing import Any, Mapping
+from typing import Any
+from collections.abc import Mapping
 
 
 DEFAULT_SSH_IDENTITY_PATH = PurePosixPath("/state/remote-provider/secrets/ssh-identity")

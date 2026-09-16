@@ -34,7 +34,8 @@ import time
 import uuid
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any
+from collections.abc import AsyncIterator
 
 import httpx
 from fastapi import FastAPI, Request, Response
