@@ -1,0 +1,14 @@
+# The build context is the ODS root only to reuse the host-side domain package.
+# Never send install data, .env, credentials, user models or unrelated services.
+**
+!bin/
+!bin/pixel_provider/
+!bin/pixel_provider/**
+!extensions/
+!extensions/services/
+!extensions/services/pixel-inference/
+!extensions/services/pixel-inference/requirements.txt
+!extensions/services/pixel-inference/app/
+!extensions/services/pixel-inference/app/**
+**/__pycache__/
+**/*.pyc

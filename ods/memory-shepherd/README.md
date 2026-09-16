@@ -105,6 +105,12 @@ Each `[agent-name]` section defines one managed agent:
 
 *`memory_file` is required for local agents; `remote_memory` is required when `remote_host` is set.
 
+Remote resets require a successful SCP read before archiving and uploading the
+baseline. A failed read stops the run without requesting a remote write; it
+cannot distinguish a missing file from a permission or connection failure. For
+a new remote agent, verify the destination and initialize its memory explicitly
+before enabling the reset timer.
+
 ### Example Config
 
 ```ini
@@ -268,7 +274,8 @@ sha256sum --check baselines/.checksums || echo "BASELINE TAMPERING DETECTED"
 - **Baseline size validation** refuses to reset if the baseline is under 1000 bytes (likely corrupt)
 - **Atomic file replacement** uses copy-then-move to prevent partial writes
 - **Missing separator handling** backs up the entire memory file before resetting
-- **Missing memory file handling** creates from baseline instead of failing
+- **Missing local memory file handling** creates from baseline instead of failing
+- **Failed remote memory reads** stop without uploading a baseline over unarchived state
 - **Archive retention** automatically cleans up old archives
 - **Log rotation** prevents unbounded log growth
 

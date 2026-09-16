@@ -1,0 +1,30 @@
+name: Pixel transition state
+on:
+  pull_request:
+    paths:
+      - 'ods/extensions/services/pixel-edge/**'
+      - '.github/workflows/test-pixel-transition-state.yml'
+  push:
+    branches: [main, public-beta]
+    paths:
+      - 'ods/extensions/services/pixel-edge/**'
+      - '.github/workflows/test-pixel-transition-state.yml'
+permissions:
+  contents: read
+jobs:
+  admission-state:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: '3.12'
+      - name: Install edge test dependencies
+        run: python -m pip install -r ods/extensions/services/pixel-edge/requirements.txt 'pytest>=8,<9'
+      - name: Verify durable admission and special-file rejection
+        run: >-
+          python -m pytest -q
+          ods/extensions/services/pixel-edge/tests/test_transition_gate.py
+          ods/extensions/services/pixel-edge/tests/test_transition_gate_special_files.py
+      - name: Verify edge HTTP and streaming contracts
+        run: python -m pytest -q ods/extensions/services/pixel-edge/tests/test_pixel_edge.py

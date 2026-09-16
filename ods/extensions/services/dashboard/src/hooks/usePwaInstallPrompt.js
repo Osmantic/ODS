@@ -37,7 +37,7 @@ function safeSet(storage, key, value) {
   try { storage?.setItem(key, value) } catch { /* private mode / quota */ }
 }
 
-function isAlreadyInstalled() {
+function isStandalone() {
   // `display-mode: standalone` is true once the user has launched the
   // installed PWA. window.matchMedia is the cross-browser way to read it.
   if (typeof window === 'undefined') return false
@@ -48,6 +48,11 @@ function isAlreadyInstalled() {
   } catch {
     // matchMedia failures shouldn't crash the hook.
   }
+  return false
+}
+
+function isAlreadyInstalled() {
+  if (isStandalone()) return true
   return safeGet(globalThis.localStorage, INSTALLED_KEY) === '1'
 }
 
@@ -91,10 +96,15 @@ export function usePwaInstallPrompt() {
 
   // Capture the browser-provided install event for non-iOS browsers.
   useEffect(() => {
-    if (installed) return
     const onBeforeInstall = (event) => {
+      if (isStandalone()) return
       event.preventDefault()
+      // A new browser offer is current evidence of installability. The saved
+      // marker may outlive an uninstall; keep listening so it cannot suppress
+      // every future offer, including in a tab that observed appinstalled.
       promptEventRef.current = event
+      safeSet(globalThis.localStorage, INSTALLED_KEY, '0')
+      setInstalled(false)
       setInstallable(true)
     }
     const onInstalled = () => {
@@ -109,7 +119,7 @@ export function usePwaInstallPrompt() {
       window.removeEventListener('beforeinstallprompt', onBeforeInstall)
       window.removeEventListener('appinstalled', onInstalled)
     }
-  }, [installed])
+  }, [])
 
   // iOS doesn't fire beforeinstallprompt, but we still want to show a
   // hint. The banner copy on iOS becomes "Share → Add to Home Screen"

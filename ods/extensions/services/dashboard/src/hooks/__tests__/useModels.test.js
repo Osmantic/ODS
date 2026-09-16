@@ -85,6 +85,18 @@ describe('useModels', () => {
     expect(result.current.error).toBeNull()
   })
 
+  test('keeps observed runtime identity separate from catalog activation identity and clears it on unload', async () => {
+    fetch.mockResolvedValue(modelsResponse([], { loadedModel: 'owner-native-35b' }))
+    const { result } = renderHook(() => useModels())
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    expect(result.current.loadedModel).toBe('owner-native-35b')
+    expect(result.current.currentModel).toBeNull()
+    expect(result.current.activationReadyModel).toBeNull()
+    fetch.mockResolvedValue(modelsResponse([]))
+    await act(async () => { await result.current.refresh() })
+    expect(result.current.loadedModel).toBeNull()
+  })
+
   test('surfaces backend-owned activation as a pending model action', async () => {
     const target = 'slow-model'
     fetch.mockResolvedValue(modelsResponse(
@@ -268,6 +280,48 @@ describe('useModels', () => {
         await vi.advanceTimersByTimeAsync(5000)
         await loadPromise
       })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  test('loadModel reports an active Pixel turn without inventing a model conflict', async () => {
+    vi.useFakeTimers()
+    const target = 'next-model'
+    fetch.mockImplementation((_url, options) => {
+      if (options?.method === 'POST') {
+        return Promise.resolve({
+          ok: false,
+          status: 409,
+          json: () => Promise.resolve({
+            detail: {
+              code: 'pixel_chat_active',
+              message: 'Pixel is working. Stop the active response before changing models.',
+              requestedModelId: target,
+            },
+          }),
+        })
+      }
+      return Promise.resolve(modelsResponse([{ id: target, status: 'downloaded' }]))
+    })
+
+    try {
+      const { result } = renderHook(() => useModels())
+      await act(async () => {})
+
+      let loadPromise
+      act(() => {
+        loadPromise = result.current.loadModel(target)
+      })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000)
+        await loadPromise
+      })
+
+      expect(result.current.error).toBe(
+        'Pixel is working. Stop the active response before changing models.'
+      )
+      expect(result.current.error).not.toMatch(/active target|server did not identify/i)
     } finally {
       vi.useRealTimers()
     }
@@ -507,7 +561,7 @@ describe('useModels', () => {
 
     expect(confirm).not.toHaveBeenCalled()
     const deleteCall = fetch.mock.calls.find(c => c[1]?.method === 'DELETE')
-    expect(deleteCall).toEqual(['/api/models/org%2Fmodel%20q4', { method: 'DELETE' }])
+    expect(deleteCall).toEqual(['/api/models/org%2Fmodel%20q4', { method: 'DELETE', signal: expect.any(AbortSignal) }])
   })
 
   test('clears a pending delete when an independent refresh confirms removal', async () => {
@@ -735,7 +789,7 @@ describe('useModels', () => {
     }
   })
 
-  test('holds the activation lock through 600 seconds and then reports a terminal timeout', async () => {
+  test('holds the activation lock through the host budget and retry grace', async () => {
     vi.useFakeTimers()
     const target = 'never-loads'
     fetch.mockImplementation((_url, opts) => {
@@ -752,16 +806,16 @@ describe('useModels', () => {
         loadPromise = result.current.loadModel(target)
       })
 
-      await act(async () => { await vi.advanceTimersByTimeAsync(600000) })
+      await act(async () => { await vi.advanceTimersByTimeAsync(2820000) })
       expect(result.current.actionLoading).toBe(target)
       expect(result.current.error).toBeNull()
 
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(10000)
+        await vi.advanceTimersByTimeAsync(5000)
         await loadPromise
       })
       expect(result.current.actionLoading).toBeNull()
-      expect(result.current.error).toMatch(/timed out after 10 minutes/i)
+      expect(result.current.error).toMatch(/timed out after 47 minutes/i)
       expect(result.current.error).toContain(target)
     } finally {
       vi.useRealTimers()
