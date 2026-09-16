@@ -11,6 +11,10 @@
 
 # Load a .env file safely: comments and empty lines skipped; key names must be
 # valid identifiers; values may be unquoted or quoted; no eval or word-splitting.
+# A quoted value followed by whitespace and '#': group 1 is the quoted part.
+_SAFE_ENV_DQ_COMMENT_RE='^("(\\.|[^"\\])*")[[:space:]]+#'
+_SAFE_ENV_SQ_COMMENT_RE="^('[^']*')[[:space:]]+#"
+
 load_env_file() {
     local path="$1"
     [[ -f "$path" ]] || return 0
@@ -38,23 +42,59 @@ load_env_file() {
         # UID=1000 is valid for Docker Compose, but exporting it here aborts
         # lifecycle commands under set -e before they can reach compose.
         [[ "$key" == "UID" ]] && continue
-        # Strip one leading space, then a single matching pair of surrounding
-        # quotes. Only strip when both ends carry the SAME quote character —
-        # stripping each quote type independently corrupts values whose content
-        # legitimately begins or ends with the other quote (e.g. a double-quoted
-        # "'literal'" would otherwise lose its inner single quotes, and KEY="'"
-        # would collapse to empty).
-        value="${value# }"
-        if [[ "$value" == '"'*'"' ]]; then
-            value="${value#\"}"
-            value="${value%\"}"
-            value="$(_safe_env_unescape_double_quoted "$value")"
-        elif [[ "$value" == "'"*"'" ]]; then
-            value="${value#\'}"
-            value="${value%\'}"
-        fi
-        export "$key=$value"
+        _safe_env_decode_value "$value"
+        export "$key=$_SAFE_ENV_VALUE"
     done < "$path"
+}
+
+# Decode one raw .env value (the text after the first '=') into its literal
+# value and store it in _SAFE_ENV_VALUE. The result is returned in a variable,
+# not printed, so load_env_file does not fork a subshell for every line.
+_safe_env_decode_value() {
+    local value="${1%$'\r'}"
+    # Apply Docker Compose's value grammar before looking at quotes: these
+    # values are exported into the environment Compose interpolates, and
+    # Compose gives the environment precedence over .env. Surrounding
+    # whitespace is trimmed; an unquoted value ends at the first " #"; a
+    # quoted value may carry a comment after its closing quote.
+    # KEY=VAL#x and KEY="a # b" keep their '#'.
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+    case "$value" in
+        \"*) [[ "$value" =~ $_SAFE_ENV_DQ_COMMENT_RE ]] && value="${BASH_REMATCH[1]}" ;;
+        \'*) [[ "$value" =~ $_SAFE_ENV_SQ_COMMENT_RE ]] && value="${BASH_REMATCH[1]}" ;;
+        *)
+            # Cut at the first " #" of the already-trimmed value, then trim
+            # the exposed trailing whitespace. Compose trims leading
+            # whitespace before this cut, so "KEY=  # x" becomes "# x"
+            # (the "#" is no longer preceded by a space) and stays literal.
+            value="${value%% #*}"
+            value="${value%"${value##*[![:space:]]}"}"
+            ;;
+    esac
+    # Then strip a single matching pair of surrounding quotes. Only strip
+    # when both ends carry the SAME quote character — stripping each quote
+    # type independently corrupts values whose content legitimately begins
+    # or ends with the other quote (e.g. a double-quoted "'literal'" would
+    # otherwise lose its inner single quotes, and KEY="'" would collapse
+    # to empty).
+    if [[ "$value" == '"'*'"' ]]; then
+        value="${value#\"}"
+        value="${value%\"}"
+        value="$(_safe_env_unescape_double_quoted "$value")"
+    elif [[ "$value" == "'"*"'" ]]; then
+        value="${value#\'}"
+        value="${value%\'}"
+    fi
+    _SAFE_ENV_VALUE="$value"
+}
+
+# Print the literal value of one raw .env value, decoded exactly as
+# load_env_file decodes it. Use this when a single existing value is read and
+# written back, so quoting and inline comments survive the round trip.
+safe_env_decode_value() {
+    _safe_env_decode_value "$1"
+    printf '%s' "$_SAFE_ENV_VALUE"
 }
 
 _safe_env_unescape_double_quoted() {
@@ -123,7 +163,9 @@ load_model_selector_env_from_output() {
         MODEL_RUNTIME_PROFILE \
         MODEL_RUNTIME_PROFILE_LABEL \
         MODEL_RUNTIME_PROFILE_SOURCE \
+        MODEL_SELECTION_SOURCE \
         LLAMA_SERVER_IMAGE \
+        LLAMA_SERVER_MEMORY_LIMIT \
         LLAMA_CPP_RELEASE_TAG_OVERRIDE \
         LLAMA_CPP_SERVER_BINARY \
         LLAMA_ARG_FLASH_ATTN \

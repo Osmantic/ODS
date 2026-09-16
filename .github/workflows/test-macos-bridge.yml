@@ -1,0 +1,35 @@
+name: Native LLM bridge contracts
+
+on:
+  pull_request:
+    paths:
+      - 'ods/bin/ods-macos-llm-bridge.py'
+      - 'ods/tests/test_macos_llm_bridge.py'
+      - 'ods/tests/test_bridge_denied_admission.py'
+      - '.github/workflows/test-macos-bridge.yml'
+  push:
+    branches: [main, public-beta]
+    paths:
+      - 'ods/bin/ods-macos-llm-bridge.py'
+      - 'ods/tests/test_macos_llm_bridge.py'
+      - 'ods/tests/test_bridge_denied_admission.py'
+      - '.github/workflows/test-macos-bridge.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  socket-contracts:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-14]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: '3.12'
+      - name: Install test dependencies
+        run: python -m pip install 'pytest>=8,<9'
+      - name: Verify bridge admission and real HTTP forwarding
+        run: python -m pytest -q ods/tests/test_bridge_denied_admission.py ods/tests/test_macos_llm_bridge.py

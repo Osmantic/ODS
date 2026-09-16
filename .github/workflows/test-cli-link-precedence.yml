@@ -1,0 +1,24 @@
+name: Installer CLI binding
+on:
+  pull_request:
+    paths:
+      - 'ods/installers/lib/cli-link.sh'
+      - 'ods/tests/test_cli_link_precedence.py'
+      - 'ods/tests/test-cli-link-refresh.sh'
+      - '.github/workflows/test-cli-link-precedence.yml'
+permissions:
+  contents: read
+jobs:
+  binding:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-14]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install pytest
+      - run: python -m pytest -q ods/tests/test_cli_link_precedence.py
+      - run: bash ods/tests/test-cli-link-refresh.sh

@@ -191,6 +191,76 @@ def test_get_n8n_workflows_failure(test_client, monkeypatch):
     assert result == []
 
 
+def test_get_n8n_workflows_auth_rejection_is_reported(test_client, monkeypatch, caplog):
+    """A rejected listing must not be silently reported as "no workflows".
+
+    n8n's public API needs a key that no installer provisions, so a fresh
+    install answers 401 here. Returning [] without a word left operators with
+    an empty Workflows page and nothing in the logs to explain it.
+    """
+    import logging
+
+    import routers.workflows as wf_mod
+
+    monkeypatch.setattr(wf_mod, "N8N_API_KEY", "", raising=False)
+
+    resp_mock = AsyncMock()
+    resp_mock.status = 401
+    resp_mock.json = AsyncMock(return_value={})
+
+    ctx = AsyncMock()
+    ctx.__aenter__ = AsyncMock(return_value=resp_mock)
+    ctx.__aexit__ = AsyncMock(return_value=False)
+
+    session_mock = AsyncMock()
+    session_mock.get = MagicMock(return_value=ctx)
+    session_mock.__aenter__ = AsyncMock(return_value=session_mock)
+    session_mock.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("routers.workflows.aiohttp.ClientSession", return_value=session_mock):
+        import asyncio
+
+        with caplog.at_level(logging.WARNING, logger=wf_mod.logger.name):
+            result = asyncio.run(wf_mod.get_n8n_workflows())
+
+    # Return contract is unchanged; only the silence is fixed.
+    assert result == []
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("401" in m and "N8N_API_KEY" in m for m in messages), (
+        f"401 from n8n was not reported; logged: {messages}"
+    )
+
+
+def test_get_n8n_workflows_other_error_status_is_reported(test_client, monkeypatch, caplog):
+    """A non-auth failure status is logged too, rather than read as empty."""
+    import logging
+
+    import routers.workflows as wf_mod
+
+    resp_mock = AsyncMock()
+    resp_mock.status = 500
+    resp_mock.json = AsyncMock(return_value={})
+
+    ctx = AsyncMock()
+    ctx.__aenter__ = AsyncMock(return_value=resp_mock)
+    ctx.__aexit__ = AsyncMock(return_value=False)
+
+    session_mock = AsyncMock()
+    session_mock.get = MagicMock(return_value=ctx)
+    session_mock.__aenter__ = AsyncMock(return_value=session_mock)
+    session_mock.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("routers.workflows.aiohttp.ClientSession", return_value=session_mock):
+        import asyncio
+
+        with caplog.at_level(logging.WARNING, logger=wf_mod.logger.name):
+            result = asyncio.run(wf_mod.get_n8n_workflows())
+
+    assert result == []
+    assert any("500" in r.getMessage() for r in caplog.records), \
+        "non-200 status from n8n was not reported"
+
+
 # ---------------------------------------------------------------------------
 # check_workflow_dependencies() unit tests
 # ---------------------------------------------------------------------------
@@ -224,6 +294,7 @@ def test_check_workflow_dependencies_with_alias(test_client, monkeypatch):
     import routers.workflows as wf_mod
     from models import ServiceStatus
 
+    monkeypatch.setitem(wf_mod.SERVICES, "llama-server", {"name": "LLM Server", "port": 8080})
     healthy_status = ServiceStatus(
         id="llama-server", name="LLM Server", port=8080,
         external_port=8080, status="healthy",
@@ -263,14 +334,14 @@ def test_check_workflow_dependencies_unhealthy(test_client, monkeypatch):
 
 
 def test_check_workflow_dependencies_unknown_dep(test_client, monkeypatch):
-    """check_workflow_dependencies returns True for deps not in SERVICES."""
+    """Unknown dependencies have no health evidence and remain unavailable."""
     import routers.workflows as wf_mod
 
     import asyncio
     result = asyncio.run(
         wf_mod.check_workflow_dependencies(["totally-unknown-service-xyz"])
     )
-    assert result["totally-unknown-service-xyz"] is True
+    assert result["totally-unknown-service-xyz"] is False
 
 
 def test_check_workflow_dependencies_uses_cache(test_client, monkeypatch):
