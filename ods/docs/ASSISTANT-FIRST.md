@@ -473,6 +473,17 @@ revalidated before locking. The store does not wire Docker, Compose, host
 probes, the Dashboard transaction executor, installation, or runtime service
 mutation.
 
+The generated catalog now records a complete, content-bound Git-index tree
+digest for each extensions-library definition, including supporting configs,
+hooks, build contexts, and documentation. Manifest v2 library plans include
+that digest in the exact owner-approved plan hash, and the typed host plan
+loader carries it without accepting a caller-supplied replacement. Manifest
+v1 library entries also gain catalog provenance but remain warning-only for
+deterministic planning; this does not make those entries transactionally
+installable. The existing one-click UI still copies the live library tree
+using its legacy receipt and asynchronous start path. A future bridge must
+re-prove or stage the exact indexed payload before calling that logic.
+
 A dormant SearXNG Compose-effect substrate now consumes the exact plan-bound
 application identity, immutable staged definition/Compose bytes, validated
 configuration metadata, and an owner-private secret-use callback. It writes

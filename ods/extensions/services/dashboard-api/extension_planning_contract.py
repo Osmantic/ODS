@@ -30,6 +30,7 @@ _V1_LEGACY_PLANNING_KEYS = {
 }
 _ORIGIN_PLANNING_KEYS = {"definitionSource", "composeFile"}
 _V1_PLANNING_KEYS = _V1_LEGACY_PLANNING_KEYS | _ORIGIN_PLANNING_KEYS
+_V1_TREE_PLANNING_KEYS = _V1_PLANNING_KEYS | {"sourceTreeSha256"}
 _V2_LEGACY_PLANNING_KEYS = _V1_LEGACY_PLANNING_KEYS | {
     "provides",
     "requires",
@@ -47,6 +48,7 @@ _V2_LEGACY_PLANNING_KEYS = _V1_LEGACY_PLANNING_KEYS | {
     "support",
 }
 _V2_PLANNING_KEYS = _V2_LEGACY_PLANNING_KEYS | _ORIGIN_PLANNING_KEYS
+_V2_TREE_PLANNING_KEYS = _V2_PLANNING_KEYS | {"sourceTreeSha256"}
 
 
 def _manifest_host_ports(value: Any) -> Any:
@@ -86,10 +88,12 @@ def manifest_from_catalog_entry(entry: Mapping[str, Any]) -> dict[str, Any]:
         else frozenset()
     )
     planning_keys = frozenset(planning) if isinstance(planning, dict) else frozenset()
-    if not isinstance(planning, dict) or planning_keys not in {
-        frozenset(expected),
-        frozenset(legacy_expected),
-    }:
+    allowed = {frozenset(expected), frozenset(legacy_expected)}
+    if schema_version == "ods.services.v2":
+        allowed.add(frozenset(_V2_TREE_PLANNING_KEYS))
+    elif schema_version == "ods.services.v1":
+        allowed.add(frozenset(_V1_TREE_PLANNING_KEYS))
+    if not isinstance(planning, dict) or planning_keys not in allowed:
         raise PlanningError("invalid-catalog-entry", serviceId=service_id)
 
     def section(name: str) -> dict[str, Any]:
@@ -211,7 +215,11 @@ def manifest_from_catalog_entry(entry: Mapping[str, Any]) -> dict[str, Any]:
             "support": {"status": support.get("status"), "url": support.get("url")},
         }
     compatibility = section("odsCompatibility")
-    if planning_keys == frozenset(expected):
+    if planning_keys in {
+        frozenset(expected),
+        frozenset(_V1_TREE_PLANNING_KEYS),
+        frozenset(_V2_TREE_PLANNING_KEYS),
+    }:
         definition_source = planning.get("definitionSource")
         compose_file = planning.get("composeFile")
         catalog_source = entry.get("catalog_source", "library")
@@ -246,6 +254,7 @@ def manifest_from_catalog_entry(entry: Mapping[str, Any]) -> dict[str, Any]:
             "compose_sha256": planning.get("composeSha256"),
             "definition_source": definition_source,
             "compose_file": compose_file,
+            "source_tree_sha256": planning.get("sourceTreeSha256"),
         },
     }
 

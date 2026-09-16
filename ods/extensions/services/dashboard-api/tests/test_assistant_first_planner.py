@@ -315,6 +315,24 @@ def test_pinned_library_v2_apps_are_selectable_by_capability(
     assert definition["data"][0]["backupClass"] == "required"
 
 
+def test_full_library_tree_digest_is_bound_to_exact_plan_hash() -> None:
+    record = manifest("tree-app")
+    record["_catalog"]["source_tree_sha256"] = "sha256:" + "1" * 64
+    first = build([record], requested_services=["tree-app"])
+    definition = first["plan"]["definitions"][0]
+    assert definition["sourceTreeSha256"] == "sha256:" + "1" * 64
+
+    changed = copy.deepcopy(record)
+    changed["_catalog"]["source_tree_sha256"] = "sha256:" + "2" * 64
+    second = build([changed], requested_services=["tree-app"])
+    assert first["planHash"] != second["planHash"]
+    assert second["plan"]["definitions"][0]["sourceTreeSha256"] == "sha256:" + "2" * 64
+
+    changed["_catalog"]["source_tree_sha256"] = "invalid"
+    with pytest.raises(planner.PlanningError):
+        build([changed], requested_services=["tree-app"])
+
+
 def test_utf8_is_unescaped_and_has_one_trailing_lf() -> None:
     encoded = planner.canonical_json_bytes({"label": "café"})
     assert b"caf\xc3\xa9" in encoded

@@ -46,6 +46,17 @@ if DOCUMENT_DIGEST_SPEC is None or DOCUMENT_DIGEST_SPEC.loader is None:
 DOCUMENT_DIGEST = importlib.util.module_from_spec(DOCUMENT_DIGEST_SPEC)
 DOCUMENT_DIGEST_SPEC.loader.exec_module(DOCUMENT_DIGEST)
 
+TREE_DIGEST_PATH = (
+    Path(__file__).resolve().parent.parent / "bin/extension_library_tree_digest.py"
+)
+TREE_DIGEST_SPEC = importlib.util.spec_from_file_location(
+    "extension_library_tree_digest", TREE_DIGEST_PATH
+)
+if TREE_DIGEST_SPEC is None or TREE_DIGEST_SPEC.loader is None:
+    raise RuntimeError("Extension library tree digest module is unavailable")
+TREE_DIGEST = importlib.util.module_from_spec(TREE_DIGEST_SPEC)
+TREE_DIGEST_SPEC.loader.exec_module(TREE_DIGEST)
+
 
 class _UniqueKeyLoader(yaml.SafeLoader):
     """Safe YAML loader that rejects ambiguous duplicate mapping keys."""
@@ -242,6 +253,7 @@ def extract_entry(
 
     definition_sha256 = ""
     compose_sha256 = ""
+    source_tree_sha256 = ""
     compose_file = None
     compose_path = None
     compose_payload = None
@@ -263,6 +275,16 @@ def extract_entry(
     )
     if manifest_path is not None:
         definition_sha256 = canonical_document_sha256(manifest_path)
+        if definition_source == "library":
+            repository = Path(__file__).resolve().parents[2]
+            if manifest_path.parent.is_relative_to(repository):
+                source_tree_sha256 = TREE_DIGEST.digest_indexed_extension_tree(
+                    repository, manifest_path.parent
+                )
+            else:
+                source_tree_sha256 = TREE_DIGEST.digest_extension_tree(
+                    manifest_path.parent
+                )
         if compose_name is not None:
             compose_path = _compose_path(manifest_path, compose_name)
             if compose_path is not None:
@@ -285,6 +307,7 @@ def extract_entry(
                 "compose_sha256": compose_sha256,
                 "definition_source": definition_source,
                 "compose_file": compose_file,
+                "source_tree_sha256": source_tree_sha256,
             },
         }
     )
@@ -324,6 +347,8 @@ def extract_entry(
         "support": PLANNER.public_json_value(planning_record["support"]),
         "legacy": planning_record["legacy"],
     }
+    if planning_record["sourceTreeSha256"]:
+        planning["sourceTreeSha256"] = planning_record["sourceTreeSha256"]
     if planning_record["legacy"]:
         planning = {
             key: planning[key]
@@ -334,11 +359,13 @@ def extract_entry(
                 "odsCompatibility",
                 "definitionSha256",
                 "composeSha256",
+                "sourceTreeSha256",
                 "definitionSource",
                 "composeFile",
                 "dependsOn",
                 "legacy",
             )
+            if key in planning
         }
 
     entry = {

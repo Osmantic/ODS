@@ -426,6 +426,7 @@ def adapt_manifest(manifest: Any) -> dict[str, Any]:
             "compose_sha256",
             "definition_source",
             "compose_file",
+            "source_tree_sha256",
         }
     )
     if unknown_catalog:
@@ -438,6 +439,9 @@ def adapt_manifest(manifest: Any) -> dict[str, Any]:
     )
     compose_sha = _digest(
         catalog.get("compose_sha256", ""), "_catalog.compose_sha256", optional=True
+    )
+    source_tree_sha = _digest(
+        catalog.get("source_tree_sha256", ""), "_catalog.source_tree_sha256", optional=True
     )
     definition_source = _enum(
         catalog.get("definition_source", "library"),
@@ -489,6 +493,7 @@ def adapt_manifest(manifest: Any) -> dict[str, Any]:
             },
             "definitionSha256": definition_sha,
             "composeSha256": compose_sha,
+            "sourceTreeSha256": source_tree_sha,
             "definitionSource": definition_source,
             "composeFile": compose_file,
             "dependsOn": depends_on,
@@ -719,6 +724,7 @@ def adapt_manifest(manifest: Any) -> dict[str, Any]:
         "odsCompatibility": {"minimum": minimum, "maximum": maximum},
         "definitionSha256": definition_sha,
         "composeSha256": compose_sha,
+        "sourceTreeSha256": source_tree_sha,
         "definitionSource": definition_source,
         "composeFile": compose_file,
         "dependsOn": depends_on,
@@ -1576,6 +1582,11 @@ def build_plan(
                 "data": public_json_value(record["data"]),
                 "trust": public_json_value(record["trust"]),
                 "support": public_json_value(record["support"]),
+                **(
+                    {"sourceTreeSha256": record["sourceTreeSha256"]}
+                    if record["sourceTreeSha256"]
+                    else {}
+                ),
             }
         )
 

@@ -316,6 +316,21 @@ def test_bind_accepts_empty_present_reservation_claims():
     assert material.exclusive == ()
 
 
+def test_host_binding_preserves_library_tree_digest_and_refuses_builtin_claim():
+    stored = transaction("applying")
+    target = stored["envelope"]["plan"]["definitions"][0]
+    target["sourceTreeSha256"] = "sha256:" + "a" * 64
+    parsed = command("apply:documents", ["documents"], {"operation": INSTALL})
+    bound = lifecycle_plan.bind_lifecycle_plan(parsed, stored)
+    assert bound.plan_material.definitions[0].source_tree_sha256 == (
+        "sha256:" + "a" * 64
+    )
+
+    target["definitionSource"] = "builtin"
+    with pytest.raises(lifecycle_work.LifecycleWorkValidationError):
+        lifecycle_plan.bind_lifecycle_plan(parsed, stored)
+
+
 def test_host_binding_preserves_approved_prior_v2_data_scope_and_rejects_drift():
     stored = transaction("downloading")
     stored["envelope"]["plan"]["operations"][0]["action"] = "update"

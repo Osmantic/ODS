@@ -78,6 +78,7 @@ _LEGACY_DEFINITION_KEYS = frozenset(
 )
 _ORIGIN_DEFINITION_KEYS = frozenset({"definitionSource", "composeFile"})
 _DEFINITION_KEYS = _LEGACY_DEFINITION_KEYS | _ORIGIN_DEFINITION_KEYS
+_TREE_DEFINITION_KEYS = _DEFINITION_KEYS | {"sourceTreeSha256"}
 _IMAGE_KEYS = frozenset({"reference", "digest", "downloadBytes"})
 _BUILD_KEYS = frozenset(
     {"source", "revision", "contextDigest", "output", "downloadBytes"}
@@ -140,6 +141,7 @@ class PlannedDefinition:
     canonical_document: bytes
     host_ports: tuple[PlannedHostPort, ...] | None = None
     exclusive: tuple[str, ...] | None = None
+    source_tree_sha256: str | None = None
 
 
 @dataclass(frozen=True)
@@ -332,6 +334,7 @@ def _definition(value: Any) -> PlannedDefinition:
     if not isinstance(value, dict) or value_keys not in {
         _LEGACY_DEFINITION_KEYS,
         _DEFINITION_KEYS,
+        _TREE_DEFINITION_KEYS,
     }:
         _reject()
     service_id = _service_id(value["id"])
@@ -354,8 +357,13 @@ def _definition(value: Any) -> PlannedDefinition:
     compose_sha256 = _digest(value["composeSha256"], optional=True)
     definition_source = value.get("definitionSource")
     compose_file = _compose_file(value.get("composeFile"))
+    source_tree_sha256 = None
+    if value_keys == _TREE_DEFINITION_KEYS:
+        source_tree_sha256 = _digest(value["sourceTreeSha256"])
+        if definition_source != "library":
+            _reject()
     claims = _reservation_claims(value["resources"])
-    if value_keys == _DEFINITION_KEYS:
+    if value_keys in {_DEFINITION_KEYS, _TREE_DEFINITION_KEYS}:
         if (
             not isinstance(definition_source, str)
             or definition_source not in _DEFINITION_SOURCES
@@ -379,6 +387,7 @@ def _definition(value: Any) -> PlannedDefinition:
         compose_file=compose_file,
         host_ports=claims[0] if claims is not None else None,
         exclusive=claims[1] if claims is not None else None,
+        source_tree_sha256=source_tree_sha256,
         images=images,
         builds=builds,
         canonical_document=_canonical_document(value),
