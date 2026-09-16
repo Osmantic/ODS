@@ -614,12 +614,14 @@ def validate_records(
                         path=record.manifest_path,
                     )
 
-            for ref in collect_service_references(feature):
-                if ref not in selected_ids:
+            # Named distinctly from the `ref` ServiceRecord bound earlier in
+            # this function: these are service-id strings, not records.
+            for service_ref in collect_service_references(feature):
+                if service_ref not in selected_ids:
                     record.add_issue(
                         "error",
                         "feature-service-reference-invalid",
-                        f"feature references unknown service '{ref}'",
+                        f"feature references unknown service '{service_ref}'",
                         path=record.manifest_path,
                     )
 

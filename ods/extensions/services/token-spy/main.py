@@ -18,9 +18,11 @@ import shlex
 import tempfile
 import time
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
 
 import httpx
+
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, Security
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -136,7 +138,7 @@ COST_PER_MILLION = {
 
 SETTINGS_PATH = os.path.join(os.path.dirname(__file__), "data", "settings.json")
 
-_DEFAULT_SETTINGS = {
+_DEFAULT_SETTINGS: dict[str, Any] = {
     "session_char_limit": 200_000,
     "poll_interval_minutes": 5,
     "agents": {},
@@ -1067,7 +1069,7 @@ except json.JSONDecodeError:
 
 # Remote agents: run on different hosts, accessed via SSH.
 # No remote agents configured by default.
-REMOTE_AGENTS = {}
+REMOTE_AGENTS: dict[str, Any] = {}
 
 # Agents running local/self-hosted models ($0 cost, no cloud API).
 # These get a "LOCAL" badge and $0 cost display on the dashboard.

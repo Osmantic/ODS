@@ -24,6 +24,7 @@ observable byte-exactness of streamed bodies.
 """
 
 import asyncio
+from typing import Any
 import gzip
 import json
 import os
@@ -299,7 +300,7 @@ class TestWebSocketLane:
             pytest.skip("websockets lib unavailable; route-registered test covers lane")
 
         ready = threading.Event()
-        box = {}
+        box: dict[str, Any] = {}
 
         def run_server():
             loop = asyncio.new_event_loop()
@@ -314,7 +315,9 @@ class TestWebSocketLane:
 
             async def main():
                 srv = await websockets.serve(echo, "127.0.0.1", 0)
-                box["port"] = srv.sockets[0].getsockname()[1]
+                # websockets types `sockets` as Iterable[socket], so take the first
+                # element through an iterator rather than indexing it.
+                box["port"] = next(iter(srv.sockets)).getsockname()[1]
                 ready.set()
                 await stop.wait()
                 srv.close()
@@ -422,7 +425,7 @@ class TestWebSocketAuth:
             pytest.skip("websockets lib unavailable")
 
         ready = threading.Event()
-        box = {}
+        box: dict[str, Any] = {}
 
         def run_server():
             loop = asyncio.new_event_loop()
@@ -437,7 +440,9 @@ class TestWebSocketAuth:
 
             async def main():
                 srv = await websockets.serve(echo, "127.0.0.1", 0)
-                box["port"] = srv.sockets[0].getsockname()[1]
+                # websockets types `sockets` as Iterable[socket], so take the first
+                # element through an iterator rather than indexing it.
+                box["port"] = next(iter(srv.sockets)).getsockname()[1]
                 ready.set()
                 await stop.wait()
                 srv.close()

@@ -785,7 +785,11 @@ def main(argv: list[str]) -> int:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
     if args.format == "paths":
-        for item in payload["files"]:
+        # payload comes from render(), typed dict[str, object]; narrow the one
+        # key this branch iterates rather than loosening the whole signature.
+        files = payload["files"]
+        assert isinstance(files, list)
+        for item in files:
             print(item["path"])
     else:
         print(json.dumps(payload, indent=2, sort_keys=True))
