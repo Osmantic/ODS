@@ -273,14 +273,16 @@ def test_bundled_searxng_v2_is_the_deterministic_web_search_provider() -> None:
 
 
 @pytest.mark.parametrize(
-    ("service_id", "capability", "secrets", "image_count"),
+    ("service_id", "capability", "secrets", "image_count", "backend"),
     [
-        ("gitea", "git-hosting@1", [], 1),
-        ("miniflux", "feed-library@1", ["MINIFLUX_ADMIN_PASSWORD", "MINIFLUX_DB_PASSWORD"], 2),
+        ("gitea", "git-hosting@1", [], 1, "cpu"),
+        ("miniflux", "feed-library@1", ["MINIFLUX_ADMIN_PASSWORD", "MINIFLUX_DB_PASSWORD"], 2, "cpu"),
+        ("ollama", "ollama-api@1", [], 1, "nvidia"),
     ],
 )
 def test_pinned_library_v2_apps_are_selectable_by_capability(
-    service_id: str, capability: str, secrets: list[str], image_count: int
+    service_id: str, capability: str, secrets: list[str], image_count: int,
+    backend: str,
 ) -> None:
     library = Path(__file__).resolve().parents[3] / "library" / "services"
     record = yaml.safe_load((library / service_id / "manifest.yaml").read_text(encoding="utf-8"))
@@ -292,6 +294,7 @@ def test_pinned_library_v2_apps_are_selectable_by_capability(
     }
     state = copy.deepcopy(HOST_STATE)
     state["odsVersion"] = "2.6.0"
+    state["gpuBackend"] = backend
     policy = copy.deepcopy(POLICY)
     policy["allowExperimental"] = True
     result = build(

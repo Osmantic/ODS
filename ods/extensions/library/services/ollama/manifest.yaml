@@ -1,4 +1,6 @@
-schema_version: ods.services.v1
+schema_version: ods.services.v2
+compatibility:
+  ods_min: "2.6.0"
 
 service:
   id: ollama
@@ -12,27 +14,112 @@ service:
   external_port_default: 7804
   health: /api/tags
   type: docker
+  version: "0.5.7"
+  data_schema_version: "1"
   gpu_backends: [amd, nvidia]
   compose_file: compose.yaml
   category: optional
   depends_on: []
-  description: "Pull-and-run server for open-source large language models with simple model management."
+  description: "Optional Ollama API server; model weights are downloaded separately."
+  tags: [models, inference, local]
+  planning:
+    provides: [ollama-api@1]
+    requires: []
+    optional: []
+    conflicts: []
+    provider_priority: 0
+    requirements:
+      platforms: [linux]
+      architectures: [amd64, arm64]
+      container_runtimes: [docker]
+      gpu_backends: [amd, nvidia]
+      min_driver_version: null
+    estimates:
+      download_bytes: 2517783838
+      disk_bytes: 8589934592
+      cpu_millicores: 1000
+      ram_bytes: 2147483648
+      vram_bytes: 0
+      gpu_count: 0
+    resources:
+      host_ports:
+        - port: 7804
+          protocol: tcp
+          configuration_key: EXT_OLLAMA_PORT
+      container_ports: [11434]
+      networks: [ods-network]
+      volumes: []
+      devices: []
+      exclusive: []
+      linux_capabilities: []
+      host_permissions: [network, host-mount]
+    configuration:
+      - key: EXT_OLLAMA_PORT
+        type: integer
+        required: false
+        secret: false
+        source: user
+        restart_behavior: service
+        validation:
+          minimum: 1
+          maximum: 65535
+        default: 7804
+      - key: OLLAMA_MODEL
+        type: string
+        required: false
+        secret: false
+        source: user
+        restart_behavior: service
+        validation:
+          minLength: 1
+          maxLength: 256
+        default: llama3
+    artifacts:
+      images:
+        - reference: ollama/ollama:0.5.7
+          digest: sha256:7e672211886f8bd4448a98ed577e26c816b9e8b052112860564afaa2c105800e
+          download_bytes: 2517783838
+      builds: []
+    lifecycle:
+      health_checks: [/api/tags]
+      readiness: [healthy]
+      setup_hook: null
+      migration_hook: null
+      rollback: definition
+      timeout_seconds: 180
+    data:
+      - path: data/ollama
+        backup_class: required
+        owner: user
+        uninstall: preserve
+        purge: separate-approval
+    trust:
+      tier: bundled
+      publisher: ODS
+      definition_signature: null
+    support:
+      status: experimental
+      url: null
   env_vars:
+    - key: EXT_OLLAMA_PORT
+      required: false
+      default: "7804"
+      description: "Published loopback port for the Ollama API"
     - key: OLLAMA_MODEL
       required: false
       default: "llama3"
-      description: Default model to load on startup
+      description: "Preferred model name; this setting does not download model weights"
 
 features:
   - id: ollama-llm
     name: Ollama LLM Backend
-    description: Alternative LLM backend for running open-source models
+    description: Optional local model API after separately downloading model weights
     icon: Cpu
     category: ai
     requirements:
       services: [ollama]
       vram_gb: 8
     enabled_services_all: [ollama]
-    setup_time: ~2 minutes
+    setup_time: "Image download plus separate model setup"
     priority: 5
     gpu_backends: [amd, nvidia]

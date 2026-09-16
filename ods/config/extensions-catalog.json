@@ -1,7 +1,7 @@
 {
-  "generated_at": "2026-09-15T23:51:33Z",
+  "generated_at": "2026-09-16T00:15:44Z",
   "schema_version": "1.0.0",
-  "catalog_revision": "b1397ce2c91e63d01aaaab7ba0658aea14ee1786383e5330598ac0f7d7e6338b",
+  "catalog_revision": "3584d15aec9c5cdcdb2d7217568e093b812210fd7e1464b61ce16042dfbffec9",
   "extensions": [
     {
       "id": "aider",
@@ -3696,24 +3696,147 @@
     },
     {
       "id": "ollama",
-      "manifest_schema_version": "ods.services.v1",
+      "manifest_schema_version": "ods.services.v2",
       "planning": {
         "serviceType": "docker",
-        "version": "0.0.0-legacy",
-        "dataSchemaVersion": "legacy",
+        "version": "0.5.7",
+        "dataSchemaVersion": "1",
         "odsCompatibility": {
-          "minimum": "",
-          "maximum": ""
+          "minimum": "2.6.0",
+          "maximum": null
         },
-        "definitionSha256": "sha256:68d81fb9aa89e0076527e0ea2fcf3fb3d1f072635cc14b971dad8be4296dd801",
+        "definitionSha256": "sha256:ad9cf0bcca87c4b6155fc126e6b319511f5e540599171f10bb7b802d71d9d6f0",
         "composeSha256": "sha256:1a1070be311a2b54c5be2c03dbbd62031d2b5a3c16311d3f99782a93aaf57377",
         "definitionSource": "library",
         "composeFile": "compose.yaml",
         "dependsOn": [],
-        "legacy": true
+        "provides": [
+          "ollama-api@1"
+        ],
+        "requires": [],
+        "optional": [],
+        "conflicts": [],
+        "providerPriority": 0,
+        "requirements": {
+          "platforms": [
+            "linux"
+          ],
+          "architectures": [
+            "amd64",
+            "arm64"
+          ],
+          "containerRuntimes": [
+            "docker"
+          ],
+          "gpuBackends": [
+            "amd",
+            "nvidia"
+          ],
+          "minDriverVersion": null
+        },
+        "estimates": {
+          "downloadBytes": 2517783838,
+          "diskBytes": 8589934592,
+          "cpuMillicores": 1000,
+          "ramBytes": 2147483648,
+          "vramBytes": 0,
+          "gpuCount": 0
+        },
+        "resources": {
+          "hostPorts": [
+            {
+              "port": 7804,
+              "protocol": "tcp",
+              "configurationKey": "EXT_OLLAMA_PORT"
+            }
+          ],
+          "containerPorts": [
+            11434
+          ],
+          "networks": [
+            "ods-network"
+          ],
+          "volumes": [],
+          "devices": [],
+          "exclusive": [],
+          "linuxCapabilities": [],
+          "hostPermissions": [
+            "host-mount",
+            "network"
+          ]
+        },
+        "configuration": [
+          {
+            "key": "EXT_OLLAMA_PORT",
+            "type": "integer",
+            "required": false,
+            "secret": false,
+            "source": "user",
+            "restartBehavior": "service",
+            "validation": {
+              "minimum": 1,
+              "maximum": 65535
+            },
+            "default": 7804
+          },
+          {
+            "key": "OLLAMA_MODEL",
+            "type": "string",
+            "required": false,
+            "secret": false,
+            "source": "user",
+            "restartBehavior": "service",
+            "validation": {
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "default": "llama3"
+          }
+        ],
+        "artifacts": {
+          "images": [
+            {
+              "reference": "ollama/ollama:0.5.7",
+              "digest": "sha256:7e672211886f8bd4448a98ed577e26c816b9e8b052112860564afaa2c105800e",
+              "downloadBytes": 2517783838
+            }
+          ],
+          "builds": []
+        },
+        "lifecycle": {
+          "healthChecks": [
+            "/api/tags"
+          ],
+          "readiness": [
+            "healthy"
+          ],
+          "setupHook": null,
+          "migrationHook": null,
+          "rollback": "definition",
+          "timeoutSeconds": 180
+        },
+        "data": [
+          {
+            "path": "data/ollama",
+            "backupClass": "required",
+            "owner": "user",
+            "uninstall": "preserve",
+            "purge": "separate-approval"
+          }
+        ],
+        "trust": {
+          "tier": "bundled",
+          "publisher": "ODS",
+          "definitionSignature": null
+        },
+        "support": {
+          "status": "experimental",
+          "url": null
+        },
+        "legacy": false
       },
       "name": "Ollama",
-      "description": "Pull-and-run server for open-source large language models with simple model management.",
+      "description": "Optional Ollama API server; model weights are downloaded separately.",
       "category": "optional",
       "gpu_backends": [
         "amd",
@@ -3726,18 +3849,28 @@
       "health_endpoint": "/api/tags",
       "env_vars": [
         {
+          "key": "EXT_OLLAMA_PORT",
+          "required": false,
+          "default": "7804",
+          "description": "Published loopback port for the Ollama API"
+        },
+        {
           "key": "OLLAMA_MODEL",
           "required": false,
           "default": "llama3",
-          "description": "Default model to load on startup"
+          "description": "Preferred model name; this setting does not download model weights"
         }
       ],
-      "tags": [],
+      "tags": [
+        "models",
+        "inference",
+        "local"
+      ],
       "features": [
         {
           "id": "ollama-llm",
           "name": "Ollama LLM Backend",
-          "description": "Alternative LLM backend for running open-source models",
+          "description": "Optional local model API after separately downloading model weights",
           "icon": "Cpu",
           "category": "ai",
           "requirements": {
@@ -3749,7 +3882,7 @@
           "enabled_services_all": [
             "ollama"
           ],
-          "setup_time": "~2 minutes",
+          "setup_time": "Image download plus separate model setup",
           "priority": 5,
           "gpu_backends": [
             "amd",
