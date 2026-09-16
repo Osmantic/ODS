@@ -36,16 +36,44 @@ const baseSummary = (overrides = {}) => ({
 
 const baseFeature = { category: 'tools', icon: 'Box' }
 
-const installFetchMock = (catalogFixture) => {
+const installFetchMock = (catalogFixture, templates = []) => {
   const fetchMock = vi.fn(async (url) => {
     const u = String(url)
     if (u.includes('/api/extensions/catalog')) return makeJsonResponse(catalogFixture)
-    if (u.includes('/api/templates')) return makeJsonResponse({ templates: [] })
+    if (u.includes('/api/templates')) return makeJsonResponse({ templates })
     throw new Error(`Unmocked fetch: ${u}`)
   })
   vi.stubGlobal('fetch', fetchMock)
   return fetchMock
 }
+
+it('hides unsupported extensions from results, categories and counts without hiding unhealthy services',async()=>{
+  installFetchMock({agent_available:true,extensions:[
+    {id:'supported',name:'Supported',status:'unhealthy',source:'user',features:[baseFeature]},
+    {id:'unsupported',name:'Unsupported device',status:'incompatible',features:[{category:'hidden-category'}]},
+    {id:'unsupported-flag',name:'Unsupported flag',status:'not_installed',compatible:false,features:[]},
+  ],summary:baseSummary({total:3})})
+  render(<Extensions compact/> )
+  expect(await screen.findByText('Supported')).toBeVisible()
+  expect(screen.queryByText('Unsupported device')).toBeNull()
+  expect(screen.queryByText('Unsupported flag')).toBeNull()
+  expect(screen.queryByRole('option',{name:'hidden-category'})).toBeNull()
+  expect(screen.getByRole('button',{name:'All 1'})).toBeVisible()
+})
+
+it('hides collections that require unsupported services while retaining usable collections', async () => {
+  installFetchMock({agent_available:true,extensions:[
+    {id:'unsupported',name:'GPU unavailable',status:'incompatible',features:[]},
+    {id:'supported',name:'Ready to install',status:'not_installed',features:[]},
+  ]}, [
+    {id:'blocked',name:'Blocked collection',services:['unsupported']},
+    {id:'available',name:'Available collection',services:['supported']},
+  ])
+  render(<Extensions compact/>)
+  fireEvent.click(await screen.findByRole('button',{name:'Starter collections 1'}))
+  expect(screen.getByText('Available collection')).toBeVisible()
+  expect(screen.queryByText('Blocked collection')).toBeNull()
+})
 
 // Find the per-extension toggle <button> by its uniquely-shaped width class.
 // L680 uses Tailwind arbitrary values: `inline-flex h-[18px] w-[32px] ...`
@@ -65,6 +93,42 @@ afterEach(() => {
 })
 
 describe('Extensions page — unhealthy + install derivations', () => {
+  it('shows starter collections as a matching paginated library with an explicit preview', async () => {
+    vi.stubGlobal('fetch', vi.fn(async url => String(url).includes('/api/templates')
+      ? makeJsonResponse({templates:Array.from({length:8}, (_,index) => ({id:`collection-${index}`,name:`Collection ${index}`,description:'A useful collection',services:['a','b']}))})
+      : makeJsonResponse({extensions:[],summary:baseSummary({total:0}),agent_available:true})))
+    render(<Extensions compact/>)
+    fireEvent.click(await screen.findByRole('button',{name:'Starter collections 8'}))
+    expect(screen.getByText('Collection 0')).toBeVisible()
+    expect(screen.queryByText('Collection 7')).toBeNull()
+    fireEvent.click(screen.getByRole('button',{name:'Page 2'}))
+    expect(screen.getByText('Collection 7')).toBeVisible()
+    fireEvent.change(screen.getByLabelText('Search extensions'),{target:{value:'Collection 0'}})
+    expect(screen.getByText('Collection 0')).toBeVisible()
+    expect(screen.queryByRole('button',{name:'Page 2'})).toBeNull()
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+  it('filters the compact library through its views without a full status legend', async () => {
+    installFetchMock({extensions:[{id:'installed',name:'Installed tool',status:'disabled',source:'user',features:[baseFeature]},{id:'new',name:'New tool',status:'not_installed',source:'user',installable:true,features:[baseFeature]}],summary:baseSummary({total:2,not_installed:1}),agent_available:true})
+    render(<Extensions compact />)
+    await screen.findByText('New tool')
+    expect(screen.queryByText('Status Legend')).toBeNull()
+    fireEvent.click(screen.getByRole('button',{name:'Installed 1'}))
+    expect(screen.queryByText('New tool')).toBeNull()
+    expect(screen.getByText('Installed tool')).toBeVisible()
+    fireEvent.click(screen.getByRole('button',{name:'Available 1'}))
+    expect(screen.getByText('New tool')).toBeVisible()
+    expect(screen.queryByText('Installed tool')).toBeNull()
+  })
+  it('keeps search and select filters usable in the compact portal panel', async () => {
+    installFetchMock({extensions:[{id:'demo',name:'Demo extension',status:'not_installed',source:'user',installable:true,features:[baseFeature],description:'Test'}],summary:baseSummary({not_installed:1}),gpu_backend:'apple',agent_available:true})
+    render(<Extensions compact />)
+    await screen.findByText('Demo extension')
+    expect(screen.getByRole('combobox',{name:'Status'})).toBeVisible()
+    expect(screen.getByRole('combobox',{name:'Category'})).toBeVisible()
+    fireEvent.change(screen.getByLabelText('Search extensions'),{target:{value:'missing'}})
+    expect(screen.queryByText('Demo extension')).toBeNull()
+  })
   it('renders amber unhealthy badge for unhealthy user ext', async () => {
     installFetchMock({
       extensions: [

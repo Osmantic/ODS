@@ -13,7 +13,7 @@ services:
     environment:
       - TARGET_API_URL=${LLM_API_URL:-http://llama-server:8080}/v1
       - TARGET_API_KEY=${LITELLM_KEY:-${TARGET_API_KEY:-not-needed}}
-      - SHIELD_PORT=${SHIELD_PORT:-8085}
+      - SHIELD_PORT=8085
       - SHIELD_API_KEY_PATH=${SHIELD_API_KEY_PATH:-/data/shield_api_key}
       - SHIELD_API_KEY=${SHIELD_API_KEY:-}
       - PII_CACHE_ENABLED=${PII_CACHE_ENABLED:-true}
