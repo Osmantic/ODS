@@ -118,6 +118,9 @@ jobs:
       - name: Health Check Tests
         run: bash tests/test-health-check.sh
 
+      - name: Restore Safety Tests
+        run: bash tests/test-restore-stops-containers.sh
+
       - name: QR Code Helper Tests
         run: bash tests/test-qrcode-helper.sh
 
