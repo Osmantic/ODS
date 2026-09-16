@@ -259,6 +259,38 @@ class TestBuildApiStatus:
         assert result["inference"]["tokenCountMode"] == "cumulative"
         assert result["inference"]["loadedModel"] == "Test-32B"
 
+    @pytest.mark.asyncio
+    async def test_live_runtime_model_overrides_stale_configured_model(self, monkeypatch):
+        from models import BootstrapStatus, ModelInfo
+
+        monkeypatch.setattr("main.get_gpu_info", lambda: None)
+        monkeypatch.setattr("main.get_all_services", AsyncMock(return_value=[]))
+        monkeypatch.setattr(
+            "main.get_model_info",
+            lambda: ModelInfo(name="Configured-Qwen", size_gb=16.0, context_length=65536),
+        )
+        monkeypatch.setattr("main.get_bootstrap_status", lambda: BootstrapStatus(active=False))
+        monkeypatch.setattr("main.get_loaded_model", AsyncMock(return_value="Live-Ministral"))
+        monkeypatch.setattr(
+            "main.get_llama_metrics",
+            AsyncMock(return_value={"tokens_per_second": 0, "lifetime_tokens": 0}),
+        )
+        monkeypatch.setattr("main.get_llama_context_size", AsyncMock(return_value=20480))
+        monkeypatch.setattr("main.get_uptime", lambda: 0)
+        monkeypatch.setattr("main.get_cpu_metrics", lambda: {"percent": 0, "temp_c": None})
+        monkeypatch.setattr("main.get_ram_metrics", lambda: {"used_gb": 0, "total_gb": 0, "percent": 0})
+
+        result = await _build_api_status()
+
+        assert result["currentModel"] == "Live-Ministral"
+        assert result["loadedModel"] == "Live-Ministral"
+        assert result["configuredModel"] == "Configured-Qwen"
+        assert result["model"]["name"] == "Live-Ministral"
+        assert result["model"]["currentModel"] == "Live-Ministral"
+        assert result["model"]["configuredModel"] == "Configured-Qwen"
+        assert result["model"]["contextLength"] == 20480
+        assert result["inference"]["contextSize"] == 20480
+
     def test_detected_gpu_count_overrides_stale_compose_default(self, monkeypatch):
         from main import _serialize_gpu
         from models import GPUInfo
