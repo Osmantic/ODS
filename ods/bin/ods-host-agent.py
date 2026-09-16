@@ -148,6 +148,11 @@ except Exception:  # pragma: no cover - import environment dependent
     _library_application_runtime_module = None
 
 try:
+    import extension_library_configuration_runtime as _library_configuration_runtime_module
+except Exception:  # pragma: no cover - import environment dependent
+    _library_configuration_runtime_module = None
+
+try:
     import extension_resource_reservation_runtime
 except Exception:  # pragma: no cover - import environment dependent
     _resource_reservation_runtime_module = None
@@ -239,8 +244,9 @@ _data_stream_backup_runtime_binding: tuple[Path, Path, object] | None = None
 _data_stream_backup_runtime_lock = threading.Lock()
 
 # Exact SearXNG configuration publication is composed lazily from the fixed
-# install root, transaction store, and host secret custody. Only ``configure``
-# selects it; construction publishes no file and reads no secret value.
+# install root, transaction store, and host secret custody. Only its one-service
+# ``configure`` route selects it; construction publishes no file and reads no
+# secret value. Approved library configuration uses a separate pure preflight.
 _configuration_effect_runtime = None
 _configuration_effect_runtime_binding: tuple[Path, Path, object, object] | None = None
 _configuration_effect_runtime_lock = threading.Lock()
@@ -259,7 +265,8 @@ _resource_reservation_runtime_lock = threading.Lock()
 
 # General production lifecycle dispatch remains deliberately unwired.  The
 # exact ``download-and-verify`` canary, paired ``backup``/``restore`` canary,
-# receipted generic ``backup`` only, ``configure`` canary, ``stage``,
+# receipted generic ``backup`` only, exact SearXNG or approved-library
+# ``configure``, ``stage``,
 # approved library ``apply:<serviceId>``, ``reserve:<serviceId>``, and
 # ``release`` select fixed host-owned runtimes after lease admission. Generic
 # restore, unapproved apply, and verify remain unavailable.
@@ -6780,6 +6787,33 @@ def _get_extension_configuration_effect_runtime():
         return _configuration_effect_runtime
 
 
+def _get_extension_library_configuration_runtime():
+    """Compose the approved-library configuring proof without any host effect."""
+
+    if (
+        _library_configuration_runtime_module is None
+        or _AssistantFirstSecretStore is None
+    ):
+        return None
+    try:
+        transactions = _get_extension_transaction_store()
+        if transactions is None:
+            return None
+        secret_store = _AssistantFirstSecretStore(DATA_DIR)
+        return (
+            _library_configuration_runtime_module.build_library_configuration_runtime(
+                transaction_loader=transactions.read,
+                secret_status=secret_store.status,
+            )
+        )
+    except Exception as exc:
+        logger.error(
+            "Library configuration runtime construction failed (%s)",
+            type(exc).__name__,
+        )
+        return None
+
+
 def _get_extension_library_application_runtime(receipt_store, active_lease):
     """Compose one lease-bound approved library application runtime."""
 
@@ -8056,6 +8090,20 @@ class AgentHandler(BaseHTTPRequestHandler):
                         if runtime is not None:
                             dispatcher = runtime.dispatcher
                             started_observer = runtime.started_observer
+                    else:
+                        approved = getattr(
+                            _library_application_runtime_module,
+                            "APPROVED_LIBRARY_SERVICES",
+                            None,
+                        )
+                        if (
+                            type(approved) is frozenset
+                            and command.service_ids
+                            and set(command.service_ids) <= approved
+                        ):
+                            runtime = _get_extension_library_configuration_runtime()
+                            if runtime is not None:
+                                dispatcher = runtime.dispatcher
                 elif command.operation_key == "stage":
                     runtime = _get_extension_artifact_stage_runtime()
                     if runtime is not None:

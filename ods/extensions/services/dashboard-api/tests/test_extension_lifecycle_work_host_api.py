@@ -2578,6 +2578,87 @@ def test_configure_uses_closed_runtime_and_replays_once(host_server, host_reques
     assert len(calls) == 1
 
 
+def test_approved_library_configure_selects_pure_receipted_runtime(
+    host_server, host_request
+):
+    agent, _listener = host_server
+    service_ids = ["gitea", "ntfy"]
+    grant = acquire_lease(agent, host_request, service_ids)
+    request = work_request(
+        agent._extension_lifecycle_work.REQUEST_SCHEMA,
+        lease_evidence(agent, grant),
+        operation_key="configure",
+        service_ids=service_ids,
+        payload={"serviceIds": service_ids},
+    )
+    begin_receipt(agent, host_request, request)
+    calls = []
+
+    def build():
+        def dispatch(command):
+            calls.append(command)
+            return EVIDENCE_HASH
+
+        return SimpleNamespace(dispatcher=dispatch)
+
+    agent._get_extension_library_configuration_runtime = build
+    agent._extension_lifecycle_work_dispatcher = lambda _command: (
+        (_ for _ in ()).throw(AssertionError("generic received library configure"))
+    )
+
+    status, result = host_request("/v1/extension/lifecycle-work", request)
+
+    assert status == 200
+    assert result["evidenceHash"] == EVIDENCE_HASH
+    assert len(calls) == 1
+    assert calls[0].service_ids == tuple(service_ids)
+    assert calls[0].plan_material.state == "configuring"
+    replay_status, replay = host_request("/v1/extension/lifecycle-work", request)
+    assert replay_status == 200
+    assert replay == result
+    assert len(calls) == 1
+
+
+@pytest.mark.skipif(not STAGE_SUPPORTED, reason="requires POSIX owner custody")
+def test_library_configuration_runtime_factory_has_no_application_effect(host_server):
+    agent, _listener = host_server
+    applications = agent.INSTALL_DIR / ".ods-assistant-first" / "applications"
+    before = tuple(sorted(applications.iterdir())) if applications.exists() else None
+
+    runtime = agent._get_extension_library_configuration_runtime()
+
+    assert runtime is not None
+    assert callable(runtime.dispatcher)
+    after = tuple(sorted(applications.iterdir())) if applications.exists() else None
+    assert after == before
+
+
+@pytest.mark.parametrize("service_ids", [["searxng", "gitea"], ["documents"]])
+def test_non_library_configure_does_not_fall_through_to_library_runtime(
+    host_server, host_request, service_ids
+):
+    agent, _listener = host_server
+    grant = acquire_lease(agent, host_request, service_ids)
+    request = work_request(
+        agent._extension_lifecycle_work.REQUEST_SCHEMA,
+        lease_evidence(agent, grant),
+        operation_key="configure",
+        service_ids=service_ids,
+        payload={"serviceIds": service_ids},
+    )
+    agent._get_extension_library_configuration_runtime = lambda: (
+        (_ for _ in ()).throw(AssertionError("library runtime selected"))
+    )
+    agent._extension_lifecycle_work_dispatcher = lambda _command: (
+        (_ for _ in ()).throw(AssertionError("generic runtime selected"))
+    )
+
+    status, result = host_request("/v1/extension/lifecycle-work", request)
+
+    assert status == 503
+    assert result == {"error": {"code": "lifecycle-work-dispatcher-unavailable"}}
+
+
 def test_configure_started_receipt_recovers_without_redispatch(
     host_server, host_request
 ):

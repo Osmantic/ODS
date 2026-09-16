@@ -7,8 +7,7 @@ approval, rederive the configuration schema from the immutable plan, and
 verify host secret custody without reading a secret value.
 
 This module performs that binding only.  It has no filesystem, subprocess,
-Docker, Compose, network, or secret-value access and is not registered in the
-production host dispatcher.
+Docker, Compose, network, or secret-value access.
 """
 
 from __future__ import annotations
@@ -300,11 +299,33 @@ def _definition_document(definition: PlannedDefinition) -> dict[str, Any]:
 
 def _plan_contracts(
     command: Any,
+    *,
+    expected_state: str,
+    target_service_id: str | None,
 ) -> tuple[str, dict[str, dict[str, Any]], dict[str, tuple[str, ...]]]:
-    if type(command) is not LifecycleWorkCommand or len(command.service_ids) != 1:
+    if (
+        type(command) is not LifecycleWorkCommand
+        or type(command.service_ids) is not tuple
+        or any(type(item) is not str for item in command.service_ids)
+    ):
         _deny("library-configuration-command-invalid")
-    service_id = command.service_ids[0]
-    if command.operation_key != f"apply:{service_id}":
+    if expected_state == "applying" and target_service_id is None:
+        if len(command.service_ids) != 1:
+            _deny("library-configuration-command-invalid")
+        service_id = command.service_ids[0]
+        if command.operation_key != f"apply:{service_id}":
+            _deny("library-configuration-command-invalid")
+    elif expected_state == "configuring" and type(target_service_id) is str:
+        service_id = target_service_id
+        if (
+            not command.service_ids
+            or len(set(command.service_ids)) != len(command.service_ids)
+            or service_id not in command.service_ids
+            or command.operation_key != "configure"
+            or command.payload != {"serviceIds": list(command.service_ids)}
+        ):
+            _deny("library-configuration-command-invalid")
+    else:
         _deny("library-configuration-command-invalid")
     material = command.plan_material
     if (
@@ -312,7 +333,7 @@ def _plan_contracts(
         or material.schema != PLAN_MATERIAL_SCHEMA
         or material.transaction_id != command.transaction_id
         or material.plan_hash != command.plan_hash
-        or material.state != "applying"
+        or material.state != expected_state
         or material.attested_approval is not True
         or type(material.operations) is not tuple
         or type(material.definitions) is not tuple
@@ -325,6 +346,7 @@ def _plan_contracts(
     by_service: dict[str, tuple[str, ...]] = {}
     seen_services: set[str] = set()
     selected = False
+    mutable_services: list[str] = []
     for operation, definition in zip(
         material.operations, material.definitions, strict=True
     ):
@@ -337,6 +359,8 @@ def _plan_contracts(
         ):
             _deny("library-configuration-plan-mismatch")
         seen_services.add(definition.service_id)
+        if operation.action in _ACTIONS:
+            mutable_services.append(definition.service_id)
         document = _definition_document(definition)
         raw_fields = document.get("configuration")
         if type(raw_fields) is not list or len(raw_fields) > _MAX_FIELDS:
@@ -356,13 +380,16 @@ def _plan_contracts(
             if (
                 selected
                 or operation.action not in _ACTIONS
-                or command.payload
-                != {
-                    "operation": {
-                        "serviceId": service_id,
-                        "action": operation.action,
+                or (
+                    expected_state == "applying"
+                    and command.payload
+                    != {
+                        "operation": {
+                            "serviceId": service_id,
+                            "action": operation.action,
+                        }
                     }
-                }
+                )
                 or definition.service_type != "docker"
                 or definition.manifest_schema_version != "ods.services.v2"
                 or definition.definition_source != "library"
@@ -370,6 +397,10 @@ def _plan_contracts(
                 _deny("library-configuration-definition-unsupported")
             selected = True
     if not selected:
+        _deny("library-configuration-plan-mismatch")
+    if expected_state == "configuring" and command.service_ids != tuple(
+        mutable_services
+    ):
         _deny("library-configuration-plan-mismatch")
     return service_id, dict(sorted(contracts.items())), by_service
 
@@ -424,10 +455,17 @@ def bind_library_configuration(
     command: LifecycleWorkCommand,
     transaction_loader: Any,
     secret_status: Any,
+    *,
+    expected_state: str = "applying",
+    target_service_id: str | None = None,
 ) -> BoundLibraryConfiguration:
-    """Return the exact approved, secret-free configuration for one apply."""
+    """Return approved, secret-free configuration for one selected service."""
 
-    service_id, contracts, by_service = _plan_contracts(command)
+    service_id, contracts, by_service = _plan_contracts(
+        command,
+        expected_state=expected_state,
+        target_service_id=target_service_id,
+    )
     if not callable(transaction_loader):
         _fail("library-configuration-store-unavailable")
     try:
@@ -437,7 +475,7 @@ def bind_library_configuration(
     if (
         type(transaction) is not dict
         or transaction.get("transactionId") != command.transaction_id
-        or transaction.get("state") != "applying"
+        or transaction.get("state") != expected_state
         or type(transaction.get("envelope")) is not dict
         or transaction["envelope"].get("planHash") != command.plan_hash
         or type(transaction.get("approval")) is not dict
