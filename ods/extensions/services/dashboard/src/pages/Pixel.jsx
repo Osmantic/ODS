@@ -6,6 +6,7 @@ import {usePixelAutoScroll} from '../lib/usePixelAutoScroll'
 import remarkGfm from 'remark-gfm'
 import rehypeHighlight from 'rehype-highlight'
 import { Link } from 'react-router-dom'
+import { getSystemRules } from '../lib/pixelSystemRules'
 import PixelAdvice from '../components/PixelAdvice.jsx'
 import PixelMascot from '../components/PixelMascot.jsx'
 import UserAvatar from '../components/UserAvatar'
@@ -809,6 +810,8 @@ export default function Pixel({ systemStatus = null }) {
     let latestAssistantText = ''
 
     async function streamAttempt(chatId, attemptConversation) {
+      const customRules = getSystemRules()
+      const payloadMessages = customRules ? [{role: 'system', content: customRules}, ...attemptConversation] : attemptConversation
       let reader
       let assistantText = ''
       let receivedDone = false
@@ -835,7 +838,7 @@ export default function Pixel({ systemStatus = null }) {
         const response = await fetch('/api/pixel/chat/stream', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ chat_id: chatId, request_id: requestId, messages: attemptConversation }),
+          body: JSON.stringify({ chat_id: chatId, request_id: requestId, messages: payloadMessages }),
           signal: controller.signal,
         })
         if (!isCurrentTurn()) return { kind: 'obsolete' }
@@ -1261,6 +1264,15 @@ export default function Pixel({ systemStatus = null }) {
             >
               <span className="truncate text-theme-text-secondary">{activeModel}</span>
             </div>
+          )}
+          {getSystemRules() && (
+            <Link
+              to="/settings"
+              className="hidden min-w-0 items-center rounded-md border border-theme-border px-2 py-1.5 font-mono text-[10px] text-theme-accent sm:flex transition hover:bg-theme-surface-hover"
+              title="Global system rules are active for this conversation"
+            >
+              <span className="truncate">⚙️ Custom Rules Active</span>
+            </Link>
           )}
           <Link
             to="/models"
