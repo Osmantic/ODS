@@ -600,6 +600,18 @@ extensions-library apply set; it has not qualified arbitrary extensions.
 The production Dashboard executor remains disabled, so this is not yet a
 working conversational install or recovery journey.
 
+Reconciliation observation can now classify an absent pilot application after
+an exact completed `compensate:<serviceId>` receipt. It rebinds that receipt to
+the original approved operation and application identity, and double-samples
+the receipt with current active files (including the generated override),
+record, and all containers in the fixed Compose project under the same lease.
+A completed apply with no compensation proof remains drift; a started-only
+compensation is not accepted as completion, but a still-fully-applied app
+remains observable for safe compensation replay. This is an end-state proof, not a
+claim that the compensation command alone caused every disappearance. The
+mutating compensation dispatcher and production Dashboard executor remain
+disabled pending their separate recovery qualification.
+
 ## Evidence boundary
 
 The source contract checks resolver ordering, the exact candidate service set,

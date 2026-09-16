@@ -309,11 +309,29 @@ def _current_containers(
             ],
         )
     )
-    if not (by_identity | by_compose) <= names.keys():
+    # A Compose application may contain dependency services whose Compose
+    # service label is not the requested extension ID.  Keep the whole fixed
+    # project in scope even after its active record has been removed during
+    # compensation, so an orphan dependency cannot masquerade as ABSENT.
+    by_project = _ids(
+        _output(
+            runner,
+            [
+                "docker",
+                "ps",
+                "-aq",
+                "--no-trunc",
+                "--filter",
+                f"label=com.docker.compose.project=ods-af-{service_id}",
+            ],
+        )
+    )
+    if not (by_identity | by_compose | by_project) <= names.keys():
         _fail("application-evidence-docker-drift")
     chosen = (
         by_identity
         | by_compose
+        | by_project
         | {
             container_id
             for container_id, name in names.items()
@@ -435,23 +453,39 @@ class ApplicationObservationAdapter:
             snapshot = self._receipts.snapshot(
                 command.transaction_id, command.operation_key
             )
+            compensation_key = f"compensate:{identity.service_id}"
+            compensation = (
+                self._receipts.snapshot(command.transaction_id, compensation_key)
+                if bound.plan_material.state == "reconciling"
+                else None
+            )
             expected_names = () if record is None else record.expected_containers
             first_files = _current_files(self._root, identity.service_id)
+            first_override = _current_override(self._root, identity.service_id)
             first_containers = _current_containers(
                 identity.service_id, expected_names, self._docker
             )
             second_files = _current_files(self._root, identity.service_id)
+            second_override = _current_override(self._root, identity.service_id)
             second_containers = _current_containers(
                 identity.service_id, expected_names, self._docker
             )
             if (
                 first_files != second_files
+                or first_override != second_override
                 or first_containers != second_containers
                 or self._records.snapshot(identity.service_id) != record
                 or self._receipts.snapshot(
                     command.transaction_id, command.operation_key
                 )
                 != snapshot
+                or (
+                    bound.plan_material.state == "reconciling"
+                    and self._receipts.snapshot(
+                        command.transaction_id, compensation_key
+                    )
+                    != compensation
+                )
                 or self._lease() is not True
             ):
                 _fail("application-evidence-current-drift")
@@ -470,6 +504,8 @@ class ApplicationObservationAdapter:
                     receipt_snapshot=snapshot,
                     topology="docker",
                     docker_available=True,
+                    compensation_snapshot=compensation,
+                    active_override_digest=first_override,
                 ),
             )
         except ApplicationObservationError:

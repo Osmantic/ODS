@@ -339,6 +339,45 @@ def _failed_snapshot(
     )
 
 
+def _compensation_snapshot(
+    identity: app_id.ApplicationIdentity | None = None,
+) -> receipts_mod.LifecycleSnapshot:
+    if identity is None:
+        identity = _get_identity()
+    operation_key = f"compensate:{identity.service_id}"
+    command = _command(
+        operation_key,
+        [identity.service_id],
+        {"operation": {"serviceId": identity.service_id, "action": identity.action}},
+    )
+    started = receipts_mod.StartedReceipt(
+        transaction_id=identity.transaction_id,
+        plan_hash=identity.plan_sha256,
+        operation_key=operation_key,
+        request_hash=command.request_hash,
+        service_ids=(identity.service_id,),
+        event_hash="b" * 64,
+    )
+    terminal = receipts_mod.TerminalReceipt(
+        transaction_id=identity.transaction_id,
+        plan_hash=identity.plan_sha256,
+        operation_key=operation_key,
+        request_hash=command.request_hash,
+        service_ids=(identity.service_id,),
+        outcome="completed",
+        evidence_hash=identity.identity_sha256,
+        started_event_hash=started.event_hash,
+        event_hash="d" * 64,
+    )
+    return receipts_mod.LifecycleSnapshot(
+        transaction_id=identity.transaction_id,
+        operation_key=operation_key,
+        state="completed",
+        started_receipt=started,
+        terminal_receipt=terminal,
+    )
+
+
 def _build_evidence(
     record: dict[str, Any] | None = None,
     def_digest: str | None = None,
@@ -348,6 +387,8 @@ def _build_evidence(
     snapshot: receipts_mod.LifecycleSnapshot | None = None,
     topology: str = "docker",
     docker_available: bool = True,
+    compensation: receipts_mod.LifecycleSnapshot | None = None,
+    override_digest: str | None = None,
 ) -> obs_mod.CurrentEvidence:
     if snapshot is None:
         snapshot = _absent_snapshot()
@@ -360,6 +401,8 @@ def _build_evidence(
         receipt_snapshot=snapshot,
         topology=topology,
         docker_available=docker_available,
+        compensation_snapshot=compensation,
+        active_override_digest=override_digest,
     )
 
 
@@ -539,6 +582,130 @@ def test_completed_receipt_no_mutation_is_drift():
     with pytest.raises(obs_mod.ApplicationObservationError) as exc:
         obs_mod.observe_application(cmd, evidence)
     assert exc.value.code == "completed-receipt-no-mutation-drift"
+
+
+def test_completed_apply_and_exact_completed_compensation_is_absent():
+    identity = _get_identity()
+    cmd = _bound_command(state="reconciling")
+    evidence = _build_evidence(
+        snapshot=_completed_snapshot(identity),
+        compensation=_compensation_snapshot(identity),
+    )
+    result = obs_mod.observe_application(cmd, evidence)
+    assert result.classification == "ABSENT"
+    assert result.identity_sha256 == identity.identity_sha256
+
+
+@pytest.mark.parametrize("field", ["request_hash", "plan_hash", "evidence_hash"])
+def test_compensation_receipt_must_match_exact_plan_and_identity(field):
+    identity = _get_identity()
+    cmd = _bound_command(state="reconciling")
+    snapshot = _compensation_snapshot(identity)
+    if field == "evidence_hash":
+        snapshot = replace(
+            snapshot,
+            terminal_receipt=replace(snapshot.terminal_receipt, evidence_hash="0" * 64),
+        )
+    else:
+        snapshot = replace(
+            snapshot,
+            started_receipt=replace(
+                snapshot.started_receipt, **{field: "0" * 64}
+            ),
+        )
+    evidence = _build_evidence(
+        snapshot=_completed_snapshot(identity), compensation=snapshot
+    )
+    with pytest.raises(obs_mod.ApplicationObservationError):
+        obs_mod.observe_application(cmd, evidence)
+
+
+def test_started_compensation_is_not_proof_of_absence():
+    identity = _get_identity()
+    snapshot = _compensation_snapshot(identity)
+    snapshot = replace(snapshot, state="started", terminal_receipt=None)
+    evidence = _build_evidence(
+        snapshot=_completed_snapshot(identity), compensation=snapshot
+    )
+    with pytest.raises(obs_mod.ApplicationObservationError) as exc:
+        obs_mod.observe_application(_bound_command(state="reconciling"), evidence)
+    assert exc.value.code == "compensation-receipt-incomplete"
+
+
+def test_started_compensation_does_not_hide_fully_applied_app():
+    identity = _get_identity()
+    compensation = _compensation_snapshot(identity)
+    compensation = replace(compensation, state="started", terminal_receipt=None)
+    evidence = _build_evidence(
+        record=_build_canonical_record(identity),
+        def_digest=DEFINITION_SHA,
+        compose_digest=COMPOSE_SHA,
+        config_digest=CONFIG_SHA,
+        containers=tuple(
+            _container_observation(name, identity=identity)
+            for name in CONTAINER_NAMES
+        ),
+        snapshot=_completed_snapshot(identity),
+        compensation=compensation,
+    )
+    result = obs_mod.observe_application(
+        _bound_command(state="reconciling"), evidence
+    )
+    assert result.classification == "APPLIED"
+
+
+def test_compensation_cannot_launder_wrong_completed_apply_evidence():
+    identity = _get_identity()
+    apply_snapshot = _completed_snapshot(identity)
+    apply_snapshot = replace(
+        apply_snapshot,
+        terminal_receipt=replace(
+            apply_snapshot.terminal_receipt, evidence_hash="0" * 64
+        ),
+    )
+    evidence = _build_evidence(
+        snapshot=apply_snapshot,
+        compensation=_compensation_snapshot(identity),
+    )
+    with pytest.raises(obs_mod.ApplicationObservationError) as exc:
+        obs_mod.observe_application(_bound_command(state="reconciling"), evidence)
+    assert exc.value.code == "compensation-apply-evidence-mismatch"
+
+
+def test_compensated_app_with_remaining_override_is_not_absent():
+    identity = _get_identity()
+    evidence = _build_evidence(
+        snapshot=_completed_snapshot(identity),
+        compensation=_compensation_snapshot(identity),
+        override_digest=COMPOSE_SHA,
+    )
+    with pytest.raises(obs_mod.ApplicationObservationError):
+        obs_mod.observe_application(_bound_command(state="reconciling"), evidence)
+
+
+def test_orphaned_override_alone_blocks_absent():
+    evidence = _build_evidence(
+        snapshot=_started_snapshot(), override_digest=COMPOSE_SHA
+    )
+    with pytest.raises(obs_mod.ApplicationObservationError) as exc:
+        obs_mod.observe_application(_bound_command(), evidence)
+    assert exc.value.code == "applied-record-required"
+
+
+def test_completed_compensation_with_remaining_app_is_drift():
+    identity = _get_identity()
+    evidence = _build_evidence(
+        record=_build_canonical_record(identity),
+        def_digest=DEFINITION_SHA,
+        compose_digest=COMPOSE_SHA,
+        config_digest=CONFIG_SHA,
+        containers=tuple(_container_observation(name, identity=identity) for name in CONTAINER_NAMES),
+        snapshot=_completed_snapshot(identity),
+        compensation=_compensation_snapshot(identity),
+    )
+    with pytest.raises(obs_mod.ApplicationObservationError) as exc:
+        obs_mod.observe_application(_bound_command(state="reconciling"), evidence)
+    assert exc.value.code == "compensated-application-reappeared"
 
 
 # ===================================================================

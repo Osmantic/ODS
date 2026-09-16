@@ -30,11 +30,20 @@ NAMES = ("documents-api", "documents-worker")
 
 
 class FakeDocker:
-    def __init__(self, identity, *, containers=True, drift=False, unavailable=False):
+    def __init__(
+        self,
+        identity,
+        *,
+        containers=True,
+        drift=False,
+        unavailable=False,
+        orphan_project=False,
+    ):
         self.labels = identity_mod.identity_labels(identity)
         self.containers = containers
         self.drift = drift
         self.unavailable = unavailable
+        self.orphan_project = orphan_project
         self.calls: list[tuple[str, ...]] = []
         self.rounds = 0
 
@@ -44,7 +53,9 @@ class FakeDocker:
             return subprocess.CompletedProcess(argv, 1, b"", b"no daemon")
         if argv[1:3] == ["ps", "-a"]:
             self.rounds += 1
-            if not self.containers:
+            if self.orphan_project:
+                output = f"{IDS[0]} documents-db\n".encode()
+            elif not self.containers:
                 output = b""
             else:
                 output = "".join(
@@ -53,17 +64,34 @@ class FakeDocker:
             if self.drift and self.rounds == 2:
                 output = b""
         elif argv[1:3] == ["ps", "-aq"]:
-            output = (
-                b"" if not self.containers else (IDS[0] + "\n" + IDS[1] + "\n").encode()
-            )
+            if self.orphan_project:
+                output = (
+                    (IDS[0] + "\n").encode()
+                    if argv[-1] == "label=com.docker.compose.project=ods-af-documents"
+                    else b""
+                )
+            else:
+                output = (
+                    b"" if not self.containers else (IDS[0] + "\n" + IDS[1] + "\n").encode()
+                )
         elif argv[1] == "inspect":
             output = "".join(
                 json.dumps(
                     {
                         "Id": container_id,
-                        "Name": "/" + NAMES[IDS.index(container_id)],
+                        "Name": (
+                            "/documents-db"
+                            if self.orphan_project
+                            else "/" + NAMES[IDS.index(container_id)]
+                        ),
                         "State": {"Status": "running", "Health": {"Status": "healthy"}},
-                        "Config": {"Labels": self.labels},
+                        "Config": {
+                            "Labels": (
+                                {"com.docker.compose.project": "ods-af-documents"}
+                                if self.orphan_project
+                                else self.labels
+                            )
+                        },
                     }
                 )
                 + "\n"
@@ -84,13 +112,33 @@ class FakeRecords:
 
 
 class FakeReceipts:
-    def __init__(self, snapshot):
+    def __init__(self, snapshot, compensation=None, *, drift_compensation=False):
         self.value = snapshot
+        self.compensation = compensation
+        self.drift_compensation = drift_compensation
+        self.compensation_reads = 0
 
     def snapshot(self, transaction_id: str, operation_key: str):
         assert transaction_id == fixtures.TRANSACTION_ID
-        assert operation_key == f"apply:{fixtures.SERVICE_ID}"
-        return self.value
+        if operation_key == f"apply:{fixtures.SERVICE_ID}":
+            return self.value
+        assert operation_key == f"compensate:{fixtures.SERVICE_ID}"
+        self.compensation_reads += 1
+        if self.drift_compensation and self.compensation_reads == 2:
+            return fixtures.receipts_mod.LifecycleSnapshot(
+                transaction_id=fixtures.TRANSACTION_ID,
+                operation_key=operation_key,
+                state="absent",
+                started_receipt=None,
+                terminal_receipt=None,
+            )
+        return self.compensation or fixtures.receipts_mod.LifecycleSnapshot(
+            transaction_id=fixtures.TRANSACTION_ID,
+            operation_key=operation_key,
+            state="absent",
+            started_receipt=None,
+            terminal_receipt=None,
+        )
 
 
 def _installed(tmp_path: Path):
@@ -166,6 +214,85 @@ def test_reconciling_plan_observes_prior_apply_without_reenabling_effect(tmp_pat
     assert adapter(command).classification == "APPLIED"
     with pytest.raises(identity_mod.ApplicationIdentityError):
         identity_mod.produce_application_identity(recovering)
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="POSIX host evidence only")
+def test_completed_compensation_and_current_absence_are_observed_together(tmp_path):
+    root, command, bound, identity, _record, _receipt = _installed(tmp_path)
+    for name in ("manifest.yaml", "compose.yaml", "configuration.json"):
+        (root / name).unlink()
+    recovering = replace(
+        bound, plan_material=replace(bound.plan_material, state="reconciling")
+    )
+    receipts = FakeReceipts(
+        fixtures._completed_snapshot(identity),
+        fixtures._compensation_snapshot(identity),
+    )
+    adapter = adapter_mod.ApplicationObservationAdapter(
+        tmp_path,
+        FakeRecords(None),
+        receipts,
+        lambda _command: recovering,
+        lambda: True,
+        FakeDocker(identity, containers=False),
+    )
+    assert adapter(command).classification == "ABSENT"
+    assert receipts.compensation_reads == 2
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="POSIX host evidence only")
+def test_changed_compensation_receipt_refuses_absence(tmp_path):
+    root, command, bound, identity, _record, _receipt = _installed(tmp_path)
+    for name in ("manifest.yaml", "compose.yaml", "configuration.json"):
+        (root / name).unlink()
+    recovering = replace(
+        bound, plan_material=replace(bound.plan_material, state="reconciling")
+    )
+    receipts = FakeReceipts(
+        fixtures._completed_snapshot(identity),
+        fixtures._compensation_snapshot(identity),
+        drift_compensation=True,
+    )
+    adapter = adapter_mod.ApplicationObservationAdapter(
+        tmp_path,
+        FakeRecords(None),
+        receipts,
+        lambda _command: recovering,
+        lambda: True,
+        FakeDocker(identity, containers=False),
+    )
+    with pytest.raises(adapter_mod.ApplicationEvidenceError) as error:
+        adapter(command)
+    assert error.value.code == "application-evidence-current-drift"
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="POSIX host evidence only")
+def test_orphan_dependency_in_compose_project_blocks_compensated_absence(tmp_path):
+    root, command, bound, identity, _record, _receipt = _installed(tmp_path)
+    for name in ("manifest.yaml", "compose.yaml", "configuration.json"):
+        (root / name).unlink()
+    recovering = replace(
+        bound, plan_material=replace(bound.plan_material, state="reconciling")
+    )
+    docker = FakeDocker(identity, containers=False, orphan_project=True)
+    adapter = adapter_mod.ApplicationObservationAdapter(
+        tmp_path,
+        FakeRecords(None),
+        FakeReceipts(
+            fixtures._completed_snapshot(identity),
+            fixtures._compensation_snapshot(identity),
+        ),
+        lambda _command: recovering,
+        lambda: True,
+        docker,
+    )
+    with pytest.raises(fixtures.obs_mod.ApplicationObservationError) as error:
+        adapter(command)
+    assert error.value.code == "compensated-application-reappeared"
+    assert any(
+        "label=com.docker.compose.project=ods-af-documents" in call
+        for call in docker.calls
+    )
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="POSIX host evidence only")

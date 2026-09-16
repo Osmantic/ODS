@@ -20,7 +20,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from extension_application_identity import (
@@ -37,6 +37,7 @@ from extension_lifecycle_receipts import (
     TerminalReceipt,
 )
 from extension_lifecycle_work import (
+    REQUEST_SCHEMA,
     LifecycleWorkCommand,
     LifecycleWorkError,
 )
@@ -374,6 +375,8 @@ class CurrentEvidence:
     - ``active_config_digest``: actual configuration sha256 or ``None`` (absent).
     - ``container_observations``: zero or more strict container observations.
     - ``receipt_snapshot``: ``LifecycleSnapshot`` for the exact apply operation.
+    - ``compensation_snapshot``: optional exact compensate receipt during recovery.
+    - ``active_override_digest``: generated Compose override, if present.
     - ``topology``: the exact supported topology marker (currently ``docker``).
     - ``docker_available``: whether Docker/probe was reachable.
     """
@@ -386,6 +389,8 @@ class CurrentEvidence:
     receipt_snapshot: LifecycleSnapshot
     topology: str
     docker_available: bool
+    compensation_snapshot: LifecycleSnapshot | None = None
+    active_override_digest: str | None = None
 
 
 def _validate_current_evidence(evidence: Any) -> CurrentEvidence:
@@ -428,6 +433,11 @@ def _validate_current_evidence(evidence: Any) -> CurrentEvidence:
         if not isinstance(evidence.active_config_digest, str):
             _bad("digest-type-confused")
         if _DIGEST_RE.fullmatch(evidence.active_config_digest) is None:
+            _bad("digest-format-invalid")
+    if evidence.active_override_digest is not None:
+        if type(evidence.active_override_digest) is not str:
+            _bad("digest-type-confused")
+        if _DIGEST_RE.fullmatch(evidence.active_override_digest) is None:
             _bad("digest-format-invalid")
 
     # container_observations validation
@@ -473,6 +483,10 @@ def _validate_current_evidence(evidence: Any) -> CurrentEvidence:
     # receipt_snapshot validation
     if not isinstance(evidence.receipt_snapshot, LifecycleSnapshot):
         _bad("receipt-snapshot-type-invalid")
+    if evidence.compensation_snapshot is not None and not isinstance(
+        evidence.compensation_snapshot, LifecycleSnapshot
+    ):
+        _bad("compensation-snapshot-type-invalid")
 
     if not isinstance(evidence.topology, str) or evidence.topology != _SUPPORTED_TOPOLOGY:
         _bad("topology-unsupported")
@@ -490,6 +504,8 @@ def _validate_current_evidence(evidence: Any) -> CurrentEvidence:
         receipt_snapshot=evidence.receipt_snapshot,
         topology=evidence.topology,
         docker_available=evidence.docker_available,
+        compensation_snapshot=evidence.compensation_snapshot,
+        active_override_digest=evidence.active_override_digest,
     )
 
 
@@ -580,6 +596,79 @@ def _validate_receipt_snapshot(
         _bad("receipt-terminal-chain-invalid")
 
 
+def _validate_completed_compensation(
+    command: LifecycleWorkCommand,
+    identity: ApplicationIdentity,
+    evidence: CurrentEvidence,
+) -> bool:
+    """Prove an exact completed compensation, not merely a vanished app.
+
+    The host must collect this receipt and current state twice under the same
+    transaction-wide lease.  This is an end-state proof, not a claim that the
+    compensation command alone caused every resource to disappear.
+    """
+    snapshot = evidence.compensation_snapshot
+    if snapshot is None:
+        return False
+    if (
+        not isinstance(command.plan_material, LifecyclePlanMaterial)
+        or command.plan_material.state != "reconciling"
+    ):
+        _bad("compensation-receipt-invalid")
+    operation_key = f"compensate:{identity.service_id}"
+    unsigned = {
+        "schema": REQUEST_SCHEMA,
+        "transactionId": command.transaction_id,
+        "planHash": command.plan_hash,
+        "operationKey": operation_key,
+        "serviceIds": [identity.service_id],
+        "payload": command.payload,
+    }
+    try:
+        request_hash = hashlib.sha256(
+            json.dumps(
+                unsigned,
+                ensure_ascii=False,
+                allow_nan=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+    except (TypeError, ValueError, UnicodeError):
+        _bad("compensation-receipt-invalid")
+    compensated_command = replace(
+        command, operation_key=operation_key, request_hash=request_hash
+    )
+    compensated_identity = replace(identity, request_sha256=request_hash)
+    _validate_receipt_snapshot(snapshot, compensated_command, compensated_identity)
+    if snapshot.state in {"absent", "started", "failed"}:
+        return False
+    started = snapshot.started_receipt
+    terminal = snapshot.terminal_receipt
+    if snapshot.state != "completed" or evidence.receipt_snapshot.state not in {
+        "started", "completed"
+    }:
+        _bad("compensation-receipt-invalid")
+    apply_terminal = evidence.receipt_snapshot.terminal_receipt
+    if (
+        evidence.receipt_snapshot.state == "completed"
+        and (
+            not isinstance(apply_terminal, TerminalReceipt)
+            or apply_terminal.evidence_hash != identity.identity_sha256
+        )
+    ):
+        _bad("compensation-apply-evidence-mismatch")
+    assert isinstance(started, StartedReceipt)
+    assert isinstance(terminal, TerminalReceipt)
+    if (
+        terminal.outcome != "completed"
+        or terminal.evidence_hash != identity.identity_sha256
+        or terminal.started_event_hash != started.event_hash
+    ):
+        _bad("compensation-receipt-invalid")
+    return True
+
+
 def _all_mutations_absent(evidence: CurrentEvidence) -> bool:
     """Check if every current mutation source is absent."""
     return (
@@ -587,6 +676,7 @@ def _all_mutations_absent(evidence: CurrentEvidence) -> bool:
         and evidence.active_definition_digest is None
         and evidence.active_compose_digest is None
         and evidence.active_config_digest is None
+        and evidence.active_override_digest is None
         and len(evidence.container_observations) == 0
     )
 
@@ -598,6 +688,7 @@ def _any_mutation_present(evidence: CurrentEvidence) -> bool:
         or evidence.active_definition_digest is not None
         or evidence.active_compose_digest is not None
         or evidence.active_config_digest is not None
+        or evidence.active_override_digest is not None
         or len(evidence.container_observations) > 0
     )
 
@@ -615,6 +706,22 @@ def _classify_absent(
     A completed terminal receipt with no current mutation is drift -> error.
     """
     snapshot = evidence.receipt_snapshot
+    compensated = _validate_completed_compensation(command, identity, evidence)
+
+    if (
+        evidence.compensation_snapshot is not None
+        and evidence.compensation_snapshot.state in {"started", "failed"}
+    ):
+        _bad("compensation-receipt-incomplete")
+
+    if compensated:
+        return ObservationResult(
+            service_id=identity.service_id,
+            classification="ABSENT",
+            identity_sha256=identity.identity_sha256,
+            record_sha256=None,
+            containers=(),
+        )
 
     if snapshot.state == "absent":
         # No receipts, no mutations: clean ABSENT
@@ -656,6 +763,8 @@ def _classify_applied(
     - If completed, terminal evidence_hash == application identity SHA-256.
     """
     snapshot = evidence.receipt_snapshot
+    if _validate_completed_compensation(command, identity, evidence):
+        _bad("compensated-application-reappeared")
 
     # Must have active record
     if evidence.active_record is None:
