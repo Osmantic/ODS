@@ -46,7 +46,7 @@ from extension_lifecycle_work import (
 # Constants
 # ---------------------------------------------------------------------------
 
-RECORD_SCHEMA = "ods.extension-application-active-record.v1"
+RECORD_SCHEMA = "ods.extension-application-active-record.v2"
 RECORD_KEYS = frozenset({
     "schema",
     "service_id",
@@ -59,6 +59,7 @@ RECORD_KEYS = frozenset({
     "compose_sha256",
     "identity_sha256",
     "config_sha256",
+    "override_sha256",
     "expected_containers",
     "record_sha256",
 })
@@ -206,6 +207,7 @@ def _validate_canonical_record(record: Any) -> dict[str, Any]:
     compose_sha256 = record.get("compose_sha256")
     identity_sha256 = record.get("identity_sha256")
     config_sha256 = record.get("config_sha256")
+    override_sha256 = record.get("override_sha256")
     expected_containers = record.get("expected_containers")
     record_sha256 = record.get("record_sha256")
 
@@ -253,6 +255,11 @@ def _validate_canonical_record(record: Any) -> dict[str, Any]:
         or _DIGEST_RE.fullmatch(config_sha256) is None
     ):
         _bad("record-field-invalid-config_sha256")
+    if (
+        not isinstance(override_sha256, str)
+        or _DIGEST_RE.fullmatch(override_sha256) is None
+    ):
+        _bad("record-field-invalid-override_sha256")
 
     if (
         not isinstance(expected_containers, list)
@@ -308,6 +315,8 @@ def produce_active_record(
     identity: ApplicationIdentity,
     config_sha256: str,
     expected_containers: tuple[str, ...],
+    *,
+    override_sha256: str,
 ) -> bytes:
     """Produce canonical bytes for a future fixed-root active record writer."""
     try:
@@ -316,6 +325,8 @@ def produce_active_record(
         _bad("record-identity-invalid")
     if not isinstance(config_sha256, str) or _DIGEST_RE.fullmatch(config_sha256) is None:
         _bad("record-field-invalid-config_sha256")
+    if type(override_sha256) is not str or _DIGEST_RE.fullmatch(override_sha256) is None:
+        _bad("record-field-invalid-override_sha256")
     if type(expected_containers) is not tuple:
         _bad("record-field-invalid-expected_containers")
     names = list(expected_containers)
@@ -334,6 +345,7 @@ def produce_active_record(
         "definition_sha256": identity.definition_sha256,
         "expected_containers": names,
         "identity_sha256": identity.identity_sha256,
+        "override_sha256": override_sha256,
         "plan_sha256": identity.plan_sha256,
         "request_sha256": identity.request_sha256,
         "schema": RECORD_SCHEMA,
@@ -811,6 +823,8 @@ def _classify_applied(
         _bad("applied-config-required")
     if evidence.active_config_digest != record["config_sha256"]:
         _bad("config-drift")
+    if evidence.active_override_digest != record["override_sha256"]:
+        _bad("override-drift")
 
     # Container observations must exactly match expected containers
     expected_names = set(record["expected_containers"])
@@ -917,6 +931,131 @@ def observe_application(
         _bad("impossible-evidence-state")
 
 
+@dataclass(frozen=True)
+class CompensationProgress:
+    """One strictly monotonic state of an admitted library compensation."""
+
+    state: str
+    record_sha256: str | None
+    remaining_files: tuple[str, ...]
+    remaining_containers: tuple[str, ...]
+
+
+def observe_compensation_progress(
+    command: LifecycleWorkCommand,
+    evidence: CurrentEvidence,
+    *,
+    expected_config_sha256: str,
+) -> CompensationProgress:
+    """Permit replay only along container, file, then record removal.
+
+    This is *not* the transaction's APPLIED/ABSENT observer. It requires the
+    exact started compensation receipt and keeps the active record until every
+    other mutation has disappeared. No partial state is called ABSENT by the
+    transaction observer, and this function performs no effect.
+    """
+    current = _validate_current_evidence(evidence)
+    identity = _validate_command(command)
+    if (
+        command.plan_material is None
+        or command.plan_material.state != "reconciling"
+        or current.docker_available is not True
+        or type(expected_config_sha256) is not str
+        or _DIGEST_RE.fullmatch(expected_config_sha256) is None
+    ):
+        _bad("compensation-progress-input-invalid")
+    _validate_receipt_snapshot(current.receipt_snapshot, command, identity)
+    if (
+        current.receipt_snapshot.state != "completed"
+        or current.receipt_snapshot.terminal_receipt is None
+        or current.receipt_snapshot.terminal_receipt.evidence_hash
+        != identity.identity_sha256
+        or current.compensation_snapshot is None
+        or current.compensation_snapshot.state != "started"
+    ):
+        _bad("compensation-progress-receipt-invalid")
+    # Re-prove the compensation snapshot's canonical request hash, started
+    # chain, plan, service, and identity binding before considering effects.
+    _validate_completed_compensation(command, identity, current)
+
+    record = current.active_record
+    if record is None:
+        if _any_mutation_present(current):
+            _bad("compensation-progress-record-lost")
+        # Only the receipted dispatcher may finish compensation. A started
+        # receipt plus empty current state is readiness, not transaction ABSENT.
+        return CompensationProgress("READY_TO_COMPLETE", None, (), ())
+
+    files = {
+        "manifest.yaml": (
+            current.active_definition_digest, identity.definition_sha256
+        ),
+        "compose.yaml": (current.active_compose_digest, identity.compose_sha256),
+        "configuration.json": (
+            current.active_config_digest, expected_config_sha256
+        ),
+        "compose.override.yaml": (
+            current.active_override_digest, record["override_sha256"]
+        ),
+    }
+    remaining: list[str] = []
+    for name, (observed, expected) in files.items():
+        if observed is None:
+            continue
+        if observed != expected:
+            _bad("compensation-progress-file-drift")
+        remaining.append(name)
+
+    containers = current.container_observations
+
+    expected_bindings = {
+        "service_id": identity.service_id,
+        "version": identity.version,
+        "action": identity.action,
+        "transaction_id": identity.transaction_id,
+        "plan_sha256": identity.plan_sha256,
+        "request_sha256": identity.request_sha256,
+        "definition_sha256": identity.definition_sha256,
+        "compose_sha256": identity.compose_sha256,
+        "identity_sha256": identity.identity_sha256,
+        "config_sha256": expected_config_sha256,
+    }
+    if any(record[key] != value for key, value in expected_bindings.items()):
+        _bad("compensation-progress-record-drift")
+
+    expected_names = set(record["expected_containers"])
+    observed_names: set[str] = set()
+    for container in containers:
+        if container.name in observed_names or container.name not in expected_names:
+            _bad("compensation-progress-container-drift")
+        observed_names.add(container.name)
+        try:
+            observed_identity = parse_observed_labels(container.labels)
+        except ApplicationIdentityError:
+            _bad("compensation-progress-container-drift")
+        if (
+            observed_identity != identity
+            or container.labels.get("com.docker.compose.project")
+            != f"ods-af-{identity.service_id}"
+        ):
+            _bad("compensation-progress-container-drift")
+    if containers and len(remaining) != len(files):
+        _bad("compensation-progress-files-before-containers")
+
+    if containers:
+        state = "CONTAINERS_PRESENT"
+    elif remaining:
+        state = "FILES_PRESENT"
+    else:
+        state = "RECORD_ONLY"
+    return CompensationProgress(
+        state,
+        record["record_sha256"],
+        tuple(remaining),
+        tuple(sorted(observed_names)),
+    )
+
+
 __all__ = [
     "MAX_CONTAINERS",
     "MAX_INPUT_BYTES",
@@ -925,11 +1064,13 @@ __all__ = [
     "ApplicationObservationError",
     "ContainerObservation",
     "ContainerStateSummary",
+    "CompensationProgress",
     "CurrentEvidence",
     "ObservationResult",
     "_validate_canonical_record",
     "_validate_current_evidence",
     "observe_application",
+    "observe_compensation_progress",
     "parse_active_record",
     "produce_active_record",
 ]

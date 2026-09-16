@@ -25,6 +25,7 @@ import test_extension_application_observation as fixtures  # noqa: E402
 MANIFEST = b"schema_version: ods.services.v2\nservice:\n  id: documents\n"
 COMPOSE = b"services:\n  documents:\n    image: example.invalid/documents@sha256:1111\n"
 CONFIG = b'{"schema":"ods.extension-configuration.v1","fields":{}}\n'
+OVERRIDE = b"services:\n  documents:\n    labels:\n      ods.test: true\n"
 IDS = ("a" * 64, "b" * 64)
 NAMES = ("documents-api", "documents-worker")
 
@@ -150,6 +151,7 @@ def _installed(tmp_path: Path):
         ("manifest.yaml", MANIFEST),
         ("compose.yaml", COMPOSE),
         ("configuration.json", CONFIG),
+        ("compose.override.yaml", OVERRIDE),
     ):
         target = root / name
         target.write_bytes(content)
@@ -170,6 +172,7 @@ def _installed(tmp_path: Path):
         identity,
         config_sha=digest_mod.canonical_document_sha256(CONFIG),
         containers=list(NAMES),
+        override_sha=digest_mod.canonical_document_sha256(OVERRIDE),
     )
     model["expected_containers"] = tuple(model["expected_containers"])
     record = record_mod.ApplicationRecord(**model)
@@ -219,7 +222,12 @@ def test_reconciling_plan_observes_prior_apply_without_reenabling_effect(tmp_pat
 @pytest.mark.skipif(sys.platform != "linux", reason="POSIX host evidence only")
 def test_completed_compensation_and_current_absence_are_observed_together(tmp_path):
     root, command, bound, identity, _record, _receipt = _installed(tmp_path)
-    for name in ("manifest.yaml", "compose.yaml", "configuration.json"):
+    for name in (
+        "manifest.yaml",
+        "compose.yaml",
+        "configuration.json",
+        "compose.override.yaml",
+    ):
         (root / name).unlink()
     recovering = replace(
         bound, plan_material=replace(bound.plan_material, state="reconciling")
@@ -243,7 +251,12 @@ def test_completed_compensation_and_current_absence_are_observed_together(tmp_pa
 @pytest.mark.skipif(sys.platform != "linux", reason="POSIX host evidence only")
 def test_changed_compensation_receipt_refuses_absence(tmp_path):
     root, command, bound, identity, _record, _receipt = _installed(tmp_path)
-    for name in ("manifest.yaml", "compose.yaml", "configuration.json"):
+    for name in (
+        "manifest.yaml",
+        "compose.yaml",
+        "configuration.json",
+        "compose.override.yaml",
+    ):
         (root / name).unlink()
     recovering = replace(
         bound, plan_material=replace(bound.plan_material, state="reconciling")
@@ -269,7 +282,12 @@ def test_changed_compensation_receipt_refuses_absence(tmp_path):
 @pytest.mark.skipif(sys.platform != "linux", reason="POSIX host evidence only")
 def test_orphan_dependency_in_compose_project_blocks_compensated_absence(tmp_path):
     root, command, bound, identity, _record, _receipt = _installed(tmp_path)
-    for name in ("manifest.yaml", "compose.yaml", "configuration.json"):
+    for name in (
+        "manifest.yaml",
+        "compose.yaml",
+        "configuration.json",
+        "compose.override.yaml",
+    ):
         (root / name).unlink()
     recovering = replace(
         bound, plan_material=replace(bound.plan_material, state="reconciling")
@@ -300,7 +318,12 @@ def test_no_files_record_or_containers_is_absent(tmp_path):
     _root, command, bound, identity, _record, _receipt = _installed(tmp_path)
     # Only the owner-prepared base root stays; there is no application mutation.
     service = tmp_path / ".ods-assistant-first" / "applications" / fixtures.SERVICE_ID
-    for name in ("manifest.yaml", "compose.yaml", "configuration.json"):
+    for name in (
+        "manifest.yaml",
+        "compose.yaml",
+        "configuration.json",
+        "compose.override.yaml",
+    ):
         (service / name).unlink()
     adapter = adapter_mod.ApplicationObservationAdapter(
         tmp_path,

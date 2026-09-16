@@ -66,6 +66,7 @@ class ApplicationRecord:
     compose_sha256: str
     identity_sha256: str
     config_sha256: str
+    override_sha256: str
     expected_containers: tuple[str, ...]
     record_sha256: str
 
@@ -141,6 +142,7 @@ def _record_model(value: Any) -> tuple[dict[str, Any], ApplicationRecord]:
         compose_sha256=parsed["compose_sha256"],
         identity_sha256=parsed["identity_sha256"],
         config_sha256=parsed["config_sha256"],
+        override_sha256=parsed["override_sha256"],
         expected_containers=tuple(parsed["expected_containers"]),
         record_sha256=parsed["record_sha256"],
     )
@@ -567,13 +569,19 @@ def _prepare_record(
     command: Any,
     config_sha256: Any,
     expected_containers: Any,
+    override_sha256: Any,
 ) -> tuple[dict[str, Any], ApplicationRecord]:
     if not isinstance(command, LifecycleWorkCommand):
         _fail("application-record-store-binding-invalid")
     # The producer performs the authoritative strict digest/container checks.
     try:
         identity = produce_application_identity(command)
-        raw = produce_active_record(identity, config_sha256, expected_containers)
+        raw = produce_active_record(
+            identity,
+            config_sha256,
+            expected_containers,
+            override_sha256=override_sha256,
+        )
         parsed = parse_active_record(raw)
     except (LifecycleWorkError, TypeError, ValueError, UnicodeError):
         _fail("application-record-store-record-invalid")
@@ -633,10 +641,11 @@ class ApplicationRecordStore:
         command: LifecycleWorkCommand,
         config_sha256: str,
         expected_containers: tuple[str, ...],
+        override_sha256: str,
         previous_record_sha256: str | None = None,
     ) -> PublishResult:
         new_dictionary, new_record = _prepare_record(
-            command, config_sha256, expected_containers
+            command, config_sha256, expected_containers, override_sha256
         )
         previous = _validate_record_hash(previous_record_sha256, optional=True)
 

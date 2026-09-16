@@ -45,6 +45,7 @@ PLAN_HASH = "2" * 64
 DEFINITION_SHA = "sha256:" + "3" * 64
 COMPOSE_SHA = "sha256:" + "4" * 64
 CONFIG_SHA = "sha256:" + "e" * 64
+OVERRIDE_SHA = "sha256:" + "a" * 64
 OTHER_CONFIG_SHA = "sha256:" + "f" * 64
 SERVICE_ID = "documents"
 VERSION = "1.2.3"
@@ -175,6 +176,7 @@ def _record_dict(
         identity,
         config_sha256,
         containers or (f"{service_id}-api",),
+        override_sha256=OVERRIDE_SHA,
     )
     return observation.parse_active_record(raw)
 
@@ -197,7 +199,9 @@ def _publish_process(root: str, service_id: str, config: str, gate, output) -> N
         target = store_mod.ApplicationRecordStore(root)
         command = _command(service_id, "install")
         gate.wait(10)
-        result = target.publish(command, config, (f"{service_id}-api",))
+        result = target.publish(
+            command, config, (f"{service_id}-api",), OVERRIDE_SHA
+        )
         output.put(("ok", result.outcome, result.record.record_sha256))
     except store_mod.ApplicationRecordStoreError as error:
         output.put(("error", error.code))
@@ -250,6 +254,7 @@ class TestApplicationRecordStore:
             _command(service_id, action, version=version),
             config,
             containers,
+            OVERRIDE_SHA,
             previous,
         )
 
@@ -260,6 +265,7 @@ class TestApplicationRecordStore:
         assert result.record.service_id == SERVICE_ID
         assert result.record.expected_containers == CONTAINERS
         assert result.record.config_sha256 == CONFIG_SHA
+        assert result.record.override_sha256 == OVERRIDE_SHA
         assert stat.S_IMODE(self.snapshot_path.stat().st_mode) == 0o600
         assert self.snapshot_path.stat().st_nlink == 1
 
@@ -273,6 +279,7 @@ class TestApplicationRecordStore:
                     ),
                     CONFIG_SHA,
                     CONTAINERS,
+                    override_sha256=OVERRIDE_SHA,
                 )
             )
         ]
@@ -424,7 +431,10 @@ class TestApplicationRecordStore:
             _assert_code(
                 "application-record-store-record-invalid",
                 lambda: self.store.publish(
-                    _command(SERVICE_ID, "install"), "secret-invalid", CONTAINERS
+                    _command(SERVICE_ID, "install"),
+                    "secret-invalid",
+                    CONTAINERS,
+                    OVERRIDE_SHA,
                 ),
             )
         opened.assert_not_called()
@@ -816,7 +826,9 @@ class TestApplicationRecordStore:
         with mock.patch.object(store_mod, "_open_root") as opened:
             _assert_code(
                 "application-record-store-record-invalid",
-                lambda: self.store.publish(command, CONFIG_SHA, CONTAINERS),
+                lambda: self.store.publish(
+                    command, CONFIG_SHA, CONTAINERS, OVERRIDE_SHA
+                ),
             )
         opened.assert_not_called()
 

@@ -612,6 +612,19 @@ claim that the compensation command alone caused every disappearance. The
 mutating compensation dispatcher and production Dashboard executor remain
 disabled pending their separate recovery qualification.
 
+The next compensation substrate pins the generated override digest in the
+canonical active-record v2 and rechecks it during apply observation and
+verification. A pure replay classifier requires the original completed apply
+and exact started compensation receipts, then permits only monotonic current
+states: owned containers with all four exact active files, no containers with
+some exact files, the record alone, or no active resources. The active record
+must be removed last so interrupted file cleanup retains its expected digests;
+record loss while any file or container remains is drift. This classifier does
+not stop containers or delete files, and its final ready-to-complete state is
+not transaction ABSENT until the receipted dispatcher proves completion.
+Earlier v1 active records are not silently rewritten; their adoption or
+upgrade needs a separate explicit migration gate.
+
 ## Evidence boundary
 
 The source contract checks resolver ordering, the exact candidate service set,

@@ -10,7 +10,6 @@ not imported by the production host agent.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
@@ -909,7 +908,12 @@ class LibraryComposeApplyEffect:
                 self._install_root.joinpath(*_APPLICATION_PARTS)
             )
             try:
-                published = records.publish(command, config_sha256, expected_names)
+                published = records.publish(
+                    command,
+                    config_sha256,
+                    expected_names,
+                    canonical_document_sha256(override),
+                )
             except Exception:  # noqa: BLE001 - record details remain private
                 _fail("library-compose-record-unavailable")
             _assert_lock(directory, lock)
@@ -920,7 +924,7 @@ class LibraryComposeApplyEffect:
                 definition_sha256=identity.definition_sha256,
                 compose_sha256=identity.compose_sha256,
                 config_sha256=config_sha256,
-                override_sha256="sha256:" + hashlib.sha256(override).hexdigest(),
+                override_sha256=canonical_document_sha256(override),
                 compose_services=compose_services,
                 expected_containers=expected_names,
                 materialization_outcome=materialized.outcome,

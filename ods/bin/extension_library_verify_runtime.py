@@ -405,7 +405,7 @@ class LibraryVerifyDispatcher:
             _override_bytes(identity, compose_services)
         )
         override = _current_override(self._install, selected.service_id)
-        if override != expected_override:
+        if override != expected_override or record.override_sha256 != expected_override:
             _fail("library-verify-override-mismatch")
         if port is None:
             _fail("library-verify-port-unbound")

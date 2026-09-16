@@ -48,6 +48,7 @@ SERVICE_ID = "documents"
 VERSION = "1.2.3"
 ACTION = "install"
 CONFIG_SHA = "sha256:" + "e" * 64
+OVERRIDE_SHA = "sha256:" + "f" * 64
 CONTAINER_NAMES = ["documents-api", "documents-worker"]
 
 
@@ -164,6 +165,7 @@ def _build_canonical_record(
     identity: app_id.ApplicationIdentity,
     config_sha: str = CONFIG_SHA,
     containers: list[str] | None = None,
+    override_sha: str = OVERRIDE_SHA,
 ) -> dict[str, Any]:
     """Build a valid canonical record for testing."""
     if containers is None:
@@ -181,6 +183,7 @@ def _build_canonical_record(
         "compose_sha256": identity.compose_sha256,
         "identity_sha256": identity.identity_sha256,
         "config_sha256": config_sha,
+        "override_sha256": override_sha,
         "expected_containers": containers,
     }
 
@@ -378,6 +381,9 @@ def _compensation_snapshot(
     )
 
 
+_DEFAULT_OVERRIDE = object()
+
+
 def _build_evidence(
     record: dict[str, Any] | None = None,
     def_digest: str | None = None,
@@ -388,10 +394,12 @@ def _build_evidence(
     topology: str = "docker",
     docker_available: bool = True,
     compensation: receipts_mod.LifecycleSnapshot | None = None,
-    override_digest: str | None = None,
+    override_digest: str | None | object = _DEFAULT_OVERRIDE,
 ) -> obs_mod.CurrentEvidence:
     if snapshot is None:
         snapshot = _absent_snapshot()
+    if override_digest is _DEFAULT_OVERRIDE:
+        override_digest = record["override_sha256"] if record is not None else None
     return obs_mod.CurrentEvidence(
         active_record=record,
         active_definition_digest=def_digest,
@@ -402,7 +410,7 @@ def _build_evidence(
         topology=topology,
         docker_available=docker_available,
         compensation_snapshot=compensation,
-        active_override_digest=override_digest,
+        active_override_digest=override_digest,  # type: ignore[arg-type]
     )
 
 
@@ -652,6 +660,154 @@ def test_started_compensation_does_not_hide_fully_applied_app():
         _bound_command(state="reconciling"), evidence
     )
     assert result.classification == "APPLIED"
+
+
+def _compensation_progress_evidence(
+    *,
+    record: bool = True,
+    files: tuple[str, ...] = (
+        "manifest.yaml",
+        "compose.yaml",
+        "configuration.json",
+        "compose.override.yaml",
+    ),
+    containers: tuple[str, ...] = tuple(CONTAINER_NAMES),
+) -> obs_mod.CurrentEvidence:
+    identity = _get_identity()
+    completed = _compensation_snapshot(identity)
+    started = replace(completed, state="started", terminal_receipt=None)
+    observed_containers = tuple(
+        replace(
+            _container_observation(name, identity=identity),
+            labels={
+                **app_id.identity_labels(identity),
+                "com.docker.compose.project": f"ods-af-{identity.service_id}",
+            },
+        )
+        for name in containers
+    )
+    return _build_evidence(
+        record=_build_canonical_record(identity) if record else None,
+        def_digest=DEFINITION_SHA if "manifest.yaml" in files else None,
+        compose_digest=COMPOSE_SHA if "compose.yaml" in files else None,
+        config_digest=CONFIG_SHA if "configuration.json" in files else None,
+        override_digest=OVERRIDE_SHA if "compose.override.yaml" in files else None,
+        containers=observed_containers,
+        snapshot=_completed_snapshot(identity),
+        compensation=started,
+    )
+
+
+@pytest.mark.parametrize(
+    ("files", "containers", "record", "state"),
+    [
+        (("manifest.yaml", "compose.yaml", "configuration.json", "compose.override.yaml"), tuple(CONTAINER_NAMES), True, "CONTAINERS_PRESENT"),
+        (("manifest.yaml", "compose.yaml", "configuration.json", "compose.override.yaml"), (CONTAINER_NAMES[0],), True, "CONTAINERS_PRESENT"),
+        (("manifest.yaml", "compose.yaml", "configuration.json", "compose.override.yaml"), (), True, "FILES_PRESENT"),
+        (("manifest.yaml", "compose.yaml"), (), True, "FILES_PRESENT"),
+        ((), (), True, "RECORD_ONLY"),
+        ((), (), False, "READY_TO_COMPLETE"),
+    ],
+)
+def test_compensation_progress_monotonic_replay(
+    files: tuple[str, ...],
+    containers: tuple[str, ...],
+    record: bool,
+    state: str,
+) -> None:
+    result = obs_mod.observe_compensation_progress(
+        _bound_command(state="reconciling"),
+        _compensation_progress_evidence(
+            files=files, containers=containers, record=record
+        ),
+        expected_config_sha256=CONFIG_SHA,
+    )
+    assert result.state == state
+    assert result.remaining_files == files
+    assert result.remaining_containers == tuple(sorted(containers))
+    assert (result.record_sha256 is not None) == record
+
+
+@pytest.mark.parametrize(
+    ("change", "code"),
+    [
+        ({"record": False}, "compensation-progress-record-lost"),
+        ({"files": ("manifest.yaml", "compose.yaml")}, "compensation-progress-files-before-containers"),
+    ],
+)
+def test_compensation_progress_rejects_impossible_partial(
+    change: dict[str, Any], code: str
+) -> None:
+    evidence = _compensation_progress_evidence(**change)
+    with pytest.raises(obs_mod.ApplicationObservationError) as exc:
+        obs_mod.observe_compensation_progress(
+            _bound_command(state="reconciling"),
+            evidence,
+            expected_config_sha256=CONFIG_SHA,
+        )
+    assert exc.value.code == code
+
+
+def test_compensation_progress_rejects_tampered_override() -> None:
+    evidence = replace(
+        _compensation_progress_evidence(containers=()),
+        active_override_digest="sha256:" + "0" * 64,
+    )
+    with pytest.raises(obs_mod.ApplicationObservationError) as exc:
+        obs_mod.observe_compensation_progress(
+            _bound_command(state="reconciling"),
+            evidence,
+            expected_config_sha256=CONFIG_SHA,
+        )
+    assert exc.value.code == "compensation-progress-file-drift"
+
+
+@pytest.mark.parametrize("override", [None, "sha256:" + "0" * 64])
+def test_applied_observation_requires_record_bound_override(
+    override: str | None,
+) -> None:
+    identity = _get_identity()
+    evidence = _build_evidence(
+        record=_build_canonical_record(identity),
+        def_digest=DEFINITION_SHA,
+        compose_digest=COMPOSE_SHA,
+        config_digest=CONFIG_SHA,
+        override_digest=override,
+        containers=tuple(_container_observation(name) for name in CONTAINER_NAMES),
+        snapshot=_completed_snapshot(identity),
+    )
+    with pytest.raises(obs_mod.ApplicationObservationError) as exc:
+        obs_mod.observe_application(_bound_command(), evidence)
+    assert exc.value.code == "override-drift"
+
+
+def test_active_record_v1_cannot_bypass_override_binding() -> None:
+    old = _build_canonical_record(_get_identity())
+    old["schema"] = "ods.extension-application-active-record.v1"
+    old.pop("override_sha256")
+    old = _recompute_record(old)
+    with pytest.raises(obs_mod.ApplicationObservationError) as exc:
+        obs_mod.parse_active_record(_record_bytes(old))
+    assert exc.value.code == "record-keys-mismatch"
+
+
+def test_compensation_progress_rejects_foreign_project_container() -> None:
+    evidence = _compensation_progress_evidence()
+    foreign = replace(
+        evidence.container_observations[0],
+        labels={
+            **evidence.container_observations[0].labels,
+            "com.docker.compose.project": "foreign",
+        },
+    )
+    evidence = replace(evidence, container_observations=(foreign, *evidence.container_observations[1:]))
+    with pytest.raises(obs_mod.ApplicationObservationError) as exc:
+        obs_mod.observe_compensation_progress(
+            _bound_command(state="reconciling"),
+            evidence,
+            expected_config_sha256=CONFIG_SHA,
+        )
+    assert exc.value.code == "compensation-progress-container-drift"
 
 
 def test_compensation_cannot_launder_wrong_completed_apply_evidence():
@@ -1827,12 +1983,14 @@ def test_active_record_bytes_are_canonical_and_duplicate_safe():
         identity,
         CONFIG_SHA,
         tuple(sorted(CONTAINER_NAMES)),
+        override_sha256=OVERRIDE_SHA,
     )
     assert obs_mod.parse_active_record(raw) == _build_canonical_record(identity)
     assert raw == obs_mod.produce_active_record(
         identity,
         CONFIG_SHA,
         tuple(sorted(CONTAINER_NAMES)),
+        override_sha256=OVERRIDE_SHA,
     )
 
     duplicate = raw.replace(
@@ -1853,6 +2011,7 @@ def test_active_record_supports_every_apply_action(action: str):
         identity,
         CONFIG_SHA,
         tuple(sorted(CONTAINER_NAMES)),
+        override_sha256=OVERRIDE_SHA,
     )
     assert obs_mod.parse_active_record(raw)["action"] == action
 
@@ -1864,6 +2023,7 @@ def test_active_record_rejects_noop_action():
             invalid,
             CONFIG_SHA,
             tuple(sorted(CONTAINER_NAMES)),
+            override_sha256=OVERRIDE_SHA,
         )
     assert exc.value.code == "record-identity-invalid"
 

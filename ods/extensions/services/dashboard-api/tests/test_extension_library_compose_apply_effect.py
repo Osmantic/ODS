@@ -371,6 +371,10 @@ def test_miniflux_full_graph_secret_boundary_and_record_last(tmp_path):
     assert record.identity_sha256 == inputs.identity.identity_sha256
     assert record.expected_containers == result.expected_containers
     assert record.config_sha256 == result.config_sha256
+    assert record.override_sha256 == result.override_sha256
+    assert record.override_sha256 == document_digest.canonical_document_sha256(
+        (active / "compose.override.yaml").read_bytes()
+    )
     stored = _all_file_bytes(install) + _all_file_bytes(users)
     assert ADMIN_SECRET.encode() not in stored
     assert DB_SECRET.encode() not in stored

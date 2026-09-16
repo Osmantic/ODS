@@ -21,7 +21,7 @@ from extension_application_identity import (  # noqa: E402
     _identity_digest,
     identity_labels,
 )
-from extension_application_observation import ContainerObservation  # noqa: E402
+from extension_application_observation import ContainerObservation, RECORD_SCHEMA  # noqa: E402
 from extension_application_record_store import ApplicationRecord  # noqa: E402
 from extension_lifecycle_plan import (  # noqa: E402
     PLAN_MATERIAL_SCHEMA,
@@ -118,7 +118,7 @@ def _record(command: LifecycleWorkCommand, *, prior: bool = False) -> Applicatio
     )
     identity = replace(base, identity_sha256=_identity_digest(base))
     return ApplicationRecord(
-        schema="ods.extension-active-application.v1",
+        schema=RECORD_SCHEMA,
         service_id=identity.service_id,
         version=identity.version,
         action=identity.action,
@@ -129,6 +129,11 @@ def _record(command: LifecycleWorkCommand, *, prior: bool = False) -> Applicatio
         compose_sha256=identity.compose_sha256,
         identity_sha256=identity.identity_sha256,
         config_sha256=CONFIG_HASH,
+        override_sha256=verify.canonical_document_sha256(
+            verify._override_bytes(
+                identity, verify._PILOT_COMPOSE_SERVICES[identity.service_id]
+            )
+        ),
         expected_containers=("ods-gitea-1",),
         record_sha256="b" * 64,
     )
@@ -429,6 +434,18 @@ def test_replaced_container_between_samples_fails(monkeypatch) -> None:
 def test_changed_active_override_fails_before_probe(monkeypatch) -> None:
     command, dispatcher, _containers, probes, _clock = _dispatcher(monkeypatch)
     monkeypatch.setattr(verify, "_current_override", lambda _root, _service: None)
+    with pytest.raises(verify.LibraryVerifyError) as caught:
+        dispatcher(command)
+    assert caught.value.code == "library-verify-override-mismatch"
+    assert probes == []
+
+
+def test_record_override_digest_must_match_generated_override(monkeypatch) -> None:
+    command, dispatcher, _containers, probes, _clock = _dispatcher(monkeypatch)
+    dispatcher._records.record = replace(
+        dispatcher._records.record,
+        override_sha256="sha256:" + "0" * 64,
+    )
     with pytest.raises(verify.LibraryVerifyError) as caught:
         dispatcher(command)
     assert caught.value.code == "library-verify-override-mismatch"
