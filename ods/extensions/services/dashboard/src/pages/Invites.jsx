@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback } from 'react'
+import './invites.css'
 import {
   UserPlus, Copy, Check, Trash2, RefreshCw, QrCode, Share2, X,
-  Loader2, AlertCircle, Clock, Users, KeyRound, ShieldCheck, Mic2,
+  Loader2, AlertCircle, Clock, KeyRound, Mic2,
   Printer, MessageSquare,
 } from 'lucide-react'
 
@@ -14,7 +15,13 @@ const fetchJson = async (url, init = {}, ms = 8000) => {
   const c = new AbortController()
   const t = setTimeout(() => c.abort(), ms)
   try {
-    return await fetch(url, { ...init, signal: c.signal })
+    const response = await fetch(url, { ...init, signal: c.signal })
+    // The deadline includes reading JSON, not just receiving HTTP headers.
+    // Keep parsing failures lazy so existing status/error handlers still apply.
+    const body = await response.json().then(value => ({ value }), error => ({ error }))
+    if (c.signal.aborted) throw new Error('Access request timed out. Refresh the list before trying another action.')
+    return { ok: response.ok, status: response.status,
+      json: () => body.error ? Promise.reject(body.error) : Promise.resolve(body.value) }
   } finally {
     clearTimeout(t)
   }
@@ -51,9 +58,9 @@ function isOwnerToken(token) {
   return token.token_type === 'owner'
 }
 
-function tokenStatus(token) {
+function tokenStatus(token, now = Date.now()) {
   if (token.revoked_at) return { label: 'revoked', tone: 'bg-theme-border text-theme-text-muted' }
-  if (!isOwnerToken(token) && token.expires_at && new Date(token.expires_at).getTime() < Date.now()) {
+  if (!isOwnerToken(token) && token.expires_at && new Date(token.expires_at).getTime() <= now) {
     return { label: 'expired', tone: 'bg-theme-border text-theme-text-muted' }
   }
   if (!isOwnerToken(token) && token.redemption_count > 0 && !token.reusable) {
@@ -65,8 +72,8 @@ function tokenStatus(token) {
   return { label: 'active', tone: 'bg-green-500/20 text-green-400' }
 }
 
-function tokenCanRevoke(token) {
-  const status = tokenStatus(token).label
+function tokenCanRevoke(token, now = Date.now()) {
+  const status = tokenStatus(token, now).label
   return status === 'active' || status.startsWith('used')
 }
 
@@ -74,6 +81,7 @@ export default function Invites() {
   const [tokens, setTokens] = useState([])
   const [query, setQuery] = useState('')
   const [inventoryStatus, setInventoryStatus] = useState('all')
+  const [now, setNow] = useState(Date.now)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [showOwnerCreate, setShowOwnerCreate] = useState(false)
@@ -81,6 +89,26 @@ export default function Invites() {
   const [generated, setGenerated] = useState(null)
   const [refreshing, setRefreshing] = useState(false)
   const [ownerCardStatus, setOwnerCardStatus] = useState(null)
+
+  useEffect(() => {
+    const tick = () => setNow(Date.now())
+    const visible = () => { if (document.visibilityState === 'visible') tick() }
+    // Refresh relative labels regularly and expiry verdicts at their boundary.
+    // This updates existing metadata without polling the access-link API.
+    const current = Date.now()
+    let delay = 30_000
+    for (const token of tokens) {
+      if (isOwnerToken(token) || !token.expires_at) continue
+      const remaining = new Date(token.expires_at).getTime() - current
+      if (remaining > 0) delay = Math.min(delay, remaining)
+    }
+    const timer = setTimeout(tick, delay)
+    document.addEventListener('visibilitychange', visible)
+    return () => {
+      clearTimeout(timer)
+      document.removeEventListener('visibilitychange', visible)
+    }
+  }, [tokens, now])
 
   const refresh = useCallback(async () => {
     setRefreshing(true)
@@ -143,7 +171,7 @@ export default function Invites() {
   }
 
   const filteredTokens = tokens.filter(token => {
-    const state = tokenStatus(token).label
+    const state = tokenStatus(token, now).label
     if (inventoryStatus !== 'all' && !(inventoryStatus === 'used' ? state.startsWith('used') : state === inventoryStatus)) return false
     const needle = query.trim().toLowerCase()
     return !needle || [token.target_username, token.note, token.token_hash_prefix].some(value => String(value || '').toLowerCase().includes(needle))
@@ -154,13 +182,11 @@ export default function Invites() {
   const ownerCardUnavailable = ownerCardStatus?.ready === false
 
   return (
-    <div className="p-8">
-      <div className="mb-8 flex items-center justify-between gap-4">
+    <div className="owner-access">
+      <div className="owner-access-heading">
         <div>
-          <h1 className="text-2xl font-bold text-theme-text">Setup / Owner</h1>
-          <p className="text-theme-text-muted mt-1">
-            Create factory owner cards for ODS Talk, and keep guest chat invites available when you need them.
-          </p>
+          <h1>Owner access</h1>
+          <p>Manage device keys and temporary guest links.</p>
         </div>
         <button
           onClick={refresh}
@@ -174,13 +200,11 @@ export default function Invites() {
       </div>
 
       {error && (
-        <div className="mb-6 p-4 bg-red-500/10 border border-red-500/30 rounded-xl text-red-400 text-sm flex items-start gap-2">
+        <div role="alert" className="my-4 text-red-400 text-xs flex items-start gap-2">
           <AlertCircle size={18} className="flex-shrink-0 mt-0.5" />
           <span>{error}</span>
         </div>
       )}
-
-      <VoiceReadiness />
 
       <div className="mb-5 flex flex-wrap items-center gap-3 text-sm text-theme-text">
         <input aria-label="Search access links" placeholder="Search username, note or ID" value={query} onChange={event => setQuery(event.target.value)} className="rounded-lg border border-theme-border bg-theme-card p-2" />
@@ -191,22 +215,25 @@ export default function Invites() {
         {filtering && <button type="button" onClick={() => { setQuery(''); setInventoryStatus('all') }} className="text-theme-accent">Clear filters</button>}
       </div>
 
-      <section className="mb-8 bg-theme-card border border-theme-border rounded-xl p-5">
-        <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+      <dl className="owner-access-summary" aria-label="Access summary">
+        <div><dt>Owner cards</dt><dd>{tokens.filter(token => isOwnerToken(token) && tokenCanRevoke(token, now)).length}<span> active</span></dd></div>
+        <div><dt>Guest links</dt><dd>{tokens.filter(t => !isOwnerToken(t) && (tokenStatus(t, now).label === 'active' || (t.reusable && tokenCanRevoke(t, now)))).length}<span> available</span></dd></div>
+      </dl>
+      <section className="owner-access-section" aria-labelledby="owner-cards-heading">
+        <div className="owner-access-section-heading">
           <div>
             <div className="flex items-center gap-2 text-theme-text">
               <KeyRound size={20} className="text-theme-accent" />
-              <h2 className="text-lg font-semibold">Factory owner card</h2>
+              <h2 id="owner-cards-heading">Owner cards</h2>
             </div>
             <p className="mt-2 max-w-2xl text-sm text-theme-text-muted">
-              This QR is a physical key for the shipped device. It creates normal 12-hour ODS sessions
-              and lands the holder in ODS Talk; the QR itself remains valid until revoked.
+              A reusable QR key for ODS Talk. Sessions last 12 hours; the card stays valid until revoked.
             </p>
           </div>
           <button
             onClick={() => setShowOwnerCreate(true)}
             disabled={ownerCardUnavailable}
-            className="inline-flex items-center justify-center gap-2 bg-theme-accent text-white px-4 py-2 rounded-lg hover:opacity-90 disabled:opacity-50 transition-opacity"
+            className="owner-access-action"
           >
             <Printer size={18} />
             Print owner card
@@ -214,40 +241,37 @@ export default function Invites() {
         </div>
 
         {ownerCardUnavailable && (
-          <div className="mt-4 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-100 flex items-start gap-2">
+          <div className="owner-access-notice" role="status">
             <AlertCircle size={16} className="mt-0.5 flex-shrink-0" />
             <span>{ownerCardStatus.reason || 'Enable ODS proxy before generating owner cards.'}</span>
           </div>
         )}
 
         {filtering && ownerTokens.length === 0 ? <p className="mt-5 text-sm text-theme-text-muted">No owner cards match these filters.</p> : ownerTokens.length === 0 ? (
-          <EmptyOwnerState
-            onCreate={() => setShowOwnerCreate(true)}
-            disabled={ownerCardUnavailable}
-          />
+          <EmptyOwnerState />
         ) : (
           <div className="mt-5 space-y-3">
             {ownerTokens.map(t => (
-              <TokenRow key={t.token_hash_prefix} token={t} onRevoke={() => handleRevoke(t.token_hash_prefix)} />
+              <TokenRow key={t.token_hash_prefix} token={t} now={now} onRevoke={() => handleRevoke(t.token_hash_prefix)} />
             ))}
           </div>
         )}
       </section>
 
-      <section className="bg-theme-card border border-theme-border rounded-xl p-5">
-        <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+      <section className="owner-access-section" aria-labelledby="guest-links-heading">
+        <div className="owner-access-section-heading">
           <div>
             <div className="flex items-center gap-2 text-theme-text">
               <MessageSquare size={20} className="text-theme-text-muted" />
-              <h2 className="text-lg font-semibold">Guest access</h2>
+              <h2 id="guest-links-heading">Guest access</h2>
             </div>
             <p className="mt-2 max-w-2xl text-sm text-theme-text-muted">
-              Time-limited magic links still work for short-term access to chat or advanced Hermes.
+              Temporary links to chat or advanced Hermes. Set an expiry and choose whether a link can be reused.
             </p>
           </div>
           <button
             onClick={() => setShowGuestCreate(true)}
-            className="inline-flex items-center justify-center gap-2 bg-theme-bg border border-theme-border text-theme-text px-4 py-2 rounded-lg hover:bg-theme-surface-hover transition-colors"
+            className="owner-access-action"
           >
             <UserPlus size={18} />
             New guest invite
@@ -255,15 +279,20 @@ export default function Invites() {
         </div>
 
         {filtering && guestTokens.length === 0 ? <p className="mt-5 text-sm text-theme-text-muted">No guest invites match these filters.</p> : guestTokens.length === 0 ? (
-          <EmptyGuestState onCreate={() => setShowGuestCreate(true)} />
+          <EmptyGuestState />
         ) : (
           <div className="mt-5 space-y-3">
             {guestTokens.map(t => (
-              <TokenRow key={t.token_hash_prefix} token={t} onRevoke={() => handleRevoke(t.token_hash_prefix)} />
+              <TokenRow key={t.token_hash_prefix} token={t} now={now} onRevoke={() => handleRevoke(t.token_hash_prefix)} />
             ))}
           </div>
         )}
       </section>
+
+      <details className="owner-access-help"><summary>Voice readiness & access safety</summary>
+        <VoiceReadiness />
+        <p>Cards and invite links are credentials. Share them privately and revoke a lost card or an unwanted invite.</p>
+      </details>
 
       {showOwnerCreate && (
         <CreateOwnerModal
@@ -301,11 +330,7 @@ export default function Invites() {
 function VoiceReadiness() {
   const secure = typeof window === 'undefined' ? true : window.isSecureContext
   return (
-    <div className={`mb-6 rounded-xl border p-4 text-sm flex items-start gap-3 ${
-      secure
-        ? 'border-green-500/20 bg-green-500/10 text-green-100'
-        : 'border-amber-500/20 bg-amber-500/10 text-amber-100'
-    }`}>
+    <div className="owner-access-voice">
       <Mic2 size={18} className="mt-0.5 flex-shrink-0" />
       <div>
         <p className="font-medium text-theme-text">Voice readiness</p>
@@ -319,53 +344,32 @@ function VoiceReadiness() {
   )
 }
 
-function EmptyOwnerState({ onCreate, disabled }) {
+function EmptyOwnerState() {
   return (
-    <div className="mt-5 rounded-xl border border-dashed border-theme-border p-6 text-center">
-      <ShieldCheck size={32} className="mx-auto mb-3 text-theme-text-muted" />
-      <h3 className="text-base font-semibold text-theme-text mb-1">No owner cards yet</h3>
-      <p className="text-sm text-theme-text-muted mb-4 max-w-lg mx-auto">
-        Generate one for a factory card or first owner handoff. Revoke it if the printed card is lost.
-      </p>
-      <button
-        onClick={onCreate}
-        disabled={disabled}
-        className="inline-flex items-center gap-2 bg-theme-accent text-white px-4 py-2 rounded-lg hover:opacity-90 disabled:opacity-50 transition-opacity"
-      >
-        <Printer size={18} />
-        Create owner card
-      </button>
+    <div className="owner-access-empty">
+      <p>No owner cards yet</p>
+      <span>Create a card for the device owner when the service is ready.</span>
     </div>
   )
 }
 
-function EmptyGuestState({ onCreate }) {
+function EmptyGuestState() {
   return (
-    <div className="mt-5 rounded-xl border border-dashed border-theme-border p-6 text-center">
-      <Users size={32} className="mx-auto mb-3 text-theme-text-muted" />
-      <h3 className="text-base font-semibold text-theme-text mb-1">No guest invites yet</h3>
-      <p className="text-sm text-theme-text-muted mb-4 max-w-lg mx-auto">
-        Guest links are temporary credentials. Anyone who opens one gets the selected access until it expires or is used.
-      </p>
-      <button
-        onClick={onCreate}
-        className="inline-flex items-center gap-2 bg-theme-bg border border-theme-border text-theme-text px-4 py-2 rounded-lg hover:bg-theme-surface-hover transition-colors"
-      >
-        <UserPlus size={18} />
-        Create guest invite
-      </button>
+    <div className="owner-access-empty">
+      <p>No guest invites yet</p>
+      <span>Create a temporary link when you want to share access.</span>
     </div>
   )
 }
 
-function TokenRow({ token, onRevoke }) {
-  const status = tokenStatus(token)
+function TokenRow({ token, onRevoke, now }) {
+  const status = tokenStatus(token, now)
   const expires = isOwnerToken(token) ? null : formatRelative(token.expires_at)
   const lastRedeemed = formatRelative(token.last_redeemed_at)
-  const canRevoke = tokenCanRevoke(token)
+  const canRevoke = tokenCanRevoke(token, now)
 
   return (
-    <div className="bg-theme-bg border border-theme-border rounded-xl p-4 flex items-center justify-between gap-4">
+    <div className="owner-access-token flex items-center justify-between gap-4">
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2 mb-1 flex-wrap">
           <span className="font-medium text-theme-text">{token.target_username}</span>
@@ -373,7 +377,7 @@ function TokenRow({ token, onRevoke }) {
           {isOwnerToken(token) ? (
             <span className="text-xs px-2 py-0.5 rounded bg-theme-accent/20 text-theme-accent-light">owner</span>
           ) : token.reusable && (
-            <span className="text-xs px-2 py-0.5 rounded bg-purple-500/20 text-purple-300">reusable</span>
+            <span className="text-xs px-2 py-0.5 rounded bg-theme-surface text-theme-text-secondary">reusable</span>
           )}
           <span className="text-xs text-theme-text-muted">scope: {token.scope}</span>
         </div>
@@ -412,6 +416,7 @@ function CreateOwnerModal({ ownerCardStatus, onClose, onCreated }) {
 
   const handleSubmit = async (e) => {
     e.preventDefault()
+    if (submitting) return
     setFormError(null)
     if (ownerCardUnavailable) {
       setFormError(ownerCardStatus.reason || 'Enable ODS proxy before generating owner cards.')
@@ -444,7 +449,7 @@ function CreateOwnerModal({ ownerCardStatus, onClose, onCreated }) {
   }
 
   return (
-    <Modal title="Create owner card" label="Create owner card" onClose={onClose}>
+    <Modal title="Create owner card" label="Create owner card" onClose={onClose} busy={submitting}>
       <form onSubmit={handleSubmit}>
         <UsernameInput value={username} onChange={setUsername} autoFocus />
         <label className="block mb-4">
@@ -489,6 +494,7 @@ function CreateGuestModal({ onClose, onCreated }) {
 
   const handleSubmit = async (e) => {
     e.preventDefault()
+    if (submitting) return
     setFormError(null)
     const trimmed = username.trim()
     if (!/^[A-Za-z0-9._-]+$/.test(trimmed)) {
@@ -518,7 +524,7 @@ function CreateGuestModal({ onClose, onCreated }) {
   }
 
   return (
-    <Modal title="Create guest invite" label="Create guest invite" onClose={onClose}>
+    <Modal title="Create guest invite" label="Create guest invite" onClose={onClose} busy={submitting}>
       <form onSubmit={handleSubmit}>
         <UsernameInput value={username} onChange={setUsername} autoFocus />
         <label className="block mb-3">
@@ -567,28 +573,31 @@ function CreateGuestModal({ onClose, onCreated }) {
   )
 }
 
-function Modal({ title, label, onClose, children }) {
+function Modal({ title, label, onClose, children, busy = false }) {
+  const requestClose = () => { if (!busy) onClose() }
   useEffect(() => {
-    const handleKey = (e) => { if (e.key === 'Escape') onClose() }
+    const handleKey = (e) => { if (e.key === 'Escape' && !busy) onClose() }
     document.addEventListener('keydown', handleKey)
     return () => document.removeEventListener('keydown', handleKey)
-  }, [onClose])
+  }, [onClose, busy])
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={onClose}>
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={requestClose}>
       <div
         className="bg-theme-card border border-theme-border rounded-xl p-6 w-full max-w-md"
         onClick={e => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
+        aria-busy={busy}
         aria-label={label}
       >
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-semibold text-theme-text">{title}</h2>
-          <button type="button" onClick={onClose} className="text-theme-text-muted hover:text-theme-text" aria-label="Close">
+          <button type="button" disabled={busy} onClick={requestClose} className="text-theme-text-muted hover:text-theme-text" aria-label="Close">
             <X size={20} />
           </button>
         </div>
+        {busy && <p role="status" className="mb-3 text-sm text-theme-text-muted">Creating your access link… Keep this dialog open until the result arrives.</p>}
         {children}
       </div>
     </div>
@@ -627,7 +636,7 @@ function FormError({ message }) {
 function ModalActions({ onCancel, submitting, submitLabel, disabled }) {
   return (
     <div className="flex justify-end gap-2">
-      <button type="button" onClick={onCancel} className="px-4 py-2 text-theme-text-muted hover:text-theme-text">
+      <button type="button" disabled={submitting} onClick={onCancel} className="px-4 py-2 text-theme-text-muted hover:text-theme-text">
         Cancel
       </button>
       <button
