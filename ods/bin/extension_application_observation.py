@@ -28,7 +28,7 @@ from extension_application_identity import (
     ApplicationIdentityError,
     identity_labels,
     parse_observed_labels,
-    produce_application_identity,
+    produce_application_observation_identity,
 )
 from extension_lifecycle_plan import LifecyclePlanMaterial
 from extension_lifecycle_receipts import (
@@ -512,7 +512,7 @@ def _validate_command(command: Any) -> ApplicationIdentity:
         _bad("command-plan-type-invalid")
 
     try:
-        identity = produce_application_identity(command)
+        identity = produce_application_observation_identity(command)
     except ApplicationIdentityError:
         _bad("command-identity-invalid")
 

@@ -187,6 +187,36 @@ def test_happy_path_identity_is_deterministic():
     assert id1.identity_sha256 == id2.identity_sha256
 
 
+def test_read_only_recovery_identity_does_not_authorize_apply() -> None:
+    applying = _bound_command()
+    parsed = _command(
+        f"apply:{SERVICE_ID}",
+        [SERVICE_ID],
+        {"operation": {"serviceId": SERVICE_ID, "action": ACTION}},
+    )
+    recovering = lifecycle_plan.bind_lifecycle_plan(
+        parsed,
+        _transaction("reconciling", [_definition(SERVICE_ID)]),
+        read_only_observation=True,
+    )
+    with pytest.raises(app_id.ApplicationIdentityError) as caught:
+        app_id.produce_application_identity(recovering)
+    assert caught.value.code == "plan-material-invalid"
+    assert app_id.produce_application_observation_identity(
+        recovering
+    ) == app_id.produce_application_identity(applying)
+    wrong_state = replace(
+        applying, plan_material=replace(applying.plan_material, state="verifying")
+    )
+    with pytest.raises(app_id.ApplicationIdentityError) as caught:
+        app_id.produce_application_observation_identity(wrong_state)
+    assert caught.value.code == "plan-material-invalid"
+    with pytest.raises(app_id.ApplicationIdentityError):
+        app_id._verify_apply_command(
+            recovering, read_only_observation=1  # type: ignore[arg-type]
+        )
+
+
 # ---------------------------------------------------------------------------
 # Label encoding / decoding round-trip
 # ---------------------------------------------------------------------------
@@ -742,4 +772,5 @@ def test_executor_remains_none():
         "identity_labels",
         "parse_observed_labels",
         "produce_application_identity",
+        "produce_application_observation_identity",
     ]

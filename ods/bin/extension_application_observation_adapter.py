@@ -18,7 +18,10 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Callable
 
-from extension_application_identity import LABEL_NAMESPACE, produce_application_identity
+from extension_application_identity import (
+    LABEL_NAMESPACE,
+    produce_application_observation_identity,
+)
 from extension_application_observation import (
     MAX_CONTAINERS,
     ApplicationObservationError,
@@ -425,7 +428,7 @@ class ApplicationObservationAdapter:
                 )
             ):
                 _fail("application-evidence-plan-unavailable")
-            identity = produce_application_identity(bound)
+            identity = produce_application_observation_identity(bound)
             record = self._records.snapshot(identity.service_id)
             if record is not None and type(record) is not ApplicationRecord:
                 _fail("application-evidence-record-invalid")

@@ -150,6 +150,25 @@ def test_exact_current_app_is_applied_without_claiming_health(tmp_path):
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="POSIX host evidence only")
+def test_reconciling_plan_observes_prior_apply_without_reenabling_effect(tmp_path):
+    _root, command, bound, identity, record, receipt = _installed(tmp_path)
+    recovering = replace(
+        bound, plan_material=replace(bound.plan_material, state="reconciling")
+    )
+    adapter = adapter_mod.ApplicationObservationAdapter(
+        tmp_path,
+        FakeRecords(record),
+        FakeReceipts(receipt),
+        lambda _command: recovering,
+        lambda: True,
+        FakeDocker(identity),
+    )
+    assert adapter(command).classification == "APPLIED"
+    with pytest.raises(identity_mod.ApplicationIdentityError):
+        identity_mod.produce_application_identity(recovering)
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="POSIX host evidence only")
 def test_no_files_record_or_containers_is_absent(tmp_path):
     _root, command, bound, identity, _record, _receipt = _installed(tmp_path)
     # Only the owner-prepared base root stays; there is no application mutation.

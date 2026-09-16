@@ -141,15 +141,18 @@ def _bound_command(
     payload: dict | None = None,
     compose: str | None = COMPOSE_SHA,
     action: str = ACTION,
+    state: str = "applying",
 ) -> lifecycle_work.LifecycleWorkCommand:
     if service_ids is None:
         service_ids = [SERVICE_ID]
     if payload is None:
         payload = {"operation": {"serviceId": service_ids[0], "action": action}}
     definitions = [_definition(s, compose) for s in service_ids]
-    tx = _transaction("applying", definitions, action)
+    tx = _transaction(state, definitions, action)
     cmd = _command(operation_key, service_ids, payload)
-    return lifecycle_plan.bind_lifecycle_plan(cmd, tx)
+    return lifecycle_plan.bind_lifecycle_plan(
+        cmd, tx, read_only_observation=state == "reconciling"
+    )
 
 
 def _get_identity() -> app_id.ApplicationIdentity:
@@ -404,6 +407,22 @@ def test_applied_started_only():
     assert result.identity_sha256 == identity.identity_sha256
     assert result.record_sha256 is not None
     assert len(result.containers) == 2
+
+
+def test_reconciling_read_only_observation_still_detects_applied_mutation():
+    identity = _get_identity()
+    command = _bound_command(state="reconciling")
+    evidence = _build_evidence(
+        record=_build_canonical_record(identity),
+        def_digest=DEFINITION_SHA,
+        compose_digest=COMPOSE_SHA,
+        config_digest=CONFIG_SHA,
+        containers=tuple(_container_observation(name) for name in CONTAINER_NAMES),
+        snapshot=_started_snapshot(identity),
+    )
+    result = obs_mod.observe_application(command, evidence)
+    assert result.classification == "APPLIED"
+    assert result.identity_sha256 == identity.identity_sha256
 
 
 def test_non_apply_command_is_rejected_before_classification():

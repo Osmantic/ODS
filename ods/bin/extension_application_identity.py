@@ -102,8 +102,12 @@ def _bad(code: str = "application-identity-error") -> None:
     raise ApplicationIdentityError(code) from None
 
 
-def _verify_apply_command(command: Any) -> None:
+def _verify_apply_command(
+    command: Any, *, read_only_observation: bool = False
+) -> None:
     """Verify command is a plan-bound apply:<serviceId> command."""
+    if type(read_only_observation) is not bool:
+        _bad("plan-material-invalid")
     if not isinstance(command, LifecycleWorkCommand):
         _bad("not-a-command")
     if command.plan_material is None:
@@ -126,7 +130,9 @@ def _verify_apply_command(command: Any) -> None:
         _bad("operation-must-be-apply-service")
     if _SERVICE_ID_RE.fullmatch(suffix) is None:
         _bad("service-id-invalid")
-    if material.state != "applying":
+    if material.state != "applying" and not (
+        read_only_observation and material.state == "reconciling"
+    ):
         _bad("plan-material-invalid")
 
 
@@ -247,6 +253,21 @@ def produce_application_identity(
     Raises ``ApplicationIdentityError`` on any binding failure.
     """
     _verify_apply_command(command)
+    material: LifecyclePlanMaterial = command.plan_material  # type: ignore[assignment]
+    definition = _find_definition(command, material)
+    return _build_identity(command, definition)
+
+
+def produce_application_observation_identity(
+    command: LifecycleWorkCommand,
+) -> ApplicationIdentity:
+    """Derive the original apply identity during read-only crash recovery.
+
+    Mutating apply callers must keep using ``produce_application_identity``,
+    which refuses a transaction that has entered reconciliation.
+    """
+
+    _verify_apply_command(command, read_only_observation=True)
     material: LifecyclePlanMaterial = command.plan_material  # type: ignore[assignment]
     definition = _find_definition(command, material)
     return _build_identity(command, definition)
@@ -480,4 +501,5 @@ __all__ = [
     "identity_labels",
     "parse_observed_labels",
     "produce_application_identity",
+    "produce_application_observation_identity",
 ]

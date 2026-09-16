@@ -316,6 +316,36 @@ def test_bind_accepts_empty_present_reservation_claims():
     assert material.exclusive == ()
 
 
+def test_apply_recovery_binding_is_read_only_and_keeps_original_plan() -> None:
+    parsed = command("apply:documents", ["documents"], {"operation": INSTALL})
+    stored = transaction("reconciling")
+    with pytest.raises(lifecycle_work.LifecycleWorkValidationError):
+        lifecycle_plan.bind_lifecycle_plan(parsed, stored)
+    bound = lifecycle_plan.bind_lifecycle_plan(
+        parsed, stored, read_only_observation=True
+    )
+    assert bound.plan_material.state == "reconciling"
+    assert bound.request_hash == parsed.request_hash
+    with pytest.raises(lifecycle_work.LifecycleWorkValidationError):
+        lifecycle_plan.bind_lifecycle_plan(
+            parsed, transaction("verifying"), read_only_observation=True
+        )
+    with pytest.raises(lifecycle_work.LifecycleWorkValidationError):
+        lifecycle_plan.bind_lifecycle_plan(
+            parsed, stored, read_only_observation=1  # type: ignore[arg-type]
+        )
+    with pytest.raises(lifecycle_work.LifecycleWorkValidationError):
+        lifecycle_plan.bind_lifecycle_plan(
+            command(
+                "verify",
+                ["documents", "voice"],
+                {"serviceIds": ["documents", "voice"]},
+            ),
+            stored,
+            read_only_observation=True,
+        )
+
+
 def test_host_binding_preserves_library_tree_digest_and_refuses_builtin_claim():
     stored = transaction("applying")
     target = stored["envelope"]["plan"]["definitions"][0]

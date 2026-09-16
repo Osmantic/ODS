@@ -516,10 +516,14 @@ def bind_lifecycle_plan(
     transaction: Any,
     *,
     require_attested_approval: bool = False,
+    read_only_observation: bool = False,
 ) -> LifecycleWorkCommand:
     """Return the command with immutable material from one exact approved plan."""
 
-    if type(require_attested_approval) is not bool:
+    if (
+        type(require_attested_approval) is not bool
+        or type(read_only_observation) is not bool
+    ):
         _reject()
     if not isinstance(command, LifecycleWorkCommand) or command.plan_material is not None:
         _reject()
@@ -571,7 +575,9 @@ def bind_lifecycle_plan(
     prior_data_bindings = _prior_data_bindings(plan.get("priorDataBindings", []), operations)
 
     prefix = command.operation_key.partition(":")[0]
-    if state not in _ALLOWED_STATES.get(prefix, frozenset()):
+    if state not in _ALLOWED_STATES.get(prefix, frozenset()) and not (
+        read_only_observation and prefix == "apply" and state == "reconciling"
+    ):
         _reject()
     _expected_request(command, operations)
 

@@ -580,6 +580,13 @@ completed verification receipt, and replay checks fresh evidence again. This
 is a source-level pilot check, not a claim that the app's real user journey or
 the full extension library has been qualified.
 
+Crash recovery moves a transaction from `applying` to `reconciling`. The
+read-only application observer may rebind the original approved apply request
+in that recovery state and classify its current mutation as `ABSENT` or
+`APPLIED`; the mutating apply identity and dispatcher still require `applying`.
+This source contract does not yet expose a transaction-wide observation route
+or enable the Dashboard executor.
+
 ## Evidence boundary
 
 The source contract checks resolver ordering, the exact candidate service set,

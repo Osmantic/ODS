@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -29,6 +30,7 @@ from extension_lifecycle_plan import (  # noqa: E402
 from extension_lifecycle_work import (  # noqa: E402
     LifecycleWorkCommand,
     LifecycleWorkStartedObservation,
+    LifecycleWorkValidationError,
     dispatch_receipted_lifecycle_work,
 )
 
@@ -81,6 +83,17 @@ def _command() -> LifecycleWorkCommand:
             attested_approval=True,
         ),
     )
+
+
+def test_recovery_observation_never_reenables_apply_dispatch() -> None:
+    applying = _command()
+    recovering = replace(
+        applying,
+        plan_material=replace(applying.plan_material, state="reconciling"),
+    )
+    with pytest.raises(LifecycleWorkValidationError) as caught:
+        runtime._validate_dispatch_command(recovering)
+    assert caught.value.code == "library-application-plan-mismatch"
 
 
 def _identity() -> ApplicationIdentity:
