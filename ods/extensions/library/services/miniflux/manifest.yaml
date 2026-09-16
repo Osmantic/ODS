@@ -1,0 +1,51 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: miniflux
+  name: Miniflux (Feed Reader)
+  description: "Self-hosted RSS and Atom reading with an authenticated API for local research workflows."
+  aliases: [feed-reader]
+  container_name: ods-miniflux
+  default_host: miniflux
+  port: 8080
+  external_port_env: MINIFLUX_PORT
+  external_port_default: 8098
+  health: /healthcheck
+  ui_path: /
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [rss, research, reading]
+  env_vars:
+    - key: MINIFLUX_PORT
+      description: "Published HTTP port"
+      default: "8098"
+    - key: MINIFLUX_BASE_URL
+      description: "Client-facing URL; update when changing port or hostname"
+      default: "http://localhost:8098"
+    - key: MINIFLUX_DB_PASSWORD
+      description: "Password for the private PostgreSQL database; retain after initialization"
+      required: true
+      secret: true
+    - key: MINIFLUX_ADMIN_PASSWORD
+      description: "Initial password for the admin account; later changes use the Miniflux UI"
+      required: true
+      secret: true
+features:
+  - id: feed-library
+    name: Feed Library
+    description: "Collect RSS and Atom articles for reading and authenticated workflow access"
+    icon: Rss
+    category: productivity
+    requirements:
+      services: [miniflux]
+      vram_gb: 0
+    enabled_services_all: [miniflux]
+    setup_time: "~2 minutes after setting credentials"
+    priority: 31
+    launch:
+      type: service
+      service: miniflux

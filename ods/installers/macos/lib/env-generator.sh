@@ -78,6 +78,11 @@ upsert_env_value() {
     if grep -qE "^${key}=" "$env_path" 2>/dev/null; then
         sed -i '' "s|^${key}=.*|${key}=${value}|" "$env_path"
     else
+        # Appending after a last line that has no newline would join the new
+        # assignment onto that line and corrupt both keys.
+        if [[ -s "$env_path" && -n "$(tail -c 1 "$env_path")" ]]; then
+            printf '\n' >> "$env_path"
+        fi
         printf '%s=%s\n' "$key" "$value" >> "$env_path"
     fi
 }
@@ -171,9 +176,9 @@ detect_timezone() {
 }
 
 normalize_ods_model_switchboard() {
-    case "${1:-observe}" in
+    case "${1:-enabled}" in
         legacy|observe|enabled) printf '%s\n' "$1" ;;
-        *) printf '%s\n' "observe" ;;
+        *) printf '%s\n' "enabled" ;;
     esac
 }
 
@@ -195,6 +200,8 @@ generate_ods_env() {
     local detected_cpu_limit detected_cpu_reservation
     local tts_cpu_limit tts_cpu_reservation whisper_cpu_limit whisper_cpu_reservation
     local hermes_cpu_limit hermes_cpu_reservation comfyui_cpu_limit comfyui_cpu_reservation
+    local host_uid="${SUDO_UID:-$(id -u)}"
+    local host_gid="${SUDO_GID:-$(id -g)}"
     read -r cpu_limit_raw cpu_reservation_raw docker_available_cpus <<< "$(calculate_llama_cpu_budget "apple")"
     detected_cpu_limit="${cpu_limit_raw}.0"
     detected_cpu_reservation="${cpu_reservation_raw}.0"
@@ -243,10 +250,23 @@ generate_ods_env() {
         upsert_env_value "$env_path" "HERMES_CPU_RESERVATION" "$hermes_cpu_reservation"
         upsert_env_value "$env_path" "COMFYUI_CPU_LIMIT" "$comfyui_cpu_limit"
         upsert_env_value "$env_path" "COMFYUI_CPU_RESERVATION" "$comfyui_cpu_reservation"
+        local compose_uid compose_gid
+        compose_uid="$(read_env_value "$env_path" "ODS_UID")"
+        compose_gid="$(read_env_value "$env_path" "ODS_GID")"
+        [[ -n "$compose_uid" ]] || compose_uid="$(read_env_value "$env_path" "UID")"
+        [[ -n "$compose_gid" ]] || compose_gid="$(read_env_value "$env_path" "GID")"
+        compose_uid="${compose_uid:-$host_uid}"
+        compose_gid="${compose_gid:-$host_gid}"
+        if [[ ! "$compose_uid" =~ ^[0-9]+$ || ! "$compose_gid" =~ ^[0-9]+$ ]]; then
+            printf 'ERROR: ODS_UID and ODS_GID must be non-negative integers\n' >&2
+            return 1
+        fi
+        upsert_env_value "$env_path" "ODS_UID" "$compose_uid"
+        upsert_env_value "$env_path" "ODS_GID" "$compose_gid"
 
         local _switchboard_mode
         _switchboard_mode="$(read_env_value "$env_path" "ODS_MODEL_SWITCHBOARD")"
-        [[ -n "$_switchboard_mode" ]] || _switchboard_mode="${ODS_MODEL_SWITCHBOARD:-observe}"
+        [[ -n "$_switchboard_mode" ]] || _switchboard_mode="${ODS_MODEL_SWITCHBOARD:-enabled}"
         _switchboard_mode="$(normalize_ods_model_switchboard "$_switchboard_mode")"
         upsert_env_value "$env_path" "ODS_MODEL_SWITCHBOARD" "$_switchboard_mode"
         if [[ "$_switchboard_mode" == "enabled" ]]; then
@@ -433,22 +453,24 @@ generate_ods_env() {
     # bridge loopback-only host services through that scoped interface.
     local macos_llm_bridge_enabled="false"
     local macos_host_agent_bridge_enabled="false"
-    local native_llama_port="8080"
+    # Host port the native Metal llama-server binds. Honour a pre-set value so
+    # an operator whose 8080 is taken can relocate ODS; every derived URL and
+    # the container readiness probe below follow this one variable.
+    local native_llama_port="${ODS_NATIVE_LLAMA_PORT:-8080}"
     local macos_host_gateway=""
     local macos_vm_ip=""
     local agent_host="host.docker.internal"
-    local llm_api_url="http://host.docker.internal:8080"
+    local llm_api_url="http://host.docker.internal:${native_llama_port}"
     local switchboard_mode
-    switchboard_mode="$(normalize_ods_model_switchboard "${ODS_MODEL_SWITCHBOARD:-observe}")"
+    switchboard_mode="$(normalize_ods_model_switchboard "${ODS_MODEL_SWITCHBOARD:-enabled}")"
     if [[ "${DOCKER_BACKEND:-unknown}" == "colima" ]]; then
         macos_llm_bridge_enabled="true"
         macos_host_agent_bridge_enabled="true"
-        native_llama_port="8080"
         macos_host_gateway="${COLIMA_HOST_IP:-}"
         macos_vm_ip="${COLIMA_VM_IP:-}"
         if [[ -n "$macos_host_gateway" ]]; then
             agent_host="$macos_host_gateway"
-            llm_api_url="http://${macos_host_gateway}:8080"
+            llm_api_url="http://${macos_host_gateway}:${native_llama_port}"
         fi
     fi
 
@@ -511,13 +533,14 @@ HOST_LAN_IP=${host_lan_ip}
 ODS_DEVICE_NAME=${device_name}
 # Container route to the loopback-only host agent (private Colima bridge or Docker Desktop helper).
 ODS_AGENT_HOST=${ODS_AGENT_HOST:-${agent_host}}
+# Docker Desktop preserves the installation owner's data group on bind mounts.
+REMOTE_PROVIDER_DATA_GID=$(id -g 2>/dev/null || echo 20)
 
 #=== LLM Backend Mode ===
 ODS_MODE=local
 ODS_MODEL_SWITCHBOARD=${switchboard_mode}
 LLM_BACKEND=llama-server
 LLM_API_URL=${llm_api_url}
-LLM_BACKEND=llama-server
 
 #=== Cloud API Keys ===
 ANTHROPIC_API_KEY=
@@ -572,8 +595,13 @@ HERMES_CPU_RESERVATION=${hermes_cpu_reservation}
 COMFYUI_CPU_LIMIT=${comfyui_cpu_limit}
 COMFYUI_CPU_RESERVATION=${comfyui_cpu_reservation}
 
+#=== Host File Ownership ===
+# Docker Compose reads these from .env without colliding with Bash's readonly UID.
+ODS_UID=${host_uid}
+ODS_GID=${host_gid}
+
 #=== Ports ===
-OLLAMA_PORT=8080
+OLLAMA_PORT=${native_llama_port}
 WEBUI_PORT=3000
 SEARXNG_PORT=8888
 PERPLEXICA_PORT=3004
@@ -637,7 +665,7 @@ EMBEDDINGS_MEMORY_LIMIT=${embeddings_memory_limit}
 #=== Web UI Settings ===
 # Loopback installs open directly. Network-bound installs require a login.
 WEBUI_AUTH=${webui_auth}
-ENABLE_WEB_SEARCH=true
+ENABLE_WEB_SEARCH=${ENABLE_WEB_SEARCH:-true}
 WEB_SEARCH_ENGINE=searxng
 OPEN_WEBUI_LLM_BASE_URL=${open_webui_llm_base_url}
 OPEN_WEBUI_LLM_API_KEY=${open_webui_llm_api_key}
@@ -704,6 +732,9 @@ search:
     - html
     - json
 engines:
+  - name: bing
+    # Requalify before enabling: https://github.com/searxng/searxng/pull/6671
+    disabled: true
   - name: duckduckgo
     disabled: false
   - name: google

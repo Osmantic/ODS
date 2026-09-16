@@ -159,12 +159,16 @@ while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
     continue
   fi
 
-  # Remove inline comments only when value is unquoted.
-  # Example: FOO=bar # comment
-  # Keep hashes inside quotes.
-  if [[ "$value" != "\""* && "$value" != "'"* ]]; then
-    value="$(trim "${value%%#*}")"
-  fi
+  # Docker Compose's inline-comment rule, so the value validated here is the
+  # value the containers receive: an unquoted value ends at the first " #"
+  # (a '#' without a leading space is data, e.g. a secret or a URL fragment),
+  # and a quoted value may carry a " #..." note after its closing quote.
+  # Hashes inside quotes are kept.
+  case "$value" in
+    \"*) [[ "$value" =~ ^(\"(\\.|[^\"\\])*\")[[:space:]]+# ]] && value="${BASH_REMATCH[1]}" ;;
+    \'*) [[ "$value" =~ ^(\'[^\']*\')[[:space:]]+# ]] && value="${BASH_REMATCH[1]}" ;;
+    *)   value="${value%% #*}" ;;
+  esac
 
   value="$(trim "$value")"
   value="$(unquote "$value")"

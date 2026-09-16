@@ -20,6 +20,36 @@ log_ok()    { echo -e "${GREEN}[OK]${NC} $*"; }
 log_warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 
+SUDO_CREDENTIAL_READY=false
+
+prepare_sudo_credential() {
+    if [[ "$(id -u)" -eq 0 ]]; then
+        return 0
+    fi
+    if $SUDO_CREDENTIAL_READY; then
+        return 0
+    fi
+    if ! command -v sudo >/dev/null 2>&1; then
+        return 1
+    fi
+
+    log_info "Administrator privileges are required for system-owned ODS files."
+    # Keep the credential prompt attached directly to the terminal. Wrapping an
+    # interactive sudo invocation in `timeout` can prevent sudo from managing
+    # terminal echo correctly on some systems.
+    sudo -v
+    SUDO_CREDENTIAL_READY=true
+}
+
+run_sudo() {
+    if [[ "$(id -u)" -eq 0 ]]; then
+        "$@"
+        return
+    fi
+    prepare_sudo_credential || return 1
+    sudo -n -- "$@"
+}
+
 resolve_compose_flags() {
     local flags=""
 
@@ -72,7 +102,9 @@ Options:
 This will remove:
     - Docker containers, images, and volumes for ODS
     - Installation directory ($INSTALL_DIR)
+    - ODS-managed Pixel host services and private configuration
     - Systemd user services (opencode-web, openclaw timers)
+    - Systemd system services (ods-host-agent, ods-mdns)
     - macOS LaunchAgents (com.ods.host-agent, com.ods.opencode-web, legacy agents)
     - CLI symlinks (/usr/local/bin/ods, ~/.local/bin/ods, legacy /usr/local/bin/ods-cli)
     - Backup directory (~/.ods)
@@ -117,12 +149,45 @@ fi
 
 if [[ "$FORCE" != "true" ]]; then
     echo -e "${YELLOW}This will permanently remove ODS and its components.${NC}"
-    read -rp "Are you sure? Type 'yes' to confirm: " confirm
+    read -rp "Are you sure? Type 'yes' to confirm: " confirm || confirm=""
     if [[ "$confirm" != "yes" ]]; then
         log_info "Uninstall cancelled."
         exit 0
     fi
     echo ""
+fi
+
+# Retire verified host services before deleting their installation or data.
+if [[ "$(uname -s)" == "Linux" ]]; then
+    if [[ -f "$SCRIPT_DIR/lib/system-uninstall.sh" ]]; then
+        . "$SCRIPT_DIR/lib/system-uninstall.sh"
+        if ! ods_uninstall_system_units "$INSTALL_DIR" "$HOME"; then
+            log_error "System service cleanup failed; installation retained"
+            exit 1
+        fi
+    elif [[ -e /etc/systemd/system/ods-host-agent.service || -e /etc/systemd/system/ods-mdns.service ]]; then
+        log_error "System service uninstall helper is missing; installation retained"
+        exit 1
+    fi
+fi
+
+# Validate and remove Pixel before any broader uninstall mutation. The helper
+# is marker-bound to this exact install and fails closed on ambient or drifted
+# Pixel state.
+if [[ "$(uname -s)" == "Linux" ]]; then
+    _ods_pixel_marker="$HOME/.config/ods/pixel-managed.json"
+    if [[ -f "$SCRIPT_DIR/lib/pixel-uninstall.sh" ]]; then
+        # shellcheck source=lib/pixel-uninstall.sh
+        . "$SCRIPT_DIR/lib/pixel-uninstall.sh"
+        if ! ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME"; then
+            log_error "Pixel cleanup failed before ODS uninstall mutation"
+            exit 1
+        fi
+    elif [[ -e "$_ods_pixel_marker" || -L "$_ods_pixel_marker" ]]; then
+        log_error "ODS-managed Pixel marker exists but its uninstall helper is missing"
+        exit 1
+    fi
+    unset _ods_pixel_marker
 fi
 
 # 1. Stop and remove Docker containers
@@ -283,19 +348,6 @@ if (( ${#_ods_uninstall_orphan_pids[@]} > 0 )); then
 fi
 unset _ods_uninstall_orphan_pids _pid
 
-# Remove system-mode ods-host-agent unit (migrated from --user mode).
-# Idempotent — no-op if the unit was never installed (e.g. older user-mode installs).
-if systemctl is-enabled ods-host-agent.service >/dev/null 2>&1; then
-    if ! timeout 20s sudo systemctl disable --now ods-host-agent.service 2>/dev/null; then
-        log_warn "ods-host-agent did not stop cleanly; forcing service shutdown"
-        sudo systemctl kill -s SIGKILL ods-host-agent.service 2>/dev/null || true
-        timeout 10s sudo systemctl disable ods-host-agent.service 2>/dev/null || true
-    fi
-fi
-sudo rm -f /etc/systemd/system/ods-host-agent.service 2>/dev/null || true
-sudo systemctl daemon-reload 2>/dev/null || true
-log_ok "Systemd services removed"
-
 # 3. Remove CLI symlinks
 _removed_cli_symlink=false
 for _ods_cli_link in "/usr/local/bin/ods" "$HOME/.local/bin/ods" "/usr/local/bin/ods-cli"; do
@@ -303,7 +355,7 @@ for _ods_cli_link in "/usr/local/bin/ods" "$HOME/.local/bin/ods" "/usr/local/bin
         log_info "Removing CLI symlink: $_ods_cli_link"
         case "$_ods_cli_link" in
             /usr/local/bin/*)
-                sudo rm -f "$_ods_cli_link" 2>/dev/null || rm -f "$_ods_cli_link" 2>/dev/null || true
+                run_sudo rm -f "$_ods_cli_link" 2>/dev/null || rm -f "$_ods_cli_link" 2>/dev/null || true
                 ;;
             *)
                 rm -f "$_ods_cli_link" 2>/dev/null || true
@@ -352,7 +404,7 @@ else
     # blessed for this codebase. If sudo is unavailable, fall back to a
     # best-effort rm and let the operator see the failures explicitly.
     if command -v sudo >/dev/null 2>&1; then
-        sudo chown -R "$(id -u):$(id -g)" "$INSTALL_DIR" 2>/dev/null || \
+        run_sudo chown -R "$(id -u):$(id -g)" "$INSTALL_DIR" 2>/dev/null || \
             log_warn "Could not chown $INSTALL_DIR (container-UID files may remain)"
     else
         log_warn "sudo not available; attempting non-privileged removal of $INSTALL_DIR"

@@ -60,14 +60,57 @@ def data_dir(tmp_path, monkeypatch):
 
 @pytest.fixture()
 def setup_config_dir(tmp_path, monkeypatch):
-    """Provide an isolated config directory for setup/persona files."""
+    """Provide isolated setup files behind a fake host-agent boundary."""
     d = tmp_path / "config"
     d.mkdir()
-    import config
-    monkeypatch.setattr(config, "SETUP_CONFIG_DIR", d)
-    # Also patch the setup router which imports SETUP_CONFIG_DIR at the top
     import routers.setup as setup_router
-    monkeypatch.setattr(setup_router, "SETUP_CONFIG_DIR", d)
+
+    def fake_setup_agent(method, path, payload=None, timeout=5):
+        del timeout
+        if method == "GET" and path == "/v1/setup/state":
+            def read_object(name):
+                state_file = d / name
+                if not state_file.exists():
+                    return False, None
+                try:
+                    value = json.loads(state_file.read_text(encoding="utf-8"))
+                except json.JSONDecodeError:
+                    return True, None
+                return True, value if isinstance(value, dict) else None
+
+            complete_exists, _ = read_object("setup-complete.json")
+            _, progress = read_object("setup-progress.json")
+            _, persona_data = read_object("persona.json")
+            return {
+                "first_run": not complete_exists,
+                "step": progress.get("step", 0) if progress else 0,
+                "persona": persona_data.get("persona") if persona_data else None,
+                "persona_data": persona_data,
+            }
+
+        if method == "POST" and path == "/v1/setup/persona":
+            assert payload is not None
+            (d / "persona.json").write_text(
+                json.dumps(payload, indent=2),
+                encoding="utf-8",
+            )
+            (d / "setup-progress.json").write_text(
+                json.dumps({"step": 2, "persona_selected": True}),
+                encoding="utf-8",
+            )
+            return {"success": True}
+
+        if method == "POST" and path == "/v1/setup/complete":
+            (d / "setup-complete.json").write_text(
+                json.dumps({"completed_at": "now", "version": "1.0.0"}),
+                encoding="utf-8",
+            )
+            (d / "setup-progress.json").unlink(missing_ok=True)
+            return {"success": True}
+
+        raise AssertionError(f"Unexpected setup host-agent request: {method} {path}")
+
+    monkeypatch.setattr(setup_router, "request_agent_json", fake_setup_agent)
     return d
 
 

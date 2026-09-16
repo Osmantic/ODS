@@ -76,7 +76,7 @@ find_config() {
 parse_config() {
     local conf_file="$1"
     local section=""
-    while IFS= read -r line; do
+    while IFS= read -r line || [[ -n "$line" ]]; do
         line="${line%%#*}"
         line="${line#"${line%%[![:space:]]*}"}"
         line="${line%"${line##*[![:space:]]}"}"
