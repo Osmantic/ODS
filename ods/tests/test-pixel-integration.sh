@@ -102,6 +102,24 @@ else
     fail "Ubuntu 24.04 + systemd should be qualified"
 fi
 
+# Ubuntu 26.04 + systemd
+F_FIXTURE="$TMPDIR_TEST/ubuntu2604"
+mkdir -p "$F_FIXTURE"
+create_os_release "$F_FIXTURE/os-release" \
+    'NAME="Ubuntu"' \
+    'VERSION="26.04 LTS"' \
+    'ID=ubuntu' \
+    'ID_LIKE=debian' \
+    'VERSION_ID="26.04"' \
+    'PRETTY_NAME="Ubuntu 26.04 LTS"'
+create_proc1_comm "$F_FIXTURE/proc1" "systemd"
+create_proc_version "$F_FIXTURE/procver" "Linux version 7.0.0-29-generic (Ubuntu 7.0.0-29.29-generic)..."
+if ods_pixel_host_qualified "$F_FIXTURE/os-release" "$F_FIXTURE/proc1" "$F_FIXTURE/procver"; then
+    pass "Ubuntu 26.04 + systemd is qualified"
+else
+    fail "Ubuntu 26.04 + systemd should be qualified"
+fi
+
 # Debian 12 + systemd
 F_FIXTURE="$TMPDIR_TEST/debian12"
 mkdir -p "$F_FIXTURE"
@@ -137,6 +155,24 @@ if ods_pixel_host_qualified "$F_FIXTURE/os-release" "$F_FIXTURE/proc1" "$F_FIXTU
     pass "WSL2 + Ubuntu 24.04 + systemd is qualified"
 else
     fail "WSL2 + Ubuntu 24.04 + systemd should be qualified"
+fi
+
+# WSL2 + Ubuntu 26.04 + systemd (should be qualified)
+F_FIXTURE="$TMPDIR_TEST/wsl2-ubuntu2604-systemd"
+mkdir -p "$F_FIXTURE"
+create_os_release "$F_FIXTURE/os-release" \
+    'NAME="Ubuntu"' \
+    'VERSION="26.04 LTS"' \
+    'ID=ubuntu' \
+    'ID_LIKE=debian' \
+    'VERSION_ID="26.04"' \
+    'PRETTY_NAME="Ubuntu 26.04 LTS"'
+create_proc1_comm "$F_FIXTURE/proc1" "systemd"
+create_proc_version "$F_FIXTURE/procver" "Linux version 7.0.0-microsoft-standard-WSL2..."
+if ods_pixel_host_qualified "$F_FIXTURE/os-release" "$F_FIXTURE/proc1" "$F_FIXTURE/procver"; then
+    pass "WSL2 + Ubuntu 26.04 + systemd is qualified"
+else
+    fail "WSL2 + Ubuntu 26.04 + systemd should be qualified"
 fi
 
 # WSL1-like kernel string remains unqualified even if a fixture claims systemd.

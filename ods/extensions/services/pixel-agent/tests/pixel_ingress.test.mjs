@@ -65,6 +65,11 @@ function fakeGateway({
     let body = "";
     req.on("data", (c) => (body += c));
     req.on("end", () => {
+      if (req.url === '/health') {
+        res.writeHead(200, {'Content-Type':'application/json'});
+        res.end(JSON.stringify({ok:true}));
+        return;
+      }
       const captured = {
         method: req.method,
         url: req.url,
@@ -116,6 +121,26 @@ function startIngress({ token = TOKEN, gatewayPort, socket, deps } = {}) {
     server.listen(socket);
   });
 }
+
+test('re-reads a briefly unavailable final receipt without resubmitting work', async()=>{
+  let submissions=0, reads=0;
+  const verification={status:'unavailable'};
+  const gw=await fakeGateway({verification,onRequest:()=>submissions++,onVerificationRequest:()=>{
+    reads++;
+    if(reads===2)verification.status='none';
+  }});
+  const srv=await startIngress({gatewayPort:gw.port});
+  try {
+    const response=await request(srv,'POST','/v1/chat/completions',{
+      body:JSON.stringify({messages:[{role:'user',content:'Do the work'}],stream:true}),headers:{'Content-Type':'application/json'},
+    });
+    assert.equal(response.status,200);
+    assert.ok(response.body.includes('"pixel_outcome":{"schemaVersion":1,"status":"none"}'));
+    assert.equal(submissions,1);assert.equal(reads,2);
+  } finally {
+    await new Promise(resolve=>srv.close(resolve));await new Promise(resolve=>gw.server.close(resolve));
+  }
+});
 
 function request(server, method, pathname, opts = {}) {
   return new Promise((resolve, reject) => {
@@ -418,6 +443,97 @@ test("cancel survives the bounded OpenClaw run-mapping startup race", async () =
     }
   } finally {
     await new Promise((resolve) => gw.server.close(resolve));
+  }
+});
+
+test("successful explicit cancel closes only the matching gateway transport", async () => {
+  const upstreamClosed = new Map();
+  const upstreamObserved = new Map();
+  const upstream = http.createServer((req, res) => {
+    let body = "";
+    req.on("data", (chunk) => (body += chunk));
+    req.on("end", () => {
+      const parsed = body ? JSON.parse(body) : {};
+      if (req.url === "/pixel-ods/abort") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ aborted: true }));
+        return;
+      }
+      const user = parsed.user;
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.flushHeaders();
+      upstreamObserved.get(user)?.();
+      res.on("close", () => upstreamClosed.get(user)?.(!res.writableEnded));
+      // Keep both provider transports open until cancellation or test cleanup.
+    });
+  });
+  await new Promise((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+  const ingress = await startIngress({ gatewayPort: upstream.address().port });
+  const clients = [];
+  const openChat = (rawUser) => {
+    const opaqueUser = computeSessionUser({ user: rawUser });
+    const observed = new Promise((resolve) => upstreamObserved.set(opaqueUser, resolve));
+    const closed = new Promise((resolve) => upstreamClosed.set(opaqueUser, resolve));
+    const response = new Promise((resolve, reject) => {
+      const client = http.request(
+        {
+          socketPath: ingress.address(),
+          method: "POST",
+          path: "/v1/chat/completions",
+          headers: { "Content-Type": "application/json" },
+        },
+        (res) => {
+          res.once("error", () => {});
+          clients.push(res);
+          resolve(res);
+        }
+      );
+      client.once("error", reject);
+      clients.push(client);
+      client.end(JSON.stringify({
+        user: rawUser,
+        stream: true,
+        messages: [{ role: "user", content: "keep generating" }],
+      }));
+    });
+    return { opaqueUser, observed, closed, response };
+  };
+
+  try {
+    const cancelled = openChat("cancel-this-chat");
+    const retained = openChat("leave-this-chat-running");
+    await Promise.all([
+      cancelled.observed,
+      retained.observed,
+      cancelled.response,
+      retained.response,
+    ]);
+
+    const cancel = await request(ingress, "POST", "/v1/chat/cancel", {
+      body: JSON.stringify({ user: "cancel-this-chat" }),
+      headers: { "Content-Type": "application/json" },
+    });
+    assert.equal(cancel.status, 200);
+    assert.deepEqual(JSON.parse(cancel.body), { aborted: true });
+    assert.equal(
+      await Promise.race([
+        cancelled.closed,
+        new Promise((resolve) => setTimeout(() => resolve(false), 2000)),
+      ]),
+      true
+    );
+    assert.equal(
+      await Promise.race([
+        retained.closed,
+        new Promise((resolve) => setTimeout(() => resolve("still-open"), 100)),
+      ]),
+      "still-open",
+      "cancelling one opaque user must not close another user's provider transport"
+    );
+  } finally {
+    for (const client of clients) client.destroy?.();
+    await new Promise((resolve) => ingress.close(resolve));
+    await new Promise((resolve) => upstream.close(resolve));
   }
 });
 
@@ -860,6 +976,46 @@ test("SSE releases content-free task observations only in the matching terminal 
   }
 });
 
+test('terminal SSE preserves v4 verified project associations without a web publication',async()=>{
+  const stamp='2026-09-16T10:00:00.000Z';
+  const project={schemaVersion:1,kind:'ods-workspace-project',relativeDirectory:'Playground/http-method-smoke',observedAt:stamp};
+  const task={schemaVersion:4,runId:TEST_RUN_ID,startedAt:stamp,finishedAt:stamp,state:'completed',calls:0,failures:0,blocked:0,truncated:false,activities:[],events:[],context:null,goal:null,projects:[project]};
+  const gw=await fakeGateway({verification:{status:'none',task}});
+  const srv=await startIngress({gatewayPort:gw.port});
+  try {
+    const response=await request(srv,'POST','/v1/chat/completions',{body:JSON.stringify({stream:true,messages:[{role:'user',content:'test'}]}),headers:{'Content-Type':'application/json'}});
+    assert.equal(response.status,200);
+    const frames=response.body.split('\n').filter(line=>line.startsWith('data: {')).map(line=>JSON.parse(line.slice(6)));
+    assert.equal(frames.filter(frame=>frame.pixel_task).length,1);
+    assert.deepEqual(frames.at(-1).pixel_task,task);
+    assert.equal(frames.at(-1).choices[0].finish_reason,'stop');
+    assert.equal(frames.at(-1).pixel,undefined);
+  } finally {await new Promise(resolve=>srv.close(resolve));await new Promise(resolve=>gw.server.close(resolve));}
+});
+
+test('question cards come only from validated pending verification on the terminal frame', async () => {
+  const questions=[{id:'style',question:'Qual estilo?',options:['Clean','Colorido']}];
+  for (const verification of [
+    {status:'pending',text:'Qual estilo?',questions},
+    {status:'passed',text:'Qual estilo?',questions},
+    {status:'pending',text:'Qual estilo?',questions:[{...questions[0],options:['Only']}]}]) {
+    const valid=verification.status==='pending' && verification.questions===questions;
+    const gw=await fakeGateway({verification,completionText:'I chose for you.'});
+    const srv=await startIngress({gatewayPort:gw.port});
+    try {
+      const response=await request(srv,'POST','/v1/chat/completions',{body:JSON.stringify({stream:true,messages:[{role:'user',content:'Ask first'}]}),headers:{'Content-Type':'application/json'}});
+      assert.doesNotMatch(response.body,/I chose for you/);
+      if (!valid) { assert.match(response.body,/upstream stream failed/); assert.doesNotMatch(response.body,/pixel_questions/); }
+      else {
+        const frames=response.body.split('\n').filter(line=>line.startsWith('data: {')).map(line=>JSON.parse(line.slice(6)));
+        assert.equal(frames.filter(frame=>frame.pixel_questions).length,1);
+        assert.deepEqual(frames.at(-1).pixel_questions,{schemaVersion:1,questions});
+        assert.equal(frames.at(-1).choices[0].finish_reason,'stop');
+      }
+    } finally { await new Promise(resolve=>srv.close(resolve)); await new Promise(resolve=>gw.server.close(resolve)); }
+  }
+});
+
 test("Operations verification text above the bounded 32 KiB cap remains fail-closed", async () => {
   const gw = await fakeGateway({
     verification: { status: "passed", text: "x".repeat(32 * 1024 + 1) },
@@ -1098,7 +1254,7 @@ test("preview delivery preserves useful answers and retains stale snapshots with
           const frames = stream ? response.body.split("\n").filter(line => line.startsWith("data: {")).map(line => JSON.parse(line.slice(6))) : [];
           const delivered = stream ? frames.map(frame => frame.choices?.[0]?.delta?.content ?? "").join("") : JSON.parse(response.body).choices[0].message.content;
           assert.equal(delivered, status === "passed" && completionText ? `${prose}\n\n${text}\n${scope}` : text);
-          if (stream) assert.deepEqual(frames.at(-1).pixel, { schemaVersion: 1, preview });
+          if (stream) { assert.deepEqual(frames.at(-1).pixel, { schemaVersion: 1, preview }); assert.deepEqual(frames.at(-1).pixel_outcome, { schemaVersion: 1, status }); }
         } finally {
           await new Promise(resolve => srv.close(resolve));
           await new Promise(resolve => gw.server.close(resolve));

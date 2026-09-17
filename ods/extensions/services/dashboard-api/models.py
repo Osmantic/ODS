@@ -107,6 +107,7 @@ class VersionInfo(BaseModel):
     update_available: bool = False
     changelog_url: Optional[str] = None
     checked_at: Optional[str] = None
+    check_status: str = "unavailable"
 
 
 class UpdateAction(BaseModel):
@@ -205,6 +206,7 @@ class ModelLibraryEntry(BaseModel):
     configured: bool = False
     recommendation: Optional[dict[str, Any]] = None
     fitsVram: bool
+    activationSupport: Optional[dict[str, Any]] = None
     fitsCurrentVram: bool
     performance: Optional[dict[str, Any]] = None
     performanceLabel: Optional[str] = None

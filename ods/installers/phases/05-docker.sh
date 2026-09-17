@@ -130,7 +130,7 @@ _docker_server_version_for_amd_downgrade() {
 
 if [[ "$SKIP_DOCKER" == "true" ]]; then
     log "Skipping Docker installation (--skip-docker)"
-elif command -v docker &> /dev/null; then
+elif command -v docker &> /dev/null && docker --version &> /dev/null; then
     ai_ok "Docker already installed: $(docker --version)"
 elif command -v podman &> /dev/null; then
     # Podman is installed but its docker-compatible CLI is not (Fedora ships
@@ -411,7 +411,7 @@ _docker_compose_detect_cmd() {
     fi
 
     # v1 fallback
-    if command -v docker-compose &>/dev/null; then
+    if command -v docker-compose &>/dev/null && docker-compose --version &>/dev/null 2>&1; then
         echo "docker-compose"
         return 0
     fi

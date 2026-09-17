@@ -36,7 +36,7 @@ test.each([
   expect(JSON.parse(localStorage.getItem(CHAT_KEY))).toMatchObject({
     persistenceVersion: 2, draft: 'Latest draft',
   })
-  expect(fetch.mock.calls.some(([, options]) => options?.method === 'POST')).toBe(false)
+  expect(fetch.mock.calls.some(([url, options]) => options?.method === 'POST' && url !== '/api/pixel/chat/context')).toBe(false)
 })
 
 test('restores the library-first request receipt before checking interrupted work', async () => {

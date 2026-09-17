@@ -19,6 +19,10 @@ for file in "${files[@]}"; do
     echo "Brave must remain available in factory SearXNG configuration: $file" >&2
     exit 1
   }
+  grep -A2 -F -- "- name: seznam" "$file" | grep -Fq "disabled: false" || {
+    echo "Seznam general-web fallback must remain available in factory SearXNG configuration: $file" >&2
+    exit 1
+  }
 done
 
 echo "SearXNG config contract checks passed"

@@ -6,6 +6,10 @@
   "providers": ["ods-policy"],
   "contracts": {
     "tools": [
+      "pixel_ods_goal",
+      "pixel_ods_activity",
+      "pixel_ods_history",
+      "pixel_ods_ask_user",
       "pixel_ods_status",
       "pixel_ods_apps_list",
       "pixel_ods_extensions",
@@ -20,6 +24,10 @@
     ]
   },
   "toolMetadata": {
+    "pixel_ods_goal": {"replaySafe": true},
+    "pixel_ods_activity": {"replaySafe": true},
+    "pixel_ods_history": {"replaySafe": true},
+    "pixel_ods_ask_user": {"replaySafe": true},
     "pixel_ods_status": {
       "replaySafe": true
     },
@@ -54,6 +62,12 @@
       "modelContextWindow": {
         "type": "integer",
         "minimum": 4096
+      },
+      "modelRouteFingerprint": {
+        "type": "string",
+        "minLength": 64,
+        "maxLength": 64,
+        "pattern": "^[a-f0-9]{64}$"
       },
       "leanPrompt": {
         "type": "boolean"

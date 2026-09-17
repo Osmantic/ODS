@@ -72,7 +72,8 @@ _ods_pixel_parse_os_release() {
 }
 
 # Qualified Pixel hosts are intentionally narrower than ODS support: native
-# Ubuntu 24.04, Debian 12, or Ubuntu 24.04 on WSL2, all with live PID1 systemd.
+# Ubuntu 24.04/26.04, Debian 12, or those Ubuntu releases on WSL2, all with
+# live PID1 systemd.
 ods_pixel_host_qualified() {
     local os_release_path="${1:-/etc/os-release}"
     local proc1_comm_path="${2:-/proc/1/comm}"
@@ -91,7 +92,10 @@ ods_pixel_host_qualified() {
     fi
 
     _ods_pixel_parse_os_release "$os_release_path" || return 1
-    [[ "$_ODS_PIXEL_OS_ID" == "ubuntu" && "$_ODS_PIXEL_OS_VERSION_ID" == "24.04" ]] && return 0
+    if [[ "$_ODS_PIXEL_OS_ID" == "ubuntu" ]] && \
+       [[ "$_ODS_PIXEL_OS_VERSION_ID" == "24.04" || "$_ODS_PIXEL_OS_VERSION_ID" == "26.04" ]]; then
+        return 0
+    fi
     [[ "$_ODS_PIXEL_OS_ID" == "debian" && "$_ODS_PIXEL_OS_VERSION_ID" == "12" ]]
 }
 

@@ -204,22 +204,26 @@ export default function Settings({ activeSection = 'all' }) {
 
   const fetchVersionInfo = async ({ announce = false } = {}) => {
     try {
-      const versionData = await fetchPayload('/api/version', 4000)
+      const versionData = await fetchPayload(announce ? '/api/version?force=true' : '/api/version', 7500)
+      const checkStatus = versionData.check_status || (versionData.latest ? 'checked' : 'unavailable')
+      const checked = checkStatus === 'checked'
       setVersion(prev => ({
         ...(prev || {}),
         current: versionData.current,
         version: versionData.current && versionData.current !== '0.0.0' ? versionData.current : (prev?.version || 'Unknown'),
         latest: versionData.latest || null,
-        update_available: Boolean(versionData.update_available && versionData.latest && versionData.current && versionData.current !== '0.0.0' && versionData.latest !== versionData.current),
+        update_available: Boolean(checked && versionData.update_available && versionData.latest && versionData.current && versionData.current !== '0.0.0' && versionData.latest !== versionData.current),
         changelog_url: versionData.changelog_url || null,
-        checked_at: versionData.checked_at || new Date().toISOString(),
-        update_check_ok: true,
+        checked_at: versionData.checked_at || null,
+        check_status: checkStatus,
+        update_check_ok: checked,
       }))
       if (announce) {
         setNotice({
-          type: versionData.update_available ? 'warn' : 'info',
-          text: versionData.update_available && versionData.latest ? `Update available: v${versionData.latest}` : 'You are already on the latest available release.',
+          type: !checked || versionData.update_available ? 'warn' : 'info',
+          text: !checked ? 'Could not confirm the latest release. Try checking again.' : versionData.update_available && versionData.latest ? `Update available: v${versionData.latest}` : 'You are on the latest available release or a newer development version.',
         })
+        window.dispatchEvent(new Event('ods-version-checked'))
       }
     } catch (err) {
       if (announce) setNotice({ type: 'warn', text: `Could not check updates right now: ${getErrorText(err)}` })
@@ -518,8 +522,8 @@ function AppearanceCard({ theme, themes, labels, onThemeChange, className = '', 
   const {wallpapers = WALLPAPERS} = useTheme()
   return (
     <PremiumCard className={`p-5 lg:p-6 ${className}`}>
-      {showHeading && <CardIntro icon={Palette} title="Appearance" description="Pixel’s minimal interface is shared across ODS." />}
-      <div className="wallpaper-intro"><h3>Make it yours</h3><p>Pixel by default. A different atmosphere when you want it.</p></div>
+      {showHeading && <CardIntro icon={Palette} title="Appearance" description="Portal’s minimal interface is shared across ODS." />}
+      <div className="wallpaper-intro"><h3>Make it yours</h3><p>Portal by default. A different atmosphere when you want it.</p></div>
       <div className="wallpaper-gallery" aria-label="Workspace themes">
         {themes.map(themeId => (
           <button
@@ -751,7 +755,7 @@ function UpdatesCard({ version, onCheckUpdates, showHeading = true }) {
   const checkedAt = formatCheckedAt(version?.checked_at)
   const updateText = version?.update_check_ok
     ? (version?.update_available ? 'Update available' : 'Current release')
-    : 'Not checked yet'
+    : ({ checking: 'Checking for updates…', stale: 'Check unavailable · showing last known release', unavailable: 'Update check unavailable', 'current-unknown': 'Installed version could not be verified' }[version?.check_status] || 'Not checked yet')
 
   return (
     <PremiumCard className="flex min-h-0 flex-col justify-between p-4">
@@ -764,6 +768,12 @@ function UpdatesCard({ version, onCheckUpdates, showHeading = true }) {
           </p>
         </div>
       </div>
+      {version?.update_available && <div className="mt-4 rounded-xl border border-theme-accent/25 bg-theme-accent/5 p-4" role="status">
+        <h3 className="text-base font-semibold text-theme-text">A new version of ODS is available</h3>
+        <p className="mt-2 text-sm text-theme-text-muted">Installed: v{version.current} · Available: v{version.latest}</p>
+        <p className="mt-2 text-xs text-theme-text-muted">Review the release notes before updating. Nothing is installed automatically.</p>
+        <a className="mt-3 inline-flex text-sm text-theme-accent-light underline underline-offset-4" href={`https://github.com/Osmantic/ODS/releases/tag/v${encodeURIComponent(version.latest)}`} target="_blank" rel="noopener noreferrer">Release notes</a>
+      </div>}
       <div className="mt-4 flex items-center justify-between gap-4 border-t border-theme-border pt-3">
         <div>
           <p className="text-base font-semibold text-theme-text">

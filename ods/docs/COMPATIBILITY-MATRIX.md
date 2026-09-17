@@ -27,7 +27,7 @@ The Linux installer detects the distro via `/etc/os-release` and chooses the rig
 
 | Distro family   | Package manager | Typical distros                    | Notes |
 |-----------------|----------------|------------------------------------|-------|
-| Debian/Ubuntu   | apt            | Ubuntu 22.04/24.04, Debian 11/12   | Most tested; Docker install via get.docker.com or distro packages. |
+| Debian/Ubuntu   | apt            | Ubuntu 22.04/24.04/26.04, Debian 11/12   | Most tested; Docker install via get.docker.com or distro packages. |
 | Fedora / RHEL   | dnf            | Fedora 38/39/40/41                | Well supported. |
 | Arch            | pacman         | Arch Linux, CachyOS               | Supported; ensure curl and optional jq/rsync. |
 | openSUSE        | zypper         | openSUSE Tumbleweed, Leap        | Supported. |
@@ -114,7 +114,7 @@ Extensions declare compatibility with ODS versions via `compatibility.ods_min` (
 
 | Scenario                    | Supported | Notes |
 |----------------------------|-----------|-------|
-| Linux Ubuntu 24.04 + NVIDIA | Yes       | Primary path. |
+| Linux Ubuntu 24.04/26.04 + NVIDIA | Yes       | Primary path. |
 | Linux Fedora + AMD GPU     | Yes       | ROCm path. |
 | Linux Debian + no GPU      | Yes       | CPU-only; lower tier. |
 | Linux Arch + NVIDIA        | Yes       | Use pacman for optional tools. |

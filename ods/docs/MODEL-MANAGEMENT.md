@@ -106,16 +106,42 @@ Perplexica when those consumers are installed. On a qualified ODS-managed
 Pixel installation it also updates Pixel's model ID, context, output limit,
 reasoning and model-family compatibility policy, then restarts and verifies the
 gateway. It verifies the new runtime and downstream routes before reporting
-success. A late failure restores the prior files, runtime, persisted app routes,
-and Pixel binding, then proves the previous model is serving again.
+success. When maintenance ownership is confirmed, a late failure restores the
+prior files, runtime, persisted app routes, and Pixel binding, then proves the
+previous model is serving again. An uncertain acknowledgement stays pending
+instead of assuming that rollback or commit completed.
+
+With the managed Portal/Edge relay configured, `/v1/model/activate` and remote
+route activation acquire both native and Edge admission before changing
+inference. The native coordinator retains
+the exact previous model contract, including a remote route's fingerprint.
+A private `data/pixel-model-transaction.json` journal records the transaction
+ID, phase and configuration hashes before admission; it contains no API keys
+or configuration contents. Standalone native installs without an Edge relay
+retain their existing direct model reconciliation. The Windows
+`/v1/runtime/lemonade/ensure` endpoint is a bootstrap step controlled by launcher
+startup order, outside this model transaction. It must not be used for model
+switching from the chat; use the normal model activation endpoint.
+
+The Portal model menu offers **Recover model switch** when this journal is
+pending. Its authenticated `GET /api/models/recovery` reads journal metadata;
+`POST /api/models/recovery` invokes the host's `POST /v1/model/recover` with an
+empty body. Recovery also runs before a subsequent model activation. It can
+finish an unchanged rejected/partial begin, a fully restored rollback, or an
+already committed model with matching configuration and fresh runtime proof.
+It never loads a different model or repeats inference mutations. An interrupted
+gate release retries only the same native finish operation; the coordinator
+revalidates its ownership and can restore/requalify the gateway contract.
+Configuration changes during proof, missing evidence, or a crash halfway
+through inference changes leave recovery pending and require explicit repair.
 
 An ODS-managed Pixel route supports OpenClaw's 4096-token minimum. Below 16K it
 uses a deliberately constrained adaptive prompt, so complex-task reliability
 still depends on the selected model and available context, but the route is not
 blocked. A requested context below 4K is rejected before activation writes
-files or restarts services. Below 32K, ODS gives Pixel an output ceiling of one
-quarter of the committed context; at 32K and above it allows up to 4096 output
-tokens. Compaction keeps a context-scaled recent tail and uses extra headroom
+files or restarts services. ODS gives Pixel an output ceiling of one quarter
+of the committed context, capped at 8192 tokens. Compaction keeps a
+context-scaled recent tail and uses extra headroom
 for 8K-31K profiles so recovery occurs before a dense tool transcript exhausts
 the model window.
 
@@ -173,6 +199,13 @@ consumer activation only after the managed tunnel and egress proof succeed.
 The Dashboard reports the provider as Ready only when the egress path and the
 actual consumer route are both active and proven.
 
+With managed Portal admission, SSH staging requires a verified local model to
+remain active. Disable an active remote provider before configuring or enabling
+its SSH replacement. Staging retains the local model and releases its maintenance
+hold only after proving it again; the later tunnel proof opens a new transaction
+for consumer activation. Direct HTTPS providers can be replaced synchronously,
+including providers that use the same model name at different endpoints.
+
 The status page rechecks the current host-owned Pixel runtime instead of
 trusting an older activation receipt. If the provider is reachable but ODS or
 Pixel has moved to a different model contract, the page reports **Consumer
@@ -183,7 +216,11 @@ ask the browser to recover or resubmit it.
 
 The operation is transactional. ODS retains the exact prior mode, LiteLLM
 config, and Pixel model contract in a private recovery record. A failed render,
-container health check, completion, or Pixel restart restores that state.
+container health check, or completion restores that state only while the same
+transaction still owns maintenance and the previous route can be proved. An
+unconfirmed apply or finish retains its recovery record and blocks new work
+until recovery proves the outcome; ODS does not replay the mutation or claim a
+successful rollback from an ambiguous response.
 **Disable** and **Remove** likewise restore and prove the pre-provider route
 before reporting success. Disable is a reversible pause: ODS retains the
 non-secret route metadata in an owner-only, fingerprint-bound profile and keeps
