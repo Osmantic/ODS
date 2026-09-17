@@ -67,7 +67,37 @@ check_service() {
     curl -sf "${url}${endpoint}" > /dev/null 2>&1
 }
 
+resolve_llm_model() {
+    if [[ -n "${SHOWCASE_MODEL:-}" ]]; then
+        printf '%s\n' "$SHOWCASE_MODEL"
+        return 0
+    fi
+
+    local models_json model_id
+    if ! models_json=$(curl -sf --max-time 10 "${LLM_URL}/v1/models"); then
+        echo "Unable to query ${LLM_URL}/v1/models" >&2
+        return 1
+    fi
+    if ! model_id=$(jq -er '.data[0].id | strings | select(length > 0)' <<< "$models_json"); then
+        echo "LLM model catalog did not contain a usable model id" >&2
+        return 1
+    fi
+    printf '%s\n' "$model_id"
+}
+
+request_llm_chat() {
+    local payload="$1" model_id routed_payload response
+    model_id=$(resolve_llm_model) || return 1
+    routed_payload=$(jq -c --arg model "$model_id" '.model = $model' <<< "$payload") \
+        || return 1
+    response=$(curl -sf --max-time 120 "${LLM_URL}/v1/chat/completions" \
+        -H "Content-Type: application/json" \
+        -d "$routed_payload") || return 1
+    jq -er '.choices[0].message.content | strings | select(length > 0)' <<< "$response"
+}
+
 demo_chat() {
+    local payload response
     clear_screen
     echo -e "${BOLD}${MAGENTA}💬 Chat with AI${NC}"
     echo -e "${DIM}────────────────────────────────────────${NC}"
@@ -96,16 +126,16 @@ demo_chat() {
         
         echo -ne "${CYAN}AI: ${NC}"
         
-        response=$(curl -sf "${LLM_URL}/v1/chat/completions" \
-            -H "Content-Type: application/json" \
-            -d "$(jq -n --arg msg "$user_input" '{
-                model: "local",
+        payload=$(jq -n --arg msg "$user_input" '{
                 messages: [{role: "user", content: $msg}],
                 max_tokens: 512,
                 temperature: 0.7
-            }')" 2>/dev/null | jq -r '.choices[0].message.content // "Error getting response"')
-        
-        echo "$response"
+            }')
+        if response=$(request_llm_chat "$payload"); then
+            echo "$response"
+        else
+            echo -e "${RED}Error getting response; check the LLM model catalog and logs.${NC}"
+        fi
         echo ""
     done
 }
@@ -160,6 +190,7 @@ demo_voice() {
 }
 
 demo_rag() {
+    local payload response
     clear_screen
     echo -e "${BOLD}${MAGENTA}📚 Document Q&A (RAG Demo)${NC}"
     echo -e "${DIM}────────────────────────────────────────${NC}"
@@ -216,24 +247,25 @@ demo_rag() {
         echo -ne "${CYAN}Answer: ${NC}"
         
         # Use document as context
-        response=$(curl -sf "${LLM_URL}/v1/chat/completions" \
-            -H "Content-Type: application/json" \
-            -d "$(jq -n --arg doc "$DOC_CONTENT" --arg q "$question" '{
-                model: "local",
+        payload=$(jq -n --arg doc "$DOC_CONTENT" --arg q "$question" '{
                 messages: [
                     {role: "system", content: "Answer questions based on the provided document. Be concise and cite relevant parts."},
                     {role: "user", content: ("Document:\n" + $doc + "\n\nQuestion: " + $q)}
                 ],
                 max_tokens: 512,
                 temperature: 0.3
-            }')" 2>/dev/null | jq -r '.choices[0].message.content // "Error getting response"')
-        
-        echo "$response"
+            }')
+        if response=$(request_llm_chat "$payload"); then
+            echo "$response"
+        else
+            echo -e "${RED}Error getting response; check the LLM model catalog and logs.${NC}"
+        fi
         echo ""
     done
 }
 
 demo_code() {
+    local payload response
     clear_screen
     echo -e "${BOLD}${MAGENTA}💻 Code Assistant${NC}"
     echo -e "${DIM}────────────────────────────────────────${NC}"
@@ -288,20 +320,20 @@ demo_code() {
     
     prompt="Task: $task\n\nCode:\n\`\`\`\n$CODE\n\`\`\`"
     
-    response=$(curl -sf "${LLM_URL}/v1/chat/completions" \
-        -H "Content-Type: application/json" \
-        -d "$(jq -n --arg p "$prompt" '{
-            model: "local",
+    payload=$(jq -n --arg p "$prompt" '{
             messages: [
                 {role: "system", content: "You are an expert code reviewer. Provide clear, actionable feedback."},
                 {role: "user", content: $p}
             ],
             max_tokens: 2048,
             temperature: 0.3
-        }')" 2>/dev/null | jq -r '.choices[0].message.content // "Error getting response"')
-    
+        }')
     echo -e "${GREEN}Result:${NC}"
-    echo "$response"
+    if response=$(request_llm_chat "$payload"); then
+        echo "$response"
+    else
+        echo -e "${RED}Error getting response; check the LLM model catalog and logs.${NC}"
+    fi
     
     echo ""
     echo -e "${DIM}Press Enter to return to menu...${NC}"

@@ -175,6 +175,8 @@ jobs:
       - name: Mode Switch Tests
         run: bash tests/test-mode-switch-status.sh
 
+      - name: Showcase Live Model Routing Tests
+        run: bash tests/test-showcase-live-model.sh
       - name: CLI Install Directory Resolution Tests
         run: bash tests/test-cli-install-dir-resolution.sh
 

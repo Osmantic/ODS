@@ -73,6 +73,8 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== mode switch status and switching ==="
 	@bash tests/test-mode-switch-status.sh
+	@echo "=== Showcase live model routing ==="
+	@bash tests/test-showcase-live-model.sh
 	@echo ""
 	@echo "=== Bind address sweep ==="
 	@bash tests/test-bind-address-sweep.sh
