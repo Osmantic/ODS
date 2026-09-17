@@ -132,7 +132,7 @@ for service_dir in _all_service_dirs:
     if not manifest_path:
         continue
     try:
-        with open(manifest_path) as f:
+        with open(manifest_path, encoding="utf-8") as f:
             m = yaml.safe_load(f)
         if not isinstance(m, dict):
             print(f'# SKIP: {manifest_path}: not a valid YAML mapping', file=sys.stderr)
@@ -221,6 +221,10 @@ for service_dir in _all_service_dirs:
         print(f'SERVICE_SETUP_HOOKS["{_esc(sid)}"]="{_esc(setup_path)}"')
         # GPU backends (default to amd/nvidia/apple, consistent with dashboard-api)
         gpu_backends = s.get("gpu_backends", ["amd", "nvidia", "apple"])
+        if isinstance(gpu_backends, str):
+            gpu_backends = [gpu_backends]
+        elif not isinstance(gpu_backends, (list, tuple)):
+            gpu_backends = ["amd", "nvidia", "apple"]
         backends_str = " ".join(str(b) for b in gpu_backends)
         print(f'SERVICE_GPU_BACKENDS["{_esc(sid)}"]="{_esc(backends_str)}"')
     except Exception as exc:

@@ -115,7 +115,8 @@ class TransitionGate:
 
     def _read(self):
         self._directory_unchanged()
-        fd = os.open(_STATE, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=self.dir_fd)
+        # Inspect special files without first blocking on a FIFO writer.
+        fd = os.open(_STATE, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=self.dir_fd)
         with os.fdopen(fd, "rb") as stream:
             info = os.fstat(stream.fileno())
             self._owned(info, stat.S_ISREG, 0o600)

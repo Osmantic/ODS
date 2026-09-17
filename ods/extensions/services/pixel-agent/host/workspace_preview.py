@@ -170,6 +170,12 @@ def _safe_root(path: pathlib.Path, owner_uid: int) -> None:
         raise PreviewError("unsafe preview root")
 
 
+def _directory_walk_failed(error: OSError) -> None:
+    # os.walk otherwise silently skips unreadable/disappeared directories and
+    # can publish an index whose referenced assets were never captured.
+    raise PreviewError("unsafe preview directory") from error
+
+
 def _source_files(
     workspace: pathlib.Path, relative_directory: str, owner_uid: int
 ) -> list[tuple[str, pathlib.Path, os.stat_result]]:
@@ -189,7 +195,7 @@ def _source_files(
         raise PreviewError("unsafe preview directory")
 
     files: list[tuple[str, pathlib.Path, os.stat_result]] = []
-    for root, directories, names in os.walk(current, topdown=True, followlinks=False):
+    for root, directories, names in os.walk(current, topdown=True, followlinks=False, onerror=_directory_walk_failed):
         root_path = pathlib.Path(root)
         root_info = root_path.lstat()
         if (
@@ -338,7 +344,7 @@ def publish_snapshot(
         raise PreviewError("unsafe preview snapshot")
     expected = {relative: data for relative, data in captured}
     observed: set[str] = set()
-    for root, directories, names in os.walk(destination, topdown=True, followlinks=False):
+    for root, directories, names in os.walk(destination, topdown=True, followlinks=False, onerror=_directory_walk_failed):
         root_path = pathlib.Path(root)
         root_info = root_path.lstat()
         if (
@@ -475,8 +481,10 @@ def snapshot_changes(previews: pathlib.Path, site_id: str, before_id: str | None
         change = "published" if before_id is None else "deleted" if new is None else "created" if old is None else "modified"
         entry = {"path": path, "change": change, "additions": None, "deletions": None, "diff": [], "truncated": False}
         try:
-            a = [] if old is None else old.decode("utf-8").splitlines(keepends=True)
-            b = [] if new is None else new.decode("utf-8").splitlines(keepends=True)
+            # Match the source viewer/excerpt's LF boundaries. str.splitlines
+            # also splits Unicode separators that are retained inside a source line.
+            a = [] if old is None else re.findall(r"[^\n]*\n|[^\n]+$", old.decode("utf-8"))
+            b = [] if new is None else re.findall(r"[^\n]*\n|[^\n]+$", new.decode("utf-8"))
             if any(any(ord(c) < 32 and c != '\t' for c in line.rstrip("\r\n")) for line in a + b) or len(a) + len(b) > 4000:
                 raise ValueError()
             additions = deletions = 0

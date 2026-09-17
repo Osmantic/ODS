@@ -2231,13 +2231,19 @@ def test_load_model_reconciles_matching_runtime_without_completion_receipt(
     _write_model_library(install_dir, [model])
     (data_dir / "models" / model["gguf_file"]).write_text("model", encoding="utf-8")
     (install_dir / ".env").write_text(
-        "ODS_MODE=local\nLLM_MODEL=qwen3.5-9b\nGGUF_FILE=Qwen3.5-9B-Q4_K_M.gguf\n",
+        "ODS_MODE=local\n"
+        "LLM_MODEL=qwen3.5-9b\n"
+        "GGUF_FILE=Qwen3.5-9B-Q4_K_M.gguf\n"
+        "CTX_SIZE=65536\n"
+        "MAX_CONTEXT=65536\n",
         encoding="utf-8",
     )
     monkeypatch.setattr(
         models_router,
         "_fetch_loaded_model_sync",
-        lambda: "extra.Qwen3.5-9B-Q4_K_M.gguf",
+        # Switchboard identity is intentionally opaque; the configured GGUF
+        # and active-model record remain the authoritative identity proof.
+        lambda: "ods/current",
     )
     monkeypatch.setattr(models_router, "_loaded_model_backend_ready_sync", lambda _loaded: True)
     calls = []
@@ -2252,7 +2258,66 @@ def test_load_model_reconciles_matching_runtime_without_completion_receipt(
 
     assert resp.status_code == 200
     assert resp.json()["status"] == "activated"
-    assert calls and calls[0][0] == "/v1/model/activate"
+    assert calls == [(
+        "/v1/model/activate",
+        {"model_id": model["id"], "context_length": 65536},
+        2700,
+    )]
+
+
+def test_load_model_preserves_context_when_env_bind_inode_is_stale(
+    test_client,
+    monkeypatch,
+    tmp_path,
+):
+    models_router, install_dir, data_dir = _patch_model_router_paths(monkeypatch, tmp_path)
+    model = {
+        "id": "qwen3.5-9b-q4",
+        "name": "Qwen 3.5 9B",
+        "gguf_file": "Qwen3.5-9B-Q4_K_M.gguf",
+        "size_mb": 5760,
+        "vram_required_gb": 8,
+        "context_length": 32768,
+        "quantization": "Q4_K_M",
+        "specialty": "General",
+        "description": "Balanced default.",
+        "llm_model_name": "qwen3.5-9b",
+    }
+    _write_model_library(install_dir, [model])
+    (data_dir / "models" / model["gguf_file"]).write_text("model", encoding="utf-8")
+    # This is the old inode still visible through the container bind mount.
+    (install_dir / ".env").write_text(
+        "ODS_MODE=local\n"
+        "LLM_MODEL=qwen3.5-2b\n"
+        "GGUF_FILE=Qwen3.5-2B-Q4_K_M.gguf\n"
+        "CTX_SIZE=65536\n"
+        "MAX_CONTEXT=65536\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        models_router,
+        "_fetch_loaded_model_sync",
+        lambda: f"extra.{model['gguf_file']}",
+    )
+    calls = []
+    monkeypatch.setattr(
+        models_router,
+        "_call_agent_model",
+        lambda path, body, timeout=30, **_kwargs: calls.append((path, body, timeout))
+        or {"status": "activated"},
+    )
+
+    resp = test_client.post(
+        f"/api/models/{model['id']}/load",
+        headers=test_client.auth_headers,
+    )
+
+    assert resp.status_code == 200
+    assert calls == [(
+        "/v1/model/activate",
+        {"model_id": model["id"], "context_length": 65536},
+        2700,
+    )]
 
 
 def test_load_model_delegates_when_live_backend_reports_different_model(test_client, monkeypatch, tmp_path):

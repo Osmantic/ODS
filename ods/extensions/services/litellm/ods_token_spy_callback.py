@@ -117,7 +117,7 @@ def build_event(
         or kwargs.get("model")
         or "unknown"
     )
-    return {
+    event = {
         "agent": "litellm",
         "model": model[:512],
         "provider_name": _provider_name(kwargs),
@@ -139,7 +139,11 @@ def build_event(
                 "cached_tokens", usage.get("cache_read_tokens", 0)
             )
         ),
-        "cache_write_tokens": _count(usage.get("cache_write_tokens", 0)),
+        "cache_write_tokens": _count(
+            prompt_details.get(
+                "cache_creation_tokens", usage.get("cache_write_tokens", 0)
+            )
+        ),
         "duration_ms": _duration_ms(start_time, end_time),
         "stop_reason": str(
             first_choice.get("finish_reason")
@@ -148,6 +152,14 @@ def build_event(
             or ""
         )[:128],
     }
+
+    # Provider prompt/input counts include cached tokens. Token Spy stores
+    # disjoint categories; partition once, after any stream aggregation.
+    event["cache_read_tokens"] = min(event["cache_read_tokens"], event["input_tokens"])
+    remaining = event["input_tokens"] - event["cache_read_tokens"]
+    event["cache_write_tokens"] = min(event["cache_write_tokens"], remaining)
+    event["input_tokens"] = remaining - event["cache_write_tokens"]
+    return event
 
 
 class ODSTokenSpyCallback(CustomLogger):

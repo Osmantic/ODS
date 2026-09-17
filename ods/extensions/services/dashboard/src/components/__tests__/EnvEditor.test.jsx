@@ -236,3 +236,34 @@ test('does not silently present an invalid boolean as Default or False', () => {
   for (const name of ['Default','True','False']) expect(screen.getByRole('button',{name,exact:true})).toHaveAttribute('aria-pressed','false')
   expect(screen.getAllByText('Must be true or false.')).not.toHaveLength(0)
 })
+
+test.each([false, true])('shows an unsupported enum value even when readOnly=%s', readOnly => {
+  const onFieldChange = vi.fn()
+  const section = {id:'llm',title:'LLM',keys:['ODS_MODE']}
+  renderEditor({sections:[section], activeSection:section,
+    fields:{ODS_MODE:{key:'ODS_MODE',label:'ODS Mode',type:'string',enum:['local','cloud'],default:'local',readOnly}},
+    values:{ODS_MODE:'legacy-mode'}, onFieldChange,
+    issues:[{key:'ODS_MODE',message:'Must be one of local, cloud.'}],
+    issueMap:{ODS_MODE:['Must be one of local, cloud.']}})
+  const input = screen.getByRole('combobox', {name:'ODS Mode'})
+  expect(input).toHaveValue('legacy-mode')
+  expect(input.selectedOptions[0]).toHaveTextContent('Unsupported value: legacy-mode')
+  expect(onFieldChange).not.toHaveBeenCalled()
+  expect(input.disabled).toBe(readOnly)
+  if (!readOnly) {
+    fireEvent.change(input, {target:{value:'cloud'}})
+    expect(onFieldChange).toHaveBeenCalledWith('ODS_MODE','cloud')
+    fireEvent.change(input, {target:{value:''}})
+    expect(onFieldChange).toHaveBeenLastCalledWith('ODS_MODE','')
+  }
+})
+
+test.each(['local', ''])('keeps the existing enum selection %j unchanged', value => {
+  const section = {id:'llm',title:'LLM',keys:['ODS_MODE']}
+  renderEditor({sections:[section], activeSection:section,
+    fields:{ODS_MODE:{key:'ODS_MODE',label:'ODS Mode',type:'string',enum:['local','cloud'],default:'local'}},
+    values:{ODS_MODE:value}})
+  const input = screen.getByRole('combobox', {name:'ODS Mode'})
+  expect(input).toHaveValue(value)
+  expect(input.querySelectorAll('option')).toHaveLength(3)
+})

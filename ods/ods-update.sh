@@ -49,12 +49,24 @@ log_ok()    { echo -e "${GREEN}[OK]${NC} $*"; }
 log_warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 
+# Installed version. .version is written by this script after an update
+# (git describe), so when it carries a version it is the freshest record for
+# this flow. No installer creates it, though, and `check` only stores
+# last_check in it -- so on a fresh install fall back to what the installer
+# did record: ODS_VERSION in .env (Linux phase 06), then manifest.json's
+# ods_version, the same sources ods-cli and the dashboard read.
 get_current_version() {
+    local version=""
     if [[ -f "$VERSION_FILE" ]]; then
-        jq -r '.version // "0.0.0"' "$VERSION_FILE" 2>/dev/null || echo "0.0.0"
-    else
-        echo "0.0.0"
+        version=$(jq -r '.version // empty' "$VERSION_FILE" 2>/dev/null || true)
     fi
+    if [[ -z "$version" ]]; then
+        version=$(env_file_value ODS_VERSION)
+    fi
+    if [[ -z "$version" && -f "${INSTALL_DIR}/manifest.json" ]]; then
+        version=$(jq -r '.ods_version // empty' "${INSTALL_DIR}/manifest.json" 2>/dev/null || true)
+    fi
+    echo "${version:-0.0.0}"
 }
 
 env_file_value() {
@@ -321,7 +333,7 @@ snapshot_pre_update() {
 # _restore_snapshot <snap_dir>
 #   Validates snapshot integrity, then restores .env files, compose overlays,
 #   and per-extension config dirs.  Does NOT restart services.
-_restore_snapshot() {
+_restore_snapshot() (
     local snap_dir="$1"
     if [[ ! -d "$snap_dir" ]]; then
         log_error "Rollback snapshot not found: ${snap_dir}"
@@ -347,29 +359,104 @@ _restore_snapshot() {
 
     log_info "Restoring from rollback snapshot: $(basename "${snap_dir}")"
 
-    # Flat files: .env*, .version, docker-compose*.yml
-    shopt -s dotglob
+    # A subshell owns shell options and traps even when callers use `if !`.
+    # Stage every item before touching live files; keep displaced originals
+    # beside their destination so all publication/rollback renames stay local.
+    local -a sources=() destinations=() workspaces=() publishing=()
+    local f base ext_dir parent workspace i completed=false recovery_failed=false
+    shopt -s dotglob nullglob
     for f in "${snap_dir}"/*; do
-        local base
         base="$(basename "$f")"
-        [[ -f "$f" && "$base" != "snapshot.json" && "$base" != "metadata.json" ]] || continue
-        cp "$f" "${INSTALL_DIR}/"
-        log_info "  Restored: ${base}"
+        [[ -f "$f" && "$base" != snapshot.json && "$base" != metadata.json ]] || continue
+        sources+=("$f")
+        destinations+=("${INSTALL_DIR}/${base}")
     done
-    shopt -u dotglob
-
-    # Per-extension config directories
     for ext_dir in litellm n8n openclaw searxng; do
-        local src="${snap_dir}/config-${ext_dir}"
-        if [[ -d "$src" ]]; then
-            rm -rf "${INSTALL_DIR}/config/${ext_dir}"
-            cp -r "$src" "${INSTALL_DIR}/config/${ext_dir}"
-            log_info "  Restored: config/${ext_dir}/"
+        f="${snap_dir}/config-${ext_dir}"
+        [[ -d "$f" ]] || continue
+        sources+=("$f")
+        destinations+=("${INSTALL_DIR}/config/${ext_dir}")
+    done
+
+    restore_cleanup() {
+        local status=$? index target work
+        trap - EXIT INT TERM
+        if [[ "$completed" != true ]]; then
+            for ((index=${#workspaces[@]}-1; index>=0; index--)); do
+                target="${destinations[index]}"
+                work="${workspaces[index]}"
+                if [[ "${publishing[index]:-false}" == true && ! -e "$work/new" && ! -L "$work/new"
+                    && ( -e "$target" || -L "$target" ) ]]; then
+                    if ! mv -- "$target" "$work/new"; then
+                        recovery_failed=true
+                        log_error "Cannot withdraw restored item ${target}; recovery files retained at ${work}"
+                        continue
+                    fi
+                fi
+                if [[ -e "$work/old" || -L "$work/old" ]]; then
+                    if ! mv -- "$work/old" "$target"; then
+                        recovery_failed=true
+                        log_error "Cannot restore original ${target}; original retained at ${work}/old"
+                        continue
+                    fi
+                fi
+            done
+        fi
+        for ((index=0; index<${#workspaces[@]}; index++)); do
+            # If recovery failed, never remove a workspace containing originals.
+            if [[ "$completed" == true || ( ! -e "${workspaces[index]}/old" && ! -L "${workspaces[index]}/old" ) ]]; then
+                rm -rf -- "${workspaces[index]}" || log_warn "Could not remove staging ${workspaces[index]}"
+            fi
+        done
+        if [[ "$recovery_failed" == true ]]; then
+            log_error "Rollback could not restore every original. Manual recovery required from the retained paths above."
+        fi
+        [[ "$completed" == true && "$status" == 0 ]] || status=1
+        exit "$status"
+    }
+    trap restore_cleanup EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+
+    for ((i=0; i<${#sources[@]}; i++)); do
+        parent="$(dirname "${destinations[i]}")"
+        if ! mkdir -p -- "$parent"; then
+            log_error "Cannot prepare restore destination ${parent}"
+            return 1
+        fi
+        workspace="$(mktemp -d "${parent}/.ods-restore.XXXXXX")" || return 1
+        workspaces+=("$workspace")
+        # cp -a preserves private .env modes, links and directory attributes.
+        if ! cp -a -- "${sources[i]}" "$workspace/new"; then
+            log_error "Failed to stage ${sources[i]}; live configuration is unchanged."
+            return 1
         fi
     done
-
+    for ((i=0; i<${#destinations[@]}; i++)); do
+        f="${destinations[i]}"
+        workspace="${workspaces[i]}"
+        publishing[i]=true
+        if [[ -e "$f" || -L "$f" ]]; then
+            if ! mv -- "$f" "$workspace/old"; then
+                log_error "Cannot preserve original ${f}; undoing restore."
+                return 1
+            fi
+        fi
+        if ! mv -- "$workspace/new" "$f"; then
+            log_error "Cannot activate restored ${f}; undoing restore."
+            return 1
+        fi
+    done
+    completed=true
+    for f in "${destinations[@]}"; do
+        if [[ -d "$f" ]]; then
+            log_info "  Restored: ${f#"${INSTALL_DIR}/"}/"
+        else
+            log_info "  Restored: ${f#"${INSTALL_DIR}/"}"
+        fi
+    done
     log_ok "Snapshot restored."
-}
+)
 
 # wait_for_healthy
 #   Polls cmd_health every 10 s until it passes or HEALTH_TIMEOUT expires.
@@ -627,21 +714,28 @@ cmd_backup() {
     log_ok "Backup created: ${backup_path}"
     log_info "Files backed up: ${files_backed_up}"
     
-    # Bash's sorted glob preserves whole paths, including spaces/newlines,
-    # without requiring GNU sort -z on macOS. Never follow backup symlinks.
-    local backup_dirs=() dir index count=0
+    # Bash's glob preserves whole paths, including spaces/newlines, without
+    # requiring GNU sort -z on macOS. Never follow backup symlinks.
+    # Order by the creation timestamp this function appends to every name, not
+    # by the whole name: a labelled "backup-dashboard-<ts>" sorts after every
+    # unlabelled "backup-<ts>", which would prune the backup just created.
+    # Only the fixed-width timestamps and array indexes are sorted.
+    local backup_dirs=() dir index stamp count=0 order=""
+    local stamp_re='-([0-9]{8}-[0-9]{6})$'
     for dir in "$BACKUP_DIR"/backup-*; do
         [[ -d "$dir" && ! -L "$dir" ]] || continue
+        [[ "$dir" =~ $stamp_re ]] || continue
+        order+="${BASH_REMATCH[1]} ${#backup_dirs[@]}"$'\n'
         backup_dirs+=("$dir")
     done
-    for ((index=${#backup_dirs[@]}-1; index>=0; index--)); do
+    while read -r stamp index; do
         dir="${backup_dirs[$index]}"
         count=$((count + 1))
         if ((count > MAX_BACKUPS)); then
             log_info "Removing old backup: $(basename "$dir")"
             rm -rf "$dir"
         fi
-    done
+    done < <(printf '%s' "$order" | LC_ALL=C sort -r)
 }
 
 #==============================================================================
@@ -671,8 +765,15 @@ cmd_update() {
     # ── Step 2: pull latest changes ───────────────────────────────────────────
     log_info "Pulling latest changes..."
     cd "$INSTALL_DIR"
+    local update_branch
+    update_branch=$(git branch --show-current 2>/dev/null || true)
+    if [[ -z "$update_branch" ]]; then
+        _update_rollback "Cannot update a detached checkout safely. Check out a branch first." \
+            "$snap_dir" "$compose_flags"
+        return 1
+    fi
     git fetch origin
-    if ! git pull origin main && ! git pull origin master; then
+    if ! git pull --ff-only origin "$update_branch"; then
         _update_rollback "Git pull failed." "$snap_dir" "$compose_flags"
         return 1
     fi
@@ -703,7 +804,11 @@ cmd_update() {
         fi
         if ! docker compose ${compose_flags} up -d; then
             log_warn "docker compose v2 up failed, trying v1..."
-            docker-compose ${compose_flags} up -d
+            if ! docker-compose ${compose_flags} up -d; then
+                _update_rollback "Both Docker Compose v2 and v1 failed to restart services." \
+                    "$snap_dir" "$compose_flags"
+                return 1
+            fi
         fi
     elif [[ -f "${INSTALL_DIR}/docker-compose.yml" ]]; then
         if ! docker compose down --remove-orphans; then
@@ -712,7 +817,11 @@ cmd_update() {
         fi
         if ! docker compose up -d; then
             log_warn "docker compose v2 up failed, trying v1..."
-            docker-compose up -d
+            if ! docker-compose up -d; then
+                _update_rollback "Both Docker Compose v2 and v1 failed to restart services." \
+                    "$snap_dir" "$compose_flags"
+                return 1
+            fi
         fi
     else
         log_warn "No compose files found. Skipping container restart."
@@ -749,6 +858,26 @@ cmd_update() {
 # COMMAND: ROLLBACK
 #==============================================================================
 
+# _latest_backup_dir <root> <prefix>
+#   Prints the newest <root>/<prefix>* directory, judged by the
+#   YYYYMMDD-HHMMSS stamp its name ends with, or nothing when there is none.
+#   The root may not exist: `ods update` writes only general backups, so
+#   data/backups is often absent. General backup names put an optional label
+#   before that stamp (backup-<label>-<stamp>), so whole names do not sort by age.
+_latest_backup_dir() {
+    local root="$1" prefix="$2" dir stamp latest="" latest_stamp=0
+    local stamp_re='-([0-9]{8})-([0-9]{6})$'
+    for dir in "$root"/"$prefix"*; do
+        [[ -d "$dir" && ! -L "$dir" && "$dir" =~ $stamp_re ]] || continue
+        stamp="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
+        if [[ -z "$latest" ]] || ((10#$stamp > 10#$latest_stamp)); then
+            latest="$dir"
+            latest_stamp="$stamp"
+        fi
+    done
+    printf '%s' "$latest"
+}
+
 cmd_rollback() {
     local target="${1:-}"
     local backup_path=""
@@ -768,11 +897,9 @@ cmd_rollback() {
     else
         # No target: prefer the most recent pre-update rollback snapshot,
         # fall back to the most recent general backup.
-        backup_path=$(find "${ROLLBACK_DIR}" -maxdepth 1 -type d -name "pre-update-*" \
-            2>/dev/null | sort -r | head -1)
+        backup_path="$(_latest_backup_dir "$ROLLBACK_DIR" pre-update-)"
         if [[ -z "$backup_path" ]]; then
-            backup_path=$(find "${BACKUP_DIR}" -maxdepth 1 -type d -name "backup-*" \
-                2>/dev/null | sort -r | head -1)
+            backup_path="$(_latest_backup_dir "$BACKUP_DIR" backup-)"
         fi
     fi
 

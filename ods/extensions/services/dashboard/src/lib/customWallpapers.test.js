@@ -1,4 +1,5 @@
 import {prepareWallpaper, isCustomWallpaper, isStoredWallpaper, MAX_WALLPAPER_VIDEO_BYTES} from './customWallpapers'
+import {mockHttpCrypto} from '../test/httpCrypto'
 const {HTMLMediaElement, HTMLVideoElement} = window
 afterEach(()=>{vi.restoreAllMocks();vi.unstubAllGlobals()})
 it('accepts only opaque custom IDs, not URLs or CSS',()=>{
@@ -21,6 +22,15 @@ function mockVideo({error = false, width = 1920, duration = 3} = {}) {
   vi.spyOn(HTMLCanvasElement.prototype, 'toDataURL').mockReturnValue('data:image/webp;base64,YQ==')
   return {createObjectURL, revokeObjectURL, pause, drawImage}
 }
+
+it('prepares local video on an HTTP LAN origin without randomUUID', async () => {
+  const id = '11111111-2222-4333-8444-555555555555'
+  mockVideo()
+  mockHttpCrypto(id)
+  const row = await prepareWallpaper(new File(['video'],'local.mp4',{type:'video/mp4'}))
+  expect(row.id).toBe(`custom-${id}`)
+  expect(isStoredWallpaper(row)).toBe(true)
+})
 
 it.each(['video/mp4','video/webm'])('stores %s as a local blob with a static thumbnail', async type => {
   const mocks = mockVideo()
@@ -45,6 +55,22 @@ it('rejects video that exceeds the resolution limit', async () => {
   const mocks=mockVideo({width:10000})
   await expect(prepareWallpaper(new File(['v'],'big.webm',{type:'video/webm'}))).rejects.toThrow('4K')
   expect(mocks.revokeObjectURL).toHaveBeenCalledOnce()
+})
+
+it('accepts a decoded finite WebM blob whose header has no duration', async () => {
+  const mocks=mockVideo({duration:Infinity})
+  const file=new File(['recorded clip'],'Recording.webm',{type:'video/webm'})
+  const row=await prepareWallpaper(file)
+  expect(row.video).toBe(file)
+  expect(isStoredWallpaper(row)).toBe(true)
+  expect(mocks.revokeObjectURL).toHaveBeenCalledOnce()
+})
+
+it.each([NaN,0,-1,-Infinity])('rejects unusable video duration %s and releases its resources', async duration => {
+  const mocks=mockVideo({duration})
+  await expect(prepareWallpaper(new File(['v'],'bad.webm',{type:'video/webm'}))).rejects.toThrow('valid video')
+  expect(mocks.revokeObjectURL).toHaveBeenCalledOnce()
+  expect(mocks.pause).toHaveBeenCalledOnce()
 })
 
 it('rejects remote media and malformed stored records, retaining old image records', () => {

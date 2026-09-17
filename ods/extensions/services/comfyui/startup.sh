@@ -93,7 +93,9 @@ fi
 if [ -d "$WORKFLOWS_MOUNT" ] && [ "$(ls -A "$WORKFLOWS_MOUNT" 2>/dev/null)" ]; then
     WORKFLOW_DIR="${COMFYUI_DIR}/user/default/workflows"
     mkdir -p "$WORKFLOW_DIR"
-    cp -u "$WORKFLOWS_MOUNT"/*.json "$WORKFLOW_DIR/" 2>/dev/null || true
+    # Templates seed missing workflows. A newer template is not permission to
+    # replace a user's saved edits in the persisted user directory.
+    cp -n "$WORKFLOWS_MOUNT"/*.json "$WORKFLOW_DIR/" 2>/dev/null || true
     echo "[startup] Copied workflow templates to ${WORKFLOW_DIR}"
 fi
 

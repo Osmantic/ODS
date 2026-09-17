@@ -29,7 +29,7 @@ describe('Pixel workspace navigation', () => {
     expect(screen.queryByText('ODS')).toBeNull()
     expect(screen.getByRole('link', { name: 'Dashboard' }).getAttribute('href')).toBe('/dashboard')
     expect(screen.getByRole('button', {name: 'New task'})).toBeVisible()
-    expect(screen.getByText('Playground')).toBeVisible()
+    expect(screen.queryByText('Playground')).toBeNull() // No synthetic project before a real project exists.
     expect(screen.getByText('Recent')).toBeVisible()
   })
   it('switches to Pixel controls and retains an exit to ODS', () => {
@@ -37,7 +37,7 @@ describe('Pixel workspace navigation', () => {
     expect(screen.getByRole('link', { name: 'Back to ODS' }).getAttribute('href')).toBe('/')
     expect(screen.getByRole('link', { name: 'Settings' }).getAttribute('href')).toBe('/pixel/settings')
     expect(screen.queryByRole('link', { name: 'Extensions' })).toBeNull()
-    expect(screen.getByText('Projects')).toBeTruthy()
+    expect(screen.queryByText('Projects')).toBeNull()
   })
   it('filters navigation without submitting an agent request', () => {
     show('/')

@@ -100,7 +100,9 @@ class _Reader:
         return chunk
 
     def skip(self, size: int) -> None:
-        self.read(size)
+        if self.offset + size > len(self.data):
+            raise ValueError("GGUF metadata ended unexpectedly")
+        self.offset += size
 
     def unpack(self, fmt: str):
         size = struct.calcsize(fmt)
@@ -134,6 +136,9 @@ def _skip_value(reader: _Reader, value_type: int, depth: int = 0) -> None:
             raise ValueError("GGUF array nesting too deep")
         item_type = reader.unpack("<I")
         length = reader.unpack("<Q")
+        if item_type in _STRUCTS:
+            reader.skip(struct.calcsize(_STRUCTS[item_type]) * length)
+            return
         for _ in range(length):
             _skip_value(reader, item_type, depth + 1)
         return
@@ -150,8 +155,14 @@ def _read_array(reader: _Reader, depth: int = 0) -> Any:
 
     sample_limit = 64
     sample = [_read_value(reader, item_type, depth + 1) for _ in range(min(length, sample_limit))]
-    for _ in range(max(length - sample_limit, 0)):
-        _skip_value(reader, item_type, depth + 1)
+    remaining = max(length - sample_limit, 0)
+    if item_type in _STRUCTS:
+        # Tokenizer score/type arrays can contain hundreds of thousands of
+        # entries. Their unused fixed-width tail needs only one bounds check.
+        reader.skip(struct.calcsize(_STRUCTS[item_type]) * remaining)
+    else:
+        for _ in range(remaining):
+            _skip_value(reader, item_type, depth + 1)
 
     if length <= sample_limit:
         return sample
@@ -192,7 +203,7 @@ def _first_value(metadata: dict[str, Any], suffixes: tuple[str, ...]) -> Any:
     return None
 
 
-def inspect_gguf(path: Path | str, max_metadata_bytes: int = 8 * 1024 * 1024) -> dict[str, Any]:
+def inspect_gguf(path: Path | str, max_metadata_bytes: int = 32 * 1024 * 1024) -> dict[str, Any]:
     """Return normalized GGUF metadata, degrading to ``unknown`` on failure."""
     p = Path(path)
     result: dict[str, Any] = {

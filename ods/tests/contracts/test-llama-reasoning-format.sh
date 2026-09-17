@@ -9,7 +9,8 @@
 # behaviour the default exists to prevent.
 #
 # Docker is exempt: docker-compose.base.yml passes LLAMA_ARG_REASONING into the
-# container environment, which llama.cpp reads natively.
+# container environment. The CPU image must support that setting; b8248 did
+# not, so its documented default was silently ignored on CPU-only installs.
 #
 # The .env values (off/on/auto) are not llama.cpp's vocabulary, so each
 # launcher also has to map them; the check below requires both the flag and the
@@ -61,6 +62,24 @@ if grep -q 'LLAMA_ARG_REASONING=${LLAMA_REASONING' "$ROOT_DIR/docker-compose.bas
 else
     fail "docker-compose.base.yml no longer forwards LLAMA_REASONING as LLAMA_ARG_REASONING"
 fi
+
+if grep -Fq 'image: ${LLAMA_SERVER_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-b9014}' "$ROOT_DIR/docker-compose.cpu.yml"; then
+    pass "docker-compose.cpu.yml defaults to a llama.cpp build that honors LLAMA_ARG_REASONING"
+else
+    fail "docker-compose.cpu.yml must use a reasoning-aware llama.cpp build by default"
+fi
+
+# The CPU installer pull and AMD-to-CPU fallback must agree with Compose.
+# Otherwise a fresh install pulls the wrong image, or the fallback writes an
+# old tag to .env and overrides Compose's reasoning-aware default.
+for target in installers/phases/08-images.sh installers/phases/11-services.sh; do
+    if grep -Fq 'ghcr.io/ggml-org/llama.cpp:server-b9014' "$ROOT_DIR/$target" \
+        && ! grep -Fq 'ghcr.io/ggml-org/llama.cpp:server-b8248' "$ROOT_DIR/$target"; then
+        pass "$target uses the reasoning-aware CPU image by default"
+    else
+        fail "$target must default to the same reasoning-aware CPU image as Compose"
+    fi
+done
 
 if (( FAILURES > 0 )); then
     echo ""

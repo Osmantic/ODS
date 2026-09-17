@@ -106,24 +106,28 @@ function validResponse(value, request) {
   return value;
 }
 
-function socketRequest(payload, { socketPath = SOCKET_PATH, signal } = {}) {
+function socketRequest(payload, { socketPath = SOCKET_PATH, signal, timeoutMs = 30_000 } = {}) {
   if (signal?.aborted) return Promise.reject(new Error("Pixel workspace preview cancelled"));
   return new Promise((resolve, reject) => {
     const connection = net.createConnection({ path: socketPath });
     const chunks = [];
     let total = 0;
     let settled = false;
+    let deadline;
     const finish = (callback, value) => {
       if (settled) return;
       settled = true;
+      clearTimeout(deadline);
       signal?.removeEventListener("abort", onAbort);
       connection.destroy();
       callback(value);
     };
     const onAbort = () => finish(reject, new Error("Pixel workspace preview cancelled"));
+    // A socket idle timeout restarts on each byte; bound the entire receipt wait.
+    deadline = setTimeout(() =>
+      finish(reject, new Error("Pixel workspace preview timed out")), timeoutMs);
     signal?.addEventListener("abort", onAbort, { once: true });
     if (signal?.aborted) onAbort();
-    connection.setTimeout(30_000);
     connection.on("connect", () => {
       connection.end(`${JSON.stringify(payload)}\n`);
     });
@@ -146,9 +150,6 @@ function socketRequest(payload, { socketPath = SOCKET_PATH, signal } = {}) {
         finish(reject, error);
       }
     });
-    connection.on("timeout", () =>
-      finish(reject, new Error("Pixel workspace preview timed out"))
-    );
     connection.on("error", (error) => finish(reject, error));
   });
 }

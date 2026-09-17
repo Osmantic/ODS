@@ -107,7 +107,7 @@ fi
 # support remains unchanged; auto mode falls back to Hermes without failing.
 if ! PIXEL_AGENT_MODE="$(ods_pixel_resolve_enablement "${ENABLE_PIXEL:-auto}" 2>/dev/null)"; then
     ai_bad "Pixel was explicitly required, but this host or license is not qualified."
-    ai "Pixel requires Ubuntu 24.04 or Debian 12 with PID1 systemd and PIXEL_LICENSE_ACCEPTED=true after a separate written agreement."
+    ai "Pixel requires Ubuntu 24.04/26.04 or Debian 12 with PID1 systemd and PIXEL_LICENSE_ACCEPTED=true after a separate written agreement."
     return 1 2>/dev/null || exit 1
 fi
 ENABLE_PIXEL_RUNTIME=false
@@ -154,12 +154,16 @@ fi
 # only gates cosmetic things (image pre-pull, health checks, summary URLs)
 # and the service still starts. Every optional service must be listed here
 # or the user can't opt out of it.
-_sync_extension_compose() {
-    local flag="$1" svc_dir="$2" label="$3" reason="$4"
-    local compose="$SCRIPT_DIR/extensions/services/$svc_dir/compose.yaml"
+_sync_extension_compose_at() {
+    local root="$1" flag="$2" svc_dir="$3" label="$4" reason="$5"
+    local compose="$root/extensions/services/$svc_dir/compose.yaml"
     if [[ "$flag" == "true" ]]; then
         # Re-enable if previously disabled (re-install with different options)
-        if [[ ! -f "$compose" && -f "${compose}.disabled" ]]; then
+        if [[ -f "$compose" ]]; then
+            # An upgrade copy does not prune the prior state file. Make the
+            # selected enabled state authoritative when both names exist.
+            rm -f -- "${compose}.disabled"
+        elif [[ -f "${compose}.disabled" ]]; then
             mv "${compose}.disabled" "$compose"
             log "$label compose re-enabled"
         fi
@@ -167,9 +171,24 @@ _sync_extension_compose() {
         # Disable — prevents resolve-compose-stack.sh from including a compose
         # file whose image was never built/pulled, blocking ALL containers.
         if [[ -f "$compose" ]]; then
+            rm -f -- "${compose}.disabled"
             mv "$compose" "${compose}.disabled"
             log "$label compose disabled ($reason)"
         fi
+    fi
+}
+
+_sync_extension_compose() {
+    local flag="$1" svc_dir="$2" label="$3" reason="$4"
+    _sync_extension_compose_at "$SCRIPT_DIR" "$flag" "$svc_dir" "$label" "$reason"
+
+    # On an upgrade, Phase 06 deliberately preserves runtime data and does not
+    # use rsync --delete. Reconcile the existing installed tree now as well so
+    # its stale opposite state cannot survive the later source copy and cause
+    # resolve-compose-stack.sh to launch a service the user disabled.
+    if [[ -n "${INSTALL_DIR:-}" && "$INSTALL_DIR" != "$SCRIPT_DIR" \
+        && -d "$INSTALL_DIR/extensions/services/$svc_dir" ]]; then
+        _sync_extension_compose_at "$INSTALL_DIR" "$flag" "$svc_dir" "$label" "$reason"
     fi
 }
 
@@ -210,7 +229,30 @@ if ! $DRY_RUN; then
     _pixel_support_services="${ENABLE_RECOMMENDED:-false}"
     [[ "${ENABLE_PIXEL_RUNTIME:-false}" == "true" ]] && _pixel_support_services=true
     [[ -n "${EXTERNAL_LLM_URL:-}" ]] && _pixel_support_services=true
-    _sync_extension_compose "$_pixel_support_services" litellm    "LiteLLM"       "neither recommended services nor Pixel are enabled"
+    # With the default ODS_MODEL_SWITCHBOARD=enabled, phase 06 routes Open WebUI
+    # through the gateway (OPEN_WEBUI_LLM_BASE_URL=http://litellm:4000), so it
+    # must run even when recommended services are off. Resolve the mode as
+    # phase 06 does: an existing .env value wins on reruns, then the caller's
+    # value, then the default; anything but legacy or observe means enabled.
+    _switchboard_mode=""
+    if [[ -f "${INSTALL_DIR:-}/.env" ]]; then
+        _switchboard_mode="$(awk -F= '$1 == "ODS_MODEL_SWITCHBOARD" { print substr($0, index($0, "=") + 1); exit }' \
+            "$INSTALL_DIR/.env" 2>/dev/null | tr -d '\r' || true)"
+        _switchboard_mode="${_switchboard_mode%% #*}"
+        _switchboard_mode="${_switchboard_mode#"${_switchboard_mode%%[![:space:]]*}"}"
+        _switchboard_mode="${_switchboard_mode%"${_switchboard_mode##*[![:space:]]}"}"
+        # Only exact modes can disable the gateway. Do not turn invalid
+        # quoted values such as 'legacy # literal' or ' legacy ' into legacy.
+        case "$_switchboard_mode" in
+            \"legacy\"|\'legacy\') _switchboard_mode=legacy ;;
+            \"observe\"|\'observe\') _switchboard_mode=observe ;;
+            \"\"|\'\') _switchboard_mode="" ;;
+        esac
+    fi
+    [[ -n "$_switchboard_mode" ]] || _switchboard_mode="${ODS_MODEL_SWITCHBOARD:-enabled}"
+    [[ "$_switchboard_mode" == "legacy" || "$_switchboard_mode" == "observe" ]] || _pixel_support_services=true
+    unset _switchboard_mode
+    _sync_extension_compose "$_pixel_support_services" litellm    "LiteLLM"       "no enabled feature routes through the LiteLLM gateway"
     # SearXNG backs Pixel, Open WebUI web search, Perplexica, and agent web tools.
     # It is not only a recommended extra — --no-recommended with Perplexica
     # still needs the search backend.
@@ -242,6 +284,7 @@ if ! $DRY_RUN; then
     _sync_extension_compose "${ENABLE_HERMES:-}"     hermes        "Hermes Agent"  "Hermes agent not enabled"
     _sync_extension_compose "${ENABLE_HERMES:-}"     hermes-proxy  "Hermes proxy"  "Hermes agent not enabled"
     _sync_extension_compose "${ENABLE_PIXEL_RUNTIME:-false}" pixel-edge "Pixel edge" "Pixel host or license not qualified"
+    _sync_extension_compose "${ENABLE_PIXEL_RUNTIME:-false}" pixel-model-relay "Pixel model relay" "Pixel host or license not qualified"
     _sync_extension_compose "${ENABLE_OPENCLAW:-}"   openclaw   "OpenClaw"      "agent framework not enabled"
     _sync_extension_compose "${ENABLE_APE:-}"        ape        "APE"           "agent governance not enabled"
     _sync_extension_compose "${ENABLE_COMFYUI:-}"    comfyui    "ComfyUI"       "image generation not enabled"

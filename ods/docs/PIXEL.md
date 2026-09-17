@@ -65,7 +65,7 @@ implicit acceptance.
 
 Pixel is selected only on:
 
-- Ubuntu 24.04 LTS or Debian 12;
+- Ubuntu 24.04/26.04 LTS or Debian 12;
 - Linux with `systemd` as PID 1;
 - a native Linux host or WSL2 (WSL1 is rejected); and
 - an ODS-managed local, cloud, hybrid, Lemonade, or external OpenAI-compatible model route.
@@ -276,7 +276,7 @@ public-web tools and shell cannot be used as substitutes.
 
 ## Install
 
-From an authorized Ubuntu 24.04 or Debian 12 host:
+From an authorized Ubuntu 24.04/26.04 or Debian 12 host:
 
 ```bash
 git clone https://github.com/Osmantic/ODS.git
