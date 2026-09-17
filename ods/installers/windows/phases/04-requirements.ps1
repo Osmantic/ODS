@@ -248,6 +248,26 @@ $_minDiskGB = switch ($selectedTier) {
     default      {  30 }
 }
 
+$estimateFeatures = @()
+if ($enableVoice) { $estimateFeatures += "voice" }
+if ($enableWorkflows) { $estimateFeatures += "workflows" }
+if ($enableRag) { $estimateFeatures += "rag" }
+if ($enableRecommended) { $estimateFeatures += "recommended" }
+if ($enableHermes) { $estimateFeatures += "hermes" }
+if ($enableOpenClaw) { $estimateFeatures += "openclaw" }
+if ($enableComfyui) { $estimateFeatures += "comfyui" }
+if ($enableDeepResearch) { $estimateFeatures += "deepResearch" }
+if ($enablePrivacyShield) { $estimateFeatures += "privacyShield" }
+if ($enableLangfuse) { $estimateFeatures += "langfuse" }
+if ($enableBraveSearch) { $estimateFeatures += "braveSearch" }
+if ($enableODSProxy) { $estimateFeatures += "odsProxy" }
+if ($enableRemoteAccess) { $estimateFeatures += "remoteAccess" }
+$installSizeEstimate = Get-ODSWindowsInstallSizeEstimate -TierConfig $tierConfig -MinimumDiskGB $_minDiskGB -EnabledOptionalFeatures $estimateFeatures
+Write-AI "Estimated install footprint before mutation:"
+Write-AI "  Model download: $(if ($null -eq $installSizeEstimate.modelDownloadGB) { 'unknown (metadata unavailable)' } else { "$($installSizeEstimate.modelDownloadGB) GB" })"
+Write-AI "  Container/data allowance: $($installSizeEstimate.buildAndDataGB) GB"
+Write-AI "  Required free disk floor: $($installSizeEstimate.requiredFreeDiskGB) GB"
+
 $_diskCheck = Test-DiskSpace -Path $installDir -RequiredGB $_minDiskGB
 if (-not $_diskCheck.Sufficient) {
     Write-AIWarn "Disk: $($_diskCheck.FreeGB) GB free, ${_minDiskGB} GB required for Tier $selectedTier."
