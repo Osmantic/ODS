@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { render } from '../test/test-utils'
 import Usage from './Usage' // eslint-disable-line no-unused-vars
 
@@ -341,5 +341,37 @@ describe('Usage page', () => {
     render(<Usage/>);await ready();tab('Costs')
     expect(screen.getByText(/Local inference · no external API charges/)).toBeVisible()
     expect(screen.queryByRole('region',{name:'Recorded cost'})).not.toBeInTheDocument()
+  })
+
+  it('submits only one readiness mutation for same-tick repeated activation', async () => {
+    let resolveAction
+    const actionResponse = new Promise((resolve) => { resolveAction = resolve })
+    vi.stubGlobal('fetch', vi.fn((url, options = {}) => {
+      const text = String(url)
+      if (options.method === 'POST') return actionResponse
+      if (text.includes('/api/usage/readiness')) {
+        return Promise.resolve({ ok: true, json: async () => offlineReadiness })
+      }
+      const report = text.includes('start=2026-04-01')
+        ? makeEmptyReport('2026-04-01', '2026-04-30')
+        : makeEmptyReport()
+      return Promise.resolve({ ok: true, json: async () => report })
+    }))
+    render(<Usage status={{}} />)
+    const restartButton = await screen.findByRole('button', { name: /Restart Token Spy/i })
+
+    act(() => {
+      restartButton.click()
+      restartButton.click()
+    })
+
+    const mutationCalls = fetch.mock.calls.filter(([, options = {}]) => options.method === 'POST')
+    expect(mutationCalls).toHaveLength(1)
+
+    await act(async () => {
+      resolveAction({ ok: true, json: async () => ({ message: 'Action accepted' }) })
+      await actionResponse
+    })
+    expect(await screen.findByText('Action accepted')).toBeInTheDocument()
   })
 })
