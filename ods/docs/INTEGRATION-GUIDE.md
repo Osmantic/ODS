@@ -239,10 +239,12 @@ client = OpenAI(
 
 ### Open WebUI Auth
 
-WebUI has built-in user management:
-1. First user becomes admin
-2. Configure auth in WebUI settings
-3. Set `WEBUI_AUTH=true` in `.env`
+Loopback-only ODS installs open directly. For a network deployment, Open WebUI
+has built-in user management:
+
+1. Set `WEBUI_AUTH=true` in `.env`
+2. Restart Open WebUI
+3. The first user becomes admin and can configure auth in Open WebUI settings
 
 ---
 

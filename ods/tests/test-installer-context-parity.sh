@@ -49,6 +49,15 @@ assert_not_grep() {
     fi
 }
 
+function_block() {
+    local function_name="$1"
+    awk -v signature="^${function_name}[(][)]" '
+        $0 ~ signature { in_block=1 }
+        in_block { print }
+        in_block && /^}/ { exit }
+    ' "installers/phases/11-services.sh"
+}
+
 echo "=== Installer context parity ==="
 
 echo ""
@@ -119,6 +128,56 @@ assert_grep "installers/phases/11-services.sh" '_hermes_model="ods/current"' \
     "Linux Hermes patcher uses the stable switchboard model alias"
 assert_grep "installers/phases/11-services.sh" '_hermes_base_url=.*http://litellm:4000/v1' \
     "Linux Hermes patcher routes switchboard mode through LiteLLM"
+assert_grep "installers/phases/11-services.sh" '_hermes_model_yaml=.*_phase11_yaml_double_quoted_scalar_content' \
+    "Linux Hermes verification serializes the selected model as YAML"
+assert_grep "installers/phases/11-services.sh" 'grep -Fqx "  default: \\"\$_hermes_model_yaml\\""' \
+    "Linux Hermes verification compares the serialized model"
+
+fallback_yaml_block="$(function_block _phase11_yaml_double_quoted_scalar_content)"
+fallback_patch_block="$(function_block _phase11_patch_hermes_with_sed)"
+[[ -n "$fallback_yaml_block" ]] || fail "could not extract the Linux YAML scalar serializer"
+[[ -n "$fallback_patch_block" ]] || fail "could not extract the Linux Hermes fallback patcher"
+(
+    fallback_tmp="$(mktemp -d "${TMPDIR:-/tmp}/ods-hermes-fallback.XXXXXX")"
+    trap 'rm -rf -- "$fallback_tmp"' EXIT
+    fallback_template="$fallback_tmp/config.yaml"
+    cat >"$fallback_template" <<'HERMES_FALLBACK_EOF'
+model:
+  default: "qwen3.5-9b"
+  context_length: 131072
+providers:
+  custom:
+    request_timeout_seconds: 180
+auxiliary:
+  compression:
+    context_length: 131072
+HERMES_FALLBACK_EOF
+
+    eval "$fallback_yaml_block"
+    eval "$fallback_patch_block"
+    fallback_model='model"branch&tag|path\leaf'
+    _phase11_patch_hermes_with_sed "$fallback_template" "$fallback_model" 65536 900
+    fallback_model_yaml="$(_phase11_yaml_double_quoted_scalar_content "$fallback_model")"
+    grep -Fqx "  default: \"${fallback_model_yaml}\"" "$fallback_template"
+    grep -Fqx '  context_length: 65536' "$fallback_template"
+    grep -Fqx '    context_length: 65536' "$fallback_template"
+    grep -Fqx '    request_timeout_seconds: 900' "$fallback_template"
+    if compgen -G "${fallback_template}.bak.*" >/dev/null; then
+        exit 1
+    fi
+
+    cp "$fallback_template" "$fallback_tmp/before-invalid"
+    if _phase11_patch_hermes_with_sed "$fallback_template" "safe-model" '65536|e touch /tmp/invalid' 900; then
+        exit 1
+    fi
+    cmp -s "$fallback_template" "$fallback_tmp/before-invalid"
+    if _phase11_patch_hermes_with_sed "$fallback_template" $'line1\nline2' 65536 900; then
+        exit 1
+    fi
+    cmp -s "$fallback_template" "$fallback_tmp/before-invalid"
+) || fail "Linux Hermes fallback patcher did not preserve metacharacters or reject unsafe structure"
+pass "Linux Hermes fallback patcher treats sed metacharacters as data"
+
 assert_grep "installers/macos/install-macos.sh" '--context-length "\$MAX_CONTEXT"' \
     "macOS Hermes patcher receives context length"
 assert_grep "installers/macos/ods-macos.sh" 'ENV_CTX_SIZE:-65536' \
@@ -275,6 +334,70 @@ pass "Hermes patcher preserves custom provider request timeout"
 grep -q '^  max_tokens: 2048$' "$tmp_hermes_custom" \
     || fail "Hermes patcher preserves a custom model output cap"
 pass "Hermes patcher preserves a custom model output cap"
+
+# ---------------------------------------------------------------------------
+# OpenCode reads config.json, not opencode.json. Every platform writer has to
+# produce both files or the native OpenCode install starts with no ODS
+# provider configured at all.
+# ---------------------------------------------------------------------------
+
+assert_grep "installers/phases/07-devtools.sh" \
+    'cp "\$OPENCODE_CONFIG_DIR/opencode\.json" "\$OPENCODE_CONFIG_DIR/config\.json"' \
+    "Linux OpenCode writer syncs config.json"
+
+assert_grep "installers/windows/lib/opencode-config.ps1" \
+    'WriteAllText\(\$_ocCompatConfigFile' \
+    "Windows OpenCode writer syncs config.json"
+
+assert_grep "installers/macos/install-macos.sh" \
+    'compat_path="\$\(dirname "\$config_path"\)/config\.json"' \
+    "macOS OpenCode writer syncs config.json"
+
+if [[ -n "$python_cmd" ]]; then
+    tmp_opencode_dir="$(mktemp -d)"
+    trap 'rm -rf "$tmp_opencode_dir"' EXIT
+
+    # Run the real macOS writer: lift the function out of the installer and
+    # point its interpreter at whatever python3 this runner has.
+    opencode_writer="$tmp_opencode_dir/writer.sh"
+    awk '/^_write_macos_opencode_config\(\) \{$/ {inside=1}
+         inside {print}
+         inside && /^\}$/ {exit}' installers/macos/install-macos.sh \
+        | sed "s#/usr/bin/python3#$python_cmd#" > "$opencode_writer"
+
+    [[ -s "$opencode_writer" ]] || fail "could not extract _write_macos_opencode_config"
+
+    # shellcheck disable=SC1090
+    . "$opencode_writer"
+    _write_macos_opencode_config \
+        "$tmp_opencode_dir/config/opencode.json" \
+        "Modern-Model.gguf" "http://127.0.0.1:8080/v1" "no-key" 32768 \
+        || fail "macOS OpenCode writer failed"
+
+    [[ -f "$tmp_opencode_dir/config/config.json" ]] \
+        || fail "macOS OpenCode writer must also write config.json"
+    pass "macOS OpenCode writer produces config.json"
+
+    cmp -s "$tmp_opencode_dir/config/opencode.json" "$tmp_opencode_dir/config/config.json" \
+        || fail "macOS OpenCode config.json must match opencode.json"
+    pass "macOS OpenCode config.json matches opencode.json"
+
+    "$python_cmd" - "$tmp_opencode_dir/config/config.json" <<'OPENCODE_COMPAT_PY'
+import json
+import sys
+
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+provider = data["provider"]["llama-server"]
+assert data["model"] == "llama-server/Modern-Model.gguf", data.get("model")
+assert provider["options"] == {
+    "baseURL": "http://127.0.0.1:8080/v1",
+    "apiKey": "no-key",
+}, provider["options"]
+OPENCODE_COMPAT_PY
+    pass "macOS OpenCode config.json carries the active route"
+else
+    echo "  SKIP: python3 unavailable - macOS OpenCode writer behaviour not exercised"
+fi
 
 echo ""
 echo "Results: $PASS passed"

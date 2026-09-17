@@ -43,6 +43,9 @@
 #
 #   8. Native Lemonade cleanup must also stop the per-user cached llama.cpp
 #      child process; it does not live under the Program Files Lemonade bin dir.
+#
+#   9. Hosts without GNU timeout must launch PowerShell without expanding an
+#      empty array under nounset (Bash 4.0-4.3 treats that as unbound).
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -147,15 +150,27 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 8b. Lemonade 10.7 removed the legacy launch flags and changed local GGUF
-#     request IDs. Bootstrap promotion must use the shared version-aware
-#     contract, resolve the live ID, and persist it for every downstream client.
+# 8a. The optional timeout command belongs in the always-populated env argv.
+# Expanding a separate empty array aborts under `set -u` on Bash < 4.4.
 # ---------------------------------------------------------------------------
 restart_block="$(awk '
     /^restart_windows_lemonade_with_full_model\(\)/ { in_block=1 }
     in_block { print }
     in_block && /^}/ { exit }
 ' "$SCRIPT" | grep -v '^[[:space:]]*#')"
+if ! grep -q 'ps_timeout_prefix' <<<"$restart_block" \
+   && grep -q 'ps_env_cmd+=(timeout --foreground' <<<"$restart_block" \
+   && grep -q 'if "${ps_env_cmd\[@\]}"' <<<"$restart_block"; then
+    pass "Windows Lemonade restart tolerates hosts without GNU timeout"
+else
+    fail "Windows Lemonade restart must not expand an optional empty timeout array"
+fi
+
+# ---------------------------------------------------------------------------
+# 8b. Lemonade 10.7 removed the legacy launch flags and changed local GGUF
+#     request IDs. Bootstrap promotion must use the shared version-aware
+#     contract, resolve the live ID, and persist it for every downstream client.
+# ---------------------------------------------------------------------------
 if grep -q 'Get-ODSLemonadeLaunchContract' <<<"$restart_block" \
    && grep -q 'New-ODSLemonadeScheduledTaskAction' <<<"$restart_block" \
    && grep -q 'Set-ODSLemonadeModernRuntimeConfig' <<<"$restart_block" \
@@ -189,8 +204,8 @@ fi
 #    Git Bash, and it must verify the YAML before returning success.
 # ---------------------------------------------------------------------------
 if grep -q 'patch_hermes_yaml_with_sed' "$SCRIPT" \
-   && grep -Fq 'grep -Fq "  default: \"${model}\""' "$SCRIPT" \
-   && grep -Fq 'grep -Fq "  base_url: \"${base_url}\""' "$SCRIPT" \
+   && grep -Fq 'grep -Fq "  default: \"${model_yaml}\""' "$SCRIPT" \
+   && grep -Fq 'grep -Fq "  base_url: \"${base_url_yaml}\""' "$SCRIPT" \
    && grep -q 'ERROR: Could not patch ${tpl} after full-model swap.' "$SCRIPT" \
    && grep -q 'return 1' "$SCRIPT"; then
     pass "post-swap Hermes patch is dependency-free, verifies model/base_url, and is fail-loud"
@@ -208,8 +223,8 @@ if grep -q 'hermes_base_url="$(read_env_value HERMES_LLM_BASE_URL)"' "$SCRIPT" \
    && grep -q 'patch_hermes_yaml_with_sed "$tpl" "$new_model" "$FULL_MAX_CONTEXT" "$hermes_base_url"' "$SCRIPT" \
    && grep -q 'patch_hermes_yaml_with_sed "$live" "$new_model" "$FULL_MAX_CONTEXT" "$hermes_base_url"' "$SCRIPT" \
    && grep -q 'patch_hermes_yaml_with_sed "$_hermes_live" "$_hermes_new_model" "$FULL_MAX_CONTEXT" "$_hermes_base_url"' "$SCRIPT" \
-   && grep -q 'hermes_base_url_sed="$(printf' "$SCRIPT" \
-   && grep -q 'base_url: \\"${hermes_base_url_sed}\\"' "$SCRIPT"; then
+   && grep -q 'patch_hermes_yaml_in_container.*' "$SCRIPT" \
+   && grep -q 'base_url: \\"${base_url_sed}\\"' "$SCRIPT"; then
     pass "post-swap Hermes patch preserves HERMES_LLM_BASE_URL in template and live config"
 else
     fail "post-swap Hermes patch must carry HERMES_LLM_BASE_URL into persisted Hermes config"

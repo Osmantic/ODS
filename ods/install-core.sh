@@ -49,6 +49,9 @@ interrupt_handler() {
     if (( now - LAST_SIGINT <= 3 )); then
         echo ""
         echo -e "\033[0;33m[!] Install cancelled by user.\033[0m"
+        if declare -F cancel_active_download >/dev/null 2>&1; then
+            cancel_active_download
+        fi
         echo -e "\033[0;32m    Log file: ${LOG_FILE:-/tmp/ods-install.log}\033[0m"
         exit 130
     fi
@@ -84,6 +87,7 @@ source "$SCRIPT_DIR/installers/lib/packaging.sh"
 source "$SCRIPT_DIR/installers/lib/python-runtime.sh"
 source "$SCRIPT_DIR/installers/lib/progress.sh"
 source "$SCRIPT_DIR/installers/lib/model-lifecycle-lock.sh"
+source "$SCRIPT_DIR/installers/lib/external-services.sh"
 if [[ -f "$SCRIPT_DIR/lib/service-registry.sh" ]]; then 
     source "$SCRIPT_DIR/lib/service-registry.sh" 
 fi
@@ -130,6 +134,11 @@ BIND_ADDRESS_EXPLICIT=false
 [[ -n "${BIND_ADDRESS:-}" ]] && BIND_ADDRESS_EXPLICIT=true
 BIND_ADDRESS="${BIND_ADDRESS:-127.0.0.1}"
 SUMMARY_JSON_FILE="${SUMMARY_JSON_FILE:-}"
+EXTERNAL_LLM_URL="${EXTERNAL_LLM_URL:-}"
+EXTERNAL_LLM_PROVIDER="${EXTERNAL_LLM_PROVIDER:-auto}"
+EXTERNAL_LLM_MODEL="${EXTERNAL_LLM_MODEL:-}"
+EXTERNAL_LLM_AUTO_REUSE="${EXTERNAL_LLM_AUTO_REUSE:-false}"
+EXTERNAL_LLM_DISABLE=false
 
 usage() {
     cat << EOF
@@ -149,6 +158,16 @@ Options:
                       (auto-detects localhost:13305, then localhost:8000 when omitted)
     --lemonade-api-key K
                       API key LiteLLM should send to the existing Lemonade server
+    --external-llm-url U
+                      Reuse an OpenAI-compatible Ollama or LM Studio endpoint
+    --external-llm-provider P
+                      External provider: auto, ollama, or lmstudio
+    --external-llm-model M
+                      Exact model id exposed by the external provider
+    --reuse-external-llm
+                      Allow non-interactive reuse of a detected matching model
+    --no-external-llm
+                      Disable a persisted external LLM selection on this rerun
     --voice           Enable voice services (Whisper + Kokoro)
     --no-voice        Disable voice services
     --workflows       Enable n8n workflow automation
@@ -208,6 +227,11 @@ while [[ $# -gt 0 ]]; do
         --use-existing-lemonade) LEMONADE_EXTERNAL=true; ODS_MODE="lemonade"; shift ;;
         --lemonade-url) LEMONADE_EXTERNAL=true; ODS_MODE="lemonade"; LEMONADE_BASE_URL="$2"; shift 2 ;;
         --lemonade-api-key) LEMONADE_API_KEY="$2"; shift 2 ;;
+        --external-llm-url) EXTERNAL_LLM_URL="$2"; shift 2 ;;
+        --external-llm-provider) EXTERNAL_LLM_PROVIDER="$2"; shift 2 ;;
+        --external-llm-model) EXTERNAL_LLM_MODEL="$2"; shift 2 ;;
+        --reuse-external-llm) EXTERNAL_LLM_AUTO_REUSE=true; shift ;;
+        --no-external-llm) EXTERNAL_LLM_DISABLE=true; shift ;;
         --voice) ENABLE_VOICE=true; shift ;;
         --no-voice) ENABLE_VOICE=false; shift ;;
         --workflows) ENABLE_WORKFLOWS=true; shift ;;
@@ -253,6 +277,9 @@ if [[ "${LEMONADE_EXTERNAL,,}" == "true" ]]; then
     ENABLE_RECOMMENDED=true
     export LEMONADE_EXTERNAL LEMONADE_BASE_URL LEMONADE_API_KEY
 fi
+
+export EXTERNAL_LLM_URL EXTERNAL_LLM_PROVIDER EXTERNAL_LLM_MODEL
+export EXTERNAL_LLM_AUTO_REUSE EXTERNAL_LLM_DISABLE
 
 # OpenClaw deprecation back-compat: preserve OpenClaw on UPGRADES of installs
 # that previously had it enabled. The earlier heuristic — "does the compose
@@ -310,6 +337,7 @@ $DRY_RUN && echo -e "${AMB}>>> DRY RUN MODE — I will simulate everything. No c
 #=============================================================================
 INSTALL_PHASE="01-preflight";    source "$SCRIPT_DIR/installers/phases/01-preflight.sh"
 INSTALL_PHASE="02-detection";    source "$SCRIPT_DIR/installers/phases/02-detection.sh"
+INSTALL_PHASE="02b-external-services"; source "$SCRIPT_DIR/installers/phases/02b-external-services.sh"
 INSTALL_PHASE="03-features";     source "$SCRIPT_DIR/installers/phases/03-features.sh"
 INSTALL_PHASE="04-requirements"; source "$SCRIPT_DIR/installers/phases/04-requirements.sh"
 INSTALL_PHASE="05-docker";       source "$SCRIPT_DIR/installers/phases/05-docker.sh"

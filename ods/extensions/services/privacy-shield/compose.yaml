@@ -1,11 +1,13 @@
 services:
   privacy-shield:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     build:
       context: ./extensions/services/privacy-shield
       dockerfile: Dockerfile
     container_name: ods-privacy-shield
     restart: unless-stopped
-    user: "${UID:-1000}:${GID:-1000}"
+    user: "${ODS_UID:-1000}:${ODS_GID:-1000}"
     security_opt:
       - no-new-privileges:true
     environment:

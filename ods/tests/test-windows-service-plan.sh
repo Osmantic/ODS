@@ -108,13 +108,43 @@ if command -v pwsh >/dev/null 2>&1; then
             -EnableRecommended $true
 
         Assert-Plan (-not (Test-ODSWindowsServiceEnabled -ServiceId "hermes" -Plan $core)) "Core disables Hermes"
+        Assert-Plan (-not (Test-ODSWindowsServiceEnabled -ServiceId "searxng" -Plan $core)) "Core disables SearXNG"
+        Assert-Plan (-not (Test-ODSWindowsServiceEnabled -ServiceId "litellm" -Plan $core)) "Core disables LiteLLM"
         Assert-Plan (-not (Test-ODSWindowsServiceEnabled -ServiceId "openclaw" -Plan $core)) "Core disables OpenClaw"
         Assert-Plan (-not (Test-ODSWindowsServiceEnabled -ServiceId "tailscale" -Plan $core)) "Core disables Tailscale"
         Assert-Plan (Test-ODSWindowsServiceEnabled -ServiceId "hermes" -Plan $full) "Full enables Hermes"
+        Assert-Plan (Test-ODSWindowsServiceEnabled -ServiceId "searxng" -Plan $full) "Full enables SearXNG"
         Assert-Plan (-not (Test-ODSWindowsServiceEnabled -ServiceId "openclaw" -Plan $full)) "Full keeps OpenClaw opt-in"
         Assert-Plan (Test-ODSWindowsServiceEnabled -ServiceId "ape" -Plan $full) "Full enables APE with agents"
         Assert-Plan (Test-ODSWindowsServiceEnabled -ServiceId "openclaw" -Plan $legacy) "OpenClaw flag enables legacy agent"
+        Assert-Plan (Test-ODSWindowsServiceEnabled -ServiceId "searxng" -Plan $legacy) "OpenClaw opt-in enables SearXNG"
         Assert-Plan (Test-ODSWindowsServiceEnabled -ServiceId "ape" -Plan $legacy) "OpenClaw opt-in enables APE"
+
+        $deepResearchOnly = New-ODSWindowsServicePlan `
+            -EnableRecommended $false `
+            -EnableVoice $false `
+            -EnableWorkflows $false `
+            -EnableRag $false `
+            -EnableHermes $false `
+            -EnableOpenClaw $false `
+            -EnableComfyui $false `
+            -EnableDeepResearch $true `
+            -EnablePrivacyShield $false
+        Assert-Plan (Test-ODSWindowsServiceEnabled -ServiceId "searxng" -Plan $deepResearchOnly) "Deep research without recommended still enables SearXNG"
+        Assert-Plan (-not (Test-ODSWindowsServiceEnabled -ServiceId "litellm" -Plan $deepResearchOnly)) "Deep research without recommended leaves LiteLLM off"
+
+        $hermesOnly = New-ODSWindowsServicePlan `
+            -EnableRecommended $false `
+            -EnableVoice $false `
+            -EnableWorkflows $false `
+            -EnableRag $false `
+            -EnableHermes $true `
+            -EnableOpenClaw $false `
+            -EnableComfyui $false `
+            -EnableDeepResearch $false `
+            -EnablePrivacyShield $false
+        Assert-Plan (Test-ODSWindowsServiceEnabled -ServiceId "searxng" -Plan $hermesOnly) "Hermes without recommended still enables SearXNG"
+
         Assert-Plan (-not $unknownOptional.Enabled) "Unknown optional is disabled"
         Assert-Plan ($unknownRecommended.Enabled) "Unknown recommended follows recommended flag"
 

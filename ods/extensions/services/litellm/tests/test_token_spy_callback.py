@@ -153,3 +153,40 @@ def test_callback_enqueues_without_waiting_for_token_spy(monkeypatch):
             pass
 
     asyncio.run(scenario())
+
+
+def test_callback_closes_http_client_during_repeated_cancellation(monkeypatch):
+    monkeypatch.setenv("TOKEN_SPY_URL", "http://token-spy:8080")
+    monkeypatch.setenv("TOKEN_SPY_API_KEY", "shared-secret")
+    callback = load_callback(monkeypatch)
+    closing = asyncio.Event()
+    release_close = asyncio.Event()
+    closed = asyncio.Event()
+
+    class Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def aclose(self):
+            closing.set()
+            await release_close.wait()
+            closed.set()
+
+    monkeypatch.setattr(callback.httpx, "AsyncClient", Client)
+    instance = callback.ODSTokenSpyCallback()
+
+    async def scenario():
+        worker = asyncio.create_task(instance._run())
+        await asyncio.sleep(0)
+        worker.cancel()
+        await closing.wait()
+        worker.cancel()
+        await asyncio.sleep(0)
+        release_close.set()
+        try:
+            await worker
+        except asyncio.CancelledError:
+            pass
+        assert closed.is_set()
+
+    asyncio.run(scenario())

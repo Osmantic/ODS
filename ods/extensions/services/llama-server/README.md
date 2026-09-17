@@ -15,7 +15,7 @@ All other services that perform AI inference — Open WebUI, LiteLLM, Privacy Sh
 - **GPU acceleration**: CUDA (NVIDIA) and ROCm/HIP (AMD) backends
 - **Configurable context window**: Token limit tunable via `CTX_SIZE`
 - **Prometheus metrics**: `/metrics` endpoint for throughput and token stats
-- **Multi-GPU offload**: All GPU layers offloaded with `--n-gpu-layers 999`
+- **Memory-aware GPU offload**: llama.cpp selects the safe layer count by default; operators can override it with `N_GPU_LAYERS`
 - **Hardware-tier model selection**: Installer auto-selects model size based on detected VRAM
 
 ## Configuration
@@ -28,6 +28,7 @@ Environment variables (set in `.env`):
 | `CTX_SIZE` | `16384` | Context window size in tokens |
 | `OLLAMA_PORT` | `11434` | External host port (maps to internal 8080) |
 | `GPU_BACKEND` | `nvidia` | GPU backend: `nvidia` or `amd` |
+| `N_GPU_LAYERS` | `auto` | GPU offload policy: `auto`, `all`, or a non-negative layer count |
 | `LLAMA_ARG_FLASH_ATTN` | `auto` | llama.cpp Flash Attention mode: `auto`, `on`, or `off` |
 | `LLAMA_ARG_CACHE_TYPE_K` | `f16` | KV cache key precision. Use `q8_0` to reduce long-context memory pressure |
 | `LLAMA_ARG_CACHE_TYPE_V` | `f16` | KV cache value precision. Use `q8_0` to reduce long-context memory pressure |

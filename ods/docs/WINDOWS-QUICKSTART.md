@@ -9,9 +9,14 @@ ODS is fully supported on Windows 10 2004+ and Windows 11 (NVIDIA and AMD). The 
 Open a normal **PowerShell** session and run:
 
 ```powershell
+$ProgressPreference = "SilentlyContinue"
+$odsSrc = Join-Path $env:TEMP ("ods-install-" + [guid]::NewGuid().ToString("N"))
+$odsZip = Join-Path $odsSrc "ods-main.zip"
+New-Item -ItemType Directory -Path $odsSrc | Out-Null
+Invoke-WebRequest "https://github.com/Osmantic/ODS/archive/refs/heads/main.zip" -OutFile $odsZip
+Expand-Archive -LiteralPath $odsZip -DestinationPath $odsSrc -Force
+cd (Get-ChildItem -LiteralPath $odsSrc -Directory | Select-Object -First 1).FullName
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-git clone https://github.com/Osmantic/ODS.git
-cd ODS
 .\install.ps1
 ```
 
@@ -23,11 +28,10 @@ The installer will:
 
 ### Source checkout vs runtime directory
 
-The cloned `ODS` folder is only the installer/source checkout. The
-Windows runtime is created under `$env:USERPROFILE\ods` by default
-(or `$env:ODS_HOME` if you set it before installing). That runtime directory
-contains `.env`, generated secrets, model files, logs, data, and the compose
-state.
+The downloaded source folder is only the installer/source checkout. The Windows
+runtime is created under `$env:USERPROFILE\ods` by default (or `$env:ODS_HOME`
+if you set it before installing). That runtime directory contains `.env`,
+generated secrets, model files, logs, data, and the compose state.
 
 If your `C:` drive is tight, choose the runtime location explicitly. Running
 the installer from `G:\ODS` does not automatically install the runtime
@@ -68,6 +72,7 @@ cd $installDir
 .\ods.ps1 logs llama-server   # Tail logs (any service name)
 .\ods.ps1 update              # Pull latest images and restart
 .\ods.ps1 report              # Generate diagnostics bundle
+.\ods.ps1 uninstall --force   # Remove ODS containers, volumes, and files
 ```
 
 For development installs where you intentionally want the runtime files inside
@@ -87,7 +92,9 @@ models to live inside that checkout.
 
 Visit **http://localhost:3000** — the chat interface is ready after the installer completes.
 
-First user becomes admin. Start chatting immediately.
+The normal loopback-only install opens directly without an account. A
+network-bound or ODS proxy install keeps authentication enabled and prompts the
+first user to create the admin account.
 
 ---
 
@@ -190,6 +197,35 @@ $installDir = "$env:USERPROFILE\ods"
 cd $installDir
 .\ods.ps1 update
 ```
+
+---
+
+## Uninstalling
+
+Start Docker Desktop first so ODS can remove its containers and volumes, then run:
+
+```powershell
+$installDir = "$env:USERPROFILE\ods"
+# If you installed with -InstallDir, use that same path instead.
+cd $installDir
+.\ods.ps1 uninstall --force
+```
+
+To preserve local state:
+
+```powershell
+.\ods.ps1 uninstall --force --keep-data
+.\ods.ps1 uninstall --force --keep-models
+```
+
+If the runtime folder is partial and `.\ods.ps1` is missing, run the cleanup command from a source checkout:
+
+```powershell
+cd ODS
+.\ods\installers\windows\ods.ps1 uninstall --force
+```
+
+That fallback removes Docker resources labelled as the ODS compose project before removing the runtime directory.
 
 ---
 

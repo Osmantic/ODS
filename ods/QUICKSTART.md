@@ -36,7 +36,7 @@ see [MACOS-QUICKSTART.md](docs/MACOS-QUICKSTART.md),
 
 ## Install
 
-### Linux One-Liner
+### Linux/macOS One-Liner
 
 ```bash
 curl -fsSL https://install.osmantic.com/ods.sh | bash
@@ -46,6 +46,8 @@ The hosted endpoint proxies the current bootstrap from repository `main`.
 Reviewed merges reach it automatically after edge-cache refresh. `ODS_REF` selects a compatible repository checkout. See
 [Installer Trust](docs/INSTALLER_TRUST.md) to inspect the script or install a
 stable release or audited commit manually.
+
+Do not run this command from Windows PowerShell; use the Windows installer below.
 
 ### Manual Clone
 
@@ -58,9 +60,14 @@ cd ODS
 ### Windows
 
 ```powershell
+$ProgressPreference = "SilentlyContinue"
+$odsSrc = Join-Path $env:TEMP ("ods-install-" + [guid]::NewGuid().ToString("N"))
+$odsZip = Join-Path $odsSrc "ods-main.zip"
+New-Item -ItemType Directory -Path $odsSrc | Out-Null
+Invoke-WebRequest "https://github.com/Osmantic/ODS/archive/refs/heads/main.zip" -OutFile $odsZip
+Expand-Archive -LiteralPath $odsZip -DestinationPath $odsSrc -Force
+cd (Get-ChildItem -LiteralPath $odsSrc -Directory | Select-Object -First 1).FullName
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-git clone https://github.com/Osmantic/ODS.git
-cd ODS
 .\install.ps1
 ```
 
@@ -75,6 +82,27 @@ Useful install flags:
 | `--no-hermes` | `-NoHermes` | Disable the default Hermes agent |
 | `--no-bootstrap` | `-NoBootstrap` | Wait for the full model instead of fast-start |
 | `--tier 3` | `-Tier 3` | Force a hardware/model tier |
+
+## Uninstall
+
+Linux/macOS:
+
+```bash
+cd ~/ods
+./ods-uninstall.sh --force
+```
+
+Windows:
+
+```powershell
+$installDir = "$env:USERPROFILE\ods"
+cd $installDir
+.\ods.ps1 uninstall --force
+```
+
+Use `--keep-data` or `--keep-models` to preserve local state. If the Windows
+runtime folder is partial and `.\ods.ps1` is missing, run
+`.\ods\installers\windows\ods.ps1 uninstall --force` from a source checkout.
 
 ## What Happens First
 
@@ -107,7 +135,9 @@ Get-Content .\logs\model-upgrade.log -Wait
 - Dashboard: http://localhost:3001
 - OpenCode IDE, when enabled: http://localhost:3003
 
-The first Chat UI user becomes admin.
+Loopback-only installs open the Chat UI directly without an account. A
+network-bound or ODS proxy install keeps authentication enabled and prompts the
+first user to create the admin account.
 
 ## Validate The Install
 
@@ -218,6 +248,7 @@ ods stop
 ods restart
 ods logs llm
 ods update
+./ods-uninstall.sh --force
 ```
 
 Windows:
@@ -230,6 +261,7 @@ cd $env:USERPROFILE\ods
 .\ods.ps1 restart
 .\ods.ps1 logs llm
 .\ods.ps1 update
+.\ods.ps1 uninstall --force
 ```
 
 ## Next Steps

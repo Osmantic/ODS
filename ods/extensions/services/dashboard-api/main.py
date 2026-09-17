@@ -26,12 +26,15 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlparse
 
 import httpx
-from fastapi import FastAPI, Depends, HTTPException, Body
+from fastapi import FastAPI, Depends, HTTPException, Body, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 # --- Local modules ---
+from env_values import strip_matching_quotes
 from config import (
     SERVICES, DATA_DIR, INSTALL_DIR, SIDEBAR_ICONS, MANIFEST_ERRORS, ALWAYS_ON_SERVICES,
     AGENT_HOST, AGENT_PORT, AGENT_URL, ODS_AGENT_KEY,
@@ -149,7 +152,7 @@ def _read_installed_version() -> str:
         try:
             for line in env_file.read_text().splitlines():
                 if line.startswith("ODS_VERSION="):
-                    env_version = line.split("=", 1)[1].strip().strip("\"'")
+                    env_version = strip_matching_quotes(line.split("=", 1)[1])
                     if env_version:
                         return env_version
         except OSError:
@@ -639,6 +642,7 @@ def _service_public_url(service_id: str, port: int | None) -> Optional[str]:
 def _serialize_services(service_statuses: list[ServiceStatus], uptime: int) -> list[dict]:
     serialized = []
     for service in service_statuses:
+        config = SERVICES.get(service.id, {})
         url = _service_public_url(service.id, service.external_port)
         item = {
             "id": service.id,
@@ -650,7 +654,11 @@ def _serialize_services(service_statuses: list[ServiceStatus], uptime: int) -> l
         if url:
             item["url"] = url
             item["href"] = url
-        llm_contract = SERVICES.get(service.id, {}).get("llm")
+        if config.get("public_url"):
+            item["public_url"] = config["public_url"]
+        if config.get("ui_path"):
+            item["ui_path"] = config["ui_path"]
+        llm_contract = config.get("llm")
         if isinstance(llm_contract, dict):
             item["llm"] = llm_contract
         item.update(_service_semantics(service.id, service.status))
@@ -675,6 +683,10 @@ def _fallback_services() -> list[dict]:
         if url:
             item["url"] = url
             item["href"] = url
+        if config.get("public_url"):
+            item["public_url"] = config["public_url"]
+        if config.get("ui_path"):
+            item["ui_path"] = config["ui_path"]
         llm_contract = config.get("llm")
         if isinstance(llm_contract, dict):
             item["llm"] = llm_contract
@@ -1045,7 +1057,7 @@ async def _lifespan(app: FastAPI):
 
 app = FastAPI(
     title="ODS Dashboard API",
-    version="2.5.3",
+    version="2.6.0",
     description="System status API for ODS Dashboard",
     lifespan=_lifespan,
 )
@@ -1078,6 +1090,71 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "X-Requested-With"],
 )
+
+# --- CSRF ---
+#
+# CORS is not a CSRF defence. It governs whether a page may *read* a response,
+# not whether the request runs. A cross-site form POST is a "simple request",
+# so the browser sends it without a preflight, the endpoint executes, and the
+# attacker page simply never sees the reply.
+#
+# That matters here more than in a typical API because the dashboard container
+# supplies the credential itself: nginx.conf sets
+# `proxy_set_header Authorization "Bearer ${DASHBOARD_API_KEY}"` on every
+# /api/ request, and verify_api_key reads only that header. No cookie and no
+# prior session are involved, so a page on any origin the owner happens to
+# visit can drive state-changing routes on the loopback dashboard.
+#
+# The check is Origin against Host rather than a fixed allowlist, because the
+# dashboard is reached at several legitimate origins — localhost:3001, a LAN
+# IP, and dashboard.<device>.local through ods-proxy. Both nginx and Caddy
+# preserve the browser's Host, so "Origin names the same host:port as Host"
+# identifies a same-origin request in every one of those shapes without
+# enumerating them.
+#
+# Requests with no Origin header are left alone: that is ods-cli, the host
+# agent, and every other non-browser caller. Browsers attach Origin to all
+# cross-site POSTs, which is the case being defended against.
+
+_STATE_CHANGING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+
+def _origin_matches_host(origin: str, host_header: str | None) -> bool:
+    """True when Origin names the same host:port as the Host header."""
+    if not host_header:
+        return False
+    try:
+        parsed = urlparse(origin)
+    except ValueError:
+        return False
+    if not parsed.hostname:
+        return False
+    return parsed.netloc == host_header
+
+
+@app.middleware("http")
+async def enforce_same_origin_for_state_changes(request: Request, call_next):
+    """Reject cross-site state-changing requests before the route runs."""
+    if request.method in _STATE_CHANGING_METHODS:
+        origin = request.headers.get("origin")
+        # Sec-Fetch-Site is set by the browser and cannot be forged by page
+        # script, so it stands on its own when present.
+        cross_site = request.headers.get("sec-fetch-site") == "cross-site"
+        if origin is not None or cross_site:
+            same_origin = origin is not None and (
+                _origin_matches_host(origin, request.headers.get("host"))
+                or origin in get_allowed_origins()
+            )
+            if cross_site or not same_origin:
+                logger.warning(
+                    "Blocked cross-origin %s %s (origin=%r)",
+                    request.method, request.url.path, origin,
+                )
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": "Cross-origin state-changing request rejected."},
+                )
+    return await call_next(request)
 
 # --- Include Routers ---
 
@@ -1498,6 +1575,7 @@ async def get_external_links(api_key: str = Depends(verify_api_key)):
         links.append({
             "id": sid, "label": cfg.get("name", sid), "port": ext_port,
             "ui_path": cfg.get("ui_path", "/"),
+            "public_url": cfg.get("public_url", ""),
             "icon": SIDEBAR_ICONS.get(sid, "ExternalLink"),
             "healthNeedles": [sid, cfg.get("name", sid).lower()],
         })
@@ -1619,11 +1697,19 @@ async def api_settings_env_save(
             detail={"message": "Could not contact host agent to write environment file."},
         ) from exc
     backup_relative = agent_resp.get("backup_path")
+    saved_raw_text = raw_text
+    enforced_values = agent_resp.get("enforced_values")
+    if isinstance(enforced_values, dict):
+        saved_values, _ = _parse_env_text(raw_text)
+        for key, value in enforced_values.items():
+            if isinstance(key, str) and isinstance(value, str):
+                saved_values[key] = value
+        saved_raw_text = _render_env_from_values(saved_values)
 
     _clear_settings_caches()
     result = await asyncio.to_thread(
         _build_settings_env_payload,
-        raw_text=raw_text,
+        raw_text=saved_raw_text,
         backup_path=backup_relative,
         apply_plan=apply_plan,
     )

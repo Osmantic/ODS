@@ -252,6 +252,27 @@ class TestExtensionDetail:
         assert data["setup_instructions"]["cli_enable"] == "ods enable test-svc"
         assert data["setup_instructions"]["cli_disable"] == "ods disable test-svc"
 
+    def test_detail_returns_configured_public_url(self, test_client, monkeypatch, tmp_path):
+        catalog = [_make_catalog_ext("test-svc", "Test Service")]
+        services = {
+            "test-svc": {
+                "host": "localhost",
+                "port": 8080,
+                "name": "Test Service",
+                "public_url": "https://service.example.test",
+            },
+        }
+        _patch_extensions_config(monkeypatch, catalog, services, tmp_path=tmp_path)
+
+        with patch("helpers.get_all_services", new_callable=AsyncMock, return_value=[]):
+            resp = test_client.get(
+                "/api/extensions/test-svc",
+                headers=test_client.auth_headers,
+            )
+
+        assert resp.status_code == 200
+        assert resp.json()["public_url"] == "https://service.example.test"
+
     def test_detail_404_for_unknown(self, test_client, monkeypatch, tmp_path):
         """404 for service_id not in catalog."""
         _patch_extensions_config(monkeypatch, [], tmp_path=tmp_path)

@@ -77,6 +77,7 @@ ENV_EOF
 
 cat > "$tmp_openclaw_windows_env" <<'ENV_EOF'
 WEBUI_SECRET=ci-placeholder
+HERMES_DASHBOARD_SESSION_TOKEN=ci-hermes-dashboard-session-token
 OPENCLAW_TOKEN=ci-openclaw-token
 ODS_AGENT_HOST=host.docker.internal
 AMD_INFERENCE_PORT=18080

@@ -27,6 +27,16 @@ def _hf_sibling(filename: str, size: int, sha: str) -> dict:
     }
 
 
+def test_active_model_reader_preserves_unmatched_quote(monkeypatch, tmp_path):
+    import routers.models as models_router
+
+    env_path = tmp_path / ".env"
+    env_path.write_text("GGUF_FILE=model-v2.gguf'\n", encoding="utf-8")
+    monkeypatch.setattr(models_router, "_ENV_PATH", env_path)
+
+    assert models_router._read_active_model() == "model-v2.gguf'"
+
+
 def test_huggingface_artifacts_group_complete_shards_and_require_integrity():
     import routers.models as models_router
 
@@ -1494,7 +1504,27 @@ def _patch_model_router_paths(monkeypatch, tmp_path):
 def test_model_activation_mode_policy_allows_matching_local_modes(mode):
     import routers.models as models_router
 
-    assert models_router._model_activation_mode_denial(mode, mode) is None
+    assert models_router._model_activation_mode_denial(mode, mode, "llama-server") is None
+
+
+def test_model_activation_mode_policy_rejects_external_backend():
+    import routers.models as models_router
+
+    denial = models_router._model_activation_mode_denial("local", "local", "external")
+
+    assert denial == {
+        "error": "local_mode_required",
+        "code": "external_llm_managed",
+        "reason": "external_backend_selected",
+        "message": (
+            "Local model activation is unavailable while ODS is using an "
+            "external Ollama or LM Studio backend. Re-run the installer with "
+            "--no-external-llm before activating a downloaded local model."
+        ),
+        "effectiveMode": "local",
+        "configuredMode": "local",
+        "llmBackend": "external",
+    }
 
 
 @pytest.mark.parametrize(
@@ -1522,6 +1552,7 @@ def test_load_model_rejects_unsafe_mode_before_lookup_or_agent_call(
         encoding="utf-8",
     )
     monkeypatch.setattr(models_router, "ODS_MODE_EFFECTIVE", effective_mode)
+    monkeypatch.setattr(models_router, "LLM_BACKEND", "llama-server")
     monkeypatch.setattr(
         models_router,
         "_call_agent_model",
@@ -1545,8 +1576,39 @@ def test_load_model_rejects_unsafe_mode_before_lookup_or_agent_call(
         "reason": expected_reason,
         "effectiveMode": models_router.normalize_ods_mode(effective_mode),
         "configuredMode": models_router.normalize_ods_mode(configured_mode),
+        "llmBackend": "llama-server",
         "requestedModelId": "not-installed",
     }
+
+
+def test_load_model_rejects_external_backend_before_lookup_or_agent_call(
+    test_client,
+    monkeypatch,
+    tmp_path,
+):
+    models_router, install_dir, _data_dir = _patch_model_router_paths(monkeypatch, tmp_path)
+    (install_dir / ".env").write_text("ODS_MODE=local\n", encoding="utf-8")
+    monkeypatch.setattr(models_router, "ODS_MODE_EFFECTIVE", "local")
+    monkeypatch.setattr(models_router, "LLM_BACKEND", "external")
+    monkeypatch.setattr(
+        models_router,
+        "_find_loadable_model",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("external activation reached model lookup")
+        ),
+    )
+
+    response = test_client.post(
+        "/api/models/downloaded-model/load",
+        headers=test_client.auth_headers,
+    )
+
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["code"] == "external_llm_managed"
+    assert detail["reason"] == "external_backend_selected"
+    assert detail["llmBackend"] == "external"
+    assert detail["requestedModelId"] == "downloaded-model"
 
 
 def _gpu():

@@ -81,8 +81,13 @@ Skip this NVIDIA CUDA container check on AMD systems.
 Open **PowerShell** (not as admin) and run:
 
 ```powershell
-git clone https://github.com/Osmantic/ODS.git
-cd ODS
+$ProgressPreference = "SilentlyContinue"
+$odsSrc = Join-Path $env:TEMP ("ods-install-" + [guid]::NewGuid().ToString("N"))
+$odsZip = Join-Path $odsSrc "ods-main.zip"
+New-Item -ItemType Directory -Path $odsSrc | Out-Null
+Invoke-WebRequest "https://github.com/Osmantic/ODS/archive/refs/heads/main.zip" -OutFile $odsZip
+Expand-Archive -LiteralPath $odsZip -DestinationPath $odsSrc -Force
+cd (Get-ChildItem -LiteralPath $odsSrc -Directory | Select-Object -First 1).FullName
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\install.ps1
 ```
@@ -272,17 +277,25 @@ docker compose up -d
 
 ## Uninstall
 
+Start Docker Desktop first so ODS can remove the Docker side of the install.
+
 ```powershell
-# Stop and remove containers
 $installDir = "$env:USERPROFILE\ods"
 # If you installed with -InstallDir, use that same path instead.
 cd $installDir
-$composeFlags = (Get-Content .compose-flags -Raw).Split(' ', [System.StringSplitOptions]::RemoveEmptyEntries)
-docker compose @composeFlags down -v --remove-orphans
-
-# Remove installation directory
-Remove-Item -Recurse -Force $installDir
+.\ods.ps1 uninstall --force
 ```
+
+Use `--keep-data` or `--keep-models` if you want to preserve local state.
+
+If the runtime folder is partial and `.\ods.ps1` is missing, run the same cleanup from a source checkout:
+
+```powershell
+cd ODS
+.\ods\installers\windows\ods.ps1 uninstall --force
+```
+
+The fallback path removes Docker containers, networks, and volumes labelled as the ODS compose project, so it still works when `.compose-flags` or the compose files were deleted before uninstall.
 
 ---
 

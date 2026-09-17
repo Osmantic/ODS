@@ -200,6 +200,7 @@ if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; 
         WEBUI_SECRET="render-webui-secret" \
         LITELLM_KEY="$render_key" \
         HERMES_LLM_API_KEY="$render_key" \
+        HERMES_DASHBOARD_SESSION_TOKEN="render-hermes-dashboard-session-token" \
         ODS_MODE=cloud \
         LLM_API_URL=http://litellm:4000 \
         HERMES_LLM_BASE_URL=http://litellm:4000/v1 \
@@ -224,6 +225,7 @@ assert services["hermes"]["environment"]["OPENAI_API_KEY"] == key
         WEBUI_SECRET="render-webui-secret" \
         LITELLM_KEY="$render_key" \
         HERMES_LLM_API_KEY="$local_hermes_key" \
+        HERMES_DASHBOARD_SESSION_TOKEN="render-hermes-dashboard-session-token" \
         ODS_MODE=local \
         LLM_API_URL=http://llama-server:8080 \
         HERMES_LLM_BASE_URL=http://llama-server:8080/v1 \

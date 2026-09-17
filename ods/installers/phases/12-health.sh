@@ -124,6 +124,14 @@ _phase12_external_lemonade() {
     [[ "${external,,}" == "true" ]] || [[ "${mode,,}" == "lemonade" && "${managed,,}" == "false" ]]
 }
 
+_phase12_external_llm() {
+    local url model skip
+    url="${EXTERNAL_LLM_URL:-$(_phase12_env_get EXTERNAL_LLM_URL "")}"
+    model="${EXTERNAL_LLM_MODEL:-$(_phase12_env_get EXTERNAL_LLM_MODEL "")}"
+    skip="${SKIP_MODEL_DOWNLOAD:-$(_phase12_env_get SKIP_MODEL_DOWNLOAD false)}"
+    [[ -n "$url" && -n "$model" && "${skip,,}" == "true" ]]
+}
+
 _phase12_model_looks_non_chat() {
     local model_lc="${1,,}"
     [[ "$model_lc" == *flux* ]] \
@@ -179,10 +187,81 @@ _phase12_verify_external_lemonade_completion() {
     return 1
 }
 
+_phase12_verify_external_llm_completion() {
+    local host_url container_url provider model dashboard_container response
+    local -a docker_cmd_arr=()
+    host_url="${EXTERNAL_LLM_URL:-$(_phase12_env_get EXTERNAL_LLM_URL "")}"
+    container_url="${EXTERNAL_LLM_CONTAINER_URL:-$(_phase12_env_get EXTERNAL_LLM_CONTAINER_URL "")}"
+    provider="${EXTERNAL_LLM_PROVIDER:-$(_phase12_env_get EXTERNAL_LLM_PROVIDER "")}"
+    model="${EXTERNAL_LLM_MODEL:-$(_phase12_env_get EXTERNAL_LLM_MODEL "")}"
+    dashboard_container="$(sr_container dashboard-api 2>/dev/null || echo ods-dashboard-api)"
+    read -r -a docker_cmd_arr <<< "${DOCKER_CMD:-docker}"
+    [[ ${#docker_cmd_arr[@]} -gt 0 ]] || docker_cmd_arr=(docker)
+
+    if [[ -z "$host_url" || -z "$container_url" || -z "$provider" || -z "$model" ]]; then
+        ai_bad "External LLM configuration is incomplete."
+        ai "Re-run with --external-llm-url, --external-llm-provider, and --external-llm-model, or use --no-external-llm."
+        return 1
+    fi
+
+    ai "Verifying external ${provider} model from the host..."
+    if ! external_llm_resolve_model "$provider" "$host_url" "$model" "$model" >/dev/null 2>&1; then
+        ai_bad "External ${provider} no longer exposes model ${model}."
+        ai "Restore the model/service, or re-run the installer with --no-external-llm."
+        return 1
+    fi
+    if ! external_llm_probe_completion "$host_url" "$model"; then
+        ai_bad "External ${provider} accepted discovery but failed a real completion for ${model}."
+        ai "Check the provider logs and model readiness, then re-run the installer."
+        return 1
+    fi
+
+    ai "Verifying the external model route from the ODS Docker network..."
+    response="$(
+        "${docker_cmd_arr[@]}" exec "$dashboard_container" python -c '
+import json
+import sys
+import urllib.request
+
+base = sys.argv[1].rstrip("/")
+model = sys.argv[2]
+payload = json.dumps({
+    "model": model,
+    "messages": [{"role": "user", "content": "Reply with OK."}],
+    "max_tokens": 1,
+    "temperature": 0,
+    "stream": False,
+}).encode()
+request = urllib.request.Request(
+    base + "/v1/chat/completions",
+    data=payload,
+    headers={"Content-Type": "application/json"},
+)
+with urllib.request.urlopen(request, timeout=90) as result:
+    body = json.load(result)
+content = body.get("choices", [{}])[0].get("message", {}).get("content")
+if content is None:
+    raise SystemExit("completion response did not contain assistant content")
+' "$container_url" "$model" 2>&1
+    )" || {
+        ai_bad "ODS containers cannot use external ${provider} at ${container_url}."
+        ai "On Linux, bind the provider to a container-reachable interface (for example 0.0.0.0 on a trusted host) and allow the ODS Docker subnet through the firewall."
+        printf '%s\n' "$response" >> "$LOG_FILE"
+        return 1
+    }
+
+    printf "  ${BGRN}OK${NC} External ${provider} route and completion healthy\n"
+}
+
 # Core service health checks with adaptive timeouts.
 # Cloud mode does not launch local llama-server; LiteLLM/external APIs are the
 # LLM surface, so do not wait on a container that intentionally is not running.
-if [[ "${ODS_MODE:-local}" == "cloud" ]] || _phase12_external_lemonade; then
+if _phase12_external_llm; then
+    ods_progress 86 "health" "Verifying external LLM route"
+    if ! _phase12_verify_external_llm_completion; then
+        exit 1
+    fi
+elif [[ "${ODS_MODE:-local}" == "cloud" ]] || _phase12_external_lemonade; then
     ods_progress 86 "health" "Waiting for LiteLLM gateway"
     _check_health "LiteLLM" "http://127.0.0.1:${SERVICE_PORTS[litellm]:-4000}${SERVICE_HEALTH[litellm]:-/health/readiness}" 60 10 "$(sr_container litellm)"
     if _phase12_external_lemonade; then
@@ -249,7 +328,7 @@ fi
 # cold path inside the installer (where time isn't surprising) so Hermes
 # lands on an already-hot slot. Bounded by curl --max-time so a stalled
 # llama-server doesn't hang phase 12.
-if [[ "${ODS_MODE:-local}" == "cloud" ]] || _phase12_external_lemonade; then
+if [[ "${ODS_MODE:-local}" == "cloud" ]] || _phase12_external_lemonade || _phase12_external_llm; then
     ai "External LLM mode - skipping local llama-server pre-warm"
 else
     ods_progress 87 "health" "Pre-warming LLM slot"
@@ -308,9 +387,16 @@ if $DOCKER_CMD inspect ods-perplexica &>/dev/null; then
     PERPLEXICA_MODEL="${LLM_MODEL:-default}"
     if [[ -n "${GGUF_FILE:-}" ]]; then
         PERPLEXICA_MODEL="$GGUF_FILE"
-        _perplexica_backend="$(printf '%s' "${LLM_BACKEND:-${AMD_INFERENCE_RUNTIME:-}}" | tr '[:upper:]' '[:lower:]')"
-        if [[ "$_perplexica_backend" == "lemonade" ]]; then
-            PERPLEXICA_MODEL="extra.$GGUF_FILE"
+        # Lemonade serves the model under a separate id. An AMD local install
+        # runs Lemonade while LLM_BACKEND stays "llama-server", so the runtime
+        # and the backend have to be checked independently — same rule as
+        # scripts/bootstrap-upgrade.sh and the container-side
+        # extensions/services/perplexica/sync-model-config.js.
+        _perplexica_runtime="$(printf '%s' "${AMD_INFERENCE_RUNTIME:-}" | tr '[:upper:]' '[:lower:]')"
+        _perplexica_backend="$(printf '%s' "${LLM_BACKEND:-}" | tr '[:upper:]' '[:lower:]')"
+        if [[ "$_perplexica_runtime" == "lemonade" || "$_perplexica_backend" == "lemonade" ]]; then
+            PERPLEXICA_MODEL="${LEMONADE_MODEL:-}"
+            [[ -n "$PERPLEXICA_MODEL" ]] || PERPLEXICA_MODEL="extra.$GGUF_FILE"
         fi
     fi
     PERPLEXICA_LLM_BASE_URL="${LLM_API_URL:-http://llama-server:8080}"

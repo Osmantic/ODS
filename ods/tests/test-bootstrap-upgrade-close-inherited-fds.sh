@@ -43,9 +43,9 @@ assert_fd_close_spawn() {
 assert_runtime_lock_release() {
     local fd="$1"
     local lock_file pid_file log_file
-    lock_file="$(mktemp "${TMPDIR:-/tmp}/ods-fd-${fd}.XXXXXX.lock")"
-    pid_file="$(mktemp "${TMPDIR:-/tmp}/ods-fd-${fd}.XXXXXX.pid")"
-    log_file="$(mktemp "${TMPDIR:-/tmp}/ods-fd-${fd}.XXXXXX.log")"
+    lock_file="$(mktemp "${TMPDIR:-/tmp}/ods-fd-${fd}.lock.XXXXXX")"
+    pid_file="$(mktemp "${TMPDIR:-/tmp}/ods-fd-${fd}.pid.XXXXXX")"
+    log_file="$(mktemp "${TMPDIR:-/tmp}/ods-fd-${fd}.log.XXXXXX")"
 
     _test_close_inherited_fds_for_daemon() {
         local fd_path fd_dir fd_name

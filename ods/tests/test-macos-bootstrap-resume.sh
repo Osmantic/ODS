@@ -32,7 +32,7 @@ touch "$install_dir/bin/llama-server"
 chmod +x "$install_dir/bin/llama-server"
 
 cat > "$install_dir/.env" <<'ENV'
-ODS_VERSION=2.5.3
+ODS_VERSION=2.6.0
 ODS_MODE=local
 GPU_BACKEND=apple
 GPU_COUNT=1

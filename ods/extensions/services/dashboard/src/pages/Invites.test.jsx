@@ -9,7 +9,14 @@ const response = (body, status = 200) => ({
 })
 
 const future = new Date(Date.now() + 3_600_000).toISOString()
-const ownerCardReady = { ready: true, requires: 'ods-proxy', reason: '' }
+const ownerCardReady = { ready: true, requires: 'ods-proxy', reason: '', url_mode: 'lan' }
+const ownerCardPublicReady = {
+  ready: true,
+  requires: 'public-url',
+  reason: '',
+  url_mode: 'public',
+  public_url: 'https://ods.example.test',
+}
 
 describe('Invites', () => {
   afterEach(() => {
@@ -112,6 +119,51 @@ describe('Invites', () => {
     expect(body).not.toHaveProperty('expires_in')
     expect(screen.getByDisplayValue('http://auth.ods.local/magic-link/plain-owner-token')).toBeInTheDocument()
     expect(await screen.findByAltText('QR code for owner card')).toHaveAttribute('src', 'data:image/png;base64,ownerqr')
+  })
+
+  test('generates public owner cards when the readiness endpoint selects public mode', async () => {
+    const fetchMock = vi.fn(async (url, options = {}) => {
+      if (url === '/api/auth/magic-link/list') {
+        return response({ tokens: [] })
+      }
+      if (url === '/api/auth/magic-link/owner-card/status') {
+        return response(ownerCardPublicReady)
+      }
+      if (url === '/api/auth/magic-link/generate' && options.method === 'POST') {
+        return response({
+          token: 'plain-owner-token',
+          url: 'https://ods.example.test/auth/magic-link/plain-owner-token',
+          expires_at: null,
+          target_username: 'mike',
+          scope: 'hermes',
+          reusable: true,
+          token_type: 'owner',
+          url_mode: 'public',
+        })
+      }
+      if (String(url).startsWith('/api/auth/magic-link/qr?url=')) {
+        return response({ data_url: 'data:image/png;base64,ownerqr' })
+      }
+      throw new Error(`unexpected request: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<Invites />)
+
+    await screen.findByText('No owner cards yet')
+    fireEvent.click(screen.getByRole('button', { name: 'Create owner card' }))
+    fireEvent.change(screen.getByPlaceholderText('alice'), { target: { value: 'mike' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Generate owner QR' }))
+
+    await screen.findByRole('dialog', { name: 'Owner card created' })
+    const generateCall = fetchMock.mock.calls.find(([url]) => url === '/api/auth/magic-link/generate')
+    expect(JSON.parse(generateCall[1].body)).toMatchObject({
+      target_username: 'mike',
+      token_type: 'owner',
+      scope: 'hermes',
+      url_mode: 'public',
+    })
+    expect(screen.getByDisplayValue('https://ods.example.test/auth/magic-link/plain-owner-token')).toBeInTheDocument()
   })
 
   test('generates guest invite from the backend URL and loads QR', async () => {

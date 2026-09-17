@@ -67,6 +67,12 @@ switch_mode() {
 
     [[ -f "$ENV_FILE" ]] || error ".env not found at $ENV_FILE"
 
+    local configured_backend
+    configured_backend=$(grep -m1 "^LLM_BACKEND=" "$ENV_FILE" 2>/dev/null | cut -d= -f2- | tr -d '"\047\r' || true)
+    if [[ "${configured_backend,,}" == "external" ]]; then
+        error "External LLM routing is installer-managed. Run './install.sh --no-external-llm' first, then retry the mode switch."
+    fi
+
     # Update .env
     env_set "ODS_MODE" "$mode"
 
