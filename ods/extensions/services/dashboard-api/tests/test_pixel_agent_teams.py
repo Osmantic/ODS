@@ -337,3 +337,24 @@ async def test_empty_model_answer_is_never_completed(tmp_path):
     manager.start(OWNER,'chat','empty','Do work',1,'')
     await settle(manager)
     assert manager.list(OWNER,'chat')[0]['status']=='failed'
+
+
+@pytest.mark.asyncio
+async def test_run_tolerates_non_json_sse_lines(monkeypatch):
+    from unittest.mock import AsyncMock, MagicMock
+    class Stream:
+        async def __aiter__(self):
+            yield b': keepalive\n\ndata: ping\n\n'
+            yield b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n'
+            yield b'data: \n\ndata: [DONE]\n\n'
+    response = MagicMock()
+    response.body_iterator = Stream()
+    monkeypatch.setattr(pixel_teams.pixel, '_host_model_status', AsyncMock(return_value={}))
+    monkeypatch.setattr(pixel_teams.pixel, '_local_inference_issue', AsyncMock(return_value=None))
+    monkeypatch.setattr(pixel_teams.pixel, '_model_readiness_issue_from_status', lambda _: None)
+    monkeypatch.setattr(pixel_teams.pixel, '_retained_chat_stream', AsyncMock(return_value=response))
+    monkeypatch.setattr(pixel_teams.pixel, '_chat_results', lambda: None)
+    monkeypatch.setattr(pixel_teams.pixel, '_result_state', lambda *_: {'state': 'complete'})
+    agent = {'chat_id': 'team-1-0', 'request_id': 'turn-0', 'messages': [{'role': 'user', 'content': 'hi'}]}
+    frames = [x async for x in pixel_teams._run(OWNER, agent)]
+    assert frames == [{'runtime_wait': False}, {'choices': [{'delta': {'content': 'ok'}}]}, {'_done': True, '_state': 'complete'}]

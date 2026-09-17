@@ -143,7 +143,10 @@ async def _run(owner, agent):
             raw = line[5:].strip()
             if raw == "[DONE]":
                 continue
-            value = json.loads(raw)
+            try:
+                value = json.loads(raw)
+            except (ValueError, TypeError, json.JSONDecodeError):
+                continue
             if isinstance(value, dict):
                 yield value
     identity = (owner_namespace(owner), agent["chat_id"], agent["request_id"])
