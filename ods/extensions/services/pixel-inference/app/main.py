@@ -20,6 +20,11 @@ from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from urllib.parse import urlsplit
 
+try:
+    _CANCELLED = (asyncio.CancelledError, BaseExceptionGroup)
+except NameError:
+    _CANCELLED = (asyncio.CancelledError,)
+
 import anyio
 import httpx
 from fastapi import FastAPI, Request
@@ -135,7 +140,7 @@ async def _guarded(awaitable, watcher):
     finally:
         if not work.done():
             work.cancel()
-            with suppress(asyncio.CancelledError):
+            with suppress(*_CANCELLED):
                 await work
         # Cancellation may finish the transport with headers instead of raising.
         # Until returned to the caller, this response is still ours to close.
