@@ -195,6 +195,8 @@ generate_ods_env() {
     local detected_cpu_limit detected_cpu_reservation
     local tts_cpu_limit tts_cpu_reservation whisper_cpu_limit whisper_cpu_reservation
     local hermes_cpu_limit hermes_cpu_reservation comfyui_cpu_limit comfyui_cpu_reservation
+    local host_uid="${SUDO_UID:-$(id -u)}"
+    local host_gid="${SUDO_GID:-$(id -g)}"
     read -r cpu_limit_raw cpu_reservation_raw docker_available_cpus <<< "$(calculate_llama_cpu_budget "apple")"
     detected_cpu_limit="${cpu_limit_raw}.0"
     detected_cpu_reservation="${cpu_reservation_raw}.0"
@@ -243,6 +245,19 @@ generate_ods_env() {
         upsert_env_value "$env_path" "HERMES_CPU_RESERVATION" "$hermes_cpu_reservation"
         upsert_env_value "$env_path" "COMFYUI_CPU_LIMIT" "$comfyui_cpu_limit"
         upsert_env_value "$env_path" "COMFYUI_CPU_RESERVATION" "$comfyui_cpu_reservation"
+        local compose_uid compose_gid
+        compose_uid="$(read_env_value "$env_path" "ODS_UID")"
+        compose_gid="$(read_env_value "$env_path" "ODS_GID")"
+        [[ -n "$compose_uid" ]] || compose_uid="$(read_env_value "$env_path" "UID")"
+        [[ -n "$compose_gid" ]] || compose_gid="$(read_env_value "$env_path" "GID")"
+        compose_uid="${compose_uid:-$host_uid}"
+        compose_gid="${compose_gid:-$host_gid}"
+        if [[ ! "$compose_uid" =~ ^[0-9]+$ || ! "$compose_gid" =~ ^[0-9]+$ ]]; then
+            printf 'ERROR: ODS_UID and ODS_GID must be non-negative integers\n' >&2
+            return 1
+        fi
+        upsert_env_value "$env_path" "ODS_UID" "$compose_uid"
+        upsert_env_value "$env_path" "ODS_GID" "$compose_gid"
 
         local _switchboard_mode
         _switchboard_mode="$(read_env_value "$env_path" "ODS_MODEL_SWITCHBOARD")"
@@ -579,6 +594,11 @@ HERMES_CPU_RESERVATION=${hermes_cpu_reservation}
 COMFYUI_CPU_LIMIT=${comfyui_cpu_limit}
 COMFYUI_CPU_RESERVATION=${comfyui_cpu_reservation}
 
+#=== Host File Ownership ===
+# Docker Compose reads these from .env without colliding with Bash's readonly UID.
+ODS_UID=${host_uid}
+ODS_GID=${host_gid}
+
 #=== Ports ===
 OLLAMA_PORT=8080
 WEBUI_PORT=3000
@@ -645,7 +665,7 @@ EMBEDDINGS_MEMORY_LIMIT=${embeddings_memory_limit}
 #=== Web UI Settings ===
 # Loopback installs open directly. Network-bound installs require a login.
 WEBUI_AUTH=${webui_auth}
-ENABLE_WEB_SEARCH=true
+ENABLE_WEB_SEARCH=${ENABLE_WEB_SEARCH:-true}
 WEB_SEARCH_ENGINE=searxng
 OPEN_WEBUI_LLM_BASE_URL=${open_webui_llm_base_url}
 OPEN_WEBUI_LLM_API_KEY=${open_webui_llm_api_key}

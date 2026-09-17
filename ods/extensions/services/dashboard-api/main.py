@@ -26,10 +26,12 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlparse
 
 import httpx
-from fastapi import FastAPI, Depends, HTTPException, Body
+from fastapi import FastAPI, Depends, HTTPException, Body, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 # --- Local modules ---
 from env_values import strip_matching_quotes
@@ -1088,6 +1090,71 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "X-Requested-With"],
 )
+
+# --- CSRF ---
+#
+# CORS is not a CSRF defence. It governs whether a page may *read* a response,
+# not whether the request runs. A cross-site form POST is a "simple request",
+# so the browser sends it without a preflight, the endpoint executes, and the
+# attacker page simply never sees the reply.
+#
+# That matters here more than in a typical API because the dashboard container
+# supplies the credential itself: nginx.conf sets
+# `proxy_set_header Authorization "Bearer ${DASHBOARD_API_KEY}"` on every
+# /api/ request, and verify_api_key reads only that header. No cookie and no
+# prior session are involved, so a page on any origin the owner happens to
+# visit can drive state-changing routes on the loopback dashboard.
+#
+# The check is Origin against Host rather than a fixed allowlist, because the
+# dashboard is reached at several legitimate origins — localhost:3001, a LAN
+# IP, and dashboard.<device>.local through ods-proxy. Both nginx and Caddy
+# preserve the browser's Host, so "Origin names the same host:port as Host"
+# identifies a same-origin request in every one of those shapes without
+# enumerating them.
+#
+# Requests with no Origin header are left alone: that is ods-cli, the host
+# agent, and every other non-browser caller. Browsers attach Origin to all
+# cross-site POSTs, which is the case being defended against.
+
+_STATE_CHANGING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+
+def _origin_matches_host(origin: str, host_header: str | None) -> bool:
+    """True when Origin names the same host:port as the Host header."""
+    if not host_header:
+        return False
+    try:
+        parsed = urlparse(origin)
+    except ValueError:
+        return False
+    if not parsed.hostname:
+        return False
+    return parsed.netloc == host_header
+
+
+@app.middleware("http")
+async def enforce_same_origin_for_state_changes(request: Request, call_next):
+    """Reject cross-site state-changing requests before the route runs."""
+    if request.method in _STATE_CHANGING_METHODS:
+        origin = request.headers.get("origin")
+        # Sec-Fetch-Site is set by the browser and cannot be forged by page
+        # script, so it stands on its own when present.
+        cross_site = request.headers.get("sec-fetch-site") == "cross-site"
+        if origin is not None or cross_site:
+            same_origin = origin is not None and (
+                _origin_matches_host(origin, request.headers.get("host"))
+                or origin in get_allowed_origins()
+            )
+            if cross_site or not same_origin:
+                logger.warning(
+                    "Blocked cross-origin %s %s (origin=%r)",
+                    request.method, request.url.path, origin,
+                )
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": "Cross-origin state-changing request rejected."},
+                )
+    return await call_next(request)
 
 # --- Include Routers ---
 

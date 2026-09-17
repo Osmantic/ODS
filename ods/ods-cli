@@ -24,7 +24,26 @@ while [[ -L "$_source" ]]; do
     [[ "$_source" != /* ]] && _source="$_dir/$_source"
 done
 SCRIPT_DIR="$(cd "$(dirname "$_source")" && pwd)"
-INSTALL_DIR="${ODS_HOME:-$HOME/ods}"
+
+_resolve_cli_install_dir() {
+    if [[ -n "${INSTALL_DIR:-}" ]]; then
+        printf '%s\n' "$INSTALL_DIR"
+    elif [[ -n "${ODS_HOME:-}" ]]; then
+        printf '%s\n' "$ODS_HOME"
+    elif [[ -n "${ODS_SCRIPT_HINT:-}" ]] && [[ -f "$ODS_SCRIPT_HINT/.env" ]]; then
+        printf '%s\n' "$ODS_SCRIPT_HINT"
+    elif [[ -n "${ODS_INSTALL_DIR:-}" ]]; then
+        printf '%s\n' "$ODS_INSTALL_DIR"
+    elif [[ -f "$SCRIPT_DIR/docker-compose.base.yml" || -f "$SCRIPT_DIR/docker-compose.yml" ]]; then
+        # Installed copies and symlink targets are self-locating. This keeps a
+        # custom-path CLI from silently operating on an unrelated $HOME/ods.
+        printf '%s\n' "$SCRIPT_DIR"
+    else
+        printf '%s\n' "$HOME/ods"
+    fi
+}
+
+INSTALL_DIR="$(_resolve_cli_install_dir)"
 VERSION="2.6.0"
 if [[ -f "$INSTALL_DIR/.env" ]]; then
     _v=$(awk -F= '/^ODS_VERSION=/{gsub(/^["'"'"']|["'"'"']$/,"",$2); print $2; exit}' "$INSTALL_DIR/.env" 2>/dev/null) || true
@@ -1594,9 +1613,11 @@ cmd_restart() {
     fi
 
     if [[ -z "$resolved_service" ]]; then
-        _compose_run_with_summary "Restarting all services" "${flags[@]}" up -d
+        _compose_run_with_summary "Restarting all services" \
+            "${flags[@]}" up -d --force-recreate --no-build --pull never
     else
-        _compose_run_with_summary "Restarting $resolved_service" "${flags[@]}" up -d "$resolved_service"
+        _compose_run_with_summary "Restarting $resolved_service" \
+            "${flags[@]}" up -d --force-recreate --no-build --pull never "$resolved_service"
     fi
 
     # Refresh SOUL.md after compose has ensured Hermes is running, so the
@@ -4725,20 +4746,12 @@ cmd_restore() {
 cmd_rollback() {
     check_install
     cd "$INSTALL_DIR"
-    load_env
-
-    if [[ ! -f "$INSTALL_DIR/.last-backup-id" ]]; then
-        error "No rollback point found. Rollback is only available after a failed update."
+    if [[ ! -x "$INSTALL_DIR/ods-update.sh" ]]; then
+        error "ods-update.sh not found or not executable"
     fi
 
-    local backup_id
-    backup_id=$(cat "$INSTALL_DIR/.last-backup-id")
-
-    if [[ -z "$backup_id" ]]; then
-        error "Invalid rollback point (empty backup ID)"
-    fi
-
-    log "Rolling back to pre-update state (backup: $backup_id)..."
+    local target="${1:-}"
+    log "Rolling back to pre-update state${target:+ (snapshot: $target)}..."
     echo ""
     warn "This will restore configuration from before the last update."
     read -p "Continue with rollback? [y/N] " -n 1 -r
@@ -4749,33 +4762,11 @@ cmd_rollback() {
         return 0
     fi
 
-    # Stop services before rollback
-    log "Stopping services..."
-    local flags_str
-    flags_str=$(get_compose_flags)
-    local -a flags
-    read -ra flags <<< "$flags_str"
-    docker compose "${flags[@]}" down 2>/dev/null || true
-
-    # Restore from backup
-    if "$INSTALL_DIR/ods-restore.sh" "$backup_id"; then
-        success "Configuration restored from backup: $backup_id"
-
-        # Restart services with restored configuration
-        log "Restarting services with restored configuration..."
-        if docker compose "${flags[@]}" up -d; then
-            success "Rollback complete"
-            rm -f "$INSTALL_DIR/.last-backup-id"
-
-            log "Checking service health..."
-            sleep 5
-            cmd_status
-        else
-            error "Failed to restart services after rollback. Check 'docker compose logs' for details."
-        fi
-    else
-        error "Failed to restore from backup. Your system may be in an inconsistent state."
-    fi
+    # ods-update.sh owns pre-update snapshot discovery, integrity verification,
+    # compose-stack restoration, restart, and health proof. Keeping that
+    # transaction in one implementation avoids diverging backup roots and stale
+    # in-memory compose flags in this CLI wrapper.
+    bash "$INSTALL_DIR/ods-update.sh" rollback ${target:+"$target"}
 }
 
 cmd_agent() {
@@ -6440,7 +6431,7 @@ ${CYAN}Commands:${NC}
   backup [options]    Create a backup of user data and config
   backup verify <id>   Verify checksum integrity for a backup
   restore [backup_id] Restore from a backup
-  rollback            Rollback to pre-update state (after failed update)
+  rollback [snapshot] Rollback to pre-update state (after failed update)
   logs <service>      Tail logs for a service
   restart [service] [--rebuild-images]
                       Restart services (all if no service specified)
@@ -6570,7 +6561,13 @@ ${CYAN}Examples:${NC}
   ods repair hermes-workers     # Prune leaked Hermes slash_worker children
 
 ${CYAN}Environment:${NC}
-  ODS_HOME          Installation directory (default: ~/ods)
+  INSTALL_DIR       Installation directory (highest precedence)
+  ODS_HOME          Legacy installation directory override
+  ODS_SCRIPT_HINT   Populated install hint (must contain .env)
+  ODS_INSTALL_DIR   Legacy macOS installation directory override
+
+Without an override, ods-cli uses the install beside its resolved script or
+symlink target when compose metadata is present, then falls back to ~/ods.
 
 EOF
 }
@@ -6593,7 +6590,7 @@ case "${1:-help}" in
     stt)         shift; cmd_stt "$@" ;;
     backup)      shift; cmd_backup "$@" ;;
     restore)     shift; cmd_restore "$@" ;;
-    rollback)    cmd_rollback ;;
+    rollback)    shift; cmd_rollback "$@" ;;
     logs|log|l)  shift; cmd_logs "$@" ;;
     restart|r)   shift; cmd_restart "$@" ;;
     repair|fix)  shift; cmd_repair "$@" ;;
