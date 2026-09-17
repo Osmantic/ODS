@@ -211,13 +211,46 @@ async def enable_workflow(workflow_id: str, api_key: str = Depends(verify_api_ke
                     result = await resp.json()
                     n8n_id = result.get("data", {}).get("id")
                     activated = False
+                    activation_error = None
                     if n8n_id:
-                        async with session.patch(f"{N8N_URL}/api/v1/workflows/{n8n_id}", headers=headers, json={"active": True}) as activate_resp:
-                            activated = activate_resp.status == 200
-                    return {"status": "success", "workflowId": workflow_id, "n8nId": n8n_id, "activated": activated, "message": f"{wf_info['name']} is now active!"}
+                        # Activation is attempted in its own scope. Previously a
+                        # timeout here escaped to the handler's outer excepts,
+                        # which report "Cannot reach n8n" and drop n8n_id — so
+                        # the workflow existed in n8n and the operator had no id
+                        # to recover it with (#3936). A non-200 was worse: it
+                        # returned "status": "success" and "is now active!"
+                        # about a workflow that was not active.
+                        try:
+                            async with session.patch(f"{N8N_URL}/api/v1/workflows/{n8n_id}", headers=headers, json={"active": True}) as activate_resp:
+                                activated = activate_resp.status == 200
+                                if not activated:
+                                    activation_error = f"n8n returned HTTP {activate_resp.status}"
+                        except asyncio.TimeoutError:
+                            activation_error = "activation request timed out"
+                        except aiohttp.ClientError as exc:
+                            activation_error = f"cannot reach n8n: {exc}"
+                    else:
+                        activation_error = "n8n did not return a workflow id"
+
+                    if activated:
+                        return {"status": "success", "workflowId": workflow_id, "n8nId": n8n_id, "activated": True, "message": f"{wf_info['name']} is now active!"}
+
+                    raise HTTPException(
+                        status_code=502,
+                        detail=(
+                            f"{wf_info['name']} was imported into n8n"
+                            + (f" as workflow {n8n_id}" if n8n_id else "")
+                            + f", but activating it failed ({activation_error}). "
+                            "The workflow exists and is inactive — activate it in the "
+                            "n8n admin panel. Do not re-run enable: that creates a "
+                            "second copy rather than activating this one."
+                        ),
+                    )
                 else:
                     error_text = await resp.text()
                     raise HTTPException(status_code=resp.status, detail=f"n8n API error: {error_text}")
+    except HTTPException:
+        raise
     except asyncio.TimeoutError:
         raise HTTPException(status_code=504, detail="n8n workflow add timed out")
     except aiohttp.ClientError as e:
