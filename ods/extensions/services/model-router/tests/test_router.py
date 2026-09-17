@@ -932,7 +932,7 @@ class TestRoutedTelemetry:
         assert event["user_message_count"] == 1
         assert event["assistant_message_count"] == 1
         assert event["tool_count"] == 1
-        assert event["input_tokens"] == 20
+        assert event["input_tokens"] == 17
         assert event["output_tokens"] == 5
         assert event["cache_read_tokens"] == 3
         assert event["stop_reason"] == "stop"
@@ -1075,3 +1075,72 @@ class TestRoutedTelemetry:
             "authorization": "Bearer shared-secret",
             "body": {"model": "Concrete.gguf"},
         }]
+
+
+@pytest.mark.parametrize("responses", [False, True], ids=["chat", "responses"])
+@pytest.mark.parametrize("cached,written,expected", [
+    (0, 0, (20, 0, 0)),
+    (8, 0, (12, 8, 0)),
+    (20, 0, (0, 20, 0)),
+    (8, 4, (8, 8, 4)),
+    (30, 4, (0, 20, 0)),
+])
+def test_routed_cache_categories_partition_prompt_total(router, responses, cached, written, expected):
+    mod, client, write_state, _ = router
+    write_state()
+    recorder = _RecordingTelemetry()
+    mod.app.state.telemetry = recorder
+    usage = ({
+        "input_tokens": 20, "output_tokens": 5,
+        "input_tokens_details": {"cached_tokens": cached},
+    } if responses else {
+        "prompt_tokens": 20, "completion_tokens": 5,
+        "prompt_tokens_details": {"cached_tokens": cached},
+    })
+    usage["cache_write_tokens"] = written
+    upstream = {"model": "Concrete.gguf", "usage": usage}
+    asyncio.run(mod.app.state.http.aclose())
+    mod.app.state.http = httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda _: httpx.Response(200, json=upstream))
+    )
+    path = "/v1/responses" if responses else "/v1/chat/completions"
+    response = client.post(path, json={"model": "default", "messages": []})
+    assert response.status_code == 200
+    # Client-visible provider usage retains its original inclusive contract.
+    assert response.json()["usage"] == usage
+    assert len(recorder.events) == 1
+    event = recorder.events[0]
+    categories = tuple(event[key] for key in (
+        "input_tokens", "cache_read_tokens", "cache_write_tokens"
+    ))
+    assert categories == expected
+    assert sum(categories) + event["output_tokens"] == 25
+
+
+@pytest.mark.parametrize("late_cache", [False, True])
+def test_stream_cache_partition_uses_final_aggregate(router, late_cache):
+    mod, client, write_state, _ = router
+    write_state()
+    recorder = _RecordingTelemetry()
+    mod.app.state.telemetry = recorder
+    snapshots = [
+        {"prompt_tokens": 20, "completion_tokens": 1},
+        {"prompt_tokens": 20, "completion_tokens": 5,
+         "prompt_tokens_details": {"cached_tokens": 8}, "cache_write_tokens": 4},
+    ]
+    if not late_cache:
+        snapshots.reverse()
+    chunks = [
+        ("data: " + json.dumps({"model": "Concrete.gguf", "usage": usage}) + "\n\n").encode()
+        for usage in snapshots
+    ]
+    _set_stream_upstream(mod, chunks + [b"data: [DONE]\n\n"])
+    response = client.post("/v1/chat/completions", json={
+        "model": "default", "messages": [], "stream": True,
+    })
+    assert response.status_code == 200
+    assert len(recorder.events) == 1
+    event = recorder.events[0]
+    assert [event[key] for key in (
+        "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens"
+    )] == [8, 5, 8, 4]

@@ -651,3 +651,44 @@ test.each(['apply', 'refresh'])('keeps newer edits while configure %s is pending
   expect(screen.getByRole('button', { name: 'Configure', exact: true })).toBeEnabled()
   expect(requestBody(1).provider.baseUrl).toBe('https://gpu.example.test/v1')
 })
+
+test.each([
+  ['truncated JSON', () => new globalThis.Response('{"applied":'), /response could not be read/],
+  ['interrupted transfer', () => new globalThis.Response(new globalThis.ReadableStream({
+    start(controller) { controller.error(new TypeError('terminated')) },
+  })), /response could not be read/],
+  ['aborted body', () => new globalThis.Response(new globalThis.ReadableStream({
+    start(controller) { controller.error(new globalThis.DOMException('Aborted', 'AbortError')) },
+  })), /Request timed out/],
+])('preserves the connection draft after a 200 with %s', async (_name, brokenResponse, message) => {
+  globalThis.fetch.mockResolvedValue(response(statusPayload))
+    .mockResolvedValueOnce(response(statusPayload))
+    .mockResolvedValueOnce(brokenResponse())
+  render(createElement(RemoteProvider))
+  await fillConfigureForm()
+  fireEvent.click(screen.getByRole('button', { name: 'Configure', exact: true }))
+
+  expect(await screen.findByText(message)).toBeInTheDocument()
+  expect(screen.getByLabelText('Base URL')).toHaveValue('https://gpu.example.test/v1')
+  expect(screen.getByLabelText('API key')).toHaveValue('unit-test-provider-token')
+  expect(screen.getByRole('button', { name: 'Configure', exact: true })).toBeEnabled()
+  expect(screen.queryByText('Unknown completed')).not.toBeInTheDocument()
+  // An unreadable receipt does not justify another mutation or a success refresh.
+  expect(globalThis.fetch).toHaveBeenCalledTimes(2)
+
+  fireEvent.click(screen.getByRole('button', { name: 'Refresh', exact: true }))
+  await screen.findByRole('heading', { name: 'Remote GPU' })
+  expect(screen.getByLabelText('API key')).toHaveValue('unit-test-provider-token')
+  expect(screen.getByLabelText('Base URL')).toHaveValue('https://gpu.example.test/v1')
+  expect(globalThis.fetch.mock.calls.filter(([, options]) => options?.method === 'POST')).toHaveLength(1)
+})
+
+test('keeps the HTTP status when an error response is not JSON', async () => {
+  globalThis.fetch.mockResolvedValueOnce(response(statusPayload))
+    .mockResolvedValueOnce(new globalThis.Response('<html>Bad Gateway</html>', { status: 502 }))
+  render(createElement(RemoteProvider))
+  await fillConfigureForm()
+  fireEvent.click(screen.getByRole('button', { name: 'Configure', exact: true }))
+  expect(await screen.findByText('Request failed (502)')).toBeInTheDocument()
+  expect(screen.getByLabelText('API key')).toHaveValue('unit-test-provider-token')
+})

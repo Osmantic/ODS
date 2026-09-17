@@ -2,6 +2,7 @@ import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import { createElement } from 'react'
 import { render } from '../test/test-utils'
 import PixelAdvice from './PixelAdvice.jsx'
+import {mockHttpCrypto} from '../test/httpCrypto'
 
 const id = '5c292c25-9368-4d9a-83cd-1e14d34cb128'
 const key = 'ods.pixel.advice.job.v1'
@@ -59,6 +60,27 @@ it('ignores a provider inspection failure from a closed advice panel', async () 
   await screen.findByText(/saved revision 3/)
   await act(async () => failOld(new Error('Old inspection failed')))
   expect(screen.queryByText('Provider settings unavailable. Reload before submitting.')).toBeNull()
+})
+
+it('creates a trackable advisory request on an HTTP LAN origin', async () => {
+  const {fetchMock} = await setup()
+  mockHttpCrypto(id)
+  fireEvent.change(screen.getByLabelText('Capsule to send'), {target:{value:'Review this example'}})
+  fireEvent.click(screen.getByRole('button', {name:'Send reviewed capsule'}))
+  await screen.findByText('Advisory answer — untrusted model output')
+  expect(localStorage.getItem(key)).toBe(id)
+  expect(fetchMock.mock.calls.filter(([url]) => url.endsWith('/start'))).toHaveLength(1)
+})
+
+it('does not submit advice if the browser has no secure random source', async () => {
+  const {fetchMock} = await setup()
+  vi.stubGlobal('crypto', {})
+  fireEvent.change(screen.getByLabelText('Capsule to send'), {target:{value:'Retain my capsule'}})
+  fireEvent.click(screen.getByRole('button', {name:'Send reviewed capsule'}))
+  expect(await screen.findByRole('alert')).toHaveTextContent('Nothing was submitted')
+  expect(screen.getByLabelText('Capsule to send')).toHaveValue('Retain my capsule')
+  expect(localStorage.getItem(key)).toBeNull()
+  expect(fetchMock.mock.calls.some(([url]) => url.endsWith('/start'))).toBe(false)
 })
 
 it('sends only reviewed capsule and fixed selected revision once, stores only job ID', async () => {

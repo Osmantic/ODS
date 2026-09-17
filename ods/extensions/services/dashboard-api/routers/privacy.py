@@ -6,6 +6,7 @@ import os
 
 import aiohttp
 from fastapi import APIRouter, Depends
+from fastapi.responses import JSONResponse
 
 from config import SERVICES
 from host_agent_client import (
@@ -58,20 +59,24 @@ async def toggle_privacy_shield(request: PrivacyShieldToggle, api_key: str = Dep
     action = "start" if request.enable else "stop"
 
     def _call_agent():
-        request_agent_json(
+        return request_agent_json(
             "POST",
             f"/v1/extension/{action}",
             payload={"service_id": "privacy-shield"},
             timeout=30,
         )
-        return True
 
     try:
-        ok = await asyncio.to_thread(_call_agent)
-        if ok:
-            msg = "Privacy Shield started. PII scrubbing is now active." if request.enable else "Privacy Shield stopped."
-            return {"success": True, "message": msg}
-        return {"success": False, "message": f"Host agent returned failure for {action}"}
+        receipt = await asyncio.to_thread(_call_agent)
+        if receipt.get("status") == "retrying":
+            return JSONResponse(status_code=202, content={
+                "success": True,
+                "pending": True,
+                "status": "retrying",
+                "message": "Privacy Shield start retry accepted. Check service status for completion.",
+            })
+        msg = "Privacy Shield started. PII scrubbing is now active." if request.enable else "Privacy Shield stopped."
+        return {"success": True, "message": msg}
     except AgentHTTPError as exc:
         logger.warning(
             "Privacy Shield toggle failed: HTTP %d: %s",

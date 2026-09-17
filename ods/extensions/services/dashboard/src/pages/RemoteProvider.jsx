@@ -151,7 +151,13 @@ function lifecycleTitle(result) {
 async function responsePayload(response) {
   try {
     return await response.json()
-  } catch {
+  } catch (error) {
+    // A 2xx header is not a completed receipt. Keep the form dirty when its
+    // body is lost: the server may already have applied the operation.
+    if (response.ok) {
+      if (error?.name === 'AbortError') throw error
+      throw new Error('Remote GPU response could not be read. Refresh status before trying again.')
+    }
     return {}
   }
 }

@@ -306,9 +306,117 @@ def test_installer_keeps_recommendation_and_active_model_separate() -> None:
         assert f"{key}=" in env_writer
 
 
+
+def test_commented_model_contract_survives_rerun() -> None:
+    for quote in ("", "'", '"'):
+        with tempfile.TemporaryDirectory() as tmp:
+            env, catalog, imports, models_dir = write_model_fixture(Path(tmp))
+            # A normal operator edit, accepted by load_env_file and Compose.
+            for key, value in (
+                ("GGUF_FILE", "Agent-Test-Q4_K_M.gguf"),
+                ("MAX_CONTEXT", "65536"),
+                ("CTX_SIZE", "65536"),
+                ("LLAMA_PARALLEL", "1"),
+                ("LLAMA_ARG_CACHE_TYPE_K", "q4_0"),
+            ):
+                replace_env(env, f"{key}={value}", f"{key}={quote}{value}{quote} # keep this selection")
+            replace_env(env, "LLAMA_PARALLEL=" + quote + "1", "LLAMA_PARALLEL=" + quote + "2")
+            values = run_helper(env, catalog, imports, models_dir)
+            assert values.get("GGUF_FILE") == "Agent-Test-Q4_K_M.gguf", (quote, values)
+            assert values["MAX_CONTEXT"] == "65536"
+            assert values["LLAMA_PARALLEL"] == "2"
+            assert values["LLAMA_ARG_CACHE_TYPE_K"] == "q4_0"
+
+
+def test_comments_do_not_hide_external_runtime_selection() -> None:
+    for key, old, selected in (
+        ("ODS_MODE", "local", "cloud"),
+        ("LLM_BACKEND", "llama-server", "lemonade"),
+        ("EXTERNAL_LLM_URL", "", "http://external.invalid/v1"),
+        ("LEMONADE_EXTERNAL", "false", "true"),
+    ):
+        with tempfile.TemporaryDirectory() as tmp:
+            env, catalog, imports, models_dir = write_model_fixture(Path(tmp))
+            replace_env(env, f"{key}={old}", f"{key}={selected} # chosen by the operator")
+            assert run_helper(env, catalog, imports, models_dir) == {}, key
+
+
+def test_literal_hashes_and_invalid_values_are_not_comments() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        env, catalog, imports, models_dir = write_model_fixture(Path(tmp))
+        data = json.loads(catalog.read_text(encoding="utf-8"))
+        data["models"][0]["llm_model_name"] = "agent # literal"
+        data["models"][0]["gguf_url"] += "#artifact"
+        catalog.write_text(json.dumps(data), encoding="utf-8")
+        replace_env(env, "LLM_MODEL=agent-test", "LLM_MODEL='agent # literal' # a comment")
+        replace_env(env, "GGUF_URL=" + data["models"][0]["gguf_url"].removesuffix("#artifact"),
+                    "GGUF_URL=" + data["models"][0]["gguf_url"] + " # a comment")
+        assert run_helper(env, catalog, imports, models_dir)["LLM_MODEL"] == "agent # literal"
+    for value in ("65536#not-a-comment", "'65536 #not-a-number'", '"65536 #unclosed'):
+        with tempfile.TemporaryDirectory() as tmp:
+            env, catalog, imports, models_dir = write_model_fixture(Path(tmp))
+            replace_env(env, "MAX_CONTEXT=65536", "MAX_CONTEXT=" + value)
+            replace_env(env, "CTX_SIZE=65536", "CTX_SIZE=" + value)
+            assert run_helper(env, catalog, imports, models_dir) == {}, value
+
+
+
+def test_commented_contract_reaches_installer_safe_loader() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        env, catalog, imports, models_dir = write_model_fixture(Path(tmp))
+        replace_env(env, "GGUF_FILE=Agent-Test-Q4_K_M.gguf",
+                    'GGUF_FILE="Agent-Test-Q4_K_M.gguf" # selected locally')
+        replace_env(env, "LLAMA_ARG_CACHE_TYPE_K=q4_0", "LLAMA_ARG_CACHE_TYPE_K=q8_0 # operator tuning")
+        command = """
+set -euo pipefail
+source "$1/lib/safe-env.sh"
+LLM_MODEL=recommended-other
+GGUF_FILE=recommended-other.gguf
+MAX_CONTEXT=32768
+LLAMA_ARG_CACHE_TYPE_K=f16
+preserved=$("$2" "$1/scripts/preserve-active-model.py" --env "$3" --catalog "$4" \\
+  --imports "$5" --models-dir "$6" --backend nvidia --memory-type discrete \\
+  --vram-mb 8192 --ram-gb 32 --host-arch amd64)
+load_model_selector_env_from_output <<< "$preserved"
+printf '%s\\n' "$LLM_MODEL" "$GGUF_FILE" "$MAX_CONTEXT" "$LLAMA_ARG_CACHE_TYPE_K"
+"""
+        result = subprocess.run(
+            ["bash", "-c", command, "preservation-check", str(ROOT), sys.executable,
+             str(env), str(catalog), str(imports), str(models_dir)],
+            check=True, text=True, capture_output=True,
+        )
+        assert result.stdout.splitlines() == [
+            "agent-test", "Agent-Test-Q4_K_M.gguf", "65536", "q8_0",
+        ], result.stdout
+
+
+def test_external_registered_model_store_is_preserved() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        env, catalog, imports, models_dir = write_model_fixture(root)
+        external = root / "ssd-models"
+        external.mkdir()
+        original = models_dir / "Agent-Test-Q4_K_M.gguf"
+        # The fixture models an existing SSD installation; production never moves it.
+        original.rename(external / original.name)
+        (root / "data/model-stores.json").write_text(json.dumps({"schemaVersion":1,"stores":[
+            {"id":"ssd","hostPath":str(external),"containerPath":"/model-stores/ssd"}]}))
+        with env.open("a") as handle:
+            handle.write("\nODS_ACTIVE_MODEL_STORE=ssd\nLLAMA_ARG_SPEC_DRAFT_TYPE_K=q4_0\n")
+        preserved = run_helper(env, catalog, imports, models_dir)
+        assert preserved["ODS_ACTIVE_MODEL_STORE"] == "ssd"
+        assert preserved["GGUF_FILE"] == original.name
+        assert preserved["LLAMA_ARG_SPEC_DRAFT_TYPE_K"] == "q4_0"
+
+
 def main() -> int:
     tests = [
         test_valid_curated_model_is_preserved,
+        test_external_registered_model_store_is_preserved,
+        test_commented_model_contract_survives_rerun,
+        test_commented_contract_reaches_installer_safe_loader,
+        test_comments_do_not_hide_external_runtime_selection,
+        test_literal_hashes_and_invalid_values_are_not_comments,
         test_valid_dashboard_import_is_preserved,
         test_verified_switchboard_state_recovers_an_interrupted_installer_env,
         test_invalid_or_unavailable_contracts_are_not_preserved,

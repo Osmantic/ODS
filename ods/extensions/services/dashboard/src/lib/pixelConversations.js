@@ -1,4 +1,5 @@
 import { conversationLabels, deleteConversationLabels } from './pixelConversationLabels'
+import {parseProjectTasks} from './pixelTaskActivity'
 
 export const CHAT_KEY = 'ods.pixel.chat.v1'
 const LIBRARY_KEY = 'ods.pixel.conversations.v1'
@@ -49,16 +50,45 @@ export function readConversations() {
   } catch { return [] }
 }
 
-export function saveConversation(chat) {
+function conversationSnapshot(chat) {
+  if (!chat) return null
+  // Save timestamps alone do not make identical content a conflicting edit.
+  return JSON.stringify(Object.fromEntries(Object.entries(chat)
+    .filter(([key]) => key !== 'updatedAt' && key !== 'persistenceVersion')
+    .sort(([left], [right]) => left.localeCompare(right))))
+}
+
+/** Bind a mounted editor to the exact record it read, including legacy data.
+ * This is an optimistic stale-editor check; localStorage has no atomic CAS.
+ */
+export function createConversationWriter(initial = null) {
+  let chatId = initial?.chatId
+  let expected = conversationSnapshot(initial)
+  return chat => saveConversation(chat, {
+    matches: current => conversationSnapshot(current) === (chat.chatId === chatId ? expected : null),
+    committed: value => {chatId = value.chatId; expected = conversationSnapshot(value)},
+  })
+}
+
+export function saveConversation(chat, checkpoint) {
   if (!valid(chat)) throw new Error('Invalid conversation')
+  if (chat.messages.some(message=>message.projectTasks!==undefined
+    && (message.role!=='assistant' || !parseProjectTasks(message.projectTasks)))) throw new Error('Invalid project metadata')
   if (deletedIds().includes(chat.chatId)) throw new Error('This conversation was deleted in another tab. Start a new chat.')
   // A read error is not an empty library. Never overwrite unreadable history.
   const entries = loadConversations(true)
   const previous = entries.find(item => valid(item) && item.chatId === chat.chatId)
+  const current = currentConversation()
+  // Empty drafts are absent from the library but still have an active record.
+  const latest = valid(current) && current.chatId === chat.chatId && (current.persistenceVersion === 2 || !previous) ? current : previous
+  if (checkpoint && !checkpoint.matches(latest ?? null)) {
+    const error = new Error('This conversation changed in another tab. Download a recovery copy of your unsaved text, then reload this page to read the saved version.')
+    error.code = 'conversation-changed'
+    throw error
+  }
   const value = { ...previous, ...chat, updatedAt: Date.now(), persistenceVersion: 2 }
   const remaining = entries.filter(item => !valid(item) || item.chatId !== value.chatId)
   const next = value.messages.length || value.draft?.trim() ? [value, ...remaining] : remaining
-  const current = currentConversation()
   if (valid(current) && current.chatId !== value.chatId) {
     // Do not replace the only durable copy of a previous partial save when
     // switching tasks. Flush its reconciled library before moving the pointer.
@@ -67,6 +97,9 @@ export function saveConversation(chat) {
   // Validate/read the library before either write. Commit the reload authority
   // first so a failed second write cannot restore stale text over newer text.
   localStorage.setItem(CHAT_KEY, JSON.stringify(value))
+  // Advance as soon as the reload authority commits, even if the library
+  // write fails afterward. A retry must recognize this editor's partial save.
+  checkpoint?.committed(value)
   try {
     // Never silently evict an older conversation when browser storage fills up.
     localStorage.setItem(LIBRARY_KEY, JSON.stringify(next))
@@ -92,6 +125,7 @@ export function deleteConversation(chatId) {
     return
   }
   if (chat.inFlight || chat.interrupted) throw new Error('Stop or resume this task before deleting its conversation.')
+  if (chat.compactionRequestId) throw new Error('Check the pending context compaction before deleting this conversation.')
   // Write the deletion marker first: stale open tabs must never resurrect a deleted chat.
   localStorage.setItem(DELETED_KEY, JSON.stringify([...new Set([...deletedIds(), chatId])]))
   localStorage.setItem(LIBRARY_KEY, JSON.stringify(entries.filter(item => !valid(item) || item.chatId !== chatId)))

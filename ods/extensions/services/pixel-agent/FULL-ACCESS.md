@@ -10,6 +10,30 @@ Native Windows and macOS/launchd return unavailable. The gateway hook/probe
 adapter is pinned to the inspected OpenClaw 2026.6.33 contracts; other versions
 require qualification before transitions become available.
 
+The Dashboard and its host agent may run on Windows or macOS while the managed
+gateway runs in a Linux/systemd guest. With Pixel configured, the authenticated
+host agent retains its model-lifecycle exclusion and relays only access status
+and exact mode requests through the inspected Edge container, private ingress,
+and coordinator socket. No distribution, user, arbitrary command, or endpoint
+comes from the browser. A timeout is never retried as a mutation.
+
+A transient HTTP 409 can retry one native lease reacquisition only when the
+owner-private journal proves that exact token already holds admission, and a
+fresh status still shows the same process and revision with no active work.
+New acquisitions, timeouts, probes, configuration changes and restarts are never
+replayed by this retry. A changed or unreadable ownership record keeps recovery
+held for explicit owner action.
+
+The relay uses the distinct owner-service credential already configured on
+Edge. The installer binds it to `/etc/ods/pixel-access-relay.key` (owner-only)
+and records its digest in the root-only controller configuration; it does not
+assume that a guest `.env` has the same credentials as the Dashboard host.
+Ingress reads that file through `PIXEL_ACCESS_OWNER_KEY_FILE` for each access
+request. Missing credentials disable access control without stopping chat.
+Chat credentials and ordinary ingress socket membership cannot change modes.
+These changes preserve the current access configuration; installation never
+enables Full Access or runs an access transition automatically.
+
 The Settings request includes a strict mode, the last inspected revision and an
 explicit confirmation boolean. The API never accepts a command, path, UID,
 credential or arbitrary service name. The owner must confirm the risk before
@@ -27,10 +51,25 @@ program tree before Full Access can be enabled; the normal host-agent unit runs
 as the install owner and delegates privilege only to this coordinator.
 
 Owner identity comes from the gateway systemd User and passwd entry, checked
-against the installed owner and private ODS management marker. Configuration is
+against the installed owner and private ODS management marker. An explicit
+legacy migration can instead install a root-owned binding of the existing
+unit/drop-in hashes, effective owner and executable. Each transition revalidates
+that binding; drift refuses access changes. Only the recognized reversible
+mode drop-in is excluded from the base hash. Migration never invents a ready
+marker or changes the current mode. `_ods_pixel_install_access_service` accepts
+`owner binary true false` to prepare that migration without starting services;
+ordinary installs retain the original marker-based path. Configuration is
 the owner's `~/.openclaw/openclaw.json`. The existing five-field baseline remains
 unchanged. The staged installed OpenClaw validator runs as that owner, with its
 HOME/PATH and private output. Schema errors never expose CLI diagnostics.
+
+An access-only guest without its own ODS `.env` receives
+`settings_data_dir: null` during explicit adoption. Its controller can inspect
+and change the agent's access mode, but cannot apply settings/provider records
+stored on a separate Windows host. That separate settings transport remains
+unavailable until it has its own validated binding. No Windows `.env` is copied,
+no guest settings store is guessed, and the API must not present this as a
+successful Settings Apply capability.
 
 `host/pixel_access_mode.py` wraps the existing pure configuration helper. Enabling
 requires explicit confirmation, a live activity check, configuration validation,

@@ -12,6 +12,7 @@ from typing import Any, Optional
 from urllib.parse import urlsplit
 
 from fastapi import HTTPException
+from jsonschema import Draft202012Validator
 
 from env_values import parse_env_value
 from host_agent_client import AgentClientError, request_json as request_agent_json
@@ -31,6 +32,13 @@ _GGUF_QUANTIZED_MODEL_RE = re.compile(
     r"(?:^|[-_.])q[2-8](?:_[a-z0-9]+)*(?:$|[-_.])",
     re.IGNORECASE,
 )
+_SCALAR_CONSTRAINT_MESSAGES = {
+    "minimum": "Must be at least {limit}.",
+    "maximum": "Must be at most {limit}.",
+    "minLength": "Must contain at least {limit} characters.",
+    "maxLength": "Must contain at most {limit} characters.",
+    "pattern": "Must match the format required by the configuration schema.",
+}
 
 # ── Apply-plan constants ───────────────────────────────────────────────────────
 
@@ -221,6 +229,7 @@ def _build_env_fields(
             "hasValue": value != "",
             "readOnly": key in _READ_ONLY_ENV_FIELDS,
             "readOnlyReason": _READ_ONLY_ENV_FIELDS.get(key, ""),
+            **{name: definition[name] for name in _SCALAR_CONSTRAINT_MESSAGES if name in definition},
         }
 
     for key, value in values.items():
@@ -247,6 +256,18 @@ def _build_env_fields(
     return fields
 
 
+def _scalar_constraint_issues(key: str, value: Any, field: dict[str, Any]) -> list[dict[str, str]]:
+    constraints = {name: field[name] for name in _SCALAR_CONSTRAINT_MESSAGES if name in field}
+    # ValidationError.message includes the instance, which may be a credential.
+    # Only return schema-derived bounds and fixed text to the browser.
+    return [
+        {"key": key, "message": _SCALAR_CONSTRAINT_MESSAGES[error.validator].format(
+            limit=error.validator_value,
+        )}
+        for error in Draft202012Validator(constraints).iter_errors(value)
+    ]
+
+
 def _validate_env_values(
     values: dict[str, str],
     fields: dict[str, dict[str, Any]],
@@ -269,9 +290,11 @@ def _validate_env_values(
             issues.append({"key": key, "message": f"Must be one of: {', '.join(enum_values)}."})
             continue
 
+        issue_count = len(issues)
+        typed_value: Any = value
         if field_type == "integer":
             try:
-                int(str(value).strip())
+                typed_value = int(str(value).strip())
             except (TypeError, ValueError):
                 issues.append({"key": key, "message": "Must be a whole number."})
         elif field_type == "boolean":
@@ -306,6 +329,9 @@ def _validate_env_values(
                     "key": key,
                     "message": "Must be an HTTP(S) OpenAI-compatible embeddings base URL.",
                 })
+
+        if len(issues) == issue_count:
+            issues.extend(_scalar_constraint_issues(key, typed_value, field))
 
     embedding_model = str(values.get("EMBEDDING_MODEL", "")).strip() or "BAAI/bge-base-en-v1.5"
     rag_model = str(values.get("RAG_EMBEDDING_MODEL", "")).strip()

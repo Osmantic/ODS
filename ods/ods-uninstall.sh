@@ -7,6 +7,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/ods}"
+REQUESTED_INSTALL_DIR=""
 
 # Colors
 RED='\033[0;31m'
@@ -19,6 +20,16 @@ log_info()  { echo -e "${BLUE}[INFO]${NC} $*"; }
 log_ok()    { echo -e "${GREEN}[OK]${NC} $*"; }
 log_warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
+
+ods_uninstall_systemctl_user() {
+    local user_uid user_runtime_dir user_bus_address
+    user_uid="$(id -u)"
+    user_runtime_dir="${XDG_RUNTIME_DIR:-/run/user/$user_uid}"
+    user_bus_address="${DBUS_SESSION_BUS_ADDRESS:-unix:path=$user_runtime_dir/bus}"
+    env XDG_RUNTIME_DIR="$user_runtime_dir" \
+        DBUS_SESSION_BUS_ADDRESS="$user_bus_address" \
+        systemctl --user "$@"
+}
 
 SUDO_CREDENTIAL_READY=false
 
@@ -34,10 +45,17 @@ prepare_sudo_credential() {
     fi
 
     log_info "Administrator privileges are required for system-owned ODS files."
-    # Keep the credential prompt attached directly to the terminal. Wrapping an
-    # interactive sudo invocation in `timeout` can prevent sudo from managing
-    # terminal echo correctly on some systems.
-    sudo -v
+    if $NON_INTERACTIVE; then
+        if ! sudo -n -v; then
+            log_error "Non-interactive uninstall requires cached or passwordless sudo. Run sudo -v in a terminal, then retry."
+            return 1
+        fi
+    else
+        # Keep the credential prompt attached directly to the terminal. Wrapping
+        # an interactive sudo invocation in `timeout` can prevent sudo from
+        # managing terminal echo correctly on some systems.
+        sudo -v
+    fi
     SUDO_CREDENTIAL_READY=true
 }
 
@@ -81,12 +99,44 @@ resolve_compose_flags() {
 KEEP_MODELS=false
 KEEP_DATA=false
 FORCE=false
+NON_INTERACTIVE=false
+
+validate_requested_install_dir() {
+    local target_dir="$1" target_real home_real script_real
+
+    [[ "$target_dir" == /* ]] || return 1
+    [[ -d "$target_dir" && ! -L "$target_dir" ]] || return 1
+    target_real="$(cd -P -- "$target_dir" 2>/dev/null && pwd -P)" || return 1
+    home_real="$(cd -P -- "$HOME" 2>/dev/null && pwd -P)" || return 1
+    script_real="$(cd -P -- "$SCRIPT_DIR" 2>/dev/null && pwd -P)" || return 1
+    [[ "$target_real" != / && "$target_real" != "$home_real" && "$target_real" != "$script_real" ]] || return 1
+    [[ -f "$target_real/.env" && ! -L "$target_real/.env" ]] || return 1
+    [[ -f "$target_real/ods-cli" && ! -L "$target_real/ods-cli" ]] || return 1
+    [[ -f "$target_real/ods-uninstall.sh" && ! -L "$target_real/ods-uninstall.sh" ]] || return 1
+    if [[ -f "$target_real/docker-compose.base.yml" && ! -L "$target_real/docker-compose.base.yml" ]]; then
+        printf '%s\n' "$target_real"
+        return 0
+    fi
+    [[ -f "$target_real/docker-compose.yml" && ! -L "$target_real/docker-compose.yml" ]] || return 1
+    printf '%s\n' "$target_real"
+}
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --keep-models) KEEP_MODELS=true; shift ;;
         --keep-data)   KEEP_DATA=true; shift ;;
         --force)       FORCE=true; shift ;;
+        --non-interactive) NON_INTERACTIVE=true; shift ;;
+        --install-dir)
+            [[ $# -ge 2 && -n "$2" ]] || { log_error "--install-dir requires a path"; exit 1; }
+            REQUESTED_INSTALL_DIR="$2"
+            shift 2
+            ;;
+        --install-dir=*)
+            REQUESTED_INSTALL_DIR="${1#*=}"
+            [[ -n "$REQUESTED_INSTALL_DIR" ]] || { log_error "--install-dir requires a path"; exit 1; }
+            shift
+            ;;
         -h|--help)
             cat << EOF
 ODS Uninstaller
@@ -97,6 +147,8 @@ Options:
     --keep-models   Keep downloaded AI models (saves re-download time)
     --keep-data     Keep user data (chat history, n8n workflows, etc.)
     --force         Skip confirmation prompts
+    --non-interactive  Never prompt for sudo; require cached or passwordless sudo
+    --install-dir   Uninstall a separately located, fingerprinted ODS installation
     -h, --help      Show this help
 
 This will remove:
@@ -104,6 +156,7 @@ This will remove:
     - Installation directory ($INSTALL_DIR)
     - ODS-managed Pixel host services and private configuration
     - Systemd user services (opencode-web, openclaw timers)
+    - Systemd system services (ods-host-agent, ods-mdns)
     - macOS LaunchAgents (com.ods.host-agent, com.ods.opencode-web, legacy agents)
     - CLI symlinks (/usr/local/bin/ods, ~/.local/bin/ods, legacy /usr/local/bin/ods-cli)
     - Backup directory (~/.ods)
@@ -121,8 +174,12 @@ echo -e "${RED}║         ODS UNINSTALLER                ║${NC}"
 echo -e "${RED}╚══════════════════════════════════════════════════╝${NC}"
 echo ""
 
-# Detect install dir
-if [[ -d "$SCRIPT_DIR" && -f "$SCRIPT_DIR/ods-cli" ]]; then
+# Detect install dir. A candidate bootstrap can explicitly target an older ODS
+# tree, but only after this uninstaller independently validates that target.
+if [[ -n "$REQUESTED_INSTALL_DIR" ]]; then
+    INSTALL_DIR="$(validate_requested_install_dir "$REQUESTED_INSTALL_DIR")" \
+        || { log_error "Refusing unsafe or unrecognized ODS install target: $REQUESTED_INSTALL_DIR"; exit 1; }
+elif [[ -d "$SCRIPT_DIR" && -f "$SCRIPT_DIR/ods-cli" ]]; then
     INSTALL_DIR="$SCRIPT_DIR"
 fi
 
@@ -156,6 +213,26 @@ if [[ "$FORCE" != "true" ]]; then
     echo ""
 fi
 
+# A non-interactive purge must prove that privileged cleanup can run before
+# removing Pixel, stopping containers, or otherwise mutating the installation.
+# Candidate-driven reinstalls rely on this path and must fail promptly instead
+# of waiting forever at a sudo password prompt or leaving a half-uninstalled
+# tree behind.
+if $NON_INTERACTIVE && ! $KEEP_DATA && [[ "$(id -u)" -ne 0 ]] && command -v sudo >/dev/null 2>&1; then
+    prepare_sudo_credential || exit 1
+fi
+
+# Check system-unit custody without stopping a recovery service or removing
+# Pixel. A foreign unit must fail before either independent cleanup begins.
+if [[ "$(uname -s)" == "Linux" && -f "$SCRIPT_DIR/lib/system-uninstall.sh" ]]; then
+    . "$SCRIPT_DIR/lib/system-uninstall.sh"
+    if ! ODS_SYSTEM_UNINSTALL_VALIDATE_ONLY=true \
+        ods_uninstall_system_units "$INSTALL_DIR" "$HOME"; then
+        log_error "System service validation failed; Pixel and installation retained"
+        exit 1
+    fi
+fi
+
 # Validate and remove Pixel before any broader uninstall mutation. The helper
 # is marker-bound to this exact install and fails closed on ambient or drifted
 # Pixel state.
@@ -173,6 +250,23 @@ if [[ "$(uname -s)" == "Linux" ]]; then
         exit 1
     fi
     unset _ods_pixel_marker
+fi
+
+# A pending Pixel transition must retain its host-agent and other recovery
+# services. Only retire verified system units after Pixel's fail-closed
+# uninstall has succeeded; the old ordering stopped the host agent first and
+# stranded a held model transition when Pixel correctly refused cleanup.
+if [[ "$(uname -s)" == "Linux" ]]; then
+    if [[ -f "$SCRIPT_DIR/lib/system-uninstall.sh" ]]; then
+        . "$SCRIPT_DIR/lib/system-uninstall.sh"
+        if ! ods_uninstall_system_units "$INSTALL_DIR" "$HOME"; then
+            log_error "System service cleanup failed; installation retained"
+            exit 1
+        fi
+    elif [[ -e /etc/systemd/system/ods-host-agent.service || -e /etc/systemd/system/ods-mdns.service ]]; then
+        log_error "System service uninstall helper is missing; installation retained"
+        exit 1
+    fi
 fi
 
 # 1. Stop and remove Docker containers
@@ -230,17 +324,26 @@ fi
 # 2. Stop and remove host service definitions
 log_info "Removing systemd user services..."
 SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
+# Phase 11 may use a transient user service so a large model download survives
+# a non-interactive SSH installer.  It has no unit file in SYSTEMD_USER_DIR,
+# therefore stop it explicitly before deleting its install tree.
+_ods_uninstall_uid="$(id -u)"
+_ods_uninstall_runtime_dir="/run/user/$_ods_uninstall_uid"
+if [[ -d "$_ods_uninstall_runtime_dir" && -S "$_ods_uninstall_runtime_dir/bus" ]]; then
+    ods_uninstall_systemctl_user stop ods-model-upgrade.service 2>/dev/null || true
+    ods_uninstall_systemctl_user reset-failed ods-model-upgrade.service 2>/dev/null || true
+fi
 for unit in opencode-web.service openclaw-session-cleanup.timer \
             memory-shepherd-workspace.timer memory-shepherd-memory.timer \
             openclaw-session-cleanup.service \
             memory-shepherd-workspace.service memory-shepherd-memory.service \
             ods-host-agent.service; do
     if [[ -f "$SYSTEMD_USER_DIR/$unit" ]]; then
-        systemctl --user disable --now "$unit" 2>/dev/null || true
+        ods_uninstall_systemctl_user disable --now "$unit" 2>/dev/null || true
         rm -f "$SYSTEMD_USER_DIR/$unit"
     fi
 done
-systemctl --user daemon-reload 2>/dev/null || true
+ods_uninstall_systemctl_user daemon-reload 2>/dev/null || true
 
 # 2a. Remove macOS LaunchAgents (#1882). install-macos.sh creates
 # com.ods.host-agent and com.ods.opencode-web as RunAtLoad+KeepAlive agents;
@@ -333,23 +436,6 @@ if (( ${#_ods_uninstall_orphan_pids[@]} > 0 )); then
 fi
 unset _ods_uninstall_orphan_pids _pid
 
-# Remove system-mode ods-host-agent unit (migrated from --user mode).
-# Idempotent — no-op if the unit was never installed (e.g. older user-mode installs).
-if systemctl is-enabled ods-host-agent.service >/dev/null 2>&1; then
-    if ! prepare_sudo_credential; then
-        log_warn "sudo is unavailable; ods-host-agent.service was not removed"
-    elif ! timeout 20s sudo -n -- systemctl disable --now ods-host-agent.service 2>/dev/null; then
-        log_warn "ods-host-agent did not stop cleanly; forcing service shutdown"
-        run_sudo systemctl kill -s SIGKILL ods-host-agent.service 2>/dev/null || true
-        timeout 10s sudo -n -- systemctl disable ods-host-agent.service 2>/dev/null || true
-    fi
-fi
-if [[ -e /etc/systemd/system/ods-host-agent.service ]]; then
-    run_sudo rm -f /etc/systemd/system/ods-host-agent.service 2>/dev/null || true
-    run_sudo systemctl daemon-reload 2>/dev/null || true
-fi
-log_ok "Systemd services removed"
-
 # 3. Remove CLI symlinks
 _removed_cli_symlink=false
 for _ods_cli_link in "/usr/local/bin/ods" "$HOME/.local/bin/ods" "/usr/local/bin/ods-cli"; do
@@ -436,6 +522,11 @@ OPENCODE_CONFIG="$HOME/.config/opencode/opencode.json"
 if [[ -f "$OPENCODE_CONFIG" ]] && grep -q "llama-server" "$OPENCODE_CONFIG" 2>/dev/null; then
     rm -f "$OPENCODE_CONFIG"
     log_ok "OpenCode config removed"
+fi
+
+if ! $INSTALL_DIR_CLEANED; then
+    log_error "ODS uninstall was incomplete; the installation directory remains at $INSTALL_DIR"
+    exit 1
 fi
 
 echo ""

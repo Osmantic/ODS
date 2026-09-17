@@ -43,20 +43,21 @@ fmt_bytes() {
 # Available bytes on filesystem containing a path
 free_bytes_for_path() {
     local path="$1"
-    df -Pk "$path" 2>/dev/null | awk 'NR==2 { print $4 * 1024 }'
+    # Bash arithmetic requires decimal integers, including above 2 GiB.
+    df -Pk "$path" 2>/dev/null | awk 'NR==2 { printf "%.0f\n", $4 * 1024 }'
 }
 
 # Estimate the backup size on disk (uncompressed)
 estimate_restore_bytes_dir() {
     local backup_dir="$1"
-    du -sk "$backup_dir" 2>/dev/null | awk '{print $1 * 1024}'
+    du -sk "$backup_dir" 2>/dev/null | awk '{printf "%.0f\n", $1 * 1024}'
 }
 
 # Estimate restore size for a tar.gz (uncompressed file sizes)
 estimate_restore_bytes_tar() {
     local tar_path="$1"
     # tar -tv lists size in column 3
-    tar -tvzf "$tar_path" 2>/dev/null | awk '{sum += $3} END {print sum+0}'
+    tar -tvzf "$tar_path" 2>/dev/null | awk '{sum += $3} END {printf "%.0f\n", sum+0}'
 }
 
 ensure_restore_space() {
@@ -78,7 +79,7 @@ ensure_restore_space() {
     local free
     free=$(free_bytes_for_path "$ODS_DIR")
 
-    if [[ -n "$free" && "$free" -gt 0 && "$free" -lt "$need" ]]; then
+    if [[ -n "$free" && "$free" -lt "$need" ]]; then
         log_error "Not enough disk space to restore into: $ODS_DIR"
         log_error "Need ~$(fmt_bytes "$need"), have ~$(fmt_bytes "$free")."
         log_error "Free up space or restore to a different location (set ODS_DIR)."
@@ -214,6 +215,10 @@ extract_backup() {
     local compressed="$BACKUP_ROOT/$backup_id.tar.gz"
     local uncompressed="$BACKUP_ROOT/$backup_id"
 
+    if [[ -L "$uncompressed" ]]; then
+        log_error "Refusing a symlinked backup directory" >&2
+        return 1
+    fi
     if [[ -d "$uncompressed" ]]; then
         # Already extracted
         echo "$uncompressed"
@@ -221,16 +226,13 @@ extract_backup() {
     fi
 
     if [[ -f "$compressed" ]]; then
-        # Validate: reject archives with absolute paths or path traversal
-        if tar -tzf "$compressed" 2>/dev/null | grep -qE '(^/|\.\./)'; then
-            log_error "Backup archive contains unsafe paths (absolute or ../) — refusing to extract" >&2
+        if ! command -v python3 >/dev/null 2>&1; then
+            log_error "python3 is required to validate and extract compressed backups" >&2
             return 1
         fi
         log_info "Extracting compressed backup..." >&2
-        mkdir -p "$uncompressed"
-        if ! tar xzf "$compressed" --no-same-owner -C "$BACKUP_ROOT"; then
+        if ! python3 "$SCRIPT_DIR/lib/backup-archive.py" "$compressed" "$BACKUP_ROOT" "$backup_id"; then
             log_error "Failed to extract backup archive" >&2
-            rm -rf "$uncompressed"
             return 1
         fi
         echo "$uncompressed"
@@ -353,6 +355,25 @@ dry_run_preview() {
             fi
         done
         echo ""
+
+        # Cache tier (full backups only): models and model caches.
+        local -a cache_dirs=("models" "${ODS_BACKUP_CACHE_PATHS[@]}")
+        local cache_listed=false
+        for dir in "${cache_dirs[@]}"; do
+            if [[ -d "$backup_dir/$dir" ]]; then
+                if [[ "$cache_listed" == "false" ]]; then
+                    echo "Cache to Restore (models):"
+                    echo "───────────────────────────────────────────────────────────────────"
+                    cache_listed=true
+                fi
+                local size
+                size=$(du -sh "$backup_dir/$dir" 2>/dev/null | cut -f1)
+                echo "  ✓ $dir ($size)"
+            fi
+        done
+        if [[ "$cache_listed" == "true" ]]; then
+            echo ""
+        fi
     fi
 
     if [[ "$restore_config" == "true" ]]; then
@@ -377,7 +398,12 @@ dry_run_preview() {
 stop_containers() {
     log_step "Stopping containers..."
 
-    if ! docker compose ls --quiet 2>/dev/null | grep -q "$(basename "$ODS_DIR")"; then
+    local projects
+    if ! projects=$(docker compose ls --quiet); then
+        log_error "Cannot determine running containers; refusing to restore."
+        return 1
+    fi
+    if ! printf '%s\n' "$projects" | grep -Fxq "$(basename "$ODS_DIR")"; then
         log_info "No running containers found"
         return 0
     fi
@@ -386,35 +412,156 @@ stop_containers() {
     if docker compose down; then
         log_success "Containers stopped"
     else
-        log_warn "Some containers may not have stopped cleanly"
+        log_error "Containers did not stop; refusing to restore live data."
+        return 1
     fi
 }
 
-# Restore user data
-restore_user_data() {
-    local backup_dir="$1"
-    log_step "Restoring user data..."
+# Restore all selected paths as one transaction. User data remains additive:
+# stage its current contents, overlay the backup, then publish by rename.
+_restore_selected_paths() (
+    local backup_dir="$1" restore_data="$2" restore_configuration="$3"
+    local -a sources=() destinations=() workspaces=() publishing=() merge_data=()
+    local dir file parent workspace i changes transfer_status completed=false recovery_failed=false
+    shopt -s nullglob
+    if [[ "$restore_data" == true ]]; then
+        for dir in "${ODS_USER_DATA_PATHS[@]}" "models" "${ODS_BACKUP_CACHE_PATHS[@]}"; do
+            [[ -d "$backup_dir/$dir" ]] || continue
+            sources+=("$backup_dir/$dir")
+            destinations+=("$ODS_DIR/$dir")
+            merge_data+=(true)
+        done
+    fi
+    if [[ "$restore_configuration" == true ]]; then
+        for file in "$backup_dir"/.env "$backup_dir"/.version "$backup_dir"/docker-compose*.y*ml "$backup_dir"/ods-*.sh; do
+            [[ -f "$file" ]] || continue
+            sources+=("$file")
+            destinations+=("$ODS_DIR/$(basename "$file")")
+            merge_data+=(false)
+        done
+        if [[ -d "$backup_dir/config" ]]; then
+            sources+=("$backup_dir/config")
+            destinations+=("$ODS_DIR/config")
+            merge_data+=(false)
+        fi
+    fi
+    if [[ ${#sources[@]} == 0 ]]; then
+        log_warn "No selected data or configuration paths are present in this backup."
+        return 0
+    fi
 
-    local data_dirs=("${ODS_USER_DATA_PATHS[@]}")
+    restore_cleanup() {
+        local status=$? index target work
+        trap - EXIT INT TERM
+        if [[ "$completed" != true ]]; then
+            for ((index=${#workspaces[@]}-1; index>=0; index--)); do
+                target="${destinations[index]}"
+                work="${workspaces[index]}"
+                if [[ "${publishing[index]:-false}" == true && ! -e "$work/new" && ! -L "$work/new"
+                    && ( -e "$target" || -L "$target" ) ]]; then
+                    if ! mv -- "$target" "$work/new"; then
+                        recovery_failed=true
+                        log_error "Cannot withdraw restored item ${target}; recovery files retained at ${work}"
+                        continue
+                    fi
+                fi
+                if [[ -e "$work/old" || -L "$work/old" ]]; then
+                    if ! mv -- "$work/old" "$target"; then
+                        recovery_failed=true
+                        log_error "Cannot restore original ${target}; original retained at ${work}/old"
+                        continue
+                    fi
+                fi
+            done
+        fi
+        for ((index=0; index<${#workspaces[@]}; index++)); do
+            # If recovery failed, never remove a workspace containing originals.
+            if [[ "$completed" == true || ( ! -e "${workspaces[index]}/old" && ! -L "${workspaces[index]}/old" ) ]]; then
+                rm -rf -- "${workspaces[index]}" || log_warn "Could not remove staging ${workspaces[index]}"
+            fi
+        done
+        if [[ "$recovery_failed" == true ]]; then
+            log_error "Rollback could not restore every original. Manual recovery required from the retained paths above."
+        fi
+        if [[ "$completed" != true && "$status" == 0 ]]; then
+            status=1
+        fi
+        exit "$status"
+    }
+    trap restore_cleanup EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
 
-    local restored_any=false
-    for dir in "${data_dirs[@]}"; do
-        if [[ -d "$backup_dir/$dir" ]]; then
-            restored_any=true
-            mkdir -p "$ODS_DIR/$(dirname "$dir")"
-            # Note: Using -a without --delete to preserve any new files created after backup
-            # Use --force flag or manually delete target if you need exact restoration
-            rsync_with_progress "$backup_dir/$dir" "$ODS_DIR/$(dirname "$dir")/" "Restoring $dir"
-            log_success "Restored: $dir"
-        else
-            log_warn "Skipped (not in backup): $dir"
+
+    for ((i=0; i<${#sources[@]}; i++)); do
+        file="${destinations[i]}"
+        if [[ -L "$file" ]]; then
+            log_error "Refusing to replace symlinked restore destination: $file"
+            return 1
+        fi
+        parent="$(dirname "$file")"
+        mkdir -p -- "$parent" || return 1
+        workspace="$(mktemp -d "$parent/.ods-restore.XXXXXX")" || return 1
+        workspaces+=("$workspace")
+        if [[ "${merge_data[i]}" == true ]]; then
+            if [[ -e "$file" ]]; then
+                [[ -d "$file" ]] || { log_error "User-data destination is not a directory: $file"; return 1; }
+                cp -a -- "$file" "$workspace/new" || return 1
+            else
+                mkdir -- "$workspace/new" || return 1
+            fi
+            if rsync_with_progress "${sources[i]}/" "$workspace/new/" "Staging ${sources[i]}"; then
+                :
+            else
+                transfer_status=$?
+                log_error "Failed to stage user data; live paths are unchanged."
+                return "$transfer_status"
+            fi
+        elif ! cp -a -- "${sources[i]}" "$workspace/new"; then
+            log_error "Failed to stage configuration; live paths are unchanged."
+            return 1
+        fi
+        # Verify the actual selected payload before any live path is moved.
+        # No Open WebUI or other optional service is required for Pixel-only
+        # and configuration-only backups. Additive local files are not deleted.
+        if [[ -d "${sources[i]}" ]]; then
+            if ! changes=$(rsync -a --checksum --dry-run --itemize-changes "${sources[i]}/" "$workspace/new/"); then
+                log_error "Could not verify staged directory: ${sources[i]}"
+                return 1
+            fi
+            [[ -z "$changes" ]] || { log_error "Staged directory differs from backup: ${sources[i]}"; return 1; }
+        elif ! cmp -s -- "${sources[i]}" "$workspace/new"; then
+            log_error "Staged file differs from backup: ${sources[i]}"
+            return 1
         fi
     done
+    for ((i=0; i<${#sources[@]}; i++)); do
+        file="${destinations[i]}"
+        workspace="${workspaces[i]}"
+        publishing[i]=true
+        if [[ -e "$file" || -L "$file" ]]; then
+            if ! mv -- "$file" "$workspace/old"; then
+                log_error "Cannot preserve original $file; undoing restore."
+                return 1
+            fi
+        fi
+        if ! mv -- "$workspace/new" "$file"; then
+            log_error "Cannot activate $file; undoing restore."
+            return 1
+        fi
+    done
+    for ((i=0; i<${#sources[@]}; i++)); do
+        verify_restore "${sources[i]}" "${destinations[i]}" || return 1
+    done
+    completed=true
+    for file in "${destinations[@]}"; do
+        log_success "Restored: ${file#"$ODS_DIR/"}"
+    done
+)
 
-    if [[ "$restored_any" == "false" ]]; then
-        log_warn "No user data directories were found in this backup."
-    fi
-}
+# Retain the individual entry points for callers restoring just one category.
+restore_user_data() { _restore_selected_paths "$1" true false; }
+restore_config() { _restore_selected_paths "$1" false true; }
 
 validate_restore_config_source() {
     local backup_dir="$1"
@@ -429,65 +576,13 @@ validate_restore_config_source() {
     fi
 }
 
-# Restore configuration
-restore_config() {
-    local backup_dir="$1"
-    log_step "Restoring configuration..."
-
-    local restored_any=false
-
-    # Dynamically discover config files (dotfiles + compose overlays + scripts)
-    for file in "$backup_dir"/.env "$backup_dir"/.version "$backup_dir"/docker-compose*.y*ml "$backup_dir"/ods-*.sh; do
-        if [[ -f "$file" ]]; then
-            restored_any=true
-            cp "$file" "$ODS_DIR/"
-            log_success "Restored: $(basename "$file")"
-        fi
-    done
-
-    if [[ -d "$backup_dir/config" ]]; then
-        restored_any=true
-        if [[ -d "$ODS_DIR/config" ]]; then
-            rm -rf "$ODS_DIR/config"
-        fi
-        cp -r "$backup_dir/config" "$ODS_DIR/"
-        log_success "Restored: config/"
-    else
-        log_warn "Skipped (not in backup): config/"
-    fi
-
-    if [[ "$restored_any" == "false" ]]; then
-        log_warn "No configuration files were found in this backup."
-    fi
-}
-
-# Verify restore
+# Check publication against the selected payload, not unrelated services.
 verify_restore() {
-    log_step "Verifying restore..."
-
-    local all_good=true
-
-    # Check critical paths
-    # Check that at least one compose file exists (base or standalone)
-    local has_compose=false
-    for f in "$ODS_DIR"/docker-compose*.y*ml; do
-        [[ -f "$f" ]] && has_compose=true && break
-    done
-    if [[ "$has_compose" == "false" ]]; then
-        log_warn "Missing after restore: no docker-compose*.yml files found"
-        all_good=false
-    fi
-    if [[ ! -d "$ODS_DIR/data/open-webui" ]]; then
-        log_warn "Missing after restore: data/open-webui"
-        all_good=false
-    fi
-
-    if [[ "$all_good" == "true" ]]; then
-        log_success "Restore verification passed"
-        return 0
-    else
-        log_warn "Some paths may be missing (this may be normal if they weren't in backup)"
-        return 0
+    local source="$1" destination="$2"
+    if [[ -L "$destination" || ( -d "$source" && ! -d "$destination" )
+        || ( -f "$source" && ! -f "$destination" ) ]]; then
+        log_error "Selected path missing after restore: $destination"
+        return 1
     fi
 }
 
@@ -500,6 +595,12 @@ do_restore() {
     local restore_data="$5"
     local restore_config="$6"
     local skip_verify="$7"
+
+    if [[ -z "$backup_id" || "$backup_id" == . || "$backup_id" == ..
+        || "$backup_id" == */* || "$backup_id" == *\\* ]]; then
+        log_error "Invalid backup ID"
+        return 1
+    fi
 
     log_info "Starting restore from backup: $backup_id"
 
@@ -546,20 +647,17 @@ do_restore() {
 
     # Stop containers if requested
     if [[ "$stop_first" == "true" ]]; then
-        stop_containers
+        stop_containers || return 1
     fi
 
-    # Perform restore
-    if [[ "$restore_data" == "true" ]]; then
-        restore_user_data "$backup_dir"
+    local restore_status
+    if _restore_selected_paths "$backup_dir" "$restore_data" "$restore_config"; then
+        :
+    else
+        restore_status=$?
+        log_error "Restore failed; inspect recovery diagnostics above."
+        return "$restore_status"
     fi
-
-    if [[ "$restore_config" == "true" ]]; then
-        restore_config "$backup_dir"
-    fi
-
-    # Verify
-    verify_restore
 
     log_success "Restore complete!"
     echo ""
