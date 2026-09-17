@@ -1,5 +1,6 @@
 """Tests for workflows router endpoints."""
 
+import asyncio
 import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -938,3 +939,129 @@ def test_workflow_enable_rejects_path_traversal_in_catalog_file(test_client, mon
     )
     assert resp.status_code == 400
     assert resp.json()["detail"] == "Invalid workflow file path"
+
+
+# ---------------------------------------------------------------------------
+# Activation failure must name the workflow it created (#3936)
+# ---------------------------------------------------------------------------
+
+
+def _enable_fixture(wf_mod, tmp_path, monkeypatch, wf_id="act-wf", name="Act Workflow"):
+    catalog = {
+        "workflows": [
+            {"id": wf_id, "name": name, "description": "t",
+             "file": f"{wf_id}.json", "dependencies": []}
+        ],
+        "categories": {},
+    }
+    catalog_file = tmp_path / "catalog.json"
+    catalog_file.write_text(json.dumps(catalog))
+    monkeypatch.setattr(wf_mod, "WORKFLOW_CATALOG_FILE", catalog_file)
+    workflow_dir = tmp_path / "workflows"
+    workflow_dir.mkdir()
+    (workflow_dir / f"{wf_id}.json").write_text(json.dumps({"name": name, "nodes": []}))
+    monkeypatch.setattr(wf_mod, "WORKFLOW_DIR", workflow_dir)
+
+
+def _session_with(create_status, create_body, patch_behaviour):
+    """Build an aiohttp.ClientSession stand-in.
+
+    patch_behaviour: an int status, or an exception instance to raise.
+    """
+    class _Ctx:
+        def __init__(self, resp): self._resp = resp
+        async def __aenter__(self): return self._resp
+        async def __aexit__(self, *a): return False
+
+    class _Resp:
+        def __init__(self, status, body):
+            self.status = status
+            self._body = body
+        async def json(self): return self._body
+        async def text(self): return json.dumps(self._body)
+
+    class _Session:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        def post(self, *a, **kw): return _Ctx(_Resp(create_status, create_body))
+        def patch(self, *a, **kw):
+            if isinstance(patch_behaviour, BaseException):
+                raise patch_behaviour
+            return _Ctx(_Resp(patch_behaviour, {}))
+
+    return lambda *a, **kw: _Session()
+
+
+def test_activation_http_error_reports_the_created_workflow_id(test_client, tmp_path, monkeypatch):
+    """A non-200 activation must not be reported as 'is now active!'."""
+    import routers.workflows as wf_mod
+    _enable_fixture(wf_mod, tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        wf_mod.aiohttp, "ClientSession",
+        _session_with(201, {"data": {"id": "n8n-77"}}, 500),
+    )
+
+    resp = test_client.post("/api/workflows/act-wf/enable",
+                            headers={"Authorization": "Bearer test-key-12345"})
+
+    assert resp.status_code == 502, resp.text
+    detail = resp.json()["detail"]
+    assert "n8n-77" in detail, "the created workflow id must be in the error"
+    assert "inactive" in detail
+    assert "HTTP 500" in detail
+    assert "second copy" in detail, "operator must be warned off re-running enable"
+
+
+def test_activation_timeout_reports_the_created_workflow_id(test_client, tmp_path, monkeypatch):
+    """A timeout during activation used to surface as a bare 504 with no id."""
+    import routers.workflows as wf_mod
+    _enable_fixture(wf_mod, tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        wf_mod.aiohttp, "ClientSession",
+        _session_with(201, {"data": {"id": "n8n-88"}}, asyncio.TimeoutError()),
+    )
+
+    resp = test_client.post("/api/workflows/act-wf/enable",
+                            headers={"Authorization": "Bearer test-key-12345"})
+
+    assert resp.status_code == 502, resp.text
+    detail = resp.json()["detail"]
+    assert "n8n-88" in detail
+    assert "timed out" in detail
+    # The old behaviour: 504 "n8n workflow add timed out", no id at all.
+    assert detail != "n8n workflow add timed out"
+
+
+def test_successful_activation_is_unchanged(test_client, tmp_path, monkeypatch):
+    """The happy path must keep its existing contract."""
+    import routers.workflows as wf_mod
+    _enable_fixture(wf_mod, tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        wf_mod.aiohttp, "ClientSession",
+        _session_with(201, {"data": {"id": "n8n-99"}}, 200),
+    )
+
+    resp = test_client.post("/api/workflows/act-wf/enable",
+                            headers={"Authorization": "Bearer test-key-12345"})
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["status"] == "success"
+    assert body["activated"] is True
+    assert body["n8nId"] == "n8n-99"
+
+
+def test_create_rejection_still_surfaces_n8n_status(test_client, tmp_path, monkeypatch):
+    """A failed create is a different fault and keeps its own status code."""
+    import routers.workflows as wf_mod
+    _enable_fixture(wf_mod, tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        wf_mod.aiohttp, "ClientSession",
+        _session_with(400, {"message": "bad workflow"}, 200),
+    )
+
+    resp = test_client.post("/api/workflows/act-wf/enable",
+                            headers={"Authorization": "Bearer test-key-12345"})
+
+    assert resp.status_code == 400, resp.text
+    assert "n8n API error" in resp.json()["detail"]
