@@ -140,7 +140,8 @@ class TestGetGpuInfoNvidia:
         info = get_gpu_info_nvidia()
         assert info is not None
         assert info.name == "NVIDIA GB10"
-        assert info.memory_used_mb == 12000
+        assert info.memory_used_mb == 0
+        assert info.memory_usage_available is False
         assert info.memory_total_mb == 124000
         assert info.memory_type == "unified"
         assert info.utilization_percent == 6

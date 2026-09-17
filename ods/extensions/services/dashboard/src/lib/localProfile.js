@@ -13,8 +13,16 @@ export function readProfile() {
   try {return normalizeProfile(JSON.parse(localStorage.getItem(PROFILE_KEY) || '{}'))}
   catch {return normalizeProfile({})}
 }
-export function saveProfile(value) {
+export function saveProfile(value, previous = null) {
   const profile = normalizeProfile(value)
+  if (previous) {
+    // Storage events are queued across tabs. Preserve already-committed values
+    // for fields this form did not edit, even before that event is delivered.
+    const current = readProfile()
+    for (const field of ['name', 'photo']) {
+      if (profile[field] === previous[field]) profile[field] = current[field]
+    }
+  }
   // Never silently report success if browser storage is unavailable/full.
   localStorage.setItem(PROFILE_KEY, JSON.stringify(profile))
   window.dispatchEvent(new Event(EVENT))

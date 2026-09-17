@@ -1,0 +1,22 @@
+{
+  "sourceSha256": "d8cf94c05714524299ee08c0c8d02baed20ce128903b50d1e9917c3008e20416",
+  "patchedSha256": "c65a00b418becfdd43878d5e7f5b54760bcfbd10944a3890139cec1a889b6a74",
+  "replacements": [
+    [
+      "\t\tif (shouldCompact(contextTokens, contextWindow, settings)) return await this.runAutoCompaction(\"threshold\", false);",
+      "\t\tif (shouldCompact(contextTokens, contextWindow, settings)) {\n\t\t\t// ODS: a token-truncated tool turn is unfinished, not a final answer.\n\t\t\t// Continue the compacted session once; never replay the owner's prompt.\n\t\t\tconst resumeTruncated = sameModel && assistantMessage.stopReason === \"length\" && !this.overflowRecoveryAttempted;\n\t\t\tif (resumeTruncated) {\n\t\t\t\tthis.overflowRecoveryAttempted = true;\n\t\t\t\tconst messages = this.agent.state.messages;\n\t\t\t\tif (messages.at(-1) === assistantMessage) this.agent.state.messages = messages.slice(0, -1);\n\t\t\t}\n\t\t\treturn await this.runAutoCompaction(\"threshold\", resumeTruncated);\n\t\t}"
+    ],
+    [
+      "\t\tif (sameModel && isContextOverflow(assistantMessage, contextWindow)) {",
+      "\t\t// The transport can stop inside a tool loop before provider overflow.\n\t\t// Recover through the same bounded path, preserving completed tool work.\n\t\tconst toolLoopOverflow = assistantMessage.stopReason === \"error\" && assistantMessage.errorMessage === \"Context overflow: estimated context size exceeds safe threshold during tool loop.\";\n\t\tif (sameModel && (isContextOverflow(assistantMessage, contextWindow) || toolLoopOverflow)) {"
+    ]
+  ],
+  "previousReplacements": {
+    "e91e736c46fa84a9e0fa9e773d616df3687a6895dec80ee70b1663d63f41b5be": [
+      [
+        "\t\tif (shouldCompact(contextTokens, contextWindow, settings)) return await this.runAutoCompaction(\"threshold\", false);",
+        "\t\tif (shouldCompact(contextTokens, contextWindow, settings)) {\n\t\t\t// ODS: a token-truncated tool turn is unfinished, not a final answer.\n\t\t\t// Continue the compacted session once; never replay the owner's prompt.\n\t\t\tconst resumeTruncated = sameModel && assistantMessage.stopReason === \"length\" && !this.overflowRecoveryAttempted;\n\t\t\tif (resumeTruncated) {\n\t\t\t\tthis.overflowRecoveryAttempted = true;\n\t\t\t\tconst messages = this.agent.state.messages;\n\t\t\t\tif (messages.at(-1) === assistantMessage) this.agent.state.messages = messages.slice(0, -1);\n\t\t\t}\n\t\t\treturn await this.runAutoCompaction(\"threshold\", resumeTruncated);\n\t\t}"
+      ]
+    ]
+  }
+}

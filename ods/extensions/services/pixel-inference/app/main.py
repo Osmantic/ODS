@@ -44,13 +44,20 @@ class ShareError(ValueError):
 
 class OwnedStreamingResponse(StreamingResponse):
     """Own resources even when disconnect precedes the first iterator step."""
-    def __init__(self, content, *, cleanup, **kwargs):
+    def __init__(self, content, *, cleanup, watcher=None, **kwargs):
         super().__init__(content, **kwargs)
         self.cleanup = cleanup
+        self.watcher = watcher
 
     async def __call__(self, scope, receive, send):
         try:
-            await super().__call__(scope, receive, send)
+            response = super().__call__(scope, receive, send)
+            if self.watcher is None:
+                await response
+            else:
+                # A slow peer can block ASGI send between iterator steps.
+                # Keep the request budget active across the entire response.
+                await _guarded(response, self.watcher)
         finally:
             await self.cleanup()
 
@@ -117,20 +124,26 @@ def _prepare(payload, grant):
 
 async def _guarded(awaitable, watcher):
     work = asyncio.ensure_future(awaitable)
+    transferred = False
     try:
         done, _ = await asyncio.wait((work, watcher), return_when=asyncio.FIRST_COMPLETED)
         if watcher in done:
-            if work.done() and not work.cancelled() and work.exception() is None:
-                orphan = work.result()
-                if isinstance(orphan, httpx.Response):
-                    await orphan.aclose()
             await watcher
-        return await work
+        result = await work
+        transferred = True
+        return result
     finally:
         if not work.done():
             work.cancel()
             with suppress(asyncio.CancelledError):
                 await work
+        # Cancellation may finish the transport with headers instead of raising.
+        # Until returned to the caller, this response is still ours to close.
+        if not transferred and not work.cancelled() and work.exception() is None:
+            orphan = work.result()
+            if isinstance(orphan, httpx.Response):
+                with anyio.CancelScope(shield=True):
+                    await orphan.aclose()
 
 
 def create_app(store=None, router_url=None, client=None):
@@ -301,7 +314,7 @@ def create_app(store=None, router_url=None, client=None):
                     raise ShareError(502, 'invalid_stream_response')
                 response_phase[0] = True  # StreamingResponse now owns disconnect reception.
                 transferred = True
-                return OwnedStreamingResponse(chunks(), cleanup=cleanup,
+                return OwnedStreamingResponse(chunks(), cleanup=cleanup, watcher=watcher,
                     media_type='text/event-stream', headers=public_headers)
             raw_response = bytearray()
             async for chunk in chunks():
@@ -329,4 +342,3 @@ def create_app(store=None, router_url=None, client=None):
 
 
 app = create_app()
-

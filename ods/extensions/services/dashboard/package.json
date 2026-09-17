@@ -13,7 +13,9 @@
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
+    "@noble/hashes": "2.4.0",
     "@paper-design/shaders-react": "^0.0.80",
+    "fflate": "0.8.3",
     "gsap": "^3.12.7",
     "lucide-react": "^0.441.0",
     "react": "^18.3.1",

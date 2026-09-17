@@ -1,13 +1,18 @@
 import {useEffect, useRef, useState} from 'react'
 import { Bookmark } from 'lucide-react'
 import {readSavedPrompts, writeSavedPrompt} from '../lib/pixelSavedPrompts'
+import {appendComposerText} from '../lib/pixelComposerText'
 
 export default function PixelPromptLibrary({input, disabled, onInsert}) {
   const dialog = useRef(null), trigger = useRef(null), previous = useRef(null)
+  const listOpener = useRef(null), newPrompt = useRef(null)
   const [items, setItems] = useState([])
   const [editing, setEditing] = useState(null)
   const [removing, setRemoving] = useState(null)
   const [error, setError] = useState('')
+  const [query, setQuery] = useState('')
+  const needle = query.trim().toLocaleLowerCase()
+  const shown = items.filter(item => `${item.title}\n${item.text}`.toLocaleLowerCase().includes(needle))
   function refresh() {
     try {setItems(readSavedPrompts()); setError('')}
     catch {setError('Saved prompts could not be read. Existing browser data has been preserved.')}
@@ -17,7 +22,19 @@ export default function PixelPromptLibrary({input, disabled, onInsert}) {
     window.addEventListener('storage', update)
     return () => window.removeEventListener('storage', update)
   }, [])
-  function close() {dialog.current?.close(); setEditing(null); setRemoving(null); trigger.current?.focus()}
+  useEffect(() => {
+    if (editing || removing || !listOpener.current || !dialog.current?.open) return
+    // List controls are remounted after an editor/confirmation closes. Resolve
+    // the logical opener after that commit, including filtered or deleted rows.
+    const {id, action} = listOpener.current
+    const opener = [...dialog.current.querySelectorAll('[data-prompt-action]')].find(
+      button => button.dataset.promptId === id && button.dataset.promptAction === action,
+    )
+    listOpener.current = null
+    ;(opener || newPrompt.current)?.focus()
+  }, [editing, removing])
+  function rememberOpener(event) {listOpener.current = {id:event.currentTarget.dataset.promptId, action:event.currentTarget.dataset.promptAction}}
+  function close() {listOpener.current = null; dialog.current?.close(); setEditing(null); setRemoving(null); trigger.current?.focus()}
   function edit(item) {previous.current = item; setEditing(item || {id:'prompt-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2, 10), title:'', text:input}); setError('')}
   function save(event) {
     event.preventDefault()
@@ -43,16 +60,22 @@ export default function PixelPromptLibrary({input, disabled, onInsert}) {
         <p>Delete saved prompt “{removing.title}”? Existing conversations are kept.</p>
         <footer><button type="button" autoFocus onClick={() => setRemoving(null)}>Keep prompt</button><button type="button" onClick={remove}>Delete prompt</button></footer>
       </div> : <>
-        <button className={buttonClass} type="button" onClick={() => edit(null)}>Save a new prompt</button>
+        <button ref={newPrompt} className={buttonClass} type="button" onClick={event => {rememberOpener(event); edit(null)}}>Save a new prompt</button>
         {!items.length && <p>No saved prompts yet. Start with your current draft or write a new one.</p>}
-        <ul>{items.map(item => {
-          const fits = input.length + item.text.length + 1 <= 16384
+        {!!items.length && <div role="search" aria-label="Search prompt library">
+          <input className={fieldClass} type="search" aria-label="Search saved prompts" placeholder="Search names and full prompt text" value={query} onChange={event => setQuery(event.target.value)}/>
+          {query && <button className={buttonClass} type="button" onClick={() => setQuery('')}>Clear prompt search</button>}
+          <p role="status">{shown.length} of {items.length} prompts</p>
+          {!shown.length && <p>No prompts match your search.</p>}
+        </div>}
+        <ul>{shown.map(item => {
+          const fits = appendComposerText(input, item.text).length <= 16384
           return <li key={item.id} className="my-3 rounded border border-theme-border p-2">
             <strong>{item.title}</strong><p className="whitespace-pre-wrap break-words">{item.text.slice(0, 160)}{item.text.length > 160 ? '…' : ''}</p>
             <div className="mt-2 flex flex-wrap gap-2">
             <button className={buttonClass} type="button" disabled={disabled || !fits} aria-label={`Insert prompt: ${item.title}`} onClick={() => {onInsert(item.text); close()}}>Insert</button>
-            <button className={buttonClass} type="button" aria-label={`Edit prompt: ${item.title}`} onClick={() => edit(item)}>Edit</button>
-            <button className={buttonClass} type="button" aria-label={`Delete prompt: ${item.title}`} onClick={() => {setRemoving(item); setError('')}}>Delete</button>
+            <button className={buttonClass} type="button" data-prompt-id={item.id} data-prompt-action="edit" aria-label={`Edit prompt: ${item.title}`} onClick={event => {rememberOpener(event); edit(item)}}>Edit</button>
+            <button className={buttonClass} type="button" data-prompt-id={item.id} data-prompt-action="delete" aria-label={`Delete prompt: ${item.title}`} onClick={event => {rememberOpener(event); setRemoving(item); setError('')}}>Delete</button>
             </div>
             {!fits && <p>Shorten the current draft before inserting this prompt.</p>}
           </li>

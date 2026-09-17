@@ -25,6 +25,7 @@ trace="$tmp/powershell.trace"
 docker_trace="$tmp/docker.trace"
 mkdir -p \
     "$fakebin" \
+    "$install_dir/installers/windows" \
     "$install_dir/data/hermes" \
     "$install_dir/data/models" \
     "$install_dir/config/litellm" \
@@ -50,9 +51,28 @@ exit 22
 EOF_CURL
 chmod +x "$fakebin/curl"
 
+cat > "$fakebin/cygpath" <<'EOF_CYGPATH'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "${!#}"
+EOF_CYGPATH
+chmod +x "$fakebin/cygpath"
+
 cat > "$fakebin/powershell.exe" <<'EOF_PS'
 #!/usr/bin/env bash
 set -euo pipefail
+if [[ " $* " == *" agent restart "* ]]; then
+  printf 'agent-restart=%s\n' "$*" >> "${ODS_FAKE_PS_TRACE:?}"
+  exit 0
+fi
+if [[ -n "${ODS_ENV_ACL_SOURCE:-}" && -n "${ODS_ENV_ACL_TARGET:-}" ]]; then
+  exit 0
+fi
+if [[ -n "${ODS_ENV_REPLACE_SOURCE:-}" && -n "${ODS_ENV_REPLACE_TARGET:-}" && -n "${ODS_ENV_REPLACE_BACKUP:-}" ]]; then
+  cp -p "$ODS_ENV_REPLACE_TARGET" "$ODS_ENV_REPLACE_BACKUP"
+  mv -f "$ODS_ENV_REPLACE_SOURCE" "$ODS_ENV_REPLACE_TARGET"
+  exit 0
+fi
 : "${ODS_WIN_PID_FILE:?}"
 : "${ODS_WIN_LLAMA_EXE:?}"
 : "${ODS_WIN_MODEL_PATH:?}"
@@ -73,6 +93,8 @@ printf '4242\n' > "$ODS_WIN_PID_FILE"
 exit 0
 EOF_PS
 chmod +x "$fakebin/powershell.exe"
+
+printf '# Windows CLI fixture\n' > "$install_dir/installers/windows/ods.ps1"
 
 cat > "$fakebin/docker" <<'EOF_DOCKER'
 #!/usr/bin/env bash
@@ -210,6 +232,8 @@ grep -q '^  stream_timeout: 900$' "$install_dir/config/litellm/local.yaml" \
     || fail "LiteLLM local config must not point at the absent llama-server container"
 grep -q 'restart ods-litellm' "$docker_trace" \
     || fail "bootstrap-upgrade should restart LiteLLM after refreshing the native Windows config"
+grep -Eq '^agent-restart=-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .*/installers/windows/ods\.ps1 agent restart$' "$trace" \
+    || fail "bootstrap-upgrade should refresh the native Windows host agent after .env changes"
 [[ ! -f "$install_dir/data/models/Bootstrap.gguf" ]] \
     || fail "bootstrap model should be removed after verified native Windows swap"
 grep -q '"status": "complete"' "$install_dir/data/bootstrap-status.json" \

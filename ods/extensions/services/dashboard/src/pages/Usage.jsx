@@ -36,24 +36,24 @@ function pad2(value) {
 }
 
 function toDateKey(date) {
-  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`
+  return `${date.getUTCFullYear()}-${pad2(date.getUTCMonth() + 1)}-${pad2(date.getUTCDate())}`
 }
 
 function monthRange(anchor = new Date()) {
-  const start = new Date(anchor.getFullYear(), anchor.getMonth(), 1)
-  const end = new Date(anchor.getFullYear(), anchor.getMonth() + 1, 0)
+  const start = new Date(Date.UTC(anchor.getUTCFullYear(), anchor.getUTCMonth(), 1))
+  const end = new Date(Date.UTC(anchor.getUTCFullYear(), anchor.getUTCMonth() + 1, 0))
   return { start: toDateKey(start), end: toDateKey(end), anchor: start }
 }
 
 function addMonths(date, delta) {
-  return new Date(date.getFullYear(), date.getMonth() + delta, 1)
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + delta, 1))
 }
 
 function emptyReport(start, end, detail = null) {
-  const startDate = new Date(`${start}T00:00:00`)
-  const endDate = new Date(`${end}T00:00:00`)
+  const startDate = new Date(`${start}T00:00:00Z`)
+  const endDate = new Date(`${end}T00:00:00Z`)
   const daily = []
-  for (let cursor = new Date(startDate); cursor <= endDate; cursor.setDate(cursor.getDate() + 1)) {
+  for (let cursor = new Date(startDate); cursor <= endDate; cursor.setUTCDate(cursor.getUTCDate() + 1)) {
     daily.push({
       date: toDateKey(cursor),
       spend_usd: 0,
@@ -75,6 +75,7 @@ function emptyReport(start, end, detail = null) {
   }
 }
 
+const USAGE_POLL_TIMEOUT_MS = 15000
 const USAGE_HISTORY_KEY = 'ods-usage-summary-history-v1'
 // Per-period sparkline depth, and an overall guard so the entry never grows
 // without limit once several periods share the store.
@@ -144,7 +145,6 @@ function appendUsageHistory(report) {
 
 function useUsageReport(range, reloadToken = 0) {
   const [report, setReport] = useState(() => emptyReport(range.start, range.end))
-  const [previousReport, setPreviousReport] = useState(null)
   const [readiness, setReadiness] = useState(EMPTY_READINESS)
   const [history, setHistory] = useState(
     () => readUsageHistory().filter(item => item.period === `${range.start}:${range.end}`),
@@ -155,28 +155,43 @@ function useUsageReport(range, reloadToken = 0) {
   useEffect(() => {
     let cancelled = false
     let inFlight = false
-    const controller = new AbortController()
-    const prevRange = monthRange(addMonths(range.anchor, -1))
+    let cancelLoad = null
 
     async function load({ silent = false } = {}) {
       if (inFlight || cancelled) return
       inFlight = true
+      const controller = new AbortController()
+      let timeoutId
+      const deadline = new Promise((_, reject) => {
+        cancelLoad = () => {
+          reject(new globalThis.DOMException('Usage poll cancelled', 'AbortError'))
+          controller.abort()
+        }
+        timeoutId = window.setTimeout(() => {
+          reject(new Error('Usage request timed out'))
+          controller.abort()
+        }, USAGE_POLL_TIMEOUT_MS)
+      })
       if (!silent) setLoading(true)
       if (!silent) setError(null)
       try {
-        const [currentRes, previousRes, readinessRes] = await Promise.all([
-          fetch(`/api/usage/report?start=${range.start}&end=${range.end}`, {signal:controller.signal}),
-          fetch(`/api/usage/report?start=${prevRange.start}&end=${prevRange.end}`, {signal:controller.signal}),
-          fetch('/api/usage/readiness', {signal:controller.signal}),
-        ])
-        if (!currentRes.ok) throw new Error(`Usage API returned HTTP ${currentRes.status}`)
-        const current = await currentRes.json()
-        const previous = previousRes.ok ? await previousRes.json() : null
-        const usageReadiness = readinessRes.ok ? await readinessRes.json() : {
-          ...EMPTY_READINESS,
-          status: 'unavailable',
-          detail: `Usage readiness API returned HTTP ${readinessRes.status}`,
-        }
+        // Include response bodies in the deadline; only the winning poll
+        // may publish state or append history.
+        const pending = (async () => {
+          const [currentRes, readinessRes] = await Promise.all([
+            fetch(`/api/usage/report?start=${range.start}&end=${range.end}`, {signal:controller.signal}),
+            fetch('/api/usage/readiness', {signal:controller.signal}),
+          ])
+          if (!currentRes.ok) throw new Error(`Usage API returned HTTP ${currentRes.status}`)
+          const current = await currentRes.json()
+          const usageReadiness = readinessRes.ok ? await readinessRes.json() : {
+            ...EMPTY_READINESS,
+            status: 'unavailable',
+            detail: `Usage readiness API returned HTTP ${readinessRes.status}`,
+          }
+          return {current, usageReadiness}
+        })()
+        const {current, usageReadiness} = await Promise.race([pending, deadline])
         if (!cancelled) {
           setError(null)
           setReport({
@@ -186,20 +201,17 @@ function useUsageReport(range, reloadToken = 0) {
           })
           setReadiness({ ...EMPTY_READINESS, ...usageReadiness, actions: usageReadiness.actions || {} })
           setHistory(appendUsageHistory(current))
-          setPreviousReport(previous ? {
-            ...emptyReport(prevRange.start, prevRange.end),
-            ...previous,
-            summary: { ...EMPTY_SUMMARY, ...(previous.summary || {}) },
-          } : null)
         }
       } catch (err) {
         if (!cancelled) {
           setError(err.message)
           setReport(emptyReport(range.start, range.end, err.message))
           setReadiness({ ...EMPTY_READINESS, status: 'unavailable', detail: err.message })
-          setPreviousReport(null)
         }
       } finally {
+        window.clearTimeout(timeoutId)
+        controller.abort()
+        cancelLoad = null
         inFlight = false
         if (!cancelled) setLoading(false)
       }
@@ -213,13 +225,13 @@ function useUsageReport(range, reloadToken = 0) {
     document.addEventListener('visibilitychange', onVisibility)
     return () => {
       cancelled = true
-      controller.abort()
+      cancelLoad?.()
       window.clearInterval(intervalId)
       document.removeEventListener('visibilitychange', onVisibility)
     }
   }, [range, reloadToken])
 
-  return { report, previousReport, readiness, history, loading, error }
+  return { report, readiness, history, loading, error }
 }
 
 export default function Usage({ compact = false }) {

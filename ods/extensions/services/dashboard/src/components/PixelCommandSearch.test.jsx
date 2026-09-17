@@ -8,6 +8,28 @@ beforeEach(() => {
   HTMLDialogElement.prototype.showModal = function () { this.open = true }
   HTMLDialogElement.prototype.close = function () { this.open = false }
 })
+
+test('keeps keyboard-selected results visible and announces the selected action', () => {
+  const scroll = vi.fn()
+  const previous = globalThis.Element.prototype.scrollIntoView
+  globalThis.Element.prototype.scrollIntoView = scroll
+  try {
+    render(<MemoryRouter><PixelCommandSearch onInsert={() => {}} onNewTask={() => {}}/></MemoryRouter>)
+    fireEvent(window, new Event(OPEN_PIXEL_SEARCH))
+    const input = screen.getByLabelText('Search conversations and actions')
+    fireEvent.keyDown(input, {key:'ArrowUp'})
+    const active = screen.getByRole('button', {name:/Research with evidence/})
+    expect(scroll).toHaveBeenLastCalledWith({block:'nearest'})
+    expect(scroll.mock.instances.at(-1)).toBe(active)
+    expect(screen.getByRole('status')).toHaveTextContent('4 of 4: Research with evidence')
+    expect(input).toHaveFocus()
+    fireEvent.change(input, {target:{value:'does not exist'}})
+    expect(screen.getByRole('status')).toHaveTextContent('No results')
+  } finally {
+    if (previous) globalThis.Element.prototype.scrollIntoView = previous
+    else delete globalThis.Element.prototype.scrollIntoView
+  }
+})
 test('Ctrl K searches real saved conversations and selects the exact identity', () => {
   saveConversation({schema:1,chatId:'saved-one',messages:[{role:'user',content:'Build a clock'}]})
   const selected = vi.fn()

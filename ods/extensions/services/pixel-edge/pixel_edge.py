@@ -20,20 +20,29 @@ import os
 import re
 import sys
 from datetime import datetime
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 from aiohttp import web, ClientSession, UnixConnector, ClientTimeout
 from transition_gate import TransitionGate, GateError, strict_json, valid_binding
+from chat_context import project_context, valid_history_snapshot
+from access_mode import (public_status as public_access_status, valid_change as valid_access_change,
+                         valid_model_control, public_model_control)
 
 
 def valid_live_task_event(event):
-    """Only bounded content-free observations may bypass the answer buffer."""
+    """Only bounded observations and explicitly public plans bypass the answer buffer."""
     if not isinstance(event, dict) or set(event) != {"object", "id", "pixel_task"} or event["object"] != "ods.task.activity":
         return False
     task = event["pixel_task"]
-    if not isinstance(task, dict) or set(task) != {"schemaVersion", "runId", "startedAt", "finishedAt", "state", "calls", "failures", "blocked", "truncated", "activities"}:
+    extended = isinstance(task, dict) and task.get('schemaVersion') in (2, 3, 4)
+    expected = {"schemaVersion", "runId", "startedAt", "finishedAt", "state", "calls", "failures", "blocked", "truncated", "activities"}
+    if extended:
+        expected |= {'events', 'context', 'goal'}
+    if isinstance(task, dict) and task.get('schemaVersion') == 4:
+        expected.add('projects')
+    if not isinstance(task, dict) or set(task) != expected:
         return False
-    if type(task["schemaVersion"]) is not int or task["schemaVersion"] != 1 or task["state"] != "running" or task["finishedAt"] is not None or type(task["truncated"]) is not bool:
+    if type(task["schemaVersion"]) is not int or task["schemaVersion"] not in {1, 2, 3, 4} or task["state"] != "running" or task["finishedAt"] is not None or type(task["truncated"]) is not bool:
         return False
     if not isinstance(event["id"], str) or not re.fullmatch(r"chatcmpl_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", event["id"], re.I) or task["runId"] != event["id"]:
         return False
@@ -43,6 +52,8 @@ def valid_live_task_event(event):
     try:
         datetime.fromisoformat(stamp.replace("Z", "+00:00"))
     except ValueError:
+        return False
+    if extended and not valid_task_details(task):
         return False
     count_keys = ("calls", "failures", "blocked")
     if any(type(task[key]) is not int or not 0 <= task[key] <= 512 for key in count_keys):
@@ -60,6 +71,99 @@ def valid_live_task_event(event):
         for key in count_keys:
             sums[key] += row[key]
     return all(sums[key] == task[key] for key in count_keys)
+
+def valid_activity_display(value):
+    if value is None:
+        return True
+    def text(s,n):
+        return isinstance(s,str) and 0 < len(s.strip()) <= len(s) <= n and not re.search(r'[\x00-\x1f\x7f]',s)
+    if not isinstance(value,dict) or set(value) != {'type','label','detail','sources','steps','change'} or value['type'] not in ('text','search','tool','trace','steps') or not text(value['label'],160):
+        return False
+    if (value['detail'] is not None and not text(value['detail'],400)) or not isinstance(value['sources'],list) or len(value['sources'])>3 or not isinstance(value['steps'],list) or len(value['steps'])>8:
+        return False
+    for source in value['sources']:
+        if not isinstance(source,dict) or set(source)!={'title','url'} or not text(source['title'],120) or not text(source['url'],512):
+            return False
+        try:
+            url=urlsplit(source['url'])
+            if url.scheme not in ('http','https') or not url.hostname or url.username or url.password:
+                return False
+        except ValueError:
+            return False
+    seen=set()
+    for step in value['steps']:
+        if not isinstance(step,dict) or set(step)!={'id','title','status'} or not isinstance(step['id'],str) or not re.fullmatch(r'[a-z][a-z0-9_]{0,31}',step['id']) or step['id'] in seen or not text(step['title'],160) or step['status'] not in ('pending','running','completed','blocked'):
+            return False
+        seen.add(step['id'])
+    if value['change'] is not None:
+        c=value['change']
+        def code(s):
+            return isinstance(s,str) and len(s)<=1000 and not re.search(r'[\x00-\x08\x0b-\x1f\x7f]',s)
+        if value['type']!='tool' or not isinstance(c,dict) or set(c)!={'file','kind','before','after','truncated'} or not text(c['file'],120) or c['kind'] not in ('write','edit','patch') or not code(c['before']) or not code(c['after']) or type(c['truncated']) is not bool:
+            return False
+    return (value['type']=='search' or not value['sources']) and (value['type']=='steps' or not value['steps'])
+
+def valid_task_details(task):
+    def timestamp(value):
+        if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z", value):
+            return False
+        try:
+            datetime.fromisoformat(value.replace('Z', '+00:00'))
+            return True
+        except ValueError:
+            return False
+
+    def text(value, maximum):
+        return isinstance(value, str) and 0 < len(value.strip()) <= len(value) <= maximum and not re.search(r'[\x00-\x1f\x7f]', value)
+
+    if task['schemaVersion'] == 4:
+        projects = task.get('projects')
+        if not isinstance(projects, list) or len(projects) > 8:
+            return False
+        seen = set()
+        for project in projects:
+            if (not isinstance(project, dict) or set(project) != {'schemaVersion', 'kind', 'relativeDirectory', 'observedAt'}
+                    or type(project['schemaVersion']) is not int or project['schemaVersion'] != 1
+                    or project['kind'] != 'ods-workspace-project' or not isinstance(project['relativeDirectory'], str)
+                    or not re.fullmatch(r'Playground/[A-Za-z0-9][A-Za-z0-9._-]{0,63}', project['relativeDirectory'])
+                    or project['relativeDirectory'].endswith('.')
+                    or re.match(r'Playground/(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)', project['relativeDirectory'], re.I)
+                    or not timestamp(project['observedAt']) or project['relativeDirectory'] in seen):
+                return False
+            seen.add(project['relativeDirectory'])
+
+    events = task['events']
+    if type(task['calls']) is not int or not isinstance(events, list) or len(events) != min(task['calls'], 24):
+        return False
+    for sequence, event in enumerate(events, start=task['calls'] - len(events) + 1):
+        if not isinstance(event, dict) or set(event) != ({'sequence','kind','state','startedAt','finishedAt'} | ({'display'} if task['schemaVersion']>=3 else set())):
+            return False
+        if task['schemaVersion']>=3 and not valid_activity_display(event['display']):
+            return False
+        if type(event['sequence']) is not int or event['sequence'] != sequence or event['kind'] not in ('read','agent','run','edit','browser','preview','action','unknown') or event['state'] not in ('running','completed','failed','blocked'):
+            return False
+        if not timestamp(event['startedAt']) or event['startedAt'] < task['startedAt']:
+            return False
+        if event['state'] == 'running':
+            if event['finishedAt'] is not None:
+                return False
+        elif not timestamp(event['finishedAt']) or event['finishedAt'] < event['startedAt']:
+            return False
+    context = task['context']
+    if context is not None and (not isinstance(context, dict) or set(context) != {'used','window','measuredAt'} or any(type(context[k]) is not int or not 1 <= context[k] <= 10_000_000 for k in ('used','window')) or not timestamp(context['measuredAt']) or context['measuredAt'] < task['startedAt']):
+        return False
+    goal = task['goal']
+    if goal is not None:
+        if not isinstance(goal,dict) or set(goal) != {'status','summary','steps'} or goal['status'] not in ('active','completed','blocked','waiting') or not text(goal['summary'],300) or not isinstance(goal['steps'],list) or len(goal['steps']) > 8:
+            return False
+        seen = set()
+        for step in goal['steps']:
+            if not isinstance(step,dict) or set(step) != {'id','title','status'} or not isinstance(step['id'],str) or not re.fullmatch(r'[a-z][a-z0-9_]{0,31}',step['id']) or step['id'] in seen or not text(step['title'],160) or step['status'] not in ('pending','running','completed','blocked'):
+                return False
+            seen.add(step['id'])
+        if goal['status'] == 'completed' and (not goal['steps'] or any(step['status'] != 'completed' for step in goal['steps'])):
+            return False
+    return True
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -92,7 +196,7 @@ _HOP_BY_HOP = frozenset({
     "upgrade",
 })
 
-_MAX_BODY = 2 * 1024 * 1024          # 2 MiB request body
+_MAX_BODY = 8 * 1024 * 1024          # Full history envelope; ingress validates 4 MiB text
 _MAX_CANCEL_BODY = 256
 _MAX_RESPONSE_BYTES = 2 * 1024 * 1024  # 2 MiB non-stream response cap
 _MAX_CANCEL_RESPONSE_BYTES = 1024
@@ -105,6 +209,8 @@ _CONNECT_TIMEOUT = 5
 _TOTAL_TIMEOUT = 1980
 _SOCK_READ_TIMEOUT = 1980
 _MAX_SSE_LINE = 1024 * 1024
+_MAX_SSE_PENDING_BYTES = 1024 * 1024
+_MAX_SSE_PENDING_LINES = 4096
 
 _UPSTREAM_REWRITE = "openclaw/default"
 _PIXEL_REWRITE = "pixel/default"
@@ -223,6 +329,7 @@ _ADDRESS_BEARING_HOST_ACTIONS = {
 _CANCEL_EVENTS_KEY = web.AppKey("pixel_cancel_events", dict)
 _CHAT_ACTIVITY_KEY = web.AppKey("pixel_chat_activity", dict)
 _ACTIVE_REQUESTS_KEY = web.AppKey("pixel_active_requests", set)
+_COMPACTIONS_KEY = web.AppKey("pixel_compactions", dict)
 _TRANSITION_GATE_KEY = web.AppKey("pixel_transition_gate", TransitionGate)
 
 
@@ -561,6 +668,14 @@ def _rewrite_json_response(raw: bytes, fallback: str) -> bytes:
     return json.dumps(parsed).encode("utf-8")
 
 
+def _normalize_sse_line(line: bytes) -> bytes:
+    # CRLF and the optional space after "data:" carry the same SSE field.
+    line = line.removesuffix(b"\r")
+    if line.startswith(b"data:") and not line.startswith(b"data: "):
+        line = b"data: " + line[5:]
+    return line
+
+
 def _sse_event(line: bytes):
     if not line.startswith(b"data: ") or line == b"data: [DONE]":
         return None, None, None
@@ -694,6 +809,106 @@ async def handle_chat_activity(request: web.Request):
     return web.json_response({"state": state}, headers={"Cache-Control": "no-store"})
 
 
+async def _context_upstream(data, *, compact=False):
+    connector = UnixConnector(path=_SOCKET_PATH)
+    timeout = ClientTimeout(total=18, sock_connect=2, sock_read=16)
+    async with ClientSession(connector=connector, timeout=timeout) as session:
+        async with session.post(f"http://pixel-upstream/v1/chat/{'compact' if compact else 'context'}",
+                                json=data, headers={"Content-Type": "application/json", "Accept": "application/json"}) as response:
+            if response.status in {409, 423, 429}:
+                raise GateError("context_busy", response.status)
+            if response.status != 200 or "application/json" not in response.headers.get("Content-Type", "").lower():
+                raise ValueError("invalid context response")
+            return project_context(strict_json(await _read_bounded(response.content, 16 * 1024)))
+
+
+def _compact_terminal(result, request_id):
+    operation = result["compaction"]
+    # A restarted native process cannot still be running this job. Its outcome
+    # remains unknown; releasing admission is not a claim of successful compact.
+    return (operation.get("requestId") == request_id and (
+        operation["status"] in {"completed", "skipped", "failed"}
+        or operation["status"] == "unknown" and operation.get("reason") == "runtime-restarted"))
+
+
+async def _watch_compaction(app, identity, token):
+    # Native work outlives the initiating HTTP response. Keep model transitions
+    # fenced until a matching terminal receipt is observed, including after a
+    # temporary transport failure. Shutdown leaves the durable gate interrupted.
+    try:
+        while True:
+            await asyncio.sleep(2)
+            try:
+                result = await _context_upstream({"user": identity[0]})
+            except Exception:
+                continue
+            if _compact_terminal(result, identity[1]):
+                await app[_TRANSITION_GATE_KEY].finish(token)
+                app[_COMPACTIONS_KEY].pop(identity, None)
+                return
+    except asyncio.CancelledError:
+        return
+
+
+async def handle_chat_context(request: web.Request):
+    fail = _check_auth(request)
+    if fail is not None:
+        return fail
+    if request.content_type != "application/json":
+        return web.json_response({"error": "Content-Type must be application/json"}, status=415)
+    compact = request.path == "/v1/chat/compact"
+    try:
+        if request.query_string:
+            raise ValueError("query not allowed")
+        data = strict_json(await _read_bounded(request.content, 512))
+        keys = {"user", "request_id"} if compact else {"user"}
+        if (not isinstance(data, dict) or set(data) != keys
+                or any(not isinstance(item, str) or not _SAFE_CHAT_ID.fullmatch(item) for item in data.values())):
+            raise ValueError("invalid context request")
+    except (ValueError, TypeError, UnicodeError, RecursionError):
+        return web.json_response({"error": "invalid context request"}, status=400)
+    token = None
+    identity = (data["user"], data.get("request_id"))
+    existing = request.app[_COMPACTIONS_KEY].get(identity)
+    if compact and existing is None:
+        if request.app[_CANCEL_EVENTS_KEY].get(data["user"]) or any(
+                user == data["user"] for user, _ in request.app[_COMPACTIONS_KEY]):
+            return web.json_response({"error": "context_busy"}, status=423)
+        token = object()
+        try:
+            await request.app[_TRANSITION_GATE_KEY].admit(token)
+        except GateError as exc:
+            return web.json_response({"error": exc.reason}, status=exc.status)
+        # Reserve before awaiting upstream so a duplicate POST cannot create a
+        # second lifetime token. Native ingress also deduplicates by request ID.
+        request.app[_COMPACTIONS_KEY][identity] = (token, None)
+    try:
+        result = await _context_upstream(data, compact=compact)
+        if compact and token is not None and (
+                _compact_terminal(result, data["request_id"])
+                or result["status"] != "unavailable" and (
+                    result["compaction"].get("requestId") != data["request_id"]
+                    or result["compaction"]["status"] == "idle")):
+            # A missing session or a busy runtime can reject admission with a
+            # valid status projection. There is no job to watch in that case.
+            await request.app[_TRANSITION_GATE_KEY].finish(token)
+            request.app[_COMPACTIONS_KEY].pop(identity, None)
+            token = None
+        return web.json_response(result, headers={"Cache-Control": "no-store"})
+    except GateError as exc:
+        if token is not None:
+            await request.app[_TRANSITION_GATE_KEY].finish(token)
+            request.app[_COMPACTIONS_KEY].pop(identity, None)
+            token = None
+        return web.json_response({"error": exc.reason}, status=exc.status)
+    except Exception:
+        return web.json_response({"error": "context status unavailable"}, status=502)
+    finally:
+        if token is not None:
+            task = asyncio.create_task(_watch_compaction(request.app, identity, token))
+            request.app[_COMPACTIONS_KEY][identity] = (token, task)
+
+
 def _finish_chat_activity(app, chat_id, cancel_event, terminal):
     active = app[_CANCEL_EVENTS_KEY].get(chat_id)
     if active is None:
@@ -716,6 +931,80 @@ def _remember_chat_activity(app, chat_id, state):
             break
         if previous not in app[_CANCEL_EVENTS_KEY]:
             history.pop(previous, None)
+
+
+async def handle_access_mode(request: web.Request):
+    fail = _check_preview_auth(request)
+    if fail is not None:
+        return fail
+    # Sharing the chat key would let ordinary inference callers grant access.
+    if _constant_time_compare(config_token, preview_proxy_token):
+        return web.json_response({'error': 'owner-auth-unavailable'}, status=503)
+    if request.query_string:
+        return web.json_response({'error': 'invalid-request'}, status=400)
+    data = None
+    if request.method == 'POST':
+        if request.content_type != 'application/json':
+            return web.json_response({'error': 'invalid-content-type'}, status=415)
+        try:
+            data = strict_json(await _read_bounded(request.content, 1024))
+            if not valid_access_change(data):
+                raise ValueError()
+        except (ValueError, OSError, RecursionError):
+            return web.json_response({'error': 'invalid-request'}, status=400)
+    elif request.can_read_body:
+        return web.json_response({'error': 'invalid-request'}, status=400)
+    try:
+        connector = UnixConnector(path=_SOCKET_PATH)
+        timeout = ClientTimeout(total=308 if data is not None else 21, sock_connect=3)
+        async with ClientSession(connector=connector, timeout=timeout) as session:
+            async with session.request(request.method, 'http://pixel-upstream/v1/access-mode',
+                    json=data, headers={'Authorization': 'Bearer ' + preview_proxy_token}) as response:
+                raw = await _read_bounded(response.content, 65536)
+                if response.status != 200:
+                    # Never retry an ambiguous transition. The controller's
+                    # durable journal, not this transport, owns recovery.
+                    status = response.status if response.status in (400, 403, 409, 503) else 503
+                    return web.json_response({'error': 'access-change-unconfirmed' if data else 'access-service-unavailable'}, status=status)
+                value = public_access_status(strict_json(raw))
+        return web.json_response(value, headers={'Cache-Control':'no-store'})
+    except Exception:
+        return web.json_response({'error':'access-service-unavailable'}, status=503)
+
+
+async def handle_model_control(request: web.Request):
+    """Private model lifecycle control; ordinary chat callers cannot mutate it."""
+    fail = _check_preview_auth(request)
+    if fail is not None:
+        return fail
+    if _constant_time_compare(config_token, preview_proxy_token):
+        return web.json_response({'error': 'owner-auth-unavailable'}, status=503)
+    if request.query_string:
+        return web.json_response({'error': 'invalid-request'}, status=400)
+    if request.content_type != 'application/json':
+        return web.json_response({'error': 'invalid-content-type'}, status=415)
+    try:
+        data = strict_json(await _read_bounded(request.content, 2048))
+        if not valid_model_control(data):
+            raise ValueError()
+    except (ValueError, OSError, RecursionError):
+        return web.json_response({'error': 'invalid-request'}, status=400)
+    try:
+        connector = UnixConnector(path=_SOCKET_PATH)
+        timeout = ClientTimeout(total=21 if data['operation'] == 'model-status' else 308, sock_connect=3)
+        async with ClientSession(connector=connector, timeout=timeout) as session:
+            async with session.post('http://pixel-upstream/v1/model-control', json=data,
+                    headers={'Authorization': 'Bearer ' + preview_proxy_token}) as response:
+                raw = await _read_bounded(response.content, 65536)
+                if response.status != 200:
+                    status = response.status if response.status in (400, 403, 409, 503) else 503
+                    return web.json_response({'error': 'model-change-unconfirmed'}, status=status)
+                value = public_model_control(strict_json(raw))
+        return web.json_response(value, headers={'Cache-Control': 'no-store'})
+    except Exception:
+        # A lost reply does not cancel the controller's durable transaction.
+        # Status reconciliation belongs to the caller; mutations are never retried here.
+        return web.json_response({'error': 'model-control-unavailable'}, status=503)
 
 
 async def handle_transition(request: web.Request):
@@ -769,20 +1058,23 @@ async def handle_chat_completions(request: web.Request):
         return web.json_response({"error": "request too large"}, status=413)
 
     try:
-        body = await request.read()
+        # Enforce this route's cap for both Content-Length and chunked bodies.
+        # Request.read() otherwise applies aiohttp's default 1 MiB cap first.
+        body = await _read_bounded(request.content, _MAX_BODY)
+    except ValueError:
+        return web.json_response({"error": "request too large"}, status=413)
     except Exception:
         return web.json_response({"error": "bad request"}, status=400)
 
-    if len(body) > _MAX_BODY:
-        return web.json_response({"error": "request too large"}, status=413)
-
     try:
         data = json.loads(body)
-    except (json.JSONDecodeError, ValueError):
+    except (json.JSONDecodeError, ValueError, RecursionError):
         return web.json_response({"error": "invalid JSON"}, status=400)
 
     if not isinstance(data, dict):
         return web.json_response({"error": "JSON object required"}, status=400)
+    if not valid_history_snapshot(data):
+        return web.json_response({"error": "invalid conversation history"}, status=400)
 
     req_model = data.get("model", "")
     if req_model not in _ALLOWED_MODELS:
@@ -940,29 +1232,42 @@ async def _stream_upstream(
     await response.prepare(request)
     buffered = bytearray()
     pending = []
+    pending_bytes = 0
     pending_text = ""
     passthrough = False
 
+    def queue_pending(line, event, content, finish_reason):
+        nonlocal pending_bytes
+        # The line cap alone does not bound many small reasoning/empty frames.
+        size = len(line) + 1
+        if (pending_bytes + size > _MAX_SSE_PENDING_BYTES
+                or len(pending) >= _MAX_SSE_PENDING_LINES):
+            raise ValueError("SSE prelude exceeded limit")
+        pending.append((line, event, content, finish_reason))
+        pending_bytes += size
+
     async def flush_pending():
-        nonlocal pending
+        nonlocal pending, pending_bytes
         for item in pending:
             await response.write(item[0] + b"\n")
         pending = []
+        pending_bytes = 0
 
     async def replace_pending(template: dict, *, synthesize_finish: bool):
-        nonlocal pending
+        nonlocal pending, pending_bytes
         # Preserve role/metadata events, but never expose the reserved text.
         for line, _event, content, finish_reason in pending:
             if content is None and finish_reason is None:
                 await response.write(line + b"\n")
         await response.write(
-            _fallback_sse_line(template, empty_reply_fallback, finished=False) + b"\n"
+            _fallback_sse_line(template, empty_reply_fallback, finished=False) + b"\n\n"
         )
         if synthesize_finish:
             await response.write(
-                _fallback_sse_line(template, empty_reply_fallback, finished=True) + b"\n"
+                _fallback_sse_line(template, empty_reply_fallback, finished=True) + b"\n\n"
             )
         pending = []
+        pending_bytes = 0
 
     try:
         async for chunk in resp.content.iter_any():
@@ -972,6 +1277,7 @@ async def _stream_upstream(
             while b"\n" in buffered:
                 line, _, remainder = buffered.partition(b"\n")
                 buffered = bytearray(remainder)
+                line = _normalize_sse_line(line)
                 if cancel_event is not None and cancel_event.is_set():
                     pending = []
                     await response.write(b"data: [DONE]\n\n")
@@ -1027,7 +1333,7 @@ async def _stream_upstream(
                     passthrough = True
                     continue
 
-                pending.append((line, event, content, finish_reason))
+                queue_pending(line, event, content, finish_reason)
                 if content is not None:
                     pending_text += content
                     normalized = pending_text.strip()
@@ -1044,7 +1350,7 @@ async def _stream_upstream(
         if buffered:
             if len(buffered) > _MAX_SSE_LINE:
                 raise ValueError("SSE line exceeded limit")
-            line = bytes(buffered)
+            line = _normalize_sse_line(bytes(buffered))
             if line.rstrip(b"\r") == b"data: [DONE]" and activity is not None:
                 activity["terminal"] = True
             if line.startswith(b"data: ") and line != b"data: [DONE]":
@@ -1053,7 +1359,7 @@ async def _stream_upstream(
                 await response.write(line)
             else:
                 event, content, finish_reason = _sse_event(line)
-                pending.append((line, event, content, finish_reason))
+                queue_pending(line, event, content, finish_reason)
         if not passthrough and pending:
             normalized = pending_text.strip()
             if not normalized or normalized in _RESERVED_ASSISTANT_REPLIES:
@@ -1064,15 +1370,18 @@ async def _stream_upstream(
                 await replace_pending(template, synthesize_finish=False)
             else:
                 await flush_pending()
-    except (ConnectionError, OSError, asyncio.TimeoutError):
+    except (ConnectionError, OSError, asyncio.TimeoutError) as exc:
         if cancel_event is not None and cancel_event.is_set():
             await response.write(b"data: [DONE]\n\n")
         else:
+            # Fixed diagnostic category only, never payloads or exception text.
+            print(f'pixel-edge stream failed ({type(exc).__name__})', file=sys.stderr)
             await response.write(b'data: {"error":"upstream error"}\n\ndata: [DONE]\n\n')
-    except Exception:
+    except Exception as exc:
         if cancel_event is not None and cancel_event.is_set():
             await response.write(b"data: [DONE]\n\n")
         else:
+            print(f'pixel-edge stream failed ({type(exc).__name__})', file=sys.stderr)
             await response.write(b'data: {"error":"upstream error"}\n\ndata: [DONE]\n\n')
     return response
 
@@ -1097,6 +1406,9 @@ def _preview_upstream_path(site_id: str, tail: str) -> str | None:
         return f"/{site_id}/{tail}"
     if re.fullmatch(r"__ods_changes__/(?:initial|site-[a-f0-9]{24})\.json", tail):
         return f"/{site_id}/{tail}"
+    # Match the host static server: a directory URL selects its index file.
+    if tail.endswith("/"):
+        tail += "index.html"
     parts = tail.split("/")
     if any(_PREVIEW_PATH_COMPONENT.fullmatch(part) is None for part in parts):
         return None
@@ -1189,6 +1501,8 @@ def create_app() -> web.Application:
     app[_CANCEL_EVENTS_KEY] = {}
     app[_CHAT_ACTIVITY_KEY] = {}
     app[_ACTIVE_REQUESTS_KEY] = set()
+    app[_COMPACTIONS_KEY] = {}
+    compactions = app[_COMPACTIONS_KEY]
     gate = TransitionGate(
         os.environ.get("PIXEL_TRANSITION_STATE_DIR", ""), app[_ACTIVE_REQUESTS_KEY],
         owner_key_distinct=not _constant_time_compare(config_token, preview_proxy_token),
@@ -1197,6 +1511,11 @@ def create_app() -> web.Application:
 
     async def stop_admission(_application):
         await gate.shutdown()
+        tasks = [task for _, task in compactions.values() if task is not None]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def close_gate(_application):
         gate.close()
@@ -1207,11 +1526,16 @@ def create_app() -> web.Application:
     app.router.add_get("/preview/{site_id}/{tail:.*}", handle_preview)
     app.router.add_get("/v1/models", handle_models)
     app.router.add_get("/v1/activity", handle_activity)
+    app.router.add_get('/v1/access-mode', handle_access_mode, allow_head=False)
+    app.router.add_post('/v1/access-mode', handle_access_mode)
+    app.router.add_post('/v1/model-control', handle_model_control)
     app.router.add_get("/v1/transition", handle_transition)
     app.router.add_post("/v1/transition/{operation:acquire|release|recover}", handle_transition)
     app.router.add_post("/v1/chat/completions", handle_chat_completions)
     app.router.add_post("/v1/chat/cancel", handle_chat_cancel)
     app.router.add_post("/v1/chat/activity", handle_chat_activity)
+    app.router.add_post("/v1/chat/context", handle_chat_context)
+    app.router.add_post("/v1/chat/compact", handle_chat_context)
     # Catch-all registered last: unmatched paths AND unmatched methods → 404.
     app.router.add_route("*", "/{tail:.*}", handle_not_found)
     return app

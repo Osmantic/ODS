@@ -343,3 +343,44 @@ def test_disconnect_before_stream_iterator_starts_still_cleans_up():
         await asyncio.wait_for(response({'type':'http','asgi':{'spec_version':'2.3'}}, receive, send), 2)
         assert cleaned == [True]
     asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("ending", ["cancel", "deadline"])
+def test_response_arriving_during_cancellation_is_closed_and_admission_released(state, ending):
+    async def exercise():
+        store, token = state
+        doc = store.load()
+        doc["devices"][0]["deadlineSeconds"] = 1
+        store.save(doc, expected_revision=doc["revision"])
+        entered = asyncio.Event()
+        response_stream = Stream([])
+
+        async def handler(request):
+            if request.method == "GET":
+                return backend(request)
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                # Model headers can arrive as the pending transport unwinds.
+                return httpx.Response(200, stream=response_stream,
+                                      headers={"content-type": "application/json"})
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as upstream:
+            app = gateway.create_app(store, "http://127.0.0.1:9099", upstream)
+            async with app.router.lifespan_context(app):
+                async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://test") as client:
+                    auth = {"Authorization": "Bearer " + token}
+                    task = asyncio.create_task(client.post("/v1/chat/completions", json=body(), headers=auth))
+                    await asyncio.wait_for(entered.wait(), 2)
+                    if ending == "cancel":
+                        task.cancel()
+                        with pytest.raises(asyncio.CancelledError):
+                            await task
+                    else:
+                        response = await asyncio.wait_for(task, 2)
+                        assert response.status_code == 504
+                        assert response.json()["error"]["type"] == "inference_deadline"
+                    assert response_stream.closed
+                    assert (await client.get("/v1/models", headers=auth)).status_code == 200
+    asyncio.run(exercise())

@@ -1,4 +1,5 @@
 import PanelSelect from '../PanelSelect'
+import { useBeforeUnload } from '../../hooks/useBeforeUnload'
 import {
   AlertTriangle,
   CheckCircle2,
@@ -24,6 +25,14 @@ const GROUPS = [
 ]
 
 const fieldKeyLabel = (key = '') => key.toLowerCase()
+
+// Match the Settings API's accepted form aliases without rewriting stored text.
+const booleanSelection = value => {
+  const text = String(value).trim().toLowerCase()
+  if (['true', '1', 'yes', 'on'].includes(text)) return 'true'
+  if (['false', '0', 'no', 'off'].includes(text)) return 'false'
+  return value === '' ? '' : null
+}
 
 const countIssueSections = (sections, issues) => {
   const issueKeys = new Set((issues || []).map(issue => issue.key).filter(Boolean))
@@ -68,12 +77,14 @@ export default function EnvEditor({
   onCompleteFollowUp = () => {},
   applying = false,
 }) {
+  useBeforeUnload(dirty || saving)
   const activeKeys = activeSection?.keys || []
   const canApply = Boolean(applyPlan?.supported && applyPlan?.services?.length > 0 && editor?.agentAvailable !== false)
   const issueSectionCount = countIssueSections(sections, issues)
 
   return (
     <section className="settings-premium-card settings-environment p-5 lg:p-7">
+      <fieldset disabled={saving} className="m-0 min-w-0 border-0 p-0" aria-busy={saving}>
       <EnvironmentEditorHeader
         onRefresh={onRefresh || onReload}
         onReload={onReload}
@@ -192,6 +203,7 @@ export default function EnvEditor({
           </div>
         </div>
       </div>
+      </fieldset>
     </section>
   )
 }
@@ -253,8 +265,10 @@ function EnvironmentCategorySidebar({ search, onSearchChange, sections, activeSe
 function EnvironmentFieldCard({ field, value, issues, revealed, cleared, onToggleReveal, onClearSecret, onChange }) {
   const hasIssues = issues.length > 0
   const isEnum = Array.isArray(field?.enum) && field.enum.length > 0
+  const unsupportedEnum = isEnum && value !== '' && !field.enum.some(option => String(option) === String(value))
   const isBoolean = field?.type === 'boolean'
   const isInteger = field?.type === 'integer'
+  const selectedBoolean = isBoolean ? booleanSelection(value) : null
   const isReadOnly = Boolean(field?.readOnly)
   const secretPlaceholder = field?.secret ? (field?.hasValue ? 'Stored locally' : 'Not set') : (field?.default !== undefined && field?.default !== null ? String(field.default) : '')
 
@@ -285,10 +299,10 @@ function EnvironmentFieldCard({ field, value, issues, revealed, cleared, onToggl
                 key={option.label}
                 type="button"
                 disabled={isReadOnly}
-                aria-pressed={String(value).toLowerCase() === option.id}
+                aria-pressed={selectedBoolean === option.id}
                 onClick={() => onChange(option.id)}
                 className={`rounded-lg px-4 py-2 text-xs font-semibold uppercase tracking-[0.14em] transition-colors disabled:cursor-default disabled:opacity-60 ${
-                  String(value).toLowerCase() === option.id ? 'bg-theme-accent text-white' : 'text-theme-text-muted hover:text-theme-text'
+                  selectedBoolean === option.id ? 'bg-theme-accent text-white' : 'text-theme-text-muted hover:text-theme-text'
                 }`}
               >
                 {option.label}
@@ -300,10 +314,12 @@ function EnvironmentFieldCard({ field, value, issues, revealed, cleared, onToggl
             id={`env-field-${field?.key}`}
             value={value}
             disabled={isReadOnly}
+            aria-invalid={unsupportedEnum || hasIssues || undefined}
             onChange={(event) => onChange(event.target.value)}
             className="w-full rounded-lg border border-theme-border bg-theme-bg/40 px-4 py-3 text-sm text-theme-text outline-none focus:border-theme-accent/60 disabled:cursor-default disabled:opacity-70"
           >
             <option value="">Use default</option>
+            {unsupportedEnum && <option value={value} disabled>Unsupported value: {value}</option>}
             {field.enum.map((option) => <option key={option} value={option}>{option}</option>)}
           </select>
         ) : (

@@ -19,7 +19,8 @@ pytestmark=pytest.mark.skipif(sys.platform!='linux',reason='Linux process-state 
 
 def live(pid):
     try: return Path(f'/proc/{pid}/stat').read_text().split(') ',1)[1].split()[0]!='Z'
-    # A process can disappear after procfs opens stat but before read completes.
+    # Linux may return ESRCH after open succeeds but the task exits during
+    # read. Both missing-task outcomes mean the process is no longer live.
     except (FileNotFoundError, ProcessLookupError): return False
 
 

@@ -19,6 +19,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 import warnings
 
 warnings.filterwarnings("ignore", message=".*Sending a large body.*")
@@ -75,6 +76,18 @@ async def _upstream_chat(request):
 
     if stream:
         async def generate():
+            if data.get("prelude_kind"):
+                kind = data["prelude_kind"]
+                line = {
+                    "reasoning": b'data: {"choices":[{"delta":{"reasoning_content":"private reasoning"}}]}',
+                    "whitespace": b'data: {"choices":[{"delta":{"content":" "}}]}',
+                    "blank": b"",
+                }[kind]
+                for _ in range(data.get("prelude_count", 100)):
+                    yield line + b"\n\n"
+                if data.get("prelude_tail"):
+                    yield line
+                    return
             if data.get("trigger_cancel_wait"):
                 yield b'data: {"id":"1","model":"openclaw/default","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}\n\n'
                 request.app["stream_started"].set()
@@ -103,6 +116,12 @@ async def _upstream_chat(request):
         )
         await resp.prepare(request)
         async for chunk in generate():
+            if data.get("sse_no_space"):
+                chunk = chunk.replace(b"data: ", b"data:")
+            if data.get("sse_crlf"):
+                chunk = chunk.replace(b"\n", b"\r\n")
+            if data.get("sse_without_finish") and b'"delta":{}' in chunk:
+                continue
             await resp.write(chunk)
         await resp.write_eof()
         return resp
@@ -146,6 +165,7 @@ async def _upstream_cancel(request):
 
 async def _upstream_preview(request):
     request.app["preview_hosts"].append(request.headers.get("Host"))
+    request.app["preview_paths"].append(request.path)
     site_id = "site-" + "a" * 24
     if request.match_info.get("site_id") != site_id:
         return web.Response(status=404)
@@ -186,7 +206,7 @@ async def _start_upstream():
     fd, path = tempfile.mkstemp(suffix=".sock")
     os.close(fd)
     os.unlink(path)
-    app = web.Application()
+    app = web.Application(client_max_size=8 * 1024 * 1024 + 1)
     app["chat_requests"] = []
     app["cancel_users"] = []
     app["native_runs"] = {}
@@ -194,6 +214,7 @@ async def _start_upstream():
     app["release_stream"] = asyncio.Event()
     app["release_on_cancel"] = False
     app["preview_hosts"] = []
+    app["preview_paths"] = []
     app.router.add_post("/v1/chat/completions", _upstream_chat)
     app.router.add_post("/v1/chat/cancel", _upstream_cancel)
     app.router.add_get("/v1/models", _upstream_models)
@@ -431,6 +452,30 @@ class TestAuth(BaseEdgeTest):
 
 
 class TestPreviewRelay(BaseEdgeTest):
+
+    async def test_nested_directory_links_resolve_to_published_index(self):
+        site = "site-" + "a" * 24
+        for method in ["GET", "HEAD"]:
+            async with self.client.request(
+                method, f"http://localhost/preview/{site}/guide/chapter/",
+                headers=self.auth(),
+            ) as response:
+                self.assertEqual(response.status, 200)
+                self.assertEqual(await response.read(),
+                                 b"<button id=launch>Remote preview</button>" if method == "GET" else b"")
+        self.assertEqual(self.up_runner.app["preview_paths"],
+                         [f"/{site}/guide/chapter/index.html"] * 2)
+        async with self.client.get(f"http://localhost/preview/{site}/guide/") as response:
+            self.assertEqual(response.status, 401)
+        self.assertEqual(len(self.up_runner.app["preview_paths"]), 2)
+
+    async def test_directory_alias_does_not_admit_unsafe_or_reserved_paths(self):
+        from pixel_edge import _preview_upstream_path
+        site = "site-" + "a" * 24
+        for tail in ["guide//", "../", "/guide/", "__ods_manifest__.json/",
+                     "guide/../", "guide/%2e%2e/", "guide/?file=private"]:
+            self.assertIsNone(_preview_upstream_path(site, tail), tail)
+
     async def test_manifest_route_is_exact_and_keeps_authentication(self):
         from pixel_edge import _preview_upstream_path
         site = "site-" + "a" * 24
@@ -696,6 +741,30 @@ class TestCancellation(BaseEdgeTest):
 # ---------------------------------------------------------------------------
 
 class TestModelAllowlist(BaseEdgeTest):
+
+    async def test_non_string_models_are_client_errors_without_forwarding(self):
+        for model in ([], {}, ["pixel/default"], {"id": "pixel/default"}, None, 1, True):
+            with self.subTest(model=model):
+                async with self.client.post(
+                    "http://localhost/v1/chat/completions",
+                    headers=self.auth(),
+                    json={"model": model, "messages": []},
+                ) as resp:
+                    self.assertEqual(resp.status, 400)
+                    self.assertEqual(await resp.json(), {"error": "model not allowed"})
+                self.assertEqual(self.up_runner.app["chat_requests"], [])
+
+    async def test_excessively_nested_json_is_a_client_error_without_forwarding(self):
+        raw = b'{"model":"pixel/default","messages":[],"extra":' + b'[' * 10000 + b'0' + b']' * 10000 + b'}'
+        async with self.client.post(
+            "http://localhost/v1/chat/completions",
+            headers={**self.auth(), "Content-Type": "application/json"},
+            data=raw,
+        ) as resp:
+            self.assertEqual(resp.status, 400)
+            self.assertEqual(await resp.json(), {"error": "invalid JSON"})
+        self.assertEqual(self.up_runner.app["chat_requests"], [])
+
     async def test_allowed_model_ok(self):
         async with self.client.post(
             "http://localhost/v1/chat/completions",
@@ -1194,12 +1263,12 @@ class TestHeaderStripping(BaseEdgeTest):
             self.assertFalse(seen.get("xforwarded"))
 
             await cap_runner.cleanup()
-            os.unlink(cap_sock)
+            Path(cap_sock).unlink(missing_ok=True)
         finally:
             os.environ["PIXEL_INGRESS_SOCKET"] = self.up_sock
             importlib.reload(pixel_edge)
             await runner.cleanup()
-            os.unlink(path)
+            Path(path).unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1207,9 +1276,53 @@ class TestHeaderStripping(BaseEdgeTest):
 # ---------------------------------------------------------------------------
 
 class TestSizeLimit(BaseEdgeTest):
+
+    async def test_large_valid_body_reaches_upstream(self):
+        for size in (1024 * 1024 + 17, 2 * 1024 * 1024):
+            for chunked in (False, True):
+                with self.subTest(size=size, chunked=chunked):
+                    payload = {"model": "pixel/default", "messages": [
+                        {"role": "user", "content": "x"}]}
+                    raw = json.dumps(payload).encode()
+                    payload["messages"][0]["content"] += "x" * (1024 * 1024 - len(raw))
+                    raw = json.dumps(payload).encode()
+                    raw += b" " * (size - len(raw))
+                    self.assertEqual(len(raw), size)
+
+                    async def chunks():
+                        for offset in range(0, len(raw), 65536):
+                            yield raw[offset:offset + 65536]
+
+                    async with self.client.post(
+                        "http://localhost/v1/chat/completions",
+                        headers={**self.auth(), "Content-Type": "application/json"},
+                        data=chunks() if chunked else raw,
+                    ) as response:
+                        self.assertEqual(response.status, 200, await response.text())
+                    received = self.up_runner.app["chat_requests"][-1]
+                    self.assertTrue(received["messages"][0]["content"].startswith(
+                        payload["messages"][0]["content"]))
+                    self.assertEqual(received["model"], "openclaw/default")
+
+    async def test_chunked_over_limit_returns_413_without_upstream(self):
+        raw = b"x" * (self.pe._MAX_BODY + 1)
+
+        async def chunks():
+            for offset in range(0, len(raw), 65536):
+                yield raw[offset:offset + 65536]
+
+        async with self.client.post(
+            "http://localhost/v1/chat/completions",
+            headers={**self.auth(), "Content-Type": "application/json"},
+            data=chunks(),
+        ) as response:
+            self.assertEqual(response.status, 413)
+            self.assertEqual(await response.json(), {"error": "request too large"})
+        self.assertEqual(self.up_runner.app["chat_requests"], [])
+
     async def test_oversized_body_rejected(self):
         big = json.dumps({"model": "pixel/default",
-                          "messages": [{"role": "user", "content": "x" * (2 * 1024 * 1024 + 1)}]})
+                          "messages": [{"role": "user", "content": "x" * (self.pe._MAX_BODY + 1)}]})
         async with self.client.post(
             "http://localhost/v1/chat/completions",
             headers={**self.auth(), "Content-Type": "application/json"},
@@ -1431,6 +1544,35 @@ class TestPrivateUrlBoundary(BaseEdgeTest):
 # ---------------------------------------------------------------------------
 
 class TestSSE(BaseEdgeTest):
+    async def test_fallback_frames_are_independently_decodable_sse_events(self):
+        for no_space in (False, True):
+            for crlf in (False, True):
+                for without_finish in (False, True):
+                    with self.subTest(no_space=no_space, crlf=crlf, without_finish=without_finish):
+                        async with self.client.post(
+                            "http://localhost/v1/chat/completions", headers=self.auth(),
+                            json={"model": "pixel/default", "stream": True,
+                                  "messages": [{"role": "user", "content": "testing 123"}],
+                                  "trigger_reserved": True, "sse_no_space": no_space,
+                                  "sse_crlf": crlf, "sse_without_finish": without_finish},
+                        ) as response:
+                            self.assertEqual(response.status, 200)
+                            body = await response.text()
+                        events = []
+                        for frame in body.replace("\r\n", "\n").split("\n\n"):
+                            fields = [line[5:].removeprefix(" ") for line in frame.split("\n")
+                                      if line.startswith("data:")]
+                            if fields:
+                                events.append("\n".join(fields))
+                        self.assertEqual(events[-1], "[DONE]")
+                        packets = [json.loads(event) for event in events[:-1]]
+                        self.assertTrue(all(packet.get("model") == "pixel/default" for packet in packets))
+                        text = "".join(packet["choices"][0].get("delta", {}).get("content", "")
+                                       for packet in packets)
+                        self.assertEqual(text, self.pe._SHORT_TEST_REPLY)
+                        self.assertEqual(sum(packet["choices"][0].get("finish_reason") == "stop"
+                                             for packet in packets), 1)
+
     async def test_sse_streams_incrementally(self):
         async with self.client.post(
             "http://localhost/v1/chat/completions",
@@ -1535,7 +1677,7 @@ class TestSanitizedErrors(BaseEdgeTest):
                     self.assertNotIn("Traceback", json.dumps(data))
 
             await runner.cleanup()
-            os.unlink(sock)
+            Path(sock).unlink(missing_ok=True)
         finally:
             pixel_edge._SOCKET_PATH = old
 
@@ -1680,3 +1822,79 @@ class TestChatActivity(BaseEdgeTest):
 if __name__ == "__main__":
     unittest.main()
 
+
+class TestSSEPreludeBudget(BaseEdgeTest):
+    async def test_many_small_prelude_frames_fail_without_leaking_or_fallback(self):
+        for kind in ("reasoning", "whitespace", "blank"):
+            with self.subTest(kind=kind), patch.object(self.pe, "_MAX_SSE_PENDING_BYTES", 1024, create=True), patch.object(self.pe, "_MAX_SSE_PENDING_LINES", 32, create=True):
+                async with self.client.post(
+                    "http://localhost/v1/chat/completions", headers=self.auth(),
+                    json={"model": "pixel/default", "messages": [], "stream": True,
+                          "prelude_kind": kind},
+                ) as response:
+                    self.assertEqual(response.status, 200)
+                    self.assertEqual(await response.text(),
+                        'data: {"error":"upstream error"}\n\ndata: [DONE]\n\n')
+
+    async def test_eof_tail_counts_toward_pending_budget(self):
+        with patch.object(self.pe, "_MAX_SSE_PENDING_BYTES", 100, create=True):
+            async with self.client.post(
+                "http://localhost/v1/chat/completions", headers=self.auth(),
+                json={"model": "pixel/default", "messages": [], "stream": True,
+                      "prelude_kind": "reasoning", "prelude_count": 1, "prelude_tail": True},
+            ) as response:
+                self.assertEqual(await response.text(),
+                    'data: {"error":"upstream error"}\n\ndata: [DONE]\n\n')
+
+    async def test_short_reasoning_prelude_still_streams_normal_answer(self):
+        with patch.object(self.pe, "_MAX_SSE_PENDING_BYTES", 1024, create=True):
+            async with self.client.post(
+                "http://localhost/v1/chat/completions", headers=self.auth(),
+                json={"model": "pixel/default", "messages": [], "stream": True,
+                      "prelude_kind": "reasoning", "prelude_count": 2},
+            ) as response:
+                body = await response.text()
+                self.assertIn("private reasoning", body)
+                self.assertIn("openclaw/default is assistant text", body)
+                self.assertNotIn('"error"', body)
+                self.assertTrue(body.endswith("data: [DONE]\n\n"))
+
+
+class TaskDetailSchemaTest(unittest.TestCase):
+    def setUp(self):
+        self.environment = patch.dict(os.environ, {'PIXEL_OPENWEBUI_KEY': TOKEN, 'PIXEL_PREVIEW_PROXY_KEY': TOKEN})
+        self.environment.start()
+        self.addCleanup(self.environment.stop)
+
+    def test_v2_live_public_plan_and_context_are_bounded(self):
+        from pixel_edge import valid_live_task_event
+        stamp='2026-09-15T10:00:00.000Z'
+        task={'schemaVersion':2,'runId':'chatcmpl_11111111-2222-4333-8444-555555555555','startedAt':stamp,'finishedAt':None,'state':'running','calls':0,'failures':0,'blocked':0,'truncated':False,'activities':[], 'events':[], 'context':{'used':810,'window':1000,'measuredAt':stamp},'goal':{'status':'active','summary':'Working','steps':[{'id':'read','title':'Read source','status':'pending'}]}}
+        event={'object':'ods.task.activity','id':task['runId'],'pixel_task':task}
+        self.assertTrue(valid_live_task_event(event))
+        for change in [{'events':[{'secret':'never'}]}, {'context':{'used':True,'window':1000,'measuredAt':stamp}}, {'goal':{**task['goal'],'status':'completed'}}, {'goal':{**task['goal'],'privateReasoning':'never'}}]:
+            self.assertFalse(valid_live_task_event({**event,'pixel_task':{**task,**change}}))
+
+
+    def test_v3_public_activity_accepts_sources_and_rejects_untrusted_shapes(self):
+        from pixel_edge import valid_live_task_event, valid_activity_display
+        stamp='2026-09-15T10:00:00.000Z'
+        display={'type':'search','label':'Official docs','detail':None,'sources':[{'title':'Docs','url':'https://example.com/docs'}],'steps':[],'change':None}
+        task={'schemaVersion':3,'runId':'chatcmpl_11111111-2222-4333-8444-555555555555','startedAt':stamp,'finishedAt':None,'state':'running','calls':1,'failures':0,'blocked':0,'truncated':False,'activities':[{'kind':'browser','calls':1,'failures':0,'blocked':0}], 'events':[{'sequence':1,'kind':'browser','state':'completed','startedAt':stamp,'finishedAt':stamp,'display':display}], 'context':None,'goal':None}
+        self.assertTrue(valid_live_task_event({'object':'ods.task.activity','id':task['runId'],'pixel_task':task}))
+        for change in [{'privateReasoning':'never'}, {'sources':[{'title':'Unsafe','url':'javascript:alert(1)'}]}, {'type':'text'}, {'label':'x'*161}, {'sources':[{'title':'Login','url':'https://user:pass@example.com/'}]}]:
+            self.assertFalse(valid_activity_display({**display,**change}))
+
+    def test_v4_project_receipts_are_bounded_closed_and_never_accepted_on_older_versions(self):
+        from pixel_edge import valid_live_task_event
+        stamp='2026-09-16T10:00:00.000Z'
+        receipt={'schemaVersion':1,'kind':'ods-workspace-project','relativeDirectory':'Playground/http-method-smoke','observedAt':stamp}
+        task={'schemaVersion':4,'runId':'chatcmpl_11111111-2222-4333-8444-555555555555','startedAt':stamp,'finishedAt':None,'state':'running','calls':0,'failures':0,'blocked':0,'truncated':False,'activities':[], 'events':[], 'context':None,'goal':None,'projects':[receipt]}
+        event={'object':'ods.task.activity','id':task['runId'],'pixel_task':task}
+        self.assertTrue(valid_live_task_event(event))
+        for projects in [[receipt,receipt], [receipt]*9, [{**receipt,'relativeDirectory':'Playground/../escape'}],
+                         [{**receipt,'relativeDirectory':'Playground/CON.txt'}], [{**receipt,'relativeDirectory':'Playground/name.'}],
+                         [{**receipt,'observedAt':'2026-02-30T10:00:00.000Z'}], [{**receipt,'hostPath':'/private'}], None]:
+            self.assertFalse(valid_live_task_event({**event,'pixel_task':{**task,'projects':projects}}),projects)
+        self.assertFalse(valid_live_task_event({**event,'pixel_task':{**task,'schemaVersion':3}}))
+        self.assertTrue(valid_live_task_event({**event,'pixel_task':{**task,'projects':[{**receipt,'relativeDirectory':'Playground/COM10'}]}}))

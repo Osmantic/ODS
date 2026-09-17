@@ -1,3 +1,5 @@
+import {parseProjectTasks} from './pixelTaskActivity'
+
 export function parseConversationImport(value) {
   if (value?.schemaVersion !== 1 || value.kind !== 'ods-pixel-conversation' || value.conversation?.schema !== 1) throw new Error('Choose a Pixel conversation JSON export (version 1).')
   const chat = value.conversation
@@ -8,11 +10,15 @@ export function parseConversationImport(value) {
     bytes += new TextEncoder().encode(message.content).byteLength
     if (bytes > 4 * 1024 * 1024) throw new Error('The conversation exceeds the 4 MB retained-text limit.')
     const status = ['done','error','stopped'].includes(message.status) ? message.status : message.status === 'streaming' ? 'stopped' : undefined
-    return {role:message.role, content:message.content, ...(message.role === 'assistant' && status ? {status} : {})}
+    const projectTasks=message.projectTasks===undefined ? undefined : parseProjectTasks(message.projectTasks)
+    if(message.projectTasks!==undefined && (message.role!=='assistant' || !projectTasks)) throw new Error('The export contains invalid project metadata.')
+    return {role:message.role, content:message.content, ...(message.role === 'assistant' && status ? {status} : {}),
+      ...(projectTasks?.length ? {projectTasks} : {})}
   })
   if (chat.draft !== undefined && (typeof chat.draft !== 'string' || chat.draft.length > 16384)) throw new Error('The export contains an invalid or oversized draft.')
   const draft = chat.draft || ''
   if (!messages.length && !draft.trim()) throw new Error('The export contains no messages or draft.')
   // File-provided IDs, jobs, scopes and publication receipts never become live authority.
+  // Valid team project observations remain inert history for folder grouping.
   return {schema:1, messages, draft, preview:null, workspaceOpen:false, inFlight:false, interrupted:false, requestId:null, contextStart:0}
 }

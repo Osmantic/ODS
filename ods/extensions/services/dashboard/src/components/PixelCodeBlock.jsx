@@ -30,7 +30,11 @@ function highlightedLines(children) {
   return lines
 }
 
+export const needsPlainSource = source => source.length > 128 * 1024 || source.split('\n', 2001).length > 2000
+
 export function PixelCodeLines({source, language = 'text', renderLine}) {
+  // Diff rows have their own bounded contract and must retain annotations.
+  if (!renderLine && needsPlainSource(String(source))) return <code>{String(source)}</code>
   const text = String(source).replace(/\n$/u, '')
   const rows = text.split('\n')
   const render = tokens => rows.map((row, index) => {

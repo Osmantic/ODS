@@ -116,9 +116,11 @@ check_eq "switch repoints LLM_API_URL" "LLM_API_URL=http://litellm:4000" "$(grep
 check_eq "switched mode is reported back" "Current mode: cloud" "$(current_mode_line "$(run_mode "$ROOT" --status)")"
 
 ROOT="$(new_root)"
-printf 'ODS_MODE=cloud\n' > "$ROOT/.env"
+printf 'ODS_MODE=cloud\nODS_MODEL_SWITCHBOARD=enabled\n' > "$ROOT/.env"
 run_mode "$ROOT" local > /dev/null
 check_eq "switching back to local repoints LLM_API_URL" "LLM_API_URL=http://llama-server:8080" "$(grep -m1 '^LLM_API_URL=' "$ROOT/.env")"
+check_eq "local switchboard routes Hermes through model-router" "HERMES_LLM_BASE_URL=http://model-router:9099/v1" "$(grep -m1 '^HERMES_LLM_BASE_URL=' "$ROOT/.env")"
+check_eq "local switchboard gives Hermes the local router key" "HERMES_LLM_API_KEY=no-key" "$(grep -m1 '^HERMES_LLM_API_KEY=' "$ROOT/.env")"
 
 # ── 6. External topology cannot be partially overwritten ─────────────────
 

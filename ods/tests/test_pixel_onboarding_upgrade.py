@@ -27,7 +27,9 @@ class OnboardingUpgradeTests(unittest.TestCase):
         self.owner = pwd.getpwuid(os.getuid()).pw_name
         self.env = dict(os.environ, MAX_CONTEXT="65536", LLAMA_REASONING="off",
                         ODS_MODEL_SWITCHBOARD="observe", LITELLM_PORT="4000",
-                        LITELLM_KEY="disposable-test-key", INSTALL_DIR=str(self.home),
+                        LITELLM_KEY="disposable-shared-test-key",
+                        PIXEL_MODEL_RELAY_PORT="4006",
+                        PIXEL_MODEL_RELAY_KEY="disposable-test-key", INSTALL_DIR=str(self.home),
                         EXTERNAL_LLM_URL="http://127.0.0.1:18080",
                         EXTERNAL_LLM_MODEL="test-model")
         self.write()
@@ -59,7 +61,7 @@ class OnboardingUpgradeTests(unittest.TestCase):
         self.answers.chmod(0o600)
 
     def test_upgrade_preserves_budget_across_credential_rotation(self):
-        self.write(env=dict(self.env, LITELLM_KEY="rotated-test-key"))
+        self.write(env=dict(self.env, PIXEL_MODEL_RELAY_KEY="rotated-test-key"))
         value = json.loads(self.answers.read_text())
         self.assertEqual(value["modelMaxTokens"], 16384)
         self.assertEqual(value["modelContextWindow"], 65536)
@@ -119,7 +121,7 @@ class OnboardingUpgradeTests(unittest.TestCase):
                  "contextWindow": 65536, "maxTokens": 16384, "reasoning": False}
         live = {"models": {"providers": {"ods-gateway": {
                     "api": "openai-completions", "apiKey": "disposable-test-key",
-                    "baseUrl": "http://127.0.0.1:4000/v1", "models": [model]}}},
+                    "baseUrl": "http://127.0.0.1:4006/v1", "models": [model]}}},
                 "agents": {"list": [{"id": "pixel", "model": "ods-gateway/ods/current"}]}}
         for name, value in ((".openclaw/openclaw.json", live),
                             (".config/ods/pixel-managed.json", {"manager": "ods"}),
@@ -161,6 +163,49 @@ class OnboardingUpgradeTests(unittest.TestCase):
                 self.invoke("_ods_pixel_update_onboarding_model", self.answers,
                             "next-model", 65536, 2048, "false", success=False)
                 self.assertEqual(self.answers.read_bytes(), before)
+
+    def test_remote_route_identity_updates_fast_path_candidate_and_rollback(self):
+        self.prepare_snapshot()
+        first, second = "a" * 64, "b" * 64
+        live_path = self.home / ".openclaw/openclaw.json"
+        live = json.loads(live_path.read_text())
+        live["agents"]["defaults"] = {}
+        live["plugins"] = {"entries": {"pixel-ods": {"config": {"modelRouteFingerprint": first}}}}
+        live_path.write_text(json.dumps(live))
+        self.save(dict(self.original, modelRouteFingerprint=first))
+        self.invoke("_ods_pixel_stable_alias_matches_promoted_model", self.answers,
+                    "test-model", 65536, 16384, "false", first)
+        self.invoke("_ods_pixel_stable_alias_matches_promoted_model", self.answers,
+                    "test-model", 65536, 16384, "false", second, success=False)
+        backup = Path(self.snapshot().stdout.strip())
+        rollback = json.loads((backup / "rollback-onboarding.json").read_text())
+        self.assertEqual(rollback["modelRouteFingerprint"], first)
+        self.invoke("_ods_pixel_update_onboarding_model", self.answers,
+                    "test-model", 65536, 16384, "false", second)
+        staged = Path(self.invoke("_ods_pixel_stage_stable_alias_candidate", self.answers).stdout.strip())
+        self.assertEqual(json.loads(staged.read_text())["plugins"]["entries"]["pixel-ods"]["config"]["modelRouteFingerprint"], second)
+        self.assertEqual(json.loads(live_path.read_text())["plugins"]["entries"]["pixel-ods"]["config"]["modelRouteFingerprint"], first)
+        live_path.write_bytes(staged.read_bytes())
+        self.invoke("_ods_pixel_stable_alias_matches_promoted_model", self.answers,
+                    "test-model", 65536, 16384, "false", second)
+        self.invoke("_ods_pixel_update_onboarding_model", self.answers,
+                    "test-model", 65536, 16384, "false")
+        self.assertNotIn("modelRouteFingerprint", json.loads(self.answers.read_text()))
+        cleared = Path(self.invoke("_ods_pixel_stage_stable_alias_candidate", self.answers).stdout.strip())
+        self.assertNotIn("modelRouteFingerprint", json.loads(cleared.read_text())["plugins"]["entries"]["pixel-ods"]["config"])
+        self.invoke("_ods_pixel_stable_alias_matches_promoted_model", self.answers,
+                    "test-model", 65536, 16384, "false", success=False)
+        before = self.answers.read_bytes()
+        self.invoke("_ods_pixel_update_onboarding_model", self.answers,
+                    "test-model", 65536, 16384, "false", "https://secret.invalid", success=False)
+        self.assertEqual(self.answers.read_bytes(), before)
+
+    def test_upgrade_preserves_valid_route_identity_only_for_same_model(self):
+        self.save(dict(self.original, modelRouteFingerprint="a" * 64))
+        self.write()
+        self.assertEqual(json.loads(self.answers.read_text())["modelRouteFingerprint"], "a" * 64)
+        self.write(env=dict(self.env, EXTERNAL_LLM_MODEL="new-local-model"))
+        self.assertNotIn("modelRouteFingerprint", json.loads(self.answers.read_text()))
 
 
 if __name__ == "__main__":

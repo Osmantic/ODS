@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { render } from '../test/test-utils'
 import Settings from './Settings' // eslint-disable-line no-unused-vars
 
@@ -73,7 +73,7 @@ const payloadByUrl = (url) => {
     }
   }
   if (url === '/api/setup/status') return { first_run: false, persona: null }
-  if (url === '/api/version') {
+  if (url === '/api/version' || url === '/api/version?force=true') {
     return { current: '2.6.0', latest: '2.6.0', update_available: false, checked_at: '2026-07-23T12:00:00Z' }
   }
   throw new Error(`Unexpected request: ${url}`)
@@ -92,6 +92,22 @@ const renderSettings = (override = null) => {
 }
 
 describe('Settings', () => {
+  it('shows a confirmed release with notes and performs only a read when checking', async () => {
+    const { fetchMock } = renderSettings(url => String(url).startsWith('/api/version') ? response({ current:'2.6.0', latest:'2.7.0', update_available:true, check_status:'checked', checked_at:'2026-09-16T00:00:00Z' }) : null)
+    expect(await screen.findByText('A new version of ODS is available')).toBeVisible()
+    expect(screen.getByRole('link', {name:'Release notes'})).toHaveAttribute('href','https://github.com/Osmantic/ODS/releases/tag/v2.7.0')
+    fireEvent.click(screen.getByRole('button', {name:'Check', exact:true}))
+    await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => url === '/api/version?force=true')).toBe(true))
+    expect(fetchMock.mock.calls.some(([url]) => url === '/api/update')).toBe(false)
+  })
+
+  it('never labels a failed release check as up to date', async () => {
+    renderSettings(url => String(url).startsWith('/api/version') ? response({ current:'2.6.0', latest:null, update_available:false, check_status:'unavailable', checked_at:null }) : null)
+    expect(await screen.findByText('Update check unavailable')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', {name:'Check', exact:true}))
+    expect(await screen.findByText('Could not confirm the latest release. Try checking again.')).toBeVisible()
+    expect(screen.queryByText('Current release')).toBeNull()
+  })
   it('does not invent uptime or a live state when uptime is missing', async () => {
     renderSettings(url => url === '/api/settings/summary' ? response({...summary,uptime:undefined}) : null)
     const label = await screen.findByText('Uptime')
@@ -189,13 +205,13 @@ describe('Settings', () => {
     expect(screen.getAllByText('Empty')).toHaveLength(3)
   })
 
-  test('migrates a retired theme to the shared Pixel appearance', async () => {
+  test('migrates a retired theme to the shared Portal appearance', async () => {
     localStorage.setItem('ods-theme', 'light')
     const { container } = renderSettings()
     await screen.findByRole('heading', { name: 'System Identity' })
 
     expect(screen.queryByRole('button', { name: 'Light' })).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Pixel', exact: true })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('button', { name: 'Portal', exact: true })).toHaveAttribute('aria-pressed', 'true')
 
     await waitFor(() => expect(document.documentElement).toHaveAttribute('data-theme', 'ods'))
     expect(localStorage.getItem('ods-theme')).toBe('ods')
@@ -257,4 +273,28 @@ describe('Settings', () => {
     expect(screen.getByDisplayValue('192.168.1.10')).toBeInTheDocument()
     expect(fetchMock.mock.calls.filter(([url]) => url === '/api/settings/env')).toHaveLength(3)
   })
+})
+
+it.each([true,false])('locks the environment draft until its pending save settles (success=%s)', async success => {
+  const {fetchMock} = renderSettings()
+  const field = await screen.findByLabelText('LAN Host IP')
+  fireEvent.change(field,{target:{value:'192.168.1.25'}})
+  let finish
+  const original = fetchMock.getMockImplementation()
+  fetchMock.mockImplementation((url,options) => options?.method === 'PUT'
+    ? new Promise(resolve => {finish = resolve})
+    : original(url,options))
+  fireEvent.click(screen.getByRole('button',{name:'Save .env'}))
+  expect(field).toBeDisabled()
+  const env = screen.getByRole('heading',{name:'Environment Editor'}).closest('section')
+  expect(within(env).getByRole('button',{name:'Reload'})).toBeDisabled()
+  expect(within(env).getByRole('button',{name:'Refresh',exact:true})).toBeDisabled()
+  await act(async () => finish(response(success
+    ? {...editor,values:{...editor.values,HOST_LAN_IP:'192.168.1.25'}}
+    : {detail:'Write failed'}, success ? 200 : 503)))
+  expect(field).toBeEnabled()
+  expect(field).toHaveValue('192.168.1.25')
+  fireEvent.change(field,{target:{value:'192.168.1.26'}})
+  expect(screen.getByRole('button',{name:'Save .env'})).toBeEnabled()
+  expect(fetchMock.mock.calls.filter(([,options]) => options?.method === 'PUT')).toHaveLength(1)
 })

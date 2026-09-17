@@ -427,3 +427,101 @@ def test_unix_http_preview_accepts_only_the_internal_relay_authority():
             finally:
                 server.shutdown()
                 thread.join(timeout=5)
+
+
+def test_http_snapshot_ignores_asset_queries_without_changing_path_or_bytes():
+    with tempfile.TemporaryDirectory() as temporary:
+        root = pathlib.Path(temporary)
+        workspace, previews = root / "workspace", root / "previews"
+        workspace.mkdir(mode=0o700)
+        previews.mkdir(mode=0o700)
+        site = workspace / "site"
+        site.mkdir(mode=0o700)
+        page = b'<link rel="stylesheet" href="style.css?v=2"><script src="app.js?build=abc"></script>'
+        assets = {"index.html": page, "style.css": b"body{color:purple}", "app.js": b"document.title='Ready'"}
+        for name, data in assets.items():
+            (site / name).write_bytes(data)
+            (site / name).chmod(0o600)
+        receipt = MODULE.publish_snapshot(workspace, previews, "site", os.getuid())
+        with MODULE.PreviewHTTPServer(("127.0.0.1", 0), previews) as server:
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            port = server.server_address[1]
+            host = f"{receipt['siteId']}.localhost:{port}"
+
+            def request(path, method="GET", authority=host):
+                connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+                try:
+                    connection.request(method, path, headers={"Host": authority})
+                    response = connection.getresponse()
+                    return response.status, dict(response.getheaders()), response.read()
+                finally:
+                    connection.close()
+
+            try:
+                for name, expected in assets.items():
+                    path = f"/{receipt['siteId']}/{name}?v=2&path=../../secret"
+                    status, headers, body = request(path)
+                    assert status == 200
+                    assert body == expected
+                    assert headers["X-Preview-SHA256"] == hashlib.sha256(expected).hexdigest()
+                    assert headers["Cache-Control"] == "no-store"
+                    assert "form-action 'none'" in headers["Content-Security-Policy"]
+                    status, head, body = request(path, "HEAD")
+                    assert status == 200 and body == b""
+                    assert int(head["Content-Length"]) == len(expected)
+                assert request(f"/{receipt['siteId']}/../secret?v=2")[0] == 404
+                assert request(f"/{receipt['siteId']}/style.css?v=2", authority="wrong.localhost")[0] == 404
+            finally:
+                server.shutdown()
+                thread.join(timeout=5)
+
+
+def test_changes_use_the_same_lf_line_boundaries_as_verified_source():
+    """Unicode separators in retained source text are not extra source lines."""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = pathlib.Path(temporary)
+        workspace, previews = root / "workspace", root / "previews"
+        workspace.mkdir(mode=0o700)
+        previews.mkdir(mode=0o700)
+        site = workspace / "demo"
+        site.mkdir(mode=0o700)
+        entry = site / "index.html"
+        for separator in ("\u0085", "\u2028", "\u2029"):
+            for ending in ("\n", "\r\n", ""):
+                old_text = "before" + separator + "inside\nunchanged" + ending
+                new_text = "after" + separator + "inside\nunchanged" + ending
+                entry.write_bytes(old_text.encode("utf-8"))
+                entry.chmod(0o600)
+                old = MODULE.publish_snapshot(workspace, previews, "demo", os.getuid())
+                entry.write_bytes(new_text.encode("utf-8"))
+                new = MODULE.publish_snapshot(workspace, previews, "demo", os.getuid())
+                with MODULE.PreviewHTTPServer(("127.0.0.1", 0), previews) as server:
+                    thread = threading.Thread(target=server.serve_forever, daemon=True)
+                    thread.start()
+                    connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+                    headers = {"Host": f"{new['siteId']}.localhost:{server.server_port}"}
+                    try:
+                        connection.request("GET", f"/{new['siteId']}/index.html", headers=headers)
+                        response = connection.getresponse()
+                        assert response.status == 200
+                        source = response.read().decode("utf-8")
+                        assert source == new_text
+                        assert len(source.split("\n")) - int(source.endswith("\n")) == 2
+                        connection.request("GET", f"/{new['siteId']}/__ods_changes__/{old['siteId']}.json", headers=headers)
+                        response = connection.getresponse()
+                        payload = json.loads(response.read())
+                        assert response.status == 200
+                        file = payload["changes"][0]
+                        assert (file["additions"], file["deletions"]) == (1, 1)
+                        assert not file["truncated"]
+                        assert file["diff"] == [
+                            {"type": "remove", "oldLine": 1, "newLine": None, "text": "before" + separator + "inside"},
+                            {"type": "add", "oldLine": None, "newLine": 1, "text": "after" + separator + "inside"},
+                            {"type": "context", "oldLine": 2, "newLine": 2, "text": "unchanged",
+                             **({} if ending else {"noFinalNewline": True})},
+                        ]
+                    finally:
+                        connection.close()
+                        server.shutdown()
+                        thread.join(timeout=5)

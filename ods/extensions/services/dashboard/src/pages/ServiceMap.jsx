@@ -2,8 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ExternalLink, GitBranch, RefreshCw, X } from 'lucide-react'
 import { serviceUrl } from '../lib/serviceUrls'
 import PanelSelect from '../components/PanelSelect'
+import IntegrationSnapshotDownload from '../components/IntegrationSnapshotDownload'
 
 const POLL_INTERVAL = 10000
+const POLL_TIMEOUT = 15000
 const NODE_W = 170
 const NODE_H = 64
 const LABEL_W = 210
@@ -140,7 +142,7 @@ export function buildTopology(statusData) {
         id,
         name: service.name || id,
         status: normalizeStatus(service.status),
-        port: service.external_port || service.port || '',
+        port: service.external_port ?? service.port ?? '',
         public_url: service.public_url || '',
         ui_path: service.ui_path || '/',
         category: CATEGORY_MAP[id] || 'other',
@@ -267,7 +269,7 @@ function DependencyList({ label, edges, field }) {
   )
 }
 
-function CompactIntegrations({ nodes, edges, refresh, error }) {
+function CompactIntegrations({ nodes, edges, capturedAt, refresh, error }) {
   const [view, setView] = useState('list')
   const [search, setSearch] = useState('')
   const [filter, setFilter] = useState('all')
@@ -289,6 +291,7 @@ function CompactIntegrations({ nodes, edges, refresh, error }) {
   }
   return <section className="portal-integrations">
     <header className="integrations-header"><div><h2>Integrations</h2><p>{nodes.length} services · {nodes.filter(node => node.status === 'healthy').length} healthy</p></div><button type="button" aria-label="Refresh integrations" onClick={refresh}><RefreshCw size={15} /></button></header>
+    <IntegrationSnapshotDownload nodes={nodes} edges={edges} capturedAt={capturedAt} refreshFailed={Boolean(error)} />
     <nav className="settings-view-tabs" aria-label="Integration views"><button type="button" aria-pressed={view === 'list'} onClick={() => setView('list')}>Service list</button><button type="button" aria-pressed={view === 'map'} onClick={() => setView('map')}>View map</button></nav>
     {error && <p role="alert" className="text-red-400">Status could not be refreshed. {error}</p>}
     <div className="integrations-filters"><input type="search" aria-label="Search integrations" placeholder="Search services…" value={search} onChange={event => setSearch(event.target.value)} /><PanelSelect label="Service status" value={filter} onChange={setFilter} options={[{value:'all',label:'All statuses'},{value:'healthy',label:'Healthy'},{value:'attention',label:'Not healthy'}]} /></div>
@@ -324,21 +327,39 @@ export default function ServiceMap({ compact = false }) {
   const [loading, setLoading] = useState(true)
   const [actualSize, setActualSize] = useState(false)
   const [error, setError] = useState(null)
-  const fetchInFlight = useRef(false)
+  const activeRequest = useRef(null)
 
   const fetchTopology = useCallback(async () => {
-    if (document.hidden || fetchInFlight.current) return
-    fetchInFlight.current = true
+    if (document.hidden || activeRequest.current) return
+    const controller = new AbortController()
+    activeRequest.current = controller
+    let rejectAbort
+    const aborted = new Promise((_, reject) => {
+      rejectAbort = () => reject(new Error('Service status request timed out'))
+      controller.signal.addEventListener('abort', rejectAbort, {once:true})
+    })
+    const timeout = setTimeout(() => controller.abort(), POLL_TIMEOUT)
     try {
-      const response = await fetch('/api/status')
-      if (!response.ok) throw new Error('Failed to fetch service status')
-      setTopology(buildTopology(await response.json()))
+      const snapshot = (async () => {
+        const response = await fetch('/api/status', {signal:controller.signal})
+        if (!response.ok) throw new Error('Failed to fetch service status')
+        return response.json()
+      })()
+      const data = await Promise.race([snapshot, aborted])
+      if (activeRequest.current !== controller) return
+      setTopology({ ...buildTopology(data), capturedAt: new Date().toISOString() })
       setError(null)
     } catch (err) {
-      setError(err.message)
+      if (activeRequest.current === controller) setError(err.message)
     } finally {
-      setLoading(false)
-      fetchInFlight.current = false
+      clearTimeout(timeout)
+      controller.signal.removeEventListener('abort', rejectAbort)
+      controller.abort()
+      // A disposed effect must not clear its replacement's request guard.
+      if (activeRequest.current === controller) {
+        activeRequest.current = null
+        setLoading(false)
+      }
     }
   }, [])
 
@@ -348,12 +369,15 @@ export default function ServiceMap({ compact = false }) {
     const onVisibility = () => { if (!document.hidden) fetchTopology() }
     document.addEventListener('visibilitychange', onVisibility)
     return () => {
+      const pending = activeRequest.current
+      activeRequest.current = null
+      pending?.abort()
       clearInterval(interval)
       document.removeEventListener('visibilitychange', onVisibility)
     }
   }, [fetchTopology])
 
-  const { nodes, edges } = topology
+  const { nodes, edges, capturedAt } = topology
   const { positions, layerY, svgWidth, svgHeight } = useMemo(() => computeLayout(nodes), [nodes])
   const counts = useMemo(() => ({
     healthy: nodes.filter(node => node.status === 'healthy').length,
@@ -371,7 +395,7 @@ export default function ServiceMap({ compact = false }) {
     return <div role="alert" className="text-sm text-red-400">Topology data unavailable: {error}<button className="ml-3" onClick={fetchTopology}>Retry</button></div>
   }
 
-  if (compact) return <CompactIntegrations nodes={nodes} edges={edges} refresh={fetchTopology} error={error} />
+  if (compact) return <CompactIntegrations nodes={nodes} edges={edges} capturedAt={capturedAt} refresh={fetchTopology} error={error} />
 
   return (
     <div className="p-8">
@@ -398,6 +422,7 @@ export default function ServiceMap({ compact = false }) {
       <div className="relative overflow-hidden rounded-xl border border-theme-border bg-theme-bg">
         <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-theme-border">
           <span className="text-xs text-theme-text-muted">Service connections</span>
+          <IntegrationSnapshotDownload nodes={nodes} edges={edges} capturedAt={capturedAt} refreshFailed={Boolean(error)} />
           <button type="button" aria-pressed={actualSize} onClick={() => setActualSize(value => !value)} className="rounded-md px-3 py-1.5 text-xs text-theme-text-secondary hover:bg-theme-card">{actualSize ? 'Fit to panel' : 'Actual size'}</button>
         </div>
         <div className="overflow-auto" role="region" aria-label="Service topology" tabIndex={0}>

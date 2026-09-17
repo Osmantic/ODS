@@ -106,6 +106,41 @@ _model_memory = importlib.util.module_from_spec(_model_memory_spec)
 _model_memory_spec.loader.exec_module(_model_memory)
 required_model_memory_gb = _model_memory.required_model_memory_gb
 
+_model_stores_spec = importlib.util.spec_from_file_location(
+    "_ods_model_stores", _MODEL_MEMORY_PATH.with_name("model_stores.py"))
+if _model_stores_spec is None or _model_stores_spec.loader is None:
+    raise ImportError("Cannot load shared model store policy")
+_model_stores = importlib.util.module_from_spec(_model_stores_spec)
+_model_stores_spec.loader.exec_module(_model_stores)
+
+
+def _installed_model_file(filename: str) -> Path | None:
+    return _model_stores.resolve_model_file(INSTALL_DIR / "data", filename, container=bool(os.environ.get("ODS_HOST_INSTALL_DIR")))
+
+
+def _active_model_directory(env: dict) -> Path:
+    return _model_stores.active_store(INSTALL_DIR / "data", env.get("ODS_ACTIVE_MODEL_STORE", "default"), container=bool(os.environ.get("ODS_HOST_INSTALL_DIR")))["path"]
+
+
+def _active_model_bind_directory(env: dict) -> str:
+    store = _model_stores.active_store(INSTALL_DIR / "data", env.get("ODS_ACTIVE_MODEL_STORE", "default"), container=bool(os.environ.get("ODS_HOST_INSTALL_DIR")))
+    if store["id"] == "default" and os.environ.get("ODS_HOST_INSTALL_DIR"):
+        return os.environ["ODS_HOST_INSTALL_DIR"].rstrip("/\\") + "/data/models"
+    return str(store["hostPath"])
+
+
+def _windows_management_shell() -> str:
+    # Do not retry a mutating script after an ambiguous failure. Select the
+    # available modern shell before launching, with inbox PowerShell fallback.
+    return shutil.which("pwsh.exe") or shutil.which("pwsh") or "powershell.exe"
+
+
+def _lemonade_recipe_options_path() -> Path:
+    cache = os.environ.get("LEMONADE_CACHE_DIR")
+    if not cache:
+        cache = str(Path(os.environ.get("USERPROFILE") or str(Path.home())) / ".cache" / "lemonade")
+    return Path(cache) / "recipe_options.json"
+
 VERSION = "1.0.0"
 ODS_VERSION = VERSION
 SERVICE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
@@ -123,6 +158,12 @@ MAX_TELEMETRY_RESPONSE_BYTES = 1024 * 1024
 SUBPROCESS_TIMEOUT_START = 600  # 10 min — image pulls can be slow
 SUBPROCESS_TIMEOUT_STOP = 120   # 2 min — stop should be fast
 HOOK_TIMEOUT = 120              # 2 min — hook execution timeout
+MODEL_ACTIVATION_HEALTH_ATTEMPTS = 60
+# Hermes can spend roughly two minutes in image/config bootstrap before its
+# 30-second Docker healthcheck observes the live dashboard.  Give that service
+# two additional health intervals during model activation while preserving the
+# same bounded, fail-closed health contract.
+HERMES_MODEL_ACTIVATION_HEALTH_ATTEMPTS = 90
 VALID_HOOK_NAMES = frozenset({
     "pre_install", "post_install", "pre_start", "post_start",
     "pre_uninstall", "post_uninstall",
@@ -349,12 +390,21 @@ def _windows_whisper_cuda_supported(env: dict) -> bool:
 
 
 def _find_usable_bash() -> str | None:
-    """Return a Bash executable compatible with this host's path contract."""
+    """Return a Bash executable compatible with this host's path contract.
+
+    On success the resolved path is cached for the lifetime of the process.
+    On failure the cache is *not* set to ``False`` — a transient startup
+    condition (installer still writing, AV scan, first-run setup) can make
+    the initial probe fail even when the binary is genuinely present.  By
+    only caching positive results we permit safe retry without changing the
+    happy path.
+    """
     global _usable_bash
     if isinstance(_usable_bash, str):
         return _usable_bash
-    if _usable_bash is False:
-        return None
+    # Deliberately do NOT short-circuit on ``False`` here.  A previous
+    # failed probe must be allowed to re-run in case the transient condition
+    # has cleared.  We only reset to None (below) on failure.
 
     candidates: list[str] = []
     if platform.system() == "Windows":
@@ -441,7 +491,7 @@ def _find_usable_bash() -> str | None:
             _usable_bash = bash
             return bash
 
-    _usable_bash = False
+    _usable_bash = None
     return None
 
 # Model download state — only one download at a time
@@ -1980,6 +2030,25 @@ def load_env(env_path: Path) -> dict:
         if "=" in line:
             key, _, val = line.partition("=")
             raw_value = val.strip()
+            # Match the dashboard's single-line dotenv writer without shell
+            # expansion. shlex drops bare Windows path backslashes and keeps
+            # a backslash before $ inside double quotes.
+            quoted = re.fullmatch(r'"((?:\\.|[^"\\])*)"(?:\s+#.*)?', raw_value)
+            if quoted:
+                env[key.strip()] = (
+                    quoted.group(1).replace('\\"', '"')
+                    .replace('\\$', '$').replace('\\\\', '\\')
+                )
+                continue
+            quoted = re.fullmatch(r"'([^']*)'(?:\s+#.*)?", raw_value)
+            if quoted:
+                env[key.strip()] = quoted.group(1)
+                continue
+            if raw_value[:1] not in {"'", '"'}:
+                env[key.strip()] = raw_value.split(" #", 1)[0].rstrip()
+                continue
+            # Preserve legacy concatenated shell quotes emitted by the host
+            # agent's own writer. Never evaluate substitutions or commands.
             try:
                 parsed = shlex.split(raw_value, comments=False, posix=True)
             except ValueError:
@@ -2134,7 +2203,7 @@ def _project_switchboard_agent_viability(payload: dict) -> None:
     local_model = active.get("runtimeModelId")
     local_context = active.get("contextLength")
     if (
-        env.get("ODS_MODE", "local") == "local"
+        str(env.get("ODS_MODE") or "local").strip().casefold() in {"local", "hybrid", "lemonade"}
         and _switchboard_state.migrate_env_identity(env)
         and active.get("reconstructed") is not True
         and active.get("verifiedAt")
@@ -2987,6 +3056,7 @@ def _reconcile_ods_managed_pixel_model(
     *,
     max_tokens: int = 4096,
     reasoning: bool = False,
+    route_fingerprint: str | None = None,
 ) -> str:
     """Transactionally bind the managed Pixel gateway to an activated model."""
     identity = _ods_managed_pixel_identity()
@@ -3000,6 +3070,11 @@ def _reconcile_ods_managed_pixel_model(
     if not isinstance(max_tokens, int) or isinstance(max_tokens, bool) \
             or not 1 <= max_tokens <= context_length:
         raise RuntimeError("The promoted Pixel output-token limit is invalid")
+    if route_fingerprint is not None and (
+        not isinstance(route_fingerprint, str)
+        or not re.fullmatch(r"[a-f0-9]{64}", route_fingerprint)
+    ):
+        raise RuntimeError("The promoted Pixel route identity is invalid")
 
     owner, home = identity
     env_values = load_env(INSTALL_DIR / ".env")
@@ -3013,6 +3088,15 @@ def _reconcile_ods_managed_pixel_model(
         source_path = Path(source_url)
         if not source_path.is_absolute() or source_path == Path("/"):
             raise RuntimeError("The configured Pixel source must be the canonical URL or an absolute local checkout")
+    configured_pixel_gateway_port = env_values.get("PIXEL_GATEWAY_PORT")
+    pixel_gateway_port = (
+        "18789"
+        if configured_pixel_gateway_port is None
+        else str(configured_pixel_gateway_port).strip()
+    )
+    if not re.fullmatch(r"[1-9][0-9]{0,4}", pixel_gateway_port) \
+            or int(pixel_gateway_port) > 65535:
+        raise RuntimeError("The configured Pixel gateway port is invalid")
 
     script = r'''
 set -uo pipefail
@@ -3023,6 +3107,7 @@ target_model="$4"
 target_context="$5"
 target_max_tokens="$6"
 target_reasoning="$7"
+target_route_fingerprint="$8"
 INTERACTIVE=false
 DRY_RUN=false
 log() { printf '%s\n' "$*" >&2; }
@@ -3041,7 +3126,7 @@ export INSTALL_DIR INTERACTIVE DRY_RUN ODS_SUDO_AVAILABLE
 . "$INSTALL_DIR/installers/lib/sudo.sh"
 . "$INSTALL_DIR/installers/lib/pixel-host-install.sh"
 ods_pixel_reconcile_promoted_model "$owner" "$home" "$target_model" ready \
-    "$target_context" "$target_max_tokens" "$target_reasoning"
+    "$target_context" "$target_max_tokens" "$target_reasoning" "$target_route_fingerprint"
 '''
     child_env = {
         "HOME": str(home),
@@ -3049,6 +3134,7 @@ ods_pixel_reconcile_promoted_model "$owner" "$home" "$target_model" ready \
         "LOGNAME": owner,
         "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
         "PIXEL_SOURCE_URL": source_url,
+        "PIXEL_GATEWAY_PORT": pixel_gateway_port,
     }
     if os.environ.get("TMPDIR"):
         child_env["TMPDIR"] = str(os.environ["TMPDIR"])
@@ -3059,6 +3145,7 @@ ods_pixel_reconcile_promoted_model "$owner" "$home" "$target_model" ready \
                 str(INSTALL_DIR), owner, str(home), model,
                 str(context_length), str(max_tokens),
                 "true" if reasoning else "false",
+                route_fingerprint or "",
             ],
             env=child_env,
             capture_output=True,
@@ -3474,6 +3561,10 @@ def _record_remote_provider_egress_probe(payload: dict) -> dict:
             if activation_current else None
         if activation is None:
             activation = _activate_remote_provider_route(state)
+    except _PixelModelTransactionUncertain:
+        # An admitted activation can outlive an ambiguous transport response.
+        # Preserve its receipt/journal for read-only recovery, not stale bytes.
+        raise
     except Exception:
         _restore_text_file(state_path, state_snapshot)
         raise
@@ -3581,6 +3672,7 @@ def _remote_provider_runtime_contract(route: dict) -> dict[str, object]:
         "contextLength": context_length,
         "maxTokens": max_tokens,
         "reasoning": reasoning,
+        "routeFingerprint": _remote_provider_route_fingerprint(route),
     }
 
 
@@ -3640,6 +3732,10 @@ def _valid_managed_pixel_runtime_contract(value: object) -> bool:
         and type(max_tokens) is int
         and 1 <= max_tokens <= context_length
         and type(reasoning) is bool
+        and ("routeFingerprint" not in value or (
+            isinstance(value["routeFingerprint"], str)
+            and re.fullmatch(r"[a-f0-9]{64}", value["routeFingerprint"]) is not None
+        ))
     )
 
 
@@ -3649,6 +3745,296 @@ def _valid_remote_provider_runtime_contract(value: object) -> bool:
         and isinstance(value, dict)
         and value.get("contextLength", 0) >= 16384
     )
+
+
+class _PixelModelTransactionUncertain(RuntimeError):
+    """The native journal owns recovery; no inference mutation may be replayed."""
+
+
+class _PixelModelTransactionRejected(RuntimeError):
+    """The controller definitively refused admission without performing it."""
+
+
+def _pixel_model_journal_path() -> Path:
+    return INSTALL_DIR / 'data' / 'pixel-model-transaction.json'
+
+
+def _publish_activation_route(env: dict, model_id: str, proof: dict, capabilities: dict):
+    """Publish a directly proven backend before consumers probe its stable alias."""
+    if (_switchboard_state is None or not isinstance(proof, dict)
+            or proof.get("contextVerified") is not True
+            or not _valid_pixel_model_name(str(proof.get("identity") or ""))
+            or not isinstance(proof.get("contextLength"), int)
+            or proof["contextLength"] <= 0):
+        raise RuntimeError("Cannot publish an unverified model-router target")
+    lemonade = str(env.get("LEMONADE_MODEL") or "") if _uses_lemonade_runtime(env) else ""
+    return _switchboard_state.record_verified_route(
+        INSTALL_DIR / "data" / "model-state.json", catalog_id=str(model_id),
+        runtime_model_id=proof["identity"], proof_identity=proof["identity"],
+        backend_kind="lemonade" if lemonade else "llama-server",
+        endpoint_id="lemonade-default" if lemonade else "llama-server-default",
+        native_route=lemonade or None, context_length=proof["contextLength"],
+        capabilities=capabilities,
+    )
+
+
+def _pixel_model_config_paths() -> dict:
+    paths = {name: INSTALL_DIR / name for name in (
+        '.env', 'config/llama-server/models.ini', 'config/litellm/lemonade.yaml',
+        'config/litellm/local.yaml', 'config/litellm/switchboard.yaml', 'config/litellm/cloud.yaml',
+        'config/model-router/endpoints.json', 'data/model-activation-receipt.json', 'data/model-state.json',
+        'data/hermes/config.yaml', 'extensions/services/hermes/cli-config.yaml.template',
+    )}
+    paths.update({'remote-route':_remote_provider_route_state_path(),
+                  'remote-activation':_remote_provider_activation_state_path(),
+                  'remote-public':_remote_provider_activation_public_path()})
+    paths.update({f'opencode-{i}': value for i,value in enumerate(_opencode_config_paths())})
+    paths['lemonade-recipe'] = _lemonade_recipe_options_path()
+    return paths
+
+
+def _pixel_model_config_digests() -> dict:
+    result = {}
+    for name, path in _pixel_model_config_paths().items():
+        try:
+            info = path.lstat()
+            if not stat_mod.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > 4 * 1024 * 1024:
+                raise ValueError()
+            result[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+        except FileNotFoundError:
+            result[name] = None
+        except (OSError, ValueError):
+            result[name] = 'unavailable'
+    return result
+
+
+def _read_pixel_model_journal() -> dict | None:
+    path = _pixel_model_journal_path()
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return None
+    if (not stat_mod.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > 65536
+            or (os.name != 'nt' and (info.st_uid != os.geteuid() or stat_mod.S_IMODE(info.st_mode) & 0o077))):
+        raise RuntimeError('Managed model recovery journal is unsafe')
+    value = json.loads(path.read_text(encoding='utf-8'))
+    required = {'schemaVersion','transactionId','phase','previous','target','before','after','outcome'}
+    if (not isinstance(value,dict) or set(value)!=required or type(value.get('schemaVersion')) is not int or value['schemaVersion']!=1
+            or not isinstance(value.get('transactionId'),str) or not re.fullmatch('[a-f0-9]{64}',value['transactionId'])
+            or value.get('phase') not in {'prepared','held','applying','applied','committing','rolling-back','completed'}
+            or not isinstance(value.get('previous'),dict) or not _valid_managed_pixel_runtime_contract(value['previous'])
+            or not _valid_managed_pixel_runtime_contract(value.get('target'))
+            or value.get('outcome') not in {None,'commit','rollback'}):
+        raise RuntimeError('Managed model recovery journal is invalid')
+    names=set(_pixel_model_config_paths())
+    for key in ('before','after'):
+        items=value[key]
+        if key=='after' and items is None:continue
+        if (not isinstance(items,dict) or not (set(items)==names or (
+                value['phase']=='completed' and value['outcome'] in {'commit','rollback'}
+                and set(items)==names-{'data/model-state.json'}))
+                or any(item is not None and item!='unavailable' and (not isinstance(item,str)
+                    or not re.fullmatch('[a-f0-9]{64}',item)) for item in items.values())):
+            raise RuntimeError('Managed model recovery evidence is invalid')
+    return value
+
+
+def _runtime_model_control(operation: str, request: dict | None = None, *, config: dict) -> dict:
+    from pixel_access_relay import request_runtime_model_control, public_model_control
+    status, value = request_runtime_model_control(operation, request, config=config)
+    if status in {400, 403, 409}:
+        raise _PixelModelTransactionRejected('Managed model controller refused the transition; its current state must be verified')
+    if status != 200:
+        raise RuntimeError('Managed model controller is unavailable or refused the transition')
+    return public_model_control(value)
+
+
+class _PixelModelTransaction:
+    """Host-side participant in the native, durable two-gate transaction."""
+    def __init__(self, config: dict):
+        self.config = dict(config)
+        self.id = secrets.token_hex(32)
+        self.previous = None
+        self.target = None
+        self.completed = False
+        self.journal = None
+
+    def _save(self, phase: str, outcome=None):
+        if self.journal is None:
+            self.journal = {'schemaVersion':1,'transactionId':self.id,'phase':phase,'previous':self.previous,
+                'target':None,'before':_pixel_model_config_digests(),'after':None,'outcome':None}
+        self.journal.update(phase=phase,previous=self.previous,target=self.target,outcome=outcome)
+        if phase in {'committing','rolling-back'}:self.journal['after']=_pixel_model_config_digests()
+        _atomic_write_json(_pixel_model_journal_path(),self.journal,0o600)
+
+    def _matches(self, value: dict, phase: str, contract: dict, outcome=None) -> bool:
+        return (value['transactionId'] == self.id and value['status'] == phase
+                and value['contract'] == contract and value['pending'] is (phase != 'completed')
+                and value['outcome'] == outcome)
+
+    def _mutate(self, operation: str, request: dict, phase: str, contract: dict, outcome=None) -> dict:
+        try:
+            value = _runtime_model_control(operation, request, config=self.config)
+        except Exception as error:
+            # Only a read may resolve an ambiguous transport result. Never
+            # replay begin/apply/finish after a timeout.
+            try:
+                value = _runtime_model_control('model-status', config=self.config)
+            except Exception as exc:
+                raise _PixelModelTransactionUncertain('Managed model transaction ownership or completion is unconfirmed; recovery is required') from exc
+            if (operation=='model-begin' and isinstance(error,_PixelModelTransactionRejected)
+                    and value['transactionId']!=self.id):
+                self._save('completed','rollback')
+                raise error
+        if not self._matches(value, phase, contract, outcome):
+            raise _PixelModelTransactionUncertain('Managed model transaction outcome is unconfirmed; recovery is required')
+        return value
+
+    def begin(self):
+        status = _runtime_model_control('model-status', config=self.config)
+        if status['pending'] or status['status'] not in {'ready', 'completed'}:
+            raise RuntimeError('Managed model maintenance is already pending; recover it before changing the model')
+        self.previous = dict(status['contract'])
+        self._save('prepared')
+        self._mutate('model-begin', {'revision': status['revision'], 'transactionId': self.id}, 'held', self.previous)
+        self._save('held')
+        return self
+
+    def verify_held(self):
+        try:
+            value = _runtime_model_control('model-status', config=self.config)
+        except Exception as exc:
+            raise _PixelModelTransactionUncertain('Cannot prove managed model maintenance ownership; recovery is required') from exc
+        expected = self.target if value['status'] == 'applied' else self.previous
+        if value['status'] not in {'held', 'applied'} or not self._matches(value, value['status'], expected):
+            raise _PixelModelTransactionUncertain('Managed model maintenance ownership changed; recovery is required')
+
+    def apply(self, target: dict):
+        if not isinstance(target, dict) or not _valid_managed_pixel_runtime_contract(target):
+            raise RuntimeError('Invalid managed model activation target')
+        self.target = dict(target)
+        self._save('applying')
+        self._mutate('model-apply', {'transactionId': self.id, 'target': self.target}, 'applied', self.target)
+        self._save('applied')
+        return 'reconciled'
+
+    def finish(self, outcome: str):
+        expected = self.target if outcome == 'commit' else self.previous
+        if outcome not in {'commit', 'rollback'} or expected is None:
+            raise RuntimeError('Invalid managed model transaction completion')
+        self._save('committing' if outcome=='commit' else 'rolling-back')
+        self._mutate('model-finish', {'transactionId': self.id, 'outcome': outcome}, 'completed', expected, outcome)
+        self.completed = True
+        self._save('completed',outcome)
+
+
+def _begin_pixel_model_transaction(config: dict):
+    # Legacy standalone native installations have no Edge admission lane.
+    # A configured Portal must never silently fall back if its relay is down.
+    if not config.get('PIXEL_OPENWEBUI_KEY'):
+        return None
+    recovery = _recover_pixel_model_transaction(config)
+    if recovery['pending']:
+        raise _PixelModelTransactionUncertain('Managed model recovery requires explicit repair; no inference change was attempted')
+    return _PixelModelTransaction(config).begin()
+
+
+def _prove_pixel_model_contract(config: dict, contract: dict) -> bool:
+    if 'routeFingerprint' in contract:
+        route = _read_remote_provider_route_state_for_update()
+        if _remote_provider_runtime_contract(route) != contract:
+            return False
+        _verify_litellm_route(config, model='ods/current')
+        return True
+    gguf = str(config.get('GGUF_FILE') or '')
+    if not gguf:
+        return False
+    proof = _wait_for_model_readiness(config,model_id=str(config.get('LLM_MODEL') or gguf),
+        gguf_file=gguf,llm_model_name=str(config.get('LLM_MODEL') or gguf),
+        lemonade_model_id=str(config.get('LEMONADE_MODEL') or ''),attempts=1,initial_delay=0,
+        interval=0,return_proof=True,require_exact_context=True,allow_model_warmup=False)
+    return (isinstance(proof,dict) and proof.get('identity')==contract['model']
+            and proof.get('contextVerified') is True and proof.get('contextLength')==contract['contextLength'])
+
+
+def _recover_pixel_model_transaction(config: dict) -> dict:
+    """Release only a provably committed or unchanged/fully restored state.
+
+    Recovery never loads a model or rewrites inference settings. The native
+    coordinator may restore/requalify its gateway contract while completing
+    the same transaction. An intermediate crash requires explicit repair.
+    """
+    journal = _read_pixel_model_journal()
+    if journal is None or journal['phase']=='completed':
+        return {'pending':False,'phase':'idle','transactionId':None}
+    pending = {'pending':True,'phase':journal['phase'],'transactionId':journal['transactionId'],
+               'reason':'model-recovery-proof-required'}
+    try:
+        try:
+            status = _runtime_model_control('model-status',config=config)
+        except Exception:
+            # A finish can release one gate before its final reply is lost.
+            # The coordinator intentionally cannot report a complete hold in
+            # that state. A prepared begin can also have acquired only one
+            # gate; its exact rollback is safe if all host state is unchanged.
+            if journal['phase'] not in {'prepared','committing','rolling-back'}:
+                return pending
+            status = None
+        if status is not None and status['transactionId']!=journal['transactionId']:
+            # A refused/unreceived begin is provably harmless only while all
+            # captured host configuration is unchanged and no lane is held.
+            if (journal['phase']=='prepared' and not status['pending']
+                    and status['contract']==journal['previous']
+                    and 'unavailable' not in journal['before'].values()
+                    and _pixel_model_config_digests()==journal['before']):
+                journal.update(phase='completed',outcome='rollback')
+                _atomic_write_json(_pixel_model_journal_path(),journal)
+                return {'pending':False,'phase':'completed','transactionId':journal['transactionId'],'outcome':'rollback'}
+            return pending
+        outcome = None
+        current = _pixel_model_config_digests()
+        if (journal['phase']=='committing' and journal['target'] is not None
+                and journal['after'] is not None and 'unavailable' not in journal['after'].values()
+                and current==journal['after'] and (status is None or (
+                    status['contract']==journal['target'] and status['status'] in {'applied','completed'}))):
+            outcome='commit'
+        elif (((status is None and journal['phase'] in {'prepared','rolling-back'})
+                or (status is not None and status['status'] in {'held','applied','completed'})) and (
+                ('unavailable' not in journal['before'].values() and current==journal['before'])
+                or (journal['phase']=='rolling-back' and journal['after'] is not None
+                    and 'unavailable' not in journal['after'].values() and current==journal['after']))):
+            outcome='rollback'
+        if outcome is None:
+            return pending
+        expected=journal['target'] if outcome=='commit' else journal['previous']
+        if not _prove_pixel_model_contract(config,expected):
+            return pending
+        if _pixel_model_config_digests()!=current:
+            return pending
+        transaction=_PixelModelTransaction(config)
+        transaction.id=journal['transactionId'];transaction.previous=journal['previous']
+        transaction.target=journal['target'];transaction.journal=journal
+        if status is not None and status['status']=='completed':
+            if status['outcome']!=outcome or status['contract']!=expected:
+                return pending
+            transaction._save('completed',outcome)
+        else:
+            if status is not None:
+                transaction.verify_held()
+            if _pixel_model_config_digests()!=current:
+                return pending
+            transaction.finish(outcome)
+        return {'pending':False,'phase':'completed','transactionId':journal['transactionId'],'outcome':outcome}
+    except Exception:
+        logger.warning('Managed model recovery remains pending; no inference mutation was replayed')
+        return pending
+
+
+def _pixel_model_recovery_status() -> dict:
+    journal=_read_pixel_model_journal()
+    if journal is None:
+        return {'pending':False,'phase':'idle','transactionId':None}
+    return {'pending':journal['phase']!='completed','phase':journal['phase'],'transactionId':journal['transactionId']}
 
 
 def _read_remote_provider_activation_state() -> dict | None:
@@ -3709,6 +4095,12 @@ def _active_remote_provider_pixel_runtime() -> dict[str, object] | None:
         _remote_provider_sanitize_probe_receipt(route_status.get("lastProbe"))
         runtime = _remote_provider_runtime_contract(route)
         activation = _read_remote_provider_activation_state()
+        # Legacy receipts predate native route identity. Keep their status
+        # readable, but never let them qualify a new activation's fast path.
+        legacy = isinstance(activation, dict) and isinstance(activation.get("remote"), dict) \
+            and "routeFingerprint" not in activation["remote"]
+        if legacy:
+            runtime.pop("routeFingerprint")
         if (
             not isinstance(activation, dict)
             or activation.get("phase") != "active"
@@ -3724,7 +4116,8 @@ def _active_remote_provider_pixel_runtime() -> dict[str, object] | None:
             != "http://litellm:4000"
         ):
             return None
-        if _managed_pixel_runtime_contract() != runtime:
+        observed = _cached_managed_pixel_runtime_contract() if env.get('PIXEL_OPENWEBUI_KEY') else _managed_pixel_runtime_contract()
+        if observed != runtime:
             return None
         return runtime
     except (OSError, RuntimeError, TypeError, ValueError):
@@ -3761,7 +4154,44 @@ def _write_remote_provider_activation_public(value: dict) -> None:
     )
 
 
+_pixel_model_read_cache = {}
+_pixel_model_read_lock = threading.Lock()
+
+
+def _cached_managed_pixel_runtime_contract() -> dict | None:
+    """A poll never waits for Docker; expired/unconfirmed identity is unknown."""
+    try:
+        files=[]
+        for path in (INSTALL_DIR/'.env',_pixel_model_journal_path(),_remote_provider_route_state_path()):
+            try:
+                info=path.stat();files.append((info.st_mtime_ns,info.st_size))
+            except FileNotFoundError:files.append(None)
+        key=(str(INSTALL_DIR),tuple(files))
+    except OSError:return None
+    with _pixel_model_read_lock:
+        if _pixel_model_read_cache.get('key')==key and time.monotonic()-_pixel_model_read_cache.get('at',0)<15:
+            value=_pixel_model_read_cache.get('value')
+            return dict(value) if isinstance(value,dict) else None
+        if _pixel_model_read_cache.get('fetching'):
+            return None
+        _pixel_model_read_cache.update(key=key,fetching=True,at=0,value=None)
+    def refresh():
+        try:value=_managed_pixel_runtime_contract()
+        except Exception:value=None
+        with _pixel_model_read_lock:
+            if _pixel_model_read_cache.get('key')==key:
+                _pixel_model_read_cache.update(value=value,at=time.monotonic(),fetching=False)
+    threading.Thread(target=refresh,name='ods-managed-model-readback',daemon=True).start()
+    return None
+
+
 def _managed_pixel_runtime_contract() -> dict[str, object] | None:
+    config = load_env(INSTALL_DIR / '.env')
+    if config.get('PIXEL_OPENWEBUI_KEY'):
+        value = _runtime_model_control('model-status', config=config)
+        if value['pending']:
+            raise RuntimeError('Managed model maintenance is pending')
+        return dict(value['contract'])
     if _ods_managed_pixel_identity() is None:
         return None
     path = INSTALL_DIR / "data" / "pixel" / "onboarding.json"
@@ -3796,6 +4226,8 @@ def _managed_pixel_runtime_contract() -> dict[str, object] | None:
         "maxTokens": value.get("modelMaxTokens"),
         "reasoning": value.get("modelReasoning"),
     }
+    if provider == "ods-gateway" and "modelRouteFingerprint" in value:
+        contract["routeFingerprint"] = value["modelRouteFingerprint"]
     if not _valid_managed_pixel_runtime_contract(contract):
         raise RuntimeError("ODS-managed Pixel onboarding runtime contract is invalid")
     return contract
@@ -3809,6 +4241,7 @@ def _reconcile_managed_pixel_contract(contract: dict[str, object] | None) -> str
         int(contract["contextLength"]),
         max_tokens=int(contract["maxTokens"]),
         reasoning=bool(contract["reasoning"]),
+        route_fingerprint=contract.get("routeFingerprint"),
     )
 
 
@@ -3870,7 +4303,7 @@ def _render_remote_provider_cloud_config(route: dict, env: dict[str, str]) -> No
         raise RuntimeError("Could not render the remote-provider LiteLLM route")
 
 
-def _activate_remote_provider_route(route: dict) -> dict[str, object]:
+def _activate_remote_provider_route(route: dict, *, transaction=None) -> dict[str, object]:
     """Commit a proven egress route to LiteLLM and managed Pixel, or roll back."""
     runtime = _remote_provider_runtime_contract(route)
     env_path = INSTALL_DIR / ".env"
@@ -3881,7 +4314,7 @@ def _activate_remote_provider_route(route: dict) -> dict[str, object]:
     activation_public_path = _remote_provider_activation_public_path()
     activation_snapshot = _snapshot_text_file(activation_path)
     activation_public_snapshot = _snapshot_text_file(activation_public_path)
-    pixel_before = _managed_pixel_runtime_contract()
+    pixel_before = transaction.previous if transaction is not None else _managed_pixel_runtime_contract()
     container_state = _capture_container_state("ods-litellm")
     if not container_state.get("running"):
         raise RuntimeError("LiteLLM must be running before a remote provider can become active")
@@ -3904,8 +4337,16 @@ def _activate_remote_provider_route(route: dict) -> dict[str, object]:
         "routeFingerprint": _remote_provider_route_fingerprint(route),
         "updatedAt": _iso_now(),
     }
+    owns_transaction = transaction is None
+    if owns_transaction:
+        transaction = _begin_pixel_model_transaction(load_env(env_path))
+        if transaction is not None:
+            pixel_before = transaction.previous
+            if not isinstance(existing, dict):
+                previous['pixel'] = pixel_before
     pixel_attempted = False
     litellm_recreated = False
+    litellm_attempted = False
     try:
         _write_remote_provider_activation_state(candidate_state)
         raw_env = str(env_snapshot.get("text") or "")
@@ -3914,6 +4355,7 @@ def _activate_remote_provider_route(route: dict) -> dict[str, object]:
         _write_bound_env_text(env_path, raw_env)
         env = load_env(env_path)
         _render_remote_provider_cloud_config(route, env)
+        litellm_attempted = True
         litellm_recreated = _restart_existing_container(
             "ods-litellm", container_state, recreate=True,
         )
@@ -3922,7 +4364,7 @@ def _activate_remote_provider_route(route: dict) -> dict[str, object]:
         _wait_for_container_health("ods-litellm")
         _verify_litellm_route(env, model="ods/current")
         pixel_attempted = pixel_before is not None
-        pixel_status = _reconcile_managed_pixel_contract(runtime)
+        pixel_status = transaction.apply(runtime) if transaction is not None else _reconcile_managed_pixel_contract(runtime)
         activation_public = {
             "active": True,
             "gateway": "litellm-cloud",
@@ -3941,8 +4383,16 @@ def _activate_remote_provider_route(route: dict) -> dict[str, object]:
         # Publish readiness only after the private recovery record commits.
         # A crash between these writes therefore degrades status safely.
         _write_remote_provider_activation_public(activation_public)
+        if transaction is not None and owns_transaction:
+            transaction.finish('commit')
         return activation_public
     except Exception as exc:
+        if isinstance(exc, _PixelModelTransactionUncertain):
+            raise
+        if transaction is not None and transaction.completed:
+            raise _PixelModelTransactionUncertain('Remote activation completed, but its final recovery receipt could not be saved') from exc
+        if transaction is not None:
+            transaction.verify_held()
         rollback_errors: list[str] = []
         try:
             _restore_bound_env_file(env_path, env_snapshot)
@@ -3951,24 +4401,30 @@ def _activate_remote_provider_route(route: dict) -> dict[str, object]:
             _restore_text_file(activation_public_path, activation_public_snapshot)
         except Exception as rollback_exc:
             rollback_errors.append(f"configuration: {rollback_exc}")
-        if litellm_recreated:
+        if litellm_attempted:
             try:
                 _restore_container_state("ods-litellm", container_state, recreate=True)
                 _wait_for_container_health("ods-litellm")
             except Exception as rollback_exc:
                 rollback_errors.append(f"LiteLLM: {rollback_exc}")
-        if pixel_attempted:
+        if pixel_attempted and transaction is None:
             try:
                 _reconcile_managed_pixel_contract(pixel_before)
             except Exception as rollback_exc:
                 rollback_errors.append(f"Pixel: {rollback_exc}")
+        if transaction is not None and rollback_errors:
+            raise _PixelModelTransactionUncertain('Remote consumer rollback is incomplete; managed model recovery is required') from exc
+        if transaction is not None and owns_transaction:
+            if not _prove_pixel_model_contract(load_env(env_path), pixel_before):
+                raise _PixelModelTransactionUncertain('Previous remote consumer route could not be proved; maintenance remains held') from exc
+            transaction.finish('rollback')
         detail = f"Remote provider consumer activation failed: {exc}"
         if rollback_errors:
             detail += "; rollback failed: " + "; ".join(rollback_errors)
         raise RuntimeError(detail) from exc
 
 
-def _deactivate_remote_provider_route() -> dict[str, object]:
+def _deactivate_remote_provider_route(*, transaction=None) -> dict[str, object]:
     """Restore the pre-remote gateway and Pixel route from private state."""
     activation = _read_remote_provider_activation_state()
     if activation is None:
@@ -3982,9 +4438,15 @@ def _deactivate_remote_provider_route() -> dict[str, object]:
     cloud_snapshot = _snapshot_text_file(cloud_path)
     activation_snapshot = _snapshot_text_file(activation_path)
     activation_public_snapshot = _snapshot_text_file(activation_public_path)
-    pixel_before = _managed_pixel_runtime_contract()
+    pixel_before = transaction.previous if transaction is not None else _managed_pixel_runtime_contract()
     container_state = _capture_container_state("ods-litellm")
+    owns_transaction = transaction is None
+    if owns_transaction:
+        transaction = _begin_pixel_model_transaction(load_env(env_path))
+        if transaction is not None:
+            pixel_before = transaction.previous
     litellm_recreated = False
+    litellm_attempted = False
     pixel_attempted = False
     try:
         raw_env = str(env_snapshot.get("text") or "")
@@ -3995,6 +4457,7 @@ def _deactivate_remote_provider_route() -> dict[str, object]:
         if not isinstance(cloud_config, dict):
             raise RuntimeError("Remote-provider rollback is missing the prior cloud config")
         _restore_text_file(cloud_path, cloud_config)
+        litellm_attempted = True
         litellm_recreated = _restart_existing_container(
             "ods-litellm", container_state, recreate=True,
         )
@@ -4005,9 +4468,16 @@ def _deactivate_remote_provider_route() -> dict[str, object]:
         _verify_litellm_route(restored_env, model="ods/current")
         previous_pixel = previous.get("pixel")
         pixel_attempted = previous_pixel is not None
-        pixel_status = _reconcile_managed_pixel_contract(previous_pixel)
+        if transaction is not None:
+            if not isinstance(previous_pixel, dict) or not _prove_pixel_model_contract(restored_env, previous_pixel):
+                raise RuntimeError('Previous local runtime could not be proved before remote deactivation')
+            pixel_status = transaction.apply(previous_pixel)
+        else:
+            pixel_status = _reconcile_managed_pixel_contract(previous_pixel)
         _remove_remote_provider_file(activation_path)
         _remove_remote_provider_file(activation_public_path)
+        if transaction is not None and owns_transaction:
+            transaction.finish('commit')
         return {
             "active": False,
             "restored": True,
@@ -4016,6 +4486,12 @@ def _deactivate_remote_provider_route() -> dict[str, object]:
             "proven": True,
         }
     except Exception as exc:
+        if isinstance(exc, _PixelModelTransactionUncertain):
+            raise
+        if transaction is not None and transaction.completed:
+            raise _PixelModelTransactionUncertain('Remote deactivation completed, but its final recovery receipt could not be saved') from exc
+        if transaction is not None:
+            transaction.verify_held()
         rollback_errors: list[str] = []
         try:
             _restore_bound_env_file(env_path, env_snapshot)
@@ -4024,17 +4500,23 @@ def _deactivate_remote_provider_route() -> dict[str, object]:
             _restore_text_file(activation_public_path, activation_public_snapshot)
         except Exception as rollback_exc:
             rollback_errors.append(f"configuration: {rollback_exc}")
-        if litellm_recreated:
+        if litellm_attempted:
             try:
                 _restore_container_state("ods-litellm", container_state, recreate=True)
                 _wait_for_container_health("ods-litellm")
             except Exception as rollback_exc:
                 rollback_errors.append(f"LiteLLM: {rollback_exc}")
-        if pixel_attempted:
+        if pixel_attempted and transaction is None:
             try:
                 _reconcile_managed_pixel_contract(pixel_before)
             except Exception as rollback_exc:
                 rollback_errors.append(f"Pixel: {rollback_exc}")
+        if transaction is not None and rollback_errors:
+            raise _PixelModelTransactionUncertain('Remote deactivation rollback is incomplete; managed model recovery is required') from exc
+        if transaction is not None and owns_transaction:
+            if not _prove_pixel_model_contract(load_env(env_path), pixel_before):
+                raise _PixelModelTransactionUncertain('Previous remote runtime could not be proved; maintenance remains held') from exc
+            transaction.finish('rollback')
         detail = f"Remote provider deactivation failed: {exc}"
         if rollback_errors:
             detail += "; rollback failed: " + "; ".join(rollback_errors)
@@ -4303,8 +4785,20 @@ def _apply_remote_provider_lifecycle_operation(payload: dict, plan: dict) -> dic
 
     snapshots: dict[Path, dict] = {}
     mutation_started = False
+    pixel_transaction = None
     try:
         snapshots = {path: _snapshot_text_file(path) for path in mutation_paths}
+        transaction_env = load_env(INSTALL_DIR / '.env')
+        if (ssh_configure or ssh_enable) and transaction_env.get('PIXEL_OPENWEBUI_KEY'):
+            current = _managed_pixel_runtime_contract()
+            if not isinstance(current, dict) or current.get('routeFingerprint'):
+                raise RuntimeError('Disable the active remote provider before staging an SSH replacement')
+            if not _prove_pixel_model_contract(transaction_env, current):
+                raise RuntimeError('The current local model must be verified before staging an SSH provider')
+        pixel_transaction = _begin_pixel_model_transaction(transaction_env)
+        if pixel_transaction is not None and (ssh_configure or ssh_enable) \
+                and pixel_transaction.previous.get('routeFingerprint'):
+            raise RuntimeError('Disable the active remote provider before staging an SSH replacement')
         # A prior receipt must never describe a route while that route is being
         # replaced, disabled, or removed. Outer rollback restores it on error.
         _remove_remote_provider_file(_remote_provider_activation_public_path())
@@ -4320,7 +4814,8 @@ def _apply_remote_provider_lifecycle_operation(payload: dict, plan: dict) -> dic
             if ssh_configure:
                 result["staged"] = True
             else:
-                result["activation"] = _activate_remote_provider_route(route)
+                result["activation"] = _activate_remote_provider_route(route, transaction=pixel_transaction) \
+                    if pixel_transaction is not None else _activate_remote_provider_route(route)
                 result["applied"] = True
         elif action == "enable":
             _write_remote_provider_route_state(
@@ -4332,7 +4827,8 @@ def _apply_remote_provider_lifecycle_operation(payload: dict, plan: dict) -> dic
             if ssh_enable:
                 result["staged"] = True
             else:
-                result["activation"] = _activate_remote_provider_route(route)
+                result["activation"] = _activate_remote_provider_route(route, transaction=pixel_transaction) \
+                    if pixel_transaction is not None else _activate_remote_provider_route(route)
                 result["applied"] = True
         elif action == "disable":
             if isinstance(saved_state, dict) and saved_state.get("enabled") is True:
@@ -4369,27 +4865,55 @@ def _apply_remote_provider_lifecycle_operation(payload: dict, plan: dict) -> dic
                     )
             _write_remote_provider_route_state(plan, resume=resume)
             mutation_started = True
-            result["activation"] = _deactivate_remote_provider_route()
+            result["activation"] = _deactivate_remote_provider_route(transaction=pixel_transaction) \
+                if pixel_transaction is not None else _deactivate_remote_provider_route()
             result["applied"] = True
         elif action == "remove":
             for path in mutation_paths:
                 _remove_remote_provider_file(path)
                 mutation_started = True
-            result["activation"] = _deactivate_remote_provider_route()
+            result["activation"] = _deactivate_remote_provider_route(transaction=pixel_transaction) \
+                if pixel_transaction is not None else _deactivate_remote_provider_route()
             result["applied"] = True
+        if pixel_transaction is not None:
+            if result['staged']:
+                # SSH provisioning changes only staged provider files while
+                # the proven local inference/contract stays intact. A later
+                # egress proof acquires a fresh transaction to activate it.
+                if not _prove_pixel_model_contract(load_env(INSTALL_DIR / '.env'), pixel_transaction.previous):
+                    raise RuntimeError('The local model could not be verified after SSH staging')
+                pixel_transaction.finish('rollback')
+            else:
+                if pixel_transaction.target is None:
+                    if not _prove_pixel_model_contract(load_env(INSTALL_DIR / '.env'), pixel_transaction.previous):
+                        raise RuntimeError('The unchanged model route could not be verified')
+                    pixel_transaction.apply(pixel_transaction.previous)
+                pixel_transaction.finish('commit')
     except Exception as exc:
+        if isinstance(exc, _PixelModelTransactionUncertain):
+            raise
+        if pixel_transaction is not None and pixel_transaction.completed:
+            raise _PixelModelTransactionUncertain('Remote provider transaction completed, but its final recovery receipt could not be saved') from exc
         rollback = {"attempted": False, "ok": None}
+        if pixel_transaction is not None:
+            pixel_transaction.verify_held()
         if mutation_started and snapshots:
             rollback["attempted"] = True
             try:
                 _restore_remote_provider_snapshots(snapshots)
             except Exception as rollback_exc:
                 rollback["ok"] = False
+                if pixel_transaction is not None:
+                    raise _PixelModelTransactionUncertain('Previous provider files could not be restored; managed model recovery is required') from rollback_exc
                 raise _RemoteProviderApplyError(
                     f"Remote provider apply failed: {exc}; rollback failed: {rollback_exc}",
                     rollback,
                 ) from exc
             rollback["ok"] = True
+        if pixel_transaction is not None:
+            if not _prove_pixel_model_contract(load_env(INSTALL_DIR / '.env'), pixel_transaction.previous):
+                raise _PixelModelTransactionUncertain('Previous provider route could not be proved; managed model recovery is required') from exc
+            pixel_transaction.finish('rollback')
         raise _RemoteProviderApplyError(
             f"Remote provider apply failed: {exc}",
             rollback,
@@ -4621,6 +5145,19 @@ def _detect_docker_bridge_gateway() -> str:
     return _detect_docker_network_gateway("bridge")
 
 
+def _local_bind_address_available(address: str) -> bool:
+    """Return whether an address belongs to this host network namespace."""
+    if not address:
+        return False
+    family = socket.AF_INET6 if ":" in address else socket.AF_INET
+    try:
+        with socket.socket(family, socket.SOCK_STREAM) as probe:
+            probe.bind((address, 0))
+    except OSError:
+        return False
+    return True
+
+
 def _running_under_wsl(
     system_name: str | None = None,
     kernel_release: str | None = None,
@@ -4641,7 +5178,19 @@ def _resolve_agent_bind_addr(env: dict, system_name: str | None = None) -> str:
             return "0.0.0.0"
         return explicit
 
-    if system_name in ("Darwin", "Windows") or _running_under_wsl(system_name):
+    if system_name in ("Darwin", "Windows"):
+        return "127.0.0.1"
+
+    if _running_under_wsl(system_name):
+        # A native Docker daemon inside WSL owns its default bridge locally,
+        # and Compose's host-gateway mapping resolves to that address. Bind
+        # only that scoped bridge so dashboard-api can reach the agent without
+        # exposing it on WSL's LAN-facing interface. Docker Desktop reports a
+        # bridge gateway from a different network namespace; the bindability
+        # check preserves its existing loopback-forwarding path.
+        bridge_gateway = _detect_docker_bridge_gateway()
+        if _local_bind_address_available(bridge_gateway):
+            return bridge_gateway
         return "127.0.0.1"
 
     if system_name == "Linux":
@@ -4723,7 +5272,19 @@ def resolve_compose_flags() -> list:
     if flags_file.exists():
         raw = flags_file.read_text(encoding="utf-8").strip()
         if raw:
-            return raw.split()
+            flags = raw.split()
+            active_name = ".active-model-store.compose.json"
+            flags = [value for index, value in enumerate(flags)
+                     if not (Path(value).name == active_name or (value == "-f" and index+1 < len(flags) and Path(flags[index+1]).name == active_name))]
+            overlay = ".model-stores.compose.json"
+            if (INSTALL_DIR / overlay).is_file():
+                _model_stores.validated_compose_overlay(INSTALL_DIR)
+                if overlay not in flags:
+                    flags.extend(["-f", overlay])
+            active_mount = _model_stores.active_compose_overlay(INSTALL_DIR, load_env(INSTALL_DIR / ".env").get("ODS_ACTIVE_MODEL_STORE", "default"))
+            if active_mount:
+                flags.extend(["-f", str(active_mount)])
+            return flags
 
     script = INSTALL_DIR / "scripts" / "resolve-compose-stack.sh"
     # Contract note: every resolver launch below must include --gpu-count and
@@ -5286,6 +5847,40 @@ def _windows_dxgi_adapters() -> list[dict]:
         return []
 
 
+def _windows_gpu_counters(script: str) -> dict:
+    """Read CIM through an available PowerShell, sharing one bounded deadline.
+
+    PowerShell 7 does not depend on the legacy Windows .NET Framework install.
+    Keep the inbox shell as a fallback for machines without PowerShell 7.
+    """
+    candidates = []
+    for name in ("pwsh.exe", "pwsh", "powershell.exe"):
+        executable = shutil.which(name)
+        if executable and executable.casefold() not in {item.casefold() for item in candidates}:
+            candidates.append(executable)
+    if not candidates:
+        candidates.append("powershell.exe")
+    deadline = time.monotonic() + 8.0
+    for executable in candidates:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            result = subprocess.run(
+                [executable, "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=remaining,
+            )
+            if result.returncode != 0:
+                continue
+            data = json.loads(result.stdout.lstrip("\ufeff"))
+            if isinstance(data, dict) and isinstance(data.get("adapters"), list):
+                return data
+        except (OSError, subprocess.SubprocessError, ValueError):
+            continue
+    raise RuntimeError("Windows GPU performance counters are unavailable")
+
+
 def _windows_gpu_metrics() -> dict | None:
     """Collect real per-adapter Windows GPU utilization and memory use."""
     global _windows_gpu_metrics_cache, _windows_dxgi_adapters_cache
@@ -5348,13 +5943,7 @@ foreach ($prefix in $prefixes) {{
   ConvertTo-Json -Compress
 """
         try:
-            result = subprocess.run(
-                ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
-                capture_output=True, text=True, timeout=8,
-            )
-            if result.returncode != 0:
-                raise RuntimeError((result.stderr or result.stdout).strip())
-            counters = json.loads(result.stdout)
+            counters = _windows_gpu_counters(script)
             counter_rows = counters.get("adapters")
             if not isinstance(counter_rows, list):
                 raise ValueError("GPU counter response did not contain an adapter list")
@@ -5581,9 +6170,10 @@ def _docker_service_health_snapshot() -> dict:
         )
         if names_result.returncode != 0:
             raise RuntimeError((names_result.stderr or names_result.stdout).strip())
+        declared_containers = _declared_docker_containers()
         names = [
             name.strip() for name in names_result.stdout.splitlines()
-            if name.strip().startswith("ods-")
+            if name.strip().startswith("ods-") or name.strip() in declared_containers
         ]
         containers: list[dict] = []
         if names:
@@ -5603,6 +6193,7 @@ def _docker_service_health_snapshot() -> dict:
                 labels = (item.get("Config") or {}).get("Labels") or {}
                 service_id = labels.get("com.docker.compose.service")
                 container_name = str(item.get("Name") or "").lstrip("/")
+                service_id = declared_containers.get(container_name, service_id)
                 if not service_id and container_name.startswith("ods-"):
                     service_id = container_name.removeprefix("ods-")
                 containers.append({
@@ -6010,6 +6601,11 @@ def _split_nmcli_terse(line: str) -> list[str]:
     return parts
 
 
+def _nmcli_env() -> dict[str, str]:
+    """Use English status text and UTF-8 network names in child processes only."""
+    return {**os.environ, "LC_ALL": "C.UTF-8", "LANGUAGE": "C"}
+
+
 def _network_supported(handler) -> bool:
     """Linux + nmcli precondition for Wi-Fi endpoints. Sends a 501 on failure
     so the caller doesn't need to repeat the check; returns True only when
@@ -6254,6 +6850,30 @@ def _service_has_docker_container(service_id: str) -> tuple[bool, str]:
     return True, ""
 
 
+def _declared_docker_containers() -> dict[str, str]:
+    """Map effective extension container names to their dashboard service IDs."""
+    service_ids = {
+        path.name
+        for root in (EXTENSIONS_DIR, USER_EXTENSIONS_DIR)
+        if root.is_dir()
+        for path in root.iterdir()
+        if path.is_dir() and SERVICE_ID_RE.fullmatch(path.name)
+    }
+    containers = {}
+    for service_id in sorted(service_ids):
+        ext_dir = _find_ext_dir(service_id)
+        if ext_dir is None:
+            continue
+        manifest = _read_manifest(ext_dir)
+        service = manifest.get("service", {}) if manifest else {}
+        if not isinstance(service, dict) or (service.get("type") or "docker") != "docker":
+            continue
+        name = service.get("container_name", f"ods-{service_id}")
+        if isinstance(name, str) and name.strip():
+            containers[name.strip()] = service_id
+    return containers
+
+
 def _is_other_ext_compose(fpath: str, service_id: str, ext_roots: tuple) -> bool:
     """True if fpath points to an extension compose file owned by an
     extension other than service_id. Used to filter `-f` args from the
@@ -6382,11 +7002,11 @@ def _find_update_bash() -> str | None:
     global _update_usable_bash
     if isinstance(_update_usable_bash, str):
         return _update_usable_bash
-    if _update_usable_bash is False:
-        return None
+    # Do not short-circuit on False — re-probe every time the underlying
+    # function hasn't cached a success yet.
 
     bash = _find_usable_bash()
-    _update_usable_bash = bash if bash else False
+    _update_usable_bash = bash if bash else None
     return bash
 
 
@@ -6440,6 +7060,8 @@ class AgentHandler(BaseHTTPRequestHandler):
             self._handle_model_list()
         elif path == "/v1/model/status":
             self._handle_model_status()
+        elif path == "/v1/model/recovery":
+            self._handle_model_recovery_status()
         elif path == "/v1/network/wifi-scan":
             self._handle_network_wifi_scan()
         elif path == "/v1/network/status":
@@ -6482,16 +7104,11 @@ class AgentHandler(BaseHTTPRequestHandler):
     def _handle_pixel_access_mode(self, change: bool):
         if not check_auth(self):
             return
-        from pixel_access_client import request_access
+        from pixel_access_relay import request_runtime_access
+        config = load_env(INSTALL_DIR / '.env')
         if not change:
-            if platform.system() != "Linux":
-                json_response(self, 200, {"available": False, "surface": platform.system().lower(),
-                    "configured_mode": "unknown", "effective_mode": "unknown", "runtime_verified": False,
-                    "revision": None, "busy": False, "pending": False, "scope": "owner-host",
-                    "reason": "macos-launchd-adapter-missing" if platform.system() == "Darwin" else "native-windows-adapter-missing"})
-                return
             try:
-                status, body = request_access("status")
+                status, body = request_runtime_access("status", config=config)
                 json_response(self, status, body)
             except Exception:
                 json_response(self, 503, {"error": "access-service-unavailable"})
@@ -6504,7 +7121,7 @@ class AgentHandler(BaseHTTPRequestHandler):
             json_response(self, 409, {"error": "model-lifecycle-busy"})
             return
         try:
-            status, response = request_access("change", body)
+            status, response = request_runtime_access("change", body, config=config)
             json_response(self, status, response)
         except Exception:
             json_response(self, 503, {"error": "access-transition-unavailable"})
@@ -6858,6 +7475,7 @@ class AgentHandler(BaseHTTPRequestHandler):
             if result.returncode != 0:
                 logger.warning("docker stats returned non-zero: %s", result.stderr[:200] if result.stderr else "")
 
+            declared_containers = _declared_docker_containers()
             containers = []
             for line in result.stdout.strip().splitlines():
                 if not line.strip():
@@ -6868,7 +7486,7 @@ class AgentHandler(BaseHTTPRequestHandler):
                     continue
 
                 name = raw.get("name", "")
-                if not name.startswith("ods-"):
+                if not name.startswith("ods-") and name not in declared_containers:
                     continue
 
                 cpu_str = raw.get("cpu", "0%").rstrip("%")
@@ -6887,7 +7505,7 @@ class AgentHandler(BaseHTTPRequestHandler):
                 except ValueError:
                     mem_percent = 0.0
 
-                service_id = name.removeprefix("ods-")
+                service_id = declared_containers.get(name, name.removeprefix("ods-"))
 
                 try:
                     pids = int(raw.get("pids", "0") or "0")
@@ -6984,6 +7602,8 @@ class AgentHandler(BaseHTTPRequestHandler):
             self._handle_model_download_cancel()
         elif self.path == "/v1/model/activate":
             self._handle_model_activate()
+        elif self.path == "/v1/model/recover":
+            self._handle_model_recover()
         elif self.path == "/v1/remote-provider/plan":
             self._handle_remote_provider_plan()
         elif self.path == "/v1/remote-provider/apply":
@@ -7875,7 +8495,7 @@ class AgentHandler(BaseHTTPRequestHandler):
         try:
             subprocess.run(
                 ["nmcli", "device", "wifi", "rescan"],
-                capture_output=True, timeout=10,
+                capture_output=True, timeout=10, env=_nmcli_env(),
             )
         except (subprocess.TimeoutExpired, OSError):
             pass
@@ -7891,7 +8511,7 @@ class AgentHandler(BaseHTTPRequestHandler):
             result = subprocess.run(
                 ["nmcli", "-t", "-f",
                  "SSID,SIGNAL,SECURITY,IN-USE", "device", "wifi", "list"],
-                capture_output=True, text=True, timeout=15,
+                capture_output=True, text=True, timeout=15, env=_nmcli_env(),
             )
         except subprocess.TimeoutExpired:
             json_response(self, 504, {"error": "nmcli wifi list timed out"})
@@ -7919,15 +8539,17 @@ class AgentHandler(BaseHTTPRequestHandler):
             except (ValueError, TypeError):
                 signal_pct = 0
             existing = networks_by_ssid.get(ssid)
+            in_use = in_use_str == "*" or bool(existing and existing["in_use"])
             if existing and existing["signal"] >= signal_pct:
+                existing["in_use"] = in_use
                 continue
             # nmcli sometimes returns multiple rows per SSID (one per BSSID).
-            # Collapse on SSID and keep the strongest signal observed.
+            # Keep the strongest signal and connection state from any BSSID.
             networks_by_ssid[ssid] = {
                 "ssid": ssid,
                 "signal": signal_pct,
                 "security": security or "open",
-                "in_use": in_use_str == "*",
+                "in_use": in_use,
             }
 
         # Strongest signal first — that's the order the wizard wants to display.
@@ -7971,7 +8593,7 @@ class AgentHandler(BaseHTTPRequestHandler):
 
         try:
             result = subprocess.run(
-                args, capture_output=True, text=True, timeout=45,
+                args, capture_output=True, text=True, timeout=45, env=_nmcli_env(),
             )
         except subprocess.TimeoutExpired:
             json_response(self, 504, {"error": "Connection attempt timed out"})
@@ -8032,7 +8654,7 @@ class AgentHandler(BaseHTTPRequestHandler):
         try:
             check = subprocess.run(
                 ["nmcli", "-t", "-f", "connection.type", "connection", "show", connection],
-                capture_output=True, text=True, timeout=10,
+                capture_output=True, text=True, timeout=10, env=_nmcli_env(),
             )
         except subprocess.TimeoutExpired:
             json_response(self, 504, {"error": "nmcli show timed out"})
@@ -8070,7 +8692,7 @@ class AgentHandler(BaseHTTPRequestHandler):
         try:
             result = subprocess.run(
                 ["nmcli", "connection", "delete", connection],
-                capture_output=True, text=True, timeout=15,
+                capture_output=True, text=True, timeout=15, env=_nmcli_env(),
             )
         except subprocess.TimeoutExpired:
             json_response(self, 504, {"error": "nmcli delete timed out"})
@@ -8106,7 +8728,7 @@ class AgentHandler(BaseHTTPRequestHandler):
         try:
             result = subprocess.run(
                 ["nmcli", "-t", "-f", "DEVICE,TYPE,STATE,CONNECTION", "device", "status"],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True, text=True, timeout=5, env=_nmcli_env(),
             )
         except subprocess.TimeoutExpired:
             json_response(self, 504, {"error": "nmcli timed out"})
@@ -8135,34 +8757,46 @@ class AgentHandler(BaseHTTPRequestHandler):
             device, typ, state, connection = parts[0], parts[1], parts[2], parts[3]
             if state != "connected":
                 continue
-            ip_addr = ""
-            gateway = ""
-            try:
-                ip_result = subprocess.run(
-                    ["nmcli", "-t", "-f", "IP4.ADDRESS,IP4.GATEWAY",
-                     "device", "show", device],
-                    capture_output=True, text=True, timeout=5,
-                )
-                for ip_line in ip_result.stdout.splitlines():
-                    if ip_line.startswith("IP4.ADDRESS"):
-                        _, _, val = ip_line.partition(":")
-                        ip_addr = val.split("/")[0]
-                    elif ip_line.startswith("IP4.GATEWAY"):
-                        _, _, val = ip_line.partition(":")
-                        gateway = val
-            except (subprocess.TimeoutExpired, OSError):
-                pass
-
             devices.append({
                 "device": device,
                 "type": typ,
                 "state": state,
                 "connection": connection,
-                "ip": ip_addr,
-                "gateway": gateway,
+                "ip": "",
+                "gateway": "",
             })
             if typ == "wifi":
                 wifi_connected = True
+
+        # One query for all interfaces bounds the entire operation to two
+        # subprocess timeouts, regardless of the number of connected devices.
+        if devices:
+            by_device = {item["device"]: item for item in devices}
+            try:
+                ip_result = subprocess.run(
+                    ["nmcli", "-t", "-f", "GENERAL.DEVICE,IP4.ADDRESS,IP4.GATEWAY",
+                     "device", "show"],
+                    capture_output=True, text=True, timeout=5, env=_nmcli_env(),
+                )
+                if ip_result.returncode != 0:
+                    logger.warning("Network address query failed with exit %s", ip_result.returncode)
+                else:
+                    current = None
+                    for ip_line in ip_result.stdout.splitlines():
+                        parts = _split_nmcli_terse(ip_line)
+                        if len(parts) != 2:
+                            continue
+                        key, value = parts
+                        if key == "GENERAL.DEVICE":
+                            current = by_device.get(value)
+                        elif current is not None and key.startswith("IP4.ADDRESS"):
+                            current["ip"] = value.split("/")[0]
+                        elif current is not None and key == "IP4.GATEWAY":
+                            current["gateway"] = value
+            except subprocess.TimeoutExpired:
+                logger.warning("Network address query timed out; returning connection state without addresses")
+            except OSError as exc:
+                logger.warning("Network address query unavailable: %s", exc)
 
         json_response(self, 200, {
             "platform_supported": True,
@@ -8655,18 +9289,18 @@ class AgentHandler(BaseHTTPRequestHandler):
             container_name = f"ods-{service_id}"
             cmd = ["docker", "logs", "--tail", str(tail), container_name]
             result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=5,
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=5,
             )
+            output = result.stdout or ""
             # Handle container not yet created (e.g. during image pull)
-            if result.returncode != 0 and "no such container" in (result.stderr or "").lower():
+            if result.returncode != 0 and "no such container" in output.lower():
                 json_response(self, 200, {
                     "service_id": service_id,
                     "logs": "Container is starting up — logs will appear once it is running.",
                     "lines": 0,
                 })
                 return
-            # docker logs writes to stderr for some containers
-            output = result.stdout or result.stderr or ""
+            # Both container streams share one pipe, preserving their emitted order.
             json_response(self, 200, {
                 "service_id": service_id,
                 "logs": output[-50000:],
@@ -8705,9 +9339,10 @@ class AgentHandler(BaseHTTPRequestHandler):
         try:
             result = subprocess.run(
                 ["docker", "logs", "--tail", str(tail), container_name],
-                capture_output=True, text=True, timeout=5,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=5,
             )
-            if result.returncode != 0 and "no such container" in (result.stderr or "").lower():
+            output = result.stdout or ""
+            if result.returncode != 0 and "no such container" in output.lower():
                 json_response(self, 200, {
                     "service_id": sid,
                     "container_name": container_name,
@@ -8716,9 +9351,8 @@ class AgentHandler(BaseHTTPRequestHandler):
                 })
                 return
             if result.returncode != 0:
-                json_response(self, 500, {"error": f"docker logs failed: {(result.stderr or '')[:500]}"})
+                json_response(self, 500, {"error": f"docker logs failed: {output[:500]}"})
                 return
-            output = result.stdout or result.stderr or ""
             json_response(self, 200, {
                 "service_id": sid,
                 "container_name": container_name,
@@ -9171,13 +9805,11 @@ class AgentHandler(BaseHTTPRequestHandler):
 
             # Scan downloaded GGUFs
             downloaded = {}
-            if models_dir.is_dir():
-                for f in models_dir.iterdir():
-                    if f.name.lower().endswith(".gguf") and _model_file_ready(f):
-                        try:
-                            downloaded[f.name] = f.stat().st_size
-                        except OSError:
-                            pass
+            for name, path in _model_stores.scan_model_files(INSTALL_DIR / "data", container=bool(os.environ.get("ODS_HOST_INSTALL_DIR"))).items():
+                try:
+                    downloaded[name] = path.stat().st_size
+                except OSError:
+                    continue
 
             # Active model from .env
             active_gguf = ""
@@ -9710,6 +10342,30 @@ class AgentHandler(BaseHTTPRequestHandler):
                 pass
         json_response(self, 200, {"status": "cancelling"})
 
+    def _handle_model_recovery_status(self):
+        if not check_auth(self):return
+        try:
+            json_response(self,200,_pixel_model_recovery_status(),no_store=True)
+        except Exception:
+            json_response(self,503,{'pending':True,'phase':'unavailable','transactionId':None},no_store=True)
+
+    def _handle_model_recover(self):
+        if not check_auth(self):
+            return
+        body=read_json_body(self)
+        if body is None:return
+        if body!={}:json_response(self,400,{'error':'Recovery accepts an empty request only'});return
+        acquired,_active=_begin_model_lifecycle('model_recovery')
+        if not acquired:
+            json_response(self,409,{'error':'Model lifecycle is busy'});return
+        try:
+            result=_recover_pixel_model_transaction(load_env(INSTALL_DIR/'.env'))
+            json_response(self,409 if result['pending'] else 200,result,no_store=True)
+        except Exception:
+            json_response(self,503,{'pending':True,'phase':'unavailable','reason':'model-recovery-unavailable'},no_store=True)
+        finally:
+            _end_model_lifecycle('model_recovery')
+
     def _handle_model_activate(self):
         """Swap active model: update .env + models.ini + restart llama-server."""
         if not check_auth(self):
@@ -9869,7 +10525,7 @@ class AgentHandler(BaseHTTPRequestHandler):
         if not target_gguf:
             json_response(self, 400, {"error": "gguf_file is required"})
             return
-        target = _safe_model_artifact_path(INSTALL_DIR / "data" / "models", target_gguf)
+        target = _installed_model_file(target_gguf)
         if target is None:
             json_response(self, 400, {"error": "Invalid model file path"})
             return
@@ -10034,12 +10690,16 @@ class AgentHandler(BaseHTTPRequestHandler):
             return
 
         def local_gguf_model_from_id(raw_model_id: str) -> dict | None:
-            models_dir = INSTALL_DIR / "data" / "models"
-            gguf_file = _resolve_local_gguf_filename(raw_model_id, models_dir)
+            matching = []
+            for store in _model_stores.registered_stores(INSTALL_DIR / "data", container=bool(os.environ.get("ODS_HOST_INSTALL_DIR"))):
+                found = _resolve_local_gguf_filename(raw_model_id, store["path"])
+                if found:
+                    matching.append((found, store["path"]))
+            gguf_file = matching[0][0] if len(matching) == 1 else None
             if not gguf_file:
                 return None
-            target = (models_dir / gguf_file).resolve()
-            if not target.is_relative_to(models_dir.resolve()) or not target.is_file():
+            target = _model_stores.safe_artifact(matching[0][1], gguf_file, allow_empty=True)
+            if target is None:
                 return None
 
             env_values = load_env(INSTALL_DIR / ".env")
@@ -10109,11 +10769,11 @@ class AgentHandler(BaseHTTPRequestHandler):
         llama_server_image = model.get("llama_server_image")
 
         # Verify GGUF exists on disk (with path traversal protection)
-        models_dir = INSTALL_DIR / "data" / "models"
-        target = (models_dir / gguf_file).resolve()
-        if not target.is_relative_to(models_dir.resolve()):
-            json_response(self, 400, {"error": "Invalid model file path"})
+        target = _installed_model_file(gguf_file)
+        if target is None:
+            json_response(self, 400, {"error": "Model file not downloaded or empty, ambiguous, or outside registered model stores"})
             return
+        models_dir = target.parent
         if not _model_file_ready(target):
             json_response(self, 400, {"error": f"Model file not downloaded or empty: {gguf_file}"})
             return
@@ -10141,6 +10801,42 @@ class AgentHandler(BaseHTTPRequestHandler):
                     },
                 )
                 return
+
+        selected_store = _model_stores.store_for_model(INSTALL_DIR / "data", gguf_file, container=bool(os.environ.get("ODS_HOST_INSTALL_DIR")))
+        try:
+            local_runtime_profile = _model_stores.lemonade_profile(INSTALL_DIR / "data", gguf_file, container=bool(os.environ.get("ODS_HOST_INSTALL_DIR")))
+            if local_runtime_profile and _uses_lemonade_runtime(persisted_env) and not _is_windows_host_lemonade(persisted_env):
+                raise ValueError("This native runtime profile requires a host-managed runtime; configure the compatible binary inside the Lemonade container before activating it")
+            if local_runtime_profile and not (_is_windows_host_lemonade(persisted_env) or _is_windows_host_llama_server(persisted_env) or persisted_env.get("GPU_BACKEND") == "apple"):
+                raise ValueError("This model profile qualifies a native executable, not the container runtime; qualify the executable inside the inference image before enabling MTP there")
+            if local_runtime_profile:
+                for artifact_path, hash_key in ((target, "modelSha256"), (Path(local_runtime_profile["executable"]), "runtimeSha256")):
+                    expected_sha = local_runtime_profile.get(hash_key)
+                    if hash_key == "modelSha256" and model_from_catalog and expected_sha == model.get("gguf_sha256"):
+                        continue  # The same complete artifact was verified above.
+                    if expected_sha:
+                        valid, reason = _verify_model_artifact(artifact_path, {"sha256":expected_sha})
+                        if not valid:
+                            raise ValueError(f"Registered runtime qualification changed: {reason}")
+            if local_runtime_profile and local_runtime_profile["mtp"]:
+                probe = subprocess.run([local_runtime_profile["executable"], "--help"], capture_output=True, text=True, timeout=20,
+                                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                if probe.returncode != 0 or "draft-mtp" not in (probe.stdout + probe.stderr) or "--spec-draft-n-max" not in (probe.stdout + probe.stderr):
+                    raise ValueError("The registered runtime does not support native MTP")
+            fit = local_runtime_profile.get("memoryQualification") if local_runtime_profile else None
+            if isinstance(fit, dict):
+                projector = _model_stores.safe_artifact(target.parent, fit.get("visionProjectorFile"))
+                expected_sha = fit.get("visionProjectorSha256")
+                if projector is None or not isinstance(expected_sha, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_sha):
+                    raise ValueError("The memory-qualified vision projector is unavailable")
+                valid, reason = _verify_model_artifact(projector, {"sha256":expected_sha})
+                if not valid:
+                    raise ValueError(f"Qualified vision projector changed: {reason}")
+            if local_runtime_profile:
+                _model_stores.validate_profile_command(local_runtime_profile, target, lemonade=_is_windows_host_lemonade(persisted_env))
+        except (ValueError, OSError, subprocess.SubprocessError) as exc:
+            json_response(self, 400, {"error": str(exc)})
+            return
 
         tier_context_limit: int | None = None
         if requested_tier is not None:
@@ -10207,6 +10903,8 @@ class AgentHandler(BaseHTTPRequestHandler):
         env_snapshot: dict | None = None
         ini_snapshot: dict | None = None
         lemonade_snapshot: dict | None = None
+        lemonade_recipe_snapshot: dict | None = None
+        lemonade_recipe_path: Path | None = None
         litellm_local_snapshot: dict | None = None
         litellm_switchboard_snapshot: dict | None = None
         model_router_endpoints_snapshot: dict | None = None
@@ -10230,6 +10928,7 @@ class AgentHandler(BaseHTTPRequestHandler):
         perplexica_mutated = False
         pixel_reconcile_attempted = False
         pixel_status = "not_installed"
+        pixel_transaction = None
         apple_llama_bin: Path | None = None
         apple_llama_log: Path | None = None
         apple_pid_file: Path | None = None
@@ -10237,6 +10936,8 @@ class AgentHandler(BaseHTTPRequestHandler):
         final_runtime_proof: dict[str, object] | None = None
         gpu_assignment_plan: dict | None = None
         previous_pixel_context: int | None = None
+        router_target_published = False
+        previous_router_active = {}
 
         def restore_backups():
             if env_snapshot is not None:
@@ -10245,6 +10946,8 @@ class AgentHandler(BaseHTTPRequestHandler):
                 _restore_text_file(models_ini, ini_snapshot)
             if lemonade_snapshot is not None:
                 _restore_text_file(lemonade_yaml, lemonade_snapshot)
+            if lemonade_recipe_snapshot is not None and lemonade_recipe_path is not None:
+                _restore_text_file(lemonade_recipe_path, lemonade_recipe_snapshot)
             if litellm_local_snapshot is not None:
                 _restore_text_file(litellm_local_yaml, litellm_local_snapshot)
             if litellm_switchboard_snapshot is not None:
@@ -10271,8 +10974,17 @@ class AgentHandler(BaseHTTPRequestHandler):
             if opencode_snapshot is not None:
                 _restore_opencode_config(opencode_snapshot)
 
+        def previous_runtime_env():
+            restored = load_env(env_path)
+            # The running native contract can have a newer context than .env.
+            # Restore that proven contract, not the stale configuration hint.
+            if pixel_transaction is not None and runtime_restart_strategy == "windows-lemonade":
+                restored["CTX_SIZE"] = str(pixel_transaction.previous["contextLength"])
+                restored["MAX_CONTEXT"] = restored["CTX_SIZE"]
+            return restored
+
         def restore_previous_runtime():
-            rollback_env = load_env(env_path)
+            rollback_env = previous_runtime_env()
             if runtime_restart_strategy == "windows-lemonade":
                 _restart_windows_lemonade(rollback_env)
             elif runtime_restart_strategy == "windows-native-llama":
@@ -10303,8 +11015,10 @@ class AgentHandler(BaseHTTPRequestHandler):
             nonlocal rollback_attempted
             rollback_attempted = True
             try:
+                if pixel_transaction is not None:
+                    pixel_transaction.verify_held()
                 restore_backups()
-                rollback_env = load_env(env_path)
+                rollback_env = previous_runtime_env()
                 previous_gguf = str(rollback_env.get("GGUF_FILE") or "")
                 previous_model = str(
                     rollback_env.get("LLM_MODEL")
@@ -10413,23 +11127,42 @@ class AgentHandler(BaseHTTPRequestHandler):
                     )
                 if not previous_gguf:
                     raise RuntimeError("previous GGUF identity is empty")
-                if not _wait_for_model_readiness(
+                previous_proof = _wait_for_model_readiness(
                     rollback_env,
                     model_id=previous_model,
                     gguf_file=previous_gguf,
                     llm_model_name=previous_model,
                     lemonade_model_id=str(rollback_env.get("LEMONADE_MODEL") or ""),
-                ):
+                    **({'return_proof': True} if pixel_transaction is not None or router_target_published else {}),
+                )
+                if not previous_proof:
                     raise RuntimeError(
                         f"previous model {previous_gguf} did not pass identity and completion readiness"
                     )
+                if pixel_transaction is not None and (
+                    not isinstance(previous_proof, dict)
+                    or previous_proof.get('identity') != pixel_transaction.previous['model']
+                    or previous_proof.get('contextVerified') is not True
+                    or previous_proof.get('contextLength') != pixel_transaction.previous['contextLength']
+                ):
+                    raise RuntimeError('Restored inference does not match the captured native model contract')
+                if router_target_published:
+                    # Readers reject regressed sequences: publish a newly proven
+                    # rollback route instead of restoring stale model-state bytes.
+                    _publish_activation_route(
+                        rollback_env, previous_router_active.get("catalogId") or previous_model,
+                        previous_proof, previous_router_active.get("capabilities") or {})
                 if litellm_restarted:
                     _wait_for_container_health("ods-litellm")
                     _verify_litellm_route(rollback_env)
                 if openclaw_recreated:
                     _verify_openclaw_model_env(previous_hermes_model)
                     _wait_for_container_health("ods-openclaw")
-                if pixel_reconcile_attempted:
+                if pixel_transaction is not None:
+                    # The coordinator restores its exact captured bytes,
+                    # including remote identity and output/reasoning limits.
+                    pixel_transaction.finish('rollback')
+                elif pixel_reconcile_attempted:
                     if previous_pixel_context is None:
                         raise RuntimeError(
                             "the previous managed Pixel context was not captured"
@@ -10483,7 +11216,7 @@ class AgentHandler(BaseHTTPRequestHandler):
             )
             lemonade_model_id = ""
             windows_lemonade_already_serving = False
-            if windows_host_lemonade and same_lemonade_target:
+            if windows_host_lemonade and same_lemonade_target and not local_runtime_profile:
                 lemonade_port = env_pre.get("AMD_INFERENCE_PORT", "8080") or "8080"
                 lemonade_model_id = _resolve_lemonade_model_id(
                     env_pre,
@@ -10548,8 +11281,14 @@ class AgentHandler(BaseHTTPRequestHandler):
                 context_length = recommended_context
             if requested_context_length is not None:
                 context_length = requested_context_length
+            elif local_runtime_profile:
+                context_length = local_runtime_profile["contextLength"]
             if tier_context_limit is not None:
                 context_length = min(int(context_length), tier_context_limit)
+            memory_fit = local_runtime_profile.get("memoryQualification") if local_runtime_profile else None
+            if isinstance(memory_fit, dict) and context_length != memory_fit.get("contextLength"):
+                json_response(self, 400, {"error": "The selected context differs from the memory-qualified profile; requalify before activating it"})
+                return
             if (
                 managed_pixel_identity is not None
                 and int(context_length) < _MIN_MANAGED_PIXEL_CONTEXT
@@ -10609,9 +11348,18 @@ class AgentHandler(BaseHTTPRequestHandler):
                 shutil.rmtree(models_ini)
             ini_snapshot = _snapshot_text_file(models_ini)
             lemonade_snapshot = _snapshot_text_file(lemonade_yaml)
+            if local_runtime_profile and windows_host_lemonade:
+                lemonade_recipe_path = _lemonade_recipe_options_path()
+                lemonade_recipe_snapshot = _snapshot_text_file(lemonade_recipe_path)
             litellm_local_snapshot = _snapshot_text_file(litellm_local_yaml)
             litellm_switchboard_snapshot = _snapshot_text_file(litellm_switchboard_yaml)
             model_router_endpoints_snapshot = _snapshot_text_file(model_router_endpoints)
+            if _normal_switchboard_mode(env_pre) == "enabled" and _switchboard_state is not None:
+                previous_router_state, state_errors = _switchboard_state.read_state(
+                    INSTALL_DIR / "data" / "model-state.json")
+                if state_errors:
+                    raise RuntimeError("Cannot capture the previous model-router route")
+                previous_router_active = (previous_router_state or {}).get("active") or {}
             activation_receipt_snapshot = _snapshot_text_file(activation_receipt)
             # Persisted Hermes state is commonly UID-10000-owned. Capture it
             # through the running container when host permissions deny access;
@@ -10681,11 +11429,13 @@ class AgentHandler(BaseHTTPRequestHandler):
                     _assert_text_file_matches_snapshot(path, snapshot)
 
             # Update .env
+            pixel_transaction = _begin_pixel_model_transaction(env_pre)
             mutation_started = True
             if env_path.exists():
                 lines = str(env_snapshot.get("text") or "").splitlines()
                 updates = {
                     "GGUF_FILE": gguf_file,
+                    "ODS_ACTIVE_MODEL_STORE": selected_store["id"] if selected_store else "default",
                     "GGUF_URL": str(model.get("gguf_url") or ""),
                     "GGUF_SHA256": str(model.get("gguf_sha256") or ""),
                     "LLM_MODEL": llm_model_name,
@@ -10735,6 +11485,15 @@ class AgentHandler(BaseHTTPRequestHandler):
                 }
                 if gpu_assignment_plan:
                     remove_keys.update(gpu_assignment_plan.get("env_removals") or [])
+                remove_keys.difference_update(updates)
+                if local_runtime_profile:
+                    updates.update({"LLAMA_PARALLEL":"1", "LLAMA_ARG_FLASH_ATTN":"on",
+                                    "LLAMA_ARG_CACHE_TYPE_K":"q4_0", "LLAMA_ARG_CACHE_TYPE_V":"q4_0"})
+                    if local_runtime_profile["mtp"]:
+                        updates.update({"LLAMA_ARG_SPEC_TYPE":"draft-mtp",
+                                        "LLAMA_ARG_SPEC_DRAFT_N_MAX":str(local_runtime_profile["args"][local_runtime_profile["args"].index("--spec-draft-n-max")+1]),
+                                        "LLAMA_ARG_SPEC_DRAFT_TYPE_K":"q4_0", "LLAMA_ARG_SPEC_DRAFT_TYPE_V":"q4_0"})
+                remove_keys.update({"LLAMA_ARG_SPEC_DRAFT_TYPE_K", "LLAMA_ARG_SPEC_DRAFT_TYPE_V"})
                 remove_keys.difference_update(updates)
                 # Only update LLAMA_SERVER_IMAGE on Docker backends.
                 # macOS runs llama-server natively (no Docker image to pull).
@@ -10895,6 +11654,8 @@ class AgentHandler(BaseHTTPRequestHandler):
                     raise RuntimeError(
                         f"Could not resolve Lemonade model ID for {gguf_file}"
                     )
+                if local_runtime_profile:
+                    _load_registered_lemonade_profile(env, lemonade_model_id, local_runtime_profile)
                 if _switchboard_adapters is not None:
                     switchboard_adapter = _switchboard_adapters.LemonadeAdapter(
                         wait_ready=_sb_wait_ready,
@@ -10962,6 +11723,16 @@ class AgentHandler(BaseHTTPRequestHandler):
                     lemonade_model_id=lemonade_model_id,
                     context_length=int(context_length),
                 )
+
+                if _normal_switchboard_mode(env) == "enabled":
+                    route_proof = switchboard_run or _wait_for_model_readiness(
+                        env, model_id=model_id, gguf_file=gguf_file,
+                        llm_model_name=llm_model_name, lemonade_model_id=lemonade_model_id,
+                        return_proof=True, require_exact_context=True,
+                    )
+                    router_target_published = True
+                    _publish_activation_route(env, model_id, route_proof,
+                                              (switchboard_run or {}).get("capabilities") or {})
 
                 hermes_live_exists = bool(
                     hermes_live_snapshot and hermes_live_snapshot.get("exists")
@@ -11045,7 +11816,25 @@ class AgentHandler(BaseHTTPRequestHandler):
                     container_states["ods-hermes"],
                     recreate=True,
                 ):
-                    _wait_for_container_health("ods-hermes")
+                    try:
+                        _wait_for_container_health("ods-hermes")
+                    except ContainerUnhealthyError:
+                        # Docker health can enter ``unhealthy`` while Hermes is
+                        # still starting after a model swap. A clean recreate
+                        # recovered this exact transient on the fleet. Retry
+                        # only that explicit state once; every other error and
+                        # a second unhealthy start still trigger rollback.
+                        logger.warning(
+                            "Hermes became unhealthy after model activation; "
+                            "recreating it once before rollback"
+                        )
+                        if not _restart_existing_container(
+                            "ods-hermes",
+                            container_states["ods-hermes"],
+                            recreate=True,
+                        ):
+                            raise
+                        _wait_for_container_health("ods-hermes")
                     _verify_running_hermes_route(
                         hermes_model_name,
                         hermes_base_url,
@@ -11095,15 +11884,21 @@ class AgentHandler(BaseHTTPRequestHandler):
                         "rolling back to the previous model"
                     )
                 pixel_reconcile_attempted = True
-                pixel_status = _reconcile_ods_managed_pixel_model(
-                    pixel_runtime_identity,
-                    int(context_length),
-                    max_tokens=_pixel_max_tokens_for_context(int(context_length)),
-                    reasoning=_pixel_model_reasoning_capable(
-                        str(llm_model_name),
-                        env,
-                    ),
-                )
+                if pixel_transaction is not None and (
+                    final_runtime_proof.get('contextVerified') is not True
+                    or final_runtime_proof.get('contextLength') != int(context_length)
+                ):
+                    raise RuntimeError('Final inference context does not match the requested native model contract')
+                pixel_target = {
+                    'model': pixel_runtime_identity,
+                    'contextLength': int(context_length),
+                    'maxTokens': _pixel_max_tokens_for_context(int(context_length)),
+                    'reasoning': _pixel_model_reasoning_capable(str(llm_model_name), env),
+                }
+                pixel_status = (pixel_transaction.apply(pixel_target) if pixel_transaction is not None
+                    else _reconcile_ods_managed_pixel_model(
+                        pixel_runtime_identity, int(context_length),
+                        max_tokens=pixel_target['maxTokens'], reasoning=pixel_target['reasoning']))
                 if pixel_status == "not_installed":
                     pixel_reconcile_attempted = False
                 consumers = {
@@ -11176,11 +11971,17 @@ class AgentHandler(BaseHTTPRequestHandler):
                         ),
                         "consumers": consumers,
                         "verifiedAt": str(final_runtime_proof.get("verifiedAt") or _iso_now()),
+                        **({'modelTransactionId':pixel_transaction.id} if pixel_transaction is not None else {}),
                     },
                 )
                 committed = True  # system state is committed before the response write
+                if pixel_transaction is not None:
+                    # Keep both admission gates until the durable activation
+                    # receipt and every consumer's proof are committed.
+                    pixel_transaction.finish('commit')
                 if (
                     _switchboard_state is not None
+                    and not router_target_published
                     and final_runtime_proof
                     and final_runtime_proof.get("contextVerified") is True
                 ):
@@ -11247,6 +12048,8 @@ class AgentHandler(BaseHTTPRequestHandler):
                     )
                 )
                 payload = {"error": error, "rolled_back": rolled_back}
+                if pixel_transaction is not None and not pixel_transaction.completed:
+                    payload.update(pending=True, code='managed_model_recovery_required')
                 if switchboard_run and not switchboard_run.get("ok"):
                     payload["failure_phase"] = switchboard_run.get("phase")
                     payload["failure_detail"] = switchboard_run.get("detail")
@@ -11266,6 +12069,9 @@ class AgentHandler(BaseHTTPRequestHandler):
             if rollback_error:
                 error += f"; rollback could not be proved: {rollback_error}"
             payload = {"error": error}
+            if ((pixel_transaction is None and isinstance(exc, _PixelModelTransactionUncertain))
+                    or (pixel_transaction is not None and not pixel_transaction.completed)):
+                payload.update(pending=True, code='managed_model_recovery_required')
             if mutation_started:
                 payload["rolled_back"] = rolled_back
             if switchboard_run and not switchboard_run.get("ok"):
@@ -11951,8 +12757,8 @@ $matches = @(
         Sort-Object CreationDate -Descending
 )
 foreach ($proc in $matches) {
-    if ($proc.CommandLine -match '(?:^|\s)--ctx-size(?:=|\s+)(\d+)(?:\s|$)') {
-        Write-Output $Matches[1]
+    if ($proc.CommandLine -match '(?:^|\s)(?:(?:"--ctx-size"\s+|--ctx-size(?:\s+|=))(?:"(?<ctx>\d+)"|(?<ctx>\d+))|"--ctx-size=(?<ctx>\d+)")(?=\s|$)') {
+        Write-Output $Matches['ctx']
         exit 0
     }
 }
@@ -11961,8 +12767,9 @@ exit 1
     try:
         result = subprocess.run(
             [
-                "powershell.exe",
+                _windows_management_shell(),
                 "-NoProfile",
+                "-NonInteractive",
                 "-ExecutionPolicy",
                 "Bypass",
                 "-Command",
@@ -11972,6 +12779,7 @@ exit 1
             text=True,
             timeout=15,
             env=ps_env,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return None
@@ -12345,6 +13153,25 @@ def _send_lemonade_warmup(
     return False
 
 
+def _load_registered_lemonade_profile(env: dict, model_id: str, profile: dict) -> None:
+    """Use Lemonade's real per-model options before proving the new route."""
+    base_url = _lemonade_runtime_base_url(env).rstrip("/")
+    if not base_url:
+        raise RuntimeError("Registered model profile requires a configured Lemonade runtime")
+    payload = {"model_name": model_id, "save_options": True,
+               "ctx_size": int(env.get("CTX_SIZE") or profile["contextLength"]),
+               "llamacpp_backend": profile["backend"], "llamacpp_args": " ".join(profile["args"])}
+    headers = {"Content-Type": "application/json"}
+    api_key = str(env.get("LITELLM_LEMONADE_API_KEY") or env.get("LEMONADE_API_KEY") or "")
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    request = urllib_request.Request(base_url + "/api/v1/load", data=json.dumps(payload).encode(), headers=headers, method="POST")
+    with urllib_request.urlopen(request, timeout=300) as response:
+        result = json.loads(response.read(65536))
+    if result.get("status") not in {"success", "ok"}:
+        raise RuntimeError("Lemonade did not accept the registered per-model runtime profile")
+
+
 def _lemonade_completion_ready(
     host: str,
     port: str,
@@ -12379,6 +13206,7 @@ def _wait_for_model_readiness(
     return_proof: bool = False,
     require_exact_context: bool = False,
     cancel_event: threading.Event | None = None,
+    allow_model_warmup: bool = True,
 ) -> bool | str | dict[str, object]:
     """Prove exact runtime identity and one matching meaningful completion.
 
@@ -12479,7 +13307,7 @@ def _wait_for_model_readiness(
                         runtime_context = (
                             _windows_lemonade_process_context_length(gguf_file) or 0
                         )
-                if not runtime_identity and body and (not warmup_sent or attempt % 3 == 0):
+                if allow_model_warmup and not runtime_identity and body and (not warmup_sent or attempt % 3 == 0):
                     warmup_sent = _send_lemonade_warmup(
                         host,
                         port,
@@ -12611,10 +13439,13 @@ def _is_windows_host_llama_server(env: dict) -> bool:
 def _restart_windows_native_llama_server(env_path: Path, env: dict):
     """Restart managed native Windows llama-server.exe with the active .env."""
     llama_bin = INSTALL_DIR / "llama-server" / "llama-server.exe"
+    profile = _model_stores.lemonade_profile(INSTALL_DIR / "data", env.get("GGUF_FILE", ""))
+    if profile:
+        llama_bin = Path(profile["executable"])
     llama_log = INSTALL_DIR / "data" / "llama-server.log"
     pid_file = INSTALL_DIR / "data" / "llama-server.pid"
     gguf_file = env.get("GGUF_FILE", "")
-    model_path = INSTALL_DIR / "data" / "models" / gguf_file
+    model_path = _active_model_directory(env) / gguf_file
     port = env.get("AMD_INFERENCE_PORT") or env.get("OLLAMA_PORT") or "8080"
 
     if not llama_bin.exists():
@@ -12675,17 +13506,9 @@ foreach ($listener in @(Get-NetTCPConnection -LocalPort $port -State Listen -Err
 }
 exit 0
 '''
-    ps_cmd = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script]
-    try:
-        result = subprocess.run(ps_cmd, capture_output=True, text=True, timeout=90, env=ps_env)
-    except FileNotFoundError:
-        result = subprocess.run(
-            ["pwsh.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
-            capture_output=True,
-            text=True,
-            timeout=90,
-            env=ps_env,
-        )
+    ps_cmd = [_windows_management_shell(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script]
+    result = subprocess.run(ps_cmd, capture_output=True, text=True, timeout=90, env=ps_env,
+                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     if result.returncode != 0:
         raise RuntimeError(
             "Windows native llama-server stop failed: "
@@ -12738,12 +13561,27 @@ def _restart_windows_lemonade(env: dict):
         "ODS_WIN_LEMONADE_DIAGNOSTIC_LOG": str(
             INSTALL_DIR / "logs" / "lemonade-launch.log"
         ),
-        "ODS_WIN_MODELS_DIR": str(INSTALL_DIR / "data" / "models"),
+        "ODS_WIN_MODELS_DIR": str(_active_model_directory(env)),
         "ODS_WIN_PID_FILE": str(INSTALL_DIR / "data" / "llama-server.pid"),
         "ODS_WIN_LEMONADE_PORT": env.get("AMD_INFERENCE_PORT", "8080") or "8080",
         "ODS_WIN_BIND_ADDR": env.get("BIND_ADDRESS", "127.0.0.1") or "127.0.0.1",
         "ODS_WIN_CONTEXT_SIZE": str(env.get("CTX_SIZE") or env.get("MAX_CONTEXT") or "0"),
     })
+    registered_profile = _model_stores.lemonade_profile(INSTALL_DIR / "data", env.get("GGUF_FILE", ""))
+    if registered_profile:
+        ps_env[f"LEMONADE_LLAMACPP_{registered_profile['backend'].upper()}_BIN"] = registered_profile["executable"]
+    external_executables = []
+    for store in _model_stores.registered_stores(INSTALL_DIR / "data"):
+        profiles = store.get("profiles", {})
+        if isinstance(profiles, dict):
+            for filename in profiles:
+                try:
+                    profile = _model_stores.lemonade_profile(INSTALL_DIR / "data", filename)
+                    if profile:
+                        external_executables.append(profile["executable"])
+                except ValueError:
+                    continue
+    ps_env["ODS_WIN_EXTERNAL_LLAMA_EXECUTABLES"] = json.dumps(external_executables)
     script = r'''
 $ErrorActionPreference = "Stop"
 $exe = $env:ODS_WIN_LEMONADE_EXE
@@ -12770,6 +13608,21 @@ $userProfile = [Environment]::GetFolderPath("UserProfile")
 $cacheBin = if ($userProfile) { Join-Path (Join-Path (Join-Path $userProfile ".cache") "lemonade") "bin" } else { $null }
 $binPrefix = $binDir.TrimEnd('\') + '\'
 $cachePrefix = if ($cacheBin) { $cacheBin.TrimEnd('\') + '\' } else { $null }
+$externalExecutables = @($env:ODS_WIN_EXTERNAL_LLAMA_EXECUTABLES | ConvertFrom-Json)
+$externalProcessOwners = @{}
+foreach ($candidate in @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)) {
+    if (-not ($candidate.ExecutablePath -and $externalExecutables -contains $candidate.ExecutablePath)) { continue }
+    $ancestorId = $candidate.ParentProcessId
+    for ($depth = 0; $depth -lt 8 -and $ancestorId -gt 0; $depth++) {
+        $ancestor = Get-CimInstance Win32_Process -Filter ("ProcessId = {0}" -f $ancestorId) -ErrorAction SilentlyContinue
+        if (-not $ancestor) { break }
+        if ($ancestor.ExecutablePath -and $ancestor.ExecutablePath.StartsWith($binPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+            $externalProcessOwners[[int]$candidate.ProcessId] = [string]$candidate.ExecutablePath
+            break
+        }
+        $ancestorId = $ancestor.ParentProcessId
+    }
+}
 $knownProcessNames = @("LemonadeServer.exe", "lemonade-server.exe", "lemonade-router.exe", "lemonade.exe")
 
 function Get-ODSPortOwners {
@@ -12789,7 +13642,8 @@ function Test-ODSLemonadeProcess {
     $pathOwned = (
         ($Proc.ExecutablePath -and $Proc.ExecutablePath.Equals($exe, [StringComparison]::OrdinalIgnoreCase)) -or
         ($Proc.ExecutablePath -and $Proc.ExecutablePath.StartsWith($binPrefix, [StringComparison]::OrdinalIgnoreCase)) -or
-        ($cachePrefix -and $Proc.ExecutablePath -and $Proc.ExecutablePath.StartsWith($cachePrefix, [StringComparison]::OrdinalIgnoreCase))
+        ($cachePrefix -and $Proc.ExecutablePath -and $Proc.ExecutablePath.StartsWith($cachePrefix, [StringComparison]::OrdinalIgnoreCase)) -or
+        ($Proc.ExecutablePath -and $externalProcessOwners -and $externalProcessOwners.ContainsKey([int]$Proc.ProcessId) -and $externalProcessOwners[[int]$Proc.ProcessId] -eq $Proc.ExecutablePath)
     )
     $nameOwned = $false
     if ($portOwned -and $Proc.Name) {
@@ -12969,12 +13823,13 @@ Set-Content -LiteralPath $pidPath -Value $proc.ProcessId
         with wrapper_stdout.open("w", encoding="utf-8") as stdout_file, \
                 wrapper_stderr.open("w", encoding="utf-8") as stderr_file:
             result = subprocess.run(
-                ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
+                [_windows_management_shell(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
                 stdout=stdout_file,
                 stderr=stderr_file,
                 text=True,
                 timeout=120,
                 env=ps_env,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
     except subprocess.TimeoutExpired as exc:
         details = summarize_powershell_output()
@@ -13425,8 +14280,18 @@ def _capture_container_state(container: str) -> dict[str, bool]:
     return {"exists": True, "running": value == "true"}
 
 
-def _wait_for_container_health(container: str, attempts: int = 60) -> None:
+class ContainerUnhealthyError(RuntimeError):
+    """A running dependent reached Docker's explicit unhealthy state."""
+
+
+def _wait_for_container_health(container: str, attempts: int | None = None) -> None:
     """Wait until a restarted dependent is healthy, failing on terminal states."""
+    if attempts is None:
+        attempts = (
+            HERMES_MODEL_ACTIVATION_HEALTH_ATTEMPTS
+            if container == "ods-hermes"
+            else MODEL_ACTIVATION_HEALTH_ATTEMPTS
+        )
     for attempt in range(attempts):
         try:
             result = subprocess.run(
@@ -13450,7 +14315,9 @@ def _wait_for_container_health(container: str, attempts: int = 60) -> None:
                 return
             raise RuntimeError(f"{container} exited while waiting for health")
         if status == "unhealthy":
-            raise RuntimeError(f"{container} became unhealthy after model activation")
+            raise ContainerUnhealthyError(
+                f"{container} became unhealthy after model activation"
+            )
         if status != "starting":
             raise RuntimeError(f"Docker returned invalid health state for {container}: {status!r}")
         if attempt + 1 < attempts:
@@ -13753,6 +14620,11 @@ def _opencode_model_route(env: dict, model_id: str) -> tuple[str, str, str]:
     return provider_id, model_id, model_id
 
 
+def _opencode_output_limit(context_length: int) -> int:
+    """Leave prompt room after a model switch, as the fresh installers do."""
+    return min(32768, max(1, context_length // 4))
+
+
 def _opencode_config_matches(
     config: object,
     provider_id: str,
@@ -13778,6 +14650,7 @@ def _opencode_config_matches(
         and options.get("apiKey") == api_key
         and isinstance(limit, dict)
         and limit.get("context") == context_length
+        and limit.get("output") == _opencode_output_limit(context_length)
     )
 
 
@@ -13843,7 +14716,7 @@ def _update_opencode_config(
             limit = {}
             model["limit"] = limit
         limit["context"] = context_length
-        limit["output"] = min(32768, context_length)
+        limit["output"] = _opencode_output_limit(context_length)
 
         _atomic_write_json(path, config, 0o600)
         try:
@@ -13928,26 +14801,17 @@ Start-Process -FilePath $exe `
     -WindowStyle Hidden | Out-Null
 'true'
 '''
-    command = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script]
-    try:
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=90,
-            env=ps_env,
-        )
-    except FileNotFoundError:
-        command[0] = "pwsh.exe"
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=90,
-            env=ps_env,
-        )
+    command = [_windows_management_shell(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script]
+    result = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        timeout=90,
+        env=ps_env,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
     if result.returncode != 0:
-        detail = (result.stderr or result.stdout or "").strip()
+        detail = (result.stderr or result.stdout or "").replace("\x00", "").strip()
         raise RuntimeError(f"Could not {action} managed Windows OpenCode: {detail[:500]}")
     value = result.stdout.strip().splitlines()[-1].casefold() if result.stdout.strip() else "false"
     if value not in {"true", "false"}:
@@ -14715,6 +15579,7 @@ def _select_runtime_profile(model: dict, env: dict) -> dict | None:
                 "NVIDIA VRAM could not be determined; refusing an unprofiled "
                 "model activation"
             )
+    hardware_matches: list[dict] = []
     for profile in profiles:
         if not isinstance(profile, dict):
             continue
@@ -14735,11 +15600,32 @@ def _select_runtime_profile(model: dict, env: dict) -> dict | None:
                 continue
             if profile.get("vram_max_gb") is not None and vram_gb > float(profile["vram_max_gb"]):
                 continue
+        except (TypeError, ValueError):
+            continue
+        hardware_matches.append(profile)
+        try:
             if profile.get("system_ram_min_gb") is not None and float(ram_gb or 0) < float(profile["system_ram_min_gb"]):
                 continue
         except (TypeError, ValueError):
             continue
         return profile
+    if hardware_matches:
+        requirements = []
+        for profile in hardware_matches:
+            try:
+                requirements.append(float(profile.get("system_ram_min_gb") or 0))
+            except (TypeError, ValueError):
+                continue
+        minimum_ram_gb = min(requirements) if requirements else 0
+        requirement = (
+            f"; the lowest hardware-matching profile requires {minimum_ram_gb:g}GB"
+            if minimum_ram_gb > 0
+            else ""
+        )
+        raise RuntimeError(
+            "No runtime profile fits the available system RAM "
+            f"({ram_gb:g}GB){requirement}; refusing an unprofiled model activation"
+        )
     return None
 
 
@@ -14802,9 +15688,12 @@ def _launch_native_llama_server(env_path: Path, llama_bin: Path, llama_log: Path
     """
     env = load_env(env_path)
     gguf_file = env.get("GGUF_FILE", "")
+    profile = _model_stores.lemonade_profile(INSTALL_DIR / "data", gguf_file)
+    if profile:
+        llama_bin = Path(profile["executable"])
     ctx_size = env.get("CTX_SIZE", "32768")
     gpu_layers = env.get("N_GPU_LAYERS", "").strip() or "auto"
-    model_path = INSTALL_DIR / "data" / "models" / gguf_file
+    model_path = _active_model_directory(env) / gguf_file
     reasoning = env.get("LLAMA_REASONING", "off")
     reasoning_fmt = {"off": "none", "on": "deepseek"}.get(reasoning, reasoning)
     # Honour the unified BIND_ADDRESS knob (PR #964); empty/missing → loopback.
@@ -14834,6 +15723,8 @@ def _launch_native_llama_server(env_path: Path, llama_bin: Path, llama_log: Path
         "LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS": "--checkpoint-every-n-tokens",
         "LLAMA_ARG_SPEC_TYPE": "--spec-type",
         "LLAMA_ARG_SPEC_DRAFT_N_MAX": "--spec-draft-n-max",
+        "LLAMA_ARG_SPEC_DRAFT_TYPE_K": "--spec-draft-type-k",
+        "LLAMA_ARG_SPEC_DRAFT_TYPE_V": "--spec-draft-type-v",
     }
     for env_key, flag in optional_args.items():
         value = env.get(env_key, "").strip()
@@ -15120,13 +16011,19 @@ def _llama_recreate_argv(
         run_cmd.extend(["--expose", str(container_port)])
 
     binds = host_config.get("Binds") or []
+    use_registered_model_mount = bool(env.get("ODS_ACTIVE_MODEL_STORE")) or len(_model_stores.registered_stores(INSTALL_DIR / "data", container=bool(os.environ.get("ODS_HOST_INSTALL_DIR")))) > 1
     if binds:
         for binding in binds:
-            run_cmd.extend(["-v", str(binding)])
+            value = str(binding)
+            if use_registered_model_mount and re.search(r":/models(?::|$)", value):
+                value = f"{_active_model_bind_directory(env)}:/models:ro"
+            run_cmd.extend(["-v", value])
     else:
         for mount in inspect_config.get("Mounts") or []:
             source = mount.get("Name") if mount.get("Type") == "volume" else mount.get("Source")
             destination = mount.get("Destination")
+            if destination == "/models" and use_registered_model_mount:
+                source = _active_model_bind_directory(env)
             if source and destination:
                 mode = "ro" if mount.get("RW") is False else "rw"
                 run_cmd.extend(["-v", f"{source}:{destination}:{mode}"])
@@ -15569,9 +16466,9 @@ def main():
 
     # Determine bind address: explicit env override, or a platform-aware safe
     # default. Native Linux prefers the ods-network gateway so dashboard-api
-    # containers can reach the agent without exposing it to the LAN. WSL uses
-    # loopback because Docker Desktop forwards host.docker.internal there; its
-    # compose gateway belongs to Docker Desktop and is not locally bindable.
+    # containers can reach the agent without exposing it to the LAN. Native
+    # Docker inside WSL binds its locally owned default bridge; Docker Desktop
+    # keeps the loopback path because its reported bridge is not locally bindable.
     # The bridge gateway fallback keeps partial/older native-Linux installs
     # reachable until phase 11 can restart the service after ods-network exists.
     bind_addr = _resolve_agent_bind_addr(env)

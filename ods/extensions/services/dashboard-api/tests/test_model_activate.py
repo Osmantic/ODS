@@ -37,6 +37,7 @@ _restart_windows_lemonade = _mod._restart_windows_lemonade
 _is_windows_host_llama_server = _mod._is_windows_host_llama_server
 _restart_windows_native_llama_server = _mod._restart_windows_native_llama_server
 _write_windows_native_litellm_config = _mod._write_windows_native_litellm_config
+_wait_for_container_health = _mod._wait_for_container_health
 
 
 @pytest.fixture(autouse=True)
@@ -78,6 +79,78 @@ def _install_runtime_renderer(tmp_path):
 
 def test_host_agent_backlog_handles_dashboard_poll_bursts():
     assert _mod.ThreadedHTTPServer.request_queue_size >= 64
+
+
+def test_hermes_health_wait_covers_delayed_docker_health_transition(monkeypatch):
+    statuses = iter(
+        ["starting"] * (_mod.HERMES_MODEL_ACTIVATION_HEALTH_ATTEMPTS - 1)
+        + ["healthy"]
+    )
+    inspections = []
+    sleeps = []
+
+    def inspect(*args, **_kwargs):
+        inspections.append(args)
+        return subprocess.CompletedProcess(args, 0, next(statuses) + "\n", "")
+
+    monkeypatch.setattr(_mod.subprocess, "run", inspect)
+    monkeypatch.setattr(_mod.time, "sleep", lambda seconds: sleeps.append(seconds))
+    monkeypatch.setattr(
+        _mod,
+        "_capture_container_state",
+        lambda _container: {"exists": True, "running": True},
+    )
+
+    _wait_for_container_health("ods-hermes")
+
+    assert len(inspections) == _mod.HERMES_MODEL_ACTIVATION_HEALTH_ATTEMPTS
+    assert sleeps == [2] * (_mod.HERMES_MODEL_ACTIVATION_HEALTH_ATTEMPTS - 1)
+
+
+def test_hermes_health_wait_remains_bounded_and_fail_closed(monkeypatch):
+    inspections = []
+    sleeps = []
+
+    def inspect(*args, **_kwargs):
+        inspections.append(args)
+        return subprocess.CompletedProcess(args, 0, "starting\n", "")
+
+    monkeypatch.setattr(_mod.subprocess, "run", inspect)
+    monkeypatch.setattr(_mod.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    with pytest.raises(
+        RuntimeError,
+        match="ods-hermes did not become healthy after model activation",
+    ):
+        _wait_for_container_health("ods-hermes")
+
+    assert len(inspections) == _mod.HERMES_MODEL_ACTIVATION_HEALTH_ATTEMPTS
+    assert sleeps == [2] * (_mod.HERMES_MODEL_ACTIVATION_HEALTH_ATTEMPTS - 1)
+
+
+@pytest.mark.parametrize(
+    ("container", "attempts", "expected_attempts"),
+    [
+        ("ods-openclaw", None, _mod.MODEL_ACTIVATION_HEALTH_ATTEMPTS),
+        ("ods-hermes", 3, 3),
+    ],
+)
+def test_container_health_wait_preserves_other_defaults_and_explicit_overrides(
+    monkeypatch, container, attempts, expected_attempts,
+):
+    inspections = []
+
+    def inspect(*args, **_kwargs):
+        inspections.append(args)
+        return subprocess.CompletedProcess(args, 0, "starting\n", "")
+
+    monkeypatch.setattr(_mod.subprocess, "run", inspect)
+    monkeypatch.setattr(_mod.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(RuntimeError, match="did not become healthy after model activation"):
+        _wait_for_container_health(container, attempts=attempts)
+
+    assert len(inspections) == expected_attempts
 
 
 def test_external_lemonade_runtime_overrides_wsl_cpu_discovery():
@@ -718,6 +791,7 @@ class TestLemonadeCompletionReady:
             )
 
         monkeypatch.setattr(_mod.platform, "system", lambda: "Windows")
+        monkeypatch.setattr(_mod, "_windows_management_shell", lambda: "powershell.exe")
         monkeypatch.setattr(_mod.subprocess, "run", fake_run)
         monkeypatch.setattr(_mod, "_chat_completion_ready", lambda *_a, **_k: True)
         env = {
@@ -1144,6 +1218,97 @@ class TestSwitchboardRuntimeConfig:
 
 
 class TestOpenCodeModelRoute:
+    @pytest.mark.parametrize("available,expected", [
+        ({"pwsh.exe": "C:/PowerShell 7/pwsh.exe", "pwsh": "other"}, "C:/PowerShell 7/pwsh.exe"),
+        ({"pwsh": "C:/PowerShell/pwsh"}, "C:/PowerShell/pwsh"),
+        ({}, "powershell.exe"),
+    ])
+    @pytest.mark.parametrize("action,output", [("inspect", "false"), ("restart", "true")])
+    def test_windows_control_selects_available_shell_before_one_hidden_execution(self, monkeypatch, available, expected, action, output):
+        calls = []
+        monkeypatch.setattr(_mod.shutil, "which", lambda name: available.get(name))
+        monkeypatch.setattr(_mod, "_opencode_port", lambda: 3456)
+        monkeypatch.setattr(_mod.subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False)
+        def run(command, **kwargs):
+            calls.append((command, kwargs))
+            return subprocess.CompletedProcess(command, 0, stdout=output + "\n", stderr="")
+        monkeypatch.setattr(_mod.subprocess, "run", run)
+        assert _mod._run_windows_opencode_control(action) is (output == "true")
+        assert len(calls) == 1
+        command, options = calls[0]
+        assert command[0] == expected
+        assert "-NonInteractive" in command
+        assert options["creationflags"] == 0x08000000
+        assert options["env"]["ODS_OPENCODE_ACTION"] == action
+        assert options["env"]["ODS_OPENCODE_PORT"] == "3456"
+        assert "-WindowStyle Hidden" in command[-1]
+
+    @pytest.mark.parametrize("failure", ["exit", "timeout", "missing", "invalid"])
+    def test_windows_control_does_not_replay_failed_or_ambiguous_restart(self, monkeypatch, failure):
+        calls = []
+        monkeypatch.setattr(_mod, "_windows_management_shell", lambda: "selected-pwsh.exe")
+        monkeypatch.setattr(_mod, "_opencode_port", lambda: 3003)
+        def run(command, **kwargs):
+            calls.append(command)
+            if failure == "timeout": raise subprocess.TimeoutExpired(command, 90)
+            if failure == "missing": raise FileNotFoundError("selected shell disappeared")
+            return subprocess.CompletedProcess(command, 1 if failure == "exit" else 0,
+                stdout="unknown", stderr="S\x00y\x00s\x00t\x00e\x00m\x00 access denied" if failure == "exit" else "")
+        monkeypatch.setattr(_mod.subprocess, "run", run)
+        with pytest.raises((RuntimeError, subprocess.TimeoutExpired, FileNotFoundError)) as caught:
+            _mod._run_windows_opencode_control("restart")
+        assert len(calls) == 1
+        if failure == "exit":
+            assert "System access denied" in str(caught.value)
+            assert "\x00" not in str(caught.value)
+
+    def test_windows_context_inspection_uses_selected_hidden_shell(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(_mod, "_windows_management_shell", lambda: "selected-pwsh.exe")
+        monkeypatch.setattr(_mod.subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False)
+        def run(command, **kwargs):
+            calls.append((command, kwargs))
+            return subprocess.CompletedProcess(command, 0, stdout="65536\n", stderr="")
+        monkeypatch.setattr(_mod.subprocess, "run", run)
+        assert _mod._windows_lemonade_process_context_length("model.gguf") == 65536
+        assert len(calls) == 1
+        assert calls[0][0][0] == "selected-pwsh.exe"
+        assert "-NonInteractive" in calls[0][0]
+        assert calls[0][1]["creationflags"] == 0x08000000
+        assert calls[0][1]["env"]["ODS_EXPECTED_GGUF"] == "model.gguf"
+
+    @pytest.mark.parametrize("arguments,expected", [
+        ('--ctx-size 65536', 65536),
+        ('"--ctx-size" "65536"', 65536),
+        ('--ctx-size "65536"', 65536),
+        ('"--ctx-size" 65536', 65536),
+        ('--ctx-size=65536', 65536),
+        ('--ctx-size="65536"', 65536),
+        ('"--ctx-size=65536"', 65536),
+        ('--ctx-size-other 65536', None),
+        ('--ctx-size 65536suffix', None),
+        ('--ctx-size 0', None),
+        ('--ctx-size auto', None),
+    ])
+    def test_real_powershell_context_parser_accepts_quoted_windows_arguments(self, monkeypatch, arguments, expected):
+        shell = shutil.which("pwsh.exe") or shutil.which("pwsh")
+        if not shell:
+            pytest.skip("PowerShell 7 required for the real parser fixture")
+        monkeypatch.setattr(_mod, "_windows_management_shell", lambda: shell)
+        calls = []
+        def run(command, **kwargs):
+            calls.append(command)
+            # Replace CIM with a synthetic process. No real model, process,
+            # settings or runtime state is read or changed by this fixture.
+            kwargs["env"]["ODS_CONTEXT_TEST_COMMAND_LINE"] = (
+                '"C:\\Program Files\\llama-server.exe" "--model" "C:\\Models\\model.gguf" '
+                + arguments + ' "--parallel" "1"')
+            fixture = 'function Get-CimInstance { [pscustomobject]@{CommandLine=$env:ODS_CONTEXT_TEST_COMMAND_LINE; CreationDate=1} }\n'
+            return _real_subprocess_run([*command[:-1], fixture + command[-1]], **kwargs)
+        monkeypatch.setattr(_mod.subprocess, "run", run)
+        assert _mod._windows_lemonade_process_context_length("model.gguf") == expected
+        assert len(calls) == 1
+
     def test_lemonade_uses_authenticated_host_litellm_route(self, monkeypatch):
         monkeypatch.setattr(_mod.platform, "system", lambda: "Linux")
         monkeypatch.setattr(_mod, "_is_windows_host_llama_server", lambda _env: False)
@@ -2223,6 +2388,7 @@ class TestWindowsNativeLlamaServer:
             captured["cmd"] = cmd
             captured["script"] = cmd[-1]
             captured["env"] = kwargs["env"]
+            captured["creationflags"] = kwargs.get("creationflags")
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
         launch_calls = []
@@ -2231,6 +2397,8 @@ class TestWindowsNativeLlamaServer:
             launch_calls.append(args)
 
         monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.setattr(_mod, "_windows_management_shell", lambda: "selected-pwsh.exe")
+        monkeypatch.setattr(_mod.subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False)
         monkeypatch.setattr(_mod.subprocess, "run", fake_run)
         monkeypatch.setattr(_mod, "_launch_native_llama_server", fake_launch)
 
@@ -2245,6 +2413,9 @@ class TestWindowsNativeLlamaServer:
         assert "Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction Ignore" in captured["script"]
         assert captured["script"].rstrip().endswith("exit 0")
         assert captured["env"]["ODS_WIN_LLAMA_PORT"] == "9090"
+        assert captured["cmd"][0] == "selected-pwsh.exe"
+        assert "-NonInteractive" in captured["cmd"]
+        assert captured["creationflags"] == 0x08000000
         assert launch_calls
 
 
@@ -2262,12 +2433,15 @@ class TestRestartWindowsLemonade:
             captured["cmd"] = cmd
             captured["script"] = cmd[-1]
             captured["env"] = kwargs["env"]
+            captured["creationflags"] = kwargs.get("creationflags")
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
         monkeypatch.setenv("LOCALAPPDATA", str(local_app_data))
         monkeypatch.delenv("ProgramFiles", raising=False)
         monkeypatch.delenv("ProgramFiles(x86)", raising=False)
         monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
+        monkeypatch.setattr(_mod, "_windows_management_shell", lambda: "selected-pwsh.exe")
+        monkeypatch.setattr(_mod.subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False)
         monkeypatch.setattr(_mod.subprocess, "run", fake_run)
 
         _restart_windows_lemonade({
@@ -2276,6 +2450,9 @@ class TestRestartWindowsLemonade:
         })
 
         script = captured["script"]
+        assert captured["cmd"][0] == "selected-pwsh.exe"
+        assert "-NonInteractive" in captured["cmd"]
+        assert captured["creationflags"] == 0x08000000
         assert "Get-ScheduledTask" not in script
         assert "Register-ScheduledTask" not in script
         assert "Start-ScheduledTask" not in script
@@ -3711,16 +3888,28 @@ def test_managed_pixel_reconcile_is_noop_when_this_install_does_not_own_pixel(
     assert _mod._reconcile_ods_managed_pixel_model("safe-model", 65536) == "not_installed"
 
 
+@pytest.mark.parametrize(
+    ("gateway_setting", "expected_gateway_port"),
+    [
+        ("PIXEL_GATEWAY_PORT=18790\n", "18790"),
+        ('PIXEL_GATEWAY_PORT="18790"\n', "18790"),
+        ("PIXEL_GATEWAY_PORT=65535\n", "65535"),
+        ("", "18789"),
+    ],
+)
 def test_managed_pixel_reconcile_uses_positional_args_and_minimal_environment(
     tmp_path,
     monkeypatch,
+    gateway_setting,
+    expected_gateway_port,
 ):
     install_dir = tmp_path / "install"
     home = tmp_path / "owner-home"
     install_dir.mkdir()
     home.mkdir()
     (install_dir / ".env").write_text(
-        "PIXEL_SOURCE_URL=https://github.com/Osmantic/Pixel.git\n",
+        "PIXEL_SOURCE_URL=https://github.com/Osmantic/Pixel.git\n"
+        f"{gateway_setting}",
         encoding="utf-8",
     )
     captured = {}
@@ -3745,7 +3934,7 @@ def test_managed_pixel_reconcile_uses_positional_args_and_minimal_environment(
         max_tokens=4096,
         reasoning=True,
     ) == "reconciled"
-    assert captured["argv"][-7:] == [
+    assert captured["argv"][-8:] == [
         str(install_dir),
         "pixel-owner",
         str(home),
@@ -3753,13 +3942,48 @@ def test_managed_pixel_reconcile_uses_positional_args_and_minimal_environment(
         "131072",
         "4096",
         "true",
+        "",
     ]
     assert captured["kwargs"]["timeout"] == 900
     assert captured["kwargs"]["check"] is False
     assert captured["kwargs"]["env"]["PIXEL_SOURCE_URL"] == (
         "https://github.com/Osmantic/Pixel.git"
     )
+    assert captured["kwargs"]["env"]["PIXEL_GATEWAY_PORT"] == expected_gateway_port
     assert "UNRELATED_SECRET" not in captured["kwargs"]["env"]
+
+
+@pytest.mark.parametrize(
+    "gateway_port",
+    ["", "   ", "0", "01", "65536", "123456", "abc", "-1"],
+)
+def test_managed_pixel_reconcile_rejects_invalid_gateway_port(
+    tmp_path,
+    monkeypatch,
+    gateway_port,
+):
+    install_dir = tmp_path / "install"
+    home = tmp_path / "owner-home"
+    install_dir.mkdir()
+    home.mkdir()
+    (install_dir / ".env").write_text(
+        f"PIXEL_GATEWAY_PORT={gateway_port}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+    monkeypatch.setattr(
+        _mod,
+        "_ods_managed_pixel_identity",
+        lambda: ("pixel-owner", home),
+    )
+    monkeypatch.setattr(
+        _mod.subprocess,
+        "run",
+        lambda *_args, **_kwargs: pytest.fail("an invalid port must fail before subprocess"),
+    )
+
+    with pytest.raises(RuntimeError, match="gateway port is invalid"):
+        _mod._reconcile_ods_managed_pixel_model("safe-model", 65536)
 
 
 def test_managed_pixel_reconcile_rejects_context_below_pixel_contract(monkeypatch):
@@ -3826,6 +4050,75 @@ class TestModelActivateRollback:
         monkeypatch.setattr(_mod, "_container_exists", lambda _container: False)
         monkeypatch.setattr(_mod, "_container_running", lambda _container: False)
         monkeypatch.setattr(_mod, "_verify_hermes_dashboard_ready", lambda: None)
+
+    @pytest.mark.parametrize('failure', [None, 'busy', 'lost-apply-ack', 'apply-refused', 'receipt-write', 'commit-unconfirmed', 'rollback-unproved'])
+    def test_native_controller_holds_before_model_mutation_and_finishes_only_after_proof(self,tmp_path,monkeypatch,failure):
+        install,env_path,original,*_=_write_model_activation_fixture(tmp_path)
+        original=original.replace('CTX_SIZE=2048','CTX_SIZE=65536')+'PIXEL_OPENWEBUI_KEY=configured\n'
+        env_path.write_text(original,encoding='utf-8')
+        previous={'model':'old-model.gguf','contextLength':65536,'maxTokens':3072,'reasoning':True,'routeFingerprint':'d'*64}
+        state={'schemaVersion':1,'status':'ready','revision':'a'*64,'contract':previous,'pending':False,'transactionId':None,'outcome':None}
+        calls=[];proofs=[];restarts=[]
+        def control(operation,request=None,*,config):
+            calls.append(operation)
+            if operation=='model-status':
+                if failure=='busy' and len(calls)==1:
+                    return {**state,'status':'held','pending':True,'transactionId':'f'*64}
+                return dict(state)
+            if operation=='model-begin':
+                assert env_path.read_text(encoding='utf-8')==original
+                assert restarts==[]
+                state.update(status='held',pending=True,transactionId=request['transactionId'])
+            elif operation=='model-apply':
+                assert proofs[-1]=='new-model.gguf'
+                assert 'routeFingerprint' not in request['target']
+                if failure in {'apply-refused','rollback-unproved'}: raise RuntimeError('refused')
+                state.update(status='applied',contract=request['target'])
+                if failure=='lost-apply-ack':raise TimeoutError('ack lost')
+            elif operation=='model-finish':
+                if request['outcome']=='commit':
+                    assert json.loads((install/'data/model-activation-receipt.json').read_text())['status']=='complete'
+                    if failure=='commit-unconfirmed':raise TimeoutError('finish uncertain')
+                else:
+                    assert proofs[-1]=='old-model.gguf'
+                    assert env_path.read_text(encoding='utf-8')==original
+                    state['contract']=previous
+                state.update(status='completed',pending=False,outcome=request['outcome'])
+            return dict(state)
+        def readiness(*args,**kwargs):
+            identity=kwargs.get('gguf_file');proofs.append(identity)
+            if failure=='rollback-unproved' and identity=='old-model.gguf':return False
+            return _mock_verified_readiness(*args,**kwargs)
+        real_write=_mod._atomic_write_json
+        def write(path,value,*args,**kwargs):
+            if failure=='receipt-write' and path.name=='model-activation-receipt.json':raise OSError('receipt failed')
+            return real_write(path,value,*args,**kwargs)
+        monkeypatch.setattr(_mod,'INSTALL_DIR',install)
+        monkeypatch.setattr(_mod,'_runtime_model_control',control)
+        monkeypatch.setattr(_mod,'_compose_restart_llama_server',lambda env:restarts.append(env['GGUF_FILE']))
+        monkeypatch.setattr(_mod,'_wait_for_model_readiness',readiness)
+        monkeypatch.setattr(_mod,'_atomic_write_json',write)
+        monkeypatch.setattr(_mod,'_reconcile_ods_managed_pixel_model',lambda *a,**kw:pytest.fail('must use coordinated native apply'))
+        handler=_ResponseHandler()
+        _mod.AgentHandler._do_model_activate(handler,'target-model',requested_context_length=65536)
+        payload=handler.parse_response()
+        assert calls.count('model-begin')<=1 and calls.count('model-apply')<=1 and calls.count('model-finish')<=1
+        if failure in {None,'lost-apply-ack'}:
+            assert handler.response_code==200,payload
+            assert state['status']=='completed' and state['outcome']=='commit'
+        elif failure=='busy':
+            assert handler.response_code==500,payload
+            assert env_path.read_text(encoding='utf-8')==original and restarts==[]
+            assert calls==['model-status']
+        elif failure in {'apply-refused','receipt-write'}:
+            assert handler.response_code==500 and payload['rolled_back'] is True,payload
+            assert state['contract']==previous and state['outcome']=='rollback'
+            assert not payload.get('pending')
+        else:
+            assert handler.response_code==500 and payload['pending'] is True,payload
+            assert state['pending'] is True and state['outcome'] is None
+            if failure=='commit-unconfirmed':assert restarts==['new-model.gguf']
+            else:assert 'model-finish' not in calls
 
     def test_activation_requires_persisted_env_before_any_mutation(
         self,
@@ -4131,6 +4424,39 @@ class TestModelActivateRollback:
                     ]
                 },
                 {"GPU_BACKEND": "nvidia"},
+            )
+
+    def test_nvidia_profile_selection_fails_closed_when_system_ram_is_too_low(
+        self,
+        monkeypatch,
+    ):
+        monkeypatch.setattr(_mod, "_nvidia_vram_gb", lambda: 8.0)
+        monkeypatch.setattr(_mod, "_system_ram_gb", lambda: 13)
+        monkeypatch.setattr(_mod.platform, "machine", lambda: "x86_64")
+
+        with pytest.raises(
+            RuntimeError,
+            match=r"available system RAM \(13GB\).*requires 15GB.*unprofiled",
+        ):
+            _mod._select_runtime_profile(
+                {
+                    "runtime_profiles": [
+                        {
+                            "id": "nvidia-8gb-profile",
+                            "backend": "nvidia",
+                            "host_arch": ["amd64"],
+                            "memory_type": "discrete",
+                            "vram_min_gb": 7.5,
+                            "vram_max_gb": 8.5,
+                            "system_ram_min_gb": 15,
+                        }
+                    ]
+                },
+                {
+                    "GPU_BACKEND": "nvidia",
+                    "GPU_MEMORY_TYPE": "discrete",
+                    "SYSTEM_RAM_GB": "13",
+                },
             )
 
     def test_nvidia_vram_probe_uses_wsl_bridge_outside_service_path(
@@ -4683,6 +5009,20 @@ class TestModelActivateRollback:
 
         local_yaml = install_dir / "config" / "litellm" / "local.yaml"
         tracked_configs = (env_path, models_ini, lemonade_yaml, local_yaml)
+        recipe_updates = []
+        if runtime_kind == "windows-lemonade":
+            recipe_path = install_dir / "lemonade-cache" / "recipe_options.json"
+            recipe_path.parent.mkdir()
+            recipe_path.write_text('{"extra.new-model.gguf":{"ctx_size":2048}}', encoding="utf-8")
+            tracked_configs += (recipe_path,)
+            monkeypatch.setattr(_mod, "_lemonade_recipe_options_path", lambda: recipe_path)
+            monkeypatch.setattr(_mod._model_stores, "lemonade_profile", lambda _data, filename, **_kw:
+                {"backend":"vulkan","executable":str(install_dir/"runtime"),"contextLength":4096,"mtp":False,"args":[]}
+                if filename == "new-model.gguf" else None)
+            def save_candidate_recipe(_env, _model, _profile):
+                recipe_updates.append(_model)
+                recipe_path.write_text('{"extra.new-model.gguf":{"ctx_size":4096}}', encoding="utf-8")
+            monkeypatch.setattr(_mod, "_load_registered_lemonade_profile", save_candidate_recipe)
 
         def config_state():
             return {
@@ -4730,6 +5070,8 @@ class TestModelActivateRollback:
             monkeypatch.setattr(_mod, "_restart_macos_native_llama_server", record_native_restart)
 
         def fake_run(cmd, **_kwargs):
+            if cmd and cmd[-1] == "--help":
+                return subprocess.CompletedProcess(cmd, 0, stdout="--ctx-size N\n--model FILE\n", stderr="")
             if cmd and cmd[0] == "curl":
                 stdout = (
                     _lemonade_health_response("extra.new-model.gguf")
@@ -4758,6 +5100,8 @@ class TestModelActivateRollback:
         assert "filename = new-model.gguf" in runtime_restarts[0][1][models_ini]
         assert runtime_restarts[1][1] == original_config
         assert config_state() == original_config
+        if runtime_kind == "windows-lemonade":
+            assert recipe_updates == ["new-model"]
 
     def test_activation_accepts_local_gguf_without_catalog_entry(self, tmp_path, monkeypatch):
         install_dir, env_path, _env_text, models_ini, _ini_text, _yaml, _yaml_text = (
@@ -6705,7 +7049,7 @@ class TestModelActivateRollback:
             assert provider["options"]["apiKey"] == "no-key"
             assert provider["models"][expected_model_id]["limit"] == {
                 "context": 4096,
-                "output": 4096,
+                "output": 1024,
             }
         primary_config = json.loads(primary.read_text(encoding="utf-8"))
         compat_config = json.loads(compat.read_text(encoding="utf-8"))
@@ -6777,7 +7121,7 @@ class TestModelActivateRollback:
             assert "qwen3-coder-next" not in provider["models"]
             assert provider["models"]["ods/current"]["limit"] == {
                 "context": 4096,
-                "output": 4096,
+                "output": 1024,
             }
 
     def test_opencode_update_failure_restores_exact_files(self, tmp_path, monkeypatch):
@@ -7179,7 +7523,70 @@ class TestModelActivateRollback:
         assert env_path.read_text(encoding="utf-8") == expected_env
         assert restarts == []
 
-    def test_dependent_health_failure_rolls_back_previous_route(
+    def test_transient_hermes_unhealthy_recreates_once_without_rollback(
+        self, tmp_path, monkeypatch,
+    ):
+        install_dir, env_path, _env_text, _models_ini, _ini_text, _yaml, _yaml_text = (
+            _write_model_activation_fixture(tmp_path)
+        )
+        hermes_live = install_dir / "data" / "hermes" / "config.yaml"
+        hermes_template = (
+            install_dir / "extensions" / "services" / "hermes" / "cli-config.yaml.template"
+        )
+        hermes_live.parent.mkdir(parents=True)
+        hermes_template.parent.mkdir(parents=True)
+        old_config = (
+            "model:\n"
+            '  default: "old-model.gguf"\n'
+            "  context_length: 2048\n"
+        )
+        hermes_live.write_text(old_config, encoding="utf-8")
+        hermes_template.write_text(old_config, encoding="utf-8")
+        states = {
+            "ods-litellm": {"exists": False, "running": False},
+            "ods-hermes": {"exists": True, "running": True},
+            "ods-openclaw": {"exists": False, "running": False},
+            "ods-perplexica": {"exists": False, "running": False},
+        }
+        runtime_models = []
+        restart_calls = []
+        health_checks = []
+
+        def restart(container, _state=None, **kwargs):
+            restart_calls.append((container, kwargs.get("recreate")))
+            return container == "ods-hermes"
+
+        def check_health(container):
+            health_checks.append(container)
+            if len(health_checks) == 1:
+                raise _mod.ContainerUnhealthyError("simulated transient unhealthy Hermes")
+
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.setattr(_mod, "_capture_container_state", lambda name: states[name])
+        monkeypatch.setattr(
+            _mod,
+            "_compose_restart_llama_server",
+            lambda env: runtime_models.append(env["GGUF_FILE"]),
+        )
+        monkeypatch.setattr(_mod, "_wait_for_model_readiness", _mock_verified_readiness)
+        monkeypatch.setattr(_mod, "_restart_existing_container", restart)
+        monkeypatch.setattr(_mod, "_verify_running_hermes_route", lambda *_args: None)
+        monkeypatch.setattr(_mod, "_wait_for_container_health", check_health)
+        handler = _ResponseHandler()
+
+        _mod.AgentHandler._do_model_activate(handler, "target-model")
+
+        assert handler.response_code == 200
+        assert runtime_models == ["new-model.gguf"]
+        assert [call for call in restart_calls if call[0] == "ods-hermes"] == [
+            ("ods-hermes", True),
+            ("ods-hermes", True),
+        ]
+        assert health_checks == ["ods-hermes", "ods-hermes"]
+        assert _mod.load_env(env_path)["GGUF_FILE"] == "new-model.gguf"
+        assert handler.parse_response()["consumers"]["hermes"] == "restarted"
+
+    def test_repeated_hermes_unhealthy_rolls_back_previous_route(
         self, tmp_path, monkeypatch,
     ):
         install_dir, env_path, env_text, _models_ini, _ini_text, _yaml, _yaml_text = (
@@ -7221,8 +7628,8 @@ class TestModelActivateRollback:
             nonlocal health_checks
             assert container == "ods-hermes"
             health_checks += 1
-            if health_checks == 1:
-                raise RuntimeError("simulated unhealthy Hermes")
+            if health_checks <= 2:
+                raise _mod.ContainerUnhealthyError("simulated unhealthy Hermes")
 
         monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
         monkeypatch.setattr(_mod, "_capture_container_state", lambda name: states[name])
@@ -7253,7 +7660,7 @@ class TestModelActivateRollback:
         assert handler.response_code == 500
         assert handler.parse_response()["rolled_back"] is True
         assert runtime_models == ["new-model.gguf", "old-model.gguf"]
-        assert health_checks == 2
+        assert health_checks == 3
         assert env_path.read_text(encoding="utf-8") == env_text
         assert hermes_live.read_text(encoding="utf-8") == old_config
         assert json.loads(completion_receipt.read_text(encoding="utf-8")) == old_receipt
@@ -7508,6 +7915,32 @@ class TestModelActivateRollback:
 
         assert json.loads(compat.read_text(encoding="utf-8"))["theme"] == "current"
 
+    @pytest.mark.parametrize(
+        ("context_length", "expected_output"),
+        [(4096, 1024), (32768, 8192), (65536, 16384), (131072, 32768)],
+    )
+    def test_model_switch_opencode_output_reserves_prompt_context(
+        self, tmp_path, monkeypatch, context_length, expected_output,
+    ):
+        config_path = tmp_path / "config.json"
+        config_path.write_text("{}", encoding="utf-8")
+        monkeypatch.setattr(_mod, "_opencode_config_paths", lambda: (config_path,))
+        snapshot = _mod._capture_opencode_config()
+
+        _mod._update_opencode_config(
+            {"ODS_MODEL_SWITCHBOARD": "enabled", "LITELLM_KEY": "test-key"},
+            snapshot,
+            "qwen3.5-27b-q4",
+            context_length,
+        )
+
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        assert config["model"] == "llama-server/ods/current"
+        assert config["small_model"] == config["model"]
+        limit = config["provider"]["llama-server"]["models"]["ods/current"]["limit"]
+        assert limit == {"context": context_length, "output": expected_output}
+        assert limit["output"] < limit["context"]
+
     def test_litellm_is_verified_before_active_opencode_restarts(
         self, tmp_path, monkeypatch,
     ):
@@ -7707,3 +8140,39 @@ class TestNvidiaHealthUnchanged:
         assert '"ok"' in body
         # But Lemonade check would fail (no model_loaded key)
         assert _check_lemonade_health(body) is False
+
+
+@pytest.mark.parametrize("fail_consumer", [False, True])
+def test_enabled_router_published_before_consumer_probe_and_rollback(tmp_path, monkeypatch, fail_consumer):
+    install, env_path, env_text, *_ = _write_model_activation_fixture(tmp_path)
+    env_path.write_text(env_text + "ODS_MODEL_SWITCHBOARD=enabled\n", encoding="utf-8")
+    monkeypatch.setattr(_mod, "INSTALL_DIR", install)
+    monkeypatch.setattr(_mod, "_compose_restart_llama_server", lambda _: None)
+    monkeypatch.setattr(_mod, "_render_model_router_runtime_configs", lambda *a, **k: None)
+    monkeypatch.setattr(_mod, "_wait_for_model_readiness", _mock_verified_readiness)
+    monkeypatch.setattr(_mod, "_capture_container_state", lambda name: {"exists": name == "ods-litellm", "running": name == "ods-litellm"})
+    monkeypatch.setattr(_mod, "_restart_existing_container", lambda name, *a, **k: name == "ods-litellm")
+    monkeypatch.setattr(_mod, "_restore_container_state", lambda name, *a, **k: name == "ods-litellm")
+    observed = []
+    def verify(env):
+        state = json.loads((install / "data/model-state.json").read_text())
+        assert state["active"]["runtimeModelId"] == env["GGUF_FILE"]
+        observed.append((env["GGUF_FILE"], state["routeSeq"]))
+        if fail_consumer and env["GGUF_FILE"] == "new-model.gguf":
+            raise RuntimeError("consumer failed after route publication")
+    monkeypatch.setattr(_mod, "_verify_litellm_route", verify)
+    handler = _ResponseHandler()
+    _mod.AgentHandler._do_model_activate(handler, "target-model")
+    assert handler.response_code == (500 if fail_consumer else 200)
+    assert observed[0][0] == "new-model.gguf"
+    if fail_consumer:
+        assert observed[1][0] == "old-model.gguf"
+        assert observed[1][1] > observed[0][1]
+        assert env_path.read_text() == env_text + "ODS_MODEL_SWITCHBOARD=enabled\n"
+
+
+def test_router_publication_rejects_unverified_context(tmp_path, monkeypatch):
+    monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
+    with pytest.raises(RuntimeError, match="unverified"):
+        _mod._publish_activation_route({}, "target", {"identity": "target", "contextVerified": False}, {})
+    assert not (tmp_path / "data/model-state.json").exists()

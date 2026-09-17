@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { copy, createProvider, eligible, prepareSave, readConfiguration } from './pixelProviderForm'
 import PixelProviderRuntime from './PixelProviderRuntime'
 import PixelConnectionImport from './PixelConnectionImport'
+import { useBeforeUnload } from '../../hooks/useBeforeUnload'
 
 const inputStyle = 'w-full rounded border border-theme-border bg-theme-bg px-3 py-2 text-theme-text focus:outline-none focus:ring-2 focus:ring-blue-500'
 const buttonStyle = 'rounded border border-theme-border px-3 py-2 text-sm hover:bg-white/5 disabled:opacity-40 focus:outline-none focus:ring-2 focus:ring-blue-500'
@@ -25,6 +26,7 @@ export default function PixelProviderSettings({ showHeading = true }) {
   const [dirty, setDirty] = useState(false)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  useBeforeUnload(Boolean(dirty || saving || newId || newLabel))
   const [stale, setStale] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
@@ -81,7 +83,7 @@ export default function PixelProviderSettings({ showHeading = true }) {
       setStale(false)
       setNewId('')
       setNewLabel('')
-      if (method === 'POST') setNotice('Settings saved. Pixel runtime has not been changed.')
+      if (method === 'POST') setNotice('Settings saved. Portal runtime has not been changed.')
     } catch {
       if (!current()) return
       setStale(true)
@@ -123,7 +125,7 @@ export default function PixelProviderSettings({ showHeading = true }) {
   }
   const providerEdit = (id, key, value) => edit(next => { next.providers.find(p => p.id === id)[key] = value })
   const reload = () => {
-    if (!writePending.current && !runtimeBusyRef.current && !connectionBusyRef.current && (!dirty || window.confirm('Discard unsaved Pixel provider edits and reload?'))) load()
+    if (!writePending.current && !runtimeBusyRef.current && !connectionBusyRef.current && (!dirty || window.confirm('Discard unsaved provider edits and reload?'))) load()
   }
   const save = () => {
     if (writePending.current || runtimeBusyRef.current || connectionBusyRef.current || saving || loading || stale || !dirty) return
@@ -175,7 +177,7 @@ export default function PixelProviderSettings({ showHeading = true }) {
 
   return <section aria-labelledby="pixel-connections-title" className="settings-premium-card pixel-connections-settings rounded-lg border border-theme-border p-5 space-y-5 text-theme-text">
     <div className="flex flex-wrap items-start justify-between gap-3">
-      <div><h2 id="pixel-connections-title" className={showHeading ? 'text-lg font-semibold' : 'sr-only'}>Pixel connections</h2>
+      <div><h2 id="pixel-connections-title" className={showHeading ? 'text-lg font-semibold' : 'sr-only'}>Portal connections</h2>
         <p className="text-sm text-theme-text-muted">{dirty ? 'Unsaved provider changes' : 'Inference providers and routing'}</p></div>
       <div className="flex flex-wrap gap-2">
         <button className={buttonStyle} disabled={loading || saving || runtimeBusy || connectionBusy} onClick={reload}>Reload providers</button>
@@ -200,11 +202,11 @@ export default function PixelProviderSettings({ showHeading = true }) {
     <div hidden={!showHeading && view !== 'import'}>{draft && <PixelConnectionImport key={`${snapshot?.revision}:${importReset}`} providers={draft.providers}
       disabled={loading || saving || runtimeBusy || stale} onBusyChange={connectionBusyChanged} onImport={importConnection} />}</div>
     {draft && <fieldset hidden={!showHeading && view !== 'providers'} disabled={loading || saving || runtimeBusy || connectionBusy} className="min-w-0 space-y-5">
-      <legend className="sr-only">Pixel provider configuration</legend>
+      <legend className="sr-only">Portal provider configuration</legend>
       <details className="settings-routing-options" open={showHeading || undefined}>
       <summary>Routing &amp; fallback rules</summary>
       <div className="flex flex-wrap gap-5">
-        <Toggle label="Enable desired Pixel routing" checked={draft.enabled} onChange={e => edit(next => { next.enabled = e.target.checked })} />
+        <Toggle label="Enable desired Portal routing" checked={draft.enabled} onChange={e => edit(next => { next.enabled = e.target.checked })} />
         <Toggle label="Allow cloud inference" checked={draft.policy.allowCloud} onChange={e => edit(next => { next.policy.allowCloud = e.target.checked })} />
       </div>
       <p className="text-xs text-theme-text-muted">Cloud routes can send conversation content to an external provider and incur charges. Opt-in is required before activation.</p>

@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import tempfile
@@ -17,9 +18,9 @@ from urllib.parse import quote, urljoin, urlsplit
 
 import httpx
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, JSONResponse
 
-from env_values import strip_matching_quotes
+from env_values import parse_env_value
 from config import (
     DATA_DIR,
     INSTALL_DIR,
@@ -65,6 +66,15 @@ router = APIRouter(tags=["models"])
 
 _LIBRARY_PATH = Path(INSTALL_DIR) / "config" / "model-library.json"
 _MODELS_DIR = Path(DATA_DIR) / "models"
+
+
+def _installed_model_paths() -> dict[str, Path]:
+    from model_stores import scan_model_files
+    return scan_model_files(Path(DATA_DIR), container=Path("/.dockerenv").exists(), default_dir=_MODELS_DIR)
+
+
+def _installed_model_path(filename: str) -> Path | None:
+    return next((path for name, path in _installed_model_paths().items() if name.casefold() == filename.casefold()), None)
 _ENV_PATH = Path(INSTALL_DIR) / ".env"
 _HF_API_BASE = "https://huggingface.co"
 _HF_REPO_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,95}/[A-Za-z0-9][A-Za-z0-9._-]{0,95}$")
@@ -305,18 +315,12 @@ def _write_imported_library(records: list[dict[str, Any]]) -> None:
 
 def _scan_downloaded_models() -> dict[str, int]:
     """Scan data/models/ for downloaded GGUF files. Returns {filename: size_bytes}."""
-    downloaded: dict[str, int] = {}
-    if not _MODELS_DIR.is_dir():
-        return downloaded
-    try:
-        for f in _MODELS_DIR.iterdir():
-            if _is_final_gguf_file(f):
-                try:
-                    downloaded[f.name] = f.stat().st_size
-                except OSError:
-                    pass
-    except OSError as exc:
-        logger.warning("Failed to scan models directory: %s", exc)
+    downloaded = {}
+    for name, path in _installed_model_paths().items():
+        try:
+            downloaded[name] = path.stat().st_size
+        except OSError:
+            continue
     return downloaded
 
 
@@ -334,7 +338,7 @@ def _read_active_model() -> Optional[str]:
     try:
         for line in _ENV_PATH.read_text(encoding="utf-8").splitlines():
             if line.startswith("GGUF_FILE="):
-                return strip_matching_quotes(line.split("=", 1)[1])
+                return parse_env_value(line.split("=", 1)[1])
     except OSError:
         pass
     return None
@@ -491,22 +495,32 @@ def _verified_activation_context(loaded_model: str | None) -> int | None:
     return context if context > 0 else None
 
 
-def _already_active_model(model_id: str, model: dict) -> tuple[bool, str | None]:
+def _configured_model_identity_matches(model: dict) -> bool:
     gguf_file = model.get("gguf_file")
     if not gguf_file:
-        return False, None
+        return False
     if _read_active_model() != gguf_file:
-        return False, None
+        return False
     configured_llm = (
         read_env_file_value("LLM_MODEL", INSTALL_DIR)
         or read_env_value("LLM_MODEL", INSTALL_DIR)
     )
     if not (_model_name_tokens(configured_llm) & _catalog_model_tokens(model)):
-        return False, None
+        return False
     if not (Path(DATA_DIR) / "models" / gguf_file).exists():
-        return False, None
+        return False
+    return True
 
+
+def _already_active_model(model_id: str, model: dict) -> tuple[bool, str | None]:
+    # Fetch the live backend identity even when the bind-mounted .env identity
+    # is stale. Model activation replaces .env atomically on the host, so a
+    # long-running container with a single-file bind mount can retain the old
+    # inode until it is recreated.
     loaded_model = _fetch_loaded_model_sync()
+    if not _configured_model_identity_matches(model):
+        return False, loaded_model
+
     if _model_name_tokens(loaded_model) & _catalog_model_tokens(model):
         # Lemonade's health endpoint is the authoritative loaded-model source.
         # A one-token chat probe against a large already-active model can take
@@ -995,7 +1009,7 @@ async def _hf_repo_details(repo_id: str) -> dict[str, Any]:
                 if isinstance(part, dict)
             ] or [str(imported.get("gguf_file") or "")]
             artifact["installed"] = bool(filenames) and all(
-                (_MODELS_DIR / filename).is_file()
+                _installed_model_path(filename) is not None
                 for filename in filenames
             )
         else:
@@ -1025,13 +1039,23 @@ async def _hf_repo_details(repo_id: str) -> dict[str, Any]:
 def _hf_local_filename(repo_id: str, remote_filename: str, revision: str) -> str:
     repo_slug = re.sub(r"[^A-Za-z0-9._-]+", "-", repo_id).strip("-._")
     basename = Path(remote_filename).name
-    stem = re.sub(r"[^A-Za-z0-9._-]+", "-", Path(basename).stem).strip("-._")
+    split = _HF_SPLIT_GGUF_RE.fullmatch(basename)
+    stem = split.group("prefix") if split else Path(basename).stem
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "-", stem).strip("-._")
+    suffix = ".gguf"
+    identity = remote_filename
+    if split:
+        # llama.cpp derives sibling paths from a shared prefix followed by
+        # -00001-of-00002.gguf. Keep the digest common to the complete set and
+        # before that suffix, including when long names must be shortened.
+        suffix = f"-{split.group('part')}-of-{split.group('total')}.gguf"
+        identity = Path(remote_filename).with_name(f"{split.group('prefix')}-of-{split.group('total')}.gguf").as_posix()
     digest = hashlib.sha256(
-        f"{repo_id}\n{revision}\n{remote_filename}".encode("utf-8")
+        f"{repo_id}\n{revision}\n{identity}".encode("utf-8")
     ).hexdigest()[:8]
-    filename = f"hf-{repo_slug}-{stem}-{digest}.gguf"
+    filename = f"hf-{repo_slug}-{stem}-{digest}{suffix}"
     if len(filename) > 220:
-        filename = f"hf-{repo_slug[:60]}-{stem[:120]}-{digest}.gguf"
+        filename = f"hf-{repo_slug[:60]}-{stem[:120]}-{digest}{suffix}"
     return filename
 
 
@@ -1320,7 +1344,7 @@ async def list_models(api_key: str = Depends(verify_api_key)):
         DATA_DIR,
         context_size,
         catalog=_load_library(),
-        downloaded_files_override=_scan_downloaded_models(),
+        downloaded_files_override=_installed_model_paths(),
     )
     _annotate_model_lifecycle(
         payload,
@@ -1333,7 +1357,7 @@ async def list_models(api_key: str = Depends(verify_api_key)):
             gpu_info,
             context_size,
             INSTALL_DIR,
-            model_files_dir(DATA_DIR) / loaded_entry["gguf"] if loaded_entry.get("gguf") else None,
+            _installed_model_path(loaded_entry["gguf"]) if loaded_entry.get("gguf") else None,
         )
         await asyncio.to_thread(
             record_model_performance,
@@ -1653,7 +1677,7 @@ def _local_gguf_filename_from_id(model_id: str) -> str | None:
 
 def _resolve_local_gguf_filename(model_id: str) -> str | None:
     candidate = _local_gguf_filename_from_id(model_id)
-    if not candidate or not _MODELS_DIR.is_dir():
+    if not candidate:
         return None
 
     candidate_lower = candidate.lower()
@@ -1663,7 +1687,7 @@ def _resolve_local_gguf_filename(model_id: str) -> str | None:
     logical_matches: list[Path] = []
     candidate_logical = _local_model_name_from_gguf(candidate).lower()
     try:
-        for path in _MODELS_DIR.iterdir():
+        for path in _installed_model_paths().values():
             if not _is_final_gguf_file(path):
                 continue
             if path.name.lower() == candidate_lower:
@@ -1689,9 +1713,8 @@ def _find_local_gguf_model(model_id: str) -> Optional[dict]:
     gguf_file = _resolve_local_gguf_filename(model_id)
     if not gguf_file:
         return None
-    models_dir = _MODELS_DIR.resolve()
-    target = (_MODELS_DIR / gguf_file).resolve()
-    if not target.is_relative_to(models_dir) or not _is_final_gguf_file(target):
+    target = _installed_model_path(gguf_file)
+    if target is None or not _is_final_gguf_file(target):
         return None
 
     context_length = 32768
@@ -1726,35 +1749,6 @@ def _find_loadable_model(model_id: str) -> Optional[dict]:
 
 def _find_normalized_model(model_id: str) -> Optional[dict]:
     return find_catalog_model(load_model_catalog(INSTALL_DIR), model_id, None)
-
-
-def _parse_llama_metric_counters(text: str) -> dict:
-    counters = {}
-    for line in text.splitlines():
-        if not line or line.startswith("#"):
-            continue
-        parts = line.split()
-        if len(parts) < 2:
-            continue
-        name = parts[0]
-        try:
-            value = float(parts[-1])
-        except ValueError:
-            continue
-        if "tokens_predicted_total" in name:
-            counters["tokens_predicted_total"] = value
-        elif "tokens_predicted_seconds_total" in name:
-            counters["tokens_predicted_seconds_total"] = value
-    return counters
-
-
-async def _fetch_llama_counters(host: str, port: int, model_name: str) -> dict:
-    metrics_port = int(read_env_value("LLAMA_METRICS_PORT", INSTALL_DIR) or port)
-    params = {"model": model_name} if model_name else {}
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        resp = await client.get(f"http://{host}:{metrics_port}/metrics", params=params)
-        resp.raise_for_status()
-        return _parse_llama_metric_counters(resp.text)
 
 
 async def _fetch_llama_loaded_model(host: str, port: int, api_prefix: str) -> str | None:
@@ -1802,20 +1796,25 @@ async def _fetch_llama_loaded_model(host: str, port: int, api_prefix: str) -> st
     return None
 
 
-def _completion_text_and_usage(data: dict) -> tuple[str, int]:
-    if not isinstance(data, dict):
-        return "", 0
-    usage = data.get("usage") or {}
-    completion_tokens = int(usage.get("completion_tokens") or 0)
-    choices = data.get("choices") or []
-    text = ""
-    if choices:
-        first = choices[0] or {}
-        message = first.get("message") or {}
-        text = first.get("text") or message.get("content") or ""
-    if completion_tokens <= 0 and text:
-        completion_tokens = max(len(text.split()), 1)
-    return text, completion_tokens
+def _benchmark_measurement(data: Any, wall_seconds: float) -> tuple[int, float, str]:
+    """Use a matched pair of request measurements; server totals include peers."""
+    data = data if isinstance(data, dict) else {}
+    timings = data.get("timings")
+    if isinstance(timings, dict):
+        tokens = timings.get("predicted_n")
+        milliseconds = timings.get("predicted_ms")
+        if (type(tokens) is int and tokens > 0
+                and type(milliseconds) in (int, float)
+                and math.isfinite(milliseconds) and milliseconds > 0):
+            return tokens, milliseconds / 1000.0, "request timings"
+    usage = data.get("usage")
+    tokens = usage.get("completion_tokens") if isinstance(usage, dict) else None
+    if type(tokens) is int and tokens > 0:
+        return tokens, wall_seconds, "request usage / wall time"
+    raise HTTPException(
+        status_code=502,
+        detail="Benchmark completed but no valid request token count was reported; result was not saved",
+    )
 
 
 async def _run_current_model_benchmark(model_id: str, max_tokens: int) -> dict:
@@ -1850,7 +1849,7 @@ async def _run_current_model_benchmark(model_id: str, max_tokens: int) -> dict:
         DATA_DIR,
         context_size,
         catalog=_load_library(),
-        downloaded_files_override=_scan_downloaded_models(),
+        downloaded_files_override=_installed_model_paths(),
     )
     target = next((m for m in payload["models"] if m["id"] == model_id), None)
     if target is None:
@@ -1865,11 +1864,6 @@ async def _run_current_model_benchmark(model_id: str, max_tokens: int) -> dict:
         "context length, and GPU memory bandwidth. Continue until the token budget ends."
     )
 
-    before = {}
-    try:
-        before = await _fetch_llama_counters(host, port, loaded_model)
-    except httpx.HTTPError as exc:
-        logger.debug("Benchmark metrics pre-read failed: %s", exc)
     started = time.perf_counter()
     async with httpx.AsyncClient(timeout=max(60.0, max_tokens * 3.0)) as client:
         resp = await client.post(
@@ -1885,27 +1879,7 @@ async def _run_current_model_benchmark(model_id: str, max_tokens: int) -> dict:
         resp.raise_for_status()
         response_data = resp.json()
     wall_seconds = max(time.perf_counter() - started, 0.001)
-    after = {}
-    try:
-        after = await _fetch_llama_counters(host, port, loaded_model)
-    except httpx.HTTPError as exc:
-        logger.debug("Benchmark metrics post-read failed: %s", exc)
-
-    generated = after.get("tokens_predicted_total", 0) - before.get("tokens_predicted_total", 0)
-    generate_seconds = after.get("tokens_predicted_seconds_total", 0) - before.get("tokens_predicted_seconds_total", 0)
-    _, fallback_tokens = _completion_text_and_usage(response_data)
-    timings = response_data.get("timings") if isinstance(response_data, dict) else {}
-    if generated <= 0 and isinstance(timings, dict):
-        generated = int(timings.get("predicted_n") or 0)
-    if generate_seconds <= 0 and isinstance(timings, dict):
-        timing_ms = float(timings.get("predicted_ms") or 0)
-        generate_seconds = timing_ms / 1000.0 if timing_ms > 0 else 0
-    if generated <= 0:
-        generated = fallback_tokens
-    if generate_seconds <= 0:
-        generate_seconds = wall_seconds
-    if generated <= 0:
-        raise HTTPException(status_code=502, detail="Benchmark completed but no generated token count was reported")
+    generated, generate_seconds, method = _benchmark_measurement(response_data, wall_seconds)
 
     tokens_per_second = round(generated / generate_seconds, 2)
     if not is_plausible_single_request_tps(tokens_per_second):
@@ -1914,7 +1888,7 @@ async def _run_current_model_benchmark(model_id: str, max_tokens: int) -> dict:
             detail="Benchmark returned implausible single-request throughput; result was not saved",
         )
     if gpu_info:
-        gguf_path = model_files_dir(DATA_DIR) / target["gguf"] if target.get("gguf") else None
+        gguf_path = _installed_model_path(target["gguf"]) if target.get("gguf") else None
         signature = build_sample_signature(target, gpu_info, context_size, INSTALL_DIR, gguf_path)
         for sample_name in {model_id, loaded_model, target.get("gguf") or "", target.get("llmModelName") or ""}:
             if not sample_name:
@@ -1946,7 +1920,7 @@ async def _run_current_model_benchmark(model_id: str, max_tokens: int) -> dict:
         "generateSeconds": round(generate_seconds, 3),
         "wallSeconds": round(wall_seconds, 3),
         "source": "local_benchmark",
-        "method": "llama-server OpenAI chat completion + Prometheus counters",
+        "method": method,
     }
 
 
@@ -1982,6 +1956,55 @@ def cancel_download(api_key: str = Depends(verify_api_key)):
     """Cancel an in-progress model download."""
     result = _call_agent_model("/v1/model/download/cancel", {})
     return result
+
+
+def _model_recovery_projection(value):
+    phases = {'idle', 'completed', 'prepared', 'held', 'applying', 'applied', 'committing', 'rolling-back', 'unavailable'}
+    if (type(value) is not dict or type(value.get('pending')) is not bool
+            or value.get('phase') not in phases
+            or value['pending'] != (value['phase'] not in ('idle', 'completed'))):
+        raise ValueError('invalid-model-recovery')
+    transaction = value.get('transactionId')
+    if (transaction is not None and (type(transaction) is not str or re.fullmatch('[a-f0-9]{64}', transaction) is None)
+            or value['phase'] not in ('idle', 'unavailable') and transaction is None):
+        raise ValueError('invalid-model-recovery')
+    result = {'pending': value['pending'], 'phase': value['phase'], 'transactionId': transaction}
+    if value.get('outcome') in ('commit', 'rollback') and value['phase'] == 'completed':
+        result['outcome'] = value['outcome']
+    if value.get('reason') in ('model-recovery-proof-required', 'model-recovery-unavailable'):
+        result['reason'] = value['reason']
+    return result
+
+
+def _model_recovery_request(method):
+    try:
+        value = request_agent_json(method, '/v1/model/recovery' if method == 'GET' else '/v1/model/recover',
+                                   payload=None if method == 'GET' else {}, timeout=5 if method == 'GET' else 400)
+        return _model_recovery_projection(value)
+    except AgentHTTPError as exc:
+        if exc.status_code in (409, 503):
+            try:
+                return JSONResponse(_model_recovery_projection(_agent_http_detail(exc)), status_code=exc.status_code,
+                                    headers={'Cache-Control': 'no-store'})
+            except ValueError:
+                pass
+        raise HTTPException(status_code=503, detail='Model recovery is unavailable. No new model switch was started.') from None
+    except (AgentClientError, ValueError):
+        raise HTTPException(status_code=503, detail='Model recovery could not be confirmed. Refresh before retrying.') from None
+
+
+@router.get('/api/models/recovery')
+def model_recovery_status(api_key: str = Depends(verify_api_key)):
+    value = _model_recovery_request('GET')
+    return value if isinstance(value, JSONResponse) else JSONResponse(value, headers={'Cache-Control': 'no-store'})
+
+
+@router.post('/api/models/recovery')
+def recover_model_switch(body: dict | None = Body(default=None), api_key: str = Depends(verify_api_key)):
+    if body != {}:
+        raise HTTPException(status_code=400, detail='Recovery accepts an empty request only.')
+    value = _model_recovery_request('POST')
+    return value if isinstance(value, JSONResponse) else JSONResponse(value, headers={'Cache-Control': 'no-store'})
 
 
 @router.post("/api/models/{model_id}/load")
@@ -2041,8 +2064,31 @@ def load_model(
 
     # Activation includes downstream synchronization and a bounded rollback.
     activation_body: dict[str, Any] = {"model_id": model_id}
-    if requested_context is not None:
-        activation_body["context_length"] = requested_context
+    activation_context = requested_context
+    if (
+        activation_context is None
+        and (
+            _configured_model_identity_matches(model)
+            or (
+                loaded_model
+                and (_model_name_tokens(loaded_model) & _catalog_model_tokens(model))
+            )
+        )
+    ):
+        # A matching live backend may still require reconciliation when its
+        # activation receipt is absent or stale (for example immediately after
+        # bootstrap promotion).  Preserve the verified runtime context across
+        # that repair.  Otherwise the host agent falls back to the catalog's
+        # conservative default and can silently shrink a 64K Hermes-capable
+        # runtime to 32K during an idempotent dashboard reload.
+        configured_context = _configured_context_length()
+        if (
+            configured_context is not None
+            and _MIN_MODEL_CONTEXT <= configured_context <= _MAX_MODEL_CONTEXT
+        ):
+            activation_context = configured_context
+    if activation_context is not None:
+        activation_body["context_length"] = activation_context
     result = _call_agent_model(
         "/v1/model/activate",
         activation_body,

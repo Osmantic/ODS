@@ -38,6 +38,7 @@ export default function PixelHandoffApproval({ label = 'Review handoffs' }) {
   const [warning, setWarning] = useState('')
   const [busy, setBusy] = useState(false)
   const [uncertain, setUncertain] = useState(false)
+  const [now, setNow] = useState(Date.now)
   const generation = useRef(0)
   const inFlight = useRef(false)
   const controllers = useRef(new Set())
@@ -46,6 +47,17 @@ export default function PixelHandoffApproval({ label = 'Review handoffs' }) {
   const previousDigest = useRef(null)
 
   const clearConsent = useCallback(() => { setReviewed(false); setCloud(false); setCost(false) }, [])
+  useEffect(() => {
+    if (!open || preview?.status !== 'pending') return
+    const tick = () => {
+      const time = Date.now()
+      setNow(time)
+      if (time >= preview.expiresAt * 1000) clearConsent()
+    }
+    tick()
+    const timer = setInterval(tick, 1000)
+    return () => clearInterval(timer)
+  }, [open, preview?.status, preview?.expiresAt, clearConsent])
   const request = useCallback(async (action, body) => {
     const controller = new AbortController()
     controllers.current.add(controller)
@@ -107,6 +119,7 @@ export default function PixelHandoffApproval({ label = 'Review handoffs' }) {
 
   const decide = async approved => {
     if (inFlight.current || busy || uncertain || preview?.status !== 'pending' ||
+        Date.now() >= preview.expiresAt * 1000 ||
         approved && (!reviewed || preview.recipient.kind === 'cloud' && !(cloud && cost))) return
     inFlight.current = true; setBusy(true); setError('')
     const current = generation.current
@@ -134,7 +147,8 @@ export default function PixelHandoffApproval({ label = 'Review handoffs' }) {
     else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus() }
   }
   const recipient = preview?.recipient
-  const pending = preview?.status === 'pending' && !busy && !uncertain
+  const expired = preview?.status === 'pending' && now >= preview.expiresAt * 1000
+  const pending = preview?.status === 'pending' && !expired && !busy && !uncertain
 
   return <>
     <button ref={trigger} type="button" className={button} onClick={() => { clearConsent(); setOpen(true) }}>{label}</button>
@@ -156,6 +170,7 @@ export default function PixelHandoffApproval({ label = 'Review handoffs' }) {
         {!runId && !items.length && <p className="my-3 text-sm">No pending handoffs.</p>}
         {preview && <div className="mt-3 space-y-3 break-words">
           <p>Handoff: {preview.status}. Approval is permission to proceed, not evidence that inference completed.</p>
+          {expired && <p role="status">This approval window has expired on this device. Reload the handoff to check the server state.</p>}
           <p className="text-sm">Recipient: {recipient.label} ({recipient.kind}) · {recipient.model}<br />Endpoint: {recipient.baseUrl}<br />
             Saved revision: {recipient.revision}. Previous leader: {recipient.previousProviderId}.<br />
             Approval expires: {new Date(preview.expiresAt * 1000).toLocaleString()}.</p>

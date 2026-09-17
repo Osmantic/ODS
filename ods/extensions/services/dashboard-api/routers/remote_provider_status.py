@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import hashlib
 import json
@@ -1106,9 +1107,11 @@ def _overall_status(
 async def remote_provider_status() -> dict[str, Any]:
     """Return sanitized remote-provider status without mutating configuration."""
     route_state = _read_route_state()
-    activation = await _reconcile_activation_with_host(_read_activation())
-    egress = await _fetch_egress_health()
-    ssh_supervisor = await _fetch_ssh_supervisor_status()
+    activation, egress, ssh_supervisor = await asyncio.gather(
+        _reconcile_activation_with_host(_read_activation()),
+        _fetch_egress_health(),
+        _fetch_ssh_supervisor_status(),
+    )
     peer = _peer_status(route_state, ssh_supervisor)
     overall = _overall_status(route_state, egress, activation)
     return {

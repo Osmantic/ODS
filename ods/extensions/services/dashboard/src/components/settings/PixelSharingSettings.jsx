@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { connectionBundle, readSharing } from './pixelSharingForm'
+import { usePortalIdentity } from '../../contexts/PortalIdentityContext'
 
 const inputStyle = 'w-full rounded border border-theme-border bg-theme-bg px-3 py-2 text-theme-text focus:outline-none focus:ring-2 focus:ring-theme-accent'
 const buttonStyle = 'rounded border border-theme-border px-3 py-2 text-sm hover:bg-white/5 disabled:opacity-40 focus:outline-none focus:ring-2 focus:ring-theme-accent'
 
 export default function PixelSharingSettings() {
+  const { displayName } = usePortalIdentity()
   const [snapshot, setSnapshot] = useState(null)
   const [label, setLabel] = useState('')
   const [days, setDays] = useState(30)
@@ -15,6 +17,12 @@ export default function PixelSharingSettings() {
   const [stale, setStale] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  const [copying, setCopying] = useState(false)
+  const [copyResult, setCopyResult] = useState(null)
+  const copyPending = useRef(false)
+  const connection = useRef(null)
+  connection.current = {issued,baseUrl}
+  const currentCopy = copyResult?.issued === issued && copyResult?.baseUrl === baseUrl ? copyResult : null
   const [confirm, setConfirm] = useState(null)
   const [clock, setClock] = useState(Date.now)
   const mounted = useRef(false)
@@ -22,9 +30,14 @@ export default function PixelSharingSettings() {
   const controller = useRef(null)
   const sequence = useRef(0)
 
+  // Release the receipt's credential reference when its connection is dismissed or edited.
+  useEffect(() => setCopyResult(null), [issued, baseUrl])
+
   const request = useCallback(async (action = null, payload = null) => {
     if (pending.current) return
     pending.current = true
+    // A reload or device mutation ends the review of the previous snapshot.
+    setConfirm(null)
     setBusy(true)
     setError('')
     const seq = ++sequence.current
@@ -118,27 +131,37 @@ export default function PixelSharingSettings() {
   }
 
   async function copyConnection() {
+    if (copyPending.current) return
+    copyPending.current = true
+    setCopying(true); setCopyResult(null); setNotice(''); setError('')
+    const current = () => mounted.current && connection.current.issued === issued && connection.current.baseUrl === baseUrl
     try {
       await navigator.clipboard.writeText(JSON.stringify(connectionBundle(issued, baseUrl), null, 2))
-      setNotice('Connection settings copied. They contain a secret device key; share only with the intended device.')
-    } catch { setError('Could not copy. Check the /v1 URL and clipboard permission.') }
+      if (current()) setCopyResult({issued,baseUrl,notice:'Connection settings copied. They contain a secret device key; share only with the intended device.'})
+    } catch {
+      if (current()) setCopyResult({issued,baseUrl,error:'Could not copy. Check the /v1 URL and clipboard permission.'})
+    } finally {
+      copyPending.current = false
+      if (mounted.current) setCopying(false)
+    }
   }
 
   function confirmAction() {
     if (!confirm || locked) return
-    const action = confirm
+    if (confirm.revision !== config.revision) { setConfirm(null); return }
+    const {action, revision} = confirm
     setConfirm(null)
-    request(action, { expectedRevision: config.revision })
+    request(action, { expectedRevision: revision })
   }
 
   return <section className="rounded-xl border border-theme-border bg-theme-card p-5 space-y-4" aria-labelledby="pixel-sharing-title">
     <div className="flex items-center justify-between gap-3">
       <div><h2 id="pixel-sharing-title" className="text-lg font-semibold">Share inference with your devices</h2>
-        <p className="text-sm text-theme-text-muted">Use this ODS model from Pixel on another device. Tools and permissions stay on that device.</p></div>
+        <p className="text-sm text-theme-text-muted">Use this ODS model from {displayName} on another device. Tools and permissions stay on that device.</p></div>
       <button className={buttonStyle} disabled={busy} onClick={() => request()}>Reload sharing</button>
     </div>
-    {error && <p role="alert" className="text-sm text-red-400">{error}</p>}
-    {notice && <p role="status" className="text-sm text-theme-text-muted">{notice}</p>}
+    {(currentCopy?.error || error) && <p role="alert" className="text-sm text-red-400">{currentCopy?.error || error}</p>}
+    {(currentCopy?.notice || notice) && <p role="status" className="text-sm text-theme-text-muted">{currentCopy?.notice || notice}</p>}
     {!snapshot ? <p className="text-sm text-theme-text-muted">{busy ? 'Loading sharing settings…' : 'Sharing settings could not be loaded.'}</p> : <>
       <div className="grid gap-3 text-sm md:grid-cols-3">
         <div><span className="text-theme-text-muted">Active model</span><p>{route?.runtimeModelId || 'No verified local model'}</p></div>
@@ -147,14 +170,14 @@ export default function PixelSharingSettings() {
       </div>
       <p className="text-sm text-theme-text-muted">Keys are limited to this active model. To share another model, select it in ODS Models first. A model change pauses incompatible device requests.</p>
       <div className="flex flex-wrap gap-2">
-        <button className={buttonStyle} disabled={locked || !route || !activeDevice || snapshot.runtime.status === 'starting'} onClick={() => setConfirm('start')}>Start sharing</button>
-        <button className={buttonStyle} disabled={locked || snapshot.runtime.status === 'starting'} onClick={() => setConfirm('stop')}>Stop sharing</button>
+        <button className={buttonStyle} disabled={locked || !route || !activeDevice || snapshot.runtime.status === 'starting'} onClick={() => setConfirm({action:'start',revision:config.revision})}>Start sharing</button>
+        <button className={buttonStyle} disabled={locked || snapshot.runtime.status === 'starting'} onClick={() => setConfirm({action:'stop',revision:config.revision})}>Stop sharing</button>
       </div>
       {confirm && <div role="dialog" aria-label="Confirm inference sharing" className="rounded border border-amber-500/40 p-4 space-y-3">
-        <p className="text-sm">{confirm === 'start'
+        <p className="text-sm">{confirm.action === 'start'
           ? `Enable issued device keys and build/start only the sharing service on 127.0.0.1:${snapshot.transport.port}? The model router and global ODS provider mode will not be changed.`
           : 'Disable device requests and stop only the sharing service? Active inference will be cancelled. This does not undo completed output.'}</p>
-        <button className={buttonStyle} disabled={locked} onClick={confirmAction}>Confirm {confirm === 'start' ? 'start' : 'stop'}</button>{' '}
+        <button className={buttonStyle} disabled={locked} onClick={confirmAction}>Confirm {confirm.action === 'start' ? 'start' : 'stop'}</button>{' '}
         <button className={buttonStyle} onClick={() => setConfirm(null)}>Cancel</button>
       </div>}
       <div className="grid gap-3 md:grid-cols-[1fr_10rem_auto] items-end">
@@ -167,8 +190,8 @@ export default function PixelSharingSettings() {
         <p className="text-sm text-theme-text-muted">On your laptop, forward this host’s 127.0.0.1:{snapshot.transport.port} through authenticated SSH, or use your explicitly configured HTTPS ingress. The key grants inference only, not SSH or computer access.</p>
         <label className="block text-sm">Laptop connection URL<input className={inputStyle} value={baseUrl} onChange={event => { baseUrlEdited.current = true; setBaseUrl(event.target.value) }} spellCheck={false} /></label>
         <label className="block text-sm">Device API key<input className={inputStyle} type="password" value={issued.credential.key} readOnly autoComplete="off" /></label>
-        <p className="text-sm">OpenAI-compatible model: <code>ods/shared</code>. Test the connection on the client before choosing it as Pixel’s leader.</p>
-        <button className={buttonStyle} onClick={copyConnection}>Copy connection settings</button>{' '}
+        <p className="text-sm">OpenAI-compatible model: <code>ods/shared</code>. Test the connection on the client before choosing it as {displayName}’s leader.</p>
+        <button className={buttonStyle} onClick={copyConnection} disabled={copying}>Copy connection settings</button>{' '}
         <button className={buttonStyle} onClick={() => setIssued(null)}>Dismiss key</button>
       </div>}
       <ul className="space-y-2" aria-label="Inference devices">

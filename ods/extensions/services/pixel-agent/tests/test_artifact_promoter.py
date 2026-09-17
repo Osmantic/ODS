@@ -198,6 +198,33 @@ class ArtifactPromoterTests(unittest.TestCase):
             self.promote()
         self.assertEqual(target.read_bytes(), self.payload)
 
+    def test_promotes_full_filename_length_without_widening_parent_paths(self) -> None:
+        for length in (128, 129, 200):
+            with self.subTest(length=length):
+                previous = self.artifacts / self.job_id / self.filename
+                self.filename = "a" * (length - 4) + ".pdf"
+                artifact = previous.with_name(self.filename)
+                if artifact != previous:
+                    previous.rename(artifact)
+                result_path = self.results / f"{self.job_id}.json"
+                result = json.loads(result_path.read_text(encoding="utf-8"))
+                result["steps"][0]["artifact"].update(path=str(artifact), filename=self.filename)
+                result_path.write_text(json.dumps(result), encoding="utf-8")
+                for prefix in ("", "downloads/"):
+                    self.relative_path = prefix + self.filename
+                    receipt = self.promote()
+                    target = self.workspace / self.relative_path
+                    self.assertEqual(target.read_bytes(), self.payload)
+                    self.assertEqual(receipt["sha256"], self.digest)
+                    self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o600)
+                    with self.assertRaises(promoter.PromotionError):
+                        self.promote()
+                    self.assertEqual(target.read_bytes(), self.payload)
+        with self.assertRaises(promoter.PromotionError):
+            self.request(filename="a" * 201, relativePath="a" * 201)
+        with self.assertRaises(promoter.PromotionError):
+            self.request(relativePath="a" * 129 + "/" + self.filename)
+
     def test_rejects_result_source_digest_and_quarantine_tampering(self) -> None:
         result_path = self.results / f"{self.job_id}.json"
         original = json.loads(result_path.read_text(encoding="utf-8"))

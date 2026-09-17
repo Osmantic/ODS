@@ -52,3 +52,24 @@ it('cancels a response as soon as its byte limit is exceeded', async () => {
   await expect(readBoundedBytes(stream,10)).rejects.toThrow('Oversized')
   expect(cancel).toHaveBeenCalledOnce(); expect(releaseLock).toHaveBeenCalledOnce()
 })
+
+it('opens host-published files nested deeper than the project-directory selector limit', async () => {
+  const path = Array.from({length:14}, (_, i) => `level${i}`).join('/') + '/app.js'
+  const deepManifest = {...manifest, files:[{...files[0], path}, files[1]]}
+  vi.stubGlobal('fetch', vi.fn(async url => response(url.endsWith('__ods_manifest__.json')
+    ? JSON.stringify(deepManifest) : js)))
+  render(<PixelTaskFiles preview={preview}/>)
+  fireEvent.click(await screen.findByRole('button', {name:name => name.includes(path)}))
+  await waitFor(() => expect(screen.getByRole('button', {name:'Copy code'})).toBeEnabled())
+  expect(screen.getByLabelText(`Code for ${path}`).textContent).toContain(js)
+  expect(fetch).toHaveBeenLastCalledWith(`/pixel-preview/${preview.siteId}/${path}`,
+    expect.objectContaining({cache:'no-store'}))
+})
+
+it.each(['level/../app.js', '/level/app.js', 'level//app.js', 'level/%2e%2e/app.js'])(
+  'still rejects unsafe manifest paths: %s', async path => {
+    vi.stubGlobal('fetch', vi.fn(async () => response(JSON.stringify({
+      ...manifest, files:[{...files[0], path}, files[1]],
+    }))))
+    await expect(loadSnapshotFiles(preview)).rejects.toThrow()
+  })

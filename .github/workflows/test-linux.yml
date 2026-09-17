@@ -8,6 +8,32 @@ on:
       - master
 
 jobs:
+  backup-space:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    strategy:
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    defaults:
+      run:
+        working-directory: ods
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: Install backup test tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rsync jq mawk
+      - name: Backup and restore disk-space boundaries
+        env:
+          ODS_TEST_AWK: mawk
+        run: python3 tests/test-backup-space-arithmetic.py -v
+      - name: Restore transaction failure recovery
+        run: python3 tests/test_restore_transaction.py -v
+      - name: Backup integrity and restore round trip
+        run: |
+          bash tests/test-backup-integrity.sh
+          bash tests/test-backup-restore-roundtrip.sh
+
   pixel-advice-host-stdlib:
     runs-on: ubuntu-latest
     strategy:
@@ -37,12 +63,34 @@ jobs:
           python-version: ${{ matrix.python }}
       - name: Install isolated inference test dependencies
         run: python -m pip install -r extensions/services/pixel-inference/requirements.txt 'pytest>=8,<9'
+      - name: mDNS publication recovery contracts
+        run: python -m pytest tests/test_mdns_refresh_recovery.py tests/test_mdns_subdomains.py -q
+      - name: Compressed backup extraction safety and recovery
+        run: python -m pytest tests/test_restore_archive.py -q
+      - name: GPU assignment capacity contracts
+        run: python -m pytest tests/test-assign-gpus.py tests/test_gpu_spare_capacity.py -q
+      - name: macOS TCP bridge lifecycle contracts
+        run: python -m pytest tests/test_macos_llm_bridge.py -q
       - name: Sharing credential and owner control tests
         run: python -m pytest tests/pixel_inference -q
       - name: Inference perimeter and cancellation tests
         run: python -m pytest extensions/services/pixel-inference/tests -q
       - name: Model router compatibility and route pins
         run: python -m pytest extensions/services/model-router/tests -q
+      - name: LiteLLM metadata-only telemetry contracts
+        run: python -m pytest extensions/services/litellm/tests -q
+      - name: Test verified preview source and diff contracts
+        run: |
+          python -m pytest -q extensions/services/pixel-agent/tests/test_workspace_preview.py \
+            extensions/services/pixel-agent/tests/test_workspace_preview_charset.py \
+            extensions/services/pixel-agent/tests/test_workspace_preview_git.py \
+            extensions/services/pixel-agent/tests/test_preview_empty_assets.py
+
+      - name: Token Spy proxy persistence and disconnect contracts
+        run: python -m pytest extensions/services/token-spy/tests/test_proxy_persistence_io.py extensions/services/token-spy/tests/test_anthropic_cumulative_usage.py -q
+      - name: Lemonade context cache persistence
+        run: sudo env LEMONADE_REQUIRE_NAMESPACE=1 "$(command -v python)" -m pytest tests/test_lemonade_context_persistence.py -q
+
       - name: Settings transaction and access preservation contracts
         run: |
           python -m pytest -q tests/pixel_settings/test_contract.py tests/pixel_settings/test_projection.py \
@@ -55,6 +103,24 @@ jobs:
             extensions/services/pixel-agent/tests/test_settings_control_transport.py \
             extensions/services/pixel-agent/tests/test_pixel_access_mode.py \
             extensions/services/pixel-agent/tests/test_access_mode_config.py
+
+      - name: Test preview publication directory failures
+        run: python -m pytest -q extensions/services/pixel-agent/tests/test_preview_directory_errors.py
+
+  token-spy-pricing:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ods/extensions/services/token-spy
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: "3.12"
+      - name: Install test dependencies
+        run: python -m pip install -r requirements.txt "pytest>=8,<9"
+      - name: Test proxy pricing receipts
+        run: python -m pytest -q tests/test_local_upstream_pricing.py tests/test_anthropic_cumulative_usage.py tests/test_usage_report.py
 
   token-spy-postgres:
     runs-on: ubuntu-latest
@@ -113,6 +179,9 @@ jobs:
       - name: Install manifest validator dependencies
         run: python3 -m pip install "PyYAML>=6.0,<7.0" "jsonschema>=4.21,<5.0"
 
+      - name: Branch cleanup release exclusions
+        run: python3 tests/test-stale-branch-release-refs.py
+
       - name: Docs Link Checks
         run: bash tests/test-doc-links.sh
 
@@ -135,16 +204,25 @@ jobs:
       - name: Extension Runtime Check Tests
         run: bash tests/test-extension-runtime-check.sh
 
+      - name: AP network identity preflight
+        run: |
+          bash tests/test-ap-mode.sh
+          python3 tests/test-ap-identity-preflight.py
+
       - name: Phase C P1 Static Checks
         run: bash tests/test-phase-c-p1.sh
 
       - name: Manifest Compatibility Checks
         run: |
+          python3 tests/test_compatibility_compose_list.py
           bash scripts/check-compatibility.sh
           bash scripts/check-release-claims.sh
 
       - name: BATS Unit Tests
         run: bash tests/run-bats.sh
+
+      - name: Cold storage relative-path round trips
+        run: python3 tests/test-cold-storage-relative-links.py
 
       - name: Tier Map Unit Tests
         run: bash tests/test-tier-map.sh
@@ -174,6 +252,8 @@ jobs:
 
       - name: Health Check Tests
         run: bash tests/test-health-check.sh
+      - name: Post-install Inference Validation Tests
+        run: python3 tests/test_validate_chat_response.py
 
       - name: QR Code Helper Tests
         run: bash tests/test-qrcode-helper.sh
@@ -195,6 +275,8 @@ jobs:
 
       - name: Uninstall Compose Flags Tests
         run: bash tests/test-uninstall-compose-flags.sh
+      - name: System service ownership and shutdown recovery
+        run: bash tests/test-uninstall-mdns-unit.sh
 
       - name: Windows Compose Failure Report Tests
         run: bash tests/test-windows-compose-failure-report.sh
@@ -226,11 +308,17 @@ jobs:
       - name: Windows Installer Flag Tests
         run: bash tests/test-windows-installer-flags.sh
 
+      - name: Windows Bootstrap Download Handoff Tests
+        run: bash tests/test-windows-bootstrap-download-handoff.sh
+
       - name: Validate Env Tests
         run: bash tests/test-validate-env.sh
 
       - name: Safe Env Loading Tests
         run: bash tests/test-safe-env.sh
+
+      - name: Installer Rerun .env Quoting Tests
+        run: bash tests/test-phase06-env-rerun-quoting.sh
 
       - name: Dotenv Serializer Tests
         run: bash tests/test-dotenv-serializer.sh
@@ -238,8 +326,17 @@ jobs:
       - name: Mode Switch Tests
         run: bash tests/test-mode-switch-status.sh
 
+      - name: .env Upserts After an Unterminated Last Line
+        run: bash tests/test-env-append-final-newline.sh
+
       - name: CLI Install Directory Resolution Tests
         run: bash tests/test-cli-install-dir-resolution.sh
+
+      - name: Preset Export Archive Permissions
+        run: bash tests/test-preset-export-permissions.sh
+
+      - name: Legacy Update Fallback Backup Round Trip
+        run: python3 tests/test-cli-legacy-update-backup.py
 
       - name: Validate Simulation Summary Tests
         run: bash tests/test-validate-sim-summary.sh
@@ -248,22 +345,42 @@ jobs:
         run: bash tests/test-golden-paths.sh
 
       - name: Generated Config Contract Tests
-        run: bash tests/test-generated-config-contracts.sh
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rsync jq
+          bash tests/test-generated-config-contracts.sh
 
       - name: Dependency Pin Contract Tests
         run: python3 tests/test-dependency-pins.py
 
       - name: Offline Model Validation Tests
-        run: python3 tests/test-offline-model-validation.py
+        run: |
+          python3 tests/test-offline-model-validation.py
+          python3 tests/test_external_model_validation.py
 
       - name: Runtime Config Renderer Tests
         run: python3 tests/test-render-runtime-configs.py
 
+      - name: Runtime Renderer Environment Modes
+        run: |
+          python3 -m pip install pytest==8.4.2
+          python3 -m pytest -q tests/test_renderer_environment_modes.py
+
       - name: Runtime Config Wiring Tests
         run: python3 tests/test-runtime-config-wiring.py
 
+      - name: OpenClaw HTTP Shim Lifecycle Tests
+        run: node --test tests/test-openclaw-shim-lifecycle.mjs
+
       - name: Perplexica Entrypoint Contract Tests
         run: python3 tests/test-perplexica-entrypoint.py
+
+      - name: ComfyUI Template Seeding Tests
+        run: sudo env COMFYUI_REQUIRE_NAMESPACE=1 "$(command -v python3)" tests/test_comfyui_template_seeding.py -v
+      - name: Perplexica Repair Interpreter Tests
+        run: |
+          python3 -m pip install pytest==8.4.2
+          python3 -m pytest -q tests/test_perplexica_repair_python.py
 
       - name: CPU-Only Path Tests
         run: bash tests/test-cpu-only-path.sh
@@ -276,9 +393,11 @@ jobs:
       - name: Installer Contract Checks
         run: |
           bash tests/contracts/test-installer-contracts.sh
+          bash tests/test-linux-ollama-port-override.sh
           bash tests/test-external-services.sh
           bash tests/test-resolve-compose-resilient.sh
           bash tests/test-phase03-multigpu-tty.sh
+          bash tests/test-pixel-support-services.sh
           bash tests/contracts/test-preflight-fixtures.sh
           bash tests/test-preflight-resolver-bug.sh
           bash tests/test-desktop-agent-host-env.sh
@@ -291,6 +410,7 @@ jobs:
         run: |
           bash tests/test-pixel-integration.sh
           bash tests/test-pixel-host-install.sh
+          python3 -m unittest -v tests/test_pixel_model_transition.py
           python3 -m unittest -v tests/test_pixel_native_search.py
           bash tests/test-pixel-compose-wiring.sh
           python3 tests/test_pixel_timeout_contract.py
@@ -301,6 +421,7 @@ jobs:
         run: |
           bash tests/test-linux-install-preflight.sh
           bash tests/test-preflight-dashboard-port.sh
+          bash tests/test-wsl-broken-docker-shim.sh
 
       - name: Installer Simulation Harness
         run: |
@@ -309,11 +430,32 @@ jobs:
           test -f artifacts/installer-sim/SUMMARY.md
           python3 scripts/validate-sim-summary.py artifacts/installer-sim/summary.json
 
+      - name: Rollback Picks the Newest Backup
+        run: bash tests/test-update-rollback-latest-backup.sh
+
+      - name: Rollback Preserves Originals on I/O Failure
+        run: bash tests/test-update-rollback-restore-failure.sh
+
       - name: Update Rollback Contract
         run: bash tests/test-update-rollback-contract.sh
 
+      - name: Update Backup Retention By Creation Time
+        run: bash tests/test-update-backup-retention-labels.sh
+
       - name: Backup Data Coverage Contract
-        run: bash tests/test-backup-data-coverage.sh
+        run: |
+          command -v rsync
+          command -v jq
+          bash tests/test-backup-data-coverage.sh
+          bash tests/test-backup-integrity.sh
+          bash tests/test-backup-restore-roundtrip.sh
+          python3 tests/test-rsync-transfer-failures.py
+
+      - name: Backup retention and integrity
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rsync jq
+          bash tests/test-backup-integrity.sh
 
       - name: Bootstrap Upgrade Compose Flags Recovery Tests
         run: bash tests/test-bootstrap-upgrade-compose-flags-recovery.sh
@@ -321,11 +463,24 @@ jobs:
       - name: Support Bundle Evidence Tests
         run: bash tests/test-support-bundle.sh
 
+      - name: Test support bundle command deadlines
+        run: |
+          python3 -m pip install pytest==8.4.2
+          python3 -m pytest -q tests/test_support_bundle_timeouts.py tests/test_support_bundle_log_scope.py tests/test_support_bundle_uri_credentials.py
+
+      - name: Linux Node runtime path tests
+        run: |
+          bash tests/test-node-runtime.sh
+          python3 -m pytest -q tests/test_node_runtime_paths.py
+
       - name: Config Migration Tests
         run: bash tests/test-migrate-config.sh
 
       - name: Atomic Environment Write Tests
         run: bash tests/test-atomic-env-writes.sh
+
+      - name: Installer mode dotenv compatibility
+        run: python3 -m pytest -q tests/test_installer_mode_dotenv.py
 
       - name: Issue-to-PR Security Contract Tests
         run: bash tests/test-issue-to-pr-security.sh

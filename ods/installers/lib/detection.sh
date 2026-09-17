@@ -902,8 +902,12 @@ StandardError=journal+console
 [Install]
 WantedBy=multi-user.target
 SVCEOF
-    ods_sudo systemctl daemon-reload
-    ods_sudo systemctl enable "${svc_name}.service" 2>>"$LOG_FILE"
+    if ! ods_sudo systemctl daemon-reload; then
+        error "Could not reload systemd after installing the auto-resume unit."
+    fi
+    if ! ods_sudo systemctl enable "${svc_name}.service" 2>>"$LOG_FILE"; then
+        error "Could not enable ${svc_name}.service; installation cannot safely resume after reboot."
+    fi
     log "Auto-resume service installed: ${svc_name}.service"
 
     # --- Show a clean, friendly reboot screen ---

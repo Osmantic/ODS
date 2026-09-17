@@ -68,7 +68,8 @@ function validRelativePath(value, filename) {
     parts.length >= 1 &&
     parts.length <= 16 &&
     parts.at(-1) === filename &&
-    parts.every((part) => !["", ".", ".."].includes(part) && PATH_COMPONENT.test(part))
+    FILENAME.test(parts.at(-1)) &&
+    parts.slice(0, -1).every((part) => !["", ".", ".."].includes(part) && PATH_COMPONENT.test(part))
   );
 }
 
@@ -158,12 +159,14 @@ export function requestPromotion(
 ) {
   return new Promise((resolve, reject) => {
     let settled = false;
+    let deadline;
     let total = 0;
     const chunks = [];
     const socket = net.createConnection({ path: socketPath });
     const finish = (error, value) => {
       if (settled) return;
       settled = true;
+      clearTimeout(deadline);
       signal?.removeEventListener("abort", onAbort);
       socket.destroy();
       if (error) reject(error);
@@ -175,7 +178,8 @@ export function requestPromotion(
       return;
     }
     signal?.addEventListener("abort", onAbort, { once: true });
-    socket.setTimeout(timeoutMs, () => finish(new Error("exact-download promotion timed out")));
+    // A response that trickles bytes must not renew the total RPC budget.
+    deadline = setTimeout(() => finish(new Error("exact-download promotion timed out")), timeoutMs);
     socket.on("error", (error) => finish(error));
     socket.on("connect", () => {
       socket.write(`${JSON.stringify(request)}\n`);
@@ -254,7 +258,9 @@ export function createDownloadPromoteTool({ request = requestPromotion } = {}) {
         filename: { type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$" },
         relativePath: { type: "string", minLength: 1, maxLength: 512 },
         sha256: { type: "string", pattern: "^[a-f0-9]{64}$" },
-        sourceUrl: { type: "string", minLength: 8, maxLength: 4096 },
+        // Large maxLength values expand beyond llama.cpp's GBNF repetition
+        // limit. validSourceUrl still enforces 4096 before contacting the host.
+        sourceUrl: { type: "string", minLength: 8, description: "Unchanged requested HTTPS URL, at most 4096 characters." },
       },
     },
     execute: async (_callId, params, signal) => {

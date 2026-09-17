@@ -99,32 +99,63 @@ function queryKeywords(query) {
 
 function evidenceBounds(text, index) {
   let start = Math.max(0, index - BEFORE_MATCH_CHARS);
-  const priorBreak = text.lastIndexOf("\n", start);
-  if (priorBreak >= 0) start = priorBreak + 1;
+  // Prefer a nearby line boundary without moving the match out of the window.
+  // Search only inside the possible window. On a long paragraph, repeatedly
+  // scanning the whole prefix for a newline makes keyword extraction quadratic.
+  const priorBreak = text.slice(start, index + 1).lastIndexOf("\n");
+  if (priorBreak >= 0) start += priorBreak + 1;
   let end = Math.min(text.length, start + MAX_EVIDENCE_CHARS);
-  const finalBreak = text.lastIndexOf("\n", end);
-  if (end < text.length && finalBreak > index) end = finalBreak;
+  const finalBreak = text.slice(index + 1, end + 1).lastIndexOf("\n");
+  if (end < text.length && finalBreak >= 0) end = index + 1 + finalBreak;
   return { start, end };
 }
 
-function keywordEvidence(text, lower, query) {
+function keywordEvidence(text, query) {
   const keywords = queryKeywords(query);
   if (keywords.length < 2) return null;
   const required = Math.min(3, keywords.length);
+  const terms = keywords.map(keyword => ({
+    keyword,
+    first: new RegExp(keyword, "iu").exec(text)?.index,
+  })).filter(term => term.first !== undefined);
+  if (terms.length < required) return null;
+  const firstBounds = evidenceBounds(text, terms[0].first);
+  const firstWindow = text.slice(firstBounds.start, firstBounds.end);
+  if (terms.every(term => new RegExp(term.keyword, "iu").test(firstWindow))) {
+    return { ...firstBounds, matched: terms.map(term => term.keyword) };
+  }
+  // Index the bounded document once per term, in original UTF-16 coordinates.
+  // Lookahead retains overlapping occurrences that may cross a window's start.
+  // Do not lowercase the whole document: Unicode folding can move offsets.
+  for (const term of terms) {
+    term.offsets = [];
+    for (const match of text.matchAll(new RegExp(`(?=${term.keyword})`, "giu"))) {
+      term.offsets.push(match.index);
+    }
+  }
   let best = null;
-  for (const keyword of keywords) {
-    let index = lower.indexOf(keyword);
-    while (index >= 0) {
+  for (const term of terms) {
+    const cursors = terms.map(() => 0);
+    let nextAnchor = 0;
+    for (const index of term.offsets) {
+      // Keep the original non-overlapping anchor order for equal-score ties.
+      if (index < nextAnchor) continue;
+      nextAnchor = index + term.keyword.length;
       const bounds = evidenceBounds(text, index);
-      const window = lower.slice(bounds.start, bounds.end);
-      const matched = keywords.filter((candidate) => window.includes(candidate));
+      // Window starts advance with this term's offsets. Each cursor therefore
+      // visits an occurrence at most once; no repeated 6000-character scans.
+      const matched = terms.filter((candidate, i) => {
+        while (candidate.offsets[cursors[i]] < bounds.start) cursors[i]++;
+        const offset = candidate.offsets[cursors[i]];
+        return offset !== undefined && offset + candidate.keyword.length <= bounds.end;
+      }).map(candidate => candidate.keyword);
       if (
         matched.length >= required &&
         (!best || matched.length > best.matched.length)
       ) {
         best = { ...bounds, matched };
+        if (matched.length === terms.length) return best;
       }
-      index = lower.indexOf(keyword, index + keyword.length);
     }
   }
   return best;
@@ -132,18 +163,20 @@ function keywordEvidence(text, lower, query) {
 
 export function selectEvidenceWindow(text, query) {
   if (typeof text !== "string" || !text) return null;
-  const lower = text.toLowerCase();
   let index = -1;
   let matchedQuery = query;
   for (const candidate of candidateQueries(query)) {
-    index = lower.indexOf(candidate.toLowerCase());
+    // Keep queries literal, including identifiers with regexp punctuation.
+    // Lowercasing the document first changes offsets for characters such as İ.
+    const literal = candidate.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    index = new RegExp(literal, "iu").exec(text)?.index ?? -1;
     if (index >= 0) {
       matchedQuery = candidate;
       break;
     }
   }
   if (index < 0) {
-    const keywordMatch = keywordEvidence(text, lower, query);
+    const keywordMatch = keywordEvidence(text, query);
     if (!keywordMatch) return null;
     return {
       matchedQuery: keywordMatch.matched.join(" + "),
@@ -173,8 +206,8 @@ function wrappedEvidence(text, sourceUrl) {
   ].join("\n");
 }
 
-function textResult(text, details) {
-  return { content: [{ type: "text", text }], details };
+function textResult(text, details, isError = false) {
+  return { content: [{ type: "text", text }], details, ...(isError ? { isError: true } : {}) };
 }
 
 export function createPublicWebExtractTool({
@@ -218,7 +251,7 @@ export function createPublicWebExtractTool({
         return textResult(`Pixel blocked targeted web extraction: ${error.message}`, {
           boundary: "public-web-read-only",
           matched: false,
-        });
+        }, true);
       }
 
       let guarded;
@@ -241,7 +274,8 @@ export function createPublicWebExtractTool({
         if (!response.ok) {
           return textResult(
             `The public page returned HTTP ${response.status}; no evidence was extracted.`,
-            { boundary: "public-web-read-only", matched: false, status: response.status }
+            { boundary: "public-web-read-only", matched: false, status: response.status },
+            true
           );
         }
         const contentType = (response.headers.get("content-type") ?? "")
@@ -261,7 +295,7 @@ export function createPublicWebExtractTool({
             boundary: "public-web-read-only",
             matched: false,
             content_type: contentType || "unknown",
-          });
+          }, true);
         }
         const body = await readResponseText(response, { maxBytes: MAX_RESPONSE_BYTES });
         let extractedText = body.text;
@@ -298,7 +332,8 @@ export function createPublicWebExtractTool({
       } catch {
         return textResult(
           "Targeted public web extraction was blocked or unavailable; no evidence was returned.",
-          { boundary: "public-web-read-only", matched: false }
+          { boundary: "public-web-read-only", matched: false },
+          true
         );
       } finally {
         guarded?.release?.();

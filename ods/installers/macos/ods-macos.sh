@@ -74,6 +74,7 @@ export ODS_SCRIPT_HINT="$SCRIPT_DIR"
 source "${LIB_DIR}/constants.sh"
 source "${LIB_DIR}/ui.sh"
 source "${LIB_DIR}/bridge-manager.sh"
+source "${LIB_DIR}/native-model.sh"
 source "${LIB_DIR}/detection.sh"
 
 unset ODS_SCRIPT_HINT
@@ -94,7 +95,10 @@ test_docker_running() {
     return 0
 }
 
-test_install() {
+# Install-directory checks only. Commands that read or edit local files
+# (config show / config edit) use this so they keep working while the Docker
+# runtime is down -- which is exactly when a user needs to look at .env.
+test_install_dir() {
     if [[ ! -d "$INSTALL_DIR" ]]; then
         ai_err "ODS not found at ${INSTALL_DIR}."
         ai "Invoke from inside the install dir (bash <install>/ods-macos.sh status), export ODS_HOME=<install>, or run the installer."
@@ -106,6 +110,12 @@ test_install() {
         ai_err "docker-compose.base.yml not found in ${INSTALL_DIR}"
         exit 1
     fi
+}
+
+# Install directory plus a reachable Docker runtime, for commands that talk
+# to compose.
+test_install() {
+    test_install_dir
     test_docker_running || exit 1
 }
 
@@ -114,8 +124,8 @@ get_compose_flags() {
 
     local flags_file="${INSTALL_DIR}/.compose-flags"
     if [[ -f "$flags_file" ]]; then
-        cat "$flags_file"
-        return
+        macos_model_store_compose_flags "$(cat "$flags_file")"
+        return $?
     fi
     # Fallback: dynamic resolution via resolve-compose-stack.sh so user-installed
     # extensions in data/user-extensions/ are discovered when the .compose-flags
@@ -146,7 +156,7 @@ get_compose_flags() {
     elif [[ -f "${INSTALL_DIR}/installers/macos/docker-compose.macos.yml" ]]; then
         flags="$flags -f installers/macos/docker-compose.macos.yml"
     fi
-    echo "$flags"
+    macos_model_store_compose_flags "$flags"
 }
 
 compose_pull_with_retry() {
@@ -193,14 +203,30 @@ read_ods_env() {
     if [[ ! -f "$env_file" ]]; then
         return
     fi
-    # Parse .env safely (no eval)
-    while IFS= read -r line; do
+    # Parse .env safely (no eval). Keep a last line that has no newline.
+    while IFS= read -r line || [[ -n "$line" ]]; do
         line=$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         [[ "$line" =~ ^# ]] && continue
         [[ -z "$line" ]] && continue
         if [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
             local key="${BASH_REMATCH[1]}"
             local val="${BASH_REMATCH[2]}"
+            # Apply Docker Compose's value grammar, mirrored from
+            # lib/safe-env.sh, before stripping quotes: trim surrounding
+            # whitespace (Compose trims leading space, so "KEY=  # x" becomes
+            # the literal "# x"), then for an unquoted value cut at the first
+            # " #", and for a quoted value drop a " #..." after the closing
+            # quote. "#" without a leading space and "#" inside quotes stay.
+            val="${val#"${val%%[![:space:]]*}"}"
+            val="${val%"${val##*[![:space:]]}"}"
+            case "$val" in
+                \"*) [[ "$val" =~ ^(\"(\\.|[^\"\\])*\")[[:space:]]+# ]] && val="${BASH_REMATCH[1]}" ;;
+                \'*) [[ "$val" =~ ^(\'[^\']*\')[[:space:]]+# ]] && val="${BASH_REMATCH[1]}" ;;
+                *)
+                    val="${val%% #*}"
+                    val="${val%"${val##*[![:space:]]}"}"
+                    ;;
+            esac
             # Strip exactly one matching pair of surrounding quotes. The old
             # sed removed a leading and a trailing quote independently (either
             # type), so KEY=abc" lost its trailing quote and "abc' was cut on
@@ -209,6 +235,11 @@ read_ods_env() {
             if [[ "$val" == '"'*'"' ]]; then
                 val="${val#\"}"
                 val="${val%\"}"
+                # Decode writer escapes without evaluating shell expansions.
+                # Single-quoted values below remain literal.
+                val="${val//\\\"/\"}"
+                val="${val//\\\$/\$}"
+                val="${val//\\\\/\\}"
             elif [[ "$val" == "'"*"'" ]]; then
                 val="${val#\'}"
                 val="${val%\'}"
@@ -398,6 +429,11 @@ upsert_env_value() {
     if grep -qE "^${key}=" "$env_file" 2>/dev/null; then
         sed -i '' "s|^${key}=.*|${key}=${value}|" "$env_file"
     else
+        # Appending after a last line that has no newline would join the new
+        # assignment onto that line and corrupt both keys.
+        if [[ -s "$env_file" && -n "$(tail -c 1 "$env_file")" ]]; then
+            printf '\n' >> "$env_file"
+        fi
         printf '%s=%s\n' "$key" "$value" >> "$env_file"
     fi
 }
@@ -579,6 +615,7 @@ get_native_llama_status() {
 }
 
 start_native_llama() {
+    local replace="${1:-false}"
     read_ods_env
     if ! macos_configure_llm_bridge_from_env "${INSTALL_DIR}/.env" "$INSTALL_DIR"; then
         ai_err "Could not configure container access to native llama-server"
@@ -591,7 +628,7 @@ start_native_llama() {
         ai "Cloud mode uses LiteLLM; native llama-server remains stopped"
         return 0
     fi
-    if $NATIVE_LLAMA_RUNNING; then
+    if $NATIVE_LLAMA_RUNNING && [[ "$replace" != true ]]; then
         if $NATIVE_LLAMA_HEALTHY; then
             ai_ok "Native llama-server already running (PID ${NATIVE_LLAMA_PID})"
         else
@@ -600,14 +637,10 @@ start_native_llama() {
         return
     fi
 
-    if [[ ! -x "$LLAMA_SERVER_BIN" ]]; then
-        ai_err "llama-server not found at ${LLAMA_SERVER_BIN}"
-        ai "Re-run the installer to download it."
-        return
-    fi
-
-    local gguf_file="${ENV_GGUF_FILE:-Qwen3.5-9B-Q4_K_M.gguf}"
     local ctx_size="${ENV_CTX_SIZE:-65536}"
+    macos_resolve_native_model "$INSTALL_DIR" "$LLAMA_SERVER_BIN" "$ctx_size" || return 1
+    local LLAMA_SERVER_BIN="$MACOS_NATIVE_BINARY"
+    ctx_size="$MACOS_NATIVE_CONTEXT"
     local gpu_layers="${ENV_N_GPU_LAYERS:-auto}"
     gpu_layers="$(printf '%s' "$gpu_layers" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
     gpu_layers="${gpu_layers:-auto}"
@@ -616,12 +649,10 @@ start_native_llama() {
     local probe_host
     probe_host="$(macos_bind_probe_host "$bind_address")"
     [[ "$native_port" =~ ^[0-9]+$ ]] || native_port="8080"
-    local model_path="${INSTALL_DIR}/data/models/${gguf_file}"
+    local model_path="$MACOS_NATIVE_MODEL_PATH"
 
-    if [[ ! -f "$model_path" ]]; then
-        ai_err "Model not found: ${model_path}"
-        return
-    fi
+    # Verification must finish before a restart can terminate working inference.
+    [[ "$replace" != true ]] || stop_native_llama
 
     mkdir -p "$(dirname "$LLAMA_SERVER_PID_FILE")"
 
@@ -642,12 +673,18 @@ start_native_llama() {
         --reasoning-format "$reasoning_fmt"
         --metrics
     )
+    if [[ "$MACOS_NATIVE_PROFILE" == true ]]; then
+        llama_args+=("${MACOS_NATIVE_PROFILE_ARGS[@]}")
+    else
     [[ -n "${ENV_LLAMA_ARG_FLASH_ATTN:-}" ]] && llama_args+=(--flash-attn "$ENV_LLAMA_ARG_FLASH_ATTN")
     [[ -n "${ENV_LLAMA_ARG_CACHE_TYPE_K:-}" ]] && llama_args+=(--cache-type-k "$ENV_LLAMA_ARG_CACHE_TYPE_K")
     [[ -n "${ENV_LLAMA_ARG_CACHE_TYPE_V:-}" ]] && llama_args+=(--cache-type-v "$ENV_LLAMA_ARG_CACHE_TYPE_V")
     [[ -n "${ENV_LLAMA_ARG_N_CPU_MOE:-}" ]] && llama_args+=(--n-cpu-moe "$ENV_LLAMA_ARG_N_CPU_MOE")
     [[ -n "${ENV_LLAMA_ARG_SPEC_TYPE:-}" ]] && llama_args+=(--spec-type "$ENV_LLAMA_ARG_SPEC_TYPE")
     [[ -n "${ENV_LLAMA_ARG_SPEC_DRAFT_N_MAX:-}" ]] && llama_args+=(--spec-draft-n-max "$ENV_LLAMA_ARG_SPEC_DRAFT_N_MAX")
+    [[ -n "${ENV_LLAMA_ARG_SPEC_DRAFT_TYPE_K:-}" ]] && llama_args+=(--spec-draft-type-k "$ENV_LLAMA_ARG_SPEC_DRAFT_TYPE_K")
+    [[ -n "${ENV_LLAMA_ARG_SPEC_DRAFT_TYPE_V:-}" ]] && llama_args+=(--spec-draft-type-v "$ENV_LLAMA_ARG_SPEC_DRAFT_TYPE_V")
+    fi
 
     (
         cd "$INSTALL_DIR" || exit 1
@@ -772,9 +809,9 @@ cmd_start() {
     ensure_llama_cpu_budget
 
     # Start native llama-server first
-    if [[ -z "$service" ]] && [[ -x "$LLAMA_SERVER_BIN" ]]; then
+    if [[ -z "$service" ]]; then
         macos_wait_for_bootstrap_compose_safe "start" || return 1
-        start_native_llama
+        start_native_llama || return 1
     fi
 
     local flags
@@ -788,16 +825,22 @@ cmd_start() {
 
     if [[ "$service" == "llama-server" || "$service" == "llama" ]]; then
         macos_wait_for_bootstrap_compose_safe "start" || return 1
-        start_native_llama
+        start_native_llama || return 1
     elif [[ -n "$service" ]]; then
         ai "Starting ${service}..."
         # shellcheck disable=SC2086
-        docker compose $flags up -d "$service"
+        if ! docker compose $flags up -d "$service"; then
+            ai_err "Failed to start ${service}."
+            return 1
+        fi
         ai_ok "${service} started"
     else
         ai "Starting all services..."
         # shellcheck disable=SC2086
-        docker compose $flags up -d
+        if ! docker compose $flags up -d; then
+            ai_err "Failed to start ODS services."
+            return 1
+        fi
         ai_ok "All services started"
     fi
 
@@ -852,24 +895,26 @@ cmd_restart() {
 
     if [[ "$service" == "llama-server" || "$service" == "llama" ]]; then
         macos_wait_for_bootstrap_compose_safe "restart" || return 1
-        stop_native_llama
-        start_native_llama
+        start_native_llama true || return 1
     elif [[ -n "$service" ]]; then
         ai "Restarting ${service}..."
         # shellcheck disable=SC2086
-        docker compose $flags up -d --force-recreate --no-build --pull never "$service"
+        if ! docker compose $flags up -d --force-recreate --no-build --pull never "$service"; then
+            ai_err "Failed to restart ${service}."
+            return 1
+        fi
         ai_ok "${service} restarted"
     else
         # Restart native llama-server
-        if [[ -f "$LLAMA_SERVER_PID_FILE" ]] || [[ -x "$LLAMA_SERVER_BIN" ]]; then
-            macos_wait_for_bootstrap_compose_safe "restart" || return 1
-            stop_native_llama
-            start_native_llama
-        fi
+        macos_wait_for_bootstrap_compose_safe "restart" || return 1
+        start_native_llama true || return 1
 
         ai "Restarting all services..."
         # shellcheck disable=SC2086
-        docker compose $flags up -d --force-recreate --no-build --pull never
+        if ! docker compose $flags up -d --force-recreate --no-build --pull never; then
+            ai_err "Failed to restart ODS services."
+            return 1
+        fi
         ai_ok "All services restarted"
     fi
 
@@ -912,7 +957,7 @@ cmd_logs() {
 }
 
 cmd_config_show() {
-    test_install
+    test_install_dir
 
     echo ""
     echo -e "  ${GRN}Configuration${NC}"
@@ -1070,7 +1115,7 @@ case "$COMMAND" in
         ACTION="${1:-show}"
         case "$ACTION" in
             edit)
-                test_install
+                test_install_dir
                 ${EDITOR:-nano} "${INSTALL_DIR}/.env"
                 ;;
             *)

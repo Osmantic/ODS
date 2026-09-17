@@ -10,7 +10,7 @@ export const RUN_PROGRESS_LIMITS = Object.freeze({
 });
 
 export const RUN_PROGRESS_STOP_REASON =
-  'Pixel stopped this response after repeated tool failures or attempts without progress. ' +
+  'This response was stopped after repeated tool failures or attempts without progress. ' +
   'Saved files and previously verified publications were preserved. ' +
   'The full request was not completed; continue from the preserved work with a corrected approach.';
 
@@ -54,7 +54,10 @@ export function createRunProgressBudget() {
       // An actual running-process receipt is a verified wait, not a failure.
       // Plain text saying "running" must never be supplied as this signal.
       if (pending) { rounds = 0; return; }
-      const fingerprint = createHash('sha256').update(JSON.stringify([tool, params])).digest('hex');
+      const fingerprint = createHash('sha256').update(JSON.stringify([tool, params], (_key, value) =>
+        value && typeof value === 'object' && !Array.isArray(value)
+          ? Object.fromEntries(Object.keys(value).sort().map(key => [key, value[key]]))
+          : value)).digest('hex');
       const count = (successes.get(fingerprint) ?? 0) + 1;
       successes.set(fingerprint, count);
       if (successes.size > 128) successes.delete(successes.keys().next().value);

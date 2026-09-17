@@ -78,7 +78,11 @@ pass "unmanaged regular command paths fail closed"
 (
     stat() {
         [[ "$1" == "-f" ]] || return 1
-        command stat -c "$2" "$3"
+        if [[ "$(uname -s)" == Darwin ]]; then
+            command stat "$@"
+        else
+            command stat -c "$2" "$3"
+        fi
     }
     install() {
         for argument in "$@"; do [[ "$argument" != "--" ]] || return 1; done

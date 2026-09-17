@@ -35,7 +35,7 @@ test('preview path alias is exact and cannot silently replace conflicting fields
 
 test('HTML cannot accidentally occupy the project directory before publication',()=>{
   const guard=createToolLoopGuard();
-  guard.observeRun(context,'pixel',{prompt:'crie um site e abra pra eu ver, tpio u msite de marketing digital'},{workspaceRoot:root});
+  guard.observeRun(context,'pixel',{prompt:'crie um site em /workspace/marketing-digital e abra pra eu ver, tipo um site de marketing digital'},{workspaceRoot:root});
   const params={id:'write',args:{path:root+'/marketing-digital',content:'<!DOCTYPE html>\n<html><title>Marketing</title></html>'}};
   const blocked=guard.beforeToolCall({toolName:'tool_call',params},context);
   assert.equal(blocked.block,true);

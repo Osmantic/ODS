@@ -22,3 +22,8 @@ export function saveConversationLabels(chatId, labels, expected) {
   localStorage.setItem(PREFIX + chatId, JSON.stringify({...labels, title:labels.title.trim()}))
   window.dispatchEvent(new Event('ods:pixel-conversations-changed'))
 }
+
+export function deleteConversationLabels(chatId) {
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(chatId)) throw new Error('Invalid conversation identity')
+  localStorage.removeItem(PREFIX + chatId)
+}

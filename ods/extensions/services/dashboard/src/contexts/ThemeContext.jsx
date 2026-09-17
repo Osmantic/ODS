@@ -16,6 +16,7 @@ export function ThemeProvider({ children }) {
     try { return localStorage.getItem('ods-wallpaper-motion') !== 'paused' } catch { return true }
   })
   const galleryRevision = useRef(0)
+  const selectionRevision = useRef(0)
   const wallpapers = [...WALLPAPERS, ...custom]
   const [theme, setThemeState] = useState(() => {
     let stored
@@ -29,16 +30,33 @@ export function ThemeProvider({ children }) {
       const revision = ++galleryRevision.current
       return readCustomWallpapers().then(rows => {
         if (!active || revision !== galleryRevision.current) return
-        setCustom(rows)
+        setCustom(previous => {
+          // Stored records are immutable: imports allocate new IDs. IndexedDB
+          // clones Blobs on reads; retain live resources for unchanged IDs.
+          const existing = new Map(previous.map(row => [row.id,row]))
+          return rows.map(row => existing.get(row.id) ?? row)
+        })
         setWallpaperError('')
         setThemeState(previous => isCustomWallpaper(previous) && !rows.some(row => row.id === previous) ? DEFAULT_THEME : previous)
       }).catch(error => { if (active && revision === galleryRevision.current) setWallpaperError(error.message) })
     }
     const sync = event => {
-      if (event.key === 'ods-wallpaper-motion') { setWallpaperMotionState(event.newValue !== 'paused'); return }
-      if (event.key !== STORAGE_KEY) return
-      setThemeState(THEMES.includes(event.newValue) || isCustomWallpaper(event.newValue) ? event.newValue : DEFAULT_THEME)
-      void refresh()
+      if (event.key !== null && event.key !== STORAGE_KEY && event.key !== 'ods-wallpaper-motion') return
+      try {
+        // Storage events can queue behind newer writes from another tab.
+        // Read current storage rather than replaying an obsolete event value.
+        if (event.key === null || event.key === 'ods-wallpaper-motion') {
+          setWallpaperMotionState(localStorage.getItem('ods-wallpaper-motion') !== 'paused')
+        }
+        if (event.key === 'ods-wallpaper-motion') return
+        const stored = localStorage.getItem(STORAGE_KEY)
+        selectionRevision.current++
+        setThemeState(THEMES.includes(stored) || isCustomWallpaper(stored) ? stored : DEFAULT_THEME)
+        void refresh()
+      } catch (error) {
+        if (!(error instanceof globalThis.DOMException)) throw error
+        setWallpaperError('Appearance preferences could not be read from browser storage.')
+      }
     }
     void refresh()
     window.addEventListener(CUSTOM_WALLPAPER_EVENT, refresh)
@@ -69,14 +87,18 @@ export function ThemeProvider({ children }) {
   }, [])
 
   const setTheme = useCallback((t) => {
-    if (THEMES.includes(t) || isCustomWallpaper(t)) setThemeState(t)
+    if (THEMES.includes(t) || isCustomWallpaper(t)) {
+      selectionRevision.current++
+      setThemeState(t)
+    }
   }, [])
 
   const addWallpaper = async file => {
+    const selection = ++selectionRevision.current
     const row = await addCustomWallpaper(file)
     galleryRevision.current++
     setCustom(previous => [...previous.filter(item => item.id !== row.id), row])
-    setThemeState(row.id)
+    if (selection === selectionRevision.current) setThemeState(row.id)
   }
   const removeWallpaper = async id => {
     await deleteCustomWallpaper(id)
@@ -86,6 +108,7 @@ export function ThemeProvider({ children }) {
   }
 
   const cycleTheme = useCallback(() => {
+    selectionRevision.current++
     setThemeState(prev => {
       const idx = THEMES.indexOf(prev)
       return THEMES[(idx + 1) % THEMES.length]

@@ -25,6 +25,39 @@ sys.modules["ods_host_agent"] = _mod
 _spec.loader.exec_module(_mod)
 
 _parse_mem_value = _mod._parse_mem_value
+
+
+def test_gpu_counters_prefer_available_powershell7(monkeypatch):
+    monkeypatch.setattr(_mod.shutil, 'which', lambda name: {'pwsh.exe': 'C:/PowerShell/pwsh.exe', 'powershell.exe': 'C:/Windows/powershell.exe'}.get(name))
+    calls = []
+    def run(command, **options):
+        calls.append((command, options))
+        return types.SimpleNamespace(returncode=0, stdout='{"adapters": []}')
+    monkeypatch.setattr(_mod.subprocess, 'run', run)
+    assert _mod._windows_gpu_counters('read CIM') == {'adapters': []}
+    assert len(calls) == 1 and calls[0][0][0] == 'C:/PowerShell/pwsh.exe'
+    assert 0 < calls[0][1]['timeout'] <= 8
+
+
+def test_gpu_counters_fallback_shares_deadline(monkeypatch):
+    monkeypatch.setattr(_mod.shutil, 'which', lambda name: name if name != 'pwsh' else None)
+    times = iter([0, 0.25, 3])
+    monkeypatch.setattr(_mod.time, 'monotonic', lambda: next(times))
+    calls = []
+    def run(command, **options):
+        calls.append((command[0], options['timeout']))
+        return types.SimpleNamespace(returncode=1 if len(calls) == 1 else 0, stdout='{"adapters": []}')
+    monkeypatch.setattr(_mod.subprocess, 'run', run)
+    assert _mod._windows_gpu_counters('read CIM') == {'adapters': []}
+    assert calls == [('pwsh.exe', 7.75), ('powershell.exe', 5)]
+
+
+def test_gpu_counters_failure_never_fabricates_zero_usage(monkeypatch):
+    monkeypatch.setattr(_mod.shutil, 'which', lambda _: None)
+    monkeypatch.setattr(_mod.subprocess, 'run', lambda *a, **kw: types.SimpleNamespace(returncode=0, stdout='{"error":"unavailable"}'))
+    with pytest.raises(RuntimeError, match='unavailable'):
+        _mod._windows_gpu_counters('read CIM')
+
 _iso_now = _mod._iso_now
 _to_bash_path = _mod._to_bash_path
 _resolve_agent_bind_addr = _mod._resolve_agent_bind_addr
@@ -35,6 +68,24 @@ invalidate_compose_cache = _mod.invalidate_compose_cache
 _post_install_core_recreate = _mod._post_install_core_recreate
 _split_nmcli_terse = _mod._split_nmcli_terse
 _request_server_shutdown = _mod._request_server_shutdown
+
+
+@pytest.mark.parametrize("value", [
+    "it's $5 \"q\" back\\slash", "  model #1  ", r"C:\models\file.gguf", "ordinary",
+])
+def test_load_env_reads_dashboard_writer(tmp_path, value):
+    from env_values import quote_env_value
+
+    path = tmp_path / ".env"
+    path.write_text("VALUE=" + quote_env_value(value) + "\n", encoding="utf-8")
+    assert _mod.load_env(path)["VALUE"] == value
+
+
+def test_load_env_retains_legacy_shell_quoted_values(tmp_path):
+    path = tmp_path / ".env"
+    value = "it's $5"
+    path.write_text(_mod._env_assignment("VALUE", value) + "\n", encoding="utf-8")
+    assert _mod.load_env(path)["VALUE"] == value
 
 
 @pytest.fixture(autouse=True)
@@ -314,15 +365,21 @@ class TestResolveAgentBindAddr:
 
         assert _resolve_agent_bind_addr({}, "Linux") == "172.18.0.1"
 
-    def test_wsl_uses_loopback_instead_of_unbindable_compose_gateway(self, monkeypatch):
+    def test_wsl_native_docker_uses_locally_owned_bridge_gateway(self, monkeypatch):
+        monkeypatch.setattr(_mod, "_running_under_wsl", lambda *_args, **_kwargs: True)
+        monkeypatch.setattr(_mod, "_detect_docker_bridge_gateway", lambda: "172.17.0.1")
+        monkeypatch.setattr(_mod, "_local_bind_address_available", lambda address: address == "172.17.0.1")
+
+        assert _resolve_agent_bind_addr({}, "Linux") == "172.17.0.1"
+
+    def test_wsl_docker_desktop_uses_loopback_for_unbindable_bridge(self, monkeypatch):
         monkeypatch.setattr(_mod, "_running_under_wsl", lambda *_args, **_kwargs: True)
         monkeypatch.setattr(
             _mod,
-            "_detect_docker_network_gateway",
-            lambda _network: (_ for _ in ()).throw(
-                AssertionError("WSL must not select Docker Desktop's compose gateway")
-            ),
+            "_detect_docker_bridge_gateway",
+            lambda: "172.17.0.1",
         )
+        monkeypatch.setattr(_mod, "_local_bind_address_available", lambda _address: False)
 
         assert _resolve_agent_bind_addr({}, "Linux") == "127.0.0.1"
 
@@ -1008,7 +1065,41 @@ class TestFindUsableBash:
         monkeypatch.setattr(_mod.subprocess, "run", fake_run)
 
         assert _mod._find_usable_bash() is None
-        assert _mod._usable_bash is False
+        # Negative result is not cached as False — it resets to None so a
+        # subsequent call can re-probe if the transient condition clears.
+        assert _mod._usable_bash is None
+
+    def test_bash_discovery_retries_after_a_transient_probe_failure(self, monkeypatch):
+        git = r"C:\Test\Git\cmd\git.exe"
+        bash = r"C:\Test\Git\bin\bash.exe"
+        outcomes = iter([1, 0])
+
+        monkeypatch.setattr(_mod, "_usable_bash", None)
+        monkeypatch.setattr(_mod.platform, "system", lambda: "Windows")
+        monkeypatch.setattr(_mod.shutil, "which", lambda name: git if name == "git" else None)
+        monkeypatch.setattr(_mod.Path, "exists", lambda path: str(path) == bash)
+
+        def fake_run(cmd, *args, **kwargs):
+            return subprocess.CompletedProcess(cmd, next(outcomes), "ok", "")
+
+        monkeypatch.setattr(_mod.subprocess, "run", fake_run)
+
+        assert _mod._find_usable_bash() is None
+        assert _mod._usable_bash is None
+        assert _mod._find_usable_bash() == bash
+        assert _mod._usable_bash == bash
+
+    def test_update_bash_retries_after_a_transient_discovery_failure(self, monkeypatch):
+        bash = "/test/bin/bash"
+        outcomes = iter([None, bash])
+
+        monkeypatch.setattr(_mod, "_update_usable_bash", None)
+        monkeypatch.setattr(_mod, "_find_usable_bash", lambda: next(outcomes))
+
+        assert _mod._find_update_bash() is None
+        assert _mod._update_usable_bash is None
+        assert _mod._find_update_bash() == bash
+        assert _mod._update_usable_bash == bash
 
 
 class TestValidateCoreRecreateIds:
@@ -3462,6 +3553,17 @@ class TestRemoteProviderLifecycle:
         }
 
         value = json.loads(onboarding.read_text(encoding="utf-8"))
+        value["modelRouteFingerprint"] = "a" * 64
+        onboarding.write_text(json.dumps(value), encoding="utf-8")
+        assert _mod._managed_pixel_runtime_contract()["routeFingerprint"] == "a" * 64
+        value["modelRouteFingerprint"] = "credential-bearing-invalid-identity"
+        onboarding.write_text(json.dumps(value), encoding="utf-8")
+        with pytest.raises(RuntimeError, match="runtime contract"):
+            _mod._managed_pixel_runtime_contract()
+        value.pop("modelRouteFingerprint")
+        onboarding.write_text(json.dumps(value), encoding="utf-8")
+
+        value = json.loads(onboarding.read_text(encoding="utf-8"))
         value["modelName"] = "ODS Current (forged) trailing"
         onboarding.write_text(json.dumps(value), encoding="utf-8")
         onboarding.chmod(0o600)
@@ -3496,6 +3598,27 @@ class TestRemoteProviderLifecycle:
 
         with pytest.raises(RuntimeError, match="contract is invalid"):
             _mod._read_remote_provider_activation_state()
+
+    def test_reconciliation_passes_opaque_route_identity_and_explicitly_clears_local(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
+        monkeypatch.setattr(_mod, "_ods_managed_pixel_identity", lambda: ("owner", tmp_path / "home"))
+        monkeypatch.setattr(_mod, "load_env", lambda _: {})
+        calls = []
+
+        def fake_run(command, **kwargs):
+            calls.append(command)
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        monkeypatch.setattr(_mod.subprocess, "run", fake_run)
+        runtime = {"model": "same-model", "contextLength": 32768, "maxTokens": 4096, "reasoning": False}
+        assert _mod._reconcile_managed_pixel_contract({**runtime, "routeFingerprint": "a" * 64}) == "reconciled"
+        assert calls[-1][-1] == "a" * 64
+        assert 'target_route_fingerprint="$8"' in calls[-1][2]
+        assert _mod._reconcile_managed_pixel_contract(runtime) == "reconciled"
+        assert calls[-1][-1] == ""
+        with pytest.raises(RuntimeError, match="route identity"):
+            _mod._reconcile_managed_pixel_contract({**runtime, "routeFingerprint": "a" * 64 + "\n"})
+        assert len(calls) == 2
 
     def test_active_remote_pixel_runtime_requires_current_proven_custody_join(
         self,
@@ -3547,6 +3670,14 @@ class TestRemoteProviderLifecycle:
         monkeypatch.setattr(_mod, "_managed_pixel_runtime_contract", lambda: runtime)
 
         assert _mod._active_remote_provider_pixel_runtime() == runtime
+
+        runtime["routeFingerprint"] = _mod._remote_provider_route_fingerprint(route)
+        assert _mod._active_remote_provider_pixel_runtime() == runtime
+        monkeypatch.setattr(_mod, "_managed_pixel_runtime_contract", lambda: {
+            **runtime, "routeFingerprint": "f" * 64,
+        })
+        assert _mod._active_remote_provider_pixel_runtime() is None
+        monkeypatch.setattr(_mod, "_managed_pixel_runtime_contract", lambda: runtime)
 
         activation["routeFingerprint"] = "0" * 64
         assert _mod._active_remote_provider_pixel_runtime() is None
@@ -3659,6 +3790,7 @@ class TestRemoteProviderLifecycle:
         route = self._configure_payload()
         plan = _mod._plan_remote_provider_lifecycle_operation(route)
 
+        remote_pixel["routeFingerprint"] = _mod._remote_provider_route_fingerprint(plan["route"])
         activation = _mod._activate_remote_provider_route(plan["route"])
 
         assert activation["active"] is True
@@ -3688,6 +3820,27 @@ class TestRemoteProviderLifecycle:
         assert current["unchanged"] is True
         assert current["pixel"] == "reconciled"
         assert current_pixel["value"] == remote_pixel
+
+        # A different provider serving the same model must leave the fast path,
+        # and failed reconciliation must restore the exact previous identity.
+        second_route = json.loads(json.dumps(plan["route"]))
+        second_route["provider"]["baseUrl"] = "https://other-provider.example/v1"
+        second_runtime = _mod._remote_provider_runtime_contract(second_route)
+        assert second_runtime["routeFingerprint"] != remote_pixel["routeFingerprint"]
+        assert _mod._verify_current_remote_provider_consumers(second_route, second_runtime) is None
+        private_before = (data_dir / "remote-provider" / "activation-state.json").read_bytes()
+
+        def fail_new_route(contract):
+            fake_reconcile(contract)
+            if contract.get("routeFingerprint") == second_runtime["routeFingerprint"]:
+                raise RuntimeError("simulated native reconciliation failure")
+
+        monkeypatch.setattr(_mod, "_reconcile_managed_pixel_contract", fail_new_route)
+        with pytest.raises(RuntimeError, match="simulated native reconciliation failure"):
+            _mod._activate_remote_provider_route(second_route)
+        assert current_pixel["value"] == remote_pixel
+        assert (data_dir / "remote-provider" / "activation-state.json").read_bytes() == private_before
+        monkeypatch.setattr(_mod, "_reconcile_managed_pixel_contract", fake_reconcile)
 
         deactivation = _mod._deactivate_remote_provider_route()
 
@@ -4482,13 +4635,14 @@ class TestModelActivationOwnership:
 
     @pytest.mark.parametrize("agent_viable", [True, False])
     @pytest.mark.parametrize("backend", ["llama-server", "lemonade"])
+    @pytest.mark.parametrize("mode", ["local", "hybrid", "lemonade"])
     def test_model_status_projects_verified_local_identity_without_onboarding(
-        self, tmp_path, monkeypatch, agent_viable, backend,
+        self, tmp_path, monkeypatch, agent_viable, backend, mode,
     ):
         install_dir = tmp_path / "ods"
         install_dir.mkdir()
         env = (
-            "ODS_MODE=local\nGPU_BACKEND=cpu\nLLM_MODEL=same-model\n"
+            f"ODS_MODE={mode}\nGPU_BACKEND=cpu\nLLM_MODEL=same-model\n"
             "GGUF_FILE=same-model.gguf\nCTX_SIZE=65536\n"
         )
         if backend == "lemonade":
@@ -4519,7 +4673,7 @@ class TestModelActivationOwnership:
 
         # Missing proof and a cloud transition must not expose a local rollback
         # route as Pixel's active runtime. This is a display rule, not admission.
-        (install_dir / ".env").write_text(env.replace("local", "cloud"), encoding="utf-8")
+        (install_dir / ".env").write_text(env.replace(f"ODS_MODE={mode}", "ODS_MODE=cloud"), encoding="utf-8")
         payload = {}
         _mod._project_switchboard_agent_viability(payload)
         assert "activeRuntime" not in payload
