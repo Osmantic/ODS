@@ -6,6 +6,7 @@ import io
 import json
 import logging
 import os
+import stat
 import subprocess
 import sys
 import threading
@@ -593,11 +594,24 @@ class TestResolveComposeFlags:
 
         assert [python_cmd, "-m", "pip", "install"] == calls[1][:4]
 
-    def test_windows_bash_discovery_skips_unusable_path_bash(self, monkeypatch):
+    def test_windows_bash_discovery_prefers_git_bash_before_path_wsl(self, monkeypatch):
         monkeypatch.setattr(_mod.platform, "system", lambda: "Windows")
-        monkeypatch.setattr(_mod.shutil, "which", lambda name: r"C:\Windows\System32\bash.exe")
+        monkeypatch.setattr(
+            _mod.shutil,
+            "which",
+            lambda name: (
+                r"C:\Program Files\Git\cmd\git.exe"
+                if name == "git"
+                else r"C:\Windows\System32\bash.exe"
+            ),
+        )
         monkeypatch.setattr(_mod, "_update_usable_bash", None)
         monkeypatch.setattr(_mod, "_usable_bash", None)
+        monkeypatch.setattr(
+            _mod.Path,
+            "exists",
+            lambda path: str(path) == r"C:\Program Files\Git\bin\bash.exe",
+        )
         calls = []
 
         def fake_run(cmd, **kwargs):
@@ -609,8 +623,7 @@ class TestResolveComposeFlags:
         monkeypatch.setattr(_mod.subprocess, "run", fake_run)
 
         assert _mod._find_update_bash() == r"C:\Program Files\Git\bin\bash.exe"
-        assert calls[0][0] == r"C:\Windows\System32\bash.exe"
-        assert calls[-1][0] == r"C:\Program Files\Git\bin\bash.exe"
+        assert [call[0] for call in calls] == [r"C:\Program Files\Git\bin\bash.exe"]
 
 
 # --- _split_nmcli_terse — parser for nmcli -t (terse) output ---
@@ -801,27 +814,60 @@ class TestToBashPath:
 
 class TestFindUsableBash:
 
-    def test_windows_skips_unusable_path_bash_and_uses_git_bash(self, monkeypatch):
-        bad_bash = r"C:\Windows\System32\bash.exe"
+    def test_windows_derives_bash_from_custom_git_install(self, monkeypatch):
+        git = r"D:\Tools\PortableGit\cmd\git.exe"
+        git_bash = r"D:\Tools\PortableGit\bin\bash.exe"
+
+        monkeypatch.setattr(_mod, "_usable_bash", None)
+        monkeypatch.setattr(_mod.platform, "system", lambda: "Windows")
+        monkeypatch.setattr(
+            _mod.shutil,
+            "which",
+            lambda name: git if name == "git" else None,
+        )
+        monkeypatch.setattr(
+            _mod.Path,
+            "exists",
+            lambda path: str(path) == git_bash,
+        )
+
+        def fake_run(cmd, *args, **kwargs):
+            assert cmd[0] == git_bash
+            return subprocess.CompletedProcess(cmd, 0, "ok", "")
+
+        monkeypatch.setattr(_mod.subprocess, "run", fake_run)
+
+        assert _mod._find_usable_bash() == git_bash
+
+    def test_windows_prefers_git_bash_over_usable_wsl_launcher(self, monkeypatch):
+        wsl_bash = r"C:\Windows\System32\bash.exe"
         git_bash = r"C:\Program Files\Git\bin\bash.exe"
         seen = []
 
         monkeypatch.setattr(_mod, "_usable_bash", None)
         monkeypatch.setattr(_mod.platform, "system", lambda: "Windows")
-        monkeypatch.setattr(_mod.shutil, "which", lambda name: bad_bash if name == "bash" else None)
+        monkeypatch.setattr(
+            _mod.shutil,
+            "which",
+            lambda name: wsl_bash if name == "bash" else None,
+        )
 
         real_exists = _mod.Path.exists
 
         def fake_exists(path):
-            if str(path) in {bad_bash, git_bash}:
+            if str(path) in {wsl_bash, git_bash}:
                 return True
             return real_exists(path)
 
         def fake_run(cmd, *args, **kwargs):
             seen.append(cmd[0])
-            if cmd[0] == bad_bash:
-                return subprocess.CompletedProcess(cmd, 127, "", "WSL execvpe(/bin/bash) failed")
             if cmd[0] == git_bash:
+                assert "MINGW*|MSYS*" in cmd[2]
+                assert cmd[-1].startswith("/")
+                return subprocess.CompletedProcess(cmd, 0, "ok", "")
+            if cmd[0] == wsl_bash:
+                # A WSL launcher can run Bash successfully, but it is not
+                # compatible with the /c/... paths used by this process.
                 return subprocess.CompletedProcess(cmd, 0, "ok", "")
             raise AssertionError(f"unexpected command: {cmd}")
 
@@ -829,7 +875,33 @@ class TestFindUsableBash:
         monkeypatch.setattr(_mod.subprocess, "run", fake_run)
 
         assert _mod._find_usable_bash() == git_bash
-        assert seen[:2] == [bad_bash, git_bash]
+        assert seen == [git_bash]
+
+    def test_windows_rejects_wsl_when_git_bash_is_absent(self, monkeypatch):
+        wsl_bash = r"C:\Windows\System32\bash.exe"
+
+        monkeypatch.setattr(_mod, "_usable_bash", None)
+        monkeypatch.setattr(_mod.platform, "system", lambda: "Windows")
+        monkeypatch.setattr(
+            _mod.shutil,
+            "which",
+            lambda name: wsl_bash if name == "bash" else None,
+        )
+        monkeypatch.delenv("LOCALAPPDATA", raising=False)
+
+        def fake_exists(path):
+            return str(path) == wsl_bash
+
+        def fake_run(cmd, *args, **kwargs):
+            assert cmd[0] == wsl_bash
+            assert "MINGW*|MSYS*" in cmd[2]
+            return subprocess.CompletedProcess(cmd, 64, "", "")
+
+        monkeypatch.setattr(_mod.Path, "exists", fake_exists)
+        monkeypatch.setattr(_mod.subprocess, "run", fake_run)
+
+        assert _mod._find_usable_bash() is None
+        assert _mod._usable_bash is False
 
 
 class TestValidateCoreRecreateIds:
@@ -918,6 +990,152 @@ class TestComposeCacheInvalidationWire:
             server.shutdown()
             server.server_close()
             thread.join(timeout=2)
+
+
+class TestSetupStateWire:
+    """Dashboard setup state crosses the authenticated host-agent boundary."""
+
+    def test_unwritable_container_mount_does_not_block_setup(
+        self,
+        tmp_path,
+        monkeypatch,
+        host_agent_wire_client,
+        test_client,
+    ):
+        from http.server import HTTPServer
+
+        from routers import setup as setup_router
+
+        host_data = tmp_path / "host-data"
+        blocked_mount = tmp_path / "container-data"
+        blocked_mount.write_text("not a directory", encoding="utf-8")
+        monkeypatch.setattr(
+            setup_router,
+            "SETUP_CONFIG_DIR",
+            blocked_mount / "config",
+            raising=False,
+        )
+        monkeypatch.setattr(_mod, "DATA_DIR", host_data)
+        monkeypatch.setattr(_mod, "AGENT_API_KEY", "wire-test-secret")
+
+        server = HTTPServer(("127.0.0.1", 0), _mod.AgentHandler)
+        port = server.server_address[1]
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            host_agent_wire_client(port, key="wrong-secret")
+            denied = test_client.post(
+                "/api/setup/persona",
+                json={"persona": "coding"},
+                headers=test_client.auth_headers,
+            )
+            assert denied.status_code == 403
+            assert not (host_data / "config" / "persona.json").exists()
+
+            host_agent_wire_client(port)
+            persona = test_client.post(
+                "/api/setup/persona",
+                json={"persona": "coding"},
+                headers=test_client.auth_headers,
+            )
+            assert persona.status_code == 200
+
+            status_response = test_client.get(
+                "/api/setup/status",
+                headers=test_client.auth_headers,
+            )
+            assert status_response.status_code == 200
+            assert status_response.json()["persona"] == "coding"
+            assert status_response.json()["step"] == 2
+
+            complete = test_client.post(
+                "/api/setup/complete",
+                headers=test_client.auth_headers,
+            )
+            assert complete.status_code == 200
+            assert test_client.post(
+                "/api/setup/complete",
+                headers=test_client.auth_headers,
+            ).status_code == 200
+
+            state_dir = host_data / "config"
+            persona_file = state_dir / "persona.json"
+            complete_file = state_dir / "setup-complete.json"
+            assert persona_file.is_file()
+            assert complete_file.is_file()
+            assert not (state_dir / "setup-progress.json").exists()
+            assert json.loads(persona_file.read_text(encoding="utf-8"))["persona"] == "coding"
+            if os.name != "nt":
+                assert stat.S_IMODE(persona_file.stat().st_mode) == 0o600
+                assert stat.S_IMODE(complete_file.stat().st_mode) == 0o600
+
+            final_status = test_client.get(
+                "/api/setup/status",
+                headers=test_client.auth_headers,
+            )
+            assert final_status.status_code == 200
+            assert final_status.json()["first_run"] is False
+        finally:
+            # Release httpx's HTTP/1.1 keep-alive connection before stopping
+            # the single-threaded test server.
+            host_agent_wire_client(port)
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+
+class TestSetupStateTransactions:
+    def test_persona_write_rolls_back_both_files_on_partial_failure(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        state_dir = tmp_path / "config"
+        state_dir.mkdir()
+        persona_path = state_dir / "persona.json"
+        progress_path = state_dir / "setup-progress.json"
+        persona_path.write_text('{"persona":"general"}\n', encoding="utf-8")
+        progress_path.write_text('{"step":1}\n', encoding="utf-8")
+        monkeypatch.setattr(_mod, "DATA_DIR", tmp_path)
+
+        real_atomic_write = _mod._atomic_write_text
+        failed_once = False
+
+        def flaky_atomic_write(path, text, *args, **kwargs):
+            nonlocal failed_once
+            if path == progress_path and not failed_once:
+                failed_once = True
+                raise RuntimeError("simulated progress write failure")
+            return real_atomic_write(path, text, *args, **kwargs)
+
+        monkeypatch.setattr(_mod, "_atomic_write_text", flaky_atomic_write)
+        payload = {
+            "persona": "coding",
+            "name": "Coding Assistant",
+            "system_prompt": "Help with code.",
+            "icon": "code",
+            "selected_at": "2026-08-25T00:00:00+00:00",
+        }
+
+        with pytest.raises(RuntimeError, match="simulated progress write failure"):
+            _mod._write_setup_persona(payload)
+
+        assert persona_path.read_text(encoding="utf-8") == '{"persona":"general"}\n'
+        assert progress_path.read_text(encoding="utf-8") == '{"step":1}\n'
+
+    def test_state_reader_refuses_symlinked_marker(self, tmp_path, monkeypatch):
+        if not can_create_symlinks(tmp_path):
+            pytest.skip("symlinks are unavailable")
+
+        state_dir = tmp_path / "config"
+        state_dir.mkdir(exist_ok=True)
+        target = tmp_path / "outside-marker.json"
+        target.write_text("{}", encoding="utf-8")
+        (state_dir / "setup-complete.json").symlink_to(target)
+        monkeypatch.setattr(_mod, "DATA_DIR", tmp_path)
+
+        with pytest.raises(RuntimeError, match="Refusing symlinked setup state"):
+            _mod._setup_state_payload()
 
 
 class TestUpdateWire:
@@ -2873,6 +3091,39 @@ class TestHandleEnvUpdate:
         # backup file actually exists where the response says it does
         backup_files = list((data_dir / "config-backups").glob(".env.backup.*"))
         assert len(backup_files) == 1
+
+    def test_same_second_updates_create_distinct_backups(
+        self, env_update_env, monkeypatch,
+    ):
+        install_dir, data_dir = env_update_env
+        real_datetime = _mod.datetime
+
+        class FrozenDateTime:
+            @classmethod
+            def now(cls, tz=None):
+                return real_datetime(2026, 8, 27, 12, 34, 56, tzinfo=tz)
+
+        monkeypatch.setattr(_mod, "datetime", FrozenDateTime)
+
+        first = _FakeHandler(_make_body("ODS_AGENT_KEY=first\n"))
+        _mod.AgentHandler._handle_env_update(first)
+        second = _FakeHandler(_make_body("ODS_AGENT_KEY=second\n"))
+        _mod.AgentHandler._handle_env_update(second)
+
+        assert first.response_code == 200
+        assert second.response_code == 200
+        first_backup = first.parse_response()["backup_path"]
+        second_backup = second.parse_response()["backup_path"]
+        assert first_backup != second_backup
+        backup_files = list((data_dir / "config-backups").glob(".env.backup.*"))
+        assert len(backup_files) == 2
+        assert {path.read_text(encoding="utf-8") for path in backup_files} == {
+            "ODS_AGENT_KEY=existing\n",
+            "ODS_AGENT_KEY=first\n",
+        }
+        assert (install_dir / ".env").read_text(encoding="utf-8") == (
+            "ODS_AGENT_KEY=second\n"
+        )
 
     def test_proxy_enabled_forces_auth_and_reports_saved_value(self, env_update_env):
         install_dir, _ = env_update_env
