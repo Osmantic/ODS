@@ -171,6 +171,7 @@ OPTIONS:
     -t, --type TYPE         Backup type: full, user-data, config (default: full)
     -c, --compress          Compress backup to .tar.gz
     -l, --list              List existing backups
+    --json                  Emit --list results as machine-readable JSON
     -d, --delete ID         Delete specific backup by ID
     --description DESC      Add description to backup manifest
 
@@ -183,12 +184,102 @@ EXAMPLES:
     $(basename "$0")                          # Backup (default: user-data)
     $(basename "$0") -t full -c               # Compressed full backup
     $(basename "$0") -l                       # List all backups
+    $(basename "$0") --list --json            # List backups as JSON
     $(basename "$0") -d 20260212-071500       # Delete specific backup
     $(basename "$0") verify 20260212-071500   # Verify checksum integrity
     $(basename "$0") verify 20260212-071500.tar.gz
     $(basename "$0") backup -t config         # Explicit backup subcommand
 
 EOF
+}
+
+# Report payload bytes without relying on GNU-only `du --bytes`. Archives are
+# regular files; directory backups sum the content length of each regular file.
+backup_size_bytes() {
+    local backup="$1"
+
+    if [[ -f "$backup" ]]; then
+        wc -c < "$backup" | tr -d '[:space:]'
+        return
+    fi
+
+    find "$backup" -type f -exec sh -c '
+        for file do
+            wc -c < "$file"
+        done
+    ' sh {} + | awk '{ total += $1 } END { print total + 0 }'
+}
+
+# Emit a stable inventory contract for automation and support tooling. Each
+# entry reports metadata without extracting an archive onto disk; malformed or
+# legacy manifests stay visible with an explicit status instead of making the
+# entire inventory unreadable.
+list_backups_json() {
+    if [[ -d "$BACKUP_ROOT" ]]; then
+        collect_backups
+    else
+        COLLECTED_BACKUPS=()
+    fi
+
+    {
+        local backup id format size_bytes manifest_data manifest_status
+        local integrity archive_name
+        for backup in "${COLLECTED_BACKUPS[@]}"; do
+            id=$(basename "$backup")
+            format="directory"
+            manifest_data="{}"
+            manifest_status="missing"
+            integrity="missing"
+
+            if [[ "$backup" == *.tar.gz ]]; then
+                format="tar.gz"
+                archive_name="${id%.tar.gz}"
+                if manifest_data=$(tar xzf "$backup" -O "${archive_name}/manifest.json" 2>/dev/null); then
+                    manifest_status="available"
+                fi
+                if tar tzf "$backup" "${archive_name}/checksums.sha256" >/dev/null 2>&1; then
+                    integrity="available"
+                fi
+            else
+                if [[ -f "$backup/manifest.json" ]]; then
+                    manifest_data=$(< "$backup/manifest.json")
+                    manifest_status="available"
+                fi
+                [[ -f "$backup/checksums.sha256" ]] && integrity="available"
+            fi
+
+            if [[ "$manifest_status" == "available" ]] && \
+               ! jq -e 'type == "object"' <<< "$manifest_data" >/dev/null 2>&1; then
+                manifest_data="{}"
+                manifest_status="invalid"
+            fi
+
+            size_bytes=$(backup_size_bytes "$backup")
+            jq -cn \
+                --arg id "$id" \
+                --arg format "$format" \
+                --argjson size_bytes "$size_bytes" \
+                --arg manifest_status "$manifest_status" \
+                --arg integrity "$integrity" \
+                --argjson manifest "$manifest_data" \
+                '{
+                    id: $id,
+                    format: $format,
+                    size_bytes: $size_bytes,
+                    backup_type: ($manifest.backup_type // "unknown"),
+                    created_at: ($manifest.backup_date // null),
+                    description: ($manifest.description // ""),
+                    ods_version: ($manifest.ods_version // null),
+                    manifest_status: $manifest_status,
+                    integrity_manifest: $integrity
+                }'
+        done
+    } | jq -s --arg backup_root "$BACKUP_ROOT" '{
+        schema_version: "ods.backups.v1",
+        backup_root: $backup_root,
+        count: length,
+        backups: .
+    }'
 }
 
 # List existing backups
@@ -609,6 +700,7 @@ main() {
     local compress="false"
     local description=""
     local list_mode="false"
+    local json_mode="false"
     local delete_id=""
     local verify_id=""
 
@@ -651,6 +743,10 @@ main() {
                 list_mode="true"
                 shift
                 ;;
+            --json)
+                json_mode="true"
+                shift
+                ;;
             -d|--delete)
                 delete_id="$2"
                 shift 2
@@ -669,8 +765,17 @@ main() {
 
     # List mode
     if [[ "$list_mode" == "true" ]]; then
-        list_backups
+        if [[ "$json_mode" == "true" ]]; then
+            list_backups_json
+        else
+            list_backups
+        fi
         exit 0
+    fi
+
+    if [[ "$json_mode" == "true" ]]; then
+        log_error "--json requires --list"
+        exit 1
     fi
 
     # Delete mode

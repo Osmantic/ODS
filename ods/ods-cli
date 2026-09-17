@@ -6412,7 +6412,7 @@ ${CYAN}Commands:${NC}
                       Configure, test, disable, or inspect remote GPU provider routing
   stt [current|status|download] [MODEL]
                       View Whisper STT model, check cache, or trigger download
-  backup [options]    Create a backup of user data and config
+  backup [options]    Create a backup; use --list --json for inventory
   backup verify <id>   Verify checksum integrity for a backup
   restore [backup_id] Restore from a backup
   rollback [snapshot] Rollback to pre-update state (after failed update)
@@ -6523,6 +6523,7 @@ ${CYAN}Examples:${NC}
   ods backup                    # Create a backup
   ods backup -c                 # Create compressed backup
   ods backup -l                 # List all backups
+  ods backup --list --json      # Machine-readable backup inventory
   ods backup verify <id>        # Verify backup integrity
   ods restore                   # Interactive restore
   ods restore 20260309-120000   # Restore specific backup
