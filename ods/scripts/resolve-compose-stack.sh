@@ -582,6 +582,9 @@ if ext_dir.exists():
             if manifest.get("schema_version") != "ods.services.v1":
                 continue
             service = manifest.get("service", {})
+            if not isinstance(service, dict):
+                print(f"WARNING: manifest 'service' is not a mapping for {service_dir.name} at {manifest_path}, skipping", file=sys.stderr)
+                continue
             # Check GPU backend compatibility
             backends = service.get("gpu_backends", ["amd", "nvidia"])
             # "none" means CPU-only — compatible with any GPU backend
@@ -675,6 +678,13 @@ if user_ext_dir.exists():
                     service = manifest.get("service", {}) if isinstance(manifest, dict) else {}
                 else:
                     service = {}
+                # A manifest whose `service:` is a scalar/list (malformed or a
+                # backup-restored file) must not crash the resolver: it runs on
+                # every `ods` invocation, and an AttributeError here escapes the
+                # skip-broken handler and bricks all CLI commands.
+                if not isinstance(service, dict):
+                    print(f"WARNING: manifest 'service' is not a mapping for {service_dir.name}, skipping", file=sys.stderr)
+                    continue
                 # Apply gpu_backends filter — same predicate as the built-in loop above.
                 # Gated on isinstance(manifest, dict) so the manifest-less compat
                 # carve-out (legacy user extensions that pre-date the manifest convention)
