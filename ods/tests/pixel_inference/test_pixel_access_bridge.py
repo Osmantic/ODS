@@ -30,6 +30,31 @@ import pixel_access_bridge as bridge  # noqa: E402
 from pixel_access_bridge import AccessError, SystemdAccessBridge  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _root_custody(monkeypatch):
+    """The bridge's custody checks pin st_uid == 0 (production runs as root).
+
+    Remap the current user's ownership to uid 0 so CI runners (non-root)
+    exercise the same mode/link/type checks; no-op on real root.
+    """
+    if os.geteuid() == 0:
+        return
+    euid = os.geteuid()
+    real_fstat = os.fstat
+    real_lstat = Path.lstat
+
+    def _remap(info):
+        if info.st_uid == euid:
+            fields = list(info)
+            fields[4] = 0  # st_uid
+            return os.stat_result(fields)
+        return info
+
+    monkeypatch.setattr(os, 'fstat', lambda fd: _remap(real_fstat(fd)))
+    monkeypatch.setattr(Path, 'lstat', lambda self: _remap(real_lstat(self)))
+    monkeypatch.setattr(os, 'geteuid', lambda: 0)
+
+
 def make_bridge(tmp_path, **kwargs):
     kwargs.setdefault("state", tmp_path / "state")
     kwargs.setdefault("dropin", tmp_path / "dropin" / "90-ods-full-access.conf")
