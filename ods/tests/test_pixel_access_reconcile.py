@@ -170,6 +170,51 @@ class ReconcileTests(unittest.TestCase):
         self.assertNotIn("private_value", output.getvalue())
         self.assertEqual(calls, ["status", "change"])
 
+    def test_status_failure_reports_stage_and_http_status(self):
+        def request(_operation, _body=None):
+            return 503, {"error": "runtime-busy"}
+        with self.assertRaises(reconcile.ReconcileError) as raised:
+            reconcile.reconcile(request)
+        self.assertEqual(raised.exception.stage, "status-unavailable")
+        self.assertEqual(raised.exception.status, 503)
+        diagnostic = raised.exception.diagnostic()
+        self.assertEqual(diagnostic["httpStatus"], 503)
+        self.assertEqual(diagnostic["projection"]["coordinator_error"], "runtime-busy")
+
+    def test_diagnostic_projection_drops_oversized_and_nonprintable(self):
+        result = reconcile.diagnostic_projection({
+            "reason": "x" * 97,
+            "configured_mode": "has\nnewline",
+            "effective_mode": "y" * 96,
+        })
+        self.assertNotIn("reason", result)
+        self.assertNotIn("configured_mode", result)
+        self.assertEqual(result["effective_mode"], "y" * 96)
+
+    def test_diagnostic_projection_accepts_non_dict(self):
+        self.assertEqual(reconcile.diagnostic_projection("text"), {})
+        self.assertEqual(reconcile.diagnostic_projection(None), {})
+
+    def test_main_reports_client_exception_type_only(self):
+        def request(_operation, _body=None):
+            raise ConnectionError("token=ods_infer_secret")
+        output = io.StringIO()
+        with contextlib.redirect_stderr(output):
+            self.assertEqual(reconcile.main(request), 1)
+        diagnostic = json.loads(output.getvalue())
+        self.assertEqual(diagnostic["stage"], "client-exception")
+        self.assertEqual(diagnostic["exceptionType"], "ConnectionError")
+        self.assertNotIn("ods_infer_secret", output.getvalue())
+
+    def test_main_already_ready_reports_without_change(self):
+        def request(_operation, _body=None):
+            return 200, projection()
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(reconcile.main(request), 0)
+        result = json.loads(output.getvalue())
+        self.assertEqual(result, {"result": "already-ready", "mode": "sandboxed"})
+
 
 if __name__ == "__main__":
     unittest.main()
