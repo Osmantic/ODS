@@ -202,6 +202,44 @@ _phase11_model_file_valid() {
     return 0
 }
 
+_phase11_yaml_double_quoted_scalar_content() {
+    local value="$1"
+    case "$value" in
+        *$'\n'*|*$'\r'*) return 1 ;;
+    esac
+    printf '%s' "$value" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+_phase11_patch_hermes_with_sed() {
+    local template_path="$1" model="$2" context_length="$3" request_timeout_seconds="$4"
+    local model_yaml model_sed backup_path
+
+    [[ -f "$template_path" ]] || return 1
+    [[ "$context_length" =~ ^[0-9]+$ ]] || return 1
+    [[ "$request_timeout_seconds" =~ ^[0-9]+$ ]] || return 1
+
+    # The replacement is parsed twice: first by sed, then as a YAML
+    # double-quoted scalar. Serialize for YAML before escaping sed metacharacters.
+    model_yaml="$(_phase11_yaml_double_quoted_scalar_content "$model")" || return 1
+    model_sed="$(printf '%s' "$model_yaml" | sed 's/[\\&|]/\\&/g')" || return 1
+    backup_path="${template_path}.bak.$$"
+
+    if sed -i".bak.$$" \
+        -e "s|^  default: \"qwen3.5-9b\"|  default: \"${model_sed}\"|" \
+        -e "s|^  context_length: .*|  context_length: ${context_length}|" \
+        -e "s|^    context_length: .*|    context_length: ${context_length}|" \
+        -e "s|^    request_timeout_seconds: 180[[:space:]]*$|    request_timeout_seconds: ${request_timeout_seconds}|" \
+        "$template_path"; then
+        rm -f "$backup_path"
+    else
+        [[ -f "$backup_path" ]] && mv -f "$backup_path" "$template_path"
+        return 1
+    fi
+
+    grep -Fqx "  default: \"${model_yaml}\"" "$template_path" \
+        && grep -Fqx "  context_length: ${context_length}" "$template_path"
+}
+
 ods_progress 75 "services" "Starting services"
 show_phase 5 6 "Starting Services" "~2-3 minutes"
 
@@ -308,7 +346,10 @@ else
 
         [[ "$(uname -s 2>/dev/null || echo unknown)" == "Linux" ]] || return 0
         command -v systemctl >/dev/null 2>&1 || return 0
-        command -v sudo >/dev/null 2>&1 || return 0
+        ods_sudo_available || {
+            ai_warn "Skipping $service_label firewall rule; privileged firewall access is unavailable."
+            return 0
+        }
         [[ "$port" =~ ^[0-9]+$ ]] || {
             ai_warn "Skipping $service_label firewall rule; invalid port: ${port:-unset}"
             return 0
@@ -341,9 +382,9 @@ else
 
         for subnet in "${subnets[@]}"; do
             if command -v ufw >/dev/null 2>&1 && systemctl is-active --quiet ufw 2>/dev/null; then
-                if sudo ufw status 2>/dev/null | grep -F "${port}/tcp" | grep -F "$subnet" >/dev/null; then
+                if ods_sudo ufw status 2>/dev/null | grep -F "${port}/tcp" | grep -F "$subnet" >/dev/null; then
                     ai_ok "UFW already allows $service_label (port $port) from $network_name subnet $subnet"
-                elif sudo ufw allow from "$subnet" to any port "$port" proto tcp comment "$rule_label" 2>&1 | tee -a "$LOG_FILE" >/dev/null; then
+                elif ods_sudo ufw allow from "$subnet" to any port "$port" proto tcp comment "$rule_label" 2>&1 | tee -a "$LOG_FILE" >/dev/null; then
                     ai_ok "UFW: allowed $service_label (port $port) from $network_name subnet $subnet"
                 else
                     ai_warn "UFW: failed to auto-add $service_label rule - run manually:"
@@ -351,10 +392,10 @@ else
                 fi
             elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
                 fw_rule="rule family=\"ipv4\" source address=\"$subnet\" port protocol=\"tcp\" port=\"$port\" accept"
-                if sudo firewall-cmd --query-rich-rule="$fw_rule" >/dev/null 2>&1; then
+                if ods_sudo firewall-cmd --query-rich-rule="$fw_rule" >/dev/null 2>&1; then
                     ai_ok "firewalld already allows $service_label (port $port) from $network_name subnet $subnet"
-                elif sudo firewall-cmd --permanent --add-rich-rule="$fw_rule" 2>&1 | tee -a "$LOG_FILE" >/dev/null \
-                  && sudo firewall-cmd --reload 2>&1 | tee -a "$LOG_FILE" >/dev/null; then
+                elif ods_sudo firewall-cmd --permanent --add-rich-rule="$fw_rule" 2>&1 | tee -a "$LOG_FILE" >/dev/null \
+                  && ods_sudo firewall-cmd --reload 2>&1 | tee -a "$LOG_FILE" >/dev/null; then
                     ai_ok "firewalld: allowed $service_label (port $port) from $network_name subnet $subnet"
                 else
                     ai_warn "firewalld: failed to auto-add $service_label rule - run manually:"
@@ -1037,15 +1078,17 @@ MODELS_INI_EOF
                 "$_python_cmd" "$_hermes_patcher" "${_hermes_patcher_args[@]}" >>"$LOG_FILE" 2>&1 || \
                     warn "Hermes config patcher failed for $_hermes_tpl"
             else
-                sed -i.bak \
-                    -e "s|^  default: \"qwen3.5-9b\"|  default: \"$_hermes_model\"|" \
-                    -e "s|^  context_length: .*|  context_length: ${_hermes_context}|" \
-                    -e "s|^    context_length: .*|    context_length: ${_hermes_context}|" \
-                    -e "s|^    request_timeout_seconds: 180[[:space:]]*$|    request_timeout_seconds: ${_hermes_request_timeout}|" \
-                    "$_hermes_tpl" 2>>"$LOG_FILE" && rm -f "${_hermes_tpl}.bak"
+                _phase11_patch_hermes_with_sed \
+                    "$_hermes_tpl" "$_hermes_model" "$_hermes_context" "$_hermes_request_timeout" \
+                    2>>"$LOG_FILE" || warn "Hermes fallback config patcher failed for $_hermes_tpl"
             fi
-            if grep -q "^  default: \"$_hermes_model\"$" "$_hermes_tpl" && \
-               grep -q "^  context_length: ${_hermes_context}$" "$_hermes_tpl"; then
+            _hermes_model_yaml_valid=false
+            if _hermes_model_yaml="$(_phase11_yaml_double_quoted_scalar_content "$_hermes_model")"; then
+                _hermes_model_yaml_valid=true
+            fi
+            if $_hermes_model_yaml_valid && \
+               grep -Fqx "  default: \"$_hermes_model_yaml\"" "$_hermes_tpl" && \
+               grep -Fqx "  context_length: ${_hermes_context}" "$_hermes_tpl"; then
                 ai_ok "Patched Hermes template: model.default=$_hermes_model, context=$_hermes_context"
             else
                 warn "Hermes template substitution didn't take effect — Hermes may 404 every chat completion. Hand-edit $_hermes_tpl after install if Hermes prompts hang."
@@ -1184,13 +1227,23 @@ MODELS_INI_EOF
     # started it before compose created ods-network, so restart it here to
     # let the safer scoped bind take effect.
     if [[ -z "${ODS_AGENT_BIND:-}" ]] \
-      && [[ "$(uname -s 2>/dev/null || echo unknown)" == "Linux" ]] \
-      && command -v systemctl >/dev/null 2>&1 \
-      && sudo -n systemctl is-enabled ods-host-agent.service >/dev/null 2>&1; then
-        if sudo -n systemctl restart ods-host-agent.service 2>&1 | tee -a "$LOG_FILE" >/dev/null; then
-            ai_ok "Restarted ods-host-agent after ods-network creation"
-        else
-            ai_warn "ods-host-agent restart after network creation failed (non-fatal)"
+      && [[ "$(uname -s 2>/dev/null || echo unknown)" == "Linux" ]]; then
+        if command -v systemctl >/dev/null 2>&1 \
+          && systemctl cat ods-host-agent.service >/dev/null 2>&1 \
+          && systemctl is-enabled ods-host-agent.service >/dev/null 2>&1 \
+          && ods_sudo_available; then
+            if ods_sudo systemctl restart ods-host-agent.service 2>&1 | tee -a "$LOG_FILE" >/dev/null; then
+                ai_ok "Restarted ods-host-agent after ods-network creation"
+            else
+                ai_warn "ods-host-agent restart after network creation failed (non-fatal)"
+            fi
+        elif [[ -s "$INSTALL_DIR/data/ods-host-agent.pid" ]]; then
+            if ODS_AGENT_FORCE_SESSION=true "$INSTALL_DIR/ods-cli" agent restart \
+              2>&1 | tee -a "$LOG_FILE" >/dev/null; then
+                ai_ok "Restarted session host agent after ods-network creation"
+            else
+                ai_warn "Session host-agent restart after network creation failed (non-fatal)"
+            fi
         fi
     fi
 

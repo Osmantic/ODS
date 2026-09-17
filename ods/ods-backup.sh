@@ -30,6 +30,7 @@ log_error() { echo -e "${RED}[ERROR]${NC} $*"; }
 
 # Source shared rsync utilities
 . "$ODS_DIR/lib/rsync.sh"
+. "$ODS_DIR/lib/backup-paths.sh"
 
 # Convert bytes to a human-friendly string (best-effort)
 fmt_bytes() {
@@ -58,15 +59,7 @@ estimate_backup_bytes() {
 
     # user data volumes
     if [[ "$backup_type" == "full" || "$backup_type" == "user-data" ]]; then
-        local -a user_data_paths=(
-            "data/open-webui"
-            "data/n8n"
-            "data/qdrant"
-            "data/openclaw"
-            "data/litellm"
-            "data/livekit"
-            "data/ollama"
-        )
+        local -a user_data_paths=("${ODS_USER_DATA_PATHS[@]}")
 
         for p in "${user_data_paths[@]}"; do
             if [[ -d "$ODS_DIR/$p" ]]; then
@@ -148,7 +141,14 @@ collect_backups() {
     local entry base
     while IFS= read -r -d '' entry; do
         base=$(basename "$entry")
-        [[ "$base" =~ ^([A-Za-z0-9_]+-)?[0-9]{8}-[0-9]{6}(\.tar\.gz)?$ ]] || continue
+        # Prefix may span multiple hyphen-separated segments (e.g.
+        # `dashboard-my-name-`): the host agent's BACKUP_ID_RE
+        # (`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`) accepts hyphenated labels, so
+        # match the prefix as one allowed label. This also preserves consecutive
+        # hyphens accepted by BACKUP_ID_RE instead of interpreting every
+        # hyphen as a mandatory non-empty segment. The trailing timestamp
+        # anchor still keeps unrelated operator files out of retention.
+        [[ "$base" =~ ^([A-Za-z0-9_][A-Za-z0-9_-]*-)?[0-9]{8}-[0-9]{6}(\.tar\.gz)?$ ]] || continue
         COLLECTED_BACKUPS+=("$entry")
     done < <(find "$BACKUP_ROOT" -maxdepth 1 \( -type d -o -name "*.tar.gz" \) -print0 2>/dev/null | sort -z -r)
 }
@@ -288,6 +288,12 @@ create_manifest() {
     [[ "$backup_type" == "full" || "$backup_type" == "config" ]] && has_config="true"
     [[ "$backup_type" == "full" ]] && has_cache="true"
 
+    local user_data_paths_json
+    user_data_paths_json=$(
+        printf '%s\n' "${ODS_USER_DATA_PATHS[@]}" \
+            | jq -R -s 'split("\n") | map(select(length > 0))'
+    )
+
     jq -n \
         --arg mv "1.0" \
         --arg bd "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
@@ -299,6 +305,7 @@ create_manifest() {
         --argjson ud "$has_user_data" \
         --argjson cfg "$has_config" \
         --argjson ca "$has_cache" \
+        --argjson udp "$user_data_paths_json" \
         '{
           manifest_version: $mv,
           backup_date: $bd,
@@ -308,15 +315,16 @@ create_manifest() {
           hostname: $hn,
           description: $desc,
           contents: { user_data: $ud, config: $cfg, cache: $ca },
-          paths: {
-            data_open_webui: "data/open-webui",
-            data_n8n: "data/n8n",
-            data_qdrant: "data/qdrant",
-            data_openclaw: "data/openclaw",
-            env: ".env",
-            compose: "docker-compose.yml",
-            config: "config"
-          }
+          paths: (
+            {
+              env: ".env",
+              compose: "docker-compose.yml",
+              config: "config"
+            }
+            + ($udp
+              | map({key: (gsub("[^A-Za-z0-9_]"; "_")), value: .})
+              | from_entries)
+          )
         }' > "$backup_dir/manifest.json"
     log_info "Created backup manifest"
 }
@@ -326,15 +334,7 @@ backup_user_data() {
     local backup_dir="$1"
     log_info "Backing up user data volumes..."
 
-    local user_data_paths=(
-        "data/open-webui"
-        "data/n8n"
-        "data/qdrant"
-        "data/openclaw"
-        "data/litellm"
-        "data/livekit"
-        "data/ollama"
-    )
+    local user_data_paths=("${ODS_USER_DATA_PATHS[@]}")
 
     for path in "${user_data_paths[@]}"; do
         local full_path="$ODS_DIR/$path"
