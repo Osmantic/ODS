@@ -14,6 +14,7 @@
 #   $llamaServerImage          -- from phase 02
 #   $whisperCudaSupported      -- from phase 02
 #   $enableOpenClaw            -- from phase 03
+#   $enableRecommended, $enableDeepResearch, $enableHermes -- from phase 03
 #   $openClawConfig            -- from phase 03
 #
 # Writes:
@@ -319,6 +320,11 @@ if ($gpuInfo.Backend -eq "amd" -and -not $cloudMode) {
 if ($amdLemonadeRuntime -and $amdLemonadeRuntime.container_image) {
     $_lemonadeServerImage = $amdLemonadeRuntime.container_image
 }
+$_enableWebSearch = Test-ODSWindowsSearxngNeeded `
+    -EnableRecommended $enableRecommended `
+    -EnableDeepResearch $enableDeepResearch `
+    -EnableHermes $enableHermes `
+    -EnableOpenClaw $enableOpenClaw
 $envResult = New-ODSEnv `
     -InstallDir     $installDir `
     -TierConfig     $tierConfig `
@@ -339,7 +345,8 @@ $envResult = New-ODSEnv `
     -EnableLangfuse $enableLangfuse `
     -SwitchboardMode $env:ODS_MODEL_SWITCHBOARD `
     -EnableLan      $lanFlag `
-    -EnableODSProxy $enableODSProxy
+    -EnableODSProxy $enableODSProxy `
+    -EnableWebSearch $_enableWebSearch
 Write-AISuccess "Generated .env with secure secrets"
 
 # ── Post-generation validation: verify all required keys are present with values ──
@@ -389,8 +396,15 @@ function Update-HermesConfigFile {
 
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
     $content = [System.IO.File]::ReadAllText($Path, $utf8NoBom)
-    $content = $content -replace '(?m)^  default: ".*"\r?$', "  default: `"$Model`""
-    $content = $content -replace '(?m)^  base_url: ".*"\r?$', "  base_url: `"$BaseUrl`""
+    # .NET reads '$' in a -replace *replacement* as a group-substitution token
+    # ($1, ${name}, $$ ...), so a model id or URL carrying '$' is rewritten on
+    # its way into the file. Doubling is the documented escape. The verification
+    # near the end of this function still compares against the raw values, which
+    # is what should actually land on disk.
+    $modelReplacement = $Model.Replace('$', '$$')
+    $baseUrlReplacement = $BaseUrl.Replace('$', '$$')
+    $content = $content -replace '(?m)^  default: ".*"\r?$', "  default: `"$modelReplacement`""
+    $content = $content -replace '(?m)^  base_url: ".*"\r?$', "  base_url: `"$baseUrlReplacement`""
     $content = $content -replace '(?m)^  context_length: .+\r?$', "  context_length: $ContextLength"
     $content = $content -replace '(?m)^    context_length: .+\r?$', "    context_length: $ContextLength"
     if ($MaxTokens -lt 1) { $MaxTokens = 1024 }
@@ -544,15 +558,13 @@ function Invoke-HermesSoulRefresh {
     }
 
     if (-not $_rendered) {
-        if (Test-Path -LiteralPath $_output -PathType Container) {
+        if (Test-Path -LiteralPath $_output) {
             Remove-Item -LiteralPath $_output -Recurse -Force
         }
-        if (-not (Test-Path -LiteralPath $_output -PathType Leaf)) {
-            $_content = Get-Content -LiteralPath $_template -Raw
-            $_content = $_content -replace "(?m)^\s*<!-- INSTALLATION_CONTEXT -->\s*\r?\n?", ""
-            Write-Utf8NoBom -Path $_output -Content $_content
-            Write-AIWarn "Generated fallback Hermes SOUL.md without dynamic installation context"
-        }
+        $_content = Get-Content -LiteralPath $_template -Raw
+        $_content = $_content -replace "(?m)^\s*<!-- INSTALLATION_CONTEXT -->\s*\r?\n?", ""
+        Write-Utf8NoBom -Path $_output -Content $_content
+        Write-AIWarn "Generated fallback Hermes SOUL.md without dynamic installation context"
     }
 
     if ($SyncContainer) {

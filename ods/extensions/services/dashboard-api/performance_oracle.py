@@ -1362,13 +1362,16 @@ def build_models_payload(gpu_info: Optional[GPUInfo], loaded_model: Optional[str
                 else 0
             )
         )
+        memory_model = {**model, **metadata}
         context_model = {
-            **model,
+            **memory_model,
             "max_context_length": max_context_length,
             "context_limit_known": context_limit_known,
         }
         vram_required = float(model["vram_required_gb"])
-        selector_required = _effective_required_memory_gb({**model, "context_length": actual_context}, runtime_profile)
+        selector_required = _effective_required_memory_gb(
+            {**memory_model, "context_length": actual_context}, runtime_profile
+        )
         if gpu_info:
             capacity_gb = _usable_model_memory_gb(gpu_info)
             fits_total = bool(_fits_declared_vram(selector_required, capacity_gb) or is_loaded)
