@@ -108,6 +108,8 @@ ENABLE_PERPLEXICA=false
 ENABLE_PRIVACY_SHIELD=false
 ENABLE_ODS_PROXY=false
 ENABLE_TAILSCALE=false
+ENABLE_SEARXNG=false
+ENABLE_WEB_SEARCH=false
 # Langfuse defaults OFF because its clickhouse + postgres + minio stack adds
 # ~500MB baseline memory. Enable via --langfuse, --all, or post-install
 # `ods enable langfuse`. --no-langfuse honored as explicit override so a
@@ -272,7 +274,7 @@ _macos_set_builtin_compose_state() {
 
 _macos_sync_builtin_compose_states() {
     _macos_set_builtin_compose_state litellm "$ENABLE_RECOMMENDED"
-    _macos_set_builtin_compose_state searxng "$ENABLE_RECOMMENDED"
+    _macos_set_builtin_compose_state searxng "$ENABLE_SEARXNG"
     _macos_set_builtin_compose_state token-spy "$ENABLE_RECOMMENDED"
     _macos_set_builtin_compose_state whisper "$ENABLE_VOICE"
     _macos_set_builtin_compose_state tts "$ENABLE_VOICE"
@@ -1520,6 +1522,14 @@ if ! $ENABLE_HERMES && ! $ENABLE_OPENCLAW; then
     ENABLE_APE=false
 fi
 
+# SearXNG backs Open WebUI web search, Perplexica, and agent web tools.
+if $ENABLE_RECOMMENDED || $ENABLE_PERPLEXICA || $ENABLE_HERMES || $ENABLE_OPENCLAW; then
+    ENABLE_SEARXNG=true
+else
+    ENABLE_SEARXNG=false
+fi
+ENABLE_WEB_SEARCH=$ENABLE_SEARXNG
+
 if $ENABLE_HERMES && ! $CLOUD_MODE; then
     if [[ "${MAX_CONTEXT:-0}" =~ ^[0-9]+$ ]] && (( MAX_CONTEXT < HERMES_CONTEXT_SIZE )); then
         ai_warn "Hermes enabled: increasing macOS llama context from ${MAX_CONTEXT} to ${HERMES_CONTEXT_SIZE} (64K floor)."
@@ -2315,7 +2325,8 @@ else
             # Check feature flags
             SKIP=false
             case "$SVC_NAME" in
-                litellm|searxng|token-spy) $ENABLE_RECOMMENDED || SKIP=true ;;
+                litellm|token-spy) $ENABLE_RECOMMENDED || SKIP=true ;;
+                searxng)       $ENABLE_SEARXNG || SKIP=true ;;
                 whisper|tts)   $ENABLE_VOICE || SKIP=true ;;
                 n8n)           $ENABLE_WORKFLOWS || SKIP=true ;;
                 qdrant|embeddings) $ENABLE_RAG || SKIP=true ;;

@@ -146,12 +146,16 @@ for f in "$SESSIONS_DIR"/*.jsonl; do
 
     # Check if this session is active
     IS_ACTIVE=false
-    for ID in "${ACTIVE_IDS[@]}"; do
-        if [ "$BASENAME" = "$ID" ]; then
-            IS_ACTIVE=true
-            break
-        fi
-    done
+    # Bash before 4.4 treats an initialized empty array as unset under
+    # `set -u`, so only expand it when the index contains active sessions.
+    if [[ ${#ACTIVE_IDS[@]} -gt 0 ]]; then
+        for ID in "${ACTIVE_IDS[@]}"; do
+            if [ "$BASENAME" = "$ID" ]; then
+                IS_ACTIVE=true
+                break
+            fi
+        done
+    fi
 
     if [ "$IS_ACTIVE" = false ]; then
         SIZE=$(du -h "$f" | cut -f1)

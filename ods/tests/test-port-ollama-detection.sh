@@ -40,6 +40,23 @@ warn() { :; }
 # Default warn-once guard expected by the function.
 _port_check_warned=false
 
+# Reproduce a restricted host where lsof is installed but misses a listener
+# that remains visible through ss.
+FALLBACK_BIN="$(mktemp -d "${TMPDIR:-/tmp}/ods-port-fallback.XXXXXX")"
+trap 'rm -rf "$FALLBACK_BIN"; [[ -z "${TEST_SERVER_PID:-}" ]] || kill "$TEST_SERVER_PID" 2>/dev/null || true' EXIT
+printf '#!/bin/sh\nexit 1\n' > "$FALLBACK_BIN/lsof"
+printf '#!/bin/sh\nprintf "LISTEN 0 4096 127.0.0.1:59876 0.0.0.0:*\\n"\n' > "$FALLBACK_BIN/ss"
+chmod +x "$FALLBACK_BIN/lsof" "$FALLBACK_BIN/ss"
+
+printf "  %-50s " "ss fallback runs when lsof misses listener..."
+if PATH="$FALLBACK_BIN:$PATH" check_port_conflict 59876 && [[ "$PORT_CONFLICT" == "true" ]]; then
+    echo -e "${GREEN}âœ“ PASS${NC}"
+    PASSED=$((PASSED + 1))
+else
+    echo -e "${RED}âœ— FAIL${NC}"
+    FAILED=$((FAILED + 1))
+fi
+
 echo "1. Function Existence Tests"
 echo "────────────────────────────"
 
