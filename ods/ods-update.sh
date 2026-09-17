@@ -71,6 +71,59 @@ env_file_value() {
     ' "${INSTALL_DIR}/.env" 2>/dev/null || true
 }
 
+ensure_hermes_dashboard_session_token() {
+    local env_file="${INSTALL_DIR}/.env"
+    [[ -f "$env_file" ]] || return 0
+
+    local current
+    current=$(awk -F= '
+        $1 == "HERMES_DASHBOARD_SESSION_TOKEN" {
+            value = substr($0, index($0, "=") + 1)
+            gsub(/\r$/, "", value)
+            gsub(/^["'\'']|["'\'']$/, "", value)
+        }
+        END { print value }
+    ' "$env_file")
+    [[ -n "$current" ]] && return 0
+
+    local token=""
+    if command -v openssl >/dev/null 2>&1; then
+        token=$(openssl rand -hex 32 2>/dev/null || true)
+    fi
+    if [[ ! "$token" =~ ^[0-9a-f]{64}$ ]]; then
+        token=$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')
+    fi
+    [[ "$token" =~ ^[0-9a-f]{64}$ ]] || {
+        log_error "Could not generate HERMES_DASHBOARD_SESSION_TOKEN."
+        return 1
+    }
+
+    local tmp_env
+    if ! tmp_env=$(mktemp "${env_file}.tmp.XXXXXX"); then
+        log_error "Could not create a temporary file beside ${env_file}."
+        return 1
+    fi
+    if ! awk -v key="HERMES_DASHBOARD_SESSION_TOKEN" -v value="$token" '
+        index($0, key "=") == 1 {
+            if (!written) print key "=" value
+            written = 1
+            next
+        }
+        { print }
+        END { if (!written) print key "=" value }
+    ' "$env_file" > "$tmp_env"; then
+        rm -f "$tmp_env"
+        log_error "Could not update ${env_file} with the Hermes dashboard session token."
+        return 1
+    fi
+    if ! chmod 600 "$tmp_env" || ! mv -f "$tmp_env" "$env_file"; then
+        rm -f "$tmp_env"
+        log_error "Could not publish the updated ${env_file}."
+        return 1
+    fi
+    log_info "Added the Hermes dashboard session token required by the updated Compose stack."
+}
+
 COMPOSE_PARSED_ARGS=()
 
 compose_flags_parse() {
@@ -670,6 +723,15 @@ cmd_update() {
     git fetch origin
     if ! git pull origin main && ! git pull origin master; then
         _update_rollback "Git pull failed." "$snap_dir" "$compose_flags"
+        return 1
+    fi
+
+    # Source releases can add required Compose inputs before an existing
+    # checkout has them in .env. Migrate this installer-managed token after the
+    # pull but before Compose parses the updated Hermes service definition.
+    if ! ensure_hermes_dashboard_session_token; then
+        _update_rollback "Could not migrate the Hermes dashboard session token." \
+            "$snap_dir" "$compose_flags"
         return 1
     fi
 

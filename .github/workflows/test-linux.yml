@@ -238,6 +238,8 @@ jobs:
       - name: Update Rollback Contract
         run: bash tests/test-update-rollback-contract.sh
 
+      - name: Source Update Hermes Token Migration
+        run: bash tests/test-update-hermes-session-token.sh
       - name: Backup Data Coverage Contract
         run: bash tests/test-backup-data-coverage.sh
 
