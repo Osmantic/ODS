@@ -136,7 +136,7 @@ else
     fi
 fi
 
-if [[ "${LLM_MODEL_SIZE_MB:-0}" =~ ^[0-9]+$ && "${LLM_MODEL_SIZE_MB:-0}" -gt 0 && "${TIER:-}" != "CLOUD" ]]; then
+if [[ -z "${EXTERNAL_LLM_URL:-}" && "${LLM_MODEL_SIZE_MB:-0}" =~ ^[0-9]+$ && "${LLM_MODEL_SIZE_MB:-0}" -gt 0 && "${TIER:-}" != "CLOUD" ]]; then
     _model_disk_gb=$(( (LLM_MODEL_SIZE_MB + 1023) / 1024 ))
     _model_needed_gb=$(( _model_disk_gb + 15 ))
     if [[ "${DISK_AVAIL:-0}" -lt "$_model_needed_gb" ]]; then
@@ -156,17 +156,23 @@ check_port_conflict() {
     PORT_CONFLICT=false
     PORT_CONFLICT_PID=""
     PORT_CONFLICT_PROC=""
+    local port_tool_found=false
 
     # Try lsof first (most reliable for getting process info)
     if command -v lsof &> /dev/null; then
+        port_tool_found=true
         if lsof -i ":${port}" -sTCP:LISTEN >/dev/null 2>&1; then
             PORT_CONFLICT_PID=$(lsof -t -i ":${port}" -sTCP:LISTEN 2>/dev/null | head -1)
             PORT_CONFLICT_PROC=$(ps -p "$PORT_CONFLICT_PID" -o comm= 2>/dev/null || echo "unknown")
             PORT_CONFLICT=true
             return 0
         fi
-    # Fallback to ss (faster but less detailed)
-    elif command -v ss &> /dev/null; then
+    fi
+
+    # Fallback to ss (faster but less detailed). Keep trying when lsof exists
+    # but cannot observe the listener, which can happen under restricted users.
+    if command -v ss &> /dev/null; then
+        port_tool_found=true
         if ss -tln 2>/dev/null | grep -qE ":${port}(\s|$)"; then
             # Try to extract PID from ss output (format: users:(("process",pid=1234,fd=5)))
             local ss_line
@@ -180,8 +186,11 @@ check_port_conflict() {
             PORT_CONFLICT=true
             return 0
         fi
-    # Fallback to netstat
-    elif command -v netstat &> /dev/null; then
+    fi
+
+    # Last fallback to netstat.
+    if command -v netstat &> /dev/null; then
+        port_tool_found=true
         if netstat -tln 2>/dev/null | grep -qE ":${port}(\s|$)"; then
             # netstat -tlnp requires root, so we may not get PID
             local netstat_line
@@ -195,14 +204,15 @@ check_port_conflict() {
             PORT_CONFLICT=true
             return 0
         fi
-    else
+    fi
+
+    if [[ "$port_tool_found" != "true" ]]; then
         # No tools available
         if [[ "${_port_check_warned}" != "true" ]]; then
             _port_check_warned=true
             warn "Neither 'lsof', 'ss', nor 'netstat' found — cannot verify port availability"
             warn "Install lsof, iproute2 (for ss), or net-tools (for netstat) to enable port checks"
         fi
-        return 1
     fi
 
     return 1
@@ -221,7 +231,7 @@ check_ollama_conflict() {
 
 # Ollama conflict detection (must happen before port checks)
 check_ollama_conflict
-if $OLLAMA_RUNNING; then
+if $OLLAMA_RUNNING && [[ "${EXTERNAL_LLM_PROVIDER:-}" != "ollama" ]]; then
     ai_warn "Ollama is running (PID ${OLLAMA_PID}) and may conflict with ODS."
     ai "  Note: this is usually not a port collision. Open WebUI may auto-discover Ollama (11434) and prefer it over the local llama-server (8080)."
     if $INTERACTIVE && ! $DRY_RUN; then
@@ -263,7 +273,8 @@ if [[ "${ENABLE_VOICE:-false}" == "true" ]] && _phase04_lemonade_uses_host_9000;
 fi
 
 # Port conflict detection with detailed process information
-PORTS_TO_CHECK="${SERVICE_PORTS[llama-server]:-8080} ${SERVICE_PORTS[open-webui]:-3000}"
+PORTS_TO_CHECK="${SERVICE_PORTS[open-webui]:-3000}"
+[[ -z "${EXTERNAL_LLM_URL:-}" ]] && PORTS_TO_CHECK="${SERVICE_PORTS[llama-server]:-8080} ${PORTS_TO_CHECK}"
 [[ "$ENABLE_VOICE" == "true" ]] && PORTS_TO_CHECK="$PORTS_TO_CHECK ${SERVICE_PORTS[whisper]:-9000} ${SERVICE_PORTS[tts]:-8880}"
 [[ "$ENABLE_WORKFLOWS" == "true" ]] && PORTS_TO_CHECK="$PORTS_TO_CHECK ${SERVICE_PORTS[n8n]:-5678}"
 [[ "${ENABLE_QDRANT:-${ENABLE_RAG:-false}}" == "true" ]] && PORTS_TO_CHECK="$PORTS_TO_CHECK ${SERVICE_PORTS[qdrant]:-6333}"

@@ -3,11 +3,14 @@
 import json
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import urlparse
 
 import yaml
+
+from env_values import strip_matching_quotes
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +100,7 @@ def _find_env_file_value(key: str) -> tuple[bool, str]:
         for line in env_path.read_text(encoding="utf-8").splitlines():
             if line.startswith(f"{key}="):
                 found = True
-                value = line.split("=", 1)[1].strip().strip("\"'")
+                value = strip_matching_quotes(line.split("=", 1)[1])
     except (OSError, UnicodeError):
         pass
     return found, value
@@ -152,6 +155,130 @@ def _apply_host_native_llm_service_override(
     logger.info("Host-native AMD inference detected; routing LLM probes to %s:%d", parsed.hostname, port)
 
 
+def _apply_external_llm_service_override(
+    services: dict[str, dict[str, Any]],
+    environment: Mapping[str, str] | None = None,
+) -> None:
+    """Route dashboard LLM probes to a validated external Ollama/LM Studio endpoint."""
+    env = environment if environment is not None else os.environ
+    if str(env.get("LLM_BACKEND", "")).strip().lower() != "external":
+        return
+    service = services.get("llama-server")
+    if not service:
+        return
+
+    configured_url = (
+        env.get("EXTERNAL_LLM_CONTAINER_URL")
+        or env.get("LLM_API_URL")
+        or ""
+    )
+    parsed = urlparse(str(configured_url).strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        logger.warning("Ignoring invalid external LLM URL: %s", configured_url)
+        return
+    try:
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    except ValueError:
+        logger.warning("Ignoring invalid external LLM port in URL: %s", configured_url)
+        return
+
+    provider = str(env.get("EXTERNAL_LLM_PROVIDER", "")).strip().lower()
+    health_paths = {
+        "ollama": "/api/tags",
+        "lmstudio": "/v1/models",
+    }
+    service["host"] = parsed.hostname
+    service["port"] = port
+    service["health"] = health_paths.get(provider, "/v1/models")
+    service["name"] = {
+        "ollama": "Ollama (External LLM)",
+        "lmstudio": "LM Studio (External LLM)",
+    }.get(provider, "External LLM")
+    logger.info(
+        "External %s inference detected; routing LLM probes to %s:%d%s",
+        provider or "OpenAI-compatible",
+        parsed.hostname,
+        port,
+        service["health"],
+    )
+
+
+def _read_env_value(key: str) -> str:
+    return (os.environ.get(key) or _read_env_from_file(key)).strip()
+
+
+def _service_public_url_key(service_id: str) -> str:
+    return re.sub(r"[^A-Za-z0-9]+", "_", service_id).strip("_").upper()
+
+
+def _valid_public_url(value: str) -> str:
+    candidate = value.strip().rstrip("/")
+    if not candidate:
+        return ""
+    parsed = urlparse(candidate)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        logger.warning("Ignoring invalid public service URL: %s", value)
+        return ""
+    return candidate
+
+
+def _read_service_public_url_map() -> dict[str, str]:
+    raw = _read_env_value("ODS_SERVICE_PUBLIC_URLS")
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        logger.warning("Ignoring invalid ODS_SERVICE_PUBLIC_URLS JSON")
+        return {}
+    if not isinstance(data, dict):
+        logger.warning("Ignoring ODS_SERVICE_PUBLIC_URLS because it is not a JSON object")
+        return {}
+    return {
+        str(key): _valid_public_url(str(value))
+        for key, value in data.items()
+        if str(value).strip()
+    }
+
+
+def _candidate_public_url_env_names(
+    service_id: str,
+    service: dict[str, Any],
+    ext_port_env: str | None,
+) -> list[str]:
+    service_key = _service_public_url_key(service_id)
+    names = [
+        service.get("public_url_env", ""),
+        f"{service_key}_PUBLIC_URL",
+        f"ODS_{service_key}_PUBLIC_URL",
+    ]
+    if ext_port_env:
+        if ext_port_env.endswith("_EXTERNAL_PORT"):
+            names.append(f"{ext_port_env.removesuffix('_EXTERNAL_PORT')}_PUBLIC_URL")
+        if ext_port_env.endswith("_PORT"):
+            names.append(f"{ext_port_env.removesuffix('_PORT')}_PUBLIC_URL")
+        names.append(f"{ext_port_env}_PUBLIC_URL")
+    return [name for index, name in enumerate(names) if name and name not in names[:index]]
+
+
+def _resolve_public_service_url(
+    service_id: str,
+    service: dict[str, Any],
+    ext_port_env: str | None,
+    public_url_map: dict[str, str],
+) -> str:
+    service_key = _service_public_url_key(service_id)
+    for map_key in (service_id, service_key, service_key.lower()):
+        url = public_url_map.get(map_key)
+        if url:
+            return url
+    for env_name in _candidate_public_url_env_names(service_id, service, ext_port_env):
+        url = _valid_public_url(_read_env_value(env_name))
+        if url:
+            return url
+    return ""
+
+
 # --- Manifest Loading ---
 
 
@@ -183,6 +310,8 @@ def load_extension_manifests(
     if not manifest_dir.exists():
         logger.info("Extension manifest directory not found: %s", manifest_dir)
         return services, features, errors
+
+    public_url_map = _read_service_public_url_map()
 
     manifest_files: list[Path] = []
     for item in sorted(manifest_dir.iterdir()):
@@ -226,7 +355,10 @@ def load_extension_manifests(
                         continue
                 supported = service.get("gpu_backends", ["amd", "nvidia", "apple"])
                 if gpu_backend == "apple":
-                    if service.get("type") == "host-systemd":
+                    if (
+                        service.get("type") == "host-systemd"
+                        and not service.get("macos_host_supported", False)
+                    ):
                         continue  # Linux-only service, not available on macOS
                     # All docker services run on macOS regardless of gpu_backends declaration
                 elif gpu_backend not in supported and "all" not in supported:
@@ -244,6 +376,7 @@ def load_extension_manifests(
                 else:
                     external_port = int(ext_port_default)
 
+                public_url = _resolve_public_service_url(service_id, service, ext_port_env, public_url_map)
                 service_config = {
                     "host": host,
                     "port": int(service.get("port", 0)),
@@ -251,7 +384,9 @@ def load_extension_manifests(
                     "health": service.get("health", "/health"),
                     "name": service.get("name", service_id),
                     "ui_path": service.get("ui_path", "/"),
+                    "public_url": public_url,
                     "external_link": bool(service.get("external_link", True)),
+                    "macos_host_supported": bool(service.get("macos_host_supported", False)),
                     "container_name": service.get("container_name", f"ods-{service_id}"),
                     "depends_on": service.get("depends_on", []),
                     "category": service.get("category", "optional"),
@@ -301,6 +436,7 @@ if not SERVICES:
 # health path so the dashboard poll loop hits the correct endpoint.
 LLM_BACKEND = os.environ.get("LLM_BACKEND", "")
 _apply_host_native_llm_service_override(SERVICES, GPU_BACKEND)
+_apply_external_llm_service_override(SERVICES)
 if LLM_BACKEND == "lemonade" and "llama-server" in SERVICES:
     SERVICES["llama-server"]["health"] = "/api/v1/health"
     logger.info("Lemonade backend detected — overriding llama-server health to /api/v1/health")

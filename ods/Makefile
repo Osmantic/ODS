@@ -32,6 +32,8 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== Installer contracts ==="
 	@bash tests/contracts/test-installer-contracts.sh
+	@bash tests/test-external-services.sh
+	@bash tests/test-resolve-compose-resilient.sh
 	@bash tests/test-phase03-multigpu-tty.sh
 	@bash tests/contracts/test-preflight-fixtures.sh
 	@bash tests/test-preflight-resolver-bug.sh
@@ -44,6 +46,8 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== ods-doctor rootless subordinate IDs ==="
 	@bash tests/test-ods-doctor-rootless-subid.sh
+	@echo "=== Docker rootless bind-mount ownership ==="
+	@bash tests/test-rootless-docker-ownership.sh
 	@echo ""
 	@echo "=== AMD/Lemonade contracts ==="
 	@bash tests/contracts/test-amd-lemonade-contracts.sh
@@ -52,13 +56,17 @@ test: ## Run unit and contract tests
 	@bash tests/contracts/test-windows-llm-model-readiness.sh
 	@bash tests/contracts/test-windows-lemonade-swap-wait.sh
 	@bash tests/contracts/test-windows-hermes-config-patching.sh
+	@bash tests/contracts/test-llama-metrics-flag.sh
+	@bash tests/contracts/test-llama-reasoning-format.sh
 	@echo ""
 	@echo "=== Overlay/plist contracts ==="
 	@bash tests/contracts/test-overlay-map-coherence.sh
 	@bash tests/contracts/test-plist-log-paths.sh
+	@python3 tests/contracts/test-llama-runtime-tunables.py
 	@echo ""
 	@echo "=== safe .env loading (quote/CRLF handling) ==="
 	@bash tests/test-safe-env.sh
+	@bash tests/test-phase06-secret-generation.sh
 	@echo ""
 	@echo "=== QR code helper LAN detection ==="
 	@bash tests/test-qrcode-helper.sh
@@ -73,9 +81,25 @@ test: ## Run unit and contract tests
 	@echo "=== config migration (version check under set -e) ==="
 	@bash tests/test-migrate-config.sh
 	@echo ""
+	@echo "=== restore refuses empty backup config ==="
+	@bash tests/test-restore-empty-config.sh
+	@echo ""
+	@echo "=== atomic .env writes ==="
+	@bash tests/test-atomic-env-writes.sh
+	@echo ""
+	@echo "=== brave-search searxng compat contract ==="
+	@bash tests/test-brave-search-searxng-compat.sh
+	@echo ""
 	@echo "=== ods-cli pipefail tolerance ==="
 	@bash tests/test-ods-cli-pipefail-tolerance.sh
 	@bash tests/test-cli-completion-parity.sh
+	@bash tests/test-unix-restart-recreate-env.sh
+	@echo ""
+	@echo "=== ods-cli install directory resolution ==="
+	@bash tests/test-cli-install-dir-resolution.sh
+	@echo ""
+	@echo "=== offline model validation ==="
+	@python3 tests/test-offline-model-validation.py
 	@echo ""
 	@echo "=== Bash 3.2 guard contracts ==="
 	@bash tests/test-bash32-guards.sh
@@ -100,6 +124,11 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== ods-update.sh backup command ==="
 	@bash tests/test-update-script-backup.sh
+	@bash tests/test-backup-data-coverage.sh
+	@echo ""
+	@echo "=== backup integrity and restore round-trip ==="
+	@bash tests/test-backup-integrity.sh
+	@bash tests/test-backup-restore-roundtrip.sh
 	@echo ""
 	@echo "=== bootstrap-upgrade spawn closes inherited FDs ==="
 	@bash tests/test-bootstrap-upgrade-close-inherited-fds.sh
@@ -109,6 +138,9 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== macOS ods-host-agent bootstrap verification ==="
 	@bash tests/test-macos-host-agent-verification.sh
+	@echo ""
+	@echo "=== desktop host-agent environment contract ==="
+	@bash tests/test-desktop-agent-host-env.sh
 	@echo ""
 	@echo "=== macOS model download retry contract ==="
 	@bash tests/test-macos-download-retries.sh
@@ -130,6 +162,9 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== issue-to-pr security check ==="
 	@bash tests/test-issue-to-pr-security.sh
+	@echo ""
+	@echo "=== NVIDIA multi-GPU visibility contract ==="
+	@bash tests/test-multigpu-nvidia-visibility.sh
 	@echo ""
 	@echo "=== CLI user-extension dependency resolution ==="
 	@bash tests/test-cli-user-extension-deps.sh

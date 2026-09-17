@@ -1977,6 +1977,11 @@ class TestRestartWindowsLemonade:
         assert "Refusing to stop unowned process" in script
         assert "[switch]$AllowStaleReference" in script
         assert (
+            "$owned = Get-CimInstance Win32_Process" in script
+            and "$liveProcess = Get-Process -Id $ProcId" in script
+            and "if (-not $liveProcess -or $AllowStaleReference)" in script
+        )
+        assert (
             "Stop-ODSProcessId -ProcId ([int]$rawPid) -AllowStaleReference"
             in script
         )
@@ -2000,6 +2005,138 @@ class TestRestartWindowsLemonade:
             "installers/windows/lib/backend-contract.ps1"
         )
         assert captured["env"]["ODS_WIN_ENV_PATH"] == str(tmp_path / ".env")
+
+    def test_restart_ignores_listener_that_exits_before_cim_lookup(
+        self, monkeypatch, tmp_path
+    ):
+        shell = shutil.which("pwsh") or shutil.which("powershell.exe")
+        if not shell:
+            pytest.skip("PowerShell is unavailable")
+
+        local_app_data = tmp_path / "AppData" / "Local"
+        lemonade_exe = (
+            local_app_data / "lemonade_server" / "bin" / "LemonadeServer.exe"
+        )
+        lemonade_exe.parent.mkdir(parents=True)
+        lemonade_exe.write_text("", encoding="utf-8")
+
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["script"] = cmd[-1]
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        monkeypatch.setenv("LOCALAPPDATA", str(local_app_data))
+        monkeypatch.delenv("ProgramFiles", raising=False)
+        monkeypatch.delenv("ProgramFiles(x86)", raising=False)
+        monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
+        monkeypatch.setattr(_mod.subprocess, "run", fake_run)
+
+        _restart_windows_lemonade({"AMD_INFERENCE_PORT": "13305"})
+
+        script = captured["script"]
+        function_start = script.index("function Get-ODSPortOwners")
+        invocation_start = script.index("if (Test-Path $pidPath)")
+        function_block = script[function_start:invocation_start]
+        base_harness = (
+            '$port = 13305\n'
+            '$exe = "C:\\ODS\\LemonadeServer.exe"\n'
+            '$modelsDir = "C:\\ODS\\data\\models"\n'
+            "$binPrefix = 'C:\\ODS\\bin\\'\n"
+            '$cachePrefix = $null\n'
+            '$knownProcessNames = @("LemonadeServer.exe", "lemonade-server.exe", '
+            '"lemonade-router.exe", "lemonade.exe")\n'
+            f"{function_block}\n"
+            "function Get-ODSPortOwners { return @{} }\n"
+        )
+        stale_harness = base_harness + (
+            "function Get-CimInstance { return $null }\n"
+            "function Get-Process { return $null }\n"
+            "Stop-ODSProcessId -ProcId 424242\n"
+            'Write-Output "STALE_LISTENER_IGNORED"\n'
+        )
+        unverifiable_live_harness = base_harness + (
+            "function Get-CimInstance { return $null }\n"
+            "function Get-Process { return [pscustomobject]@{ Id = 424243 } }\n"
+            "try {\n"
+            "    Stop-ODSProcessId -ProcId 424243\n"
+            '    Write-Error "UNVERIFIABLE_LIVE_PROCESS_ACCEPTED"\n'
+            "    exit 2\n"
+            "} catch {\n"
+            '    if ($_.Exception.Message -notlike "Refusing to stop unowned process*") {\n'
+            "        throw\n"
+            "    }\n"
+            '    Write-Output "UNVERIFIABLE_LIVE_PROCESS_REJECTED"\n'
+            "}\n"
+        )
+        reused_pid_harness = base_harness + (
+            "function Get-CimInstance { return $null }\n"
+            "function Get-Process { return [pscustomobject]@{ Id = 424244 } }\n"
+            "Stop-ODSProcessId -ProcId 424244 -AllowStaleReference\n"
+            'Write-Output "REUSED_STALE_PID_IGNORED"\n'
+        )
+        unowned_harness = base_harness + (
+            "function Get-CimInstance {\n"
+            "    return [pscustomobject]@{\n"
+            "        ProcessId = 424243\n"
+            '        Name = "unrelated-server.exe"\n'
+            '        ExecutablePath = "C:\\Other\\unrelated-server.exe"\n'
+            '        CommandLine = "unrelated-server.exe --port 13305"\n'
+            "    }\n"
+            "}\n"
+            "try {\n"
+            "    Stop-ODSProcessId -ProcId 424243\n"
+            '    Write-Error "UNOWNED_PROCESS_ACCEPTED"\n'
+            "    exit 2\n"
+            "} catch {\n"
+            '    if ($_.Exception.Message -notlike "Refusing to stop unowned process*") {\n'
+            "        throw\n"
+            "    }\n"
+            '    Write-Output "UNOWNED_PROCESS_REJECTED"\n'
+            "}\n"
+        )
+        stale_result = _real_subprocess_run(
+            [shell, "-NoProfile", "-NonInteractive", "-Command", stale_harness],
+            text=True,
+            capture_output=True,
+            timeout=30,
+        )
+        unverifiable_live_result = _real_subprocess_run(
+            [
+                shell,
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                unverifiable_live_harness,
+            ],
+            text=True,
+            capture_output=True,
+            timeout=30,
+        )
+        reused_pid_result = _real_subprocess_run(
+            [shell, "-NoProfile", "-NonInteractive", "-Command", reused_pid_harness],
+            text=True,
+            capture_output=True,
+            timeout=30,
+        )
+        unowned_result = _real_subprocess_run(
+            [shell, "-NoProfile", "-NonInteractive", "-Command", unowned_harness],
+            text=True,
+            capture_output=True,
+            timeout=30,
+        )
+
+        assert stale_result.returncode == 0, stale_result.stderr
+        assert "STALE_LISTENER_IGNORED" in stale_result.stdout
+        assert unverifiable_live_result.returncode == 0, unverifiable_live_result.stderr
+        assert (
+            "UNVERIFIABLE_LIVE_PROCESS_REJECTED"
+            in unverifiable_live_result.stdout
+        )
+        assert reused_pid_result.returncode == 0, reused_pid_result.stderr
+        assert "REUSED_STALE_PID_IGNORED" in reused_pid_result.stdout
+        assert unowned_result.returncode == 0, unowned_result.stderr
+        assert "UNOWNED_PROCESS_REJECTED" in unowned_result.stdout
 
     def test_installer_and_cli_lemonade_tasks_are_always_on(self):
         ods_root = Path(__file__).resolve().parents[4]

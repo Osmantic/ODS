@@ -104,11 +104,13 @@ def test_release_model_switchboard_catalog_ids_exist():
         "granite4.0-h-1b-q4",
         "falcon-h1-1.5b-instruct-q4",
         "falcon-h1-3b-instruct-q4",
+        "nvidia-nemotron3-nano-4b-q4",
         "granite4.0-1b-q4",
         "granite4.0-h-350m-q4",
         "granite3.2-2b-instruct-q4",
         "granite3.1-2b-instruct-q4",
         "phi3-mini-128k-q4",
+        "ministral3-8b-instruct-2512-q4",
         "llama3.2-1b-instruct-q4",
         "llama3.2-3b-instruct-q4",
         "qwen2.5-3b-instruct-q4",
@@ -613,6 +615,87 @@ def test_falcon_h1_3b_is_not_talk_agent_viable_until_revalidated():
     assert not _agent_viable_for_release(by_id["falcon-h1-3b-instruct-q4"])
 
 
+def test_nemotron3_nano_4b_is_recommended_after_six_host_validation():
+    catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
+    by_id = {model["id"]: model for model in catalog["models"]}
+    model = by_id["nvidia-nemotron3-nano-4b-q4"]
+
+    assert model["family"] == "nemotron"
+    assert model["gguf_file"] == "NVIDIA-Nemotron3-Nano-4B-Q4_K_M.gguf"
+    assert model["gguf_url"] == (
+        "https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-4B-GGUF/"
+        "resolve/main/NVIDIA-Nemotron3-Nano-4B-Q4_K_M.gguf"
+    )
+    assert model["gguf_sha256"] == "be5d9a656a51922f24f1f09a759cebb694e1f5d9728bf0ef9f8c972c5a0b5ef2"
+    assert model["size_bytes"] == 2837072864
+    assert model["vram_required_gb"] <= 5
+    assert model["context_length"] == 262144
+    assert model.get("install_recommendation") is True
+    compatibility = model["app_compatibility"]
+    assert compatibility["openai_chat"]["status"] == "verified"
+    assert compatibility["hermes_talk"]["status"] == "verified"
+    assert compatibility["perplexica"]["status"] == "verified"
+    assert compatibility["agent_viability"]["status"] == "verified"
+    assert "2026-07-27T02-32-10Z" in compatibility["agent_viability"]["evidence"]
+    assert compatibility["agent_viability"]["hostScope"] == [
+        "tower2", "strix-halo", "spark", "m5-mbp", "windows-laptop", "strixy"
+    ]
+    assert _agent_viable_for_release(model)
+
+
+def test_ministral3_8b_is_recommended_after_six_host_validation():
+    catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
+    by_id = {model["id"]: model for model in catalog["models"]}
+    model = by_id["ministral3-8b-instruct-2512-q4"]
+
+    assert model["family"] == "mistral"
+    assert model["gguf_file"] == "Ministral-3-8B-Instruct-2512-Q4_K_M.gguf"
+    assert model["gguf_url"] == (
+        "https://huggingface.co/mistralai/Ministral-3-8B-Instruct-2512-GGUF/"
+        "resolve/0102285ad796bd99af90f58de616092e5630e970/"
+        "Ministral-3-8B-Instruct-2512-Q4_K_M.gguf"
+    )
+    assert model["gguf_sha256"] == "33e7a72cf5e6e2cfc2f2847075acc013d68bba023e35310cef86b5cf8fdca761"
+    assert model["size_bytes"] == 5198911904
+    assert model["vram_required_gb"] == 7
+    assert model["context_length"] == 262144
+    profile = {
+        item["id"]: item for item in model["runtime_profiles"]
+    }["nvidia-8gb-64k-q4-kv"]
+    assert profile["backend"] == "nvidia"
+    assert profile["host_arch"] == ["amd64"]
+    assert profile["memory_type"] == "discrete"
+    assert profile["vram_min_gb"] == 7.5
+    assert profile["vram_max_gb"] == 8.5
+    assert profile["system_ram_min_gb"] == 31
+    assert profile["context_length"] == 65536
+    assert profile["estimated_required_gb"] == 7.4
+    assert profile["env"] == {
+        "LLAMA_PARALLEL": "1",
+        "LLAMA_ARG_FLASH_ATTN": "on",
+        "LLAMA_ARG_CACHE_TYPE_K": "q4_0",
+        "LLAMA_ARG_CACHE_TYPE_V": "q4_0",
+    }
+    compatibility = model["app_compatibility"]
+    assert model.get("install_recommendation") is True
+    assert {
+        app: entry["status"] for app, entry in compatibility.items()
+    } == {
+        "openai_chat": "verified",
+        "hermes_talk": "verified",
+        "perplexica": "verified",
+        "agent_viability": "verified",
+    }
+    evidence = compatibility["agent_viability"]
+    assert "2026-07-27T06-31-36Z" in evidence["evidence"]
+    assert evidence["productSha"] == "7629cd20c0ec75a274187aea52b8cc9ad6fa2a2a"
+    assert evidence["harnessSha"] == "19d43e6f9f2533e8768ed85b33de9f4ace232129"
+    assert evidence["hostScope"] == [
+        "tower2", "strix-halo", "spark", "m5-mbp", "windows-laptop", "strixy"
+    ]
+    assert _agent_viable_for_release(model)
+
+
 def test_qwen25_coder_15b_128k_has_scoped_app_blocks_until_revalidated():
     catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
     by_id = {model["id"]: model for model in catalog["models"]}
@@ -719,6 +802,139 @@ def test_qwen35_9b_meets_hermes_context_floor():
     assert by_id["qwen3.5-9b-q4"]["context_length"] >= HERMES_CONTEXT_FLOOR
 
 
+def test_qwen35_2b_records_exact_artifact_and_failed_fleet_evidence():
+    catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
+    by_id = {model["id"]: model for model in catalog["models"]}
+    model = by_id["qwen3.5-2b-q4"]
+
+    assert model["gguf_url"] == (
+        "https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/"
+        "resolve/f6d5376be1edb4d416d56da11e5397a961aca8ae/"
+        "Qwen3.5-2B-Q4_K_M.gguf"
+    )
+    assert model["gguf_sha256"] == "aaf42c8b7c3cab2bf3d69c355048d4a0ee9973d48f16c731c0520ee914699223"
+    assert model["size_bytes"] == 1280835840
+    assert model["size_mb"] == 1281
+    assert model["vram_required_gb"] == 3
+    assert model["context_length"] == HERMES_CONTEXT_FLOOR
+    assert model["max_context_length"] == 262144
+    assert "install_recommendation" not in model
+    compatibility = model["app_compatibility"]
+    assert compatibility["hermes_talk"]["status"] == "verified"
+    assert compatibility["openai_chat"]["status"] == "unsupported_until_revalidated"
+    assert compatibility["perplexica"]["status"] == "unsupported_until_revalidated"
+    assert compatibility["agent_viability"]["status"] == "not_agent_viable"
+    assert compatibility["agent_viability"]["productSha"] == (
+        "b5da3792c281e0ba8f679e33876ee3de902a7dd6"
+    )
+    assert compatibility["agent_viability"]["harnessSha"] == (
+        "19d43e6f9f2533e8768ed85b33de9f4ace232129"
+    )
+    assert not _agent_viable_for_release(model)
+
+
+def test_jamba_reasoning_3b_records_fleet_compatibility_without_recommendation():
+    catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
+    by_id = {model["id"]: model for model in catalog["models"]}
+    model = by_id["jamba-reasoning-3b-q4"]
+
+    assert model["gguf_url"] == (
+        "https://huggingface.co/ai21labs/AI21-Jamba-Reasoning-3B-GGUF/"
+        "resolve/462e08a43c3c32f6b8b85f79ff0796e484d7b65a/"
+        "jamba-reasoning-3b-Q4_K_M.gguf"
+    )
+    assert model["gguf_sha256"] == "5c8edf36ec3ad9792a639db8d6865e479038226cf8fc71ef47331c611854f6c8"
+    assert model["size_bytes"] == 1932698048
+    assert model["size_mb"] == 1933
+    assert model["vram_required_gb"] == 3
+    assert model["context_length"] == HERMES_CONTEXT_FLOOR
+    assert model["max_context_length"] == 262144
+    assert model["install_recommendation"] is False
+    assert model["app_compatibility"]["openai_chat"]["status"] == "verified"
+    assert model["app_compatibility"]["hermes_talk"]["status"] == "verified"
+    assert model["app_compatibility"]["opencode"]["status"] == "unsupported_until_revalidated"
+    assert model["app_compatibility"]["agent_viability"]["status"] == "not_agent_viable"
+    assert model["app_compatibility"]["agent_viability"]["productSha"] == (
+        "ca730791cacaadb0280f63f3fc9f8b8ef70e4ebb"
+    )
+    assert model["app_compatibility"]["agent_viability"]["harnessSha"] == (
+        "19d43e6f9f2533e8768ed85b33de9f4ace232129"
+    )
+    assert not _agent_viable_for_release(model)
+
+
+def test_kat_coder_v25_dev_records_pinned_evidence_without_recommendation():
+    catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
+    by_id = {model["id"]: model for model in catalog["models"]}
+    model = by_id["kat-coder-v2.5-dev-apex-q4"]
+
+    assert model["gguf_url"] == (
+        "https://huggingface.co/mudler/KAT-Coder-V2.5-Dev-APEX-GGUF/"
+        "resolve/be23ff3a49eee0d5160e3fd4f5d58062160856c2/"
+        "KAT-Coder-V2.5-Dev-APEX-I-Balanced.gguf"
+    )
+    assert model["gguf_sha256"] == (
+        "ee6e0ec15964c42ba91831d13e9709239f1b74da3dc49dd3edec4ad6aed8029f"
+    )
+    assert model["size_bytes"] == 25268441472
+    assert model["size_mb"] == 25269
+    assert model["vram_required_gb"] == 32
+    assert model["context_length"] == 131072
+    assert model["max_context_length"] == 262144
+    assert model["total_params_b"] == 35
+    assert model["active_params_b"] == 3
+    assert model["architecture"] == "hybrid-moe"
+    assert model["quantization"] == "APEX-I-Balanced"
+    assert model["install_recommendation"] is False
+
+    quality = model["quality_evidence"]
+    assert quality["independent"] is True
+    assert quality["score"] == "29/30"
+    assert "120-run" in quality["benchmark"]
+    assert "quantization confound" in quality["note"]
+
+    publisher = model["publisher_evidence"]
+    assert publisher["independent"] is False
+    assert publisher["swe_bench_verified"] == 69.4
+    assert publisher["swe_bench_pro"] == 45.96
+
+    source = model["source_evidence"]
+    assert source["model_revision"] == (
+        "7be56fe773e72b6f5ca93c1ae45d828ddb893922"
+    )
+    assert source["weights_revision"] == (
+        "68466af897fddf5539a9a7179b42868645457a95"
+    )
+    assert source["gguf_revision"] == (
+        "be23ff3a49eee0d5160e3fd4f5d58062160856c2"
+    )
+    assert source["license"] == "apache-2.0"
+    assert "40 model blocks" in source["gguf_metadata_note"]
+    assert "no grafted MTP draft layer" in source["gguf_metadata_note"]
+    assert "pre-fix chat template" in source["gguf_metadata_note"]
+    assert "3a7d874090df0cd4399401982eca67df2c5a7e82" in (
+        source["gguf_metadata_note"]
+    )
+
+    rejected = model["rejected_artifacts"]
+    assert len(rejected) == 1
+    assert rejected[0]["revision"] == (
+        "b5d04175d9c1d014d61a0c26eef987f50656d8b4"
+    )
+    assert rejected[0]["sha256"] == (
+        "cce1395f842b99c147cc99025267c866aaaec5cd7b8c2c9c11d5530dc10c5e7b"
+    )
+    assert rejected[0]["verdict"] == "runtime_incompatible"
+    assert "blk.40.ssm_conv1d.weight" in rejected[0]["reason"]
+    assert rejected[0]["evidence"]["product_sha"] == (
+        "333b08c4f65de6534c46a45e2fd646732629c76f"
+    )
+    assert rejected[0]["evidence"]["harness_sha"] == (
+        "65a24267982811bc72e45db219e09e6e547c9628"
+    )
+    assert rejected[0]["evidence"]["hosts"] == ["tower2", "strix-halo"]
+
+
 def test_new_switchboard_models_do_not_change_install_recommendations():
     expected_switchboard_only = {
         "phi3.5-mini-q4",
@@ -747,6 +963,7 @@ def test_new_switchboard_models_do_not_change_install_recommendations():
         "llama3.1-8b-instruct-q4",
         "granite3.3-8b-instruct-q4",
         "mistral-nemo-12b-instruct-q4",
+        "kat-coder-v2.5-dev-apex-q4",
     }
     catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
     by_id = {model["id"]: model for model in catalog["models"]}

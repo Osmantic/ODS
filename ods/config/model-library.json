@@ -6,18 +6,120 @@
       "name": "Qwen 3.5 2B",
       "family": "qwen",
       "gguf_file": "Qwen3.5-2B-Q4_K_M.gguf",
-      "gguf_url": "https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q4_K_M.gguf",
+      "gguf_url": "https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/f6d5376be1edb4d416d56da11e5397a961aca8ae/Qwen3.5-2B-Q4_K_M.gguf",
       "gguf_sha256": "aaf42c8b7c3cab2bf3d69c355048d4a0ee9973d48f16c731c0520ee914699223",
-      "size_mb": 1500,
+      "size_bytes": 1280835840,
+      "size_mb": 1281,
       "vram_required_gb": 3,
-      "context_length": 8192,
+      "context_length": 65536,
       "max_context_length": 262144,
       "quantization": "Q4_K_M",
-      "specialty": "Fast",
-      "description": "Lightweight model for quick responses. Best for simple tasks and low-resource systems.",
+      "specialty": "Low-VRAM Chat",
+      "description": "Qwen's compact hybrid model with a native 256K context limit, tool-use support, broad multilingual coverage, and a 64K operating target. It remains available for manual testing, but is not agent-ready after required app probes failed on four of six fleet hosts.",
       "tokens_per_sec_estimate": 120,
       "llm_model_name": "qwen3.5-2b",
-      "llama_server_image": null
+      "llama_server_image": null,
+      "app_compatibility": {
+        "openai_chat": {
+          "status": "unsupported_until_revalidated",
+          "label": "App chat needs revalidation",
+          "reason": "Fresh exact-commit six-host validation loaded Qwen 3.5 2B and passed ODS Talk everywhere, but LiteLLM and Open WebUI exact-token probes emitted truncated reasoning instead of the requested answer on strixy.",
+          "evidence": "fleet-test/runs/2026-07-27T08-54-24Z-model-ui-product-b5da3792c281-harness-19d43e6f9f25-hosts-tower2-strix-halo-spark-m5-mbp-windows-laptop-strixy/cycle-001/{tower2,strix-halo,spark,m5-mbp,windows-laptop,strixy}",
+          "recordedAt": "2026-07-27T09:13:58Z",
+          "productSha": "b5da3792c281e0ba8f679e33876ee3de902a7dd6",
+          "harnessSha": "19d43e6f9f2533e8768ed85b33de9f4ace232129"
+        },
+        "hermes_talk": {
+          "status": "verified",
+          "label": "ODS Talk verified across fleet",
+          "reason": "The same exact-commit run loaded Qwen 3.5 2B at 64K context and passed challenge-bound ODS Talk on all six Linux, macOS, and Windows hosts before app-consumer validation.",
+          "evidence": "fleet-test/runs/2026-07-27T08-54-24Z-model-ui-product-b5da3792c281-harness-19d43e6f9f25-hosts-tower2-strix-halo-spark-m5-mbp-windows-laptop-strixy/cycle-001/{tower2,strix-halo,spark,m5-mbp,windows-laptop,strixy}",
+          "recordedAt": "2026-07-27T09:13:58Z",
+          "productSha": "b5da3792c281e0ba8f679e33876ee3de902a7dd6",
+          "harnessSha": "19d43e6f9f2533e8768ed85b33de9f4ace232129",
+          "hostScope": ["tower2", "strix-halo", "spark", "m5-mbp", "windows-laptop", "strixy"]
+        },
+        "perplexica": {
+          "status": "unsupported_until_revalidated",
+          "label": "Perplexica needs revalidation",
+          "reason": "Perplexica exact-token probes were instruction-following failures on spark, m5-mbp, and windows-laptop after successful candidate load and Talk inference. The model refused or omitted the required verification phrase while the services remained healthy.",
+          "evidence": "fleet-test/runs/2026-07-27T08-54-24Z-model-ui-product-b5da3792c281-harness-19d43e6f9f25-hosts-tower2-strix-halo-spark-m5-mbp-windows-laptop-strixy/cycle-001/{spark,m5-mbp,windows-laptop}",
+          "recordedAt": "2026-07-27T09:13:58Z",
+          "productSha": "b5da3792c281e0ba8f679e33876ee3de902a7dd6",
+          "harnessSha": "19d43e6f9f2533e8768ed85b33de9f4ace232129"
+        },
+        "agent_viability": {
+          "status": "not_agent_viable",
+          "label": "Not agent-ready",
+          "reason": "Only tower2 and strix-halo completed the full rotation. Four hosts failed required candidate-phase app probes, although every failure recovery restored the original model and deleted the test artifact cleanly.",
+          "evidence": "fleet-test/runs/2026-07-27T08-54-24Z-model-ui-product-b5da3792c281-harness-19d43e6f9f25-hosts-tower2-strix-halo-spark-m5-mbp-windows-laptop-strixy/cycle-001/{tower2,strix-halo,spark,m5-mbp,windows-laptop,strixy}",
+          "recordedAt": "2026-07-27T09:13:58Z",
+          "productSha": "b5da3792c281e0ba8f679e33876ee3de902a7dd6",
+          "harnessSha": "19d43e6f9f2533e8768ed85b33de9f4ace232129"
+        }
+      }
+    },
+    {
+      "id": "jamba-reasoning-3b-q4",
+      "name": "AI21 Jamba Reasoning 3B",
+      "family": "jamba",
+      "gguf_file": "jamba-reasoning-3b-Q4_K_M.gguf",
+      "gguf_url": "https://huggingface.co/ai21labs/AI21-Jamba-Reasoning-3B-GGUF/resolve/462e08a43c3c32f6b8b85f79ff0796e484d7b65a/jamba-reasoning-3b-Q4_K_M.gguf",
+      "gguf_sha256": "5c8edf36ec3ad9792a639db8d6865e479038226cf8fc71ef47331c611854f6c8",
+      "size_bytes": 1932698048,
+      "size_mb": 1933,
+      "vram_required_gb": 3,
+      "context_length": 65536,
+      "max_context_length": 262144,
+      "quantization": "Q4_K_M",
+      "specialty": "Efficient Reasoning",
+      "description": "AI21's compact hybrid reasoning model combines 26 Mamba layers with 2 attention layers for low-memory long-context work. It remains available for manual testing, but is not agent-ready after required OpenCode probes failed on two independent fleet backends.",
+      "tokens_per_sec_estimate": 90,
+      "llm_model_name": "jamba-reasoning-3b",
+      "llama_server_image": null,
+      "app_compatibility": {
+        "openai_chat": {
+          "status": "verified",
+          "label": "App chat verified across fleet",
+          "reason": "Fresh exact-commit six-host validation loaded the pinned Jamba artifact and passed the required LiteLLM and Open WebUI exact-token probes everywhere while route evidence named the live Jamba model.",
+          "evidence": "fleet-test/runs/2026-07-27T10-47-19Z-model-ui-product-ca730791caca-harness-19d43e6f9f25-hosts-tower2-strix-halo-spark-m5-mbp-windows-laptop-strixy/cycle-001/{tower2,strix-halo,spark,m5-mbp,windows-laptop,strixy}",
+          "recordedAt": "2026-07-27T11:12:30Z",
+          "productSha": "ca730791cacaadb0280f63f3fc9f8b8ef70e4ebb",
+          "harnessSha": "19d43e6f9f2533e8768ed85b33de9f4ace232129",
+          "hostScope": ["tower2", "strix-halo", "spark", "m5-mbp", "windows-laptop", "strixy"]
+        },
+        "hermes_talk": {
+          "status": "verified",
+          "label": "ODS Talk verified across fleet",
+          "reason": "ODS Talk returned its challenge-bound verification phrase after the live Jamba swap on all six hosts, including both Windows Lemonade machines.",
+          "evidence": "fleet-test/runs/2026-07-27T10-47-19Z-model-ui-product-ca730791caca-harness-19d43e6f9f25-hosts-tower2-strix-halo-spark-m5-mbp-windows-laptop-strixy/cycle-001/{tower2,strix-halo,spark,m5-mbp,windows-laptop,strixy}",
+          "recordedAt": "2026-07-27T11:12:30Z",
+          "productSha": "ca730791cacaadb0280f63f3fc9f8b8ef70e4ebb",
+          "harnessSha": "19d43e6f9f2533e8768ed85b33de9f4ace232129",
+          "hostScope": ["tower2", "strix-halo", "spark", "m5-mbp", "windows-laptop", "strixy"]
+        },
+        "opencode": {
+          "status": "unsupported_until_revalidated",
+          "label": "OpenCode needs revalidation",
+          "reason": "OpenCode routed to the exact live Jamba model but returned unrelated or repetitive reasoning instead of its requested verification phrase on tower2 through Linux llama-server and strix-halo through Lemonade. Four other hosts passed the same probe.",
+          "evidence": "fleet-test/runs/2026-07-27T10-47-19Z-model-ui-product-ca730791caca-harness-19d43e6f9f25-hosts-tower2-strix-halo-spark-m5-mbp-windows-laptop-strixy/cycle-001/{tower2,strix-halo}",
+          "recordedAt": "2026-07-27T11:12:30Z",
+          "productSha": "ca730791cacaadb0280f63f3fc9f8b8ef70e4ebb",
+          "harnessSha": "19d43e6f9f2533e8768ed85b33de9f4ace232129",
+          "hostScope": ["tower2", "strix-halo"],
+          "expiresAt": "2026-08-27T11:12:30Z"
+        },
+        "agent_viability": {
+          "status": "not_agent_viable",
+          "label": "Not agent-ready",
+          "reason": "Four hosts completed the full rotation, but two independent backends failed the required OpenCode candidate probe after successful load and Talk inference. Every host restored its original model and deleted the test artifact cleanly.",
+          "evidence": "fleet-test/runs/2026-07-27T10-47-19Z-model-ui-product-ca730791caca-harness-19d43e6f9f25-hosts-tower2-strix-halo-spark-m5-mbp-windows-laptop-strixy/cycle-001/{tower2,strix-halo,spark,m5-mbp,windows-laptop,strixy}",
+          "recordedAt": "2026-07-27T11:12:30Z",
+          "productSha": "ca730791cacaadb0280f63f3fc9f8b8ef70e4ebb",
+          "harnessSha": "19d43e6f9f2533e8768ed85b33de9f4ace232129"
+        }
+      },
+      "install_recommendation": false
     },
     {
       "id": "phi4-mini-q4",
@@ -461,6 +563,67 @@
       "install_recommendation": false
     },
     {
+      "id": "nvidia-nemotron3-nano-4b-q4",
+      "name": "NVIDIA Nemotron 3 Nano 4B",
+      "family": "nemotron",
+      "gguf_file": "NVIDIA-Nemotron3-Nano-4B-Q4_K_M.gguf",
+      "gguf_url": "https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-4B-GGUF/resolve/main/NVIDIA-Nemotron3-Nano-4B-Q4_K_M.gguf",
+      "gguf_sha256": "be5d9a656a51922f24f1f09a759cebb694e1f5d9728bf0ef9f8c972c5a0b5ef2",
+      "size_bytes": 2837072864,
+      "size_mb": 2838,
+      "vram_required_gb": 5,
+      "context_length": 262144,
+      "quantization": "Q4_K_M",
+      "specialty": "Agentic Reasoning",
+      "description": "NVIDIA's compact Nemotron 3 hybrid reasoning model with long-context and tool-use support. A diverse 5GB-class candidate for local agents, chat, and code.",
+      "tokens_per_sec_estimate": 105,
+      "llm_model_name": "NVIDIA-Nemotron3-Nano-4B",
+      "llama_server_image": null,
+      "app_compatibility": {
+        "openai_chat": {
+          "status": "verified",
+          "label": "Fleet chat routes verified",
+          "reason": "Fresh exact-commit six-host validation loaded NVIDIA Nemotron 3 Nano 4B through the browser switchboard and passed every required deployed OpenAI-compatible LLM-consumer probe with signed route evidence naming the candidate runtime.",
+          "evidence": "fleet-test/runs/2026-07-27T02-32-10Z-model-ui-product-651e048b61d9-harness-19d43e6f9f25-hosts-tower2-strix-halo-spark-m5-mbp-windows-laptop-strixy/cycle-001/{tower2,strix-halo,spark,m5-mbp,windows-laptop,strixy}",
+          "recordedAt": "2026-07-27T03:04:50Z",
+          "productSha": "651e048b61d9a5cc2133f342014b9ceb64800d41",
+          "harnessSha": "19d43e6f9f2533e8768ed85b33de9f4ace232129",
+          "hostScope": ["tower2", "strix-halo", "spark", "m5-mbp", "windows-laptop", "strixy"]
+        },
+        "hermes_talk": {
+          "status": "verified",
+          "label": "ODS Talk verified across fleet",
+          "reason": "Fresh exact-commit six-host validation passed challenge-bound ODS Talk after loading Nemotron and again after restoring each host's original model.",
+          "evidence": "fleet-test/runs/2026-07-27T02-32-10Z-model-ui-product-651e048b61d9-harness-19d43e6f9f25-hosts-tower2-strix-halo-spark-m5-mbp-windows-laptop-strixy/cycle-001/{tower2,strix-halo,spark,m5-mbp,windows-laptop,strixy}",
+          "recordedAt": "2026-07-27T03:04:50Z",
+          "productSha": "651e048b61d9a5cc2133f342014b9ceb64800d41",
+          "harnessSha": "19d43e6f9f2533e8768ed85b33de9f4ace232129",
+          "hostScope": ["tower2", "strix-halo", "spark", "m5-mbp", "windows-laptop", "strixy"]
+        },
+        "perplexica": {
+          "status": "verified",
+          "label": "Perplexica verified across fleet",
+          "reason": "Fresh exact-commit six-host validation passed the challenge-bound Perplexica route on Nemotron with signed model-route evidence, then repeated the required consumer suite after clean baseline restoration.",
+          "evidence": "fleet-test/runs/2026-07-27T02-32-10Z-model-ui-product-651e048b61d9-harness-19d43e6f9f25-hosts-tower2-strix-halo-spark-m5-mbp-windows-laptop-strixy/cycle-001/{tower2,strix-halo,spark,m5-mbp,windows-laptop,strixy}",
+          "recordedAt": "2026-07-27T03:04:50Z",
+          "productSha": "651e048b61d9a5cc2133f342014b9ceb64800d41",
+          "harnessSha": "19d43e6f9f2533e8768ed85b33de9f4ace232129",
+          "hostScope": ["tower2", "strix-halo", "spark", "m5-mbp", "windows-laptop", "strixy"]
+        },
+        "agent_viability": {
+          "status": "verified",
+          "label": "Agent workflow verified across fleet",
+          "reason": "Fresh exact-commit six-host validation passed Nemotron load, challenge-bound ODS Talk, every required deployed LLM consumer, original-model restore, repeated Talk and consumer probes, candidate deletion, and clean final inventory across Linux, macOS, and Windows backends.",
+          "evidence": "fleet-test/runs/2026-07-27T02-32-10Z-model-ui-product-651e048b61d9-harness-19d43e6f9f25-hosts-tower2-strix-halo-spark-m5-mbp-windows-laptop-strixy/cycle-001/{tower2,strix-halo,spark,m5-mbp,windows-laptop,strixy}",
+          "recordedAt": "2026-07-27T03:04:50Z",
+          "productSha": "651e048b61d9a5cc2133f342014b9ceb64800d41",
+          "harnessSha": "19d43e6f9f2533e8768ed85b33de9f4ace232129",
+          "hostScope": ["tower2", "strix-halo", "spark", "m5-mbp", "windows-laptop", "strixy"]
+        }
+      },
+      "install_recommendation": true
+    },
+    {
       "id": "granite4.1-3b-q4",
       "name": "Granite 4.1 3B",
       "family": "granite",
@@ -718,6 +881,88 @@
         }
       },
       "install_recommendation": false
+    },
+    {
+      "id": "ministral3-8b-instruct-2512-q4",
+      "name": "Ministral 3 8B Instruct 2512",
+      "family": "mistral",
+      "gguf_file": "Ministral-3-8B-Instruct-2512-Q4_K_M.gguf",
+      "gguf_url": "https://huggingface.co/mistralai/Ministral-3-8B-Instruct-2512-GGUF/resolve/0102285ad796bd99af90f58de616092e5630e970/Ministral-3-8B-Instruct-2512-Q4_K_M.gguf",
+      "gguf_sha256": "33e7a72cf5e6e2cfc2f2847075acc013d68bba023e35310cef86b5cf8fdca761",
+      "size_bytes": 5198911904,
+      "size_mb": 5199,
+      "vram_required_gb": 7,
+      "context_length": 262144,
+      "quantization": "Q4_K_M",
+      "specialty": "Agentic Multilingual",
+      "description": "Mistral AI's edge-optimized 8B instruction model with 256K context, native function calling, JSON output, multilingual support, and optional vision through a separate projection artifact.",
+      "tokens_per_sec_estimate": 55,
+      "llm_model_name": "Ministral-3-8B-Instruct-2512",
+      "llama_server_image": null,
+      "runtime_profiles": [
+        {
+          "id": "nvidia-8gb-64k-q4-kv",
+          "label": "NVIDIA 8GB 64K context with Q4 KV cache",
+          "backend": "nvidia",
+          "host_arch": ["amd64"],
+          "memory_type": "discrete",
+          "vram_min_gb": 7.5,
+          "vram_max_gb": 8.5,
+          "system_ram_min_gb": 31,
+          "context_length": 65536,
+          "estimated_required_gb": 7.4,
+          "fit_label": "64K 8GB Q4 KV profile",
+          "env": {
+            "LLAMA_PARALLEL": "1",
+            "LLAMA_ARG_FLASH_ATTN": "on",
+            "LLAMA_ARG_CACHE_TYPE_K": "q4_0",
+            "LLAMA_ARG_CACHE_TYPE_V": "q4_0"
+          }
+        }
+      ],
+      "app_compatibility": {
+        "openai_chat": {
+          "status": "verified",
+          "label": "Fleet chat routes verified",
+          "reason": "Fresh exact-commit six-host validation loaded Ministral 3 8B through the browser switchboard and passed every required deployed OpenAI-compatible LLM-consumer probe with signed route evidence naming the candidate runtime.",
+          "evidence": "fleet-test/runs/2026-07-27T06-31-36Z-model-ui-product-7629cd20c0ec-harness-19d43e6f9f25-hosts-tower2-strix-halo-spark-m5-mbp-windows-laptop-strixy/cycle-001/{tower2,strix-halo,spark,m5-mbp,windows-laptop,strixy}",
+          "recordedAt": "2026-07-27T06:59:37Z",
+          "productSha": "7629cd20c0ec75a274187aea52b8cc9ad6fa2a2a",
+          "harnessSha": "19d43e6f9f2533e8768ed85b33de9f4ace232129",
+          "hostScope": ["tower2", "strix-halo", "spark", "m5-mbp", "windows-laptop", "strixy"]
+        },
+        "hermes_talk": {
+          "status": "verified",
+          "label": "ODS Talk verified across fleet",
+          "reason": "Fresh exact-commit six-host validation passed challenge-bound ODS Talk after loading Ministral and again after restoring each host's original model.",
+          "evidence": "fleet-test/runs/2026-07-27T06-31-36Z-model-ui-product-7629cd20c0ec-harness-19d43e6f9f25-hosts-tower2-strix-halo-spark-m5-mbp-windows-laptop-strixy/cycle-001/{tower2,strix-halo,spark,m5-mbp,windows-laptop,strixy}",
+          "recordedAt": "2026-07-27T06:59:37Z",
+          "productSha": "7629cd20c0ec75a274187aea52b8cc9ad6fa2a2a",
+          "harnessSha": "19d43e6f9f2533e8768ed85b33de9f4ace232129",
+          "hostScope": ["tower2", "strix-halo", "spark", "m5-mbp", "windows-laptop", "strixy"]
+        },
+        "perplexica": {
+          "status": "verified",
+          "label": "Perplexica verified across fleet",
+          "reason": "Fresh exact-commit six-host validation passed the challenge-bound Perplexica route on Ministral with signed model-route evidence, then repeated the required consumer suite after clean baseline restoration.",
+          "evidence": "fleet-test/runs/2026-07-27T06-31-36Z-model-ui-product-7629cd20c0ec-harness-19d43e6f9f25-hosts-tower2-strix-halo-spark-m5-mbp-windows-laptop-strixy/cycle-001/{tower2,strix-halo,spark,m5-mbp,windows-laptop,strixy}",
+          "recordedAt": "2026-07-27T06:59:37Z",
+          "productSha": "7629cd20c0ec75a274187aea52b8cc9ad6fa2a2a",
+          "harnessSha": "19d43e6f9f2533e8768ed85b33de9f4ace232129",
+          "hostScope": ["tower2", "strix-halo", "spark", "m5-mbp", "windows-laptop", "strixy"]
+        },
+        "agent_viability": {
+          "status": "verified",
+          "label": "Agent workflow verified across fleet",
+          "reason": "Fresh exact-commit six-host validation passed Ministral load with the scoped NVIDIA 8GB profile, challenge-bound ODS Talk, every required deployed LLM consumer, original-model restore, repeated Talk and consumer probes, candidate deletion, and clean final inventory across Linux, macOS, and Windows backends.",
+          "evidence": "fleet-test/runs/2026-07-27T06-31-36Z-model-ui-product-7629cd20c0ec-harness-19d43e6f9f25-hosts-tower2-strix-halo-spark-m5-mbp-windows-laptop-strixy/cycle-001/{tower2,strix-halo,spark,m5-mbp,windows-laptop,strixy}",
+          "recordedAt": "2026-07-27T06:59:37Z",
+          "productSha": "7629cd20c0ec75a274187aea52b8cc9ad6fa2a2a",
+          "harnessSha": "19d43e6f9f2533e8768ed85b33de9f4ace232129",
+          "hostScope": ["tower2", "strix-halo", "spark", "m5-mbp", "windows-laptop", "strixy"]
+        }
+      },
+      "install_recommendation": true
     },
     {
       "id": "ministral-3b-instruct-q4",
@@ -1384,9 +1629,10 @@
       "name": "Gemma 4 E2B",
       "family": "gemma4",
       "gguf_file": "gemma-4-E2B-it-Q4_K_M.gguf",
-      "gguf_url": "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf",
-      "gguf_sha256": "ac0069ebccd39925d836f24a88c0f0c858d20578c29b21ab7cedce66ee576845",
-      "size_mb": 2810,
+      "gguf_url": "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/0314792d7f1f7e229411f620751375812bb9faf2/gemma-4-E2B-it-Q4_K_M.gguf",
+      "gguf_sha256": "740185b21d22ceb83a11c3aa62ad5842ef32c70f6096d756bbee85a1e4ec34b8",
+      "size_bytes": 3106738272,
+      "size_mb": 2963,
       "vram_required_gb": 5,
       "context_length": 16384,
       "quantization": "Q4_K_M",
@@ -1418,9 +1664,10 @@
       "name": "Gemma 4 E4B",
       "family": "gemma4",
       "gguf_file": "gemma-4-E4B-it-Q4_K_M.gguf",
-      "gguf_url": "https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q4_K_M.gguf",
-      "gguf_sha256": "dff0ffba4c90b4082d70214d53ce9504a28d4d8d998276dcb3b8881a656c742a",
-      "size_mb": 5340,
+      "gguf_url": "https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/bfc15c382204943c3a8fff0c750b94ae2364d7a3/gemma-4-E4B-it-Q4_K_M.gguf",
+      "gguf_sha256": "85a896a047553e842f25297ee5b031d64ff30147d9c4af17b1e4b394cd1fab87",
+      "size_bytes": 4977171584,
+      "size_mb": 4747,
       "vram_required_gb": 8,
       "context_length": 32768,
       "quantization": "Q4_K_M",
@@ -1599,6 +1846,81 @@
       "tokens_per_sec_estimate": 59,
       "llm_model_name": "qwen3.6-35b-a3b",
       "llama_server_image": null
+    },
+    {
+      "id": "kat-coder-v2.5-dev-apex-q4",
+      "name": "KAT-Coder V2.5 Dev 35B-A3B",
+      "family": "kat-coder",
+      "gguf_file": "KAT-Coder-V2.5-Dev-APEX-I-Balanced.gguf",
+      "gguf_url": "https://huggingface.co/mudler/KAT-Coder-V2.5-Dev-APEX-GGUF/resolve/be23ff3a49eee0d5160e3fd4f5d58062160856c2/KAT-Coder-V2.5-Dev-APEX-I-Balanced.gguf",
+      "gguf_sha256": "ee6e0ec15964c42ba91831d13e9709239f1b74da3dc49dd3edec4ad6aed8029f",
+      "size_bytes": 25268441472,
+      "size_mb": 25269,
+      "vram_required_gb": 32,
+      "context_length": 131072,
+      "max_context_length": 262144,
+      "total_params_b": 35,
+      "active_params_b": 3,
+      "architecture": "hybrid-moe",
+      "quantization": "APEX-I-Balanced",
+      "specialty": "Agentic Coding",
+      "description": "Kuaishou's July 2026 SFT and RL post-train of Qwen 3.6 35B-A3B for repository-scale coding, tool discipline, and efficient agent loops. Independent 120-run evidence tied the best pass rate while using about half the stock models' input tokens.",
+      "tokens_per_sec_estimate": 55,
+      "llm_model_name": "kat-coder-v2.5-dev",
+      "llama_server_image": null,
+      "install_recommendation": false,
+      "quality_evidence": {
+        "source": "K. Marble 35B Coder Bakeoff",
+        "source_url": "https://kmarble.dev/posts/35b-coder-bakeoff/",
+        "benchmark": "Pre-registered 120-run agentic task battery",
+        "score": "29/30",
+        "assessed_at": "2026-07-27",
+        "independent": true,
+        "note": "KAT tied the best of four 35B-class models at 29/30 passes, used 12.6M input tokens versus 25.1M for stock Qwen 3.6, and had zero malformed tool-call leaks in the cited research task. The study used the MTP-grafted APEX I-Balanced sibling; this 40-block artifact removes the grafted draft head and therefore requires its own fleet validation. The study also had one harness, one GPU, five repetitions per task, and a quantization confound favoring the post-trains."
+      },
+      "publisher_evidence": {
+        "source_url": "https://huggingface.co/Kwaipilot/KAT-Coder-V2.5-Dev",
+        "swe_bench_verified": 69.4,
+        "swe_bench_multilingual": 63.0,
+        "swe_bench_pro": 45.96,
+        "terminal_bench_2_1": 41.02,
+        "pinch_bench": 93.43,
+        "scicode": 44.2,
+        "kat_code_bench": 46.21,
+        "independent": false,
+        "note": "Publisher-reproduced results use disclosed 256K agent harnesses and one run per evaluation. They are supporting evidence, not a substitute for fleet validation or independent reruns."
+      },
+      "source_evidence": {
+        "model_card": "https://huggingface.co/Kwaipilot/KAT-Coder-V2.5-Dev",
+        "model_revision": "7be56fe773e72b6f5ca93c1ae45d828ddb893922",
+        "weights_revision": "68466af897fddf5539a9a7179b42868645457a95",
+        "gguf_repository": "mudler/KAT-Coder-V2.5-Dev-APEX-GGUF",
+        "gguf_revision": "be23ff3a49eee0d5160e3fd4f5d58062160856c2",
+        "license": "apache-2.0",
+        "license_url": "https://www.apache.org/licenses/LICENSE-2.0",
+        "license_note": "The KAT checkpoint is Apache-2.0 licensed; commercial use, modification, and redistribution are permitted subject to license notice and attribution requirements.",
+        "gguf_metadata_note": "The exact artifact reports qwen35moe, 256 experts with 8 active, 262K native context, and 40 model blocks with no grafted MTP draft layer. It embeds the upstream pre-fix chat template (SHA-256 e84f32a23fdda27689f868aa4a1a5621f41133e51a48d7f3efcbea2839574259), which rejects non-leading system messages; upstream fixed that template at revision 3a7d874090df0cd4399401982eca67df2c5a7e82, so exact deployed-consumer validation is required before recommendation."
+      },
+      "rejected_artifacts": [
+        {
+          "repository": "gbuzhf/KAT-Coder-V2.5-Dev-APEX-MTP-GGUF",
+          "revision": "b5d04175d9c1d014d61a0c26eef987f50656d8b4",
+          "file": "Kwaipilot_KAT-Coder-V2.5-Dev-APEX-MTP-I-Balanced.gguf",
+          "sha256": "cce1395f842b99c147cc99025267c866aaaec5cd7b8c2c9c11d5530dc10c5e7b",
+          "verdict": "runtime_incompatible",
+          "reason": "The grafted 41st MTP block requires llama.cpp MTP loader support merged after the ODS production builds. ODS llama.cpp b8668 on Strix Halo/ROCm and b9014 on Tower2/CUDA both interpreted it as a normal hybrid block and failed with missing tensor 'blk.40.ssm_conv1d.weight' despite ample memory.",
+          "evidence": {
+            "product_sha": "333b08c4f65de6534c46a45e2fd646732629c76f",
+            "harness_sha": "65a24267982811bc72e45db219e09e6e547c9628",
+            "run": "2026-07-29T09-28-59Z-model-ui-product-333b08c4f65d-harness-65a242679828-hosts-tower2-strix-halo-spark-m5-mbp-strixy-kat-coder-fit-five-r1",
+            "hosts": [
+              "tower2",
+              "strix-halo"
+            ],
+            "observed_at": "2026-07-29"
+          }
+        }
+      ]
     },
     {
       "id": "deepseek-r1-70b-q4",

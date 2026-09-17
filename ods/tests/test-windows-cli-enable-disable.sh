@@ -550,9 +550,12 @@ else
         echo 'function Write-AIError { param($Message) Write-Host "ERROR: $Message" }'
         echo 'function Write-AISuccess { param($Message) Write-Host "OK: $Message" }'
         echo 'function Test-ODSInstallFiles { }'
+        echo 'function Get-ODSEnvValue { param($Name, $Default = ""); $match = Get-Content (Join-Path $InstallDir ".env") | Where-Object { $_ -like "${Name}=*" } | Select-Object -Last 1; if ($match) { return ($match -split "=", 2)[1] }; return $Default }'
         # Exercise the real reconciliation logic against each temporary install.
         extract_fn Get-ComposeFlags
         extract_fn Update-ComposeFlags
+        extract_fn Set-ODSEnvValue
+        extract_fn Set-ODSProxyAuthRequired
         # Keep Docker out of the test: force the offline branch of Invoke-Disable.
         echo 'function docker { $global:LASTEXITCODE = 1 }'
         echo '$script:_EnableVisited = @()'
@@ -579,6 +582,9 @@ else
         mkdir -p "$dir"
         if [[ ! -e "$root/.compose-flags" ]]; then
             printf '%s' '--env-file .env -f docker-compose.base.yml' > "$root/.compose-flags"
+        fi
+        if [[ ! -e "$root/.env" ]]; then
+            printf '%s\n' 'WEBUI_AUTH=false' > "$root/.env"
         fi
         cat > "$dir/manifest.yaml" <<EOF
 schema_version: ods.services.v1
@@ -672,6 +678,8 @@ EOF
         || fail "enable did not repair stale compose flags; output: $out3b; flags: $flags3b"
     [[ $(grep -o 'extensions/services/ods-proxy/compose.yaml' "$C3B/.compose-flags" | wc -l) -eq 1 ]] \
         || fail "enable duplicated the ods-proxy compose fragment; flags: $flags3b"
+    [[ "$(grep '^WEBUI_AUTH=' "$C3B/.env")" == "WEBUI_AUTH=true" ]] \
+        || fail "enable did not force network-safe Open WebUI auth; output: $out3b"
     pass "enable repairs stale compose flags without duplicate entries"
 
     # ── Case 3c: empty/missing caches recover before reconciliation ───────────

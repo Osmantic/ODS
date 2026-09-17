@@ -115,6 +115,23 @@ else
     fail "mode display exited $rc with missing optional .env keys"
 fi
 
+cat > "$INSTALL_DIR/.env" <<'EOF'
+ODS_MODE=local
+LLM_BACKEND=external
+LLM_API_URL=http://host.docker.internal:11434
+EXTERNAL_LLM_URL=http://127.0.0.1:11434
+EOF
+before_external_env="$(cat "$INSTALL_DIR/.env")"
+result="$(run_ods mode cloud)"
+rc="$(printf '%s\n' "$result" | sed -n '1p')"
+if [[ "$rc" != "0" ]] \
+    && grep -q -- '--no-external-llm' <<<"$result" \
+    && [[ "$(cat "$INSTALL_DIR/.env")" == "$before_external_env" ]]; then
+    pass "mode switch rejects partial mutation of installer-managed external routing"
+else
+    fail "mode switch partially mutated installer-managed external routing"
+fi
+
 result="$(run_ods model current)"
 rc="$(printf '%s\n' "$result" | sed -n '1p')"
 if [[ "$rc" == "0" ]]; then

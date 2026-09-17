@@ -37,7 +37,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from socketserver import ThreadingMixIn
 from urllib import error as urllib_error, request as urllib_request
 from urllib.parse import parse_qs, unquote, urlparse
@@ -312,7 +312,7 @@ def _windows_whisper_cuda_supported(env: dict) -> bool:
 
 
 def _find_usable_bash() -> str | None:
-    """Return a Bash executable that can run shell scripts on this host."""
+    """Return a Bash executable compatible with this host's path contract."""
     global _usable_bash
     if isinstance(_usable_bash, str):
         return _usable_bash
@@ -320,11 +320,24 @@ def _find_usable_bash() -> str | None:
         return None
 
     candidates: list[str] = []
-    found = shutil.which("bash")
-    if found:
-        candidates.append(found)
-
     if platform.system() == "Windows":
+        # The host agent passes MSYS-style paths (``/c/...``) to every bundled
+        # shell script.  A WSL launcher can successfully run ``bash -lc`` but
+        # expects ``/mnt/c/...`` instead, so a generic PATH probe is not enough.
+        # Prefer Bash shipped with Git for Windows, which is also the runtime
+        # required by the Windows installer.
+        git = shutil.which("git")
+        if git and PureWindowsPath(git).name.lower() in {"git", "git.exe"}:
+            git_path = PureWindowsPath(git)
+            git_root = (
+                git_path.parent.parent
+                if git_path.parent.name.lower() in {"bin", "cmd"}
+                else git_path.parent
+            )
+            candidates.extend([
+                str(git_root / "bin" / "bash.exe"),
+                str(git_root / "usr" / "bin" / "bash.exe"),
+            ])
         candidates.extend([
             r"C:\Program Files\Git\bin\bash.exe",
             r"C:\Program Files\Git\usr\bin\bash.exe",
@@ -337,17 +350,52 @@ def _find_usable_bash() -> str | None:
                 str(Path(local_appdata) / "Programs" / "Git" / "bin" / "bash.exe"),
                 str(Path(local_appdata) / "Programs" / "Git" / "usr" / "bin" / "bash.exe"),
             ])
+        found = shutil.which("bash")
+        if found:
+            candidates.append(found)
+    else:
+        found = shutil.which("bash")
+        if found:
+            candidates.append(found)
 
     seen: set[str] = set()
     for bash in candidates:
-        if not bash or bash in seen:
+        identity = os.path.normcase(os.path.normpath(bash)) if platform.system() == "Windows" else bash
+        if not bash or identity in seen:
             continue
-        seen.add(bash)
-        if not Path(bash).exists() and shutil.which(bash) is None:
+        seen.add(identity)
+        bash_path = Path(bash)
+        is_absolute = (
+            PureWindowsPath(bash).is_absolute()
+            if platform.system() == "Windows"
+            else bash_path.is_absolute()
+        )
+        if is_absolute:
+            if not bash_path.exists():
+                continue
+        elif shutil.which(bash) is None:
             continue
         try:
+            if platform.system() == "Windows":
+                # Validate both the shell dialect and the exact path syntax the
+                # resolver will receive.  This rejects a working WSL bash.exe
+                # instead of discovering the mismatch during model rollback.
+                command = (
+                    'case "$(uname -s 2>/dev/null)" in '
+                    'MINGW*|MSYS*) test -d "$1" && printf ok ;; '
+                    '*) exit 64 ;; esac'
+                )
+                probe = [
+                    bash,
+                    "-lc",
+                    command,
+                    "ods-bash-probe",
+                    _to_bash_path(INSTALL_DIR.resolve()),
+                ]
+            else:
+                probe = [bash, "-lc", "printf ok"]
             result = subprocess.run(
-                [bash, "-lc", "printf ok"],
+                probe,
                 capture_output=True, text=True, timeout=5,
             )
         except (OSError, subprocess.SubprocessError):
@@ -385,6 +433,7 @@ _update_status_lock = threading.Lock()
 _update_thread: threading.Thread | None = None
 _update_usable_bash: str | bool | None = None
 _usable_bash: str | bool | None = None
+_setup_state_lock = threading.Lock()
 
 
 def _model_download_thread_alive() -> bool:
@@ -2121,6 +2170,176 @@ def _atomic_write_text(
     _atomic_write_bytes(path, text.encode("utf-8"), mode, uid, gid)
 
 
+def _copy_unique_env_backup(env_path: Path, backup_dir: Path) -> Path:
+    """Copy ``.env`` to a collision-resistant, owner-readable backup file."""
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    fd, raw_backup_path = tempfile.mkstemp(
+        prefix=f".env.backup.{timestamp}.",
+        dir=str(backup_dir),
+    )
+    backup_path = Path(raw_backup_path)
+    try:
+        os.close(fd)
+    except OSError:
+        backup_path.unlink(missing_ok=True)
+        raise
+    try:
+        shutil.copy2(env_path, backup_path)
+        os.chmod(backup_path, 0o600)
+    except OSError:
+        backup_path.unlink(missing_ok=True)
+        raise
+    return backup_path
+def _read_setup_json(path: Path) -> tuple[bool, dict | None]:
+    """Read one fixed setup-state file without following a symlink."""
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return False, None
+    except OSError as exc:
+        raise RuntimeError(f"Could not inspect setup state {path}: {exc}") from exc
+
+    if stat_mod.S_ISLNK(metadata.st_mode):
+        raise RuntimeError(f"Refusing symlinked setup state file: {path}")
+    if not stat_mod.S_ISREG(metadata.st_mode):
+        raise RuntimeError(f"Refusing non-regular setup state file: {path}")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError) as exc:
+        raise RuntimeError(f"Could not read setup state {path}: {exc}") from exc
+    except json.JSONDecodeError:
+        logger.warning("Ignoring malformed setup state file: %s", path)
+        return True, None
+    if not isinstance(payload, dict):
+        logger.warning("Ignoring non-object setup state file: %s", path)
+        return True, None
+    return True, payload
+
+
+def _setup_state_payload() -> dict:
+    """Return the persisted setup state from the host-owned data directory."""
+    state_dir = DATA_DIR / "config"
+    with _setup_state_lock:
+        complete_exists, _ = _read_setup_json(state_dir / "setup-complete.json")
+        _, progress = _read_setup_json(state_dir / "setup-progress.json")
+        _, persona_data = _read_setup_json(state_dir / "persona.json")
+
+    step = progress.get("step", 0) if progress else 0
+    if not isinstance(step, int) or isinstance(step, bool) or step < 0:
+        step = 0
+    persona = persona_data.get("persona") if persona_data else None
+    if not isinstance(persona, str):
+        persona = None
+    return {
+        "first_run": not complete_exists,
+        "step": step,
+        "persona": persona,
+        "persona_data": persona_data,
+    }
+
+
+def _validate_setup_persona_payload(payload: dict) -> dict[str, str]:
+    limits = {
+        "persona": 64,
+        "name": 128,
+        "system_prompt": 100_000,
+        "icon": 32,
+        "selected_at": 64,
+    }
+    normalized: dict[str, str] = {}
+    for key, limit in limits.items():
+        value = payload.get(key)
+        if not isinstance(value, str) or not value or len(value) > limit:
+            raise ValueError(f"{key} must be a non-empty string of at most {limit} characters")
+        if "\0" in value:
+            raise ValueError(f"{key} contains a NUL character")
+        normalized[key] = value
+    return normalized
+
+
+def _restore_setup_snapshots(snapshots: list[tuple[Path, dict]]) -> None:
+    rollback_errors = []
+    for path, snapshot in snapshots:
+        try:
+            _restore_text_file(path, snapshot)
+        except (OSError, RuntimeError) as exc:
+            rollback_errors.append(f"{path.name}: {exc}")
+    if rollback_errors:
+        raise RuntimeError("Setup state rollback failed: " + "; ".join(rollback_errors))
+
+
+def _write_setup_persona(payload: dict) -> None:
+    """Atomically publish persona and progress through one serialized owner."""
+    persona = _validate_setup_persona_payload(payload)
+    state_dir = DATA_DIR / "config"
+    persona_path = state_dir / "persona.json"
+    progress_path = state_dir / "setup-progress.json"
+    with _setup_state_lock:
+        snapshots = [
+            (persona_path, _snapshot_text_file(persona_path)),
+            (progress_path, _snapshot_text_file(progress_path)),
+        ]
+        try:
+            _atomic_write_text(
+                persona_path,
+                json.dumps(persona, indent=2) + "\n",
+                mode=0o600,
+            )
+            _atomic_write_text(
+                progress_path,
+                json.dumps({"step": 2, "persona_selected": True}, indent=2) + "\n",
+                mode=0o600,
+            )
+        except (OSError, RuntimeError) as exc:
+            try:
+                _restore_setup_snapshots(snapshots)
+            except RuntimeError as rollback_exc:
+                raise RuntimeError(f"Could not persist setup persona; {rollback_exc}") from exc
+            raise
+
+
+def _unlink_setup_file(path: Path) -> None:
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return
+    if stat_mod.S_ISLNK(metadata.st_mode):
+        raise RuntimeError(f"Refusing to remove symlinked setup state file: {path}")
+    if not stat_mod.S_ISREG(metadata.st_mode):
+        raise RuntimeError(f"Refusing to remove non-regular setup state file: {path}")
+    path.unlink()
+
+
+def _complete_setup() -> None:
+    """Publish the completion marker and remove progress transactionally."""
+    state_dir = DATA_DIR / "config"
+    complete_path = state_dir / "setup-complete.json"
+    progress_path = state_dir / "setup-progress.json"
+    with _setup_state_lock:
+        snapshots = [
+            (complete_path, _snapshot_text_file(complete_path)),
+            (progress_path, _snapshot_text_file(progress_path)),
+        ]
+        marker = {
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+            "version": "1.0.0",
+        }
+        try:
+            _atomic_write_text(
+                complete_path,
+                json.dumps(marker, indent=2) + "\n",
+                mode=0o600,
+            )
+            _unlink_setup_file(progress_path)
+        except (OSError, RuntimeError) as exc:
+            try:
+                _restore_setup_snapshots(snapshots)
+            except RuntimeError as rollback_exc:
+                raise RuntimeError(f"Could not complete setup; {rollback_exc}") from exc
+            raise
+
+
 def _snapshot_text_file(path: Path) -> dict:
     """Capture bytes/mode/existence for exact transactional restoration."""
     try:
@@ -2624,15 +2843,15 @@ def _assert_text_file_matches_snapshot(path: Path, snapshot: dict) -> None:
         raise RuntimeError(f"Configuration changed during model activation: {path}")
 
 
-def _upsert_env_value(env_path: Path, key: str, value: str) -> None:
-    """Persist one simple ``KEY=value`` entry without disturbing other lines."""
+def _upsert_env_text(raw_text: str, key: str, value: str) -> str:
+    """Return env text with one canonical ``KEY=value`` entry."""
     if any(character in value for character in "\r\n\x00"):
         raise ValueError(f"Invalid newline or NUL in {key}")
-    lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
     output = []
     written = False
-    for line in lines:
-        line_key = line.split("=", 1)[0] if "=" in line and not line.startswith("#") else None
+    for line in raw_text.splitlines():
+        left, separator, _ = line.partition("=")
+        line_key = left.strip() if separator and not line.lstrip().startswith("#") else None
         if line_key == key:
             if not written:
                 output.append(f"{key}={value}")
@@ -2641,7 +2860,13 @@ def _upsert_env_value(env_path: Path, key: str, value: str) -> None:
         output.append(line)
     if not written:
         output.append(f"{key}={value}")
-    _atomic_write_text(env_path, "\n".join(output) + "\n")
+    return "\n".join(output) + "\n"
+
+
+def _upsert_env_value(env_path: Path, key: str, value: str) -> None:
+    """Persist one simple ``KEY=value`` entry without disturbing other lines."""
+    raw_text = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
+    _atomic_write_text(env_path, _upsert_env_text(raw_text, key, value))
 
 
 def _write_activation_config_file(path: Path, content: str) -> None:
@@ -3106,10 +3331,68 @@ def _precreate_data_dirs(service_id: str):
                 logger.warning("Failed to pre-create %s: %s", dir_path, e)
 
 
+_ROOTLESS_BIND_OWNERSHIP_SERVICES = {
+    "ape",
+    "comfyui",
+    "hermes",
+    "langfuse",
+    "n8n",
+    "privacy-shield",
+    "token-spy",
+    "whisper",
+}
+
+
+def _repair_rootless_data_ownership(service_id: str) -> None:
+    """Apply the built-in rootless bind-mount ownership contract before start."""
+    if platform.system() != "Linux" or service_id not in _ROOTLESS_BIND_OWNERSHIP_SERVICES:
+        return
+
+    helper = INSTALL_DIR / "lib" / "rootless-ownership.sh"
+    if not helper.is_file():
+        raise RuntimeError(f"Rootless ownership helper not found: {helper}")
+    bash = _find_usable_bash()
+    if not bash:
+        raise RuntimeError("Bash is required for Docker rootless ownership repair")
+
+    try:
+        result = subprocess.run(
+            [bash, str(helper), str(INSTALL_DIR), service_id],
+            cwd=str(INSTALL_DIR),
+            env=os.environ.copy(),
+            capture_output=True,
+            text=True,
+            timeout=SUBPROCESS_TIMEOUT_START,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError(
+            f"Rootless ownership repair could not run for {service_id}: {exc}"
+        ) from exc
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "unknown error").strip()
+        raise RuntimeError(
+            f"Rootless ownership repair failed for {service_id}: {detail[-500:]}"
+        )
+
+
 def docker_compose_action(service_id: str, action: str) -> tuple:
     flags = resolve_compose_flags()
+    compose_env = os.environ.copy()
     if action == "start":
+        if service_id == "ods-proxy":
+            ok, error = _prepare_proxy_auth_start(flags)
+            if not ok:
+                return False, error
+        elif service_id == "open-webui" and _proxy_compose_enabled():
+            ok, error = _persist_proxy_auth_required()
+            if not ok:
+                return False, error
+            compose_env["WEBUI_AUTH"] = "true"
         _precreate_data_dirs(service_id)
+        try:
+            _repair_rootless_data_ownership(service_id)
+        except RuntimeError as exc:
+            return False, str(exc)
         cmd = ["docker", "compose"] + flags + ["up", "-d", service_id]
     elif action == "stop":
         cmd = ["docker", "compose"] + flags + ["stop", service_id]
@@ -3119,11 +3402,68 @@ def docker_compose_action(service_id: str, action: str) -> tuple:
     try:
         result = subprocess.run(
             cmd, cwd=str(INSTALL_DIR),
-            capture_output=True, text=True, timeout=timeout,
+            capture_output=True, text=True, timeout=timeout, env=compose_env,
         )
         return (True, "") if result.returncode == 0 else (False, result.stderr[:500])
     except subprocess.TimeoutExpired:
         return False, f"Docker compose operation timed out ({timeout}s)"
+
+
+def _proxy_compose_enabled() -> bool:
+    """Return whether the current compose stack includes ods-proxy."""
+    return any(
+        root != Path() and (root / "ods-proxy" / "compose.yaml").is_file()
+        for root in (EXTENSIONS_DIR, USER_EXTENSIONS_DIR)
+    )
+
+
+def _persist_proxy_auth_required() -> tuple[bool, str]:
+    """Persist network-safe Open WebUI auth while serializing .env writers."""
+    env_path = INSTALL_DIR / ".env"
+    if not env_path.is_file():
+        return False, f"Cannot enable network access without {env_path}"
+
+    try:
+        with _model_activate_lock:
+            raw_text = env_path.read_text(encoding="utf-8")
+            new_text = _upsert_env_text(raw_text, "WEBUI_AUTH", "true")
+            if new_text != raw_text:
+                _atomic_write_text(env_path, new_text)
+                logger.info("Enforced WEBUI_AUTH=true for network-accessible ODS")
+    except (OSError, UnicodeError, RuntimeError) as exc:
+        return False, f"Could not enforce proxy authentication: {exc}"
+    return True, ""
+
+
+def _prepare_proxy_auth_start(flags: list[str]) -> tuple[bool, str]:
+    """Persist network-safe auth and apply it before exposing ods-proxy."""
+    ok, error = _persist_proxy_auth_required()
+    if not ok:
+        return False, error
+
+    compose_env = os.environ.copy()
+    compose_env["WEBUI_AUTH"] = "true"
+    try:
+        result = subprocess.run(
+            ["docker", "compose"] + flags
+            + ["up", "-d", "--no-deps", "--force-recreate", "open-webui"],
+            cwd=str(INSTALL_DIR),
+            capture_output=True,
+            text=True,
+            timeout=SUBPROCESS_TIMEOUT_START,
+            env=compose_env,
+        )
+    except subprocess.TimeoutExpired:
+        return False, (
+            "Open WebUI authentication preflight timed out; ods-proxy was not started"
+        )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "unknown error").strip()
+        return False, (
+            "Could not recreate Open WebUI with authentication; "
+            f"ods-proxy was not started: {detail[-500:]}"
+        )
+    return True, ""
 
 
 def validate_core_recreate_ids(service_ids: list[str]) -> tuple[bool, str]:
@@ -3153,6 +3493,8 @@ def docker_compose_recreate(service_ids: list[str]) -> tuple:
     compose_env = os.environ.copy()
     for key in ("GGUF_FILE", "LLM_MODEL", "LEMONADE_MODEL", "MAX_CONTEXT", "CTX_SIZE"):
         compose_env.pop(key, None)
+    if "open-webui" in service_ids and _proxy_compose_enabled():
+        compose_env["WEBUI_AUTH"] = "true"
     try:
         result = subprocess.run(
             cmd, cwd=str(INSTALL_DIR),
@@ -3835,6 +4177,10 @@ def _run_post_install_hook(service_id: str, ext_dir: Path) -> tuple[bool, str]:
         "GPU_BACKEND": GPU_BACKEND,
         "HOOK_NAME": "post_install",
     }
+    for runtime_key in ("DOCKER_HOST", "XDG_RUNTIME_DIR"):
+        runtime_value = os.environ.get(runtime_key, "")
+        if runtime_value:
+            hook_env[runtime_key] = runtime_value
     bash = _find_usable_bash()
     if not bash:
         msg = "post_install hook requires a usable Bash runtime. Install Git Bash or run ODS through WSL/Linux."
@@ -4456,8 +4802,19 @@ class AgentHandler(BaseHTTPRequestHandler):
             self._handle_remote_provider_ssh_supervisor_status()
         elif path == "/v1/host/port":
             self._handle_host_port_status(parse_qs(parsed.query))
+        elif path == "/v1/setup/state":
+            self._handle_setup_state()
         else:
             json_response(self, 404, {"error": "Not found"})
+
+    def _handle_setup_state(self):
+        if not check_auth(self):
+            return
+        try:
+            json_response(self, 200, _setup_state_payload())
+        except (OSError, RuntimeError) as exc:
+            logger.exception("Could not read setup state")
+            json_response(self, 500, {"error": f"Could not read setup state: {exc}"})
 
     def _handle_host_port_status(self, query: dict[str, list[str]]):
         """Return whether a host-local TCP port is reachable.
@@ -4819,6 +5176,10 @@ class AgentHandler(BaseHTTPRequestHandler):
             self._handle_invalidate_compose_cache()
         elif self.path == "/v1/env/update":
             self._handle_env_update()
+        elif self.path == "/v1/setup/persona":
+            self._handle_setup_persona()
+        elif self.path == "/v1/setup/complete":
+            self._handle_setup_complete()
         elif self.path in ("/v1/update/check", "/v1/update/backup", "/v1/update/start"):
             self._handle_update_action()
         elif self.path == "/v1/network/wifi-connect":
@@ -4827,6 +5188,37 @@ class AgentHandler(BaseHTTPRequestHandler):
             self._handle_network_wifi_forget()
         else:
             json_response(self, 404, {"error": "Not found"})
+
+    def _handle_setup_persona(self):
+        if not check_auth(self):
+            return
+        body = read_optional_json_body(self)
+        if body is None:
+            return
+        try:
+            _write_setup_persona(body)
+        except ValueError as exc:
+            json_response(self, 400, {"error": str(exc)})
+            return
+        except (OSError, RuntimeError) as exc:
+            logger.exception("Could not persist setup persona")
+            json_response(self, 500, {"error": f"Could not persist setup persona: {exc}"})
+            return
+        json_response(self, 200, {"success": True})
+
+    def _handle_setup_complete(self):
+        if not check_auth(self):
+            return
+        body = read_optional_json_body(self)
+        if body is None:
+            return
+        try:
+            _complete_setup()
+        except (OSError, RuntimeError) as exc:
+            logger.exception("Could not persist setup completion")
+            json_response(self, 500, {"error": f"Could not persist setup completion: {exc}"})
+            return
+        json_response(self, 200, {"success": True})
 
     def _handle_remote_provider_plan(self):
         """Validate a remote-provider lifecycle request without side effects."""
@@ -5459,6 +5851,10 @@ class AgentHandler(BaseHTTPRequestHandler):
             logger.warning("env_update rejected: raw_text missing/empty from %s", client_ip)
             json_response(self, 400, {"error": "raw_text required"})
             return
+        enforced_values = {}
+        if _proxy_compose_enabled():
+            raw_text = _upsert_env_text(raw_text, "WEBUI_AUTH", "true")
+            enforced_values["WEBUI_AUTH"] = "true"
         backup = body.get("backup", True)
 
         schema_path = INSTALL_DIR / ".env.schema.json"
@@ -5515,10 +5911,7 @@ class AgentHandler(BaseHTTPRequestHandler):
         try:
             if backup and env_path.exists():
                 backup_dir = DATA_DIR / "config-backups"
-                backup_dir.mkdir(parents=True, exist_ok=True)
-                timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-                backup_path = backup_dir / f".env.backup.{timestamp}"
-                shutil.copy2(env_path, backup_path)
+                backup_path = _copy_unique_env_backup(env_path, backup_dir)
                 backup_relative_path = f"data/{backup_path.relative_to(DATA_DIR).as_posix()}"
 
             payload_text = raw_text if raw_text.endswith("\n") else raw_text + "\n"
@@ -5538,7 +5931,11 @@ class AgentHandler(BaseHTTPRequestHandler):
             _model_activate_lock.release()
 
         logger.info(".env updated via host agent from %s (backup=%s)", client_ip, backup_relative_path or "none")
-        json_response(self, 200, {"status": "ok", "backup_path": backup_relative_path})
+        json_response(self, 200, {
+            "status": "ok",
+            "backup_path": backup_relative_path,
+            "enforced_values": enforced_values,
+        })
 
     def _handle_core_recreate(self):
         if not check_auth(self):
@@ -6151,6 +6548,10 @@ class AgentHandler(BaseHTTPRequestHandler):
             "GPU_BACKEND": GPU_BACKEND,
             "HOOK_NAME": hook_name,
         }
+        for runtime_key in ("DOCKER_HOST", "XDG_RUNTIME_DIR"):
+            runtime_value = os.environ.get(runtime_key, "")
+            if runtime_value:
+                hook_env[runtime_key] = runtime_value
         bash = _find_usable_bash()
         if not bash:
             json_response(self, 500, {
@@ -6285,6 +6686,16 @@ class AgentHandler(BaseHTTPRequestHandler):
                 # Step 3: Start
                 _write_progress(service_id, "starting", "Starting container...")
                 _precreate_data_dirs(service_id)
+                try:
+                    _repair_rootless_data_ownership(service_id)
+                except RuntimeError as exc:
+                    _write_progress(
+                        service_id,
+                        "error",
+                        "Installation failed",
+                        error=str(exc),
+                    )
+                    return
                 start_result = subprocess.run(
                     ["docker", "compose"] + flags + ["up", "-d", service_id],
                     cwd=str(INSTALL_DIR), capture_output=True, text=True,
@@ -9721,6 +10132,16 @@ function Stop-ODSProcessId {
         [switch]$AllowStaleReference
     )
     $owned = Get-CimInstance Win32_Process -Filter ("ProcessId = {0}" -f $ProcId) -ErrorAction SilentlyContinue
+    # A Lemonade child can exit after its listening socket is enumerated but
+    # before CIM resolves the PID. Only accept that race when the PID itself
+    # is gone; a live PID without CIM metadata cannot prove ODS ownership.
+    if (-not $owned) {
+        $liveProcess = Get-Process -Id $ProcId -ErrorAction SilentlyContinue
+        if (-not $liveProcess -or $AllowStaleReference) {
+            return
+        }
+        throw "Refusing to stop unowned process $ProcId on configured Lemonade port $port"
+    }
     $portOwners = Get-ODSPortOwners
     if (-not (Test-ODSLemonadeProcess $owned $portOwners)) {
         if ($AllowStaleReference) {
@@ -11611,12 +12032,13 @@ def _restart_macos_native_llama_server(
 def _launch_native_llama_server(env_path: Path, llama_bin: Path, llama_log: Path, pid_file: Path):
     """Launch the native (Metal) llama-server process and write its PID file.
 
-    Reads the current .env for GGUF_FILE, CTX_SIZE, and LLAMA_REASONING so
-    the caller only needs to ensure .env is up-to-date before calling.
+    Reads the current .env for model and llama.cpp runtime settings so the
+    caller only needs to ensure .env is up-to-date before calling.
     """
     env = load_env(env_path)
     gguf_file = env.get("GGUF_FILE", "")
     ctx_size = env.get("CTX_SIZE", "32768")
+    gpu_layers = env.get("N_GPU_LAYERS", "").strip() or "auto"
     model_path = INSTALL_DIR / "data" / "models" / gguf_file
     reasoning = env.get("LLAMA_REASONING", "off")
     reasoning_fmt = {"off": "none", "on": "deepseek"}.get(reasoning, reasoning)
@@ -11634,7 +12056,7 @@ def _launch_native_llama_server(env_path: Path, llama_bin: Path, llama_log: Path
         "--host", bind_addr, "--port", str(port),
         "--model", str(model_path),
         "--ctx-size", ctx_size,
-        "--n-gpu-layers", "999",
+        "--n-gpu-layers", gpu_layers,
         "--parallel", env.get("LLAMA_PARALLEL", "1"),
         "--reasoning-format", reasoning_fmt,
         "--metrics",

@@ -108,6 +108,10 @@ setup() {
     [[ "$BOOTSTRAP_GGUF_SHA256" =~ ^[a-f0-9]{64}$ ]]
 }
 
+@test "BOOTSTRAP_GGUF_SIZE_MB: matches the pinned artifact progress size" {
+    [[ "$BOOTSTRAP_GGUF_SIZE_MB" -eq 1221 ]]
+}
+
 @test "BOOTSTRAP_LLM_MODEL: is set and non-empty" {
     [[ -n "$BOOTSTRAP_LLM_MODEL" ]]
 }

@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Mapping
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 from .policy import (
     DEFAULT_POLICY_PATH,
@@ -78,6 +78,9 @@ class UpstreamRequest:
     requested_model: str
     provider_model: str
     stream: bool
+    tls_server_name: str = ""
+    host_header: str = ""
+    connection_key: str = ""
 
 
 def _disabled_route(mode: str = "cloud") -> dict[str, Any]:
@@ -325,6 +328,7 @@ def prepare_upstream_request(
     route: Mapping[str, Any],
     provider_secret: str,
     max_body_bytes: int = DEFAULT_MAX_BODY_BYTES,
+    resolved_addresses: list[str] | None = None,
 ) -> UpstreamRequest:
     """Validate and rewrite one OpenAI-compatible request for the provider."""
     required_method = FORWARD_PATHS.get(path)
@@ -348,6 +352,33 @@ def prepare_upstream_request(
     if not isinstance(provider, Mapping):
         raise EgressError(503, "invalid_route", "provider route is missing")
     upstream_base_url = upstream_base_url_for_route(route)
+    tls_server_name = ""
+    host_header = ""
+    connection_key = ""
+    if route.get("transport") == "direct" and resolved_addresses:
+        parts = urlsplit(upstream_base_url)
+        tls_server_name = parts.hostname or ""
+        ip_address = resolved_addresses[0]
+        if ":" in ip_address and not ip_address.startswith("["):
+            ip_address = f"[{ip_address}]"
+        netloc = ip_address
+        if parts.port is not None:
+            netloc = f"{ip_address}:{parts.port}"
+        original_host = tls_server_name
+        if ":" in original_host and not original_host.startswith("["):
+            original_host = f"[{original_host}]"
+        host_header = original_host
+        if parts.port is not None:
+            host_header = f"{original_host}:{parts.port}"
+        tls_port = parts.port or (443 if parts.scheme == "https" else 80)
+        connection_key = f"{parts.scheme}://{tls_server_name}:{tls_port}"
+        upstream_base_url = urlunsplit((
+            parts.scheme,
+            netloc,
+            parts.path,
+            parts.query,
+            parts.fragment
+        ))
     try:
         payload = json.loads(body.decode("utf-8"))
     except (UnicodeDecodeError, ValueError) as exc:
@@ -366,6 +397,9 @@ def prepare_upstream_request(
         requested_model=requested_model,
         provider_model=provider_model,
         stream=bool(payload.get("stream")),
+        tls_server_name=tls_server_name,
+        host_header=host_header,
+        connection_key=connection_key,
     )
 
 

@@ -14,6 +14,7 @@ service:
   external_port_default: 3003
   health: /
   type: host-systemd
+  macos_host_supported: true
   gpu_backends: [all]
   category: optional
   depends_on: []
@@ -26,7 +27,6 @@ service:
     probe:
       kind: custom
       path: /
-      auth: env:OPENCODE_SERVER_PASSWORD
 
 features:
   - id: coding

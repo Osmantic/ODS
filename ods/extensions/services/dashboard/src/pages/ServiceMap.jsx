@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ExternalLink, GitBranch, RefreshCw, X } from 'lucide-react'
+import { serviceUrl } from '../lib/serviceUrls'
 
 const POLL_INTERVAL = 10000
 const NODE_W = 170
@@ -139,6 +140,8 @@ export function buildTopology(statusData) {
         name: service.name || id,
         status: normalizeStatus(service.status),
         port: service.external_port || service.port || '',
+        public_url: service.public_url || '',
+        ui_path: service.ui_path || '/',
         category: CATEGORY_MAP[id] || 'other',
       }
     })
@@ -219,7 +222,7 @@ function DetailPanel({ node, edges, onClose }) {
   const meta = statusMeta(node.status)
   const upstream = edges.filter(edge => edge.target === node.id)
   const downstream = edges.filter(edge => edge.source === node.id)
-  const serviceUrl = node.port ? `http://${window.location.hostname}:${node.port}` : null
+  const url = serviceUrl(node)
 
   return (
     <div className="absolute top-4 right-4 z-10 w-72 overflow-hidden rounded-xl border border-theme-border bg-theme-card shadow-2xl">
@@ -236,7 +239,7 @@ function DetailPanel({ node, edges, onClose }) {
         <div className="flex justify-between"><span className="text-theme-text-muted">Layer</span><span className="text-theme-text">{node.category}</span></div>
         {upstream.length > 0 && <DependencyList label="Used by" edges={upstream} field="source" />}
         {downstream.length > 0 && <DependencyList label="Depends on" edges={downstream} field="target" />}
-        {serviceUrl && <a href={serviceUrl} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 text-theme-accent hover:underline"><ExternalLink size={12} />Open service</a>}
+        {url && <a href={url} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 text-theme-accent hover:underline"><ExternalLink size={12} />Open service</a>}
       </div>
     </div>
   )

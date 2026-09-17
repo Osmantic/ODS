@@ -193,12 +193,29 @@ docker compose logs llama-server
 - Restart: `docker compose restart`
 
 ### How do I uninstall?
+**Linux/macOS:**
+
 ```bash
 cd ~/ods
 ./ods-uninstall.sh --force
 ```
 
-This uses ODS's saved `.compose-flags` stack, removes the matching containers and volumes, and then removes the install directory. Use `--keep-data` or `--keep-models` if you want to preserve local state.
+**Windows:**
+
+```powershell
+$installDir = "$env:USERPROFILE\ods"
+cd $installDir
+.\ods.ps1 uninstall --force
+```
+
+These use ODS's saved compose stack when available, remove the matching containers and volumes, and then remove the install directory. Use `--keep-data` or `--keep-models` if you want to preserve local state.
+
+On Windows, if the runtime folder is partial and `.\ods.ps1` is missing, run the cleanup from a source checkout:
+
+```powershell
+cd ODS
+.\ods\installers\windows\ods.ps1 uninstall --force
+```
 
 If you need to run Docker Compose manually, do not use bare `docker compose down`: ODS does not use a top-level `docker-compose.yml`. Use the saved flags instead:
 

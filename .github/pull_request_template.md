@@ -10,7 +10,7 @@
 
 <!-- Pick the lane before review. See ods/docs/RELEASE_CHANNELS.md. -->
 
-- [ ] Stable hotfix targeting `release/2.5.x`
+- [ ] Stable hotfix targeting `release/2.6.x`
 - [ ] Mainline change targeting `main`
 - [ ] Next-minor work targeting the next feature/minor release
 - [ ] Not sure; reviewer should help classify
@@ -18,7 +18,7 @@
 Stable hotfix reason:
 
 ```text
-<!-- If this targets release/2.5.x, explain the current-stable user problem it fixes. -->
+<!-- If this targets release/2.6.x, explain the current-stable user problem it fixes. -->
 ```
 
 ## Changed Surface
@@ -47,7 +47,7 @@ Stable hotfix reason:
   - [ ] Dashboard lint/test/build
   - [ ] Extension audit / compose validation
   - [ ] Release-grade fleet or scoped hardware validation
-  - [ ] Stable-lane patch validation, if targeting `release/2.5.x`
+  - [ ] Stable-lane patch validation, if targeting `release/2.6.x`
   - [ ] Not required because: <!-- explain -->
 
 Commands/results:

@@ -13,7 +13,11 @@ def signed_talk_cookie(monkeypatch):
 
 
 @pytest.fixture()
-def talk_client(test_client, signed_talk_cookie):
+def talk_client(test_client, signed_talk_cookie, monkeypatch):
+    async def no_loaded_model():
+        return None
+
+    monkeypatch.setattr("routers.talk.get_loaded_model", no_loaded_model)
     test_client.cookies.set("ods-session", signed_talk_cookie)
     return test_client
 
@@ -46,16 +50,19 @@ def test_talk_status_disables_text_chat_for_incompatible_active_model(talk_clien
         return {"configured": True, "status": "healthy", "id": service_id}
 
     monkeypatch.setattr("routers.talk._service_state", fake_state)
-    monkeypatch.setattr("routers.talk._active_model_app_compatibility", lambda: {
-        "agentViability": {
-            "status": "not_agent_viable",
-            "reason": "Phi direct chat works, but agent validation failed.",
-        },
-        "hermesTalk": {
-            "status": "unsupported_until_revalidated",
-            "reason": "Phi direct chat works, but ODS Talk is not revalidated.",
-        },
-    })
+    async def incompatible_model():
+        return {
+            "agentViability": {
+                "status": "not_agent_viable",
+                "reason": "Phi direct chat works, but agent validation failed.",
+            },
+            "hermesTalk": {
+                "status": "unsupported_until_revalidated",
+                "reason": "Phi direct chat works, but ODS Talk is not revalidated.",
+            },
+        }
+
+    monkeypatch.setattr("routers.talk._active_model_app_compatibility", incompatible_model)
 
     resp = talk_client.get("/api/talk/status")
     assert resp.status_code == 200, resp.text
@@ -72,21 +79,104 @@ def test_talk_message_rejects_incompatible_model_before_hermes(talk_client, monk
         return None
 
     monkeypatch.setattr("hermes_bridge.submit_prompt", fake_submit)
-    monkeypatch.setattr("routers.talk._active_model_app_compatibility", lambda: {
-        "agentViability": {
-            "status": "not_agent_viable",
-            "reason": "Active model is not agent ready.",
-        },
-        "hermesTalk": {
-            "status": "unsupported_until_revalidated",
-            "reason": "Active model is not Talk ready.",
-        },
-    })
+    async def incompatible_model():
+        return {
+            "agentViability": {
+                "status": "not_agent_viable",
+                "reason": "Active model is not agent ready.",
+            },
+            "hermesTalk": {
+                "status": "unsupported_until_revalidated",
+                "reason": "Active model is not Talk ready.",
+            },
+        }
+
+    monkeypatch.setattr("routers.talk._active_model_app_compatibility", incompatible_model)
 
     resp = talk_client.post("/api/talk/message", json={"text": "hello"})
     assert resp.status_code == 409, resp.text
     assert resp.json()["detail"] == "Active model is not agent ready."
     assert calls == []
+
+
+def test_talk_status_uses_live_model_instead_of_configured_bootstrap(talk_client, monkeypatch):
+    async def fake_state(service_id):
+        return {"configured": True, "status": "healthy", "id": service_id}
+
+    async def live_model():
+        return "jamba-reasoning-3b-Q4_K_M.gguf"
+
+    catalog = [
+        {
+            "id": "qwen3.5-2b-q4",
+            "name": "Qwen 3.5 2B",
+            "gguf_file": "Qwen3.5-2B-Q4_K_M.gguf",
+            "app_compatibility": {
+                "agent_viability": {
+                    "status": "not_agent_viable",
+                    "reason": "Configured bootstrap model is not agent ready.",
+                },
+            },
+        },
+        {
+            "id": "jamba-reasoning-3b-q4",
+            "name": "AI21 Jamba Reasoning 3B",
+            "gguf_file": "jamba-reasoning-3b-Q4_K_M.gguf",
+        },
+    ]
+
+    monkeypatch.setattr("routers.talk._service_state", fake_state)
+    monkeypatch.setattr("routers.talk.get_loaded_model", live_model)
+    monkeypatch.setattr("routers.talk.load_model_catalog", lambda _install_dir: catalog)
+    monkeypatch.setattr("routers.talk.read_env_file_value", lambda key, _install_dir: {
+        "LLM_MODEL": "qwen3.5-2b",
+        "GGUF_FILE": "Qwen3.5-2B-Q4_K_M.gguf",
+    }.get(key, ""))
+    monkeypatch.setattr("routers.talk.model_compatibility_runtime_context", lambda _install_dir: {})
+
+    resp = talk_client.get("/api/talk/status")
+
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["capabilities"]["text_chat"] is True
+    assert data["modelCompatibility"]["activeModel"] == {
+        "id": "jamba-reasoning-3b-q4",
+        "model": "jamba-reasoning-3b-Q4_K_M.gguf",
+        "gguf": "jamba-reasoning-3b-Q4_K_M.gguf",
+    }
+
+
+def test_talk_status_falls_back_to_configured_model_without_live_runtime(talk_client, monkeypatch):
+    async def fake_state(service_id):
+        return {"configured": True, "status": "healthy", "id": service_id}
+
+    catalog = [{
+        "id": "qwen3.5-2b-q4",
+        "name": "Qwen 3.5 2B",
+        "gguf_file": "Qwen3.5-2B-Q4_K_M.gguf",
+        "app_compatibility": {
+            "agent_viability": {
+                "status": "not_agent_viable",
+                "reason": "Configured bootstrap model is not agent ready.",
+            },
+        },
+    }]
+
+    monkeypatch.setattr("routers.talk._service_state", fake_state)
+    monkeypatch.setattr("routers.talk.load_model_catalog", lambda _install_dir: catalog)
+    monkeypatch.setattr("routers.talk.read_env_file_value", lambda key, _install_dir: {
+        "LLM_MODEL": "qwen3.5-2b",
+        "GGUF_FILE": "Qwen3.5-2B-Q4_K_M.gguf",
+    }.get(key, ""))
+    monkeypatch.setattr("routers.talk.model_compatibility_runtime_context", lambda _install_dir: {})
+
+    resp = talk_client.get("/api/talk/status")
+
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["capabilities"]["text_chat"] is False
+    assert data["reason"] == "Configured bootstrap model is not agent ready."
+    assert data["modelCompatibility"]["activeModel"]["id"] == "qwen3.5-2b-q4"
 
 
 def test_talk_message_routes_through_hermes_bridge(talk_client, monkeypatch):

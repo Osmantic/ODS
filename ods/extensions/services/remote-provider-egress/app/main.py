@@ -97,10 +97,20 @@ def _load_route() -> dict[str, Any]:
     return route_from_state(load_route_state(ROUTE_PATH), policy=policy)
 
 
-def _http_client() -> httpx.AsyncClient:
+def _http_client(connection_key: str = "") -> httpx.AsyncClient:
+    if connection_key:
+        clients = getattr(app.state, "direct_http_clients", None)
+        if clients is None:
+            clients = {}
+            app.state.direct_http_clients = clients
+        client = clients.get(connection_key)
+        if client is None or client.is_closed:
+            client = httpx.AsyncClient(follow_redirects=False, trust_env=False)
+            clients[connection_key] = client
+        return client
     client = getattr(app.state, "http", None)
     if client is None or client.is_closed:
-        client = httpx.AsyncClient(follow_redirects=False)
+        client = httpx.AsyncClient(follow_redirects=False, trust_env=False)
         app.state.http = client
     return client
 
@@ -325,7 +335,7 @@ async def forward(full_path: str, request: Request) -> Response:
     path = "/" + full_path
     try:
         route = _load_route()
-        validate_direct_provider_resolution(route)
+        resolved_addresses = validate_direct_provider_resolution(route)
         secret = read_provider_secret(SECRET_PATH)
         if route.get("transport") == "ssh":
             tunnel = await _ssh_tunnel_status()
@@ -341,11 +351,18 @@ async def forward(full_path: str, request: Request) -> Response:
             route=route,
             provider_secret=secret,
             max_body_bytes=MAX_BODY_BYTES,
+            resolved_addresses=resolved_addresses,
         )
     except EgressError as exc:
         return _error_response(exc)
 
-    client = _http_client()
+    client = _http_client(upstream_request.connection_key)
+    headers = dict(upstream_request.headers)
+    extensions = {}
+    if upstream_request.tls_server_name:
+        extensions["sni_hostname"] = upstream_request.tls_server_name
+        headers["host"] = upstream_request.host_header
+
     ods_headers = {
         "X-ODS-Remote-Transport": str(route.get("transport") or ""),
         "X-ODS-Requested-Model": upstream_request.requested_model,
@@ -357,8 +374,9 @@ async def forward(full_path: str, request: Request) -> Response:
                 upstream_request.method,
                 upstream_request.url,
                 content=upstream_request.content,
-                headers=upstream_request.headers,
+                headers=headers,
                 timeout=UPSTREAM_TIMEOUT_SECONDS,
+                extensions=extensions,
             )
             upstream = await client.send(req, stream=True)
 
@@ -376,13 +394,15 @@ async def forward(full_path: str, request: Request) -> Response:
                 headers={**_response_headers(upstream.headers), **ods_headers},
             )
 
-        upstream = await client.request(
+        req = client.build_request(
             upstream_request.method,
             upstream_request.url,
             content=upstream_request.content,
-            headers=upstream_request.headers,
+            headers=headers,
             timeout=UPSTREAM_TIMEOUT_SECONDS,
+            extensions=extensions,
         )
+        upstream = await client.send(req)
     except httpx.TimeoutException:
         return _error_response(
             EgressError(504, "upstream_timeout", "remote provider timed out")
@@ -405,9 +425,14 @@ async def forward(full_path: str, request: Request) -> Response:
 
 @app.on_event("startup")
 async def _startup() -> None:
-    app.state.http = httpx.AsyncClient(follow_redirects=False)
+    app.state.http = httpx.AsyncClient(follow_redirects=False, trust_env=False)
+    app.state.direct_http_clients = {}
 
 
 @app.on_event("shutdown")
 async def _shutdown() -> None:
     await app.state.http.aclose()
+    clients = getattr(app.state, "direct_http_clients", {})
+    for client in clients.values():
+        await client.aclose()
+    clients.clear()

@@ -24,6 +24,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import EnvEditor from '../components/settings/EnvEditor'
 import { useTheme } from '../contexts/ThemeContext'
+import { dashboardHost, serviceUrl } from '../lib/serviceUrls'
 import {
   clearSettingsFollowUp,
   loadSettingsFollowUp,
@@ -91,9 +92,6 @@ const formatUsageSource = (source) => {
 const getErrorText = (err) => (
   err?.name === 'AbortError' ? 'Request timed out' : (err?.details?.message || err?.message || 'Failed to load settings')
 )
-
-const getDashboardHost = () => (typeof window !== 'undefined' ? window.location.hostname : 'localhost')
-const getExternalUrl = (port) => (port ? `http://${getDashboardHost()}:${port}` : null)
 
 const todayKey = () => {
   const now = new Date()
@@ -615,7 +613,7 @@ function RoutingTableCard({ services, counts, routeFilter, onRouteFilterChange, 
           <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-theme-text-muted">Route Surfaces</p>
           <div className="mt-3 inline-flex items-center gap-3 rounded-full border border-theme-border bg-theme-accent/10 px-4 py-2 text-sm text-theme-text">
             <span className="h-2 w-2 rounded-full bg-emerald-400" />
-            {getDashboardHost()}
+              {dashboardHost()}
           </div>
         </div>
       </div>
@@ -861,7 +859,7 @@ function RouteStatusCard({ tone, label, count, description }) {
 }
 
 function RouteRow({ service }) {
-  const href = getExternalUrl(service.port)
+  const href = serviceUrl(service)
   const healthy = service.status === 'healthy'
   const degraded = service.status === 'degraded'
   const dot = healthy ? 'bg-emerald-400' : degraded ? 'bg-amber-400' : 'bg-red-400'

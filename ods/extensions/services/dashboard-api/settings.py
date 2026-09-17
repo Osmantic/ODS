@@ -13,6 +13,7 @@ from urllib.parse import urlsplit
 
 from fastapi import HTTPException
 
+from env_values import strip_matching_quotes
 from host_agent_client import AgentClientError, request_json as request_agent_json
 
 # ── Regex constants ────────────────────────────────────────────────────────────
@@ -86,16 +87,14 @@ _READ_ONLY_ENV_FIELDS = {
     "MODEL_RECOMMENDATION_CONFIDENCE": "Recommendation confidence is managed by the installer.",
     "MODEL_RECOMMENDATION_REASON": "Recommendation rationale is managed by the installer.",
     "MODEL_RECOMMENDED_ALTERNATIVES": "Recommended alternatives are managed by the installer.",
+    "EXTERNAL_LLM_URL": "External inference topology is validated and managed by the installer.",
+    "EXTERNAL_LLM_CONTAINER_URL": "The container route is derived and validated by the installer.",
+    "EXTERNAL_LLM_PROVIDER": "The external provider is detected and validated by the installer.",
+    "EXTERNAL_LLM_MODEL": "The external model id is verified against the provider by the installer.",
+    "SKIP_MODEL_DOWNLOAD": "Model download skipping is an installer-owned validation receipt.",
 }
 
 # ── Env parsing ────────────────────────────────────────────────────────────────
-
-
-def _strip_env_quotes(value: str) -> str:
-    value = value.strip()
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
-        return value[1:-1]
-    return value
 
 
 def _read_env_map_from_path(path: Path) -> tuple[dict[str, str], list[dict[str, Any]]]:
@@ -124,7 +123,7 @@ def _parse_env_text(raw_text: str) -> tuple[dict[str, str], list[dict[str, Any]]
             continue
 
         key, value = match.groups()
-        values[key] = _strip_env_quotes(value)
+        values[key] = strip_matching_quotes(value)
 
     return values, issues
 
@@ -273,7 +272,13 @@ def _validate_env_values(
             if _normalize_bool(value) is None:
                 issues.append({"key": key, "message": "Must be true or false."})
 
-        if key == "EMBEDDING_MODEL":
+        if key == "N_GPU_LAYERS":
+            if not re.fullmatch(r"(?:auto|all|[0-9]+)", str(value).strip()):
+                issues.append({
+                    "key": key,
+                    "message": "Must be auto, all, or a non-negative whole number.",
+                })
+        elif key == "EMBEDDING_MODEL":
             if _is_unsupported_tei_model_id(value):
                 issues.append({
                     "key": key,
@@ -348,6 +353,8 @@ def _serialize_form_values(
             serialized[key] = normalized if normalized is not None else str(value).strip()
         elif field_type == "integer":
             serialized[key] = str(value).strip()
+        elif key == "N_GPU_LAYERS":
+            serialized[key] = str(value).strip()
         else:
             serialized[key] = str(value)
 
@@ -367,6 +374,8 @@ def _empty_value_unsets_env_key(key: str, field: dict[str, Any]) -> bool:
 
 
 def _match_apply_service(key: str) -> Optional[str]:
+    if key.endswith("_PUBLIC_URL") or key == "ODS_SERVICE_PUBLIC_URLS":
+        return None
     if key in _LLAMA_APPLY_KEYS or key.startswith(("LLAMA_", "GGUF_")):
         return "llama-server"
     if key == "SEARXNG_URL":
@@ -485,7 +494,12 @@ def _compute_env_apply_plan(
         if service and service in _SETTINGS_APPLY_ALLOWED_SERVICES:
             schedule(service)
             continue
-        if key in _MANUAL_RESTART_KEYS or key.startswith("ODS_AGENT_"):
+        if (
+            key in _MANUAL_RESTART_KEYS
+            or key.startswith("ODS_AGENT_")
+            or key.endswith("_PUBLIC_URL")
+            or key == "ODS_SERVICE_PUBLIC_URLS"
+        ):
             manual_keys.append(key)
             continue
         if key not in {"TZ", "TIMEZONE"}:

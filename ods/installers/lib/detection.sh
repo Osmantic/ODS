@@ -622,6 +622,12 @@ fix_nvidia_secure_boot() {
 
     ai "NVIDIA GPU hardware detected but driver not responding."
 
+    if ! ods_sudo_available; then
+        ai_warn "NVIDIA driver and Secure Boot recovery requires root privileges."
+        ai "Install or repair the NVIDIA driver with an administrator account, then re-run ODS."
+        return 1
+    fi
+
     # Step 2: Ensure a driver package is installed
     local installed_driver
     installed_driver=$(dpkg-query -W -f='${Package}\n' 'nvidia-driver-*' 2>/dev/null \
@@ -723,7 +729,7 @@ fix_nvidia_secure_boot() {
 
     # Sign every nvidia DKMS module (handles .ko, .ko.zst, .ko.xz)
     local signed_count=0
-    for mod_path in /lib/modules/${kver}/updates/dkms/nvidia*.ko*; do
+    for mod_path in /lib/modules/"${kver}"/updates/dkms/nvidia*.ko*; do
         [[ -f "$mod_path" ]] || continue
         case "$mod_path" in
             *.zst)
