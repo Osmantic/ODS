@@ -14,12 +14,26 @@ import Pixel, {
   parseApprovalReceipt,
   parseVerifiedPreviewFrame,
   resolvePreviewAccess,
+  latestProjectPublication,
 } from './Pixel'
 
 const response = (body, status = 200) => ({
   ok: status >= 200 && status < 300,
   status,
   json: async () => body,
+})
+
+it('resolves old cards to the latest verified version of their own project',()=>{
+  const publication=(letter,directory)=>{
+    const sha256=letter.repeat(64),siteId=`site-${sha256.slice(0,24)}`
+    return {schemaVersion:1,kind:'ods-pixel-workspace-preview',relativeDirectory:directory,siteId,port:9437,url:`http://${siteId}.localhost:9437/${siteId}/`,files:2,bytes:100,sha256,entrySha256:sha256}
+  }
+  const old=publication('a','pacman-game'),current=publication('b','pacman-game'),other=publication('c','Playground/weather')
+  const messages=[old,current,other].map(p=>({role:'assistant',content:'Ready',publication:p}))
+  messages.push({role:'assistant',content:'Unverified',publication:{...current,url:'https://elsewhere.example/'}})
+  expect(latestProjectPublication(old,messages)).toEqual(current)
+  expect(latestProjectPublication(other,messages)).toEqual(other)
+  expect(messages[0].publication).toEqual(old)
 })
 
 // Build a fake fetch Response with streaming SSE body
@@ -57,7 +71,18 @@ const sseResponse = (frames, { status = 200, chunks } = {}) => {
 
 describe('Pixel', () => {
   beforeEach(() => {
-    globalThis.fetch = vi.fn()
+    // Stream fixtures are independent of background context reads. The full
+    // context lifecycle is exercised in PixelCompaction.test.jsx; retain all
+    // network observations here without consuming the next SSE fixture.
+    const responses=vi.fn()
+    const fetchMock=vi.fn((url,...args)=>url==='/api/pixel/chat/context'
+      ? Promise.resolve(response({schemaVersion:1,status:'missing',sessionRevision:null,context:null,model:null,
+        compaction:{status:'idle',count:0},history:{revision:null,acknowledgedMessages:0}}))
+      : responses(url,...args))
+    for(const method of ['mockResolvedValue','mockResolvedValueOnce','mockRejectedValue','mockRejectedValueOnce','mockImplementation','mockImplementationOnce']) {
+      fetchMock[method]=(...args)=>{responses[method](...args);return fetchMock}
+    }
+    globalThis.fetch = fetchMock
     globalThis.localStorage.clear()
   })
 
@@ -215,11 +240,12 @@ describe('Pixel', () => {
     expect(frame).toHaveAttribute('sandbox', 'allow-scripts allow-forms allow-downloads')
     expect(screen.queryByLabelText('Snapshot details')).not.toBeInTheDocument()
     expect(screen.queryByText('Info', {exact:true})).not.toBeInTheDocument()
-    expect(screen.getByRole('button', {name:'Files',exact:true})).toBeInTheDocument()
-    expect(screen.getByTitle('Open preview in a new tab')).toHaveAttribute('href', `/pixel-preview/${siteId}/`)
-    expect(screen.getByRole('link', { name: 'Open the verified preview' })).toHaveAttribute('href', `/pixel-preview/${siteId}/`)
-    expect(screen.getByRole('link', { name: 'Documentation' })).toHaveAttribute('href', 'https://example.com/docs')
-    expect(screen.getByRole('link', { name: 'Other host' })).toHaveAttribute('href', `http://${siteId}.localhost.example.com:9437/${siteId}/`)
+    expect(screen.getByRole('button', {name:'Browse files',exact:true})).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button',{name:'Workspace options'}))
+    expect(screen.getByRole('link',{name:'Open preview in a new tab'})).toHaveAttribute('href', `/pixel-preview/${siteId}/`)
+    expect(await screen.findByRole('link', { name: 'Open the verified preview' })).toHaveAttribute('href', `/pixel-preview/${siteId}/`)
+    expect(await screen.findByRole('link', { name: 'Documentation' })).toHaveAttribute('href', 'https://example.com/docs')
+    expect(await screen.findByRole('link', { name: 'Other host' },{timeout:2000})).toHaveAttribute('href', `http://${siteId}.localhost.example.com:9437/${siteId}/`)
 
     await waitFor(() => expect(
       JSON.parse(globalThis.localStorage.getItem('ods.pixel.chat.v1')).preview
@@ -250,15 +276,20 @@ describe('Pixel', () => {
     render(<Pixel />)
     await screen.findByText('Available')
     fireEvent.click(screen.getByRole('button',{name:'Workspace',exact:true}))
-    expect(screen.getByText('No preview published yet')).toBeVisible()
+    fireEvent.click(screen.getByRole('tab',{name:'Preview',exact:true}))
+    expect(screen.getByText('No files to show yet')).toBeVisible()
     expect(screen.queryByTitle('Interactive Portal preview')).toBeNull()
-    fireEvent.click(screen.getByRole('button',{name:'Ask Pixel to publish'}))
+    fireEvent.click(screen.getByRole('button',{name:'Expand workspace'}))
+    expect(document.querySelector('.pixel-chat-preview-layout')).toHaveClass('is-workspace-expanded')
+    fireEvent.click(screen.getByRole('button',{name:'Ask Portal to publish'}))
+    expect(document.querySelector('.pixel-chat-preview-layout')).not.toHaveClass('is-workspace-expanded')
     expect(screen.getByPlaceholderText('Message Portal...').value).toContain('pixel_ods_workspace_preview')
     expect(globalThis.fetch.mock.calls.some(([url]) => url === '/api/pixel/chat/stream')).toBe(false)
     fireEvent.click(screen.getByTitle('Close preview'))
-    expect(screen.queryByText('No preview published yet')).toBeNull()
+    expect(screen.queryByText('No files to show yet')).toBeNull()
     fireEvent.click(screen.getByRole('button',{name:'Workspace',exact:true}))
-    expect(screen.getByText('No preview published yet')).toBeVisible()
+    fireEvent.click(screen.getByRole('tab',{name:'Preview',exact:true}))
+    expect(screen.getByText('No files to show yet')).toBeVisible()
   })
 
   it('deletes the selected idle chat and starts an empty one without resurrecting it', async () => {
@@ -302,7 +333,7 @@ describe('Pixel', () => {
     const column = screen.getByPlaceholderText('Message Portal...').closest('.pixel-chat-column')
     expect(column.parentElement).toBe(panel.parentElement)
     expect(column).toContainElement(screen.getByRole('button',{name:'Workspace',exact:true}))
-    expect(column).toContainElement(screen.getByRole('link',{name:'Change model'}))
+    expect(column).toContainElement(screen.getByRole('button',{name:/Choose model:/}))
     expect(column).toContainElement(screen.getByRole('button',{name:'Search Pixel'}))
     expect(panel).not.toContainElement(screen.getByRole('heading',{name:'Portal',exact:true}))
     fireEvent.click(screen.getByTitle('Collapse preview'))
@@ -326,15 +357,48 @@ describe('Pixel', () => {
     globalThis.fetch.mockResolvedValueOnce(response({available:true}))
     render(<Pixel />)
     await screen.findByText('Available')
-    fireEvent.click(screen.getByRole('button',{name:'Workspace',exact:true}))
-    fireEvent.click(screen.getByRole('button',{name:'Activity',exact:true}))
-    expect(screen.getByText('Read')).toBeVisible()
+    const activity=screen.getByRole('region',{name:'Agent activity'})
+    fireEvent.click(within(activity).getByRole('button',{name:'Worked for 2s'}))
+    expect(within(activity).getByText('Reading files')).toBeVisible()
     globalThis.fetch.mockResolvedValueOnce(sseResponse([JSON.stringify({choices:[{delta:{content:'OK'}}]}),'[DONE]']))
     fireEvent.change(screen.getByPlaceholderText('Message Portal...'),{target:{value:'Continue'}})
     fireEvent.click(screen.getByTitle('Send'))
     await screen.findByText('OK')
     const calls=globalThis.fetch.mock.calls.filter(([url])=>url==='/api/pixel/chat/stream')
     expect(JSON.parse(calls.at(-1)[1].body).messages.every(message=>Object.keys(message).sort().join(',')==='content,role')).toBe(true)
+  })
+
+  it('restores pending questions and choices then continues the same conversation without UI metadata', async () => {
+    const questions=[{id:'style',question:'Qual estilo?',options:['Clean','Colorido']}]
+    fetch.mockResolvedValueOnce(response({available:true}))
+    fetch.mockResolvedValueOnce(sseResponse([
+      JSON.stringify({choices:[{delta:{content:'Qual estilo?'}}]}),
+      JSON.stringify({pixel_questions:{schemaVersion:1,questions},choices:[{delta:{},finish_reason:'stop'}]}),'[DONE]']))
+    const first=render(<Pixel/>)
+    await screen.findByText('Available')
+    fireEvent.change(screen.getByPlaceholderText('Message Portal...'),{target:{value:'Pergunte antes de criar'}})
+    fireEvent.click(screen.getByTitle('Send'))
+    const clean=await screen.findByRole('radio',{name:/Clean/})
+    fireEvent.click(clean)
+    await waitFor(()=>expect(JSON.parse(localStorage.getItem('ods.pixel.chat.v1')).messages.at(-1).questionDraft.style).toBe('Clean'))
+    const chatId=JSON.parse(localStorage.getItem('ods.pixel.chat.v1')).chatId
+    first.unmount()
+    fetch.mockResolvedValueOnce(response({available:true}))
+    render(<Pixel/>)
+    await screen.findByText('Available')
+    expect(screen.getByRole('radio',{name:/Clean/})).toBeChecked()
+    fetch.mockResolvedValueOnce(sseResponse([JSON.stringify({choices:[{delta:{content:'Escolha recebida.'}}]}),'[DONE]']))
+    fireEvent.click(screen.getByRole('button',{name:'Continue',exact:true}))
+    await screen.findByText('Escolha recebida.')
+    const calls=fetch.mock.calls.filter(([url])=>url==='/api/pixel/chat/stream')
+    expect(calls).toHaveLength(2)
+    const request=JSON.parse(calls.at(-1)[1].body)
+    expect(request.chat_id).toBe(chatId)
+    expect(request.messages.at(-1)).toEqual({role:'user',content:'Qual estilo?\nClean'})
+    expect(request.messages.every(message=>Object.keys(message).sort().join(',')==='content,role')).toBe(true)
+    expect(screen.queryByRole('button',{name:'Continue',exact:true})).toBeNull()
+    expect(screen.getByRole('region',{name:'Your answers'})).toHaveTextContent('Clean')
+    expect(screen.queryByText('Qual estilo?\nClean')).toBeNull()
   })
 
   it('renders agent tables and task lists while keeping unsafe content inert', async () => {
@@ -480,19 +544,20 @@ describe('Pixel', () => {
     expect(screen.queryByTitle('Interactive Portal preview')).not.toBeInTheDocument()
   })
 
-  it('keeps dictation beside send and distinguishes characters from model context', async () => {
+  it('keeps dictation beside send and places the model selector beside measured context', async () => {
     globalThis.fetch.mockResolvedValue(response({ available: true, model: 'pixel/default' }))
     render(<Pixel systemStatus={{ inference: { loadedModel: 'local-model', contextSize: 65536 } }} />)
     await waitFor(() => expect(screen.getByText('Available')).toBeInTheDocument())
     const send = screen.getByTitle('Send')
     expect(send.parentElement).toContainElement(screen.getByRole('button', { name: 'Dictate message' }))
     expect(send.parentElement).toHaveClass('pixel-composer-actions')
-    expect(screen.getByText('64K context')).toHaveAttribute('title', expect.stringContaining('Model context'))
-    const counter = screen.getByTitle('Characters in this message, not tokens or context usage')
-    expect(counter).toHaveTextContent(`0 / ${(16 * 1024).toLocaleString()} chars`)
+    expect(screen.getByRole('button',{name:'Token usage unavailable'})).toBeInTheDocument()
+    expect(screen.queryByText(/chars$/)).not.toBeInTheDocument()
+    const selector=screen.getByRole('button',{name:'Choose model: local model'})
+    expect(selector.closest('.pixel-composer-limits')).toBeInTheDocument()
     fireEvent.change(screen.getByPlaceholderText('Message Portal...'), { target: { value: 'Olá' } })
-    expect(counter).toHaveTextContent(`3 / ${(16 * 1024).toLocaleString()} chars`)
-    expect(screen.getByText('64K context')).toBeInTheDocument()
+    expect(selector).toBeInTheDocument()
+    expect(screen.getByRole('button',{name:'Token usage unavailable'})).toBeInTheDocument()
     const field = screen.getByPlaceholderText('Message Portal...')
     expect(field).toHaveClass('pixel-composer-input')
     expect(field.className).not.toContain('focus:ring')
@@ -501,7 +566,8 @@ describe('Pixel', () => {
     expect(field).toHaveValue('Olá\nsegunda linha\nterceira linha')
     expect(send.parentElement.parentElement).toHaveClass('pixel-composer-row')
     expect(send.parentElement).toContainElement(screen.getByRole('button',{name:'Dictate message'}))
-    expect(globalThis.fetch.mock.calls.every(([,options]) => options?.method !== 'POST')).toBe(true)
+    expect(globalThis.fetch.mock.calls.filter(([url])=>url!=='/api/pixel/chat/context').every(([,options]) => options?.method !== 'POST')).toBe(true)
+    expect(selector.closest('.pixel-composer-limits').lastElementChild).toContainElement(screen.getByRole('button',{name:'Token usage unavailable'}))
   })
 
   it('highlights fenced code while keeping unknown languages and HTML inert', async () => {
@@ -515,8 +581,8 @@ describe('Pixel', () => {
     fireEvent.change(screen.getByPlaceholderText('Message Portal...'), { target: { value: 'Show code' } })
     fireEvent.click(screen.getByTitle('Send'))
     await waitFor(() => expect(container.querySelector('.hljs-keyword')).toHaveTextContent('const'))
-    expect(container.querySelector('.hljs-string')).toHaveTextContent('"Pixel"')
-    expect(container.querySelector('.language-unknown-language')).toHaveTextContent('<video onerror="alert(1)">')
+    await waitFor(() => expect(container.querySelector('.hljs-string')).toHaveTextContent('"Pixel"'))
+    await waitFor(() => expect(container.querySelector('.language-unknown-language')).toHaveTextContent('<video onerror="alert(1)">'))
     expect(container.querySelector('video')).toBeNull()
   })
 
@@ -688,8 +754,8 @@ describe('Pixel', () => {
       'title',
       'Pixel is ready and adapts its tool flow for this model.'
     )
-    expect(screen.getAllByRole('link', { name: 'Change model' })).toHaveLength(1)
-    expect(screen.getAllByRole('link', { name: 'Change model' })[0]).toHaveAttribute('href', '/models')
+    expect(screen.getByRole('button', { name: /Choose model:/ })).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'Change model' })).not.toBeInTheDocument()
     expect(screen.getByPlaceholderText('Message Portal...')).toBeEnabled()
   })
 
@@ -737,8 +803,8 @@ describe('Pixel', () => {
       'title',
       'This model failed Pixel tool qualification.'
     )
-    expect(screen.getAllByRole('link', { name: 'Change model' })).toHaveLength(1)
-    expect(screen.getAllByRole('link', { name: 'Change model' })[0]).toHaveAttribute('href', '/models')
+    expect(screen.getByRole('button', { name: /Choose model:/ })).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'Change model' })).not.toBeInTheDocument()
     expect(screen.getByPlaceholderText('Message Portal...')).toBeEnabled()
   })
 
@@ -788,10 +854,11 @@ describe('Pixel', () => {
     }
     const before = publication('a')
     const after = publication('b')
+    const originalContent = `Game updated\n\nYour preview is ready.\n\n[Open preview](${after.url})\n\nPublished from your workspace.\nPublication scope: this receipt verifies the published snapshot, not functional behavior or completion of other requested work.`
     const changes = {schemaVersion: 1, scope: 'published-snapshots', siteId: after.siteId, sha256: after.sha256, beforeSiteId: before.siteId, beforeSha256: before.sha256, changes: [{path: 'index.html', change: 'modified', additions: 22, deletions: 9, truncated: true, diff: []}]}
     globalThis.localStorage.setItem('ods.pixel.chat.v1', JSON.stringify({schema: 1, chatId: 'diff-history', messages: [
       {role: 'user', content: 'edit the game'},
-      {role: 'assistant', content: 'Game updated', publication: after, beforePublication: before},
+      {role: 'assistant', content: originalContent, publication: after, beforePublication: before},
     ]}))
     globalThis.fetch.mockImplementation(async (url) => {
       if (url.includes('__ods_changes__')) return {ok: true, headers: new Map(), arrayBuffer: async () => new TextEncoder().encode(JSON.stringify(changes)).buffer}
@@ -799,23 +866,28 @@ describe('Pixel', () => {
       return response({available: true, model: 'pixel/default'})
     })
     const view = render(<Pixel />)
-    expect(await screen.findByText('Edited index.html')).toBeVisible()
+    expect(await screen.findByRole('button',{name:/index\.html/})).toBeVisible()
+    expect(screen.getByText('Game updated')).toBeVisible()
+    expect(screen.queryByRole('link',{name:/Open preview/})).toBeNull()
+    expect(screen.queryByText(/Published from your workspace/)).toBeNull()
+    expect(screen.queryByText(/Publication scope:/)).toBeNull()
+    expect(screen.getByRole('button',{name:'Copy response'})).toBeVisible()
     await screen.findByText('Available')
     fireEvent.change(screen.getByPlaceholderText('Message Portal...'), {target: {value: 'another message'}})
     fireEvent.click(screen.getByTitle('Send'))
-    expect(screen.getByText('Edited index.html')).toBeVisible()
+    expect(screen.getByRole('button',{name:/index\.html/})).toBeVisible()
     expect(await screen.findByText('Second answer')).toBeVisible()
-    expect(screen.getByText('Edited index.html')).toBeVisible()
+    expect(screen.getByRole('button',{name:/index\.html/})).toBeVisible()
     expect(screen.getAllByLabelText('22 lines added, 9 lines removed')).toHaveLength(2)
     const call = globalThis.fetch.mock.calls.find(([url]) => url === '/api/pixel/chat/stream')
     expect(JSON.parse(call[1].body).messages).toEqual([
-      {role: 'user', content: 'edit the game'}, {role: 'assistant', content: 'Game updated'}, {role: 'user', content: 'another message'},
+      {role: 'user', content: 'edit the game'}, {role: 'assistant', content: originalContent}, {role: 'user', content: 'another message'},
     ])
     const stored = JSON.parse(localStorage.getItem('ods.pixel.chat.v1'))
-    expect(stored.messages[1]).toMatchObject({publication: after, beforePublication: before})
+    expect(stored.messages[1]).toMatchObject({content:originalContent, publication: after, beforePublication: before})
     view.unmount()
     render(<Pixel />)
-    expect(await screen.findByText('Edited index.html')).toBeVisible()
+    expect(await screen.findByRole('button',{name:/index\.html/})).toBeVisible()
     expect(screen.getByText('Second answer')).toBeVisible()
   })
 
@@ -891,12 +963,12 @@ describe('Pixel', () => {
 
     await waitFor(() => expect(screen.getByText('Available')).toBeInTheDocument())
     expect(screen.getByText('What do you want to work on?')).toBeInTheDocument()
-    expect(screen.getByText('Qwen3.5-9B-Q4_K_M.gguf')).toBeInTheDocument()
-    expect(screen.getByText('32K context')).toBeInTheDocument()
+    expect(screen.getByRole('button',{name:'Choose model: Qwen 3.5 9B'})).toBeInTheDocument()
+    expect(screen.getByRole('button',{name:'Token usage unavailable'})).toBeInTheDocument()
 
     for (const name of ['Check ODS health','Build in my workspace','Research with sources','Plan a multi-step task']) expect(screen.queryByRole('button',{name:new RegExp(name)})).toBeNull()
     expect(screen.getByPlaceholderText('Message Portal...')).toHaveValue('')
-    expect(globalThis.fetch).toHaveBeenCalledTimes(1)
+    expect(globalThis.fetch.mock.calls.filter(([url])=>url==='/api/pixel/status')).toHaveLength(1)
   })
 
   it('shows the active remote Pixel runtime instead of the local rollback model', async () => {
@@ -923,8 +995,8 @@ describe('Pixel', () => {
     }} />)
 
     await waitFor(() => expect(screen.getByText('Available')).toBeInTheDocument())
-    expect(screen.getByText('remote-owner-model')).toBeInTheDocument()
-    expect(screen.getByText('128K context')).toBeInTheDocument()
+    expect(screen.getByRole('button',{name:'Choose model: remote owner model'})).toBeInTheDocument()
+    expect(screen.getByRole('button',{name:/Token usage unavailable.*131,072 token capacity/})).toBeInTheDocument()
     expect(screen.queryByText('Qwen3.5-9B-Q4_K_M.gguf')).not.toBeInTheDocument()
   })
 
@@ -956,8 +1028,8 @@ describe('Pixel', () => {
     }} />)
 
     await waitFor(() => expect(screen.getByText('Available')).toBeInTheDocument())
-    expect(screen.getByText('small-owner-model')).toBeInTheDocument()
-    expect(screen.getByText('8K context')).toBeInTheDocument()
+    expect(screen.getByRole('button',{name:'Choose model: small owner model'})).toBeInTheDocument()
+    expect(screen.getByRole('button',{name:/Token usage unavailable.*8,192 token capacity/})).toBeInTheDocument()
     expect(screen.queryByText('Qwen3.5-9B-Q4_K_M.gguf')).not.toBeInTheDocument()
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
     expect(screen.getByPlaceholderText('Message Portal...')).toBeEnabled()
@@ -971,8 +1043,8 @@ describe('Pixel', () => {
     }))
     render(<Pixel systemStatus={{ inference: { loadedModel: 'qwen3.5-9b', contextSize: 32768 } }} />)
     await waitFor(() => expect(screen.getByText('Available')).toBeInTheDocument())
-    expect(screen.getByText('Qwen3.6-35B-A3B-GGUF')).toBeInTheDocument()
-    expect(screen.getByText('64K context')).toBeInTheDocument()
+    expect(screen.getByRole('button',{name:'Choose model: Qwen 3.6 35B'})).toBeInTheDocument()
+    expect(screen.getByRole('button',{name:/Token usage unavailable.*65,536 token capacity/})).toBeInTheDocument()
     expect(screen.queryByText('qwen3.5-9b')).not.toBeInTheDocument()
     expect(screen.getByPlaceholderText('Message Portal...')).toBeEnabled()
   })
@@ -1001,8 +1073,8 @@ describe('Pixel', () => {
     }} />)
 
     await waitFor(() => expect(screen.getByText('Available')).toBeInTheDocument())
-    expect(screen.getByText('Qwen3.5-9B-Q4_K_M.gguf')).toBeInTheDocument()
-    expect(screen.getByText('32K context')).toBeInTheDocument()
+    expect(screen.getByRole('button',{name:'Choose model: Qwen 3.5 9B'})).toBeInTheDocument()
+    expect(screen.getByRole('button',{name:'Token usage unavailable'})).toBeInTheDocument()
     expect(screen.queryByText('forged-runtime')).not.toBeInTheDocument()
   })
 
@@ -1087,13 +1159,16 @@ describe('Pixel', () => {
       { role: 'user', content: 'second turn' },
     ])
     expect(body.messages.every(message => Object.keys(message).sort().join(',') === 'content,role')).toBe(true)
+    expect(body.history_snapshot).toEqual({schemaVersion:1,messages:body.messages})
   })
 
-  it('recovers once from a host-authoritative zero-submission marker with clean future context', async () => {
+  it.each([0,2])('recovers once from a zero-submission marker while preserving history from contextStart=%s', async contextStart => {
     globalThis.localStorage.setItem('ods.pixel.chat.v1', JSON.stringify({
       schema: 1,
       chatId: 'long-running-chat',
+      contextStart,
       messages: [
+        ...(contextStart ? [{role:'user',content:'Excluded earlier request'},{role:'assistant',content:'Excluded earlier answer'}] : []),
         { role: 'user', content: 'old context' },
         { role: 'assistant', content: 'old answer' },
       ],
@@ -1140,9 +1215,15 @@ describe('Pixel', () => {
     expect(retryBody.messages).toEqual([
       { role: 'user', content: 'Inspect the installed extension.' },
     ])
+    expect(retryBody.history_snapshot).toEqual(firstBody.history_snapshot)
+    expect(retryBody.history_snapshot.messages).toEqual([
+      { role: 'user', content: 'old context' },
+      { role: 'assistant', content: 'old answer' },
+      ...retryBody.messages,
+    ])
     const savedRecovery = JSON.parse(localStorage.getItem('ods.pixel.chat.v1'))
-    expect(savedRecovery.contextStart).toBe(2)
-    expect(savedRecovery.messages[0].content).toBe('old context')
+    expect(savedRecovery.contextStart).toBe(contextStart)
+    expect(savedRecovery.messages[contextStart].content).toBe('old context')
     expect(screen.getByText('old answer')).toBeVisible()
 
     fireEvent.change(textarea, { target: { value: 'Continue from that verified result.' } })
@@ -1153,12 +1234,43 @@ describe('Pixel', () => {
     expect(JSON.parse(chatCalls[2][1].body)).toEqual({
       chat_id: retryBody.chat_id,
       request_id: expect.any(String),
+      history_snapshot:{schemaVersion:1,messages:[
+        { role: 'user', content: 'old context' },
+        { role: 'assistant', content: 'old answer' },
+        { role: 'user', content: 'Inspect the installed extension.' },
+        { role: 'assistant', content: 'Verified recovery result' },
+        { role: 'user', content: 'Continue from that verified result.' },
+      ]},
       messages: [
+        { role: 'user', content: 'old context' },
+        { role: 'assistant', content: 'old answer' },
         { role: 'user', content: 'Inspect the installed extension.' },
         { role: 'assistant', content: 'Verified recovery result' },
         { role: 'user', content: 'Continue from that verified result.' },
       ],
     })
+  })
+
+  it.each([409,412])('preserves the original history boundary when recovery is rejected with %s',async rejection=>{
+    const messages=[{role:'user',content:'Excluded request'},{role:'assistant',content:'Excluded answer'},
+      {role:'user',content:'The project is Cedar'},{role:'assistant',content:'I will remember Cedar'}]
+    localStorage.setItem('ods.pixel.chat.v1',JSON.stringify({schema:1,chatId:'retry-history-chat',contextStart:2,messages}))
+    const marker=JSON.stringify({choices:[{delta:{},finish_reason:'stop'}],pixel:{schemaVersion:1,recovery:'clean-context',reason:'operations-unavailable-zero-submissions'}})
+    let attempts=0
+    fetch.mockImplementation(async url=>{
+      if(url==='/api/pixel/chat/stream')return ++attempts===1?sseResponse([marker,'[DONE]']):response({detail:'Model preparation in progress'},rejection)
+      if(url==='/api/pixel/chat/context')return response({schemaVersion:1,status:'missing',sessionRevision:null,context:null,model:null,compaction:{status:'idle',count:0},history:{revision:null,acknowledgedMessages:0}})
+      return response({available:true})
+    })
+    render(<Pixel/>);await screen.findByText('Available')
+    const textarea=screen.getByPlaceholderText('Message Portal...')
+    fireEvent.change(textarea,{target:{value:'Continue Cedar'}})
+    fireEvent.click(screen.getByTitle('Send'))
+    await waitFor(()=>expect(textarea).toHaveValue('Continue Cedar'))
+    const calls=fetch.mock.calls.filter(([url])=>url==='/api/pixel/chat/stream')
+    expect(calls).toHaveLength(2)
+    expect(JSON.parse(calls[1][1].body).history_snapshot.messages).toEqual([...messages.slice(2),{role:'user',content:'Continue Cedar'}])
+    expect(JSON.parse(localStorage.getItem('ods.pixel.chat.v1'))).toMatchObject({contextStart:2,messages,draft:'Continue Cedar'})
   })
 
   it('stops honestly after a second host-authoritative zero-submission marker', async () => {
@@ -1268,7 +1380,7 @@ describe('Pixel', () => {
     fireEvent.click(screen.getByTitle('Send'))
 
     await waitFor(() => {
-      expect(screen.getByText('Hello world')).toBeInTheDocument()
+      expect(screen.getByText((_,node)=>node.tagName==='P' && node.textContent==='Hello world')).toBeInTheDocument()
     })
   })
 
@@ -1318,7 +1430,7 @@ describe('Pixel', () => {
     fireEvent.click(screen.getByTitle('Send'))
 
     await waitFor(() => {
-      expect(screen.getByText('Split test')).toBeInTheDocument()
+      expect(screen.getByText((_,node)=>node.tagName==='P' && node.textContent==='Split test')).toBeInTheDocument()
     })
   })
 
@@ -1662,8 +1774,8 @@ describe('Pixel', () => {
       expect(ta).toBeDisabled()
       expect(screen.getByText('Working')).toBeInTheDocument()
       expect(screen.getAllByText(/0:00 elapsed/).length).toBeGreaterThan(0)
-      expect(screen.getByText('Starting the owner-agent turn')).toBeInTheDocument()
-      const reply = screen.getByText('Starting the owner-agent turn').closest('[data-pixel-response]')
+      expect(screen.getByText('Thinking…')).toBeInTheDocument()
+      const reply = screen.getByText('Thinking…').closest('[data-pixel-response]')
       expect(reply.querySelectorAll('.pixel-character')).toHaveLength(1)
       expect(reply.querySelector('.pixel-reply-character')).not.toBeNull()
       expect(screen.queryByText('Available')).not.toBeInTheDocument()
@@ -1940,23 +2052,28 @@ describe('Pixel', () => {
     expect(JSON.parse(localStorage.getItem('ods.pixel.chat.v1')).messages[1].content).toBe(longReply)
   })
 
-  it.each(['Files','Changes'])('reloads the active %s inspector after a failed fetch',async tab=>{
+  it.each(['Files','Review'])('reloads the active %s inspector after a failed fetch',async tab=>{
     const sha256='a'.repeat(64),siteId=`site-${sha256.slice(0,24)}`
     localStorage.setItem('ods.pixel.chat.v1',JSON.stringify({schema:1,chatId:'reload_inspector',messages:[{role:'user',content:'Inspect project'}],preview:{schemaVersion:1,kind:'ods-pixel-workspace-preview',relativeDirectory:'demo',siteId,port:9437,url:`http://${siteId}.localhost:9437/${siteId}/`,files:1,bytes:100,sha256,entrySha256:'b'.repeat(64)}}))
     globalThis.fetch.mockImplementation(async url=>url==='/api/pixel/status' ? response({available:true}) : {ok:false})
     render(<Pixel />)
     await screen.findByText('Available')
-    fireEvent.click(screen.getByRole('button',{name:tab,exact:true}))
-    await screen.findByText(tab==='Files' ? 'Task files could not be verified.' : /File comparison unavailable/)
-    const requests=()=>fetch.mock.calls.filter(([url])=>url.startsWith('/pixel-preview/')).length
+    fireEvent.click(tab==='Files' ? screen.getByRole('button',{name:'Browse files'}) : screen.getByRole('tab',{name:'Review'}))
+    await screen.findByText(tab==='Files' ? 'Files unavailable.' : /File comparison unavailable/)
+    const inspector=tab==='Files' ? '__ods_manifest__' : '__ods_changes__'
+    const requests=()=>fetch.mock.calls.filter(([url])=>url.startsWith('/pixel-preview/') && url.includes(inspector)).length
     const before=requests()
     fireEvent.click(screen.getByTitle('Reload preview'))
     await waitFor(()=>expect(requests()).toBe(before+1))
-    expect(screen.getByRole('button',{name:tab,exact:true})).toHaveAttribute('aria-pressed','true')
+    if(tab==='Files') expect(screen.getByRole('button',{name:'Browse files'})).toHaveAttribute('aria-pressed','true')
+    expect(screen.getByRole('tab',{name:tab==='Files'?'Preview':'Review'})).toHaveAttribute('aria-selected','true')
     expect(screen.getAllByTitle('Interactive Portal preview')).toHaveLength(1)
-    fireEvent.click(screen.getByRole('button',{name:'Preview',exact:true}))
+    if(tab==='Files') fireEvent.click(screen.getByRole('button',{name:'Browse files'}))
+    else fireEvent.click(screen.getByRole('tab',{name:'Preview'}))
     expect(screen.getAllByTitle('Interactive Portal preview')).toHaveLength(1)
-    expect(screen.queryByRole('region',{name:'Task files'})).not.toBeInTheDocument()
+    expect(screen.getByRole('tabpanel',{name:'Preview'})).toBeVisible()
+    expect(screen.queryByRole('tabpanel',{name:'Review'})).toBeNull()
+    expect(screen.queryByText('Files unavailable.')).toBeNull()
   })
 
   it('renders assistant HTML as inert text', async () => {
@@ -1986,3 +2103,8 @@ describe('Pixel', () => {
     })
   })
 })
+
+// Fix the numeric locale for English accessibility fixtures on every host OS.
+beforeEach(()=>{vi.spyOn(Number.prototype,'toLocaleString').mockImplementation(function(locales,options){
+  return new Intl.NumberFormat(locales || 'en-US',options).format(this.valueOf())
+})})

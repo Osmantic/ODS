@@ -31,6 +31,7 @@ function hooks(guardResult, managedRuntime = false) {
       after: () => activity.push('after'),
       finish: () => activity.push('finish'),
     },
+    goalProgress: {before() {}, update() {}, finish() {}},
     managedRuntime, accessRuntime: runtime, withPixelCronDeliveryDefault, AGENT_ID: 'pixel',
   });
   return {callbacks, calls, runtime, activity};

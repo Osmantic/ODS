@@ -1,0 +1,19 @@
+{
+  "version": "2026.6.33",
+  "sourceSha256": "1aa62e90f3a56b0498e2254743a0896ddb4dbd8e46f389597ffe118c98ee84d5",
+  "patchedSha256": "c59eb4ac87a09351baa815c5d83dfd680b1de7722647c85191184f3b2f7beaec",
+  "replacements": [
+    [
+      "async function interruptSessionRunIfActive(params) {",
+      "function refuseActiveSessionCompaction(params) {\n\tconst cfg = params.context.getRuntimeConfig();\n\tconst hasTrackedRun = hasTrackedActiveSessionRun({\n\t\tcontext: params.context,\n\t\trequestedKey: params.requestedKey,\n\t\tcanonicalKey: params.canonicalKey,\n\t\tagentId: params.agentId,\n\t\tdefaultAgentId: resolveDefaultAgentId(cfg)\n\t});\n\tconst hasEmbeddedRun = typeof params.sessionId === \"string\" && params.sessionId ? isEmbeddedAgentRunActive(params.sessionId) : false;\n\tif (hasTrackedRun || hasEmbeddedRun) return {\n\t\tinterrupted: false,\n\t\terror: errorShape(ErrorCodes.UNAVAILABLE, \"Session is active; retry compaction after the current run finishes.\")\n\t};\n\treturn { interrupted: false };\n}\nasync function interruptSessionRunIfActive(params) {"
+    ],
+    [
+      "const interruptResult = await interruptSessionRunIfActive({\n\t\t\t\treq,\n\t\t\t\tcontext,\n\t\t\t\tclient,\n\t\t\t\tisWebchatConnect,\n\t\t\t\trequestedKey: key,\n\t\t\t\tcanonicalKey: target.canonicalKey,\n\t\t\t\tagentId: requestedAgentId,\n\t\t\t\tsessionId\n\t\t\t});",
+      "const interruptResult = refuseActiveSessionCompaction({\n\t\t\t\treq,\n\t\t\t\tcontext,\n\t\t\t\tclient,\n\t\t\t\tisWebchatConnect,\n\t\t\t\trequestedKey: key,\n\t\t\t\tcanonicalKey: target.canonicalKey,\n\t\t\t\tagentId: requestedAgentId,\n\t\t\t\tsessionId\n\t\t\t});"
+    ],
+    [
+      "const truncateInterrupt = await interruptSessionRunIfActive({\n\t\t\treq,\n\t\t\tcontext,\n\t\t\tclient,\n\t\t\tisWebchatConnect,\n\t\t\trequestedKey: key,\n\t\t\tcanonicalKey: target.canonicalKey,\n\t\t\tagentId: requestedAgentId,\n\t\t\tsessionId\n\t\t});",
+      "const truncateInterrupt = refuseActiveSessionCompaction({\n\t\t\treq,\n\t\t\tcontext,\n\t\t\tclient,\n\t\t\tisWebchatConnect,\n\t\t\trequestedKey: key,\n\t\t\tcanonicalKey: target.canonicalKey,\n\t\t\tagentId: requestedAgentId,\n\t\t\tsessionId\n\t\t});"
+    ]
+  ]
+}

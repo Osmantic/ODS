@@ -130,6 +130,11 @@ else
                 fi
                 _phase06_step "rebind-pixel-source"
                 ai "Retiring the verified prior Pixel source before applying the new immutable source..."
+                if ! _ods_pixel_restore_transition_source \
+                    "$_phase06_pixel_owner" "$_phase06_pixel_home" "$PIXEL_SOURCE_REF" >/dev/null; then
+                    error "Could not reconstruct the exact prior Pixel source needed for safe retirement."
+                    return 1
+                fi
                 if ! ods_pixel_uninstall_managed "$INSTALL_DIR" "$_phase06_pixel_home"; then
                     error "Could not safely retire the prior ODS-managed Pixel source."
                     return 1
@@ -348,11 +353,11 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
     do
         [[ -d "$_installed_code_root" && ! -L "$_installed_code_root" ]] \
             || error "Missing or unsafe installed code tree: $_installed_code_root"
-        find -P "$_installed_code_root" \( -type d -o -type f \) -exec chmod go-w {} + \
+        find -P "$_installed_code_root" \( -type d -o -type f \) -exec chmod go-w -- {} + \
             || error "Could not secure installed code tree: $_installed_code_root"
     done
     find -P "$INSTALL_DIR" -maxdepth 1 -type f \
-        \( -name '*.sh' -o -name 'ods-cli' \) -exec chmod go-w {} + \
+        \( -name '*.sh' -o -name 'ods-cli' \) -exec chmod go-w -- {} + \
         || error "Could not secure installed root executables"
     unset _installed_code_root
 
@@ -365,7 +370,7 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
         _pixel_exec_control_path="$_pixel_exec_control_dir/$_pixel_exec_control"
         [[ -f "$_pixel_exec_control_path" && ! -L "$_pixel_exec_control_path" ]] \
             || error "Missing or unsafe Pixel execution-control helper: $_pixel_exec_control_path"
-        chmod 0755 "$_pixel_exec_control_path" \
+        chmod 0755 -- "$_pixel_exec_control_path" \
             || error "Could not secure Pixel execution-control helper: $_pixel_exec_control_path"
     done
     unset _pixel_exec_control_dir _pixel_exec_control _pixel_exec_control_path
@@ -409,7 +414,7 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
         [[ ! -L "$INSTALL_DIR/data/extensions-library" ]] \
             || error "Installed extension library cannot be a symlink"
         find -P "$INSTALL_DIR/data/extensions-library" \( -type d -o -type f \) \
-            -exec chmod go-w {} + \
+            -exec chmod go-w -- {} + \
             || error "Could not secure the installed extension library"
         ai_ok "Extensions library copied to data/extensions-library/ (from $_ext_lib_src)"
     else
@@ -567,6 +572,16 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
         printf '%s\n' "$model_id"
     }
 
+    # The local llama-server port may already belong to another owner service
+    # (for example a fleet worker). Honor an explicit install override before
+    # preserving an older .env value, and reject malformed ports before Compose.
+    OLLAMA_PORT_VALUE="$(_env_get_explicit_first OLLAMA_PORT "11434")"
+    if [[ ! "$OLLAMA_PORT_VALUE" =~ ^[1-9][0-9]{0,4}$ ]] \
+        || (( 10#$OLLAMA_PORT_VALUE > 65535 )); then
+        error "OLLAMA_PORT must be a port from 1 to 65535"
+        return 1
+    fi
+
     # Secrets: reuse existing values, generate only if missing
     WEBUI_SECRET=$(_phase06_env_hex_secret WEBUI_SECRET 32)
     N8N_PASS=$(_env_get N8N_PASS "$(openssl rand -base64 16 2>/dev/null || head -c 16 /dev/urandom | base64)")
@@ -663,16 +678,29 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
     SEARXNG_SECRET=$(_phase06_env_hex_secret SEARXNG_SECRET 32)
 
     PIXEL_OPENWEBUI_KEY_VALUE=""
+    PIXEL_MODEL_RELAY_KEY_VALUE=""
+    PIXEL_MODEL_RELAY_PORT_VALUE=""
     PIXEL_INGRESS_GID_VALUE=""
     PIXEL_SOURCE_URL_VALUE=""
     PIXEL_SOURCE_REF_VALUE=""
     PIXEL_SOURCE_DIR_VALUE=""
+    PIXEL_GATEWAY_PORT_VALUE=""
+    PIXEL_PREVIEW_PORT_VALUE=""
     if [[ "${ENABLE_PIXEL_RUNTIME:-false}" == "true" ]]; then
         PIXEL_OPENWEBUI_KEY_VALUE="$(_env_get PIXEL_OPENWEBUI_KEY "")"
         if [[ -z "$PIXEL_OPENWEBUI_KEY_VALUE" ]]; then
             PIXEL_OPENWEBUI_KEY_VALUE="$(ods_pixel_generate_key)" || error "Could not generate Pixel edge key"
         fi
         [[ "$PIXEL_OPENWEBUI_KEY_VALUE" =~ ^[0-9a-f]{64}$ ]] || error "Existing PIXEL_OPENWEBUI_KEY is invalid"
+        PIXEL_MODEL_RELAY_KEY_VALUE="$(_env_get PIXEL_MODEL_RELAY_KEY "")"
+        if [[ -z "$PIXEL_MODEL_RELAY_KEY_VALUE" ]]; then
+            PIXEL_MODEL_RELAY_KEY_VALUE="$(ods_pixel_generate_key)" || error "Could not generate Pixel model relay key"
+        fi
+        [[ "$PIXEL_MODEL_RELAY_KEY_VALUE" =~ ^[0-9a-f]{64}$ ]] || error "Existing PIXEL_MODEL_RELAY_KEY is invalid"
+        PIXEL_MODEL_RELAY_PORT_VALUE="$(_env_get_explicit_first PIXEL_MODEL_RELAY_PORT "4006")"
+        [[ "$PIXEL_MODEL_RELAY_PORT_VALUE" =~ ^[1-9][0-9]{0,4}$ \
+            && "$PIXEL_MODEL_RELAY_PORT_VALUE" -le 65535 ]] || \
+            error "PIXEL_MODEL_RELAY_PORT must be an integer from 1 to 65535"
 
         # Phase 11 creates/resolves ods-pixel immediately before Compose
         # validation, then atomically fills this initially empty numeric GID.
@@ -681,7 +709,24 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
             error "Existing PIXEL_INGRESS_GID is invalid"
 
         PIXEL_SOURCE_URL_VALUE="$(_env_get_explicit_first PIXEL_SOURCE_URL "https://github.com/Osmantic/Pixel.git")"
-        PIXEL_SOURCE_REF_VALUE="$(_env_get_explicit_first PIXEL_SOURCE_REF "bbd1d2d62c7260f822ba1e727728a0a02f78895f")"
+        PIXEL_SOURCE_REF_VALUE="$(_env_get_explicit_first PIXEL_SOURCE_REF "b33730436baf5d98bf58f7d57c090318fe19f433")"
+        PIXEL_GATEWAY_PORT_VALUE="$(_env_get_explicit_first PIXEL_GATEWAY_PORT "18789")"
+        PIXEL_PREVIEW_PORT_VALUE="$(_env_get_explicit_first PIXEL_PREVIEW_PORT "9437")"
+        [[ "$PIXEL_GATEWAY_PORT_VALUE" =~ ^[1-9][0-9]{0,4}$ \
+            && "$PIXEL_PREVIEW_PORT_VALUE" =~ ^[1-9][0-9]{0,4}$ \
+            && "$PIXEL_GATEWAY_PORT_VALUE" -le 65535 \
+            && "$PIXEL_PREVIEW_PORT_VALUE" -le 65535 ]] || \
+            error "Pixel gateway and preview ports must be integers from 1 to 65535"
+        [[ "$PIXEL_GATEWAY_PORT_VALUE" != "$PIXEL_PREVIEW_PORT_VALUE" ]] || \
+            error "PIXEL_GATEWAY_PORT and PIXEL_PREVIEW_PORT must be different"
+        [[ "$PIXEL_MODEL_RELAY_PORT_VALUE" != "$PIXEL_GATEWAY_PORT_VALUE" \
+            && "$PIXEL_MODEL_RELAY_PORT_VALUE" != "$PIXEL_PREVIEW_PORT_VALUE" \
+            && "$PIXEL_MODEL_RELAY_PORT_VALUE" != "${LITELLM_PORT:-4000}" ]] || \
+            error "Pixel model relay port conflicts with another Pixel or LiteLLM port"
+        export PIXEL_MODEL_RELAY_PORT="$PIXEL_MODEL_RELAY_PORT_VALUE"
+        export PIXEL_MODEL_RELAY_KEY="$PIXEL_MODEL_RELAY_KEY_VALUE"
+        export PIXEL_GATEWAY_PORT="$PIXEL_GATEWAY_PORT_VALUE"
+        export PIXEL_PREVIEW_PORT="$PIXEL_PREVIEW_PORT_VALUE"
         PIXEL_WEB_SEARCH_PROVIDER_VALUE="$(_env_get_explicit_first PIXEL_WEB_SEARCH_PROVIDER "")"
         case "$PIXEL_WEB_SEARCH_PROVIDER_VALUE" in
             ""|parallel-free|searxng) ;;
@@ -808,9 +853,13 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
         _default_hermes_base_url="http://llama-server:8080/v1"
         _default_hermes_api_key="sk-ods-hermes-local"
     fi
-    if [[ "$ODS_MODEL_SWITCHBOARD_VALUE" == "enabled" ]]; then
-        _default_hermes_base_url="http://litellm:4000/v1"
-        _default_hermes_api_key="${LITELLM_KEY}"
+    if [[ "$ODS_MODEL_SWITCHBOARD_VALUE" == "enabled" && "${ODS_MODE:-local}" != "cloud" && "$EXTERNAL_LLM_ACTIVE" != "true" ]]; then
+        # Local Hermes streams directly through model-router so an abandoned
+        # Talk request can cancel the active backend request.  LiteLLM remains
+        # the authenticated cloud/external gateway, but its retry layer can
+        # outlive a disconnected local Hermes client and pin the only slot.
+        _default_hermes_base_url="http://model-router:9099/v1"
+        _default_hermes_api_key="no-key"
     fi
     if [[ "$EXTERNAL_LLM_ACTIVE" == "true" ]]; then
         HERMES_LLM_BASE_URL_VALUE="http://litellm:4000/v1"
@@ -821,6 +870,12 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
     else
         HERMES_LLM_BASE_URL_VALUE=$(_env_get HERMES_LLM_BASE_URL "$_default_hermes_base_url")
         HERMES_LLM_API_KEY_VALUE=$(_env_get HERMES_LLM_API_KEY "$_default_hermes_api_key")
+    fi
+    if [[ "$ODS_MODEL_SWITCHBOARD_VALUE" == "enabled" && "${ODS_MODE:-local}" != "cloud" && "$EXTERNAL_LLM_ACTIVE" != "true" && "$HERMES_LLM_BASE_URL_VALUE" == "http://litellm:4000/v1" ]]; then
+        # Migrate the former managed default on upgrade.  Preserve every
+        # non-default custom endpoint exactly as supplied by the operator.
+        HERMES_LLM_BASE_URL_VALUE="http://model-router:9099/v1"
+        HERMES_LLM_API_KEY_VALUE="no-key"
     fi
     LLM_API_URL="$LLM_API_URL_VALUE"
     HERMES_LLM_BASE_URL="$HERMES_LLM_BASE_URL_VALUE"
@@ -1093,6 +1148,7 @@ LLM_MODEL_SIZE_MB=${LLM_MODEL_SIZE_MB:-0}
 MAX_CONTEXT=${MAX_CONTEXT}
 CTX_SIZE=${MAX_CONTEXT}
 MODEL_SELECTION_SOURCE=${MODEL_SELECTION_SOURCE_VALUE}
+ODS_ACTIVE_MODEL_STORE=${ODS_ACTIVE_MODEL_STORE:-default}
 MODEL_RECOMMENDED_MODEL=${MODEL_RECOMMENDED_MODEL_VALUE}
 MODEL_RECOMMENDED_GGUF=${MODEL_RECOMMENDED_GGUF_VALUE}
 MODEL_RECOMMENDED_CONTEXT=${MODEL_RECOMMENDED_CONTEXT_VALUE}
@@ -1126,6 +1182,8 @@ LLAMA_PARALLEL=${LLAMA_PARALLEL:-1}
 # LLAMA_ARG_SPEC_DRAFT_N_MAX=3
 $(if [[ -n "${LLAMA_ARG_SPEC_TYPE:-}" ]]; then echo "LLAMA_ARG_SPEC_TYPE=${LLAMA_ARG_SPEC_TYPE}"; fi)
 $(if [[ -n "${LLAMA_ARG_SPEC_DRAFT_N_MAX:-}" ]]; then echo "LLAMA_ARG_SPEC_DRAFT_N_MAX=${LLAMA_ARG_SPEC_DRAFT_N_MAX}"; fi)
+$(if [[ -n "${LLAMA_ARG_SPEC_DRAFT_TYPE_K:-}" ]]; then echo "LLAMA_ARG_SPEC_DRAFT_TYPE_K=${LLAMA_ARG_SPEC_DRAFT_TYPE_K}"; fi)
+$(if [[ -n "${LLAMA_ARG_SPEC_DRAFT_TYPE_V:-}" ]]; then echo "LLAMA_ARG_SPEC_DRAFT_TYPE_V=${LLAMA_ARG_SPEC_DRAFT_TYPE_V}"; fi)
 LLAMA_CPU_LIMIT=${LLAMA_CPU_LIMIT}
 LLAMA_CPU_RESERVATION=${LLAMA_CPU_RESERVATION}
 
@@ -1207,7 +1265,7 @@ INTEL_ENV
 fi)
 
 #=== Ports ===
-OLLAMA_PORT=11434
+OLLAMA_PORT=$(dotenv_value "${OLLAMA_PORT_VALUE}")
 WEBUI_PORT=3000
 SEARXNG_PORT=8888
 PERPLEXICA_PORT=3004
@@ -1252,9 +1310,13 @@ PIXEL_SOURCE_REF=$(dotenv_value "${PIXEL_SOURCE_REF_VALUE}")
 PIXEL_SOURCE_DIR=$(dotenv_quote "$PIXEL_SOURCE_DIR_VALUE")
 $(if [[ -n "$PIXEL_WEB_SEARCH_PROVIDER_VALUE" ]]; then printf 'PIXEL_WEB_SEARCH_PROVIDER=%s\n' "$PIXEL_WEB_SEARCH_PROVIDER_VALUE"; fi)
 PIXEL_OPENWEBUI_KEY=$(dotenv_value "${PIXEL_OPENWEBUI_KEY_VALUE}")
+PIXEL_MODEL_RELAY_KEY=$(dotenv_value "${PIXEL_MODEL_RELAY_KEY_VALUE}")
+PIXEL_MODEL_RELAY_PORT=$(dotenv_value "${PIXEL_MODEL_RELAY_PORT_VALUE}")
 PIXEL_INGRESS_RUNTIME_DIR=/run/ods-pixel
 PIXEL_PREVIEW_RUNTIME_DIR=/run/ods-pixel-preview
 PIXEL_INGRESS_GID=${PIXEL_INGRESS_GID_VALUE}
+PIXEL_GATEWAY_PORT=$(dotenv_value "${PIXEL_GATEWAY_PORT_VALUE}")
+PIXEL_PREVIEW_PORT=$(dotenv_value "${PIXEL_PREVIEW_PORT_VALUE}")
 PIXEL_ENV
 fi)
 SHIELD_API_KEY=$(dotenv_value "${SHIELD_API_KEY}")
@@ -1531,6 +1593,9 @@ engines:
   - name: google
     disabled: false
   - name: brave
+    disabled: false
+  - name: seznam
+    # Independent general-web fallback when major engines block this household IP.
     disabled: false
   - name: wikipedia
     disabled: false

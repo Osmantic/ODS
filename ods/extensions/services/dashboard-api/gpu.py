@@ -180,13 +180,14 @@ def get_gpu_info_nvidia() -> Optional[GPUInfo]:
                     pass
             na_values = ("[N/A]", "[Not Supported]", "N/A", "Not Supported", "")
             # GB10/GB200 unified memory: nvidia-smi reports [N/A] for memory
-            # fields; fall back to /proc/meminfo (mirrors detection.sh).
+            # fields. System RAM can describe capacity, never GPU memory use.
             unified = parts[1] in na_values or parts[2] in na_values
             if unified:
                 fallback = _read_meminfo_mb()
                 if not fallback:
                     continue
-                mem_used, mem_total = fallback
+                _, mem_total = fallback
+                mem_used = 0
                 any_unified = True
             else:
                 mem_used = int(parts[1])
@@ -197,6 +198,7 @@ def get_gpu_info_nvidia() -> Optional[GPUInfo]:
                 "name": parts[0],
                 "mem_used": mem_used,
                 "mem_total": mem_total,
+                "memory_usage_available": not unified,
                 "util": util,
                 "temp": temp,
                 "utilization_available": parts[3] not in na_values,
@@ -222,6 +224,7 @@ def get_gpu_info_nvidia() -> Optional[GPUInfo]:
                 power_w=g["power_w"],
                 memory_type=memory_type,
                 gpu_backend="nvidia",
+                memory_usage_available=g["memory_usage_available"],
                 utilization_available=g["utilization_available"],
                 temperature_available=g["temperature_available"],
             )
@@ -256,6 +259,7 @@ def get_gpu_info_nvidia() -> Optional[GPUInfo]:
             memory_type=memory_type,
             gpu_backend="nvidia",
             gpu_count=len(gpus),
+            memory_usage_available=all(g["memory_usage_available"] for g in gpus),
             utilization_available=all(g["utilization_available"] for g in gpus),
             temperature_available=any(g["temperature_available"] for g in gpus),
         )
@@ -654,11 +658,13 @@ def get_gpu_info_nvidia_detailed() -> Optional[list[IndividualGPU]]:
                 except (ValueError, TypeError):
                     pass
             # GB10/GB200 unified memory fallback (see _read_meminfo_mb).
-            if parts[3] in na_values or parts[4] in na_values:
+            unified = parts[3] in na_values or parts[4] in na_values
+            if unified:
                 fallback = _read_meminfo_mb()
                 if not fallback:
                     continue
-                mem_used, mem_total = fallback
+                _, mem_total = fallback
+                mem_used = 0
             else:
                 mem_used = int(parts[3])
                 mem_total = int(parts[4])
@@ -674,6 +680,7 @@ def get_gpu_info_nvidia_detailed() -> Optional[list[IndividualGPU]]:
                 temperature_c=int(parts[6]) if parts[6] not in na_values else 0,
                 power_w=power_w,
                 assigned_services=uuid_service_map.get(uuid, []),
+                memory_usage_available=not unified,
                 utilization_available=parts[5] not in na_values,
                 temperature_available=parts[6] not in na_values,
             ))

@@ -36,7 +36,7 @@ export default function PixelConversationImport({disabled, onImport}) {
       <h3>Import conversation</h3>
       {reading && <p role="status">Reading local export…</p>}
       {error && <p role="alert">{error}</p>}
-      {pending && <><p>{pending.messages.length} messages{pending.draft ? ' and an unsent draft' : ''}</p><p>This creates a new local conversation. Only message text, terminal reply status and the draft are imported. Tasks are not resumed; workspace files and preview permissions are not imported.</p></>}
+      {pending && <><p>{pending.messages.length} messages{pending.draft ? ' and an unsent draft' : ''}</p><p>This creates a new local conversation with message text, reply status, saved project labels and the draft. Tasks are not resumed; workspace files and preview permissions are not imported.</p></>}
       {disabled && <p>Finish or stop the active task before importing.</p>}
       <footer><button type="button" onClick={()=>{reader.current?.abort();setReading(false);close()}}>Cancel import</button><button type="button" disabled={disabled || !pending || reading} onClick={confirm}>Import as new conversation</button></footer>
     </dialog>

@@ -84,5 +84,8 @@ describe('Sidebar', () => {
     expect(screen.getByText('OpenCode')).toBeInTheDocument()
     expect(screen.getByText('Offline')).toBeInTheDocument()
     expect(screen.getByText('OpenCode').closest('a')).not.toHaveAttribute('href')
+    const applications=screen.getByLabelText('Applications')
+    expect(applications).toHaveClass('pixel-nav-item')
+    expect(applications.querySelector('svg')).toBeInTheDocument()
   })
 })

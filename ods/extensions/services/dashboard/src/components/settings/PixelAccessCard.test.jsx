@@ -7,12 +7,23 @@ const safe = {available: true, surface: 'linux-systemd', configured_mode: 'sandb
 afterEach(() => vi.unstubAllGlobals())
 
 describe('Pixel access confirmation and effective status', () => {
+  it('uses the agent runtime platform and preserves the current setting on load', async () => {
+    const fetch = vi.fn().mockResolvedValue({ok:true,json:async()=>({...safe,surface:'wsl-systemd'})})
+    vi.stubGlobal('fetch',fetch)
+    render(<PixelAccessCard />)
+    expect(await screen.findByText('WSL')).toBeInTheDocument()
+    expect(screen.getByText('Configured').nextElementSibling).toHaveTextContent('Sandbox')
+    expect(screen.getByText('Effective').nextElementSibling).toHaveTextContent('Not verified')
+    expect(fetch.mock.calls.every(call=>!call[1])).toBe(true)
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
   it('withdraws effective-mode proof after a failed inspection and requires a fresh receipt', async () => {
     const verified = {...safe, runtime_verified: true, effective_mode: 'sandboxed'}
     const fetch = vi.fn().mockResolvedValueOnce({ok: true, json: async () => verified}).mockResolvedValue({ok: false})
     vi.stubGlobal('fetch', fetch)
     render(<PixelAccessCard />)
-    await waitFor(() => expect(screen.getByText('Effective').nextElementSibling).toHaveTextContent('Safer mode'))
+    await waitFor(() => expect(screen.getByText('Effective').nextElementSibling).toHaveTextContent('Sandbox'))
     fireEvent.click(screen.getByRole('button', {name: 'Refresh status'}))
     await screen.findByRole('alert')
     expect(screen.getByText('Effective').nextElementSibling).toHaveTextContent('Not verified')
@@ -20,7 +31,7 @@ describe('Pixel access confirmation and effective status', () => {
     fetch.mockResolvedValue({ok: true, json: async () => verified})
     fireEvent.click(screen.getByRole('button', {name: 'Refresh status'}))
     await waitFor(() => expect(screen.getByRole('button', {name: 'Enable Full Access'})).toBeEnabled())
-    expect(screen.getByText('Effective').nextElementSibling).toHaveTextContent('Safer mode')
+    expect(screen.getByText('Effective').nextElementSibling).toHaveTextContent('Sandbox')
   })
 
   it('ignores an older failed read after a newer verified inspection', async () => {
@@ -33,10 +44,10 @@ describe('Pixel access confirmation and effective status', () => {
     await screen.findByText('Not verified')
     fireEvent.click(screen.getByRole('button', {name: 'Refresh status'}))
     fireEvent.click(screen.getByRole('button', {name: 'Refresh status'}))
-    await waitFor(() => expect(screen.getByText('Effective').nextElementSibling).toHaveTextContent('Safer mode'))
+    await waitFor(() => expect(screen.getByText('Effective').nextElementSibling).toHaveTextContent('Sandbox'))
     await act(async () => finishOld({ok: false}))
     expect(screen.queryByRole('alert')).toBeNull()
-    expect(screen.getByText('Effective').nextElementSibling).toHaveTextContent('Safer mode')
+    expect(screen.getByText('Effective').nextElementSibling).toHaveTextContent('Sandbox')
   })
 
   it('keeps a rejected change visible after the recovery inspection succeeds', async () => {
@@ -44,7 +55,7 @@ describe('Pixel access confirmation and effective status', () => {
     vi.stubGlobal('fetch', fetch)
     render(<PixelAccessCard />)
     await screen.findByText('Not verified')
-    fireEvent.click(screen.getByRole('button', {name: 'Verify safer mode'}))
+    fireEvent.click(screen.getByRole('button', {name: 'Verify Sandbox'}))
     await waitFor(() => expect(fetch).toHaveBeenCalledTimes(4))
     await waitFor(() => expect(screen.queryByText(/Changing access and checking/)).toBeNull())
     expect(screen.getByRole('alert')).toHaveTextContent('The change was not verified')
@@ -54,11 +65,33 @@ describe('Pixel access confirmation and effective status', () => {
   it('ends the inspection message after failure and clears the error on retry', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce({ok: false}).mockResolvedValue({ok: true, json: async () => safe}))
     render(<PixelAccessCard />)
-    expect(await screen.findByRole('alert')).toHaveTextContent('Pixel access status is unavailable')
-    expect(screen.queryByText('Inspecting Pixel access…')).toBeNull()
+    expect(await screen.findByRole('alert')).toHaveTextContent('Portal permissions could not be checked')
+    expect(screen.queryByText('Checking Portal permissions…')).toBeNull()
     fireEvent.click(screen.getByRole('button', {name: 'Refresh status'}))
     await waitFor(() => expect(screen.getByText('Configured')).toBeInTheDocument())
     expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('does not claim an interrupted restore left Full Access unchanged when confirmation also fails', async () => {
+    const full = {...safe, configured_mode:'full-access', effective_mode:'full-access', runtime_verified:true}
+    const fetch = vi.fn().mockResolvedValueOnce({ok:true,json:async()=>full})
+      .mockResolvedValueOnce({ok:true,json:async()=>full})
+      .mockRejectedValue(new Error('connection interrupted'))
+    vi.stubGlobal('fetch', fetch)
+    render(<PixelAccessCard />)
+    await waitFor(()=>expect(screen.getByRole('button',{name:'Restore Sandbox'})).toBeEnabled())
+    fireEvent.click(screen.getByRole('button',{name:'Restore Sandbox'}))
+    await screen.findByText(/The current mode is unconfirmed/)
+    expect(screen.queryByText(/has not been changed/)).toBeNull()
+    expect(screen.getByText('Last known configuration').nextElementSibling).toHaveTextContent('Full Access')
+    expect(screen.getByText('Effective').nextElementSibling).toHaveTextContent('Not verified')
+    expect(screen.getByRole('button',{name:'Restore Sandbox'})).toBeDisabled()
+    const recovered = {...safe,configured_mode:'sandboxed',pending:true}
+    fetch.mockResolvedValue({ok:true,json:async()=>recovered})
+    fireEvent.click(screen.getByRole('button',{name:'Refresh status'}))
+    await waitFor(()=>expect(screen.getByText('Configured').nextElementSibling).toHaveTextContent('Sandbox'))
+    expect(screen.getByRole('button',{name:'Restore Sandbox'})).toBeEnabled()
+    expect(fetch.mock.calls.filter(call=>call[1]?.method==='POST')).toHaveLength(1)
   })
   it('does not present configured mode as effective or POST before explicit confirmation', async () => {
     const fetch = vi.fn(async (_url, options) => ({ok: true, json: async () => options ? {...safe, pending: true} : safe}))
@@ -81,7 +114,7 @@ describe('Pixel access confirmation and effective status', () => {
     render(<PixelAccessCard />)
     await screen.findByText(/transition is unfinished/i)
     expect(screen.getByRole('button', {name: 'Enable Full Access'})).toBeDisabled()
-    expect(screen.getByRole('button', {name: 'Restore safer mode'})).toBeDisabled()
+    expect(screen.getByRole('button', {name: 'Restore Sandbox'})).toBeDisabled()
   })
 
   it.each(['sandboxed', 'full-access'])('inspects again before requesting %s after Settings becomes stale', async mode => {
@@ -97,7 +130,7 @@ describe('Pixel access confirmation and effective status', () => {
       fireEvent.click(screen.getByRole('button', {name: 'Enable Full Access'}))
       fireEvent.click(screen.getByRole('checkbox'))
       fireEvent.click(screen.getByRole('button', {name: 'Confirm and enable'}))
-    } else fireEvent.click(screen.getByRole('button', {name: 'Verify safer mode'}))
+    } else fireEvent.click(screen.getByRole('button', {name: 'Verify Sandbox'}))
     await waitFor(() => expect(fetch).toHaveBeenCalledTimes(3))
     expect(fetch.mock.calls[1][1]).toBeUndefined()
     expect(JSON.parse(fetch.mock.calls[2][1].body)).toEqual({mode, revision: fresh.revision, confirmed: mode === 'full-access'})
@@ -115,7 +148,7 @@ describe('Pixel access confirmation and effective status', () => {
     vi.stubGlobal('fetch', fetch)
     render(<PixelAccessCard />)
     await screen.findByText('Not verified')
-    fireEvent.click(screen.getByRole('button', {name: 'Verify safer mode'}))
+    fireEvent.click(screen.getByRole('button', {name: 'Verify Sandbox'}))
     await screen.findByText(/No change was requested/)
     expect(fetch.mock.calls.every(call => !call[1])).toBe(true)
   })
@@ -129,7 +162,7 @@ describe('Pixel access confirmation and effective status', () => {
     vi.stubGlobal('fetch', fetch)
     render(<PixelAccessCard />)
     await screen.findByText('Not verified')
-    fireEvent.click(screen.getByRole('button', {name: 'Verify safer mode'}))
+    fireEvent.click(screen.getByRole('button', {name: 'Verify Sandbox'}))
     await waitFor(() => expect(fetch.mock.calls.filter(call => call[1]?.method === 'POST')).toHaveLength(1))
     expect(JSON.parse(fetch.mock.calls.find(call => call[1])[1].body).revision).toBe(fresh.revision)
   })
@@ -155,7 +188,7 @@ describe('Pixel access confirmation and effective status', () => {
     vi.stubGlobal('fetch', fetch)
     render(<PixelAccessCard />)
     await screen.findByText('Not verified')
-    fireEvent.click(screen.getByRole('button', {name: 'Verify safer mode'}))
+    fireEvent.click(screen.getByRole('button', {name: 'Verify Sandbox'}))
     await screen.findByText(/The change was not verified/)
     await waitFor(() => expect(fetch).toHaveBeenCalledTimes(4))
     expect(fetch.mock.calls.filter(call => call[1]?.method === 'POST')).toHaveLength(1)
