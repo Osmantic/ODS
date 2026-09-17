@@ -100,7 +100,7 @@ _PROBE_RE = re.compile(
     r"\[ODS_PROBE id=([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}) "
     r"sig=([A-Za-z0-9_-]+)\]"
 )
-_SSE_DELIMITER_RE = re.compile(rb"(?:\r\n|\r|\n)(?:\r\n|\r|\n)")
+_SSE_DELIMITER_RE = re.compile(rb"(?:\r\n|\r(?!\n)|(?<!\r)\n){2}")
 _CHAT_TEMPLATE_ARTIFACTS = (
     re.compile(r"<\|im_start\|>\s*(?:assistant|user|system|tool)?\s*<\|im_end\|>"),
     re.compile(r"<\|start_header_id\|>\s*(?:assistant|user|system|tool)?\s*<\|end_header_id\|>"),
@@ -273,7 +273,7 @@ def _build_telemetry_event(
     ]
     tools = payload.get("tools")
     tools = tools if isinstance(tools, list) else []
-    return {
+    event = {
         "agent": "model-router",
         "model": str(model)[:512],
         "provider_name": str(backend or "unknown")[:128],
@@ -298,6 +298,14 @@ def _build_telemetry_event(
         "duration_ms": min(max(duration_ms, 0), 86_400_000),
         "stop_reason": str(stop_reason or "")[:128],
     }
+
+    # Provider prompt/input counts include cached tokens. Token Spy stores
+    # disjoint categories; partition once, after any stream aggregation.
+    event["cache_read_tokens"] = min(event["cache_read_tokens"], event["input_tokens"])
+    remaining = event["input_tokens"] - event["cache_read_tokens"]
+    event["cache_write_tokens"] = min(event["cache_write_tokens"], remaining)
+    event["input_tokens"] = remaining - event["cache_write_tokens"]
+    return event
 
 
 def _emit_telemetry(event: dict[str, Any]) -> bool:
@@ -693,45 +701,56 @@ def _sanitize_choice_content(obj: dict[str, Any]) -> bool:
 def _rewrite_sse_event(
     event: bytes, alias: str
 ) -> tuple[bytes, list[str], list[dict[str, Any]], bool]:
-    """Rewrite complete SSE data lines and return observable response metadata."""
-    out_lines: list[bytes] = []
-    models: list[str] = []
-    payloads: list[dict[str, Any]] = []
-    saw_done = False
+    """Join an event's data fields before decoding JSON and observing metadata."""
+    lines: list[tuple[bytes, bytes]] = []
+    data_indices: list[int] = []
+    data_values: list[bytes] = []
     for line in event.splitlines(keepends=True):
         content = line.rstrip(b"\r\n")
-        ending = line[len(content):]
-        if content.startswith(b"data:"):
-            payload = content[5:].strip()
-            if payload == b"[DONE]":
-                saw_done = True
-            elif payload:
-                try:
-                    obj = json.loads(payload)
-                except ValueError:
-                    obj = None
-                if isinstance(obj, dict):
-                    payloads.append(obj)
-                    model_objects = [obj]
-                    # Responses lifecycle events wrap their response object.
-                    # Observe the concrete identity before restoring the alias,
-                    # just as for top-level Chat/Completions model fields.
-                    if (isinstance(obj.get("type"), str)
-                            and obj["type"].startswith("response.")
-                            and isinstance(obj.get("response"), dict)):
-                        model_objects.append(obj["response"])
-                    for model_object in model_objects:
-                        if isinstance(model_object.get("model"), str):
-                            if model_object["model"]:
-                                models.append(model_object["model"])
-                            model_object["model"] = alias
-                    _sanitize_choice_content(obj)
-                    content = (
-                        b"data: "
-                        + json.dumps(obj, separators=(",", ":")).encode("utf-8")
-                    )
-        out_lines.append(content + ending)
-    return b"".join(out_lines), models, payloads, saw_done
+        lines.append((content, line[len(content):]))
+        field, _, value = content.partition(b":")
+        if field == b"data":
+            data_indices.append(len(lines) - 1)
+            # SSE removes exactly one optional space after the colon, then
+            # joins all data fields with LF, including fields without a colon.
+            data_values.append(value.removeprefix(b" "))
+    payload = b"\n".join(data_values)
+    if payload.strip() == b"[DONE]":
+        return event, [], [], True
+    try:
+        obj = json.loads(payload)
+    except ValueError:
+        return event, [], [], False
+    if not isinstance(obj, dict):
+        return event, [], [], False
+
+    models: list[str] = []
+    model_objects = [obj]
+    # Responses lifecycle events wrap their response object. Observe the
+    # concrete identity before restoring either top-level or nested aliases.
+    if (isinstance(obj.get("type"), str)
+            and obj["type"].startswith("response.")
+            and isinstance(obj.get("response"), dict)):
+        model_objects.append(obj["response"])
+    for model_object in model_objects:
+        if isinstance(model_object.get("model"), str):
+            if model_object["model"]:
+                models.append(model_object["model"])
+            model_object["model"] = alias
+    _sanitize_choice_content(obj)
+
+    # Emit one compact data field, preserving comments and other SSE fields.
+    # The last retained line inherits the original final ending so deleting
+    # later data fields cannot introduce an extra blank event delimiter.
+    first_data = data_indices[0]
+    removed = set(data_indices[1:])
+    retained = [line for index, line in enumerate(lines) if index not in removed]
+    retained[first_data] = (
+        b"data: " + json.dumps(obj, separators=(",", ":")).encode("utf-8"),
+        lines[first_data][1],
+    )
+    retained[-1] = (retained[-1][0], lines[-1][1])
+    return b"".join(content + ending for content, ending in retained), models, [obj], False
 
 
 def _is_terminal_stream_payload(payload: dict[str, Any]) -> bool:
@@ -755,10 +774,13 @@ def _is_terminal_stream_payload(payload: dict[str, Any]) -> bool:
 class _SSERewriter:
     """Incrementally frames SSE so transport chunk boundaries are irrelevant."""
 
-    def __init__(self, alias: str) -> None:
+    def __init__(self, alias: str, expected_model: str) -> None:
         self.alias = alias
+        self.expected_model = expected_model
         self.buffer = b""
-        self.models: list[str] = []
+        # Evidence needs only an irreversible mismatch verdict. Retaining one
+        # decoded model string per token makes long responses grow in memory.
+        self.identity_matches = True
         self.usage = {
             "input_tokens": 0,
             "output_tokens": 0,
@@ -784,13 +806,18 @@ class _SSERewriter:
         self.buffer += chunk
         output: list[bytes] = []
         while match := _SSE_DELIMITER_RE.search(self.buffer):
+            if match.end() == len(self.buffer) and self.buffer.endswith(b"\r"):
+                # A transport split may put the LF of CRLF in the next chunk.
+                break
             event = self.buffer[:match.start()]
             delimiter = self.buffer[match.start():match.end()]
             self.buffer = self.buffer[match.end():]
             rewritten, models, payloads, saw_done = _rewrite_sse_event(
                 event, self.alias
             )
-            self.models.extend(models)
+            self.identity_matches = self.identity_matches and all(
+                model == self.expected_model for model in models
+            )
             self._observe(payloads, saw_done=saw_done)
             output.append(rewritten + delimiter)
         return output
@@ -801,7 +828,9 @@ class _SSERewriter:
         rewritten, models, payloads, saw_done = _rewrite_sse_event(
             self.buffer, self.alias
         )
-        self.models.extend(models)
+        self.identity_matches = self.identity_matches and all(
+            model == self.expected_model for model in models
+        )
         self._observe(payloads, saw_done=saw_done)
         self.buffer = b""
         return rewritten
@@ -1197,19 +1226,17 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
                     await _release_admission()
 
             async def stream_body() -> AsyncIterator[bytes]:
-                rewriter = _SSERewriter(requested_alias)
+                rewriter = _SSERewriter(requested_alias, route["runtimeModelId"])
                 completed = False
                 try:
                     async for chunk in upstream.aiter_bytes():
-                        before = len(rewriter.models)
                         events = rewriter.feed(chunk)
-                        if pinned_route and any(model != route['runtimeModelId'] for model in rewriter.models[before:]):
+                        if pinned_route and not rewriter.identity_matches:
                             raise RouterError(502, 'response_identity_mismatch', 'Backend response identity changed')
                         for event in events:
                             yield event
-                    before = len(rewriter.models)
                     tail = rewriter.finish()
-                    if pinned_route and any(model != route['runtimeModelId'] for model in rewriter.models[before:]):
+                    if pinned_route and not rewriter.identity_matches:
                         raise RouterError(502, 'response_identity_mismatch', 'Backend response identity changed')
                     if tail:
                         yield tail
@@ -1220,10 +1247,7 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
                         and rewriter.completed
                         and probe_id
                         and 200 <= upstream.status_code < 300
-                        and all(
-                            model == route["runtimeModelId"]
-                            for model in rewriter.models
-                        )
+                        and rewriter.identity_matches
                     ):
                         _record_evidence({
                             **evidence_base,

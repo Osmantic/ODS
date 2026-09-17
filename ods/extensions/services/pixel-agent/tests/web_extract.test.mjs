@@ -5,6 +5,8 @@ import {
   selectEvidenceWindow,
 } from "../plugin/web-extract.mjs";
 
+import { createRunProgressBudget, failedToolOutcome } from "../plugin/run-progress-budget.mjs";
+
 function fixture({
   body = "",
   contentType = "text/plain",
@@ -292,3 +294,46 @@ test("case-insensitive evidence queries remain literal", () => {
   assert.equal(selectEvidenceWindow("Use CACHEab here.", "[cache](a+b)?"), null);
   assert.ok(selectEvidenceWindow("😀\nPATH.EXISTS returns true.\n", "Path.exists").text.includes("PATH.EXISTS"));
 });
+
+for (const [label, options, params] of [
+  ["invalid input", {}, { query: "x" }],
+  ["HTTP error", { status: 503 }, {}],
+  ["unsupported document", { contentType: "application/pdf" }, {}],
+  ["transport failure", { fetchError: new Error("offline") }, {}],
+]) {
+  test("extraction " + label + " is a failed tool outcome", async () => {
+    const harness = fixture(options);
+    const result = await harness.tool.execute("failed", {
+      url: "https://docs.example.org/reference", query: "Path.exists", ...params,
+    });
+    assert.equal(result.isError, true);
+    assert.equal(failedToolOutcome({ result }), true);
+    assert.equal(result.details.matched, false);
+    assert.equal(harness.releases(), label === "HTTP error" || label === "unsupported document" ? 1 : 0);
+  });
+}
+
+test("distinct unsuccessful fetches exhaust the existing failure budget", async () => {
+  const harness = fixture({ fetchError: new Error("offline") });
+  const budget = createRunProgressBudget();
+  for (let i = 0; i < 4; i++) {
+    const params = { url: "https://docs.example.org/page-" + i, query: "Path.exists" };
+    const result = await harness.tool.execute("call-" + i, params);
+    budget.observeResult({ callId: "call-" + i, tool: harness.tool.name, params,
+      failed: failedToolOutcome({ result }) });
+    assert.equal(budget.exhausted, i === 3);
+  }
+});
+
+for (const [body, matched] of [["Path.exists returns a boolean", true], ["Unrelated text", false]]) {
+  test("a completed lookup (matched=" + matched + ") remains successful", async () => {
+    const harness = fixture({ body });
+    const result = await harness.tool.execute("lookup", {
+      url: "https://docs.example.org/reference", query: "Path.exists",
+    });
+    assert.notEqual(result.isError, true);
+    assert.equal(failedToolOutcome({ result }), false);
+    assert.equal(result.details.matched, matched);
+    assert.equal(harness.releases(), 1);
+  });
+}

@@ -148,7 +148,7 @@ fi
 [[ "$ENABLE_HERMES" == "true" ]] && echo "  • Hermes (auth): http://localhost:${SERVICE_PORTS[hermes-proxy]:-9120}  (magic-link gated; not direct :9119)"
 [[ "$ENABLE_OPENCLAW" == "true" ]] && echo "  • OpenClaw:      http://localhost:${SERVICE_PORTS[openclaw]:-7860}"
 if [[ "${ENABLE_OPENCODE:-false}" == "true" ]]; then
-    systemctl --user is-active opencode-web &>/dev/null && echo "  • OpenCode:      http://localhost:3003"
+    ods_systemctl_user is-active opencode-web &>/dev/null && echo "  • OpenCode:      http://localhost:3003"
 fi
 [[ "$ENABLE_VOICE" == "true" ]] && echo "  • Whisper STT:   http://localhost:${SERVICE_PORTS[whisper]:-9000}"
 [[ "$ENABLE_VOICE" == "true" ]] && echo "  • TTS (Kokoro):  http://localhost:${SERVICE_PORTS[tts]:-8880}"
@@ -456,7 +456,7 @@ echo -e "  ${BGRN}Pixel${NC}        ${WHT}http://localhost:${DASHBOARD_PORT}/pix
 echo -e "  ${BGRN}Hermes${NC}       ${WHT}http://localhost:${SERVICE_PORTS[hermes-proxy]:-9120}${NC}  ${AMB}(magic-link gated)${NC}"
 [[ "$ENABLE_OPENCLAW" == "true" ]] && \
 echo -e "  ${BGRN}OpenClaw${NC}     ${WHT}http://localhost:${OPENCLAW_PORT}${NC}"
-systemctl --user is-active opencode-web &>/dev/null && \
+ods_systemctl_user is-active opencode-web &>/dev/null && \
 [[ "${ENABLE_OPENCODE:-false}" == "true" ]] && \
     echo -e "  ${BGRN}OpenCode${NC}     ${WHT}http://localhost:3003${NC}"
 echo ""

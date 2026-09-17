@@ -4,6 +4,9 @@
 ods_existing_install_mode() {
     local env_file="$1" expected_uid="${2:-${UID:-$(id -u)}}"
     local owner_uid file_mode file_size line value="" found=false
+    local modes='local|cloud|hybrid|lemonade' value_pattern
+    # Accept literal dotenv formatting without evaluating any shell content.
+    value_pattern="^[[:space:]]*(($modes)|\"($modes)\"|'($modes)')([[:space:]]+#.*)?[[:space:]]*$"
 
     [[ -f "$env_file" && ! -L "$env_file" ]] || return 1
     read -r owner_uid file_mode file_size < <(
@@ -15,14 +18,12 @@ ods_existing_install_mode() {
     (( file_size > 0 && file_size <= 1048576 )) || return 1
 
     while IFS= read -r line || [[ -n "$line" ]]; do
-        [[ "$line" == ODS_MODE=* ]] || continue
+        line="${line%$'\r'}"
+        [[ "$line" =~ ^[[:space:]]*ODS_MODE[[:space:]]*= ]] || continue
         [[ "$found" == "false" ]] || return 1
         found=true
-        value="${line#ODS_MODE=}"
-        case "$value" in
-            local|cloud|hybrid|lemonade) ;;
-            *) return 1 ;;
-        esac
+        [[ "${line#*=}" =~ $value_pattern ]] || return 1
+        value="${BASH_REMATCH[2]}${BASH_REMATCH[3]}${BASH_REMATCH[4]}"
     done <"$env_file"
 
     [[ "$found" == "true" ]] || return 1

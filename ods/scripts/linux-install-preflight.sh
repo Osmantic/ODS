@@ -130,9 +130,17 @@ fi
 # --- Docker CLI ---
 DOCKER_IS_PODMAN=false
 if ! command -v docker >/dev/null 2>&1; then
-    append_check "DOCKER_INSTALLED" "fail" \
-        "Docker CLI not found in PATH" \
-        "Install Docker Engine and ensure your user can run docker (see LINUX-TROUBLESHOOTING-GUIDE.md#docker_installed)."
+    if command -v podman >/dev/null 2>&1; then
+        # Podman without its docker-compatible CLI (Fedora ships them as
+        # separate packages). ODS drives Podman through that shim.
+        append_check "DOCKER_INSTALLED" "fail" \
+            "Podman is installed but no docker-compatible CLI is in PATH" \
+            "Install the podman-docker package (the installer does this for you), plus a compose provider, then re-run (see LINUX-TROUBLESHOOTING-GUIDE.md#docker_installed)."
+    else
+        append_check "DOCKER_INSTALLED" "fail" \
+            "Docker CLI not found in PATH" \
+            "Install Docker Engine and ensure your user can run docker (see LINUX-TROUBLESHOOTING-GUIDE.md#docker_installed)."
+    fi
 else
     DV="$(docker --version 2>/dev/null | head -1 || true)"
     append_check "DOCKER_INSTALLED" "pass" "Docker CLI: ${DV:-present}" ""

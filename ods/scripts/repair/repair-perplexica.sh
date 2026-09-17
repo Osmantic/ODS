@@ -40,8 +40,8 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PYTHON_CMD="python3"
-if [[ -f "$SCRIPT_DIR/lib/python-cmd.sh" ]]; then
-    . "$SCRIPT_DIR/lib/python-cmd.sh"
+if [[ -f "$SCRIPT_DIR/../lib/python-cmd.sh" ]]; then
+    . "$SCRIPT_DIR/../lib/python-cmd.sh"
     PYTHON_CMD="$(ods_detect_python_cmd)"
 elif command -v python >/dev/null 2>&1; then
     PYTHON_CMD="python"

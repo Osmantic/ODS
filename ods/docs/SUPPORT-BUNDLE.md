@@ -51,3 +51,10 @@ URLs.
 Review the archive before posting it publicly. Redaction is defensive, but local
 paths, hostnames, container names, model names, and non-secret configuration
 values may still be useful to attackers in some environments.
+
+Each collected diagnostic has a 60-second deadline. To allow slower hosts more time,
+set `ODS_SUPPORT_COMMAND_TIMEOUT` to an integer from 1 to 3600 seconds. A timed-out
+command and its child processes are stopped; the bundle retains partial output and
+records exit code 124 in `manifest.json`. Collection continues with other probes.
+This is a per-command limit, so the whole bundle can take longer than one deadline.
+Docker availability checks also use the limit and report an unavailable daemon on failure.

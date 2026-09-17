@@ -265,6 +265,7 @@ function EnvironmentCategorySidebar({ search, onSearchChange, sections, activeSe
 function EnvironmentFieldCard({ field, value, issues, revealed, cleared, onToggleReveal, onClearSecret, onChange }) {
   const hasIssues = issues.length > 0
   const isEnum = Array.isArray(field?.enum) && field.enum.length > 0
+  const unsupportedEnum = isEnum && value !== '' && !field.enum.some(option => String(option) === String(value))
   const isBoolean = field?.type === 'boolean'
   const isInteger = field?.type === 'integer'
   const selectedBoolean = isBoolean ? booleanSelection(value) : null
@@ -313,10 +314,12 @@ function EnvironmentFieldCard({ field, value, issues, revealed, cleared, onToggl
             id={`env-field-${field?.key}`}
             value={value}
             disabled={isReadOnly}
+            aria-invalid={unsupportedEnum || hasIssues || undefined}
             onChange={(event) => onChange(event.target.value)}
             className="w-full rounded-lg border border-theme-border bg-theme-bg/40 px-4 py-3 text-sm text-theme-text outline-none focus:border-theme-accent/60 disabled:cursor-default disabled:opacity-70"
           >
             <option value="">Use default</option>
+            {unsupportedEnum && <option value={value} disabled>Unsupported value: {value}</option>}
             {field.enum.map((option) => <option key={option} value={option}>{option}</option>)}
           </select>
         ) : (

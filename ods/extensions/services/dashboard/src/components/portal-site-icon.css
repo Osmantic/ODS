@@ -1,0 +1,4 @@
+.portal-site-icon { display:inline-flex; position:relative; align-items:center; justify-content:center; width:14px; height:14px; flex:0 0 14px; vertical-align:-2px; color:rgb(var(--theme-text-muted)); }
+.portal-site-icon img { position:absolute; inset:0; display:block; width:14px; height:14px; margin:0; border:0; border-radius:2px; object-fit:contain; opacity:0; }
+.portal-site-icon img[data-loaded=true] { opacity:1; }
+.portal-citation > a > .portal-site-icon { margin-right:5px; }

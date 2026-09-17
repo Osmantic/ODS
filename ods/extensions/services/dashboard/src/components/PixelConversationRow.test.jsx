@@ -52,3 +52,36 @@ it('measures only overflowing titles for the hover animation',()=>{
   view.rerender(<ConversationTitle title="Short"/>)
   expect(view.container.firstChild).toHaveAttribute('data-overflow','false')
 })
+
+it('keeps a height-constrained menu open when keyboard focus scrolls its actions',()=>{
+  render(<PixelConversationNavigation/>)
+  const button=screen.getByRole('button',{name:'My chat',exact:true})
+  fireEvent.keyDown(button,{key:'F10',shiftKey:true})
+  const menu=screen.getByRole('menu')
+  fireEvent.keyDown(menu,{key:'End'})
+  const remove=screen.getByRole('menuitem',{name:'Delete chat'})
+  expect(remove).toHaveFocus()
+  // The menu has max-height:calc(100dvh - 16px) and overflow:auto.
+  // Browser focus movement or touch/wheel scrolling can emit this event.
+  fireEvent.scroll(menu)
+  expect(screen.getByRole('menu')).toBe(menu)
+  expect(remove).toHaveFocus()
+  fireEvent.click(remove)
+  expect(screen.getByRole('dialog',{name:'Delete this chat?'})).toBeVisible()
+  expect(readConversations()).toHaveLength(1)
+})
+
+it('does not dismiss the menu for scrolling inside its content',()=>{
+  render(<PixelConversationNavigation/>)
+  fireEvent.contextMenu(screen.getByRole('button',{name:'My chat',exact:true}))
+  fireEvent.scroll(screen.getByRole('menuitem',{name:'Rename'}))
+  expect(screen.getByRole('menu')).toBeVisible()
+})
+
+it.each(['page scroll','window scroll','resize'])('still dismisses on %s',event=>{
+  const {container}=render(<PixelConversationNavigation/>)
+  fireEvent.contextMenu(screen.getByRole('button',{name:'My chat',exact:true}))
+  if(event==='resize') fireEvent.resize(window)
+  else fireEvent.scroll(event==='page scroll'?container:window)
+  expect(screen.queryByRole('menu')).toBeNull()
+})

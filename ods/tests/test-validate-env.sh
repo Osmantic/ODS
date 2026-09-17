@@ -456,6 +456,7 @@ fi
 manifest_env_contract() {
     awk '
         /^[[:space:]]+external_port_env:[[:space:]]*/ {
+            if ($2 == "\047\047" || $2 == "\"\"") next
             print FILENAME "	" $2
             next
         }
@@ -468,7 +469,8 @@ manifest_env_contract() {
             pending = ""
         }
         /^[[:space:]]+-[[:space:]]+key:/ { pending = $3 }
-    ' "$ROOT_DIR"/extensions/services/*/manifest.yaml | sort -u
+    ' "$ROOT_DIR"/extensions/services/*/manifest.yaml \
+      "$ROOT_DIR"/extensions/library/services/*/manifest.yaml | sort -u
 }
 
 undeclared=""
@@ -568,6 +570,56 @@ else
     fail "BACKEND=nvidia#x should fail the enum check (Compose passes 'nvidia#x' to the container), got exit $r"
 fi
 
+# 24. Keys phase 09 appends to .env for an air-gapped install
+# (installers/phases/09-offline.sh, `--offline`) must be declared, or every
+# offline install ends up with a .env that `ods config validate` rejects.
+cp "$TMP_DIR/valid.env" "$TMP_DIR/offline.env"
+cat >> "$TMP_DIR/offline.env" <<'EOF'
+OFFLINE_MODE=true
+DISABLE_TELEMETRY=true
+DISABLE_UPDATE_CHECK=true
+WEB_SEARCH_ENABLED=false
+LOCAL_RAG_ENABLED=true
+EOF
+set +e
+out=$("$VALIDATE_ENV_BASH" "$ROOT_DIR/scripts/validate-env.sh" "$TMP_DIR/offline.env" "$ROOT_DIR/.env.schema.json" 2>&1)
+r=$?
+set -e
+if [[ $r -eq 0 ]]; then
+    pass "Installer-written offline-mode keys validate cleanly"
+else
+    fail "Offline-mode keys should validate, got exit $r: $(echo "$out" | grep -iE 'OFFLINE_MODE|TELEMETRY|UPDATE_CHECK|WEB_SEARCH|LOCAL_RAG' | tr '\n' ' ')"
+fi
+
 echo ""
+# Library port overrides are optional, but must be valid when operators set them.
+cp "$TMP_DIR/valid.env" "$TMP_DIR/library-ports.env"
+cat >> "$TMP_DIR/library-ports.env" <<'EOF'
+MINIFLUX_BASE_URL=http://localhost:8098
+NTFY_BASE_URL=http://localhost:8097
+MINIFLUX_DB_PASSWORD=fixture-database-password
+MINIFLUX_ADMIN_PASSWORD=fixture-admin-password
+EOF
+port=31000
+while read -r key; do
+    printf '%s=%s\n' "$key" "$port" >> "$TMP_DIR/library-ports.env"
+    port=$((port + 1))
+done < <(awk '/^[[:space:]]+external_port_env:/ { if ($2 != "\047\047" && $2 != "\"\"") print $2 }' \
+    "$ROOT_DIR"/extensions/library/services/*/manifest.yaml | sort -u)
+if out=$("$VALIDATE_ENV_BASH" "$ROOT_DIR/scripts/validate-env.sh" "$TMP_DIR/library-ports.env" "$ROOT_DIR/.env.schema.json" 2>&1); then
+    pass "Every library port override passes public env validation"
+else
+    fail "Library port overrides failed validation: $out"
+fi
+cp "$TMP_DIR/valid.env" "$TMP_DIR/library-invalid-port.env"
+printf 'DIFY_PORT=65536\n' >> "$TMP_DIR/library-invalid-port.env"
+if out=$("$VALIDATE_ENV_BASH" "$ROOT_DIR/scripts/validate-env.sh" "$TMP_DIR/library-invalid-port.env" "$ROOT_DIR/.env.schema.json" 2>&1); then
+    fail "Out-of-range library port passed validation"
+elif [[ "$out" == *"DIFY_PORT: value 65536 is > maximum 65535"* ]]; then
+    pass "Library ports retain numeric range validation"
+else
+    fail "Library port was rejected for the wrong reason: $out"
+fi
+
 echo "Result: $PASSED passed, $FAILED failed"
 [[ $FAILED -eq 0 ]]

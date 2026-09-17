@@ -33,6 +33,8 @@ RUNTIME_KEYS = (
     "LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS",
     "LLAMA_ARG_SPEC_TYPE",
     "LLAMA_ARG_SPEC_DRAFT_N_MAX",
+    "LLAMA_ARG_SPEC_DRAFT_TYPE_K",
+    "LLAMA_ARG_SPEC_DRAFT_TYPE_V",
     "LLAMA_ARG_SPLIT_MODE",
     "LLAMA_ARG_TENSOR_SPLIT",
 )
@@ -65,8 +67,18 @@ def parse_dotenv(path: Path) -> dict[str, str]:
         key = key.strip()
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
             continue
+        # Match the literal inline-comment rules used by lib/safe-env.sh.
+        # Enabling shlex comments globally would also cut URL fragments and
+        # other unquoted hashes that are part of the model contract.
+        raw_value = raw_value.strip()
+        if raw_value.startswith(("'", '"')):
+            comment = re.match(r"""^("(?:\\.|[^"\\])*"|'[^']*')\s+#""", raw_value)
+            if comment:
+                raw_value = comment.group(1)
+        else:
+            raw_value = raw_value.split(" #", 1)[0].rstrip()
         try:
-            parsed = shlex.split(raw_value.strip(), comments=False, posix=True)
+            parsed = shlex.split(raw_value, comments=False, posix=True)
         except ValueError:
             continue
         if len(parsed) <= 1:
@@ -298,7 +310,7 @@ def valid_runtime_value(key: str, value: str) -> bool:
         return bool(re.fullmatch(r"[1-9][0-9]*(?:\.[0-9]+)?[KMGTP]?[bB]?", value))
     if key == "LLAMA_ARG_FLASH_ATTN":
         return value.lower() in {"auto", "on", "off", "true", "false", "0", "1"}
-    if key in {"LLAMA_ARG_CACHE_TYPE_K", "LLAMA_ARG_CACHE_TYPE_V"}:
+    if key in {"LLAMA_ARG_CACHE_TYPE_K", "LLAMA_ARG_CACHE_TYPE_V", "LLAMA_ARG_SPEC_DRAFT_TYPE_K", "LLAMA_ARG_SPEC_DRAFT_TYPE_V"}:
         return bool(re.fullmatch(r"[A-Za-z0-9_.-]{1,32}", value))
     if key == "LLAMA_ARG_N_CPU_MOE":
         return value.isdigit() and int(value) <= 4096
@@ -354,12 +366,21 @@ def preserved_contract(args: argparse.Namespace) -> dict[str, str] | None:
         return None
 
     actual_bytes = 0
+    models_dir = args.models_dir
+    active_store_id = env.get("ODS_ACTIVE_MODEL_STORE", "default")
+    if active_store_id != "default":
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "extensions/services/dashboard-api"))
+        try:
+            from model_stores import active_store
+            models_dir = active_store(args.env.parent / "data", active_store_id)["path"]
+        except (ValueError, OSError, ImportError):
+            return None
     try:
-        models_root = args.models_dir.resolve()
+        models_root = models_dir.resolve()
     except (OSError, RuntimeError):
         return None
     for artifact in manifest:
-        artifact_path = args.models_dir / artifact["file"]
+        artifact_path = models_dir / artifact["file"]
         try:
             resolved_artifact = artifact_path.resolve()
             if not resolved_artifact.is_relative_to(models_root):
@@ -515,6 +536,8 @@ def preserved_contract(args: argparse.Namespace) -> dict[str, str] | None:
         "LLAMA_SERVER_IMAGE": image,
         **runtime_values,
     }
+    if active_store_id != "default":
+        contract["ODS_ACTIVE_MODEL_STORE"] = active_store_id
     return contract
 
 

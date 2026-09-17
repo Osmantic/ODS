@@ -65,11 +65,18 @@ GPU1    PHB      X      PHB
 GPU2    PHB     PHB      X
 EOF
         ;;
+    *"--query-gpu=mig.mode.current"*)
+        if [[ "${NVIDIA_MIG_ENABLED:-0}" == "1" ]]; then
+            printf '%s\n' Enabled Disabled '[N/A]'
+        else
+            printf '%s\n' Disabled Disabled '[N/A]'
+        fi
+        ;;
     "-q")
         if [[ "${NVIDIA_MIG_ENABLED:-0}" == "1" ]]; then
-            echo "MIG Mode : Enabled"
+            printf '%s\n' '    MIG Mode' '        Current : Enabled' '        Pending : Enabled'
         else
-            echo "MIG Mode : Disabled"
+            printf '%s\n' '    MIG Mode' '        Current : Disabled' '        Pending : Disabled'
         fi
         ;;
     *) exit 1 ;;

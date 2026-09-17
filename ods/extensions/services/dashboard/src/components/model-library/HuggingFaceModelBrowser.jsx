@@ -19,6 +19,7 @@ import {
 } from 'lucide-react'
 
 const SEARCH_DELAY_MS = 350
+const SEARCH_TIMEOUT_MS = 30000
 
 export default function HuggingFaceModelBrowser({ gpu, downloadBusy, onImportStarted }) {
   const [query, setQuery] = useState('')
@@ -40,7 +41,15 @@ export default function HuggingFaceModelBrowser({ gpu, downloadBusy, onImportSta
     const controller = new AbortController()
     setLoading(true)
     setError(null)
+    let deadline
     const timeout = setTimeout(async () => {
+      // Include body consumption in the deadline. Cleanup aborts obsolete
+      // queries; a current stalled request must also release the Retry action.
+      deadline = setTimeout(() => {
+        controller.abort()
+        setError('Hugging Face search timed out. Retry search.')
+        setLoading(false)
+      }, SEARCH_TIMEOUT_MS)
       try {
         const params = new URLSearchParams({ q: query.trim(), sort, limit: '20' })
         const response = await fetch(`/api/models/huggingface/search?${params}`, { signal: controller.signal })
@@ -53,11 +62,13 @@ export default function HuggingFaceModelBrowser({ gpu, downloadBusy, onImportSta
       } catch (requestError) {
         if (!controller.signal.aborted && requestError?.name !== 'AbortError') setError(requestError.message)
       } finally {
+        clearTimeout(deadline)
         if (!controller.signal.aborted) setLoading(false)
       }
     }, SEARCH_DELAY_MS)
     return () => {
       clearTimeout(timeout)
+      clearTimeout(deadline)
       controller.abort()
     }
   }, [query, sort, searchAttempt])
@@ -202,7 +213,7 @@ export default function HuggingFaceModelBrowser({ gpu, downloadBusy, onImportSta
         </div>
         <div className="divide-y divide-white/[0.05]">
           {loading && results.length === 0 && <RepositorySkeleton />}
-          {!loading && results.length === 0 && (
+          {!loading && !error && results.length === 0 && (
             <div className="px-5 py-16 text-center">
               <Cloud size={28} className="mx-auto text-theme-text-muted/45" />
               <p className="mt-3 text-sm font-medium text-theme-text-secondary">No GGUF repositories found</p>

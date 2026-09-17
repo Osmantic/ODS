@@ -30,3 +30,19 @@ test('never replays stale observations from the previous request',async()=>{
   const stop=streamTaskActivity({write:text=>packets.push(text)},'ods-'+'a'.repeat(64),'token',18789,new AbortController().signal,deps);
   await jobs.shift()();stop();assert.deepEqual(packets,[]);
 });
+
+test('streams v4 verified file-only project metadata but rejects extra private fields',async()=>{
+  const jobs=[],packets=[],stamp=new Date().toISOString();
+  const project={schemaVersion:1,kind:'ods-workspace-project',relativeDirectory:'Playground/http-method-smoke',observedAt:stamp};
+  let task={schemaVersion:4,runId:'chatcmpl_11111111-2222-4333-8444-555555555555',startedAt:stamp,finishedAt:null,state:'running',calls:0,failures:0,blocked:0,truncated:false,activities:[],events:[],context:null,goal:null,projects:[project]};
+  const deps={setTimeout:fn=>{jobs.push(fn);return fn},clearTimeout:()=>{},fetch:async()=>new Response(JSON.stringify({task}),{headers:{'content-type':'application/json'}})};
+  const stop=streamTaskActivity({write:text=>packets.push(text)},'ods-'+'a'.repeat(64),'token',18789,new AbortController().signal,deps);
+  // The real run starts after the observer. Do not depend on both Date calls
+  // landing in the same millisecond to pass the stale-run filter.
+  task={...task,startedAt:new Date().toISOString()};
+  await jobs.shift()();
+  assert.equal(packets.length,1);
+  assert.deepEqual(JSON.parse(packets[0].slice(6).trim()).pixel_task.projects,[project]);
+  task={...task,projects:[{...project,workspaceRoot:'/private'}]};
+  await jobs.shift()();stop();assert.equal(packets.length,1);
+});

@@ -561,7 +561,7 @@ describe('useModels', () => {
 
     expect(confirm).not.toHaveBeenCalled()
     const deleteCall = fetch.mock.calls.find(c => c[1]?.method === 'DELETE')
-    expect(deleteCall).toEqual(['/api/models/org%2Fmodel%20q4', { method: 'DELETE' }])
+    expect(deleteCall).toEqual(['/api/models/org%2Fmodel%20q4', { method: 'DELETE', signal: expect.any(AbortSignal) }])
   })
 
   test('clears a pending delete when an independent refresh confirms removal', async () => {
@@ -789,7 +789,7 @@ describe('useModels', () => {
     }
   })
 
-  test('holds the activation lock through 600 seconds and then reports a terminal timeout', async () => {
+  test('holds the activation lock through the host budget and retry grace', async () => {
     vi.useFakeTimers()
     const target = 'never-loads'
     fetch.mockImplementation((_url, opts) => {
@@ -806,16 +806,16 @@ describe('useModels', () => {
         loadPromise = result.current.loadModel(target)
       })
 
-      await act(async () => { await vi.advanceTimersByTimeAsync(600000) })
+      await act(async () => { await vi.advanceTimersByTimeAsync(2820000) })
       expect(result.current.actionLoading).toBe(target)
       expect(result.current.error).toBeNull()
 
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(10000)
+        await vi.advanceTimersByTimeAsync(5000)
         await loadPromise
       })
       expect(result.current.actionLoading).toBeNull()
-      expect(result.current.error).toMatch(/timed out after 10 minutes/i)
+      expect(result.current.error).toMatch(/timed out after 47 minutes/i)
       expect(result.current.error).toContain(target)
     } finally {
       vi.useRealTimers()

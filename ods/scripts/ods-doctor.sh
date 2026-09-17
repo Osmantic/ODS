@@ -22,6 +22,35 @@ case "${1:-}" in
     -h|--help) usage; exit 0 ;;
 esac
 
+# ods-doctor sources lib/service-registry.sh, which uses Bash 4 associative
+# arrays. macOS ships Bash 3.2, and every caller launches this script by its
+# shebang (ods-cli's `ods doctor`, installers/macos.sh, the dashboard host
+# agent, and the documented `scripts/ods-doctor.sh` invocation), so it runs
+# under whatever `bash` is first on PATH — often /bin/bash 3.2. Without a
+# guard the report failed to generate with "service-registry.sh requires
+# Bash 4.0+". Re-exec under a modern Bash, mirroring install-macos.sh.
+_ods_doctor_bash_is_modern() {
+    [ -x "$1" ] || return 1
+    # The test string must evaluate in the candidate shell, not this one.
+    # shellcheck disable=SC2016
+    "$1" -c '[ "${BASH_VERSINFO[0]:-0}" -ge 4 ]' >/dev/null 2>&1
+}
+if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
+    _ods_doctor_bash_candidates=("${BASH:-}" /opt/homebrew/bin/bash /usr/local/bin/bash)
+    if command -v brew >/dev/null 2>&1; then
+        _ods_doctor_brew_prefix="$(brew --prefix 2>/dev/null)"
+        [ -n "$_ods_doctor_brew_prefix" ]             && _ods_doctor_bash_candidates=("$_ods_doctor_brew_prefix/bin/bash" "${_ods_doctor_bash_candidates[@]}")
+    fi
+    for _ods_doctor_candidate in "${_ods_doctor_bash_candidates[@]}"; do
+        if _ods_doctor_bash_is_modern "$_ods_doctor_candidate"; then
+            exec "$_ods_doctor_candidate" "$0" "$@"
+        fi
+    done
+    echo "ods-doctor.sh requires Bash 4+ (you have ${BASH_VERSION})." >&2
+    echo "macOS ships only Bash 3.2; install a modern one with: brew install bash" >&2
+    exit 1
+fi
+
 REPORT_FILE="${1:-/tmp/ods-doctor-report.json}"
 
 CAP_FILE="/tmp/ods-doctor-capabilities.json"

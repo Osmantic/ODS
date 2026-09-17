@@ -206,7 +206,7 @@ async def _start_upstream():
     fd, path = tempfile.mkstemp(suffix=".sock")
     os.close(fd)
     os.unlink(path)
-    app = web.Application(client_max_size=2 * 1024 * 1024 + 1)
+    app = web.Application(client_max_size=8 * 1024 * 1024 + 1)
     app["chat_requests"] = []
     app["cancel_users"] = []
     app["native_runs"] = {}
@@ -741,6 +741,30 @@ class TestCancellation(BaseEdgeTest):
 # ---------------------------------------------------------------------------
 
 class TestModelAllowlist(BaseEdgeTest):
+
+    async def test_non_string_models_are_client_errors_without_forwarding(self):
+        for model in ([], {}, ["pixel/default"], {"id": "pixel/default"}, None, 1, True):
+            with self.subTest(model=model):
+                async with self.client.post(
+                    "http://localhost/v1/chat/completions",
+                    headers=self.auth(),
+                    json={"model": model, "messages": []},
+                ) as resp:
+                    self.assertEqual(resp.status, 400)
+                    self.assertEqual(await resp.json(), {"error": "model not allowed"})
+                self.assertEqual(self.up_runner.app["chat_requests"], [])
+
+    async def test_excessively_nested_json_is_a_client_error_without_forwarding(self):
+        raw = b'{"model":"pixel/default","messages":[],"extra":' + b'[' * 10000 + b'0' + b']' * 10000 + b'}'
+        async with self.client.post(
+            "http://localhost/v1/chat/completions",
+            headers={**self.auth(), "Content-Type": "application/json"},
+            data=raw,
+        ) as resp:
+            self.assertEqual(resp.status, 400)
+            self.assertEqual(await resp.json(), {"error": "invalid JSON"})
+        self.assertEqual(self.up_runner.app["chat_requests"], [])
+
     async def test_allowed_model_ok(self):
         async with self.client.post(
             "http://localhost/v1/chat/completions",
@@ -1281,7 +1305,7 @@ class TestSizeLimit(BaseEdgeTest):
                     self.assertEqual(received["model"], "openclaw/default")
 
     async def test_chunked_over_limit_returns_413_without_upstream(self):
-        raw = b"x" * (2 * 1024 * 1024 + 1)
+        raw = b"x" * (self.pe._MAX_BODY + 1)
 
         async def chunks():
             for offset in range(0, len(raw), 65536):
@@ -1298,7 +1322,7 @@ class TestSizeLimit(BaseEdgeTest):
 
     async def test_oversized_body_rejected(self):
         big = json.dumps({"model": "pixel/default",
-                          "messages": [{"role": "user", "content": "x" * (2 * 1024 * 1024 + 1)}]})
+                          "messages": [{"role": "user", "content": "x" * (self.pe._MAX_BODY + 1)}]})
         async with self.client.post(
             "http://localhost/v1/chat/completions",
             headers={**self.auth(), "Content-Type": "application/json"},
@@ -1834,3 +1858,43 @@ class TestSSEPreludeBudget(BaseEdgeTest):
                 self.assertIn("openclaw/default is assistant text", body)
                 self.assertNotIn('"error"', body)
                 self.assertTrue(body.endswith("data: [DONE]\n\n"))
+
+
+class TaskDetailSchemaTest(unittest.TestCase):
+    def setUp(self):
+        self.environment = patch.dict(os.environ, {'PIXEL_OPENWEBUI_KEY': TOKEN, 'PIXEL_PREVIEW_PROXY_KEY': TOKEN})
+        self.environment.start()
+        self.addCleanup(self.environment.stop)
+
+    def test_v2_live_public_plan_and_context_are_bounded(self):
+        from pixel_edge import valid_live_task_event
+        stamp='2026-09-15T10:00:00.000Z'
+        task={'schemaVersion':2,'runId':'chatcmpl_11111111-2222-4333-8444-555555555555','startedAt':stamp,'finishedAt':None,'state':'running','calls':0,'failures':0,'blocked':0,'truncated':False,'activities':[], 'events':[], 'context':{'used':810,'window':1000,'measuredAt':stamp},'goal':{'status':'active','summary':'Working','steps':[{'id':'read','title':'Read source','status':'pending'}]}}
+        event={'object':'ods.task.activity','id':task['runId'],'pixel_task':task}
+        self.assertTrue(valid_live_task_event(event))
+        for change in [{'events':[{'secret':'never'}]}, {'context':{'used':True,'window':1000,'measuredAt':stamp}}, {'goal':{**task['goal'],'status':'completed'}}, {'goal':{**task['goal'],'privateReasoning':'never'}}]:
+            self.assertFalse(valid_live_task_event({**event,'pixel_task':{**task,**change}}))
+
+
+    def test_v3_public_activity_accepts_sources_and_rejects_untrusted_shapes(self):
+        from pixel_edge import valid_live_task_event, valid_activity_display
+        stamp='2026-09-15T10:00:00.000Z'
+        display={'type':'search','label':'Official docs','detail':None,'sources':[{'title':'Docs','url':'https://example.com/docs'}],'steps':[],'change':None}
+        task={'schemaVersion':3,'runId':'chatcmpl_11111111-2222-4333-8444-555555555555','startedAt':stamp,'finishedAt':None,'state':'running','calls':1,'failures':0,'blocked':0,'truncated':False,'activities':[{'kind':'browser','calls':1,'failures':0,'blocked':0}], 'events':[{'sequence':1,'kind':'browser','state':'completed','startedAt':stamp,'finishedAt':stamp,'display':display}], 'context':None,'goal':None}
+        self.assertTrue(valid_live_task_event({'object':'ods.task.activity','id':task['runId'],'pixel_task':task}))
+        for change in [{'privateReasoning':'never'}, {'sources':[{'title':'Unsafe','url':'javascript:alert(1)'}]}, {'type':'text'}, {'label':'x'*161}, {'sources':[{'title':'Login','url':'https://user:pass@example.com/'}]}]:
+            self.assertFalse(valid_activity_display({**display,**change}))
+
+    def test_v4_project_receipts_are_bounded_closed_and_never_accepted_on_older_versions(self):
+        from pixel_edge import valid_live_task_event
+        stamp='2026-09-16T10:00:00.000Z'
+        receipt={'schemaVersion':1,'kind':'ods-workspace-project','relativeDirectory':'Playground/http-method-smoke','observedAt':stamp}
+        task={'schemaVersion':4,'runId':'chatcmpl_11111111-2222-4333-8444-555555555555','startedAt':stamp,'finishedAt':None,'state':'running','calls':0,'failures':0,'blocked':0,'truncated':False,'activities':[], 'events':[], 'context':None,'goal':None,'projects':[receipt]}
+        event={'object':'ods.task.activity','id':task['runId'],'pixel_task':task}
+        self.assertTrue(valid_live_task_event(event))
+        for projects in [[receipt,receipt], [receipt]*9, [{**receipt,'relativeDirectory':'Playground/../escape'}],
+                         [{**receipt,'relativeDirectory':'Playground/CON.txt'}], [{**receipt,'relativeDirectory':'Playground/name.'}],
+                         [{**receipt,'observedAt':'2026-02-30T10:00:00.000Z'}], [{**receipt,'hostPath':'/private'}], None]:
+            self.assertFalse(valid_live_task_event({**event,'pixel_task':{**task,'projects':projects}}),projects)
+        self.assertFalse(valid_live_task_event({**event,'pixel_task':{**task,'schemaVersion':3}}))
+        self.assertTrue(valid_live_task_event({**event,'pixel_task':{**task,'projects':[{**receipt,'relativeDirectory':'Playground/COM10'}]}}))

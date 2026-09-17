@@ -108,6 +108,23 @@ function Write-ODSUtf8NoBomFile {
     [System.IO.File]::WriteAllText($Path, $Content, $utf8NoBom)
 }
 
+function Resolve-ODSModelStoreComposeFlags {
+    param([string[]]$Flags)
+    $helper = Join-Path $InstallDir 'scripts/model-store-compose-flags.py'
+    if (-not (Test-Path -LiteralPath $helper -PathType Leaf)) {
+        throw 'Registered model-store Compose resolver is missing; repair the ODS installation'
+    }
+    $python = Resolve-ODSHostAgentPython
+    if (-not $python) { throw 'Python 3 is required for registered model-store Compose mounts' }
+    $arguments = @($python.PrefixArgs) + @($helper, '--install-dir', $InstallDir, '--json-stdin')
+    $inputJson = ConvertTo-Json -InputObject @($Flags) -Compress
+    $output = $inputJson | & $python.FilePath @arguments 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "Registered model-store Compose configuration is unavailable: $(($output | Out-String).Trim())" }
+    try { $resolved = ($output | Out-String) | ConvertFrom-Json -ErrorAction Stop }
+    catch { throw 'Registered model-store Compose resolver returned invalid arguments' }
+    return @($resolved)
+}
+
 function Get-ComposeFlags {
     <#
     .SYNOPSIS
@@ -118,6 +135,10 @@ function Get-ComposeFlags {
     $flagsFile = Join-Path $InstallDir ".compose-flags"
     if (Test-Path $flagsFile) {
         $raw = (Get-Content $flagsFile -Raw).Trim()
+        if ((Test-Path -LiteralPath (Join-Path $InstallDir '.model-stores.compose.json')) -or
+            (Test-Path -LiteralPath (Join-Path $InstallDir 'data/model-stores.json'))) {
+            return (Resolve-ODSModelStoreComposeFlags -Flags ($raw -split "\s+"))
+        }
         return ($raw -split "\s+")
     }
 
@@ -130,6 +151,10 @@ function Get-ComposeFlags {
             $raw = ($composeFlagsLine -replace "^compose_flags=", "").Trim()
             if (-not [string]::IsNullOrWhiteSpace($raw)) {
                 Write-AIWarn ".compose-flags is missing; using compose flags from logs\compose-launch.txt"
+                if ((Test-Path -LiteralPath (Join-Path $InstallDir '.model-stores.compose.json')) -or
+                    (Test-Path -LiteralPath (Join-Path $InstallDir 'data/model-stores.json'))) {
+                    return (Resolve-ODSModelStoreComposeFlags -Flags ($raw -split "\s+"))
+                }
                 return ($raw -split "\s+")
             }
         }
@@ -164,6 +189,10 @@ function Get-ComposeFlags {
         }
     }
 
+    if ((Test-Path -LiteralPath (Join-Path $InstallDir '.model-stores.compose.json')) -or
+        (Test-Path -LiteralPath (Join-Path $InstallDir 'data/model-stores.json'))) {
+        return (Resolve-ODSModelStoreComposeFlags -Flags $flags)
+    }
     return $flags
 }
 
@@ -1136,6 +1165,66 @@ function Ensure-LlamaCpuBudget {
 
 # ── AMD native inference server management (Lemonade or llama-server) ──
 
+function Get-ODSNativeModelSelection {
+    param([switch]$VerifyArtifacts, [switch]$AllowMissingModel)
+
+    $envMap = Read-ODSEnv
+    $storeId = [string]$envMap['ODS_ACTIVE_MODEL_STORE']
+    if ([string]::IsNullOrWhiteSpace($storeId)) { $storeId = 'default' }
+    $registry = Join-Path $InstallDir 'data/model-stores.json'
+    if ($storeId -eq 'default' -and -not (Test-Path -LiteralPath $registry)) {
+        $filename = [string]$envMap['GGUF_FILE']
+        if ([string]::IsNullOrWhiteSpace($filename)) { $filename = 'Qwen3.5-9B-Q4_K_M.gguf' }
+        if ($filename -match '[/\\\x00\r\n]' -or $filename -in @('.', '..')) {
+            throw 'Invalid configured model filename'
+        }
+        $directory = Join-Path $InstallDir 'data/models'
+        $modelPath = Join-Path $directory $filename
+        if ($VerifyArtifacts -and (-not (Test-Path -LiteralPath $modelPath -PathType Leaf) -or
+            (Get-Item -LiteralPath $modelPath).Length -le 0)) {
+            throw 'The configured native model is missing or empty; the current runtime was not stopped'
+        }
+        return [pscustomobject]@{ schemaVersion = 1; storeId = 'default'; modelsDirectory = $directory;
+            modelPath = $modelPath; profile = $null }
+    }
+    $resolver = Join-Path $InstallDir 'scripts/resolve-model-store.py'
+    if (-not (Test-Path -LiteralPath $resolver -PathType Leaf)) {
+        throw 'Registered model store resolver is missing; repair the ODS installation before starting inference'
+    }
+    $python = Resolve-ODSHostAgentPython
+    if (-not $python) { throw 'Python 3 is required to resolve the registered model store' }
+    $resolverArgs = @($python.PrefixArgs) + @($resolver, '--install-dir', $InstallDir)
+    if ($VerifyArtifacts) { $resolverArgs += '--verify-artifacts' }
+    if ($AllowMissingModel) { $resolverArgs += '--allow-missing-model' }
+    $output = & $python.FilePath @resolverArgs 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Configured model store is unavailable: $(($output | Out-String).Trim())"
+    }
+    try { $selection = ($output | Out-String) | ConvertFrom-Json -ErrorAction Stop }
+    catch { throw 'Registered model store resolver returned an invalid response' }
+    if ($selection.schemaVersion -ne 1 -or $selection.storeId -ne $storeId -or
+        -not [IO.Path]::IsPathRooted([string]$selection.modelsDirectory) -or
+        -not [IO.Path]::IsPathRooted([string]$selection.modelPath)) {
+        throw 'Registered model store resolver returned an invalid selection'
+    }
+    return $selection
+}
+
+function Get-ODSConfiguredNativeExecutable {
+    $selection = Get-ODSNativeModelSelection -AllowMissingModel
+    if ($selection.profile) { return [string]$selection.profile.executable }
+    return $script:LLAMA_SERVER_EXE
+}
+
+function ConvertTo-ODSNativeArgumentString {
+    param([string[]]$Values)
+    # Start-Process joins ArgumentList without quoting. Preserve SSD paths with
+    # spaces, Unicode, quotes or trailing backslashes using Windows CRT rules.
+    return (@($Values | ForEach-Object {
+        '"' + [regex]::Replace([regex]::Replace([string]$_, '(\\*)"', '$1$1\"'), '(\\+)$', '$1$1') + '"'
+    }) -join ' ')
+}
+
 function Get-NativeInferenceBackend {
     <#
     .SYNOPSIS
@@ -1145,7 +1234,11 @@ function Get-NativeInferenceBackend {
     $env = Read-ODSEnv
     $backend = $env["LLM_BACKEND"]
     if ($backend -eq "lemonade" -and (Test-Path $script:LEMONADE_EXE)) { return "lemonade" }
-    if (Test-Path $script:LLAMA_SERVER_EXE) { return "llama-server" }
+    $configuredExecutable = Get-ODSConfiguredNativeExecutable
+    # A removed external disk must not erase the identity needed to stop an
+    # already-running process. Start verifies the file separately.
+    if ($configuredExecutable -ne $script:LLAMA_SERVER_EXE -or
+        (Test-Path -LiteralPath $configuredExecutable)) { return "llama-server" }
     return "none"
 }
 
@@ -1161,7 +1254,7 @@ function Get-NativeInferenceStatus {
     $result = @{ Running = $false; Pid = 0; Healthy = $false; Backend = $backend; Recovered = $false }
     if ($backend -eq "none") { return $result }
 
-    $expectedExecutable = if ($backend -eq "lemonade") { $script:LEMONADE_EXE } else { $script:LLAMA_SERVER_EXE }
+    $expectedExecutable = if ($backend -eq "lemonade") { $script:LEMONADE_EXE } else { Get-ODSConfiguredNativeExecutable }
     $healthUrl = if ($backend -eq "lemonade") {
         $script:LEMONADE_HEALTH_URL
     } else {
@@ -1493,6 +1586,36 @@ function Start-ODSOpenCodeRuntime {
 
 function Stop-ODSLemonadeRuntime {
     Sync-ODSNativeInferenceConfig
+    # Capture ancestry before terminating the router. Qualified executables can
+    # live outside Lemonade's bin/cache folders; never stop an unrelated process
+    # merely because it uses the same executable.
+    $externalChildren = @()
+    try {
+        $selection = Get-ODSNativeModelSelection -AllowMissingModel
+        if ($selection.profile) {
+            $expected = [string]$selection.profile.executable
+            $processes = @(Get-CimInstance Win32_Process -ErrorAction Stop)
+            $byPid = @{}
+            foreach ($process in $processes) { $byPid[[int]$process.ProcessId] = $process }
+            foreach ($process in $processes) {
+                if (-not $process.ExecutablePath -or
+                    -not ([string]$process.ExecutablePath).Equals($expected, [StringComparison]::OrdinalIgnoreCase)) { continue }
+                $ancestorId = [int]$process.ParentProcessId
+                $visited = @{}
+                for ($depth = 0; $depth -lt 64 -and $byPid.ContainsKey($ancestorId); $depth++) {
+                    if ($visited.ContainsKey($ancestorId)) { break }
+                    $visited[$ancestorId] = $true
+                    $ancestor = $byPid[$ancestorId]
+                    if ($ancestor.ExecutablePath -and
+                        ([string]$ancestor.ExecutablePath).Equals($script:LEMONADE_EXE, [StringComparison]::OrdinalIgnoreCase)) {
+                        $externalChildren += @{ Id = [int]$process.ProcessId; Executable = $expected }
+                        break
+                    }
+                    $ancestorId = [int]$ancestor.ParentProcessId
+                }
+            }
+        }
+    } catch { }
     try { Stop-ScheduledTask -TaskName $script:LEMONADE_TASK_NAME -ErrorAction SilentlyContinue } catch { }
     try { Unregister-ScheduledTask -TaskName $script:LEMONADE_TASK_NAME -Confirm:$false -ErrorAction SilentlyContinue } catch { }
 
@@ -1525,13 +1648,25 @@ function Stop-ODSLemonadeRuntime {
     })) {
         Stop-ODSNativeProcessId -ProcessId ([int]$child.ProcessId)
     }
+    foreach ($child in $externalChildren) {
+        if (Test-ODSNativeProcessExecutable -ProcessId $child.Id -ExpectedExecutable $child.Executable) {
+            Stop-ODSNativeProcessId -ProcessId $child.Id
+        }
+    }
 }
 
 function Start-ODSLemonadeRuntime {
     param([string]$BindAddress)
 
     Sync-ODSNativeInferenceConfig
-    $modelsDir = Join-Path (Join-Path $InstallDir "data") "models"
+    # Resolve and verify before stopping a working runtime. An unplugged SSD
+    # must never silently fall back to a different checkpoint or executable.
+    $selection = Get-ODSNativeModelSelection -VerifyArtifacts
+    $modelsDir = [string]$selection.modelsDirectory
+    $runtimeEnvironment = @{}
+    if ($selection.profile) {
+        $runtimeEnvironment['LEMONADE_LLAMACPP_' + ([string]$selection.profile.backend).ToUpperInvariant() + '_BIN'] = [string]$selection.profile.executable
+    }
     $envPath = Join-Path $InstallDir ".env"
     $contextRaw = Get-ODSEnvValue -Name "CTX_SIZE" -Default (Get-ODSEnvValue -Name "MAX_CONTEXT" -Default "0")
     $contextSize = [long]0
@@ -1545,7 +1680,7 @@ function Start-ODSLemonadeRuntime {
         -BindAddress $BindAddress `
         -ModelsDir $modelsDir `
         -ContextSize $contextSize `
-        -AdminApiKey $adminApiKey
+        -AdminApiKey $adminApiKey -RuntimeEnvironment $runtimeEnvironment
     $diagnosticLog = Join-Path (Join-Path $InstallDir "logs") "lemonade-launch.log"
     $launchMethod = "scheduled task"
     $directProcess = $null
@@ -1671,7 +1806,8 @@ function Wait-ODSLemonadeConfiguredModel {
     $ggufFile = $EnvVars["GGUF_FILE"]
     if ([string]::IsNullOrWhiteSpace($ggufFile)) { return }
 
-    $modelPath = Join-Path (Join-Path $InstallDir "data\models") $ggufFile
+    $selection = Get-ODSNativeModelSelection
+    $modelPath = [string]$selection.modelPath
     if (-not (Test-Path -LiteralPath $modelPath -PathType Leaf)) {
         throw "Configured Lemonade model file is missing: $modelPath"
     }
@@ -1686,6 +1822,22 @@ function Wait-ODSLemonadeConfiguredModel {
     }
     if ([string]::IsNullOrWhiteSpace($modelId)) {
         $modelId = [IO.Path]::GetFileNameWithoutExtension($ggufFile)
+    }
+
+    if ($selection.profile) {
+        $contextSize = [long]$selection.profile.contextLength
+        if ($EnvVars['CTX_SIZE']) { $contextSize = [long]$EnvVars['CTX_SIZE'] }
+        $load = @{ model_name = $modelId; save_options = $false; ctx_size = $contextSize;
+            llamacpp_backend = [string]$selection.profile.backend;
+            llamacpp_args = (@($selection.profile.args) -join ' ') } | ConvertTo-Json -Compress
+        $headers = @{}
+        $key = Get-ODSLemonadeAdminApiKey -EnvPath (Join-Path $InstallDir '.env')
+        if ($key) { $headers.Authorization = "Bearer $key" }
+        $loaded = Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:$($script:LEMONADE_PORT)/api/v1/load" `
+            -Headers $headers -ContentType 'application/json' -Body $load -TimeoutSec 300 -ErrorAction Stop
+        if ([string]$loaded.status -notin @('success', 'ok')) {
+            throw 'Lemonade did not accept the configured model runtime profile'
+        }
     }
 
     $chatUrl = "http://127.0.0.1:$($script:LEMONADE_PORT)/api/v1/chat/completions"
@@ -1814,27 +1966,30 @@ function Start-NativeInferenceServer {
         $maxWait = 60; $waited = 0
         while ($waited -lt $maxWait) {
             Start-Sleep -Seconds 2; $waited += 2
+            $resp = $null
             try {
                 $resp = Invoke-WebRequest -Uri $script:LEMONADE_HEALTH_URL `
                 -TimeoutSec 3 -UseBasicParsing -ErrorAction SilentlyContinue
-                if ($resp.StatusCode -eq 200) {
-                    Write-AISuccess "Lemonade server healthy"
-                    Wait-ODSLemonadeConfiguredModel -EnvVars $envVars
-                    return
-                }
             } catch { }
+            if ($resp -and $resp.StatusCode -eq 200) {
+                Write-AISuccess "Lemonade server healthy"
+                Wait-ODSLemonadeConfiguredModel -EnvVars $envVars
+                return
+            }
         }
         Write-AIWarn "Lemonade server may still be starting..."
     } elseif ($backend -eq "llama-server") {
+        $selection = Get-ODSNativeModelSelection -VerifyArtifacts
+        $llamaExecutable = if ($selection.profile) { [string]$selection.profile.executable } else { $script:LLAMA_SERVER_EXE }
         $ggufFile = $envVars["GGUF_FILE"]
         $ctxSize  = $envVars["CTX_SIZE"]
         $gpuLayers = $envVars["N_GPU_LAYERS"]
         if (-not $ggufFile) { $ggufFile = "Qwen3.5-9B-Q4_K_M.gguf" }
-        if (-not $ctxSize)  { $ctxSize = "16384" }
+        if (-not $ctxSize) { $ctxSize = if ($selection.profile) { [string]$selection.profile.contextLength } else { "16384" } }
         if (-not $gpuLayers) { $gpuLayers = "auto" }
 
-        $modelPath = Join-Path (Join-Path $InstallDir "data\models") $ggufFile
-        if (-not (Test-Path $modelPath)) {
+        $modelPath = [string]$selection.modelPath
+        if (-not (Test-Path -LiteralPath $modelPath -PathType Leaf)) {
             Write-AIError "Model not found: $modelPath"
             return
         }
@@ -1864,21 +2019,28 @@ function Start-NativeInferenceServer {
             # this too.
             "--metrics"
         )
-        if ($envVars["LLAMA_ARG_FLASH_ATTN"]) { $llamaArgs += @("--flash-attn", $envVars["LLAMA_ARG_FLASH_ATTN"]) }
-        if ($envVars["LLAMA_ARG_CACHE_TYPE_K"]) { $llamaArgs += @("--cache-type-k", $envVars["LLAMA_ARG_CACHE_TYPE_K"]) }
-        if ($envVars["LLAMA_ARG_CACHE_TYPE_V"]) { $llamaArgs += @("--cache-type-v", $envVars["LLAMA_ARG_CACHE_TYPE_V"]) }
-        if ($envVars["LLAMA_ARG_N_CPU_MOE"]) { $llamaArgs += @("--n-cpu-moe", $envVars["LLAMA_ARG_N_CPU_MOE"]) }
-        if ($envVars["LLAMA_PARALLEL"]) { $llamaArgs += @("--parallel", $envVars["LLAMA_PARALLEL"]) }
-        if ($envVars["LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS"]) { $llamaArgs += @("--checkpoint-every-n-tokens", $envVars["LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS"]) }
-        if ($envVars["LLAMA_ARG_NO_CACHE_PROMPT"] -and $envVars["LLAMA_ARG_NO_CACHE_PROMPT"] -notin @("0", "false", "off", "no")) { $llamaArgs += @("--no-cache-prompt") }
-        if ($envVars["LLAMA_ARG_SPEC_TYPE"]) { $llamaArgs += @("--spec-type", $envVars["LLAMA_ARG_SPEC_TYPE"]) }
-        if ($envVars["LLAMA_ARG_SPEC_DRAFT_N_MAX"]) { $llamaArgs += @("--spec-draft-n-max", $envVars["LLAMA_ARG_SPEC_DRAFT_N_MAX"]) }
+        if ($selection.profile) {
+            $llamaArgs += @($selection.profile.args)
+        } else {
+            if ($envVars["LLAMA_ARG_FLASH_ATTN"]) { $llamaArgs += @("--flash-attn", $envVars["LLAMA_ARG_FLASH_ATTN"]) }
+            if ($envVars["LLAMA_ARG_CACHE_TYPE_K"]) { $llamaArgs += @("--cache-type-k", $envVars["LLAMA_ARG_CACHE_TYPE_K"]) }
+            if ($envVars["LLAMA_ARG_CACHE_TYPE_V"]) { $llamaArgs += @("--cache-type-v", $envVars["LLAMA_ARG_CACHE_TYPE_V"]) }
+            if ($envVars["LLAMA_ARG_N_CPU_MOE"]) { $llamaArgs += @("--n-cpu-moe", $envVars["LLAMA_ARG_N_CPU_MOE"]) }
+            if ($envVars["LLAMA_PARALLEL"]) { $llamaArgs += @("--parallel", $envVars["LLAMA_PARALLEL"]) }
+            if ($envVars["LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS"]) { $llamaArgs += @("--checkpoint-every-n-tokens", $envVars["LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS"]) }
+            if ($envVars["LLAMA_ARG_NO_CACHE_PROMPT"] -and $envVars["LLAMA_ARG_NO_CACHE_PROMPT"] -notin @("0", "false", "off", "no")) { $llamaArgs += @("--no-cache-prompt") }
+            if ($envVars["LLAMA_ARG_SPEC_TYPE"]) { $llamaArgs += @("--spec-type", $envVars["LLAMA_ARG_SPEC_TYPE"]) }
+            if ($envVars["LLAMA_ARG_SPEC_DRAFT_N_MAX"]) { $llamaArgs += @("--spec-draft-n-max", $envVars["LLAMA_ARG_SPEC_DRAFT_N_MAX"]) }
+            if ($envVars["LLAMA_ARG_SPEC_DRAFT_TYPE_K"]) { $llamaArgs += @("--spec-draft-type-k", $envVars["LLAMA_ARG_SPEC_DRAFT_TYPE_K"]) }
+            if ($envVars["LLAMA_ARG_SPEC_DRAFT_TYPE_V"]) { $llamaArgs += @("--spec-draft-type-v", $envVars["LLAMA_ARG_SPEC_DRAFT_TYPE_V"]) }
+        }
 
         $pidDir = Split-Path $script:INFERENCE_PID_FILE
         New-Item -ItemType Directory -Path $pidDir -Force | Out-Null
 
-        $proc = Start-Process -FilePath $script:LLAMA_SERVER_EXE `
-            -ArgumentList $llamaArgs -WindowStyle Hidden -PassThru
+        $proc = Start-Process -FilePath $llamaExecutable `
+            -ArgumentList (ConvertTo-ODSNativeArgumentString -Values $llamaArgs) `
+            -WorkingDirectory (Split-Path -Parent $llamaExecutable) -WindowStyle Hidden -PassThru
         Set-Content -Path $script:INFERENCE_PID_FILE -Value $proc.Id
 
         Write-AISuccess "Native llama-server started (PID $($proc.Id))"
@@ -2288,9 +2450,15 @@ function Invoke-Restart {
                 Invoke-HermesSoulRefresh -SyncContainer
             }
         } else {
+            $nativeBackend = Get-NativeInferenceBackend
+            if ($nativeBackend -ne "none") {
+                # An absent SSD or changed qualification must fail before any
+                # working helper or inference process is stopped.
+                $null = Get-ODSNativeModelSelection -VerifyArtifacts
+            }
             Stop-ODSOpenCodeRuntime
             # For AMD, also restart native inference server
-            if ((Get-NativeInferenceBackend) -ne "none") {
+            if ($nativeBackend -ne "none") {
                 Stop-NativeInferenceServer
                 Start-NativeInferenceServer
             }
@@ -2320,6 +2488,10 @@ function Invoke-Restart {
                 Write-ODSComposeDiagnostics -InstallDir $InstallDir -ComposeFlags $flags -Phase "ods.ps1 restart (all)"
                 exit 1
             }
+            # The native host agent reads .env once at process startup. Refresh
+            # it after recreating env-backed containers so dashboard requests do
+            # not use a newer ODS_AGENT_KEY or model state than the agent holds.
+            Invoke-Agent -Action "restart"
             Write-AISuccess "All services restarted"
             $null = Start-ODSOpenCodeRuntime
             if ($hermesInStack) {

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import {browserUuid} from '../lib/browserUuid'
 
 const button = 'rounded border border-theme-border px-3 py-2 text-xs disabled:opacity-40'
 const scopes = ['task', 'conversation', 'default']
@@ -82,7 +83,7 @@ export default function PixelProviderScopes({ chatId, sending = false }) {
     const current = generation.current
     try {
       const body = { chatId, expectedRevision: state.revision, taskId: state.taskId }
-      if (action === 'begin') body.taskId = crypto.randomUUID()
+      if (action === 'begin') body.taskId = browserUuid()
       if (action === 'select' || action === 'return') body.scope = scope
       if (action === 'select') Object.assign(body, { providerId: target.id, providerRevision: configuration.revision,
         allowCloud: target.kind === 'cloud' && cloud, acceptUnknownCost: target.kind === 'cloud' && cost })
@@ -108,12 +109,12 @@ export default function PixelProviderScopes({ chatId, sending = false }) {
   }, [open])
 
   return <>
-    <button ref={trigger} type="button" className={button} onClick={() => { setOpen(true); void load() }}>Handoff scope</button>
+    <button ref={trigger} type="button" className={button} onClick={() => { setOpen(true); void load() }}>Handoff preferences</button>
     {open && <dialog ref={panel} aria-labelledby="pixel-scope-title" onCancel={event => {event.preventDefault(); close()}}
         className="m-auto backdrop:bg-black/60 max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-xl border border-theme-border bg-theme-bg p-4 text-theme-text">
-        <div className="flex items-center justify-between gap-3"><h2 id="pixel-scope-title" className="text-lg font-semibold">Choose handoff scope</h2>
+        <div className="flex items-center justify-between gap-3"><h2 id="pixel-scope-title" className="text-lg font-semibold">Handoff preferences</h2>
           <button autoFocus type="button" className={button} onClick={close}>Close scope controls</button></div>
-        <p className="my-3 text-sm">These are saved preferences, not an active route. They do not start inference, install routing, change the tool computer or grant privileges. Once routing is activated, each selected handoff run still waits for Review handoffs approval.</p>
+        <p className="my-3 text-sm">Save the recipient and scope for future handoffs. This does not switch the active model. Runtime routing must be enabled in Portal connections, and each handoff still requires approval.</p>
         <button type="button" className={button} disabled={busy} onClick={() => { void load() }}>Reload preferences</button>
         {error && <p role="alert" className="my-3 text-red-400">{error}</p>}
         {sending && <p className="my-3 text-sm">Current work retains its frozen route. Wait for it to finish before changing preferences here.</p>}
