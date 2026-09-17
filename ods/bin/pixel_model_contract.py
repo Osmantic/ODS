@@ -75,8 +75,8 @@ def projection(config):
             if key not in params: continue
             declared = True
             value = params[key]
-            if (type(value) is int or type(value) is float and math.isfinite(value)) and value >= 0:
-                output, resolved = value, True
+            if (type(value) is int or type(value) is float and math.isfinite(value) and value.is_integer()) and value >= 0:
+                output, resolved = int(value), True
                 break
     if declared and not resolved: raise ModelError("invalid-model-limits")
     compaction = defaults.get("compaction", {})
