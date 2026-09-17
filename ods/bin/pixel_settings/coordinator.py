@@ -13,7 +13,7 @@ import stat
 import time
 
 from pixel_access_bridge import AccessError, UNIT, atomic_json, digest, remaining
-from pixel_access_protocol import decode_frame, HEX
+from pixel_access_protocol import decode_frame, HEX, ProtocolError
 from .contract import SettingsError, preview_preferences
 from .runtime import compare_readback, declared_capabilities, saved_document
 
@@ -47,9 +47,11 @@ def _read(path, uid, maximum=1024 * 1024):
         if len(raw) > maximum: raise AccessError("unsafe-settings-source")
         after = os.fstat(fd)
         _private_info(after, uid)
-        if (opened.st_size, opened.st_mtime_ns, opened.st_ctime_ns) != (after.st_size, after.st_mtime_ns, after.st_ctime_ns):
-            raise AccessError("settings-source-changed")
-        return decode_frame(raw.decode("utf-8") + "\n", maximum + 1), _hash(raw)
+        try:
+            parsed = decode_frame(raw.decode("utf-8") + "\n", maximum + 1)
+        except (UnicodeDecodeError, ProtocolError):
+            raise AccessError("unsafe-settings-source") from None
+        return parsed, _hash(raw)
     finally:
         os.close(fd)
 

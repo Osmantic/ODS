@@ -337,3 +337,16 @@ def test_private_source_refuses_unsafe_files(adapter, mutation):
     if mutation == "permissions": path.chmod(0o644)
     if mutation == "duplicate": path.write_text('{"revision":3,"revision":4}')
     with pytest.raises((AccessError, ValueError)): c.status(adapter)
+
+
+def test_read_malformed_and_invalid_utf8(tmp_path):
+    path = tmp_path / "corrupt.json"
+    path.write_bytes(b"\xff\xfe\x00\x00")
+    path.chmod(0o600)
+    with pytest.raises(AccessError, match="unsafe-settings-source"):
+        c._read(path, os.getuid())
+
+    path.write_text("invalid json\n")
+    with pytest.raises(AccessError, match="unsafe-settings-source"):
+        c._read(path, os.getuid())
+
