@@ -120,7 +120,9 @@ def preview_preferences(preferences, capabilities):
     # Preserve the existing ODS OpenAI-compatible transport headroom (1.25 input
     # safety factor). Earlier compaction may reserve more, never less headroom.
     minimum_reserve = (context + 4 * output + 4) // 5
-    default_floor = context // 2 if 8192 <= context < 32768 else 0
+    # Do not override the computed headroom with a second half-window reserve.
+    # Explicit larger user reserves remain supported below.
+    default_floor = 0
     proposed = {
         "contextTokens": context, "maxOutputTokens": output,
         "compactionReserveTokens": minimum_reserve,

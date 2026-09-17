@@ -23,13 +23,17 @@ def protected(path):
 
 PROGRAM = Path(__file__).resolve().parent
 protected(PROGRAM)
-for name in ("access_mode_server.py", "pixel_access_bridge.py", "access_mode_worker.py", "pixel_access_mode.py", "access_mode_config.py",
+for name in ("access_mode_server.py", "pixel_access_bridge.py", "pixel_access_client.py", "pixel_access_reconcile.py",
+             "pixel_model_transition.py",
+             "access_mode_worker.py", "pixel_access_mode.py", "access_mode_config.py",
              "settings_transaction.py", "pixel_access_protocol.py", "pixel_settings/__init__.py",
              "pixel_settings/contract.py", "pixel_settings/projection.py", "pixel_settings/runtime.py", "pixel_settings/coordinator.py",
              "pixel_provider/__init__.py", "pixel_provider/config.py", "pixel_provider/store.py",
              "pixel_provider/activation_config.py", "pixel_provider/managed_deployment.py",
              "pixel_provider/service_environment.py", "pixel_provider/service_activation.py",
              "pixel_provider/runtime_custody.py", "pixel_provider/coordinator.py", "provider_transaction.py"):
+    protected(PROGRAM / name)
+for name in ("pixel_model_contract.py", "pixel_model_coordinator.py", "model_transaction.py"):
     protected(PROGRAM / name)
 sys.path.insert(0, str(PROGRAM))
 from pixel_access_bridge import AccessError, SystemdAccessBridge, private_json
@@ -42,16 +46,34 @@ def main():
     owner = pwd.getpwnam(settings["owner"])
     if owner.pw_uid == 0: raise RuntimeError("invalid owner")
     install = Path(settings["install_dir"])
-    # Values remain private data. Never source .env or import owner code.
-    values = {}
-    for line in (install / ".env").read_text().splitlines():
-        if line.startswith("DASHBOARD_API_KEY="):
-            values["key"] = line.partition("=")[2].strip().strip("\"'")
+    # The installed key is bound to the actual Edge owner credential. Hybrid
+    # installations may have different Windows and guest .env files.
+    key_path = Path('/etc/ods/pixel-access-relay.key')
+    if settings.get('edge_owner_key_sha256'):
+        import hashlib
+        fd = os.open(key_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, 'rb') as handle:
+            info = os.fstat(handle.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != owner.pw_uid or info.st_nlink != 1 or info.st_mode & 0o077 or info.st_size > 4096:
+                raise RuntimeError('unsafe owner relay credential')
+            key = handle.read(4097)
+        if hashlib.sha256(key).hexdigest() != settings['edge_owner_key_sha256']:
+            raise RuntimeError('owner relay credential changed')
+        key = key.decode('ascii')
+    else:
+        # Existing local installs remain readable until their coordinator is
+        # upgraded through the same custody-preserving installer.
+        key = ''
+        for line in (install / '.env').read_text().splitlines():
+            if line.startswith('DASHBOARD_API_KEY='):
+                key = line.partition('=')[2].strip().strip("\"'")
     def make_adapter():
         # Discovery has request-local owner/gateway snapshots. Never let another
         # handler replace the active transition's authentication or runtime data.
-        return SystemdAccessBridge(install, values.get("key", ""), installed_binary=settings["openclaw_bin"],
-                                   gateway_owner=owner.pw_name, settings_data_dir=settings.get("settings_data_dir"))
+        return SystemdAccessBridge(install, key, installed_binary=settings["openclaw_bin"],
+                                   gateway_owner=owner.pw_name, settings_data_dir=settings.get("settings_data_dir"),
+                                   gateway_binding=settings.get('gateway_binding'),
+                                   gateway_port=settings.get('gateway_port'))
     address = "/run/ods-pixel-access/control.sock"
 
     class Handler(socketserver.StreamRequestHandler):
@@ -64,11 +86,19 @@ def main():
                 raw = self.rfile.readline(2049)
                 if len(raw) > 2048 or not raw.endswith(b"\n"): raise ValueError()
                 request = control_request(decode_frame(raw.decode("utf-8"), 2048))
+                if request["operation"] in ("model-begin", "model-route-begin"):
+                    self.connection.settimeout(1850)
                 adapter = make_adapter()
                 if request == {"operation": "status"}:
                     status, body = 200, adapter.status()
+                elif request == {"operation": "model-status"}:
+                    status, body = 200, adapter.model_status()
                 elif set(request) == {"operation", "request"} and request["operation"] == "change":
                     status, body = 200, adapter.change(request["request"])
+                elif request == {"operation": "model-begin"}:
+                    status, body = 200, adapter.model_begin()
+                elif set(request) == {"operation", "request"} and request["operation"] == "model-finish":
+                    status, body = 200, adapter.model_finish(request["request"])
                 elif request["operation"].startswith("settings-"):
                     status = 200
                     body = (adapter.settings_status(data_dir_id=request["data_dir_id"])
@@ -79,6 +109,11 @@ def main():
                     body = (adapter.provider_status(data_dir_id=request["data_dir_id"])
                             if request["operation"] == "provider-status"
                             else adapter.change_providers(request["request"], data_dir_id=request["data_dir_id"]))
+                elif request["operation"].startswith("model-route-"):
+                    # The browser route has a different transaction contract
+                    # from the installed model-promotion hold above.
+                    operation = "model-" + request["operation"].removeprefix("model-route-")
+                    status, body = 200, adapter.model_control(operation, request.get("request"))
                 else: raise ValueError()
             except PermissionError: pass
             except AccessError as error: status, body = 409, {"error": error.code}

@@ -22,6 +22,10 @@ SPEC.loader.exec_module(generator)
 
 class CatalogTests(unittest.TestCase):
     def setUp(self):
+        # Positive fixtures model the non-group-writable catalog custody that
+        # the bootstrap establishes, regardless of a developer host's umask.
+        original_umask = os.umask(0o022)
+        self.addCleanup(os.umask, original_umask)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
@@ -93,16 +97,18 @@ class CatalogTests(unittest.TestCase):
         self.assertIn("crewai", entries)
 
     @unittest.skipIf(os.name == "nt", "Linux filesystem custody qualification")
-    def test_symlinked_service_and_mismatched_manifest_id_are_not_discovered(self):
+    def test_symlinked_service_is_skipped_and_mismatched_manifest_id_is_rejected(self):
         outside = self.root / "outside"
         outside.mkdir()
         target = self.manifest(outside, "linked")
         (self.services / "linked").symlink_to(target, target_is_directory=True)
+        self.assertEqual(generator.generate_catalog(self.library, self.services), [])
         wrong = self.manifest(self.services, "actual") / "manifest.yaml"
         value = json.loads(wrong.read_text())
         value["service"]["id"] = "different"
         wrong.write_text(json.dumps(value))
-        self.assertEqual(generator.generate_catalog(self.library, self.services), [])
+        with self.assertRaisesRegex(ValueError, "invalid extension manifest"):
+            generator.generate_catalog(self.library, self.services)
 
     @unittest.skipIf(os.name == "nt", "Linux filesystem custody qualification")
     def test_projector_refuses_symlinked_service_directory(self):

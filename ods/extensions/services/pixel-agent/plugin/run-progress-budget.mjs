@@ -10,7 +10,7 @@ export const RUN_PROGRESS_LIMITS = Object.freeze({
 });
 
 export const RUN_PROGRESS_STOP_REASON =
-  'Pixel stopped this response after repeated tool failures or attempts without progress. ' +
+  'This response was stopped after repeated tool failures or attempts without progress. ' +
   'Saved files and previously verified publications were preserved. ' +
   'The full request was not completed; continue from the preserved work with a corrected approach.';
 

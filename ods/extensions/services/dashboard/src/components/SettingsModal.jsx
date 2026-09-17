@@ -16,12 +16,12 @@ const sections = [
   ['general', 'General', Gear], ['profile', 'Profile', UserRound], ['appearance', 'Appearance', Palette],
   ['portal-mascot', 'Portal mascot', Bot],
   ['usage', 'Usage', Activity], ['owner', 'Owner access', UserRound],
-  ['connections', 'Pixel connections', Bot], ['access', 'Pixel access', ShieldCheck],
+  ['connections', 'Portal connections', Bot], ['access', 'Portal access', ShieldCheck],
   ['sharing', 'Model sharing', Share2], ['services', 'Services', Network],
-  ['pixel-diagnostics', 'Pixel diagnostics', Activity],
+  ['pixel-diagnostics', 'Portal diagnostics', Activity],
   ['storage', 'Storage', HardDrive], ['updates', 'Updates', RefreshCw],
   ['advanced', 'Advanced', Terminal],
-  ['integrations', 'Integrations', Network], ['remote', 'Remote GPU', Share2],
+  ['integrations', 'Service map', Network], ['remote', 'Remote GPU', Share2],
 ]
 
 export default function SettingsModal() {

@@ -65,5 +65,11 @@ jobs:
           pip install -r requirements.txt
           pip install -r tests/requirements-test.txt
 
+      - name: Test configured SQLite paths
+        run: python -m pytest -q ../token-spy/tests/test_sqlite_configured_paths.py
+
       - name: Run Unit Tests
         run: pytest tests/ -v --cov=. --cov-report=term --cov-report=lcov:coverage.lcov
+
+      - name: Test interrupted Token Spy usage receipts
+        run: python -m pytest -q ../token-spy/tests/test_interrupted_usage_receipts.py ../token-spy/tests/test_anthropic_cumulative_usage.py

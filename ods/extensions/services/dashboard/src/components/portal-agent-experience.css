@@ -1,0 +1,113 @@
+/*!
+ * Neon rim, activity card and compact ring layouts adapted from UImaxxing,
+ * © 2026 Yogi Suria. Free to use, modify and ship in products, commercial
+ * included; not for republication as a component library or ML training data.
+ * https://uimaxx.ing/r/neon-prompt-bar.json
+ * provenance-mark: uim1-1ea983e5.866d597c
+ * Portal adaptation: theme tokens, real controls, responsive/reduced-motion UI.
+ */
+.portal-glass-composer { position:relative; border:1px solid rgb(var(--theme-text) / .12); border-radius:22px; padding:14px 16px 10px; background:rgb(var(--theme-card) / .55); backdrop-filter:blur(28px) saturate(115%); -webkit-backdrop-filter:blur(28px) saturate(115%); box-shadow:0 8px 28px -18px #0006; }
+:root[data-wallpaper] .portal-glass-composer { background:#151b243d; border-color:#ffffff1a; }
+.portal-neon-prompt:focus-within { border-color:rgb(var(--theme-text) / .25); box-shadow:0 8px 28px -18px #0006,0 0 18px -12px #e4e8f06b; }
+:root .pixel-chat .portal-glass-composer textarea.pixel-composer-input { min-height:48px; background:transparent; border-color:transparent; padding:5px 2px; border-radius:0; backdrop-filter:none; -webkit-backdrop-filter:none; box-shadow:none; }
+:root .pixel-chat .portal-glass-composer textarea.pixel-composer-input.border-red-400 { border-bottom-color:#f87171; }
+.portal-glass-composer .pixel-composer-secondary { border:0; padding-top:5px; }
+.portal-glass-composer .pixel-composer-actions button[title='Send'] { color:rgb(var(--theme-bg)); background:rgb(var(--theme-text)); border:0; border-radius:50%; box-shadow:none; }
+.portal-recovery { display:flex; align-items:flex-start; gap:12px; margin:12px 20px 0; padding:14px 16px; border:1px solid rgb(var(--theme-text) / .1); border-radius:14px; background:rgb(var(--theme-card) / .6); color:rgb(var(--theme-text-secondary)); backdrop-filter:blur(20px); -webkit-backdrop-filter:blur(20px); font-size:12px; line-height:1.55; }
+.portal-recovery-icon { flex-shrink:0; margin-top:2px; color:rgb(var(--theme-text-muted)); }
+.portal-recovery-copy { flex:1; min-width:0; overflow-wrap:anywhere; }
+.portal-recovery-copy > strong { display:block; color:rgb(var(--theme-text)); font-size:13px; font-weight:500; margin-bottom:3px; }
+.portal-recovery p { margin:0; }
+.portal-recovery details { margin-top:5px; color:rgb(var(--theme-text-muted)); font-size:11px; }
+.portal-recovery summary { cursor:pointer; width:fit-content; }
+.portal-recovery details p { margin-top:4px; }
+.portal-recovery > button { display:inline-flex; align-items:center; justify-content:center; gap:7px; flex-shrink:0; min-height:34px; padding:7px 11px; border:1px solid rgb(var(--theme-text) / .13); border-radius:8px; color:rgb(var(--theme-text)); background:rgb(var(--theme-text) / .04); font-size:11px; }
+.portal-recovery > button:hover { background:rgb(var(--theme-text) / .09); }
+.portal-recovery :is(button,summary):focus-visible { outline:2px solid currentColor; outline-offset:3px; }
+.portal-recovery .portal-recovery-error { margin-top:8px; color:rgb(var(--theme-text)); }
+.portal-context { position:relative; display:inline-flex; }
+.portal-context-trigger { display:inline-flex; align-items:center; gap:6px; min-height:30px; min-width:30px; justify-content:center; padding:5px; border-radius:8px; font-variant-numeric:tabular-nums; color:rgb(var(--theme-text-secondary)); }
+.portal-context-trigger svg { width:16px; height:16px; transform:rotate(-90deg); }
+.portal-context-track { stroke:rgb(var(--theme-text-muted) / .22); }
+.portal-context-arc { stroke:currentColor; transition:stroke-dashoffset .2s ease; }
+.portal-context-tooltip,.portal-citation-tooltip { position:absolute; bottom:calc(100% + 8px); right:0; z-index:60; width:280px; max-width:75vw; padding:12px 14px; border:1px solid rgb(var(--theme-border)); border-radius:12px; background:rgb(var(--theme-card)); color:rgb(var(--theme-text)); box-shadow:0 8px 25px #0004; white-space:normal; overflow-wrap:anywhere; font-size:12px; line-height:1.6; }
+.portal-context-tooltip { width:max-content; max-width:min(260px,calc(100vw - 48px)); padding:9px 12px; border-radius:11px; font-size:12px; line-height:1.65; background:rgb(var(--theme-card) / .98); text-align:left; }
+.portal-context-tooltip > :is(span,strong) { display:block; }
+.portal-context-tooltip strong { font-weight:500; }
+.portal-context-heading { color:rgb(var(--theme-text-muted)); }
+.portal-context-tooltip small { display:block; margin-top:5px; color:rgb(var(--theme-text-muted)); font-size:11px; }
+.portal-stream-reveal { animation:portal-text-arrive .2s ease-out both; }
+@keyframes portal-text-arrive { from { opacity:.35; filter:blur(1px); } to { opacity:1; filter:blur(0); } }
+@media (prefers-reduced-motion:reduce) { .portal-stream-reveal { animation:none; } }
+.portal-streaming-text { min-width:0; overflow-wrap:anywhere; }
+.portal-stream-cursor { display:inline-block; width:5px; height:13px; margin:4px 3px 0; border-radius:3px; background:currentColor; animation:portal-silver-pulse 1.3s ease-in-out infinite; }
+.portal-citation { position:relative; }
+.portal-citation > a { color:rgb(var(--theme-text)); text-decoration:underline; text-decoration-color:rgb(var(--theme-text-muted) / .5); text-underline-offset:3px; }
+.portal-citation-domain { display:inline-block; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; padding:2px 5px; margin-left:4px; border-radius:5px; background:rgb(var(--theme-text-muted) / .12); color:rgb(var(--theme-text-secondary)); font-size:10px; vertical-align:2px; text-decoration:none; }
+.pixel-response-table { min-width:28rem; }
+.pixel-response-table th,.pixel-response-table td { min-width:7rem; word-break:normal; overflow-wrap:break-word; }
+.portal-citation-tooltip { left:0; right:auto; display:inline-flex; flex-direction:column; font-weight:400; }
+.portal-citation-tooltip > span { font-size:10px; color:rgb(var(--theme-text-muted)); }
+.portal-question-card { background:rgb(var(--theme-card) / .78); backdrop-filter:blur(26px) saturate(110%); -webkit-backdrop-filter:blur(26px) saturate(110%); box-shadow:none; overflow-wrap:anywhere; }
+:root[data-wallpaper] .portal-question-card { background:#111820b8; border-color:#ffffff20; }
+.portal-question-card textarea { background:rgb(var(--theme-bg) / .25); }
+.portal-response-error { display:flex; align-items:flex-start; gap:7px; margin:8px 0; color:rgb(var(--theme-text-muted)); font-size:12px; line-height:1.6; }
+.portal-response-error > svg { flex-shrink:0; margin-top:3px; }
+@supports not ((backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px))) {
+  .portal-question-card { background:rgb(var(--theme-card)); }
+  :root[data-wallpaper] .portal-question-card { background:#13181f; }
+}
+@media(prefers-reduced-transparency:reduce) {
+  .portal-question-card { background:rgb(var(--theme-card)); backdrop-filter:none; -webkit-backdrop-filter:none; }
+  :root[data-wallpaper] .portal-question-card { background:#13181f; }
+}
+.portal-question-card fieldset > legend { letter-spacing:-.015em; }
+.portal-question-card label:has(input:checked) { border-color:rgb(var(--theme-text-muted)); box-shadow:inset 0 1px rgb(var(--theme-text) / .06); }
+.portal-question-card input[type=radio] { accent-color:rgb(var(--theme-text-secondary)); }
+.portal-question-card button:focus-visible,.portal-context-trigger:focus-visible,.portal-citation a:focus-visible { outline:2px solid rgb(var(--theme-text-muted)); outline-offset:3px; }
+@keyframes portal-silver-pulse { 0%,100% { opacity:1; } 50% { opacity:.6; } }
+@media (max-width:600px) {
+  .portal-glass-composer { padding:12px 10px 8px; border-radius:18px; }
+  .portal-recovery { margin:8px 12px 0; padding:12px; flex-wrap:wrap; gap:8px; }
+  .portal-recovery-copy { flex-basis:calc(100% - 25px); }
+  .portal-recovery > button { margin-left:25px; }
+  .portal-neon-prompt .pixel-composer-row { gap:5px; }
+  .portal-citation-tooltip { position:fixed; left:12px; right:12px; bottom:18px; width:auto; max-width:none; }
+}
+@media (prefers-reduced-motion:reduce) {
+  .portal-streaming-text.is-streaming > p:last-of-type,.portal-stream-cursor { animation:none; }
+  .portal-context-arc { transition:none; }
+}
+@media (forced-colors:active) {
+  .portal-neon-prompt { border:1px solid CanvasText; }
+  .portal-context-arc { stroke:CanvasText; }
+  .portal-context-track { stroke:GrayText; }
+}
+
+.portal-goal-mode { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:10px; padding:8px 10px; border-radius:10px; background:rgb(var(--theme-card) / .85); font-size:12px; }
+.portal-goal-mode > span { font-weight:600; }
+.portal-goal-mode > small { color:rgb(var(--theme-text-muted)); }
+.portal-goal-mode > button { margin-left:auto; padding:5px; }
+.portal-goal-plan { margin-bottom:16px; border:1px solid rgb(var(--theme-border)); border-radius:16px; background:linear-gradient(130deg,rgb(var(--theme-text) / .045),transparent),rgb(var(--theme-card) / .9); overflow:hidden; }
+.portal-goal-plan header { display:flex; align-items:center; gap:9px; padding:14px 16px 0; font-size:12px; }
+.portal-goal-plan header > span { margin-left:auto; color:rgb(var(--theme-text-muted)); font-variant-numeric:tabular-nums; }
+.portal-goal-plan > p { margin:8px 16px 12px; color:rgb(var(--theme-text-muted)); font-size:11px; }
+.portal-goal-plan ol { list-style:none; padding:0 16px; margin:0; }
+.portal-goal-plan li { display:flex; align-items:flex-start; gap:10px; padding:9px 0; font-size:12px; line-height:1.6; }
+.portal-goal-plan li > svg { flex-shrink:0; margin-top:2px; color:rgb(var(--theme-text-muted)); }
+.portal-goal-plan li[data-state=completed] { color:rgb(var(--theme-text-muted)); }
+.portal-goal-plan footer { display:flex; align-items:center; flex-wrap:wrap; gap:8px; padding:12px 16px; margin-top:8px; border-top:1px solid rgb(var(--theme-border) / .6); }
+.portal-goal-plan footer small { flex:1; font-size:10px; line-height:1.5; color:rgb(var(--theme-text-muted)); }
+.portal-goal-plan footer button { padding:6px 9px; border:1px solid rgb(var(--theme-border)); border-radius:7px; font-size:11px; }
+.portal-goal-plan button:focus-visible,.portal-goal-mode button:focus-visible { outline:2px solid currentColor; outline-offset:2px; }
+
+@media (prefers-reduced-transparency:reduce) {
+  :root .portal-glass-composer,.portal-recovery { background:rgb(var(--theme-card)); backdrop-filter:none; -webkit-backdrop-filter:none; }
+}
+@supports not ((backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px))) {
+  :root .portal-glass-composer,.portal-recovery { background:rgb(var(--theme-card)); }
+}
+.portal-context-status { display:flex; align-items:center; flex-wrap:wrap; gap:6px 10px; padding:6px 4px; font-size:11px; line-height:1.5; color:rgb(var(--theme-text-muted)); }
+.portal-context-status > span { flex:1; min-width:180px; }
+.portal-context-status > button { padding:3px 5px; background:transparent; color:rgb(var(--theme-text-secondary)); text-decoration:underline; text-underline-offset:3px; }
+.portal-context-status > button:focus-visible { outline:1px solid currentColor; outline-offset:2px; }

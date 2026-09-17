@@ -145,7 +145,6 @@ function appendUsageHistory(report) {
 
 function useUsageReport(range, reloadToken = 0) {
   const [report, setReport] = useState(() => emptyReport(range.start, range.end))
-  const [previousReport, setPreviousReport] = useState(null)
   const [readiness, setReadiness] = useState(EMPTY_READINESS)
   const [history, setHistory] = useState(
     () => readUsageHistory().filter(item => item.period === `${range.start}:${range.end}`),
@@ -157,7 +156,6 @@ function useUsageReport(range, reloadToken = 0) {
     let cancelled = false
     let inFlight = false
     let cancelLoad = null
-    const prevRange = monthRange(addMonths(range.anchor, -1))
 
     async function load({ silent = false } = {}) {
       if (inFlight || cancelled) return
@@ -180,22 +178,20 @@ function useUsageReport(range, reloadToken = 0) {
         // Include response bodies in the deadline; only the winning poll
         // may publish state or append history.
         const pending = (async () => {
-          const [currentRes, previousRes, readinessRes] = await Promise.all([
+          const [currentRes, readinessRes] = await Promise.all([
             fetch(`/api/usage/report?start=${range.start}&end=${range.end}`, {signal:controller.signal}),
-            fetch(`/api/usage/report?start=${prevRange.start}&end=${prevRange.end}`, {signal:controller.signal}),
             fetch('/api/usage/readiness', {signal:controller.signal}),
           ])
           if (!currentRes.ok) throw new Error(`Usage API returned HTTP ${currentRes.status}`)
           const current = await currentRes.json()
-          const previous = previousRes.ok ? await previousRes.json() : null
           const usageReadiness = readinessRes.ok ? await readinessRes.json() : {
             ...EMPTY_READINESS,
             status: 'unavailable',
             detail: `Usage readiness API returned HTTP ${readinessRes.status}`,
           }
-          return {current, previous, usageReadiness}
+          return {current, usageReadiness}
         })()
-        const {current, previous, usageReadiness} = await Promise.race([pending, deadline])
+        const {current, usageReadiness} = await Promise.race([pending, deadline])
         if (!cancelled) {
           setError(null)
           setReport({
@@ -205,18 +201,12 @@ function useUsageReport(range, reloadToken = 0) {
           })
           setReadiness({ ...EMPTY_READINESS, ...usageReadiness, actions: usageReadiness.actions || {} })
           setHistory(appendUsageHistory(current))
-          setPreviousReport(previous ? {
-            ...emptyReport(prevRange.start, prevRange.end),
-            ...previous,
-            summary: { ...EMPTY_SUMMARY, ...(previous.summary || {}) },
-          } : null)
         }
       } catch (err) {
         if (!cancelled) {
           setError(err.message)
           setReport(emptyReport(range.start, range.end, err.message))
           setReadiness({ ...EMPTY_READINESS, status: 'unavailable', detail: err.message })
-          setPreviousReport(null)
         }
       } finally {
         window.clearTimeout(timeoutId)
@@ -241,7 +231,7 @@ function useUsageReport(range, reloadToken = 0) {
     }
   }, [range, reloadToken])
 
-  return { report, previousReport, readiness, history, loading, error }
+  return { report, readiness, history, loading, error }
 }
 
 export default function Usage({ compact = false }) {

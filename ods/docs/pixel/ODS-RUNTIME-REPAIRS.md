@@ -111,3 +111,28 @@ The wrapper line comes from OpenClaw's MIT-licensed runtime, Copyright (c) 2026
 OpenClaw Foundation; the full license remains in the
 [upstream MIT notice](upstream/THIRD_PARTY_NOTICES.md). The test does not vendor
 the upstream implementation.
+
+
+## Truncated turn continuation after automatic compaction
+
+For OpenClaw 2026.6.33, `openclaw-compaction-resume.json` binds the exact
+`sessions-CZbwb3_c.js` bytes. A same-model response ending in `length` above
+the compaction threshold continues the compacted session once instead of
+ending an unfinished tool turn. The incomplete trailing assistant is removed
+from in-memory compaction input; completed tool results and the durable
+transcript remain. The original user prompt is not replayed. The existing
+overflow recovery bound also limits this continuation, and unsuccessful or
+aborted compaction does not resume. Normal completed responses do not retry.
+The installer applies `--compaction-resume`; its owner-private backup and
+receipt support `--compaction-resume --restore`. Unknown runtime bytes fail
+closed. This does not guarantee arbitrary model-generated projects compile.
+
+The exact transport error `Context overflow: estimated context size exceeds
+safe threshold during tool loop.` uses the existing bounded overflow recovery
+path too. This preserves completed tool work and resumes only after successful
+compaction; unrelated tool failures do not trigger this recovery. The repair
+accepts the previous reviewed patch hash and reconstructs the original before
+upgrading it. Model and settings defaults retain the calculated output/transport
+reserve without a redundant half-window reserve floor. Explicit larger settings
+reserves remain supported. Compaction cannot make an oversized irreducible
+prompt fit every model.

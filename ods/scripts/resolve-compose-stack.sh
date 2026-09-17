@@ -793,6 +793,32 @@ if external_llm:
         sys.exit(1)
     resolved.append("docker-compose.external-llm.yml")
 
+# Optional owner-registered model directories. Unlike untrusted extension
+# mounts, these explicitly authorized absolute roots must match the bounded
+# registry exactly; no extra Compose keys or writable mounts are accepted.
+model_stores_overlay = script_dir / ".model-stores.compose.json"
+if model_stores_overlay.exists():
+    sys.path.insert(0, str(script_dir / "extensions/services/dashboard-api"))
+    try:
+        from model_stores import validated_compose_overlay, active_compose_overlay
+        from env_values import parse_env_value
+        validated_compose_overlay(script_dir)
+        active_store_id = "default"
+        env_path = script_dir / ".env"
+        if env_path.exists():
+            for line in env_path.read_text(encoding="utf-8").splitlines():
+                key, separator, value = line.partition("=")
+                if separator and key.strip() == "ODS_ACTIVE_MODEL_STORE":
+                    active_store_id = parse_env_value(value)
+        active_mount = active_compose_overlay(script_dir, active_store_id)
+    except (ImportError, ValueError) as exc:
+        print(f"ERROR: registered model mounts: {exc}", file=sys.stderr)
+        sys.exit(1)
+    resolved.append(".model-stores.compose.json")
+    resolved = [item for item in resolved if pathlib.Path(item).name != ".active-model-store.compose.json"]
+    if active_mount:
+        resolved.append(str(active_mount.relative_to(script_dir)))
+
 # Include docker-compose.override.yml if it exists (user customizations).
 # Even though the operator placed this file themselves, the resolver runs
 # under installer/CI and may handle composes from sources the operator

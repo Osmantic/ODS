@@ -123,6 +123,11 @@ _env_set() {
             if (index($0, k "=") == 1) print k "=" v; else print
         }' "$file" > "${file}.tmp" && cat "${file}.tmp" > "$file" && rm -f "${file}.tmp"
     else
+        # Appending after a last line that has no newline would join the new
+        # assignment onto that line and corrupt both keys.
+        if [[ -s "$file" && -n "$(tail -c 1 "$file")" ]]; then
+            printf '\n' >> "$file"
+        fi
         echo "${key}=${val}" >> "$file"
     fi
 }
@@ -1048,7 +1053,7 @@ _compose_run_with_summary() {
             _compose_remove_conflicting_ods_containers "$_compose_log" || break
             sleep "${ODS_COMPOSE_NAME_CONFLICT_RETRY_DELAY:-3}"
         elif (( _startup_attempt < _startup_max_attempts )) \
-           && grep -Eiq 'dependency failed to start|No such container|container .* (exited|is unhealthy)|service .* failed to start|failed to start.*container' "$_compose_log"; then
+           && grep -Eiq 'dependency failed to start|No such container|container .* (exited|is unhealthy)|service .* failed to start|failed to start.*container|failed to create task.*OCI runtime create failed|OCI runtime create failed.*message recipient disconnected from message bus' "$_compose_log"; then
             warn "Docker reported a transient service startup failure; waiting briefly and retrying (${_startup_attempt}/${_startup_retries})."
             sleep "${ODS_COMPOSE_STARTUP_RETRY_DELAY:-15}"
             _startup_attempt=$(( _startup_attempt + 1 ))
@@ -1568,6 +1573,64 @@ cmd_logs() {
     docker compose "${flags[@]}" logs -f --tail "$lines" "$service"
 }
 
+_ods_cli_wait_for_hermes_ready() {
+    local timeout interval attempts state i
+    timeout="${ODS_HERMES_READY_TIMEOUT:-180}"
+    interval="${ODS_HERMES_READY_INTERVAL:-3}"
+    [[ "$timeout" =~ ^[1-9][0-9]*$ ]] || timeout=180
+    [[ "$interval" =~ ^[1-9][0-9]*$ ]] || interval=3
+
+    # Hermes is optional. A restart that does not include it must not acquire
+    # a new product dependency or delay otherwise-healthy installations.
+    docker inspect ods-hermes >/dev/null 2>&1 || return 0
+    log "Waiting for Hermes agent readiness..."
+
+    attempts=$(( (timeout + interval - 1) / interval ))
+    for (( i=1; i<=attempts; i++ )); do
+        state=$(docker inspect --format \
+            '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' \
+            ods-hermes 2>/dev/null || true)
+        case "$state" in
+            healthy)
+                success "Hermes agent — ready"
+                return 0
+                ;;
+            unhealthy|exited|dead|restarting)
+                log_error "Hermes agent did not recover after restart (state: $state)."
+                return 1
+                ;;
+        esac
+        (( i < attempts )) && sleep "$interval"
+    done
+
+    log_error "Hermes agent did not become ready within ${timeout}s (last state: ${state:-missing})."
+    return 1
+}
+
+_ods_cli_wait_for_hermes_ready_with_retry() {
+    local flags=("$@")
+    local state
+
+    if _ods_cli_wait_for_hermes_ready; then
+        return 0
+    fi
+
+    state=$(docker inspect --format \
+        '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' \
+        ods-hermes 2>/dev/null || true)
+    [[ "$state" == "unhealthy" ]] || return 1
+
+    # Repeated fleet restart cycles can occasionally leave Hermes in Docker's
+    # explicit unhealthy state even though a clean recreate recovers it. Retry
+    # only that terminal state once; a second failed readiness check remains a
+    # hard restart failure.
+    log "Hermes was unhealthy after restart; recreating it once..."
+    _compose_run_with_summary "Retrying Hermes" \
+        "${flags[@]}" up -d --force-recreate --no-build --pull never hermes
+    _ods_cli_refresh_soul || true
+    _ods_cli_wait_for_hermes_ready
+}
+
 cmd_restart() {
     check_install
     cd "$INSTALL_DIR"
@@ -1639,6 +1702,13 @@ cmd_restart() {
     # needing the Docker Desktop-hostile nested bind mount.
     if [[ "$refresh_soul" == "true" ]]; then
         _ods_cli_refresh_soul || true
+    fi
+
+    # `docker compose up -d` only proves that container creation was accepted.
+    # Do not tell users a full/Hermes restart is done while Dream Talk and the
+    # default agent path can still return a startup error.
+    if [[ -z "$resolved_service" || "$resolved_service" == "hermes" ]]; then
+        _ods_cli_wait_for_hermes_ready_with_retry "${flags[@]}"
     fi
 
     if [[ -z "$resolved_service" || "$resolved_service" == "llama-server" ]]; then
@@ -2057,7 +2127,7 @@ cmd_update() {
         fi
     elif [[ -x "$INSTALL_DIR/ods-backup.sh" ]]; then
         log "Creating pre-update backup (${_snap_label})..."
-        if ! "$INSTALL_DIR/ods-backup.sh" "$_snap_label"; then
+        if ! "$INSTALL_DIR/ods-backup.sh" --type user-data --description "$_snap_label"; then
             warn "Pre-update backup failed; proceeding without safety net."
         fi
     else
@@ -3303,7 +3373,18 @@ META
 
             # Create archive (relative to presets dir to avoid absolute paths)
             cd "$PRESETS_DIR"
-            if tar czf "$output" "$name" 2>/dev/null; then
+            if (
+                umask 077
+                staged_archive="$(mktemp "${output}.XXXXXX")" || exit 1
+                trap 'rm -f -- "$staged_archive"' EXIT
+                trap 'exit 130' INT
+                trap 'exit 143' TERM
+                # Finish privately before replacing an existing public file.
+                chmod 600 "$staged_archive" || exit 1
+                tar czf "$staged_archive" "$name" 2>/dev/null || exit 1
+                [[ ! -d "$output" ]] || exit 1
+                mv -f -- "$staged_archive" "$output"
+            ); then
                 local size
                 size=$(du -h "$output" 2>/dev/null | cut -f1 || true)
                 success "Preset exported to: $output ($size)"
@@ -3576,8 +3657,15 @@ cmd_mode() {
     if [[ "$mode" == "local" ]]; then
         api_url="http://llama-server:8080"
         _env_set "LLM_API_URL" "$api_url"
-        _env_set "HERMES_LLM_BASE_URL" "http://llama-server:8080/v1"
-        _env_set "HERMES_LLM_API_KEY" "sk-ods-hermes-local"
+        local switchboard_mode
+        switchboard_mode=$(grep -m1 "^ODS_MODEL_SWITCHBOARD=" .env 2>/dev/null | cut -d= -f2- | tr -d '"\047\r' || true)
+        if [[ "${switchboard_mode,,}" == "enabled" ]]; then
+            _env_set "HERMES_LLM_BASE_URL" "http://model-router:9099/v1"
+            _env_set "HERMES_LLM_API_KEY" "no-key"
+        else
+            _env_set "HERMES_LLM_BASE_URL" "http://llama-server:8080/v1"
+            _env_set "HERMES_LLM_API_KEY" "sk-ods-hermes-local"
+        fi
     else
         api_url="http://litellm:4000"
         _env_set "LLM_API_URL" "$api_url"
@@ -4756,10 +4844,14 @@ cmd_stt() {
 
     # Resolve model and port from .env (with fallback for older installs).
     local model port model_encoded url
-    model=$(_env_get_raw AUDIO_STT_MODEL)
-    [[ -z "$model" ]] && model="Systran/faster-whisper-base"
-    port=$(_env_get_raw WHISPER_PORT)
-    [[ -z "$port" ]] && port="9000"
+    # These settings are dotenv values, including quotes and inline comments.
+    # Keep missing-file/key defaults independent of the caller's environment.
+    local AUDIO_STT_MODEL="" WHISPER_PORT=""
+    if [[ -f "$INSTALL_DIR/.env" ]]; then
+        load_env
+    fi
+    model="${AUDIO_STT_MODEL:-Systran/faster-whisper-base}"
+    port="${WHISPER_PORT:-9000}"
     model_encoded="${model//\//%2F}"
     url="http://127.0.0.1:${port}"
 

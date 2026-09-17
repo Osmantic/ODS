@@ -228,7 +228,8 @@ class TestGetGpuInfoNvidiaDetailed:
         assert result is not None and len(result) == 1
         g = result[0]
         assert g.name == "NVIDIA GB10"
-        assert g.memory_used_mb == 12000
+        assert g.memory_used_mb == 0
+        assert g.memory_usage_available is False
         assert g.memory_total_mb == 124000
         assert g.utilization_percent == 6
         assert g.temperature_c == 43

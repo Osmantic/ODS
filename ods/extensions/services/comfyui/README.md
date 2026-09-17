@@ -47,6 +47,10 @@ Environment variables (set in `.env`):
 | `./data/comfyui/workflows` | `/workflows` | Workflow JSON templates (read-only) |
 | `./data/comfyui/user` | `/user` | Saved workflows and UI settings (persisted across recreates) |
 
+Workflow templates seed missing files in the NVIDIA user directory on startup.
+An existing saved workflow keeps its contents even when its template is newer.
+To use an updated template, import it under a new name in ComfyUI.
+
 When upgrading an older NVIDIA container, export its saved workflows and settings
 before recreating it: files in the old container layer cannot be recovered by the
 new entrypoint. Startup preserves any existing image-side `user/` as

@@ -68,6 +68,10 @@ function New-ODSWindowsServicePlan {
     # edge proxy: without the private host ingress behind it that creates a
     # broken, misleading Pixel surface (and fails Compose secret interpolation).
     $plan["pixel-edge"] = New-ODSWindowsServicePlanEntry "pixel-edge" $false "agents" "Pixel requires the ODS Linux installer in Ubuntu 24.04 WSL2"
+    # The relay is also Pixel-only. Its manifest is tagged core for the Linux
+    # installer, but native Windows has no Pixel host or relay bearer key.
+    # Do not let the generic core fallback enable it during Compose discovery.
+    $plan["pixel-model-relay"] = New-ODSWindowsServicePlanEntry "pixel-model-relay" $false "agents" "Pixel requires the ODS Linux installer in Ubuntu 24.04 WSL2"
 
     $plan["comfyui"] = New-ODSWindowsServicePlanEntry "comfyui" $EnableComfyui "image" "image generation not enabled"
     $plan["perplexica"] = New-ODSWindowsServicePlanEntry "perplexica" $EnableDeepResearch "research" "deep research not enabled"

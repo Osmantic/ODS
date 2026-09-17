@@ -1,20 +1,23 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { AtSign, Slash, ShieldCheck, ListChecks, Globe2, CheckCheck } from 'lucide-react'
+import { AtSign, Slash, ShieldCheck, ListChecks, Globe2, CheckCheck, Users, Minimize2 } from 'lucide-react'
 import PixelMascot from './PixelMascot'
 import PixelPromptLibrary from './PixelPromptLibrary'
 import { usePortalIdentity } from '../contexts/PortalIdentityContext'
 
 const commands = [
+  { title: 'Goal', detail: 'Plan, work and verify the outcome', icon: ListChecks, text: '/goal ' },
   { title: 'Plan', detail: 'Milestones and completion checks', icon: ListChecks, text: 'Plan this outcome with milestones and exact completion criteria: ' },
   { title: 'Research', detail: 'Current sources and visible provenance', icon: Globe2, text: 'Research this using current sources, inline citations, and evidence-versus-inference labels: ' },
+  { title: 'Agents', detail: 'Let Portal plan the team', icon: Users, text: '/agents ' },
+  { title: 'Compact', detail: 'Free context while keeping conversation history', icon: Minimize2, action: 'compact' },
   { title: 'Review', detail: 'Risks and concrete next actions', icon: CheckCheck, text: 'Review this critically, identify real risks, and recommend concrete next actions: ' },
 ]
 const sources = [
   { title: 'Current task', detail: 'Reference the current conversation', icon: AtSign, text: '@current-task ' },
   { title: 'Retained evidence', detail: 'Request evidence; no files are attached automatically', icon: AtSign, text: '@retained-evidence ' },
 ]
-export default function PixelComposerTools({ disabled, input, onInsert, children }) {
+export default function PixelComposerTools({ disabled, input, onInsert, onCompact, children }) {
   const {displayName} = usePortalIdentity()
   const [menu, setMenu] = useState(null)
   const root = useRef(null)
@@ -42,7 +45,7 @@ export default function PixelComposerTools({ disabled, input, onInsert, children
         : (current + (event.key === 'ArrowDown' ? 1 : -1) + choices.length) % choices.length
       choices[next]?.focus()
     }} aria-label={menu === 'sources' ? 'Mention a source' : 'Prompt commands'}>
-      {(menu === 'sources' ? sources : commands).map(item => <button type="button" key={item.title} aria-label={`${item.title} ${item.detail}`} onClick={() => { setMenu(null); onInsert(item.text) }}><item.icon size={17}/><span><strong>{item.title}</strong><small>{item.detail}</small></span></button>)}
+      {(menu === 'sources' ? sources : commands.filter(item=>!item.action || onCompact)).map(item => <button type="button" key={item.title} aria-label={`${item.title} ${item.detail}`} onClick={() => { setMenu(null); if(item.action==='compact')onCompact();else onInsert(item.text) }}><item.icon size={17}/><span><strong>{item.title}</strong><small>{item.detail}</small></span></button>)}
     </div>}
     {children}
     <button type="button" disabled={disabled} title="Mention source" aria-label="Mention source" aria-expanded={menu === 'sources'} onClick={event => toggle('sources', event)}><AtSign size={16}/></button>

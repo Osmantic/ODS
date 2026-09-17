@@ -105,6 +105,20 @@ else
     fail "cloud overlay must profile local llama-server out of default startup"
 fi
 
+"$PY" - <<'PY'
+from pathlib import Path
+import sys
+import yaml
+
+services = yaml.safe_load(Path("docker-compose.cloud.yml").read_text(encoding="utf-8"))["services"]
+for name in ("llama-server", "model-router", "pixel-model-relay"):
+    service = services.get(name, {})
+    if "local-inference" not in service.get("profiles", []) or service.get("restart") != "no":
+        print(f"[FAIL] cloud mode must profile {name} out with its local dependency chain", file=sys.stderr)
+        sys.exit(1)
+print("[PASS] cloud mode profiles Pixel relay and its local model dependency together")
+PY
+
 if grep -Fq -- '--ods-mode "${ODS_MODE:-local}"' installers/lib/compose-select.sh \
     && grep -Fq -- '--ods-mode "${ODS_MODE:-local}"' installers/phases/03-features.sh \
     && grep -Fq -- '--ods-mode "${ODS_MODE:-local}"' installers/phases/11-services.sh \

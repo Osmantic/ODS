@@ -27,6 +27,7 @@ sys.path.insert(0, DASHBOARD_API_DIR)
 
 from routers import pixel  # noqa: E402
 import pixel_runtime_state  # noqa: E402
+import pixel_chat_identity  # noqa: E402
 from pixel_runtime_state import pixel_stream_active  # noqa: E402
 
 
@@ -121,6 +122,9 @@ async def stream_body(response):
 
 @pytest.fixture(autouse=True)
 def pixel_env(monkeypatch):
+    async def saved_identity(*_args, **_kwargs):
+        return {"schemaVersion": 1, "revision": 1, "displayName": "Portal"}
+    monkeypatch.setattr(pixel_chat_identity, "async_request_json", saved_identity)
     monkeypatch.setenv("PIXEL_OPENWEBUI_KEY", EDGE_KEY)
     monkeypatch.setenv("PIXEL_EDGE_URL", "http://pixel-edge:9595")
 
@@ -439,6 +443,15 @@ def test_active_runtime_projection_accepts_a_constrained_adaptive_context():
     assert pixel._active_runtime_projection({"activeRuntime": runtime}) == runtime
 
 
+def test_active_remote_runtime_projects_only_a_valid_route_fingerprint():
+    runtime = {"source": "remote-provider", "model": "same-model", "contextLength": 8192,
+               "maxTokens": 1024, "reasoning": False, "routeFingerprint": "a" * 64}
+    assert pixel._active_runtime_projection({"activeRuntime": runtime}) == runtime
+    for invalid in (None, True, "private-url", "a" * 63, "a" * 64 + "\n", "A" * 64):
+        assert pixel._active_runtime_projection({"activeRuntime": {**runtime, "routeFingerprint": invalid}}) is None
+    assert pixel._active_runtime_projection({"activeRuntime": {**runtime, "baseUrl": "https://private.example"}}) is None
+
+
 @pytest.mark.asyncio
 async def test_status_projects_active_model_switch_without_touching_edge(monkeypatch):
     async def active_model_lifecycle(*_args, **_kwargs):
@@ -539,15 +552,30 @@ async def test_chat_forwards_exact_body_and_narrow_edge_key_only():
     assert streamed.count(b"data: [DONE]") == 1
     assert capture["method"] == "POST"
     assert capture["url"] == "http://pixel-edge:9595/v1/chat/completions"
-    assert capture["json"] == {
+    assert capture["json"]["messages"][0]["role"] == "system"
+    assert '"Portal"' in capture["json"]["messages"][0]["content"]
+    assert capture["json"]["messages"][1:] == [{"role": "user", "content": "hello"}]
+    assert {key: value for key, value in capture["json"].items() if key != "messages"} == {
         "model": "pixel/default",
         "stream": True,
         "user": "conversation_1",
-        "messages": [{"role": "user", "content": "hello"}],
     }
     assert capture["headers"]["Authorization"] == f"Bearer {EDGE_KEY}"
     assert "dashboard-test-key" not in json.dumps(capture)
     assert pixel_runtime_state._local_pixel_stream_active() is False
+
+
+@pytest.mark.asyncio
+async def test_chat_rejects_before_opening_edge_when_stream_capacity_is_full(monkeypatch):
+    body = pixel.ChatStreamRequest.model_validate(
+        {"chat_id": "capacity", "messages": [{"role": "user", "content": "hello"}]}
+    )
+    monkeypatch.setattr(pixel, "try_begin_pixel_stream", lambda: False)
+    with patch.object(pixel.httpx, "AsyncClient", side_effect=AssertionError("edge must not be opened")):
+        with pytest.raises(HTTPException) as exc_info:
+            await pixel.pixel_chat_stream(ConnectedRequest(), body)
+    assert exc_info.value.status_code == 429
+    assert "capacity" in exc_info.value.detail
 
 
 @pytest.mark.asyncio
@@ -719,6 +747,24 @@ async def test_stream_rejections_never_reflect_upstream_body(upstream):
         with pytest.raises(HTTPException) as exc_info:
             await pixel.pixel_chat_stream(ConnectedRequest(), body)
     assert exc_info.value.status_code == 502
+    assert "secret upstream body" not in str(exc_info.value.detail)
+
+
+@pytest.mark.asyncio
+async def test_stream_projects_edge_transition_as_actionable_conflict_without_reflection():
+    upstream = FakeResponse(
+        status=409,
+        content_type="application/json",
+        chunks=[b'{"error":"pixel_transition_in_progress","private":"secret upstream body"}'],
+    )
+    body = pixel.ChatStreamRequest.model_validate(
+        {"chat_id": "c1", "messages": [{"role": "user", "content": "hello"}]}
+    )
+    with patch.object(pixel.httpx, "AsyncClient", return_value=FakeClient(upstream)):
+        with pytest.raises(HTTPException) as exc_info:
+            await pixel.pixel_chat_stream(ConnectedRequest(), body)
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == pixel._MODEL_SWITCH_DETAIL
     assert "secret upstream body" not in str(exc_info.value.detail)
 
 

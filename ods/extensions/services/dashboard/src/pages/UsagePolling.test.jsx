@@ -23,17 +23,20 @@ it.each(['report headers','report body','readiness body'])(
     const pending = new Promise(resolve => {resolveOld = resolve})
     const signals = []
     let calls = 0
+    let firstSignal
     vi.stubGlobal('fetch', vi.fn((url, options) => {
-      const call = calls++
+      calls++
+      firstSignal ??= options.signal
+      const firstPoll = options.signal === firstSignal
       signals.push(options.signal)
       const readiness = String(url).includes('/readiness')
-      if (call < 3) {
-        if (phase === 'report headers' && call === 0) return pending
-        if ((phase === 'report body' && call === 0) || (phase === 'readiness body' && readiness)) {
+      if (firstPoll) {
+        if (phase === 'report headers' && !readiness) return pending
+        if ((phase === 'report body' && !readiness) || (phase === 'readiness body' && readiness)) {
           return Promise.resolve({ok:true,json:() => pending})
         }
       }
-      return Promise.resolve(response(readiness ? {status:'ready'} : report(call < 3 ? 900 : 123)))
+      return Promise.resolve(response(readiness ? {status:'ready'} : report(firstPoll ? 900 : 123)))
     }))
     const mounted = render(<Usage/>)
     await settle()
@@ -41,11 +44,11 @@ it.each(['report headers','report body','readiness body'])(
     await act(async () => {await vi.advanceTimersByTimeAsync(15000)})
     expect(screen.getByRole('alert')).toHaveTextContent('Could not load usage')
     expect(screen.getByRole('button',{name:'Refresh usage'})).toBeEnabled()
-    expect(signals.slice(0,3).every(signal => signal.aborted)).toBe(true)
+    expect(signals.slice(0,2).every(signal => signal.aborted)).toBe(true)
     await act(async () => {await vi.advanceTimersByTimeAsync(5000)})
     expect(screen.getByText('Recorded activity · refreshes every 10s')).toBeVisible()
     expect(screen.getByText('123')).toBeVisible()
-    expect(calls).toBe(6)
+    expect(calls).toBe(4)
     await act(async () => {
       resolveOld(phase === 'report headers' ? response(report(900)) : phase === 'readiness body' ? {status:'ready'} : report(900))
     })
@@ -53,7 +56,7 @@ it.each(['report headers','report body','readiness body'])(
     expect(screen.queryByText('900')).not.toBeInTheDocument()
     mounted.unmount()
     await act(async () => {await vi.advanceTimersByTimeAsync(60000)})
-    expect(calls).toBe(6)
+    expect(calls).toBe(4)
     expect(vi.getTimerCount()).toBe(0)
   },
 )
@@ -68,7 +71,7 @@ it('aborts an unfinished poll and removes its deadline when unmounted', async ()
   await settle()
   mounted.unmount()
   await act(async () => {await vi.advanceTimersByTimeAsync(0)})
-  expect(signals).toHaveLength(3)
+  expect(signals).toHaveLength(2)
   expect(signals.every(signal => signal.aborted)).toBe(true)
   expect(vi.getTimerCount()).toBe(0)
 })

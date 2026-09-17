@@ -126,8 +126,8 @@ assert_grep "installers/phases/11-services.sh" '_hermes_switchboard_mode=.*ODS_M
     "Linux Hermes patcher reads switchboard mode"
 assert_grep "installers/phases/11-services.sh" '_hermes_model="ods/current"' \
     "Linux Hermes patcher uses the stable switchboard model alias"
-assert_grep "installers/phases/11-services.sh" '_hermes_base_url=.*http://litellm:4000/v1' \
-    "Linux Hermes patcher routes switchboard mode through LiteLLM"
+assert_grep "installers/phases/11-services.sh" '_hermes_base_url=.*http://model-router:9099/v1' \
+    "Linux Hermes patcher routes local switchboard mode through model-router"
 assert_grep "installers/phases/11-services.sh" '_hermes_model_yaml=.*_phase11_yaml_double_quoted_scalar_content' \
     "Linux Hermes verification serializes the selected model as YAML"
 assert_grep "installers/phases/11-services.sh" 'grep -Fqx "  default: \\"\$_hermes_model_yaml\\""' \
@@ -182,7 +182,7 @@ assert_grep "installers/macos/install-macos.sh" '--context-length "\$MAX_CONTEXT
     "macOS Hermes patcher receives context length"
 assert_grep "installers/macos/ods-macos.sh" 'ENV_CTX_SIZE:-65536' \
     "macOS native llama restart defaults to 64K context"
-assert_grep "installers/phases/07-devtools.sh" '"context": \$\{MAX_CONTEXT:-65536\}' \
+assert_grep "installers/phases/07-devtools.sh" '_opencode_context="\$\{MAX_CONTEXT:-65536\}"' \
     "Linux OpenCode config defaults to 64K context"
 assert_grep "installers/phases/07-devtools.sh" 'ODS_MODEL_SWITCHBOARD' \
     "Linux OpenCode config reads switchboard mode"
@@ -198,7 +198,7 @@ assert_grep "installers/macos/lib/env-generator.sh" 'ODS_MODEL_SWITCHBOARD=\$\{s
     "macOS .env generation persists switchboard mode"
 assert_grep "installers/macos/lib/env-generator.sh" 'OPEN_WEBUI_LLM_BASE_URL=\$\{open_webui_llm_base_url\}' \
     "macOS .env generation carries the Open WebUI switchboard route"
-assert_grep "installers/macos/docker-compose.macos.yml" 'OPENAI_API_BASE_URL: "\$\{OPEN_WEBUI_LLM_BASE_URL:-http://\$\{ODS_MACOS_HOST_GATEWAY:-host\.docker\.internal\}:8080/v1\}"' \
+assert_grep "installers/macos/docker-compose.macos.yml" 'OPENAI_API_BASE_URL: "\$\{OPEN_WEBUI_LLM_BASE_URL:-http://\$\{ODS_MACOS_HOST_GATEWAY:-host\.docker\.internal\}:\$\{OLLAMA_PORT:-8080\}/v1\}"' \
     "macOS Open WebUI compose route honors switchboard override"
 assert_grep "installers/macos/docker-compose.macos.yml" 'OPENAI_API_KEY: "\$\{OPEN_WEBUI_LLM_API_KEY:-\}"' \
     "macOS Open WebUI compose route carries switchboard API key"

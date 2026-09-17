@@ -124,7 +124,7 @@ async def preview_template(template_id: str, api_key: str = Depends(verify_api_k
         if ext_status in ("installing", "setting_up"):
             in_progress.append(svc_id)
             continue
-        if ext_status == "enabled" or (svc_status and svc_status.status == "healthy"):
+        if ext_status in ("enabled", "cli_installed") or (svc_status and svc_status.status == "healthy"):
             already_enabled.append(svc_id)
             continue
 
@@ -168,6 +168,7 @@ async def apply_template(template_id: str, api_key: str = Depends(verify_api_key
         _install_from_library, _is_installable,
         _call_agent_invalidate_compose_cache,
         _has_error_progress, _sync_extension_config, _write_error_progress,
+        _compute_extension_status,
     )
 
     # Blocking sections run in the thread pool so the event loop stays
@@ -229,6 +230,7 @@ async def apply_template(template_id: str, api_key: str = Depends(verify_api_key
         service_list = await get_all_services()
     services_by_id = {s.id: s for s in service_list}
 
+    catalog_by_id = {entry["id"]: entry for entry in EXTENSION_CATALOG}
     results = {}
     enabled_services = []
     library_installed: list[str] = []
@@ -245,6 +247,15 @@ async def apply_template(template_id: str, api_key: str = Depends(verify_api_key
         # These have no individual compose.yaml to toggle — they're always on.
         if svc_id in _BASE_COMPOSE_SERVICES:
             results[svc_id] = "core_service"
+            continue
+
+        # One-shot tools have no healthy daemon to observe. Reuse catalog
+        # readiness so an already installed CLI is not invoked by reapplying.
+        ext = catalog_by_id.get(svc_id)
+        if ext and await asyncio.to_thread(
+            _compute_extension_status, ext, services_by_id,
+        ) == "cli_installed":
+            results[svc_id] = "already_enabled"
             continue
 
         compatibility_error = _gpu_backend_error(svc_id)

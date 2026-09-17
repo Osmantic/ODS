@@ -475,3 +475,53 @@ def test_http_snapshot_ignores_asset_queries_without_changing_path_or_bytes():
             finally:
                 server.shutdown()
                 thread.join(timeout=5)
+
+
+def test_changes_use_the_same_lf_line_boundaries_as_verified_source():
+    """Unicode separators in retained source text are not extra source lines."""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = pathlib.Path(temporary)
+        workspace, previews = root / "workspace", root / "previews"
+        workspace.mkdir(mode=0o700)
+        previews.mkdir(mode=0o700)
+        site = workspace / "demo"
+        site.mkdir(mode=0o700)
+        entry = site / "index.html"
+        for separator in ("\u0085", "\u2028", "\u2029"):
+            for ending in ("\n", "\r\n", ""):
+                old_text = "before" + separator + "inside\nunchanged" + ending
+                new_text = "after" + separator + "inside\nunchanged" + ending
+                entry.write_bytes(old_text.encode("utf-8"))
+                entry.chmod(0o600)
+                old = MODULE.publish_snapshot(workspace, previews, "demo", os.getuid())
+                entry.write_bytes(new_text.encode("utf-8"))
+                new = MODULE.publish_snapshot(workspace, previews, "demo", os.getuid())
+                with MODULE.PreviewHTTPServer(("127.0.0.1", 0), previews) as server:
+                    thread = threading.Thread(target=server.serve_forever, daemon=True)
+                    thread.start()
+                    connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+                    headers = {"Host": f"{new['siteId']}.localhost:{server.server_port}"}
+                    try:
+                        connection.request("GET", f"/{new['siteId']}/index.html", headers=headers)
+                        response = connection.getresponse()
+                        assert response.status == 200
+                        source = response.read().decode("utf-8")
+                        assert source == new_text
+                        assert len(source.split("\n")) - int(source.endswith("\n")) == 2
+                        connection.request("GET", f"/{new['siteId']}/__ods_changes__/{old['siteId']}.json", headers=headers)
+                        response = connection.getresponse()
+                        payload = json.loads(response.read())
+                        assert response.status == 200
+                        file = payload["changes"][0]
+                        assert (file["additions"], file["deletions"]) == (1, 1)
+                        assert not file["truncated"]
+                        assert file["diff"] == [
+                            {"type": "remove", "oldLine": 1, "newLine": None, "text": "before" + separator + "inside"},
+                            {"type": "add", "oldLine": None, "newLine": 1, "text": "after" + separator + "inside"},
+                            {"type": "context", "oldLine": 2, "newLine": 2, "text": "unchanged",
+                             **({} if ending else {"noFinalNewline": True})},
+                        ]
+                    finally:
+                        connection.close()
+                        server.shutdown()
+                        thread.join(timeout=5)

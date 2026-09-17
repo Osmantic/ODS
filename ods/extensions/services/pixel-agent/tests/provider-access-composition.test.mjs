@@ -90,7 +90,11 @@ test('slow lease cleanup keeps access busy until exit and prevents a transition'
   const finishing = f.composition.finish(f.event, ctx).then(() => {ended = true;});
   for (let i = 0; i < 5; i++) await Promise.resolve();
   assert.equal(f.access.status().phase, 'busy'); assert.equal(ended, false);
-  assert.throws(() => f.access.acquire(randomBytes(32).toString('hex'), f.access.status().revision), /busy/);
+  let failure;
+  try { f.access.acquire(randomBytes(32).toString('hex'), f.access.status().revision); }
+  catch (error) { failure = error; }
+  assert.ok(failure);
+  assert.equal(f.access.classifyTransitionError(failure), 'native-transition-busy-active-run');
   gate.resolve(); await finishing;
   assert.equal(f.access.status().phase, 'idle'); assert.equal(f.access.status().active, 0);
   await f.routing.shutdown();
@@ -101,7 +105,11 @@ test('unknown provider cleanup cannot clear shared activity or allow access tran
   assert.equal((await f.composition.admit(f.event, ctx)).outcome, 'pass');
   await assert.rejects(f.composition.finish(f.event, ctx), /cleanup incomplete/);
   assert.equal(f.access.status().phase, 'busy'); assert.equal(f.access.status().active, 1);
-  assert.throws(() => f.access.acquire(randomBytes(32).toString('hex'), f.access.status().revision), /busy/);
+  let failure;
+  try { f.access.acquire(randomBytes(32).toString('hex'), f.access.status().revision); }
+  catch (error) { failure = error; }
+  assert.ok(failure);
+  assert.equal(f.access.classifyTransitionError(failure), 'native-transition-busy-active-run');
   await assert.rejects(f.routing.shutdown(), /cleanup incomplete/);
 });
 

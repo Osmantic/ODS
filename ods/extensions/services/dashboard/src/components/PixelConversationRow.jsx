@@ -43,10 +43,14 @@ export default function PixelConversationRow({chat,title,onDelete,onExport,onSav
     if(!position) return
     const outside=event=>{if(!menu.current?.contains(event.target)) close(false)}
     const dismiss=()=>close(false)
+    const scrolled=event=>{
+      if(event.target instanceof Node && menu.current?.contains(event.target)) return
+      close(false)
+    }
     document.addEventListener('pointerdown',outside)
     window.addEventListener('resize',dismiss)
-    window.addEventListener('scroll',dismiss,true)
-    return ()=>{document.removeEventListener('pointerdown',outside);window.removeEventListener('resize',dismiss);window.removeEventListener('scroll',dismiss,true)}
+    window.addEventListener('scroll',scrolled,true)
+    return ()=>{document.removeEventListener('pointerdown',outside);window.removeEventListener('resize',dismiss);window.removeEventListener('scroll',scrolled,true)}
   },[position])
   function toggle(field) {
     try {saveConversationLabels(chat.chatId,{...labels,[field]:!labels[field]},labels);close();onSaved?.()}

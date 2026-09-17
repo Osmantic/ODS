@@ -14,6 +14,8 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY pixel_edge.py ./
+COPY chat_context.py ./
+COPY access_mode.py ./
 COPY transition_gate.py ./
 COPY edge_entrypoint.py ./
 

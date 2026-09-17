@@ -493,6 +493,9 @@ def _patch_mutation_config(monkeypatch, tmp_path, lib_dir=None, user_dir=None):
                         tmp_path / "builtin")
     monkeypatch.setattr("routers.extensions.CORE_SERVICE_IDS",
                         frozenset({"dashboard-api", "open-webui", "hermes", "hermes-proxy"}))
+    # Mutation tests should model a reachable host agent unless a test is
+    # specifically exercising the stop-failure path.
+    monkeypatch.setattr("routers.extensions._call_agent", lambda action, sid: True)
 
 
 # --- Install endpoint ---
@@ -610,6 +613,31 @@ class TestInstallExtension:
         assert not (user_dir / "my-ext" / "stale.txt").exists()
         assert (user_dir / "my-ext" / "compose.yaml").exists()
         assert resp.json()["action"] == "installed"
+
+    def test_install_rejects_symlinked_retry_directory(
+        self, test_client, monkeypatch, tmp_path,
+    ):
+        """A failed retry must not follow or remove a symlinked extension path."""
+        lib_dir = _setup_library_ext(tmp_path, "my-ext")
+        user_dir = tmp_path / "user"
+        user_dir.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "keep.txt").write_text("must survive", encoding="utf-8")
+        _patch_mutation_config(monkeypatch, tmp_path, lib_dir=lib_dir,
+                               user_dir=user_dir)
+        # Model a symlink at the Path API boundary so this safety test runs on
+        # Windows hosts without Developer Mode or administrator privileges.
+        monkeypatch.setattr(Path, "is_symlink", lambda path: path.name == "my-ext")
+
+        resp = test_client.post(
+            "/api/extensions/my-ext/install",
+            headers=test_client.auth_headers,
+        )
+
+        assert resp.status_code == 400
+        assert "symlinked" in resp.json()["detail"]
+        assert (outside / "keep.txt").read_text(encoding="utf-8") == "must survive"
 
     def test_install_unknown_extension_404(self, test_client, monkeypatch, tmp_path):
         """404 when extension is not in the library."""
@@ -1027,20 +1055,10 @@ class TestEnableExtensionHookReturnHandling:
         assert data["warnings"] == []
         assert data["message"] == "Extension enabled and started."
 
-    def test_multi_svc_pre_start_failure_on_dep_does_not_warn(
+    def test_multi_svc_pre_start_failure_blocks_dependent(
         self, test_client, monkeypatch, tmp_path,
     ):
-        """Multi-svc mixed-outcome: dep pre_start fails, main proceeds.
-
-        Covers fork issue #494's "pre_start failures must be terminal for
-        the failing service but must not pollute the warnings array" path.
-        Dep's pre_start failure writes its own error progress and is
-        treated as terminal (no start, no post_start) — the warnings
-        accumulator only collects post_start failures. Main service's
-        hooks all succeed but agent_ok stays False because one of the
-        services in enabled_services failed pre_start, so
-        restart_required is True.
-        """
+        """A failed prerequisite blocks main and explains the blocked start."""
         user_dir = tmp_path / "user"
         user_dir.mkdir(exist_ok=True)
         # Dep ext (no further deps).
@@ -1084,9 +1102,10 @@ class TestEnableExtensionHookReturnHandling:
         assert data["action"] == "enabled"
         # pre_start failure on dep keeps agent_ok False → restart required.
         assert data["restart_required"] is True
-        # warnings collects only post_start failures, so dep's pre_start
-        # failure must NOT appear here.
-        assert data["warnings"] == []
+        assert data["warnings"] == [
+            "main-ext: Not started because dependencies failed: dep",
+        ]
+        assert data["failed_services"] == ["dep", "main-ext"]
         # Both services were activated (dep auto-enabled, then main).
         assert "dep" in data["enabled_services"]
         assert "main-ext" in data["enabled_services"]
@@ -1166,6 +1185,24 @@ class TestEnableExtensionHookReturnHandling:
 
 class TestDisableExtension:
 
+    def test_disable_stop_failure_preserves_enabled_definition(
+        self, test_client, monkeypatch, tmp_path,
+    ):
+        """A failed stop must not make a running extension uninstallable."""
+        user_dir = _setup_user_ext(tmp_path, "my-ext", enabled=True)
+        _patch_mutation_config(monkeypatch, tmp_path, user_dir=user_dir)
+        monkeypatch.setattr("routers.extensions._call_agent", lambda action, sid: False)
+
+        resp = test_client.post(
+            "/api/extensions/my-ext/disable",
+            headers=test_client.auth_headers,
+        )
+
+        assert resp.status_code == 502
+        assert "failed to stop" in resp.json()["detail"]
+        assert (user_dir / "my-ext" / "compose.yaml").exists()
+        assert not (user_dir / "my-ext" / "compose.yaml.disabled").exists()
+
     def test_disable_renames_to_disabled(self, test_client, monkeypatch, tmp_path):
         """Disable renames compose.yaml → compose.yaml.disabled."""
         user_dir = _setup_user_ext(tmp_path, "my-ext", enabled=True)
@@ -1179,7 +1216,7 @@ class TestDisableExtension:
         assert resp.status_code == 200
         data = resp.json()
         assert data["action"] == "disabled"
-        assert data["restart_required"] is True
+        assert data["restart_required"] is False
         assert (user_dir / "my-ext" / "compose.yaml.disabled").exists()
         assert not (user_dir / "my-ext" / "compose.yaml").exists()
 
