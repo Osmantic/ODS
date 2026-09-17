@@ -24,7 +24,9 @@ test.each(['enter','mod-enter'])('shows the current %s preference from the real 
   expect(within(help).getByRole('row', {name:/Search conversations/})).toHaveTextContent('Ctrl/⌘ + K')
   expect(screen.getByRole('button', {name:'Close keyboard shortcuts'})).toHaveFocus()
   expect(composer).toHaveValue('Keep this unsent')
-  expect(fetch.mock.calls.some(([,options]) => options?.method === 'POST')).toBe(false)
+  // The context ring polls /api/pixel/chat/context on mount; opening the help
+  // dialog must not trigger any state-changing POST (stream, cancel, agents).
+  expect(fetch.mock.calls.some(([url,options]) => options?.method === 'POST' && url !== '/api/pixel/chat/context')).toBe(false)
   fireEvent.click(screen.getByRole('button', {name:'Close keyboard shortcuts'}))
   expect(trigger).toHaveFocus()
   expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
