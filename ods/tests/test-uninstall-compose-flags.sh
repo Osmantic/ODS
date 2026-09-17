@@ -69,6 +69,9 @@ EOF
     cat > "$stub_dir/sudo" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${SUDO_LOG:?}"
+if [[ "$*" == "-n -v" ]]; then
+    exit "${SUDO_VALIDATE_EXIT_CODE:-0}"
+fi
 exit 0
 EOF
     chmod +x "$stub_dir/sudo"
@@ -92,9 +95,10 @@ EOF
 make_install() {
     local install_dir="$1"
 
-    mkdir -p "$install_dir/data" "$install_dir/lib"
+    mkdir -p "$install_dir/data" "$install_dir/lib" "$install_dir/systemd"
     cp "$TARGET" "$install_dir/ods-uninstall.sh"
     cp "$ROOT_DIR/lib/safe-env.sh" "$install_dir/lib/safe-env.sh"
+    cp "$ROOT_DIR/lib/system-uninstall.sh" "$install_dir/lib/system-uninstall.sh"
     touch "$install_dir/ods-cli"
     touch "$install_dir/docker-compose.base.yml"
     touch "$install_dir/docker-compose.cpu.yml"
@@ -113,6 +117,8 @@ run_uninstall() {
     PATH="$stub_dir:$PATH" \
     DOCKER_LOG="${DOCKER_LOG:?}" \
     SUDO_LOG="${SUDO_LOG:?}" \
+    SUDO_VALIDATE_EXIT_CODE="${SUDO_VALIDATE_EXIT_CODE:-0}" \
+    ODS_UNINSTALL_SYSTEMD_DIR="$install_dir/systemd" \
         bash "$install_dir/ods-uninstall.sh" --force "$@" >/dev/null
 }
 
@@ -183,6 +189,39 @@ main() {
     [[ "$sudo_chown_seen" -eq 1 ]] \
         || fail "privileged uninstall must chown retained data through cached sudo credentials"
     pass "uninstall separates the interactive sudo prompt from privileged commands"
+
+    local install_noninteractive="$TMP_DIR/install-noninteractive"
+    local home_noninteractive="$TMP_DIR/home-noninteractive"
+    local log_noninteractive="$TMP_DIR/docker-noninteractive.log"
+    local sudo_noninteractive="$TMP_DIR/sudo-noninteractive.log"
+    local out_noninteractive="$TMP_DIR/uninstall-noninteractive.out"
+    local noninteractive_rc
+    mkdir -p "$home_noninteractive"
+    make_install "$install_noninteractive"
+    : > "$log_noninteractive"
+    : > "$sudo_noninteractive"
+    set +e
+    HOME="$home_noninteractive" \
+    INSTALL_DIR="$install_noninteractive" \
+    PATH="$stub_dir:$PATH" \
+    DOCKER_LOG="$log_noninteractive" \
+    SUDO_LOG="$sudo_noninteractive" \
+    SUDO_VALIDATE_EXIT_CODE=1 \
+        timeout 5s bash "$install_noninteractive/ods-uninstall.sh" \
+            --force --non-interactive >"$out_noninteractive" 2>&1
+    noninteractive_rc=$?
+    set -e
+    [[ "$noninteractive_rc" -ne 0 && "$noninteractive_rc" -ne 124 ]] \
+        || fail "non-interactive uninstall must fail promptly when sudo cannot authenticate (rc=$noninteractive_rc)"
+    [[ -d "$install_noninteractive" ]] \
+        || fail "failed non-interactive sudo preflight must not mutate the install tree"
+    [[ ! -s "$log_noninteractive" ]] \
+        || fail "failed non-interactive sudo preflight must happen before Docker cleanup"
+    grep -qx -- '-n -v' "$sudo_noninteractive" \
+        || fail "non-interactive uninstall must validate sudo without prompting"
+    grep -qF 'Non-interactive uninstall requires cached or passwordless sudo' "$out_noninteractive" \
+        || fail "non-interactive sudo failure must explain how to retry"
+    pass "non-interactive uninstall fails promptly and before mutation when sudo is unavailable"
 
     local install_safe="$TMP_DIR/install-safe-env"
     local home_safe="$TMP_DIR/home-safe-env"

@@ -6,6 +6,24 @@ const runId = 'chatcmpl_11111111-2222-4333-8444-555555555555';
 const ctx = {agentId:'pixel',runId};
 const now = () => '2026-09-08T20:00:00.000Z';
 
+test('context uses the latest assistant call, includes cached tokens and never cumulative cost',()=>{
+  const r=createTaskActivity({now});r.begin({},ctx);
+  r.modelOutput({contextTokenBudget:1000,usage:{input:9000,output:9000}},ctx);
+  assert.equal(r.projection(runId).context,null);
+  r.modelOutput({contextTokenBudget:1000,lastAssistant:{usage:{input:400,output:50,cacheRead:200,cacheWrite:100}}},ctx);
+  assert.deepEqual(r.projection(runId).context,{used:750,window:1000,measuredAt:now()});
+  assert.ok(parseTaskActivity(r.projection(runId),runId));
+});
+test('records bounded ordered steps and rejects malformed timeline and token metadata',()=>{
+  const r=createTaskActivity({now});r.begin({},ctx);
+  for(let i=0;i<30;i++){r.before({toolName:'read'},{...ctx,toolCallId:String(i)});r.after({result:{}},{...ctx,toolCallId:String(i)});}
+  const value=r.projection(runId);
+  assert.equal(value.events.length,24);assert.equal(value.events[0].sequence,7);
+  assert.ok(parseTaskActivity(value,runId));
+  assert.equal(parseTaskActivity({...value,events:[...value.events].reverse()},runId),null);
+  assert.equal(parseTaskActivity({...value,context:{used:-1,window:1000,measuredAt:now()}},runId),null);
+});
+
 test('live observations bind exactly one active run to its opaque user and exclude other sessions', () => {
   const recorder=createTaskActivity({now});
   const user='ods-'+ 'a'.repeat(64);

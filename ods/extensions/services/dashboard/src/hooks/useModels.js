@@ -218,6 +218,7 @@ export function useModels() {
   const [loading, setLoading] = useState(USE_MOCK_DATA ? false : true)
   const [fetchError, setFetchError] = useState(null)
   const [mutationError, setMutationError] = useState(null)
+  const clearMutationError = useCallback(() => setMutationError(null), [])
   const [pendingActions, setPendingActionsState] = useState([])
   const pendingActionsRef = useRef([])
   const actionTokenRef = useRef(0)
@@ -392,6 +393,9 @@ export function useModels() {
       return
     }
     loadActiveRef.current = true
+    // Invalidate catalog requests started before this mutation. Their replies
+    // describe the previous route even if no newer poll has settled yet.
+    latestSettledModelsRequestRef.current = ++modelsRequestRef.current
     const action = startAction(modelId, 'load')
     setMutationError(null)
 
@@ -486,6 +490,9 @@ export function useModels() {
       controller.abort()
       activationControllerRef.current = null
       void activationRequest
+      // A background poll started before final confirmation must not restore
+      // the old selection after the selector has released its switching state.
+      latestSettledModelsRequestRef.current = ++modelsRequestRef.current
       loadActiveRef.current = false
     }
   }
@@ -555,6 +562,7 @@ export function useModels() {
     configuredMode,
     llmBackend,
     canActivateModels: activationModeError === null,
+    clearMutationError,
     activationModeError,
     recommendationAlternatives,
     hermesMinimumContext,

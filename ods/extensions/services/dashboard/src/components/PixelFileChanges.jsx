@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState } from 'react'
-import { Pencil } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { Check, Copy, FileText, PanelRightClose, PanelRightOpen } from 'lucide-react'
+import PortalFileTree from './PortalFileTree'
+import PortalFileTreeResize,{useFileTreeResize} from './PortalFileTreeResize'
 import { fileLanguage, PixelCodeLines, PixelLanguageBadge } from './PixelCodeBlock'
 import './pixel-file-changes.css'
 
-const LABELS = {created:'Created', modified:'Edited', deleted:'Deleted', published:'Published'}
 const count = value => Number.isSafeInteger(value) && value >= 0
 
 export function PixelChangeCounts({additions, deletions}) {
@@ -49,9 +50,7 @@ function DiffLines({rows, path}) {
   }}/>
 }
 
-function FileChange({file, onPreview, expansion}) {
-  const [open, setOpen] = useState(false)
-  useEffect(() => {if (expansion) setOpen(expansion.open)}, [expansion])
+function FileChange({file, onPreview, onOpenFile, treeOpen, onToggleTree}) {
   const [copyState, setCopyState] = useState('Copy')
   const rows = Array.isArray(file.diff) ? file.diff : []
   const copyRequest = useRef(null)
@@ -62,11 +61,13 @@ function FileChange({file, onPreview, expansion}) {
     return () => { clearTimeout(copyRequest.current?.timer); copyRequest.current = null }
   }, [patch])
   const hasCounts = count(file.additions) && count(file.deletions)
-  const validRows = rows.every(row => row && ['context','add','remove'].includes(row.type) && typeof row.text === 'string' && !row.text.includes('\n') &&
-    (row.oldLine === null || Number.isSafeInteger(row.oldLine) && row.oldLine > 0) &&
-    (row.newLine === null || Number.isSafeInteger(row.newLine) && row.newLine > 0))
+  const positiveLine = value => Number.isSafeInteger(value) && value > 0
+  const validRows = Array.isArray(file.diff) && rows.every(row => row && ['context','add','remove'].includes(row.type) && typeof row.text === 'string' && !/[\r\n\0]/.test(row.text) &&
+    (row.type === 'add' ? row.oldLine === null && positiveLine(row.newLine) : row.type === 'remove' ? row.newLine === null && positiveLine(row.oldLine) : positiveLine(row.oldLine) && positiveLine(row.newLine)))
+  const unverifiable = !validRows || !hasCounts && (file.additions !== null || file.deletions !== null)
+  const canCopy = !unverifiable && hasCounts && rows.length > 0
   const copy = async () => {
-    if (copyRequest.current) return
+    if (copyRequest.current || !canCopy) return
     const request = {timer:null}
     copyRequest.current = request
     setCopyState('Copying…')
@@ -82,37 +83,62 @@ function FileChange({file, onPreview, expansion}) {
       if (copyRequest.current === request) copyRequest.current = null
     }
   }
-  return <details className="chat-file-change" open={open} onToggle={event => setOpen(event.currentTarget.open)}>
-    <summary><Pencil size={16} strokeWidth={1.25} aria-hidden="true"/><span className="file-change-name">{LABELS[file.change] || 'Changed'} {file.path}</span><PixelChangeCounts additions={file.additions} deletions={file.deletions}/></summary>
-    {open && <div className="inline-artifact-content">
-      {file.change === 'published' && <p className="pixel-publication-baseline">First published version. No earlier snapshot was available for comparison.</p>}
-      {!validRows || !hasCounts && (file.additions !== null || file.deletions !== null) ? <p role="status">Changes could not be verified.</p> : !hasCounts ? <p role="status">Line comparison unavailable for this file.</p> : !rows.length ? <p role="status">{file.additions || file.deletions ? 'Line changes are unavailable for this file.' : 'No line changes.'}</p> : <section className="pixel-code-block artifact-diff" aria-label={`Changes to ${file.path}`}>
-        <header className="code-block-header"><PixelLanguageBadge path={file.path}/><span title={file.path}>{file.path}</span><PixelChangeCounts additions={file.additions} deletions={file.deletions}/>{onPreview && file.change !== 'deleted' && <button type="button" onClick={() => onPreview(file)} aria-label={`Preview ${file.path}`}>Preview</button>}<button type="button" onClick={copy} disabled={copyState === 'Copying…'} aria-label={`Copy changes to ${file.path}`}>{copyState}</button></header>
-        <pre tabIndex={0} aria-label={`Diff for ${file.path}`}><DiffLines rows={rows} path={file.path}/></pre>
-        {file.truncated && <p className="pixel-diff-notice" role="status">Only part of this diff is displayed. Counts cover the verified file change.</p>}
-        {copyState === 'Copy failed' && <p className="pixel-diff-notice" role="alert">Clipboard access failed. Select the changes to copy them manually.</p>}
-      </section>}
-    </div>}
-  </details>
+  const openFile = onOpenFile || onPreview
+  const TreeIcon = treeOpen ? PanelRightClose : PanelRightOpen
+  return <section className="portal-review-diff pixel-code-block artifact-diff" aria-label={`Changes to ${file.path}`}>
+    <header className="code-block-header portal-review-file-header">
+      <PixelLanguageBadge path={file.path}/><span className="portal-review-path" title={file.path}>{file.path}</span><PixelChangeCounts additions={file.additions} deletions={file.deletions}/>
+      {file.change === 'deleted' && <span className="portal-review-deleted">Deleted</span>}
+      {openFile && file.change !== 'deleted' && <button type="button" onClick={() => openFile(file)} title="Open file" aria-label={`Open file ${file.path}`}><FileText size={14} aria-hidden="true"/></button>}
+      {canCopy && <button type="button" onClick={copy} disabled={copyState === 'Copying…'} title={copyState} aria-label={`Copy changes to ${file.path}`}>{copyState === 'Copied' ? <Check size={14} aria-hidden="true"/> : <Copy size={14} aria-hidden="true"/>}</button>}
+      <button type="button" className="portal-review-tree-toggle" title={treeOpen ? 'Hide files' : 'Show files'} aria-label="Toggle changed files" aria-expanded={treeOpen} onClick={onToggleTree}><TreeIcon size={15} aria-hidden="true"/></button>
+    </header>
+    {unverifiable ? <p className="portal-review-empty" role="status">Changes could not be verified.</p> : !hasCounts ? <p className="portal-review-empty" role="status">Line comparison unavailable for this file.</p> : !rows.length ? <p className="portal-review-empty" role="status">{file.additions || file.deletions ? 'Line changes are unavailable for this file.' : 'No line changes.'}</p> : <pre tabIndex={0} aria-label={`Diff for ${file.path}`}><DiffLines rows={rows} path={file.path}/></pre>}
+    {file.truncated && !unverifiable && <p className="pixel-diff-notice" role="status">Only part of this diff is displayed. Counts cover the verified file change.</p>}
+    {copyState === 'Copy failed' ? <p className="pixel-diff-notice" role="alert">Clipboard access failed. Select the changes to copy them manually.</p> : copyState === 'Copied' && <span className="sr-only" role="status">Changes copied.</span>}
+  </section>
 }
 
 /** Receives verified changes only. Does not derive counts from truncated rows. */
-export default function PixelFileChanges({changes = [], onPreview}) {
-  const [query, setQuery] = useState('')
-  const [kind, setKind] = useState('')
-  const [expansion, setExpansion] = useState(null)
-  if (!changes.length) return null
-  const shown = changes.filter(file => file.path.toLowerCase().includes(query.toLowerCase()) && (!kind || file.change === kind))
-  return <div className="pixel-file-changes" aria-label="File changes">
-    {(changes.length > 1 || query || kind) && <div className="my-2 flex flex-wrap items-center gap-2 text-xs">
-      <input type="search" aria-label="Filter changed files" placeholder="Find a changed file…" className="min-w-0 rounded border border-theme-border bg-theme-bg p-2" value={query} onChange={event => setQuery(event.target.value)}/>
-      <select aria-label="Change kind" className="rounded border border-theme-border bg-theme-bg p-2" value={kind} onChange={event => setKind(event.target.value)}><option value="">All changes</option>{Object.entries(LABELS).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select>
-      <button type="button" onClick={() => setExpansion({open:true})}>Expand all changes</button>
-      <button type="button" onClick={() => setExpansion({open:false})}>Collapse all changes</button>
-      {(query || kind) && <button type="button" onClick={() => {setQuery(''); setKind('')}}>Clear change filters</button>}
-      <span role="status">Showing {shown.length} of {changes.length} changed files</span>
-    </div>}
-    {!shown.length && <p role="status">No changed files match these filters.</p>}
-    {shown.map(file => <FileChange key={file.path} file={file} onPreview={onPreview} expansion={expansion}/>)}
+export default function PixelFileChanges({changes = [], files, comparisonReady=true, rootPath, onPreview, selectedPath, onSelectFile, onOpenFile}) {
+  const [localPath, setLocalPath] = useState(null)
+  const [treePreference, setTreePreference] = useState(null)
+  const panel = useRef(null), openedUnchanged = useRef(null)
+  const hasManifest = Array.isArray(files)
+  const treeFiles = useMemo(() => {
+    if (!Array.isArray(files)) return changes
+    const byPath = new Map(changes.map(file => [file.path,file]))
+    // Only the current verified manifest supplies source files. Removed paths
+    // are review-only entries and never inherit an old snapshot's file hash.
+    return [...files.map(file => ({...file,...byPath.get(file.path)})),...changes.filter(file => file.change === 'deleted')]
+  }, [files,changes])
+  const treeLayout=useFileTreeResize(panel,{enabled:treeFiles.length>0})
+  const {narrow}=treeLayout
+  const path = selectedPath ?? localPath
+  const missingSelection = hasManifest && comparisonReady && path && !treeFiles.some(file=>file.path===path)
+  const selected = missingSelection ? null : changes.find(file => file.path === path) || changes[0]
+  const requestedFile = hasManifest && files.find(file => file.path === selectedPath)
+  useEffect(() => {
+    if (!comparisonReady || !requestedFile || changes.some(file => file.path === requestedFile.path) || !onOpenFile) return
+    const key = `${requestedFile.path}/${requestedFile.sha256}`
+    if (openedUnchanged.current === key) return
+    openedUnchanged.current = key
+    onOpenFile(requestedFile)
+  }, [comparisonReady,requestedFile,changes,onOpenFile])
+  if (!treeFiles.length) return null
+  const treeOpen = treePreference ?? !narrow
+  const selectFile = (path, file) => {
+    if (hasManifest && !file.change) { onOpenFile?.(file); return }
+    setLocalPath(path)
+    onSelectFile?.(path,file)
+    if (narrow) setTreePreference(false)
+  }
+  return <div ref={panel} className={`pixel-file-changes portal-review-layout${treeOpen ? ' has-files' : ''}${narrow ? ' is-narrow' : ' portal-tree-split'}`} style={treeLayout.style} aria-label="File changes">
+    {selected ? <FileChange key={selected.path} file={selected} onPreview={onPreview} onOpenFile={onOpenFile} treeOpen={treeOpen} onToggleTree={() => setTreePreference(!treeOpen)}/> : <section className="portal-review-diff pixel-code-block" aria-label="Project files">
+      <header className="code-block-header portal-review-file-header"><span>{missingSelection ? 'File unavailable' : comparisonReady ? 'No changes' : 'Project files'}</span><button type="button" className="portal-review-tree-toggle" title={treeOpen ? 'Hide files' : 'Show files'} aria-label="Toggle changed files" aria-expanded={treeOpen} onClick={() => setTreePreference(!treeOpen)}>{treeOpen ? <PanelRightClose size={15}/> : <PanelRightOpen size={15}/>}</button></header>
+      <p className="portal-review-empty" role={missingSelection ? 'status' : undefined}>{missingSelection ? 'This file is not part of the current project. Select another file.' : 'Select a file to view its contents.'}</p>
+    </section>}
+    {treeOpen && <PortalFileTreeResize layout={treeLayout} label="Resize changed file list"/>}
+    {treeOpen && <aside className="portal-review-files"><PortalFileTree files={treeFiles} rootPath={rootPath} selectedPath={selected?.path} onSelectFile={selectFile} label={hasManifest ? 'Project files' : 'Changed files'} filterLabel={hasManifest ? 'Filter project files' : 'Filter changed files'}/></aside>}
   </div>
 }

@@ -197,6 +197,17 @@ else
             ai_err "OpenCode switchboard config requires LITELLM_KEY, but it is empty."
             exit 1
         fi
+        # OpenCode reserves `limit.output` from `limit.context` when deciding
+        # whether to compact. Reserving the entire context for output causes
+        # a trivial completed chat to enter an unbounded compaction/continue
+        # loop on 32K installs. Keep at least three quarters for the prompt.
+        _opencode_context="${MAX_CONTEXT:-65536}"
+        if [[ ! "$_opencode_context" =~ ^[0-9]+$ ]] || (( _opencode_context < 1024 )); then
+            ai_err "OpenCode requires a numeric context of at least 1024 tokens."
+            exit 1
+        fi
+        _opencode_output_limit=$(( _opencode_context / 4 ))
+        (( _opencode_output_limit <= 32768 )) || _opencode_output_limit=32768
 
         # Writes a fresh opencode.json from the template. Used for first-install
         # and as deterministic recovery when the jq rewrite path finds an
@@ -219,8 +230,8 @@ else
         "${_opencode_model_id}": {
           "name": "${_opencode_model_name}",
           "limit": {
-            "context": ${MAX_CONTEXT:-65536},
-            "output": 32768
+            "context": ${_opencode_context},
+            "output": ${_opencode_output_limit}
           }
         }
       }
@@ -242,7 +253,8 @@ OPENCODE_EOF
                     --arg model_id "$_opencode_model_id" \
                     --arg model_name "$_opencode_model_name" \
                     --arg provider_name "$_opencode_provider_name" \
-                    --argjson context "${MAX_CONTEXT:-65536}" \
+                    --argjson context "$_opencode_context" \
+                    --argjson output "$_opencode_output_limit" \
                     '.["$schema"] = "https://opencode.ai/config.json"
                      | .model = ("llama-server/" + $model_id)
                      | .small_model = ("llama-server/" + $model_id)
@@ -254,7 +266,7 @@ OPENCODE_EOF
                      | .provider["llama-server"].models = {
                          ($model_id): {
                            "name": $model_name,
-                           "limit": {"context": $context, "output": ([32768, $context] | min)}
+                           "limit": {"context": $context, "output": $output}
                          }
                        }' \
                     "$OPENCODE_CONFIG_DIR/opencode.json" > "$_opencode_tmp" 2>/dev/null; then
@@ -302,8 +314,8 @@ OPENCODE_EOF
                 rm -f "$svc_tmp"
             fi
 
-            systemctl --user daemon-reload 2>/dev/null || true
-            systemctl --user enable --now opencode-web.service >> "$LOG_FILE" 2>&1 && \
+            ods_systemctl_user daemon-reload 2>/dev/null || true
+            ods_systemctl_user enable --now opencode-web.service >> "$LOG_FILE" 2>&1 && \
                 ai_ok "OpenCode Web UI service installed (user-level, port 3003)" || \
                 ai_warn "OpenCode Web UI service failed to start"
 
@@ -317,9 +329,9 @@ OPENCODE_EOF
         # A rerun with --no-opencode must not leave an earlier ODS-managed
         # browser IDE running. Preserve the binary and user configuration so
         # an explicit future opt-in is reversible, but retire the managed unit.
-        if systemctl --user is-active --quiet opencode-web.service 2>/dev/null \
-            || systemctl --user is-enabled --quiet opencode-web.service 2>/dev/null; then
-            systemctl --user disable --now opencode-web.service >> "$LOG_FILE" 2>&1 || \
+        if ods_systemctl_user is-active --quiet opencode-web.service 2>/dev/null \
+            || ods_systemctl_user is-enabled --quiet opencode-web.service 2>/dev/null; then
+            ods_systemctl_user disable --now opencode-web.service >> "$LOG_FILE" 2>&1 || \
                 ai_warn "Could not stop the previously enabled OpenCode extension"
         fi
         log "OpenCode extension disabled; skipped installation and startup"
@@ -361,10 +373,10 @@ if [[ -f "$INSTALL_DIR/bin/ods-host-agent.py" ]]; then
         if systemctl status >/dev/null 2>&1 || [[ -d /run/systemd/system ]]; then
             # Migrate any pre-existing user-mode unit (idempotent — no-op if absent).
             if [[ -f "$HOME/.config/systemd/user/ods-host-agent.service" ]]; then
-                systemctl --user stop ods-host-agent.service 2>/dev/null || true
-                systemctl --user disable ods-host-agent.service 2>/dev/null || true
+                ods_systemctl_user stop ods-host-agent.service 2>/dev/null || true
+                ods_systemctl_user disable ods-host-agent.service 2>/dev/null || true
                 rm -f "$HOME/.config/systemd/user/ods-host-agent.service"
-                systemctl --user daemon-reload 2>/dev/null || true
+                ods_systemctl_user daemon-reload 2>/dev/null || true
                 ai_ok "Migrated host agent from --user mode to system mode"
             fi
 

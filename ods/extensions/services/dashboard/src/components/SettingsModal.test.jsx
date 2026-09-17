@@ -22,9 +22,9 @@ it('renders inline, filters sections, and preserves form state across navigation
   fireEvent.click(screen.getByRole('button', {name:'Storage',exact:true}))
   expect(screen.getByText('storage content')).toBeVisible()
   expect(screen.getByLabelText('Draft')).toHaveValue('Unsaved')
-  fireEvent.change(screen.getByLabelText('Search settings'), {target:{value:'pixel'}})
+  fireEvent.change(screen.getByLabelText('Search settings'), {target:{value:'portal'}})
   expect(screen.queryByRole('button', {name:'Storage',exact:true})).toBeNull()
-  expect(screen.getByRole('button', {name:'Pixel access'})).toBeVisible()
+  expect(screen.getByRole('button', {name:'Portal access'})).toBeVisible()
 })
 
 it('leaves closing and collapsing to the workspace panel header', () => {
@@ -60,7 +60,7 @@ it('offers integrations and remote GPU inside settings without losing remote dra
   fireEvent.click(screen.getByRole('button', {name:'Remote GPU',exact:true}))
   const draft = await screen.findByLabelText('Remote draft')
   fireEvent.change(draft, {target:{value:'Unsaved remote'}})
-  fireEvent.click(screen.getByRole('button', {name:'Integrations',exact:true}))
+  fireEvent.click(screen.getByRole('button', {name:'Service map',exact:true}))
   expect(await screen.findByText('Integration details')).toBeVisible()
   expect(draft).not.toBeVisible()
   fireEvent.click(screen.getByRole('button', {name:'Remote GPU',exact:true}))

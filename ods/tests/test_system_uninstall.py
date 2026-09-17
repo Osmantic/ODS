@@ -34,6 +34,16 @@ else:
 
 
 class SystemUninstall(unittest.TestCase):
+    def test_top_level_pixel_guard_precedes_system_unit_cleanup(self):
+        source = (ODS / 'ods-uninstall.sh').read_text()
+        pixel = source.index('ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME"')
+        preflight = source.index('ODS_SYSTEM_UNINSTALL_VALIDATE_ONLY=true')
+        system = source.rindex('ods_uninstall_system_units "$INSTALL_DIR" "$HOME"')
+        docker = source.index('# 1. Stop and remove Docker containers')
+        self.assertLess(preflight, pixel)
+        self.assertLess(pixel, system)
+        self.assertLess(system, docker)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='ods unit fixture ')
         self.addCleanup(self.temp.cleanup)
@@ -58,7 +68,7 @@ class SystemUninstall(unittest.TestCase):
                     'ODS_UNINSTALL_SYSTEMD_DIR': str(self.units), 'ODS_UNINSTALL_SYSTEMD_UID': str(os.getuid()),
                     'PATH': str(self.bin)+os.pathsep+os.environ['PATH']}
 
-    def cleanup(self, fault=''):
+    def cleanup(self, fault='', validate_only=False):
         script = r'''
 set -euo pipefail
 source "$1"
@@ -72,8 +82,23 @@ run_sudo() {
 ods_uninstall_system_units "$2" "$3"
 '''
         return subprocess.run(['bash', '-c', script, '_', str(ODS/'lib/system-uninstall.sh'),
-                               str(self.install), str(self.home)], env={**self.env, 'FAULT': fault},
+                               str(self.install), str(self.home)],
+                              env={**self.env, 'FAULT': fault,
+                                   'ODS_SYSTEM_UNINSTALL_VALIDATE_ONLY': 'true' if validate_only else 'false'},
                               text=True, capture_output=True, timeout=15)
+
+    def test_validation_only_retains_healthy_units_and_needs_no_privilege(self):
+        result = self.cleanup(validate_only=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_retained()
+        self.assertFalse((self.root/'privileged').exists())
+        self.assertNotIn('disable --now', (self.root/'calls').read_text())
+
+    def test_validation_only_rejects_foreign_unit_before_pixel_cleanup(self):
+        result = self.cleanup('foreign_fragment', validate_only=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assert_retained()
+        self.assertFalse((self.root/'privileged').exists())
 
     def assert_retained(self):
         self.assertTrue(all((self.units/u).exists() for u in UNITS))

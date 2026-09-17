@@ -1,10 +1,16 @@
 import { useEffect, useRef, useState } from 'react'
-import { Plus } from 'lucide-react'
+import { Archive, Folder, Plus } from 'lucide-react'
+import {groupProjectConversations} from '../lib/conversationProjects'
 import { CHAT_KEY, LIBRARY_EVENT, SELECT_EVENT, DELETE_EVENT, readConversations, conversationTitle } from '../lib/pixelConversations'
 import { conversationLabels } from '../lib/pixelConversationLabels'
 import PixelConversationRow, {ConversationTitle} from './PixelConversationRow'
 
 import { exportConversation } from '../lib/pixelConversationExport'
+
+function LimitedList({items,children,label}) {
+  const [expanded,setExpanded]=useState(false)
+  return <>{children(expanded?items:items.slice(0,5))}{items.length>5 && <button type="button" className="rail-show-more" aria-label={`${expanded?'Show fewer':'Show more'} ${label}`} aria-expanded={expanded} onClick={()=>setExpanded(value=>!value)}>{expanded?'Mostrar menos':`Mostrar mais (${items.length-5})`}</button>}</>
+}
 
 export default function PixelConversationNavigation({ collapsed }) {
   const [chats, setChats] = useState(readConversations)
@@ -50,6 +56,9 @@ export default function PixelConversationNavigation({ collapsed }) {
   const visible = labeled.filter(item => item.labels.archived === showArchived)
   const pinned = visible.filter(item => item.labels.pinned).map(item => item.chat)
   const regular = visible.filter(item => !item.labels.pinned).map(item => item.chat)
+  const {projects,recent}=groupProjectConversations(regular)
+  const playground=projects.filter(project=>project.root==='Playground')
+  const legacy=projects.filter(project=>!project.root)
   const chevron = <svg className="rail-chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="m5 6 3 3 3-3"/></svg>
   function rows(items, empty) {
     return <div className="rail-conversations">{items.length ? items.map(chat => <PixelConversationRow key={chat.chatId} chat={chat} title={conversationTitle(chat)} onSaved={() => archiveToggle.current?.focus()} onDelete={event => {trigger.current=event.currentTarget;setDeleteError('');setPending(chat)}} onExport={() => {
@@ -57,6 +66,12 @@ export default function PixelConversationNavigation({ collapsed }) {
       catch { setExportError('This conversation could not be exported. Your saved history is unchanged.') }
     }}><button className={`conversation-link ${chat.chatId === active ? 'active' : ''}`} title={conversationTitle(chat)} aria-current={chat.chatId === active ? 'page' : undefined} onClick={() => window.dispatchEvent(new CustomEvent(SELECT_EVENT, { detail: chat.chatId }))}><ConversationTitle title={conversationTitle(chat)}/>{chat.inFlight && <span className="rail-task-running" role="status" aria-label="Working"/>}</button></PixelConversationRow>) : <span className="rail-empty">{empty}</span>}</div>
 
+  }
+  function projectRows(items) {
+    return items.map(project=><details className="rail-project" key={project.path} open={project.chats.some(chat=>chat.chatId===active) || undefined}>
+      <summary title={project.path}><Folder size={16}/><span>{project.name}</span>{chevron}</summary>
+      <LimitedList items={project.chats} label={`conversations in ${project.path}`}>{items=>rows(items,'')}</LimitedList>
+    </details>)
   }
   return <div className="pixel-conversation-navigation">
     {exportError && <p role="alert">{exportError}</p>}
@@ -68,17 +83,18 @@ export default function PixelConversationNavigation({ collapsed }) {
       <footer><button autoFocus onClick={closeDelete}>Cancel</button><button onClick={confirmDelete}>Delete chat</button></footer>
     </dialog>
     <button ref={newTask} className="pixel-nav-item" onClick={() => window.dispatchEvent(new Event('ods:pixel-new-task'))}><Plus size={16}/><span>New task</span></button>
-    <button ref={archiveToggle} className="pixel-nav-item" type="button" aria-pressed={showArchived} onClick={() => setShowArchived(value => !value)}>{showArchived ? 'Show active conversations' : `Archived (${labeled.filter(item => item.labels.archived).length})`}</button>
     <div className="pixel-original-sections">
       {pinned.length > 0 && <details className="rail-section" open><summary>Pinned{chevron}</summary>{rows(pinned, '')}</details>}
-      <details className="rail-section" open>
+      {projects.length>0 && <details className="rail-section" open>
         <summary>Projects{chevron}</summary>
-        <details className="rail-project" open>
-          <summary><svg className="rail-folder" viewBox="0 0 20 20" aria-hidden="true"><path d="M3 6V4.8A1.3 1.3 0 0 1 4.3 3.5h4l2 2h5.4A1.3 1.3 0 0 1 17 6.8V8M4 16.5h11.3a1.5 1.5 0 0 0 1.5-1.2L18 9.2A1 1 0 0 0 17 8H5.2a1.5 1.5 0 0 0-1.5 1.2L2.5 15A1.3 1.3 0 0 0 4 16.5Z"/></svg><span>Playground</span>{chevron}</summary>
-          {rows(regular.slice(0, 5), showArchived ? 'No archived conversations' : 'No conversations yet')}
-        </details>
-      </details>
-      <details className="rail-section" open><summary>Recent{chevron}</summary>{rows(regular.slice(5), 'No older conversations')}</details>
+        {playground.length>0 && <details className="rail-project rail-playground" open>
+          <summary><Folder size={16}/><span>Playground</span>{chevron}</summary>
+          <LimitedList items={playground} label="Playground projects">{projectRows}</LimitedList>
+        </details>}
+        {legacy.length>0 && <LimitedList items={legacy} label="projects">{projectRows}</LimitedList>}
+      </details>}
+      <details className="rail-section" open><summary>{showArchived?'Archived conversations':'Recent'}{chevron}</summary>{rows(recent,showArchived?'No archived conversations':'No conversations yet')}</details>
     </div>
+    <button ref={archiveToggle} className="pixel-nav-item rail-archive-toggle" type="button" aria-pressed={showArchived} onClick={() => setShowArchived(value => !value)}><Archive size={16}/><span>{showArchived ? 'Show active conversations' : `Archived (${labeled.filter(item => item.labels.archived).length})`}</span></button>
   </div>
 }
