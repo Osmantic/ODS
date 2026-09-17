@@ -11,7 +11,7 @@ from routers.resources import _scan_service_disk
 
 def test_scan_service_disk_handles_permission_error(tmp_path, monkeypatch):
     monkeypatch.setattr("routers.resources.DATA_DIR", str(tmp_path))
-    
+
     with patch.object(Path, "iterdir", side_effect=PermissionError("Permission denied")):
         result = _scan_service_disk()
         assert result == {}

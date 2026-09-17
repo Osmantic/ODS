@@ -16,3 +16,11 @@ services:
     profiles:
       - local-inference
     restart: "no"
+
+  # Pixel's model relay has a hard dependency on model-router. Keep their
+  # cloud-mode profile in lockstep so an enabled local install remains a valid
+  # Compose project when the operator checks or switches to cloud mode.
+  pixel-model-relay:
+    profiles:
+      - local-inference
+    restart: "no"

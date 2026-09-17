@@ -67,10 +67,11 @@ select option, select optgroup { background-color:rgb(var(--theme-card)); color:
 .pixel-nav-search { display:block; box-sizing:border-box; width:calc(100% - 8px); min-width:0; margin:2px 4px 6px; height:34px; background:#1d1e20; padding:7px 10px; border:1px solid #383a3d; border-radius:7px; font-size:12px; color:#dedfe3; transition:border-color .15s; }
 .pixel-app .pixel-nav-search:focus,.pixel-app .pixel-nav-search:focus-visible { outline:none; border-color:#858b94; box-shadow:inset 0 0 0 1px #858b9430; }
 .pixel-sidebar-sections { margin-top:20px; }
-.pixel-applications { margin-top:20px; }
-.pixel-applications summary { display:flex; align-items:center; gap:5px; min-height:30px; padding:5px 11px; list-style:none; border-radius:7px; color:#777d83; font:500 .74rem/20px Inter,ui-sans-serif,system-ui,sans-serif; cursor:pointer; }
+.pixel-applications { margin:0; }
+.pixel-applications summary { list-style:none; cursor:pointer; }
+.pixel-applications summary > .rail-chevron { margin-left:auto; }
 .pixel-applications summary::-webkit-details-marker { display:none; }
-.pixel-applications summary:hover { background:#171819; color:#c8ccd1; }
+.pixel-applications summary:hover { background:rgb(var(--theme-text) / .055); color:rgb(var(--theme-text-secondary)); }
 .pixel-applications summary:focus-visible { outline:1px solid #777d83; outline-offset:-1px; }
 .pixel-applications .rail-chevron { width:13px; height:13px; fill:none; stroke:currentColor; stroke-width:1.4; stroke-linecap:round; stroke-linejoin:round; transform:rotate(-90deg); transition:transform .15s ease; }
 .pixel-applications[open] > summary > .rail-chevron { transform:rotate(0); }
@@ -433,7 +434,8 @@ select option, select optgroup { background-color:rgb(var(--theme-card)); color:
 .dashboard-metric-row dd > span { display:flex; align-items:center; justify-content:flex-end; gap:5px; font-size:11px; overflow-wrap:anywhere; }
 .dashboard-metric-row.is-model dd { width:65%; }
 .dashboard-metric-row.is-model dd > span { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; }
-@media(max-width:639px) { .pixel-applications > summary { font-size:0; } .pixel-applications > summary::after { content:'•••'; font-size:12px; } }
+.pixel-sidebar.is-collapsed .pixel-applications > summary > .rail-chevron { display:none; }
+@media(max-width:639px) { .pixel-applications > summary > .rail-chevron { display:none; } }
 .dashboard-metal-track { height:5px; margin-top:7px; border-radius:9px; overflow:hidden; background:#303333; box-shadow:inset 0 1px 2px #0006; }
 .dashboard-metal-track > span { display:block; height:100%; border-radius:inherit; background:linear-gradient(110deg,#666d73 0%,#bcc3c8 20%,#eef1f2 30%,#858d94 43%,#d5d9dc 57%,#727a82 70%,#e3e6e8 84%,#858d94 100%); background-size:220% 100%; animation:dashboard-metal-flow 7s ease-in-out infinite alternate; box-shadow:inset 0 1px 0 #fff6; transition:width 400ms ease; }
 @keyframes dashboard-metal-flow { from { background-position:0% 50%; } to { background-position:100% 50%; } }
@@ -476,6 +478,28 @@ select option, select optgroup { background-color:rgb(var(--theme-card)); color:
 .pixel-preview-panel iframe { color-scheme:dark; }
 .pixel-app :is(.pixel-nav,.portal-panel-content,.pixel-chat-column > div,.pixel-task-files,.pixel-preview-source,.pixel-task-activity) { scrollbar-width:thin; scrollbar-color:var(--theme-scrollbar-thumb) var(--theme-scrollbar-track); }
 ::-webkit-scrollbar-corner { background:var(--theme-scrollbar-track); }
+/* Blend navigation scrolling into both the default shell and wallpaper glass. */
+.pixel-app .pixel-sidebar .pixel-nav {
+  --nav-scroll-thumb:rgb(var(--theme-text) / .24);
+  scrollbar-width:thin;
+  scrollbar-color:var(--nav-scroll-thumb) transparent;
+}
+.pixel-app .pixel-sidebar .pixel-nav:is(:hover,:focus-within) { --nav-scroll-thumb:rgb(var(--theme-text) / .42); }
+/* Use the pseudo-element path where supported so native arrow buttons don't
+   leave dark blocks at either end. Firefox keeps its native thin scrollbar. */
+@supports selector(::-webkit-scrollbar) {
+  .pixel-app .pixel-sidebar .pixel-nav { scrollbar-width:auto; scrollbar-color:auto; }
+  .pixel-sidebar .pixel-nav::-webkit-scrollbar { width:6px; height:6px; }
+  .pixel-sidebar .pixel-nav::-webkit-scrollbar-track,
+  .pixel-sidebar .pixel-nav::-webkit-scrollbar-corner { background:transparent; }
+  .pixel-sidebar .pixel-nav::-webkit-scrollbar-thumb { background:var(--nav-scroll-thumb); border-radius:999px; }
+  .pixel-sidebar .pixel-nav::-webkit-scrollbar-thumb:hover { background:rgb(var(--theme-text) / .58); }
+  .pixel-sidebar .pixel-nav::-webkit-scrollbar-button { display:none; width:0; height:0; }
+}
+@media (forced-colors:active) {
+  .pixel-app .pixel-sidebar .pixel-nav { scrollbar-color:auto; --nav-scroll-thumb:ButtonText; }
+  .pixel-sidebar .pixel-nav::-webkit-scrollbar-thumb:hover { background:Highlight; }
+}
 @container portal-chat (max-width:680px) {
   .pixel-chat-preview-layout { flex-direction:column; overflow-y:auto; }
   .pixel-preview-panel { width:100%; max-width:100%; height:42vh; min-height:240px; border-left:0; border-top:1px solid #303232; }
@@ -504,6 +528,16 @@ select option, select optgroup { background-color:rgb(var(--theme-card)); color:
 .pixel-original-sections details[open] > summary > .rail-chevron { transform:rotate(0); }
 .pixel-original-sections .rail-project > summary { gap:8px; color:#c8ccd1; font-weight:400; }
 .pixel-original-sections .rail-project > summary > .rail-chevron { margin-left:auto; color:#777d83; }
+.pixel-original-sections .rail-project > summary > span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.pixel-original-sections .rail-project > summary > svg { flex-shrink:0; }
+.pixel-original-sections .rail-playground > .rail-project { margin-left:12px; }
+.pixel-original-sections .rail-show-more { display:block; padding:7px 11px 7px 35px; color:rgb(var(--theme-text-muted)); font-size:11px; text-align:left; border-radius:6px; }
+.pixel-original-sections .rail-show-more:hover { color:rgb(var(--theme-text)); background:rgb(var(--theme-text) / .05); }
+.pixel-original-sections .rail-show-more:focus-visible { outline:1px solid currentColor; outline-offset:-1px; }
+.pixel-conversation-navigation .rail-archive-toggle { margin-top:16px; }
+.pixel-chat-options-advanced { padding:7px 0 0; border-top:1px solid rgb(var(--theme-border)); }
+.pixel-chat-options-advanced > summary { padding:8px; font-size:11px; color:rgb(var(--theme-text-muted)); cursor:pointer; }
+.pixel-chat-options-advanced > div { display:grid; gap:6px; padding:4px 0; }
 .pixel-original-sections .rail-folder { width:16px; height:16px; flex:0 0 16px; fill:none; stroke:currentColor; stroke-width:1.3; stroke-linecap:round; stroke-linejoin:round; }
 .pixel-original-sections .rail-conversations { display:grid; gap:2px; }
 .pixel-original-sections .conversation-link { display:flex; align-items:center; gap:8px; min-width:0; width:100%; min-height:31px; padding:5px 11px; border:0; border-radius:7px; text-align:left; color:#c8ccd1; background:transparent; }

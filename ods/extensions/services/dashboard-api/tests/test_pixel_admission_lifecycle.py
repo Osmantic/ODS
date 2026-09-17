@@ -6,12 +6,16 @@ import pytest
 from fastapi import HTTPException
 
 import pixel_runtime_state
+import pixel_chat_identity
 from routers import pixel
 from test_pixel import ConnectedRequest, FakeClient, FakeResponse, FakeStreamContext
 
 
 @pytest.fixture(autouse=True)
 def ready_pixel(monkeypatch):
+    async def saved_identity(*_args, **_kwargs):
+        return {"schemaVersion": 1, "revision": 1, "displayName": "Portal"}
+    monkeypatch.setattr(pixel_chat_identity, "async_request_json", saved_identity)
     monkeypatch.setenv("PIXEL_OPENWEBUI_KEY", "e" * 64)
     monkeypatch.setenv("PIXEL_EDGE_URL", "http://pixel-edge:9595")
     monkeypatch.setenv("ODS_PIXEL_MAX_STREAMS", "1")
