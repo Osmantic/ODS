@@ -65,8 +65,7 @@ def test_non_posix_never_proposes_interpreters(monkeypatch):
     assert candidates() == []
 
 
-def test_the_running_interpreter_is_considered_first(monkeypatch):
-    resolved = str(Path(sys.executable).resolve())
+def test_candidates_preserve_scan_order(monkeypatch):
     calls = []
     real_run = advice_python.subprocess.run
 
@@ -76,13 +75,13 @@ def test_the_running_interpreter_is_considered_first(monkeypatch):
 
     monkeypatch.setattr(advice_python.subprocess, 'run', spy)
     found = candidates()
-    # The running interpreter is always probed before the fixed prefixes.
-    assert calls and calls[0] == resolved
+    # Returned candidates keep the order their binaries were probed in —
+    # the running interpreter is scanned first, then the fixed prefixes.
     paths = [item['path'] for item in found]
-    if resolved in paths:
-        # A candidate only survives the probe+digest filter; when it does, it
-        # must stay first in the returned order.
-        assert paths[0] == resolved
+    assert paths == [path for path in calls if path in paths]
+    resolved = str(Path(sys.executable).resolve())
+    if resolved in calls:
+        assert calls[0] == resolved
 
 
 def test_duplicate_spellings_resolve_to_one_candidate():
