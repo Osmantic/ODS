@@ -5,6 +5,19 @@
 
 set -euo pipefail
 
+# ods-cli needs Bash 4+; macOS ships 3.2. Re-exec under a modern Bash (as the
+# sibling env-refresh suite does) so the CLI invocations below run under 4+
+# instead of failing "ods-cli requires Bash 4.0+".
+if (( BASH_VERSINFO[0] < 4 )); then
+    for modern_bash in /opt/homebrew/bin/bash /usr/local/bin/bash; do
+        if [[ -x "$modern_bash" ]]; then
+            exec "$modern_bash" "$0" "$@"
+        fi
+    done
+    printf '[SKIP] ods-cli requires Bash 4+\n'
+    exit 0
+fi
+
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 GREEN='\033[0;32m'
@@ -71,6 +84,13 @@ case "${1:-}" in
         fi
         exit 0
         ;;
+    inspect)
+        # This fixture has no ods-hermes container. cmd_restart's post-#4215
+        # Hermes readiness wait is skipped when `docker inspect ods-hermes`
+        # fails, so report the container as absent instead of hanging the wait
+        # for its full 180s timeout on an empty inspect result.
+        exit 1
+        ;;
 esac
 exit 0
 SH
@@ -131,7 +151,7 @@ ODS_HOME="$INSTALL_DIR" \
 DOCKER_LOG="$DOCKER_LOG" \
 ODS_FAKE_BOOTSTRAP_PROCESS=1 \
 ODS_CLI_BOOTSTRAP_COMPOSE_WAIT_INTERVAL=1 \
-bash "$INSTALL_DIR/ods-cli" restart > "$OUT" 2>&1 || fail "ods restart failed"
+"$BASH" "$INSTALL_DIR/ods-cli" restart > "$OUT" 2>&1 || fail "ods restart failed"
 
 grep -q 'Model Upgrade: download nearly complete; waiting before restart touches llama-server' "$OUT" \
     || fail "restart did not wait while bootstrap upgrade was near hot-swap"
@@ -175,7 +195,7 @@ ODS_HOME="$INSTALL_DIR" \
 DOCKER_LOG="$DOCKER_LOG" \
 ODS_FAKE_BOOTSTRAP_PROCESS=1 \
 ODS_CLI_BOOTSTRAP_COMPOSE_WAIT_INTERVAL=1 \
-bash "$INSTALL_DIR/ods-cli" restart > "$OUT" 2>&1 || fail "ods restart blocked early background download"
+"$BASH" "$INSTALL_DIR/ods-cli" restart > "$OUT" 2>&1 || fail "ods restart blocked early background download"
 
 grep -q 'Model Upgrade: downloading in background; continuing with restart before hot-swap begins' "$OUT" \
     || fail "restart did not continue during early background download"
@@ -220,7 +240,7 @@ PATH="$BIN_DIR:$PATH" \
 ODS_HOME="$INSTALL_DIR" \
 DOCKER_LOG="$DOCKER_LOG" \
 ODS_CLI_BOOTSTRAP_COMPOSE_WAIT_SECONDS=0 \
-bash "$INSTALL_DIR/ods-cli" restart > "$OUT" 2>&1 || fail "ods restart rejected stale settled bootstrap status"
+"$BASH" "$INSTALL_DIR/ods-cli" restart > "$OUT" 2>&1 || fail "ods restart rejected stale settled bootstrap status"
 
 grep -q 'stale (swapping) but the full model is already configured' "$OUT" \
     || fail "restart did not identify stale settled bootstrap status"
