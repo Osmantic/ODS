@@ -27,6 +27,16 @@ def _hf_sibling(filename: str, size: int, sha: str) -> dict:
     }
 
 
+def test_active_model_reader_preserves_unmatched_quote(monkeypatch, tmp_path):
+    import routers.models as models_router
+
+    env_path = tmp_path / ".env"
+    env_path.write_text("GGUF_FILE=model-v2.gguf'\n", encoding="utf-8")
+    monkeypatch.setattr(models_router, "_ENV_PATH", env_path)
+
+    assert models_router._read_active_model() == "model-v2.gguf'"
+
+
 def test_huggingface_artifacts_group_complete_shards_and_require_integrity():
     import routers.models as models_router
 

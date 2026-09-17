@@ -260,11 +260,13 @@ render_state() {
         LITELLM_KEY=sk-resolver-test \
         HERMES_LLM_BASE_URL=http://litellm:4000/v1 \
         HERMES_LLM_API_KEY=sk-resolver-test \
+        HERMES_DASHBOARD_SESSION_TOKEN=resolver-hermes-dashboard-session-token \
             docker compose "${compose_args[@]}" config > "$render_file"
         WEBUI_SECRET=resolver-webui-secret \
         LITELLM_KEY=sk-resolver-test \
         HERMES_LLM_BASE_URL=http://litellm:4000/v1 \
         HERMES_LLM_API_KEY=sk-resolver-test \
+        HERMES_DASHBOARD_SESSION_TOKEN=resolver-hermes-dashboard-session-token \
             docker compose "${compose_args[@]}" config --services \
             | LC_ALL=C sort > "$services_file"
     )

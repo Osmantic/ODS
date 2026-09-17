@@ -10,10 +10,35 @@
 # Provides: ods_sudo(), ods_prepare_sudo()
 # ============================================================================
 
+# ODS_SUDO_AVAILABLE is set by ods_prepare_sudo(). It is "true" only when we can
+# run privileged commands without an interactive prompt (either we are root, or
+# sudo is cached / passwordless). Anything else is "false" and the installer
+# proceeds rootless, skipping the root-only extras. Default to unset → treated
+# as available by ods_sudo() for backward-compat when prepare was never called.
+export ODS_SUDO_AVAILABLE="${ODS_SUDO_AVAILABLE:-}"
+
+# ods_sudo_available: true when privileged commands can run without a prompt.
+ods_sudo_available() {
+    [[ ${EUID:-$(id -u)} -eq 0 ]] && return 0
+    [[ "${ODS_SUDO_AVAILABLE:-true}" == "true" ]] && return 0
+    return 1
+}
+
 ods_sudo() {
     if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
         "$@"
         return $?
+    fi
+
+    # Friction-free: if we determined up front that sudo is unusable, skip the
+    # privileged command rather than prompting (which hangs without a TTY) or
+    # failing under `set -e`. Core ODS runs rootless; root-only steps are
+    # optional. Log the skip so it is visible in the install log, never silent.
+    if [[ "${ODS_SUDO_AVAILABLE:-true}" == "false" ]]; then
+        if declare -f log >/dev/null 2>&1; then
+            log "Skipping privileged command (sudo unavailable): $*"
+        fi
+        return 0
     fi
 
     if [[ "${INTERACTIVE:-true}" != "true" ]]; then
@@ -26,22 +51,41 @@ ods_sudo() {
 ods_prepare_sudo() {
     local reason="${1:-installer setup}"
 
-    [[ "${DRY_RUN:-false}" == "true" ]] && return 0
-    [[ ${EUID:-$(id -u)} -eq 0 ]] && return 0
-    command -v sudo >/dev/null 2>&1 || error "sudo is required for ${reason}."
-
-    if [[ "${INTERACTIVE:-true}" != "true" ]]; then
-        if ! sudo -n true 2>/dev/null; then
-            ai_bad "sudo requires a password, but this run is --non-interactive."
-            ai_bad "The installer would otherwise appear to hang at the first hidden sudo prompt."
-            ai "Run one of:"
-            ai "  sudo -v && ./install.sh --non-interactive ..."
-            ai "  ./install.sh ..."
-            ai "  configure NOPASSWD sudo for this install user"
-            error "Cannot continue non-interactively without cached or passwordless sudo."
-        fi
-    else
-        ai "Checking sudo access up front so later setup steps do not stall..."
-        sudo -v || error "sudo authentication failed."
+    if [[ "${DRY_RUN:-false}" == "true" ]]; then
+        export ODS_SUDO_AVAILABLE=true
+        return 0
     fi
+    if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
+        export ODS_SUDO_AVAILABLE=true
+        return 0
+    fi
+
+    export ODS_SUDO_AVAILABLE=false
+
+    if ! command -v sudo >/dev/null 2>&1; then
+        ai_warn "sudo not found — continuing without privileged steps (${reason})."
+        ai "Root-only extras (system package installs, systemd units, GPU tuning)"
+        ai "will be skipped. Core ODS runs rootless via Docker/Podman."
+        return 0
+    fi
+
+    # sudo present — is it usable without an interactive prompt?
+    if sudo -n true 2>/dev/null; then
+        export ODS_SUDO_AVAILABLE=true
+        return 0
+    fi
+
+    if [[ "${INTERACTIVE:-true}" == "true" ]]; then
+        ai "Requesting sudo access for privileged setup steps (you may be prompted)..."
+        if sudo -v 2>/dev/null; then
+            export ODS_SUDO_AVAILABLE=true
+            return 0
+        fi
+        ai_warn "sudo authentication unavailable — continuing without privileged steps."
+    else
+        ai_warn "sudo needs a password and this run is --non-interactive — continuing rootless."
+    fi
+    ai "Root-only extras (system package installs, systemd units, GPU tuning)"
+    ai "will be skipped. Core ODS runs rootless via Docker/Podman."
+    return 0
 }
