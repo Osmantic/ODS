@@ -61,6 +61,7 @@ param(
     [switch]$Langfuse,
     [switch]$NoLangfuse,
     [switch]$NoBootstrap,
+    [switch]$CoreOnly,
     [string]$InstallDir = "",
     [string]$SummaryJsonPath = ""
 )
@@ -117,6 +118,7 @@ $voiceFlag      = $Voice.IsPresent
 $workflowsFlag  = $Workflows.IsPresent
 $ragFlag        = $Rag.IsPresent
 $recommendedFlag = $Recommended.IsPresent
+$coreOnlyFlag = $CoreOnly.IsPresent
 $noRecommendedFlag = $NoRecommended.IsPresent
 $hermesFlag     = $Hermes.IsPresent
 $noHermesFlag   = $NoHermes.IsPresent

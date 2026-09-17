@@ -121,6 +121,8 @@ echo   dashboard-api:
 echo     environment:
 echo       DASHBOARD_API_KEY: super-secret-dashboard-key
 echo       OPENCLAW_TOKEN: super-secret-openclaw-token
+echo       N8N_USER: super-secret-n8n-user
+echo       LANGFUSE_INIT_USER_EMAIL: super-secret-langfuse-email
 exit /b 0
 :check_ps
 echo %args% | findstr /I /C:"ps -a" >nul || exit /b 0
