@@ -26,7 +26,7 @@ The short version: the dashboard-api `Dockerfile` copies the Python source into 
 The recommended workflow is to run uvicorn natively on the host with `--reload`:
 
 ```bash
-cd ods/extensions/services/dashboard-api
+cd extensions/services/dashboard-api
 pip install -r requirements.txt
 ODS_INSTALL_DIR=/path/to/ods \
   uvicorn main:app --host 127.0.0.1 --port 3002 --reload
