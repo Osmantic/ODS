@@ -136,6 +136,17 @@ class TestContextRoutes(BaseEdgeTest):
         self.assertTrue(received["messages"][-1]["content"].startswith("Continue"))
         self.assertNotEqual(received["messages"][-1]["content"], "Continue")
 
+    async def test_non_list_messages_with_snapshot_fails_closed_as_client_error(self):
+        snapshot = {"schemaVersion": 1, "messages": [{"role": "user", "content": "Continue"}]}
+        for invalid_messages in (123, True, {"content": "Continue"}, "Continue"):
+            with self.subTest(invalid_messages=invalid_messages):
+                async with self.client.post("http://localhost/v1/chat/completions", headers=self.auth(), json={
+                    "model": "pixel/default", "user": "chat", "request_id": "attempt",
+                    "messages": invalid_messages, "history_snapshot": snapshot,
+                }) as response:
+                    self.assertEqual(response.status, 400)
+                    self.assertEqual(await response.json(), {"error": "invalid conversation history"})
+
 
 def test_context_projection_drops_internal_history_and_native_summary():
     value = state()
@@ -152,3 +163,6 @@ def test_snapshot_cannot_promote_instructions_or_forge_a_different_latest_turn()
     assert not valid_history_snapshot(data)
     data["history_snapshot"]["messages"] = [{"role": "user", "content": "Different"}]
     assert not valid_history_snapshot(data)
+    for invalid in (123, True, {}, set(), "Continue"):
+        bad = {"request_id": "attempt", "messages": invalid, "history_snapshot": {"schemaVersion": 1, "messages": [latest]}}
+        assert not valid_history_snapshot(bad)
