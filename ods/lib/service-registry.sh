@@ -327,10 +327,19 @@ sr_compose_flags() {
 
     # Cache miss: rebuild flags
     ((_SR_CACHE_MISSES++))
-    local flags=""
+    local flags="" compose_path registry_root
+    registry_root="${INSTALL_DIR:-${SCRIPT_DIR:-}}"
     for sid in "${SERVICE_IDS[@]}"; do
-        local cf="${SERVICE_COMPOSE[$sid]}"
-        [[ -n "$cf" && -f "$cf" ]] && flags="$flags -f $cf"
+        compose_path="${SERVICE_COMPOSE[$sid]}"
+        [[ -n "$compose_path" && -f "$compose_path" ]] || continue
+        # Registry manifests live below the install root. Emit those paths
+        # relative to the compose working directory so an install directory
+        # containing whitespace never becomes part of the flat legacy flags
+        # string consumed by ods-cli.
+        if [[ -n "$registry_root" && "$compose_path" == "$registry_root/"* ]]; then
+            compose_path="${compose_path#"$registry_root/"}"
+        fi
+        flags="$flags -f $compose_path"
     done
 
     # Store in cache

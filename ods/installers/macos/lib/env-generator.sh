@@ -39,6 +39,11 @@ read_env_value() {
     grep -E "^${key}=" "$env_path" 2>/dev/null | sed -n '1p' | cut -d'=' -f2- | tr -d '\r' || true
 }
 
+# shellcheck source=../../../lib/dotenv-quote.sh
+_ODS_MACOS_ENV_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+. "$_ODS_MACOS_ENV_ROOT/lib/dotenv-quote.sh"
+unset _ODS_MACOS_ENV_ROOT
+
 env_key_exists() {
     local env_path="$1"
     local key="$2"
@@ -190,6 +195,8 @@ generate_ods_env() {
     local detected_cpu_limit detected_cpu_reservation
     local tts_cpu_limit tts_cpu_reservation whisper_cpu_limit whisper_cpu_reservation
     local hermes_cpu_limit hermes_cpu_reservation comfyui_cpu_limit comfyui_cpu_reservation
+    local host_uid="${SUDO_UID:-$(id -u)}"
+    local host_gid="${SUDO_GID:-$(id -g)}"
     read -r cpu_limit_raw cpu_reservation_raw docker_available_cpus <<< "$(calculate_llama_cpu_budget "apple")"
     detected_cpu_limit="${cpu_limit_raw}.0"
     detected_cpu_reservation="${cpu_reservation_raw}.0"
@@ -238,6 +245,19 @@ generate_ods_env() {
         upsert_env_value "$env_path" "HERMES_CPU_RESERVATION" "$hermes_cpu_reservation"
         upsert_env_value "$env_path" "COMFYUI_CPU_LIMIT" "$comfyui_cpu_limit"
         upsert_env_value "$env_path" "COMFYUI_CPU_RESERVATION" "$comfyui_cpu_reservation"
+        local compose_uid compose_gid
+        compose_uid="$(read_env_value "$env_path" "ODS_UID")"
+        compose_gid="$(read_env_value "$env_path" "ODS_GID")"
+        [[ -n "$compose_uid" ]] || compose_uid="$(read_env_value "$env_path" "UID")"
+        [[ -n "$compose_gid" ]] || compose_gid="$(read_env_value "$env_path" "GID")"
+        compose_uid="${compose_uid:-$host_uid}"
+        compose_gid="${compose_gid:-$host_gid}"
+        if [[ ! "$compose_uid" =~ ^[0-9]+$ || ! "$compose_gid" =~ ^[0-9]+$ ]]; then
+            printf 'ERROR: ODS_UID and ODS_GID must be non-negative integers\n' >&2
+            return 1
+        fi
+        upsert_env_value "$env_path" "ODS_UID" "$compose_uid"
+        upsert_env_value "$env_path" "ODS_GID" "$compose_gid"
 
         local _switchboard_mode
         _switchboard_mode="$(read_env_value "$env_path" "ODS_MODEL_SWITCHBOARD")"
@@ -535,13 +555,13 @@ CTX_SIZE=${MAX_CONTEXT}
 MODEL_RECOMMENDED_MODEL=${LLM_MODEL}
 MODEL_RECOMMENDED_GGUF=${GGUF_FILE}
 MODEL_RECOMMENDED_CONTEXT=${MAX_CONTEXT}
-MODEL_RECOMMENDATION_SOURCE=${MODEL_RECOMMENDATION_SOURCE:-installer_tier_map}
-MODEL_RECOMMENDATION_POLICY=${MODEL_RECOMMENDATION_POLICY:-tier-map}
-MODEL_RECOMMENDATION_CONFIDENCE=${MODEL_RECOMMENDATION_CONFIDENCE:-medium}
-MODEL_RECOMMENDATION_REASON=${MODEL_RECOMMENDATION_REASON:-Selected by installer tier ${tier} (${TIER_NAME}) for apple backend; benchmark locally after first launch.}
-MODEL_RECOMMENDED_ALTERNATIVES=${MODEL_RECOMMENDED_ALTERNATIVES:-}
+MODEL_RECOMMENDATION_SOURCE=$(dotenv_quote "${MODEL_RECOMMENDATION_SOURCE:-installer_tier_map}")
+MODEL_RECOMMENDATION_POLICY=$(dotenv_quote "${MODEL_RECOMMENDATION_POLICY:-tier-map}")
+MODEL_RECOMMENDATION_CONFIDENCE=$(dotenv_quote "${MODEL_RECOMMENDATION_CONFIDENCE:-medium}")
+MODEL_RECOMMENDATION_REASON=$(dotenv_quote "${MODEL_RECOMMENDATION_REASON:-Selected by installer tier ${tier} (${TIER_NAME}) for apple backend; benchmark locally after first launch.}")
+MODEL_RECOMMENDED_ALTERNATIVES=$(dotenv_quote "${MODEL_RECOMMENDED_ALTERNATIVES:-}")
 MODEL_PERFORMANCE_SOURCE=benchmark_required
-MODEL_PERFORMANCE_LABEL=Benchmark after first launch
+MODEL_PERFORMANCE_LABEL=$(dotenv_quote "Benchmark after first launch")
 GPU_BACKEND=apple
 HOST_RAM_GB=${SYSTEM_RAM_GB}
 N_GPU_LAYERS=${n_gpu_layers}
@@ -566,6 +586,11 @@ HERMES_CPU_LIMIT=${hermes_cpu_limit}
 HERMES_CPU_RESERVATION=${hermes_cpu_reservation}
 COMFYUI_CPU_LIMIT=${comfyui_cpu_limit}
 COMFYUI_CPU_RESERVATION=${comfyui_cpu_reservation}
+
+#=== Host File Ownership ===
+# Docker Compose reads these from .env without colliding with Bash's readonly UID.
+ODS_UID=${host_uid}
+ODS_GID=${host_gid}
 
 #=== Ports ===
 OLLAMA_PORT=8080
@@ -632,7 +657,7 @@ EMBEDDINGS_MEMORY_LIMIT=${embeddings_memory_limit}
 #=== Web UI Settings ===
 # Loopback installs open directly. Network-bound installs require a login.
 WEBUI_AUTH=${webui_auth}
-ENABLE_WEB_SEARCH=true
+ENABLE_WEB_SEARCH=${ENABLE_WEB_SEARCH:-true}
 WEB_SEARCH_ENGINE=searxng
 OPEN_WEBUI_LLM_BASE_URL=${open_webui_llm_base_url}
 OPEN_WEBUI_LLM_API_KEY=${open_webui_llm_api_key}

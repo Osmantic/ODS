@@ -125,6 +125,8 @@ if bash -c "
     export LLM_MODEL=qwen3-1.7b
     export GGUF_FILE=Qwen3-1.7B-Q4_K_M.gguf
     export MAX_CONTEXT=4096
+    export MODEL_RECOMMENDATION_REASON='Arch-aware catalog policy (spark-aarch64): selected after fit check'
+    export MODEL_RECOMMENDED_ALTERNATIVES='deepseek-r1:32768:48;qwen-a3b:131072:35.48'
     export ODS_VERSION=2.1.0
     export ENABLE_VOICE=true
     export ENABLE_WORKFLOWS=true
@@ -143,6 +145,7 @@ export ENABLE_OPENCLAW=true
     source installers/lib/ui.sh
     source installers/lib/detection.sh
     source installers/lib/progress.sh
+    source installers/lib/sudo.sh
 
     # Stub UI functions
     ods_progress() { :; }
@@ -186,6 +189,19 @@ fi
 echo ""
 echo "── .env schema validation ──"
 if [[ "$ENV_GENERATED" == true && -f "$INSTALL_DIR/.env" ]]; then
+    if bash -c '
+        set -a
+        source "$1"
+        set +a
+        [[ "$MODEL_RECOMMENDATION_REASON" == "Arch-aware catalog policy (spark-aarch64): selected after fit check" ]]
+        [[ "$MODEL_RECOMMENDED_ALTERNATIVES" == "deepseek-r1:32768:48;qwen-a3b:131072:35.48" ]]
+        [[ "$MODEL_PERFORMANCE_LABEL" == "Benchmark after first launch" ]]
+    ' _ "$INSTALL_DIR/.env"; then
+        pass "Generated model metadata is safe to source as dotenv"
+    else
+        fail "Generated model metadata breaks dotenv parsing"
+    fi
+
     if bash scripts/validate-env.sh "$INSTALL_DIR/.env" "$ROOT_DIR/.env.schema.json" 2>/dev/null; then
         pass ".env validates against schema"
     else
@@ -245,6 +261,13 @@ fi
 
 # Check for duplicate keys
 if [[ "$ENV_GENERATED" == true && -f "$INSTALL_DIR/.env" ]]; then
+    if grep -qx "ODS_UID=$(id -u)" "$INSTALL_DIR/.env" \
+        && grep -qx "ODS_GID=$(id -g)" "$INSTALL_DIR/.env"; then
+        pass "Host UID/GID are persisted for Docker Compose interpolation"
+    else
+        fail "Generated .env does not contain the host UID/GID"
+    fi
+
     DUPES=$(grep -v '^#' "$INSTALL_DIR/.env" | grep -v '^$' | cut -d= -f1 | sort | uniq -d)
     if [[ -z "$DUPES" ]]; then
         pass "No duplicate keys in .env"

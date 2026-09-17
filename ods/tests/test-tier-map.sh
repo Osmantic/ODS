@@ -513,6 +513,13 @@ load_selector_env "$_selector_env"
 assert_eq "SELECTOR_CURATED_SOURCE" "curated-model" "$LLM_MODEL"
 echo ""
 
+if python3 "$SCRIPT_DIR/tests/test-gemma4-artifact-pins.py"; then
+    ((PASS++))
+else
+    ((FAIL++))
+fi
+echo ""
+
 # --- Summary ---
 echo "==============================="
 echo "Results: $PASS passed, $FAIL failed"
