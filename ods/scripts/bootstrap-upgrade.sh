@@ -917,7 +917,7 @@ restart_windows_lemonade_with_full_model() {
 
     log "Restarting native Windows Lemonade with ${target_label}: ${target_gguf}"
     local ps_output model_id ps_rc restart_timeout ps_output_file
-    local -a ps_env_cmd ps_timeout_prefix
+    local -a ps_env_cmd
     restart_timeout="${ODS_LEMONADE_RESTART_PS_TIMEOUT:-180}"
     case "$restart_timeout" in ''|*[!0-9]*|0) restart_timeout=180 ;; esac
     mkdir -p "$INSTALL_DIR/logs" 2>/dev/null || true
@@ -935,11 +935,10 @@ restart_windows_lemonade_with_full_model() {
         "ODS_WIN_LEMONADE_TASK=ODSLemonadeRuntime"
         "ODS_WIN_GGUF_FILE=$target_gguf"
     )
-    ps_timeout_prefix=()
     if command -v timeout >/dev/null 2>&1; then
-        ps_timeout_prefix=(timeout --foreground --kill-after=5s "${restart_timeout}s")
+        ps_env_cmd+=(timeout --foreground --kill-after=5s "${restart_timeout}s")
     fi
-    if "${ps_env_cmd[@]}" "${ps_timeout_prefix[@]}" \
+    if "${ps_env_cmd[@]}" \
         "$ps_cmd" -NoProfile -ExecutionPolicy Bypass -Command '
         $ErrorActionPreference = "Stop"
 

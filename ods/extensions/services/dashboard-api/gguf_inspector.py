@@ -170,6 +170,21 @@ def _first_int(metadata: dict[str, Any], suffixes: tuple[str, ...]) -> int | Non
     return None
 
 
+def _first_int_or_list(
+    metadata: dict[str, Any], suffixes: tuple[str, ...]
+) -> int | list[int] | None:
+    for key, value in metadata.items():
+        if not key.endswith(suffixes):
+            continue
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+        if isinstance(value, list) and all(
+            isinstance(item, int) and not isinstance(item, bool) for item in value
+        ):
+            return value
+    return None
+
+
 def _first_value(metadata: dict[str, Any], suffixes: tuple[str, ...]) -> Any:
     for key, value in metadata.items():
         if key.endswith(suffixes):
@@ -223,7 +238,16 @@ def inspect_gguf(path: Path | str, max_metadata_bytes: int = 8 * 1024 * 1024) ->
             "block_count": _first_int(metadata, (".block_count",)),
             "embedding_length": _first_int(metadata, (".embedding_length",)),
             "attention_head_count": _first_int(metadata, (".attention.head_count",)),
-            "attention_head_count_kv": _first_int(metadata, (".attention.head_count_kv",)),
+            "attention_head_count_kv": _first_int_or_list(
+                metadata, (".attention.head_count_kv",)
+            ),
+            "attention_key_length": _first_int(
+                metadata, (".attention.key_length",)
+            ),
+            "attention_value_length": _first_int(
+                metadata, (".attention.value_length",)
+            ),
+            "rope_dimension_count": _first_int(metadata, (".rope.dimension_count",)),
             "expert_count": _first_int(metadata, (".expert_count", ".expert.count")),
             "expert_used_count": _first_int(metadata, (".expert_used_count", ".expert.used_count")),
             "model_name": _first_value(metadata, ("general.name",)),

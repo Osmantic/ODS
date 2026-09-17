@@ -175,6 +175,9 @@ jobs:
       - name: Mode Switch Tests
         run: bash tests/test-mode-switch-status.sh
 
+      - name: CLI Install Directory Resolution Tests
+        run: bash tests/test-cli-install-dir-resolution.sh
+
       - name: Validate Simulation Summary Tests
         run: bash tests/test-validate-sim-summary.sh
 
@@ -237,6 +240,8 @@ jobs:
 
       - name: Source Update Hermes Token Migration
         run: bash tests/test-update-hermes-session-token.sh
+      - name: Backup Data Coverage Contract
+        run: bash tests/test-backup-data-coverage.sh
 
       - name: Bootstrap Upgrade Compose Flags Recovery Tests
         run: bash tests/test-bootstrap-upgrade-compose-flags-recovery.sh
@@ -252,6 +257,9 @@ jobs:
 
       - name: Issue-to-PR Security Contract Tests
         run: bash tests/test-issue-to-pr-security.sh
+
+      - name: NVIDIA Multi-GPU Visibility Contract Tests
+        run: bash tests/test-multigpu-nvidia-visibility.sh
 
       - name: Upload Installer Simulation Artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
