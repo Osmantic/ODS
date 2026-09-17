@@ -206,9 +206,18 @@ jobs:
         run: |
           bash -n install-core.sh
           bash -n installers/lib/packaging.sh
+          # A step exits with the status of its last command, so the loop
+          # must carry a failed check out instead of ending on an echo.
+          status=0
           for f in installers/phases/*.sh; do
-            bash -n "$f" && echo "  OK: $f" || echo "  FAIL: $f"
+            if bash -n "$f"; then
+              echo "  OK: $f"
+            else
+              echo "  FAIL: $f"
+              status=1
+            fi
           done
+          exit "$status"
 
   macos-smoke:
     runs-on: macos-latest
