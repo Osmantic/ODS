@@ -90,6 +90,7 @@ $LibDir = Join-Path $ScriptDir "lib"
 . (Join-Path $LibDir "opencode-config.ps1")
 . (Join-Path $LibDir "readiness-summary.ps1")
 . (Join-Path $LibDir "service-plan.ps1")
+. (Join-Path $LibDir "build-receipt.ps1")
 
 # Preserve the caller's Docker client configuration before any installer phase
 # changes location. Docker accepts relative DOCKER_CONFIG values, whose meaning
@@ -1757,6 +1758,10 @@ litellm_settings:
         }
         $_buildLog = Join-Path $_composeLogDir "compose-build.log"
         "" | Out-File -FilePath $_buildLog -Encoding ascii
+        $_buildFailureReceipt = Join-Path $_composeLogDir "compose-build-failure.json"
+        if (Test-Path -LiteralPath $_buildFailureReceipt) {
+            Remove-Item -LiteralPath $_buildFailureReceipt -Force -ErrorAction SilentlyContinue
+        }
 
         Push-Location $installDir
         try {
@@ -1801,6 +1806,27 @@ litellm_settings:
                 if ($_buildExit -ne 0) {
                     $_failedBuildServices += $_svc
                     Write-AIError "$_svc build failed (see $_buildLog)"
+
+                    # A Docker Desktop engine can disappear during a long local
+                    # image build. Distinguish that failure from an ordinary
+                    # Dockerfile/registry error so the operator has a recovery
+                    # path and the failure log remains actionable.
+                    $null = & docker @script:ODSWindowsUserDockerClientArgs info 2>$null
+                    if ($LASTEXITCODE -ne 0) {
+                        $receiptPath = $_buildFailureReceipt
+                        try {
+                            Write-ODSWindowsBuildFailureReceipt `
+                                -ReceiptPath $receiptPath `
+                                -Service $_svc `
+                                -BuildLog $_buildLog `
+                                -Recovery "Restart Docker Desktop, then rerun the installer to resume from cached layers." | Out-Null
+                        } catch {
+                            Write-AIWarn "Could not write Docker build failure receipt '$receiptPath': $($_.Exception.Message)"
+                            Add-Content -LiteralPath $_buildLog -Value "Docker build failure receipt write failed: $($_.Exception.Message)"
+                        }
+                        Add-Content -LiteralPath $_buildLog -Value "Docker daemon became unavailable while building $_svc. Restart Docker Desktop, then rerun the installer to resume from cached layers. Receipt: $receiptPath"
+                        Write-AIError "Docker daemon became unavailable during $_svc build. Restart Docker Desktop and rerun the installer; see $_buildLog."
+                    }
                 }
             }
             if ($_legacyBuilderServices.Count -gt 0) {
