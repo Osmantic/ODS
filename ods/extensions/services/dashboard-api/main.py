@@ -29,7 +29,7 @@ from typing import Any, Optional
 from urllib.parse import urlparse
 
 import httpx
-from fastapi import FastAPI, Depends, HTTPException, Body, Request
+from fastapi import FastAPI, Depends, HTTPException, Body, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -63,6 +63,7 @@ from host_agent_client import (
     shutdown_clients as shutdown_agent_clients,
 )
 from agent_monitor import collect_metrics
+from api_metrics import ApiMetricsMiddleware, api_metrics
 from routers import (
     workflows, features, setup, updates, agents, privacy, extensions,
     gpu as gpu_router, resources, voice, models as models_router, model_state as model_state_router,
@@ -1062,6 +1063,8 @@ app = FastAPI(
     lifespan=_lifespan,
 )
 
+app.add_middleware(ApiMetricsMiddleware, registry=api_metrics)
+
 # --- CORS ---
 
 def get_allowed_origins():
@@ -1191,6 +1194,15 @@ app.include_router(node.router)
 async def health():
     """API health check."""
     return {"status": "ok", "timestamp": datetime.now(timezone.utc).isoformat()}
+
+
+@app.get("/metrics", include_in_schema=False)
+async def prometheus_metrics():
+    """Expose process-local API request metrics for Prometheus scrapers."""
+    return Response(
+        content=api_metrics.render(),
+        media_type="text/plain; version=0.0.4",
+    )
 
 
 @app.get("/api/host-agent/diagnostics", dependencies=[Depends(verify_api_key)])

@@ -14,6 +14,7 @@ It runs at `http://localhost:3002` and is the single backend used by the React d
 - **Service health**: Health checks for all ODS services via Docker network
 - **LLM metrics**: Tokens/second, lifetime tokens, loaded model, context size
 - **System metrics**: CPU usage, RAM usage, uptime, disk space
+- **API observability**: Prometheus request counts, in-flight gauge, and latency histograms with bounded route labels
 - **Workflow management**: n8n workflow catalog — install, enable, disable, track executions
 - **Feature discovery**: Hardware-aware feature recommendations with VRAM tier detection
 - **Setup wizard**: First-run setup, persona selection, diagnostic tests
@@ -44,6 +45,7 @@ Environment variables (set in `.env`):
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | `GET` | `/health` | No | Health check |
+| `GET` | `/metrics` | No | Prometheus API request metrics (route templates, status, and latency) |
 | `GET` | `/gpu` | Yes | GPU metrics (VRAM, temp, utilization) |
 | `GET` | `/services` | Yes | All service health statuses |
 | `GET` | `/disk` | Yes | Disk usage |
