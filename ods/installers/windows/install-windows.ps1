@@ -61,6 +61,7 @@ param(
     [switch]$Langfuse,
     [switch]$NoLangfuse,
     [switch]$NoBootstrap,
+    [switch]$RebuildNoCache,
     [string]$InstallDir = "",
     [string]$SummaryJsonPath = ""
 )
@@ -90,6 +91,7 @@ $LibDir = Join-Path $ScriptDir "lib"
 . (Join-Path $LibDir "opencode-config.ps1")
 . (Join-Path $LibDir "readiness-summary.ps1")
 . (Join-Path $LibDir "service-plan.ps1")
+. (Join-Path $LibDir "build-receipt.ps1")
 
 # Preserve the caller's Docker client configuration before any installer phase
 # changes location. Docker accepts relative DOCKER_CONFIG values, whose meaning
@@ -1329,7 +1331,10 @@ litellm_settings:
                     $env:DOCKER_BUILDKIT = "0"
                 }
 
-                & docker @DockerClientArgs compose @ComposeFlags build --no-cache $Service *>> $BuildLog
+                $composeBuildArgs = @("build")
+                if ($RebuildNoCache) { $composeBuildArgs += "--no-cache" }
+                $composeBuildArgs += $Service
+                & docker @DockerClientArgs compose @ComposeFlags @composeBuildArgs *>> $BuildLog
                 return $LASTEXITCODE
             } finally {
                 if ($UseLegacyBuilder) {
@@ -1409,7 +1414,12 @@ litellm_settings:
             try {
                 $env:DOCKER_BUILDKIT = "0"
                 Add-Content -LiteralPath $BuildLog -Value "plain docker fallback building $Service as $imageTag from $contextPath"
-                & docker @DockerClientArgs build --no-cache -t $imageTag -f $dockerfilePath @buildArgs $contextPath *>> $BuildLog
+                $plainBuildArgs = @("build")
+                if ($RebuildNoCache) { $plainBuildArgs += "--no-cache" }
+                $plainBuildArgs += @("-t", $imageTag, "-f", $dockerfilePath)
+                $plainBuildArgs += $buildArgs
+                $plainBuildArgs += $contextPath
+                & docker @DockerClientArgs @plainBuildArgs *>> $BuildLog
                 return $LASTEXITCODE
             } finally {
                 if ($hadBuildKit) {
@@ -1733,13 +1743,12 @@ litellm_settings:
         if (-not (Test-Path $_composeLogDir)) { New-Item -ItemType Directory -Path $_composeLogDir -Force | Out-Null }
         $_composeLog = Join-Path $_composeLogDir "compose-up.log"
 
-        # ── Rebuild local-built images ─────────────────────────────────────
-        # Mirrors phases/11-services.sh on Linux: local Dockerfiles can drift
-        # from the baked images, so we always rebuild without cache before
+        # ── Build local-built images ───────────────────────────────────────
+        # Local Dockerfiles can drift from baked images, so rebuild them before
         # `up -d`. llama-server runs natively on Windows (Lemonade or Vulkan
         # binary) so it is not built here. ComfyUI is only locally built on
         # NVIDIA; the Windows AMD stack uses a prebuilt image overlay.
-        $_buildServices = @("dashboard", "dashboard-api", "model-router", "remote-provider-egress", "remote-provider-ssh-tunnel")
+        $_buildServices = @("dashboard", "dashboard-api", "model-router", "remote-provider-egress", "remote-provider-ssh-tunnel", "pixel-inference")
         if (Test-ODSWindowsServiceEnabled -ServiceId "ape" -Plan $servicePlan) {
             $_buildServices += "ape"
         }
@@ -1757,10 +1766,15 @@ litellm_settings:
         }
         $_buildLog = Join-Path $_composeLogDir "compose-build.log"
         "" | Out-File -FilePath $_buildLog -Encoding ascii
+        $_buildFailureReceipt = Join-Path $_composeLogDir "compose-build-failure.json"
+        if (Test-Path -LiteralPath $_buildFailureReceipt) {
+            Remove-Item -LiteralPath $_buildFailureReceipt -Force -ErrorAction SilentlyContinue
+        }
 
         Push-Location $installDir
         try {
-            Write-AI "Rebuilding local-built images (no-cache)..."
+            $buildModeLabel = if ($RebuildNoCache) { "no-cache" } else { "cached" }
+            Write-AI "Building local-built images ($buildModeLabel)..."
             $_failedBuildServices = @()
             $_legacyBuilderServices = @()
             $_defaultDockerConfigServices = @()
@@ -1801,6 +1815,27 @@ litellm_settings:
                 if ($_buildExit -ne 0) {
                     $_failedBuildServices += $_svc
                     Write-AIError "$_svc build failed (see $_buildLog)"
+
+                    # A Docker Desktop engine can disappear during a long local
+                    # image build. Distinguish that failure from an ordinary
+                    # Dockerfile/registry error so the operator has a recovery
+                    # path and the failure log remains actionable.
+                    $null = & docker @script:ODSWindowsUserDockerClientArgs info 2>$null
+                    if ($LASTEXITCODE -ne 0) {
+                        $receiptPath = $_buildFailureReceipt
+                        try {
+                            Write-ODSWindowsBuildFailureReceipt `
+                                -ReceiptPath $receiptPath `
+                                -Service $_svc `
+                                -BuildLog $_buildLog `
+                                -Recovery "Restart Docker Desktop, then rerun the installer to resume from cached layers." | Out-Null
+                        } catch {
+                            Write-AIWarn "Could not write Docker build failure receipt '$receiptPath': $($_.Exception.Message)"
+                            Add-Content -LiteralPath $_buildLog -Value "Docker build failure receipt write failed: $($_.Exception.Message)"
+                        }
+                        Add-Content -LiteralPath $_buildLog -Value "Docker daemon became unavailable while building $_svc. Restart Docker Desktop, then rerun the installer to resume from cached layers. Receipt: $receiptPath"
+                        Write-AIError "Docker daemon became unavailable during $_svc build. Restart Docker Desktop and rerun the installer; see $_buildLog."
+                    }
                 }
             }
             if ($_legacyBuilderServices.Count -gt 0) {
@@ -1818,8 +1853,11 @@ litellm_settings:
                     Write-Host "  --- docker compose build log tail ---" -ForegroundColor DarkGray
                     Get-Content $_buildLog -Tail 60 | ForEach-Object { Write-Host "  $_" }
                 }
+                $diagnosticBuildArgs = @("build")
+                if ($RebuildNoCache) { $diagnosticBuildArgs += "--no-cache" }
+                $diagnosticBuildArgs += $_failedBuildServices
                 Write-ODSComposeDiagnostics -InstallDir $installDir -ComposeFlags $composeFlags `
-                    -ComposeArgs (@("build", "--no-cache") + $_failedBuildServices) `
+                    -ComposeArgs $diagnosticBuildArgs `
                     -ComposeLogPath $_buildLog `
                     -Phase "install-windows.ps1 local image build" `
                     -NextStep "Fix the local Dockerfile/build error shown above, then re-run .\install-windows.ps1." `

@@ -34,6 +34,11 @@ env_set() {
             if (index($0, k "=") == 1) print k "=" v; else print
         }' "$ENV_FILE" > "${ENV_FILE}.tmp" && cat "${ENV_FILE}.tmp" > "$ENV_FILE" && rm -f "${ENV_FILE}.tmp"
     else
+        # Appending after a last line that has no newline would join the new
+        # assignment onto that line and corrupt both keys.
+        if [[ -s "$ENV_FILE" && -n "$(tail -c 1 "$ENV_FILE")" ]]; then
+            printf '\n' >> "$ENV_FILE"
+        fi
         echo "${key}=${val}" >> "$ENV_FILE"
     fi
 }

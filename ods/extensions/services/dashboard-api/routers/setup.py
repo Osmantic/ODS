@@ -4,6 +4,7 @@ import asyncio
 import logging
 import os
 import re
+import signal
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -12,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 
-from config import SERVICES, PERSONAS, INSTALL_DIR, read_live_env_value
+from config import SERVICES, PERSONAS, INSTALL_DIR
 from host_agent_client import (
     AgentHTTPError,
     AgentProtocolError,
@@ -21,6 +22,7 @@ from host_agent_client import (
 )
 from models import PersonaRequest, ChatRequest
 from security import verify_api_key
+from setup_chat_route import resolve_chat_route
 
 logger = logging.getLogger(__name__)
 
@@ -151,12 +153,15 @@ async def run_setup_diagnostics(api_key: str = Depends(verify_api_key)):
         process = await asyncio.create_subprocess_exec(
             "bash", str(script_path),
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+            start_new_session=os.name == "posix",
         )
+        completed = False
         try:
             try:
                 async for line in process.stdout:
                     yield line.decode()
                 await process.wait()
+                completed = True
                 # Emit the human-readable trailer AND the machine-readable sentinel
                 # as a SINGLE chunk. Starlette's StreamingResponse finalizes the
                 # HTTP stream as soon as the async generator exits; when trailer
@@ -180,9 +185,14 @@ async def run_setup_diagnostics(api_key: str = Depends(verify_api_key)):
                 logger.exception("run_setup_diagnostics generator raised: %s", exc)
                 yield f"\nDiagnostic runner error: {exc}\n__ODS_RESULT__:FAIL:1\n"
         finally:
-            if process.returncode is None:
+            if not completed:
                 try:
-                    process.kill()
+                    # Shell diagnostics spawn curl and other descendants that
+                    # can keep stdout open after the shell itself has exited.
+                    if os.name == "posix":
+                        os.killpg(process.pid, signal.SIGKILL)
+                    else:
+                        process.kill()
                 except OSError:
                     pass
                 await process.wait()
@@ -198,8 +208,11 @@ async def chat(request: ChatRequest, api_key: str = Depends(verify_api_key)):
         system_prompt = await asyncio.to_thread(get_active_persona_prompt)
 
     _llm = SERVICES.get("llama-server", {})
-    llm_url = os.environ.get("OLLAMA_URL", f"http://{_llm.get('host', 'llama-server')}:{_llm.get('port', 0)}")
-    model = read_live_env_value("LLM_MODEL", "qwen3-coder-next")
+    try:
+        llm_url, model, headers = resolve_chat_route(
+            f"http://{_llm.get('host', 'llama-server')}:{_llm.get('port', 0)}")
+    except ValueError:
+        raise HTTPException(status_code=503, detail="Invalid LLM route configuration")
 
     payload = {
         "model": model,
@@ -209,8 +222,7 @@ async def chat(request: ChatRequest, api_key: str = Depends(verify_api_key)):
 
     try:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
-            _api_path = os.environ.get("LLM_API_BASE_PATH", "/v1")
-            async with session.post(f"{llm_url}{_api_path}/chat/completions", json=payload, headers={"Content-Type": "application/json"}) as resp:
+            async with session.post(llm_url, json=payload, headers=headers, allow_redirects=False) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     choices = data.get("choices") or [{}]
@@ -221,7 +233,7 @@ async def chat(request: ChatRequest, api_key: str = Depends(verify_api_key)):
                 else:
                     error_text = await resp.text()
                     raise HTTPException(status_code=resp.status, detail=f"LLM error: {error_text}")
-    except aiohttp.ClientError:
+    except (aiohttp.ClientError, asyncio.TimeoutError):
         logger.exception("Cannot reach LLM backend")
         raise HTTPException(status_code=503, detail="Cannot reach LLM backend")
 
@@ -314,7 +326,8 @@ async def setup_network_status() -> dict:
     Always returns 200 even on non-Linux — the response carries
     `platform_supported: false` so the wizard can render a fallback.
     """
-    return await asyncio.to_thread(_call_agent, "/v1/network/status", "GET", None, 10)
+    # Host: one status query (5s) + one address query for all devices (5s).
+    return await asyncio.to_thread(_call_agent, "/v1/network/status", "GET", None, 15)
 
 
 class WifiForgetRequest(BaseModel):
@@ -336,5 +349,6 @@ async def setup_wifi_forget(payload: WifiForgetRequest) -> dict:
         "/v1/network/wifi-forget",
         "POST",
         {"connection": payload.connection},
-        15,
+        # Host verifies the profile type (10s), then deletes it (15s).
+        30,
     )

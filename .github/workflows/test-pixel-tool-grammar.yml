@@ -1,0 +1,54 @@
+name: Pixel tool grammar
+
+on:
+  pull_request:
+    paths:
+      - 'ods/extensions/services/pixel-agent/plugin/**'
+      - 'ods/extensions/services/pixel-agent/tests/tool*grammar*'
+      - 'ods/docker-compose.base.yml'
+      - '.github/workflows/test-pixel-tool-grammar.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  grammar:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Fetch the default Compose runtime's exact source
+        uses: actions/checkout@v4
+        with:
+          repository: ggml-org/llama.cpp
+          # b9014, matching ods/docker-compose.base.yml
+          ref: d4b0c22f9e67f0295e91dc1ab4f17c0fb2557fa4
+          path: .llama-grammar-source
+          persist-credentials: false
+      - name: Build the native schema and grammar test bridge
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fq 'ghcr.io/ggml-org/llama.cpp:server-b9014' ods/docker-compose.base.yml
+          source_dir="$PWD/.llama-grammar-source"
+          build_dir="$RUNNER_TEMP/pixel-llama-grammar"
+          cmake -S "$source_dir" -B "$build_dir" -DCMAKE_BUILD_TYPE=Release \
+            -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=OFF \
+            -DGGML_NATIVE=OFF -DGGML_OPENMP=OFF -DLLAMA_CURL=OFF -DLLAMA_OPENSSL=OFF
+          cmake --build "$build_dir" --target llama-common -j 2
+          g++ -std=c++17 -O2 ods/extensions/services/pixel-agent/tests/tool-schema-grammar.cpp \
+            -I "$source_dir/src" -I "$source_dir/common" -I "$source_dir/include" \
+            -I "$source_dir/vendor" -I "$source_dir/ggml/include" \
+            -L "$build_dir/bin" -Wl,-rpath,"$build_dir/bin" \
+            -lllama-common -lllama -lggml-base -o "$RUNNER_TEMP/pixel-tool-schema-grammar"
+      - name: Compile offered schemas and verify execution limits
+        shell: bash
+        run: |
+          set -euo pipefail
+          export ODS_TEST_LLAMA_SCHEMA="$RUNNER_TEMP/pixel-tool-schema-grammar"
+          test -x "$ODS_TEST_LLAMA_SCHEMA"
+          node --test ods/extensions/services/pixel-agent/tests/tool_schema_grammar.test.mjs

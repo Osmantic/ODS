@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { getSidebarExternalLinks } from './registry'
+import { getInternalRoutes, getSidebarExternalLinks } from './registry'
+
+describe('getInternalRoutes', () => {
+  it('passes the polled system runtime to the Pixel page', () => {
+    const status = { inference: { loadedModel: 'Qwen3.5-9B', contextSize: 32768 } }
+    const pixel = getInternalRoutes({ status }).find(route => route.id === 'pixel')
+    expect(pixel.getProps({ status })).toEqual({ systemStatus: status })
+  })
+})
 
 describe('getSidebarExternalLinks', () => {
   it('uses API-provided public URLs before host-port fallback', () => {

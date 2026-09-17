@@ -21,6 +21,7 @@ param(
     [switch]$Langfuse,
     [switch]$NoLangfuse,
     [switch]$NoBootstrap,
+    [switch]$RebuildNoCache,
     [switch]$Lan,
     [string]$InstallDir = "",
     [string]$SummaryJsonPath = ""

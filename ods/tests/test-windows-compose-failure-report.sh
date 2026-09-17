@@ -87,6 +87,14 @@ check 'The probe image ($_probeImage) is already available; this is a file-shari
 check 'throw "Docker Desktop cannot bind-mount $installDir"' "$PRE_SCRIPT" "preflight file-sharing failure terminates installer"
 check 'throw "Docker daemon is not responding"' "$DOCKER_PHASE" "Docker daemon prerequisite failure is terminating"
 check 'throw "Docker Compose not found"' "$DOCKER_PHASE" "Docker Compose prerequisite failure is terminating"
+check 'Docker daemon became unavailable while building' "$INSTALL_PS1" "local build failures distinguish Docker daemon loss"
+check 'Restart Docker Desktop and rerun the installer' "$INSTALL_PS1" "daemon-loss failures provide recovery guidance"
+check 'compose-build-failure.json' "$INSTALL_PS1" "daemon-loss failures persist a machine-readable receipt"
+check 'if ($RebuildNoCache) { $composeBuildArgs += "--no-cache" }' "$INSTALL_PS1" "Windows Compose builds opt into no-cache explicitly"
+check 'Building local-built images ($buildModeLabel)...' "$INSTALL_PS1" "Windows build output reports the selected cache mode"
+check '$diagnosticBuildArgs = @("build")' "$INSTALL_PS1" "failure diagnostics match the selected cache mode"
+check 'Remove-Item -LiteralPath $_buildFailureReceipt' "$INSTALL_PS1" "stale daemon-loss receipts are cleared before a new build"
+check 'Could not write Docker build failure receipt' "$INSTALL_PS1" "receipt write failures are reported"
 
 if grep -q "Write-ODSComposeDiagnostics .*SaveReport" "$ROOT_DIR/installers/windows/ods.ps1"; then
     fail "ods.ps1 command failures should not create install reports by default"
@@ -121,6 +129,8 @@ echo   dashboard-api:
 echo     environment:
 echo       DASHBOARD_API_KEY: super-secret-dashboard-key
 echo       OPENCLAW_TOKEN: super-secret-openclaw-token
+echo       N8N_USER: super-secret-n8n-user
+echo       LANGFUSE_INIT_USER_EMAIL: super-secret-langfuse-email
 exit /b 0
 :check_ps
 echo %args% | findstr /I /C:"ps -a" >nul || exit /b 0
