@@ -78,6 +78,30 @@ _HEALTH_TIMEOUT = aiohttp.ClientTimeout(total=30)
 _CATALOG_HEALTH_TIMEOUT = aiohttp.ClientTimeout(total=5)
 
 
+def normalize_llm_base_url(raw: str, base_path: str | None = None) -> str:
+    """Join an LLM host root with its OpenAI-compatible base path exactly once.
+
+    ``raw`` may already be a full base (``http://h:8080/v1``, ``.../api/v1``) or
+    a bare host root. Appending ``LLM_API_BASE_PATH`` unconditionally turns the
+    former into ``/v1/v1`` and every request 404s — which is what the setup
+    wizard's chat test did against any operator-supplied ``LLM_API_URL`` that
+    already carried its base path, the canonical form for an external
+    OpenAI-compatible provider (#4186).
+
+    routers/talk.py has carried this guard for the vision path since it hit the
+    same thing; this is that logic, shared rather than duplicated.
+    """
+    cleaned = (raw or "").rstrip("/")
+    if cleaned.endswith("/v1") or cleaned.endswith("/api/v1"):
+        return cleaned
+
+    path = base_path if base_path is not None else os.environ.get("LLM_API_BASE_PATH")
+    path = (path or "/v1").strip() or "/v1"
+    if not path.startswith("/"):
+        path = f"/{path}"
+    return f"{cleaned}{path.rstrip('/')}"
+
+
 def _get_aio_session_lock() -> asyncio.Lock:
     global _aio_session_lock
     if _aio_session_lock is None:
