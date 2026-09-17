@@ -256,6 +256,8 @@ jobs:
       - name: Issue-to-PR Security Contract Tests
         run: bash tests/test-issue-to-pr-security.sh
 
+      - name: Shared Python Resolver Tests
+        run: bash tests/test-python-cmd-resolver.sh
       - name: NVIDIA Multi-GPU Visibility Contract Tests
         run: bash tests/test-multigpu-nvidia-visibility.sh
 
