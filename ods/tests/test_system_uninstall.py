@@ -61,6 +61,12 @@ class SystemUninstall(unittest.TestCase):
             content = template.replace('__INSTALL_DIR__', str(self.install)).replace('__HOME__', str(self.home))
             content = content.replace('__INSTALL_USER__', 'fixture-user').replace('__PYTHON3__', '/usr/bin/python3')
             (self.units/unit).write_text(content)
+            # A real systemd unit is root-owned 0644; the custody check refuses
+            # any unit that is group- or other-writable (mode & 0o022). Pin the
+            # fixture mode so the suite does not depend on the runner's umask:
+            # Ubuntu's default 002 (private user groups) makes write_text() leave
+            # the file 0664, which trips the guard and fails five of these tests.
+            (self.units/unit).chmod(0o644)
         stub = self.bin/'systemctl'
         stub.write_text(STUB)
         stub.chmod(0o755)
