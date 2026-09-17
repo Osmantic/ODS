@@ -857,7 +857,7 @@ cmd_restart() {
     elif [[ -n "$service" ]]; then
         ai "Restarting ${service}..."
         # shellcheck disable=SC2086
-        docker compose $flags up -d "$service"
+        docker compose $flags up -d --force-recreate --no-build --pull never "$service"
         ai_ok "${service} restarted"
     else
         # Restart native llama-server
@@ -869,7 +869,7 @@ cmd_restart() {
 
         ai "Restarting all services..."
         # shellcheck disable=SC2086
-        docker compose $flags up -d
+        docker compose $flags up -d --force-recreate --no-build --pull never
         ai_ok "All services restarted"
     fi
 
