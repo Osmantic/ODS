@@ -97,6 +97,9 @@ test: ## Run unit and contract tests
 	@echo "=== ods-cli install directory resolution ==="
 	@bash tests/test-cli-install-dir-resolution.sh
 	@echo ""
+	@echo "=== CLI log snapshot options ==="
+	@bash tests/test-cli-log-snapshots.sh
+	@echo ""
 	@echo "=== offline model validation ==="
 	@python3 tests/test-offline-model-validation.py
 	@echo ""

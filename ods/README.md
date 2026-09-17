@@ -367,6 +367,7 @@ The `ods` CLI is the primary management tool. It's installed automatically at `~
 ods status              # Health checks + GPU status
 ods list                # Show all services and their state
 ods logs <service>      # Tail logs (accepts aliases: llm, stt, tts)
+ods logs <service> --since 30m --no-follow  # Print a bounded snapshot
 ods restart [service]   # Restart one or all services
 ods start / stop        # Start or stop the stack
 

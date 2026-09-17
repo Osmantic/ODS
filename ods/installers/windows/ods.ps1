@@ -2337,10 +2337,14 @@ function Invoke-Restart {
 function Invoke-Logs {
     param(
         [string]$Service,
-        [int]$Lines = 100
+        [int]$Lines = 100,
+        [string]$Since = "",
+        [string]$Until = "",
+        [bool]$Follow = $true,
+        [switch]$Timestamps
     )
     if (-not $Service) {
-        Write-AI "Usage: .\ods.ps1 logs <service> [lines]"
+        Write-AI "Usage: .\ods.ps1 logs <service> [lines] [--since TIME] [--until TIME] [--no-follow] [--timestamps]"
         Write-AI "Services: llama-server, open-webui, dashboard-api, n8n, whisper, tts, ..."
         return
     }
@@ -2352,7 +2356,13 @@ function Invoke-Logs {
             Write-ODSMissingComposeServiceHint -ComposeFlags $flags -Service $Service
             exit 1
         }
-        & docker compose @flags logs -f --tail $Lines $Service
+        $logArgs = @("logs")
+        if ($Follow) { $logArgs += "-f" }
+        if ($Since) { $logArgs += @("--since", $Since) }
+        if ($Until) { $logArgs += @("--until", $Until) }
+        if ($Timestamps) { $logArgs += "--timestamps" }
+        $logArgs += @("--tail", $Lines, $Service)
+        & docker compose @flags @logArgs
     } finally {
         Pop-Location
     }
@@ -3502,8 +3512,8 @@ function Show-Help {
     Write-Host "Stop all or one service" -ForegroundColor DarkGray
     Write-Host "    restart [service]   " -ForegroundColor Cyan -NoNewline
     Write-Host "Restart all or one service" -ForegroundColor DarkGray
-    Write-Host "    logs <svc> [lines]  " -ForegroundColor Cyan -NoNewline
-    Write-Host "Tail logs (default 100)" -ForegroundColor DarkGray
+    Write-Host "    logs <svc> [lines] [--since TIME] [--no-follow]" -ForegroundColor Cyan -NoNewline
+    Write-Host "  Stream or snapshot logs" -ForegroundColor DarkGray
     Write-Host "    config show         " -ForegroundColor Cyan -NoNewline
     Write-Host "View .env (secrets masked)" -ForegroundColor DarkGray
     Write-Host "    config edit         " -ForegroundColor Cyan -NoNewline
@@ -3588,21 +3598,47 @@ switch ($Command.ToLower()) {
     "restart" { Invoke-Restart -Service ($Arguments | Select-Object -First 1) }
     "logs"    {
         $svc = $Arguments | Select-Object -First 1
-        # Validate the optional line count instead of a bare [int] cast, which
-        # throws an unhandled .NET conversion error on non-numeric input
-        # (e.g. `ods logs llama-server 5m`). Mirrors the [int]::TryParse guard
-        # used elsewhere in this script; the Unix CLIs pass the value straight
-        # to `docker compose --tail`, which rejects bad input gracefully too.
         $n = 100
-        if ($Arguments.Count -ge 2) {
-            $parsedLines = 0
-            if ([int]::TryParse([string]$Arguments[1], [ref]$parsedLines) -and $parsedLines -gt 0) {
-                $n = $parsedLines
-            } else {
-                Write-AIWarn "Invalid line count '$($Arguments[1])'; using $n."
+        $lineCountSet = $false
+        $since = ""
+        $until = ""
+        $follow = $true
+        $timestamps = $false
+        for ($i = 1; $i -lt $Arguments.Count; $i++) {
+            $arg = [string]$Arguments[$i]
+            switch ($arg) {
+                "--since" {
+                    if ($i + 1 -ge $Arguments.Count) { Write-AIError "--since requires a value"; exit 1 }
+                    $i++; $since = [string]$Arguments[$i]
+                }
+                "--until" {
+                    if ($i + 1 -ge $Arguments.Count) { Write-AIError "--until requires a value"; exit 1 }
+                    $i++; $until = [string]$Arguments[$i]
+                }
+                "--no-follow" { $follow = $false }
+                "--timestamps" { $timestamps = $true }
+                "--tail" {
+                    if ($i + 1 -ge $Arguments.Count) { Write-AIError "--tail requires a value"; exit 1 }
+                    if ($lineCountSet) { Write-AIError "Only one log line count may be specified"; exit 1 }
+                    $i++
+                    $parsedLines = 0
+                    if (-not [int]::TryParse([string]$Arguments[$i], [ref]$parsedLines) -or $parsedLines -le 0) {
+                        Write-AIError "Log line count must be a positive integer: $($Arguments[$i])"
+                        exit 1
+                    }
+                    $n = $parsedLines; $lineCountSet = $true
+                }
+                default {
+                    $parsedLines = 0
+                    if ($lineCountSet -or -not [int]::TryParse($arg, [ref]$parsedLines) -or $parsedLines -le 0) {
+                        Write-AIError "Unknown logs argument: $arg"
+                        exit 1
+                    }
+                    $n = $parsedLines; $lineCountSet = $true
+                }
             }
         }
-        Invoke-Logs -Service $svc -Lines $n
+        Invoke-Logs -Service $svc -Lines $n -Since $since -Until $until -Follow $follow -Timestamps:$timestamps
     }
     "config"  {
         $action = ($Arguments | Select-Object -First 1)

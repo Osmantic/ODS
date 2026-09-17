@@ -1522,20 +1522,58 @@ cmd_logs() {
     load_env
 
     local service="${1:-}"
-    local lines="${2:-100}"
-
     if [[ -z "$service" ]]; then
-        log "Usage: ods logs <service> [lines]"
+        log "Usage: ods logs <service> [lines] [--since TIME] [--until TIME] [--no-follow] [--timestamps]"
         log "Run 'ods list' to see available services."
         exit 1
     fi
+    shift
+
+    local lines="100"
+    local lines_set="false"
+    local since=""
+    local until=""
+    local follow="true"
+    local timestamps="false"
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --since|--until)
+                [[ -n "${2:-}" ]] || error "$1 requires a timestamp or duration"
+                if [[ "$1" == "--since" ]]; then since="$2"; else until="$2"; fi
+                shift 2
+                ;;
+            --no-follow) follow="false"; shift ;;
+            --timestamps) timestamps="true"; shift ;;
+            --tail)
+                [[ -n "${2:-}" ]] || error "--tail requires a positive line count"
+                [[ "$lines_set" == "false" ]] || error "Only one log line count may be specified"
+                lines="$2"
+                lines_set="true"
+                shift 2
+                ;;
+            -*) error "Unknown logs option: $1" ;;
+            *)
+                [[ "$lines_set" == "false" ]] || error "Only one log line count may be specified"
+                lines="$1"
+                lines_set="true"
+                shift
+                ;;
+        esac
+    done
+    [[ "$lines" =~ ^[1-9][0-9]*$ ]] || error "Log line count must be a positive integer: $lines"
 
     service=$(resolve_service "$service")
     local flags_str
     flags_str=$(get_compose_flags)
     local -a flags
     read -ra flags <<< "$flags_str"
-    docker compose "${flags[@]}" logs -f --tail "$lines" "$service"
+    local -a log_args=(logs)
+    [[ "$follow" == "false" ]] || log_args+=(-f)
+    [[ -z "$since" ]] || log_args+=(--since "$since")
+    [[ -z "$until" ]] || log_args+=(--until "$until")
+    [[ "$timestamps" == "false" ]] || log_args+=(--timestamps)
+    log_args+=(--tail "$lines" "$service")
+    docker compose "${flags[@]}" "${log_args[@]}"
 }
 
 cmd_restart() {
@@ -6416,7 +6454,8 @@ ${CYAN}Commands:${NC}
   backup verify <id>   Verify checksum integrity for a backup
   restore [backup_id] Restore from a backup
   rollback [snapshot] Rollback to pre-update state (after failed update)
-  logs <service>      Tail logs for a service
+  logs <service> [lines] [--since TIME] [--until TIME] [--no-follow] [--timestamps]
+                      Stream logs or print a bounded snapshot
   restart [service] [--rebuild-images]
                       Restart services (all if no service specified)
   start [service] [--rebuild-images]
