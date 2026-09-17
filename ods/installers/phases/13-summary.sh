@@ -255,7 +255,7 @@ DESKTOP_EOF
 fi
 
 #=============================================================================
-# Bash Completion Setup
+# Shell Completion Setup
 #=============================================================================
 if ! $DRY_RUN; then
     COMPLETION_FILE="$INSTALL_DIR/completions/ods-cli.bash"
@@ -267,6 +267,16 @@ if ! $DRY_RUN; then
 # ODS CLI bash completion
 if [[ -f "$HOME/ods/completions/ods-cli.bash" ]]; then
     . "$HOME/ods/completions/ods-cli.bash"
+fi
+
+if ! $DRY_RUN && command -v zsh >/dev/null 2>&1; then
+    ZSH_COMPLETION_INSTALLER="$INSTALL_DIR/completions/install-zsh-completion.sh"
+    if [[ -f "$ZSH_COMPLETION_INSTALLER" ]] \
+        && bash "$ZSH_COMPLETION_INSTALLER" "$INSTALL_DIR"; then
+        ai_ok "Zsh completion enabled for ods-cli"
+    else
+        warn "Could not install optional Zsh completion"
+    fi
 fi
 BASHRC_EOF
             ai_ok "Bash completion enabled for ods-cli"

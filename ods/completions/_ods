@@ -1,0 +1,136 @@
+#compdef ods ods-cli
+
+# Zsh completion for the ODS CLI. Service, preset, and template candidates are
+# discovered from the active install so user extensions participate without a
+# generated completion file.
+
+_ods_services() {
+  local root="${ODS_HOME:-$HOME/ods}"
+  local -a service_dirs services
+  service_dirs=(
+    "$root"/extensions/services/*(N/)
+    "$root"/data/user-extensions/*(N/)
+  )
+  services=("${service_dirs[@]:t}")
+  _values 'service' "${services[@]}"
+}
+
+_ods_presets() {
+  local root="${ODS_HOME:-$HOME/ods}"
+  local -a preset_dirs presets
+  preset_dirs=("$root"/presets/*(N/))
+  presets=("${preset_dirs[@]:t}")
+  _values 'preset' "${presets[@]}"
+}
+
+_ods_templates() {
+  local root="${ODS_HOME:-$HOME/ods}"
+  local -a template_files templates
+  template_files=("$root"/templates/*.(yaml|yml)(N))
+  templates=("${template_files[@]:t:r}")
+  _values 'template' "${templates[@]}"
+}
+
+_ods() {
+  local -a commands
+  commands=(
+    'gpu:inspect and manage GPU configuration'
+    'status:show service and hardware health'
+    'status-json:emit machine-readable status'
+    'list:list available services'
+    'enable:enable an extension service'
+    'disable:disable an extension service'
+    'purge:delete disabled service data'
+    'preset:manage configuration presets'
+    'mode:switch local, cloud, or hybrid mode'
+    'model:view or change the local model tier'
+    'remote-provider:manage a remote inference provider'
+    'stt:manage the speech-to-text model'
+    'backup:create or verify backups'
+    'restore:restore a backup'
+    'rollback:restore pre-update state'
+    'logs:tail service logs'
+    'restart:restart services'
+    'repair:repair an operational subsystem'
+    'start:start services'
+    'stop:stop services'
+    'update:update ODS'
+    'shell:open a service container shell'
+    'config:view or edit configuration'
+    'chat:send a quick LLM prompt'
+    'benchmark:run an inference benchmark'
+    'doctor:run diagnostics'
+    'audit:audit extension contracts'
+    'template:list, preview, or apply templates'
+    'agent:manage the host agent'
+    'help:show CLI help'
+    'version:show the CLI version'
+  )
+
+  if (( CURRENT == 2 )); then
+    _describe -t commands 'ODS command' commands
+    return
+  fi
+
+  case "${words[2]}" in
+    enable|disable|purge|logs|log|restart|start|stop|shell|audit)
+      (( CURRENT == 3 )) && _ods_services
+      ;;
+    gpu|g)
+      (( CURRENT == 3 )) && _values 'GPU action' status topology assignment validate reassign help
+      (( CURRENT == 4 && words[3] == reassign )) && _values 'option' --auto --manual --dry-run
+      (( CURRENT == 4 && words[3] == topology )) && _values 'option' --force
+      ;;
+    preset|p)
+      if (( CURRENT == 3 )); then
+        _values 'preset action' save load list delete export import diff
+      elif (( CURRENT == 4 )); then
+        case "${words[3]}" in
+          save|load|delete|export|diff) _ods_presets ;;
+          import) _files -g '*.tar.gz' ;;
+        esac
+      fi
+      ;;
+    mode|m)
+      (( CURRENT == 3 )) && _values 'mode' local cloud hybrid
+      ;;
+    model)
+      (( CURRENT == 3 )) && _values 'model action' current list swap
+      (( CURRENT == 4 && words[3] == swap )) && _values 'tier' 0 1 2 3 4
+      ;;
+    remote-provider)
+      (( CURRENT == 3 )) && _values 'remote provider action' status plan configure test disable remove peer-models help
+      (( CURRENT == 4 && words[3] == peer-models )) && _values 'peer model action' list download-status cancel-download download load delete
+      ;;
+    stt)
+      (( CURRENT == 3 )) && _values 'STT action' current status download
+      ;;
+    backup)
+      (( CURRENT == 3 )) && _values 'backup option' verify --compress --list -c -l
+      ;;
+    config|cfg)
+      (( CURRENT == 3 )) && _values 'config action' show edit validate
+      ;;
+    repair|fix)
+      (( CURRENT == 3 )) && _values 'repair target' voice stt tts hermes-workers slash-workers rootless-ownership rootless
+      ;;
+    template|tmpl)
+      if (( CURRENT == 3 )); then
+        _values 'template action' list preview apply
+      elif (( CURRENT == 4 )) && [[ "${words[3]}" == preview || "${words[3]}" == apply ]]; then
+        _ods_templates
+      fi
+      ;;
+    agent)
+      (( CURRENT == 3 )) && _values 'agent action' status start stop restart logs
+      ;;
+    doctor|diag|d)
+      (( CURRENT == 3 )) && _values 'doctor option' report --json
+      ;;
+    update|u)
+      (( CURRENT == 3 )) && _values 'update option' --dry-run --force --rebuild-images
+      ;;
+  esac
+}
+
+_ods "$@"

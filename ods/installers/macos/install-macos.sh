@@ -1706,6 +1706,19 @@ else
         ai_ok "Installed ods-macos.sh CLI"
     fi
 
+    # Zsh is the default interactive shell on supported macOS releases. Install
+    # completion after the source tree is present, while keeping failure
+    # non-fatal because it only mutates the current user's shell profile.
+    _zsh_completion_installer="${INSTALL_DIR}/completions/install-zsh-completion.sh"
+    if command -v zsh >/dev/null 2>&1 && [[ -f "$_zsh_completion_installer" ]]; then
+        if bash "$_zsh_completion_installer" "$INSTALL_DIR"; then
+            ai_ok "Zsh completion enabled for ods-cli"
+        else
+            ai_warn "Could not install optional Zsh completion"
+        fi
+    fi
+    unset _zsh_completion_installer
+
     # The resolver treats compose.yaml as enabled and compose.yaml.disabled as
     # disabled. Persist every installer feature choice in that canonical form
     # so cache invalidation and later dashboard toggles cannot resurrect the
