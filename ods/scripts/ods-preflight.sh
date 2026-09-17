@@ -12,8 +12,10 @@ cd "$SCRIPT_DIR"
 sr_load
 
 # Safe .env loading for port overrides (no eval; use lib/safe-env.sh)
-[[ -f "$SCRIPT_DIR/lib/safe-env.sh" ]] && . "$SCRIPT_DIR/lib/safe-env.sh"
-load_env_file "$SCRIPT_DIR/.env"
+if [[ -f "$SCRIPT_DIR/lib/safe-env.sh" ]]; then
+    . "$SCRIPT_DIR/lib/safe-env.sh"
+    [[ -f "$SCRIPT_DIR/.env" ]] && load_env_file "$SCRIPT_DIR/.env"
+fi
 sr_resolve_ports
 
 # Resolve compose flags for accurate status checks
