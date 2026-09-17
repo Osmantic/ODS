@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'bin'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'bin'))
 from pixel_provider.store import StoreError
 from pixel_settings import host_api, public
 from pixel_settings.contract import SettingsError
