@@ -373,8 +373,12 @@ if ($dryRun) {
             $envPath = Join-Path $installDir ".env"
             if (Test-Path $envPath) {
                 $envContent = Get-Content $envPath -Raw
-                $envContent = $envContent -replace "(?m)^GGUF_FILE=.*$", "GGUF_FILE=$($tierConfig.GgufFile)"
-                $envContent = $envContent -replace "(?m)^LLM_MODEL=.*$", "LLM_MODEL=$($tierConfig.LlmModel)"
+                # Same .NET group-substitution hazard as Update-HermesConfigFile:
+                # '$' in a replacement string is a token, not a literal.
+                $ggufReplacement = "$($tierConfig.GgufFile)".Replace('$', '$$')
+                $llmModelReplacement = "$($tierConfig.LlmModel)".Replace('$', '$$')
+                $envContent = $envContent -replace "(?m)^GGUF_FILE=.*$", "GGUF_FILE=$ggufReplacement"
+                $envContent = $envContent -replace "(?m)^LLM_MODEL=.*$", "LLM_MODEL=$llmModelReplacement"
                 $envContent = $envContent -replace "(?m)^MAX_CONTEXT=.*$", "MAX_CONTEXT=$($tierConfig.MaxContext)"
                 $envContent = $envContent -replace "(?m)^CTX_SIZE=.*$", "CTX_SIZE=$($tierConfig.MaxContext)"
                 [System.IO.File]::WriteAllText($envPath, $envContent, (New-Object System.Text.UTF8Encoding($false)))

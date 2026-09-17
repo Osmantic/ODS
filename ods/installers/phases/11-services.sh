@@ -346,7 +346,10 @@ else
 
         [[ "$(uname -s 2>/dev/null || echo unknown)" == "Linux" ]] || return 0
         command -v systemctl >/dev/null 2>&1 || return 0
-        command -v sudo >/dev/null 2>&1 || return 0
+        ods_sudo_available || {
+            ai_warn "Skipping $service_label firewall rule; privileged firewall access is unavailable."
+            return 0
+        }
         [[ "$port" =~ ^[0-9]+$ ]] || {
             ai_warn "Skipping $service_label firewall rule; invalid port: ${port:-unset}"
             return 0
@@ -379,9 +382,9 @@ else
 
         for subnet in "${subnets[@]}"; do
             if command -v ufw >/dev/null 2>&1 && systemctl is-active --quiet ufw 2>/dev/null; then
-                if sudo ufw status 2>/dev/null | grep -F "${port}/tcp" | grep -F "$subnet" >/dev/null; then
+                if ods_sudo ufw status 2>/dev/null | grep -F "${port}/tcp" | grep -F "$subnet" >/dev/null; then
                     ai_ok "UFW already allows $service_label (port $port) from $network_name subnet $subnet"
-                elif sudo ufw allow from "$subnet" to any port "$port" proto tcp comment "$rule_label" 2>&1 | tee -a "$LOG_FILE" >/dev/null; then
+                elif ods_sudo ufw allow from "$subnet" to any port "$port" proto tcp comment "$rule_label" 2>&1 | tee -a "$LOG_FILE" >/dev/null; then
                     ai_ok "UFW: allowed $service_label (port $port) from $network_name subnet $subnet"
                 else
                     ai_warn "UFW: failed to auto-add $service_label rule - run manually:"
@@ -389,10 +392,10 @@ else
                 fi
             elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
                 fw_rule="rule family=\"ipv4\" source address=\"$subnet\" port protocol=\"tcp\" port=\"$port\" accept"
-                if sudo firewall-cmd --query-rich-rule="$fw_rule" >/dev/null 2>&1; then
+                if ods_sudo firewall-cmd --query-rich-rule="$fw_rule" >/dev/null 2>&1; then
                     ai_ok "firewalld already allows $service_label (port $port) from $network_name subnet $subnet"
-                elif sudo firewall-cmd --permanent --add-rich-rule="$fw_rule" 2>&1 | tee -a "$LOG_FILE" >/dev/null \
-                  && sudo firewall-cmd --reload 2>&1 | tee -a "$LOG_FILE" >/dev/null; then
+                elif ods_sudo firewall-cmd --permanent --add-rich-rule="$fw_rule" 2>&1 | tee -a "$LOG_FILE" >/dev/null \
+                  && ods_sudo firewall-cmd --reload 2>&1 | tee -a "$LOG_FILE" >/dev/null; then
                     ai_ok "firewalld: allowed $service_label (port $port) from $network_name subnet $subnet"
                 else
                     ai_warn "firewalld: failed to auto-add $service_label rule - run manually:"
@@ -1224,13 +1227,23 @@ MODELS_INI_EOF
     # started it before compose created ods-network, so restart it here to
     # let the safer scoped bind take effect.
     if [[ -z "${ODS_AGENT_BIND:-}" ]] \
-      && [[ "$(uname -s 2>/dev/null || echo unknown)" == "Linux" ]] \
-      && command -v systemctl >/dev/null 2>&1 \
-      && sudo -n systemctl is-enabled ods-host-agent.service >/dev/null 2>&1; then
-        if sudo -n systemctl restart ods-host-agent.service 2>&1 | tee -a "$LOG_FILE" >/dev/null; then
-            ai_ok "Restarted ods-host-agent after ods-network creation"
-        else
-            ai_warn "ods-host-agent restart after network creation failed (non-fatal)"
+      && [[ "$(uname -s 2>/dev/null || echo unknown)" == "Linux" ]]; then
+        if command -v systemctl >/dev/null 2>&1 \
+          && systemctl cat ods-host-agent.service >/dev/null 2>&1 \
+          && systemctl is-enabled ods-host-agent.service >/dev/null 2>&1 \
+          && ods_sudo_available; then
+            if ods_sudo systemctl restart ods-host-agent.service 2>&1 | tee -a "$LOG_FILE" >/dev/null; then
+                ai_ok "Restarted ods-host-agent after ods-network creation"
+            else
+                ai_warn "ods-host-agent restart after network creation failed (non-fatal)"
+            fi
+        elif [[ -s "$INSTALL_DIR/data/ods-host-agent.pid" ]]; then
+            if ODS_AGENT_FORCE_SESSION=true "$INSTALL_DIR/ods-cli" agent restart \
+              2>&1 | tee -a "$LOG_FILE" >/dev/null; then
+                ai_ok "Restarted session host agent after ods-network creation"
+            else
+                ai_warn "Session host-agent restart after network creation failed (non-fatal)"
+            fi
         fi
     fi
 

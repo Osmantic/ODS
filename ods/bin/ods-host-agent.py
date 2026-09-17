@@ -37,7 +37,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from socketserver import ThreadingMixIn
 from urllib import error as urllib_error, request as urllib_request
 from urllib.parse import parse_qs, unquote, urlparse
@@ -312,7 +312,7 @@ def _windows_whisper_cuda_supported(env: dict) -> bool:
 
 
 def _find_usable_bash() -> str | None:
-    """Return a Bash executable that can run shell scripts on this host."""
+    """Return a Bash executable compatible with this host's path contract."""
     global _usable_bash
     if isinstance(_usable_bash, str):
         return _usable_bash
@@ -320,11 +320,24 @@ def _find_usable_bash() -> str | None:
         return None
 
     candidates: list[str] = []
-    found = shutil.which("bash")
-    if found:
-        candidates.append(found)
-
     if platform.system() == "Windows":
+        # The host agent passes MSYS-style paths (``/c/...``) to every bundled
+        # shell script.  A WSL launcher can successfully run ``bash -lc`` but
+        # expects ``/mnt/c/...`` instead, so a generic PATH probe is not enough.
+        # Prefer Bash shipped with Git for Windows, which is also the runtime
+        # required by the Windows installer.
+        git = shutil.which("git")
+        if git and PureWindowsPath(git).name.lower() in {"git", "git.exe"}:
+            git_path = PureWindowsPath(git)
+            git_root = (
+                git_path.parent.parent
+                if git_path.parent.name.lower() in {"bin", "cmd"}
+                else git_path.parent
+            )
+            candidates.extend([
+                str(git_root / "bin" / "bash.exe"),
+                str(git_root / "usr" / "bin" / "bash.exe"),
+            ])
         candidates.extend([
             r"C:\Program Files\Git\bin\bash.exe",
             r"C:\Program Files\Git\usr\bin\bash.exe",
@@ -337,17 +350,52 @@ def _find_usable_bash() -> str | None:
                 str(Path(local_appdata) / "Programs" / "Git" / "bin" / "bash.exe"),
                 str(Path(local_appdata) / "Programs" / "Git" / "usr" / "bin" / "bash.exe"),
             ])
+        found = shutil.which("bash")
+        if found:
+            candidates.append(found)
+    else:
+        found = shutil.which("bash")
+        if found:
+            candidates.append(found)
 
     seen: set[str] = set()
     for bash in candidates:
-        if not bash or bash in seen:
+        identity = os.path.normcase(os.path.normpath(bash)) if platform.system() == "Windows" else bash
+        if not bash or identity in seen:
             continue
-        seen.add(bash)
-        if not Path(bash).exists() and shutil.which(bash) is None:
+        seen.add(identity)
+        bash_path = Path(bash)
+        is_absolute = (
+            PureWindowsPath(bash).is_absolute()
+            if platform.system() == "Windows"
+            else bash_path.is_absolute()
+        )
+        if is_absolute:
+            if not bash_path.exists():
+                continue
+        elif shutil.which(bash) is None:
             continue
         try:
+            if platform.system() == "Windows":
+                # Validate both the shell dialect and the exact path syntax the
+                # resolver will receive.  This rejects a working WSL bash.exe
+                # instead of discovering the mismatch during model rollback.
+                command = (
+                    'case "$(uname -s 2>/dev/null)" in '
+                    'MINGW*|MSYS*) test -d "$1" && printf ok ;; '
+                    '*) exit 64 ;; esac'
+                )
+                probe = [
+                    bash,
+                    "-lc",
+                    command,
+                    "ods-bash-probe",
+                    _to_bash_path(INSTALL_DIR.resolve()),
+                ]
+            else:
+                probe = [bash, "-lc", "printf ok"]
             result = subprocess.run(
-                [bash, "-lc", "printf ok"],
+                probe,
                 capture_output=True, text=True, timeout=5,
             )
         except (OSError, subprocess.SubprocessError):
@@ -385,6 +433,7 @@ _update_status_lock = threading.Lock()
 _update_thread: threading.Thread | None = None
 _update_usable_bash: str | bool | None = None
 _usable_bash: str | bool | None = None
+_setup_state_lock = threading.Lock()
 
 
 def _model_download_thread_alive() -> bool:
@@ -2119,6 +2168,176 @@ def _atomic_write_text(
 ) -> None:
     """Atomically replace a UTF-8 text file."""
     _atomic_write_bytes(path, text.encode("utf-8"), mode, uid, gid)
+
+
+def _copy_unique_env_backup(env_path: Path, backup_dir: Path) -> Path:
+    """Copy ``.env`` to a collision-resistant, owner-readable backup file."""
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    fd, raw_backup_path = tempfile.mkstemp(
+        prefix=f".env.backup.{timestamp}.",
+        dir=str(backup_dir),
+    )
+    backup_path = Path(raw_backup_path)
+    try:
+        os.close(fd)
+    except OSError:
+        backup_path.unlink(missing_ok=True)
+        raise
+    try:
+        shutil.copy2(env_path, backup_path)
+        os.chmod(backup_path, 0o600)
+    except OSError:
+        backup_path.unlink(missing_ok=True)
+        raise
+    return backup_path
+def _read_setup_json(path: Path) -> tuple[bool, dict | None]:
+    """Read one fixed setup-state file without following a symlink."""
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return False, None
+    except OSError as exc:
+        raise RuntimeError(f"Could not inspect setup state {path}: {exc}") from exc
+
+    if stat_mod.S_ISLNK(metadata.st_mode):
+        raise RuntimeError(f"Refusing symlinked setup state file: {path}")
+    if not stat_mod.S_ISREG(metadata.st_mode):
+        raise RuntimeError(f"Refusing non-regular setup state file: {path}")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError) as exc:
+        raise RuntimeError(f"Could not read setup state {path}: {exc}") from exc
+    except json.JSONDecodeError:
+        logger.warning("Ignoring malformed setup state file: %s", path)
+        return True, None
+    if not isinstance(payload, dict):
+        logger.warning("Ignoring non-object setup state file: %s", path)
+        return True, None
+    return True, payload
+
+
+def _setup_state_payload() -> dict:
+    """Return the persisted setup state from the host-owned data directory."""
+    state_dir = DATA_DIR / "config"
+    with _setup_state_lock:
+        complete_exists, _ = _read_setup_json(state_dir / "setup-complete.json")
+        _, progress = _read_setup_json(state_dir / "setup-progress.json")
+        _, persona_data = _read_setup_json(state_dir / "persona.json")
+
+    step = progress.get("step", 0) if progress else 0
+    if not isinstance(step, int) or isinstance(step, bool) or step < 0:
+        step = 0
+    persona = persona_data.get("persona") if persona_data else None
+    if not isinstance(persona, str):
+        persona = None
+    return {
+        "first_run": not complete_exists,
+        "step": step,
+        "persona": persona,
+        "persona_data": persona_data,
+    }
+
+
+def _validate_setup_persona_payload(payload: dict) -> dict[str, str]:
+    limits = {
+        "persona": 64,
+        "name": 128,
+        "system_prompt": 100_000,
+        "icon": 32,
+        "selected_at": 64,
+    }
+    normalized: dict[str, str] = {}
+    for key, limit in limits.items():
+        value = payload.get(key)
+        if not isinstance(value, str) or not value or len(value) > limit:
+            raise ValueError(f"{key} must be a non-empty string of at most {limit} characters")
+        if "\0" in value:
+            raise ValueError(f"{key} contains a NUL character")
+        normalized[key] = value
+    return normalized
+
+
+def _restore_setup_snapshots(snapshots: list[tuple[Path, dict]]) -> None:
+    rollback_errors = []
+    for path, snapshot in snapshots:
+        try:
+            _restore_text_file(path, snapshot)
+        except (OSError, RuntimeError) as exc:
+            rollback_errors.append(f"{path.name}: {exc}")
+    if rollback_errors:
+        raise RuntimeError("Setup state rollback failed: " + "; ".join(rollback_errors))
+
+
+def _write_setup_persona(payload: dict) -> None:
+    """Atomically publish persona and progress through one serialized owner."""
+    persona = _validate_setup_persona_payload(payload)
+    state_dir = DATA_DIR / "config"
+    persona_path = state_dir / "persona.json"
+    progress_path = state_dir / "setup-progress.json"
+    with _setup_state_lock:
+        snapshots = [
+            (persona_path, _snapshot_text_file(persona_path)),
+            (progress_path, _snapshot_text_file(progress_path)),
+        ]
+        try:
+            _atomic_write_text(
+                persona_path,
+                json.dumps(persona, indent=2) + "\n",
+                mode=0o600,
+            )
+            _atomic_write_text(
+                progress_path,
+                json.dumps({"step": 2, "persona_selected": True}, indent=2) + "\n",
+                mode=0o600,
+            )
+        except (OSError, RuntimeError) as exc:
+            try:
+                _restore_setup_snapshots(snapshots)
+            except RuntimeError as rollback_exc:
+                raise RuntimeError(f"Could not persist setup persona; {rollback_exc}") from exc
+            raise
+
+
+def _unlink_setup_file(path: Path) -> None:
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return
+    if stat_mod.S_ISLNK(metadata.st_mode):
+        raise RuntimeError(f"Refusing to remove symlinked setup state file: {path}")
+    if not stat_mod.S_ISREG(metadata.st_mode):
+        raise RuntimeError(f"Refusing to remove non-regular setup state file: {path}")
+    path.unlink()
+
+
+def _complete_setup() -> None:
+    """Publish the completion marker and remove progress transactionally."""
+    state_dir = DATA_DIR / "config"
+    complete_path = state_dir / "setup-complete.json"
+    progress_path = state_dir / "setup-progress.json"
+    with _setup_state_lock:
+        snapshots = [
+            (complete_path, _snapshot_text_file(complete_path)),
+            (progress_path, _snapshot_text_file(progress_path)),
+        ]
+        marker = {
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+            "version": "1.0.0",
+        }
+        try:
+            _atomic_write_text(
+                complete_path,
+                json.dumps(marker, indent=2) + "\n",
+                mode=0o600,
+            )
+            _unlink_setup_file(progress_path)
+        except (OSError, RuntimeError) as exc:
+            try:
+                _restore_setup_snapshots(snapshots)
+            except RuntimeError as rollback_exc:
+                raise RuntimeError(f"Could not complete setup; {rollback_exc}") from exc
+            raise
 
 
 def _snapshot_text_file(path: Path) -> dict:
@@ -4583,8 +4802,19 @@ class AgentHandler(BaseHTTPRequestHandler):
             self._handle_remote_provider_ssh_supervisor_status()
         elif path == "/v1/host/port":
             self._handle_host_port_status(parse_qs(parsed.query))
+        elif path == "/v1/setup/state":
+            self._handle_setup_state()
         else:
             json_response(self, 404, {"error": "Not found"})
+
+    def _handle_setup_state(self):
+        if not check_auth(self):
+            return
+        try:
+            json_response(self, 200, _setup_state_payload())
+        except (OSError, RuntimeError) as exc:
+            logger.exception("Could not read setup state")
+            json_response(self, 500, {"error": f"Could not read setup state: {exc}"})
 
     def _handle_host_port_status(self, query: dict[str, list[str]]):
         """Return whether a host-local TCP port is reachable.
@@ -4946,6 +5176,10 @@ class AgentHandler(BaseHTTPRequestHandler):
             self._handle_invalidate_compose_cache()
         elif self.path == "/v1/env/update":
             self._handle_env_update()
+        elif self.path == "/v1/setup/persona":
+            self._handle_setup_persona()
+        elif self.path == "/v1/setup/complete":
+            self._handle_setup_complete()
         elif self.path in ("/v1/update/check", "/v1/update/backup", "/v1/update/start"):
             self._handle_update_action()
         elif self.path == "/v1/network/wifi-connect":
@@ -4954,6 +5188,37 @@ class AgentHandler(BaseHTTPRequestHandler):
             self._handle_network_wifi_forget()
         else:
             json_response(self, 404, {"error": "Not found"})
+
+    def _handle_setup_persona(self):
+        if not check_auth(self):
+            return
+        body = read_optional_json_body(self)
+        if body is None:
+            return
+        try:
+            _write_setup_persona(body)
+        except ValueError as exc:
+            json_response(self, 400, {"error": str(exc)})
+            return
+        except (OSError, RuntimeError) as exc:
+            logger.exception("Could not persist setup persona")
+            json_response(self, 500, {"error": f"Could not persist setup persona: {exc}"})
+            return
+        json_response(self, 200, {"success": True})
+
+    def _handle_setup_complete(self):
+        if not check_auth(self):
+            return
+        body = read_optional_json_body(self)
+        if body is None:
+            return
+        try:
+            _complete_setup()
+        except (OSError, RuntimeError) as exc:
+            logger.exception("Could not persist setup completion")
+            json_response(self, 500, {"error": f"Could not persist setup completion: {exc}"})
+            return
+        json_response(self, 200, {"success": True})
 
     def _handle_remote_provider_plan(self):
         """Validate a remote-provider lifecycle request without side effects."""
@@ -5646,10 +5911,7 @@ class AgentHandler(BaseHTTPRequestHandler):
         try:
             if backup and env_path.exists():
                 backup_dir = DATA_DIR / "config-backups"
-                backup_dir.mkdir(parents=True, exist_ok=True)
-                timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-                backup_path = backup_dir / f".env.backup.{timestamp}"
-                shutil.copy2(env_path, backup_path)
+                backup_path = _copy_unique_env_backup(env_path, backup_dir)
                 backup_relative_path = f"data/{backup_path.relative_to(DATA_DIR).as_posix()}"
 
             payload_text = raw_text if raw_text.endswith("\n") else raw_text + "\n"
