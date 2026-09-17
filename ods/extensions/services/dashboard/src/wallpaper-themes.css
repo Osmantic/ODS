@@ -46,9 +46,17 @@
 :root[data-wallpaper] .pixel-workspace-toolbar { background:transparent; }
 :root[data-wallpaper] .portal-side-panel,
 :root[data-wallpaper] .pixel-preview-panel {
-  background:#111820b8;
-  backdrop-filter:blur(26px) saturate(110%);
-  -webkit-backdrop-filter:blur(26px) saturate(110%);
+  --portal-panel-fill:#111820b8;
+  --portal-panel-filter:blur(26px) saturate(110%);
+  background:var(--portal-panel-fill);
+  backdrop-filter:var(--portal-panel-filter);
+  -webkit-backdrop-filter:var(--portal-panel-filter);
+}
+/* The same tokens reach narrow file drawers; browsers without blur retain a
+   readable surface instead of showing code and wallpaper through each other. */
+@supports not ((backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px))) {
+  :root[data-wallpaper] .portal-side-panel,
+  :root[data-wallpaper] .pixel-preview-panel { --portal-panel-fill:#13181f; --portal-panel-filter:none; }
 }
 :root[data-wallpaper] .pixel-nav-item:hover,
 :root[data-wallpaper] .pixel-nav-item.is-active,
@@ -92,7 +100,9 @@
 @media(hover:none) { .conversation-delete { opacity:1; pointer-events:auto; } }
 @media(prefers-reduced-transparency:reduce) {
   :root[data-wallpaper] #root > .pixel-app::before { background:#13181ff2; backdrop-filter:none; -webkit-backdrop-filter:none; }
-  :root[data-wallpaper] .pixel-sidebar,:root[data-wallpaper] .portal-side-panel,:root[data-wallpaper] .pixel-preview-panel { background:#13181ff2; backdrop-filter:none; }
+  :root[data-wallpaper] .pixel-sidebar { background:#13181ff2; backdrop-filter:none; -webkit-backdrop-filter:none; }
+  :root[data-wallpaper] .portal-side-panel,
+  :root[data-wallpaper] .pixel-preview-panel { --portal-panel-fill:#13181f; --portal-panel-filter:none; }
   :root[data-wallpaper] .portal-chat { background:#111820ed; }
 }
 @media(prefers-reduced-motion:reduce) { .wallpaper-thumbnail { transition:none; } }

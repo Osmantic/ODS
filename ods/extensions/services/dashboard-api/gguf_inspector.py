@@ -203,7 +203,7 @@ def _first_value(metadata: dict[str, Any], suffixes: tuple[str, ...]) -> Any:
     return None
 
 
-def inspect_gguf(path: Path | str, max_metadata_bytes: int = 8 * 1024 * 1024) -> dict[str, Any]:
+def inspect_gguf(path: Path | str, max_metadata_bytes: int = 32 * 1024 * 1024) -> dict[str, Any]:
     """Return normalized GGUF metadata, degrading to ``unknown`` on failure."""
     p = Path(path)
     result: dict[str, Any] = {

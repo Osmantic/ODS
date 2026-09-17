@@ -94,11 +94,13 @@ class EdgeContainerTransportTests(unittest.TestCase):
         self.assertEqual(json.loads(self.requests[0][3]), payload)
 
     def test_native_gateway_status_and_mutation_reach_loopback(self):
-        value = {"available": True, "phase": "idle", "revision": "c" * 64, "active": 0}
+        value = {"available": True, "phase": "idle", "revision": "c" * 64, "active": 0, "pid": 123}
         self.response = json.dumps(value).encode()
         adapter = bridge.SystemdAccessBridge("/unused", "k" * 64)
         adapter.native_origin = "http://127.0.0.1:" + str(self.server.server_port)
+        adapter.native_port = self.server.server_port
         adapter.native_key = "k" * 64
+        adapter.command = lambda *_args, **_kwargs: "123"
         self.assertEqual(adapter.native(), value)
         self.assertEqual(adapter.native("acquire", "b" * 64), value)
         self.assertEqual([r[0] for r in self.requests], ["GET", "GET", "POST"])

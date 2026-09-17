@@ -22,6 +22,10 @@ SPEC.loader.exec_module(generator)
 
 class CatalogTests(unittest.TestCase):
     def setUp(self):
+        # Positive fixtures model the non-group-writable catalog custody that
+        # the bootstrap establishes, regardless of a developer host's umask.
+        original_umask = os.umask(0o022)
+        self.addCleanup(os.umask, original_umask)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)

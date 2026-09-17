@@ -164,6 +164,8 @@ load_model_selector_env_from_output() {
         MODEL_RUNTIME_PROFILE_LABEL \
         MODEL_RUNTIME_PROFILE_SOURCE \
         MODEL_SELECTION_SOURCE \
+        PIXEL_AGENT_MODEL_READY \
+        ODS_ACTIVE_MODEL_STORE \
         LLAMA_SERVER_IMAGE \
         LLAMA_SERVER_MEMORY_LIMIT \
         LLAMA_CPP_RELEASE_TAG_OVERRIDE \
@@ -176,6 +178,8 @@ load_model_selector_env_from_output() {
         LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS \
         LLAMA_ARG_SPEC_TYPE \
         LLAMA_ARG_SPEC_DRAFT_N_MAX \
+        LLAMA_ARG_SPEC_DRAFT_TYPE_K \
+        LLAMA_ARG_SPEC_DRAFT_TYPE_V \
         LLAMA_ARG_SPLIT_MODE \
         LLAMA_ARG_TENSOR_SPLIT
 }

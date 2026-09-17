@@ -5,6 +5,7 @@ import { MemoryRouter } from 'react-router-dom' // eslint-disable-line no-unused
 import { ThemeProvider } from './contexts/ThemeContext' // eslint-disable-line no-unused-vars
 import App from './App' // eslint-disable-line no-unused-vars
 import { useFirstRun } from './hooks/useFirstRun'
+import { useVersion } from './hooks/useVersion'
 import { getInternalRoutes } from './plugins/registry'
 
 vi.mock('./hooks/useSystemStatus', () => ({
@@ -110,6 +111,7 @@ describe('App', () => {
     expect(input).toHaveValue('Keep this message')
   })
   beforeEach(() => {
+    useVersion.mockReturnValue({ version:{current:'2.6.0',update_available:false}, showUpdate:false, dismissUpdate:vi.fn() })
     getInternalRoutes.mockReturnValue([])
     vi.stubGlobal('fetch', vi.fn(() =>
       Promise.resolve({ ok: true, json: () => Promise.resolve({}) })
@@ -126,6 +128,17 @@ describe('App', () => {
   test('renders without crashing', () => {
     render(<App />)
     expect(document.querySelector('aside')).toBeInTheDocument()
+  })
+
+  test('opens update details from the confirmed-release notice without replacing the conversation', async () => {
+    useVersion.mockReturnValue({ version:{current:'2.6.0',latest:'2.7.0',update_available:true,check_status:'checked'}, showUpdate:true, dismissUpdate:vi.fn() })
+    render(<App />)
+    const draft = await screen.findByLabelText('Portal draft')
+    fireEvent.change(draft, {target:{value:'Keep my message'}})
+    fireEvent.click(screen.getByRole('button', {name:'View update'}))
+    expect(await screen.findByLabelText('Settings draft')).toBeVisible()
+    expect(screen.getByLabelText('Portal draft')).toBe(draft)
+    expect(draft).toHaveValue('Keep my message')
   })
 
   test('shows FirstBoot when server reports first_run=true', async () => {

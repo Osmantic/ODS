@@ -27,7 +27,7 @@ ODS is a turnkey local AI stack that runs entirely on your own hardware. It incl
 - NVIDIA GPU with 24GB+ VRAM (RTX 3090/4090)
 - 32GB+ system RAM
 - 100GB+ SSD storage
-- Ubuntu 22.04/24.04 or WSL2 on Windows
+- Ubuntu 22.04/24.04/26.04 or WSL2 on Windows
 
 ### Do I need an internet connection?
 **Initial setup:** Yes, to download models and Docker images.
