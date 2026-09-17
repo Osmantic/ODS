@@ -196,7 +196,10 @@ def main() -> None:
     }
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(catalog, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    import os
+    tmp_output = output_path.with_suffix(f".tmp.{os.getpid()}")
+    tmp_output.write_text(json.dumps(catalog, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    tmp_output.replace(output_path)
 
     print(f"Generated catalog with {len(entries)} extensions at {output_path}")
 
