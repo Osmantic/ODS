@@ -162,6 +162,8 @@ test: ## Run unit and contract tests
 	@echo "=== issue-to-pr security check ==="
 	@bash tests/test-issue-to-pr-security.sh
 	@echo ""
+	@echo "=== workflow permissions contract ==="
+	@bash tests/test-workflow-permissions.sh
 	@echo "=== NVIDIA multi-GPU visibility contract ==="
 	@bash tests/test-multigpu-nvidia-visibility.sh
 	@echo ""

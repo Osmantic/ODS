@@ -7,6 +7,9 @@ on:
       - main
       - master
 
+permissions:
+  contents: read
+
 jobs:
   token-spy-postgres:
     runs-on: ubuntu-latest
@@ -256,6 +259,8 @@ jobs:
       - name: Issue-to-PR Security Contract Tests
         run: bash tests/test-issue-to-pr-security.sh
 
+      - name: Workflow Permissions Contract Tests
+        run: bash tests/test-workflow-permissions.sh
       - name: NVIDIA Multi-GPU Visibility Contract Tests
         run: bash tests/test-multigpu-nvidia-visibility.sh
 

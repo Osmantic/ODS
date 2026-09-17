@@ -8,6 +8,9 @@ on:
   issues:
     types: [labeled]
 
+permissions:
+  contents: read
+
 concurrency:
   group: issue-to-pr-${{ github.event.issue.number }}
   cancel-in-progress: true
@@ -20,6 +23,9 @@ jobs:
     name: Validate Issue
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
     if: >-
       github.event.label.name == 'ai-implement' &&
       github.event.issue.user.login != 'claude[bot]' &&
@@ -322,6 +328,10 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
     outputs:
       pr_number: ${{ steps.create.outputs.pull-request-number }}
       pr_url: ${{ steps.create.outputs.pull-request-url }}
