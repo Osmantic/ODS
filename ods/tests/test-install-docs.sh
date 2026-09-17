@@ -8,6 +8,7 @@ REPO_ROOT="$(cd "$ROOT_DIR/.." && pwd)"
 
 CANONICAL_ENDPOINT="https://install.osmantic.com/ods.sh"
 CANONICAL_REPO_URL="https://github.com/Osmantic/ODS.git"
+WINDOWS_SOURCE_ZIP_URL="https://github.com/Osmantic/ODS/archive/refs/heads/main.zip"
 STABLE_VERSION="$(
     python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["release"]["version"])' \
         "$ROOT_DIR/manifest.json"
@@ -179,6 +180,15 @@ clone_docs=(
     "$ROOT_DIR/docs/INSTALLER_TRUST.md"
 )
 
+windows_copy_paste_docs=(
+    "$REPO_ROOT/README.md"
+    "$ROOT_DIR/README.md"
+    "$ROOT_DIR/QUICKSTART.md"
+    "$ROOT_DIR/docs/FAQ.md"
+    "$ROOT_DIR/docs/WINDOWS-QUICKSTART.md"
+    "$ROOT_DIR/docs/WINDOWS-INSTALL-WALKTHROUGH.md"
+)
+
 for file in "${install_docs[@]}"; do
     [[ -f "$file" ]] || fail "Expected install document missing: $file"
     require_literal "$file" "$CANONICAL_ENDPOINT" "Canonical install endpoint"
@@ -186,6 +196,21 @@ done
 
 for file in "${clone_docs[@]}"; do
     require_literal "$file" "$CANONICAL_REPO_URL" "Canonical clone URL"
+done
+
+require_literal "$REPO_ROOT/README.md" 'Choose your system, copy the block' "Front-page copy/paste install guidance"
+require_literal "$REPO_ROOT/README.md" '**Linux or macOS**' "Front-page Linux/macOS install label"
+require_literal "$REPO_ROOT/README.md" '**Windows PowerShell**' "Front-page Windows install label"
+require_literal "$REPO_ROOT/README.md" 'Docker must be installed and running' "Front-page Docker prerequisite"
+
+for file in "${windows_copy_paste_docs[@]}"; do
+    require_literal "$file" "$WINDOWS_SOURCE_ZIP_URL" "Windows no-Git source ZIP install"
+    require_literal "$file" '[guid]::NewGuid().ToString("N")' "Windows collision-free temporary source directory"
+    require_literal "$file" 'Expand-Archive -LiteralPath $odsZip -DestinationPath $odsSrc -Force' "Windows source ZIP expansion"
+    require_literal "$file" '.\install.ps1' "Windows installer invocation"
+    if grep -qF 'Remove-Item -LiteralPath $odsSrc -Recurse' "$file"; then
+        fail "Windows copy/paste install must not recursively delete a reusable temporary path in ${file#"$REPO_ROOT"/}"
+    fi
 done
 
 compatible_ref_docs=(
@@ -218,10 +243,10 @@ require_literal "$trust_doc" 'verify-hosted-bootstrap.sh' "Hosted bootstrap depl
 require_literal "$REPO_ROOT/README.md" "\`$STABLE_TAG\` is the current stable release" "README stable release"
 require_literal "$release_doc" "current stable release is \`$STABLE_TAG\`" "Release channel stable release"
 require_literal "$trust_doc" "--branch $STABLE_TAG $CANONICAL_REPO_URL" "Manual stable clone"
-require_literal "$trust_doc" 'predates that repository layout' "Stable layout guidance"
+require_literal "$trust_doc" "ODS_REF=$STABLE_TAG" "Stable bootstrap ref guidance"
 
-if grep -qF "ODS_REF=$STABLE_TAG" "$REPO_ROOT/README.md" "$trust_doc"; then
-    fail "$STABLE_TAG must not be documented through the incompatible sparse-checkout bootstrap"
+if grep -qF "Do not pass \`$STABLE_TAG\` through \`ODS_REF\`" "$trust_doc"; then
+    fail "$STABLE_TAG must be documented as compatible with the sparse-checkout bootstrap"
 fi
 
 hosted_verifier="$ROOT_DIR/scripts/verify-hosted-bootstrap.sh"

@@ -145,7 +145,10 @@ function normalizeOdsMode(value) {
   return ODS_MODES.has(mode) ? mode : 'unknown'
 }
 
-function modelActivationModeError(effectiveMode, configuredMode) {
+function modelActivationModeError(effectiveMode, configuredMode, llmBackend) {
+  if (llmBackend === 'external') {
+    return 'ODS is using an external Ollama or LM Studio backend. Re-run the installer with --no-external-llm before activating a downloaded local model.'
+  }
   if (effectiveMode === 'unknown' || configuredMode === 'unknown') {
     return 'ODS could not verify the active runtime mode. Repair or restart ODS before running a local model.'
   }
@@ -167,6 +170,7 @@ export function useModels() {
   const [modelLifecycle, setModelLifecycle] = useState(null)
   const [odsMode, setOdsMode] = useState(USE_MOCK_DATA ? MOCK_MODES.odsMode : 'unknown')
   const [configuredMode, setConfiguredMode] = useState(USE_MOCK_DATA ? MOCK_MODES.configuredMode : 'unknown')
+  const [llmBackend, setLlmBackend] = useState(USE_MOCK_DATA ? 'llama-server' : 'unknown')
   const [recommendationAlternatives, setRecommendationAlternatives] = useState([])
   const [hermesMinimumContext, setHermesMinimumContext] = useState(DEFAULT_HERMES_MIN_CONTEXT)
   const [loading, setLoading] = useState(USE_MOCK_DATA ? false : true)
@@ -245,6 +249,7 @@ export function useModels() {
       const effectiveMode = normalizeOdsMode(data.odsMode)
       setOdsMode(effectiveMode)
       setConfiguredMode(normalizeOdsMode(data.configuredMode ?? data.odsMode))
+      setLlmBackend(typeof data.llmBackend === 'string' ? data.llmBackend.trim().toLowerCase() : 'unknown')
       setRecommendationAlternatives(data.recommendationAlternatives ?? [])
       setHermesMinimumContext(Number(data.hermesMinimumContext || DEFAULT_HERMES_MIN_CONTEXT))
       setFetchError(null)
@@ -330,7 +335,7 @@ export function useModels() {
   }
 
   const loadModel = async (modelId, options = {}) => {
-    const modeError = modelActivationModeError(odsMode, configuredMode)
+    const modeError = modelActivationModeError(odsMode, configuredMode, llmBackend)
     if (modeError) {
       setMutationError(modeError)
       return
@@ -476,7 +481,7 @@ export function useModels() {
     ].filter(Boolean)),
   ]
   const error = mutationError || fetchError
-  const activationModeError = modelActivationModeError(odsMode, configuredMode)
+  const activationModeError = modelActivationModeError(odsMode, configuredMode, llmBackend)
 
   return {
     models,
@@ -487,6 +492,7 @@ export function useModels() {
     modelLifecycle,
     odsMode,
     configuredMode,
+    llmBackend,
     canActivateModels: activationModeError === null,
     activationModeError,
     recommendationAlternatives,

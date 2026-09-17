@@ -99,6 +99,13 @@ def main() -> int:
     add_regex_check(
         checks,
         errors,
+        "ods-cli VERSION",
+        ROOT / "ods-cli",
+        r'^VERSION="([^"]+)"',
+    )
+    add_regex_check(
+        checks,
+        errors,
         "installers/macos/lib/constants.sh ODS_VERSION",
         ROOT / "installers/macos/lib/constants.sh",
         r'^ODS_VERSION="([^"]+)"',

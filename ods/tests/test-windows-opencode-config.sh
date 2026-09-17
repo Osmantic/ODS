@@ -14,6 +14,8 @@ OPENCODE_LIB="$ROOT_DIR/installers/windows/lib/opencode-config.ps1"
 INSTALLER_PS1="$ROOT_DIR/installers/windows/install-windows.ps1"
 BOOTSTRAP_UPGRADE="$ROOT_DIR/scripts/bootstrap-upgrade.sh"
 UPDATE_SCRIPT="$ROOT_DIR/scripts/update-windows-opencode-config.ps1"
+CONSTANTS_PS1="$ROOT_DIR/installers/windows/lib/constants.ps1"
+ODS_PS1="$ROOT_DIR/installers/windows/ods.ps1"
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -42,6 +44,35 @@ grep -q 'ODS_MODEL_SWITCHBOARD' "$OPENCODE_LIB" && pass "switchboard mode is rea
 grep -q 'ods/current' "$OPENCODE_LIB" && pass "switchboard alias is written to OpenCode config" || fail "switchboard alias missing from OpenCode helper"
 grep -q 'LITELLM_KEY' "$OPENCODE_LIB" && pass "switchboard OpenCode route uses LiteLLM key" || fail "switchboard LiteLLM key missing from OpenCode helper"
 grep -q 'ODS switchboard' "$OPENCODE_LIB" && pass "switchboard provider is labelled" || fail "switchboard provider label missing"
+grep -q 'OPENCODE_TASK_NAME = "ODSOpenCodeWeb"' "$CONSTANTS_PS1" \
+    && pass "OpenCode scheduled task has a stable name" \
+    || fail "OpenCode scheduled task name missing"
+grep -q 'Register-ScheduledTask -TaskName \$script:OPENCODE_TASK_NAME' "$DEVTOOLS_PS1" \
+    && pass "installer registers OpenCode for login persistence" \
+    || fail "installer must register the OpenCode login task"
+grep -q 'Start-ScheduledTask -TaskName \$script:OPENCODE_TASK_NAME' "$DEVTOOLS_PS1" \
+    && pass "installer starts OpenCode immediately" \
+    || fail "installer must start OpenCode immediately"
+grep -q 'Remove-Item Env:OPENCODE_SERVER_PASSWORD' "$DEVTOOLS_PS1" \
+    && pass "OpenCode launcher clears inherited browser authentication" \
+    || fail "OpenCode launcher must open directly on loopback"
+grep -q -- '--hostname 127.0.0.1' "$DEVTOOLS_PS1" \
+    && pass "passwordless OpenCode remains loopback-only" \
+    || fail "passwordless OpenCode must remain loopback-only"
+grep -q 'function Start-ODSOpenCodeRuntime' "$ODS_PS1" \
+    && grep -q 'Start-ODSOpenCodeRuntime' "$ODS_PS1" \
+    && pass "Windows CLI manages the OpenCode host app" \
+    || fail "Windows CLI must manage the OpenCode host app"
+grep -q 'function Get-ODSOpenCodePortState' "$ODS_PS1" \
+    && grep -q 'OwnedByODS' "$ODS_PS1" \
+    && pass "Windows CLI rejects foreign OpenCode port listeners" \
+    || fail "Windows CLI must verify OpenCode port ownership"
+grep -q 'function Test-ODSOpenCodePortOwned' "$DEVTOOLS_PS1" \
+    && pass "installer verifies the OpenCode listener belongs to ODS" \
+    || fail "installer must not accept a foreign listener as OpenCode"
+grep -q '\$script:OPENCODE_TASK_NAME' "$ODS_PS1" \
+    && pass "OpenCode task participates in runtime cleanup" \
+    || fail "OpenCode scheduled task cleanup missing"
 
 if grep -q 'preserving existing configuration' "$DEVTOOLS_PS1"; then
     fail "existing configs are still preserved without migration"

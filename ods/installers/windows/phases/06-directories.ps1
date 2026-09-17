@@ -14,6 +14,7 @@
 #   $llamaServerImage          -- from phase 02
 #   $whisperCudaSupported      -- from phase 02
 #   $enableOpenClaw            -- from phase 03
+#   $enableRecommended, $enableDeepResearch, $enableHermes -- from phase 03
 #   $openClawConfig            -- from phase 03
 #
 # Writes:
@@ -138,20 +139,54 @@ if (-not (Test-Path -LiteralPath $_extensionsLock -PathType Leaf)) {
 if ($sourceRoot -ne $installDir) {
     Write-AI "Copying source files to $installDir..."
 
+    $pruneStaleDevPaths = (
+        (Test-Path -LiteralPath (Join-Path $installDir ".env") -PathType Leaf) -and
+        (Test-Path -LiteralPath (Join-Path $installDir "manifest.json") -PathType Leaf) -and
+        (Test-Path -LiteralPath (Join-Path $installDir "docker-compose.base.yml") -PathType Leaf)
+    )
+    $devOnlyDirectories = @("tests", "docs", "examples", ".github")
+    $devOnlyFiles = @(
+        "CHANGELOG.md", "CODE_OF_CONDUCT.md", "CONTRIBUTING.md",
+        "EDGE-QUICKSTART.md", "FAQ.md", "QUICKSTART.md",
+        "SECURITY.md", "README.md",
+        ".shellcheckrc", "PSScriptAnalyzerSettings.psd1",
+        "test-stack.sh", ".gitignore"
+    )
+
     # robocopy exit codes 0-7 are success (bits for files copied, extras, etc.)
     $robocopyArgs = @(
         $sourceRoot, $installDir,
         "/E",                                  # Copy subdirectories including empty ones
         "/NFL", "/NDL", "/NJH", "/NJS",        # Suppress file/dir/job headers (clean output)
-        "/XD", ".git", "data", "logs", "models", "node_modules", "dist",
+        "/XD", ".git", "data", "logs", "models", "node_modules", "dist"
+    )
+    $robocopyArgs += @($devOnlyDirectories | ForEach-Object {
+        Join-Path $sourceRoot $_
+    })
+    $robocopyArgs += @(
         "/XF", ".env", "*.log", ".current-mode", ".profiles",
                ".target-model", ".target-quantization", ".offline-mode"
     )
+    $robocopyArgs += @($devOnlyFiles | ForEach-Object {
+        Join-Path $sourceRoot $_
+    })
     & robocopy @robocopyArgs | Out-Null
     if ($LASTEXITCODE -gt 7) {
         Write-AIError "File copy failed (robocopy exit code: $LASTEXITCODE)."
         Write-AI "  Try re-running with --Force or check that $installDir is writable."
         throw "ODS_INSTALL_ABORTED"
+    }
+
+    # Robocopy exclusions leave files copied by older installers in place.
+    # Move managed-upgrade leftovers to a recoverable backup instead of
+    # deleting possible user modifications. Unmanaged targets remain untouched.
+    if ($pruneStaleDevPaths) {
+        $devBackup = Move-ODSDevelopmentPathsToBackup `
+            -InstallDir $installDir `
+            -RelativePaths @($devOnlyDirectories + $devOnlyFiles)
+        if (-not [string]::IsNullOrWhiteSpace($devBackup)) {
+            Write-AIWarn "Older development files were moved to $devBackup"
+        }
     }
     Write-AISuccess "Source files installed to $installDir"
 } else {
@@ -285,6 +320,11 @@ if ($gpuInfo.Backend -eq "amd" -and -not $cloudMode) {
 if ($amdLemonadeRuntime -and $amdLemonadeRuntime.container_image) {
     $_lemonadeServerImage = $amdLemonadeRuntime.container_image
 }
+$_enableWebSearch = Test-ODSWindowsSearxngNeeded `
+    -EnableRecommended $enableRecommended `
+    -EnableDeepResearch $enableDeepResearch `
+    -EnableHermes $enableHermes `
+    -EnableOpenClaw $enableOpenClaw
 $envResult = New-ODSEnv `
     -InstallDir     $installDir `
     -TierConfig     $tierConfig `
@@ -304,7 +344,9 @@ $envResult = New-ODSEnv `
     -WhisperCudaEnabled $whisperCudaSupported `
     -EnableLangfuse $enableLangfuse `
     -SwitchboardMode $env:ODS_MODEL_SWITCHBOARD `
-    -EnableLan      $lanFlag
+    -EnableLan      $lanFlag `
+    -EnableODSProxy $enableODSProxy `
+    -EnableWebSearch $_enableWebSearch
 Write-AISuccess "Generated .env with secure secrets"
 
 # ── Post-generation validation: verify all required keys are present with values ──
@@ -354,8 +396,15 @@ function Update-HermesConfigFile {
 
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
     $content = [System.IO.File]::ReadAllText($Path, $utf8NoBom)
-    $content = $content -replace '(?m)^  default: ".*"\r?$', "  default: `"$Model`""
-    $content = $content -replace '(?m)^  base_url: ".*"\r?$', "  base_url: `"$BaseUrl`""
+    # .NET reads '$' in a -replace *replacement* as a group-substitution token
+    # ($1, ${name}, $$ ...), so a model id or URL carrying '$' is rewritten on
+    # its way into the file. Doubling is the documented escape. The verification
+    # near the end of this function still compares against the raw values, which
+    # is what should actually land on disk.
+    $modelReplacement = $Model.Replace('$', '$$')
+    $baseUrlReplacement = $BaseUrl.Replace('$', '$$')
+    $content = $content -replace '(?m)^  default: ".*"\r?$', "  default: `"$modelReplacement`""
+    $content = $content -replace '(?m)^  base_url: ".*"\r?$', "  base_url: `"$baseUrlReplacement`""
     $content = $content -replace '(?m)^  context_length: .+\r?$', "  context_length: $ContextLength"
     $content = $content -replace '(?m)^    context_length: .+\r?$', "    context_length: $ContextLength"
     if ($MaxTokens -lt 1) { $MaxTokens = 1024 }
@@ -509,15 +558,13 @@ function Invoke-HermesSoulRefresh {
     }
 
     if (-not $_rendered) {
-        if (Test-Path -LiteralPath $_output -PathType Container) {
+        if (Test-Path -LiteralPath $_output) {
             Remove-Item -LiteralPath $_output -Recurse -Force
         }
-        if (-not (Test-Path -LiteralPath $_output -PathType Leaf)) {
-            $_content = Get-Content -LiteralPath $_template -Raw
-            $_content = $_content -replace "(?m)^\s*<!-- INSTALLATION_CONTEXT -->\s*\r?\n?", ""
-            Write-Utf8NoBom -Path $_output -Content $_content
-            Write-AIWarn "Generated fallback Hermes SOUL.md without dynamic installation context"
-        }
+        $_content = Get-Content -LiteralPath $_template -Raw
+        $_content = $_content -replace "(?m)^\s*<!-- INSTALLATION_CONTEXT -->\s*\r?\n?", ""
+        Write-Utf8NoBom -Path $_output -Content $_content
+        Write-AIWarn "Generated fallback Hermes SOUL.md without dynamic installation context"
     }
 
     if ($SyncContainer) {

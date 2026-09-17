@@ -176,6 +176,7 @@ canonical source and treat older recipes as context.
 | [KNOWN-GOOD-VERSIONS.md](KNOWN-GOOD-VERSIONS.md) | Operators | Tested image/version combos |
 | [PLATFORM-TRUTH-TABLE.md](PLATFORM-TRUTH-TABLE.md) | Developers | Platform feature matrix |
 | [RELEASE_VALIDATION.md](RELEASE_VALIDATION.md) | Operators / release reviewers | User Green gates and when operational changes require release-grade fleet validation |
+| [RELEASE_NOTES_2.6.0.md](RELEASE_NOTES_2.6.0.md) | Operators / release reviewers | 2.6.0 release notes, validation receipt, and known validation boundaries |
 | [VALIDATION-MATRIX.md](VALIDATION-MATRIX.md) | Operators / release reviewers | Sanitized CI, distro lab, and real-hardware fleet release-readiness evidence |
 | [HIGH_RISK_CHANGE_MAP.md](HIGH_RISK_CHANGE_MAP.md) | Contributors / maintainers | Risk levels and required validation by changed surface |
 

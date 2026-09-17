@@ -9,7 +9,7 @@ const response = (body, status = 200) => ({
 })
 
 const summary = {
-  version: '2.5.3',
+  version: '2.6.0',
   install_date: '2026-07-20T14:58:20Z',
   tier: 'entry',
   uptime: 3600,
@@ -50,7 +50,7 @@ const editor = {
     },
   },
   sections: [{ id: 'configuration', title: 'Configuration', keys: ['ODS_VERSION', 'HOST_LAN_IP'] }],
-  values: { ODS_VERSION: '2.5.3', HOST_LAN_IP: '192.168.1.10' },
+  values: { ODS_VERSION: '2.6.0', HOST_LAN_IP: '192.168.1.10' },
   issues: [],
   applyPlan: null,
   agentAvailable: true,
@@ -69,7 +69,7 @@ const payloadByUrl = (url) => {
   }
   if (url === '/api/setup/status') return { first_run: false, persona: null }
   if (url === '/api/version') {
-    return { current: '2.5.3', latest: '2.5.3', update_available: false, checked_at: '2026-07-23T12:00:00Z' }
+    return { current: '2.6.0', latest: '2.6.0', update_available: false, checked_at: '2026-07-23T12:00:00Z' }
   }
   throw new Error(`Unexpected request: ${url}`)
 }

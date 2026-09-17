@@ -5,19 +5,21 @@ ecosystems move quickly. Treat each ref intentionally.
 
 ## Current Stable
 
-The current stable release is `v2.5.3`.
+The current stable release is `v2.6.0`.
 
-Use `v2.5.3` for normal installs, downstream appliance baselines, lab images,
-and forks that want a known-good starting point. Use `release/2.5.x` only for
-patches that should preserve the `v2.5.3` user experience while fixing a
-stable-user problem.
+Use `v2.6.0` for normal installs, downstream appliance baselines, lab images,
+and forks that want a known-good starting point. Use `release/2.6.x` only for
+patches that should preserve the `v2.6.0` user experience while fixing a
+stable-user problem. The prior `release/2.5.x` line remains available only for
+critical fixes that must stay on the superseded 2.5 baseline.
 
 ## Channels
 
 | Channel | Use it for | Expectation |
 |---|---|---|
 | `main` | Active development, contributor work, rapid fixes, validation candidates | Can change many times per day. Read diffs and run focused validation before using it for an appliance or fork release. |
-| `release/2.5.x` | Patch-only maintenance for the current stable line | Only accepts stable hotfixes, security fixes, and docs that clarify current stable behavior. No new feature work. |
+| `release/2.6.x` | Patch-only maintenance for the current stable line | Only accepts stable hotfixes, security fixes, and docs that clarify current stable behavior. No new feature work. |
+| `release/2.5.x` | Superseded stable baseline | Critical security or operator-continuity fixes only. Prefer upgrading to `v2.6.0`. |
 | Tagged releases | Stable installs, downstream forks, lab images, appliance baselines | Preferred source for users and downstream operators who want a reproducible starting point. |
 | Pinned commits | Security reviews, internal mirrors, release candidates, emergency hotfix baselines | Valid when the commit and validation receipt are recorded together. |
 | Downstream forks | Custom hardware images, labs, private extensions, offline mirrors | Should record upstream ref, downstream changes, and local validation results. |
@@ -26,8 +28,8 @@ stable-user problem.
 
 - New users can follow the README quickstart.
 - Operators who want reproducibility should pin a release tag. Today that means
-  `v2.5.3` unless a newer stable release has been published.
-- Stable hotfixes should target `release/2.5.x` first, then be merged forward
+  `v2.6.0` unless a newer stable release has been published.
+- Stable hotfixes should target `release/2.6.x` first, then be merged forward
   or cherry-picked into `main`.
 - Forks should either fork-and-pin or fork-and-mirror.
 - Hardware builders should treat upstream release receipts as evidence, then add
@@ -45,7 +47,7 @@ current stable release. Good candidates include:
   supported default path
 - docs that prevent current stable users from taking the wrong action
 
-Do not target `release/2.5.x` for:
+Do not target `release/2.6.x` for:
 
 - new bundled services or changed default services
 - broad installer, CLI, manifest, or compose refactors
@@ -68,7 +70,7 @@ Before opening or reviewing a PR, classify the lane:
 4. Can it wait for the next minor release?
 
 If the answer to the first question is yes and the fix is narrow, consider
-`release/2.5.x`. If the answer is no, use `main`. If the change is broad or
+`release/2.6.x`. If the answer is no, use `main`. If the change is broad or
 feature-shaped, use the next minor milestone.
 
 ## Fork-And-Pin

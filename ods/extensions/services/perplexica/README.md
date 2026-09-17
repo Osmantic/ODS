@@ -33,10 +33,11 @@ Environment variables (set in `.env`):
 | `PERPLEXICA_PORT` | 3004 | External port for the Perplexica web UI |
 | `LLM_API_URL` | `http://llama-server:8080` | Base URL of the LLM backend (OpenAI-compatible) |
 | `PERPLEXICA_SCRAPE_URL_MAX_CHARS` | 30000 | Per-URL cap applied to Perplexica's internal `scrape_url` tool output before synthesis |
+| `PERPLEXICA_SEARXNG_API_URL` | empty | Explicit SearXNG-compatible endpoint; empty preserves the current setting (`http://searxng:8080` on fresh installs) |
 
 > **LLM API key:** Perplexica uses `LITELLM_KEY` automatically when LiteLLM auth is enabled, then falls back to `OPENAI_API_KEY`, then `no-key` for direct llama-server installs that do not require authentication. No changes needed for local use.
 
-> **SearXNG URL:** Perplexica connects to SearXNG internally at `http://searxng:8080`. This is fixed in `compose.yaml` and does not need to be changed.
+> **SearXNG URL:** Perplexica connects to SearXNG internally at `http://searxng:8080` by default. Set `PERPLEXICA_SEARXNG_API_URL` in `.env` to point it at another SearXNG-compatible service, such as `http://brave-search:8585` when the `brave-search` extension runs with `BRAVE_SEARCH_SEARXNG_COMPAT=1`. ODS validates and applies an explicit override to Perplexica's persisted setting on each start. Empty preserves the current setting; explicitly set `http://searxng:8080` once to switch an existing install back.
 
 > **Model name:** Perplexica stores its own `defaultChatModel` in its app
 > settings volume. The installer seeds it on first boot, and the bootstrap

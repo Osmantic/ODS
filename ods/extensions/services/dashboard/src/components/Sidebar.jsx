@@ -7,12 +7,10 @@ import {
 } from 'lucide-react'
 import { getSidebarExternalLinks, getSidebarNavItems } from '../plugins/registry'
 import { useTheme } from '../contexts/ThemeContext'
+import { fallbackServiceUrl } from '../lib/serviceUrls'
 
 // Derive external service URLs from current host
-const getExternalUrl = (port) =>
-  typeof window !== 'undefined'
-    ? `http://${window.location.hostname}:${port}`
-    : `http://localhost:${port}`
+const getExternalUrl = (port) => fallbackServiceUrl(port)
 
 function OsmanticLogo({ compact = false }) {
   return (
@@ -62,7 +60,9 @@ export default function Sidebar({ status, collapsed, onToggle }) {
   }, [status, serviceTokens, apiLinks])
 
   const visibleExternalLinks = useMemo(() => {
-    return showAllQuickLinks ? externalLinks : externalLinks.filter(link => link.healthy)
+    return showAllQuickLinks
+      ? externalLinks
+      : externalLinks.filter(link => link.healthy || link.alwaysVisible)
   }, [externalLinks, showAllQuickLinks])
 
   // Service counts with degraded nuance
@@ -215,7 +215,7 @@ export default function Sidebar({ status, collapsed, onToggle }) {
                       className="ml-auto text-[9px] font-mono uppercase tracking-[0.18em]"
                       style={{ color: healthy ? 'var(--sidebar-accent-soft)' : 'var(--sidebar-inactive)' }}
                     >
-                      {healthy ? 'OPEN' : '—'}
+                      {healthy ? 'OPEN' : 'OFFLINE'}
                     </span>
                   </a>
                 </li>

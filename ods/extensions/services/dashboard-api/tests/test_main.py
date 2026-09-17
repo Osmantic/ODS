@@ -40,6 +40,13 @@ def test_read_installed_version_ignores_empty_env_override(tmp_path, monkeypatch
     assert _read_installed_version() == "3.1.4"
 
 
+def test_read_installed_version_preserves_unmatched_quote(tmp_path, monkeypatch):
+    (tmp_path / ".env").write_text("ODS_VERSION=3.1.4'\n", encoding="utf-8")
+    monkeypatch.setattr("main._resolve_install_root", lambda: tmp_path)
+
+    assert _read_installed_version() == "3.1.4'"
+
+
 class TestGetAllowedOrigins:
 
     def test_returns_env_origins_when_set(self, monkeypatch):
@@ -474,7 +481,14 @@ class TestExternalLinks:
     def test_returns_links_for_services(self, test_client, monkeypatch):
         import config
         monkeypatch.setattr(config, "SERVICES", {
-            "open-webui": {"name": "Open WebUI", "port": 3000, "external_port": 3000, "health": "/health", "host": "localhost"},
+            "open-webui": {
+                "name": "Open WebUI",
+                "port": 3000,
+                "external_port": 3000,
+                "health": "/health",
+                "host": "localhost",
+                "public_url": "https://chat.example.test",
+            },
             "n8n": {"name": "n8n", "port": 5678, "external_port": 5678, "health": "/healthz", "host": "localhost"},
             "dashboard-api": {"name": "Dashboard API", "port": 3002, "external_port": 3002, "health": "/health", "host": "localhost"},
         })
@@ -487,6 +501,8 @@ class TestExternalLinks:
         link_ids = [link["id"] for link in data]
         assert "open-webui" in link_ids
         assert "n8n" in link_ids
+        open_webui = next(link for link in data if link["id"] == "open-webui")
+        assert open_webui["public_url"] == "https://chat.example.test"
 
     def test_excludes_dashboard_api(self, test_client, monkeypatch):
         import config
@@ -958,6 +974,30 @@ class TestApiStatusServiceSerialization:
         serialized = _serialize_services(services, uptime=42)
 
         assert serialized[0]["llm"] == llm_contract
+
+    def test_serialize_services_includes_public_url_metadata(self, monkeypatch):
+        from models import ServiceStatus
+        monkeypatch.setattr("main.SERVICES", {
+            "open-webui": {
+                "category": "core",
+                "public_url": "https://chat.example.test",
+                "ui_path": "/",
+            },
+        })
+        services = [
+            ServiceStatus(
+                id="open-webui",
+                name="Open WebUI",
+                port=3000,
+                external_port=3000,
+                status="healthy",
+            )
+        ]
+
+        serialized = _serialize_services(services, uptime=42)
+
+        assert serialized[0]["public_url"] == "https://chat.example.test"
+        assert serialized[0]["ui_path"] == "/"
 
     def test_optional_unknown_does_not_count_as_issue(self, monkeypatch):
         from models import ServiceStatus

@@ -28,6 +28,7 @@ const modelsResponse = (models, overrides = {}) => ({
       : (overrides.currentModel ?? null),
     odsMode: 'local',
     configuredMode: 'local',
+    llmBackend: 'llama-server',
     ...overrides,
   })
 })
@@ -153,6 +154,28 @@ describe('useModels', () => {
     expect(activationPosts).toHaveLength(0)
     expect(result.current.actionLoading).toBeNull()
     expect(result.current.error).toBe('ODS is running in cloud mode. A local-mode installation is required to run downloaded models.')
+  })
+
+  test('keeps browsing available but blocks local activation for an external backend', async () => {
+    const target = 'downloaded-model'
+    fetch.mockResolvedValue(modelsResponse(
+      [{ id: target, status: 'downloaded' }],
+      { odsMode: 'local', configuredMode: 'local', llmBackend: 'external' }
+    ))
+
+    const { result } = renderHook(() => useModels())
+    await waitFor(() => expect(result.current.llmBackend).toBe('external'))
+
+    expect(result.current.models).toHaveLength(1)
+    expect(result.current.canActivateModels).toBe(false)
+
+    await act(async () => {
+      await result.current.loadModel(target)
+    })
+
+    const activationPosts = fetch.mock.calls.filter(([, options]) => options?.method === 'POST')
+    expect(activationPosts).toHaveLength(0)
+    expect(result.current.error).toContain('external Ollama or LM Studio backend')
   })
 
   test('does not activate when effective and configured modes differ', async () => {

@@ -1,90 +1,84 @@
 # OpenCode
 
-AI-powered coding assistant accessible via browser in ODS
+Browser-based AI coding assistant connected to the active ODS model.
 
 ## Overview
 
-OpenCode provides a browser-based AI coding environment that integrates with your local LLM. It gives you code completion, explanation, refactoring, and generation capabilities through a web interface — no IDE plugin required. Unlike other ODS services, OpenCode runs directly on the host system (not in Docker) as a systemd-managed process.
+OpenCode runs directly on the host rather than in Docker. ODS installs it,
+configures its local model route, starts its web interface on loopback, and
+keeps an OpenCode entry in the dashboard application menu even while the host
+process is starting or needs attention.
 
-## Features
+## Deployment
 
-- **Browser-based IDE**: Access your AI coding assistant from any browser on your local network
-- **Local LLM backend**: All code and queries stay on your machine — connects to llama-server for inference when available
-- **Code completion**: Context-aware completions for multiple languages
-- **Explanation and refactoring**: Ask the LLM to explain, refactor, or debug your code
-- **No IDE installation required**: Works entirely in the browser
+ODS manages the host process with the native user service for each platform:
 
-## Deployment Type
+| Platform | Service manager | Service |
+|----------|-----------------|---------|
+| Linux | systemd user service | `opencode-web.service` |
+| macOS | LaunchAgent | `com.ods.opencode-web` |
+| Windows | Task Scheduler | `ODSOpenCodeWeb` |
 
-OpenCode runs as a **host-level systemd service** (`type: host-systemd`), not as a Docker container. This means:
+The manifest retains `type: host-systemd` for compatibility with the existing
+host-service health path. `macos_host_supported: true` tells the dashboard that
+the equivalent macOS LaunchAgent is available.
 
-- It is managed by systemd on the host, not by Docker Compose
-- There is no `container_name` — use systemd commands to manage the process
-- LLM features require either OpenCode's own backend or llama-server to be running (either satisfies the requirement)
+## Access
+
+Open the **OpenCode** entry in the dashboard or browse directly to:
+
+```text
+http://localhost:3003
+```
+
+ODS-managed OpenCode binds only to `127.0.0.1` and opens without a separate
+login on Linux, macOS, and Windows. It is not exposed through the LAN proxy.
 
 ## Configuration
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `OPENCODE_PORT` | 3003 | Port for the OpenCode web interface |
+| `OPENCODE_PORT` | `3003` | Dashboard metadata for the managed OpenCode web interface; host launchers currently use port 3003 |
+| `OPENCODE_SERVER_PASSWORD` | generated | Optional password for a separately managed, network-exposed OpenCode server; ignored by the ODS loopback launcher |
 
-> **Note:** LLM-powered features (completion, explanation) need either OpenCode's own backend or `llama-server` running. OpenCode itself starts independently.
-
-## Accessing OpenCode
-
-Once running, open your browser and navigate to:
-
-```
-http://localhost:3003
-```
+ODS regenerates the managed OpenCode provider/model route during install,
+upgrade, and model activation. The route follows `ods/current` when the model
+switchboard is enabled.
 
 ## Requirements
 
-| Requirement | Details |
-|-------------|---------|
-| GPU VRAM | 8 GB minimum (for LLM inference via llama-server) |
-| LLM service | `llama-server` must be running |
-| GPU backends | NVIDIA, AMD |
-
-## Architecture
-
-```
-┌──────────┐  HTTP :3003   ┌──────────────┐
-│ Browser  │──────────────▶│  OpenCode    │
-│          │◀──────────────│ (host daemon)│
-└──────────┘               └──────┬───────┘
-                                  │ LLM inference
-                                  ▼
-                           ┌──────────────┐
-                           │ llama-server │
-                           │   (Docker)   │
-                           └──────────────┘
-```
-
-## Files
-
-- `manifest.yaml` — Service metadata (port, health endpoint, GPU backends, feature definition)
+- A supported ODS host on Linux, macOS, or Windows
+- An active ODS local or remote model route for inference
+- Enough memory for the selected model; OpenCode itself does not require 8 GB
+  of VRAM
 
 ## Troubleshooting
 
-**OpenCode not accessible on port 3003:**
+First check whether port 3003 is listening and whether the platform service is
+running:
 
-Since OpenCode is a host systemd service, check its status with systemd:
 ```bash
-# Check service status
-systemctl status opencode
-
-# View logs
-journalctl -u opencode --follow
-
-# Restart the service
-systemctl restart opencode
+# Linux
+systemctl --user status opencode-web.service
+journalctl --user -u opencode-web.service --follow
 ```
 
-**LLM inference not working:**
-- Verify llama-server is running: `docker compose -f ods/docker-compose.base.yml ps llama-server`
-- Ensure sufficient VRAM (minimum 8 GB) is available
+```bash
+# macOS
+launchctl print "gui/$(id -u)/com.ods.opencode-web"
+tail -f "$HOME/Library/Logs/ODS/opencode-web.log"
+```
 
-**Port 3003 already in use:**
-- Check what is using the port: `lsof -i :3003`
-- Update the port in your ODS configuration and restart the service
+```powershell
+# Windows
+Get-ScheduledTask -TaskName ODSOpenCodeWeb
+.\ods.ps1 restart opencode
+```
+
+If the service is absent, rerun the ODS installer. If port 3003 is occupied by
+another process, stop that process before reinstalling.
+
+## Files
+
+- `manifest.yaml`: service metadata, health route, and dashboard feature
+- `opencode-web.service`: Linux user service template

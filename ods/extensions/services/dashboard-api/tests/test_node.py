@@ -123,7 +123,7 @@ class TestNodeCapabilitiesEndpoint:
 
         r = test_client.get("/api/node/capabilities", headers=test_client.auth_headers)
         assert r.status_code == 200
-        assert r.json()["ods_version"] == "2.5.3"  # app.version fallback
+        assert r.json()["ods_version"] == "2.6.0"  # app.version fallback
 
     def test_requires_auth(self, test_client):
         r = test_client.get("/api/node/capabilities")

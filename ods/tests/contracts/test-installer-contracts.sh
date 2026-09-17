@@ -30,6 +30,10 @@ echo "[contract] capability profile schema has hardware_class"
 jq -e '.properties.hardware_class and (.required | index("hardware_class"))' config/capability-profile.schema.json >/dev/null \
   || { echo "[FAIL] capability profile schema missing hardware_class"; exit 1; }
 
+echo "[contract] cross-platform installed footprint"
+python3 tests/test-install-footprint-contract.py
+bash tests/contracts/test-install-footprint-macos.sh
+
 echo "[contract] AMD phase-06 env keys exist in schema"
 for key in HSA_XNACK AMDGPU_TARGET LLAMA_CPP_REF; do
   jq -e --arg key "$key" '.properties[$key]' .env.schema.json >/dev/null \
@@ -308,6 +312,9 @@ bash tests/test-macos-cloud-resolver.sh
 echo "[contract] macOS installer preserves authenticated local/cloud transitions"
 bash tests/test-macos-installer-transitions.sh
 
+echo "[contract] macOS Compose pre-pull reuses matching platform caches"
+bash tests/test-macos-compose-image-cache.sh
+
 echo "[contract] AMD reassign keeps HSA override Strix-only"
 grep -q '_env_set "HSA_OVERRIDE_GFX_VERSION" "11.5.1"' ods-cli \
   || { echo "[FAIL] ods-cli must set HSA override to 11.5.1 for gfx1151"; exit 1; }
@@ -554,7 +561,7 @@ echo "[contract] optional extension compose files are installer-gated"
 # a Core Only install just because their compose file exists in the source tree.
 for spec in \
   'ENABLE_RECOMMENDED:litellm' \
-  'ENABLE_RECOMMENDED:searxng' \
+  'ENABLE_SEARXNG:searxng' \
   'ENABLE_RECOMMENDED:token-spy' \
   'ENABLE_HERMES:hermes' \
   'ENABLE_HERMES:hermes-proxy' \
@@ -571,6 +578,30 @@ do
   grep -qE "_sync_extension_compose +\"\\\$\\{${flag}:-[^}]*\\}\" +$svc\\b|_sync_extension_compose +\"\\\$\\{${flag}:-\\}\" +$svc\\b" "$features_phase" \
     || { echo "[FAIL] $svc compose is not gated by $flag in $features_phase"; exit 1; }
 done
+
+echo "[contract] SearXNG follows web search consumers, not only --recommended"
+grep -qE 'ENABLE_RECOMMENDED:-false' "$features_phase" \
+  || { echo "[FAIL] ENABLE_SEARXNG derivation must consult ENABLE_RECOMMENDED"; exit 1; }
+grep -qE 'ENABLE_PERPLEXICA:-false' "$features_phase" \
+  || { echo "[FAIL] ENABLE_SEARXNG derivation must consult ENABLE_PERPLEXICA"; exit 1; }
+grep -qE 'ENABLE_HERMES:-false' "$features_phase" \
+  || { echo "[FAIL] ENABLE_SEARXNG derivation must consult ENABLE_HERMES"; exit 1; }
+grep -qE 'ENABLE_OPENCLAW:-false' "$features_phase" \
+  || { echo "[FAIL] ENABLE_SEARXNG derivation must consult ENABLE_OPENCLAW"; exit 1; }
+grep -Fq 'ENABLE_WEB_SEARCH="$ENABLE_SEARXNG"' "$features_phase" \
+  || { echo "[FAIL] ENABLE_WEB_SEARCH must track ENABLE_SEARXNG"; exit 1; }
+grep -Fq 'ENABLE_WEB_SEARCH: "${ENABLE_WEB_SEARCH:-false}"' docker-compose.base.yml \
+  || { echo "[FAIL] docker-compose.base.yml must interpolate ENABLE_WEB_SEARCH"; exit 1; }
+if grep -qE 'ENABLE_WEB_SEARCH: "true"' docker-compose.base.yml; then
+  echo "[FAIL] docker-compose.base.yml must not hardcode ENABLE_WEB_SEARCH=true"
+  exit 1
+fi
+grep -Fq 'ENABLE_WEB_SEARCH=${ENABLE_WEB_SEARCH:-true}' installers/phases/06-directories.sh \
+  || { echo "[FAIL] Linux .env generator must interpolate ENABLE_WEB_SEARCH"; exit 1; }
+grep -Fq '_macos_set_builtin_compose_state searxng "$ENABLE_SEARXNG"' installers/macos/install-macos.sh \
+  || { echo "[FAIL] macOS installer must gate SearXNG with ENABLE_SEARXNG"; exit 1; }
+grep -Fq 'ENABLE_WEB_SEARCH=${ENABLE_WEB_SEARCH:-true}' installers/macos/lib/env-generator.sh \
+  || { echo "[FAIL] macOS .env generator must interpolate ENABLE_WEB_SEARCH"; exit 1; }
 
 windows_plan="installers/windows/lib/service-plan.ps1"
 test -f "$windows_plan" || { echo "[FAIL] missing $windows_plan"; exit 1; }
@@ -776,5 +807,9 @@ bash tests/test-installer-context-parity.sh
 
 echo "[contract] Linux installer/background model lifecycle serialization"
 bash tests/test-linux-installer-model-lifecycle-lock.sh
+
+echo "[contract] Podman and no-sudo rootless lifecycle"
+bash tests/test-podman-rootless-contracts.sh
+bash tests/test-installer-noninteractive-sudo.sh
 
 echo "[PASS] installer contracts"

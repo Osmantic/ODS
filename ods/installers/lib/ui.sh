@@ -12,6 +12,8 @@
 # Provides: type_line(), type_line_dramatic(), static_line(), bootline(),
 #           ai(), ai_ok(), ai_warn(), ai_bad(), signal(), chapter(),
 #           show_phase(), show_stranger_boot(), LORE_MESSAGES[], spin_task(),
+#           download_part_bytes(), format_download_progress(),
+#           report_active_download_preserved(), cancel_active_download(),
 #           pull_with_progress(), check_service(), show_hardware_summary(),
 #           show_tier_recommendation(), show_install_menu(), show_success_card()
 #
@@ -166,10 +168,76 @@ LORE_MESSAGES=(
   "The code is yours. Make something never imagined."
 )
 
-# Spinner with mm:ss timer + lore messages every 8 seconds
+# Size of an in-flight download, in bytes. Missing file reads as 0 so callers
+# can poll before curl has created it. GNU stat first, BSD stat second.
+download_part_bytes() {
+  local part_file="$1"
+  local bytes=""
+  if [[ -f "$part_file" ]]; then
+    bytes=$(stat -c%s "$part_file" 2>/dev/null || stat -f%z "$part_file" 2>/dev/null || echo "")
+  fi
+  case "$bytes" in
+    ''|*[!0-9]*) printf '0' ;;
+    *) printf '%s' "$bytes" ;;
+  esac
+}
+
+# Render download progress: "397 MB / 1221 MB (32%)", or just "397 MB" when the
+# expected size is unknown. Pure — no file access, so it stays unit-testable.
+format_download_progress() {
+  local downloaded_bytes="${1:-0}"
+  local total_mb="${2:-0}"
+
+  case "$downloaded_bytes" in ''|*[!0-9]*) downloaded_bytes=0 ;; esac
+  case "$total_mb" in ''|*[!0-9]*) total_mb=0 ;; esac
+
+  local downloaded_mb=$(( downloaded_bytes / 1048576 ))
+  if [[ "$total_mb" -le 0 ]]; then
+    printf '%s MB' "$downloaded_mb"
+    return 0
+  fi
+
+  # A declared size is an estimate; never render a misleading >100%.
+  local percent=$(( downloaded_mb * 100 / total_mb ))
+  [[ "$percent" -gt 100 ]] && percent=100
+  printf '%s MB / %s MB (%s%%)' "$downloaded_mb" "$total_mb" "$percent"
+}
+
+# Report resumable bytes when an active model download is cancelled or exhausts
+# its retries. The active values are transient installer state, never persisted
+# to .env, and are deliberately ignored when the .part file is absent or empty.
+report_active_download_preserved() {
+  local part_file="${1:-${ODS_ACTIVE_DOWNLOAD_PART:-}}"
+  local total_mb="${2:-${ODS_ACTIVE_DOWNLOAD_TOTAL_MB:-0}}"
+
+  [[ -n "$part_file" && -s "$part_file" ]] || return 0
+
+  ai "Partial download preserved: $(format_download_progress "$(download_part_bytes "$part_file")" "$total_mb"). Re-run the installer to resume it."
+}
+
+# Stop the background process owned by the current installer before reporting
+# its resumable file. Waiting avoids printing a size while curl is still writing.
+cancel_active_download() {
+  local download_pid="${ODS_ACTIVE_DOWNLOAD_PID:-}"
+
+  if [[ "$download_pid" =~ ^[0-9]+$ ]] && kill -0 "$download_pid" 2>/dev/null; then
+    kill -TERM "$download_pid" 2>/dev/null || true
+    wait "$download_pid" 2>/dev/null || true
+  fi
+
+  report_active_download_preserved
+  ODS_ACTIVE_DOWNLOAD_PID=""
+}
+
+# Spinner with mm:ss timer + lore messages every 8 seconds.
+# Optional args 3/4 turn the label into a live download counter: pass the .part
+# file the task is writing and the expected size in MB (0 when unknown). Without
+# them a long download is indistinguishable from a stalled one.
 spin_task() {
   local pid=$1
   local msg=$2
+  local progress_part="${3:-}"
+  local progress_total_mb="${4:-0}"
   local spin='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
   local i=0
   local elapsed=0
@@ -179,7 +247,11 @@ spin_task() {
   while kill -0 "$pid" 2>/dev/null; do
     local mm=$((elapsed / 60))
     local ss=$((elapsed % 60))
-    printf "\r  ${GRN}%s${NC} [%02d:%02d] %s " "${spin:$i:1}" "$mm" "$ss" "$msg"
+    local label="$msg"
+    if [[ -n "$progress_part" ]]; then
+      label="$msg — $(format_download_progress "$(download_part_bytes "$progress_part")" "$progress_total_mb")"
+    fi
+    printf "\r  ${GRN}%s${NC} [%02d:%02d] %s " "${spin:$i:1}" "$mm" "$ss" "$label"
     i=$(( (i + 1) % ${#spin} ))
     elapsed=$((elapsed + 1))
     # Show lore every 8 seconds

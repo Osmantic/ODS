@@ -110,6 +110,8 @@ test_install() {
 }
 
 get_compose_flags() {
+    ensure_hermes_dashboard_session_token
+
     local flags_file="${INSTALL_DIR}/.compose-flags"
     if [[ -f "$flags_file" ]]; then
         cat "$flags_file"
@@ -400,6 +402,50 @@ upsert_env_value() {
     fi
 }
 
+ensure_hermes_dashboard_session_token() {
+    local env_file="${INSTALL_DIR}/.env"
+    [[ -f "$env_file" ]] || return 0
+    [[ -n "$(read_env_value "$env_file" "HERMES_DASHBOARD_SESSION_TOKEN")" ]] && return 0
+
+    local token
+    if command -v openssl >/dev/null 2>&1; then
+        token="$(openssl rand -hex 32)"
+    else
+        token="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+    fi
+    [[ "$token" =~ ^[0-9a-f]{64}$ ]] || {
+        ai_err "Could not generate HERMES_DASHBOARD_SESSION_TOKEN"
+        return 1
+    }
+    upsert_env_value "$env_file" "HERMES_DASHBOARD_SESSION_TOKEN" "$token"
+}
+
+proxy_is_enabled() {
+    [[ -f "${INSTALL_DIR}/extensions/services/ods-proxy/compose.yaml" ]] \
+        || [[ -f "${INSTALL_DIR}/data/user-extensions/ods-proxy/compose.yaml" ]]
+}
+
+require_proxy_auth() {
+    local env_file="${INSTALL_DIR}/.env"
+    [[ -f "$env_file" ]] || {
+        ai_err "Cannot enable network access without ${env_file}."
+        return 1
+    }
+    if [[ "$(read_env_value "$env_file" "WEBUI_AUTH")" != "true" ]]; then
+        upsert_env_value "$env_file" "WEBUI_AUTH" "true"
+        ai "Network access requires sign-in; set WEBUI_AUTH=true."
+    fi
+    export WEBUI_AUTH=true
+}
+
+prepare_proxy_start() {
+    local flags="$1"
+    require_proxy_auth || return 1
+    ai "Applying authenticated Open WebUI configuration..."
+    # shellcheck disable=SC2086
+    docker compose $flags up -d --no-deps --force-recreate open-webui
+}
+
 select_auto_cpu_value() {
     local existing="$1"
     local detected="$2"
@@ -562,6 +608,9 @@ start_native_llama() {
 
     local gguf_file="${ENV_GGUF_FILE:-Qwen3.5-9B-Q4_K_M.gguf}"
     local ctx_size="${ENV_CTX_SIZE:-65536}"
+    local gpu_layers="${ENV_N_GPU_LAYERS:-auto}"
+    gpu_layers="$(printf '%s' "$gpu_layers" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    gpu_layers="${gpu_layers:-auto}"
     local native_port="${ENV_ODS_NATIVE_LLAMA_PORT:-8080}"
     local bind_address="${ENV_BIND_ADDRESS:-127.0.0.1}"
     local probe_host
@@ -589,7 +638,7 @@ start_native_llama() {
         --host "$bind_address" --port "$native_port"
         --model "$model_path"
         --ctx-size "$ctx_size"
-        --n-gpu-layers 999
+        --n-gpu-layers "$gpu_layers"
         --reasoning-format "$reasoning_fmt"
         --metrics
     )
@@ -731,6 +780,12 @@ cmd_start() {
     local flags
     flags=$(get_compose_flags)
 
+    if [[ "$service" == "ods-proxy" ]]; then
+        prepare_proxy_start "$flags" || return 1
+    elif [[ -z "$service" || "$service" == "open-webui" ]] && proxy_is_enabled; then
+        require_proxy_auth || return 1
+    fi
+
     if [[ "$service" == "llama-server" || "$service" == "llama" ]]; then
         macos_wait_for_bootstrap_compose_safe "start" || return 1
         start_native_llama
@@ -789,6 +844,12 @@ cmd_restart() {
     local flags
     flags=$(get_compose_flags)
 
+    if [[ "$service" == "ods-proxy" ]]; then
+        prepare_proxy_start "$flags" || return 1
+    elif [[ -z "$service" || "$service" == "open-webui" ]] && proxy_is_enabled; then
+        require_proxy_auth || return 1
+    fi
+
     if [[ "$service" == "llama-server" || "$service" == "llama" ]]; then
         macos_wait_for_bootstrap_compose_safe "restart" || return 1
         stop_native_llama
@@ -796,7 +857,7 @@ cmd_restart() {
     elif [[ -n "$service" ]]; then
         ai "Restarting ${service}..."
         # shellcheck disable=SC2086
-        docker compose $flags up -d "$service"
+        docker compose $flags up -d --force-recreate --no-build --pull never "$service"
         ai_ok "${service} restarted"
     else
         # Restart native llama-server
@@ -808,7 +869,7 @@ cmd_restart() {
 
         ai "Restarting all services..."
         # shellcheck disable=SC2086
-        docker compose $flags up -d
+        docker compose $flags up -d --force-recreate --no-build --pull never
         ai_ok "All services restarted"
     fi
 

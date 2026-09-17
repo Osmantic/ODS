@@ -37,12 +37,12 @@ Known-good version baselines: [`docs/KNOWN-GOOD-VERSIONS.md`](docs/KNOWN-GOOD-VE
 
 ---
 
-## 5-Minute Quickstart (Linux)
+## 5-Minute Quickstart
 
 > **Prerequisites:** `curl` and `jq` must be installed. The installer will auto-install `jq` if missing, but `curl` is required to fetch the installer itself.
 
 ```bash
-# One-line install (Linux — NVIDIA, AMD, Intel Arc, or CPU/cloud fallback)
+# One-line install for Linux/macOS shells
 curl -fsSL https://install.osmantic.com/ods.sh | bash
 ```
 
@@ -50,6 +50,9 @@ The hosted endpoint proxies the current bootstrap from repository `main`.
 Reviewed merges reach it automatically after edge-cache refresh. `ODS_REF` selects a compatible repository checkout. See
 [Installer Trust](docs/INSTALLER_TRUST.md) to inspect the script or install a
 stable release or audited commit manually.
+
+Do not run the `curl ... | bash` installer from Windows PowerShell. Use the
+Windows PowerShell installer below.
 
 Or manually:
 
@@ -109,7 +112,15 @@ llama-server runs natively with Metal GPU acceleration; all other services run i
 > **Prerequisite:** Install [Docker Desktop](https://www.docker.com/products/docker-desktop/) with WSL2 backend and make sure it is running before you start.
 
 ```powershell
-.\install.ps1   # Auto-detects GPU, launches all services via Docker Desktop + WSL2
+$ProgressPreference = "SilentlyContinue"
+$odsSrc = Join-Path $env:TEMP ("ods-install-" + [guid]::NewGuid().ToString("N"))
+$odsZip = Join-Path $odsSrc "ods-main.zip"
+New-Item -ItemType Directory -Path $odsSrc | Out-Null
+Invoke-WebRequest "https://github.com/Osmantic/ODS/archive/refs/heads/main.zip" -OutFile $odsZip
+Expand-Archive -LiteralPath $odsZip -DestinationPath $odsSrc -Force
+cd (Get-ChildItem -LiteralPath $odsSrc -Directory | Select-Object -First 1).FullName
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\install.ps1
 ```
 
 Windows installs keep the cloned repo separate from the runtime directory. The
@@ -119,6 +130,27 @@ installing, run `.\ods.ps1` or manual `docker compose` commands from that
 runtime directory, not from the source checkout.
 
 See [`docs/WINDOWS-QUICKSTART.md`](docs/WINDOWS-QUICKSTART.md) for details.
+
+### Uninstall
+
+Linux/macOS:
+
+```bash
+cd ~/ods
+./ods-uninstall.sh --force
+```
+
+Windows:
+
+```powershell
+$installDir = "$env:USERPROFILE\ods"
+cd $installDir
+.\ods.ps1 uninstall --force
+```
+
+Use `--keep-data` or `--keep-models` if you want to preserve local state. If a
+Windows runtime is partial and `.\ods.ps1` is missing, run the cleanup from a
+source checkout with `.\ods\installers\windows\ods.ps1 uninstall --force`.
 
 ---
 

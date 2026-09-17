@@ -10,7 +10,6 @@ fail() { echo "[FAIL] $*"; exit 1; }
 pass() { echo "[PASS] $*"; }
 
 command -v jq >/dev/null 2>&1 || fail "jq is required"
-command -v rsync >/dev/null 2>&1 || fail "rsync is required"
 command -v sha256sum >/dev/null 2>&1 || fail "sha256sum is required"
 
 [[ -x "$ODS_BACKUP" ]] || fail "ods-backup.sh is not executable"
@@ -19,9 +18,59 @@ command -v sha256sum >/dev/null 2>&1 || fail "sha256sum is required"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
+if ! command -v rsync >/dev/null 2>&1; then
+    mkdir -p "$TMP/bin"
+    cat > "$TMP/bin/rsync" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${1:-}" == "--help" ]]; then
+    echo "test rsync shim"
+    exit 0
+fi
+
+sources=()
+for arg in "$@"; do
+    case "$arg" in
+        -a|--delete|--progress|--info=*) ;;
+        -*) ;;
+        *) sources+=("$arg") ;;
+    esac
+done
+
+if (( ${#sources[@]} < 2 )); then
+    echo "rsync shim: missing source/destination" >&2
+    exit 2
+fi
+
+last_index=$((${#sources[@]} - 1))
+dest="${sources[$last_index]}"
+unset "sources[$last_index]"
+mkdir -p "$dest"
+
+for src in "${sources[@]}"; do
+    if [[ -d "$src" ]]; then
+        if [[ "$src" == */ ]]; then
+            cp -R "$src". "$dest"
+        else
+            cp -R "$src" "$dest"
+        fi
+    elif [[ -f "$src" ]]; then
+        cp -p "$src" "$dest"
+    else
+        echo "rsync shim: missing source: $src" >&2
+        exit 23
+    fi
+done
+SH
+    chmod +x "$TMP/bin/rsync"
+    PATH="$TMP/bin:$PATH"
+    export PATH
+fi
+
 SRC="$TMP/ods"
 mkdir -p "$SRC/lib" "$SRC/config" "$SRC/data/open-webui" "$SRC/data/hermes"
-cp "$ROOT_DIR/lib/rsync.sh" "$SRC/lib/rsync.sh"
+cp "$ROOT_DIR/lib/rsync.sh" "$ROOT_DIR/lib/backup-paths.sh" "$SRC/lib/"
 
 cat > "$SRC/.version" <<'EOF'
 1.0.0
@@ -115,7 +164,7 @@ pass "update rollback evidence written to artifacts/update-rollback/evidence.jso
 # Rollback restores a snapshot with GPU_BACKEND=cpu.
 ROLLBACK_SRC="$TMP/ods-rollback-test"
 mkdir -p "$ROLLBACK_SRC/lib" "$ROLLBACK_SRC/config" "$ROLLBACK_SRC/data/backups" "$ROLLBACK_SRC/bin"
-cp "$ROOT_DIR/lib/rsync.sh" "$ROLLBACK_SRC/lib/rsync.sh"
+cp "$ROOT_DIR/lib/rsync.sh" "$ROOT_DIR/lib/backup-paths.sh" "$ROLLBACK_SRC/lib/"
 cp "$ROOT_DIR/lib/safe-env.sh" "$ROLLBACK_SRC/lib/safe-env.sh"
 cp "$ROOT_DIR/ods-update.sh" "$ROLLBACK_SRC/ods-update.sh"
 chmod +x "$ROLLBACK_SRC/ods-update.sh"
