@@ -19,6 +19,7 @@
 // Open WebUI's own service worker, not here.
 
 const VERSION = 'ods-dashboard-sw-v1';
+const CACHE_PREFIX = 'ods-dashboard-sw-';
 
 self.addEventListener('install', (event) => {
   // Skip the waiting-for-existing-pages dance — install immediately.
@@ -27,11 +28,16 @@ self.addEventListener('install', (event) => {
 });
 
 self.addEventListener('activate', (event) => {
-  // Claim all open tabs so the new worker controls them right away,
-  // and clear any caches a previous version may have created.
+  // Claim all open tabs so the new worker controls them right away, and clear
+  // caches created by previous dashboard workers without touching unrelated
+  // applications sharing this origin.
   event.waitUntil(Promise.all([
     self.clients.claim(),
-    caches.keys().then((keys) => Promise.all(keys.map((k) => caches.delete(k)))),
+    caches.keys().then((keys) => Promise.all(
+      keys
+        .filter((key) => key.startsWith(CACHE_PREFIX) && key !== VERSION)
+        .map((key) => caches.delete(key)),
+    )),
   ]));
 });
 
