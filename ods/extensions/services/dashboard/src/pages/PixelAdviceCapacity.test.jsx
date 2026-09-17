@@ -26,6 +26,7 @@ async function openAdvice(draft) {
   const composer = screen.getByPlaceholderText('Message Portal...')
   fireEvent.change(composer, {target:{value:draft}})
   fireEvent.click(screen.getByLabelText('Chat options'))
+  fireEvent.click(screen.getByText('Advanced tools'))
   fireEvent.click(screen.getByRole('button', {name:/^Ask for advice/}))
   await screen.findByText('Advice: completed')
   return {composer, paste:screen.getByRole('button', {name:'Paste advice into composer (does not send)'})}
