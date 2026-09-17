@@ -67,6 +67,26 @@ describe('useDownloadProgress', () => {
     expect(result.current.progress.percent).toBe(100)
   })
 
+  test('uses the backend percentage while total bytes are unknown', async () => {
+    fetch.mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({
+        status: 'downloading',
+        model: 'bootstrap-model',
+        percent: 37.5,
+        bytesDownloaded: 3e9,
+        bytesTotal: 0,
+      })
+    })
+
+    const { result } = renderHook(() => useDownloadProgress())
+
+    await waitFor(() => {
+      expect(result.current.isDownloading).toBe(true)
+    })
+    expect(result.current.progress.percent).toBe(37.5)
+  })
+
   test('clears progress when status is complete', async () => {
     fetch.mockResolvedValue({
       ok: true,
@@ -120,52 +140,71 @@ describe('useDownloadProgress', () => {
     })
   })
 
-  test('does not let an older idle response overwrite newer download progress', async () => {
-    const olderRequest = deferred()
-    const newerRequest = deferred()
-    fetch
-      .mockImplementationOnce(() => olderRequest.promise)
-      .mockImplementationOnce(() => newerRequest.promise)
+  test('skips concurrent manual refreshes while a progress request is active', async () => {
+    const pendingRequest = deferred()
+    fetch.mockImplementationOnce(() => pendingRequest.promise)
 
     const { result } = renderHook(() => useDownloadProgress())
-    let newerRefresh
+    let concurrentRefresh
     act(() => {
-      newerRefresh = result.current.refresh()
+      concurrentRefresh = result.current.refresh()
     })
+    expect(fetch).toHaveBeenCalledTimes(1)
+    await expect(concurrentRefresh).resolves.toBeNull()
 
     await act(async () => {
-      newerRequest.resolve({
+      pendingRequest.resolve({
         ok: true,
         json: () => Promise.resolve({
           status: 'downloading',
-          model: 'new-model.gguf',
+          model: 'slow-model.gguf',
           bytesDownloaded: 5,
           bytesTotal: 10,
         }),
       })
-      await newerRefresh
+      await pendingRequest.promise
+      await Promise.resolve()
     })
     expect(result.current.isDownloading).toBe(true)
     expect(result.current.progress).toMatchObject({
-      model: 'new-model.gguf',
+      model: 'slow-model.gguf',
       status: 'downloading',
       percent: 50,
     })
+  })
 
-    await act(async () => {
-      olderRequest.resolve({
-        ok: true,
-        json: () => Promise.resolve({ status: 'idle' }),
+  test('does not overlap progress polls while the previous request is pending', async () => {
+    const pendingRequest = deferred()
+    fetch.mockImplementationOnce(() => pendingRequest.promise)
+
+    vi.useFakeTimers()
+    try {
+      renderHook(() => useDownloadProgress(1000))
+      await act(async () => {})
+      expect(fetch).toHaveBeenCalledTimes(1)
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(10000) })
+      expect(fetch).toHaveBeenCalledTimes(1)
+
+      await act(async () => {
+        pendingRequest.resolve({
+          ok: true,
+          json: () => Promise.resolve({
+            status: 'downloading',
+            model: 'slow-model.gguf',
+            bytesDownloaded: 1,
+            bytesTotal: 10,
+          }),
+        })
+        await Promise.resolve()
+        await Promise.resolve()
       })
-      await olderRequest.promise
-      await Promise.resolve()
-    })
 
-    expect(result.current.isDownloading).toBe(true)
-    expect(result.current.progress).toMatchObject({
-      model: 'new-model.gguf',
-      status: 'downloading',
-    })
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+      expect(fetch).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   test('cancelDownload posts to the cancel endpoint and refreshes terminal status', async () => {
@@ -292,6 +331,27 @@ describe('useDownloadProgress', () => {
     expect(result.current.formatBytes(512)).toBe('512 B')
     expect(result.current.formatBytes(0)).toBe('0 B')
     expect(result.current.formatBytes(null)).toBe('0 B')
+  })
+
+  test('releases a stalled body by its deadline and rejects its late progress', async () => {
+    vi.useFakeTimers()
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const oldBody = deferred()
+    let oldSignal
+    fetch.mockImplementationOnce((_url, options) => {
+      oldSignal = options.signal
+      return Promise.resolve({ ok: true, json: () => oldBody.promise })
+    }).mockResolvedValue({ ok: true, json: async () => ({ status: 'downloading', model: 'fresh', percent: 25 }) })
+    const { result, unmount } = renderHook(() => useDownloadProgress())
+    await act(async () => { await vi.advanceTimersByTimeAsync(15000) })
+    expect(oldSignal.aborted).toBe(true)
+    await act(async () => { await result.current.refresh() })
+    expect(result.current.progress.model).toBe('fresh')
+    await act(async () => { oldBody.resolve({ status: 'idle' }) })
+    expect(result.current.progress.model).toBe('fresh')
+    unmount()
+    expect(vi.getTimerCount()).toBe(0)
+    vi.useRealTimers()
   })
 
   test('formatEta formats minutes and seconds', () => {
