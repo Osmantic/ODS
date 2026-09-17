@@ -59,13 +59,22 @@ function toolResult(value) {
   };
 }
 
+class BrokerReadbackError extends Error {
+  constructor(jobId) {
+    super("Broker submission or result could not be verified");
+    this.jobId = jobId;
+  }
+}
+
 function errorResult(
   text = "Pixel could not complete the read-only ODS host observation.",
-  boundaryNotice = BOUNDARY
+  boundaryNotice = BOUNDARY,
+  jobId
 ) {
+  const next = jobId ? `Check job ${jobId} with pixel_ops_job_get or pixel_ops_job_wait; do not resubmit until its state is known. Submission or completion could not be confirmed.` : null;
   return {
-    content: [{ type: "text", text }],
-    details: { status: "unavailable", boundaryNotice },
+    content: [{ type: "text", text: next ? `${text} ${next}` : text }],
+    details: { status: "unavailable", boundaryNotice, ...(jobId ? {jobId, next} : {}) },
     isError: true,
   };
 }
@@ -150,7 +159,7 @@ function normalizedPorts(value) {
   return ports;
 }
 
-async function publishRequest(jobId, value, requestDir = REQUEST_DIR) {
+async function publishRequest(jobId, value, requestDir = REQUEST_DIR, signal) {
   if (!SAFE_ID.test(jobId)) throw new Error("invalid operations job ID");
   const destination = join(requestDir, `${jobId}.json`);
   const temporary = join(
@@ -165,6 +174,7 @@ async function publishRequest(jobId, value, requestDir = REQUEST_DIR) {
     await handle.chmod(0o640);
     await handle.close();
     handle = undefined;
+    signal?.throwIfAborted();
     await link(temporary, destination);
   } finally {
     if (handle) await handle.close().catch(() => {});
@@ -181,11 +191,12 @@ async function waitForTerminal(
     timeoutMs = 30_000,
     pollIntervalMs = 250,
     boundaryNotice = BOUNDARY,
+    signal,
   } = {}
 ) {
   const deadline = Date.now() + timeoutMs;
   let latest;
-  while (Date.now() < deadline) {
+  while (Date.now() < deadline && !signal?.aborted) {
     try {
       latest = await readBoundedJson(join(resultDir, `${jobId}.json`));
       if (
@@ -202,11 +213,20 @@ async function waitForTerminal(
     } catch (error) {
       if (error?.code !== "ENOENT") throw error;
     }
-    await delay(pollIntervalMs);
+    try {
+      await delay(pollIntervalMs, undefined, { signal });
+    } catch (error) {
+      if (!signal?.aborted) throw error;
+      break;
+    }
   }
   return {
     ...(latest ?? { schemaVersion: 2, jobId, status: "pending" }),
-    waitTimedOut: true,
+    waitTimedOut: !signal?.aborted,
+    ...(signal?.aborted ? {
+      waitCancelled: true,
+      next: "Stopped waiting; this does not cancel the broker job. Check its existing ID with pixel_ops_job_get or pixel_ops_job_wait before resubmitting.",
+    } : {}),
     boundaryNotice,
   };
 }
@@ -243,6 +263,7 @@ async function observeHost(
     resultDir = RESULT_DIR,
     timeoutMs,
     pollIntervalMs,
+    signal,
   } = {}
 ) {
   const jobId = `ops-${Date.now()}-${randomBytes(6).toString("hex")}`;
@@ -264,18 +285,24 @@ async function observeHost(
     boundary:
       "Request only. The external broker compiles policy and decides whether execution is permitted.",
   };
-  await publishRequest(jobId, request, requestDir);
-  return waitForTerminal(jobId, {
-    resultDir,
-    timeoutMs,
-    pollIntervalMs,
-    boundaryNotice: BOUNDARY,
-  });
+  try {
+    await publishRequest(jobId, request, requestDir, signal);
+    return await waitForTerminal(jobId, {
+      resultDir,
+      timeoutMs,
+      pollIntervalMs,
+      boundaryNotice: BOUNDARY,
+      signal,
+    });
+  } catch {
+    // A linked request can survive either result-read or submission-cleanup errors.
+    throw new BrokerReadbackError(jobId);
+  }
 }
 
 async function proposeHostCommand(
   command,
-  { requestDir = REQUEST_DIR, resultDir = RESULT_DIR, timeoutMs, pollIntervalMs } = {}
+  { requestDir = REQUEST_DIR, resultDir = RESULT_DIR, timeoutMs, pollIntervalMs, signal } = {}
 ) {
   const jobId = `ops-${Date.now()}-${randomBytes(6).toString("hex")}`;
   const request = {
@@ -290,13 +317,19 @@ async function proposeHostCommand(
     boundary:
       "Request only. The external broker compiles an immutable plan and decides whether execution is permitted.",
   };
-  await publishRequest(jobId, request, requestDir);
-  return waitForTerminal(jobId, {
-    resultDir,
-    timeoutMs,
-    pollIntervalMs,
-    boundaryNotice: HOST_COMMAND_BOUNDARY,
-  });
+  try {
+    await publishRequest(jobId, request, requestDir, signal);
+    return await waitForTerminal(jobId, {
+      resultDir,
+      timeoutMs,
+      pollIntervalMs,
+      boundaryNotice: HOST_COMMAND_BOUNDARY,
+      signal,
+    });
+  } catch {
+    // A linked request can survive either result-read or submission-cleanup errors.
+    throw new BrokerReadbackError(jobId);
+  }
 }
 
 export function createHostObserveTool({
@@ -333,7 +366,8 @@ export function createHostObserveTool({
         },
       },
     },
-    execute: async (_toolCallId, params) => {
+    execute: async (_toolCallId, params, signal) => {
+      if (signal?.aborted) return errorResult("Host observation was stopped before submission. No job was submitted.");
       try {
         const actions = normalizedActions(params?.actions);
         const requiresPeer = actions.includes("host.network-peer");
@@ -349,9 +383,10 @@ export function createHostObserveTool({
           resultDir,
           timeoutMs,
           pollIntervalMs,
+          signal,
         });
         let odsStatusProjection;
-        if (params?.includeOdsStatus === true && typeof readOdsStatus === "function") {
+        if (!signal?.aborted && params?.includeOdsStatus === true && typeof readOdsStatus === "function") {
           try {
             odsStatusProjection = await readOdsStatus();
           } catch {
@@ -364,8 +399,9 @@ export function createHostObserveTool({
           ...receipt,
           ...(odsStatusProjection ? { odsStatusProjection } : {}),
         });
-      } catch {
-        return errorResult();
+      } catch (failure) {
+        return errorResult(undefined, BOUNDARY,
+          failure instanceof BrokerReadbackError ? failure.jobId : undefined);
       }
     },
   };
@@ -388,7 +424,8 @@ export function createExtensionReadTool({ requestDir = REQUEST_DIR, resultDir, t
         serviceId: { type: "string", pattern: "^[a-z0-9][a-z0-9._-]{0,63}$", description: "Exact catalog extension ID required for inspect." },
       },
     },
-    execute: async (_toolCallId, params) => {
+    execute: async (_toolCallId, params, signal) => {
+      if (signal?.aborted) return errorResult("Extension discovery was stopped before submission. No job was submitted.", EXTENSION_READ_BOUNDARY);
       const invalid = (message) => errorResult(message, EXTENSION_READ_BOUNDARY);
       if (!params || typeof params !== "object" || Array.isArray(params) ||
           Object.keys(params).some((key) => !["action", "target", "query", "serviceId"].includes(key)) ||
@@ -416,7 +453,7 @@ export function createExtensionReadTool({ requestDir = REQUEST_DIR, resultDir, t
           target, action: `ods.extensions.${params.action}`, parameters,
           reason: "Read-only ODS extension discovery requested through Pixel.",
           boundary: "Request only. The external broker validates target, parameters, and policy.",
-        }, requestDir);
+        }, requestDir, signal);
       } catch {
         // Publication can succeed before temporary-file cleanup fails. Keep
         // the identity even when submission itself cannot be confirmed.
@@ -426,7 +463,7 @@ export function createExtensionReadTool({ requestDir = REQUEST_DIR, resultDir, t
       }
       try {
         const receipt = await waitForTerminal(jobId, {
-          resultDir, timeoutMs, pollIntervalMs, boundaryNotice: EXTENSION_READ_BOUNDARY,
+          resultDir, timeoutMs, pollIntervalMs, boundaryNotice: EXTENSION_READ_BOUNDARY, signal,
         });
         return toolResult({ ...receipt, ...(receipt.waitTimedOut ? {
           next: "Read this existing job with pixel_ops_job_get or pixel_ops_job_wait; a wait timeout does not cancel the submitted read.",
@@ -457,22 +494,27 @@ export function createHostCommandProposeTool({
       additionalProperties: false,
       required: ["command"],
       properties: {
-        command: { type: "string", minLength: 1, maxLength: 16_384 },
+        // normalizedCommand enforces both limits before publishing a proposal.
+        // A maxLength this large cannot compile in llama.cpp's GBNF parser.
+        command: { type: "string", minLength: 1, description: "Owner-requested command, at most 16384 characters and 16384 UTF-8 bytes." },
       },
     },
-    execute: async (_toolCallId, params) => {
+    execute: async (_toolCallId, params, signal) => {
+      if (signal?.aborted) return errorResult("Command proposal was stopped before submission. No job was submitted.", HOST_COMMAND_BOUNDARY);
       try {
         const receipt = await proposeHostCommand(normalizedCommand(params?.command), {
           requestDir,
           resultDir,
           timeoutMs,
           pollIntervalMs,
+          signal,
         });
         return toolResult(receipt);
-      } catch {
+      } catch (failure) {
         return errorResult(
           "Pixel could not submit or verify the protected ODS host command proposal.",
-          HOST_COMMAND_BOUNDARY
+          HOST_COMMAND_BOUNDARY,
+          failure instanceof BrokerReadbackError ? failure.jobId : undefined
         );
       }
     },

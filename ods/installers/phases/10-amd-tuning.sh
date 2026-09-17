@@ -77,9 +77,15 @@ elif [[ "$GPU_BACKEND" == "amd" ]] && ! $DRY_RUN; then
     if [[ -d "$INSTALL_DIR/scripts/systemd" ]]; then
         for _unit in "$INSTALL_DIR/scripts/systemd"/*.service "$INSTALL_DIR/scripts/systemd"/*.timer; do
             [[ -f "$_unit" ]] || continue
-            case "$(basename "$_unit")" in
-                ods-host-agent.service|ods-ap-mode.service) continue ;;
-            esac
+            # Skip system-scope units: they carry __PLACEHOLDER__ tokens that
+            # phase 07 renders when installing to /etc/systemd/system
+            # (ods-host-agent, ods-ap-mode, ods-mdns). Copying them raw here
+            # drops an unrendered, non-functional unit into the user scope that
+            # also survives uninstall. Detect them by their placeholders rather
+            # than a name list, which previously missed ods-mdns.service.
+            if grep -q '__[A-Z0-9_]\{1,\}__' "$_unit"; then
+                continue
+            fi
             cp "$_unit" "$SYSTEMD_USER_DIR/" 2>/dev/null || true
         done
     fi
@@ -88,9 +94,9 @@ elif [[ "$GPU_BACKEND" == "amd" ]] && ! $DRY_RUN; then
     mkdir -p "$INSTALL_DIR/data/memory-archives/ods-agent"/{memory,agents,tools}
 
     # Reload and enable all timers
-    systemctl --user daemon-reload 2>/dev/null || true
+    ods_systemctl_user daemon-reload 2>/dev/null || true
     for timer in openclaw-session-cleanup memory-shepherd-workspace memory-shepherd-memory; do
-        systemctl --user enable --now "${timer}.timer" >> "$LOG_FILE" 2>&1 || true
+        ods_systemctl_user enable --now "${timer}.timer" >> "$LOG_FILE" 2>&1 || true
     done
     ai_ok "Maintenance timers enabled (session cleanup, memory shepherd)"
 

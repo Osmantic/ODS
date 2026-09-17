@@ -132,6 +132,7 @@ def generate_catalog(library_dir: Path, services_dir: Path | None = None) -> lis
         sys.exit(1)
 
     entries: dict[str, dict] = {}
+    invalid_manifests: list[str] = []
     roots = [(library_dir, "library")]
     if services_dir is not None:
         if not services_dir.is_dir() or services_dir.is_symlink():
@@ -146,9 +147,16 @@ def generate_catalog(library_dir: Path, services_dir: Path | None = None) -> lis
                 continue
             manifest = load_manifest(manifest_path)
             if manifest is None:
+                invalid_manifests.append(str(manifest_path))
+                continue
+            service = manifest.get("service")
+            if (isinstance(service, dict) and service.get("id") == service_dir.name
+                    and service_dir.name in EXCLUDED_IDS):
+                # Intentional catalog exclusions are not broken manifests.
                 continue
             entry = extract_entry(manifest)
             if entry is None or entry["id"] != service_dir.name:
+                invalid_manifests.append(str(manifest_path))
                 continue
             if source == "builtin":
                 # Native services can be disabled or managed outside Docker.
@@ -162,6 +170,11 @@ def generate_catalog(library_dir: Path, services_dir: Path | None = None) -> lis
             # The installed native definition takes precedence over a library
             # alternative with the same service ID, matching ODS resolution.
             entries[entry["id"]] = entry
+    if invalid_manifests:
+        details = "\n".join(f"  - {path}" for path in invalid_manifests)
+        raise ValueError(
+            "Catalog generation failed: invalid extension manifest(s):\n" + details
+        )
     return sorted(entries.values(), key=lambda entry: entry["id"])
 
 

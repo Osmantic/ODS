@@ -210,3 +210,60 @@ describe('EnvEditor', () => {
     expect(screen.getByText(/selected by the installer/i)).toBeInTheDocument()
   })
 })
+
+test.each([
+  ['1','True'],['yes','True'],[' ON ','True'],['TRUE','True'],
+  ['0','False'],['no','False'],[' OFF ','False'],['FALSE','False'],
+  [true,'True'],[false,'False'],['','Default'],
+])('shows the settings API boolean value %j as %s without changing the draft', (value, selected) => {
+  const onFieldChange = vi.fn()
+  const section = {id:'webui',title:'WebUI',keys:['WEBUI_AUTH']}
+  renderEditor({sections:[section],activeSection:section,
+    fields:{WEBUI_AUTH:{key:'WEBUI_AUTH',label:'WebUI Auth',type:'boolean',default:true}},
+    values:{WEBUI_AUTH:value},onFieldChange})
+  expect(screen.getByRole('button',{name:selected,exact:true})).toHaveAttribute('aria-pressed','true')
+  expect(onFieldChange).not.toHaveBeenCalled()
+  fireEvent.click(screen.getByRole('button',{name:'False',exact:true}))
+  expect(onFieldChange).toHaveBeenCalledWith('WEBUI_AUTH','false')
+})
+
+test('does not silently present an invalid boolean as Default or False', () => {
+  const section = {id:'webui',title:'WebUI',keys:['WEBUI_AUTH']}
+  renderEditor({sections:[section],activeSection:section,
+    fields:{WEBUI_AUTH:{key:'WEBUI_AUTH',label:'WebUI Auth',type:'boolean'}},
+    values:{WEBUI_AUTH:'sometimes'},issues:[{key:'WEBUI_AUTH',message:'Must be true or false.'}],
+    issueMap:{WEBUI_AUTH:['Must be true or false.']}})
+  for (const name of ['Default','True','False']) expect(screen.getByRole('button',{name,exact:true})).toHaveAttribute('aria-pressed','false')
+  expect(screen.getAllByText('Must be true or false.')).not.toHaveLength(0)
+})
+
+test.each([false, true])('shows an unsupported enum value even when readOnly=%s', readOnly => {
+  const onFieldChange = vi.fn()
+  const section = {id:'llm',title:'LLM',keys:['ODS_MODE']}
+  renderEditor({sections:[section], activeSection:section,
+    fields:{ODS_MODE:{key:'ODS_MODE',label:'ODS Mode',type:'string',enum:['local','cloud'],default:'local',readOnly}},
+    values:{ODS_MODE:'legacy-mode'}, onFieldChange,
+    issues:[{key:'ODS_MODE',message:'Must be one of local, cloud.'}],
+    issueMap:{ODS_MODE:['Must be one of local, cloud.']}})
+  const input = screen.getByRole('combobox', {name:'ODS Mode'})
+  expect(input).toHaveValue('legacy-mode')
+  expect(input.selectedOptions[0]).toHaveTextContent('Unsupported value: legacy-mode')
+  expect(onFieldChange).not.toHaveBeenCalled()
+  expect(input.disabled).toBe(readOnly)
+  if (!readOnly) {
+    fireEvent.change(input, {target:{value:'cloud'}})
+    expect(onFieldChange).toHaveBeenCalledWith('ODS_MODE','cloud')
+    fireEvent.change(input, {target:{value:''}})
+    expect(onFieldChange).toHaveBeenLastCalledWith('ODS_MODE','')
+  }
+})
+
+test.each(['local', ''])('keeps the existing enum selection %j unchanged', value => {
+  const section = {id:'llm',title:'LLM',keys:['ODS_MODE']}
+  renderEditor({sections:[section], activeSection:section,
+    fields:{ODS_MODE:{key:'ODS_MODE',label:'ODS Mode',type:'string',enum:['local','cloud'],default:'local'}},
+    values:{ODS_MODE:value}})
+  const input = screen.getByRole('combobox', {name:'ODS Mode'})
+  expect(input).toHaveValue(value)
+  expect(input.querySelectorAll('option')).toHaveLength(3)
+})

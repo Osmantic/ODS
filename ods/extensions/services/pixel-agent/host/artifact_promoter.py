@@ -84,9 +84,10 @@ def _relative_parts(value: object, filename: str) -> tuple[str, ...]:
     if (
         not 1 <= len(parts) <= 16
         or parts[-1] != filename
+        or FILENAME.fullmatch(parts[-1]) is None
         or any(
             part in {"", ".", ".."} or PATH_COMPONENT.fullmatch(part) is None
-            for part in parts
+            for part in parts[:-1]
         )
     ):
         raise PromotionError("invalid workspace destination")

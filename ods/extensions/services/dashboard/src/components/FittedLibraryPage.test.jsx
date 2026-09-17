@@ -36,3 +36,22 @@ it('fits the actual utility panel and paginates without dropping entries', () =>
   expect(screen.getByText('Item 9')).toBeVisible()
   expect(screen.getByText('9–10 of 10')).toBeVisible()
 })
+
+it('keeps the current catalog item visible when the utility panel shrinks and grows', () => {
+  vi.stubGlobal('ResizeObserver', class {observe(){} disconnect(){}})
+  vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function () {
+    return {top:this.classList.contains('fitted-library-page') ? 100 : 0,width:420,height:144}
+  })
+  const height=vi.spyOn(HTMLElement.prototype,'clientHeight','get').mockReturnValue(742)
+  render(<div className="portal-panel-content"><FittedLibraryPage label="Catalog" items={Array.from({length:20},(_,i)=>i)}>{items=>items.map(i=><article className="extension-entry" key={i}>Entry {i}</article>)}</FittedLibraryPage></div>)
+  fireEvent.click(screen.getByRole('button',{name:'Page 2'}))
+  expect(screen.getByText('Entry 4')).toBeVisible()
+  height.mockReturnValue(454)
+  fireEvent(window,new Event('resize'))
+  expect(screen.getByText('Entry 4')).toBeVisible()
+  expect(screen.getByRole('button',{name:'Page 3'})).toHaveAttribute('aria-current','page')
+  height.mockReturnValue(742)
+  fireEvent(window,new Event('resize'))
+  expect(screen.getByText('Entry 4')).toBeVisible()
+  expect(screen.getByRole('button',{name:'Page 2'})).toHaveAttribute('aria-current','page')
+})

@@ -1,0 +1,37 @@
+name: NVIDIA MIG topology
+on:
+  pull_request:
+    paths:
+      - 'ods/installers/lib/nvidia-topo.sh'
+      - 'ods/ods-cli'
+      - 'ods/tests/test_nvidia_mig_current.py'
+      - 'ods/tests/test-nvidia-topo.sh'
+      - 'ods/tests/test-gpu-reassign-manual.sh'
+      - '.github/workflows/test-nvidia-mig.yml'
+  push:
+    branches: [public-beta]
+    paths:
+      - 'ods/installers/lib/nvidia-topo.sh'
+      - 'ods/ods-cli'
+      - 'ods/tests/test_nvidia_mig_current.py'
+      - 'ods/tests/test-nvidia-topo.sh'
+      - 'ods/tests/test-gpu-reassign-manual.sh'
+      - '.github/workflows/test-nvidia-mig.yml'
+permissions:
+  contents: read
+jobs:
+  current-mode:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: '3.12'
+      - run: sudo apt-get update && sudo apt-get install -y jq
+      - run: python -m pip install 'pytest>=8,<9'
+      - run: python -m pytest -q ods/tests/test_nvidia_mig_current.py
+      - run: bash ods/tests/test-nvidia-topo.sh
+      - run: bash ods/tests/test-gpu-reassign-manual.sh

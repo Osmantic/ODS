@@ -1,7 +1,54 @@
 import { CHAT_KEY, readConversations, saveConversation, conversationTitle, deleteConversation } from './pixelConversations'
 
 beforeEach(() => localStorage.clear())
+afterEach(() => vi.restoreAllMocks())
 const chat = (id, text) => ({ schema: 1, chatId: id, messages: [{ role: 'user', content: text }], preview: null })
+
+test('a failed library write preserves the newest current conversation for reload', () => {
+  saveConversation(chat('saved', 'Original message'))
+  const write = window.Storage.prototype.setItem
+  vi.spyOn(window.Storage.prototype, 'setItem').mockImplementation(function(key,value) {
+    if (key === 'ods.pixel.conversations.v1') throw new globalThis.DOMException('Quota', 'QuotaExceededError')
+    return write.call(this,key,value)
+  })
+  expect(() => saveConversation({...chat('saved','Newest message'),draft:'Retain this draft'})).toThrow('Quota')
+  expect(JSON.parse(localStorage.getItem(CHAT_KEY))).toMatchObject({draft:'Retain this draft',messages:[{role:'user',content:'Newest message'}]})
+  expect(readConversations()[0].draft).toBe('Retain this draft')
+  expect(() => saveConversation(chat('next','Another task'))).toThrow('Quota')
+  expect(JSON.parse(localStorage.getItem(CHAT_KEY)).draft).toBe('Retain this draft')
+})
+
+test('a failed current write cannot commit newer library text that an old pointer will overwrite', () => {
+  saveConversation(chat('saved', 'Original message'))
+  const originalLibrary = localStorage.getItem('ods.pixel.conversations.v1')
+  const write = window.Storage.prototype.setItem
+  vi.spyOn(window.Storage.prototype, 'setItem').mockImplementation(function(key,value) {
+    if (key === CHAT_KEY) throw new globalThis.DOMException('Quota', 'QuotaExceededError')
+    return write.call(this,key,value)
+  })
+  expect(() => saveConversation(chat('saved','New message'))).toThrow('Quota')
+  expect(localStorage.getItem('ods.pixel.conversations.v1')).toBe(originalLibrary)
+})
+
+test('keeps legacy library-first records authoritative until their next save', () => {
+  localStorage.setItem('ods.pixel.conversations.v1',JSON.stringify([chat('legacy','Latest library text')]))
+  localStorage.setItem(CHAT_KEY,JSON.stringify(chat('legacy','Older active text')))
+  expect(readConversations()[0].messages[0].content).toBe('Latest library text')
+})
+
+test('a partial cleared-draft save cannot resurrect the discarded draft on the next task', () => {
+  saveConversation({schema:1,chatId:'draft',messages:[],draft:'Remove this'})
+  const write = window.Storage.prototype.setItem
+  const mock = vi.spyOn(window.Storage.prototype, 'setItem').mockImplementation(function(key,value) {
+    if (key === 'ods.pixel.conversations.v1') throw new globalThis.DOMException('Quota', 'QuotaExceededError')
+    return write.call(this,key,value)
+  })
+  expect(() => saveConversation({schema:1,chatId:'draft',messages:[],draft:''})).toThrow('Quota')
+  expect(readConversations()).toEqual([])
+  mock.mockRestore()
+  saveConversation({schema:1,chatId:'next',messages:[],draft:''})
+  expect(readConversations()).toEqual([])
+})
 
 test('migrates the current conversation without deleting the original', () => {
   localStorage.setItem(CHAT_KEY, JSON.stringify(chat('legacy', 'Original task')))
@@ -85,4 +132,35 @@ test('preserves unknown records, including null, while updating and deleting val
   expect(readConversations()[0].draft).toBe('Still works')
   deleteConversation('valid')
   expect(JSON.parse(localStorage.getItem('ods.pixel.conversations.v1'))).toEqual(damaged)
+})
+
+test('deleting a conversation also removes its retained name, pin and archive metadata', () => {
+  saveConversation(chat('private','Private conversation'))
+  saveConversation(chat('keep','Other conversation'))
+  localStorage.setItem('ods.pixel.chat-labels.v1.private',JSON.stringify({title:'Private project title',pinned:true,archived:true}))
+  localStorage.setItem('ods.pixel.chat-labels.v1.keep',JSON.stringify({title:'Keep this title',pinned:false,archived:false}))
+  deleteConversation('private')
+  expect(localStorage.getItem('ods.pixel.chat-labels.v1.private')).toBeNull()
+  expect(conversationTitle(readConversations()[0])).toBe('Keep this title')
+  expect(readConversations().map(item => item.chatId)).toEqual(['keep'])
+  expect(() => saveConversation(chat('private','Stale tab'))).toThrow(/deleted/)
+})
+
+test('reports failed metadata cleanup and permits a safe retry after the conversation tombstone is written', () => {
+  saveConversation(chat('private','Private conversation'))
+  const key = 'ods.pixel.chat-labels.v1.private'
+  localStorage.setItem(key,JSON.stringify({title:'Private title',pinned:false,archived:false}))
+  const remove = window.Storage.prototype.removeItem
+  const fail = vi.spyOn(window.Storage.prototype,'removeItem').mockImplementation(function (name) {
+    if (name === key) throw new globalThis.DOMException('Denied','SecurityError')
+    return remove.call(this,name)
+  })
+  try {
+    expect(() => deleteConversation('private')).toThrow()
+    expect(localStorage.getItem(key)).not.toBeNull()
+    expect(readConversations()).toEqual([])
+    expect(() => saveConversation(chat('private','Stale tab'))).toThrow(/deleted/)
+  } finally {fail.mockRestore()}
+  deleteConversation('private')
+  expect(localStorage.getItem(key)).toBeNull()
 })

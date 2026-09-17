@@ -25,7 +25,7 @@ export function isStaleAssetError(error) {
  * render a useful fallback instead of entering a reload loop.
  */
 export function recoverFromStaleAsset(error, {
-  storage = globalThis.sessionStorage,
+  storage,
   reload = () => globalThis.location.reload(),
   href = globalThis.location?.href || '',
   now = Date.now(),
@@ -33,6 +33,7 @@ export function recoverFromStaleAsset(error, {
   if (!isStaleAssetError(error)) return false
 
   try {
+    if (storage === undefined) storage = globalThis.sessionStorage
     const previous = JSON.parse(storage.getItem(RECOVERY_KEY) || 'null')
     if (previous?.at && now - previous.at < RECOVERY_WINDOW_MS) return false
 
@@ -46,8 +47,9 @@ export function recoverFromStaleAsset(error, {
   return true
 }
 
-export function clearStaleAssetRecovery(storage = globalThis.sessionStorage) {
+export function clearStaleAssetRecovery(storage) {
   try {
+    if (storage === undefined) storage = globalThis.sessionStorage
     storage.removeItem(RECOVERY_KEY)
   } catch {
     // Storage can be disabled without preventing normal dashboard use.

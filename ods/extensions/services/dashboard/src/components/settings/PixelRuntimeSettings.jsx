@@ -1,6 +1,8 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { readSettings, prepareSettingsSave, GROUPS, CONTROLS } from './pixelRuntimeSettingsForm';
 import PixelSettingsRuntime from './PixelSettingsRuntime';
+import { useBeforeUnload } from '../../hooks/useBeforeUnload';
+import { usePortalIdentity } from '../../contexts/PortalIdentityContext';
 
 function scalarToString(value) {
   if (value === null || value === undefined) return '';
@@ -41,6 +43,7 @@ function buildBooleanOptions() {
 }
 
 export default function PixelRuntimeSettings() {
+  const { displayName } = usePortalIdentity();
   const [snapshot, setSnapshot] = useState(null);
   const [rawChanges, setRawChanges] = useState({});
   const [error, setError] = useState(null);
@@ -129,6 +132,7 @@ export default function PixelRuntimeSettings() {
   }, [loadSettings, clearAbort]);
 
   const hasChanges = Object.keys(rawChanges).length > 0;
+  useBeforeUnload(hasChanges);
   const canSave = snapshot && hasChanges && !stale && !pending && !runtimeBusy && snapshot.revision < Number.MAX_SAFE_INTEGER;
   const canReload = !pending && !runtimeBusy;
   const canCancel = hasChanges && !pending && !runtimeBusy;
@@ -178,7 +182,7 @@ export default function PixelRuntimeSettings() {
           setRawChanges({});
           setStale(false);
           setError(null);
-          setNotice('Preferences saved. Pixel runtime is unchanged.');
+          setNotice(`Preferences saved. ${displayName} runtime is unchanged.`);
         });
       })
       .catch((e) => {
@@ -195,7 +199,7 @@ export default function PixelRuntimeSettings() {
           pendingRef.current = false;
         });
       });
-  }, [canSave, snapshot, rawChanges, clearAbort, doRequest]);
+  }, [canSave, snapshot, rawChanges, clearAbort, doRequest, displayName]);
 
   const handleReload = useCallback(() => {
     if (pendingRef.current || runtimeBusyRef.current || pending) return;
@@ -292,9 +296,9 @@ export default function PixelRuntimeSettings() {
 
   return (
     <section aria-labelledby="pixel-runtime-title" className="rounded-lg border border-theme-border bg-theme-card p-5 text-theme-text space-y-4 min-w-0">
-      <h2 id="pixel-runtime-title" className="text-lg font-semibold">Pixel runtime settings</h2>
-      <p className="text-sm text-theme-text-muted">Saving preferences does not apply them to Pixel.</p>
-      <p className="text-sm text-theme-text-muted">Inspect runtime support below, then apply your saved preferences when Pixel is idle.</p>
+      <h2 id="pixel-runtime-title" className="text-lg font-semibold">{displayName} runtime settings</h2>
+      <p className="text-sm text-theme-text-muted">Saving preferences does not apply them to {displayName}.</p>
+      <p className="text-sm text-theme-text-muted">Inspect runtime support below, then apply your saved preferences when {displayName} is idle.</p>
       {stale && (
         <div className="text-sm text-amber-600">Connection stale. Reload before saving.</div>
       )}
@@ -313,23 +317,23 @@ export default function PixelRuntimeSettings() {
           className="rounded border border-theme-border px-3 py-2 text-sm disabled:opacity-40"
           disabled={!canSave}
           onClick={handleSave}
-          aria-label="Save Pixel preferences"
+          aria-label={`Save ${displayName} preferences`}
         >
-          {pending ? 'Please wait…' : 'Save Pixel preferences'}
+          {pending ? 'Please wait…' : `Save ${displayName} preferences`}
         </button>
         <button
           className="rounded border border-theme-border px-3 py-2 text-sm disabled:opacity-40"
           disabled={!canReload}
           onClick={handleReload}
         >
-          Reload Pixel preferences
+          Reload {displayName} preferences
         </button>
         <button
           className="rounded border border-theme-border px-3 py-2 text-sm disabled:opacity-40"
           disabled={!canCancel}
           onClick={handleCancel}
         >
-          Cancel Pixel edits
+          Cancel {displayName} edits
         </button>
       </div>
       <PixelSettingsRuntime savedRevision={snapshot?.revision ?? null} saving={pending}

@@ -1,6 +1,6 @@
 import { NavLink, useLocation, useNavigate } from 'react-router-dom'
 import { useEffect, useState } from 'react'
-import { ArrowLeft, ChevronLeft, ChevronRight, Plus, Search, Sparkles, Settings } from 'lucide-react'
+import { ArrowLeft, ChevronLeft, ChevronRight, Grid2X2, Search, Sparkles, Settings } from 'lucide-react'
 import { getSidebarExternalLinks, getSidebarNavItems } from '../plugins/registry'
 import { usePortalIdentity } from '../contexts/PortalIdentityContext'
 import { fallbackServiceUrl } from '../lib/serviceUrls'
@@ -71,7 +71,7 @@ export default function Sidebar({ status, collapsed, onToggle }) {
       {searchOpen && !collapsed && <input autoFocus aria-label="Search navigation" placeholder="Find a page…" value={query} onChange={event => setQuery(event.target.value)} onKeyDown={event => { if (event.key === 'Escape') { closeSearch(); event.currentTarget.previousElementSibling?.focus() } }} className="pixel-nav-search" />}
       {links.filter(item => item.label.toLowerCase().includes(query.toLowerCase())).map(({ path, label, icon: Icon }) => <NavLink key={path} to={path} end title={label} aria-label={label} onClick={event => navigatePanel(event, path)} className={({ isActive }) => `pixel-nav-item ${isActive ? 'is-active' : ''}`}><Icon size={16} /><span>{label}</span></NavLink>)}
       {!pixelMode && applications.length > 0 && <details className="pixel-applications" open={query ? true : undefined}>
-        <summary aria-label="Applications"><span>{collapsed ? '•••' : 'Applications'}</span><svg className="rail-chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="m5 6 3 3 3-3"/></svg></summary>
+        <summary className="pixel-nav-item" aria-label="Applications" title="Applications"><Grid2X2 size={16}/><span>Applications</span><svg className="rail-chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="m5 6 3 3 3-3"/></svg></summary>
         {applications.filter(link => link.label.toLowerCase().includes(query.toLowerCase())).map(({ key, label, icon: Icon, healthy, url }) => {
           const href = key === 'openclaw' && serviceTokens.openclaw ? `${url}/?token=${encodeURIComponent(serviceTokens.openclaw)}` : url
           return <a key={key} className="pixel-nav-item" title={healthy ? label : `${label} · Offline`} aria-label={label} aria-disabled={!healthy} href={healthy ? href : undefined} target={healthy ? '_blank' : undefined} rel="noopener noreferrer"><Icon size={16} /><span>{label}</span>{!healthy && !collapsed && <small>Offline</small>}</a>

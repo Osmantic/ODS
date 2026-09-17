@@ -8,10 +8,25 @@ export function conversationExcerpt(chat, query) {
     {label:'Draft', text:typeof chat.draft === 'string' ? chat.draft : ''},
   ]
   for (const {label, text} of fields) {
-    const at = text.toLocaleLowerCase().indexOf(needle)
+    const folded = text.toLocaleLowerCase()
+    const at = folded.indexOf(needle)
     if (at < 0) continue
-    const start = Math.max(0, at - 48)
-    const end = Math.min(text.length, start + Math.max(180, needle.length))
+    // Case conversion can expand a character (for example İ -> i + dot).
+    // Locate boundaries in the original text before choosing surrounding context.
+    const originalOffset = (offset, roundUp) => {
+      if (folded.length === text.length) return offset
+      let low = 0, high = text.length
+      while (low < high) {
+        const middle = Math.floor((low + high) / 2)
+        if (text.slice(0, middle).toLocaleLowerCase().length < offset) low = middle + 1
+        else high = middle
+      }
+      return !roundUp && text.slice(0, low).toLocaleLowerCase().length > offset ? low - 1 : low
+    }
+    const matchStart = originalOffset(at, false)
+    const matchEnd = originalOffset(at + needle.length, true)
+    const start = Math.max(0, matchStart - 48)
+    const end = Math.min(text.length, Math.max(start + 180, matchEnd))
     return `${label}: ${start ? '…' : ''}${text.slice(start, end).replace(/\s+/g, ' ')}${end < text.length ? '…' : ''}`
   }
   return null

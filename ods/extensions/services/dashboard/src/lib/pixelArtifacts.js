@@ -1,7 +1,8 @@
+import { sha256 as hashSha256 } from '@noble/hashes/sha2.js'
+
 const DIGEST = /^[a-f0-9]{64}$/
 export const isSnapshotId = value => typeof value === 'string' && /^site-[a-f0-9]{24}$/.test(value)
 export const isArtifactPath = value => typeof value === 'string' && value.length <= 1664
-  && value.split('/').length <= 13
   && value.split('/').every(part => /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(part))
 
 export async function readBoundedBytes(response, maximum) {
@@ -34,7 +35,8 @@ export async function readBoundedBytes(response, maximum) {
 }
 
 export async function sha256(bytes) {
-  return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), byte => byte.toString(16).padStart(2, '0')).join('')
+  // LAN HTTP has no SubtleCrypto. Verify the same digest on every origin.
+  return Array.from(hashSha256(new Uint8Array(bytes)), byte => byte.toString(16).padStart(2, '0')).join('')
 }
 
 export async function loadSnapshotFiles(preview, signal) {
@@ -50,7 +52,7 @@ export async function loadSnapshotFiles(preview, signal) {
   const seen = new Set()
   for (const file of manifest.files) {
     if (!file || !isArtifactPath(file.path) || seen.has(file.path) || !DIGEST.test(file.sha256)
-      || !Number.isInteger(file.bytes) || file.bytes < 1 || file.bytes > 4 * 1024 * 1024) throw new Error('Invalid file')
+      || !Number.isInteger(file.bytes) || file.bytes < (file.path === 'index.html' ? 1 : 0) || file.bytes > 4 * 1024 * 1024) throw new Error('Invalid file')
     total += file.bytes
     seen.add(file.path)
   }

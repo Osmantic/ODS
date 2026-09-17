@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import {browserUuid} from '../lib/browserUuid'
 
 const key = 'ods.pixel.advice.setup.v1'
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/
@@ -103,7 +104,7 @@ export default function PixelAdviceRuntime({ onReadyChange, title = 'Advisory ru
     jobVersion.current++
     let id
     try {
-      id = globalThis.crypto.randomUUID(); localStorage.setItem(key, id)
+      id = browserUuid(); localStorage.setItem(key, id)
       tracked.current = id; setJobId(id); setJob(null)
       const result = await request('/prepare', { requestId: id, expectedRevision: readiness.revision,
         sourceSha256: readiness.sourceSha256, candidateId: selected, confirmed: true })

@@ -24,6 +24,7 @@ export default function PixelSelectionActions({ disabled, conversationId, onInse
     const outside = event => { if (!toolbar.current?.contains(event.target)) setSelection(null) }
     const escape = event => { if (event.key === 'Escape') setSelection(null) }
     const hide = () => setSelection(null)
+    document.addEventListener('selectionchange', update)
     document.addEventListener('mouseup', update)
     document.addEventListener('keyup', update)
     document.addEventListener('pointerdown', outside)
@@ -31,6 +32,7 @@ export default function PixelSelectionActions({ disabled, conversationId, onInse
     window.addEventListener('scroll', hide, true)
     window.addEventListener('resize', hide)
     return () => {
+      document.removeEventListener('selectionchange', update)
       document.removeEventListener('mouseup', update); document.removeEventListener('keyup', update)
       document.removeEventListener('pointerdown', outside); document.removeEventListener('keydown', escape)
       window.removeEventListener('scroll', hide, true); window.removeEventListener('resize', hide)

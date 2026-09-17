@@ -11,6 +11,28 @@ function Gallery() {
 }
 beforeEach(()=>{localStorage.clear();vi.resetAllMocks();readCustomWallpapers.mockResolvedValue([])})
 
+it.each(['preset', 'other tab', 'stale event', 'storage clear'])('keeps a newer %s choice when an earlier import finishes',async choice=>{
+  let finishImport
+  addCustomWallpaper.mockReturnValue(new Promise(resolve=>{finishImport=resolve}))
+  render(<ThemeProvider><Gallery/></ThemeProvider>)
+  await act(async()=>{})
+  fireEvent.change(screen.getByLabelText('Choose local wallpaper'),{target:{files:[new File(['x'],'x.png',{type:'image/png'})]}})
+  if(choice === 'preset') fireEvent.click(screen.getByRole('button',{name:'Forest',exact:true}))
+  else if(choice === 'storage clear') act(()=>{
+    localStorage.clear()
+    window.dispatchEvent(new StorageEvent('storage',{key:null}))
+  })
+  else act(()=>{
+    localStorage.setItem('ods-theme','forest')
+    window.dispatchEvent(new StorageEvent('storage',{key:'ods-theme',newValue:choice === 'stale event' ? 'ods' : 'forest'}))
+  })
+  await act(async()=>finishImport(row))
+  expect(screen.getByRole('button',{name:'My forest'})).toBeVisible()
+  expect(localStorage.getItem('ods-theme')).toBe(choice === 'storage clear' ? 'ods' : 'forest')
+  if(choice === 'storage clear') expect(document.documentElement).not.toHaveAttribute('data-wallpaper')
+  else expect(document.documentElement).toHaveAttribute('data-wallpaper','forest')
+})
+
 it('imports, selects, restores and removes a custom image while retaining the default palette',async()=>{
   addCustomWallpaper.mockResolvedValue(row)
   deleteCustomWallpaper.mockResolvedValue(undefined)
@@ -66,4 +88,25 @@ it('ignores an older gallery read that completes after a successful import',asyn
   await act(async()=>finishRead([]))
   expect(screen.getByRole('button',{name:'My forest'})).toBeVisible()
   expect(document.documentElement).toHaveAttribute('data-wallpaper',row.id)
+})
+
+it('imports and restores video backgrounds and saves the pause preference',async()=>{
+  const movie={...row,kind:'video',video:new Blob(['video'],{type:'video/mp4'})}
+  addCustomWallpaper.mockResolvedValue(movie)
+  const view=render(<ThemeProvider><Gallery/></ThemeProvider>)
+  await act(async()=>{})
+  const input=screen.getByLabelText('Choose local wallpaper')
+  expect(input.accept).toContain('video/mp4')
+  expect(input.accept).toContain('video/webm')
+  fireEvent.change(input,{target:{files:[new File(['v'],'v.mp4',{type:'video/mp4'})]}})
+  const toggle=await screen.findByRole('checkbox',{name:'Animate video background'})
+  expect(document.documentElement).toHaveAttribute('data-wallpaper-kind','video')
+  fireEvent.click(toggle)
+  expect(localStorage.getItem('ods-wallpaper-motion')).toBe('paused')
+  view.unmount()
+  readCustomWallpapers.mockResolvedValue([movie])
+  render(<ThemeProvider><Gallery/></ThemeProvider>)
+  expect(await screen.findByRole('checkbox',{name:'Animate video background'})).not.toBeChecked()
+  fireEvent.click(screen.getByRole('button',{name:'Remove selected wallpaper'}))
+  await waitFor(()=>expect(document.documentElement).not.toHaveAttribute('data-wallpaper-kind'))
 })

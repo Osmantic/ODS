@@ -18,7 +18,7 @@ import aiohttp
 import httpx
 
 from config import SERVICES, INSTALL_DIR, DATA_DIR, LLM_BACKEND, read_live_env_value
-from env_values import strip_matching_quotes
+from env_values import parse_env_value
 from host_agent_client import AgentClientError, async_request_json as request_agent_json
 from models import ServiceStatus, DiskUsage, ModelInfo, BootstrapStatus
 from service_health_dns import ServiceHealthResolver
@@ -137,6 +137,15 @@ async def _get_httpx_client() -> httpx.AsyncClient:
         if _httpx_client is None or _httpx_client.is_closed:
             _httpx_client = httpx.AsyncClient(timeout=5.0)
     return _httpx_client
+
+
+async def shutdown_llm_client() -> None:
+    """Close the pooled LLM client after application users have stopped."""
+    global _httpx_client, _httpx_client_lock
+    if _httpx_client is not None:
+        await _httpx_client.aclose()
+        _httpx_client = None
+    _httpx_client_lock = None
 
 
 def _service_status_from_config(service_id: str, config: dict, status: str) -> ServiceStatus:
@@ -653,14 +662,44 @@ async def check_service_health(
     if config.get("type") == "host-systemd":
         return await _check_host_systemd_health(service_id, config)
 
-    if config.get("host_network") and int(config.get("port") or 0) <= 0:
+    def port_number(value):
+        if type(value) is not int and not (
+            isinstance(value, str) and re.fullmatch(r"[0-9]{1,5}", value.strip())
+        ):
+            raise ValueError("port must be an integer")
+        port = int(value)
+        if not 0 <= port <= 65535:
+            raise ValueError("port outside valid range")
+        return port
+
+    # Keep the service visible as down on malformed configuration, without
+    # probing an unrelated default port. Zero represents an invalid/absent port.
+    safe = {**config, "name": str(config.get("name") or service_id), "port": 0, "external_port": 0}
+    try:
+        safe["port"] = port_number(config.get("port"))
+        safe["external_port"] = port_number(config.get("external_port", safe["port"]))
+    except (ValueError, TypeError):
+        return _service_status_from_config(service_id, safe, "down")
+    config = safe
+
+    if config.get("host_network") and config["port"] == 0:
         if service_id == "tailscale":
             return await _check_tailscale_health(service_id, config)
         return _service_status_from_config(service_id, config, "not_deployed")
 
     host = config.get('host', 'localhost')
-    health_port = config.get('health_port', config['port'])
-    url = f"http://{host}:{health_port}{config['health']}"
+    try:
+        health_path = config.get('health', '/')
+        if not isinstance(health_path, str):
+            raise ValueError("health path must be a string")
+        if not health_path.startswith('/'):
+            health_path = f"/{health_path}"
+        health_port = port_number(config.get('health_port', config['port']))
+        if health_port == 0:
+            raise ValueError("HTTP health port must be positive")
+    except (ValueError, TypeError):
+        return _service_status_from_config(service_id, config, "down")
+    url = f"http://{host}:{health_port}{health_path}"
     status = "unknown"
     response_time = None
 
@@ -685,7 +724,7 @@ async def check_service_health(
             status = "not_deployed"
         else:
             status = "down"
-    except (aiohttp.ClientError, OSError) as e:
+    except (aiohttp.ClientError, OSError, ValueError) as e:
         logger.debug(f"Health check failed for {service_id} at {url}: {e}")
         status = "down"
 
@@ -844,7 +883,7 @@ def get_model_info() -> Optional[ModelInfo]:
                     key = key.strip()
                     if not key:
                         continue
-                    value = strip_matching_quotes(value)
+                    value = parse_env_value(value)
                     env_values[key] = value
 
             model_name = env_values.get("LLM_MODEL")
@@ -1027,27 +1066,33 @@ def _get_cpu_metrics_linux() -> dict:
             d_idle, d_total = idle - prev_idle, total - prev_total
             get_cpu_metrics._prev = (idle, total)
             if d_total > 0:
-                result["percent"] = round((1 - d_idle / d_total) * 100, 1)
+                result["percent"] = max(0.0, min(100.0, round((1 - d_idle / d_total) * 100, 1)))
     except OSError as e:
         logger.debug("Failed to read /proc/stat: %s", e)
 
     try:
         import glob
         for tz in sorted(glob.glob("/sys/class/thermal/thermal_zone*/type")):
-            with open(tz) as f:
-                zone_type = f.read().strip()
-            if any(k in zone_type.lower() for k in ("k10temp", "coretemp", "cpu", "soc", "tctl")):
-                with open(tz.replace("/type", "/temp")) as f:
-                    result["temp_c"] = int(f.read().strip()) // 1000
-                break
-        if result["temp_c"] is None:
-            for hwmon in sorted(glob.glob("/sys/class/hwmon/hwmon*/name")):
-                with open(hwmon) as f:
-                    name = f.read().strip()
-                if name in ("k10temp", "coretemp", "zenpower"):
-                    with open(hwmon.replace("/name", "/temp1_input")) as f:
+            try:
+                with open(tz) as f:
+                    zone_type = f.read().strip()
+                if any(k in zone_type.lower() for k in ("k10temp", "coretemp", "cpu", "soc", "tctl")):
+                    with open(tz.replace("/type", "/temp")) as f:
                         result["temp_c"] = int(f.read().strip()) // 1000
                     break
+            except (OSError, ValueError):
+                continue
+        if result["temp_c"] is None:
+            for hwmon in sorted(glob.glob("/sys/class/hwmon/hwmon*/name")):
+                try:
+                    with open(hwmon) as f:
+                        name = f.read().strip()
+                    if name in ("k10temp", "coretemp", "zenpower"):
+                        with open(hwmon.replace("/name", "/temp1_input")) as f:
+                            result["temp_c"] = int(f.read().strip()) // 1000
+                        break
+                except (OSError, ValueError):
+                    continue
     except OSError as e:
         logger.debug("Failed to read CPU temperature: %s", e)
     return result
@@ -1094,11 +1139,11 @@ def _get_ram_metrics_linux() -> dict:
                     meminfo[parts[0].rstrip(":")] = int(parts[1])
         total = meminfo.get("MemTotal", 0)
         available = meminfo.get("MemAvailable", 0)
-        used = total - available
+        used = max(0, total - available)
         result["total_gb"] = round(total / (1024 * 1024), 1)
         result["used_gb"] = round(used / (1024 * 1024), 1)
         if total > 0:
-            result["percent"] = round(used / total * 100, 1)
+            result["percent"] = max(0.0, min(100.0, round(used / total * 100, 1)))
         # On Apple Silicon, override total_gb with the host's actual RAM
         host_ram_gb_str = os.environ.get("HOST_RAM_GB", "")
         gpu_backend = os.environ.get("GPU_BACKEND", "").lower()
@@ -1107,7 +1152,7 @@ def _get_ram_metrics_linux() -> dict:
                 host_ram_gb = float(host_ram_gb_str)
                 if host_ram_gb > 0:
                     result["total_gb"] = round(host_ram_gb, 1)
-                    result["percent"] = round(used / (host_ram_gb * 1024 * 1024) * 100, 1)
+                    result["percent"] = max(0.0, min(100.0, round(used / (host_ram_gb * 1024 * 1024) * 100, 1)))
             except ValueError:
                 pass
     except OSError as e:

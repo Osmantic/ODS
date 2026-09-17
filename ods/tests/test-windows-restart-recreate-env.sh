@@ -38,6 +38,24 @@ else
     fail "all-service restart must target running compose services with guarded docker compose up -d --force-recreate"
 fi
 
+all_service_restart_block="$(awk '
+    /Write-AI "Restarting all services\.\.\."/ { in_block=1 }
+    in_block { print }
+    in_block && /Invoke-BootstrapUpgradeResume/ { exit }
+' <<<"$restart_block")"
+
+if grep -qF -- 'Invoke-Agent -Action "restart"' <<<"$all_service_restart_block"; then
+    pass "all-service restart refreshes the native host agent after .env changes"
+else
+    fail "all-service restart must refresh the native host agent after recreating env-backed containers"
+fi
+
+if grep -qF -- 'Invoke-Agent -Action "restart"' <<<"$(sed -n '1,/Write-AI "Restarting all services\.\.\."/p' <<<"$restart_block")"; then
+    fail "service-scoped restart must not restart the unrelated native host agent"
+else
+    pass "service-scoped restart leaves the native host agent untouched"
+fi
+
 if grep -qF -- 'function Get-ODSRunningComposeServices' "$ODS_PS1" &&
    grep -qF -- 'ps --services --filter "status=running"' "$ODS_PS1" &&
    grep -qF -- 'label=com.docker.compose.project=ods' "$ODS_PS1"; then

@@ -367,3 +367,37 @@ test("host command adapter rejects a result whose embedded job ID does not match
     await rm(root, { recursive: true, force: true });
   }
 });
+
+for (const [name, factory, params] of [
+  ['observation', createHostObserveTool, {actions:['host.kernel']}],
+  ['command proposal', createHostCommandProposeTool, {command:'uname -sr'}],
+]) {
+  test(`${name} retains its submitted identity when result readback fails`, async () => {
+    const root = await mkdtemp(join(tmpdir(), 'pixel-host-readback-'));
+    const requestDir = join(root, 'requests'), resultDir = join(root, 'results');
+    await mkdir(requestDir); await mkdir(resultDir);
+    try {
+      const tool = factory({requestDir, resultDir, timeoutMs:2000, pollIntervalMs:5});
+      const pending = tool.execute('readback-failure', params);
+      let names = [];
+      for (let attempt=0; attempt<200 && !names.length; attempt++) {
+        names = (await readdir(requestDir)).filter(name => name.endsWith('.json'));
+        if (!names.length) await delay(5);
+      }
+      assert.equal(names.length, 1);
+      const request = JSON.parse(await readFile(join(requestDir, names[0]), 'utf8'));
+      await publishResult(join(resultDir, names[0]), {
+        jobId:'ops-1234567890123-aaaaaaaaaaaa', status:'succeeded',
+        privateResult:'must not escape a mismatched receipt',
+      });
+      const result = await pending;
+      assert.equal(result.isError, true);
+      assert.equal(result.details.status, 'unavailable');
+      assert.equal(result.details.jobId, request.jobId);
+      assert.match(result.content[0].text, new RegExp(request.jobId));
+      assert.match(result.content[0].text, /do not resubmit/i);
+      assert.doesNotMatch(JSON.stringify(result), /privateResult|must not escape/);
+      assert.deepEqual((await readdir(requestDir)).filter(name => name.endsWith('.json')), names);
+    } finally { await rm(root, {recursive:true, force:true}); }
+  });
+}

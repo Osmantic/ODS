@@ -29,7 +29,7 @@ export default function PixelReplyTable({children}) {
   }
   return <div className="my-3 max-w-full">
     <div role="region" aria-label="Scrollable table" tabIndex={0} className="overflow-x-auto rounded border border-theme-border">
-      <table ref={table} className="w-full border-collapse text-left text-sm">{children}</table>
+      <table ref={table} className="pixel-response-table w-full border-collapse text-left text-sm">{children}</table>
     </div>
     <button type="button" onClick={download} className="mt-2 rounded border border-theme-border px-2 py-1 text-xs">Download table CSV</button>
     <p className="mt-1 text-xs text-theme-text-muted">Exports displayed text. Formula-like cells are prefixed with an apostrophe for spreadsheet safety.</p>

@@ -12,6 +12,7 @@ _lock = threading.Lock()
 _active_streams = 0
 _PIXEL_EDGE_ACTIVITY_URL = "http://pixel-edge:9595/v1/activity"
 _MAX_ACTIVITY_BYTES = 1024
+_DEFAULT_MAX_STREAMS = 8
 
 
 def begin_pixel_stream() -> None:
@@ -19,6 +20,21 @@ def begin_pixel_stream() -> None:
     global _active_streams
     with _lock:
         _active_streams += 1
+
+
+def try_begin_pixel_stream() -> bool:
+    """Atomically admit a stream before opening an upstream connection."""
+    global _active_streams
+    try:
+        limit = int(os.environ.get("ODS_PIXEL_MAX_STREAMS", _DEFAULT_MAX_STREAMS))
+    except (TypeError, ValueError):
+        limit = _DEFAULT_MAX_STREAMS
+    limit = max(1, min(limit, 1024))
+    with _lock:
+        if _active_streams >= limit:
+            return False
+        _active_streams += 1
+        return True
 
 
 def end_pixel_stream() -> None:

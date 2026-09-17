@@ -87,6 +87,25 @@ pass "fresh-install Docker detection uses the verified installer command"
 ) || fail "selected-command rootless detection"
 pass "selected-command rootless detection preserves ownership mode"
 
+(
+    source "$LIB"
+    unset ODS_ASSUME_ROOTLESS
+    docker() {
+        # Mirrors the real CLI: an empty template result on stdout, then the
+        # connection error (and a template error) on stderr.
+        echo ""
+        echo "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?" >&2
+        echo "template: :1:7: executing \"\" at <.Host.Security.Rootless>: can't evaluate field Host in type system.dockerInfo" >&2
+        return 1
+    }
+    state_rc=0
+    probe_err="$(ods_docker_rootless_state 2>&1)" || state_rc=$?
+    [[ "$state_rc" -eq 2 ]] || exit 1
+    [[ "$probe_err" == *"Could not determine whether Docker is running in rootless mode"* ]] || exit 1
+    [[ "$probe_err" == *"docker info: Cannot connect to the Docker daemon"* ]] || exit 1
+) || fail "daemon-unreachable probe did not surface docker's own error"
+pass "indeterminate rootless state reports why docker info failed"
+
 INSTALL_DIR="$TMP_DIR/ods"
 mkdir -p "$INSTALL_DIR/data"/{ape,privacy-shield,token-spy,n8n,whisper,hermes,comfyui}
 mkdir -p "$INSTALL_DIR/data/langfuse"/{postgres,clickhouse}

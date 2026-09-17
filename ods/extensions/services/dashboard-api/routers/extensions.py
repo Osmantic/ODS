@@ -1511,6 +1511,11 @@ def _install_from_library(service_id: str) -> None:
     dest = USER_EXTENSIONS_DIR / service_id
 
     # Re-check under lock to prevent double-install race.
+    if dest.is_symlink():
+        raise HTTPException(
+            status_code=400,
+            detail=f"Refusing to install over symlinked extension directory: {service_id}",
+        )
     if dest.exists():
         has_compose = (dest / "compose.yaml").exists()
         has_disabled = (dest / "compose.yaml.disabled").exists()
@@ -1630,6 +1635,11 @@ def install_extension(service_id: str, api_key: str = Depends(verify_api_key)):
     dest = USER_EXTENSIONS_DIR / service_id
 
     # Early check (non-authoritative, rechecked under lock in _install_from_library)
+    if dest.is_symlink():
+        raise HTTPException(
+            status_code=400,
+            detail=f"Refusing to install over symlinked extension directory: {service_id}",
+        )
     if dest.exists():
         has_compose = (dest / "compose.yaml").exists()
         has_disabled = (dest / "compose.yaml.disabled").exists()
@@ -1923,12 +1933,18 @@ def update_extension(
                     prefix=f".{service_id}-retired-backup-", dir=retire_parent,
                 )) / service_id
                 os.replace(backup, retired)
-            backup.parent.mkdir(parents=True, exist_ok=True)
-            os.replace(dest, backup)
+            live_parked = False
             try:
+                backup.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(dest, backup)
+                live_parked = True
                 os.replace(staged, dest)
             except OSError:
-                os.replace(backup, dest)
+                # Even a failure to park the live tree must restore the
+                # retired rollback point. The live tree has not moved yet
+                # in that case, so never replace it with the older backup.
+                if live_parked:
+                    os.replace(backup, dest)
                 if retired is not None:
                     try:
                         os.replace(retired, backup)
@@ -2128,12 +2144,14 @@ def _get_missing_deps_transitive(
     _visiting.add(service_id)
 
     for dep in _read_direct_deps(service_id):
-        if _is_dep_satisfied(dep):
-            continue
         if dep in _order:
             continue  # already queued from another branch
+        # An enabled service can still have a disabled dependency: disable
+        # warns about dependents but permits the operation. Walk its subtree
+        # before deciding whether this service itself needs activation.
         _get_missing_deps_transitive(dep, _visiting=_visiting, _order=_order)
-        _order.append(dep)
+        if not _is_dep_satisfied(dep):
+            _order.append(dep)
 
     _visiting.discard(service_id)
     return _order
@@ -2199,6 +2217,22 @@ def _activate_service(service_id: str) -> dict:
     return {"id": service_id, "action": "enabled"}
 
 
+def _failed_dependency_starts(service_id: str, failed: set[str], seen=None) -> list[str]:
+    """Find failed prerequisites, including through already-enabled services."""
+    if seen is None:
+        seen = set()
+    if service_id in seen:
+        return []
+    seen.add(service_id)
+    blockers = []
+    for dep in _read_direct_deps(service_id):
+        if dep in failed:
+            blockers.append(dep)
+        else:
+            blockers.extend(_failed_dependency_starts(dep, failed, seen))
+    return list(dict.fromkeys(blockers))
+
+
 @router.post("/api/extensions/{service_id}/enable")
 @_serialize_extension_operation
 def enable_extension(
@@ -2215,8 +2249,10 @@ def enable_extension(
     disabled_compose = ext_dir / "compose.yaml.disabled"
     enabled_compose = ext_dir / "compose.yaml"
 
-    # Stopped case: compose.yaml exists but container is not running — just start it
-    if enabled_compose.exists():
+    already_enabled = enabled_compose.exists()
+    # A stopped target still needs the same dependency preflight as a disabled
+    # target. Preserve its compose scan without bypassing that shared plan.
+    if already_enabled:
         with _extensions_lock():
             st = os.lstat(enabled_compose)
             if stat.S_ISLNK(st.st_mode):
@@ -2233,29 +2269,7 @@ def enable_extension(
                 skip_gpu_passthrough_check=is_builtin,
                 skip_root_user_check=is_builtin,
             )
-        # Dependencies were satisfied at install time; compose content is re-scanned above
-        _write_initial_progress(service_id)
-        # Invalidate .compose-flags cache so ods-cli picks up this extension
-        # before the host agent starts the container.
-        _call_agent_invalidate_compose_cache()
-        agent_ok = _call_agent("start", service_id)
-        if not agent_ok:
-            _write_error_progress(
-                service_id,
-                "Host agent failed to start extension. Run 'ods restart' to recover.",
-            )
-        logger.info("Started stopped extension: %s", service_id)
-        return {
-            "id": service_id,
-            "action": "enabled",
-            "restart_required": not agent_ok,
-            "message": (
-                "Extension started." if agent_ok
-                else "Extension is enabled. Run 'ods restart' to start."
-            ),
-        }
-
-    if not disabled_compose.exists():
+    elif not disabled_compose.exists():
         raise HTTPException(
             status_code=404, detail=f"Extension has no compose file: {service_id}",
         )
@@ -2285,7 +2299,7 @@ def enable_extension(
 
         # Enable the target service
         result = _activate_service(service_id)
-        if result.get("action") == "enabled":
+        if result.get("action") in ("enabled", "already_enabled"):
             enabled_services.append(service_id)
 
         # Invalidate .compose-flags cache so ods-cli picks up the new enabled set
@@ -2295,10 +2309,32 @@ def enable_extension(
     # Start all enabled services via agent (outside lock)
     agent_ok = True
     warnings: list[str] = []
+    failed_services: list[str] = []
     for svc_id in enabled_services:
+        blocked_deps = _failed_dependency_starts(svc_id, set(failed_services))
+        if blocked_deps:
+            agent_ok = False
+            failed_services.append(svc_id)
+            message = f"Not started because dependencies failed: {', '.join(blocked_deps)}"
+            _write_error_progress(svc_id, message)
+            warnings.append(f"{svc_id}: {message}")
+            continue
+        if already_enabled and svc_id == service_id:
+            # Keep the existing stopped-target start contract and progress
+            # receipt, after any newly confirmed prerequisites have started.
+            _write_initial_progress(svc_id)
+            if not _call_agent("start", svc_id):
+                agent_ok = False
+                failed_services.append(svc_id)
+                _write_error_progress(
+                    svc_id,
+                    "Host agent failed to start extension. Run 'ods restart' to recover.",
+                )
+            continue
         # pre_start failure is terminal for this service — do not start it
         if not _call_agent_hook(svc_id, "pre_start"):
             agent_ok = False
+            failed_services.append(svc_id)
             _write_error_progress(
                 svc_id,
                 "pre_start hook failed — extension not started.",
@@ -2306,6 +2342,9 @@ def enable_extension(
             continue
         if not _call_agent("start", svc_id):
             agent_ok = False
+            failed_services.append(svc_id)
+            _write_error_progress(svc_id, "Host agent failed to start extension.")
+            continue
         # post_start is non-terminal — log failure but don't fail the enable
         if not _call_agent_hook(svc_id, "post_start"):
             logger.warning("post_start hook failed for %s (non-fatal)", svc_id)
@@ -2319,6 +2358,7 @@ def enable_extension(
         "id": service_id,
         "action": "enabled",
         "enabled_services": enabled_services,
+        "failed_services": failed_services,
         "restart_required": not agent_ok,
         "warnings": warnings,
         "message": (
@@ -2371,7 +2411,14 @@ def disable_extension(service_id: str, include_data_info: bool = Query(True), ap
     # Call agent to stop BEFORE renaming (prevents zombie containers)
     agent_ok = _call_agent("stop", service_id)
     if not agent_ok:
-        logger.warning("Could not stop %s via agent — container may still be running", service_id)
+        # Do not rename an extension after a failed stop: uninstall only
+        # accepts disabled definitions, so continuing would make it possible
+        # to delete the definition while its container still serves traffic.
+        logger.error("Could not stop %s via agent; refusing to disable", service_id)
+        raise HTTPException(
+            status_code=502,
+            detail=f"Host agent failed to stop extension: {service_id}; extension was not disabled",
+        )
 
     with _extensions_lock():
         # lstat check inside lock (TOCTOU prevention)
@@ -2506,9 +2553,12 @@ def purge_extension_data(
             if (check_dir / "compose.yaml").exists():
                 raise HTTPException(status_code=400, detail=f"{service_id} is still enabled. Disable it first.")
 
-        data_path = (Path(DATA_DIR) / service_id).resolve()
-        if not data_path.is_relative_to(Path(DATA_DIR).resolve()):
+        data_root = Path(DATA_DIR).resolve()
+        data_path = (data_root / service_id).resolve()
+        if not data_path.is_relative_to(data_root):
             raise HTTPException(status_code=400, detail="Invalid data path")
+        if data_path != data_root / service_id:
+            raise HTTPException(status_code=400, detail="Service data directory redirects to another location")
 
         if not data_path.is_dir():
             raise HTTPException(status_code=404, detail=f"No data directory found for {service_id}")

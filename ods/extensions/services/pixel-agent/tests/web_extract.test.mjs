@@ -5,6 +5,8 @@ import {
   selectEvidenceWindow,
 } from "../plugin/web-extract.mjs";
 
+import { createRunProgressBudget, failedToolOutcome } from "../plugin/run-progress-budget.mjs";
+
 function fixture({
   body = "",
   contentType = "text/plain",
@@ -238,3 +240,100 @@ test("requires every security dependency", () => {
     /dependencies are unavailable/
   );
 });
+
+test("extraction includes a late match on a long paragraph after a heading", async () => {
+  const body = "Heading\n" + "background ".repeat(3000) + "Path.exists returns true for existing files." + " tail".repeat(3000);
+  const harness = fixture({ body });
+  const result = await harness.tool.execute("late-match", {
+    url: "https://docs.example.org/reference", query: "Path.exists",
+  });
+  assert.equal(result.details.matched, true);
+  assert.match(result.content[0].text, /Path.exists returns true/);
+  assert.equal(result.details.evidence_truncated_before, true);
+  assert.equal(result.details.evidence_truncated_after, true);
+  assert.ok(selectEvidenceWindow(body, "Path.exists").text.length <= 6000);
+});
+
+test("a line break inside a multi-word match does not truncate the match", async () => {
+  const body = "intro ".repeat(400) + "needle one\nneedle two" + " tail".repeat(2000);
+  const selected = selectEvidenceWindow(body, "needle one");
+  assert.match(selected.text, /needle one/);
+  assert.ok(selected.text.length <= 6000);
+});
+
+test("keyword extraction finds terms deep inside a long paragraph", async () => {
+  const body = "Heading\n" + "background ".repeat(3000) + "Follow symlinks to existing targets." + " tail".repeat(3000);
+  const harness = fixture({ body });
+  const result = await harness.tool.execute("keywords", {
+    url: "https://docs.example.org/reference", query: "symlinks existing targets",
+  });
+  assert.equal(result.details.matched, true);
+  assert.match(result.content[0].text, /Follow symlinks to existing targets/);
+});
+
+for (const query of ["Path.exists", "routing context budget"]) {
+  test(`keeps original text offsets after Unicode case expansion: ${query}`, async () => {
+    // U+0130 lowercases to two UTF-16 code units. Offsets in a lowercased
+    // document therefore cannot be used to slice the original document.
+    const target = "Path.exists sets routing and context with a budget.";
+    const body = "İstanbul reference\n".repeat(1500) + target + "\n" + "Other material.\n".repeat(1000);
+    const harness = fixture({ body });
+    const result = await harness.tool.execute("unicode-offset", {
+      url: "https://docs.example.org/reference", query,
+    });
+    assert.equal(result.details.matched, true);
+    assert.ok(result.content[0].text.includes(target));
+    assert.ok(selectEvidenceWindow(body, query).text.length <= 6000);
+    assert.equal(harness.releases(), 1);
+  });
+}
+
+test("case-insensitive evidence queries remain literal", () => {
+  const selected = selectEvidenceWindow("Header\nUse [CACHE](a+b)? here.\n", "[cache](a+b)?");
+  assert.ok(selected.text.includes("[CACHE](a+b)?"));
+  assert.equal(selectEvidenceWindow("Use CACHEab here.", "[cache](a+b)?"), null);
+  assert.ok(selectEvidenceWindow("😀\nPATH.EXISTS returns true.\n", "Path.exists").text.includes("PATH.EXISTS"));
+});
+
+for (const [label, options, params] of [
+  ["invalid input", {}, { query: "x" }],
+  ["HTTP error", { status: 503 }, {}],
+  ["unsupported document", { contentType: "application/pdf" }, {}],
+  ["transport failure", { fetchError: new Error("offline") }, {}],
+]) {
+  test("extraction " + label + " is a failed tool outcome", async () => {
+    const harness = fixture(options);
+    const result = await harness.tool.execute("failed", {
+      url: "https://docs.example.org/reference", query: "Path.exists", ...params,
+    });
+    assert.equal(result.isError, true);
+    assert.equal(failedToolOutcome({ result }), true);
+    assert.equal(result.details.matched, false);
+    assert.equal(harness.releases(), label === "HTTP error" || label === "unsupported document" ? 1 : 0);
+  });
+}
+
+test("distinct unsuccessful fetches exhaust the existing failure budget", async () => {
+  const harness = fixture({ fetchError: new Error("offline") });
+  const budget = createRunProgressBudget();
+  for (let i = 0; i < 4; i++) {
+    const params = { url: "https://docs.example.org/page-" + i, query: "Path.exists" };
+    const result = await harness.tool.execute("call-" + i, params);
+    budget.observeResult({ callId: "call-" + i, tool: harness.tool.name, params,
+      failed: failedToolOutcome({ result }) });
+    assert.equal(budget.exhausted, i === 3);
+  }
+});
+
+for (const [body, matched] of [["Path.exists returns a boolean", true], ["Unrelated text", false]]) {
+  test("a completed lookup (matched=" + matched + ") remains successful", async () => {
+    const harness = fixture({ body });
+    const result = await harness.tool.execute("lookup", {
+      url: "https://docs.example.org/reference", query: "Path.exists",
+    });
+    assert.notEqual(result.isError, true);
+    assert.equal(failedToolOutcome({ result }), false);
+    assert.equal(result.details.matched, matched);
+    assert.equal(harness.releases(), 1);
+  });
+}

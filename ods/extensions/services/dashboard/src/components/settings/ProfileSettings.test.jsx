@@ -92,3 +92,24 @@ it('preserves an unsaved photo removal while synchronizing an untouched name',()
   fireEvent.click(screen.getByRole('button',{name:'Save profile'}))
   expect(readProfile()).toEqual({name:'Updated elsewhere',photo:''})
 })
+
+it('preserves a photo committed before its cross-tab storage event arrives', () => {
+  saveProfile({name:'Original'})
+  render(<ProfileSettings/>)
+  fireEvent.change(screen.getByRole('textbox',{name:'Display name'}),{target:{value:'My new name'}})
+  // Another tab has committed; this tab has not received its queued event.
+  localStorage.setItem(PROFILE_KEY,JSON.stringify({name:'Original',photo:PHOTO}))
+  fireEvent.click(screen.getByRole('button',{name:'Save profile'}))
+  expect(readProfile()).toEqual({name:'My new name',photo:PHOTO})
+  expect(screen.getByRole('img',{name:'My new name profile photo'})).toBeVisible()
+})
+
+it('preserves an unseen saved name while explicitly removing the photo', () => {
+  saveProfile({name:'Original',photo:PHOTO})
+  render(<ProfileSettings/>)
+  fireEvent.click(screen.getByRole('button',{name:'Remove photo'}))
+  localStorage.setItem(PROFILE_KEY,JSON.stringify({name:'Updated elsewhere',photo:PHOTO}))
+  fireEvent.click(screen.getByRole('button',{name:'Save profile'}))
+  expect(readProfile()).toEqual({name:'Updated elsewhere',photo:''})
+  expect(screen.getByRole('textbox',{name:'Display name'})).toHaveValue('Updated elsewhere')
+})

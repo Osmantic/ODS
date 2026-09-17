@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createPerplexicaResearchTool, readResearchStream } from "../plugin/perplexica-research.mjs";
+import {displayForActivity} from '../plugin/activity-display.mjs';
 
 const config = { values: { preferences: {
   defaultChatProvider: "owner-chat", defaultChatModel: "ods/current",
@@ -42,6 +43,8 @@ test("delegates only the brief and configured model identities; preserves citati
   assert.match(text, /"index":2,"title":"Café","url":"https:\/\/example.org\/source"/);
   assert.doesNotMatch(text, /PRIVATE|javascript:/);
   assert.match(text, /untrusted research evidence/);
+  const display=displayForActivity({params:{query:'Compare the sources'},result},{toolName:'pixel_ods_research'});
+  assert.deepEqual(display.sources,[{title:'Café',url:'https://example.org/source'}]);
 });
 
 test("an EOF, corrupt JSON, or error event cannot masquerade as completed research", async () => {
@@ -162,4 +165,35 @@ test("a completed request without sources is explicitly unverified", async () =>
   assert.equal(result.details.retainedSourceCount, 0);
   assert.match(result.content[0].text, /returned no source citations.*unverified/);
   assert.deepEqual(evidence(result).sources, []);
+});
+
+test("corrupt UTF-8 cannot become successful research or a different model identity", async () => {
+  for (const stage of ["config", "answer"]) {
+    const original = stage === "config" ? JSON.stringify(config) :
+      '{"type":"response","data":"Evidence MARKER."}\n{"type":"done"}';
+    const marked = stage === "config" ? original.replace("owner-chat", "MARKER") : original;
+    const offset = marked.indexOf("MARKER");
+    const bytes = new Uint8Array([
+      ...new TextEncoder().encode(marked.slice(0, offset)),
+      0xff,
+      ...new TextEncoder().encode(marked.slice(offset + 6)),
+    ]);
+    let calls = 0;
+    const tool = createPerplexicaResearchTool({env:{}, fetch:async () => {
+      calls++;
+      if (stage === "config" || calls === 2) return new Response(bytes);
+      return Response.json(config);
+    }});
+    const result = await tool.execute("corrupt-utf8", {query:"Research"}, signal());
+    assert.equal(result.details.status, "unavailable", stage);
+    assert.equal(result.isError, true);
+    if (stage === "config") assert.equal(calls, 1, "do not submit a changed model identity");
+    assert.doesNotMatch(JSON.stringify(result), /Evidence|\ufffd/);
+  }
+});
+
+test("rejects an incomplete UTF-8 sequence at the end of the stream", async () => {
+  const prefix = new TextEncoder().encode('{"type":"response","data":"OK"}\n{"type":"done"}\n');
+  await assert.rejects(readResearchStream(new Response(new Uint8Array([...prefix, 0xc3])),
+    signal(), () => {}));
 });

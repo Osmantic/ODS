@@ -18,8 +18,9 @@ import re
 from pathlib import Path
 from typing import Any, Optional
 
-from env_values import strip_matching_quotes
+from env_values import parse_env_value, strip_matching_quotes
 from gguf_inspector import inspect_gguf
+from model_mtp import mtp_metadata
 from context_policy import HERMES_MIN_CONTEXT, HERMES_TARGET_CONTEXT, PIXEL_MIN_CONTEXT
 from helpers import (
     get_model_performance_samples,
@@ -143,7 +144,7 @@ def read_env_file_value(key: str, install_dir: str | Path) -> str:
     try:
         for line in env_path.read_text(encoding="utf-8").splitlines():
             if line.startswith(f"{key}="):
-                return strip_matching_quotes(line.split("=", 1)[1])
+                return parse_env_value(line.split("=", 1)[1])
     except OSError:
         pass
     return ""
@@ -172,6 +173,11 @@ def read_context_length(install_dir: str | Path, default: int = 32768) -> int:
 
 def model_files_dir(data_dir: str | Path) -> Path:
     return Path(data_dir) / "models"
+
+
+def installed_model_path(data_dir: str | Path, filename: str) -> Path | None:
+    from model_stores import resolve_model_file
+    return resolve_model_file(Path(data_dir), filename, container=Path("/.dockerenv").exists())
 
 
 def _model_aliases(model: dict[str, Any]) -> set[str]:
@@ -258,6 +264,7 @@ def normalize_catalog_entry(raw: dict[str, Any]) -> dict[str, Any] | None:
         "active_params_b": raw.get("active_params_b"),
         "tokens_per_sec_estimate": raw.get("tokens_per_sec_estimate"),
         "runtime_profiles": raw.get("runtime_profiles") if isinstance(raw.get("runtime_profiles"), list) else [],
+        "mtp": raw.get("mtp") if isinstance(raw.get("mtp"), dict) else {},
         "app_compatibility": raw.get("app_compatibility") if isinstance(raw.get("app_compatibility"), dict) else {},
         "catalog_source": raw.get("source") or "ods",
         "source_repo": raw.get("source_repo"),
@@ -674,10 +681,10 @@ def _selector_required_memory_gb(model: dict[str, Any]) -> float:
     return required_model_memory_gb(model)
 
 
-def _matching_runtime_profile(model: dict[str, Any], gpu_info: Optional[GPUInfo],
-                              system_ram_gb: int | None = None) -> dict[str, Any] | None:
+def _hardware_matching_runtime_profiles(model: dict[str, Any], gpu_info: Optional[GPUInfo]) -> list[dict[str, Any]]:
+    """Return profiles anchored to the detected GPU before system-RAM filtering."""
     if not gpu_info:
-        return None
+        return []
     backend = normalize_key(gpu_info.gpu_backend)
     memory_type = (
         "unified"
@@ -688,7 +695,7 @@ def _matching_runtime_profile(model: dict[str, Any], gpu_info: Optional[GPUInfo]
     )
     host_arch = _normalize_host_arch(platform.machine())
     vram_gb = float(gpu_info.memory_total_mb or 0) / 1024.0
-    ram_gb = system_ram_gb if system_ram_gb is not None else _system_ram_gb()
+    matches: list[dict[str, Any]] = []
     for profile in model.get("runtime_profiles", []) or []:
         if not isinstance(profile, dict):
             continue
@@ -705,6 +712,17 @@ def _matching_runtime_profile(model: dict[str, Any], gpu_info: Optional[GPUInfo]
                 continue
             if profile.get("vram_max_gb") is not None and vram_gb > float(profile["vram_max_gb"]):
                 continue
+        except (TypeError, ValueError):
+            continue
+        matches.append(profile)
+    return matches
+
+
+def _matching_runtime_profile(model: dict[str, Any], gpu_info: Optional[GPUInfo],
+                              system_ram_gb: int | None = None) -> dict[str, Any] | None:
+    ram_gb = system_ram_gb if system_ram_gb is not None else _system_ram_gb()
+    for profile in _hardware_matching_runtime_profiles(model, gpu_info):
+        try:
             if profile.get("system_ram_min_gb") is not None and float(ram_gb or 0) < float(profile["system_ram_min_gb"]):
                 continue
         except (TypeError, ValueError):
@@ -1193,6 +1211,8 @@ def rank_pre_download_models(catalog: list[dict[str, Any]], gpu_info: Optional[G
         if not _family_allowed_for_profile(model, normalized_profile):
             continue
         runtime_profile = _matching_runtime_profile(model, gpu_info, system_ram_gb)
+        if runtime_profile is None and _hardware_matching_runtime_profiles(model, gpu_info):
+            continue
         candidate_model = {**model, "_runtime_profile": runtime_profile} if runtime_profile else model
         required = _effective_required_memory_gb(candidate_model, runtime_profile)
         fits = _fits_declared_vram(required, capacity_gb)
@@ -1207,7 +1227,13 @@ def rank_pre_download_models(catalog: list[dict[str, Any]], gpu_info: Optional[G
         fallback_pool = [
             model for model in catalog
             if (not installable_only or model.get("gguf_url")) and _family_allowed_for_profile(model, normalized_profile)
-        ] or catalog
+            and not _hardware_matching_runtime_profiles(model, gpu_info)
+        ] or [
+            model for model in catalog
+            if not _hardware_matching_runtime_profiles(model, gpu_info)
+        ]
+        if not fallback_pool:
+            return []
         fallback = min(fallback_pool, key=lambda m: float(m.get("vram_required_gb") or 999))
         candidates = [{"model": fallback, "score": -1.0}]
 
@@ -1264,11 +1290,60 @@ def _downloaded_catalog_path(model: dict[str, Any], downloaded_files: dict[str, 
         ]
         downloaded = bool(part_paths) and all(part_paths)
         seen = {str(part.get("file", "")).lower() for part in parts if isinstance(part, dict)}
-        return downloaded, part_paths[0] if downloaded else None, seen if downloaded else set()
+        # A shard belongs to this catalog entry even before the whole download
+        # finishes; it must never become a standalone installed-model option.
+        return downloaded, part_paths[0] if downloaded else None, seen
 
     gguf = str(model["gguf"]).lower()
     path = downloaded_files.get(gguf)
     return bool(path), path, {gguf} if path else set()
+
+
+def _measured_native_activation(model, path, data_root, install_dir, gpu_info, system_ram_gb):
+    """Separate a proven native load from the generic all-GPU fit estimate."""
+    if path is None or not gpu_info:
+        return None
+    value = lambda key: read_env_file_value(key, install_dir) or read_env_value(key, install_dir)
+    if (value("AMD_INFERENCE_LOCATION") != "host"
+            or not value("AMD_INFERENCE_RUNTIME_MODE").startswith("windows-")
+            or value("LLM_BACKEND") != "lemonade"
+            or value("AMD_INFERENCE_MANAGED").lower() == "false"
+            or value("LEMONADE_EXTERNAL").lower() == "true"):
+        return None
+    from model_stores import registered_stores, safe_artifact
+    for store in registered_stores(data_root, container=Path("/.dockerenv").exists()):
+        if store["path"].resolve() != path.parent.resolve():
+            continue
+        profiles = store.get("profiles", {})
+        row = profiles.get(path.name) if isinstance(profiles, dict) else None
+        fit = row.get("memoryQualification") if isinstance(row, dict) else None
+        if not isinstance(fit, dict) or fit.get("source") != "measured-native" or fit.get("schemaVersion") != 1:
+            continue
+        if (fit.get("runtimeMode") != "lemonade" or fit.get("gpuLayers") != "99"
+                or fit.get("runtimeBackend") != row.get("backend")
+                or fit.get("qualificationSignature") != row.get("qualificationSignature")
+                or any(not re.fullmatch(r"[0-9a-f]{64}", str(fit.get(key, ""))) for key in ("modelSha256", "runtimeSha256", "executionSignature", "visionProjectorSha256"))
+                or any(fit.get(key) != row.get(key) for key in ("modelSha256", "runtimeSha256", "contextLength", "draftTokens"))
+                or (model.get("gguf_sha256") and model["gguf_sha256"] != fit["modelSha256"])):
+            continue
+        hardware = fit.get("hardware", {})
+        if (not isinstance(hardware, dict) or normalize_key(hardware.get("name")) != normalize_key(gpu_info.name)
+                or hardware.get("backend") != gpu_info.gpu_backend
+                or type(hardware.get("memoryTotalMB")) is not int
+                or gpu_info.memory_total_mb + 256 < hardware["memoryTotalMB"]
+                or type(hardware.get("systemRamGB")) is not int or system_ram_gb < hardware["systemRamGB"]):
+            continue
+        projector = safe_artifact(store["path"], fit.get("visionProjectorFile"))
+        try:
+            if (projector is None or projector.stat().st_size != fit.get("visionProjectorSize")
+                    or abs(projector.stat().st_mtime_ns - int(fit.get("visionProjectorMtimeNs", 0))) > 1_000_000_000):
+                continue
+        except (OSError, TypeError, ValueError):
+            continue
+        return {"available":True, "mode":"native-profile", "source":"measured-native",
+            "contextLength":fit["contextLength"], "label":"Verified native profile",
+            "measuredAt":fit.get("measuredAt")}
+    return None
 
 
 def build_models_payload(gpu_info: Optional[GPUInfo], loaded_model: Optional[str], live_tps: float,
@@ -1313,14 +1388,9 @@ def build_models_payload(gpu_info: Optional[GPUInfo], loaded_model: Optional[str
             for name, value in downloaded_files_override.items()
         }
     else:
-        downloaded_files = {}
-        if models_dir.exists():
-            for p in models_dir.iterdir():
-                try:
-                    if p.is_file() and p.name.lower().endswith(".gguf") and p.stat().st_size > 0:
-                        downloaded_files[p.name.lower()] = p
-                except OSError:
-                    continue
+        from model_stores import scan_model_files
+        downloaded_files = {name.lower(): path for name, path in scan_model_files(
+            data_root, container=Path("/.dockerenv").exists()).items()}
 
     gpu_data = None
     free_gb = 0.0
@@ -1349,13 +1419,19 @@ def build_models_payload(gpu_info: Optional[GPUInfo], loaded_model: Optional[str
         if is_loaded:
             current_model_id = model["id"]
         metadata = inspect_gguf(path) if path else {"exists": False, "readable": False, "quantization": model.get("quantization", "unknown")}
+        activation_support = _measured_native_activation(model, path, data_root, install_dir, gpu_info, install_ram_gb) if metadata.get("readable") else None
         runtime_profile = _matching_runtime_profile(model, gpu_info, install_ram_gb or None)
+        profile_ram_ineligible = bool(
+            runtime_profile is None
+            and _hardware_matching_runtime_profiles(model, gpu_info)
+        )
         profile_context = _effective_context_length(model, runtime_profile)
         configured_context = recommendation.get("contextLength") if is_configured else None
         actual_context = (
             context_length
             if is_loaded and context_length
             else configured_context
+            or (activation_support["contextLength"] if activation_support else None)
             or profile_context
             or model.get("context_length")
         )
@@ -1381,8 +1457,8 @@ def build_models_payload(gpu_info: Optional[GPUInfo], loaded_model: Optional[str
         )
         if gpu_info:
             capacity_gb = _usable_model_memory_gb(gpu_info)
-            fits_total = bool(_fits_declared_vram(selector_required, capacity_gb) or is_loaded)
-            fits_current = bool(_fits_declared_vram(selector_required, free_gb) or is_loaded)
+            fits_total = bool((not profile_ram_ineligible and _fits_declared_vram(selector_required, capacity_gb)) or is_loaded)
+            fits_current = bool((not profile_ram_ineligible and _fits_declared_vram(selector_required, free_gb)) or is_loaded)
         else:
             fits_total = bool(_fits_declared_vram(selector_required, 4.0) or is_loaded)
             fits_current = False
@@ -1436,6 +1512,7 @@ def build_models_payload(gpu_info: Optional[GPUInfo], loaded_model: Optional[str
             "activeParamsB": model.get("active_params_b"),
             "publisher": model_publisher(model),
             "metadata": {
+                "mtp": mtp_metadata(model, metadata),
                 "source": "gguf" if metadata.get("readable") else "catalog",
                 "catalogSource": model.get("catalog_source") or "ods",
                 "sourceRepo": model.get("source_repo"),
@@ -1460,6 +1537,7 @@ def build_models_payload(gpu_info: Optional[GPUInfo], loaded_model: Optional[str
             "configured": is_configured,
             "recommendation": model_recommendation,
             "fitsVram": fits_total,
+            "activationSupport": activation_support,
             "fitsCurrentVram": fits_current,
             "fitLabel": runtime_profile.get("fit_label") if runtime_profile else ("Fits GPU" if fits_total else "Too large"),
             "runtimeProfile": {

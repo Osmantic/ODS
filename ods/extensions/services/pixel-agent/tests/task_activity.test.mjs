@@ -6,6 +6,24 @@ const runId = 'chatcmpl_11111111-2222-4333-8444-555555555555';
 const ctx = {agentId:'pixel',runId};
 const now = () => '2026-09-08T20:00:00.000Z';
 
+test('context uses the latest assistant call, includes cached tokens and never cumulative cost',()=>{
+  const r=createTaskActivity({now});r.begin({},ctx);
+  r.modelOutput({contextTokenBudget:1000,usage:{input:9000,output:9000}},ctx);
+  assert.equal(r.projection(runId).context,null);
+  r.modelOutput({contextTokenBudget:1000,lastAssistant:{usage:{input:400,output:50,cacheRead:200,cacheWrite:100}}},ctx);
+  assert.deepEqual(r.projection(runId).context,{used:750,window:1000,measuredAt:now()});
+  assert.ok(parseTaskActivity(r.projection(runId),runId));
+});
+test('records bounded ordered steps and rejects malformed timeline and token metadata',()=>{
+  const r=createTaskActivity({now});r.begin({},ctx);
+  for(let i=0;i<30;i++){r.before({toolName:'read'},{...ctx,toolCallId:String(i)});r.after({result:{}},{...ctx,toolCallId:String(i)});}
+  const value=r.projection(runId);
+  assert.equal(value.events.length,24);assert.equal(value.events[0].sequence,7);
+  assert.ok(parseTaskActivity(value,runId));
+  assert.equal(parseTaskActivity({...value,events:[...value.events].reverse()},runId),null);
+  assert.equal(parseTaskActivity({...value,context:{used:-1,window:1000,measuredAt:now()}},runId),null);
+});
+
 test('live observations bind exactly one active run to its opaque user and exclude other sessions', () => {
   const recorder=createTaskActivity({now});
   const user='ods-'+ 'a'.repeat(64);
@@ -77,4 +95,25 @@ test('rejects cross-run, unbounded, extra-field, duplicate and impossible projec
     {...value,activities:[{kind:'read',calls:1,failures:2,blocked:0}]},
     {...value,calls:2,activities:[{kind:'read',calls:1,failures:0,blocked:0},{kind:'read',calls:1,failures:0,blocked:0}]}];
   for (const item of invalid) assert.equal(parseTaskActivity(item,runId),null);
+});
+
+test('configured agent activity binds to that agent and its exact user session', () => {
+  const recorder = createTaskActivity({now, agentId:'assistant'});
+  const user = 'ods-' + 'a'.repeat(64);
+  const context = {...ctx, agentId:'assistant', sessionKey:`agent:assistant:openai-user:${user}`};
+  recorder.begin({}, {...ctx, sessionKey:`agent:pixel:openai-user:${user}`});
+  assert.equal(recorder.projection(runId), null);
+  recorder.begin({}, context);
+  recorder.before({toolName:'read'}, {...context, toolCallId:'a'});
+  recorder.after({result:{}}, {...context, toolCallId:'a'});
+  const active = recorder.activeForUser(user);
+  assert.equal(active?.runId, runId);
+  assert.equal(active.calls, 1);
+  assert.equal(parseTaskActivity(active, runId), active);
+  assert.equal(recorder.activeForUser('ods-' + 'b'.repeat(64)), null);
+  recorder.finish({success:true}, ctx);
+  assert.equal(recorder.activeForUser(user)?.state, 'running');
+  recorder.finish({success:true}, context);
+  assert.equal(recorder.activeForUser(user), null);
+  assert.equal(recorder.projection(runId).state, 'completed');
 });

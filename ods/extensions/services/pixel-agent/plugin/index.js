@@ -1,3 +1,5 @@
+import {createActivityTool, ACTIVITY_CONTRACT} from './activity-display.mjs';
+import {createGoalProgress, createGoalProgressTool, GOAL_CONTRACT} from './goal-progress.mjs';
 // Pixel ODS integration plugin entry.
 //
 // Registers status projection tools plus one targeted, strictly guarded public
@@ -9,7 +11,11 @@ import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import {
   abortAgentHarnessRun,
   abortAndDrainAgentHarnessRun,
+  callGatewayTool,
+  resolveActiveEmbeddedRunSessionId,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
+import {getSessionEntry, patchSessionEntry, resolveStorePath} from "openclaw/plugin-sdk/session-store-runtime";
+import {withSessionTranscriptWriteLock} from 'openclaw/plugin-sdk/session-transcript-runtime';
 import {
   extractBasicHtmlContent,
   fetchWithWebToolsNetworkGuard,
@@ -22,6 +28,8 @@ import {
   statusPayload,
 } from "./projection.mjs";
 import { promptContractForAgent } from "./prompt-contract.mjs";
+import { executionContext } from "./completion-assurance.mjs";
+import { createAskUserTool } from "./ask-user.mjs";
 import {
   appsToolText,
   statusToolText,
@@ -44,17 +52,24 @@ import {
 import { createEvidenceArtifactWriter } from "./evidence-artifact.mjs";
 import { createWorkspacePreviewTool } from "./workspace-preview.mjs";
 import { createTaskActivity } from "./task-activity.mjs";
+import { createWorkspaceProjects } from "./workspace-projects.mjs";
 import { createAccessRuntime, executionHostForAgent } from "./access-runtime.mjs";
 import { createManagedRuntimeRegistry } from "./managed-runtime-lifecycle.mjs";
+import {createContextCompaction, readContextRequest, prepareStableContextModel} from './context-compaction.mjs';
+import {registerHistoryIntegration} from './history-context.mjs';
 import { createOpenClawCodingTools, resolveSandboxContext, OPENCLAW_VERSION } from "openclaw/plugin-sdk/agent-harness";
 
 const AGENT_ID = process.env.PIXEL_AGENT_ID ?? "pixel";
 const ABORT_BODY_LIMIT = 256;
 const OPENAI_RUN_ID = /^chatcmpl_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const toolLoopGuardRegistry = createToolLoopGuardRegistry();
-const taskActivity = createTaskActivity();
+const goalProgress = createGoalProgress({agentId:AGENT_ID});
+const workspaceProjects = createWorkspaceProjects();
+const taskActivity = createTaskActivity({agentId:AGENT_ID, goalForRun:id=>goalProgress.projection(id),projectsForSession:key=>workspaceProjects.forSession(key)});
 let execCancellationControl;
 let accessRuntime;
+let contextCompaction;
+let currentManagedRuntime;
 const managedRuntimeRegistry = createManagedRuntimeRegistry();
 const evidenceArtifactWriter = createEvidenceArtifactWriter();
 
@@ -212,6 +227,28 @@ export default definePluginEntry({
       execControl: () => execCancellationControl, runtimeVersion: OPENCLAW_VERSION,
       hooksAllowed: api.config?.plugins?.entries?.["pixel-ods"]?.hooks?.allowConversationAccess === true});
     const managedRuntime = managedRuntimeRegistry.register(api, accessRuntime);
+    if (managedRuntime) currentManagedRuntime = managedRuntime;
+    contextCompaction ??= createContextCompaction({agentId:AGENT_ID,
+      readConfig:() => api.runtime?.config?.current?.() ?? api.config,
+      readSession:scope => getSessionEntry({...scope,
+        storePath:resolveStorePath((api.runtime?.config?.current?.() ?? api.config)?.session?.store, {agentId:AGENT_ID})}),
+      callGateway:callGatewayTool,
+      prepareModel:scope => {
+        if (currentManagedRuntime) {
+          // Per-turn managed routes need their own qualified maintenance lease;
+          // never replay an expired turn token or bypass handoff approval.
+          if (typeof currentManagedRuntime.prepareCompaction === 'function') return currentManagedRuntime.prepareCompaction(scope);
+          throw Object.assign(new Error('managed compaction unavailable'),{code:'unsupported-model'});
+        }
+        return prepareStableContextModel(scope);
+      },
+      activeSession:key => Boolean(resolveActiveEmbeddedRunSessionId(key)),
+      admission:{status:() => currentManagedRuntime?.status() ?? accessRuntime.status(),
+        acquire:(token, revision) => currentManagedRuntime ? currentManagedRuntime.acquireTransition(token, revision)
+          : accessRuntime.acquire(token, revision),
+        release:token => accessRuntime.release(token), owns:token => accessRuntime.owns(token)},
+    });
+    registerHistoryIntegration(api,{compactor:contextCompaction,getSessionEntry,patchSessionEntry,resolveStorePath,withSessionTranscriptWriteLock});
     const statusFile = statusFileFromEnv();
     const configuredContextWindow = api.pluginConfig?.modelContextWindow;
     const configuredLeanPrompt = api.pluginConfig?.leanPrompt === true;
@@ -230,6 +267,7 @@ export default definePluginEntry({
         }),
       execControl: execCancellationControl,
       evidenceArtifactWriter,
+      onWorkspaceMutation:mutation=>workspaceProjects.record(mutation),
       warn: (message) => api.logger.warn(message),
     });
 
@@ -238,23 +276,34 @@ export default definePluginEntry({
     // so every ODS lookup is followed by a user-visible answer.
     api.on("before_prompt_build", (event, context) => {
       const privateBrowserAccess = privateBrowserAccessForAgent(api.config, AGENT_ID);
-      toolLoopGuard.observeRun(context, AGENT_ID, event, { privateBrowserAccess });
-      if (!accessRuntime.isProbe(context)) taskActivity.begin(event, context);
-      return promptContractForAgent(context, AGENT_ID, event, {
+      const workspaceRoot = api.config?.agents?.list?.find(agent => agent.id === AGENT_ID)?.workspace;
+      toolLoopGuard.observeRun(context, AGENT_ID, event, { privateBrowserAccess, workspaceRoot });
+      if (!accessRuntime.isProbe(context)) { goalProgress.begin(event, context); taskActivity.begin(event, context); }
+      const contract = promptContractForAgent(context, AGENT_ID, event, {
         verificationStatus: toolLoopGuard.verificationStatus(context?.runId),
         configuredContextWindow,
         configuredLeanPrompt,
         privateBrowserAccess,
       });
+      return contract ? { ...contract, ...(goalProgress.active(context?.runId ?? event?.runId) ? {appendContext:GOAL_CONTRACT} : {}), appendSystemContext: `${ACTIVITY_CONTRACT} ${goalProgress.active(context?.runId ?? event?.runId) ? GOAL_CONTRACT : ""} ${contract.appendSystemContext} ${executionContext()}` } : undefined;
     });
     api.on("model_call_started", (event, context) =>
       toolLoopGuard.observeModelCall(event, context, AGENT_ID)
     );
+    api.on("model_call_ended", (event, context) =>
+      toolLoopGuard.observeModelEnd(event, context, AGENT_ID)
+    );
+    api.on("llm_output", (event, context) => {
+      if (!accessRuntime.isProbe(context)) {
+        taskActivity.modelOutput(event, context);
+        contextCompaction.observeModelOutput(event,context);
+      }
+    });
     if (!managedRuntime) {
       api.on("before_agent_run", (event, context) => accessRuntime.admit(undefined, context));
     }
     api.on("agent_end", (event, context) => {
-      if (!accessRuntime.isProbe(context)) taskActivity.finish(event, context);
+      if (!accessRuntime.isProbe(context)) { goalProgress.finish(event, context); taskActivity.finish(event, context); }
       if (!managedRuntime) return accessRuntime.finish({runId: event.runId}, context);
     });
     api.on("before_tool_call", async (event, context) => {
@@ -263,13 +312,14 @@ export default definePluginEntry({
         await toolLoopGuard.beforeToolCall(event, context, AGENT_ID),
         event, context, AGENT_ID,
       );
-      const decision = guard?.block ? guard : accessRuntime.beforeTool(event, context) ?? guard;
+      const decision = guard?.block ? guard : goalProgress.before(event, context) ?? accessRuntime.beforeTool(event, context) ?? guard;
       taskActivity.before(event, context, decision?.block === true);
       return decision;
     });
     api.on("after_tool_call", (event, context) => {
       accessRuntime.afterTool(event, context);
       if (!accessRuntime.isProbe(context)) {
+        goalProgress.update(event, context);
         taskActivity.after(event, context);
         return toolLoopGuard.afterToolCall(event, context, AGENT_ID);
       }
@@ -283,6 +333,9 @@ export default definePluginEntry({
           let body = "";
           for await (const chunk of req) { body += chunk.toString(); if (body.length > 512) throw new Error(); }
           const value = JSON.parse(body);
+          if (value?.operation === 'model-status' && Object.keys(value).join() === 'operation') {
+            sendJson(res, 200, accessRuntime.readModel()); return true;
+          }
           if (!value || Object.keys(value).sort().join() !== "operation,revision,token" ||
               !/^[a-f0-9]{64}$/.test(value.token) || !/^[a-f0-9]{64}$/.test(value.revision)) throw new Error();
           let result;
@@ -299,6 +352,9 @@ export default definePluginEntry({
             managedRuntime?.assertTransition();
             result = accessRuntime.readSettings(value.token, value.revision);
           }
+          else if (value.operation === "model-readback") {
+            result = accessRuntime.readModel(value.token, value.revision);
+          }
           else if (value.operation === "provider-readback") {
             managedRuntime?.assertTransition();
             // The same owned transition and current-process snapshot gate this
@@ -312,16 +368,27 @@ export default definePluginEntry({
           }
           else throw new Error();
           sendJson(res, 200, result);
-        } catch { sendJson(res, 409, {error: "access transition unavailable, busy, or proof failed"}); }
+        } catch (failure) {
+          sendJson(res, 409, {error: (typeof managedRuntime?.classifyTransitionError === 'function'
+            ? managedRuntime.classifyTransitionError(failure)
+            : null) ?? (typeof accessRuntime.classifyTransitionError === 'function'
+            ? accessRuntime.classifyTransitionError(failure)
+            : null)
+            ?? "access transition unavailable, busy, or proof failed"});
+        }
         return true;
       },
     });
     api.on("tool_result_persist", (event, context) =>
       toolLoopGuard.toolResultPersist(event, context, AGENT_ID)
     );
-    api.on("before_agent_finalize", (event, context) =>
-      toolLoopGuard.beforeAgentFinalize(event, context, AGENT_ID)
-    );
+    api.on("before_agent_finalize", (event, context) => {
+      const guardDecision = toolLoopGuard.beforeAgentFinalize(event, context, AGENT_ID);
+      const verification = toolLoopGuard.deliveryVerificationForRun(context?.runId ?? event?.runId);
+      return goalProgress.finalize(event, context, {guardDecision,
+        allowed:toolLoopGuard.continuationAllowed(context?.runId ?? event?.runId),
+        waiting:verification?.status === 'pending'});
+    });
     // Delivery rewriting is limited to host-authoritative failed or pending
     // verification state. It neither requests nor receives conversation data.
     api.on("reply_payload_sending", (event) =>
@@ -350,6 +417,16 @@ export default definePluginEntry({
         return true;
       },
     });
+    for (const operation of ['context','compact']) {
+      api.registerHttpRoute({path:`/pixel-ods/${operation}`,auth:'gateway',match:'exact',
+        handler:async (req,res) => {
+          const parsed = await readContextRequest(req, operation === 'compact');
+          if (parsed.status !== 200) {sendJson(res,parsed.status,{error:'invalid context request'});return true;}
+          const result = operation === 'compact' ? await contextCompaction.compact(parsed.user,parsed.requestId)
+            : contextCompaction.context(parsed.user);
+          sendJson(res,200,result);return true;
+        }});
+    }
     // The OpenAI-compatible gateway route does not dispatch channel delivery
     // hooks. Give the private host ingress a narrow, authenticated way to ask
     // for host-observed verification and source-evidence truth before it
@@ -459,6 +536,9 @@ export default definePluginEntry({
     registerTool(api, createPerplexicaResearchTool({ port: api.pluginConfig?.perplexicaPort }), {
       names: ["pixel_ods_research"],
     });
+    registerTool(api, createAskUserTool(), {names:['pixel_ods_ask_user']});
+    registerTool(api, createGoalProgressTool(), {names:['pixel_ods_goal']});
+    registerTool(api, createActivityTool(), {names:['pixel_ods_activity']});
 
     registerTool(api, createDownloadPromoteTool(), {
       names: ["pixel_ods_download_promote"],

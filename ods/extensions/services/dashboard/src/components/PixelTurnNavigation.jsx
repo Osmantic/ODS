@@ -1,5 +1,7 @@
+import {isQuestionAnswer} from '../lib/pixelQuestions'
+
 export default function PixelTurnNavigation({messages, onNavigate}) {
-  const turns = messages.flatMap((message,index) => message.role === 'user' ? [{index,text:message.content}] : [])
+  const turns = messages.flatMap((message,index) => message.role === 'user' && !isQuestionAnswer(messages,index) ? [{index,text:message.content}] : [])
   if (turns.length < 2) return null
   return <div className="p-2 text-xs">
     <label>Conversation outline
