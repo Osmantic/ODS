@@ -315,10 +315,17 @@ async function handleSearxngSearch(res, params, signal) {
     return;
   }
 
-  // searxng pages are 1-based; Brave offsets are 0-based pages capped at 9.
+  // searxng pages are 1-based; Brave offsets support only pages 1 through 10.
+  // Do not bill another request for page 10 when a caller asks for page 11+.
   const requestedPage = Number(params.get("pageno") ?? 1);
   const pageno = Number.isFinite(requestedPage) ? Math.trunc(requestedPage) : 1;
-  const offset = Math.min(9, Math.max(0, pageno - 1));
+  if (pageno > 10) {
+    send(res, 200, searxngEnvelope(query, [], [
+      ["brave", "page outside supported range (1-10)"],
+    ]));
+    return;
+  }
+  const offset = Math.max(0, pageno - 1);
 
   const outcome = await fetchBraveWeb(query, SEARXNG_PAGE_SIZE, offset, signal);
   if (outcome.error) {

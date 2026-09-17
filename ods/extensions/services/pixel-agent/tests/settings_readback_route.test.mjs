@@ -168,7 +168,7 @@ function registeredRoute(managed) {
     resolveSandboxContext() {}, execCancellationControl: {}, OPENCLAW_VERSION: '2026.6.33',
     sendJson(res, status, value) {Object.assign(res, {status, body: value});}});
   const begin = source.indexOf('    accessRuntime ??= createAccessRuntime(');
-  const finish = source.indexOf('    const statusFile =', begin);
+  const finish = source.indexOf('    contextCompaction ??=', begin);
   assert.ok(begin >= 0 && finish > begin);
   // Include the actual production assignment from registry to route owner.
   vm.runInContext(source.slice(begin, finish) + source.slice(start, end), context);

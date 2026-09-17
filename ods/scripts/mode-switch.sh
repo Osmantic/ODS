@@ -34,6 +34,11 @@ env_set() {
             if (index($0, k "=") == 1) print k "=" v; else print
         }' "$ENV_FILE" > "${ENV_FILE}.tmp" && cat "${ENV_FILE}.tmp" > "$ENV_FILE" && rm -f "${ENV_FILE}.tmp"
     else
+        # Appending after a last line that has no newline would join the new
+        # assignment onto that line and corrupt both keys.
+        if [[ -s "$ENV_FILE" && -n "$(tail -c 1 "$ENV_FILE")" ]]; then
+            printf '\n' >> "$ENV_FILE"
+        fi
         echo "${key}=${val}" >> "$ENV_FILE"
     fi
 }
@@ -78,8 +83,21 @@ switch_mode() {
 
     if [[ "$mode" == "local" ]]; then
         env_set "LLM_API_URL" "http://llama-server:8080"
+        local switchboard_mode
+        switchboard_mode=$(grep -m1 "^ODS_MODEL_SWITCHBOARD=" "$ENV_FILE" 2>/dev/null | cut -d= -f2- | tr -d '"\047\r' || true)
+        if [[ "${switchboard_mode,,}" == "enabled" ]]; then
+            env_set "HERMES_LLM_BASE_URL" "http://model-router:9099/v1"
+            env_set "HERMES_LLM_API_KEY" "no-key"
+        else
+            env_set "HERMES_LLM_BASE_URL" "http://llama-server:8080/v1"
+            env_set "HERMES_LLM_API_KEY" "sk-ods-hermes-local"
+        fi
     else
         env_set "LLM_API_URL" "http://litellm:4000"
+        env_set "HERMES_LLM_BASE_URL" "http://litellm:4000/v1"
+        local litellm_key
+        litellm_key=$(grep -m1 "^LITELLM_KEY=" "$ENV_FILE" 2>/dev/null | cut -d= -f2- | tr -d '"\047\r' || true)
+        [[ -z "$litellm_key" ]] || env_set "HERMES_LLM_API_KEY" "$litellm_key"
         # Auto-enable litellm extension
         local litellm_cf="$SCRIPT_DIR/extensions/services/litellm/compose.yaml"
         local litellm_disabled="${litellm_cf}.disabled"

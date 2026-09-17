@@ -27,7 +27,7 @@ const fetchJson = async (url, options = {}) => {
  *
  * Templates carry a `_status` field set by the parent: 'available',
  * 'in_progress', 'applied', or 'has_errors'. The card renders differently
- * per state and is only clickable in 'available'. Callers that prefer to
+ * per state; available and failed templates can be opened for review. Callers that prefer to
  * hide applied templates (Extensions page) can filter them out upstream.
  */
 export function TemplatePicker({ templates, onApplied, compact = false, variant = 'cards' }) {
@@ -44,7 +44,7 @@ export function TemplatePicker({ templates, onApplied, compact = false, variant 
           const inProgress = status === 'in_progress'
           const hasErrors = status === 'has_errors'
           const isApplied = status === 'applied'
-          const disabled = inProgress || hasErrors || isApplied
+          const disabled = inProgress || isApplied
 
           if (variant === 'library') return <button key={tmpl.id} className="collection-entry" disabled={disabled} aria-disabled={disabled} onClick={() => setPreview(tmpl)}>
             <MetalMetricIcon icon={inProgress ? Loader2 : hasErrors ? AlertTriangle : isApplied ? Check : Icon} size={19}/>
@@ -56,7 +56,7 @@ export function TemplatePicker({ templates, onApplied, compact = false, variant 
           const cardByStatus = inProgress
             ? 'bg-theme-card border-blue-500/30 cursor-not-allowed opacity-80'
             : hasErrors
-            ? 'bg-red-500/5 border-red-500/30 cursor-not-allowed'
+            ? 'bg-red-500/5 border-red-500/30 hover:border-red-400/70'
             : isApplied
             ? 'bg-green-500/5 border-green-500/30 cursor-not-allowed'
             : 'bg-theme-card border-theme-border hover:border-theme-accent/40 hover:bg-theme-surface-hover'
@@ -155,7 +155,7 @@ export function TemplatePreview({ template, onClose, onApplied }) {
   }
 
   const handleApply = async () => {
-    if (applying) return
+    if (applying || !canApply) return
     setApplying(true)
     setError(null)
     try {
@@ -187,6 +187,9 @@ export function TemplatePreview({ template, onClose, onApplied }) {
   }
 
   const changes = previewData?.changes || {}
+  const retrying = (changes.has_errors?.length || 0) > 0
+  const waiting = (changes.in_progress?.length || 0) > 0
+  const canApply = !loading && !waiting && ((changes.to_enable?.length || 0) > 0 || retrying)
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={requestClose}>
@@ -223,6 +226,21 @@ export function TemplatePreview({ template, onClose, onApplied }) {
         {/* Preview content */}
         {previewData && !applied && (
           <div className="space-y-3">
+            {retrying && (
+              <section aria-label="Failed template services" className="rounded border border-red-500/30 bg-red-500/5 p-3">
+                <h4 className="text-sm font-medium text-red-400">Failed services</h4>
+                <p className="text-xs text-theme-text-muted mt-1">Retry will repeat installation or setup for these services.</p>
+                <ul className="mt-2 text-xs text-theme-text">{changes.has_errors.map(svc => <li key={svc}>{svc}</li>)}</ul>
+              </section>
+            )}
+            {waiting && (
+              <section aria-label="Template installations in progress" className="rounded border border-blue-500/30 p-3">
+                <h4 className="text-sm font-medium text-blue-400">Installation in progress</h4>
+                <ul className="mt-2 text-xs text-theme-text">{changes.in_progress.map(svc => <li key={svc}>{svc}</li>)}</ul>
+                <p className="mt-2 text-xs text-theme-text-muted">Wait for these installations to finish before applying this template.</p>
+                <button type="button" disabled={loading || applying} onClick={loadPreview} className="mt-2 text-xs text-theme-accent-light disabled:opacity-50">Refresh preview</button>
+              </section>
+            )}
             {changes.to_enable?.length > 0 && (
               <div>
                 <h4 className="text-xs font-medium text-theme-text-muted uppercase tracking-wider mb-1.5">Will be enabled</h4>
@@ -238,7 +256,7 @@ export function TemplatePreview({ template, onClose, onApplied }) {
 
             {changes.already_enabled?.length > 0 && (
               <div>
-                <h4 className="text-xs font-medium text-theme-text-muted uppercase tracking-wider mb-1.5">Already running</h4>
+                <h4 className="text-xs font-medium text-theme-text-muted uppercase tracking-wider mb-1.5">Already available</h4>
                 <div className="flex flex-wrap gap-1.5">
                   {changes.already_enabled.map(svc => (
                     <span key={svc} className="text-xs px-2 py-1 rounded bg-green-500/10 text-green-400 border border-green-500/20">
@@ -290,7 +308,7 @@ export function TemplatePreview({ template, onClose, onApplied }) {
               <p className="text-sm text-green-400">Template applied — check extension cards for installation progress</p>
             )}
             {applied === 'already_active' && (
-              <p className="text-sm text-green-400">All services in this template are already active</p>
+              <p className="text-sm text-green-400">All services in this template are already available</p>
             )}
             {applied === 'restart_required' && (
               <>
@@ -343,11 +361,11 @@ export function TemplatePreview({ template, onClose, onApplied }) {
           {!applied && previewData && (
             <button
               onClick={handleApply}
-              disabled={applying || (changes.to_enable?.length === 0)}
+              disabled={applying || !canApply}
               className="px-4 py-2 text-sm rounded-lg bg-theme-accent/20 text-theme-accent-light hover:bg-theme-accent/30 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
             >
               {applying ? <Loader2 size={14} className="animate-spin" /> : null}
-              Apply Template
+              {retrying ? 'Retry Template' : 'Apply Template'}
             </button>
           )}
         </div>

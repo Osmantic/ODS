@@ -5,6 +5,7 @@ import PanelSelect from '../components/PanelSelect'
 import IntegrationSnapshotDownload from '../components/IntegrationSnapshotDownload'
 
 const POLL_INTERVAL = 10000
+const POLL_TIMEOUT = 15000
 const NODE_W = 170
 const NODE_H = 64
 const LABEL_W = 210
@@ -141,7 +142,7 @@ export function buildTopology(statusData) {
         id,
         name: service.name || id,
         status: normalizeStatus(service.status),
-        port: service.external_port || service.port || '',
+        port: service.external_port ?? service.port ?? '',
         public_url: service.public_url || '',
         ui_path: service.ui_path || '/',
         category: CATEGORY_MAP[id] || 'other',
@@ -326,21 +327,39 @@ export default function ServiceMap({ compact = false }) {
   const [loading, setLoading] = useState(true)
   const [actualSize, setActualSize] = useState(false)
   const [error, setError] = useState(null)
-  const fetchInFlight = useRef(false)
+  const activeRequest = useRef(null)
 
   const fetchTopology = useCallback(async () => {
-    if (document.hidden || fetchInFlight.current) return
-    fetchInFlight.current = true
+    if (document.hidden || activeRequest.current) return
+    const controller = new AbortController()
+    activeRequest.current = controller
+    let rejectAbort
+    const aborted = new Promise((_, reject) => {
+      rejectAbort = () => reject(new Error('Service status request timed out'))
+      controller.signal.addEventListener('abort', rejectAbort, {once:true})
+    })
+    const timeout = setTimeout(() => controller.abort(), POLL_TIMEOUT)
     try {
-      const response = await fetch('/api/status')
-      if (!response.ok) throw new Error('Failed to fetch service status')
-      setTopology({ ...buildTopology(await response.json()), capturedAt: new Date().toISOString() })
+      const snapshot = (async () => {
+        const response = await fetch('/api/status', {signal:controller.signal})
+        if (!response.ok) throw new Error('Failed to fetch service status')
+        return response.json()
+      })()
+      const data = await Promise.race([snapshot, aborted])
+      if (activeRequest.current !== controller) return
+      setTopology({ ...buildTopology(data), capturedAt: new Date().toISOString() })
       setError(null)
     } catch (err) {
-      setError(err.message)
+      if (activeRequest.current === controller) setError(err.message)
     } finally {
-      setLoading(false)
-      fetchInFlight.current = false
+      clearTimeout(timeout)
+      controller.signal.removeEventListener('abort', rejectAbort)
+      controller.abort()
+      // A disposed effect must not clear its replacement's request guard.
+      if (activeRequest.current === controller) {
+        activeRequest.current = null
+        setLoading(false)
+      }
     }
   }, [])
 
@@ -350,6 +369,9 @@ export default function ServiceMap({ compact = false }) {
     const onVisibility = () => { if (!document.hidden) fetchTopology() }
     document.addEventListener('visibilitychange', onVisibility)
     return () => {
+      const pending = activeRequest.current
+      activeRequest.current = null
+      pending?.abort()
       clearInterval(interval)
       document.removeEventListener('visibilitychange', onVisibility)
     }

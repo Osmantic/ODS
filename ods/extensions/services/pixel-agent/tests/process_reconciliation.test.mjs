@@ -52,7 +52,11 @@ test('unknown, malformed, expired, duplicate and reused identities remain held',
     [{...terminal(), status: 'unknown'}], new Error('unavailable')]) {
     await runtime.reconcileDetached();
     assert.equal(runtime.status().active, 1);
-    assert.throws(() => runtime.acquire('a'.repeat(64), runtime.status().revision), /busy/);
+    let failure;
+    try { runtime.acquire('a'.repeat(64), runtime.status().revision); }
+    catch (error) { failure = error; }
+    assert.ok(failure);
+    assert.equal(runtime.classifyTransitionError(failure), 'native-transition-busy-detached-process');
   }
   result = [terminal()];
   await runtime.reconcileDetached();

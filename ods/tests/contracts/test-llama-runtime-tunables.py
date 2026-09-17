@@ -101,7 +101,7 @@ def main() -> int:
         errors.append("06-directories.sh: reruns do not preserve N_GPU_LAYERS")
     if 'N_GPU_LAYERS_VALUE="${N_GPU_LAYERS_VALUE:-auto}"' not in linux_env_generator:
         errors.append("06-directories.sh: empty N_GPU_LAYERS values do not fall back to auto")
-    if "N_GPU_LAYERS=${N_GPU_LAYERS_VALUE}" not in linux_env_generator:
+    if 'N_GPU_LAYERS=$(dotenv_value "${N_GPU_LAYERS_VALUE}")' not in linux_env_generator:
         errors.append("06-directories.sh: generated .env does not write N_GPU_LAYERS")
 
     macos_env_generator = MACOS_ENV_GENERATOR.read_text(encoding="utf-8")

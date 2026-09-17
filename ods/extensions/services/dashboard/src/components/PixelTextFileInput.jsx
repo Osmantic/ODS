@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Paperclip } from 'lucide-react'
+import { appendComposerText } from '../lib/pixelComposerText'
 
 const EXTENSIONS = /\.(txt|md|markdown|csv|tsv|json|jsonl|yaml|yml|toml|xml|html|css|js|jsx|ts|tsx|py|sh|log)$/i
 const MAX_BYTES = 16 * 1024
@@ -39,7 +40,7 @@ export default function PixelTextFileInput({ input, disabled, limit, onInsert })
     next.onerror = () => { setReading(false); setError('The file could not be read. Choose it again.') }
     next.readAsArrayBuffer(selected)
   }
-  const fits = file && input.length + file.text.length + 1 <= limit
+  const fits = file && appendComposerText(input, file.text).length <= limit
   return <div className="pixel-text-file-input text-xs text-theme-text-secondary">
     <input ref={field} type="file" aria-label="Choose text file" accept=".txt,.md,.csv,.tsv,.json,.jsonl,.yaml,.yml,.toml,.xml,.html,.css,.js,.jsx,.ts,.tsx,.py,.sh,.log" hidden disabled={disabled} onChange={choose}/>
     <button type="button" aria-label="Add text file" title="Add text file" disabled={disabled || reading} onClick={() => field.current?.click()}><Paperclip size={16}/></button>

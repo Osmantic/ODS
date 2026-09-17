@@ -53,7 +53,14 @@ ods_bind_cli_command() {
         return 0
     fi
 
-    if _ods_cli_replace_link "$install_cli" "$system_link" true; then
+    # Refresh the conventional link that the shell already selects. A
+    # rootless link may shadow the system command after an install moves.
+    # An unrelated PATH entry belongs to the operator, not this installer.
+    if [[ -n "$current" && "$current" != "$user_link" && "$current" != "$system_link" ]]; then
+        return 1
+    fi
+
+    if [[ "$current" != "$user_link" ]] && _ods_cli_replace_link "$install_cli" "$system_link" true; then
         printf 'system:%s\n' "$system_link"
         return 0
     fi
@@ -69,6 +76,12 @@ ods_bind_cli_command() {
         install -d -m 0700 "$user_bin" || return 1
     fi
     if _ods_cli_replace_link "$install_cli" "$user_link" false; then
+        # A new user link cannot hide a stale system command earlier in PATH.
+        # If no command was visible, the caller already prints the PATH setup.
+        if [[ -n "$current" ]]; then
+            current="$(command -v ods 2>/dev/null || true)"
+            ods_cli_path_matches_install "$current" "$install_cli" || return 1
+        fi
         printf 'user:%s\n' "$user_link"
         return 0
     fi

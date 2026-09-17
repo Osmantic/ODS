@@ -698,12 +698,17 @@ export default function Dashboard({ status, loading, compact = false }) {
 
   if (status?.gpu) {
     if (status.gpu.memoryType === 'unified') {
-      // Apple Silicon: GPU utilization isn't available (always 0), show chip info instead.
+      const hasGpuUsage = Number.isFinite(status.gpu.utilization)
       systemMetrics.push({
         icon: Zap,
-        label: 'Chip',
-        value: status.gpu.name.replace('Apple ', ''),
-        subvalue: 'Apple Silicon',
+        label: hasGpuUsage ? 'GPU' : 'Chip',
+        value: hasGpuUsage ? `${status.gpu.utilization}%` : status.gpu.name.replace('Apple ', ''),
+        subvalue: hasGpuUsage ? status.gpu.name : status.gpu.name.startsWith('Apple ') ? 'Apple Silicon' : 'Unified memory',
+        percent: hasGpuUsage ? status.gpu.utilization : undefined,
+      })
+      if (Number.isFinite(status.gpu.vramUsed)) systemMetrics.push({
+        icon: HardDrive, label: 'GPU memory', value: `${status.gpu.vramUsed.toFixed(1)} GB`,
+        subvalue: 'Dedicated + shared',
       })
       if (status?.ram) {
         systemMetrics.push({
@@ -871,7 +876,7 @@ export default function Dashboard({ status, loading, compact = false }) {
                   Multi-GPU System · {status.gpu.gpu_count} GPUs
                 </p>
                 <p className="text-xs text-zinc-400 mt-0.5">
-                  {status.gpu.name} · {status.gpu.utilization}% avg util · {status.gpu.vramUsed?.toFixed(1)}/{status.gpu.vramTotal} GB VRAM
+                  {status.gpu.name} · {Number.isFinite(status.gpu.utilization) ? `${status.gpu.utilization}% avg util` : 'Utilization unavailable'} · {Number.isFinite(status.gpu.vramUsed) ? `${status.gpu.vramUsed.toFixed(1)}/${status.gpu.vramTotal} GB VRAM` : 'VRAM usage unavailable'}
                 </p>
               </div>
             </div>

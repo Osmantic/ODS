@@ -14,6 +14,6 @@ ods_linux_node_tools_available() {
     case "$node_real:$npm_real" in
         /mnt/[A-Za-z]/*|*:/mnt/[A-Za-z]/*) return 1 ;;
     esac
-    major="$($node_bin -p 'process.versions.node.split(".")[0]' 2>/dev/null || true)"
+    major="$("$node_bin" -p 'process.versions.node.split(".")[0]' 2>/dev/null || true)"
     [[ "$major" =~ ^[0-9]+$ && "$major" -ge 20 ]]
 }

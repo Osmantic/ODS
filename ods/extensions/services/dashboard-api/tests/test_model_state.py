@@ -347,6 +347,24 @@ class TestModelStateEndpoint:
         assert any("routeSeq" in error for error in body["errors"])
         assert any("unexpected" in error for error in body["errors"])
 
+    def test_non_dict_root_state_is_diagnostic(self, test_client, monkeypatch, tmp_path):
+        path = self._point_at(monkeypatch, tmp_path)
+        path.write_text('["array", "root"]', encoding="utf-8")
+        resp = test_client.get("/api/models/state", headers=test_client.auth_headers)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["exists"] is True and body["valid"] is False
+        assert any("JSON object" in err for err in body["errors"])
+
+    def test_non_utf8_binary_state_is_diagnostic(self, test_client, monkeypatch, tmp_path):
+        path = self._point_at(monkeypatch, tmp_path)
+        path.write_bytes(b"\x80\xff\xfe\xfd")
+        resp = test_client.get("/api/models/state", headers=test_client.auth_headers)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["exists"] is True and body["valid"] is False
+        assert any("read failed" in err for err in body["errors"])
+
     def test_requires_auth(self, test_client, monkeypatch, tmp_path):
         self._point_at(monkeypatch, tmp_path)
         resp = test_client.get("/api/models/state")

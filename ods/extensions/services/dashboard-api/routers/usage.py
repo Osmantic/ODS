@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import math
 import os
 import re
 import urllib.error
@@ -415,14 +416,14 @@ def _request_text(url: str) -> str:
         return response.read().decode("utf-8", errors="replace")
 
 
-def _metric_value(metrics_text: str, metric_name: str) -> float:
+def _metric_value(metrics_text: str, metric_name: str, *, default: float = 0) -> float:
     match = re.search(rf"^{re.escape(metric_name)}\s+([0-9.eE+-]+)\s*$", metrics_text, flags=re.MULTILINE)
     if not match:
-        return 0
+        return default
     try:
         return float(match.group(1))
     except ValueError:
-        return 0
+        return default
 
 
 def _has_metric(metrics_text: str, metric_name: str) -> bool:
@@ -430,8 +431,17 @@ def _has_metric(metrics_text: str, metric_name: str) -> bool:
 
 
 def _extract_llama_cpp_prometheus_counters(metrics_text: str, url: str) -> dict[str, Any] | None:
-    input_tokens = int(_metric_value(metrics_text, LLAMA_CPP_PROMETHEUS_METRICS["input_tokens"]))
-    output_tokens = int(_metric_value(metrics_text, LLAMA_CPP_PROMETHEUS_METRICS["output_tokens"]))
+    values = {}
+    for field, name in LLAMA_CPP_PROMETHEUS_METRICS.items():
+        value = _metric_value(metrics_text, name, default=math.nan) if _has_metric(metrics_text, name) else 0
+        # An optional exporter must not fail the complete report or reset the
+        # observation baseline with fabricated zeros. Discard this sample;
+        # the next valid scrape can continue from the last valid observation.
+        if not math.isfinite(value) or value < 0:
+            return None
+        values[field] = int(value)
+    input_tokens = values["input_tokens"]
+    output_tokens = values["output_tokens"]
     if input_tokens <= 0 and output_tokens <= 0:
         return None
 
@@ -440,7 +450,7 @@ def _extract_llama_cpp_prometheus_counters(metrics_text: str, url: str) -> dict[
     if service in {"127.0.0.1", "localhost", "host.docker.internal"}:
         service = "local-runtime"
     request_metric_available = _has_metric(metrics_text, LLAMA_CPP_PROMETHEUS_METRICS["requests"])
-    request_count = int(_metric_value(metrics_text, LLAMA_CPP_PROMETHEUS_METRICS["requests"])) if request_metric_available else 0
+    request_count = values["requests"]
     request_count_source = "prometheus_counter" if request_metric_available else "unavailable"
     request_count_note = None
     if not request_metric_available:

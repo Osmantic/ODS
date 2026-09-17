@@ -335,6 +335,20 @@ async function testCompatEnabled(base) {
     JSON.stringify(braveEngine.body.unresponsive_engines),
   );
 
+  const page10 = await getJson(base, "/search?format=json&q=echo&pageno=10");
+  check("last supported page maps to offset 9",
+    page10.body.results[0]?.title === "offset=9 count=20", page10);
+
+  for (const page of [11, 100, 100000000000000000000]) {
+    const before = observedTokens.length;
+    const outside = await getJson(base, "/search?format=json&q=echo&pageno=" + page);
+    check("out-of-range page has an honest empty envelope",
+      outside.status === 200 && outside.body.results.length === 0 &&
+      outside.body.unresponsive_engines[0]?.[1] === "page outside supported range (1-10)", outside);
+    check("out-of-range page does not spend an upstream request",
+      observedTokens.length === before, observedTokens.length - before);
+  }
+
   const page3 = await getJson(base, "/search?format=json&q=echo&pageno=3");
   check(
     "pageno maps to Brave offset (page 3 → offset 2)",

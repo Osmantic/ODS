@@ -95,9 +95,10 @@ load_env_from_output_allowlist ALLOWED < <(printf '%s\n' 'ALLOWED="yes"' 'NOT_AL
 pass "allowlist loader ignores unapproved keys"
 
 echo "Test 9: model selector loader only accepts approved selector keys"
-unset LLM_MODEL EVIL_SELECTOR_KEY 2>/dev/null || true
-load_model_selector_env_from_output < <(printf '%s\n' 'LLM_MODEL="qwen-test"' 'EVIL_SELECTOR_KEY="nope"')
+unset LLM_MODEL PIXEL_AGENT_MODEL_READY EVIL_SELECTOR_KEY 2>/dev/null || true
+load_model_selector_env_from_output < <(printf '%s\n' 'LLM_MODEL="qwen-test"' 'PIXEL_AGENT_MODEL_READY="false"' 'EVIL_SELECTOR_KEY="nope"')
 [[ "${LLM_MODEL:-}" == "qwen-test" ]] || fail "LLM_MODEL was not loaded"
+[[ "${PIXEL_AGENT_MODEL_READY:-}" == "false" ]] || fail "PIXEL_AGENT_MODEL_READY was not loaded"
 [[ -z "${EVIL_SELECTOR_KEY:-}" ]] || fail "EVIL_SELECTOR_KEY should not be loaded"
 pass "model selector loader is allowlisted"
 

@@ -463,6 +463,7 @@ export default function Models({ compact = false }) {
           model={activationConfigModel}
           gpu={gpu}
           pixelMinimumContext={pixelMinimumContext}
+          hermesMinimumContext={hermesMinimumContext}
           isCurrentModel={activationConfigModel.id === currentModel}
           onCancel={() => setActivationConfigModel(null)}
           onConfirm={handleConfirmActivation}
@@ -823,6 +824,7 @@ function ModelTableRow({
     canActivateModels,
     activationModeError,
     hermesMinimumContext,
+    pixelMinimumContext,
     loadBusy,
     activationBusy,
   })
@@ -1103,12 +1105,21 @@ function ModelActivationDialog({
   model,
   gpu,
   pixelMinimumContext,
+  hermesMinimumContext,
   isCurrentModel,
   onCancel,
   onConfirm,
 }) {
   const options = getContextOptions(model, gpu)
-  const initialContext = Number(model.contextLength || options[0]?.contextLength || 8192)
+  const fittingOptions = options.filter(option => option.fitsVram === true)
+  const hermesFit = fittingOptions.filter(option => option.contextLength >= Number(hermesMinimumContext || 65536))
+  const pixelFit = fittingOptions.filter(option => option.contextLength >= Number(pixelMinimumContext || 16384))
+  const bestShorterContext = Math.max(0, ...(hermesFit.length ? hermesFit : pixelFit).map(option => option.contextLength))
+  const initialContext = Number(
+    model.fitsVram === false && !model.recommended && bestShorterContext > 0
+      ? bestShorterContext
+      : model.contextLength || options[0]?.contextLength || 8192
+  )
   const [selectedContext, setSelectedContext] = useState(initialContext)
   const [customContext, setCustomContext] = useState(String(initialContext))
   const selected = options.find(option => option.contextLength === selectedContext)
@@ -1290,7 +1301,7 @@ function ModelActivationDialog({
             <button
               type="button"
               onClick={() => onConfirm(selectedContext)}
-              disabled={!contextValid || sameContext}
+              disabled={!contextValid || sameContext || (model.fitsVram === false && !model.recommended && selected?.fitsVram === false)}
               className="inline-flex h-9 min-w-28 items-center justify-center gap-2 rounded-md bg-theme-accent px-4 text-xs font-semibold text-white shadow-[0_0_18px_rgba(168,85,247,0.28)] transition-colors hover:bg-theme-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
             >
               <Play size={13} />
@@ -1474,6 +1485,7 @@ function getRunDisabledReason({
   canActivateModels,
   activationModeError,
   hermesMinimumContext,
+  pixelMinimumContext,
   loadBusy,
   activationBusy,
 }) {
@@ -1481,12 +1493,17 @@ function getRunDisabledReason({
     return activationModeError || 'The local model runtime is unavailable. Review runtime settings before running this model.'
   }
   if (model.fitsVram !== true && !model.recommended) {
-    const required = Number(model.estimatedRequired || model.vramRequired || 0)
-    const total = Number(gpu?.vramTotal || 0)
-    if (required > 0 && total > 0) {
-      return `Requires ${formatNumber(required)} GB VRAM; the detected GPU has ${formatNumber(total)} GB total.`
+    const shorterContextFits = getContextOptions(model, gpu).some(option =>
+      option.fitsVram === true && option.contextLength >= Number(pixelMinimumContext || 16384)
+    )
+    if (!shorterContextFits) {
+      const required = Number(model.estimatedRequired || model.vramRequired || 0)
+      const total = Number(gpu?.vramTotal || 0)
+      if (required > 0 && total > 0) {
+        return `Requires ${formatNumber(required)} GB VRAM; the detected GPU has ${formatNumber(total)} GB total.`
+      }
+      return 'This model does not fit the detected GPU memory.'
     }
-    return 'This model does not fit the detected GPU memory.'
   }
   if (activationBusy) return 'Wait for the current model swap to finish.'
   if (loadBusy) return 'Another model action is in progress.'
@@ -1699,6 +1716,12 @@ function getMemoryMeta(model, gpu) {
 
 function getCompatibilityMeta(model, memory, pixelMinimumContext = 0) {
   if (!model?.fitsVram) {
+    const shorterContextFits = Array.isArray(model?.contextOptions) && model.contextOptions.some(option =>
+      option?.fitsVram === true && Number(option?.contextLength || 0) >= Number(pixelMinimumContext || 16384)
+    )
+    if (shorterContextFits) {
+      return { label: 'Shorter context', detail: 'Fits GPU', tone: 'amber' }
+    }
     const nearLimit = memory.total > 0 && memory.required <= memory.total * 1.08
     return {
       label: nearLimit ? 'High VRAM' : 'Too large',

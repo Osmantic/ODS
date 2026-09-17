@@ -640,6 +640,40 @@ def test_atomic_write_failure_preserves_known_good_config() -> None:
         assert not list(target.parent.glob(f".{target.name}.*.tmp"))
 
 
+def test_validation_rejects_negative_context_or_invalid_port() -> None:
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPT), "--context-length", "-10"],
+        cwd=ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    assert proc.returncode != 0
+    assert "context length must be positive" in proc.stderr
+
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPT), "--opencode-port", "70000"],
+        cwd=ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    assert proc.returncode != 0
+    assert "opencode port must be between 1 and 65535" in proc.stderr
+
+
+def test_validation_rejects_control_characters_in_model_and_key() -> None:
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPT), "--model", "qwen\ninjected=true"],
+        cwd=ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    assert proc.returncode != 0
+    assert "cannot contain control characters or newlines" in proc.stderr
+
+
 def main() -> int:
     tests = [
         test_external_model_uses_authenticated_gateway_without_vendor_impersonation,
@@ -669,6 +703,8 @@ def main() -> int:
         test_write_mode_writes_under_output_root,
         test_write_cli_defaults_to_secret_free_paths,
         test_atomic_write_failure_preserves_known_good_config,
+        test_validation_rejects_negative_context_or_invalid_port,
+        test_validation_rejects_control_characters_in_model_and_key,
     ]
     for test in tests:
         test()

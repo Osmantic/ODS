@@ -3,6 +3,7 @@
 import sqlite3
 import os
 import threading
+from collections import deque
 from datetime import date, timedelta
 
 DB_PATH = os.environ.get("DB_PATH", os.path.join(os.path.dirname(__file__), "data", "usage.db"))
@@ -23,7 +24,7 @@ _local = threading.local()
 
 def _get_conn() -> sqlite3.Connection:
     if not hasattr(_local, "conn") or _local.conn is None:
-        os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+        os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
         _local.conn = sqlite3.connect(DB_PATH)
         _local.conn.execute("PRAGMA journal_mode=WAL")
         _local.conn.execute("PRAGMA busy_timeout=5000")
@@ -422,9 +423,27 @@ def query_session_status(agent: str, char_limit: int = 200_000) -> dict:
         FROM usage
         WHERE agent = ? AND timestamp > {_RECENT_TS_BOUND}
         ORDER BY timestamp ASC
-    """, [agent, "-24 hours"]).fetchall()
+    """, [agent, "-24 hours"])
 
-    if not rows:
+    # A status poll needs a scalar session summary and only the last five
+    # turns, not a second in-memory copy of the entire day's usage history.
+    last_5 = deque(maxlen=5)
+    session_turns = 0
+    current_history = 0
+    total_cost = 0
+    for row in rows:
+        history = row["conversation_history_chars"] or 0
+        if current_history > 1000 and history < current_history * 0.5:
+            session_turns = 0
+            total_cost = 0
+            last_5.clear()
+        current_history = history
+        last_cost = row["estimated_cost_usd"] or 0
+        total_cost += last_cost
+        session_turns += 1
+        last_5.append(row)
+
+    if not session_turns:
         return {
             "agent": agent,
             "current_session_turns": 0,
@@ -437,23 +456,7 @@ def query_session_status(agent: str, char_limit: int = 200_000) -> dict:
             "recommendation": "no_data",
         }
 
-    rows = [dict(r) for r in rows]
-
-    # Find last session reset: a turn where history drops by >50%
-    last_reset_idx = 0
-    for i in range(1, len(rows)):
-        prev = rows[i - 1]["conversation_history_chars"] or 0
-        curr = rows[i]["conversation_history_chars"] or 0
-        if prev > 1000 and curr < prev * 0.5:
-            last_reset_idx = i
-
-    session_rows = rows[last_reset_idx:]
-    current_history = session_rows[-1]["conversation_history_chars"] or 0
-    last_cost = session_rows[-1]["estimated_cost_usd"] or 0
-    total_cost = sum(r["estimated_cost_usd"] or 0 for r in session_rows)
-
     # Last 5 turns for rolling averages
-    last_5 = session_rows[-5:]
     avg_cost_5 = sum(r["estimated_cost_usd"] or 0 for r in last_5) / max(len(last_5), 1)
     total_cache_5 = sum((r["cache_read_tokens"] or 0) + (r["cache_write_tokens"] or 0) for r in last_5)
     total_write_5 = sum(r["cache_write_tokens"] or 0 for r in last_5)
@@ -473,13 +476,13 @@ def query_session_status(agent: str, char_limit: int = 200_000) -> dict:
 
     return {
         "agent": agent,
-        "current_session_turns": len(session_rows),
+        "current_session_turns": session_turns,
         "current_history_chars": current_history,
         "last_turn_cost": round(last_cost, 6),
         "avg_cost_last_5": round(avg_cost_5, 6),
         "cache_write_pct_last_5": round(cache_write_pct, 4),
         "cost_since_last_reset": round(total_cost, 6),
-        "turns_since_last_reset": len(session_rows),
+        "turns_since_last_reset": session_turns,
         "recommendation": rec,
     }
 

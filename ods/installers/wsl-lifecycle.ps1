@@ -359,12 +359,16 @@ function Invoke-ODSWslLifecycle([string]$Action,[string]$Distro,[string]$Install
         if ($Action -in @('stop','restart')) {
             $status=Get-ODSWslLifetimeStatus $identity
             # A stopped distribution is never entered by stop.
-            if ($status.distroRunning) { Invoke-ODSWslStack $identity 'stop' }
+            if ($status.distroRunning) {
+                Invoke-ODSWslStack $identity 'stop' | ForEach-Object { [Console]::Error.WriteLine([string]$_) }
+            }
             $status=Stop-ODSWslLifetime $identity
             if ($Action -eq 'stop') { return $status }
         }
         $status=Start-ODSWslLifetime $identity
-        Invoke-ODSWslStack $identity 'start'
+        # Stack commands emit progress and an adapter receipt. Keep them on
+        # stderr so the public success pipeline contains one lifetime result.
+        Invoke-ODSWslStack $identity 'start' | ForEach-Object { [Console]::Error.WriteLine([string]$_) }
         Get-ODSWslLifetimeStatus $identity
     } finally { $lock.Dispose() }
 }
