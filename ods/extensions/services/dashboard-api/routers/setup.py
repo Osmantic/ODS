@@ -209,8 +209,9 @@ async def chat(request: ChatRequest, api_key: str = Depends(verify_api_key)):
 
     try:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
-            _api_path = os.environ.get("LLM_API_BASE_PATH", "/v1")
-            async with session.post(f"{llm_url}{_api_path}/chat/completions", json=payload, headers={"Content-Type": "application/json"}) as resp:
+            from helpers import normalize_llm_base_url  # noqa: PLC0415
+            _base = normalize_llm_base_url(llm_url)
+            async with session.post(f"{_base}/chat/completions", json=payload, headers={"Content-Type": "application/json"}) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     choices = data.get("choices") or [{}]

@@ -148,20 +148,14 @@ def _vision_backend_base_url() -> str:
     keeps Linux container, Windows host, llama-server, and Lemonade paths from
     accidentally becoming ``/v1/v1`` or ``/api/v1/v1``.
     """
+    from helpers import normalize_llm_base_url  # noqa: PLC0415
+
     raw = (
         os.environ.get("ODS_TALK_VISION_URL")
         or os.environ.get("LLM_API_URL")
         or "http://llama-server:8080"
-    ).rstrip("/")
-    if raw.endswith("/v1") or raw.endswith("/api/v1"):
-        return raw
-
-    base_path = (os.environ.get("LLM_API_BASE_PATH") or "/v1").strip()
-    if not base_path:
-        base_path = "/v1"
-    if not base_path.startswith("/"):
-        base_path = f"/{base_path}"
-    return f"{raw}{base_path.rstrip('/')}"
+    )
+    return normalize_llm_base_url(raw)
 
 
 def _vision_chat_completions_url() -> str:

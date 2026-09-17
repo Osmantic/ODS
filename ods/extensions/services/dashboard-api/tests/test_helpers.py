@@ -1607,3 +1607,63 @@ class TestDirSizeGb:
         # Verify older items were evicted
         first_path = tmp_path / "test_dir_0"
         assert _dir_size_cache.get(first_path) is None
+
+
+# ---------------------------------------------------------------------------
+# normalize_llm_base_url (#4186)
+# ---------------------------------------------------------------------------
+
+
+class TestNormalizeLlmBaseUrl:
+    """The setup wizard appended LLM_API_BASE_PATH unconditionally, so an
+    LLM_API_URL that already carried its base path became /v1/v1 and every
+    chat test 404'd. talk.py had the guard; setup.py did not."""
+
+    def test_host_root_gets_the_base_path(self, monkeypatch):
+        from helpers import normalize_llm_base_url
+        monkeypatch.delenv("LLM_API_BASE_PATH", raising=False)
+        assert normalize_llm_base_url("http://llama-server:8080") == "http://llama-server:8080/v1"
+
+    def test_full_base_is_not_doubled(self, monkeypatch):
+        """The regression: a /v1-terminated URL must be left alone."""
+        from helpers import normalize_llm_base_url
+        monkeypatch.delenv("LLM_API_BASE_PATH", raising=False)
+        assert normalize_llm_base_url("https://api.example.com/v1") == "https://api.example.com/v1"
+        assert normalize_llm_base_url("http://host:8080/api/v1") == "http://host:8080/api/v1"
+
+    def test_trailing_slashes_do_not_produce_a_double_slash(self, monkeypatch):
+        from helpers import normalize_llm_base_url
+        monkeypatch.delenv("LLM_API_BASE_PATH", raising=False)
+        assert normalize_llm_base_url("http://h:8080/") == "http://h:8080/v1"
+        assert normalize_llm_base_url("https://api.example.com/v1/") == "https://api.example.com/v1"
+
+    def test_lemonade_style_base_path_is_honoured(self, monkeypatch):
+        """Lemonade serves /api/v1; the env override must still apply."""
+        from helpers import normalize_llm_base_url
+        monkeypatch.setenv("LLM_API_BASE_PATH", "/api/v1")
+        assert normalize_llm_base_url("http://host:8000") == "http://host:8000/api/v1"
+
+    def test_base_path_without_leading_slash_is_tolerated(self, monkeypatch):
+        from helpers import normalize_llm_base_url
+        monkeypatch.setenv("LLM_API_BASE_PATH", "v1")
+        assert normalize_llm_base_url("http://h:8080") == "http://h:8080/v1"
+
+    def test_empty_base_path_falls_back_to_v1(self, monkeypatch):
+        from helpers import normalize_llm_base_url
+        monkeypatch.setenv("LLM_API_BASE_PATH", "   ")
+        assert normalize_llm_base_url("http://h:8080") == "http://h:8080/v1"
+
+    def test_explicit_argument_overrides_the_environment(self, monkeypatch):
+        from helpers import normalize_llm_base_url
+        monkeypatch.setenv("LLM_API_BASE_PATH", "/api/v1")
+        assert normalize_llm_base_url("http://h:8080", "/v1") == "http://h:8080/v1"
+
+    def test_setup_router_uses_the_normalizer(self):
+        """A guard in helpers.py is no use if the bug site does not call it."""
+        import inspect
+        import routers.setup as setup_mod
+        src = inspect.getsource(setup_mod)
+        assert "normalize_llm_base_url" in src
+        assert '{_api_path}/chat/completions' not in src, (
+            "setup.py still concatenates LLM_API_BASE_PATH directly"
+        )
