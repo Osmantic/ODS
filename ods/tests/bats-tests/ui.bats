@@ -3,11 +3,15 @@
 # BATS tests for installers/lib/ui.sh
 # ============================================================================
 # Tests: ai(), ai_ok(), ai_warn(), ai_bad(), signal(), chapter(),
-#        show_phase(), show_hardware_summary(), show_tier_recommendation()
+#        show_phase(), show_hardware_summary(), show_tier_recommendation(),
+#        download_part_bytes(), format_download_progress(),
+#        report_active_download_preserved(), cancel_active_download(),
+#        spin_task() labels
 #
-# Note: type_line, type_line_dramatic, show_stranger_boot, spin_task,
-#       pull_with_progress, check_service, show_install_menu, show_success_card
-#       have side effects (sleep, read, curl, docker) and are NOT tested here.
+# Note: type_line, type_line_dramatic, show_stranger_boot, pull_with_progress,
+#       show_install_menu, show_success_card have side effects (sleep, read,
+#       curl, docker) and are NOT tested here. spin_task is covered only for
+#       its label rendering, against a short-lived background task.
 
 load '../bats/bats-support/load'
 load '../bats/bats-assert/load'
@@ -288,4 +292,115 @@ MOCK
 
 @test "DIVIDER: is set and non-empty" {
     [[ -n "$DIVIDER" ]]
+}
+
+# ── download progress ───────────────────────────────────────────────────────
+
+@test "format_download_progress: reports downloaded MB when the size is unknown" {
+    run format_download_progress 416284672 0
+    assert_success
+    assert_output "397 MB"
+}
+
+@test "format_download_progress: adds total and percent when the size is known" {
+    run format_download_progress 416284672 1221
+    assert_success
+    assert_output "397 MB / 1221 MB (32%)"
+}
+
+@test "format_download_progress: pinned bootstrap artifact completes at 100 percent" {
+    run format_download_progress 1280835840 1221
+    assert_success
+    assert_output "1221 MB / 1221 MB (100%)"
+}
+
+@test "format_download_progress: never renders more than 100% for a stale estimate" {
+    run format_download_progress 2097152000 1500
+    assert_success
+    assert_output --partial "(100%)"
+}
+
+@test "format_download_progress: treats missing or non-numeric input as zero" {
+    run format_download_progress "" ""
+    assert_success
+    assert_output "0 MB"
+
+    run format_download_progress "abc" "xyz"
+    assert_success
+    assert_output "0 MB"
+}
+
+@test "download_part_bytes: reads the size of an in-flight download" {
+    local part="$BATS_TEST_TMPDIR/model.gguf.part"
+    printf '%0.sx' $(seq 1 2048) > "$part"
+
+    run download_part_bytes "$part"
+    assert_success
+    assert_output "2048"
+}
+
+@test "download_part_bytes: reads zero before curl creates the file" {
+    run download_part_bytes "$BATS_TEST_TMPDIR/not-created-yet.part"
+    assert_success
+    assert_output "0"
+}
+
+@test "report_active_download_preserved: reports resumable bytes" {
+    local part="$BATS_TEST_TMPDIR/resumable.gguf.part"
+    head -c 5242880 /dev/zero > "$part"
+
+    run report_active_download_preserved "$part" 10
+    assert_success
+    assert_output --partial "Partial download preserved: 5 MB / 10 MB (50%)"
+    assert_output --partial "Re-run the installer to resume it."
+}
+
+@test "report_active_download_preserved: is silent without resumable bytes" {
+    run report_active_download_preserved "$BATS_TEST_TMPDIR/missing.gguf.part" 10
+    assert_success
+    assert_output ""
+}
+
+@test "cancel_active_download: stops the owned process before reporting its part" {
+    local part="$BATS_TEST_TMPDIR/cancelled.gguf.part"
+    local rendered="$BATS_TEST_TMPDIR/cancelled.out"
+    head -c 5242880 /dev/zero > "$part"
+
+    sleep 30 &
+    local download_pid=$!
+    ODS_ACTIVE_DOWNLOAD_PID="$download_pid"
+    ODS_ACTIVE_DOWNLOAD_PART="$part"
+    ODS_ACTIVE_DOWNLOAD_TOTAL_MB=10
+
+    cancel_active_download > "$rendered"
+
+    ! kill -0 "$download_pid" 2>/dev/null
+    [[ -z "$ODS_ACTIVE_DOWNLOAD_PID" ]]
+    grep -qF "Partial download preserved: 5 MB / 10 MB (50%)" "$rendered"
+}
+
+# spin_task waits on a background pid, so these redirect its output to a file
+# instead of using `run` or command substitution: both fork a subshell, which
+# cannot wait on a child of the test shell.
+@test "spin_task: shows the download counter when a part file is supplied" {
+    local part="$BATS_TEST_TMPDIR/spin.gguf.part"
+    head -c 5242880 /dev/zero > "$part"
+
+    sleep 2 &
+    local task_pid=$!
+    local rendered="$BATS_TEST_TMPDIR/spin-progress.out"
+    spin_task "$task_pid" "Downloading model.gguf" "$part" 10 > "$rendered"
+
+    grep -qF "Downloading model.gguf" "$rendered"
+    grep -qF "5 MB / 10 MB (50%)" "$rendered"
+}
+
+@test "spin_task: keeps the plain label when no part file is supplied" {
+    sleep 2 &
+    local task_pid=$!
+    local rendered="$BATS_TEST_TMPDIR/spin-plain.out"
+    spin_task "$task_pid" "Working" > "$rendered"
+
+    grep -qF "Working" "$rendered"
+    ! grep -qF " MB" "$rendered"
 }

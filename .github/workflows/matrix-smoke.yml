@@ -224,6 +224,9 @@ jobs:
       - name: macOS Dispatch Smoke
         run: bash tests/smoke/macos-dispatch.sh
 
+      - name: Atomic Environment Write Tests
+        run: /bin/bash tests/test-atomic-env-writes.sh
+
       - name: Bash 3.2 syntax check (catches declare -g, associative arrays, etc.)
         run: |
           echo "=== Checking installer scripts for Bash 3.2 compatibility ==="

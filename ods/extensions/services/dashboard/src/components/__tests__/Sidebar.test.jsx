@@ -1,6 +1,7 @@
 import { screen } from '@testing-library/react'
 import { render } from '../../test/test-utils'
 import Sidebar from '../Sidebar' // eslint-disable-line no-unused-vars
+import { getSidebarExternalLinks } from '../../plugins/registry'
 
 vi.mock('../../plugins/registry', () => ({
   getSidebarNavItems: vi.fn(() => [
@@ -65,5 +66,24 @@ describe('Sidebar', () => {
   test('shows version in header', () => {
     render(<Sidebar status={defaultStatus} collapsed={false} onToggle={() => {}} />)
     expect(screen.getAllByText(/v1\.0\.0/)).toHaveLength(2)
+  })
+
+  test('keeps an always-visible OpenCode launcher in the default application list', () => {
+    getSidebarExternalLinks.mockReturnValueOnce([
+      {
+        key: 'opencode',
+        url: 'http://localhost:3003',
+        icon: () => <span data-testid="opencode-icon">OC</span>,
+        label: 'OpenCode',
+        healthy: false,
+        alwaysVisible: true,
+      },
+    ])
+
+    render(<Sidebar status={defaultStatus} collapsed={false} onToggle={() => {}} />)
+
+    expect(screen.getByText('OpenCode')).toBeInTheDocument()
+    expect(screen.getByText('OFFLINE')).toBeInTheDocument()
+    expect(screen.getByText('OpenCode').closest('a')).not.toHaveAttribute('href')
   })
 })

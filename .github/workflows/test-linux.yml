@@ -8,6 +8,46 @@ on:
       - master
 
 jobs:
+  token-spy-postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: tokenspy
+          POSTGRES_USER: tokenspy
+          POSTGRES_PASSWORD: testpass
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U tokenspy -d tokenspy"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    defaults:
+      run:
+        working-directory: ods/extensions/services/token-spy
+    env:
+      DB_HOST: 127.0.0.1
+      DB_PORT: "5432"
+      DB_NAME: tokenspy
+      DB_USER: tokenspy
+      DB_PASSWORD: testpass
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Setup Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: "3.12"
+
+      - name: Install test dependencies
+        run: python -m pip install "psycopg2-binary>=2.9.9,<3.0.0" "pytest>=8,<9"
+
+      - name: Test Postgres SSE cursor
+        run: python -m pytest tests/test_recent_events_cursor_postgres.py -v
+
   integration-smoke:
     runs-on: ubuntu-latest
     defaults:
@@ -84,6 +124,9 @@ jobs:
       - name: n8n Cookie Policy Tests
         run: bash tests/test-n8n-cookie-policy.sh
 
+      - name: brave-search searxng Compat Tests
+        run: bash tests/test-brave-search-searxng-compat.sh
+
       - name: ODS Doctor Tests
         run: bash tests/test-ods-doctor.sh
 
@@ -126,8 +169,14 @@ jobs:
       - name: Safe Env Loading Tests
         run: bash tests/test-safe-env.sh
 
+      - name: Dotenv Serializer Tests
+        run: bash tests/test-dotenv-serializer.sh
+
       - name: Mode Switch Tests
         run: bash tests/test-mode-switch-status.sh
+
+      - name: CLI Install Directory Resolution Tests
+        run: bash tests/test-cli-install-dir-resolution.sh
 
       - name: Validate Simulation Summary Tests
         run: bash tests/test-validate-sim-summary.sh
@@ -140,6 +189,9 @@ jobs:
 
       - name: Dependency Pin Contract Tests
         run: python3 tests/test-dependency-pins.py
+
+      - name: Offline Model Validation Tests
+        run: python3 tests/test-offline-model-validation.py
 
       - name: Runtime Config Renderer Tests
         run: python3 tests/test-render-runtime-configs.py
@@ -161,9 +213,12 @@ jobs:
       - name: Installer Contract Checks
         run: |
           bash tests/contracts/test-installer-contracts.sh
+          bash tests/test-external-services.sh
+          bash tests/test-resolve-compose-resilient.sh
           bash tests/test-phase03-multigpu-tty.sh
           bash tests/contracts/test-preflight-fixtures.sh
           bash tests/test-preflight-resolver-bug.sh
+          bash tests/test-desktop-agent-host-env.sh
           python3 tests/contracts/test-network-exposure-contracts.py
           python3 tests/contracts/test-remote-provider-egress-policy.py
           python3 tests/contracts/test-remote-provider-egress-service.py
@@ -183,6 +238,9 @@ jobs:
       - name: Update Rollback Contract
         run: bash tests/test-update-rollback-contract.sh
 
+      - name: Backup Data Coverage Contract
+        run: bash tests/test-backup-data-coverage.sh
+
       - name: Bootstrap Upgrade Compose Flags Recovery Tests
         run: bash tests/test-bootstrap-upgrade-compose-flags-recovery.sh
 
@@ -192,8 +250,14 @@ jobs:
       - name: Config Migration Tests
         run: bash tests/test-migrate-config.sh
 
+      - name: Atomic Environment Write Tests
+        run: bash tests/test-atomic-env-writes.sh
+
       - name: Issue-to-PR Security Contract Tests
         run: bash tests/test-issue-to-pr-security.sh
+
+      - name: NVIDIA Multi-GPU Visibility Contract Tests
+        run: bash tests/test-multigpu-nvidia-visibility.sh
 
       - name: Upload Installer Simulation Artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

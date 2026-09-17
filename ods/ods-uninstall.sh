@@ -20,6 +20,36 @@ log_ok()    { echo -e "${GREEN}[OK]${NC} $*"; }
 log_warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 
+SUDO_CREDENTIAL_READY=false
+
+prepare_sudo_credential() {
+    if [[ "$(id -u)" -eq 0 ]]; then
+        return 0
+    fi
+    if $SUDO_CREDENTIAL_READY; then
+        return 0
+    fi
+    if ! command -v sudo >/dev/null 2>&1; then
+        return 1
+    fi
+
+    log_info "Administrator privileges are required for system-owned ODS files."
+    # Keep the credential prompt attached directly to the terminal. Wrapping an
+    # interactive sudo invocation in `timeout` can prevent sudo from managing
+    # terminal echo correctly on some systems.
+    sudo -v
+    SUDO_CREDENTIAL_READY=true
+}
+
+run_sudo() {
+    if [[ "$(id -u)" -eq 0 ]]; then
+        "$@"
+        return
+    fi
+    prepare_sudo_credential || return 1
+    sudo -n -- "$@"
+}
+
 resolve_compose_flags() {
     local flags=""
 
@@ -147,8 +177,10 @@ if command -v docker &>/dev/null; then
         log_warn "No compose files resolved; falling back to container/volume discovery"
     fi
 
-    # Remove any remaining ods-* containers
-    ods_containers=$(docker ps -a --filter "name=ods-" --format "{{.Names}}" 2>/dev/null || true)
+    # Remove any remaining ods-* containers.
+    # Docker's name filter matches anywhere in the name, so filter on the
+    # printed names instead: only this project's ods-<service> containers.
+    ods_containers=$(docker ps -a --format "{{.Names}}" 2>/dev/null | grep -E '^ods-' || true)
     if [[ -n "$ods_containers" ]]; then
         log_info "Removing ODS containers..."
         echo "$ods_containers" | xargs docker rm -f 2>/dev/null || true
@@ -158,7 +190,12 @@ if command -v docker &>/dev/null; then
     if [[ "$KEEP_DATA" == "true" ]]; then
         log_info "Keeping Docker volumes (--keep-data)"
     else
-        ods_volumes=$(docker volume ls --filter "name=ods" --format "{{.Name}}" 2>/dev/null || true)
+        # Compose names project volumes ods_<volume> (docker-compose.base.yml
+        # declares `name: ods`); older installs also produced ods-<volume>.
+        # An unanchored "ods" filter would additionally select unrelated
+        # volumes that merely contain it (pods, methods, ...) and this branch
+        # removes what it finds, so anchor on the project prefix.
+        ods_volumes=$(docker volume ls --format "{{.Name}}" 2>/dev/null | grep -E '^ods[_-]' || true)
         if [[ -n "$ods_volumes" ]]; then
             log_info "Removing Docker volumes..."
             echo "$ods_volumes" | xargs docker volume rm 2>/dev/null || true
@@ -279,14 +316,18 @@ unset _ods_uninstall_orphan_pids _pid
 # Remove system-mode ods-host-agent unit (migrated from --user mode).
 # Idempotent — no-op if the unit was never installed (e.g. older user-mode installs).
 if systemctl is-enabled ods-host-agent.service >/dev/null 2>&1; then
-    if ! timeout 20s sudo systemctl disable --now ods-host-agent.service 2>/dev/null; then
+    if ! prepare_sudo_credential; then
+        log_warn "sudo is unavailable; ods-host-agent.service was not removed"
+    elif ! timeout 20s sudo -n -- systemctl disable --now ods-host-agent.service 2>/dev/null; then
         log_warn "ods-host-agent did not stop cleanly; forcing service shutdown"
-        sudo systemctl kill -s SIGKILL ods-host-agent.service 2>/dev/null || true
-        timeout 10s sudo systemctl disable ods-host-agent.service 2>/dev/null || true
+        run_sudo systemctl kill -s SIGKILL ods-host-agent.service 2>/dev/null || true
+        timeout 10s sudo -n -- systemctl disable ods-host-agent.service 2>/dev/null || true
     fi
 fi
-sudo rm -f /etc/systemd/system/ods-host-agent.service 2>/dev/null || true
-sudo systemctl daemon-reload 2>/dev/null || true
+if [[ -e /etc/systemd/system/ods-host-agent.service ]]; then
+    run_sudo rm -f /etc/systemd/system/ods-host-agent.service 2>/dev/null || true
+    run_sudo systemctl daemon-reload 2>/dev/null || true
+fi
 log_ok "Systemd services removed"
 
 # 3. Remove CLI symlinks
@@ -296,7 +337,7 @@ for _ods_cli_link in "/usr/local/bin/ods" "$HOME/.local/bin/ods" "/usr/local/bin
         log_info "Removing CLI symlink: $_ods_cli_link"
         case "$_ods_cli_link" in
             /usr/local/bin/*)
-                sudo rm -f "$_ods_cli_link" 2>/dev/null || rm -f "$_ods_cli_link" 2>/dev/null || true
+                run_sudo rm -f "$_ods_cli_link" 2>/dev/null || rm -f "$_ods_cli_link" 2>/dev/null || true
                 ;;
             *)
                 rm -f "$_ods_cli_link" 2>/dev/null || true
@@ -345,7 +386,7 @@ else
     # blessed for this codebase. If sudo is unavailable, fall back to a
     # best-effort rm and let the operator see the failures explicitly.
     if command -v sudo >/dev/null 2>&1; then
-        sudo chown -R "$(id -u):$(id -g)" "$INSTALL_DIR" 2>/dev/null || \
+        run_sudo chown -R "$(id -u):$(id -g)" "$INSTALL_DIR" 2>/dev/null || \
             log_warn "Could not chown $INSTALL_DIR (container-UID files may remain)"
     else
         log_warn "sudo not available; attempting non-privileged removal of $INSTALL_DIR"

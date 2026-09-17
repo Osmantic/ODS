@@ -42,8 +42,13 @@ function New-ODSWindowsServicePlan {
 
     $plan = @{}
 
+    $enableSearxng = Test-ODSWindowsSearxngNeeded `
+        -EnableRecommended $EnableRecommended `
+        -EnableDeepResearch $EnableDeepResearch `
+        -EnableHermes $EnableHermes `
+        -EnableOpenClaw $EnableOpenClaw
     $plan["litellm"] = New-ODSWindowsServicePlanEntry "litellm" $EnableRecommended "recommended" "recommended services not enabled"
-    $plan["searxng"] = New-ODSWindowsServicePlanEntry "searxng" $EnableRecommended "recommended" "recommended services not enabled"
+    $plan["searxng"] = New-ODSWindowsServicePlanEntry "searxng" $enableSearxng "search" "web search backend not required"
     $plan["token-spy"] = New-ODSWindowsServicePlanEntry "token-spy" $EnableRecommended "recommended" "recommended services not enabled"
 
     $plan["whisper"] = New-ODSWindowsServicePlanEntry "whisper" $EnableVoice "voice" "voice not enabled"
@@ -67,6 +72,22 @@ function New-ODSWindowsServicePlan {
     $plan["tailscale"] = New-ODSWindowsServicePlanEntry "tailscale" $EnableRemoteAccess "networking" "remote access not enabled"
 
     return $plan
+}
+
+function Test-ODSWindowsSearxngNeeded {
+    <#
+    .SYNOPSIS
+        SearXNG is required for Open WebUI web search, Perplexica, and agent web tools.
+        It is not only a "recommended" extra.
+    #>
+    param(
+        [bool]$EnableRecommended = $false,
+        [bool]$EnableDeepResearch = $false,
+        [bool]$EnableHermes = $false,
+        [bool]$EnableOpenClaw = $false
+    )
+
+    return [bool]($EnableRecommended -or $EnableDeepResearch -or $EnableHermes -or $EnableOpenClaw)
 }
 
 function Get-ODSWindowsServicePlanDecision {

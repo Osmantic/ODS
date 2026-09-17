@@ -117,7 +117,35 @@ sync_model_route() {
     ) &
 }
 
+sync_search_route() {
+    [ -n "${PERPLEXICA_SEARXNG_API_URL:-}" ] || return 0
+    attempts="${PERPLEXICA_SEARCH_SYNC_ATTEMPTS:-30}"
+    delay="${PERPLEXICA_SEARCH_SYNC_DELAY_SECONDS:-2}"
+    case "$attempts:$delay" in
+        *[!0-9:]*|:*|*:)
+            attempts=30
+            delay=2
+            ;;
+    esac
+
+    (
+        attempt=1
+        last_error=""
+        while [ "$attempt" -le "$attempts" ]; do
+            if output=$(node /app/ods-sync-search-config.js 2>&1); then
+                log "Search route synchronized: $output"
+                exit 0
+            fi
+            last_error="$output"
+            attempt=$((attempt + 1))
+            [ "$attempt" -le "$attempts" ] && sleep "$delay"
+        done
+        log "WARNING: search-route synchronization did not complete: $last_error"
+    ) &
+}
+
 sync_model_route
+sync_search_route
 
 # When compose overrides `entrypoint:`, Docker drops the image's CMD
 # (`node server.js`), so $@ arrives empty. Fall back to the image's default

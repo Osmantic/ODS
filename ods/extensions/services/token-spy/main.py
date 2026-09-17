@@ -2423,11 +2423,11 @@ def dashboard_charts_asset():
 async def token_events(request: Request):
     """Stream token usage events as Server-Sent Events."""
     async def event_stream():
-        last_id = None
+        last_cursor = None
         while True:
             try:
                 # Query recent events
-                events = query_recent_events(limit=50, after_id=last_id)
+                events = query_recent_events(limit=50, after_id=last_cursor)
 
                 for event in events:
                     # Format event as SSE
@@ -2445,7 +2445,9 @@ async def token_events(request: Request):
                     }
 
                     yield f"data: {json.dumps(event_data)}\n\n"
-                    last_id = event.get("id")
+                    # PostgreSQL supplies a stable (timestamp, UUID) cursor.
+                    # SQLite and older backends continue to use the row ID.
+                    last_cursor = event.get("_cursor", event.get("id"))
 
                 # Heartbeat to keep connection alive
                 yield ":heartbeat\n\n"

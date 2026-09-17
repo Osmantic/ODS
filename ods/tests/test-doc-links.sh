@@ -106,6 +106,18 @@ check_markdown_file() {
   done < "$file"
 }
 
+check_contributing_workdirs() {
+  local command workdir
+  while IFS= read -r command; do
+    workdir="${command#cd }"
+    workdir="${workdir%% &&*}"
+    [[ -d "$ROOT_DIR/$workdir" ]] || {
+      echo "[FAIL] CONTRIBUTING.md uses a missing working directory: $workdir"
+      return 1
+    }
+  done < <(grep -E '^cd [^/~$]+' "$ROOT_DIR/CONTRIBUTING.md")
+}
+
 main() {
   local failures=0
 
@@ -133,6 +145,10 @@ main() {
       failures=$((failures + 1))
     fi
   done
+
+  if ! check_contributing_workdirs; then
+    failures=$((failures + 1))
+  fi
 
   if [[ $failures -gt 0 ]]; then
     fail "$failures markdown file(s) contain broken local links"

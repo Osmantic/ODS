@@ -24,8 +24,27 @@ while [[ -L "$_source" ]]; do
     [[ "$_source" != /* ]] && _source="$_dir/$_source"
 done
 SCRIPT_DIR="$(cd "$(dirname "$_source")" && pwd)"
-INSTALL_DIR="${ODS_HOME:-$HOME/ods}"
-VERSION="2.0.0"
+
+_resolve_cli_install_dir() {
+    if [[ -n "${INSTALL_DIR:-}" ]]; then
+        printf '%s\n' "$INSTALL_DIR"
+    elif [[ -n "${ODS_HOME:-}" ]]; then
+        printf '%s\n' "$ODS_HOME"
+    elif [[ -n "${ODS_SCRIPT_HINT:-}" ]] && [[ -f "$ODS_SCRIPT_HINT/.env" ]]; then
+        printf '%s\n' "$ODS_SCRIPT_HINT"
+    elif [[ -n "${ODS_INSTALL_DIR:-}" ]]; then
+        printf '%s\n' "$ODS_INSTALL_DIR"
+    elif [[ -f "$SCRIPT_DIR/docker-compose.base.yml" || -f "$SCRIPT_DIR/docker-compose.yml" ]]; then
+        # Installed copies and symlink targets are self-locating. This keeps a
+        # custom-path CLI from silently operating on an unrelated $HOME/ods.
+        printf '%s\n' "$SCRIPT_DIR"
+    else
+        printf '%s\n' "$HOME/ods"
+    fi
+}
+
+INSTALL_DIR="$(_resolve_cli_install_dir)"
+VERSION="2.6.0"
 if [[ -f "$INSTALL_DIR/.env" ]]; then
     _v=$(awk -F= '/^ODS_VERSION=/{gsub(/^["'"'"']|["'"'"']$/,"",$2); print $2; exit}' "$INSTALL_DIR/.env" 2>/dev/null) || true
     [[ -n "${_v:-}" ]] && VERSION="$_v"
@@ -123,6 +142,45 @@ _env_get_raw() {
         index($0, k "=") == 1 { value = substr($0, length(k) + 2); found = 1 }
         END { if (found) print value }
     ' "$file" 2>/dev/null | tr -d '\r' || true
+}
+
+_ensure_hermes_dashboard_session_token() {
+    [[ -f "$INSTALL_DIR/.env" ]] || return 0
+    [[ -n "$(_env_get_raw HERMES_DASHBOARD_SESSION_TOKEN)" ]] && return 0
+
+    local token
+    if command -v openssl >/dev/null 2>&1; then
+        token="$(openssl rand -hex 32)"
+    else
+        token="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+    fi
+    [[ "$token" =~ ^[0-9a-f]{64}$ ]] \
+        || error "Could not generate HERMES_DASHBOARD_SESSION_TOKEN"
+    _env_set "HERMES_DASHBOARD_SESSION_TOKEN" "$token"
+}
+
+_ods_cli_proxy_enabled() {
+    [[ -f "$INSTALL_DIR/extensions/services/ods-proxy/compose.yaml" ]] \
+        || [[ -f "$INSTALL_DIR/data/user-extensions/ods-proxy/compose.yaml" ]]
+}
+
+_ods_cli_require_proxy_auth() {
+    [[ -f "$INSTALL_DIR/.env" ]] \
+        || error "Cannot enable network access without $INSTALL_DIR/.env."
+    if [[ "$(_env_get_raw WEBUI_AUTH)" != "true" ]]; then
+        _env_set "WEBUI_AUTH" "true" \
+            || error "Could not enforce WEBUI_AUTH=true before enabling network access."
+        log "  Network access requires sign-in; set WEBUI_AUTH=true."
+    fi
+    export WEBUI_AUTH=true
+}
+
+_ods_cli_prepare_proxy_start() {
+    local -a compose_flags=("$@")
+    _ods_cli_require_proxy_auth
+    _compose_run_with_summary \
+        "Applying authenticated Open WebUI configuration" \
+        "${compose_flags[@]}" up -d --no-deps --force-recreate open-webui
 }
 
 _ods_cli_bootstrap_status() {
@@ -699,10 +757,18 @@ _regenerate_compose_flags() {
         # --gpu-count gates the multigpu-{backend}.yml overlay; without it,
         # toggling any extension would silently strip multi-GPU plumbing
         # from the persisted cache.
-        "$INSTALL_DIR/scripts/resolve-compose-stack.sh" \
+        # Capture the resolver's stderr instead of discarding it: it reports
+        # actionable causes (e.g. missing PyYAML) that would otherwise only
+        # surface commands later as compose's "no configuration file provided".
+        local resolver_err=""
+        if ! resolver_err=$("$INSTALL_DIR/scripts/resolve-compose-stack.sh" \
             --script-dir "$INSTALL_DIR" --tier "${TIER:-1}" --gpu-backend "${GPU_BACKEND:-nvidia}" \
             --gpu-count "${GPU_COUNT:-1}" --ods-mode "${ODS_MODE:-local}" \
-            > "$INSTALL_DIR/.compose-flags" 2>/dev/null || rm -f "$INSTALL_DIR/.compose-flags"
+            2>&1 > "$INSTALL_DIR/.compose-flags"); then
+            rm -f "$INSTALL_DIR/.compose-flags"
+            warn "Could not regenerate the compose stack cache. 'ods start' will fail until this is resolved:"
+            [[ -n "$resolver_err" ]] && printf '%s\n' "$resolver_err" >&2
+        fi
     else
         rm -f "$INSTALL_DIR/.compose-flags"
     fi
@@ -784,6 +850,8 @@ PYEOF
 
 # Build full compose flags: base + GPU overlay + enabled extensions
 get_compose_flags() {
+    _ensure_hermes_dashboard_session_token
+
     # Fast path: use saved flags from installer if available
     if [[ -f "$INSTALL_DIR/.compose-flags" ]]; then
         local cached
@@ -1157,9 +1225,37 @@ _ods_cli_pull_external_images() {
     for image in "${images[@]}"; do
         count=$((count + 1))
         log "  [$count/$total] $image"
-        if ! docker pull "$image"; then
+        local _pull_max_attempts="${ODS_COMPOSE_PULL_RETRY_ATTEMPTS:-3}"
+        if ! [[ "$_pull_max_attempts" =~ ^[0-9]+$ ]] || (( _pull_max_attempts < 1 )); then
+            _pull_max_attempts=3
+        fi
+        local _pull_attempt=1 _pull_ok=false _pull_log
+        _pull_log=$(mktemp)
+        while (( _pull_attempt <= _pull_max_attempts )); do
+            : >"$_pull_log"
+            if docker pull "$image" >"$_pull_log" 2>&1; then
+                _pull_ok=true
+                break
+            fi
+            if (( _pull_attempt >= _pull_max_attempts )) \
+                || ! grep -Eiq 'context deadline exceeded|i/o timeout|TLS handshake timeout|connection reset by peer|connection timed out|temporary failure|network is unreachable|net/http: request canceled|unexpected EOF' "$_pull_log"; then
+                break
+            fi
+            local _pull_delay
+            case "$_pull_attempt" in
+                1) _pull_delay="${ODS_COMPOSE_PULL_RETRY_DELAY_1:-5}" ;;
+                2) _pull_delay="${ODS_COMPOSE_PULL_RETRY_DELAY_2:-15}" ;;
+                *) _pull_delay="${ODS_COMPOSE_PULL_RETRY_DELAY_N:-30}" ;;
+            esac
+            warn "Docker registry pull hit a transient network error; retrying (${_pull_attempt}/$((_pull_max_attempts - 1)))."
+            sleep "$_pull_delay"
+            _pull_attempt=$((_pull_attempt + 1))
+        done
+        if [[ "$_pull_ok" != "true" ]]; then
+            cat "$_pull_log" >&2
             failed=$((failed + 1))
         fi
+        rm -f "$_pull_log"
     done
 
     if (( failed > 0 )); then
@@ -1472,6 +1568,17 @@ cmd_restart() {
         resolved_service=$(resolve_service "$resolved_service")
     fi
 
+    if [[ "$resolved_service" == "ods-proxy" ]]; then
+        _ods_cli_prepare_proxy_start "${flags[@]}"
+    elif [[ -z "$resolved_service" || "$resolved_service" == "open-webui" ]] \
+        && _ods_cli_proxy_enabled; then
+        _ods_cli_require_proxy_auth
+    fi
+
+    if ! _ods_cli_repair_rootless_ownership "$resolved_service"; then
+        error "Rootless bind-mount ownership is not ready; service restart was cancelled."
+    fi
+
     local refresh_soul="false"
     if [[ -z "$resolved_service" || "$resolved_service" == "hermes" ]]; then
         refresh_soul="true"
@@ -1490,9 +1597,11 @@ cmd_restart() {
     fi
 
     if [[ -z "$resolved_service" ]]; then
-        _compose_run_with_summary "Restarting all services" "${flags[@]}" up -d
+        _compose_run_with_summary "Restarting all services" \
+            "${flags[@]}" up -d --force-recreate --no-build --pull never
     else
-        _compose_run_with_summary "Restarting $resolved_service" "${flags[@]}" up -d "$resolved_service"
+        _compose_run_with_summary "Restarting $resolved_service" \
+            "${flags[@]}" up -d --force-recreate --no-build --pull never "$resolved_service"
     fi
 
     # Refresh SOUL.md after compose has ensured Hermes is running, so the
@@ -1626,6 +1735,16 @@ cmd_stop() {
     fi
 }
 
+_ods_cli_repair_rootless_ownership() {
+    local service="${1:-}"
+    local helper="$INSTALL_DIR/lib/rootless-ownership.sh"
+
+    [[ -f "$helper" ]] || return 0
+    # shellcheck source=lib/rootless-ownership.sh
+    source "$helper"
+    ods_fix_rootless_ownership "$INSTALL_DIR" "$service"
+}
+
 cmd_start() {
     check_install
     cd "$INSTALL_DIR"
@@ -1657,6 +1776,13 @@ cmd_start() {
         resolved_service=$(resolve_service "$resolved_service")
     fi
 
+    if [[ "$resolved_service" == "ods-proxy" ]]; then
+        _ods_cli_prepare_proxy_start "${flags[@]}"
+    elif [[ -z "$resolved_service" || "$resolved_service" == "open-webui" ]] \
+        && _ods_cli_proxy_enabled; then
+        _ods_cli_require_proxy_auth
+    fi
+
     local refresh_soul="false"
     if [[ -z "$resolved_service" || "$resolved_service" == "hermes" ]]; then
         refresh_soul="true"
@@ -1669,6 +1795,10 @@ cmd_start() {
         ensure_llama_cpu_budget
         flags_str=$(get_compose_flags)
         read -ra flags <<< "$flags_str"
+    fi
+
+    if ! _ods_cli_repair_rootless_ownership "$resolved_service"; then
+        error "Rootless bind-mount ownership is not ready; service start was cancelled."
     fi
 
     if [[ -z "$resolved_service" ]]; then
@@ -2362,6 +2492,35 @@ for name, status in checks:
         print(f"  {RED}✗{NC} {name}")
         has_failures = True
 
+llm_backend = runtime.get('llm_backend', {})
+if llm_backend:
+    llm_status = llm_backend.get('status', 'unknown')
+    llm_provider = llm_backend.get('provider', 'unknown')
+    llm_url = llm_backend.get('url', '')
+    llm_model = llm_backend.get('model', '')
+    local_warn = llm_backend.get('local_running_warning', False)
+    recovery = llm_backend.get('recovery_hint', '')
+
+    is_external = llm_provider != "llama-server"
+    backend_label = f"{llm_provider} (external)" if is_external else "llama-server (local)"
+
+    if llm_status == 'ok':
+        print(f"  {GREEN}✓{NC} LLM Backend: {backend_label} — responding")
+        if llm_url:
+            print(f"    Endpoint: {llm_url}")
+        if llm_model:
+            print(f"    Model:    {llm_model}")
+    else:
+        print(f"  {RED}✗{NC} LLM Backend: {backend_label} — not responding")
+        if llm_url:
+            print(f"    Endpoint: {llm_url}")
+        if recovery:
+            print(f"    Recovery: {recovery}")
+        has_failures = True
+
+    if local_warn:
+        print(f"    {YELLOW}⚠{NC} Note: Unused local llama-server container is running")
+
 dgx_check = runtime.get('dgx_spark_cuda_arch_check', {})
 dgx_status = dgx_check.get('status')
 dgx_message = dgx_check.get('message', '')
@@ -2601,6 +2760,10 @@ cmd_enable() {
     # Check it's not a core service
     local cat="${SERVICE_CATEGORIES[$service_id]:-optional}"
     [[ "$cat" == "core" ]] && { success "$service_id is a core service (always enabled)."; return 0; }
+
+    if [[ "$service_id" == "ods-proxy" ]]; then
+        _ods_cli_require_proxy_auth
+    fi
 
     # Check GPU backend compatibility
     local gpu_backends="${SERVICE_GPU_BACKENDS[$service_id]:-}"
@@ -3369,6 +3532,12 @@ cmd_mode() {
         local|cloud|hybrid) ;;
         *) error "Unknown mode: $mode. Use: local, cloud, hybrid" ;;
     esac
+
+    local configured_backend
+    configured_backend=$(grep -m1 "^LLM_BACKEND=" .env 2>/dev/null | cut -d= -f2- | tr -d '"\047\r' || true)
+    if [[ "${configured_backend,,}" == "external" ]]; then
+        error "External LLM routing is installer-managed. Run './install.sh --no-external-llm' first, then retry 'ods mode $mode'."
+    fi
 
     # Update .env
     _env_set "ODS_MODE" "$mode"
@@ -4561,20 +4730,12 @@ cmd_restore() {
 cmd_rollback() {
     check_install
     cd "$INSTALL_DIR"
-    load_env
-
-    if [[ ! -f "$INSTALL_DIR/.last-backup-id" ]]; then
-        error "No rollback point found. Rollback is only available after a failed update."
+    if [[ ! -x "$INSTALL_DIR/ods-update.sh" ]]; then
+        error "ods-update.sh not found or not executable"
     fi
 
-    local backup_id
-    backup_id=$(cat "$INSTALL_DIR/.last-backup-id")
-
-    if [[ -z "$backup_id" ]]; then
-        error "Invalid rollback point (empty backup ID)"
-    fi
-
-    log "Rolling back to pre-update state (backup: $backup_id)..."
+    local target="${1:-}"
+    log "Rolling back to pre-update state${target:+ (snapshot: $target)}..."
     echo ""
     warn "This will restore configuration from before the last update."
     read -p "Continue with rollback? [y/N] " -n 1 -r
@@ -4585,33 +4746,11 @@ cmd_rollback() {
         return 0
     fi
 
-    # Stop services before rollback
-    log "Stopping services..."
-    local flags_str
-    flags_str=$(get_compose_flags)
-    local -a flags
-    read -ra flags <<< "$flags_str"
-    docker compose "${flags[@]}" down 2>/dev/null || true
-
-    # Restore from backup
-    if "$INSTALL_DIR/ods-restore.sh" "$backup_id"; then
-        success "Configuration restored from backup: $backup_id"
-
-        # Restart services with restored configuration
-        log "Restarting services with restored configuration..."
-        if docker compose "${flags[@]}" up -d; then
-            success "Rollback complete"
-            rm -f "$INSTALL_DIR/.last-backup-id"
-
-            log "Checking service health..."
-            sleep 5
-            cmd_status
-        else
-            error "Failed to restart services after rollback. Check 'docker compose logs' for details."
-        fi
-    else
-        error "Failed to restore from backup. Your system may be in an inconsistent state."
-    fi
+    # ods-update.sh owns pre-update snapshot discovery, integrity verification,
+    # compose-stack restoration, restart, and health proof. Keeping that
+    # transaction in one implementation avoids diverging backup roots and stale
+    # in-memory compose flags in this CLI wrapper.
+    bash "$INSTALL_DIR/ods-update.sh" rollback ${target:+"$target"}
 }
 
 cmd_agent() {
@@ -4624,22 +4763,44 @@ cmd_agent() {
     local log_file="$INSTALL_DIR/data/ods-host-agent.log"
     local agent_script="$INSTALL_DIR/bin/ods-host-agent.py"
 
-    # Detect daemon type
+    _agent_process_owned() {
+        local candidate_pid="${1:-}" command_line=""
+        [[ "$candidate_pid" =~ ^[0-9]+$ ]] || return 1
+        kill -0 "$candidate_pid" 2>/dev/null || return 1
+        command_line=$(ps -p "$candidate_pid" -o command= 2>/dev/null || true)
+        [[ -n "$command_line" && "$command_line" == *"$agent_script"* ]]
+    }
+
+    _agent_health_ready() {
+        local bind_addr health_payload
+        bind_addr="$(_agent_probe_host)"
+        health_payload=$(curl -sf --max-time 2 "http://${bind_addr}:${port}/health" 2>/dev/null) || return 1
+        grep -Eq '"status"[[:space:]]*:[[:space:]]*"ok"' <<<"$health_payload" && \
+            grep -Eq '"version"[[:space:]]*:' <<<"$health_payload"
+    }
+
+    # Installer phases can explicitly request the per-session fallback when
+    # sudo is unavailable, even if an older system unit remains on disk.
     local daemon_type="none"
-    case "$(uname -s)" in
-        Darwin) daemon_type="launchd" ;;
-        Linux)
-            if systemctl status >/dev/null 2>&1 || [[ -d /run/systemd/system ]]; then
-                daemon_type="systemd"
-            fi
-            ;;
-    esac
+    if [[ "${ODS_AGENT_FORCE_SESSION:-false}" != "true" ]]; then
+        case "$(uname -s)" in
+            Darwin)
+                if [[ -f "$HOME/Library/LaunchAgents/com.ods.host-agent.plist" ]]; then
+                    daemon_type="launchd"
+                fi
+                ;;
+            Linux)
+                if command -v systemctl >/dev/null 2>&1 && \
+                   systemctl cat ods-host-agent.service >/dev/null 2>&1; then
+                    daemon_type="systemd"
+                fi
+                ;;
+        esac
+    fi
 
     case "$action" in
         status)
-            local bind_addr
-            bind_addr="$(_agent_probe_host)"
-            if curl -sf --max-time 2 "http://${bind_addr}:${port}/health" > /dev/null 2>&1; then
+            if _agent_health_ready; then
                 success "ODS host agent: running (port ${port}, ${daemon_type})"
             else
                 warn "ODS host agent: not responding (port ${port})"
@@ -4658,17 +4819,45 @@ cmd_agent() {
                     ;;
                 *)
                     # Fallback: nohup + PID file
+                    if _agent_health_ready; then
+                        success "ODS host agent: already running (port ${port})"
+                        return 0
+                    fi
                     if [[ -f "$pid_file" ]]; then
-                        kill "$(cat "$pid_file")" 2>/dev/null || true
+                        local stale_pid
+                        stale_pid=$(tr -d '[:space:]' < "$pid_file")
+                        if _agent_process_owned "$stale_pid"; then
+                            kill "$stale_pid" 2>/dev/null || true
+                        elif [[ -n "$stale_pid" ]]; then
+                            warn "Ignoring stale host-agent PID file; process $stale_pid is not owned by ODS"
+                        fi
                         rm -f "$pid_file"
                     fi
                     if ! command -v python3 &>/dev/null; then
                         error "python3 not found in PATH"
                         return 1
                     fi
+                    if [[ ! -f "$agent_script" ]]; then
+                        error "ODS host agent script not found: $agent_script"
+                        return 1
+                    fi
                     nohup python3 "$agent_script" --pid-file "$pid_file" \
-                        >> "$log_file" 2>&1 &disown
-                    success "Agent started (background, PID $!)"
+                        >> "$log_file" 2>&1 &
+                    local agent_pid=$!
+                    disown "$agent_pid" 2>/dev/null || true
+                    local attempt
+                    for attempt in {1..20}; do
+                        if _agent_health_ready; then
+                            success "Agent started (background, PID $agent_pid)"
+                            return 0
+                        fi
+                        kill -0 "$agent_pid" 2>/dev/null || break
+                        sleep 0.5
+                    done
+                    _agent_process_owned "$agent_pid" && kill "$agent_pid" 2>/dev/null || true
+                    rm -f "$pid_file"
+                    error "Agent did not become healthy on port ${port}; check $log_file"
+                    return 1
                     ;;
             esac
             ;;
@@ -4684,8 +4873,16 @@ cmd_agent() {
                     ;;
                 *)
                     if [[ -f "$pid_file" ]]; then
-                        kill "$(cat "$pid_file")" 2>/dev/null && \
-                            success "Agent stopped" || warn "Agent process not found"
+                        local agent_pid
+                        agent_pid=$(tr -d '[:space:]' < "$pid_file")
+                        if _agent_process_owned "$agent_pid"; then
+                            kill "$agent_pid" 2>/dev/null && \
+                                success "Agent stopped" || warn "Agent process not found"
+                        elif [[ -n "$agent_pid" ]]; then
+                            warn "Refusing to stop process $agent_pid because it is not owned by ODS"
+                        else
+                            warn "Agent PID file is empty"
+                        fi
                         rm -f "$pid_file"
                     else
                         warn "Agent not running (no PID file)"
@@ -4694,7 +4891,7 @@ cmd_agent() {
             esac
             ;;
         restart)
-            cmd_agent stop
+            cmd_agent stop || return 1
             sleep 1
             cmd_agent start
             ;;
@@ -5928,6 +6125,13 @@ cmd_repair() {
             [[ -x "$script" ]] || error "Hermes slash worker repair script not found or not executable: $script"
             "$script" --force
             ;;
+        rootless-ownership|rootless)
+            local script="$INSTALL_DIR/lib/rootless-ownership.sh"
+            [[ -f "$script" ]] || error "Rootless ownership helper not found: $script"
+            # shellcheck source=lib/rootless-ownership.sh
+            source "$script"
+            ods_fix_rootless_ownership "$INSTALL_DIR"
+            ;;
         voice|stt|tts)
             local flags_str
             flags_str=$(get_compose_flags)
@@ -5988,7 +6192,7 @@ cmd_repair() {
             success "Voice repair complete"
             ;;
         *)
-            log "Usage: ods repair [voice|hermes-workers]"
+            log "Usage: ods repair [voice|hermes-workers|rootless-ownership]"
             log_error "Unknown repair target: $target"
             return 1
             ;;
@@ -6211,7 +6415,7 @@ ${CYAN}Commands:${NC}
   backup [options]    Create a backup of user data and config
   backup verify <id>   Verify checksum integrity for a backup
   restore [backup_id] Restore from a backup
-  rollback            Rollback to pre-update state (after failed update)
+  rollback [snapshot] Rollback to pre-update state (after failed update)
   logs <service>      Tail logs for a service
   restart [service] [--rebuild-images]
                       Restart services (all if no service specified)
@@ -6337,10 +6541,17 @@ ${CYAN}Examples:${NC}
   ods agent status              # Check host agent health
   ods agent restart             # Restart host agent
   ods repair voice              # Start voice services and cache STT model
+  ods repair rootless-ownership # Repair active bind mounts for rootless Docker
   ods repair hermes-workers     # Prune leaked Hermes slash_worker children
 
 ${CYAN}Environment:${NC}
-  ODS_HOME          Installation directory (default: ~/ods)
+  INSTALL_DIR       Installation directory (highest precedence)
+  ODS_HOME          Legacy installation directory override
+  ODS_SCRIPT_HINT   Populated install hint (must contain .env)
+  ODS_INSTALL_DIR   Legacy macOS installation directory override
+
+Without an override, ods-cli uses the install beside its resolved script or
+symlink target when compose metadata is present, then falls back to ~/ods.
 
 EOF
 }
@@ -6363,7 +6574,7 @@ case "${1:-help}" in
     stt)         shift; cmd_stt "$@" ;;
     backup)      shift; cmd_backup "$@" ;;
     restore)     shift; cmd_restore "$@" ;;
-    rollback)    cmd_rollback ;;
+    rollback)    shift; cmd_rollback "$@" ;;
     logs|log|l)  shift; cmd_logs "$@" ;;
     restart|r)   shift; cmd_restart "$@" ;;
     repair|fix)  shift; cmd_repair "$@" ;;

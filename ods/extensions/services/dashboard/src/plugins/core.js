@@ -9,6 +9,7 @@ import {
   Cloud,
   UserPlus,
   CreditCard,
+  Code,
 } from 'lucide-react'
 
 const Dashboard = lazy(() => import('../pages/Dashboard'))
@@ -119,4 +120,17 @@ export const coreRoutes = [
   },
 ]
 
-export const coreExternalLinks = []
+// OpenCode is an ODS application on every platform, even though its process is
+// host-managed rather than part of the Docker stack. Keep the launcher present
+// while health data is loading or the host service needs attention.
+export const coreExternalLinks = [
+  {
+    id: 'opencode',
+    label: 'OpenCode',
+    icon: Code,
+    port: 3003,
+    ui_path: '/',
+    healthNeedles: ['opencode', 'OpenCode (IDE)'],
+    alwaysVisible: true,
+  },
+]

@@ -19,6 +19,7 @@ import httpx
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.responses import RedirectResponse
 
+from env_values import strip_matching_quotes
 from config import (
     DATA_DIR,
     INSTALL_DIR,
@@ -147,11 +148,21 @@ def _configured_ods_mode() -> str:
 def _model_activation_mode_denial(
     effective_mode: str,
     configured_mode: str,
+    llm_backend: str = "",
 ) -> dict[str, str] | None:
     """Describe why this runtime cannot safely perform a local model swap."""
     effective_mode = normalize_ods_mode(effective_mode)
     configured_mode = normalize_ods_mode(configured_mode)
-    if "unknown" in {effective_mode, configured_mode}:
+    normalized_backend = str(llm_backend or "").strip().lower()
+    if normalized_backend == "external":
+        code = "external_llm_managed"
+        reason = "external_backend_selected"
+        message = (
+            "Local model activation is unavailable while ODS is using an "
+            "external Ollama or LM Studio backend. Re-run the installer with "
+            "--no-external-llm before activating a downloaded local model."
+        )
+    elif "unknown" in {effective_mode, configured_mode}:
         code = "ods_mode_unknown"
         reason = "mode_unknown"
         message = (
@@ -182,6 +193,7 @@ def _model_activation_mode_denial(
         "message": message,
         "effectiveMode": effective_mode,
         "configuredMode": configured_mode,
+        "llmBackend": normalized_backend or "unknown",
     }
 
 try:
@@ -321,7 +333,7 @@ def _read_active_model() -> Optional[str]:
     try:
         for line in _ENV_PATH.read_text(encoding="utf-8").splitlines():
             if line.startswith("GGUF_FILE="):
-                return line.split("=", 1)[1].strip().strip('"').strip("'")
+                return strip_matching_quotes(line.split("=", 1)[1])
     except OSError:
         pass
     return None
@@ -1028,6 +1040,8 @@ def _hf_import_record(details: dict[str, Any], artifact: dict[str, Any]) -> dict
     if not re.fullmatch(r"[0-9a-fA-F]{40,64}", revision):
         raise HTTPException(status_code=502, detail="Hugging Face did not provide an immutable repository revision")
     remote_files = artifact["files"]
+    if not remote_files:
+        raise HTTPException(status_code=422, detail="The selected artifact contains no files")
     local_files = [
         _hf_local_filename(repo_id, item["filename"], revision)
         for item in remote_files
@@ -1338,6 +1352,7 @@ async def list_models(api_key: str = Depends(verify_api_key)):
         )
     payload["odsMode"] = ODS_MODE_EFFECTIVE
     payload["configuredMode"] = _configured_ods_mode()
+    payload["llmBackend"] = LLM_BACKEND or "unknown"
     loaded_entry = next((model for model in payload["models"] if model["status"] == "loaded"), None)
     payload["activationReadyModel"] = (
         payload.get("currentModel")
@@ -1976,6 +1991,7 @@ def load_model(
     mode_denial = _model_activation_mode_denial(
         ODS_MODE_EFFECTIVE,
         _configured_ods_mode(),
+        LLM_BACKEND,
     )
     if mode_denial is not None:
         raise HTTPException(

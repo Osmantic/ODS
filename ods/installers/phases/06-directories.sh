@@ -35,6 +35,46 @@ _phase06_step() {
     log "Phase 06 step: ${step}"
 }
 
+_phase06_generate_hex_secret() {
+    local bytes="$1" secret expected_length
+    case "$bytes" in
+        ''|*[!0-9]*|0)
+            error "Secret byte count must be a positive integer: $bytes"
+            return 1
+            ;;
+    esac
+
+    if command -v openssl >/dev/null 2>&1; then
+        secret="$(openssl rand -hex "$bytes")" || secret=""
+    elif command -v xxd >/dev/null 2>&1; then
+        secret="$(head -c "$bytes" /dev/urandom | xxd -p | tr -d '\n')" || secret=""
+    elif command -v od >/dev/null 2>&1; then
+        secret="$(od -An -N "$bytes" -tx1 /dev/urandom | tr -d ' \n')" || secret=""
+    else
+        error "Cannot generate installer secrets: install openssl, xxd, or od."
+        return 1
+    fi
+
+    expected_length=$((bytes * 2))
+    if [[ "${#secret}" -ne "$expected_length" || "$secret" == *[!0-9a-fA-F]* ]]; then
+        error "Secret generator returned invalid output; refusing to write .env."
+        return 1
+    fi
+    printf '%s' "$secret"
+}
+
+_phase06_env_hex_secret() {
+    local key="$1" bytes="$2" prefix="${3:-}" value
+    value="$(_env_get "$key" "")"
+    [[ -n "$value" ]] || value="${!key-}"
+    if [[ -n "$value" ]]; then
+        printf '%s' "$value"
+        return 0
+    fi
+    value="$(_phase06_generate_hex_secret "$bytes")" || return 1
+    printf '%s%s' "$prefix" "$value"
+}
+
 if $DRY_RUN; then
     log "[DRY RUN] Would create: $INSTALL_DIR/{config,data,models}"
     log "[DRY RUN] Would copy compose files ($COMPOSE_FLAGS) and source tree"
@@ -44,6 +84,60 @@ if $DRY_RUN; then
     [[ "$ENABLE_OPENCLAW" == "true" ]] && log "[DRY RUN] Would configure OpenClaw (model: $LLM_MODEL, config: ${OPENCLAW_CONFIG:-default})"
     log "[DRY RUN] Would validate .env against schema"
 else
+    # shellcheck source=../lib/llama-memory-budget.sh
+    source "$SCRIPT_DIR/installers/lib/llama-memory-budget.sh"
+
+    # shellcheck source=../../lib/dotenv-quote.sh
+    source "$SCRIPT_DIR/lib/dotenv-quote.sh"
+
+    _phase06_rootless=false
+    if [[ -f "$SCRIPT_DIR/lib/rootless-ownership.sh" ]]; then
+        # shellcheck source=../../lib/rootless-ownership.sh
+        source "$SCRIPT_DIR/lib/rootless-ownership.sh"
+        _phase06_rootless_state=0
+        ods_docker_rootless_state || _phase06_rootless_state=$?
+        case "$_phase06_rootless_state" in
+            0) _phase06_rootless=true ;;
+            1) ;;
+            *)
+                error "Could not determine Docker rootless mode. Verify Docker access, then re-run the installer."
+                return 1
+                ;;
+        esac
+    fi
+
+    _env_existing=""
+    [[ -f "$INSTALL_DIR/.env" ]] && _env_existing="$INSTALL_DIR/.env"
+
+    # Safe reader: extract a value from existing .env without sourcing it.
+    _env_get() {
+        local key="$1" default="${2:-}"
+        if [[ -n "$_env_existing" ]]; then
+            local val
+            val=$(grep -m1 "^${key}=" "$_env_existing" 2>/dev/null | cut -d= -f2- || true)
+            val="${val%\"}" && val="${val#\"}"
+            val="${val%\'}" && val="${val#\'}"
+            if [[ -n "$val" ]]; then
+                echo "$val"
+                return
+            fi
+        fi
+        echo "$default"
+    }
+
+    _phase06_compose_uid=$(_env_get ODS_UID "")
+    _phase06_compose_gid=$(_env_get ODS_GID "")
+    # Migrate the old Compose-only UID/GID keys without writing Bash's
+    # readonly UID variable back into the generated dotenv file.
+    [[ -n "$_phase06_compose_uid" ]] \
+        || _phase06_compose_uid=$(_env_get UID "${SUDO_UID:-$(id -u)}")
+    [[ -n "$_phase06_compose_gid" ]] \
+        || _phase06_compose_gid=$(_env_get GID "${SUDO_GID:-$(id -g)}")
+    [[ "$_phase06_compose_uid" =~ ^[0-9]+$ ]] \
+        || error "ODS_UID must be a non-negative integer, got: $_phase06_compose_uid"
+    [[ "$_phase06_compose_gid" =~ ^[0-9]+$ ]] \
+        || error "ODS_GID must be a non-negative integer, got: $_phase06_compose_gid"
+
     # Create directories
     _phase06_step "create-directories"
     ods_progress 38 "directories" "Creating directory structure"
@@ -53,39 +147,79 @@ else
     mkdir -p "$INSTALL_DIR"/data/langfuse/{postgres,clickhouse,redis,minio}
     mkdir -p "$INSTALL_DIR"/config/{n8n,litellm,openclaw,searxng}
 
-    # Hermes runs its gateway/dashboard as the in-container `hermes` user
-    # (uid 10000) and keeps HERMES_HOME at data/hermes mounted as /opt/data.
+    _phase06_repair_host_path() {
+        local target="$1" description="$2"
+
+        if $_phase06_rootless; then
+            local relative="${target#"$INSTALL_DIR"/}"
+            if [[ "$relative" == "$target" ]] || \
+               ! ods_rootless_make_host_writable "$INSTALL_DIR" "$relative"; then
+                error "Failed to repair $description in the rootless namespace: $target"
+                return 1
+            fi
+            return 0
+        fi
+        if ! ods_sudo_available; then
+            error "Cannot repair $description without privileged access: $target. Fix its ownership manually, then re-run ODS."
+            return 1
+        fi
+        if ! ods_sudo chown -R "$(id -u):$(id -g)" "$target" 2>/dev/null; then
+            error "Failed to repair $description: $target"
+            return 1
+        fi
+    }
+
+    # Hermes remaps its in-container user to the persisted host UID/GID and
+    # keeps HERMES_HOME at data/hermes mounted as /opt/data.
     # Upstream intentionally makes that directory 0700. A reinstall running
     # as the host user must not "repair" it back to uid 1000, or Hermes's web
     # status and ODS Talk JSON-RPC paths fail with PermissionError.
-    if [[ "${ENABLE_HERMES:-false}" == "true" && -d "$INSTALL_DIR/data/hermes" ]]; then
-        sudo chown -R 10000:10000 "$INSTALL_DIR/data/hermes" 2>/dev/null || \
-            warn "Failed to restore data/hermes ownership to Hermes uid 10000 (Hermes dashboard may be unhealthy)"
-        sudo chmod 700 "$INSTALL_DIR/data/hermes" 2>/dev/null || true
+    if ! $_phase06_rootless \
+        && [[ "${ENABLE_HERMES:-false}" == "true" && -d "$INSTALL_DIR/data/hermes" ]]; then
+        _hermes_metadata=$(stat -c '%u:%g:%a' "$INSTALL_DIR/data/hermes" 2>/dev/null || true)
+        if [[ "$_hermes_metadata" != "$_phase06_compose_uid:$_phase06_compose_gid:700" ]]; then
+            if ! ods_sudo_available; then
+                error "Hermes requires data/hermes ownership $_phase06_compose_uid:$_phase06_compose_gid and mode 700 with a rootful runtime. Grant privileged access or disable Hermes, then re-run ODS."
+                return 1
+            fi
+            ods_sudo chown -R "$_phase06_compose_uid:$_phase06_compose_gid" "$INSTALL_DIR/data/hermes" 2>/dev/null || {
+                error "Failed to restore data/hermes ownership to $_phase06_compose_uid:$_phase06_compose_gid"
+                return 1
+            }
+            ods_sudo chmod 700 "$INSTALL_DIR/data/hermes" 2>/dev/null || {
+                error "Failed to preserve private mode 700 on data/hermes"
+                return 1
+            }
+        fi
+        unset _hermes_metadata
     fi
 
     # Fix ownership of data/config dirs that may have been created by containers
     # (e.g. SearXNG runs as uid 977, ComfyUI data owned by root)
-    for _data_dir in "$INSTALL_DIR"/data/*/; do
-        [[ "${ENABLE_HERMES:-false}" == "true" && "$_data_dir" == "$INSTALL_DIR/data/hermes/" ]] && continue
-        if [[ -d "$_data_dir" ]] && ! [[ -w "$_data_dir" ]]; then
-            sudo chown -R "$(id -u):$(id -g)" "$_data_dir" 2>/dev/null || true
-        fi
-    done
+    if ! $_phase06_rootless; then
+        for _data_dir in "$INSTALL_DIR"/data/*/; do
+            [[ "${ENABLE_HERMES:-false}" == "true" && "$_data_dir" == "$INSTALL_DIR/data/hermes/" ]] && continue
+            if [[ -d "$_data_dir" ]] && ! [[ -w "$_data_dir" ]]; then
+                _phase06_repair_host_path "$_data_dir" "container-owned data directory" || return 1
+            fi
+        done
+    fi
     for _cfg_dir in "$INSTALL_DIR"/config/*/; do
         if [[ -d "$_cfg_dir" ]] && ! [[ -w "$_cfg_dir" ]]; then
-            sudo chown -R "$(id -u):$(id -g)" "$_cfg_dir" 2>/dev/null || true
+            _phase06_repair_host_path "$_cfg_dir" "container-owned config directory" || return 1
         fi
     done
 
     # Ensure we can write to config/data subtrees (rsync will fail otherwise)
     if [[ "$SCRIPT_DIR" != "$INSTALL_DIR" ]]; then
         _cant_write=""
-        for _root in config data; do
+        _phase06_write_roots="config data"
+        $_phase06_rootless && _phase06_write_roots="config"
+        for _root in $_phase06_write_roots; do
             [[ -d "$INSTALL_DIR/$_root" ]] || continue
             for _d in "$INSTALL_DIR/$_root"/*/; do
                 [[ "${ENABLE_HERMES:-false}" == "true" && "$_d" == "$INSTALL_DIR/data/hermes/" ]] && continue
-                [[ -d "$_d" ]] && ! [[ -w "$_d" ]] && _cant_write="$_cant_write ${_d#$INSTALL_DIR/}"
+                [[ -d "$_d" ]] && ! [[ -w "$_d" ]] && _cant_write="$_cant_write ${_d#"$INSTALL_DIR"/}"
             done
         done
         if [[ -n "$_cant_write" ]]; then
@@ -206,7 +340,7 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
         _sed_i "s|__LITELLM_KEY__|${_oc_key_esc}|g" "$INSTALL_DIR/config/openclaw/openclaw.json"
         log "Installed OpenClaw config: $OPENCLAW_CONFIG -> openclaw.json (model: $OPENCLAW_MODEL)"
         # Generate OPENCLAW_TOKEN (used by compose env and inject-token.js)
-        OPENCLAW_TOKEN=$(openssl rand -hex 24 2>/dev/null || head -c 24 /dev/urandom | xxd -p)
+        OPENCLAW_TOKEN=$(_phase06_generate_hex_secret 24)
         # Note: inject-token.js regenerates /home/node/.openclaw/openclaw.json
         # on every container start, so that file stays ephemeral. OpenClaw also
         # writes agent, cron, and canvas state under /home/node/.openclaw; those
@@ -233,40 +367,25 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
         # Pre-create data/openclaw so chown doesn't fail on a fresh install where
         # the directory hasn't been touched yet.
         mkdir -p "$INSTALL_DIR/data/openclaw"
-        chown -R 1000:1000 "$INSTALL_DIR/data/openclaw" "$INSTALL_DIR/config/openclaw/workspace" || warn "Failed to chown openclaw paths to 1000:1000 (non-fatal); container may need uid fixup"
+        if ! $_phase06_rootless; then
+            chown -R 1000:1000 "$INSTALL_DIR/data/openclaw" "$INSTALL_DIR/config/openclaw/workspace" || warn "Failed to chown openclaw paths to 1000:1000 (non-fatal); container may need uid fixup"
+        fi
     fi
 
-    # token-spy container runs as uid 1000 (baked in Dockerfile) — fix ownership
+    # Prepare service-specific ownership after compose selection is final.
     _phase06_step "prepare-service-permissions"
-    chown -R 1000:1000 "$INSTALL_DIR/data/token-spy" || warn "Failed to chown data/token-spy to 1000:1000 (non-fatal); container may crash if installer ran as a different uid"
+    if ! $_phase06_rootless; then
+        chown -R 1000:1000 "$INSTALL_DIR/data/token-spy" || warn "Failed to chown data/token-spy to 1000:1000 (non-fatal); container may crash if installer ran as a different uid"
+    fi
 
     # ── .env merge logic: preserve user-configured values on re-install ──
     _phase06_step "generate-env"
     ods_progress 40 "directories" "Generating secrets and configuration"
     # If an existing .env exists, read user-editable values so we don't
     # destroy API keys, custom ports, or manually-set secrets.
-    _env_existing=""
     if [[ -f "$INSTALL_DIR/.env" ]]; then
-        _env_existing="$INSTALL_DIR/.env"
         log "Found existing .env — preserving user-configured values"
     fi
-
-    # Safe reader: extract a value from existing .env without sourcing it
-    _env_get() {
-        local key="$1" default="${2:-}"
-        if [[ -n "$_env_existing" ]]; then
-            local val
-            val=$(grep -m1 "^${key}=" "$_env_existing" 2>/dev/null | cut -d= -f2- || true)
-            # Strip surrounding quotes
-            val="${val%\"}" && val="${val#\"}"
-            val="${val%\'}" && val="${val#\'}"
-            if [[ -n "$val" ]]; then
-                echo "$val"
-                return
-            fi
-        fi
-        echo "$default"
-    }
 
     # Optional overrides use an empty value to mean "inherit the bundled
     # provider". Preserve that explicit state across reruns; _env_get treats
@@ -362,10 +481,11 @@ raise SystemExit(1)' 2>/dev/null && return 0
     }
 
     # Secrets: reuse existing values, generate only if missing
-    WEBUI_SECRET=$(_env_get WEBUI_SECRET "$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p | tr -d '\n')")
+    WEBUI_SECRET=$(_phase06_env_hex_secret WEBUI_SECRET 32)
     N8N_PASS=$(_env_get N8N_PASS "$(openssl rand -base64 16 2>/dev/null || head -c 16 /dev/urandom | base64)")
-    LITELLM_KEY=$(_env_get LITELLM_KEY "sk-ods-$(openssl rand -hex 16 2>/dev/null || head -c 16 /dev/urandom | xxd -p)")
-    LITELLM_LEMONADE_API_KEY=$(_env_get LITELLM_LEMONADE_API_KEY "sk-ods-lemonade-$(openssl rand -hex 16 2>/dev/null || head -c 16 /dev/urandom | xxd -p)")
+    LITELLM_KEY=$(_phase06_env_hex_secret LITELLM_KEY 16 "sk-ods-")
+    LITELLM_LEMONADE_API_KEY=$(_phase06_env_hex_secret LITELLM_LEMONADE_API_KEY 16 "sk-ods-lemonade-")
+    OPENCLAW_TOKEN=$(_phase06_env_hex_secret OPENCLAW_TOKEN 24)
     LEMONADE_EXTERNAL_VALUE="${LEMONADE_EXTERNAL:-false}"
     [[ "${LEMONADE_EXTERNAL_VALUE,,}" == "true" ]] && LEMONADE_EXTERNAL_VALUE="true" || LEMONADE_EXTERNAL_VALUE="false"
     if [[ "$LEMONADE_EXTERNAL_VALUE" == "true" && -n "${LEMONADE_API_KEY:-}" ]]; then
@@ -429,58 +549,100 @@ raise SystemExit(1)' 2>/dev/null && return 0
         LEMONADE_MODEL="$LEMONADE_MODEL_VALUE"
     fi
     LIVEKIT_SECRET=$(_env_get LIVEKIT_API_SECRET "$(openssl rand -base64 32 2>/dev/null || head -c 32 /dev/urandom | base64)")
-    DASHBOARD_API_KEY=$(_env_get DASHBOARD_API_KEY "$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p | tr -d '\n')")
-    ODS_AGENT_KEY=$(_env_get ODS_AGENT_KEY "$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p | tr -d '\n')")
+    LIVEKIT_API_KEY=$(_phase06_env_hex_secret LIVEKIT_API_KEY 16)
+    DASHBOARD_API_KEY=$(_phase06_env_hex_secret DASHBOARD_API_KEY 32)
+    ODS_AGENT_KEY=$(_phase06_env_hex_secret ODS_AGENT_KEY 32)
     # HMAC key for signing ods-session cookies (magic-link redemption).
     # 32 random bytes hex-encoded. Rotating invalidates every issued cookie —
     # the only revocation mechanism we have today, so don't rotate casually.
-    ODS_SESSION_SECRET=$(_env_get ODS_SESSION_SECRET "$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p | tr -d '\n')")
-    SHIELD_API_KEY=$(_env_get SHIELD_API_KEY "$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p | tr -d '\n')")
-    DIFY_SECRET_KEY=$(_env_get DIFY_SECRET_KEY "$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p | tr -d '\n')")
-    QDRANT_API_KEY=$(_env_get QDRANT_API_KEY "$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p | tr -d '\n')")
+    ODS_SESSION_SECRET=$(_phase06_env_hex_secret ODS_SESSION_SECRET 32)
+    # Upstream Hermes otherwise generates this token at process start. Keep it
+    # stable so an already-open dashboard can reconnect after a container
+    # restart instead of receiving a bare WebSocket 403.
+    HERMES_DASHBOARD_SESSION_TOKEN=$(_phase06_env_hex_secret HERMES_DASHBOARD_SESSION_TOKEN 32)
+    SHIELD_API_KEY=$(_phase06_env_hex_secret SHIELD_API_KEY 32)
+    DIFY_SECRET_KEY=$(_phase06_env_hex_secret DIFY_SECRET_KEY 32)
+    QDRANT_API_KEY=$(_phase06_env_hex_secret QDRANT_API_KEY 32)
     _token_spy_key_default=""
     if [[ -f "$INSTALL_DIR/data/token-spy/token-spy-api-key.txt" ]]; then
         _token_spy_key_default=$(tr -d '\r\n' < "$INSTALL_DIR/data/token-spy/token-spy-api-key.txt" 2>/dev/null || true)
     fi
     if [[ -z "$_token_spy_key_default" ]]; then
-        _token_spy_key_default=$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p | tr -d '\n')
+        _token_spy_key_default=$(_phase06_generate_hex_secret 32)
     fi
     TOKEN_SPY_API_KEY=$(_env_get TOKEN_SPY_API_KEY "$_token_spy_key_default")
     unset _token_spy_key_default
     OPENCODE_SERVER_PASSWORD=$(_env_get OPENCODE_SERVER_PASSWORD "$(openssl rand -base64 16 2>/dev/null || head -c 16 /dev/urandom | base64)")
-    SEARXNG_SECRET=$(_env_get SEARXNG_SECRET "$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p | tr -d '\n')")
+    SEARXNG_SECRET=$(_phase06_env_hex_secret SEARXNG_SECRET 32)
 
     # Langfuse (LLM Observability). LANGFUSE_ENABLED mirrors the install-time
     # ENABLE_LANGFUSE toggle, falling back to whatever the user had in .env on
     # re-install so manual post-install `ods enable langfuse` edits survive.
     LANGFUSE_PORT=$(_env_get LANGFUSE_PORT "3006")
     LANGFUSE_ENABLED=$(_env_get LANGFUSE_ENABLED "${ENABLE_LANGFUSE:-false}")
-    LANGFUSE_NEXTAUTH_SECRET=$(_env_get LANGFUSE_NEXTAUTH_SECRET "$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p | tr -d '\n')")
-    LANGFUSE_SALT=$(_env_get LANGFUSE_SALT "$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p | tr -d '\n')")
-    LANGFUSE_ENCRYPTION_KEY=$(_env_get LANGFUSE_ENCRYPTION_KEY "$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p | tr -d '\n')")
-    LANGFUSE_DB_PASSWORD=$(_env_get LANGFUSE_DB_PASSWORD "$(openssl rand -hex 16 2>/dev/null || head -c 16 /dev/urandom | xxd -p)")
-    LANGFUSE_CLICKHOUSE_PASSWORD=$(_env_get LANGFUSE_CLICKHOUSE_PASSWORD "$(openssl rand -hex 16 2>/dev/null || head -c 16 /dev/urandom | xxd -p)")
-    LANGFUSE_REDIS_PASSWORD=$(_env_get LANGFUSE_REDIS_PASSWORD "$(openssl rand -hex 16 2>/dev/null || head -c 16 /dev/urandom | xxd -p)")
-    LANGFUSE_MINIO_ACCESS_KEY=$(_env_get LANGFUSE_MINIO_ACCESS_KEY "$(openssl rand -hex 16 2>/dev/null || head -c 16 /dev/urandom | xxd -p)")
-    LANGFUSE_MINIO_SECRET_KEY=$(_env_get LANGFUSE_MINIO_SECRET_KEY "$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p | tr -d '\n')")
-    LANGFUSE_PROJECT_PUBLIC_KEY=$(_env_get LANGFUSE_PROJECT_PUBLIC_KEY "pk-lf-ods-$(openssl rand -hex 16 2>/dev/null || head -c 16 /dev/urandom | xxd -p)")
-    LANGFUSE_PROJECT_SECRET_KEY=$(_env_get LANGFUSE_PROJECT_SECRET_KEY "sk-lf-ods-$(openssl rand -hex 16 2>/dev/null || head -c 16 /dev/urandom | xxd -p)")
-    LANGFUSE_INIT_PROJECT_ID=$(_env_get LANGFUSE_INIT_PROJECT_ID "$(openssl rand -hex 16 2>/dev/null || head -c 16 /dev/urandom | xxd -p)")
+    LANGFUSE_NEXTAUTH_SECRET=$(_phase06_env_hex_secret LANGFUSE_NEXTAUTH_SECRET 32)
+    LANGFUSE_SALT=$(_phase06_env_hex_secret LANGFUSE_SALT 32)
+    LANGFUSE_ENCRYPTION_KEY=$(_phase06_env_hex_secret LANGFUSE_ENCRYPTION_KEY 32)
+    LANGFUSE_DB_PASSWORD=$(_phase06_env_hex_secret LANGFUSE_DB_PASSWORD 16)
+    LANGFUSE_CLICKHOUSE_PASSWORD=$(_phase06_env_hex_secret LANGFUSE_CLICKHOUSE_PASSWORD 16)
+    LANGFUSE_REDIS_PASSWORD=$(_phase06_env_hex_secret LANGFUSE_REDIS_PASSWORD 16)
+    LANGFUSE_MINIO_ACCESS_KEY=$(_phase06_env_hex_secret LANGFUSE_MINIO_ACCESS_KEY 16)
+    LANGFUSE_MINIO_SECRET_KEY=$(_phase06_env_hex_secret LANGFUSE_MINIO_SECRET_KEY 32)
+    LANGFUSE_PROJECT_PUBLIC_KEY=$(_phase06_env_hex_secret LANGFUSE_PROJECT_PUBLIC_KEY 16 "pk-lf-ods-")
+    LANGFUSE_PROJECT_SECRET_KEY=$(_phase06_env_hex_secret LANGFUSE_PROJECT_SECRET_KEY 16 "sk-lf-ods-")
+    LANGFUSE_INIT_PROJECT_ID=$(_phase06_env_hex_secret LANGFUSE_INIT_PROJECT_ID 16)
     LANGFUSE_INIT_USER_EMAIL=$(_env_get LANGFUSE_INIT_USER_EMAIL "admin@ods.local")
-    LANGFUSE_INIT_USER_PASSWORD=$(_env_get LANGFUSE_INIT_USER_PASSWORD "$(openssl rand -hex 16 2>/dev/null || head -c 16 /dev/urandom | xxd -p)")
+    LANGFUSE_INIT_USER_PASSWORD=$(_phase06_env_hex_secret LANGFUSE_INIT_USER_PASSWORD 16)
     MODEL_PROFILE_VALUE=$(_env_get MODEL_PROFILE "${MODEL_PROFILE_REQUESTED:-${MODEL_PROFILE:-qwen}}")
-    ODS_MODE_VALUE="$(if [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "lemonade"; elif [[ "$GPU_BACKEND" == "amd" && "${ODS_MODE:-local}" == "local" ]]; then echo "lemonade"; else echo "${ODS_MODE:-local}"; fi)"
+    MODEL_RECOMMENDED_MODEL_VALUE="${LLM_MODEL}"
+    MODEL_RECOMMENDED_GGUF_VALUE="${GGUF_FILE}"
+    MODEL_RECOMMENDED_CONTEXT_VALUE="${MAX_CONTEXT}"
+    EXTERNAL_LLM_URL_VALUE="${EXTERNAL_LLM_URL:-}"
+    EXTERNAL_LLM_CONTAINER_URL_VALUE="${EXTERNAL_LLM_CONTAINER_URL:-}"
+    EXTERNAL_LLM_PROVIDER_VALUE="${EXTERNAL_LLM_PROVIDER:-}"
+    EXTERNAL_SELECTED_MODEL="${EXTERNAL_LLM_MODEL:-}"
+    EXTERNAL_LLM_ACTIVE=false
+    if [[ -n "$EXTERNAL_LLM_URL_VALUE" ]]; then
+        if [[ -z "$EXTERNAL_LLM_CONTAINER_URL_VALUE" || -z "$EXTERNAL_LLM_PROVIDER_VALUE" || -z "$EXTERNAL_SELECTED_MODEL" ]]; then
+            error "External LLM selection is incomplete. Re-run with a reachable endpoint and model, or use --no-external-llm."
+        fi
+        EXTERNAL_LLM_ACTIVE=true
+        LLM_MODEL="$EXTERNAL_SELECTED_MODEL"
+    fi
+    LLAMA_SERVER_MEMORY_LIMIT_VALUE=""
+    if [[ "$GPU_BACKEND" == "nvidia" && "$EXTERNAL_LLM_ACTIVE" != "true" && "${ODS_MODE:-local}" != "cloud" ]]; then
+        _docker_memory_gb="$(ods_docker_memory_gb 2>/dev/null || true)"
+        _effective_memory_gb="$(ods_effective_container_memory_gb "${RAM_GB:-0}" "$_docker_memory_gb")"
+        _llama_memory_default="$(ods_default_nvidia_llama_memory_limit "$_effective_memory_gb")"
+        LLAMA_SERVER_MEMORY_LIMIT_VALUE="$(_env_get LLAMA_SERVER_MEMORY_LIMIT "$_llama_memory_default")"
+        unset _docker_memory_gb _effective_memory_gb _llama_memory_default
+    fi
+    ODS_MODE_VALUE="$(if [[ "$EXTERNAL_LLM_ACTIVE" == "true" ]]; then echo "local"; elif [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "lemonade"; elif [[ "$GPU_BACKEND" == "amd" && "${ODS_MODE:-local}" == "local" ]]; then echo "lemonade"; else echo "${ODS_MODE:-local}"; fi)"
     ODS_MODEL_SWITCHBOARD_VALUE=$(_env_get ODS_MODEL_SWITCHBOARD "${ODS_MODEL_SWITCHBOARD:-observe}")
     case "$ODS_MODEL_SWITCHBOARD_VALUE" in
         legacy|observe|enabled) ;;
         *) ODS_MODEL_SWITCHBOARD_VALUE="observe" ;;
     esac
+    if [[ "$EXTERNAL_LLM_ACTIVE" == "true" && "$ODS_MODEL_SWITCHBOARD_VALUE" == "enabled" ]]; then
+        ai_warn "External LLM reuse bypasses the managed model router; setting ODS_MODEL_SWITCHBOARD=observe."
+        ODS_MODEL_SWITCHBOARD_VALUE="observe"
+    fi
     _default_llm_api_url="$(if [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "http://litellm:4000"; elif [[ "$GPU_BACKEND" == "amd" && "${ODS_MODE:-local}" == "local" ]]; then echo "http://litellm:4000"; elif [[ "${ODS_MODE:-local}" == "local" ]]; then echo "http://llama-server:8080"; else echo "http://litellm:4000"; fi)"
-    LLM_API_URL_VALUE=$(_env_get LLM_API_URL "$_default_llm_api_url")
-    if [[ "$ODS_MODEL_SWITCHBOARD_VALUE" == "enabled" ]]; then
+    if [[ "$EXTERNAL_LLM_ACTIVE" == "true" ]]; then
+        LLM_API_URL_VALUE="$EXTERNAL_LLM_CONTAINER_URL_VALUE"
+        OPEN_WEBUI_LLM_BASE_URL_VALUE="${EXTERNAL_LLM_CONTAINER_URL_VALUE}/v1"
+        OPEN_WEBUI_LLM_API_KEY_VALUE=""
+    elif [[ "${EXTERNAL_LLM_RESET:-false}" == "true" ]]; then
+        LLM_API_URL_VALUE="$_default_llm_api_url"
+        OPEN_WEBUI_LLM_BASE_URL_VALUE=""
+        OPEN_WEBUI_LLM_API_KEY_VALUE=""
+    else
+        LLM_API_URL_VALUE=$(_env_get LLM_API_URL "$_default_llm_api_url")
+    fi
+    if [[ "$EXTERNAL_LLM_ACTIVE" != "true" && "${EXTERNAL_LLM_RESET:-false}" != "true" && "$ODS_MODEL_SWITCHBOARD_VALUE" == "enabled" ]]; then
         OPEN_WEBUI_LLM_BASE_URL_VALUE=$(_env_get OPEN_WEBUI_LLM_BASE_URL "http://litellm:4000")
         OPEN_WEBUI_LLM_API_KEY_VALUE=$(_env_get OPEN_WEBUI_LLM_API_KEY "${LITELLM_KEY}")
-    else
+    elif [[ "$EXTERNAL_LLM_ACTIVE" != "true" && "${EXTERNAL_LLM_RESET:-false}" != "true" ]]; then
         OPEN_WEBUI_LLM_BASE_URL_VALUE=$(_env_get OPEN_WEBUI_LLM_BASE_URL "")
         OPEN_WEBUI_LLM_API_KEY_VALUE=$(_env_get OPEN_WEBUI_LLM_API_KEY "")
     fi
@@ -498,8 +660,16 @@ raise SystemExit(1)' 2>/dev/null && return 0
         _default_hermes_base_url="http://litellm:4000/v1"
         _default_hermes_api_key="${LITELLM_KEY}"
     fi
-    HERMES_LLM_BASE_URL_VALUE=$(_env_get HERMES_LLM_BASE_URL "$_default_hermes_base_url")
-    HERMES_LLM_API_KEY_VALUE=$(_env_get HERMES_LLM_API_KEY "$_default_hermes_api_key")
+    if [[ "$EXTERNAL_LLM_ACTIVE" == "true" ]]; then
+        HERMES_LLM_BASE_URL_VALUE="${EXTERNAL_LLM_CONTAINER_URL_VALUE}/v1"
+        HERMES_LLM_API_KEY_VALUE="not-needed"
+    elif [[ "${EXTERNAL_LLM_RESET:-false}" == "true" ]]; then
+        HERMES_LLM_BASE_URL_VALUE="$_default_hermes_base_url"
+        HERMES_LLM_API_KEY_VALUE="$_default_hermes_api_key"
+    else
+        HERMES_LLM_BASE_URL_VALUE=$(_env_get HERMES_LLM_BASE_URL "$_default_hermes_base_url")
+        HERMES_LLM_API_KEY_VALUE=$(_env_get HERMES_LLM_API_KEY "$_default_hermes_api_key")
+    fi
     LLM_API_URL="$LLM_API_URL_VALUE"
     HERMES_LLM_BASE_URL="$HERMES_LLM_BASE_URL_VALUE"
     HERMES_LLM_API_KEY="$HERMES_LLM_API_KEY_VALUE"
@@ -567,6 +737,14 @@ raise SystemExit(1)' 2>/dev/null && return 0
     else
         BIND_ADDRESS=$(_env_get BIND_ADDRESS "${BIND_ADDRESS:-127.0.0.1}")
     fi
+    if [[ "${ENABLE_ODS_PROXY:-false}" == "true" ]] \
+        || [[ "$BIND_ADDRESS" != "127.0.0.1" && "$BIND_ADDRESS" != "::1" && "$BIND_ADDRESS" != "localhost" ]]; then
+        # Never carry an authless localhost value into a network-exposed rerun.
+        WEBUI_AUTH="true"
+    else
+        # On loopback, preserve an operator's explicit opt-in to authentication.
+        WEBUI_AUTH=$(_env_get WEBUI_AUTH "false")
+    fi
 
     # Host LAN IP — only meaningful when BIND_ADDRESS=0.0.0.0. Some services
     # (e.g. openclaw) need to know the host's LAN address so the Control UI
@@ -633,6 +811,9 @@ raise SystemExit(1)' 2>/dev/null && return 0
     RAG_OPENAI_API_BASE_URL_VALUE=$(_env_get_preserve_empty RAG_OPENAI_API_BASE_URL "${RAG_OPENAI_API_BASE_URL:-}")
     RAG_OPENAI_API_KEY_VALUE=$(_env_get_preserve_empty RAG_OPENAI_API_KEY "${RAG_OPENAI_API_KEY:-}")
     EMBEDDINGS_MEMORY_LIMIT_VALUE=$(_env_get EMBEDDINGS_MEMORY_LIMIT "${EMBEDDINGS_MEMORY_LIMIT:-4G}")
+    N_GPU_LAYERS_VALUE=$(_env_get N_GPU_LAYERS "${N_GPU_LAYERS:-auto}")
+    N_GPU_LAYERS_VALUE="$(printf '%s' "$N_GPU_LAYERS_VALUE" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    N_GPU_LAYERS_VALUE="${N_GPU_LAYERS_VALUE:-auto}"
 
     _phase06_lemonade_uses_host_9000() {
         [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]] && return 0
@@ -682,7 +863,7 @@ raise SystemExit(1)' 2>/dev/null && return 0
 # Tier: ${TIER} (${TIER_NAME})
 
 #=== ODS Version (used by ods-cli update for version-compat checks) ===
-ODS_VERSION=${VERSION:-2.5.3}
+ODS_VERSION=${VERSION:-2.6.0}
 
 #=== Network Binding ===
 # 127.0.0.1 = localhost only (secure default)
@@ -698,15 +879,20 @@ ODS_MODEL_SWITCHBOARD=${ODS_MODEL_SWITCHBOARD_VALUE}
 LLM_API_URL=${LLM_API_URL_VALUE}
 OPEN_WEBUI_LLM_BASE_URL=${OPEN_WEBUI_LLM_BASE_URL_VALUE}
 OPEN_WEBUI_LLM_API_KEY=${OPEN_WEBUI_LLM_API_KEY_VALUE}
-LLM_BACKEND=$(if [[ "$ODS_MODE_VALUE" == "lemonade" ]]; then echo "lemonade"; else echo "llama-server"; fi)
+LLM_BACKEND=$(if [[ "$EXTERNAL_LLM_ACTIVE" == "true" ]]; then echo "external"; elif [[ "$ODS_MODE_VALUE" == "lemonade" ]]; then echo "lemonade"; else echo "llama-server"; fi)
 LLM_API_BASE_PATH=$(if [[ "$ODS_MODE_VALUE" == "lemonade" ]]; then echo "${LEMONADE_API_BASE_PATH_VALUE}"; else echo "/v1"; fi)
-AMD_INFERENCE_RUNTIME=$(if [[ "$LEMONADE_EXTERNAL_VALUE" == "true" || ( "$GPU_BACKEND" == "amd" && "${ODS_MODE:-local}" == "local" ) ]]; then echo "lemonade"; else echo ""; fi)
-AMD_INFERENCE_BACKEND=$(if [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "${AMD_INFERENCE_BACKEND:-auto}"; elif [[ "$GPU_BACKEND" == "amd" && "${ODS_MODE:-local}" == "local" ]]; then echo "${BACKEND_LEMONADE_LINUX_BACKEND:-rocm}"; else echo ""; fi)
-AMD_INFERENCE_LOCATION=$(if [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "host"; elif [[ "$GPU_BACKEND" == "amd" && "${ODS_MODE:-local}" == "local" ]]; then echo "container"; else echo ""; fi)
-AMD_INFERENCE_PORT=$(if [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "${LEMONADE_PORT_VALUE}"; elif [[ "$GPU_BACKEND" == "amd" && "${ODS_MODE:-local}" == "local" ]]; then echo "${BACKEND_LEMONADE_API_PORT:-8080}"; else echo ""; fi)
-AMD_INFERENCE_SUPPORTED_BACKENDS=$(if [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "${AMD_INFERENCE_SUPPORTED_BACKENDS:-auto}"; elif [[ "$GPU_BACKEND" == "amd" && "${ODS_MODE:-local}" == "local" ]]; then echo "${BACKEND_LEMONADE_LINUX_BACKEND:-rocm}"; else echo ""; fi)
-AMD_INFERENCE_RUNTIME_MODE=$(if [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "external-lemonade"; elif [[ "$GPU_BACKEND" == "amd" && "${ODS_MODE:-local}" == "local" ]]; then echo "linux-container"; else echo ""; fi)
-AMD_INFERENCE_MANAGED=$(if [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "false"; elif [[ "$GPU_BACKEND" == "amd" && "${ODS_MODE:-local}" == "local" ]]; then echo "true"; else echo ""; fi)
+EXTERNAL_LLM_URL=${EXTERNAL_LLM_URL_VALUE}
+EXTERNAL_LLM_CONTAINER_URL=${EXTERNAL_LLM_CONTAINER_URL_VALUE}
+EXTERNAL_LLM_PROVIDER=${EXTERNAL_LLM_PROVIDER_VALUE}
+EXTERNAL_LLM_MODEL=${EXTERNAL_SELECTED_MODEL}
+SKIP_MODEL_DOWNLOAD=${EXTERNAL_LLM_ACTIVE}
+AMD_INFERENCE_RUNTIME=$(if [[ "$EXTERNAL_LLM_ACTIVE" == "true" ]]; then echo ""; elif [[ "$LEMONADE_EXTERNAL_VALUE" == "true" || ( "$GPU_BACKEND" == "amd" && "${ODS_MODE:-local}" == "local" ) ]]; then echo "lemonade"; else echo ""; fi)
+AMD_INFERENCE_BACKEND=$(if [[ "$EXTERNAL_LLM_ACTIVE" == "true" ]]; then echo ""; elif [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "${AMD_INFERENCE_BACKEND:-auto}"; elif [[ "$GPU_BACKEND" == "amd" && "${ODS_MODE:-local}" == "local" ]]; then echo "${BACKEND_LEMONADE_LINUX_BACKEND:-rocm}"; else echo ""; fi)
+AMD_INFERENCE_LOCATION=$(if [[ "$EXTERNAL_LLM_ACTIVE" == "true" ]]; then echo ""; elif [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "host"; elif [[ "$GPU_BACKEND" == "amd" && "${ODS_MODE:-local}" == "local" ]]; then echo "container"; else echo ""; fi)
+AMD_INFERENCE_PORT=$(if [[ "$EXTERNAL_LLM_ACTIVE" == "true" ]]; then echo ""; elif [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "${LEMONADE_PORT_VALUE}"; elif [[ "$GPU_BACKEND" == "amd" && "${ODS_MODE:-local}" == "local" ]]; then echo "${BACKEND_LEMONADE_API_PORT:-8080}"; else echo ""; fi)
+AMD_INFERENCE_SUPPORTED_BACKENDS=$(if [[ "$EXTERNAL_LLM_ACTIVE" == "true" ]]; then echo ""; elif [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "${AMD_INFERENCE_SUPPORTED_BACKENDS:-auto}"; elif [[ "$GPU_BACKEND" == "amd" && "${ODS_MODE:-local}" == "local" ]]; then echo "${BACKEND_LEMONADE_LINUX_BACKEND:-rocm}"; else echo ""; fi)
+AMD_INFERENCE_RUNTIME_MODE=$(if [[ "$EXTERNAL_LLM_ACTIVE" == "true" ]]; then echo ""; elif [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "external-lemonade"; elif [[ "$GPU_BACKEND" == "amd" && "${ODS_MODE:-local}" == "local" ]]; then echo "linux-container"; else echo ""; fi)
+AMD_INFERENCE_MANAGED=$(if [[ "$EXTERNAL_LLM_ACTIVE" == "true" ]]; then echo ""; elif [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "false"; elif [[ "$GPU_BACKEND" == "amd" && "${ODS_MODE:-local}" == "local" ]]; then echo "true"; else echo ""; fi)
 LEMONADE_EXTERNAL=${LEMONADE_EXTERNAL_VALUE}
 LEMONADE_BASE_URL=${LEMONADE_BASE_URL_VALUE}
 LEMONADE_CONTAINER_BASE_URL=${LEMONADE_CONTAINER_BASE_URL_VALUE}
@@ -729,21 +915,22 @@ LLM_MODEL=${LLM_MODEL}
 GGUF_FILE=${GGUF_FILE}
 MAX_CONTEXT=${MAX_CONTEXT}
 CTX_SIZE=${MAX_CONTEXT}
-MODEL_RECOMMENDED_MODEL=${LLM_MODEL}
-MODEL_RECOMMENDED_GGUF=${GGUF_FILE}
-MODEL_RECOMMENDED_CONTEXT=${MAX_CONTEXT}
-MODEL_RECOMMENDATION_SOURCE=${MODEL_RECOMMENDATION_SOURCE:-installer_tier_map}
-MODEL_RECOMMENDATION_POLICY=${MODEL_RECOMMENDATION_POLICY:-tier-map}
-MODEL_RECOMMENDATION_CONFIDENCE=${MODEL_RECOMMENDATION_CONFIDENCE:-medium}
-MODEL_RECOMMENDATION_REASON=${MODEL_RECOMMENDATION_REASON:-Selected by installer tier ${TIER} (${TIER_NAME}) for ${GPU_BACKEND} backend; benchmark locally after first launch.}
-MODEL_RECOMMENDED_ALTERNATIVES=${MODEL_RECOMMENDED_ALTERNATIVES:-}
+MODEL_RECOMMENDED_MODEL=${MODEL_RECOMMENDED_MODEL_VALUE}
+MODEL_RECOMMENDED_GGUF=${MODEL_RECOMMENDED_GGUF_VALUE}
+MODEL_RECOMMENDED_CONTEXT=${MODEL_RECOMMENDED_CONTEXT_VALUE}
+MODEL_RECOMMENDATION_SOURCE=$(dotenv_quote "${MODEL_RECOMMENDATION_SOURCE:-installer_tier_map}")
+MODEL_RECOMMENDATION_POLICY=$(dotenv_quote "${MODEL_RECOMMENDATION_POLICY:-tier-map}")
+MODEL_RECOMMENDATION_CONFIDENCE=$(dotenv_quote "${MODEL_RECOMMENDATION_CONFIDENCE:-medium}")
+MODEL_RECOMMENDATION_REASON=$(dotenv_quote "${MODEL_RECOMMENDATION_REASON:-Selected by installer tier ${TIER} (${TIER_NAME}) for ${GPU_BACKEND} backend; benchmark locally after first launch.}")
+MODEL_RECOMMENDED_ALTERNATIVES=$(dotenv_quote "${MODEL_RECOMMENDED_ALTERNATIVES:-}")
 MODEL_PERFORMANCE_SOURCE=benchmark_required
-MODEL_PERFORMANCE_LABEL=Benchmark after first launch
+MODEL_PERFORMANCE_LABEL=$(dotenv_quote "Benchmark after first launch")
 GPU_BACKEND=${GPU_BACKEND}
 SYSTEM_RAM_GB=${RAM_GB:-0}
-N_GPU_LAYERS=${N_GPU_LAYERS:-99}
+N_GPU_LAYERS=${N_GPU_LAYERS_VALUE}
 $(if [[ -n "${LLAMA_SERVER_IMAGE:-}" ]]; then echo "LLAMA_SERVER_IMAGE=${LLAMA_SERVER_IMAGE}"; fi)
 $(if [[ -n "${LLAMA_SERVER_IMAGE_FALLBACK:-}" ]]; then echo "LLAMA_SERVER_IMAGE_FALLBACK=${LLAMA_SERVER_IMAGE_FALLBACK}"; fi)
+$(if [[ -n "$LLAMA_SERVER_MEMORY_LIMIT_VALUE" ]]; then echo "LLAMA_SERVER_MEMORY_LIMIT=${LLAMA_SERVER_MEMORY_LIMIT_VALUE}"; fi)
 #=== llama.cpp Runtime Tuning ===
 LLAMA_ARG_FLASH_ATTN=${LLAMA_ARG_FLASH_ATTN:-auto}
 LLAMA_ARG_CACHE_TYPE_K=${LLAMA_ARG_CACHE_TYPE_K:-f16}
@@ -769,6 +956,11 @@ HERMES_CPU_LIMIT=${HERMES_CPU_LIMIT}
 HERMES_CPU_RESERVATION=${HERMES_CPU_RESERVATION}
 COMFYUI_CPU_LIMIT=${COMFYUI_CPU_LIMIT}
 COMFYUI_CPU_RESERVATION=${COMFYUI_CPU_RESERVATION}
+
+#=== Host File Ownership ===
+# Docker Compose reads these from .env without colliding with Bash's readonly UID.
+ODS_UID=${_phase06_compose_uid}
+ODS_GID=${_phase06_compose_gid}
 
 $(if [[ "$GPU_BACKEND" == "amd" ]]; then
     # Read gfx target from topology detection. Falls back to gfx1151 (Strix Halo)
@@ -866,13 +1058,14 @@ WEBUI_SECRET=${WEBUI_SECRET}
 DASHBOARD_API_KEY=${DASHBOARD_API_KEY}
 ODS_AGENT_KEY=${ODS_AGENT_KEY}
 ODS_SESSION_SECRET=${ODS_SESSION_SECRET}
+HERMES_DASHBOARD_SESSION_TOKEN=${HERMES_DASHBOARD_SESSION_TOKEN}
 SHIELD_API_KEY=${SHIELD_API_KEY}
 N8N_USER=admin@ods.local
 N8N_PASS=${N8N_PASS}
 LITELLM_KEY=${LITELLM_KEY}
-LIVEKIT_API_KEY=$(_env_get LIVEKIT_API_KEY "$(openssl rand -hex 16 2>/dev/null || head -c 16 /dev/urandom | xxd -p)")
+LIVEKIT_API_KEY=${LIVEKIT_API_KEY}
 LIVEKIT_API_SECRET=${LIVEKIT_SECRET}
-OPENCLAW_TOKEN=${OPENCLAW_TOKEN:-$(openssl rand -hex 24 2>/dev/null || head -c 24 /dev/urandom | xxd -p)}
+OPENCLAW_TOKEN=${OPENCLAW_TOKEN}
 QDRANT_API_KEY=${QDRANT_API_KEY}
 TOKEN_SPY_API_KEY=${TOKEN_SPY_API_KEY}
 OPENCODE_SERVER_PASSWORD=${OPENCODE_SERVER_PASSWORD}
@@ -905,8 +1098,9 @@ EMBEDDINGS_MEMORY_LIMIT=${EMBEDDINGS_MEMORY_LIMIT_VALUE}
 ODS_DEVICE_NAME=${ODS_DEVICE_NAME}
 
 #=== Web UI Settings ===
-WEBUI_AUTH=true
-ENABLE_WEB_SEARCH=true
+# Loopback installs open directly. Network-bound installs require a login.
+WEBUI_AUTH=${WEBUI_AUTH}
+ENABLE_WEB_SEARCH=${ENABLE_WEB_SEARCH:-true}
 WEB_SEARCH_ENGINE=searxng
 
 #=== n8n Settings ===
@@ -958,6 +1152,18 @@ ENV_EOF
     chmod 600 "$INSTALL_DIR/.env"  # Secure secrets file
     ai_ok "Created $INSTALL_DIR"
     ai_ok "Generated secure secrets in .env (permissions: 600)"
+
+    # Apply rootless namespace ownership only after the final .env exists.
+    # This preserves legacy Token Spy key migration and makes UID/GID overrides
+    # from both fresh installs and reruns available to the ownership contract.
+    if $_phase06_rootless; then
+        export ODS_ROOTLESS_COMPOSE_FLAGS="${COMPOSE_FLAGS:-}"
+        if ! ods_fix_rootless_ownership "$INSTALL_DIR"; then
+            error "Docker rootless data ownership could not be prepared. Stop any affected ODS services, then re-run the installer."
+            return 1
+        fi
+        unset ODS_ROOTLESS_COMPOSE_FLAGS
+    fi
 
     # Generate LiteLLM config for Lemonade.
     # Lemonade exposes models as "extra.<GGUF_FILENAME>" — the wildcard
@@ -1083,7 +1289,7 @@ ENV_EOF
     _phase06_step "generate-searxng-config"
     mkdir -p "$INSTALL_DIR/config/searxng"
     if [[ -f "$INSTALL_DIR/config/searxng/settings.yml" ]] && ! [[ -w "$INSTALL_DIR/config/searxng/settings.yml" ]]; then
-        sudo chown "$(id -u):$(id -g)" "$INSTALL_DIR/config/searxng/settings.yml" 2>/dev/null || true
+        _phase06_repair_host_path "$INSTALL_DIR/config/searxng/settings.yml" "SearXNG configuration" || return 1
     fi
     cat > "$INSTALL_DIR/config/searxng/settings.yml" << SEARXNG_EOF
 use_default_settings: true

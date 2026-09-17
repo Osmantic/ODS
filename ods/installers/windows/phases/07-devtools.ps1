@@ -26,7 +26,7 @@ Write-Phase -Phase 7 -Total 13 -Name "DEVELOPER TOOLS" -Estimate "~2-5 minutes"
 if ($dryRun) {
     Write-AI "[DRY RUN] Would install OpenCode v$($script:OPENCODE_VERSION) to $($script:OPENCODE_EXE)"
     Write-AI "[DRY RUN] Would configure OpenCode for local llama-server (model: $($tierConfig.LlmModel))"
-    Write-AI "[DRY RUN] Would create a manual OpenCode launcher"
+    Write-AI "[DRY RUN] Would register and start $($script:OPENCODE_TASK_NAME) for the OpenCode web app"
     if (-not $cloudMode) {
         Write-AI "[DRY RUN] Would check for Node.js and install Claude Code + Codex CLI via npm"
     }
@@ -109,20 +109,108 @@ if (Test-Path $script:OPENCODE_EXE) {
     }
 
     # ── VBS launcher (available for manual startup) ──────────────────────────
-    # Creates a VBS script users can run to start OpenCode without a console
-    # window. NOT added to Windows Startup -- OpenCode is a developer tool,
-    # not a core service, so it should be opt-in.
+    # OpenCode is bound to loopback, so match the Linux and macOS launchers:
+    # clear any inherited password and open directly from the ODS app menu.
+    $_ocLauncherPath = Join-Path $script:OPENCODE_DIR "start-opencode.ps1"
+    $_ocExeLiteral = $script:OPENCODE_EXE.Replace("'", "''")
+    $_ocDirLiteral = $script:OPENCODE_DIR.Replace("'", "''")
+    $_ocLauncherContent = @"
+`$ErrorActionPreference = "Stop"
+Remove-Item Env:OPENCODE_SERVER_PASSWORD -ErrorAction SilentlyContinue
+Set-Location -LiteralPath '$_ocDirLiteral'
+& '$_ocExeLiteral' web --port $($script:OPENCODE_PORT) --hostname 127.0.0.1
+exit `$LASTEXITCODE
+"@
+    Write-Utf8NoBom -Path $_ocLauncherPath -Content $_ocLauncherContent
+
+    function Test-ODSOpenCodePortOwned {
+        $listeners = @(
+            Get-NetTCPConnection -LocalPort $script:OPENCODE_PORT `
+                -State Listen -ErrorAction SilentlyContinue
+        )
+        if ($listeners.Count -eq 0) { return $false }
+
+        $expectedExe = [System.IO.Path]::GetFullPath($script:OPENCODE_EXE)
+        foreach ($processId in @($listeners | Select-Object -ExpandProperty OwningProcess -Unique)) {
+            $process = Get-CimInstance Win32_Process `
+                -Filter "ProcessId = $([int]$processId)" -ErrorAction SilentlyContinue
+            if (-not $process -or [string]::IsNullOrWhiteSpace($process.ExecutablePath)) {
+                continue
+            }
+            try {
+                $actualExe = [System.IO.Path]::GetFullPath([string]$process.ExecutablePath)
+            } catch {
+                continue
+            }
+            if ($actualExe.Equals($expectedExe, [System.StringComparison]::OrdinalIgnoreCase)) {
+                return $true
+            }
+        }
+        return $false
+    }
+
+    $_ocTaskArgument = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$($_ocLauncherPath)`""
+    $_ocStarted = $false
+    try {
+        try { Stop-ScheduledTask -TaskName $script:OPENCODE_TASK_NAME -ErrorAction SilentlyContinue } catch { }
+        try { Unregister-ScheduledTask -TaskName $script:OPENCODE_TASK_NAME -Confirm:$false -ErrorAction SilentlyContinue } catch { }
+
+        $_ocTaskAction = New-ScheduledTaskAction -Execute "powershell.exe" `
+            -Argument $_ocTaskArgument -WorkingDirectory $script:OPENCODE_DIR
+        $_ocTaskTrigger = New-ScheduledTaskTrigger -AtLogOn
+        $_ocTaskSettings = New-ScheduledTaskSettingsSet `
+            -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+            -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero)
+        $_ocTaskPrincipal = New-ODSInteractiveScheduledTaskPrincipal -RunLevel Limited
+
+        Register-ScheduledTask -TaskName $script:OPENCODE_TASK_NAME `
+            -Action $_ocTaskAction -Trigger $_ocTaskTrigger `
+            -Settings $_ocTaskSettings -Principal $_ocTaskPrincipal `
+            -Description "ODS OpenCode browser application" `
+            -Force -ErrorAction Stop | Out-Null
+        Start-ScheduledTask -TaskName $script:OPENCODE_TASK_NAME -ErrorAction Stop
+        $_ocStarted = $true
+    } catch {
+        Write-AIWarn "Could not register the OpenCode login task: $_"
+        Write-AI "Starting OpenCode for this session..."
+        try {
+            Start-Process -FilePath "powershell.exe" -ArgumentList $_ocTaskArgument `
+                -WorkingDirectory $script:OPENCODE_DIR -WindowStyle Hidden -ErrorAction Stop | Out-Null
+            $_ocStarted = $true
+        } catch {
+            Write-AIWarn "Could not start OpenCode: $_"
+        }
+    }
+
+    $_ocHealthy = $false
+    if ($_ocStarted) {
+        for ($_ocAttempt = 0; $_ocAttempt -lt 15; $_ocAttempt++) {
+            Start-Sleep -Seconds 1
+            if (Test-ODSOpenCodePortOwned) {
+                $_ocHealthy = $true
+                break
+            }
+        }
+    }
+
+    if ($_ocHealthy) {
+        Write-AISuccess "OpenCode web app started (http://localhost:$($script:OPENCODE_PORT))"
+    } elseif ($_ocStarted) {
+        Write-AIWarn "OpenCode was launched but did not become reachable on port $($script:OPENCODE_PORT)."
+    }
+
+    # Retain the familiar double-click launcher as a recovery path.
     $_vbsContent = @"
 ' ODS -- OpenCode Web Server (silent launcher)
 ' Run this script to start OpenCode without a visible console window.
 Set WshShell = CreateObject("WScript.Shell")
-WshShell.CurrentDirectory = WshShell.ExpandEnvironmentStrings("%USERPROFILE%\.opencode")
-WshShell.Run """%USERPROFILE%\.opencode\bin\opencode.exe"" web --port $($script:OPENCODE_PORT) --hostname 127.0.0.1", 0, False
+WshShell.Run "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""$_ocLauncherPath""", 0, False
 "@
     $_vbsPath = Join-Path $script:OPENCODE_DIR "start-opencode.vbs"
     Write-Utf8NoBom -Path $_vbsPath -Content $_vbsContent
-    Write-AISuccess "OpenCode ready -- start manually: $($script:OPENCODE_EXE) web --port $($script:OPENCODE_PORT)"
-    Write-AI "  Or run: $($_vbsPath) (silent, no console window)"
+    if (-not $_ocStarted) {
+        Write-AI "  Recovery launcher: $($_vbsPath)"
+    }
 }
 
 # ── Node.js / npm tools (Claude Code + Codex CLI) ────────────────────────────
@@ -256,9 +344,12 @@ function Resolve-ODSHostAgentPython {
     }
 
     foreach ($name in @("python3", "python")) {
-        $cmd = Get-Command $name -CommandType Application -ErrorAction SilentlyContinue
-        if ($cmd -and $cmd.Source) {
-            $candidateFiles.Add($cmd.Source)
+        # Get-Command returns an array when multiple executables share a name
+        # across PATH entries; iterate so .Source is always a single string.
+        foreach ($cmd in @(Get-Command $name -CommandType Application -All -ErrorAction SilentlyContinue)) {
+            if ($cmd.Source) {
+                $candidateFiles.Add($cmd.Source)
+            }
         }
     }
 
@@ -271,10 +362,11 @@ function Resolve-ODSHostAgentPython {
         }
     }
 
-    $pyLauncher = Get-Command py -CommandType Application -ErrorAction SilentlyContinue
-    if ($pyLauncher -and $pyLauncher.Source -and
-        (Test-ODSHostAgentPythonCandidate -FilePath $pyLauncher.Source -PrefixArgs @("-3"))) {
-        return (New-ODSHostAgentPythonCandidate -FilePath $pyLauncher.Source -PrefixArgs @("-3"))
+    foreach ($pyLauncher in @(Get-Command py -CommandType Application -All -ErrorAction SilentlyContinue)) {
+        if ($pyLauncher.Source -and
+            (Test-ODSHostAgentPythonCandidate -FilePath $pyLauncher.Source -PrefixArgs @("-3"))) {
+            return (New-ODSHostAgentPythonCandidate -FilePath $pyLauncher.Source -PrefixArgs @("-3"))
+        }
     }
 
     return $null

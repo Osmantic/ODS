@@ -108,6 +108,27 @@ else
     fail "Valid .env should yield exit 0, got $r"
 fi
 
+# N_GPU_LAYERS accepts llama.cpp's symbolic policies and explicit non-negative
+# counts, but rejects malformed values before they reach any launcher.
+for gpu_layers in auto all 0 17 999; do
+    cp "$TMP_DIR/valid.env" "$TMP_DIR/gpu-layers-valid.env"
+    printf 'N_GPU_LAYERS=%s\n' "$gpu_layers" >> "$TMP_DIR/gpu-layers-valid.env"
+    "$VALIDATE_ENV_BASH" "$ROOT_DIR/scripts/validate-env.sh" \
+        "$TMP_DIR/gpu-layers-valid.env" "$ROOT_DIR/.env.schema.json" >/dev/null 2>&1 \
+        || fail "N_GPU_LAYERS=$gpu_layers should validate"
+done
+pass "N_GPU_LAYERS accepts auto, all, and non-negative layer counts"
+
+for gpu_layers in -1 1.5 AUTO automatic '999;exit'; do
+    cp "$TMP_DIR/valid.env" "$TMP_DIR/gpu-layers-invalid.env"
+    printf 'N_GPU_LAYERS=%s\n' "$gpu_layers" >> "$TMP_DIR/gpu-layers-invalid.env"
+    if "$VALIDATE_ENV_BASH" "$ROOT_DIR/scripts/validate-env.sh" \
+        "$TMP_DIR/gpu-layers-invalid.env" "$ROOT_DIR/.env.schema.json" >/dev/null 2>&1; then
+        fail "N_GPU_LAYERS=$gpu_layers should be rejected"
+    fi
+done
+pass "N_GPU_LAYERS rejects malformed and negative values"
+
 # 5. .env missing one required key → exit 2
 REAL_JQ="$(command -v jq)"
 CRLF_JQ_DIR="$TMP_DIR/crlf-jq"
@@ -426,6 +447,60 @@ if ! grep -q "REMOTE_LLM_API_KEY" "$ROOT_DIR/.env.schema.json" "$ROOT_DIR/.env.e
     pass "Remote provider API key is absent from schema and .env.example"
 else
     fail "Remote provider API key must not be added as an ordinary .env field"
+fi
+
+# 20. Service manifests promise user-settable .env keys. validate-env.sh
+# rejects any key absent from the schema as "unknown", so a manifest key that
+# never made it into .env.schema.json turns following the service README into
+# a hard validation failure.
+manifest_env_contract() {
+    awk '
+        /^[[:space:]]+external_port_env:[[:space:]]*/ {
+            print FILENAME "	" $2
+            next
+        }
+        /^[[:space:]]+-[[:space:]]+key:[[:space:]]*/ {
+            pending = $3
+            next
+        }
+        pending != "" && /^[[:space:]]+required:[[:space:]]*true[[:space:]]*$/ {
+            print FILENAME "	" pending
+            pending = ""
+        }
+        /^[[:space:]]+-[[:space:]]+key:/ { pending = $3 }
+    ' "$ROOT_DIR"/extensions/services/*/manifest.yaml | sort -u
+}
+
+undeclared=""
+while IFS=$'	' read -r manifest key; do
+    [[ -n "$key" ]] || continue
+    if ! grep -q "\"$key\":" "$ROOT_DIR/.env.schema.json"; then
+        undeclared+="${key} (${manifest##*/services/}) "
+    fi
+done < <(manifest_env_contract)
+
+if [[ -z "$undeclared" ]]; then
+    pass "Every manifest port override and required env key is declared in the schema"
+else
+    fail "Manifest keys missing from .env.schema.json: ${undeclared% }"
+fi
+
+# 21. The same gap, from the user's side: setting the documented Brave Search
+# keys in .env must not be reported as unknown.
+cp "$TMP_DIR/valid.env" "$TMP_DIR/brave.env"
+cat >> "$TMP_DIR/brave.env" <<'EOF'
+BRAVE_SEARCH_API_KEY=brave-subscription-token
+BRAVE_SEARCH_PORT=8585
+EOF
+set +e
+out=$("$VALIDATE_ENV_BASH" "$ROOT_DIR/scripts/validate-env.sh" "$TMP_DIR/brave.env" "$ROOT_DIR/.env.schema.json" 2>&1)
+r=$?
+set -e
+if [[ $r -eq 0 ]]; then
+    pass "Documented Brave Search keys validate cleanly"
+else
+    fail "Brave Search keys should validate, got exit $r: $(echo "$out" | grep -i brave | tr '
+' ' ')"
 fi
 
 echo ""

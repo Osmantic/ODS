@@ -61,6 +61,45 @@ function Resolve-WindowsODSPort {
     return $DefaultPort
 }
 
+function Get-ODSDockerMemoryGB {
+    try {
+        $raw = (& docker info --format "{{.MemTotal}}" 2>$null | Select-Object -First 1)
+        $bytes = [int64]0
+        if ([int64]::TryParse(([string]$raw).Trim(), [ref]$bytes) -and $bytes -ge 1GB) {
+            return [int][Math]::Floor($bytes / 1GB)
+        }
+    } catch { }
+    return 0
+}
+
+function Get-ODSEffectiveContainerMemoryGB {
+    param(
+        [int]$SystemRamGB,
+        [int]$DockerRamGB
+    )
+
+    if ($SystemRamGB -gt 0 -and $DockerRamGB -gt 0) {
+        return [Math]::Min($SystemRamGB, $DockerRamGB)
+    }
+    if ($DockerRamGB -gt 0) {
+        return $DockerRamGB
+    }
+    return [Math]::Max(0, $SystemRamGB)
+}
+
+function Get-ODSDefaultNvidiaLlamaMemoryLimit {
+    param([int]$AvailableRamGB)
+
+    if ($AvailableRamGB -le 0) {
+        return "64G"
+    }
+
+    $reserveGB = $(if ($AvailableRamGB -lt 16) { 3 } else { 4 })
+    $usableGB = [Math]::Max(1, $AvailableRamGB - $reserveGB)
+    $usableGB = [Math]::Min(64, $usableGB)
+    return "${usableGB}G"
+}
+
 function Write-Utf8NoBom {
     <#
     .SYNOPSIS
@@ -418,6 +457,22 @@ function New-SecureBase64 {
     return [Convert]::ToBase64String($buf)
 }
 
+function ConvertTo-ODSDotenvValue {
+    <# Serialize a value for Bash, Docker Compose, and ODS safe-env readers. #>
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value)
+
+    $text = ([string]$Value) -replace "`r", " " -replace "`n", " "
+    if ($text.IndexOf("'") -ge 0) {
+        # Bash and Compose disagree about \` inside double-quoted dotenv
+        # values. Normalize it only in this apostrophe fallback so both readers
+        # receive the same safe text.
+        $text = $text.Replace('`', 'ˋ')
+        $escaped = $text.Replace('\', '\\').Replace('"', '\"').Replace('$', '\$')
+        return '"' + $escaped + '"'
+    }
+    return "'" + $text + "'"
+}
+
 function New-ODSEnv {
     <#
     .SYNOPSIS
@@ -457,7 +512,9 @@ function New-ODSEnv {
         # user already had in .env (via Get-EnvOrNew), so manual
         # `ods enable langfuse` edits survive.
         [bool]$EnableLangfuse = $false,
-        [bool]$EnableLan = $false
+        [bool]$EnableLan = $false,
+        [bool]$EnableODSProxy = $false,
+        [bool]$EnableWebSearch = $true
     )
 
     # Preserve existing secrets on re-install (mirrors Linux _env_get logic)
@@ -486,6 +543,25 @@ function New-ODSEnv {
             return $existingEnv[$Key]
         }
         return $Default
+    }
+
+    $bindAddressDefault = if ($EnableLan) { "0.0.0.0" } else { "127.0.0.1" }
+    $bindAddress = if ($EnableLan) {
+        # An explicit -Lan rerun must override a stale loopback-only .env.
+        $bindAddressDefault
+    } else {
+        Get-EnvOrNew "BIND_ADDRESS" $bindAddressDefault
+    }
+    $networkExposed = (
+        $bindAddress -notin @("127.0.0.1", "::1", "localhost") -or
+        $EnableODSProxy
+    )
+    if ($networkExposed) {
+        # Never carry an authless localhost value into a network-exposed rerun.
+        $webuiAuth = "true"
+    } else {
+        # On loopback, preserve an operator's explicit opt-in to authentication.
+        $webuiAuth = Get-EnvOrNew "WEBUI_AUTH" "false"
     }
 
     $webuiPort = Resolve-WindowsODSPort `
@@ -594,6 +670,9 @@ function New-ODSEnv {
     # session_signer raises on issue() and verify-session returns no-secret —
     # the magic-link gate effectively breaks.
     $odsSessionSecret = Get-EnvOrNew "ODS_SESSION_SECRET" (New-SecureHex -Bytes 32)
+    # Hermes otherwise rotates its dashboard token on every process start,
+    # invalidating WebSocket URLs held by already-open browser tabs.
+    $hermesDashboardSessionToken = Get-EnvOrNew "HERMES_DASHBOARD_SESSION_TOKEN" (New-SecureHex -Bytes 32)
     $shieldApiKey    = Get-EnvOrNew "SHIELD_API_KEY"     (New-SecureHex -Bytes 32)
     $tokenSpyApiKeyDefault = Get-ExistingTokenSpyApiKey
     if ([string]::IsNullOrWhiteSpace($tokenSpyApiKeyDefault)) {
@@ -639,6 +718,7 @@ function New-ODSEnv {
     $langfusePort              = Get-EnvOrNew "LANGFUSE_PORT"              "3006"
     $langfuseDefault           = if ($EnableLangfuse) { "true" } else { "false" }
     $langfuseEnabled           = Get-EnvOrNew "LANGFUSE_ENABLED"           $langfuseDefault
+    $enableWebSearchValue      = if ($EnableWebSearch) { "true" } else { "false" }
     $langfuseNextauthSecret    = Get-EnvOrNew "LANGFUSE_NEXTAUTH_SECRET"   (New-SecureHex -Bytes 32)
     $langfuseSalt              = Get-EnvOrNew "LANGFUSE_SALT"              (New-SecureHex -Bytes 32)
     $langfuseEncryptionKey     = Get-EnvOrNew "LANGFUSE_ENCRYPTION_KEY"    (New-SecureHex -Bytes 32)
@@ -667,6 +747,15 @@ function New-ODSEnv {
         $nativeInferencePort = [string]$parsedNativeInferencePort
     }
     $effectiveODSMode = $(if ($windowsAmdLemonade) { "lemonade" } else { $ODSMode })
+    $llamaServerMemoryLimit = ""
+    if ($GpuBackend -eq "nvidia" -and $effectiveODSMode -ne "cloud") {
+        $dockerRamGB = Get-ODSDockerMemoryGB
+        $availableRamGB = Get-ODSEffectiveContainerMemoryGB `
+            -SystemRamGB $SystemRamGB -DockerRamGB $dockerRamGB
+        $llamaMemoryDefault = Get-ODSDefaultNvidiaLlamaMemoryLimit `
+            -AvailableRamGB $availableRamGB
+        $llamaServerMemoryLimit = Get-EnvOrNew "LLAMA_SERVER_MEMORY_LIMIT" $llamaMemoryDefault
+    }
     $existingLemonadeModel = Get-EnvOrNew "LEMONADE_MODEL" ""
     $existingGgufFile = Get-EnvOrNew "GGUF_FILE" ""
     $effectiveLemonadeModel = $existingLemonadeModel
@@ -799,8 +888,19 @@ function New-ODSEnv {
     $embeddingsMemoryLimitDefault = [Environment]::GetEnvironmentVariable("EMBEDDINGS_MEMORY_LIMIT")
     if ([string]::IsNullOrWhiteSpace($embeddingsMemoryLimitDefault)) { $embeddingsMemoryLimitDefault = "4G" }
     $embeddingsMemoryLimit = Get-EnvOrNew "EMBEDDINGS_MEMORY_LIMIT" $embeddingsMemoryLimitDefault
+    $nGpuLayersDefault = [Environment]::GetEnvironmentVariable("N_GPU_LAYERS")
+    if ([string]::IsNullOrWhiteSpace($nGpuLayersDefault)) { $nGpuLayersDefault = "auto" }
+    $nGpuLayers = (Get-EnvOrNew "N_GPU_LAYERS" $nGpuLayersDefault).Trim()
+    if ([string]::IsNullOrWhiteSpace($nGpuLayers)) { $nGpuLayers = "auto" }
 
     # Build .env content (matches Phase 06 format)
+    $recommendationSource = ConvertTo-ODSDotenvValue $(if ($TierConfig.RecommendationSource) { $TierConfig.RecommendationSource } else { "installer_tier_map" })
+    $recommendationPolicy = ConvertTo-ODSDotenvValue $(if ($TierConfig.RecommendationPolicy) { $TierConfig.RecommendationPolicy } else { "tier-map" })
+    $recommendationConfidence = ConvertTo-ODSDotenvValue $(if ($TierConfig.RecommendationConfidence) { $TierConfig.RecommendationConfidence } else { "medium" })
+    $recommendationReason = ConvertTo-ODSDotenvValue $(if ($TierConfig.RecommendationReason) { $TierConfig.RecommendationReason } else { "Selected by installer tier $Tier ($($TierConfig.TierName)) for $GpuBackend backend; benchmark locally after first launch." })
+    $recommendationAlternatives = ConvertTo-ODSDotenvValue $(if ($TierConfig.RecommendationAlternatives) { $TierConfig.RecommendationAlternatives } else { "" })
+    $performanceLabel = ConvertTo-ODSDotenvValue "Benchmark after first launch"
+
     $envContent = @"
 # ODS Configuration -- $($TierConfig.TierName) Edition
 # Generated by Windows installer v$($script:ODS_VERSION) on $timestamp
@@ -809,7 +909,7 @@ function New-ODSEnv {
 #=== Network Binding ===
 # 127.0.0.1 = localhost only (secure default)
 # 0.0.0.0   = accessible from LAN (install with -Lan or set manually)
-BIND_ADDRESS=$(Get-EnvOrNew "BIND_ADDRESS" "$(if ($EnableLan) { "0.0.0.0" } else { "127.0.0.1" })")
+BIND_ADDRESS=$bindAddress
 # Docker Desktop containers reach loopback-only host services through this name.
 ODS_AGENT_HOST=$(Get-EnvOrNew "ODS_AGENT_HOST" "host.docker.internal")
 # The dashboard-api container must call the host agent over Docker Desktop's
@@ -848,20 +948,22 @@ CTX_SIZE=$($TierConfig.MaxContext)
 MODEL_RECOMMENDED_MODEL=$($TierConfig.LlmModel)
 MODEL_RECOMMENDED_GGUF=$($TierConfig.GgufFile)
 MODEL_RECOMMENDED_CONTEXT=$($TierConfig.MaxContext)
-MODEL_RECOMMENDATION_SOURCE=$(if ($TierConfig.RecommendationSource) { $TierConfig.RecommendationSource } else { "installer_tier_map" })
-MODEL_RECOMMENDATION_POLICY=$(if ($TierConfig.RecommendationPolicy) { $TierConfig.RecommendationPolicy } else { "tier-map" })
-MODEL_RECOMMENDATION_CONFIDENCE=$(if ($TierConfig.RecommendationConfidence) { $TierConfig.RecommendationConfidence } else { "medium" })
-MODEL_RECOMMENDATION_REASON=$(if ($TierConfig.RecommendationReason) { $TierConfig.RecommendationReason } else { "Selected by installer tier $Tier ($($TierConfig.TierName)) for $GpuBackend backend; benchmark locally after first launch." })
-MODEL_RECOMMENDED_ALTERNATIVES=$(if ($TierConfig.RecommendationAlternatives) { $TierConfig.RecommendationAlternatives } else { "" })
+MODEL_RECOMMENDATION_SOURCE=$recommendationSource
+MODEL_RECOMMENDATION_POLICY=$recommendationPolicy
+MODEL_RECOMMENDATION_CONFIDENCE=$recommendationConfidence
+MODEL_RECOMMENDATION_REASON=$recommendationReason
+MODEL_RECOMMENDED_ALTERNATIVES=$recommendationAlternatives
 MODEL_RUNTIME_PROFILE=$(if ($TierConfig.RuntimeProfile) { $TierConfig.RuntimeProfile } else { "" })
 MODEL_RUNTIME_PROFILE_LABEL=$(if ($TierConfig.RuntimeProfileLabel) { $TierConfig.RuntimeProfileLabel } else { "" })
 MODEL_RUNTIME_PROFILE_SOURCE=$(if ($TierConfig.RuntimeProfileSource) { $TierConfig.RuntimeProfileSource } else { "" })
 MODEL_PERFORMANCE_SOURCE=benchmark_required
-MODEL_PERFORMANCE_LABEL=Benchmark after first launch
+MODEL_PERFORMANCE_LABEL=$performanceLabel
 GPU_BACKEND=$GpuBackend
 SYSTEM_RAM_GB=$SystemRamGB
+N_GPU_LAYERS=$nGpuLayers
 $(if ($LlamaServerImage) { "LLAMA_SERVER_IMAGE=$LlamaServerImage" } else { "#LLAMA_SERVER_IMAGE=ghcr.io/ggml-org/llama.cpp:server-cuda" })
 $(if ($llamaServerImageFallback) { "LLAMA_SERVER_IMAGE_FALLBACK=$llamaServerImageFallback" } else { "#LLAMA_SERVER_IMAGE_FALLBACK=ghcr.io/ggml-org/llama.cpp:server-cuda-b9014" })
+$(if ($llamaServerMemoryLimit) { "LLAMA_SERVER_MEMORY_LIMIT=$llamaServerMemoryLimit" })
 $(if ($LemonadeServerImage) { "LEMONADE_SERVER_IMAGE=$LemonadeServerImage" } else { "#LEMONADE_SERVER_IMAGE=ghcr.io/lemonade-sdk/lemonade-server:v10.2.0" })
 #=== llama.cpp Runtime Tuning ===
 LLAMA_PARALLEL=$(Get-EnvOrNew "LLAMA_PARALLEL" "$(if ($TierConfig.LLAMA_PARALLEL) { $TierConfig.LLAMA_PARALLEL } else { "1" })")
@@ -914,6 +1016,7 @@ WEBUI_SECRET=$webuiSecret
 DASHBOARD_API_KEY=$dashboardApiKey
 ODS_AGENT_KEY=$odsAgentKey
 ODS_SESSION_SECRET=$odsSessionSecret
+HERMES_DASHBOARD_SESSION_TOKEN=$hermesDashboardSessionToken
 SHIELD_API_KEY=$shieldApiKey
 N8N_USER=admin@ods.local
 N8N_PASS=$n8nPass
@@ -950,8 +1053,9 @@ RAG_OPENAI_API_KEY=$ragOpenAiApiKey
 EMBEDDINGS_MEMORY_LIMIT=$embeddingsMemoryLimit
 
 #=== Web UI Settings ===
-WEBUI_AUTH=true
-ENABLE_WEB_SEARCH=true
+# Loopback installs open directly. LAN installs require a login by default.
+WEBUI_AUTH=$webuiAuth
+ENABLE_WEB_SEARCH=$enableWebSearchValue
 WEB_SEARCH_ENGINE=searxng
 
 #=== n8n Settings ===

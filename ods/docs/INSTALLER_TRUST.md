@@ -66,8 +66,15 @@ curl -fsSL https://install.osmantic.com/ods.sh | ODS_REF=main bash
 ```
 
 `ODS_REF` can select only refs that contain the current `ods/` product-tree
-layout used by the sparse checkout. The current stable tag, `v2.5.3`, predates that repository layout and must be installed through the manual source path below.
-Do not pass `v2.5.3` through `ODS_REF`.
+layout used by the sparse checkout. The current stable tag, `v2.6.0`, is
+compatible with that layout:
+
+```bash
+curl -fsSL https://install.osmantic.com/ods.sh | ODS_REF=v2.6.0 bash
+```
+
+Older tags that predate the current layout must be installed through the
+manual source path below.
 
 Maintainers can verify all twelve hosted Worker aliases against an exact Git
 ref:
@@ -96,7 +103,7 @@ For the stable release tag, clone the known ref and run the installer from the
 checked-out source:
 
 ```bash
-git clone --depth 1 --branch v2.5.3 https://github.com/Osmantic/ODS.git
+git clone --depth 1 --branch v2.6.0 https://github.com/Osmantic/ODS.git
 cd ODS
 ./install.sh
 ```
@@ -131,7 +138,7 @@ Windows users should install from a normal user PowerShell, not an elevated
 Administrator shell:
 
 ```powershell
-git clone --depth 1 --branch v2.5.3 https://github.com/Osmantic/ODS.git
+git clone --depth 1 --branch v2.6.0 https://github.com/Osmantic/ODS.git
 cd ODS
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\install.ps1
@@ -168,7 +175,7 @@ cmp get-ods.sh main-get-ods.sh
 On Windows, clone first and inspect `install.ps1` before running it:
 
 ```powershell
-git clone --depth 1 --branch v2.5.3 https://github.com/Osmantic/ODS.git
+git clone --depth 1 --branch v2.6.0 https://github.com/Osmantic/ODS.git
 cd ODS
 notepad .\install.ps1
 .\install.ps1

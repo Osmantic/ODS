@@ -6,11 +6,111 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2.6.0] - 2026-07-28
+
+### Added
+- Remote-provider operations graduated into the product surface: direct and
+  SSH egress routes, egress policy contracts, SSH tunnel supervision, peer ODS
+  model discovery, remote model load/delete flows, and dashboard status/UI
+  integration.
+- Model Switchboard support now gives local applications a stable current-model
+  route, selected context propagation, model identity validation, rollback-aware
+  runtime swaps, and app probes across Open WebUI, Hermes, OpenCode,
+  Perplexica, and other LLM consumers.
+- GPU reassignment workflows now support verified multi-GPU model swapping on
+  NVIDIA and Linux AMD/ROCm paths, including rollback when a reassignment or
+  recreation fails.
+- Dashboard and setup flows gained stack presets, an animated loading screen,
+  better service URL handling, model download progress, first-boot polish, and
+  clearer owner/support access paths.
+- Linux rootless Docker installs now have subordinate-ID diagnostics and a
+  rootless bind-mount ownership repair path for services with container-owned
+  data directories.
+
+### Changed
+- Stable channel documentation now points at `v2.6.0` and identifies
+  `release/2.6.x` as the current patch lane, with `release/2.5.x` retained
+  only for critical old-stable continuity fixes.
+- Version consistency now also checks the `ods-cli` fallback version so CLI,
+  installer, dashboard, manifest, architecture, and changelog authorities move
+  together.
+- Runtime configuration is more centralized: generated configs, app routes,
+  model-router state, switchboard mode, and Lemonade/native adapters share more
+  of the same contracts across Linux, macOS, Windows, and Docker paths.
+- Extension installation and dashboard service handling were hardened around
+  transactional updates, dependency resolution, public service URLs, and
+  compose-stack reconciliation.
+
 ### Fixed
 - Dashboard Hermes readiness now accepts either llama-server or LiteLLM and
   requires the complete authenticated runtime chain. Hermes Single Sign-On now
   opens owner and support access management instead of duplicating the Agent
   runtime link.
+- Windows native llama-server launches now carry both the llama.cpp metrics
+  endpoint and `LLAMA_REASONING` selection, while the Windows host-agent Python
+  resolver handles multiple PATH interpreters and Microsoft Store aliases.
+- Intel and Arc compose overlays keep llama.cpp runtime tunables such as batch
+  size, threads, parallelism, and metrics instead of losing base-command flags.
+- Linux rootless Docker no longer receives host-side ownership repairs that map
+  to the wrong namespace; ODS prepares and verifies bind mounts from inside the
+  rootless container namespace.
+- Token Spy's Postgres SSE cursor now uses a durable timestamp/UUID cursor so
+  retention and UUID ordering cannot silently drop events.
+- Remote provider direct egress now pins requests to policy-validated resolved
+  addresses while preserving Host and TLS SNI, closing DNS-rebinding/TOCTOU
+  escape paths.
+- macOS writes OpenCode's `config.json` compatibility file alongside
+  `opencode.json`, and installer-context parity now checks all platform
+  writers.
+- Perplexica detects AMD Lemonade runtime state on local installs and selects
+  the served model id instead of routing to an unavailable GGUF name.
+- Dashboard voice readiness no longer treats absent optional LiveKit as a
+  voice-stack failure; installed optional voice services still gate on health.
+- Dashboard model-memory estimates now read the catalog `gguf_file` key so
+  dashboard activation agrees with installer model selection.
+- Uninstall cleanup now scopes fallback container and volume discovery to ODS
+  project prefixes, avoiding unrelated Docker resources.
+- Windows Lemonade restarts tolerate stale listener/PID references without
+  relaxing ownership checks for live unrelated processes.
+- Offline model validation, model compatibility, model download host checks,
+  imported-model exclusion, and model route foundation fixes reduce invalid
+  catalog selections and stale app routes.
+- Multiple installer and lifecycle regressions were fixed across macOS platform
+  image pulls, Windows env-file replacement, native-port preflight, compose
+  failure reporting, Linux TTY input, compose resolver errors, bootstrap resume,
+  update dry-run version reading, and restart/doctor recovery paths.
+
+### Security
+- Remote-provider egress now validates direct provider DNS resolution and pins
+  outbound requests to the approved address while keeping provider TLS identity
+  intact.
+- OAuth pending-state validation and local backend URL handling were hardened.
+- Network exposure, dependency pin, secret-minLength, support-bundle, and
+  release-claim contracts were expanded so release gates catch more unsafe
+  drift.
+
+### Validation
+- Release-prep candidate `07e2a21e` had all PR checks green on 2026-07-28:
+  Dashboard, Lint PowerShell, Matrix Smoke, Python Lint, Python Type Check,
+  Secret Scan, ShellCheck, Test Linux, Validate .env Schema, and review gates.
+  The branch is based on product merge commit `c292e00d`.
+- Focused local validation on 2026-07-28 passed Windows parser/resolver,
+  llama runtime tunables, metrics, reasoning, env schema, uninstall scoping,
+  installer-context parity, rootless doctor, dashboard API regressions
+  (`502 passed, 5 skipped`), and Perplexica/remote-provider/token-spy tests
+  (`35 passed, 1 skipped`).
+- Linux rootless ownership contract passed on Tower2 with
+  `25` rootless ownership tests.
+- Release-prep fleet validation on 2026-07-28 passed regressions,
+  zero-prereq bootstrap, fresh install, verify, cloud-mode, dashboard, Hermes,
+  UI policy, full-model capability finalize, lifecycle reinstall/restart, and
+  `ods doctor` across Tower2, Strix Halo, Spark, M5 MacBook Pro,
+  Windows laptop, and Strixy. The run recorded zero product bugs, zero harness
+  limitations, and zero environment notes.
+- Strict User Green is not claimed for this candidate: the long six-cycle
+  browser model-management matrix was intentionally waived after partial pass
+  evidence, and `dgx-gpu01` was excluded because its SSH host key changed and
+  was not owner-verified.
 
 ## [2.5.3] - 2026-05-26
 

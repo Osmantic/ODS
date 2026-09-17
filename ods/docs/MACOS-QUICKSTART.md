@@ -42,7 +42,9 @@ The installer will:
 - **Dashboard:** http://localhost:3001
 - **OpenCode (IDE):** http://localhost:3003
 
-First user on the Chat UI becomes admin. Start chatting immediately.
+The normal loopback-only install opens the Chat UI directly without an account.
+A network-bound or ODS proxy install keeps authentication enabled and prompts
+the first user to create the admin account.
 
 ---
 

@@ -62,6 +62,10 @@
         "port": { "type": "integer", "minimum": 0, "maximum": 65535 },
         "external_port_env": { "type": "string" },
         "external_port_default": { "type": "integer", "minimum": 0, "maximum": 65535 },
+        "public_url_env": {
+          "type": "string",
+          "description": "Optional env var that contains the public browser URL for this service when served through an external reverse proxy."
+        },
         "host_network": {
           "type": "boolean",
           "description": "True for Docker network_mode: host services that do not declare Docker-mapped ports or HTTP health paths."
@@ -85,6 +89,10 @@
         "external_link": {
           "type": "boolean",
           "description": "When false, omit this service from dashboard external quicklinks while keeping it in health/status APIs."
+        },
+        "macos_host_supported": {
+          "type": "boolean",
+          "description": "True when a host-systemd service has an equivalent macOS LaunchAgent and should remain in the Apple service registry."
         },
         "type": { "type": "string", "enum": ["docker", "host-systemd"] },
         "startup_check": {

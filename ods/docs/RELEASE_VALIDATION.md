@@ -1,6 +1,6 @@
 # Release Validation
 
-Last updated: 2026-05-25
+Last updated: 2026-07-28
 
 ODS is validated as an installed appliance, not only as a collection of
 unit tests. The release-grade path combines CI, clean distro bootstrap checks,

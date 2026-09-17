@@ -26,10 +26,12 @@ trap 'rm -rf "$tmp_dir"' EXIT
 mkdir -p "$install_dir/data" "$bin_dir"
 cp "$root_dir/docker-compose.base.yml" "$install_dir/docker-compose.base.yml"
 cp "$root_dir/manifest.json" "$install_dir/manifest.json"
+mkdir -p "$install_dir/installers/lib"
+cp "$root_dir/installers/lib/compose-images.sh" "$install_dir/installers/lib/compose-images.sh"
 printf '%s\n' '-f docker-compose.base.yml' > "$install_dir/.compose-flags"
 
 cat > "$install_dir/.env" <<'ENV'
-ODS_VERSION=2.5.3
+ODS_VERSION=2.6.0
 ODS_MODE=local
 GPU_BACKEND=cpu
 GPU_COUNT=1
@@ -72,6 +74,12 @@ if [[ "${1:-}" == "compose" ]]; then
         exit 0
     fi
     for ((i = 0; i < ${#args[@]}; i++)); do
+        if [[ "${args[$i]}" == "config" && "$joined" == *" --format json "* ]]; then
+            cat <<'JSON'
+{"services":{"dashboard":{"image":"ods-dashboard:local","build":{"context":"./extensions/services/dashboard"}},"open-webui":{"image":"ghcr.io/open-webui/open-webui:main"},"aider":{"image":"ghcr.io/example/aider:1.0"}}}
+JSON
+            exit 0
+        fi
         if [[ "${args[$i]}" == "config" && "${args[$((i + 1))]:-}" == "--services" ]]; then
             printf '%s\n' dashboard dashboard-api aider
             exit 0
@@ -88,6 +96,19 @@ if [[ "${1:-}" == "compose" ]]; then
             fi
         fi
     done
+    exit 0
+fi
+
+if [[ "${1:-}" == "pull" ]]; then
+    count_file="${TEST_DOCKER_PULL_COUNT:-}"
+    count=0
+    [[ -n "$count_file" && -f "$count_file" ]] && count="$(cat "$count_file")"
+    count=$((count + 1))
+    [[ -n "$count_file" ]] && printf '%s\n' "$count" > "$count_file"
+    if [[ "${TEST_DOCKER_PULL_FAIL_ONCE:-}" == "1" && "$count" == "1" ]]; then
+        printf '%s\n' 'Error response from daemon: Head "https://registry-1.docker.io/v2/open-webui/manifests/main": Get "https://auth.docker.io/token": context deadline exceeded' >&2
+        exit 1
+    fi
     exit 0
 fi
 
@@ -129,6 +150,9 @@ NO_COLOR=1 \
 TEST_DOCKER_LOG="$docker_log" \
 TEST_DOCKER_PULL_COUNT="$pull_count_file" \
 TEST_DOCKER_PULL_FAIL_ONCE=1 \
+ODS_COMPOSE_PULL_RETRY_DELAY_1=0 \
+ODS_COMPOSE_PULL_RETRY_DELAY_2=0 \
+ODS_COMPOSE_PULL_RETRY_DELAY_N=0 \
     "$BASH" "$ods_cli" update --force > "$tmp_dir/update.out" 2>&1 || {
         cat "$tmp_dir/update.out" >&2
         exit 1
@@ -140,13 +164,19 @@ grep -q 'Update complete' "$tmp_dir/update.out" || {
     exit 1
 }
 
-grep -q -- 'pull --ignore-buildable' "$docker_log" || {
+grep -q -- 'pull ghcr.io/open-webui/open-webui:main' "$docker_log" || {
     cat "$docker_log" >&2
-    printf '[FAIL] update did not skip local-build images during compose pull\n' >&2
+    printf '[FAIL] update did not pull external images individually\n' >&2
     exit 1
 }
 
-if [[ "$(cat "$pull_count_file")" != "2" ]]; then
+if grep -q -- 'pull ods-dashboard:local' "$docker_log"; then
+    cat "$docker_log" >&2
+    printf '[FAIL] update attempted to pull a local-build image\n' >&2
+    exit 1
+fi
+
+if [[ "$(cat "$pull_count_file")" != "3" ]]; then
     cat "$tmp_dir/update.out" >&2
     cat "$docker_log" >&2
     printf '[FAIL] update did not retry transient compose pull failure\n' >&2
@@ -168,6 +198,28 @@ grep -q -- 'config --services' "$docker_log" || {
 grep -q -- 'ps --services --status running' "$docker_log" || {
     cat "$docker_log" >&2
     printf '[FAIL] update did not verify running compose services\n' >&2
+    exit 1
+}
+
+token_before="$(awk -F= '/^HERMES_DASHBOARD_SESSION_TOKEN=/{print $2}' "$install_dir/.env")"
+[[ "$token_before" =~ ^[0-9a-f]{64}$ ]] || {
+    cat "$install_dir/.env" >&2
+    printf '[FAIL] update did not backfill a valid Hermes dashboard session token\n' >&2
+    exit 1
+}
+
+PATH="$bin_dir:$PATH" \
+ODS_HOME="$install_dir" \
+NO_COLOR=1 \
+TEST_DOCKER_LOG="$docker_log" \
+    "$BASH" "$ods_cli" start dashboard > "$tmp_dir/start-after-update.out" 2>&1 || {
+        cat "$tmp_dir/start-after-update.out" >&2
+        exit 1
+    }
+
+token_after="$(awk -F= '/^HERMES_DASHBOARD_SESSION_TOKEN=/{print $2}' "$install_dir/.env")"
+[[ "$token_after" == "$token_before" ]] || {
+    printf '[FAIL] later Compose lifecycle command rotated the Hermes dashboard session token\n' >&2
     exit 1
 }
 

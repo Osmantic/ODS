@@ -366,7 +366,90 @@ def test_service_source_avoids_public_env_secret_names() -> None:
     assert_true('@app.post("/probe")' in text, "app must expose an internal probe endpoint")
     assert_true("probe_route_response" in text, "probe endpoint must use the shared egress probe helper")
     assert_true("ssh_tunnel_not_ready" in text, "app must fail closed when the SSH tunnel is down")
+    assert_true("trust_env=False" in text, "egress requests must not delegate pinned connections or private headers to environment proxies")
     assert_true(POLICY.exists(), "policy document must exist for mounted service config")
+
+
+def test_prepare_upstream_request_with_resolved_addresses() -> None:
+    route = route_from_state(route_state())
+    upstream = prepare_upstream_request(
+        method="POST",
+        path="/v1/chat/completions",
+        headers={
+            "authorization": "Bearer client-token",
+        },
+        body=json.dumps({"model": "ods/current", "messages": []}).encode("utf-8"),
+        route=route,
+        provider_secret="unit-test-provider-token",
+        resolved_addresses=["93.184.216.34"],
+    )
+    assert_true(upstream.url == "https://93.184.216.34/v1/chat/completions", f"expected url to be rewritten to IP, got {upstream.url}")
+    assert_true(upstream.tls_server_name == "gpu.example.test", f"expected TLS server name to be original host, got {upstream.tls_server_name}")
+    assert_true(upstream.host_header == "gpu.example.test", f"expected Host header to preserve original authority, got {upstream.host_header}")
+    assert_true(upstream.connection_key == "https://gpu.example.test:443", f"unexpected connection key: {upstream.connection_key}")
+
+
+def test_prepare_upstream_request_with_resolved_ipv6_addresses() -> None:
+    route = route_from_state(route_state())
+    upstream = prepare_upstream_request(
+        method="POST",
+        path="/v1/chat/completions",
+        headers={
+            "authorization": "Bearer client-token",
+        },
+        body=json.dumps({"model": "ods/current", "messages": []}).encode("utf-8"),
+        route=route,
+        provider_secret="unit-test-provider-token",
+        resolved_addresses=["2606:2800:220:1:248:1893:25c8:1946"],
+    )
+    assert_true(upstream.url == "https://[2606:2800:220:1:248:1893:25c8:1946]/v1/chat/completions", f"expected IPv6 url formatting, got {upstream.url}")
+    assert_true(upstream.tls_server_name == "gpu.example.test", f"expected TLS server name to be original host, got {upstream.tls_server_name}")
+    assert_true(upstream.host_header == "gpu.example.test", f"expected Host header to preserve original authority, got {upstream.host_header}")
+    assert_true(
+        upstream.connection_key == "https://gpu.example.test:443",
+        f"unexpected IPv6 connection key: {upstream.connection_key}",
+    )
+
+
+def test_pinned_request_preserves_non_default_port_and_separates_tls_origins() -> None:
+    first_route = route_from_state(
+        route_state(baseUrl="https://gpu-a.example.test:8443/v1")
+    )
+    second_route = route_from_state(
+        route_state(baseUrl="https://gpu-b.example.test:8443/v1")
+    )
+    first = prepare_upstream_request(
+        method="POST",
+        path="/v1/chat/completions",
+        headers={},
+        body=b'{"model":"ods/current","messages":[]}',
+        route=first_route,
+        provider_secret="unit-test-provider-token",
+        resolved_addresses=["93.184.216.34"],
+    )
+    second = prepare_upstream_request(
+        method="POST",
+        path="/v1/chat/completions",
+        headers={},
+        body=b'{"model":"ods/current","messages":[]}',
+        route=second_route,
+        provider_secret="unit-test-provider-token",
+        resolved_addresses=["93.184.216.34"],
+    )
+    rotated_address = prepare_upstream_request(
+        method="POST",
+        path="/v1/chat/completions",
+        headers={},
+        body=b'{"model":"ods/current","messages":[]}',
+        route=first_route,
+        provider_secret="unit-test-provider-token",
+        resolved_addresses=["93.184.216.35"],
+    )
+    assert_true(first.url == "https://93.184.216.34:8443/v1/chat/completions", f"unexpected pinned URL: {first.url}")
+    assert_true(first.host_header == "gpu-a.example.test:8443", f"non-default provider port was not preserved: {first.host_header}")
+    assert_true(first.tls_server_name == "gpu-a.example.test", f"SNI must not include the provider port: {first.tls_server_name}")
+    assert_true(first.connection_key != second.connection_key, "different TLS hostnames on the same IP must not share a connection pool")
+    assert_true(first.connection_key == rotated_address.connection_key, "DNS address rotation for one TLS identity must use a bounded client pool")
 
 
 def main() -> int:
@@ -383,6 +466,9 @@ def main() -> int:
         test_probe_response_returns_redacted_ssh_receipt_through_tunnel_boundary,
         test_probe_response_fails_closed_when_ssh_tunnel_is_not_ready,
         test_service_source_avoids_public_env_secret_names,
+        test_prepare_upstream_request_with_resolved_addresses,
+        test_prepare_upstream_request_with_resolved_ipv6_addresses,
+        test_pinned_request_preserves_non_default_port_and_separates_tls_origins,
     ]
     for test in tests:
         test()

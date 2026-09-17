@@ -75,6 +75,128 @@ resolve_inference_runtime() {
     MODEL_ENV_KEY="LLM_MODEL"
 }
 
+resolve_env_file() {
+    local path="$1" link dir hops=0
+
+    # Preserve former in-place write behavior: a .env symlink must keep
+    # pointing at its target rather than being replaced by the temp file.
+    while [[ -L "$path" ]]; do
+        hops=$((hops + 1))
+        [[ "$hops" -le 40 ]] || return 1
+        dir="$(cd -P "$(dirname "$path")" && pwd)" || return 1
+        link="$(readlink "$path")" || return 1
+        case "$link" in
+            /*) path="$link" ;;
+            [A-Za-z]:/*|[A-Za-z]:\\*)
+                command -v cygpath >/dev/null 2>&1 || return 1
+                path="$(cygpath -u "$link")" || return 1
+                ;;
+            *) path="$dir/$link" ;;
+        esac
+    done
+
+    dir="$(cd -P "$(dirname "$path")" && pwd)" || return 1
+    printf '%s/%s\n' "$dir" "$(basename "$path")"
+}
+
+copy_env_permissions() {
+    local source="$1" target="$2" source_windows target_windows
+
+    # Git Bash replacement uses the source file ACL. Copy the protected NTFS
+    # DACL to the still-empty temp file before it receives .env contents.
+    case "$(uname -s 2>/dev/null || true)" in
+        MINGW*|MSYS*|CYGWIN*)
+            command -v cygpath >/dev/null 2>&1 || return 1
+            command -v powershell.exe >/dev/null 2>&1 || return 1
+            source_windows="$(cygpath -aw "$source")" || return 1
+            target_windows="$(cygpath -aw "$target")" || return 1
+            if ! ODS_ENV_ACL_SOURCE="$source_windows" ODS_ENV_ACL_TARGET="$target_windows" \
+                powershell.exe -NoLogo -NoProfile -NonInteractive -Command '
+$ErrorActionPreference = [System.Management.Automation.ActionPreference]::Stop
+$sourceAcl = [System.IO.File]::GetAccessControl($env:ODS_ENV_ACL_SOURCE, [System.Security.AccessControl.AccessControlSections]::Access)
+$sddl = $sourceAcl.GetSecurityDescriptorSddlForm([System.Security.AccessControl.AccessControlSections]::Access)
+$targetAcl = [System.IO.File]::GetAccessControl($env:ODS_ENV_ACL_TARGET, [System.Security.AccessControl.AccessControlSections]::Access)
+$targetAcl.SetSecurityDescriptorSddlForm($sddl, [System.Security.AccessControl.AccessControlSections]::Access)
+[System.IO.File]::SetAccessControl($env:ODS_ENV_ACL_TARGET, $targetAcl)
+' >/dev/null; then
+                return 1
+            fi
+            return 0
+    esac
+
+    cp -p "$source" "$target"
+}
+
+replace_env_file() {
+    local source="$1" target="$2" backup source_windows target_windows backup_windows
+
+    case "$(uname -s 2>/dev/null || true)" in
+        MINGW*|MSYS*|CYGWIN*)
+            command -v cygpath >/dev/null 2>&1 || return 1
+            command -v powershell.exe >/dev/null 2>&1 || return 1
+            backup="$(umask 077; mktemp "${target}.bak.XXXXXX")" || return 1
+            if ! copy_env_permissions "$target" "$backup"; then
+                rm -f "$backup" 2>/dev/null || true
+                return 1
+            fi
+            if ! source_windows="$(cygpath -aw "$source")"; then
+                rm -f "$backup" 2>/dev/null || true
+                return 1
+            fi
+            if ! target_windows="$(cygpath -aw "$target")"; then
+                rm -f "$backup" 2>/dev/null || true
+                return 1
+            fi
+            if ! backup_windows="$(cygpath -aw "$backup")"; then
+                rm -f "$backup" 2>/dev/null || true
+                return 1
+            fi
+            if ! ODS_ENV_REPLACE_SOURCE="$source_windows" ODS_ENV_REPLACE_TARGET="$target_windows" \
+                ODS_ENV_REPLACE_BACKUP="$backup_windows" \
+                powershell.exe -NoLogo -NoProfile -NonInteractive -Command '
+$ErrorActionPreference = [System.Management.Automation.ActionPreference]::Stop
+[System.IO.File]::Replace($env:ODS_ENV_REPLACE_SOURCE, $env:ODS_ENV_REPLACE_TARGET, $env:ODS_ENV_REPLACE_BACKUP)
+' >/dev/null; then
+                rm -f "$backup" 2>/dev/null || true
+                return 1
+            fi
+            rm -f "$backup" || return 1
+            return 0
+    esac
+
+    mv -f "$source" "$target"
+}
+
+# Atomically update or append a simple KEY=value entry without weakening the
+# existing .env permissions. The temporary file is created beside the target,
+# so the final replacement cannot expose a truncated live configuration.
+update_env_value() {
+    local env_file="$1" key="$2" value="$3" tmp target_file
+    target_file="$(resolve_env_file "$env_file")" || return 1
+    [[ -f "$target_file" ]] || return 1
+
+    tmp="$(umask 077; mktemp "${target_file}.tmp.XXXXXX")" || return 1
+    if ! copy_env_permissions "$target_file" "$tmp"; then
+        rm -f "$tmp" 2>/dev/null || true
+        return 1
+    fi
+
+    if ! awk -v k="$key" -v v="$value" '
+        BEGIN { found = 0 }
+        index($0, k "=") == 1 { print k "=" v; found = 1; next }
+        { print }
+        END { if (!found) print k "=" v }
+    ' "$target_file" > "$tmp"; then
+        rm -f "$tmp" 2>/dev/null || true
+        return 1
+    fi
+
+    if ! replace_env_file "$tmp" "$target_file"; then
+        rm -f "$tmp" 2>/dev/null || true
+        return 1
+    fi
+}
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -237,16 +359,9 @@ start_llm() {
     
     # Update environment or compose file
     local env_file="$ODS_DIR/.env"
-    if [[ -f "$env_file" ]]; then
-        # Update active model env key for detected inference backend.
-        if grep -q "^${MODEL_ENV_KEY}=" "$env_file"; then
-            # Use awk index() instead of sed to avoid delimiter collisions
-            awk -v k="$MODEL_ENV_KEY" -v v="$model" '{
-                if (index($0, k "=") == 1) print k "=" v; else print
-            }' "$env_file" > "${env_file}.tmp" && cat "${env_file}.tmp" > "$env_file" && rm -f "${env_file}.tmp"
-        else
-            echo "${MODEL_ENV_KEY}=$model" >> "$env_file"
-        fi
+    if [[ -f "$env_file" ]] && ! update_env_value "$env_file" "$MODEL_ENV_KEY" "$model"; then
+        error "Could not atomically update ${MODEL_ENV_KEY} in $env_file"
+        return 1
     fi
     
     if command -v docker &> /dev/null; then

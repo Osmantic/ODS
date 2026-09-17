@@ -120,7 +120,22 @@ printf 'ODS_MODE=cloud\n' > "$ROOT/.env"
 run_mode "$ROOT" local > /dev/null
 check_eq "switching back to local repoints LLM_API_URL" "LLM_API_URL=http://llama-server:8080" "$(grep -m1 '^LLM_API_URL=' "$ROOT/.env")"
 
-# ── 6. Bad input is rejected ──────────────────────────────────────────────
+# ── 6. External topology cannot be partially overwritten ─────────────────
+
+ROOT="$(new_root)"
+cat > "$ROOT/.env" <<'EOF'
+ODS_MODE=local
+LLM_BACKEND=external
+LLM_API_URL=http://host.docker.internal:11434
+EXTERNAL_LLM_URL=http://127.0.0.1:11434
+EOF
+BEFORE="$(cat "$ROOT/.env")"
+OUT="$(run_mode "$ROOT" cloud)"
+check_eq "external backend rejects direct mode switch" "1" "$(run_rc "$ROOT" cloud)"
+check_contains "external backend points to the transactional reset" "--no-external-llm" "$OUT"
+check_eq "rejected external mode switch leaves .env unchanged" "$BEFORE" "$(cat "$ROOT/.env")"
+
+# ── 7. Bad input is rejected ──────────────────────────────────────────────
 
 ROOT="$(new_root)"
 printf 'ODS_MODE=local\n' > "$ROOT/.env"
