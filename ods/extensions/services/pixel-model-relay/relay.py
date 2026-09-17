@@ -44,7 +44,7 @@ async def _inference(request):
     if request.method == "POST":
         try:
             payload = json.loads(body)
-        except (UnicodeDecodeError, json.JSONDecodeError):
+        except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
             raise web.HTTPBadRequest() from None
         if not isinstance(payload, dict) or payload.get("model") not in ALIASES:
             raise web.HTTPBadRequest()
