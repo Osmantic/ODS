@@ -12,6 +12,21 @@ from gpu import (
 )
 
 
+def test_gpu_assignment_env_reader_preserves_unmatched_quote(monkeypatch, tmp_path):
+    import gpu
+
+    (tmp_path / ".env").write_text(
+        "GPU_ASSIGNMENT_JSON_B64=payload'\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ODS_INSTALL_DIR", str(tmp_path))
+
+    assert gpu._read_env_var_from_file_state("GPU_ASSIGNMENT_JSON_B64") == (
+        True,
+        "payload'",
+    )
+
+
 # --- get_gpu_tier (pure function, no I/O) ---
 
 

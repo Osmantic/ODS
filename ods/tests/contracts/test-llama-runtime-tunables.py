@@ -30,10 +30,21 @@ except ModuleNotFoundError as exc:
 ROOT_DIR = Path(__file__).resolve().parents[2]
 BASE_FILE = ROOT_DIR / "docker-compose.base.yml"
 SCHEMA_FILE = ROOT_DIR / ".env.schema.json"
+ENV_GENERATOR = ROOT_DIR / "installers" / "phases" / "06-directories.sh"
+MACOS_ENV_GENERATOR = ROOT_DIR / "installers" / "macos" / "lib" / "env-generator.sh"
+WINDOWS_ENV_GENERATOR = ROOT_DIR / "installers" / "windows" / "lib" / "env-generator.ps1"
+NATIVE_LAUNCHERS = (
+    ROOT_DIR / "bin" / "ods-host-agent.py",
+    ROOT_DIR / "installers" / "macos" / "install-macos.sh",
+    ROOT_DIR / "installers" / "macos" / "ods-macos.sh",
+    ROOT_DIR / "installers" / "windows" / "install-windows.ps1",
+    ROOT_DIR / "installers" / "windows" / "ods.ps1",
+    ROOT_DIR / "scripts" / "bootstrap-upgrade.sh",
+)
 
 # Flags whose value must stay operator-tunable through .env. The base file is
 # the source of truth for which variable backs each one.
-TUNABLE_FLAGS = ("--ctx-size", "--batch-size", "--threads", "--parallel")
+TUNABLE_FLAGS = ("--n-gpu-layers", "--ctx-size", "--batch-size", "--threads", "--parallel")
 VAR_RE = re.compile(r"\$\{([A-Z_][A-Z0-9_]*)")
 
 
@@ -82,6 +93,45 @@ def main() -> int:
             if variable not in schema_properties:
                 errors.append(f".env.schema.json: {flag} uses undocumented variable {variable}")
 
+    gpu_layer_schema = schema_properties.get("N_GPU_LAYERS") or {}
+    if gpu_layer_schema.get("default") != "auto":
+        errors.append(".env.schema.json: N_GPU_LAYERS must default to llama.cpp auto placement")
+    linux_env_generator = ENV_GENERATOR.read_text(encoding="utf-8")
+    if 'N_GPU_LAYERS_VALUE=$(_env_get N_GPU_LAYERS "${N_GPU_LAYERS:-auto}")' not in linux_env_generator:
+        errors.append("06-directories.sh: reruns do not preserve N_GPU_LAYERS")
+    if 'N_GPU_LAYERS_VALUE="${N_GPU_LAYERS_VALUE:-auto}"' not in linux_env_generator:
+        errors.append("06-directories.sh: empty N_GPU_LAYERS values do not fall back to auto")
+    if "N_GPU_LAYERS=${N_GPU_LAYERS_VALUE}" not in linux_env_generator:
+        errors.append("06-directories.sh: generated .env does not write N_GPU_LAYERS")
+
+    macos_env_generator = MACOS_ENV_GENERATOR.read_text(encoding="utf-8")
+    if "N_GPU_LAYERS=${n_gpu_layers}" not in macos_env_generator:
+        errors.append("macOS env generator: fresh installs do not write N_GPU_LAYERS")
+    if 'read_env_value "$env_path" "N_GPU_LAYERS"' not in macos_env_generator:
+        errors.append("macOS env generator: reruns do not preserve/backfill N_GPU_LAYERS")
+    if "normalize_n_gpu_layers" not in macos_env_generator:
+        errors.append("macOS env generator: N_GPU_LAYERS values are not normalized")
+
+    windows_env_generator = WINDOWS_ENV_GENERATOR.read_text(encoding="utf-8")
+    if 'N_GPU_LAYERS=$nGpuLayers' not in windows_env_generator:
+        errors.append("Windows env generator: installs/reruns do not preserve/default N_GPU_LAYERS")
+    if '$nGpuLayers = (Get-EnvOrNew "N_GPU_LAYERS" $nGpuLayersDefault).Trim()' not in windows_env_generator:
+        errors.append("Windows env generator: N_GPU_LAYERS values are not normalized")
+
+    for path in NATIVE_LAUNCHERS:
+        text = path.read_text(encoding="utf-8")
+        flag_lines = [line.strip() for line in text.splitlines() if "--n-gpu-layers" in line]
+        if not flag_lines:
+            errors.append(f"{path.relative_to(ROOT_DIR)}: native launcher no longer sets --n-gpu-layers")
+            continue
+        if "N_GPU_LAYERS" not in text:
+            errors.append(f"{path.relative_to(ROOT_DIR)}: native launcher ignores N_GPU_LAYERS")
+        for line in flag_lines:
+            if re.search(r"--n-gpu-layers[\"',\s]+[\"']?999(?:[\"'\s,]|$)", line):
+                errors.append(
+                    f"{path.relative_to(ROOT_DIR)}: native launcher still forces every GPU layer"
+                )
+
     for path in sorted(ROOT_DIR.glob("docker-compose*.yml")):
         if path == BASE_FILE:
             continue
@@ -97,6 +147,13 @@ def main() -> int:
                 )
                 continue
             if flag not in TUNABLE_FLAGS:
+                continue
+            if (
+                flag == "--n-gpu-layers"
+                and path.name == "docker-compose.cpu.yml"
+                and values[flag] == "0"
+            ):
+                # A CPU-only deployment must never inherit auto/all offload.
                 continue
             # The overlay may pick its own default, but it must stay tunable
             # through the same .env variable the base file uses.

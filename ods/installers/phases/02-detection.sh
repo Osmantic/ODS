@@ -228,11 +228,14 @@ if [[ $GPU_COUNT -gt 0 && "$GPU_BACKEND" == "nvidia" ]]; then
             fi
             ai "Attempting to install a compatible driver..."
             if ! $DRY_RUN; then
+                if ! ods_sudo_available; then
+                    error "NVIDIA driver ${DRIVER_VERSION} is below ${MIN_DRIVER_VERSION}, but privileged driver installation is unavailable. Upgrade the driver manually, then re-run ODS."
+                fi
                 if command -v ubuntu-drivers &> /dev/null; then
-                    sudo ubuntu-drivers install nvidia:${MIN_DRIVER_VERSION}-server 2>>"$LOG_FILE" || \
-                    sudo apt-get install -y nvidia-driver-${MIN_DRIVER_VERSION} 2>>"$LOG_FILE" || true
+                    ods_sudo ubuntu-drivers install "nvidia:${MIN_DRIVER_VERSION}-server" 2>>"$LOG_FILE" || \
+                    ods_sudo apt-get install -y "nvidia-driver-${MIN_DRIVER_VERSION}" 2>>"$LOG_FILE" || true
                 else
-                    sudo apt-get install -y nvidia-driver-${MIN_DRIVER_VERSION} 2>>"$LOG_FILE" || true
+                    ods_sudo apt-get install -y "nvidia-driver-${MIN_DRIVER_VERSION}" 2>>"$LOG_FILE" || true
                 fi
                 # Check if upgrade succeeded
                 if dpkg -l "nvidia-driver-${MIN_DRIVER_VERSION}"* 2>/dev/null | grep -q "^ii"; then
@@ -243,7 +246,7 @@ if [[ $GPU_COUNT -gt 0 && "$GPU_BACKEND" == "nvidia" ]]; then
                     if $INTERACTIVE; then
                         read -p "  Reboot now? [y/N] " -r < /dev/tty
                         if [[ $REPLY =~ ^[Yy]$ ]]; then
-                            sudo reboot
+                            ods_sudo reboot
                         fi
                     fi
                     error "Reboot required to load NVIDIA driver ${MIN_DRIVER_VERSION}. Re-run install.sh after rebooting."

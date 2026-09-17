@@ -49,6 +49,15 @@ assert_not_grep() {
     fi
 }
 
+function_block() {
+    local function_name="$1"
+    awk -v signature="^${function_name}[(][)]" '
+        $0 ~ signature { in_block=1 }
+        in_block { print }
+        in_block && /^}/ { exit }
+    ' "installers/phases/11-services.sh"
+}
+
 echo "=== Installer context parity ==="
 
 echo ""
@@ -119,6 +128,56 @@ assert_grep "installers/phases/11-services.sh" '_hermes_model="ods/current"' \
     "Linux Hermes patcher uses the stable switchboard model alias"
 assert_grep "installers/phases/11-services.sh" '_hermes_base_url=.*http://litellm:4000/v1' \
     "Linux Hermes patcher routes switchboard mode through LiteLLM"
+assert_grep "installers/phases/11-services.sh" '_hermes_model_yaml=.*_phase11_yaml_double_quoted_scalar_content' \
+    "Linux Hermes verification serializes the selected model as YAML"
+assert_grep "installers/phases/11-services.sh" 'grep -Fqx "  default: \\"\$_hermes_model_yaml\\""' \
+    "Linux Hermes verification compares the serialized model"
+
+fallback_yaml_block="$(function_block _phase11_yaml_double_quoted_scalar_content)"
+fallback_patch_block="$(function_block _phase11_patch_hermes_with_sed)"
+[[ -n "$fallback_yaml_block" ]] || fail "could not extract the Linux YAML scalar serializer"
+[[ -n "$fallback_patch_block" ]] || fail "could not extract the Linux Hermes fallback patcher"
+(
+    fallback_tmp="$(mktemp -d "${TMPDIR:-/tmp}/ods-hermes-fallback.XXXXXX")"
+    trap 'rm -rf -- "$fallback_tmp"' EXIT
+    fallback_template="$fallback_tmp/config.yaml"
+    cat >"$fallback_template" <<'HERMES_FALLBACK_EOF'
+model:
+  default: "qwen3.5-9b"
+  context_length: 131072
+providers:
+  custom:
+    request_timeout_seconds: 180
+auxiliary:
+  compression:
+    context_length: 131072
+HERMES_FALLBACK_EOF
+
+    eval "$fallback_yaml_block"
+    eval "$fallback_patch_block"
+    fallback_model='model"branch&tag|path\leaf'
+    _phase11_patch_hermes_with_sed "$fallback_template" "$fallback_model" 65536 900
+    fallback_model_yaml="$(_phase11_yaml_double_quoted_scalar_content "$fallback_model")"
+    grep -Fqx "  default: \"${fallback_model_yaml}\"" "$fallback_template"
+    grep -Fqx '  context_length: 65536' "$fallback_template"
+    grep -Fqx '    context_length: 65536' "$fallback_template"
+    grep -Fqx '    request_timeout_seconds: 900' "$fallback_template"
+    if compgen -G "${fallback_template}.bak.*" >/dev/null; then
+        exit 1
+    fi
+
+    cp "$fallback_template" "$fallback_tmp/before-invalid"
+    if _phase11_patch_hermes_with_sed "$fallback_template" "safe-model" '65536|e touch /tmp/invalid' 900; then
+        exit 1
+    fi
+    cmp -s "$fallback_template" "$fallback_tmp/before-invalid"
+    if _phase11_patch_hermes_with_sed "$fallback_template" $'line1\nline2' 65536 900; then
+        exit 1
+    fi
+    cmp -s "$fallback_template" "$fallback_tmp/before-invalid"
+) || fail "Linux Hermes fallback patcher did not preserve metacharacters or reject unsafe structure"
+pass "Linux Hermes fallback patcher treats sed metacharacters as data"
+
 assert_grep "installers/macos/install-macos.sh" '--context-length "\$MAX_CONTEXT"' \
     "macOS Hermes patcher receives context length"
 assert_grep "installers/macos/ods-macos.sh" 'ENV_CTX_SIZE:-65536' \

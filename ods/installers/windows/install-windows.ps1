@@ -373,8 +373,12 @@ if ($dryRun) {
             $envPath = Join-Path $installDir ".env"
             if (Test-Path $envPath) {
                 $envContent = Get-Content $envPath -Raw
-                $envContent = $envContent -replace "(?m)^GGUF_FILE=.*$", "GGUF_FILE=$($tierConfig.GgufFile)"
-                $envContent = $envContent -replace "(?m)^LLM_MODEL=.*$", "LLM_MODEL=$($tierConfig.LlmModel)"
+                # Same .NET group-substitution hazard as Update-HermesConfigFile:
+                # '$' in a replacement string is a token, not a literal.
+                $ggufReplacement = "$($tierConfig.GgufFile)".Replace('$', '$$')
+                $llmModelReplacement = "$($tierConfig.LlmModel)".Replace('$', '$$')
+                $envContent = $envContent -replace "(?m)^GGUF_FILE=.*$", "GGUF_FILE=$ggufReplacement"
+                $envContent = $envContent -replace "(?m)^LLM_MODEL=.*$", "LLM_MODEL=$llmModelReplacement"
                 $envContent = $envContent -replace "(?m)^MAX_CONTEXT=.*$", "MAX_CONTEXT=$($tierConfig.MaxContext)"
                 $envContent = $envContent -replace "(?m)^CTX_SIZE=.*$", "CTX_SIZE=$($tierConfig.MaxContext)"
                 [System.IO.File]::WriteAllText($envPath, $envContent, (New-Object System.Text.UTF8Encoding($false)))
@@ -710,11 +714,19 @@ if ($dryRun) {
                 # Start native llama-server
                 Write-AI "Starting native llama-server (Vulkan)..."
                 $modelFullPath = Join-Path (Join-Path $installDir "data\models") $tierConfig.GgufFile
+                $_llamaEnv = @{}
+                Get-Content -LiteralPath (Join-Path $installDir ".env") -ErrorAction SilentlyContinue | ForEach-Object {
+                    if ($_ -match '^\s*#' -or $_ -notmatch '=') { return }
+                    $parts = $_ -split '=', 2
+                    $_llamaEnv[$parts[0].Trim()] = $parts[1].Trim().Trim('"')
+                }
+                $_gpuLayers = $_llamaEnv["N_GPU_LAYERS"]
+                if (-not $_gpuLayers) { $_gpuLayers = "auto" }
                 $llamaArgs = @(
                     "--model", $modelFullPath,
                     "--host", $bindAddr,
                     "--port", [string]$script:LEMONADE_PORT,
-                    "--n-gpu-layers", "999",
+                    "--n-gpu-layers", $_gpuLayers,
                     "--ctx-size", "$($tierConfig.MaxContext)",
                     # llama.cpp keeps /metrics off unless asked. The dashboard's
                     # tokens/sec reading and the Usage page's local-runtime
@@ -722,12 +734,6 @@ if ($dryRun) {
                     # path passes this too.
                     "--metrics"
                 )
-                $_llamaEnv = @{}
-                Get-Content -LiteralPath (Join-Path $installDir ".env") -ErrorAction SilentlyContinue | ForEach-Object {
-                    if ($_ -match '^\s*#' -or $_ -notmatch '=') { return }
-                    $parts = $_ -split '=', 2
-                    $_llamaEnv[$parts[0].Trim()] = $parts[1].Trim().Trim('"')
-                }
                 # Map the .env values (off/on/auto) onto llama-server's own
                 # vocabulary, the same way scripts/bootstrap-upgrade.sh does for
                 # its Windows hot-swap. Defaulting to off keeps thinking models
@@ -1686,7 +1692,7 @@ litellm_settings:
             $hasHermesImageOverride = -not [string]::IsNullOrWhiteSpace($envHermesImage)
             $envHermesFallbackImage = Get-ODSEnvValueFromFile -Path $_envCheck -Key "HERMES_AGENT_IMAGE_FALLBACK"
             if ([string]::IsNullOrWhiteSpace($envHermesImage)) {
-                $envHermesImage = "nousresearch/hermes-agent:v2026.5.16"
+                $envHermesImage = "nousresearch/hermes-agent:v2026.6.5"
             }
 
             Write-AI "Validating Hermes Agent image tag before startup..."
