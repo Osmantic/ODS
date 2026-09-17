@@ -113,6 +113,8 @@ function Get-ComposeFlags {
     .SYNOPSIS
         Read saved compose flags from installer, or build default flags.
     #>
+    Ensure-HermesDashboardSessionToken
+
     $flagsFile = Join-Path $InstallDir ".compose-flags"
     if (Test-Path $flagsFile) {
         $raw = (Get-Content $flagsFile -Raw).Trim()
@@ -584,15 +586,13 @@ function Invoke-HermesSoulRefresh {
     }
 
     if (-not $rendered) {
-        if (Test-Path -LiteralPath $output -PathType Container) {
+        if (Test-Path -LiteralPath $output) {
             Remove-Item -LiteralPath $output -Recurse -Force
         }
-        if (-not (Test-Path -LiteralPath $output -PathType Leaf)) {
-            $content = Get-Content -LiteralPath $template -Raw
-            $content = $content -replace "(?m)^\s*<!-- INSTALLATION_CONTEXT -->\s*\r?\n?", ""
-            [System.IO.File]::WriteAllText($output, $content, (New-Object System.Text.UTF8Encoding($false)))
-            Write-AIWarn "Generated fallback Hermes SOUL.md without dynamic installation context"
-        }
+        $content = Get-Content -LiteralPath $template -Raw
+        $content = $content -replace "(?m)^\s*<!-- INSTALLATION_CONTEXT -->\s*\r?\n?", ""
+        [System.IO.File]::WriteAllText($output, $content, (New-Object System.Text.UTF8Encoding($false)))
+        Write-AIWarn "Generated fallback Hermes SOUL.md without dynamic installation context"
     }
 
     if ($SyncContainer) {
@@ -959,6 +959,23 @@ function Set-ODSEnvValue {
 
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
     [System.IO.File]::WriteAllLines($envFile, $lines.ToArray(), $utf8NoBom)
+}
+
+function Ensure-HermesDashboardSessionToken {
+    $current = Get-ODSEnvValue -Name "HERMES_DASHBOARD_SESSION_TOKEN"
+    if (-not [string]::IsNullOrWhiteSpace($current)) {
+        return
+    }
+
+    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    try {
+        $bytes = New-Object byte[] 32
+        $rng.GetBytes($bytes)
+        $token = ($bytes | ForEach-Object { $_.ToString("x2") }) -join ""
+    } finally {
+        $rng.Dispose()
+    }
+    Set-ODSEnvValue -Key "HERMES_DASHBOARD_SESSION_TOKEN" -Value $token
 }
 
 function Set-ODSProxyAuthRequired {
@@ -1811,8 +1828,10 @@ function Start-NativeInferenceServer {
     } elseif ($backend -eq "llama-server") {
         $ggufFile = $envVars["GGUF_FILE"]
         $ctxSize  = $envVars["CTX_SIZE"]
+        $gpuLayers = $envVars["N_GPU_LAYERS"]
         if (-not $ggufFile) { $ggufFile = "Qwen3.5-9B-Q4_K_M.gguf" }
         if (-not $ctxSize)  { $ctxSize = "16384" }
+        if (-not $gpuLayers) { $gpuLayers = "auto" }
 
         $modelPath = Join-Path (Join-Path $InstallDir "data\models") $ggufFile
         if (-not (Test-Path $modelPath)) {
@@ -1836,7 +1855,7 @@ function Start-NativeInferenceServer {
             "--model", $modelPath,
             "--host", $bindAddr,
             "--port", [string]$script:LEMONADE_PORT,
-            "--n-gpu-layers", "999",
+            "--n-gpu-layers", $gpuLayers,
             "--ctx-size", $ctxSize,
             "--reasoning-format", $reasoningFmt,
             # llama.cpp keeps /metrics off unless asked. The dashboard's

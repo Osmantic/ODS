@@ -132,6 +132,7 @@ export N8N_USER="${N8N_USER:-admin@example.invalid}"
 export N8N_PASS="${N8N_PASS:-test-password}"
 export OPENCLAW_TOKEN="${OPENCLAW_TOKEN:-test-openclaw-token}"
 export SEARXNG_SECRET="${SEARXNG_SECRET:-test-searxng-secret}"
+export HERMES_DASHBOARD_SESSION_TOKEN="${HERMES_DASHBOARD_SESSION_TOKEN:-test-hermes-dashboard-session-token}"
 
 if [[ -z "$COMPOSE_FILE" ]]; then
     fail "No compose file found (expected base+overlay or docker-compose.yml)"

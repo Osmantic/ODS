@@ -32,6 +32,28 @@ pass "rootless detection has deterministic test override"
 
 (
     source "$LIB"
+    install_dir="$TMP_DIR/config-repair"
+    mkdir -p "$install_dir/config/searxng"
+    _ods_rootless_ensure_helper_image() { return 0; }
+    docker() {
+        [[ "$*" == *'-v '*'/config/searxng:/target'* ]] || return 1
+        return 0
+    }
+    ods_rootless_make_host_writable "$install_dir" config/searxng
+) || fail "rootless config ownership repair"
+pass "rootless config ownership repair stays inside config/"
+
+(
+    source "$LIB"
+    install_dir="$TMP_DIR/config-escape"
+    mkdir -p "$install_dir/config" "$TMP_DIR/outside"
+    ln -s "$TMP_DIR/outside" "$install_dir/config/escape"
+    ! ods_rootless_make_host_writable "$install_dir" config/escape
+) || fail "rootless config symlink escape guard"
+pass "rootless config ownership repair rejects symlinks"
+
+(
+    source "$LIB"
     unset ODS_ASSUME_ROOTLESS
     docker() { return 1; }
     state_rc=0
@@ -117,8 +139,8 @@ pass "Hermes keeps UID 10000 and mode 0700"
 
 : > "$CALLS"
 cat > "$INSTALL_DIR/.env" <<'EOF'
-UID=12001
-GID=12002
+ODS_UID=12001
+ODS_GID=12002
 EOF
 (
     source "$LIB"
@@ -134,11 +156,31 @@ EOF
 grep -q '^data/privacy-shield|12001:12002$' "$CALLS" || fail "Privacy Shield ignored UID/GID override"
 grep -q '^data/n8n|12001:12002$' "$CALLS" || fail "n8n ignored UID/GID override"
 grep -q '^data/hermes|12001:12002$' "$CALLS" || fail "Hermes ignored UID/GID override"
-pass "compose UID/GID overrides are preserved"
+pass "compose ODS_UID/ODS_GID overrides are preserved"
 
 cat > "$INSTALL_DIR/.env" <<'EOF'
-UID=""
-GID=''
+UID=13001
+GID=13002
+EOF
+: > "$CALLS"
+(
+    source "$LIB"
+    ods_docker_rootless_state() { return 0; }
+    uname() { printf 'Linux\n'; }
+    _ods_rootless_ensure_helper_image() { return 0; }
+    _ods_rootless_fix_directory() {
+        printf '%s|%s\n' "$2" "$3" >> "$CALLS"
+    }
+    ODS_ROOTLESS_COMPOSE_FLAGS="-f extensions/services/n8n/compose.yaml -f extensions/services/hermes/compose.yaml"
+    ods_fix_rootless_ownership "$INSTALL_DIR"
+)
+grep -q '^data/n8n|13001:13002$' "$CALLS" || fail "n8n ignored legacy UID/GID override"
+grep -q '^data/hermes|13001:13002$' "$CALLS" || fail "Hermes ignored legacy UID/GID override"
+pass "legacy UID/GID overrides remain compatible until installer migration"
+
+cat > "$INSTALL_DIR/.env" <<'EOF'
+ODS_UID=""
+ODS_GID=''
 EOF
 : > "$CALLS"
 (
@@ -159,8 +201,8 @@ grep -q '^data/hermes|10000:10000$' "$CALLS" \
 pass "empty UID/GID overrides follow compose default semantics"
 
 cat > "$INSTALL_DIR/.env" <<'EOF'
-UID=not-a-number
-GID=12002
+ODS_UID=not-a-number
+ODS_GID=12002
 EOF
 (
     source "$LIB"

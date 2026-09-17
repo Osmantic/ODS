@@ -16,6 +16,9 @@
 #   Multi-distro: uses packaging.sh for distro-agnostic package installs.
 # ============================================================================
 
+# shellcheck source=installers/lib/podman-registries.sh
+source "$SCRIPT_DIR/installers/lib/podman-registries.sh"
+
 ods_progress 30 "docker" "Setting up Docker"
 show_phase 3 6 "Docker Setup" "~2 minutes"
 ai "Preparing container runtime..."
@@ -136,16 +139,9 @@ else
     if $DRY_RUN; then
         log "[DRY RUN] Would install Docker via official script"
     else
-        # In non-interactive mode, fail fast if sudo requires a password
-        if [[ "${INTERACTIVE:-true}" != "true" ]] && ! sudo -n true 2>/dev/null; then
-            ai_bad "Docker is not installed and sudo requires a password."
-            ai_bad "In non-interactive mode, either:"
-            ai "  1. Run with passwordless sudo (NOPASSWD in sudoers)"
-            ai "  2. Install Docker manually first, then re-run with --skip-docker"
-            ai "  3. Run the installer interactively (without --non-interactive)"
-            error "Cannot install Docker without sudo in non-interactive mode."
+        if ! ods_sudo_available; then
+            error "No container runtime is installed and privileged package installation is unavailable. Install Docker or Podman first, then re-run ODS."
         fi
-
         case "$PKG_MANAGER" in
             apt|zypper)
                 # Docker CE via get.docker.com (supports Debian/Ubuntu/Fedora/SLES)
@@ -203,9 +199,11 @@ if command -v docker &>/dev/null && ! $DRY_RUN; then
     _docker_ver="$(_docker_server_version_for_amd_downgrade || echo "0.0.0")"
     if [[ "$_docker_ver" == 29.3.* ]] && [[ "${GPU_BACKEND:-}" == "amd" ]]; then
         ai_warn "Docker $_docker_ver has a known bug with AMD GPU device passthrough."
-        ai "Downgrading to Docker 29.2.1 for AMD GPU compatibility..."
-        # Detect package format
-        if command -v apt-get &>/dev/null; then
+        if ! ods_sudo_available; then
+            ai_warn "Cannot downgrade Docker without privileged package access."
+            ai_warn "AMD GPU containers may fail until Docker 29.2.1 is installed by an administrator."
+        elif command -v apt-get &>/dev/null; then
+            ai "Downgrading to Docker 29.2.1 for AMD GPU compatibility..."
             # Docker CE's apt version string embeds the distro id + codename,
             # e.g. 5:29.2.1-1~ubuntu.24.04~noble or 5:29.2.1-1~debian.13~trixie.
             # Resolve the exact installable 29.2.1 version from the configured
@@ -224,6 +222,7 @@ if command -v docker &>/dev/null && ! $DRY_RUN; then
                 ai "  Manual fix: ensure Docker's apt repo is configured (get.docker.com), then 'apt-cache madison docker-ce' to find the 29.2.1 version string."
             fi
         elif command -v dnf &>/dev/null; then
+            ai "Downgrading to Docker 29.2.1 for AMD GPU compatibility..."
             ods_sudo dnf downgrade -y docker-ce-29.2.1 docker-ce-cli-29.2.1 >> "$LOG_FILE" 2>&1 && \
                 ai_ok "Docker downgraded to 29.2.1 (AMD GPU fix)" || \
                 ai_warn "Could not downgrade Docker. GPU containers may fail."
@@ -238,7 +237,9 @@ if command -v docker &>/dev/null && ! $DRY_RUN; then
         else
             ai_warn "Could not downgrade Docker on this system. GPU containers may fail."
         fi
-        ods_sudo systemctl restart docker 2>/dev/null || true
+        if ods_sudo_available; then
+            ods_sudo systemctl restart docker 2>/dev/null || true
+        fi
     fi
 fi
 
@@ -304,7 +305,11 @@ _docker_try_with_optional_sudo() {
         return 0
     fi
 
-    if [[ "$DOCKER_CMD" != "sudo docker" ]] && command -v sudo &>/dev/null; then
+    # ods_prepare_sudo already established whether sudo can run without a
+    # password prompt. Merely finding the binary is not enough here: in a
+    # --non-interactive install, raw `sudo docker` would otherwise hang when
+    # Docker exists but this user cannot access its socket.
+    if [[ "$DOCKER_CMD" != "sudo docker" ]] && ods_sudo_available && command -v sudo &>/dev/null; then
         DOCKER_CMD="sudo docker"
         DOCKER_COMPOSE_CMD="sudo docker compose"
         if docker_run "$@" &>/dev/null; then
@@ -382,6 +387,24 @@ _docker_compose_verify() {
     return 1
 }
 
+# When the `docker` CLI is actually the podman shim (common on AMD Ryzen AI /
+# Fedora / RHEL hosts), bare image names like `nousresearch/hermes-agent:TAG`
+# do not resolve: podman has no implicit docker.io like Docker does, and errors
+# with `short-name ... did not resolve` unless an unqualified-search registry is
+# configured. Every bare image the installer validates (phase 08) and every
+# compose pull (phase 11) would fail. Ensure docker.io is searched, using a
+# user-level registries.conf (no sudo, doesn't touch system config). System
+# registries.conf.d shortname aliases are still merged by podman.
+_runtime_is_podman() {
+    docker_run version 2>/dev/null | grep -qi 'podman' && return 0
+    return 1
+}
+
+_ensure_podman_dockerhub_search() {
+    _runtime_is_podman || return 0
+    ods_podman_ensure_dockerhub_search
+}
+
 _docker_post_install_checks() {
     # Best-effort checks. Should not hard-fail in dry-run.
     if $DRY_RUN; then
@@ -422,6 +445,9 @@ _docker_post_install_checks() {
         warn "Docker engine did not respond to 'docker version'"
     fi
 
+    # If the runtime is podman, make sure bare image names resolve to Docker Hub.
+    _ensure_podman_dockerhub_search
+
     # Optional: give the user a clear hint if they are likely missing group perms
     if [[ "$DOCKER_CMD" == "sudo docker" ]]; then
         warn "Docker commands are running via sudo in this installer session."
@@ -444,6 +470,9 @@ if [[ $GPU_COUNT -gt 0 && "$GPU_BACKEND" == "nvidia" ]]; then
     else
         ai "Installing NVIDIA Container Toolkit..."
         if ! $DRY_RUN; then
+            if ! ods_sudo_available; then
+                error "NVIDIA Container Toolkit is missing and privileged package installation is unavailable. Install the toolkit first, then re-run ODS."
+            fi
             # Distro-aware repo setup + install
             case "$PKG_MANAGER" in
                 apt)
