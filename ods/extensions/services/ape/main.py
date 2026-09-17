@@ -99,10 +99,9 @@ WARMUP_SECONDS = int(os.environ.get("APE_WARMUP_SECONDS", "0"))
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("ape")
 
-API_KEY = _API_KEY or secrets.token_hex(32)
-
 if not _API_KEY:
-    logger.warning(f"APE_API_KEY not set - auto-generated key: {API_KEY[:16]}... (set APE_API_KEY env var to use a fixed key)")
+    raise RuntimeError("APE_API_KEY is required")
+API_KEY = _API_KEY
 
 if not STRICT_MODE:
     logger.warning("WARNING: APE is running in advisory mode. Tool calls are logged but NOT blocked. Set APE_STRICT_MODE=true to enforce policies.")

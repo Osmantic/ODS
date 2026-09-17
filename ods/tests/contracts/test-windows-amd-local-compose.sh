@@ -84,6 +84,7 @@ AMD_INFERENCE_PORT=18080
 SEARXNG_SECRET=ci-searxng-secret
 N8N_USER=ci@example.test
 N8N_PASS=ci-n8n-password
+APE_API_KEY=ci-ape-api-key
 ENV_EOF
 
 cat > "$tmp_openclaw_linux_env" <<'ENV_EOF'

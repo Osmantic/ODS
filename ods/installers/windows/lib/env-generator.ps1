@@ -674,6 +674,7 @@ function New-ODSEnv {
     # invalidating WebSocket URLs held by already-open browser tabs.
     $hermesDashboardSessionToken = Get-EnvOrNew "HERMES_DASHBOARD_SESSION_TOKEN" (New-SecureHex -Bytes 32)
     $shieldApiKey    = Get-EnvOrNew "SHIELD_API_KEY"     (New-SecureHex -Bytes 32)
+    $apeApiKey       = Get-EnvOrNew "APE_API_KEY"        (New-SecureHex -Bytes 32)
     $tokenSpyApiKeyDefault = Get-ExistingTokenSpyApiKey
     if ([string]::IsNullOrWhiteSpace($tokenSpyApiKeyDefault)) {
         $tokenSpyApiKeyDefault = New-SecureHex -Bytes 32
@@ -1018,6 +1019,7 @@ ODS_AGENT_KEY=$odsAgentKey
 ODS_SESSION_SECRET=$odsSessionSecret
 HERMES_DASHBOARD_SESSION_TOKEN=$hermesDashboardSessionToken
 SHIELD_API_KEY=$shieldApiKey
+APE_API_KEY=$apeApiKey
 N8N_USER=admin@ods.local
 N8N_PASS=$n8nPass
 LITELLM_KEY=$litellmKey

@@ -114,6 +114,7 @@ function Get-ComposeFlags {
         Read saved compose flags from installer, or build default flags.
     #>
     Ensure-HermesDashboardSessionToken
+    Ensure-ApeApiKey
 
     $flagsFile = Join-Path $InstallDir ".compose-flags"
     if (Test-Path $flagsFile) {
@@ -976,6 +977,23 @@ function Ensure-HermesDashboardSessionToken {
         $rng.Dispose()
     }
     Set-ODSEnvValue -Key "HERMES_DASHBOARD_SESSION_TOKEN" -Value $token
+}
+
+function Ensure-ApeApiKey {
+    $current = Get-ODSEnvValue -Name "APE_API_KEY"
+    if (-not [string]::IsNullOrWhiteSpace($current)) {
+        return
+    }
+
+    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    try {
+        $bytes = New-Object byte[] 32
+        $rng.GetBytes($bytes)
+        $token = ($bytes | ForEach-Object { $_.ToString("x2") }) -join ""
+    } finally {
+        $rng.Dispose()
+    }
+    Set-ODSEnvValue -Key "APE_API_KEY" -Value $token
 }
 
 function Set-ODSProxyAuthRequired {

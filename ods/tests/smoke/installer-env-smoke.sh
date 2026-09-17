@@ -177,6 +177,7 @@ export ENABLE_OPENCLAW=true
     export RAG_OPENAI_API_KEY=replacement-secret
     export EMBEDDINGS_MEMORY_LIMIT=8GB
     export HERMES_DASHBOARD_SESSION_TOKEN=replacement-must-not-win
+    export APE_API_KEY=replacement-must-not-win
     source installers/phases/06-directories.sh
 " 2>/dev/null; then
     ENV_GENERATED=true
@@ -234,6 +235,14 @@ if [[ "$ENV_GENERATED" == true && -f "$INSTALL_DIR/.env" ]]; then
         pass "LLAMA_CPU_RESERVATION stays within the capped limit"
     else
         fail "LLAMA_CPU_RESERVATION was not written as expected"
+    fi
+
+    ape_api_key="$(sed -n 's/^APE_API_KEY=//p' "$INSTALL_DIR/.env")"
+    if [[ "$ape_api_key" =~ ^[[:xdigit:]]{64}$ ]] \
+        && [[ "$ape_api_key" != "replacement-must-not-win" ]]; then
+        pass "APE_API_KEY is generated and survives a Linux installer rerun"
+    else
+        fail "APE_API_KEY was missing, malformed, or replaced on rerun"
     fi
 
     if grep -q '^TTS_CPU_LIMIT=4.0$' "$INSTALL_DIR/.env"; then

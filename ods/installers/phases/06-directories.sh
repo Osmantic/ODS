@@ -561,6 +561,7 @@ raise SystemExit(1)' 2>/dev/null && return 0
     # restart instead of receiving a bare WebSocket 403.
     HERMES_DASHBOARD_SESSION_TOKEN=$(_phase06_env_hex_secret HERMES_DASHBOARD_SESSION_TOKEN 32)
     SHIELD_API_KEY=$(_phase06_env_hex_secret SHIELD_API_KEY 32)
+    APE_API_KEY=$(_phase06_env_hex_secret APE_API_KEY 32)
     DIFY_SECRET_KEY=$(_phase06_env_hex_secret DIFY_SECRET_KEY 32)
     QDRANT_API_KEY=$(_phase06_env_hex_secret QDRANT_API_KEY 32)
     _token_spy_key_default=""
@@ -1060,6 +1061,7 @@ ODS_AGENT_KEY=${ODS_AGENT_KEY}
 ODS_SESSION_SECRET=${ODS_SESSION_SECRET}
 HERMES_DASHBOARD_SESSION_TOKEN=${HERMES_DASHBOARD_SESSION_TOKEN}
 SHIELD_API_KEY=${SHIELD_API_KEY}
+APE_API_KEY=${APE_API_KEY}
 N8N_USER=admin@ods.local
 N8N_PASS=${N8N_PASS}
 LITELLM_KEY=${LITELLM_KEY}

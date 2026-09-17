@@ -121,6 +121,7 @@ if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; 
   OPENCLAW_TOKEN=test \
   N8N_USER=test@example.local \
   N8N_PASS=test \
+  APE_API_KEY=test \
   SEARXNG_SECRET=test \
   ODS_SESSION_SECRET=test \
   LEMONADE_EXTERNAL=true \

@@ -286,6 +286,11 @@ generate_ods_env() {
         if [[ -z "$(read_env_value "$env_path" "SHIELD_API_KEY")" ]]; then
             upsert_env_value "$env_path" "SHIELD_API_KEY" "$(new_secure_hex 32)"
         fi
+        # APE rejects unauthenticated policy decisions. Backfill one stable
+        # key so upgraded installs do not receive an unreachable random key.
+        if [[ -z "$(read_env_value "$env_path" "APE_API_KEY")" ]]; then
+            upsert_env_value "$env_path" "APE_API_KEY" "$(new_secure_hex 32)"
+        fi
         # Upsert TOKEN_SPY_API_KEY when missing so dashboard-api and the
         # Token Spy UI share the same login key. Preserve Token Spy's existing
         # fallback key file on upgrades where the container created one first.
@@ -395,6 +400,8 @@ generate_ods_env() {
     hermes_dashboard_session_token=$(new_secure_hex 32)
     local shield_api_key
     shield_api_key=$(new_secure_hex 32)
+    local ape_api_key
+    ape_api_key=$(new_secure_hex 32)
     local token_spy_api_key
     token_spy_api_key="$(read_token_spy_api_key "$install_dir")"
     if [[ -z "$token_spy_api_key" ]]; then
@@ -623,6 +630,7 @@ ODS_AGENT_KEY=${ods_agent_key}
 ODS_SESSION_SECRET=${ods_session_secret}
 HERMES_DASHBOARD_SESSION_TOKEN=${hermes_dashboard_session_token}
 SHIELD_API_KEY=${shield_api_key}
+APE_API_KEY=${ape_api_key}
 N8N_USER=admin@ods.local
 N8N_PASS=${n8n_pass}
 LITELLM_KEY=${litellm_key}

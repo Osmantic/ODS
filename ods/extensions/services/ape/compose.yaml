@@ -12,7 +12,7 @@ services:
       - APE_AUDIT_LOG=/data/ape/audit.jsonl
       - APE_RATE_LIMIT_RPM=${APE_RATE_LIMIT_RPM:-60}
       - APE_STRICT_MODE=${APE_STRICT_MODE:-false}
-      - APE_API_KEY=${APE_API_KEY:-}
+      - APE_API_KEY=${APE_API_KEY:?installer must generate APE_API_KEY}
     volumes:
       - ./config/ape:/config:ro,z
       - ./data/ape:/data/ape:z
