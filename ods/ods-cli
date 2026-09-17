@@ -5137,21 +5137,59 @@ _gpu_status() {
 }
 
 _gpu_topology() {
-    local force=0
+    local force=0 json_mode=0
     while [[ $# -gt 0 ]]; do
-        case "$1" in --force|-f) force=1 ;; esac
+        case "$1" in
+            --force|-f) force=1 ;;
+            --json) json_mode=1 ;;
+            *) error "Unknown gpu topology option: $1" ;;
+        esac
         shift
     done
 
     check_install
     load_env
 
-    echo -e "${BLUE}━━━ GPU Topology ━━━${NC}"
-    echo ""
-
     if [[ "${GPU_BACKEND:-}" == "apple" ]]; then
+        if [[ "$json_mode" -eq 1 ]]; then
+            command -v jq &>/dev/null || error "jq not found — required for JSON output"
+            local chip memory_bytes gpu_cores
+            chip=$(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo "Apple Silicon")
+            memory_bytes=$(sysctl -n hw.memsize 2>/dev/null || echo 0)
+            [[ "$memory_bytes" =~ ^[0-9]+$ ]] || memory_bytes=0
+            gpu_cores=$(system_profiler SPDisplaysDataType -json 2>/dev/null \
+                | jq -r '.SPDisplaysDataType[0].sppci_cores // empty') || gpu_cores=""
+            jq -cn \
+                --arg chip "$chip" \
+                --argjson memory_bytes "$memory_bytes" \
+                --arg gpu_cores "$gpu_cores" '
+                {
+                    schema_version: "ods.gpu-topology.v1",
+                    backend: "apple",
+                    source: "live",
+                    gpu_count: 1,
+                    integrated: true,
+                    driver_version: null,
+                    gpus: [{
+                        index: 0,
+                        name: $chip,
+                        memory_bytes: $memory_bytes,
+                        gpu_cores: ($gpu_cores | tonumber? // null)
+                    }],
+                    links: [],
+                    numa: {nodes: 1}
+                }'
+            return 0
+        fi
+        echo -e "${BLUE}━━━ GPU Topology ━━━${NC}"
+        echo ""
         echo "  Single integrated GPU (Apple Silicon, unified memory) — no multi-GPU topology to display."
         return 0
+    fi
+
+    if [[ "$json_mode" -eq 0 ]]; then
+        echo -e "${BLUE}━━━ GPU Topology ━━━${NC}"
+        echo ""
     fi
 
     if ! command -v jq &>/dev/null; then
@@ -5169,28 +5207,49 @@ _gpu_topology() {
         topo_lib="$SCRIPT_DIR/installers/lib/nvidia-topo.sh"
         topo_detect_fn="detect_nvidia_topo"
         if ! command -v nvidia-smi &>/dev/null; then
+            [[ "$json_mode" -eq 1 ]] && error "nvidia-smi not found — topology unavailable"
             warn "nvidia-smi not found — topology unavailable"
             return
         fi
     fi
 
     if [[ ! -f "$topo_lib" ]]; then
+        [[ "$json_mode" -eq 1 ]] && error "Topology library not found: $topo_lib"
         warn "Topology library not found: $topo_lib"
         return
     fi
 
     local topo_file="$INSTALL_DIR/config/gpu-topology.json"
-    local topo_json
+    local topo_json source="detected"
 
     if [[ "$force" -eq 0 && -f "$topo_file" ]]; then
         topo_json=$(cat "$topo_file")
+        source="cache"
     else
-        [[ "$force" -eq 1 && -f "$topo_file" ]] && log "Re-detecting topology (--force)..."
+        if [[ "$json_mode" -eq 0 && "$force" -eq 1 && -f "$topo_file" ]]; then
+            log "Re-detecting topology (--force)..."
+        fi
         . "$topo_lib"
-        topo_json=$($topo_detect_fn 2>&1) || { warn "Failed to detect GPU topology"; return; }
+        if ! topo_json=$($topo_detect_fn 2>&1); then
+            [[ "$json_mode" -eq 1 ]] && error "Failed to detect GPU topology"
+            warn "Failed to detect GPU topology"
+            return
+        fi
         echo "$topo_json" > "$topo_file"
         chmod 644 "$topo_file"
-        log "Topology saved to $topo_file"
+        [[ "$json_mode" -eq 0 ]] && log "Topology saved to $topo_file"
+    fi
+
+    if [[ "$json_mode" -eq 1 ]]; then
+        printf '%s\n' "$topo_json" | jq \
+            --arg backend "$backend" \
+            --arg source "$source" \
+            '. + {
+                schema_version: "ods.gpu-topology.v1",
+                backend: $backend,
+                source: $source
+            }'
+        return 0
     fi
 
     local gpu_count driver
@@ -6098,7 +6157,7 @@ cmd_gpu() {
             echo ""
             echo "Subcommands:"
             echo "  status       Per-GPU metrics table with VRAM, util, temp, power"
-            echo "  topology     Show GPU interconnect topology (NVLink, PCIe, NUMA)"
+            echo "  topology     Show GPU interconnect topology (add --json for automation)"
             echo "  assignment   Show current service→GPU mapping from .env"
             echo "  validate     Check GPU config is consistent with live system"
             echo "  reassign     Re-run GPU assignment algorithm and update .env"
@@ -6499,6 +6558,7 @@ EOF
 ${CYAN}Examples:${NC}
   ods gpu status                # Per-GPU metrics (VRAM, util, temp, power)
   ods gpu topology              # Show GPU interconnect topology
+  ods gpu topology --json       # Machine-readable cached/live topology
   ods gpu assignment            # Show service→GPU mapping
   ods gpu validate              # Validate GPU configuration
   ods gpu reassign --auto       # Auto-reassign GPUs after hardware change
