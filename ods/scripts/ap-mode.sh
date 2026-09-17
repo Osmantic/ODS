@@ -285,6 +285,13 @@ HEREDOC
   chmod 0644 "${STATE_FILE}"
 }
 
+rollback_failed_up() {
+  local stage="$1"
+  err "AP activation failed while ${stage}; rolling back interface and firewall state"
+  cmd_down
+  return 1
+}
+
 cmd_up() {
   require_linux
   require_root
@@ -297,11 +304,23 @@ cmd_up() {
   # Snapshot the original state so we can recover on teardown.
   log "bringing up AP on ${ODS_AP_INTERFACE} as '${ODS_AP_SSID}'"
   release_interface_from_nm
-  bring_up_interface
+  if ! bring_up_interface; then
+    rollback_failed_up "configuring ${ODS_AP_INTERFACE}"
+    return 1
+  fi
 
-  write_hostapd_conf
-  write_dnsmasq_conf
-  install_iptables_rules
+  if ! write_hostapd_conf; then
+    rollback_failed_up "writing hostapd configuration"
+    return 1
+  fi
+  if ! write_dnsmasq_conf; then
+    rollback_failed_up "writing dnsmasq configuration"
+    return 1
+  fi
+  if ! install_iptables_rules; then
+    rollback_failed_up "installing captive-portal firewall rules"
+    return 1
+  fi
 
   # Start daemons directly and track them with PID files so teardown can
   # cleanly stop only the processes started for AP mode.
@@ -314,7 +333,10 @@ cmd_up() {
       || { err "dnsmasq failed to start — check ${RUN_DIR}/dnsmasq.log"; cmd_down; return 1; }
   fi
 
-  write_state "active"
+  if ! write_state "active"; then
+    rollback_failed_up "publishing active state"
+    return 1
+  fi
   log "AP up: SSID=${ODS_AP_SSID} gateway=${ODS_AP_GATEWAY_IP}"
   log "  any hostname resolves to ${ODS_AP_GATEWAY_IP} (captive portal)"
   log "  HTTP/HTTPS on ${ODS_AP_INTERFACE} redirected to the gateway"

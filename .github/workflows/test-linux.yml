@@ -175,6 +175,8 @@ jobs:
       - name: Mode Switch Tests
         run: bash tests/test-mode-switch-status.sh
 
+      - name: AP Mode Activation Transaction Tests
+        run: bash tests/test-ap-mode.sh
       - name: CLI Install Directory Resolution Tests
         run: bash tests/test-cli-install-dir-resolution.sh
 
