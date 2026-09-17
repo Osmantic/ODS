@@ -48,6 +48,7 @@ load_env_file() {
         if [[ "$value" == '"'*'"' ]]; then
             value="${value#\"}"
             value="${value%\"}"
+            value="$(_safe_env_unescape_double_quoted "$value")"
         elif [[ "$value" == "'"*"'" ]]; then
             value="${value#\'}"
             value="${value%\'}"

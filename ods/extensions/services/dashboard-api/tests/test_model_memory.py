@@ -78,6 +78,61 @@ class TestParamScaleSources:
         assert estimated_context_kv_gb(model) < estimated_context_kv_gb(without_filename)
 
 
+class TestArchitectureAwareKvCache:
+
+    def test_dense_qwen_metadata_matches_llama_allocation(self):
+        model = {
+            "block_count": 36,
+            "attention_head_count_kv": 8,
+            "embedding_length": 4096,
+            "attention_head_count": 32,
+        }
+        assert estimated_context_kv_gb(model, 32768) == 4.5
+        assert estimated_context_kv_gb(model, 262144) == 36.0
+
+    def test_explicit_key_and_value_lengths_support_grouped_attention(self):
+        model = {
+            "block_count": 10,
+            "attention_head_count_kv": 4,
+            "attention_key_length": 64,
+            "attention_value_length": 64,
+        }
+        assert estimated_context_kv_gb(model, 32768) == 0.31
+
+    def test_partial_rope_dimension_does_not_undercount_phi3_heads(self):
+        model = {
+            "block_count": 32,
+            "attention_head_count_kv": 8,
+            "embedding_length": 3072,
+            "attention_head_count": 24,
+            "rope_dimension_count": 96,
+        }
+        assert estimated_context_kv_gb(model, 32768) == 4.0
+
+    def test_per_layer_kv_heads_cover_hybrid_attention(self):
+        model = {
+            "block_count": 4,
+            "attention_head_count_kv": [0, 2, 0, 2],
+            "attention_key_length": 256,
+            "attention_value_length": 256,
+        }
+        assert estimated_context_kv_gb(model, 32768) == 0.12
+
+    def test_incomplete_per_layer_metadata_falls_back(self):
+        model = {
+            "params_b": 4,
+            "block_count": 80,
+            "attention_head_count_kv": [8] * 64,
+            "attention_key_length": 128,
+            "attention_value_length": 128,
+        }
+        assert estimated_context_kv_gb(model, 32768) == 0.48
+
+    def test_incomplete_metadata_keeps_catalog_fallback(self):
+        model = {"params_b": 4, "block_count": 36}
+        assert estimated_context_kv_gb(model, 32768) == 0.48
+
+
 @pytest.mark.skipif(
     not CATALOG_PATH.exists() or not SELECT_MODEL_PATH.exists(),
     reason="repo checkout required",

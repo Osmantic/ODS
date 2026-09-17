@@ -13,6 +13,7 @@ from urllib.parse import urlsplit
 
 from fastapi import HTTPException
 
+from env_values import strip_matching_quotes
 from host_agent_client import AgentClientError, request_json as request_agent_json
 
 # ── Regex constants ────────────────────────────────────────────────────────────
@@ -96,13 +97,6 @@ _READ_ONLY_ENV_FIELDS = {
 # ── Env parsing ────────────────────────────────────────────────────────────────
 
 
-def _strip_env_quotes(value: str) -> str:
-    value = value.strip()
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
-        return value[1:-1]
-    return value
-
-
 def _read_env_map_from_path(path: Path) -> tuple[dict[str, str], list[dict[str, Any]]]:
     try:
         return _parse_env_text(path.read_text(encoding="utf-8"))
@@ -129,7 +123,7 @@ def _parse_env_text(raw_text: str) -> tuple[dict[str, str], list[dict[str, Any]]
             continue
 
         key, value = match.groups()
-        values[key] = _strip_env_quotes(value)
+        values[key] = strip_matching_quotes(value)
 
     return values, issues
 
@@ -278,7 +272,13 @@ def _validate_env_values(
             if _normalize_bool(value) is None:
                 issues.append({"key": key, "message": "Must be true or false."})
 
-        if key == "EMBEDDING_MODEL":
+        if key == "N_GPU_LAYERS":
+            if not re.fullmatch(r"(?:auto|all|[0-9]+)", str(value).strip()):
+                issues.append({
+                    "key": key,
+                    "message": "Must be auto, all, or a non-negative whole number.",
+                })
+        elif key == "EMBEDDING_MODEL":
             if _is_unsupported_tei_model_id(value):
                 issues.append({
                     "key": key,
@@ -352,6 +352,8 @@ def _serialize_form_values(
             normalized = _normalize_bool(value)
             serialized[key] = normalized if normalized is not None else str(value).strip()
         elif field_type == "integer":
+            serialized[key] = str(value).strip()
+        elif key == "N_GPU_LAYERS":
             serialized[key] = str(value).strip()
         else:
             serialized[key] = str(value)

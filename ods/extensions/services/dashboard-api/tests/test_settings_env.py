@@ -5,6 +5,23 @@ import json
 import pytest
 
 
+def test_settings_parser_strips_one_pair_and_preserves_unmatched_quotes():
+    from settings import _parse_env_text
+
+    values, issues = _parse_env_text(
+        "PAIRED='value'\n"
+        "UNMATCHED=value'\n"
+        "REPEATED=''value''\n"
+    )
+
+    assert issues == []
+    assert values == {
+        "PAIRED": "value",
+        "UNMATCHED": "value'",
+        "REPEATED": "'value'",
+    }
+
+
 @pytest.fixture()
 def settings_env_fixture(tmp_path, monkeypatch):
     install_root = tmp_path / "ods"
@@ -578,6 +595,33 @@ def test_api_settings_env_save_returns_llama_apply_plan(test_client, settings_en
     assert "llama-server" in payload["applyPlan"]["summary"]
 
 
+def test_api_settings_env_gpu_layer_change_recreates_llama_server(
+    test_client, settings_env_fixture,
+):
+    env_path = settings_env_fixture["env_path"]
+    env_path.write_text(
+        env_path.read_text(encoding="utf-8") + "N_GPU_LAYERS=99\n",
+        encoding="utf-8",
+    )
+
+    response = test_client.put(
+        "/api/settings/env",
+        headers=test_client.auth_headers,
+        json={
+            "mode": "form",
+            "values": {
+                "N_GPU_LAYERS": "auto",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["values"]["N_GPU_LAYERS"] == "auto"
+    assert payload["applyPlan"]["status"] == "ready"
+    assert payload["applyPlan"]["services"] == ["llama-server"]
+
+
 def test_api_settings_env_save_uses_host_agent_canonical_value(
     test_client, settings_env_fixture, monkeypatch,
 ):
@@ -801,6 +845,19 @@ def test_settings_apply_plan_maps_hermes_env_keys():
 
     assert plan["status"] == "ready"
     assert plan["services"] == ["hermes", "hermes-proxy"]
+    assert plan["manualKeys"] == []
+
+
+def test_settings_apply_plan_restarts_hermes_for_dashboard_token_rotation():
+    from settings import _compute_env_apply_plan
+
+    plan = _compute_env_apply_plan(
+        {"HERMES_DASHBOARD_SESSION_TOKEN": "old-token"},
+        {"HERMES_DASHBOARD_SESSION_TOKEN": "new-token"},
+    )
+
+    assert plan["status"] == "ready"
+    assert plan["services"] == ["hermes"]
     assert plan["manualKeys"] == []
 
 
@@ -1037,6 +1094,38 @@ def test_settings_validation_accepts_compose_memory_units():
             {"EMBEDDINGS_MEMORY_LIMIT": {"type": "string"}}, set(), values,
         )
         assert _validate_env_values(values, fields) == []
+
+
+@pytest.mark.parametrize("value", ["auto", "all", "0", "99", "999"])
+def test_settings_validation_accepts_gpu_layer_modes_and_counts(value):
+    from settings import _validate_env_values
+
+    assert _validate_env_values(
+        {"N_GPU_LAYERS": value},
+        {"N_GPU_LAYERS": {"type": "string"}},
+    ) == []
+
+
+def test_settings_serialization_normalizes_gpu_layer_whitespace():
+    from settings import _serialize_form_values
+
+    assert _serialize_form_values(
+        {"N_GPU_LAYERS": "  all  "},
+        {"N_GPU_LAYERS": {"type": "string"}},
+    ) == {"N_GPU_LAYERS": "all"}
+
+
+@pytest.mark.parametrize("value", ["-1", "99.5", "automatic", "AUTO", "999;exit 1"])
+def test_settings_validation_rejects_invalid_gpu_layer_values(value):
+    from settings import _validate_env_values
+
+    assert _validate_env_values(
+        {"N_GPU_LAYERS": value},
+        {"N_GPU_LAYERS": {"type": "string"}},
+    ) == [{
+        "key": "N_GPU_LAYERS",
+        "message": "Must be auto, all, or a non-negative whole number.",
+    }]
 
 
 def test_settings_validation_rejects_invalid_rag_base_url():
@@ -1303,6 +1392,17 @@ def test_production_schema_only_allows_explicit_rag_secret_removal():
         if definition.get("clearable") is True
     }
     assert clearable == {"RAG_OPENAI_API_KEY"}
+
+
+def test_production_schema_protects_hermes_dashboard_session_token():
+    import pathlib
+
+    schema_path = pathlib.Path(__file__).resolve().parents[4] / ".env.schema.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    entry = schema["properties"]["HERMES_DASHBOARD_SESSION_TOKEN"]
+
+    assert entry["secret"] is True
+    assert entry["minLength"] >= 32
 
 
 def test_env_example_keys_are_present_in_schema():

@@ -68,6 +68,20 @@ def test_live_env_value_preserves_explicit_empty_value(monkeypatch, tmp_path):
     assert config.read_live_env_value("LEMONADE_MODEL", "fallback") == ""
 
 
+def test_live_env_value_strips_one_pair_and_preserves_unmatched_quotes(monkeypatch, tmp_path):
+    (tmp_path / ".env").write_text(
+        "PAIRED='model-v2'\n"
+        "UNMATCHED=model-v2'\n"
+        "REPEATED=''model-v2''\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config, "INSTALL_DIR", str(tmp_path))
+
+    assert config.read_live_env_value("PAIRED") == "model-v2"
+    assert config.read_live_env_value("UNMATCHED") == "model-v2'"
+    assert config.read_live_env_value("REPEATED") == "'model-v2'"
+
+
 class TestReadManifestFile:
 
     def test_reads_yaml(self, tmp_path):

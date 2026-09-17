@@ -9,6 +9,15 @@ import httpx
 from host_agent_client import AgentHTTPError, AgentUnavailable
 
 
+def test_current_version_reader_preserves_unmatched_quote(monkeypatch, tmp_path):
+    import routers.updates as updates_mod
+
+    (tmp_path / ".env").write_text("ODS_VERSION=2.6.0'\n", encoding="utf-8")
+    monkeypatch.setattr(updates_mod, "INSTALL_DIR", str(tmp_path))
+
+    assert updates_mod._read_current_version() == "2.6.0'"
+
+
 def test_github_release_urls_use_canonical_repository():
     import routers.updates as updates_mod
 
@@ -352,6 +361,26 @@ def test_update_dry_run_parses_quoted_ods_version(test_client, tmp_path, monkeyp
 
     assert resp.status_code == 200
     assert resp.json()["current_version"] == "1.3.0"
+
+
+def test_update_dry_run_preserves_unmatched_version_quote(test_client, tmp_path, monkeypatch):
+    """Dry-run must not silently repair malformed persisted values."""
+    import routers.updates as updates_mod
+
+    install_dir = tmp_path / "ods"
+    install_dir.mkdir()
+    (install_dir / ".env").write_text("ODS_VERSION=1.3.0'\n", encoding="utf-8")
+
+    monkeypatch.setattr(updates_mod, "INSTALL_DIR", str(install_dir))
+
+    with patch(
+        "routers.updates.httpx.AsyncClient.get",
+        side_effect=httpx.ConnectError("mocked network failure"),
+    ):
+        resp = test_client.get("/api/update/dry-run", headers=test_client.auth_headers)
+
+    assert resp.status_code == 200
+    assert resp.json()["current_version"] == "1.3.0'"
 
 
 def test_update_dry_run_version_from_version_file(test_client, tmp_path, monkeypatch):
