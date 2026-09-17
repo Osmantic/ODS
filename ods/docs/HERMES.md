@@ -122,6 +122,11 @@ Three layers, highest to lowest precedence:
 2. **Set env vars in ODS's `.env`** — `HERMES_LLM_BASE_URL`, `HERMES_LLM_API_KEY`, `HERMES_LANGUAGE`, optional `WHATSAPP_*` gateway settings, and the `HERMES_PROXY_*` proxy settings. Hermes itself has no host-port env knob in the auth-gated stack; the LAN-facing port is `HERMES_PROXY_PORT`.
 3. **Fall back to ODS's defaults** — defined in `extensions/services/hermes/cli-config.yaml.template`.
 
+`HERMES_DASHBOARD_SESSION_TOKEN` is installer-managed internal state. Do not
+remove it: Hermes uses it to authenticate dashboard WebSockets, and preserving
+it keeps open browser sessions valid across container restarts. If an operator
+rotates it intentionally, every open Hermes tab must be refreshed.
+
 To bring up Hermes pointing at a different LLM (e.g. OpenRouter, OpenAI, Anthropic), edit `data/hermes/config.yaml`'s `model.provider` and `model.base_url` and restart. The whole gamut of provider options is listed in the upstream config — Hermes supports OpenRouter / Anthropic / OpenAI / Hugging Face / NVIDIA NIM / z.ai / Kimi / Gemini / Ollama Cloud / LM Studio / etc. out of the box.
 
 For local backends, keep `model.context_length` and `auxiliary.compression.context_length` aligned with `.env`'s `CTX_SIZE` / `MAX_CONTEXT`. Values below 64000 will make Hermes reject prompts; values above the server's real context can produce `context length exceeded` / `max compression attempts reached` loops.
@@ -129,6 +134,7 @@ For local backends, keep `model.context_length` and `auxiliary.compression.conte
 ## Security posture
 
 - **`--insecure` is enabled inside the container.** Hermes's dashboard refuses non-loopback binds without it. ODS accepts that trade-off only because port 9119 is not host-bound in the default stack; the LAN-facing entry is the magic-link-gated proxy on port 9120. Do not add a public 9119 host binding.
+- **Hermes's internal dashboard token is independent of ODS authentication.** The installer stores `HERMES_DASHBOARD_SESSION_TOKEN` in the mode-600 `.env`; the browser receives it from Hermes only after the ODS session gate permits the page request. The token is stable across restarts but is not a substitute for the outer proxy gate.
 - **The container runs as a non-root user** (UID 10000 by default, remappable via `HERMES_UID`). The entrypoint drops privileges via `gosu` before any agent code runs.
 - **The container has full network access** within ODS's bridge net — Hermes can make outbound HTTP requests for tools like `web_search`. If you want to restrict this, add an iptables firewall rule on the host or run Hermes behind a forward proxy.
 - **No APE policy enforcement yet.** Hermes's 70+ tools include shell + file write. The base config defaults toward less-risky tools, but Hermes can still execute shell commands inside its sandbox container. APE policy wrapping is a planned follow-up; until then, the trust model is "the user authenticated to Hermes is trusted to use the local container."
@@ -279,5 +285,6 @@ When promoting / talking about this extension, the convention is: "Hermes Agent 
 
 | Date | Pinned image | Notes |
 |---|---|---|
+| 2026-07-30 | `nousresearch/hermes-agent:v2026.6.5` | Persist Hermes's supported dashboard session token so WebSocket reconnects survive container restarts; retain compatibility with ODS's authenticated proxy topology. |
 | 2026-06-01 | `nousresearch/hermes-agent:v2026.5.16` | Replace removed upstream `sha-*` tag with a published version tag; add `HERMES_AGENT_IMAGE` override/fallback path. |
 | 2026-05-12 | `dd0923bb89ed2dd56f82cb63656a1323f6f42e6f` | Initial integration. |

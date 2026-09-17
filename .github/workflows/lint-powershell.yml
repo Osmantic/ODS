@@ -76,6 +76,10 @@ jobs:
         shell: pwsh
         run: ./tests/test-windows-model-activation.ps1
 
+      - name: Windows Dotenv Serializer Contract
+        shell: pwsh
+        run: ./tests/test-windows-dotenv-serializer.ps1
+
       - name: Windows Catalog Source Boundary Contract
         shell: pwsh
         run: ./tests/test-windows-catalog-selector.ps1
@@ -96,3 +100,8 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: ./tests/contracts/test-install-footprint-windows.ps1
+
+      - name: Atomic Environment Write Tests
+        if: runner.os == 'Windows'
+        shell: bash
+        run: bash tests/test-atomic-env-writes.sh

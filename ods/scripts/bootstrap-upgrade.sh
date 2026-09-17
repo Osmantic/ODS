@@ -532,20 +532,126 @@ read_env_value() {
     grep -E "^${key}=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"\047\r'
 }
 
+resolve_env_file() {
+    local path="$1" link dir hops=0
+
+    # Preserve former in-place write behavior: a .env symlink must keep
+    # pointing at its target rather than being replaced by the temp file.
+    while [[ -L "$path" ]]; do
+        hops=$((hops + 1))
+        [[ "$hops" -le 40 ]] || return 1
+        dir="$(cd -P "$(dirname "$path")" && pwd)" || return 1
+        link="$(readlink "$path")" || return 1
+        case "$link" in
+            /*) path="$link" ;;
+            [A-Za-z]:/*|[A-Za-z]:\\*)
+                command -v cygpath >/dev/null 2>&1 || return 1
+                path="$(cygpath -u "$link")" || return 1
+                ;;
+            *) path="$dir/$link" ;;
+        esac
+    done
+
+    dir="$(cd -P "$(dirname "$path")" && pwd)" || return 1
+    printf '%s/%s\n' "$dir" "$(basename "$path")"
+}
+
+copy_env_permissions() {
+    local source="$1" target="$2" source_windows target_windows
+
+    # Git Bash replacement uses the source file ACL. Copy the protected NTFS
+    # DACL to the still-empty temp file before it receives .env contents.
+    case "$(uname -s 2>/dev/null || true)" in
+        MINGW*|MSYS*|CYGWIN*)
+            command -v cygpath >/dev/null 2>&1 || return 1
+            command -v powershell.exe >/dev/null 2>&1 || return 1
+            source_windows="$(cygpath -aw "$source")" || return 1
+            target_windows="$(cygpath -aw "$target")" || return 1
+            if ! ODS_ENV_ACL_SOURCE="$source_windows" ODS_ENV_ACL_TARGET="$target_windows" \
+                powershell.exe -NoLogo -NoProfile -NonInteractive -Command '
+$ErrorActionPreference = [System.Management.Automation.ActionPreference]::Stop
+$sourceAcl = [System.IO.File]::GetAccessControl($env:ODS_ENV_ACL_SOURCE, [System.Security.AccessControl.AccessControlSections]::Access)
+$sddl = $sourceAcl.GetSecurityDescriptorSddlForm([System.Security.AccessControl.AccessControlSections]::Access)
+$targetAcl = [System.IO.File]::GetAccessControl($env:ODS_ENV_ACL_TARGET, [System.Security.AccessControl.AccessControlSections]::Access)
+$targetAcl.SetSecurityDescriptorSddlForm($sddl, [System.Security.AccessControl.AccessControlSections]::Access)
+[System.IO.File]::SetAccessControl($env:ODS_ENV_ACL_TARGET, $targetAcl)
+' >/dev/null; then
+                return 1
+            fi
+            return 0
+    esac
+
+    cp -p "$source" "$target"
+}
+
+replace_env_file() {
+    local source="$1" target="$2" backup source_windows target_windows backup_windows
+
+    case "$(uname -s 2>/dev/null || true)" in
+        MINGW*|MSYS*|CYGWIN*)
+            command -v cygpath >/dev/null 2>&1 || return 1
+            command -v powershell.exe >/dev/null 2>&1 || return 1
+            backup="$(umask 077; mktemp "${target}.bak.XXXXXX")" || return 1
+            if ! copy_env_permissions "$target" "$backup"; then
+                rm -f "$backup" 2>/dev/null || true
+                return 1
+            fi
+            if ! source_windows="$(cygpath -aw "$source")"; then
+                rm -f "$backup" 2>/dev/null || true
+                return 1
+            fi
+            if ! target_windows="$(cygpath -aw "$target")"; then
+                rm -f "$backup" 2>/dev/null || true
+                return 1
+            fi
+            if ! backup_windows="$(cygpath -aw "$backup")"; then
+                rm -f "$backup" 2>/dev/null || true
+                return 1
+            fi
+            if ! ODS_ENV_REPLACE_SOURCE="$source_windows" ODS_ENV_REPLACE_TARGET="$target_windows" \
+                ODS_ENV_REPLACE_BACKUP="$backup_windows" \
+                powershell.exe -NoLogo -NoProfile -NonInteractive -Command '
+$ErrorActionPreference = [System.Management.Automation.ActionPreference]::Stop
+[System.IO.File]::Replace($env:ODS_ENV_REPLACE_SOURCE, $env:ODS_ENV_REPLACE_TARGET, $env:ODS_ENV_REPLACE_BACKUP)
+' >/dev/null; then
+                rm -f "$backup" 2>/dev/null || true
+                return 1
+            fi
+            rm -f "$backup" || return 1
+            return 0
+    esac
+
+    mv -f "$source" "$target"
+}
+
 write_env_value() {
-    local key="$1" value="$2" tmp
-    [[ -f "$ENV_FILE" ]] || return 1
-    tmp="${ENV_FILE}.tmp.$$"
+    local key="$1" value="$2" tmp env_file
+    env_file="$(resolve_env_file "$ENV_FILE")" || return 1
+    [[ -f "$env_file" ]] || return 1
+    tmp="$(umask 077; mktemp "${env_file}.tmp.XXXXXX")" || return 1
+
+    # Keep the replacement in the same directory so mv is an atomic rename.
+    # Copy metadata before writing: .env can hold service keys and is
+    # deliberately owner-only on normal installs.
+    if ! copy_env_permissions "$env_file" "$tmp"; then
+        rm -f "$tmp" 2>/dev/null || true
+        return 1
+    fi
+
     if ! awk -v k="$key" -v v="$value" '
         BEGIN { found = 0 }
         index($0, k "=") == 1 { print k "=" v; found = 1; next }
         { print }
         END { if (!found) print k "=" v }
-    ' "$ENV_FILE" > "$tmp"; then
-        rm -f "$tmp"
+    ' "$env_file" > "$tmp"; then
+        rm -f "$tmp" 2>/dev/null || true
         return 1
     fi
-    cat "$tmp" > "$ENV_FILE" && rm -f "$tmp"
+
+    if ! replace_env_file "$tmp" "$env_file"; then
+        rm -f "$tmp" 2>/dev/null || true
+        return 1
+    fi
 }
 
 full_model_env_matches() {
@@ -811,7 +917,7 @@ restart_windows_lemonade_with_full_model() {
 
     log "Restarting native Windows Lemonade with ${target_label}: ${target_gguf}"
     local ps_output model_id ps_rc restart_timeout ps_output_file
-    local -a ps_env_cmd ps_timeout_prefix
+    local -a ps_env_cmd
     restart_timeout="${ODS_LEMONADE_RESTART_PS_TIMEOUT:-180}"
     case "$restart_timeout" in ''|*[!0-9]*|0) restart_timeout=180 ;; esac
     mkdir -p "$INSTALL_DIR/logs" 2>/dev/null || true
@@ -829,11 +935,10 @@ restart_windows_lemonade_with_full_model() {
         "ODS_WIN_LEMONADE_TASK=ODSLemonadeRuntime"
         "ODS_WIN_GGUF_FILE=$target_gguf"
     )
-    ps_timeout_prefix=()
     if command -v timeout >/dev/null 2>&1; then
-        ps_timeout_prefix=(timeout --foreground --kill-after=5s "${restart_timeout}s")
+        ps_env_cmd+=(timeout --foreground --kill-after=5s "${restart_timeout}s")
     fi
-    if "${ps_env_cmd[@]}" "${ps_timeout_prefix[@]}" \
+    if "${ps_env_cmd[@]}" \
         "$ps_cmd" -NoProfile -ExecutionPolicy Bypass -Command '
         $ErrorActionPreference = "Stop"
 
@@ -1138,6 +1243,7 @@ restart_windows_native_llama_server_with_full_model() {
     ODS_WIN_BIND_ADDR="$bind_addr" \
     ODS_WIN_LLAMA_PORT="$llama_port" \
     ODS_WIN_CTX_SIZE="$ctx_size" \
+    ODS_WIN_GPU_LAYERS="$(read_env_value N_GPU_LAYERS)" \
     ODS_WIN_REASONING_FORMAT="$reasoning_fmt" \
     ODS_WIN_FLASH_ATTN="$(read_env_value LLAMA_ARG_FLASH_ATTN)" \
     ODS_WIN_CACHE_TYPE_K="$(read_env_value LLAMA_ARG_CACHE_TYPE_K)" \
@@ -1196,11 +1302,13 @@ restart_windows_native_llama_server_with_full_model() {
         function Start-ODSLlama {
             param([string]$ModelPath)
 
+            $gpuLayers = $env:ODS_WIN_GPU_LAYERS
+            if (-not $gpuLayers) { $gpuLayers = "auto" }
             $args = @(
                 "--model", $ModelPath,
                 "--host", $env:ODS_WIN_BIND_ADDR,
                 "--port", $env:ODS_WIN_LLAMA_PORT,
-                "--n-gpu-layers", "999",
+                "--n-gpu-layers", $gpuLayers,
                 "--ctx-size", $env:ODS_WIN_CTX_SIZE,
                 "--reasoning-format", $env:ODS_WIN_REASONING_FORMAT,
                 "--metrics"
@@ -1267,20 +1375,36 @@ restart_windows_native_llama_server_with_full_model() {
     return 0
 }
 
+yaml_double_quoted_scalar_content() {
+    local value="$1"
+    case "$value" in
+        *$'\n'*|*$'\r'*) return 1 ;;
+    esac
+    printf '%s' "$value" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
+}
+
+sed_replacement_escape() {
+    printf '%s' "$1" | sed 's/[\\&|]/\\&/g'
+}
+
 patch_hermes_yaml_with_sed() {
     local path="$1" model="$2" context_length="$3" base_url="${4:-}" request_timeout_seconds="${5:-180}"
     [[ -f "$path" ]] || return 1
+    [[ "$context_length" =~ ^[0-9]+$ ]] || return 1
+    [[ "$request_timeout_seconds" =~ ^[0-9]+$ ]] || return 1
 
-    local model_sed base_url_sed
-    model_sed="$(printf '%s' "$model" | sed 's/[\\&|]/\\&/g')"
-    base_url_sed="$(printf '%s' "$base_url" | sed 's/[\\&|]/\\&/g')"
+    local model_yaml base_url_yaml model_sed base_url_sed
+    model_yaml="$(yaml_double_quoted_scalar_content "$model")" || return 1
+    base_url_yaml="$(yaml_double_quoted_scalar_content "$base_url")" || return 1
+    model_sed="$(sed_replacement_escape "$model_yaml")" || return 1
+    base_url_sed="$(sed_replacement_escape "$base_url_yaml")" || return 1
 
     local sed_args=(
         -e "s|^  default: \".*\"[[:space:]]*$|  default: \"${model_sed}\"|"
         -e "s|^  context_length: .*|  context_length: ${context_length}|"
         -e "s|^    context_length: .*|    context_length: ${context_length}|"
     )
-    if [[ "$request_timeout_seconds" =~ ^[0-9]+$ && "$request_timeout_seconds" != "180" ]]; then
+    if [[ "$request_timeout_seconds" != "180" ]]; then
         sed_args+=(-e "s|^    request_timeout_seconds: 180[[:space:]]*$|    request_timeout_seconds: ${request_timeout_seconds}|")
     fi
     if [[ -n "$base_url" ]]; then
@@ -1296,9 +1420,48 @@ patch_hermes_yaml_with_sed() {
         return 1
     fi
 
-    grep -Fq "  default: \"${model}\"" "$path" \
+    grep -Fq "  default: \"${model_yaml}\"" "$path" \
         && grep -Fq "  context_length: ${context_length}" "$path" \
-        && { [[ -z "$base_url" ]] || grep -Fq "  base_url: \"${base_url}\"" "$path"; }
+        && { [[ -z "$base_url" ]] || grep -Fq "  base_url: \"${base_url_yaml}\"" "$path"; }
+}
+
+patch_hermes_yaml_in_container() {
+    local model="$1" context_length="$2" base_url="${3:-}" request_timeout_seconds="${4:-180}"
+    local normalize_compression="${5:-false}"
+
+    [[ -n "${DOCKER_CMD:-}" ]] || return 1
+    [[ "$context_length" =~ ^[0-9]+$ ]] || return 1
+    [[ "$request_timeout_seconds" =~ ^[0-9]+$ ]] || return 1
+    [[ "$normalize_compression" == "true" || "$normalize_compression" == "false" ]] || return 1
+    local model_yaml base_url_yaml model_sed base_url_sed
+    model_yaml="$(yaml_double_quoted_scalar_content "$model")" || return 1
+    base_url_yaml="$(yaml_double_quoted_scalar_content "$base_url")" || return 1
+    model_sed="$(sed_replacement_escape "$model_yaml")" || return 1
+    base_url_sed="$(sed_replacement_escape "$base_url_yaml")" || return 1
+
+    local sed_args=(
+        -e "s|^  default: \".*\"[[:space:]]*$|  default: \"${model_sed}\"|"
+        -e "s|^  context_length: .*|  context_length: ${context_length}|"
+        -e "s|^    context_length: .*|    context_length: ${context_length}|"
+    )
+    if [[ -n "$base_url" ]]; then
+        sed_args+=(-e "s|^  base_url: \".*\"|  base_url: \"${base_url_sed}\"|")
+    fi
+    if [[ "$request_timeout_seconds" != "180" ]]; then
+        sed_args+=(-e "s|^    request_timeout_seconds: 180[[:space:]]*$|    request_timeout_seconds: ${request_timeout_seconds}|")
+    fi
+    if [[ "$normalize_compression" == "true" ]]; then
+        sed_args+=(
+            -e 's|^  enabled: .*|  enabled: true|'
+            -e 's|^  threshold: .*|  threshold: 0.75|'
+            -e 's|^  target_ratio: .*|  target_ratio: 0.50|'
+            -e 's|^  protect_last_n: .*|  protect_last_n: 40|'
+        )
+    fi
+
+    $DOCKER_CMD exec ods-hermes sed -i \
+        "${sed_args[@]}" \
+        /opt/data/config.yaml
 }
 
 patch_hermes_model_after_swap() {
@@ -1343,19 +1506,9 @@ patch_hermes_model_after_swap() {
     fi
 
     if [[ -n "$DOCKER_CMD" ]] && $DOCKER_CMD ps --filter name=ods-hermes --format '{{.Names}}' 2>/dev/null | grep -q ods-hermes; then
-        local live_patch new_model_sed hermes_base_url_sed
-        new_model_sed="$(printf '%s' "$new_model" | sed 's/[\\&|]/\\&/g')"
-        hermes_base_url_sed="$(printf '%s' "$hermes_base_url" | sed 's/[\\&|]/\\&/g')"
-        live_patch="sed -i -e 's|^  default: \".*\"[[:space:]]*$|  default: \"${new_model_sed}\"|' -e 's|^  context_length: .*|  context_length: ${FULL_MAX_CONTEXT}|' -e 's|^    context_length: .*|    context_length: ${FULL_MAX_CONTEXT}|'"
-        if [[ -n "$hermes_base_url" ]]; then
-            live_patch="${live_patch} -e 's|^  base_url: \".*\"|  base_url: \"${hermes_base_url_sed}\"|'"
-        fi
-        if [[ "$hermes_request_timeout" != "180" ]]; then
-            live_patch="${live_patch} -e 's|^    request_timeout_seconds: 180[[:space:]]*$|    request_timeout_seconds: ${hermes_request_timeout}|'"
-        fi
-        live_patch="${live_patch} /opt/data/config.yaml"
-        $DOCKER_CMD exec ods-hermes sh -c \
-            "$live_patch" 2>&1 || {
+        patch_hermes_yaml_in_container \
+            "$new_model" "$FULL_MAX_CONTEXT" "$hermes_base_url" "$hermes_request_timeout" false \
+            2>&1 || {
                 log "ERROR: Could not patch Hermes live config after full-model swap."
                 return 1
             }
@@ -2812,18 +2965,9 @@ elif [[ -n "$DOCKER_CMD" ]] && $DOCKER_CMD ps --filter name=ods-llama-server --f
 
         if $DOCKER_CMD ps --filter name=ods-hermes --format '{{.Names}}' 2>/dev/null | grep -q ods-hermes; then
             # Live config inside the running container (owned by container UID).
-            _hermes_new_model_sed="$(printf '%s' "$_hermes_new_model" | sed 's/[\\&|]/\\&/g')"
-            _hermes_base_url_sed="$(printf '%s' "$_hermes_base_url" | sed 's/[\\&|]/\\&/g')"
-            _hermes_live_patch="sed -i -e 's|^  default: \".*\"[[:space:]]*$|  default: \"${_hermes_new_model_sed}\"|' -e 's|^  context_length: .*|  context_length: ${FULL_MAX_CONTEXT}|' -e 's|^    context_length: .*|    context_length: ${FULL_MAX_CONTEXT}|'"
-            if [[ -n "$_hermes_base_url" ]]; then
-                _hermes_live_patch="${_hermes_live_patch} -e 's|^  base_url: \".*\"|  base_url: \"${_hermes_base_url_sed}\"|'"
-            fi
-            if [[ "$_hermes_request_timeout" != "180" ]]; then
-                _hermes_live_patch="${_hermes_live_patch} -e 's|^    request_timeout_seconds: 180[[:space:]]*$|    request_timeout_seconds: ${_hermes_request_timeout}|'"
-            fi
-            _hermes_live_patch="${_hermes_live_patch} -e 's|^  enabled: .*|  enabled: true|' -e 's|^  threshold: .*|  threshold: 0.75|' -e 's|^  target_ratio: .*|  target_ratio: 0.50|' -e 's|^  protect_last_n: .*|  protect_last_n: 40|' /opt/data/config.yaml"
-            $DOCKER_CMD exec ods-hermes sh -c \
-                "$_hermes_live_patch" 2>&1 || \
+            patch_hermes_yaml_in_container \
+                "$_hermes_new_model" "$FULL_MAX_CONTEXT" "$_hermes_base_url" "$_hermes_request_timeout" true \
+                2>&1 || \
                 log "WARNING: Could not patch Hermes /opt/data/config.yaml (non-fatal — operator can hand-edit and 'docker restart ods-hermes')"
             log "Restarting Hermes to pick up model change..."
             $DOCKER_CMD restart ods-hermes 2>&1 || log "WARNING: Hermes restart failed (non-fatal — hand-restart with 'docker restart ods-hermes')"
@@ -2832,7 +2976,7 @@ elif [[ -n "$DOCKER_CMD" ]] && $DOCKER_CMD ps --filter name=ods-llama-server --f
             #
             # Two latency hits if we skip this:
             #   1. llama-server / Lemonade loads the full model into VRAM on first
-            #      request (`--n-gpu-layers 999` is lazy). PR #1192 already warms
+            #      request. PR #1192 already warms
             #      this at install time, but that warm-up was against the
             #      bootstrap model — after the swap, the slot is cold again.
             #   2. Hermes's runtime config bakes a 14K-token system prompt
@@ -2969,13 +3113,15 @@ elif [[ -f "$INSTALL_DIR/data/.llama-server.pid" ]]; then
             _cache_type_k=$(grep '^LLAMA_ARG_CACHE_TYPE_K=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
             _cache_type_v=$(grep '^LLAMA_ARG_CACHE_TYPE_V=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
             _n_cpu_moe=$(grep '^LLAMA_ARG_N_CPU_MOE=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
+            _gpu_layers=$(grep '^N_GPU_LAYERS=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' || echo "")
+            [[ -z "$_gpu_layers" ]] && _gpu_layers="auto"
             _spec_type=$(grep '^LLAMA_ARG_SPEC_TYPE=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
             _spec_draft_n_max=$(grep '^LLAMA_ARG_SPEC_DRAFT_N_MAX=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
             _llama_args=(
                 --host "$_bind" --port "$_native_port"
                 --model "$_model_path"
                 --ctx-size "$_ctx_size"
-                --n-gpu-layers 999
+                --n-gpu-layers "$_gpu_layers"
                 --reasoning-format "$_reasoning_fmt"
                 --metrics
             )
@@ -3023,7 +3169,7 @@ elif [[ -f "$INSTALL_DIR/data/.llama-server.pid" ]]; then
                             --host "$_bind" --port "$_native_port" \
                             --model "$_old_model_path" \
                             --ctx-size "$_ctx_size" \
-                            --n-gpu-layers 999 \
+                            --n-gpu-layers "$_gpu_layers" \
                             --reasoning-format "${_reasoning_fmt:-none}" \
                             --metrics
                     ) > "$LLAMA_SERVER_LOG" 2>&1 &
