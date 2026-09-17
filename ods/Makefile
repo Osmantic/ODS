@@ -66,6 +66,7 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== safe .env loading (quote/CRLF handling) ==="
 	@bash tests/test-safe-env.sh
+	@bash tests/test-phase06-secret-generation.sh
 	@echo ""
 	@echo "=== QR code helper LAN detection ==="
 	@bash tests/test-qrcode-helper.sh
@@ -80,6 +81,9 @@ test: ## Run unit and contract tests
 	@echo "=== config migration (version check under set -e) ==="
 	@bash tests/test-migrate-config.sh
 	@echo ""
+	@echo "=== restore refuses empty backup config ==="
+	@bash tests/test-restore-empty-config.sh
+	@echo ""
 	@echo "=== atomic .env writes ==="
 	@bash tests/test-atomic-env-writes.sh
 	@echo ""
@@ -88,6 +92,10 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== ods-cli pipefail tolerance ==="
 	@bash tests/test-ods-cli-pipefail-tolerance.sh
+	@bash tests/test-unix-restart-recreate-env.sh
+	@echo ""
+	@echo "=== ods-cli install directory resolution ==="
+	@bash tests/test-cli-install-dir-resolution.sh
 	@echo ""
 	@echo "=== offline model validation ==="
 	@python3 tests/test-offline-model-validation.py
@@ -115,6 +123,11 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== ods-update.sh backup command ==="
 	@bash tests/test-update-script-backup.sh
+	@bash tests/test-backup-data-coverage.sh
+	@echo ""
+	@echo "=== backup integrity and restore round-trip ==="
+	@bash tests/test-backup-integrity.sh
+	@bash tests/test-backup-restore-roundtrip.sh
 	@echo ""
 	@echo "=== bootstrap-upgrade spawn closes inherited FDs ==="
 	@bash tests/test-bootstrap-upgrade-close-inherited-fds.sh
@@ -148,6 +161,9 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== issue-to-pr security check ==="
 	@bash tests/test-issue-to-pr-security.sh
+	@echo ""
+	@echo "=== NVIDIA multi-GPU visibility contract ==="
+	@bash tests/test-multigpu-nvidia-visibility.sh
 	@echo ""
 	@echo "=== CLI user-extension dependency resolution ==="
 	@bash tests/test-cli-user-extension-deps.sh
