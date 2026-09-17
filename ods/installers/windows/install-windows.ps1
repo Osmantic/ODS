@@ -61,6 +61,7 @@ param(
     [switch]$Langfuse,
     [switch]$NoLangfuse,
     [switch]$NoBootstrap,
+    [switch]$RebuildNoCache,
     [string]$InstallDir = "",
     [string]$SummaryJsonPath = ""
 )
@@ -1330,7 +1331,10 @@ litellm_settings:
                     $env:DOCKER_BUILDKIT = "0"
                 }
 
-                & docker @DockerClientArgs compose @ComposeFlags build --no-cache $Service *>> $BuildLog
+                $composeBuildArgs = @("build")
+                if ($RebuildNoCache) { $composeBuildArgs += "--no-cache" }
+                $composeBuildArgs += $Service
+                & docker @DockerClientArgs compose @ComposeFlags @composeBuildArgs *>> $BuildLog
                 return $LASTEXITCODE
             } finally {
                 if ($UseLegacyBuilder) {
@@ -1410,7 +1414,12 @@ litellm_settings:
             try {
                 $env:DOCKER_BUILDKIT = "0"
                 Add-Content -LiteralPath $BuildLog -Value "plain docker fallback building $Service as $imageTag from $contextPath"
-                & docker @DockerClientArgs build --no-cache -t $imageTag -f $dockerfilePath @buildArgs $contextPath *>> $BuildLog
+                $plainBuildArgs = @("build")
+                if ($RebuildNoCache) { $plainBuildArgs += "--no-cache" }
+                $plainBuildArgs += @("-t", $imageTag, "-f", $dockerfilePath)
+                $plainBuildArgs += $buildArgs
+                $plainBuildArgs += $contextPath
+                & docker @DockerClientArgs @plainBuildArgs *>> $BuildLog
                 return $LASTEXITCODE
             } finally {
                 if ($hadBuildKit) {
@@ -1734,9 +1743,8 @@ litellm_settings:
         if (-not (Test-Path $_composeLogDir)) { New-Item -ItemType Directory -Path $_composeLogDir -Force | Out-Null }
         $_composeLog = Join-Path $_composeLogDir "compose-up.log"
 
-        # ── Rebuild local-built images ─────────────────────────────────────
-        # Mirrors phases/11-services.sh on Linux: local Dockerfiles can drift
-        # from the baked images, so we always rebuild without cache before
+        # ── Build local-built images ───────────────────────────────────────
+        # Local Dockerfiles can drift from baked images, so rebuild them before
         # `up -d`. llama-server runs natively on Windows (Lemonade or Vulkan
         # binary) so it is not built here. ComfyUI is only locally built on
         # NVIDIA; the Windows AMD stack uses a prebuilt image overlay.
@@ -1765,7 +1773,8 @@ litellm_settings:
 
         Push-Location $installDir
         try {
-            Write-AI "Rebuilding local-built images (no-cache)..."
+            $buildModeLabel = if ($RebuildNoCache) { "no-cache" } else { "cached" }
+            Write-AI "Building local-built images ($buildModeLabel)..."
             $_failedBuildServices = @()
             $_legacyBuilderServices = @()
             $_defaultDockerConfigServices = @()
@@ -1844,8 +1853,11 @@ litellm_settings:
                     Write-Host "  --- docker compose build log tail ---" -ForegroundColor DarkGray
                     Get-Content $_buildLog -Tail 60 | ForEach-Object { Write-Host "  $_" }
                 }
+                $diagnosticBuildArgs = @("build")
+                if ($RebuildNoCache) { $diagnosticBuildArgs += "--no-cache" }
+                $diagnosticBuildArgs += $_failedBuildServices
                 Write-ODSComposeDiagnostics -InstallDir $installDir -ComposeFlags $composeFlags `
-                    -ComposeArgs (@("build", "--no-cache") + $_failedBuildServices) `
+                    -ComposeArgs $diagnosticBuildArgs `
                     -ComposeLogPath $_buildLog `
                     -Phase "install-windows.ps1 local image build" `
                     -NextStep "Fix the local Dockerfile/build error shown above, then re-run .\install-windows.ps1." `

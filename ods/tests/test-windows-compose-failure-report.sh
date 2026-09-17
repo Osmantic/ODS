@@ -90,6 +90,9 @@ check 'throw "Docker Compose not found"' "$DOCKER_PHASE" "Docker Compose prerequ
 check 'Docker daemon became unavailable while building' "$INSTALL_PS1" "local build failures distinguish Docker daemon loss"
 check 'Restart Docker Desktop and rerun the installer' "$INSTALL_PS1" "daemon-loss failures provide recovery guidance"
 check 'compose-build-failure.json' "$INSTALL_PS1" "daemon-loss failures persist a machine-readable receipt"
+check 'if ($RebuildNoCache) { $composeBuildArgs += "--no-cache" }' "$INSTALL_PS1" "Windows Compose builds opt into no-cache explicitly"
+check 'Building local-built images ($buildModeLabel)...' "$INSTALL_PS1" "Windows build output reports the selected cache mode"
+check '$diagnosticBuildArgs = @("build")' "$INSTALL_PS1" "failure diagnostics match the selected cache mode"
 check 'Remove-Item -LiteralPath $_buildFailureReceipt' "$INSTALL_PS1" "stale daemon-loss receipts are cleared before a new build"
 check 'Could not write Docker build failure receipt' "$INSTALL_PS1" "receipt write failures are reported"
 
