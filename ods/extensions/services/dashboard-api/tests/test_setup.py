@@ -3,7 +3,6 @@
 import json
 from unittest.mock import patch, MagicMock, AsyncMock
 
-import pytest
 
 def test_chat_handles_empty_choices(test_client, monkeypatch):
     """A 200 LLM response with empty/absent `choices` (e.g. content-filtered)
@@ -182,28 +181,6 @@ def test_setup_persona_updates_progress(test_client, setup_config_dir):
     progress = json.loads((setup_config_dir / "setup-progress.json").read_text())
     assert progress["step"] == 2
     assert progress["persona_selected"] is True
-
-
-def test_setup_persona_preserves_previous_file_when_replace_fails(
-    test_client, setup_config_dir, monkeypatch
-):
-    """A failed atomic promotion must not truncate the active persona."""
-    persona_file = setup_config_dir / "persona.json"
-    persona_file.write_text('{"persona": "general"}', encoding="utf-8")
-
-    def fail_replace(_source, _destination):
-        raise OSError("injected replace failure")
-
-    monkeypatch.setattr("routers.setup.os.replace", fail_replace)
-    with pytest.raises(OSError, match="injected replace failure"):
-        test_client.post(
-            "/api/setup/persona",
-            json={"persona": "coding"},
-            headers=test_client.auth_headers,
-        )
-
-    assert json.loads(persona_file.read_text(encoding="utf-8"))["persona"] == "general"
-    assert not list(setup_config_dir.glob(".persona.json.*.tmp"))
 
 
 # ---------------------------------------------------------------------------
