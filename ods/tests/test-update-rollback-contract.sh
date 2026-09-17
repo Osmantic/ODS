@@ -98,7 +98,7 @@ EOF
 
 baseline_hash="$(sha256sum "$SRC/.env" "$SRC/config/settings.json" "$SRC/data/open-webui/data.txt" | sha256sum | awk '{print $1}')"
 
-ODS_DIR="$SRC" RETENTION_COUNT=10 bash "$ODS_BACKUP" --type full >/dev/null 2>&1
+ODS_DIR="$SRC" RETENTION_COUNT=10 bash "$ODS_BACKUP" --type full --live >/dev/null 2>&1
 BACKUP_ID="$(find "$SRC/.backups" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort | tail -n 1)"
 [[ -n "$BACKUP_ID" ]] || fail "backup ID was not created"
 pass "backup created before update mutation: $BACKUP_ID"

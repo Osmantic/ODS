@@ -30,7 +30,22 @@ log_error() { echo -e "${RED}[ERROR]${NC} $*"; }
 
 # Source shared rsync utilities
 . "$ODS_DIR/lib/rsync.sh"
+# shellcheck source=lib/backup-quiesce.sh
+. "$SCRIPT_DIR/lib/backup-quiesce.sh"
 . "$ODS_DIR/lib/backup-paths.sh"
+
+_backup_exit() {
+    local status=$?
+    trap - EXIT
+    if [[ "$ODS_BACKUP_QUIESCE_ACTIVE" == "true" ]] && ! ods_backup_quiesce_resume; then
+        status=1
+    fi
+    exit "$status"
+}
+trap _backup_exit EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # Convert bytes to a human-friendly string (best-effort)
 fmt_bytes() {
@@ -170,6 +185,7 @@ OPTIONS:
     -o, --output DIR        Custom backup directory (default: .backups/)
     -t, --type TYPE         Backup type: full, user-data, config (default: full)
     -c, --compress          Compress backup to .tar.gz
+    --live                  Copy writable data without stopping containers
     -l, --list              List existing backups
     -d, --delete ID         Delete specific backup by ID
     --description DESC      Add description to backup manifest
@@ -276,6 +292,8 @@ create_manifest() {
     local backup_dir="$1"
     local backup_type="$2"
     local description="${3:-}"
+    local consistency="${4:-quiesced}"
+    local container_count="${5:-0}"
     local version
     # .version is a JSON file written by ods-update.sh; extract the version
     # string rather than embedding the entire JSON blob (see get_current_version
@@ -302,6 +320,8 @@ create_manifest() {
         --arg dv "$version" \
         --arg hn "$(hostname)" \
         --arg desc "$description" \
+        --arg consistency "$consistency" \
+        --argjson cc "$container_count" \
         --argjson ud "$has_user_data" \
         --argjson cfg "$has_config" \
         --argjson ca "$has_cache" \
@@ -314,6 +334,8 @@ create_manifest() {
           ods_version: $dv,
           hostname: $hn,
           description: $desc,
+          consistency: $consistency,
+          quiesced_container_count: $cc,
           contents: { user_data: $ud, config: $cfg, cache: $ca },
           paths: (
             {
@@ -480,6 +502,7 @@ do_backup() {
     local backup_type="${1:-user-data}"
     local compress="${2:-false}"
     local description="${3:-}"
+    local live="${4:-false}"
 
     # Generate backup ID
     local backup_id
@@ -492,11 +515,22 @@ do_backup() {
     # Disk space preflight (best-effort)
     ensure_backup_space "$backup_type"
 
+    local consistency="config-only"
+    if [[ "$backup_type" == "full" || "$backup_type" == "user-data" ]]; then
+        if [[ "$live" == "true" ]]; then
+            consistency="live-best-effort"
+            log_warn "Live backup selected: writable application data may not be transactionally consistent"
+        else
+            ods_backup_quiesce_begin
+            consistency="quiesced"
+        fi
+    fi
+
     # Create backup directory
     mkdir -p "$backup_dir"
 
     # Create manifest
-    create_manifest "$backup_dir" "$backup_type" "$description"
+    create_manifest "$backup_dir" "$backup_type" "$description" "$consistency" "$ODS_BACKUP_QUIESCE_COUNT"
 
     # Perform backup based on type
     case "$backup_type" in
@@ -520,6 +554,10 @@ do_backup() {
 
     # Generate checksums after files are copied into place
     create_checksums "$backup_dir"
+
+    # Keep the outage window to the data copy itself. Compression and retention
+    # operate only on the completed snapshot and do not require stopped apps.
+    ods_backup_quiesce_resume
 
     # Compress if requested
     if [[ "$compress" == "true" ]]; then
@@ -611,6 +649,7 @@ main() {
     local list_mode="false"
     local delete_id=""
     local verify_id=""
+    local live="false"
 
     # Parse arguments
     while [[ $# -gt 0 ]]; do
@@ -645,6 +684,10 @@ main() {
                 ;;
             -c|--compress)
                 compress="true"
+                shift
+                ;;
+            --live)
+                live="true"
                 shift
                 ;;
             -l|--list)
@@ -706,7 +749,7 @@ main() {
     mkdir -p "$BACKUP_ROOT"
 
     # Perform backup
-    do_backup "$backup_type" "$compress" "$description"
+    do_backup "$backup_type" "$compress" "$description" "$live"
 }
 
 main "$@"

@@ -44,7 +44,7 @@ mkdir -p "$SRC/lib"
 cp "$SCRIPT_DIR/../lib/rsync.sh" "$SCRIPT_DIR/../lib/backup-paths.sh" "$SRC/lib/"
 
 info "Creating backup from source"
-ODS_DIR="$SRC" bash "$ODS_BACKUP" --type full >/dev/null 2>&1 || fail "Backup failed"
+ODS_DIR="$SRC" bash "$ODS_BACKUP" --type full --live >/dev/null 2>&1 || fail "Backup failed"
 
 # Find the backup ID
 BACKUP_ID=$(ls -1 "$SRC/.backups" | head -n 1)

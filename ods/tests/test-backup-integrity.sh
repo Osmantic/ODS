@@ -41,7 +41,7 @@ echo "world" > "$FAKE_ODS/config/settings.json"
 BACKUPS_DIR="$TMP_ROOT/backups"
 
 info "Creating backup"
-ODS_DIR="$FAKE_ODS" "$ODS_BACKUP" --output "$BACKUPS_DIR" --type full >/dev/null
+ODS_DIR="$FAKE_ODS" "$ODS_BACKUP" --output "$BACKUPS_DIR" --type full --live >/dev/null
 
 backup_id="$(ls -1 "$BACKUPS_DIR" | head -n 1)"
 [[ -n "$backup_id" ]] || fail "No backup created"

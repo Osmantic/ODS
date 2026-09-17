@@ -1749,6 +1749,13 @@ cmd_start() {
     check_install
     cd "$INSTALL_DIR"
     load_env
+    if [[ -f "$INSTALL_DIR/lib/backup-quiesce.sh" ]]; then
+        ODS_DIR="$INSTALL_DIR"
+        # shellcheck source=lib/backup-quiesce.sh
+        source "$INSTALL_DIR/lib/backup-quiesce.sh"
+        ods_backup_quiesce_recover_dead \
+            || error "Could not recover containers from an interrupted backup."
+    fi
     ensure_llama_cpu_budget
     sr_load
 
