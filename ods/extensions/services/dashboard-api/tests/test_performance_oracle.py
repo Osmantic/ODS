@@ -1143,6 +1143,10 @@ def test_downloaded_gguf_header_replaces_stale_hub_context(
             "readable": True,
             "context_length": 131072,
             "quantization": "Q4_K_M",
+            "block_count": 36,
+            "attention_head_count_kv": 8,
+            "embedding_length": 4096,
+            "attention_head_count": 32,
         },
     )
 
@@ -1162,6 +1166,8 @@ def test_downloaded_gguf_header_replaces_stale_hub_context(
     assert model["metadata"]["contextSource"] == "gguf_file"
     assert model["contextOptions"][-1]["contextLength"] == 131072
     assert model["contextOptions"][-1]["fullContext"] is True
+    assert model["estimatedRequired"] == 1.61
+    assert model["contextOptions"][-1]["estimatedRequired"] == 18.49
 
 
 def test_configured_model_prefers_env_file_over_stale_process_env(data_dir, tmp_path, monkeypatch):

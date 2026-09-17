@@ -331,8 +331,14 @@ ods_fix_rootless_ownership() {
     [[ "$(uname -s)" == "Linux" ]] || return 0
     _ods_rootless_ensure_helper_image || return 1
     flags=$(_ods_rootless_compose_flags)
-    uid_override=$(_ods_rootless_env_id_override "$install_dir" UID) || return 1
-    gid_override=$(_ods_rootless_env_id_override "$install_dir" GID) || return 1
+    uid_override=$(_ods_rootless_env_id_override "$install_dir" ODS_UID) || return 1
+    gid_override=$(_ods_rootless_env_id_override "$install_dir" ODS_GID) || return 1
+    # Existing installs may still carry the legacy Compose-only keys. Honour
+    # them until the next installer run migrates the values to ODS_UID/GID.
+    [[ -n "$uid_override" ]] \
+        || uid_override=$(_ods_rootless_env_id_override "$install_dir" UID) || return 1
+    [[ -n "$gid_override" ]] \
+        || gid_override=$(_ods_rootless_env_id_override "$install_dir" GID) || return 1
     service_uid="${uid_override:-1000}"
     service_gid="${gid_override:-1000}"
     hermes_uid="${uid_override:-10000}"
