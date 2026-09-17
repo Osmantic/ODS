@@ -114,6 +114,7 @@ export default function Extensions({ compact = false }) {
   const [pollingLost, setPollingLost] = useState(false)
   const installProgressRef = useRef(null)
   const activePollers = useRef({})
+  const progressPollInFlight = useRef({})
   // Per-service recovery tracker: counts consecutive fetch failures and
   // fires onThresholdReached/onRecovered to drive the polling-lost banner.
   // Keyed by serviceId because multiple installs can be polling concurrently.
@@ -132,6 +133,8 @@ export default function Extensions({ compact = false }) {
       onRecovered: () => setPollingLost(prev => (prev ? false : prev)),
     })
     activePollers.current[serviceId] = setInterval(async () => {
+      if (progressPollInFlight.current[serviceId]) return
+      progressPollInFlight.current[serviceId] = true
       try {
         const res = await fetchJson(`/api/extensions/${serviceId}/progress`)
         // Successful fetch (regardless of HTTP status) means the dashboard
@@ -177,6 +180,8 @@ export default function Extensions({ compact = false }) {
         // at a silent spinner forever.
         console.warn('poll fetch failed:', err)
         recoveryTrackers.current[serviceId]?.recordFailure()
+      } finally {
+        delete progressPollInFlight.current[serviceId]
       }
     }, 3000)
   }
@@ -190,6 +195,7 @@ export default function Extensions({ compact = false }) {
     return () => {
       Object.values(activePollers.current).forEach(clearInterval)
       activePollers.current = {}
+      progressPollInFlight.current = {}
       recoveryTrackers.current = {}
     }
   }, [])
@@ -1091,7 +1097,10 @@ function ConsoleModal({ ext, onClose }) {
   // Fetch install progress info
   useEffect(() => {
     let active = true
+    let inFlight = false
     const fetchProgress = async () => {
+      if (inFlight) return
+      inFlight = true
       try {
         const res = await fetchJson(`/api/extensions/${ext.id}/progress`)
         if (res.ok && active) {
@@ -1099,6 +1108,7 @@ function ConsoleModal({ ext, onClose }) {
           if (data.status !== 'idle') setInstallInfo(data)
         }
       } catch { /* ignore */ }
+      finally { inFlight = false }
     }
     fetchProgress()
     const interval = setInterval(fetchProgress, 5000)
