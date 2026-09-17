@@ -172,6 +172,13 @@ function normalizeOdsMode(value) {
   return ODS_MODES.has(mode) ? mode : 'unknown'
 }
 
+function modelsFetchErrorMessage(error) {
+  if (error?.name === 'AbortError') {
+    return 'Model inventory timed out after 30 seconds. The model service may still be loading; retry shortly or check Dashboard API logs.'
+  }
+  return error?.message || 'Failed to fetch models'
+}
+
 function modelActivationModeError(effectiveMode, configuredMode, llmBackend) {
   if (llmBackend === 'external') {
     return 'ODS is using an external Ollama or LM Studio backend. Re-run the installer with --no-external-llm before activating a downloaded local model.'
@@ -315,7 +322,7 @@ export function useModels() {
       if (signal?.aborted) return null
       if (requestId >= latestSettledModelsRequestRef.current) {
         latestSettledModelsRequestRef.current = requestId
-        setFetchError(err.message)
+        setFetchError(modelsFetchErrorMessage(err))
       }
       // No silent fallback - let error propagate to UI
     } finally {

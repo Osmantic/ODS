@@ -1037,6 +1037,31 @@ describe('useModels', () => {
     }
   })
 
+  test('turns a models timeout into actionable UI guidance', async () => {
+    vi.useFakeTimers()
+    fetch.mockImplementation((_url, options) => new Promise((_resolve, reject) => {
+      options.signal.addEventListener('abort', () => {
+        const error = new Error('signal is aborted without reason')
+        error.name = 'AbortError'
+        reject(error)
+      }, { once: true })
+    }))
+
+    try {
+      const { result } = renderHook(() => useModels())
+      setDocumentHidden(true)
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(30000) })
+
+      expect(result.current.loading).toBe(false)
+      expect(result.current.error).toMatch(/timed out after 30 seconds/i)
+      expect(result.current.error).toMatch(/Dashboard API logs/i)
+      expect(result.current.error).not.toMatch(/aborted/i)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   test('does not let an older models response overwrite a newer snapshot', async () => {
     const firstRequest = deferred()
     const secondRequest = deferred()
