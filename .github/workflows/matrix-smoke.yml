@@ -40,6 +40,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - distro: ubuntu-26.04
+            container: ubuntu:26.04
+            expected_pkg: apt
           - distro: ubuntu-24.04
             container: ubuntu:24.04
             expected_pkg: apt

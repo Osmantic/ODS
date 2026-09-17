@@ -67,7 +67,7 @@ canonical source and treat older recipes as context.
 - The golden paths are Linux NVIDIA, Windows with Docker Desktop + WSL2 for
   NVIDIA/AMD, and Apple Silicon. Linux AMD Strix Halo is actively supported;
   Intel Arc is present but still experimental.
-- Pixel is the preferred agent only on qualified Ubuntu 24.04 or Debian 12
+- Pixel is the preferred agent only on qualified Ubuntu 24.04/26.04 or Debian 12
   PID1-systemd hosts after separate written license authorization. Hermes plus
   `hermes-proxy` remains the portable default and rollback path everywhere
   else. OpenClaw is deprecated and explicit opt-in.

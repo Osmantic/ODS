@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createPerplexicaResearchTool, readResearchStream } from "../plugin/perplexica-research.mjs";
+import {displayForActivity} from '../plugin/activity-display.mjs';
 
 const config = { values: { preferences: {
   defaultChatProvider: "owner-chat", defaultChatModel: "ods/current",
@@ -42,6 +43,8 @@ test("delegates only the brief and configured model identities; preserves citati
   assert.match(text, /"index":2,"title":"Café","url":"https:\/\/example.org\/source"/);
   assert.doesNotMatch(text, /PRIVATE|javascript:/);
   assert.match(text, /untrusted research evidence/);
+  const display=displayForActivity({params:{query:'Compare the sources'},result},{toolName:'pixel_ods_research'});
+  assert.deepEqual(display.sources,[{title:'Café',url:'https://example.org/source'}]);
 });
 
 test("an EOF, corrupt JSON, or error event cannot masquerade as completed research", async () => {

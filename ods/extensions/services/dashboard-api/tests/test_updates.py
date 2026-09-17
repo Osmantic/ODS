@@ -41,7 +41,10 @@ def test_get_version_authenticated(test_client):
     assert "latest" in data
     assert "update_available" in data
     assert "checked_at" in data
-    datetime.fromisoformat(data["checked_at"])  # valid ISO-8601 (regression: no trailing "Z" after the offset)
+    if data["checked_at"] is not None:
+        datetime.fromisoformat(data["checked_at"])
+    else:
+        assert data["check_status"] in ("checking", "unavailable")
 
 
 def test_get_version_with_mock_github(test_client, monkeypatch):
@@ -484,7 +487,7 @@ def test_update_dry_run_reads_compose_images(test_client, tmp_path, monkeypatch)
 
 
 def test_update_dry_run_no_files(test_client, tmp_path, monkeypatch):
-    """GET /api/update/dry-run with no .env or .version → defaults to 0.0.0."""
+    """Source installs use the packaged release when receipts are absent."""
     import routers.updates as updates_mod
 
     install_dir = tmp_path / "ods"
@@ -497,7 +500,7 @@ def test_update_dry_run_no_files(test_client, tmp_path, monkeypatch):
 
     assert resp.status_code == 200
     data = resp.json()
-    assert data["current_version"] == "0.0.0"
+    assert data["current_version"] == updates_mod._read_current_version()
     assert data["env_keys"] == {}
     assert data["images"] == []
 

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { confirmOutcome, readOutcome, readRuntime, runtimeChangeRequest } from './pixelRuntimeStatus'
+import { usePortalIdentity } from '../../contexts/PortalIdentityContext'
 
 const PATH = '/api/pixel/settings/runtime'
 
@@ -14,6 +15,7 @@ async function request(flight, method, payload) {
 }
 
 export default function usePixelSettingsRuntime({ savedRevision, saving, blocked, onBusyChange }) {
+  const { displayName } = usePortalIdentity()
   const [runtime, setRuntime] = useState(null)
   const [running, setRunning] = useState(null)
   const [stale, setStale] = useState(true)
@@ -21,7 +23,7 @@ export default function usePixelSettingsRuntime({ savedRevision, saving, blocked
   const [notice, setNotice] = useState(null)
   const [stage, setStage] = useState(null)
   const latest = useRef(null)
-  latest.current = { savedRevision, saving, blocked, onBusyChange, runtime, stale }
+  latest.current = { savedRevision, saving, blocked, onBusyChange, runtime, stale, displayName }
   const active = useRef(null)
   const mounted = useRef(false)
   const sequence = useRef(0)
@@ -55,7 +57,7 @@ export default function usePixelSettingsRuntime({ savedRevision, saving, blocked
     setStale(true)
     setError(null)
     setNotice(null)
-    setStage(operation === 'inspect' ? 'Inspecting current Pixel runtime…' : 'Waiting for the settings controller. Pixel may restart…')
+    setStage(operation === 'inspect' ? `Inspecting current ${latest.current.displayName} runtime…` : `Waiting for the settings controller. ${latest.current.displayName} may restart…`)
     let controllerReplied = false
     try {
       let outcome

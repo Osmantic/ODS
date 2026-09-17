@@ -22,8 +22,12 @@ import pixel_access_protocol as protocol
 
 def request(operation="settings-apply", **changes):
     value = dict(operation=operation, openclaw="/usr/bin/openclaw", config_sha256="a" * 64, confirmed=False)
-    if operation in ("settings-apply", "settings-recover", "provider-change", "provider-recover"):
+    if operation in ("settings-apply", "settings-recover", "provider-change", "provider-recover", "model-begin", "model-apply", "model-rollback", "model-finish"):
         value["transaction_id"] = "b" * 64
+    if operation == "model-apply":
+        value["model_target"] = dict(model="fixture", contextLength=16384, maxTokens=4096, reasoning=False)
+    if operation == "model-finish":
+        value["model_outcome"] = "commit"
     if operation == "settings-apply":
         value.update(settings_revision=3, preferences={}, capabilities={})
     if operation == "provider-change":

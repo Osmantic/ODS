@@ -390,9 +390,29 @@ printf '%s\\n' "$LLM_MODEL" "$GGUF_FILE" "$MAX_CONTEXT" "$LLAMA_ARG_CACHE_TYPE_K
         ], result.stdout
 
 
+def test_external_registered_model_store_is_preserved() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        env, catalog, imports, models_dir = write_model_fixture(root)
+        external = root / "ssd-models"
+        external.mkdir()
+        original = models_dir / "Agent-Test-Q4_K_M.gguf"
+        # The fixture models an existing SSD installation; production never moves it.
+        original.rename(external / original.name)
+        (root / "data/model-stores.json").write_text(json.dumps({"schemaVersion":1,"stores":[
+            {"id":"ssd","hostPath":str(external),"containerPath":"/model-stores/ssd"}]}))
+        with env.open("a") as handle:
+            handle.write("\nODS_ACTIVE_MODEL_STORE=ssd\nLLAMA_ARG_SPEC_DRAFT_TYPE_K=q4_0\n")
+        preserved = run_helper(env, catalog, imports, models_dir)
+        assert preserved["ODS_ACTIVE_MODEL_STORE"] == "ssd"
+        assert preserved["GGUF_FILE"] == original.name
+        assert preserved["LLAMA_ARG_SPEC_DRAFT_TYPE_K"] == "q4_0"
+
+
 def main() -> int:
     tests = [
         test_valid_curated_model_is_preserved,
+        test_external_registered_model_store_is_preserved,
         test_commented_model_contract_survives_rerun,
         test_commented_contract_reaches_installer_safe_loader,
         test_comments_do_not_hide_external_runtime_selection,

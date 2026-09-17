@@ -1,9 +1,13 @@
-import {useLayoutEffect, useRef, useState} from 'react'
+import {useCallback, useLayoutEffect, useRef, useState} from 'react'
 
 export function usePixelAutoScroll(messages, conversationId, endRef) {
   const following = useRef(true)
   const previousChat = useRef(conversationId)
   const [showLatest, setShowLatest] = useState(false)
+  const onContentResize=useCallback(()=>{
+    const container=endRef.current?.parentElement
+    if(following.current && container)container.scrollTop=container.scrollHeight
+  },[endRef])
 
   function jumpToLatest() {
     const container = endRef.current?.parentElement
@@ -30,5 +34,5 @@ export function usePixelAutoScroll(messages, conversationId, endRef) {
     if (following.current && container) container.scrollTop = container.scrollHeight
   }, [messages, conversationId, endRef])
 
-  return {onScroll, jumpToLatest, showLatest}
+  return {onScroll, jumpToLatest, showLatest, onContentResize}
 }

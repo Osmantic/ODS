@@ -119,6 +119,22 @@ def test_per_layer_kv_head_counts_are_preserved(tmp_path):
     assert result["attention_head_count_kv"] == [0, 2, 0, 2]
 
 
+def test_large_tokenizer_header_preserves_architecture_and_mtp_metadata(tmp_path):
+    # Current vocabularies can exceed the old 8 MiB header limit. Keep the
+    # inspection bounded while reading the structural metadata after the vocab.
+    path = _write(tmp_path, "large-vocabulary.gguf", build_gguf([
+        ("general.architecture", STR, "qwen35"),
+        ("tokenizer.ggml.tokens", ARR, (STR, ["x" * (9 * 1024 * 1024)])),
+        ("qwen35.context_length", U32, 262144),
+        ("qwen35.nextn_predict_layers", U32, 1),
+    ]))
+    result = inspect_gguf(path)
+    assert result["readable"] is True
+    assert result["context_length"] == 262144
+    assert result["metadata"]["qwen35.nextn_predict_layers"] == 1
+    assert inspect_gguf(path, max_metadata_bytes=8 * 1024 * 1024)["readable"] is False
+
+
 def test_expert_count_accepts_alternate_suffix(tmp_path):
     # Some exporters use ``.expert.count`` instead of ``.expert_count``.
     path = _write(tmp_path, "moe.gguf", build_gguf([

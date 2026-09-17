@@ -437,6 +437,15 @@ test("prior website feedback does not require a preview for new scheduled file w
   assert.equal(userMessageRequestsWorkspacePreview([], "The last task succeeded. Improve the website and publish it."), true);
 });
 
+test("ordinary filenames cannot request website authorship or publication", () => {
+  for (const path of ['portal-check/nota.txt','site/data.json','dashboard/app.py','C:\\work\\portal\\notes.md']) {
+    assert.equal(userMessageRequestsWorkspacePreview([], `Edit ${path} and read the final content.`), false, path);
+    assert.equal(userMessageRequestsWorkspacePreview([], `Create ${path} with a greeting.`), false, path);
+  }
+  assert.equal(userMessageRequestsWorkspacePreview([], 'Teste de integração: usando a ferramenta edit, altere teste concluído para integração validada em portal-activity-check-20260916/nota.txt. O schema atual é {path, edits:[{oldText,newText}]}. Depois use a ferramenta read para ler esse arquivo e informe seu conteúdo final.'), false);
+  assert.equal(userMessageRequestsWorkspacePreview([], 'Build a website and write its data to portal/data.json.'), true);
+});
+
 test("preview intent treats HTML paths as targets rather than task instructions", () => {
   assert.equal(userMessageRequestsWorkspacePreview([], "Repair the server page at visualization/index.html and publish"), true);
   for (const directory of ["expense-review/static", "history-chart", "backend/service"]) {
@@ -14749,4 +14758,28 @@ test("scoped IPv6 peer observations remain verifiable host receipts", () => {
   assert.equal(verification.status, "passed");
   assert.match(verification.text, /fe80::1234%3/);
   assert.match(verification.text, /open TCP 443/);
+});
+
+test('managed teams block recursive delegation without blocking ordinary tools or normal chats', () => {
+  for (const prompt of ["You are the Builder in the owner's Portal team. Do work.", "History:\nUser: You are the Reviewer in the owner's Portal team.\nUser: Continue"]) {
+    const guard=createToolLoopGuard();
+    const context={agentId:'pixel',runId:'team-run',sessionId:'team-session'};
+    guard.observeRun(context,'pixel',{prompt});
+    assert.equal(guard.beforeToolCall({toolName:'sessions_spawn',params:{task:'nested'}},context).block,true);
+    assert.equal(guard.beforeToolCall({toolName:'tool_call',params:{id:'functions:task',arguments:{}}},context).block,true);
+    assert.notEqual(guard.beforeToolCall({toolName:'read',params:{path:'README.md'}},context)?.block,true);
+  }
+  const guard=createToolLoopGuard();const context={agentId:'pixel',runId:'normal',sessionId:'normal'};
+  guard.observeRun(context,'pixel',{prompt:'Please help with this task'});
+  assert.notEqual(guard.beforeToolCall({toolName:'sessions_spawn',params:{task:'nested'}},context)?.block,true);
+});
+
+test('review workers remain read-only with identity/history wrappers and implementation handoffs', () => {
+  for (const toolName of ['write','edit','apply_patch','exec','process','browser','pixel_ods_workspace_preview','pixel_ops_run','sessions_spawn']) {
+    const guard=createToolLoopGuard();const context={agentId:'pixel',runId:'review',sessionId:'review'};
+    guard.observeRun(context,'pixel',{prompt:"Identity: Portal\n\nYou are the Reviewer in the owner's Portal team.\nOwner's requested outcome:\nCreate a website and run tests"});
+    assert.equal(guard.beforeToolCall({toolName:'tool_call',params:{id:'openclaw:core:'+toolName,args:{}}},context).block,true,toolName);
+    assert.notEqual(guard.beforeToolCall({toolName:'read',params:{path:'index.html'}},context)?.block,true);
+    assert.notEqual(guard.verificationStatus('review'),'pending');
+  }
 });

@@ -188,7 +188,7 @@ export default function PixelAdvice({ onInsert, canInsert = true, input = '' }) 
             {!adviceFits && <p className="text-sm">The draft and advice exceed the 16,384-character message limit. Shorten the draft or copy an excerpt from the answer above.</p>}
           </>}
         </div> : <>
-          <p className="text-sm">{providerReady ? `Configured advisor: ${advisor.label} · ${advisor.model} · ${advisor.baseUrl} · saved revision ${config.revision}` : 'Select and save an enabled advisor in Settings → Pixel providers first.'}</p>
+          <p className="text-sm">{providerReady ? `Configured advisor: ${advisor.label} · ${advisor.model} · ${advisor.baseUrl} · saved revision ${config.revision}` : 'Select and save an enabled advisor in Settings → Portal connections first.'}</p>
           <button className={button} onClick={load}>Reload saved providers</button>
           <label className="block space-y-2 text-sm">Capsule to send<textarea className={field} rows={7} value={capsule} onChange={event => { setCapsule(event.target.value); setCloud(false); setCost(false) }} placeholder="Describe the specific problem and include only the details this advisor needs." /></label>
           <p className="text-xs">Maximum 16 KiB; one attempt; up to {Math.min(1024, advisor?.maxOutputTokens || 1024)} output tokens. Price is unknown, not zero. No fallback provider is used for advice.</p>

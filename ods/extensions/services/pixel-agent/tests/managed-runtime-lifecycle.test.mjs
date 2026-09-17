@@ -163,8 +163,25 @@ test('existing held management channel survives drained config invalidation, not
 test('invalid idle owner cannot gain a new management hold', async () => {
   const f = fixture(), owner = f.register(); changeBinding(f);
   assert.equal((await owner.readControlStatus()).available, false);
-  await assert.rejects(owner.acquireTransition('a'.repeat(64), 'b'.repeat(64)));
+  const failure = await owner.acquireTransition('a'.repeat(64), 'b'.repeat(64)).catch(error => error);
+  assert.equal(owner.classifyTransitionError(failure), 'managed-transition-invalid-owner');
   assert.equal(f.access.status().phase, 'idle'); await owner.shutdown();
+});
+
+test('only registry-created transition errors expose bounded classifications', async () => {
+  const f = fixture(), owner = f.register(); f.hold();
+  const failure = await owner.acquireTransition('b'.repeat(64), 'b'.repeat(64)).catch(error => error);
+  assert.equal(owner.classifyTransitionError(failure), 'managed-transition-access-owner-refused');
+  assert.equal(owner.classifyTransitionError(new Error('managed-transition-invalid-owner')), null);
+  await owner.shutdown();
+});
+
+test('asynchronous access-owner refusal retains its trusted classification', async () => {
+  const f = fixture(), owner = f.register(); f.hold();
+  f.access.acquire = async () => { throw new Error('asynchronous refusal'); };
+  const failure = await owner.acquireTransition('a'.repeat(64), 'b'.repeat(64)).catch(error => error);
+  assert.equal(owner.classifyTransitionError(failure), 'managed-transition-access-owner-refused');
+  await owner.shutdown();
 });
 
 test('held management recovery waits for the same routing shutdown to settle', async () => {
@@ -301,6 +318,14 @@ test('only the existing access owner can identify a probe; untrusted hints canno
   const forged = {...context(), isProbe: true, probe: true}; await owner.select({}, forged); await owner.admit({}, forged);
   assert.ok(f.calls.includes('routing.select')); assert.ok(f.calls.includes('routing.admit'));
   await owner.finish({}, forged); await owner.shutdown();
+});
+
+test('only the existing access owner can bypass command admission for its held proof', async () => {
+  const f = fixture(), owner = f.register(); f.hold();
+  assert.equal(owner.beforeCommandRun({commandId: 'proof-command'}, {runId: 'trusted-probe'}), undefined);
+  assert.deepEqual(owner.beforeCommandRun({commandId: 'forged-command'}, {runId: 'ordinary', probe: true}),
+    {action: 'block', reason: 'ods-command-admission-unavailable'});
+  assert.equal(f.runs.size, 0); await owner.shutdown();
 });
 
 test('foreign session or mutated original context cannot release a selected run', async () => {
