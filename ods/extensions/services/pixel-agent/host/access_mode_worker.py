@@ -17,7 +17,7 @@ sys.dont_write_bytecode = True
 # Python excludes cwd, PYTHONPATH and user site packages; add this protected path.
 directory = Path(__file__).resolve().parent
 for path in (directory, *directory.parents, *(directory / name for name in (
-        "pixel_access_mode.py", "access_mode_config.py", "settings_transaction.py", "pixel_access_protocol.py",
+        "pixel_access_mode.py", "access_mode_config.py", "settings_transaction.py", "pixel_access_protocol.py", "model_transaction.py", "pixel_model_contract.py",
         "pixel_settings", "pixel_settings/__init__.py", "pixel_settings/contract.py", "pixel_settings/projection.py",
         "provider_transaction.py", "pixel_provider", "pixel_provider/__init__.py", "pixel_provider/store.py",
         "pixel_provider/activation_config.py"))):
@@ -29,6 +29,8 @@ import pixel_access_mode as controller
 import pixel_access_protocol as protocol
 import settings_transaction
 import provider_transaction
+import model_transaction
+from pixel_model_contract import ModelError
 from pixel_provider.store import StoreError
 from pixel_settings.contract import SettingsError
 
@@ -67,6 +69,13 @@ def main():
             return False
 
     try:
+        if request["operation"].startswith("model-"):
+            result = model_transaction.operate(path, state_dir=state_dir, operation=request["operation"],
+                transaction_id=request.get("transaction_id"), proposed=request.get("model_target"),
+                outcome=request.get("model_outcome"), expected_config_sha256=request["config_sha256"],
+                validate_config=validate, check_no_active_run=lambda: hook("busy"))
+            emit({"result": result})
+            return
         if request["operation"].startswith("provider-"):
             if request['operation'] == 'provider-worker-status':
                 # Root selected and qualified both executable paths; this
@@ -124,7 +133,7 @@ def main():
         emit({"result": controller.get_status(path, state_dir=state_dir)})
     except controller.AccessModeError as error:
         emit({"error": error.code})
-    except (SettingsError, StoreError, protocol.ProtocolError) as error:
+    except (SettingsError, StoreError, ModelError, protocol.ProtocolError) as error:
         emit({"error": str(error)})
     except Exception:
         emit({"error": "owner-operation-failed"})

@@ -66,3 +66,16 @@ _sed_i() {
         sed -i '' "$@"
     fi
 }
+
+# Reach the installing user's systemd manager from both interactive shells and
+# unattended SSH/service contexts.  systemctl --user normally inherits these
+# variables from a login session; fleet installs and automation often do not.
+ods_systemctl_user() {
+    local user_uid user_runtime_dir user_bus_address
+    user_uid="$(id -u)"
+    user_runtime_dir="${XDG_RUNTIME_DIR:-/run/user/$user_uid}"
+    user_bus_address="${DBUS_SESSION_BUS_ADDRESS:-unix:path=$user_runtime_dir/bus}"
+    env XDG_RUNTIME_DIR="$user_runtime_dir" \
+        DBUS_SESSION_BUS_ADDRESS="$user_bus_address" \
+        systemctl --user "$@"
+}

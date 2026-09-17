@@ -41,6 +41,19 @@ def test_bundled_llama_server_is_discoverable_on_cpu_fallback():
     assert all("cpu" in feature["gpu_backends"] for feature in manifest["features"])
 
 
+def test_aider_library_extension_is_discoverable_on_cpu_fallback():
+    manifest_path = (
+        Path(__file__).resolve().parents[3]
+        / "library"
+        / "services"
+        / "aider"
+        / "manifest.yaml"
+    )
+    manifest = config.yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+
+    assert "none" in manifest["service"]["gpu_backends"]
+
+
 def test_manifest_loader_rejects_pathological_nesting(tmp_path):
     nested = "value: leaf\n"
     for _ in range(config.MAX_MANIFEST_DEPTH + 2):

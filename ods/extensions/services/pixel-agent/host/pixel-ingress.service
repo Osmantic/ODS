@@ -10,8 +10,15 @@ Wants=network-online.target
 Type=simple
 User=__PIXEL_SERVICE_USER__
 Group=ods-pixel
+# Keep access to the owner's private control socket after overriding Group.
+SupplementaryGroups=__PIXEL_SERVICE_GID__
 ExecStart=/usr/bin/env node /usr/local/libexec/ods-pixel-ingress.mjs
 Restart=on-failure
+# Model-route reconciliation uses SIGHUP as a narrowly scoped, owner-safe
+# request for systemd to replace this process. systemd normally treats SIGHUP
+# as a clean termination, so force a restart for that signal while preserving
+# ordinary clean-stop behavior.
+RestartForceExitStatus=SIGHUP
 RestartSec=5
 TimeoutStartSec=30
 TimeoutStopSec=20
@@ -29,6 +36,10 @@ RuntimeDirectoryMode=0710
 # directory inode across ingress restarts so the container continues to see a
 # newly recreated socket instead of remaining bound to an abandoned directory.
 RuntimeDirectoryPreserve=restart
+
+# Delivery acknowledgements and full Portal history survive process reboots.
+StateDirectory=ods-pixel-chat
+StateDirectoryMode=0700
 
 UMask=0007
 
@@ -52,7 +63,7 @@ CapabilityBoundingSet=
 # receives access to the source home path or any neighboring owner state.
 BindReadOnlyPaths=__PIXEL_GATEWAY_TOKEN_SOURCE__:__PIXEL_GATEWAY_TOKEN_FILE__
 ReadOnlyPaths=/etc/ods/pixel-agent.env
-ReadWritePaths=/run/ods-pixel
+ReadWritePaths=/run/ods-pixel /var/lib/ods-pixel-chat
 # Docker socket is NOT mounted into the service; the status projection probes
 # docker only if the CLI is available on the host PATH.
 PrivateMounts=true

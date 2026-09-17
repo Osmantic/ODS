@@ -14,15 +14,20 @@ import fs from "node:fs";
 import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import path from "node:path";
+import os from "node:os";
 import { Readable } from "node:stream";
 import { pathToFileURL } from "node:url";
 import { parseTaskActivity } from "./task_activity_schema.mjs";
+import { parseQuestions } from "./questions_schema.mjs";
+import {createChatHistoryLedger,HistoryError} from './chat_history_ledger.mjs';
+import {handleAccessMode, handleModelControl, readAccessOwnerKey} from './access_mode_relay.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
 const MAX_BODY = 2 * 1024 * 1024; // 2 MiB request body cap
+const MAX_HISTORY_BODY = 8 * 1024 * 1024;
 const MAX_NONSTREAM_RESPONSE = 2 * 1024 * 1024; // 2 MiB non-stream response cap
 const MAX_STREAM_RESPONSE = 4 * 1024 * 1024; // 4 MiB terminal completion cap for SSE clients
 // A broad typed host report can legitimately include bounded summaries for
@@ -30,7 +35,7 @@ const MAX_STREAM_RESPONSE = 4 * 1024 * 1024; // 4 MiB terminal completion cap fo
 // Keep this channel far below the normal completion cap while allowing the
 // guard's structurally rendered evidence to cross the private ingress intact.
 const MAX_VERIFICATION_TEXT = 32 * 1024;
-const MAX_VERIFICATION_RESPONSE = 64 * 1024;
+const MAX_VERIFICATION_RESPONSE = 1024 * 1024;
 const OPENAI_RUN_ID = /^chatcmpl_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const OPERATIONS_UNAVAILABLE_ZERO_SUBMISSIONS_CODE =
   "operations-unavailable-zero-submissions";
@@ -200,7 +205,7 @@ class HttpError extends Error {
 // bytes for longer than that while evaluating its first prompt. Use the core
 // HTTP client for this fixed loopback hop so the explicit connect and total
 // AbortController budgets below are the only transport deadlines.
-export function gatewayFetch(url, options = {}) {
+function directGatewayFetch(url, options = {}) {
   return new Promise((resolve, reject) => {
     let connectTimer = null;
     const clearConnectTimer = () => {
@@ -252,6 +257,69 @@ export function gatewayFetch(url, options = {}) {
   });
 }
 
+// A host can have different IPv4/IPv6 loopback paths (including WSL's IPv4
+// forwarding proxy). Discover a healthy local listener with a read-only GET
+// before sending any body. A reset after a POST is an unknown outcome: only
+// the next request may discover another endpoint, never replay that POST.
+export function createLoopbackGatewayFetch(fetchImpl = directGatewayFetch, {
+  probeTimeoutMs = 750, cacheMs = 5000, now = Date.now,
+} = {}) {
+  const endpoints = new Map();
+  const discoveries = new Map();
+  const validate = (url) => {
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'http:' || !['127.0.0.1', '[::1]', 'localhost'].includes(parsed.hostname)
+        || parsed.username || parsed.password || parsed.hash) throw new Error('invalid local gateway address');
+    return parsed;
+  };
+  const discover = async (port, headers) => {
+    const cached = endpoints.get(port);
+    if (cached && cached.expiresAt > now()) return cached.origin;
+    if (discoveries.has(port)) return discoveries.get(port);
+    const pending = (async () => {
+      for (const host of ['[::1]', '127.0.0.1']) {
+        const origin = `http://${host}:${port}`;
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), probeTimeoutMs);
+        timer.unref?.();
+        try {
+          const authorization = headers?.authorization ?? headers?.Authorization;
+          const response = await fetchImpl(`${origin}/health`, {
+            method:'GET', redirect:'error', signal:controller.signal,
+            headers:authorization ? {authorization, accept:'application/json'} : {accept:'application/json'},
+          });
+          await drain(response.body);
+          if (response.status < 200 || response.status >= 300) continue;
+          endpoints.set(port, {origin, expiresAt:now() + cacheMs});
+          return origin;
+        } catch { /* An unqualified family receives no mutation. */ }
+        finally { clearTimeout(timer); }
+      }
+      endpoints.delete(port);
+      throw new Error('local gateway unavailable');
+    })();
+    discoveries.set(port, pending);
+    try { return await pending; }
+    finally { discoveries.delete(port); }
+  };
+  return async (url, options = {}) => {
+    const parsed = validate(url), port = parsed.port || '80';
+    if (options.signal?.aborted) throw options.signal.reason ?? new Error('request aborted');
+    const origin = await discover(port, options.headers);
+    if (options.signal?.aborted) throw options.signal.reason ?? new Error('request aborted');
+    try {
+      return await fetchImpl(`${origin}${parsed.pathname}${parsed.search}`, options);
+    } catch (error) {
+      // HTTP bodies/streams are never retried. Even a transport reset can
+      // arrive after the gateway has accepted a mutation or started a run.
+      if (endpoints.get(port)?.origin === origin) endpoints.delete(port);
+      throw error;
+    }
+  };
+}
+
+export const gatewayFetch = createLoopbackGatewayFetch();
+
 const defaultDeps = {
   execFile,
   fetch: gatewayFetch,
@@ -300,6 +368,8 @@ export function validateConfig(cfg) {
     ["socket path", cfg.socketPath],
     ["gateway token file", cfg.gatewayTokenFile],
     ["status file", cfg.statusFile],
+    ...(cfg.chatStateDir ? [["chat state directory",cfg.chatStateDir]] : []),
+    ...(cfg.accessOwnerKeyFile ? [["access owner key file",cfg.accessOwnerKeyFile]] : []),
   ]) {
     if (typeof value !== "string" || !path.isAbsolute(value) || value.includes("\0")) {
       throw new Error(`invalid ${label}`);
@@ -319,6 +389,8 @@ export function configFromEnv(env = process.env) {
     ingressGid: env.PIXEL_INGRESS_GID ? Number(env.PIXEL_INGRESS_GID) : null,
     odsVersion: env.PIXEL_ODS_VERSION || "unknown",
     appPorts: appPortsFromEnv(env),
+    accessOwnerKeyFile: env.PIXEL_ACCESS_OWNER_KEY_FILE || null,
+    chatStateDir: env.PIXEL_CHAT_STATE_DIR || (process.platform === 'linux' ? '/var/lib/ods-pixel-chat' : path.join(process.platform === 'win32' ? env.LOCALAPPDATA || os.homedir() : path.join(os.homedir(),'Library','Application Support'),'ODS','chat-state')),
   };
   return validateConfig(cfg);
 }
@@ -698,6 +770,8 @@ function parseVerificationResponse(value, runId) {
   if (hasPreview) expectedKeys.push("preview");
   const hasTask = Object.prototype.hasOwnProperty.call(value, "task");
   if (hasTask) expectedKeys.push("task");
+  const hasQuestions = Object.prototype.hasOwnProperty.call(value, 'questions');
+  if (hasQuestions) expectedKeys.push('questions');
   if (status === "passed" && carriesAuthoritativeText && value.deliveryMode === "append") {
     expectedKeys.push("deliveryMode");
   }
@@ -750,14 +824,15 @@ function parseVerificationResponse(value, runId) {
         value.text.length < 1 ||
         value.text.length > MAX_VERIFICATION_TEXT ||
         /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(value.text))) ||
-    !previewValid || (hasTask && !parseTaskActivity(value.task, runId))
+    !previewValid || (hasTask && !parseTaskActivity(value.task, runId)) ||
+    (hasQuestions && (status !== 'pending' || !parseQuestions(value.questions)))
   ) {
     throw new HttpError(502, "verification state unavailable");
   }
   return value;
 }
 
-async function verificationForRun(runId, token, gatewayPort, signal, deps) {
+async function readVerificationForRun(runId, token, gatewayPort, signal, deps) {
   if (typeof runId !== "string" || !OPENAI_RUN_ID.test(runId)) {
     throw new HttpError(502, "invalid upstream response");
   }
@@ -791,6 +866,25 @@ async function verificationForRun(runId, token, gatewayPort, signal, deps) {
     throw new HttpError(502, "verification state unavailable");
   }
   return parseVerificationResponse(parsed, runId);
+}
+
+async function verificationForRun(runId, token, gatewayPort, signal, deps) {
+  // Only re-read the same host receipt. Never resubmit the model request or
+  // replay tools when finalization and receipt availability briefly overlap.
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await readVerificationForRun(runId, token, gatewayPort, signal, deps);
+    } catch (error) {
+      if (signal.aborted || attempt >= 2 || !OPENAI_RUN_ID.test(runId ?? '')) throw error;
+      await new Promise(resolve => {
+        const timer = deps.setTimeout(done, 100 * (attempt + 1));
+        function done() { deps.clearTimeout(timer); signal.removeEventListener('abort', done); resolve(); }
+        signal.addEventListener('abort', done, {once:true});
+        if (signal.aborted) done();
+      });
+      if (signal.aborted) throw error;
+    }
+  }
 }
 
 function applyVerificationToCompletion(completion, verification) {
@@ -880,6 +974,8 @@ function completionSse(completion, verification) {
     choices: [{ index: 0, delta, finish_reason: finishReason }],
     ...(terminal && terminalPixel ? { pixel: terminalPixel } : {}),
     ...(terminal && verification?.task ? { pixel_task: verification.task } : {}),
+    ...(terminal && verification?.questions ? { pixel_questions: {schemaVersion:1,questions:verification.questions} } : {}),
+    ...(terminal ? {pixel_outcome: {schemaVersion:1,status:verification?.status ?? 'none'}} : {}),
   });
   return Buffer.from(
     `data: ${envelope({ role: "assistant" }, null)}\n\n` +
@@ -906,7 +1002,7 @@ export function streamTaskActivity(res, user, token, gatewayPort, signal, deps =
         method:'POST', headers:upstreamHeaders(false, token), body:JSON.stringify({user}), redirect:'error', signal:controller.signal,
       });
       if (response.status !== 200 || !String(response.headers.get('content-type')).startsWith('application/json')) { await drain(response.body); return; }
-      const value = JSON.parse((await readBounded(response.body, 4096)).toString('utf8'));
+      const value = JSON.parse((await readBounded(response.body, 1024 * 1024)).toString('utf8'));
       if (!value || Object.keys(value).join() !== 'task') return;
       const task = parseTaskActivity(value.task, value.task?.runId);
       if (!task || task.state !== 'running' || task.startedAt < since || (runId && task.runId !== runId)) return;
@@ -925,8 +1021,34 @@ export function streamTaskActivity(res, user, token, gatewayPort, signal, deps =
   return () => { stopped = true; deps.clearTimeout(timer); inFlight?.abort(); };
 }
 
-async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps) {
+function registerActiveGatewayTransport(activeGatewayTransports, user, controller) {
+  if (!(activeGatewayTransports instanceof Map) || typeof user !== "string") {
+    return () => {};
+  }
+  let controllers = activeGatewayTransports.get(user);
+  if (!controllers) {
+    controllers = new Set();
+    activeGatewayTransports.set(user, controllers);
+  }
+  controllers.add(controller);
+  return () => {
+    controllers.delete(controller);
+    if (controllers.size === 0 && activeGatewayTransports.get(user) === controllers) {
+      activeGatewayTransports.delete(user);
+    }
+  };
+}
+
+function abortActiveGatewayTransports(activeGatewayTransports, user) {
+  const controllers = activeGatewayTransports.get(user);
+  if (!controllers) return;
+  for (const controller of [...controllers]) controller.abort();
+}
+
+async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps, hooks = {}, activeGatewayTransports = new Map()) {
   const controller = new AbortController();
+  const unregisterGatewayTransport = registerActiveGatewayTransport(activeGatewayTransports, outgoing.user, controller);
+  hooks.onController?.(controller);
   const totalTimer = deps.setTimeout(() => controller.abort(), TOTAL_TIMEOUT_MS);
   const abortOnDownstreamClose = () => {
     if (!res.writableEnded) controller.abort();
@@ -958,6 +1080,9 @@ async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps
     stopActivity = streamTaskActivity(res, outgoing.user, token, gatewayPort, controller.signal, deps);
   }
   try {
+    await hooks.beforeRequest?.(controller.signal);
+    if(controller.signal.aborted) throw new HistoryError('history-preparation-interrupted',503);
+    hooks.onSubmitted?.();
     const upstream = await deps.fetch(
       `http://127.0.0.1:${gatewayPort}/v1/chat/completions`,
       {
@@ -1007,6 +1132,7 @@ async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps
           controller.signal,
           deps
         );
+        await hooks.onComplete?.(completion,verification);
         deliveryStage = "delivery";
         res.end(completionSse(
           applyVerificationToCompletion(completion, verification),
@@ -1038,6 +1164,7 @@ async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps
       controller.signal,
       deps
     );
+    await hooks.onComplete?.(completion,verification);
     const verifiedCompletion = applyVerificationToCompletion(completion, verification);
     const responseBody = verifiedCompletion === completion
       ? body
@@ -1058,6 +1185,7 @@ async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps
     stopActivity?.();
     res.off("close", abortOnDownstreamClose);
     deps.clearTimeout(totalTimer);
+    unregisterGatewayTransport();
   }
 }
 
@@ -1331,13 +1459,26 @@ export async function writeStatus(
   return projection;
 }
 
-export function createIngressServer({ token, gatewayPort, deps = defaultDeps }) {
+export function createIngressServer({ token, gatewayPort, deps = defaultDeps, historyLedger = null, accessOwnerKey = null }) {
+  // Cancellation is scoped to this ingress instance and the opaque ODS user.
+  // A Set preserves correct behavior if one chat has overlapping transports.
+  const activeGatewayTransports = new Map();
+  const historyAborters=new Map();
   return http.createServer((req, res) => {
     let pathname;
     try {
       pathname = new URL(req.url, "http://pixel-ingress.invalid").pathname;
     } catch {
       sendError(res, 400, "bad request");
+      return;
+    }
+
+    if (pathname === '/v1/model-control') {
+      void handleModelControl(req, res, {ownerKey:typeof accessOwnerKey === 'function' ? accessOwnerKey() : accessOwnerKey});
+      return;
+    }
+    if (pathname === '/v1/access-mode') {
+      void handleAccessMode(req, res, {ownerKey:typeof accessOwnerKey === 'function' ? accessOwnerKey() : accessOwnerKey});
       return;
     }
 
@@ -1367,7 +1508,15 @@ export function createIngressServer({ token, gatewayPort, deps = defaultDeps }) 
         sendError(res, 415, "content type must be application/json");
         return;
       }
-      void handleChat(req, res, token, gatewayPort, deps);
+      void handleChat(req, res, token, gatewayPort, deps, historyLedger, historyAborters, activeGatewayTransports);
+      return;
+    }
+
+    if(['/v1/chat/context','/v1/chat/compact','/v1/chat/history'].includes(pathname)) {
+      if(req.method!=='POST') {sendError(res,405,'method not allowed');return;}
+      if(req.url!==pathname) {sendError(res,400,'invalid request');return;}
+      if(String(req.headers['content-type'] || '').split(';',1)[0].trim()!=='application/json') {sendError(res,415,'content type must be application/json');return;}
+      void handleContextControl(req,res,pathname,token,gatewayPort,deps,historyLedger);
       return;
     }
 
@@ -1381,7 +1530,7 @@ export function createIngressServer({ token, gatewayPort, deps = defaultDeps }) 
         sendError(res, 415, "content type must be application/json");
         return;
       }
-      void handleCancel(req, res, token, gatewayPort, deps);
+      void handleCancel(req, res, token, gatewayPort, deps, historyLedger, historyAborters, activeGatewayTransports);
       return;
     }
 
@@ -1389,7 +1538,7 @@ export function createIngressServer({ token, gatewayPort, deps = defaultDeps }) 
   });
 }
 
-async function handleCancel(req, res, token, gatewayPort, deps) {
+async function handleCancel(req, res, token, gatewayPort, deps, ledger, historyAborters, activeGatewayTransports) {
   let raw;
   try {
     raw = await readBody(req, MAX_CANCEL_BODY);
@@ -1420,13 +1569,37 @@ async function handleCancel(req, res, token, gatewayPort, deps) {
     return;
   }
   const user = computeSessionUser({ user: parsed.user });
-  sendJson(res, 200, { aborted: await abortGatewayRun(user, token, gatewayPort, deps) });
+  try {
+    const pending=ledger?.read(user),local=historyAborters?.get(user);
+    if(local && pending && local.requestId===pending.requestId) local.controller.abort();
+    const aborted=await abortGatewayRun(user, token, gatewayPort, deps);
+    if(aborted) {
+      // The run acknowledgment covers OpenClaw; also close the matching
+      // provider transport so generation cannot outlive a terminal UI.
+      abortActiveGatewayTransports(activeGatewayTransports, user);
+      ledger?.interrupt(user,pending?.requestId);
+      sendJson(res,200,{aborted:true});
+      return;
+    }
+    // A restart or a rejected pre-dispatch request may leave only the browser's
+    // interrupted marker. Prove this exact session idle under the history lock;
+    // absence of an abortable run alone is never enough to clear the warning.
+    const release=ledger?.lock(user);
+    try {
+      const native=await nativeContextRequest('context',{user},token,gatewayPort,deps);
+      const idle=['ready','missing'].includes(native.status);
+      const current=ledger?.read(user);
+      const unresolved=current && ['pending','unknown'].includes(current.status);
+      const recovered=idle && (!unresolved || ledger.interrupt(user,current.requestId));
+      sendJson(res,200,{aborted:recovered===true});
+    } finally {release?.();}
+  } catch {sendError(res,503,'cancellation-unconfirmed');}
 }
 
-async function handleChat(req, res, token, gatewayPort, deps) {
+async function handleChat(req, res, token, gatewayPort, deps, historyLedger, historyAborters, activeGatewayTransports) {
   let raw;
   try {
-    raw = await readBody(req, MAX_BODY);
+    raw = await readBody(req, MAX_HISTORY_BODY);
   } catch (error) {
     sendError(
       res,
@@ -1448,16 +1621,107 @@ async function handleChat(req, res, token, gatewayPort, deps) {
     return;
   }
 
+  let release,prepared,submitted=false,completed=false,user;
   try {
-    const outgoing = buildOutgoing(parsed, computeSessionUser(parsed));
-    await forwardChat(res, outgoing, token, gatewayPort, deps);
+    if(!parsed.history_snapshot && raw.length>MAX_BODY) throw new HistoryError('request-too-large',413);
+    user=computeSessionUser(parsed);
+    const outgoing = buildOutgoing(parsed, user);
+    if(historyLedger && user) release=historyLedger.lock(user);
+    if(!parsed.history_snapshot) {await forwardChat(res,outgoing,token,gatewayPort,deps,{},activeGatewayTransports);return;}
+    if(!historyLedger || !user) throw new HistoryError('history-storage-unavailable',503);
+    const native=await nativeContextRequest('context',{user},token,gatewayPort,deps);
+    prepared=historyLedger.prepare(user,parsed.request_id,parsed.history_snapshot,native);
+    if(prepared.replay) {
+      const result=prepared.replay;
+      if(outgoing.stream) {res.writeHead(200,{'Content-Type':'text/event-stream','Cache-Control':'no-store'});res.end(completionSse(applyVerificationToCompletion(result.completion,result.verification),result.verification));}
+      else sendJson(res,200,applyVerificationToCompletion(result.completion,result.verification));
+      return;
+    }
+    const latest=[...(outgoing.messages || [])].reverse().find(message=>message.role==='user');
+    if(!latest) throw new HistoryError('invalid-history-input',400);
+    // Identity/delivery policy belongs to the trusted API/edge messages. The
+    // snapshot is data only; it cannot introduce system/developer instructions.
+    outgoing.messages=[...(outgoing.messages || []).filter(message=>message.role==='system'),...prepared.delta.slice(0,-1),latest];
+    await forwardChat(res,outgoing,token,gatewayPort,deps,{
+      onController:controller=>historyAborters?.set(user,{requestId:parsed.request_id,controller}),
+      beforeRequest:async signal=>{
+        if(!prepared.hydrate) return;
+        const seeded=await nativeContextRequest('history',{user,request_id:parsed.request_id,messages:prepared.archive},token,gatewayPort,deps,signal,30000);
+        if(seeded?.hydrated!==true) throw new HistoryError('history-preparation-failed',503);
+        const request_id=`history-${createHash('sha256').update(`${parsed.request_id}:${prepared.state.revision}`).digest('hex')}`;
+        let state=await nativeContextRequest('compact',{user,request_id},token,gatewayPort,deps,signal);
+        while(state.compaction?.requestId===request_id && state.compaction.status==='running') {
+          await new Promise((resolve,reject)=>{
+            if(signal.aborted) {reject(new HistoryError('history-preparation-interrupted',503));return;}
+            const abort=()=>{deps.clearTimeout(timer);reject(new HistoryError('history-preparation-interrupted',503))};
+            const timer=deps.setTimeout(()=>{signal.removeEventListener('abort',abort);resolve()},1000);
+            signal.addEventListener('abort',abort,{once:true});
+          });
+          state=await nativeContextRequest('context',{user},token,gatewayPort,deps,signal);
+        }
+        if(state.compaction?.requestId!==request_id || !['completed','skipped'].includes(state.compaction.status)) throw new HistoryError('history-compaction-unconfirmed',503);
+      },
+      onSubmitted:()=>{submitted=true;},
+      onComplete:async(completion,verification)=>{
+        let after;
+        try {after=await nativeContextRequest('context',{user},token,gatewayPort,deps)} catch { /* The verified completion still proves this input ran. */ }
+        historyLedger.complete(user,prepared,completion,verification,after);
+        completed=true;
+      },
+    },activeGatewayTransports);
   } catch (error) {
     sendError(
       res,
-      error instanceof HttpError ? error.status : 400,
-      error instanceof HttpError ? error.message : "invalid request body"
+      error instanceof HttpError || error instanceof HistoryError ? error.status : 400,
+      error instanceof HttpError || error instanceof HistoryError ? error.message : "invalid request body"
     );
+  } finally {
+    if(historyAborters?.get(user)?.requestId===prepared?.state?.requestId) historyAborters.delete(user);
+    try {if(prepared?.state && !completed) {if(submitted) historyLedger.uncertain(user,prepared);else historyLedger.abandon(user,prepared);}} catch { /* A still-pending durable record remains unknown after restart. */ }
+    try {release?.()} catch { /* Keep serving unrelated conversations if a lock cannot be removed. */ }
   }
+}
+
+async function nativeContextRequest(operation,body,token,gatewayPort,deps,outerSignal,timeoutMs=10000) {
+  const controller=new AbortController(), abort=()=>controller.abort();
+  outerSignal?.addEventListener('abort',abort,{once:true});
+  if(outerSignal?.aborted) controller.abort();
+  const timer=deps.setTimeout(abort,timeoutMs);
+  try {
+    const response=await deps.fetch(`http://127.0.0.1:${gatewayPort}/pixel-ods/${operation}`,{method:'POST',headers:upstreamHeaders(false,token),body:JSON.stringify(body),redirect:'error',signal:controller.signal});
+    if(response.status!==200 || !String(response.headers.get('content-type') || '').startsWith('application/json')) {await drain(response.body);throw new HistoryError(response.status===409?'context-busy':'context-unavailable',response.status===409?409:503);}
+    const value=JSON.parse((await readBounded(response.body,32768)).toString('utf8'));
+    if(operation==='history') return value;
+    if(value?.schemaVersion!==1 || !['ready','missing','busy','unavailable'].includes(value.status) || !['idle','running','completed','skipped','failed','unknown'].includes(value.compaction?.status) || !Number.isInteger(value.compaction?.count)) throw new HistoryError('context-unavailable',503);
+    return value;
+  } catch(error) {if(error instanceof HistoryError) throw error;throw new HistoryError('context-unavailable',503)}
+  finally {deps.clearTimeout(timer);outerSignal?.removeEventListener('abort',abort);}
+}
+function publicContext(native,history) {
+  return {schemaVersion:1,status:history.status==='pending'?'busy':history.status==='unknown' && native.status!=='busy'?'unavailable':native.status,
+    sessionRevision:native.sessionRevision,context:native.context,model:native.model,compaction:native.compaction,history};
+}
+async function handleContextControl(req,res,pathname,token,gatewayPort,deps,ledger) {
+  let release;
+  try {
+    if(!ledger) throw new HistoryError('history-storage-unavailable',503);
+    const body=JSON.parse((await readBody(req,1024)).toString('utf8'));
+    if(!body || typeof body!=='object' || Array.isArray(body)) throw new HistoryError('invalid-context-request',400);
+    if(pathname==='/v1/chat/history') {
+      if(!/^ods-[a-f0-9]{64}$/.test(body.user || '') || Object.keys(body).some(key=>!['user','query','offset','limit'].includes(key))) throw new HistoryError('invalid-history-query',400);
+      sendJson(res,200,ledger.search(body.user,body));return;
+    }
+    const compact=pathname==='/v1/chat/compact';
+    if(Object.keys(body).sort().join()!==(compact?'request_id,user':'user') || !/^[A-Za-z0-9_-]{1,128}$/.test(body.user || '') || (compact && !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(body.request_id || ''))) throw new HistoryError('invalid-context-request',400);
+    const user=computeSessionUser({user:body.user});
+    if(compact) {
+      release=ledger.lock(user);
+      if(ledger.projection(user).status!=='ready') throw new HistoryError('history-outcome-unknown',409);
+    }
+    const native=await nativeContextRequest(compact?'compact':'context',{user,...compact?{request_id:body.request_id}:{}},token,gatewayPort,deps);
+    sendJson(res,200,publicContext(native,ledger.projection(user)));
+  } catch(error) {sendError(res,error instanceof HistoryError?error.status:400,error instanceof HistoryError?error.message:'invalid-context-request')}
+  finally {try {release?.()} catch { /* Persistent lock keeps subsequent writes closed. */ }}
 }
 
 function listenUnix(server, socketPath) {
@@ -1488,7 +1752,11 @@ export async function start(cfg = configFromEnv(), opts = {}) {
     const token = gateway.token;
     startupStage = "socket-prepare";
     prepareSocketPath(cfg.socketPath);
-    server = createIngressServer({ token, gatewayPort: cfg.gatewayPort, deps });
+    const historyLedger=createChatHistoryLedger(cfg.chatStateDir || path.join(path.dirname(cfg.socketPath),'chat-state'));
+    // Re-read on access requests so credential rotation or first installation
+    // does not restart an active chat. Missing/unsafe key disables only access.
+    const accessOwnerKey = () => readAccessOwnerKey(cfg.accessOwnerKeyFile, opts.euid);
+    server = createIngressServer({ token, gatewayPort: cfg.gatewayPort, deps, historyLedger, accessOwnerKey });
     startupStage = "socket-listen";
     await listenUnix(server, cfg.socketPath);
     startupStage = "runtime-state";

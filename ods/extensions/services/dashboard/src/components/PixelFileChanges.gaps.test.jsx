@@ -1,4 +1,4 @@
-import {fireEvent, render, screen, within} from '@testing-library/react'
+import {render, screen, within} from '@testing-library/react'
 import PixelFileChanges from './PixelFileChanges' // eslint-disable-line no-unused-vars
 import receipt from './__tests__/fixtures/published-diff-gap.json'
 
@@ -6,7 +6,6 @@ import receipt from './__tests__/fixtures/published-diff-gap.json'
 // 300,000 unchanged characters. That row exceeds the 256 KiB diff response budget.
 async function expand(change) {
   render(<PixelFileChanges changes={[change]}/>)
-  fireEvent.click(screen.getByText('Edited index.html').closest('summary'))
   return screen.findByRole('region', {name:'Changes to index.html'})
 }
 

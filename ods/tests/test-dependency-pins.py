@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -27,6 +28,24 @@ def test_repo_dependency_lock_passes() -> None:
     module = load_module()
     errors = module.check()
     assert errors == [], "\n".join(errors)
+
+
+def test_langfuse_minio_images_use_official_quay_registry() -> None:
+    lock = json.loads((ROOT / "config" / "dependency-lock.json").read_text(encoding="utf-8"))
+    by_id = {entry["id"]: entry["value"] for entry in lock["entries"]}
+    expected = {
+        "langfuse.minio": "quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z",
+        "langfuse.minio-client": "quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z",
+    }
+    assert {key: by_id[key] for key in expected} == expected
+
+    compose = (
+        ROOT / "extensions" / "services" / "langfuse" / "compose.yaml.disabled"
+    ).read_text(encoding="utf-8")
+    for image in expected.values():
+        assert f"image: {image}" in compose
+    assert "image: minio/minio:" not in compose
+    assert "image: minio/mc:" not in compose
 
 
 def test_unallowlisted_latest_is_rejected() -> None:
@@ -181,6 +200,7 @@ def test_extension_library_sha_tags_are_rejected() -> None:
 def main() -> int:
     tests = [
         test_repo_dependency_lock_passes,
+        test_langfuse_minio_images_use_official_quay_registry,
         test_unallowlisted_latest_is_rejected,
         test_variable_refs_must_be_documented,
         test_ephemeral_sha_tags_are_rejected,

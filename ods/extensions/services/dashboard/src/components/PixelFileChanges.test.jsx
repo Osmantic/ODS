@@ -10,16 +10,15 @@ const change = {
   ],
 }
 async function expand(path = 'index.html') {
-  fireEvent.click(screen.getByText(new RegExp(`(?:Edited|Created|Deleted) ${path.replace('.', '\\.')}`)).closest('summary'))
   return screen.findByRole('region',{name:`Changes to ${path}`})
 }
 afterEach(() => vi.restoreAllMocks())
 
-it('ports the original compact disclosure, exact counts, line numbers and inert code', async () => {
+it('shows the selected verified diff with exact counts, line numbers and inert code', async () => {
   const html = '<img src=x onerror="bad()"><script>bad()</script>'
   const {container} = render(<PixelFileChanges changes={[{...change,diff:[...change.diff.slice(0,2),{...change.diff[2],text:html}]}]}/>)
   expect(screen.getByLabelText('1 lines added, 1 lines removed')).toHaveTextContent('+1-1')
-  expect(screen.queryByRole('region')).toBeNull()
+  expect(screen.getByRole('region',{name:'Changes to index.html'})).toBeVisible()
   const region = await expand()
   expect(region.querySelector('.artifact-diff-line.added')).toHaveAttribute('data-line','2')
   expect(region.querySelector('.artifact-diff-line.removed')).toHaveAttribute('data-line','2')
@@ -33,10 +32,10 @@ it('copies a real patch and only offers a preview when there is a working callba
   Object.defineProperty(navigator,'clipboard',{value:{writeText},configurable:true})
   render(<PixelFileChanges changes={[change]} onPreview={onPreview}/>)
   const region = await expand()
-  fireEvent.click(within(region).getByRole('button',{name:'Preview index.html'}))
+  fireEvent.click(within(region).getByRole('button',{name:'Open file index.html'}))
   expect(onPreview).toHaveBeenCalledWith(change)
   fireEvent.click(within(region).getByRole('button',{name:'Copy changes to index.html'}))
-  await waitFor(() => expect(screen.getByText('Copied')).toBeVisible())
+  await waitFor(() => expect(screen.getByText('Changes copied.')).toBeVisible())
   expect(writeText).toHaveBeenCalledWith(' <!doctype html>\n-<title>Before</title>\n+<title>After</title>')
 })
 
@@ -66,7 +65,6 @@ it('labels a gap as omitted, never fabricates unchanged lines from absent source
 it('shows zero without manufacturing additions for an unchanged or empty file', async () => {
   render(<PixelFileChanges changes={[{...change,change:'created',additions:0,deletions:0,diff:[]}]}/>)
   expect(screen.getByLabelText('0 lines added, 0 lines removed')).toHaveTextContent('+0-0')
-  fireEvent.click(screen.getByText('Created index.html').closest('summary'))
   expect(await screen.findByRole('status')).toHaveTextContent('No line changes.')
   expect(screen.queryByRole('button',{name:/Copy/})).toBeNull()
 })
@@ -74,11 +72,10 @@ it('shows zero without manufacturing additions for an unchanged or empty file', 
 it('does not render invalid counts, malformed rows or preview links for deleted files', async () => {
   const {rerender} = render(<PixelFileChanges changes={[{...change,additions:undefined}]}/>)
   expect(screen.queryByText('+1')).toBeNull()
-  fireEvent.click(screen.getByText('Edited index.html').closest('summary'))
   expect(await screen.findByRole('status')).toHaveTextContent('could not be verified')
   rerender(<PixelFileChanges changes={[{...change,change:'deleted'}]} onPreview={vi.fn()}/>)
   expect(await screen.findByRole('region',{name:'Changes to index.html'})).toBeVisible()
-  expect(screen.queryByRole('button',{name:'Preview index.html'})).toBeNull()
+  expect(screen.queryByRole('button',{name:'Open file index.html'})).toBeNull()
 })
 
 it('keeps an explicit final empty added line instead of dropping it', async () => {
@@ -91,13 +88,12 @@ it('keeps an explicit final empty added line instead of dropping it', async () =
 it('calls a first snapshot Published rather than claiming the file was created during this turn', async () => {
   render(<PixelFileChanges changes={[{...change,change:'published'}]}/>)
   expect(screen.queryByText('Created index.html')).toBeNull()
-  fireEvent.click(screen.getByText('Published index.html').closest('summary'))
-  expect(await screen.findByText(/No earlier snapshot was available for comparison/)).toBeVisible()
+  expect(screen.getByLabelText('Published')).toBeVisible()
+  expect(screen.queryByText(/No earlier snapshot was available for comparison/)).toBeNull()
 })
 
 it('keeps unknown binary or oversized line counts unknown instead of rendering zero', async () => {
   render(<PixelFileChanges changes={[{...change,additions:null,deletions:null,diff:[]}]}/>)
   expect(screen.queryByLabelText(/lines added/)).toBeNull()
-  fireEvent.click(screen.getByText('Edited index.html').closest('summary'))
   expect(await screen.findByRole('status')).toHaveTextContent('Line comparison unavailable for this file.')
 })

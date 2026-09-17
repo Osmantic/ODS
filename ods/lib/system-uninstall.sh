@@ -42,6 +42,10 @@ PY
         fi
         owned+=("$unit")
     done
+    # Pixel may still have a recoverable held transition. Validate foreign
+    # system-unit custody before touching Pixel, but leave all services live
+    # until its fail-closed cleanup has succeeded.
+    [[ "${ODS_SYSTEM_UNINSTALL_VALIDATE_ONLY:-false}" != true ]] || return 0
     [[ ${#owned[@]} -gt 0 ]] || return 0
     prepare_sudo_credential || return 1
     for unit in "${owned[@]}"; do
