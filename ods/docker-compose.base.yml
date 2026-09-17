@@ -112,10 +112,10 @@ services:
       WEBUI_URL: "${WEBUI_URL:-}"
       WEBUI_AUTH: "${WEBUI_AUTH:-true}"
       WEBUI_SECRET_KEY: "${WEBUI_SECRET:?WEBUI_SECRET must be set — run the installer or add it to .env}"
-      ENABLE_WEB_SEARCH: "true"
+      ENABLE_WEB_SEARCH: "${ENABLE_WEB_SEARCH:-false}"
       WEB_SEARCH_ENGINE: "searxng"
       SEARXNG_QUERY_URL: "http://searxng:8080/search?q=<query>&format=json"
-      ENABLE_SEARCH_QUERY_GENERATION: "true"
+      ENABLE_SEARCH_QUERY_GENERATION: "${ENABLE_WEB_SEARCH:-false}"
       WEB_SEARCH_RESULT_COUNT: "5"
       # Route Open WebUI retrieval embeddings through ODS's TEI service.
       # Otherwise Open WebUI downloads sentence-transformers/all-MiniLM-L6-v2

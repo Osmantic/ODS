@@ -138,39 +138,34 @@ else
     append_check "DOCKER_INSTALLED" "pass" "Docker CLI: ${DV:-present}" ""
     if docker_cli_looks_like_podman; then
         DOCKER_IS_PODMAN=true
-        append_check "DOCKER_ENGINE" "fail" \
-            "docker resolves to Podman compatibility mode, not Docker Engine" \
-            "Install Docker Engine and Docker Compose v2. Podman is not a supported ODS runtime yet; remove podman-docker or put Docker Engine first in PATH."
+        append_check "DOCKER_ENGINE" "pass" \
+            "docker resolves to Podman (rootless-compatible container runtime; see phase 05 for Podman-specific setup)" ""
     else
         append_check "DOCKER_ENGINE" "pass" "Docker CLI appears to target Docker Engine" ""
     fi
 fi
 
 # --- Docker daemon ---
+# Probed the same way for Docker Engine and Podman: both serve `docker info`
+# through the CLI resolved above (Podman via its docker-compatible shim).
 DOCKER_INFO_OK=false
-if [[ "$DOCKER_IS_PODMAN" == true ]]; then
-    append_check "DOCKER_DAEMON" "fail" \
-        "Skipped Docker daemon probe because docker resolves to Podman" \
-        "Install Docker Engine; ODS does not currently support Podman as the container runtime."
-elif command -v docker >/dev/null 2>&1; then
+if command -v docker >/dev/null 2>&1; then
     if docker info >/dev/null 2>&1; then
         DOCKER_INFO_OK=true
         append_check "DOCKER_DAEMON" "pass" "Docker daemon is reachable" ""
     else
         append_check "DOCKER_DAEMON" "fail" \
             "Docker daemon not running or not accessible" \
-            "Start the service (e.g. sudo systemctl start docker) or log in to Docker Desktop; add your user to the docker group if permission denied (see LINUX-TROUBLESHOOTING-GUIDE.md#docker_daemon)."
+            "Start the service (e.g. sudo systemctl start docker, or 'podman machine start' / 'systemctl --user start podman.socket' for Podman) or log in to Docker Desktop; add your user to the docker group if permission denied (see LINUX-TROUBLESHOOTING-GUIDE.md#docker_daemon)."
     fi
 else
     append_check "DOCKER_DAEMON" "fail" "Skipped — Docker CLI missing" ""
 fi
 
 # --- Docker Compose v2 / v1 ---
-if [[ "$DOCKER_IS_PODMAN" == true ]]; then
-    append_check "COMPOSE_CLI" "fail" \
-        "Skipped Compose probe because docker resolves to Podman" \
-        "Install Docker Engine with the Docker Compose v2 plugin. podman compose is not a supported substitute for ODS installs yet."
-elif command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+# Probed the same way for Docker Engine and Podman: `docker compose` works
+# through Podman's docker-compatible shim once a compose provider is present.
+if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
     CV="$(docker compose version 2>/dev/null | head -1 || true)"
     append_check "COMPOSE_CLI" "pass" "Compose: $CV" ""
 elif command -v docker-compose >/dev/null 2>&1; then
