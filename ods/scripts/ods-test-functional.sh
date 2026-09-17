@@ -47,6 +47,21 @@ WHISPER_URL="${WHISPER_URL:-http://localhost:${SERVICE_PORTS[whisper]:-9000}}"
 TTS_URL="${TTS_URL:-http://localhost:${SERVICE_PORTS[tts]:-8880}}"
 EMBEDDING_URL="${EMBEDDING_URL:-http://localhost:${SERVICE_PORTS[embeddings]:-9103}}"
 
+# Keep generated audio private to this invocation. Predictable files directly
+# under /tmp let concurrent runs overwrite or remove one another's fixtures.
+FUNCTIONAL_TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ods-functional.XXXXXX")"
+TTS_OUTPUT_FILE="$FUNCTIONAL_TMP_DIR/tts-output.wav"
+WHISPER_TEST_AUDIO="$FUNCTIONAL_TMP_DIR/whisper-input.wav"
+
+cleanup_functional_artifacts() {
+    rm -f -- "$TTS_OUTPUT_FILE" "$WHISPER_TEST_AUDIO"
+    rmdir -- "$FUNCTIONAL_TMP_DIR"
+}
+trap cleanup_functional_artifacts EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 # Test tracking
 TESTS_PASSED=0
 TESTS_FAILED=0
@@ -126,7 +141,7 @@ test_tts_functional() {
     echo "> Testing TTS Audio Generation"
     
     local test_text="Hello, this is a test."
-    local output_file="/tmp/test_tts_output.wav"
+    local output_file="$TTS_OUTPUT_FILE"
     
     local payload="{\"model\": \"kokoro\", \"input\": \"$test_text\", \"voice\": \"af_bella\", \"response_format\": \"wav\"}"
     
@@ -216,7 +231,7 @@ test_whisper_functional() {
     echo "> Testing Whisper Transcription"
     
     # Create a simple test audio file or use existing
-    local test_audio="/tmp/test_audio.wav"
+    local test_audio="$WHISPER_TEST_AUDIO"
     
     # Try to generate test audio with TTS first
     local tts_payload='{"model": "kokoro", "input": "Hello world", "voice": "af_bella", "response_format": "wav"}'

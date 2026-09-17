@@ -175,6 +175,8 @@ jobs:
       - name: Mode Switch Tests
         run: bash tests/test-mode-switch-status.sh
 
+      - name: Functional Test Temp Isolation
+        run: bash tests/test-functional-temp-isolation.sh
       - name: CLI Install Directory Resolution Tests
         run: bash tests/test-cli-install-dir-resolution.sh
 
