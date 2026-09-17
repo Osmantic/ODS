@@ -74,6 +74,7 @@ export ODS_SCRIPT_HINT="$SCRIPT_DIR"
 source "${LIB_DIR}/constants.sh"
 source "${LIB_DIR}/ui.sh"
 source "${LIB_DIR}/bridge-manager.sh"
+source "${LIB_DIR}/native-model.sh"
 source "${LIB_DIR}/detection.sh"
 
 unset ODS_SCRIPT_HINT
@@ -123,8 +124,8 @@ get_compose_flags() {
 
     local flags_file="${INSTALL_DIR}/.compose-flags"
     if [[ -f "$flags_file" ]]; then
-        cat "$flags_file"
-        return
+        macos_model_store_compose_flags "$(cat "$flags_file")"
+        return $?
     fi
     # Fallback: dynamic resolution via resolve-compose-stack.sh so user-installed
     # extensions in data/user-extensions/ are discovered when the .compose-flags
@@ -155,7 +156,7 @@ get_compose_flags() {
     elif [[ -f "${INSTALL_DIR}/installers/macos/docker-compose.macos.yml" ]]; then
         flags="$flags -f installers/macos/docker-compose.macos.yml"
     fi
-    echo "$flags"
+    macos_model_store_compose_flags "$flags"
 }
 
 compose_pull_with_retry() {
@@ -614,6 +615,7 @@ get_native_llama_status() {
 }
 
 start_native_llama() {
+    local replace="${1:-false}"
     read_ods_env
     if ! macos_configure_llm_bridge_from_env "${INSTALL_DIR}/.env" "$INSTALL_DIR"; then
         ai_err "Could not configure container access to native llama-server"
@@ -626,7 +628,7 @@ start_native_llama() {
         ai "Cloud mode uses LiteLLM; native llama-server remains stopped"
         return 0
     fi
-    if $NATIVE_LLAMA_RUNNING; then
+    if $NATIVE_LLAMA_RUNNING && [[ "$replace" != true ]]; then
         if $NATIVE_LLAMA_HEALTHY; then
             ai_ok "Native llama-server already running (PID ${NATIVE_LLAMA_PID})"
         else
@@ -635,14 +637,10 @@ start_native_llama() {
         return
     fi
 
-    if [[ ! -x "$LLAMA_SERVER_BIN" ]]; then
-        ai_err "llama-server not found at ${LLAMA_SERVER_BIN}"
-        ai "Re-run the installer to download it."
-        return
-    fi
-
-    local gguf_file="${ENV_GGUF_FILE:-Qwen3.5-9B-Q4_K_M.gguf}"
     local ctx_size="${ENV_CTX_SIZE:-65536}"
+    macos_resolve_native_model "$INSTALL_DIR" "$LLAMA_SERVER_BIN" "$ctx_size" || return 1
+    local LLAMA_SERVER_BIN="$MACOS_NATIVE_BINARY"
+    ctx_size="$MACOS_NATIVE_CONTEXT"
     local gpu_layers="${ENV_N_GPU_LAYERS:-auto}"
     gpu_layers="$(printf '%s' "$gpu_layers" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
     gpu_layers="${gpu_layers:-auto}"
@@ -651,12 +649,10 @@ start_native_llama() {
     local probe_host
     probe_host="$(macos_bind_probe_host "$bind_address")"
     [[ "$native_port" =~ ^[0-9]+$ ]] || native_port="8080"
-    local model_path="${INSTALL_DIR}/data/models/${gguf_file}"
+    local model_path="$MACOS_NATIVE_MODEL_PATH"
 
-    if [[ ! -f "$model_path" ]]; then
-        ai_err "Model not found: ${model_path}"
-        return
-    fi
+    # Verification must finish before a restart can terminate working inference.
+    [[ "$replace" != true ]] || stop_native_llama
 
     mkdir -p "$(dirname "$LLAMA_SERVER_PID_FILE")"
 
@@ -677,12 +673,18 @@ start_native_llama() {
         --reasoning-format "$reasoning_fmt"
         --metrics
     )
+    if [[ "$MACOS_NATIVE_PROFILE" == true ]]; then
+        llama_args+=("${MACOS_NATIVE_PROFILE_ARGS[@]}")
+    else
     [[ -n "${ENV_LLAMA_ARG_FLASH_ATTN:-}" ]] && llama_args+=(--flash-attn "$ENV_LLAMA_ARG_FLASH_ATTN")
     [[ -n "${ENV_LLAMA_ARG_CACHE_TYPE_K:-}" ]] && llama_args+=(--cache-type-k "$ENV_LLAMA_ARG_CACHE_TYPE_K")
     [[ -n "${ENV_LLAMA_ARG_CACHE_TYPE_V:-}" ]] && llama_args+=(--cache-type-v "$ENV_LLAMA_ARG_CACHE_TYPE_V")
     [[ -n "${ENV_LLAMA_ARG_N_CPU_MOE:-}" ]] && llama_args+=(--n-cpu-moe "$ENV_LLAMA_ARG_N_CPU_MOE")
     [[ -n "${ENV_LLAMA_ARG_SPEC_TYPE:-}" ]] && llama_args+=(--spec-type "$ENV_LLAMA_ARG_SPEC_TYPE")
     [[ -n "${ENV_LLAMA_ARG_SPEC_DRAFT_N_MAX:-}" ]] && llama_args+=(--spec-draft-n-max "$ENV_LLAMA_ARG_SPEC_DRAFT_N_MAX")
+    [[ -n "${ENV_LLAMA_ARG_SPEC_DRAFT_TYPE_K:-}" ]] && llama_args+=(--spec-draft-type-k "$ENV_LLAMA_ARG_SPEC_DRAFT_TYPE_K")
+    [[ -n "${ENV_LLAMA_ARG_SPEC_DRAFT_TYPE_V:-}" ]] && llama_args+=(--spec-draft-type-v "$ENV_LLAMA_ARG_SPEC_DRAFT_TYPE_V")
+    fi
 
     (
         cd "$INSTALL_DIR" || exit 1
@@ -807,9 +809,9 @@ cmd_start() {
     ensure_llama_cpu_budget
 
     # Start native llama-server first
-    if [[ -z "$service" ]] && [[ -x "$LLAMA_SERVER_BIN" ]]; then
+    if [[ -z "$service" ]]; then
         macos_wait_for_bootstrap_compose_safe "start" || return 1
-        start_native_llama
+        start_native_llama || return 1
     fi
 
     local flags
@@ -823,7 +825,7 @@ cmd_start() {
 
     if [[ "$service" == "llama-server" || "$service" == "llama" ]]; then
         macos_wait_for_bootstrap_compose_safe "start" || return 1
-        start_native_llama
+        start_native_llama || return 1
     elif [[ -n "$service" ]]; then
         ai "Starting ${service}..."
         # shellcheck disable=SC2086
@@ -893,8 +895,7 @@ cmd_restart() {
 
     if [[ "$service" == "llama-server" || "$service" == "llama" ]]; then
         macos_wait_for_bootstrap_compose_safe "restart" || return 1
-        stop_native_llama
-        start_native_llama
+        start_native_llama true || return 1
     elif [[ -n "$service" ]]; then
         ai "Restarting ${service}..."
         # shellcheck disable=SC2086
@@ -905,11 +906,8 @@ cmd_restart() {
         ai_ok "${service} restarted"
     else
         # Restart native llama-server
-        if [[ -f "$LLAMA_SERVER_PID_FILE" ]] || [[ -x "$LLAMA_SERVER_BIN" ]]; then
-            macos_wait_for_bootstrap_compose_safe "restart" || return 1
-            stop_native_llama
-            start_native_llama
-        fi
+        macos_wait_for_bootstrap_compose_safe "restart" || return 1
+        start_native_llama true || return 1
 
         ai "Restarting all services..."
         # shellcheck disable=SC2086

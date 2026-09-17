@@ -173,6 +173,7 @@ LIB_DIR="${SCRIPT_DIR}/lib"
 source "${LIB_DIR}/constants.sh"
 source "${LIB_DIR}/ui.sh"
 source "${LIB_DIR}/bridge-manager.sh"
+source "${LIB_DIR}/native-model.sh"
 source "${LIB_DIR}/tier-map.sh"
 source "${LIB_DIR}/detection.sh"
 source "${LIB_DIR}/preflight-fs.sh"
@@ -452,6 +453,9 @@ model_name = os.environ["ODS_OPENCODE_MODEL"]
 base_url = os.environ["ODS_OPENCODE_BASE_URL"]
 api_key = os.environ["ODS_OPENCODE_API_KEY"]
 context = int(os.environ["ODS_OPENCODE_CONTEXT"])
+if context < 1024:
+    raise SystemExit("OpenCode requires at least 1024 context tokens")
+output_limit = min(32768, context // 4)
 provider_id = "llama-server"
 provider = data.setdefault("provider", {}).setdefault(provider_id, {})
 provider.update({
@@ -461,7 +465,7 @@ provider.update({
     "models": {
         model_name: {
             "name": model_name,
-            "limit": {"context": context, "output": min(32768, context)},
+            "limit": {"context": context, "output": output_limit},
         }
     },
 })
@@ -719,9 +723,14 @@ _macos_native_llama_pid_is_owned() {
     [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
     process_name="$(ps -ww -p "$pid" -o comm= 2>/dev/null || true)"
     command_line="$(ps -ww -p "$pid" -o command= 2>/dev/null || true)"
-    [[ "${process_name##*/}" == "llama-server" ]] || return 1
+    [[ "${process_name##*/}" == "llama-server" || "${process_name##*/}" == "${LLAMA_SERVER_BIN##*/}" ]] || return 1
+    [[ "$command_line" == *"${INSTALL_DIR}/bin/llama-server"* ]] && return 0
     if [[ -n "${LLAMA_SERVER_BIN:-}" && "$command_line" == *"$LLAMA_SERVER_BIN"* ]]; then
-        return 0
+        # A registered runtime can be shared by multiple installs. Its path
+        # alone is no longer ownership proof; the launcher anchors its cwd.
+        process_cwd="$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1)"
+        _macos_native_llama_cwd_is_owned "$process_cwd"
+        return
     fi
     case "$command_line" in
         ./bin/llama-server*|bin/llama-server*)
@@ -1731,6 +1740,22 @@ else
     _previous_llm_bind="$(read_env_value "${INSTALL_DIR}/.env" "BIND_ADDRESS")"
     _previous_macos_gateway="$(read_env_value "${INSTALL_DIR}/.env" "ODS_MACOS_HOST_GATEWAY")"
     generate_ods_env "$INSTALL_DIR" "$SELECTED_TIER" "$FORCE"
+    _MACOS_EXTERNAL_MODEL_READY=false
+    _macos_active_store="$(read_env_value "${INSTALL_DIR}/.env" "ODS_ACTIVE_MODEL_STORE")"
+    _macos_active_store="${_macos_active_store//\"/}"
+    _macos_active_store="${_macos_active_store//\'/}"
+    if ! $CLOUD_MODE && [[ "$_previous_ods_mode" != cloud && -n "$_macos_active_store" && "$_macos_active_store" != default ]]; then
+        # A retained SSD selection owns the runtime contract, not this tier's
+        # recommendation. Verify it before any native listener is replaced.
+        macos_resolve_native_model "$INSTALL_DIR" "$LLAMA_SERVER_BIN" \
+            "$(read_env_value "${INSTALL_DIR}/.env" "CTX_SIZE")" true || exit 1
+        _MACOS_EXTERNAL_MODEL_READY=true
+        GGUF_FILE="$(basename "$MACOS_NATIVE_MODEL_PATH")"
+        LLM_MODEL="$(read_env_value "${INSTALL_DIR}/.env" "LLM_MODEL")"
+        LLM_MODEL="${LLM_MODEL:-$GGUF_FILE}"
+        MAX_CONTEXT="${MACOS_NATIVE_CONTEXT:-65536}"
+        GGUF_URL=""
+    fi
     _macos_switchboard_mode="$(read_env_value "${INSTALL_DIR}/.env" "ODS_MODEL_SWITCHBOARD")"
     case "${_macos_switchboard_mode:-enabled}" in
         legacy|observe|enabled) ;;
@@ -1794,6 +1819,7 @@ else
         upsert_env_value "${INSTALL_DIR}/.env" "OPEN_WEBUI_LLM_API_KEY" "$_macos_litellm_key"
         upsert_env_value "${INSTALL_DIR}/.env" "LLM_MODEL" "$LLM_MODEL"
         upsert_env_value "${INSTALL_DIR}/.env" "GGUF_FILE" ""
+        upsert_env_value "${INSTALL_DIR}/.env" "ODS_ACTIVE_MODEL_STORE" "default"
         upsert_env_value "${INSTALL_DIR}/.env" "MAX_CONTEXT" "$MAX_CONTEXT"
         upsert_env_value "${INSTALL_DIR}/.env" "CTX_SIZE" "$MAX_CONTEXT"
     else
@@ -1801,6 +1827,7 @@ else
         upsert_env_value "${INSTALL_DIR}/.env" "LLM_BACKEND" "llama-server"
         upsert_env_value "${INSTALL_DIR}/.env" "HERMES_LLM_API_KEY" "sk-ods-hermes-local"
         if [[ "$_previous_ods_mode" == "cloud" ]]; then
+            upsert_env_value "${INSTALL_DIR}/.env" "ODS_ACTIVE_MODEL_STORE" "default"
             upsert_env_value "${INSTALL_DIR}/.env" "LLM_MODEL" "$LLM_MODEL"
             upsert_env_value "${INSTALL_DIR}/.env" "GGUF_FILE" "$GGUF_FILE"
             upsert_env_value "${INSTALL_DIR}/.env" "MAX_CONTEXT" "$MAX_CONTEXT"
@@ -1819,8 +1846,8 @@ else
                 ai_err "Switchboard mode requires the generated LiteLLM master key, but LITELLM_KEY is empty."
                 exit 1
             fi
-            upsert_env_value "${INSTALL_DIR}/.env" "HERMES_LLM_BASE_URL" "http://litellm:4000/v1"
-            upsert_env_value "${INSTALL_DIR}/.env" "HERMES_LLM_API_KEY" "$_macos_litellm_key"
+            upsert_env_value "${INSTALL_DIR}/.env" "HERMES_LLM_BASE_URL" "http://model-router:9099/v1"
+            upsert_env_value "${INSTALL_DIR}/.env" "HERMES_LLM_API_KEY" "no-key"
             upsert_env_value "${INSTALL_DIR}/.env" "OPEN_WEBUI_LLM_BASE_URL" "http://litellm:4000"
             upsert_env_value "${INSTALL_DIR}/.env" "OPEN_WEBUI_LLM_API_KEY" "$_macos_litellm_key"
         fi
@@ -1942,7 +1969,7 @@ else
 
     # ── Bootstrap fast-start ──────────────────────────────────────────────
     _BOOTSTRAP_ACTIVE=false
-    if bootstrap_needed "$SELECTED_TIER" "$INSTALL_DIR" "$GGUF_FILE"; then
+    if [[ "${_MACOS_EXTERNAL_MODEL_READY:-false}" != true ]] && bootstrap_needed "$SELECTED_TIER" "$INSTALL_DIR" "$GGUF_FILE"; then
         _BOOTSTRAP_ACTIVE=true
         FULL_GGUF_FILE="$GGUF_FILE"
         FULL_GGUF_URL="$GGUF_URL"
@@ -2021,7 +2048,8 @@ else
     # it later, and persisted /opt/data/config.yaml wins over the template.
     _hermes_tpl="${INSTALL_DIR}/extensions/services/hermes/cli-config.yaml.template"
     if [[ -f "$_hermes_tpl" ]]; then
-            _hermes_base_url="${CONTAINER_LLM_URL%/}/v1"
+            _hermes_base_url="$(read_env_value "${INSTALL_DIR}/.env" "HERMES_LLM_BASE_URL")"
+            [[ -n "$_hermes_base_url" ]] || _hermes_base_url="${CONTAINER_LLM_URL%/}/v1"
             _hermes_model="$GGUF_FILE"
             $CLOUD_MODE && _hermes_model="default"
             _hermes_patcher="${INSTALL_DIR}/scripts/patch-hermes-config.py"
@@ -2089,6 +2117,13 @@ else
     # ── Download and start native llama-server (Metal) ──
     if ! $CLOUD_MODE; then
         chapter "NATIVE LLAMA-SERVER (METAL)"
+
+        if [[ "${_MACOS_EXTERNAL_MODEL_READY:-false}" != true ]]; then
+            macos_resolve_native_model "$INSTALL_DIR" "$LLAMA_SERVER_BIN" "$MAX_CONTEXT" true || exit 1
+        fi
+        LLAMA_SERVER_BIN="$MACOS_NATIVE_BINARY"
+        LLAMA_SERVER_DIR="$(dirname "$LLAMA_SERVER_BIN")"
+        MAX_CONTEXT="$MACOS_NATIVE_CONTEXT"
 
         # Download llama.cpp Metal build
         LLAMA_ZIP="/tmp/${LLAMA_CPP_MACOS_ASSET}"
@@ -2164,7 +2199,7 @@ else
 
         # Start native llama-server with Metal
         ai "Starting native llama-server (Metal)..."
-        MODEL_FULL_PATH="${INSTALL_DIR}/data/models/${GGUF_FILE}"
+        MODEL_FULL_PATH="$MACOS_NATIVE_MODEL_PATH"
 
         mkdir -p "$(dirname "$LLAMA_SERVER_PID_FILE")"
 
@@ -2207,12 +2242,20 @@ else
             --reasoning-format "$_reasoning_fmt"
             --metrics
         )
+        if [[ "$MACOS_NATIVE_PROFILE" == true ]]; then
+            _llama_args+=("${MACOS_NATIVE_PROFILE_ARGS[@]}")
+        else
         [[ -n "$_flash_attn" ]] && _llama_args+=(--flash-attn "$_flash_attn")
         [[ -n "$_cache_type_k" ]] && _llama_args+=(--cache-type-k "$_cache_type_k")
         [[ -n "$_cache_type_v" ]] && _llama_args+=(--cache-type-v "$_cache_type_v")
         [[ -n "$_n_cpu_moe" ]] && _llama_args+=(--n-cpu-moe "$_n_cpu_moe")
         [[ -n "$_spec_type" ]] && _llama_args+=(--spec-type "$_spec_type")
         [[ -n "$_spec_draft_n_max" ]] && _llama_args+=(--spec-draft-n-max "$_spec_draft_n_max")
+        _spec_draft_type_k="$(read_env_value "$INSTALL_DIR/.env" "LLAMA_ARG_SPEC_DRAFT_TYPE_K")"
+        _spec_draft_type_v="$(read_env_value "$INSTALL_DIR/.env" "LLAMA_ARG_SPEC_DRAFT_TYPE_V")"
+        [[ -n "$_spec_draft_type_k" ]] && _llama_args+=(--spec-draft-type-k "$_spec_draft_type_k")
+        [[ -n "$_spec_draft_type_v" ]] && _llama_args+=(--spec-draft-type-v "$_spec_draft_type_v")
+        fi
 
         (
             cd "$INSTALL_DIR" || exit 1

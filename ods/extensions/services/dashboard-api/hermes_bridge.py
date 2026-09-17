@@ -27,6 +27,7 @@ visitors doesn't pin Hermes resources forever.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import logging
@@ -55,6 +56,8 @@ def _env_int(name: str, default: int, *, minimum: int = 1) -> int:
 # Connection pool tuning. Override per environment if needed.
 _IDLE_EXPIRY_SECONDS = _env_int("ODS_TALK_IDLE_EXPIRY", 300)  # 5 min default
 _IDLE_SWEEP_INTERVAL = 60  # how often the background sweeper runs
+_APPROVAL_SEND_TIMEOUT = 5.0
+_APPROVAL_DISPLAY_LIMIT = 500
 
 
 class HermesBridgeError(RuntimeError):
@@ -181,12 +184,19 @@ class _HermesConnection:
     session_id: str
     last_used: float = field(default_factory=time.monotonic)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # Approval responses must be writable while ``lock`` is held by the
+    # long-running prompt receive loop. All WS writes use this narrower lock.
+    write_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # The browser never owns or echoes this protocol payload. It only submits
+    # one of the two choices accepted by ``respond_approval``.
+    pending_approval: dict[str, Any] | None = None
     closed: bool = False
 
     async def aclose(self) -> None:
         if self.closed:
             return
         self.closed = True
+        self.pending_approval = None
         try:
             await self.ws.close()
         except Exception:  # pragma: no cover — best-effort cleanup
@@ -360,12 +370,13 @@ async def _submit_on_connection(
     request_id = f"ods-talk-prompt-{int(time.monotonic() * 1000)}"
     try:
         conn.last_used = time.monotonic()
-        await conn.ws.send_str(json.dumps({
-            "jsonrpc": "2.0",
-            "id": request_id,
-            "method": "prompt.submit",
-            "params": {"session_id": conn.session_id, "text": text},
-        }))
+        async with conn.write_lock:
+            await conn.ws.send_str(json.dumps({
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "method": "prompt.submit",
+                "params": {"session_id": conn.session_id, "text": text},
+            }))
     except (aiohttp.ClientError, ConnectionResetError, ConnectionError) as exc:
         # Pooled WS was closed under us between the freshness check and this
         # send (Hermes restart, network blip, idle timeout that hadn't been
@@ -448,11 +459,25 @@ async def _submit_on_connection(
                     "duration_s": payload.get("duration_s") if isinstance(payload.get("duration_s"), (int, float)) else None,
                     "summary": payload.get("summary") if isinstance(payload.get("summary"), str) else None,
                 }
+        elif event_type == "approval.request":
+            # Keep the authoritative request on the live server-side
+            # connection. The phone receives bounded display text only and
+            # can answer with a fixed choice; it cannot alter the command.
+            conn.pending_approval = dict(payload)
+            command = payload.get("command") if isinstance(payload.get("command"), str) else ""
+            description = payload.get("description") if isinstance(payload.get("description"), str) else ""
+            yield {
+                "type": "approval",
+                "command": command[:_APPROVAL_DISPLAY_LIMIT],
+                "description": description[:_APPROVAL_DISPLAY_LIMIT],
+                "choices": ["once", "deny"],
+            }
         elif event_type == "message.complete":
             final_text = payload.get("text")
             if not isinstance(final_text, str) or not final_text.strip():
                 final_text = "".join(chunks)
             conn.last_used = time.monotonic()
+            conn.pending_approval = None
             yield {
                 "type": "complete",
                 "session_id": conn.session_id,
@@ -462,6 +487,7 @@ async def _submit_on_connection(
             }
             return
         elif event_type == "error":
+            conn.pending_approval = None
             message = payload.get("message") if isinstance(payload.get("message"), str) else "Hermes reported an error"
             raise HermesBridgeError(message)
 
@@ -526,6 +552,187 @@ async def stream_prompt(session_key: str, text: str) -> AsyncIterator[dict[str, 
             except HermesUnavailable:
                 await _drop_connection(session_key, conn)
                 raise
+
+
+async def respond_approval(session_key: str, choice: str) -> bool:
+    """Answer the current approval on an existing pooled Talk connection.
+
+    This deliberately never opens a connection and never acquires the prompt
+    ``lock``: that lock is held while Hermes waits for this response. The
+    pending request is claimed under ``write_lock`` before sending, so at most
+    one racing browser request can succeed. After the send begins, failures are
+    treated as ambiguous and the request is not restored or retried.
+    """
+    if choice not in {"once", "deny"}:
+        raise ValueError("choice must be 'once' or 'deny'")
+
+    async with _POOL_GUARD:
+        conn = _CONNECTION_POOL.get(session_key)
+        if conn is None or conn.closed or conn.ws.closed:
+            return False
+
+    try:
+        await asyncio.wait_for(conn.write_lock.acquire(), timeout=_APPROVAL_SEND_TIMEOUT)
+    except asyncio.TimeoutError as exc:
+        raise HermesBridgeError("Hermes approval channel is busy") from exc
+
+    try:
+        if conn.closed or conn.ws.closed or conn.pending_approval is None:
+            return False
+
+        rpc = json.dumps({
+            "jsonrpc": "2.0",
+            "id": f"ods-talk-approval-{time.monotonic_ns()}",
+            "method": "approval.respond",
+            "params": {
+                "session_id": conn.session_id,
+                "choice": choice,
+                "all": False,
+            },
+        })
+        conn.pending_approval = None
+        try:
+            await asyncio.wait_for(
+                conn.ws.send_str(rpc),
+                timeout=_APPROVAL_SEND_TIMEOUT,
+            )
+        except asyncio.TimeoutError as exc:
+            raise HermesBridgeError(
+                "Hermes approval response timed out; response state is unknown"
+            ) from exc
+        except (aiohttp.ClientError, ConnectionResetError, ConnectionError) as exc:
+            raise HermesBridgeError("Hermes approval response could not be sent") from exc
+        conn.last_used = time.monotonic()
+        return True
+    finally:
+        conn.write_lock.release()
+
+
+async def deny_pending_approval(session_key: str) -> bool:
+    """Best-effort safety denial used before abandoning an SSE stream."""
+    try:
+        return await respond_approval(session_key, "deny")
+    except (HermesBridgeError, asyncio.TimeoutError):
+        logger.warning(
+            "hermes-bridge: could not deny abandoned approval for %s",
+            session_key[:8],
+            exc_info=True,
+        )
+        return False
+
+
+async def _interrupt_session_with_ack(session_id: str) -> None:
+    """Interrupt a Hermes session on a short-lived control WebSocket.
+
+    The prompt's pooled WebSocket already has a reader blocked in
+    ``_submit_on_connection``.  Reading an interrupt reply on that socket
+    would race that reader, while sending and immediately closing gives the
+    Hermes gateway no delivery acknowledgement.  A separate authenticated
+    control connection can address the process-wide session id, receive the
+    JSON-RPC result, and prove Hermes processed the interrupt before the
+    prompt-owning socket is evicted.
+    """
+    timeout = aiohttp.ClientTimeout(total=_APPROVAL_SEND_TIMEOUT * 2)
+    control_session = aiohttp.ClientSession(timeout=timeout)
+    control_ws: aiohttp.ClientWebSocketResponse | None = None
+    request_id = f"ods-talk-interrupt-{time.monotonic_ns()}"
+    deadline = time.monotonic() + _APPROVAL_SEND_TIMEOUT
+    try:
+        control_ws = await _connect_ws(control_session)
+        await asyncio.wait_for(
+            control_ws.send_str(json.dumps({
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "method": "session.interrupt",
+                "params": {"session_id": session_id},
+            })),
+            timeout=max(0.01, deadline - time.monotonic()),
+        )
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise asyncio.TimeoutError
+            frame = await _recv_json(control_ws, remaining)
+            if frame.get("id") != request_id:
+                # gateway.ready and unrelated process-level events may arrive
+                # before the RPC result on a newly opened control socket.
+                continue
+            if frame.get("error"):
+                err = frame["error"]
+                message = err.get("message") if isinstance(err, dict) else str(err)
+                raise HermesBridgeError(message or "Hermes session interrupt failed")
+            result = frame.get("result")
+            if not isinstance(result, dict) or result.get("status") != "interrupted":
+                raise HermesBridgeError("Hermes did not acknowledge the session interrupt")
+            return
+    finally:
+        if control_ws is not None:
+            with contextlib.suppress(Exception):
+                await control_ws.close()
+        with contextlib.suppress(Exception):
+            await control_session.close()
+
+
+async def interrupt_active_prompt(session_key: str) -> bool:
+    """Interrupt and evict the active Hermes prompt for one Talk session.
+
+    Closing the WebSocket alone is not cancellation: Hermes deliberately
+    detaches an in-flight session and lets its agent continue after a client
+    disconnect. On a single-slot local model that can block every later Talk,
+    Pixel, and capability request for minutes. Send Hermes's session-scoped
+    abort RPC before closing the pooled connection so the abandoned turn frees
+    its upstream model slot without affecting any sibling session.
+
+    This is best-effort disconnect cleanup. It never opens a new connection,
+    never interrupts an idle session, and always evicts the used connection so
+    late frames from the interrupted turn cannot be mistaken for a later Talk
+    response.
+    """
+    async with _POOL_GUARD:
+        conn = _CONNECTION_POOL.get(session_key)
+        if (
+            conn is None
+            or conn.closed
+            or conn.ws.closed
+            or not conn.lock.locked()
+        ):
+            return False
+        _CONNECTION_POOL.pop(session_key, None)
+
+    acknowledged = False
+    try:
+        await _interrupt_session_with_ack(conn.session_id)
+        conn.pending_approval = None
+        conn.last_used = time.monotonic()
+        acknowledged = True
+        logger.info(
+            "hermes-bridge: Hermes acknowledged interrupt for abandoned prompt %s",
+            session_key[:8],
+        )
+    except (
+        HermesBridgeError,
+        asyncio.TimeoutError,
+        aiohttp.ClientError,
+        ConnectionResetError,
+        ConnectionError,
+    ):
+        logger.warning(
+            "hermes-bridge: could not interrupt abandoned prompt for %s",
+            session_key[:8],
+            exc_info=True,
+        )
+    finally:
+        try:
+            await asyncio.wait_for(
+                conn.aclose(),
+                timeout=_APPROVAL_SEND_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "hermes-bridge: timed out closing interrupted connection for %s",
+                session_key[:8],
+            )
+    return acknowledged
 
 
 async def submit_prompt(session_key: str, text: str) -> HermesReply:

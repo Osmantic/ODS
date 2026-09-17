@@ -98,9 +98,13 @@ export function createManagedRuntimeRegistry({environment = process.env,
         const routing = createRouting({deployment, readConfig});
         const commands = createCommands({accessRuntime});
         const selected = new Map(), selecting = new Set();
+        const transitionFailures = new WeakMap();
         let closed = false, failed = false, cleanupFailed = false, closing;
         const isPixel = context => !(typeof context?.agentId === 'string' && context.agentId !== 'pixel');
         const probe = context => accessRuntime.isProbe(context) === true;
+        const transitionError = code => {
+          const failure = error(); transitionFailures.set(failure, code); return failure;
+        };
         function shutdown() {
           closed = true;
           if (!closing) {
@@ -209,16 +213,21 @@ export function createManagedRuntimeRegistry({environment = process.env,
         }
         async function acquireTransition(token, revision) {
           if (valid()) {
-            assertTransition();
+            try { assertTransition(); }
+            catch { throw transitionError('managed-transition-busy'); }
           } else {
             const held = await readControlStatus();
-            if (!held.available || held.phase !== 'held' || accessRuntime.owns(token) !== true) throw error();
+            if (!held.available || held.phase !== 'held' || accessRuntime.owns(token) !== true) {
+              throw transitionError('managed-transition-invalid-owner');
+            }
           }
-          return accessRuntime.acquire(token, revision);
+          try { return await accessRuntime.acquire(token, revision); }
+          catch { throw transitionError('managed-transition-access-owner-refused'); }
         }
         current = {accessRuntime, deploymentText: raw, binding: canonical(deployment.binding),
           routing, commands, valid, shutdown, admit, finish, select, assertTransition, status,
           readControlStatus, acquireTransition,
+          classifyTransitionError: failure => transitionFailures.get(failure) ?? null,
           readRegistration() {
             assertTransition();
             // Report this successfully registered owner, not an editable config
@@ -226,6 +235,13 @@ export function createManagedRuntimeRegistry({environment = process.env,
             return {status: 'active', binding: JSON.parse(current.binding)};
           },
           beforeCommandRun(event, context) {
+            // The access proof deliberately executes two fixed, internally
+            // prepared commands while admission is held.  Feeding those
+            // commands back through ordinary managed command admission makes
+            // the shared access owner reject its own proof.  Only the access
+            // runtime can identify this unforgeable run; user-supplied hints
+            // do not bypass command accounting.
+            if (probe(context)) return undefined;
             if (!valid()) return {action: 'block', reason: 'ods-command-admission-unavailable'};
             return commands.beforeCommandRun(event, context);
           },

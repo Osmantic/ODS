@@ -1880,6 +1880,35 @@
       "llama_server_image": null
     },
     {
+      "id": "qwen3.8-27b-iq4-xs",
+      "name": "Qwen 3.8 27B",
+      "family": "qwen",
+      "gguf_file": "Qwen3.8-27B-UD-IQ4_XS.gguf",
+      "gguf_url": "https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/4ca720788d1e01f1bff70c033e0d0028fd02e502/Qwen3.8-27B-UD-IQ4_XS.gguf",
+      "gguf_sha256": "40fac4050e940397dbf13087afd50f4734a11805bf9d65ef8ddd7483470e6199",
+      "size_bytes": 14252845984,
+      "size_mb": 14253,
+      "vram_required_gb": 18,
+      "context_length": 32768,
+      "max_context_length": 262144,
+      "quantization": "UD-IQ4_XS",
+      "specialty": "Reasoning and coding",
+      "description": "Dense 27B reasoning model with embedded MTP. Smaller GPUs can use partial offload and a reduced context profile. MTP needs a compatible llama.cpp runtime and measured memory/throughput validation; it is not enabled automatically.",
+      "llm_model_name": "qwen3.8-27b",
+      "llama_server_image": null,
+      "install_recommendation": false,
+      "source_repo": "unsloth/Qwen3.8-27B-GGUF",
+      "source_revision": "4ca720788d1e01f1bff70c033e0d0028fd02e502",
+      "source_url": "https://huggingface.co/unsloth/Qwen3.8-27B-GGUF",
+      "license": "apache-2.0",
+      "mtp": {
+        "mode": "embedded",
+        "source_url": "https://unsloth.ai/docs/models/mtp",
+        "runtime_requirement": "llama.cpp advertising draft-mtp and --spec-draft-n-max",
+        "recommendation": "benchmark-required"
+      }
+    },
+    {
       "id": "qwen3.5-27b-q4",
       "name": "Qwen 3.5 27B",
       "family": "qwen",

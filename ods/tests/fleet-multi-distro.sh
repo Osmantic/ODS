@@ -10,6 +10,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 declare -A IMAGES=(
+    [ubuntu2604]="ubuntu:26.04"
     [ubuntu2404]="ubuntu:24.04"
     [ubuntu2204]="ubuntu:22.04"
     [debian12]="debian:12"
@@ -23,6 +24,7 @@ declare -A IMAGES=(
 )
 
 declare -A EXPECTED_PKG=(
+    [ubuntu2604]="apt"
     [ubuntu2404]="apt"
     [ubuntu2204]="apt"
     [debian12]="apt"
@@ -36,6 +38,8 @@ declare -A EXPECTED_PKG=(
 )
 
 declare -A ALIASES=(
+    [ubuntu/26.04]="ubuntu2604"
+    [ubuntu-26.04]="ubuntu2604"
     [ubuntu/24.04]="ubuntu2404"
     [ubuntu-24.04]="ubuntu2404"
     [ubuntu/22.04]="ubuntu2204"
@@ -62,7 +66,7 @@ declare -A ALIASES=(
     [tumbleweed]="opensuse"
 )
 
-ORDER=(ubuntu2404 ubuntu2204 debian12 mint213 fedora41 rocky9 arch manjaro cachyos opensuse)
+ORDER=(ubuntu2604 ubuntu2404 ubuntu2204 debian12 mint213 fedora41 rocky9 arch manjaro cachyos opensuse)
 
 PULL=false
 RUN_DRY_RUN=true
@@ -92,7 +96,7 @@ Options:
 
 Examples:
   tests/fleet-multi-distro.sh --pull
-  tests/fleet-multi-distro.sh ubuntu/24.04 archlinux/current mint
+  tests/fleet-multi-distro.sh ubuntu/26.04 archlinux/current mint
   tests/fleet-multi-distro.sh --no-dry-run ubuntu2404
 EOF
 }

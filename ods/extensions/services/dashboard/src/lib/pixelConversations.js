@@ -1,4 +1,5 @@
 import { conversationLabels, deleteConversationLabels } from './pixelConversationLabels'
+import {parseProjectTasks} from './pixelTaskActivity'
 
 export const CHAT_KEY = 'ods.pixel.chat.v1'
 const LIBRARY_KEY = 'ods.pixel.conversations.v1'
@@ -71,6 +72,8 @@ export function createConversationWriter(initial = null) {
 
 export function saveConversation(chat, checkpoint) {
   if (!valid(chat)) throw new Error('Invalid conversation')
+  if (chat.messages.some(message=>message.projectTasks!==undefined
+    && (message.role!=='assistant' || !parseProjectTasks(message.projectTasks)))) throw new Error('Invalid project metadata')
   if (deletedIds().includes(chat.chatId)) throw new Error('This conversation was deleted in another tab. Start a new chat.')
   // A read error is not an empty library. Never overwrite unreadable history.
   const entries = loadConversations(true)
@@ -122,6 +125,7 @@ export function deleteConversation(chatId) {
     return
   }
   if (chat.inFlight || chat.interrupted) throw new Error('Stop or resume this task before deleting its conversation.')
+  if (chat.compactionRequestId) throw new Error('Check the pending context compaction before deleting this conversation.')
   // Write the deletion marker first: stale open tabs must never resurrect a deleted chat.
   localStorage.setItem(DELETED_KEY, JSON.stringify([...new Set([...deletedIds(), chatId])]))
   localStorage.setItem(LIBRARY_KEY, JSON.stringify(entries.filter(item => !valid(item) || item.chatId !== chatId)))

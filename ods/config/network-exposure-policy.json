@@ -86,6 +86,12 @@
       "auth_required": true,
       "notes": "Optional loopback-only inference sharing; per-device expiring revocable keys. Remote clients require an explicitly trusted tunnel or separately secured HTTPS transport. Never grants agent or administration access."
     },
+    "pixel-model-relay": {
+      "risk": "scoped-model-inference-api",
+      "lan_exposure": "none",
+      "auth_required": true,
+      "notes": "Pixel-only authenticated inference relay bound to host loopback; never expose it on LAN or grant agent or administrative control."
+    },
     "n8n": {
       "risk": "workflow-automation-ui",
       "lan_exposure": "operator-controlled",
