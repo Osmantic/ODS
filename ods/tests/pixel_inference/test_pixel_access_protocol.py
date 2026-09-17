@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'bin'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'bin'))
 import pixel_access_protocol as protocol
 from pixel_access_protocol import ProtocolError
 
