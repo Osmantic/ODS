@@ -101,6 +101,7 @@ def test_auth_and_query_are_not_forwarded(connect):
 @pytest.mark.parametrize('change', [dict(model='other'), dict(max_tokens=65), dict(max_tokens=True),
     dict(max_tokens=1,max_completion_tokens=1), dict(n=2), dict(stream=1), dict(api_base='http://evil'),
     dict(chat_template_kwargs={'arbitrary':True}), dict(tools=[{'type':'web_search'}]),
+    dict(stream_options={'include_usage':True}), dict(stream=True,stream_options='bad'), dict(parallel_tool_calls='yes'),
     dict(messages=[{'role':'user','content':[{'type':'image_url','image_url':{'url':'http://169.254.169.254'}}]}])])
 def test_request_limits(connect, change):
     payload = body()
