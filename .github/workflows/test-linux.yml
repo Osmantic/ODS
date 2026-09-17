@@ -238,6 +238,14 @@ jobs:
       - name: Update Rollback Contract
         run: bash tests/test-update-rollback-contract.sh
 
+      - name: Backup and Restore Safety Contracts
+        run: |
+          bash tests/test-backup-restore-cli.sh
+          bash tests/test-backup-restore-roundtrip.sh
+          bash tests/test-backup-integrity.sh
+          bash tests/test-restore-safety-ux.sh
+          bash tests/test-cli-preset-restore-user-extensions.sh
+          bash tests/test-update-script-backup.sh
       - name: Backup Data Coverage Contract
         run: bash tests/test-backup-data-coverage.sh
 
