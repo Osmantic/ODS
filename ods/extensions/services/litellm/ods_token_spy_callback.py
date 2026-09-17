@@ -79,10 +79,14 @@ def _provider_name(kwargs: dict[str, Any]) -> str:
 
 
 def _endpoint_path(kwargs: dict[str, Any]) -> str:
+    # LiteLLM's CallTypes name the *function*, not the wire endpoint:
+    # completion/acompletion is the chat API, text_completion/atext_completion
+    # is the legacy one. Under the proxy every call is the async variant, so
+    # match the async spellings too rather than only the bare stems.
     call_type = str(kwargs.get("call_type") or "").lower()
     if "responses" in call_type:
         return "/v1/responses"
-    if call_type in {"text_completion", "completion"}:
+    if call_type in {"text_completion", "atext_completion"}:
         return "/v1/completions"
     return "/v1/chat/completions"
 
