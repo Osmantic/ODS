@@ -128,6 +128,25 @@ def _error_response(exc: EgressError) -> JSONResponse:
     )
 
 
+async def _read_bounded_body(request: Request) -> bytes:
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            if int(content_length) > MAX_BODY_BYTES:
+                raise EgressError(413, "payload_too_large", "request body exceeds limit")
+        except ValueError:
+            pass
+
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > MAX_BODY_BYTES:
+            raise EgressError(413, "payload_too_large", "request body exceeds limit")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 def _probe_error_response(exc: ProbeError) -> JSONResponse:
     return JSONResponse(
         {
@@ -347,7 +366,7 @@ async def forward(full_path: str, request: Request) -> Response:
             method=request.method,
             path=path,
             headers=dict(request.headers),
-            body=await request.body(),
+            body=await _read_bounded_body(request),
             route=route,
             provider_secret=secret,
             max_body_bytes=MAX_BODY_BYTES,
