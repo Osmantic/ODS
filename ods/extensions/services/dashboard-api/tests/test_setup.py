@@ -136,12 +136,9 @@ def test_setup_status_tolerates_non_object_state_files(test_client, setup_config
     assert resp.json()["persona"] is None
 
 
-def test_active_persona_prompt_tolerates_invalid_value_type(
-    setup_config_dir, monkeypatch
-):
+def test_active_persona_prompt_tolerates_invalid_value_type(setup_config_dir):
     import routers.setup as setup_router
 
-    monkeypatch.setattr(setup_router, "SETUP_CONFIG_DIR", setup_config_dir)
     (setup_config_dir / "persona.json").write_text(
         json.dumps({"system_prompt": ["not", "a", "string"]})
     )
