@@ -66,8 +66,13 @@ def test_non_posix_never_proposes_interpreters(monkeypatch):
 
 
 def test_the_running_interpreter_is_considered_first():
-    found = candidates()
     resolved = str(Path(sys.executable).resolve())
+    probe = subprocess.run([resolved, '-I', '-S', '-B', '-c', advice_python.PROBE],
+                           stdin=subprocess.DEVNULL, capture_output=True, timeout=10,
+                           env=advice_python.worker_environment(), cwd='/')
+    if probe.returncode:
+        pytest.skip('running interpreter does not satisfy the isolated probe')
+    found = candidates()
     assert any(item['path'] == resolved for item in found)
 
 
