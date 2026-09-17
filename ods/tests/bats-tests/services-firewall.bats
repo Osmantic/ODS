@@ -90,11 +90,15 @@ STUB
 
 extract_firewall_helper() {
     local out="$1"
+    cat > "$out" <<'HELPERS'
+ods_sudo_available() { [[ "${TEST_SUDO_AVAILABLE:-true}" == "true" ]]; }
+ods_sudo() { sudo "$@"; }
+HELPERS
     awk '
         /^    _phase11_external_lemonade\(\) \{/ { capture=1 }
         capture && /amd_gpu_runtime_devices_available/ { exit }
         capture { print }
-    ' "$PHASE11" > "$out"
+    ' "$PHASE11" >> "$out"
 }
 
 @test "services firewall: UFW rule is scoped to detected ods-network subnet" {
@@ -152,6 +156,26 @@ extract_firewall_helper() {
 
     assert_success
     assert_output --partial "skipping automatic host-agent firewall rule"
+    refute_output --partial "ufw allow"
+}
+
+@test "services firewall: unavailable privilege skips rules without invoking sudo" {
+    helper="$BATS_TEST_TMPDIR/helper.sh"
+    extract_firewall_helper "$helper"
+
+    run bash -c '
+        source "'"$helper"'"
+        ai_ok() { echo "OK: $1"; }
+        ai_warn() { echo "WARN: $1"; }
+        export TEST_SUDO_AVAILABLE=false
+        export SYSTEMCTL_ACTIVE_UNITS="ufw"
+        export DOCKER_NETWORK_SUBNETS="10.89.0.0/24"
+        _phase11_allow_host_agent_firewall ods-network
+        cat "$COMMAND_LOG"
+    '
+
+    assert_success
+    assert_output --partial "privileged firewall access is unavailable"
     refute_output --partial "ufw allow"
 }
 

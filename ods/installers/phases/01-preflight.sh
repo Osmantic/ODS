@@ -20,7 +20,7 @@ ai "I'm scanning your system for required components..."
 
 # Root check
 if [[ $EUID -eq 0 ]]; then
-    error "Do not run as root. Run as regular user with sudo access."
+    error "Do not run as root. Run as a regular user; ODS uses sudo only for host setup steps when it is available."
 fi
 
 # OS check
@@ -46,17 +46,15 @@ log "curl: $(curl --version 2>/dev/null | sed -n '1p')"
 
 if ! command -v jq &> /dev/null; then
     log "jq not found - attempting auto-install..."
-    # In non-interactive mode, fail fast if sudo requires a password
-    # (otherwise the bare `sudo <pkgmgr>` below hangs on a TTY prompt that never comes).
-    if [[ "${INTERACTIVE:-true}" != "true" ]] && ! sudo -n true 2>/dev/null; then
-        error "Cannot install jq: sudo password required but running in --non-interactive mode. Re-run interactively or configure NOPASSWD sudo for the package manager."
+    if ! ods_sudo_available; then
+        error "jq is required but not installed and privileged package installation is unavailable. Install jq first, then re-run ODS."
     fi
     case "$PKG_MANAGER" in
-        dnf)    sudo dnf install -y jq ;;
-        pacman) sudo pacman -S --noconfirm jq ;;
-        zypper) sudo zypper install -y jq ;;
-        apk)    sudo apk add jq ;;
-        *)      sudo apt-get install -y jq ;;
+        dnf)    ods_sudo dnf install -y jq ;;
+        pacman) ods_sudo pacman -S --noconfirm jq ;;
+        zypper) ods_sudo zypper install -y jq ;;
+        apk)    ods_sudo apk add jq ;;
+        *)      ods_sudo apt-get install -y jq ;;
     esac
     command -v jq &> /dev/null || error "Failed to install jq automatically. Install it manually and re-run."
 fi
