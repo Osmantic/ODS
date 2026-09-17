@@ -11,7 +11,7 @@ import json
 import os
 from contextlib import suppress
 
-from aiohttp import ClientSession, ClientTimeout, web
+from aiohttp import ClientError, ClientSession, ClientTimeout, web
 
 KEY = os.environ.get("PIXEL_MODEL_RELAY_KEY", "")
 UPSTREAM = "http://model-router:9099"
@@ -50,9 +50,11 @@ async def _inference(request):
             raise web.HTTPBadRequest()
 
     async with ClientSession(timeout=ClientTimeout(total=None)) as client:
+        data = body if request.method == "POST" else None
+        headers = {"Content-Type": "application/json"} if data is not None else {}
         upstream_task = asyncio.create_task(client.request(
-            request.method, UPSTREAM + request.path, data=body,
-            headers={"Content-Type": "application/json"}))
+            request.method, UPSTREAM + request.path, data=data,
+            headers=headers))
         disconnected = asyncio.create_task(_disconnect(request))
         try:
             done, _ = await asyncio.wait({upstream_task, disconnected}, return_when=asyncio.FIRST_COMPLETED)
@@ -61,7 +63,13 @@ async def _inference(request):
                 with suppress(asyncio.CancelledError):
                     await upstream_task
                 return web.Response(status=499)
-            upstream = await upstream_task
+            try:
+                upstream = await upstream_task
+            except (ClientError, OSError, asyncio.TimeoutError):
+                return web.json_response(
+                    {"error": {"message": "upstream model router unavailable", "type": "bad_gateway", "code": "502"}},
+                    status=502,
+                )
             async with upstream:
                 response = web.StreamResponse(status=upstream.status, headers={
                     "Content-Type": upstream.headers.get("Content-Type", "application/json"),
@@ -78,7 +86,7 @@ async def _inference(request):
                         break
                     try:
                         chunk = await chunk_task
-                    except StopAsyncIteration:
+                    except (StopAsyncIteration, ClientError):
                         break
                     try:
                         await _write(response, chunk)
