@@ -238,6 +238,58 @@ else
 fi
 
 # ============================================================================
+# Test 13: backup captures DATA_DIR content (#2924)
+#
+# BACKUP_DIR lives inside DATA_DIR, so a wholesale `cp -r "$DATA_DIR"` asks cp
+# to copy a directory into itself; the failure used to be swallowed and the
+# backup shipped with an empty data/.
+# ============================================================================
+mkdir -p "$DATA_DIR/models"
+echo "user-payload" > "$DATA_DIR/models/marker.txt"
+
+backup13_exit=0
+backup13_output=$(bash "$MIGRATE_CONFIG_SCRIPT" backup 2>&1) || backup13_exit=$?
+if [[ $backup13_exit -ne 0 ]]; then
+    fail "Behavioral test: backup exited $backup13_exit: $backup13_output"
+else
+    latest_backup=$(ls -1d "$DATA_DIR"/backups/config-* | tail -1)
+    if [[ -f "$latest_backup/data/models/marker.txt" ]]; then
+        pass "Behavioral test: backup captures DATA_DIR content"
+    else
+        fail "Behavioral test: backup data/ is missing DATA_DIR content ($latest_backup)"
+    fi
+fi
+
+# The backups tree must not be copied into the backup it is creating.
+if [[ -e "$latest_backup/data/backups" ]]; then
+    fail "Behavioral test: backup recursed into its own backups directory"
+else
+    pass "Behavioral test: backup skips the backups directory"
+fi
+
+# Two backups created within the same second must remain separate snapshots.
+FAKE_BIN="$TEMP_DIR/fake-bin"
+mkdir -p "$FAKE_BIN"
+cat > "$FAKE_BIN/date" <<'SH'
+#!/bin/bash
+if [[ "${1:-}" == "+%Y%m%d-%H%M%S" ]]; then
+    printf '%s\n' '20300101-010203'
+else
+    /bin/date "$@"
+fi
+SH
+chmod +x "$FAKE_BIN/date"
+
+backup_first=$(PATH="$FAKE_BIN:$PATH" bash "$MIGRATE_CONFIG_SCRIPT" backup | tail -n 1)
+backup_second=$(PATH="$FAKE_BIN:$PATH" bash "$MIGRATE_CONFIG_SCRIPT" backup | tail -n 1)
+if [[ "$backup_first" != "$backup_second" \
+    && -d "$backup_first" && -d "$backup_second" ]]; then
+    pass "Behavioral test: same-second backups use unique directories"
+else
+    fail "Behavioral test: same-second backups collided at $backup_first"
+fi
+
+# ============================================================================
 # Summary
 # ============================================================================
 echo ""

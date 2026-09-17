@@ -447,6 +447,35 @@ else
 fi
 
 # ============================================
+# TEST 8: Compose flags under a spaced install root
+# ============================================
+header "8/8" "Path-safe Compose Flags"
+
+if (
+    spaced_root="$(mktemp -d)/ODS Install"
+    trap 'rm -rf "${spaced_root%/ODS Install}"' EXIT
+    compose_file="$spaced_root/extensions/services/fixture/compose.yaml"
+    mkdir -p "$(dirname "$compose_file")"
+    printf 'services: {}\n' > "$compose_file"
+
+    INSTALL_DIR="$spaced_root"
+    SERVICE_IDS=(fixture)
+    SERVICE_COMPOSE[fixture]="$compose_file"
+    _SR_LOADED=true
+    _SR_COMPOSE_FLAGS_CACHED=false
+    flags="$(sr_compose_flags)"
+    [[ "$flags" == " -f extensions/services/fixture/compose.yaml" ]]
+
+    cd "$INSTALL_DIR"
+    read -ra args <<< "$flags"
+    [[ "${args[0]}" == "-f" && -f "${args[1]}" ]]
+); then
+    pass "Registry compose flags survive an install root containing spaces"
+else
+    fail "Registry compose flags must be relative to a spaced install root"
+fi
+
+# ============================================
 # Summary
 # ============================================
 echo ""

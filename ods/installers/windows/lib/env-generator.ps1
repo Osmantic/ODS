@@ -513,7 +513,8 @@ function New-ODSEnv {
         # `ods enable langfuse` edits survive.
         [bool]$EnableLangfuse = $false,
         [bool]$EnableLan = $false,
-        [bool]$EnableODSProxy = $false
+        [bool]$EnableODSProxy = $false,
+        [bool]$EnableWebSearch = $true
     )
 
     # Preserve existing secrets on re-install (mirrors Linux _env_get logic)
@@ -717,6 +718,7 @@ function New-ODSEnv {
     $langfusePort              = Get-EnvOrNew "LANGFUSE_PORT"              "3006"
     $langfuseDefault           = if ($EnableLangfuse) { "true" } else { "false" }
     $langfuseEnabled           = Get-EnvOrNew "LANGFUSE_ENABLED"           $langfuseDefault
+    $enableWebSearchValue      = if ($EnableWebSearch) { "true" } else { "false" }
     $langfuseNextauthSecret    = Get-EnvOrNew "LANGFUSE_NEXTAUTH_SECRET"   (New-SecureHex -Bytes 32)
     $langfuseSalt              = Get-EnvOrNew "LANGFUSE_SALT"              (New-SecureHex -Bytes 32)
     $langfuseEncryptionKey     = Get-EnvOrNew "LANGFUSE_ENCRYPTION_KEY"    (New-SecureHex -Bytes 32)
@@ -1053,7 +1055,7 @@ EMBEDDINGS_MEMORY_LIMIT=$embeddingsMemoryLimit
 #=== Web UI Settings ===
 # Loopback installs open directly. LAN installs require a login by default.
 WEBUI_AUTH=$webuiAuth
-ENABLE_WEB_SEARCH=true
+ENABLE_WEB_SEARCH=$enableWebSearchValue
 WEB_SEARCH_ENGINE=searxng
 
 #=== n8n Settings ===
