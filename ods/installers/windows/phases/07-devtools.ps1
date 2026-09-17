@@ -51,6 +51,7 @@ if (-not (Test-Path $script:OPENCODE_EXE)) {
             -Label       "OpenCode v$($script:OPENCODE_VERSION)"
         if (-not $dlOk) {
             Write-AIWarn "OpenCode download failed after retries -- skipping (install manually later)."
+            $script:ODSFailedOptionalSetup.Add("opencode-download")
             Write-AI "  Manual: https://github.com/anomalyco/opencode/releases"
         }
     }
@@ -62,6 +63,7 @@ if (-not (Test-Path $script:OPENCODE_EXE)) {
             Write-AIWarn "OpenCode archive is corrupt: $($_zipCheck.ErrorMessage)"
             Remove-Item $_ocZip -Force -ErrorAction SilentlyContinue
             Write-AIWarn "Skipping OpenCode (re-run installer to retry)"
+            $script:ODSFailedOptionalSetup.Add("opencode-archive")
         } else {
             # Extract to ~/.opencode/bin/
             New-Item -ItemType Directory -Path $script:OPENCODE_BIN -Force | Out-Null
@@ -76,9 +78,11 @@ if (-not (Test-Path $script:OPENCODE_EXE)) {
                     Write-AISuccess "OpenCode v$($script:OPENCODE_VERSION) installed"
                 } else {
                     Write-AIWarn "opencode.exe not found after extraction -- skipping"
+                    $script:ODSFailedOptionalSetup.Add("opencode-extraction")
                 }
             } else {
                 Write-AIWarn "OpenCode extraction failed -- skipping"
+                $script:ODSFailedOptionalSetup.Add("opencode-extraction")
             }
         }
     }
@@ -240,6 +244,8 @@ if (-not $_npmCmd -or -not $_nodeCmd) {
 
     if (-not $_npmCmd) {
         Write-AIWarn "Node.js not installed. Claude Code and Codex CLI will be skipped."
+        $script:ODSSkippedServices.Add("claude-code (Node.js unavailable)")
+        $script:ODSSkippedServices.Add("codex-cli (Node.js unavailable)")
         Write-AI "  Install manually: https://nodejs.org/en/download"
         Write-AI "  Then run: npm install -g @anthropic-ai/claude-code @openai/codex"
     }
@@ -434,6 +440,8 @@ if (Test-Path $_agentScript) {
                 Write-AISuccess "ODS host-agent Hugging Face downloader ready"
             } else {
                 Write-AIWarn "Could not install huggingface_hub[hf_xet]; model manager downloads may fail on Xet-backed Hugging Face models."
+                $script:ODSFailedOptionalSetup.Add("huggingface-hub-xet")
+                $script:ODSDegradedCapabilities.Add("xet-model-downloads")
             }
         }
 
@@ -517,6 +525,7 @@ Start-Process -FilePath $_pythonLiteral -ArgumentList `$agentArgs -WorkingDirect
         } catch {
             $taskError = $_
             Write-AIWarn "Could not register login task through Task Scheduler: $($taskError.Exception.Message)"
+            $script:ODSStartupFallbacks.Add("host-agent-startup-folder")
             Write-AI "Setting up alternative startup persistence for standard user..."
 
             $startupFolder = [Environment]::GetFolderPath("Startup")
@@ -533,12 +542,16 @@ WshShell.Run "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hid
                 Start-Process wscript.exe -ArgumentList ('"{0}"' -f $vbsFile) -NoNewWindow
             } catch {
                 Write-AIError "Failed to set up alternative startup persistence: $_"
+                $script:ODSFailedOptionalSetup.Add("host-agent-startup-folder")
+                $script:ODSStartupFallbacks.Add("host-agent-session-only")
                 Write-AIWarn "Starting host agent directly for this session..."
                 Start-Process -FilePath $_python3.FilePath -ArgumentList @($_agentScript, '--port', "$($script:ODS_AGENT_PORT)", '--pid-file', $script:ODS_AGENT_PID_FILE, '--install-dir', $installDir) -WorkingDirectory $installDir -WindowStyle Hidden -RedirectStandardError $script:ODS_AGENT_LOG_FILE
             }
         }
     } else {
         Write-AIWarn "Python 3 unavailable -- ODS host agent not started"
+        $script:ODSFailedOptionalSetup.Add("host-agent-python")
+        $script:ODSDegradedCapabilities.Add("host-agent")
         Write-AI "  Install Python 3.12 and re-run the installer, or start manually: .\ods.ps1 agent start"
     }
 } else {
