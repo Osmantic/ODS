@@ -69,20 +69,25 @@ ods_readiness_summary() {
 
         local http_code container_state state detail line
         http_code="$(_ods_readiness_http_code "$health_url" 3)"
-        container_state="$(_ods_readiness_container_state "$container")"
 
         if _ods_readiness_is_ready_code "$http_code"; then
             state="ready"
             detail="HTTP $http_code"
-        elif [[ "$container_state" == "running" || "$container_state" == "starting" || "$container_state" == "host" ]]; then
-            state="starting"
-            detail="HTTP $http_code"
-        elif [[ "$container_state" == "missing" || "$container_state" == "docker-unavailable" ]]; then
-            state="not detected"
-            detail="$container_state"
         else
-            state="needs attention"
-            detail="container $container_state, HTTP $http_code"
+            # HTTP readiness already decides the result. Consult Docker only
+            # to explain a failed probe; a stalled daemon must not hold up
+            # services that are already reachable.
+            container_state="$(_ods_readiness_container_state "$container")"
+            if [[ "$container_state" == "running" || "$container_state" == "starting" || "$container_state" == "host" ]]; then
+                state="starting"
+                detail="HTTP $http_code"
+            elif [[ "$container_state" == "missing" || "$container_state" == "docker-unavailable" ]]; then
+                state="not detected"
+                detail="$container_state"
+            else
+                state="needs attention"
+                detail="container $container_state, HTTP $http_code"
+            fi
         fi
 
         line=$(printf "%-28s %s (%s)" "$name" "$open_url" "$detail")

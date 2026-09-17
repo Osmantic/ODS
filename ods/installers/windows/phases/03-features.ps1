@@ -54,6 +54,24 @@ $enableRemoteAccess  = $false
 # explicit override so a -All run can still suppress Langfuse.
 $enableLangfuse   = ($langfuseFlag -or $allFlag) -and (-not $noLangfuseFlag)
 
+# Tier 1 headless installs default to the lean Core Only profile. Explicit
+# feature flags (or -All) still opt into the requested services.
+$implicitTier1CoreOnly = $nonInteractive -and $selectedTier -eq "1" -and
+    -not ($allFlag -or $recommendedFlag -or $hermesFlag -or $voiceFlag -or
+        $workflowsFlag -or $ragFlag -or $openClawFlag -or $langfuseFlag)
+if ($nonInteractive -and ($coreOnlyFlag -or $implicitTier1CoreOnly) -and $selectedTier -eq "1") {
+    $enableVoice = $false
+    $enableWorkflows = $false
+    $enableRag = $false
+    $enableRecommended = $false
+    $enableHermes = $false
+    $enableOpenClaw = $false
+    $enableComfyui = $false
+    $enableDeepResearch = $false
+    $enablePrivacyShield = $false
+    $enableLangfuse = $false
+}
+
 # ── Interactive menu (skipped in non-interactive / dry-run / --All mode) ──────
 if (-not $nonInteractive -and -not $allFlag -and -not $dryRun) {
     Write-Host ""
