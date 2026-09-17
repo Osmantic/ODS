@@ -43,6 +43,9 @@
 #
 #   8. Native Lemonade cleanup must also stop the per-user cached llama.cpp
 #      child process; it does not live under the Program Files Lemonade bin dir.
+#
+#   9. Hosts without GNU timeout must launch PowerShell without expanding an
+#      empty array under nounset (Bash 4.0-4.3 treats that as unbound).
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -147,15 +150,27 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 8b. Lemonade 10.7 removed the legacy launch flags and changed local GGUF
-#     request IDs. Bootstrap promotion must use the shared version-aware
-#     contract, resolve the live ID, and persist it for every downstream client.
+# 8a. The optional timeout command belongs in the always-populated env argv.
+# Expanding a separate empty array aborts under `set -u` on Bash < 4.4.
 # ---------------------------------------------------------------------------
 restart_block="$(awk '
     /^restart_windows_lemonade_with_full_model\(\)/ { in_block=1 }
     in_block { print }
     in_block && /^}/ { exit }
 ' "$SCRIPT" | grep -v '^[[:space:]]*#')"
+if ! grep -q 'ps_timeout_prefix' <<<"$restart_block" \
+   && grep -q 'ps_env_cmd+=(timeout --foreground' <<<"$restart_block" \
+   && grep -q 'if "${ps_env_cmd\[@\]}"' <<<"$restart_block"; then
+    pass "Windows Lemonade restart tolerates hosts without GNU timeout"
+else
+    fail "Windows Lemonade restart must not expand an optional empty timeout array"
+fi
+
+# ---------------------------------------------------------------------------
+# 8b. Lemonade 10.7 removed the legacy launch flags and changed local GGUF
+#     request IDs. Bootstrap promotion must use the shared version-aware
+#     contract, resolve the live ID, and persist it for every downstream client.
+# ---------------------------------------------------------------------------
 if grep -q 'Get-ODSLemonadeLaunchContract' <<<"$restart_block" \
    && grep -q 'New-ODSLemonadeScheduledTaskAction' <<<"$restart_block" \
    && grep -q 'Set-ODSLemonadeModernRuntimeConfig' <<<"$restart_block" \

@@ -71,18 +71,33 @@ env_file_value() {
     ' "${INSTALL_DIR}/.env" 2>/dev/null || true
 }
 
+COMPOSE_PARSED_ARGS=()
+
+compose_flags_parse() {
+    local flags="$1" parsed="" token
+    COMPOSE_PARSED_ARGS=()
+    [[ -n "$flags" ]] || return 0
+    # xargs tokenizes shell-style quotes without evaluating substitutions or
+    # commands. One token per output line preserves whitespace inside a path;
+    # compose filenames containing newlines are intentionally unsupported.
+    parsed="$(printf '%s\n' "$flags" | xargs -n 1 printf '%s\n')" || return 1
+    while IFS= read -r token; do
+        [[ -n "$token" ]] && COMPOSE_PARSED_ARGS+=("$token")
+    done <<< "$parsed"
+}
+
 compose_flags_files_exist() {
-    local flags="$1"
-    local prev="" tok
-    for tok in $flags; do
-        if [[ "$prev" == "-f" ]]; then
-            if [[ "$tok" = /* ]]; then
-                [[ -f "$tok" ]] || return 1
-            else
-                [[ -f "${INSTALL_DIR}/${tok}" ]] || return 1
-            fi
+    local flags="$1" index path
+    compose_flags_parse "$flags" || return 1
+    for ((index = 0; index < ${#COMPOSE_PARSED_ARGS[@]}; index++)); do
+        [[ "${COMPOSE_PARSED_ARGS[$index]}" == "-f" ]] || continue
+        ((index + 1 < ${#COMPOSE_PARSED_ARGS[@]})) || return 1
+        path="${COMPOSE_PARSED_ARGS[$((index + 1))]}"
+        if [[ "$path" = /* ]]; then
+            [[ -f "$path" ]] || return 1
+        else
+            [[ -f "${INSTALL_DIR}/${path}" ]] || return 1
         fi
-        prev="$tok"
     done
     return 0
 }
@@ -90,9 +105,9 @@ compose_flags_files_exist() {
 resolve_compose_flags() {
     local cached=""
     if [[ -f "${INSTALL_DIR}/.compose-flags" ]]; then
-        cached="$(tr '\n' ' ' < "${INSTALL_DIR}/.compose-flags" | xargs 2>/dev/null || true)"
+        cached="$(< "${INSTALL_DIR}/.compose-flags")"
         if [[ -n "$cached" ]] && compose_flags_files_exist "$cached"; then
-            echo "$cached"
+            printf '%s\n' "$cached"
             return 0
         fi
         log_warn "Cached compose flags are missing or stale; trying dynamic compose resolution." >&2
@@ -785,7 +800,11 @@ cmd_rollback() {
     local -a compose_args=()
     compose_flags=$(resolve_compose_flags 2>/dev/null || true)
     if [[ -n "$compose_flags" ]]; then
-        read -ra compose_args <<< "$compose_flags"
+        compose_flags_parse "$compose_flags" || {
+            log_error "Resolved compose flags are malformed."
+            return 1
+        }
+        compose_args=("${COMPOSE_PARSED_ARGS[@]}")
     fi
 
     # Stop services using the currently active compose stack.
@@ -838,7 +857,11 @@ cmd_rollback() {
     local -a restored_compose_args=()
     restored_compose_flags=$(resolve_compose_flags 2>/dev/null || true)
     if [[ -n "$restored_compose_flags" ]]; then
-        read -ra restored_compose_args <<< "$restored_compose_flags"
+        compose_flags_parse "$restored_compose_flags" || {
+            log_error "Restored compose flags are malformed."
+            return 1
+        }
+        restored_compose_args=("${COMPOSE_PARSED_ARGS[@]}")
     fi
 
     if [[ ${#restored_compose_args[@]} -gt 0 ]]; then
@@ -926,7 +949,11 @@ cmd_health() {
     local -a compose_args=()
     compose_flags=$(resolve_compose_flags 2>/dev/null || true)
     if [[ -n "$compose_flags" ]]; then
-        read -ra compose_args <<< "$compose_flags"
+        compose_flags_parse "$compose_flags" || {
+            log_error "Resolved compose flags are malformed."
+            return 1
+        }
+        compose_args=("${COMPOSE_PARSED_ARGS[@]}")
     fi
     
     local services
