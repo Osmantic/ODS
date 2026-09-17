@@ -1050,6 +1050,9 @@ async def handle_chat_completions(request: web.Request):
     if fail is not None:
         return fail
 
+    if request.query_string:
+        return web.json_response({"error": "query parameters not allowed"}, status=400)
+
     if request.content_type != "application/json":
         return web.json_response({"error": "Content-Type must be application/json"},
                                  status=415)
