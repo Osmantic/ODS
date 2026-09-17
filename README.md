@@ -148,7 +148,7 @@ Windows recovery note: if the runtime folder is partial and `.\ods.ps1` is missi
 > | **Windows** (NVIDIA + AMD) | **Supported** — install and run today |
 > | **macOS** (Apple Silicon) | **Supported** — install and run today |
 >
-> **Tested Linux distros:** Ubuntu 24.04/22.04, Debian 12, Linux Mint 21.3, Fedora 41+, Rocky Linux 9, Arch Linux, Manjaro, CachyOS, and openSUSE Tumbleweed. Other distros using apt, dnf, pacman, or zypper should also work — [open an issue](https://github.com/Osmantic/ODS/issues) if yours doesn't.
+> **Tested Linux distros:** Ubuntu 26.04/24.04/22.04, Debian 12, Linux Mint 21.3, Fedora 41+, Rocky Linux 9, Arch Linux, Manjaro, CachyOS, and openSUSE Tumbleweed. Other distros using apt, dnf, pacman, or zypper should also work — [open an issue](https://github.com/Osmantic/ODS/issues) if yours doesn't.
 >
 > **Release validation:** Operational changes run through a release-grade gate
 > that covers zero-prereq bootstrap, clean installs, product behavior,
@@ -252,7 +252,7 @@ See the [macOS Quickstart](ods/docs/MACOS-QUICKSTART.md) for details.
 - **Kokoro** — text-to-speech
 
 ### Agents & Automation
-- **Pixel** — core conversational agent on qualified Ubuntu 24.04/Debian 12 systemd hosts after separate written license authorization; appears as `pixel/default` in Open WebUI and as a Dashboard toolbar app
+- **Pixel** — core conversational agent on qualified Ubuntu 24.04/26.04 or Debian 12 systemd hosts after separate written license authorization; appears as `pixel/default` in Open WebUI and as a Dashboard toolbar app
 - **Hermes Agent** — independent general-purpose agent, available alongside Pixel; includes memory, skills, and a magic-link-gated proxy
 - **OpenClaw** — deprecated legacy autonomous agent, still opt-in during the migration window
 - **n8n** — workflow automation with 400+ integrations (Slack, email, databases, APIs)

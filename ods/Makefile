@@ -35,6 +35,7 @@ test: ## Run unit and contract tests
 	@bash tests/test-external-services.sh
 	@bash tests/test-resolve-compose-resilient.sh
 	@bash tests/test-phase03-multigpu-tty.sh
+	@bash tests/test-pixel-support-services.sh
 	@bash tests/test-phase03-no-gpu-assignment-message.sh
 	@bash tests/contracts/test-preflight-fixtures.sh
 	@bash tests/test-preflight-resolver-bug.sh
@@ -42,8 +43,11 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== Linux install preflight ==="
 	@bash tests/test-linux-install-preflight.sh
+	@bash tests/test-phase05-podman-shim.sh
 	@bash tests/test-linux-host-agent-stop.sh
 	@bash tests/test-preflight-dashboard-port.sh
+	@bash tests/test-wsl-broken-docker-shim.sh
+	@bash tests/test-ui-missing-container-fast-fail.sh
 	@echo ""
 	@echo "=== ods-doctor rootless subordinate IDs ==="
 	@bash tests/test-ods-doctor-rootless-subid.sh
@@ -60,6 +64,7 @@ test: ## Run unit and contract tests
 	@echo "=== Docker rootless bind-mount ownership ==="
 	@bash tests/test-rootless-docker-ownership.sh
 	@bash tests/test-cli-status-docker-error.sh
+	@python3 tests/test-cli-stt-env.py
 	@echo ""
 	@echo "=== AMD/Lemonade contracts ==="
 	@bash tests/contracts/test-amd-lemonade-contracts.sh
@@ -80,6 +85,7 @@ test: ## Run unit and contract tests
 	@bash tests/test-safe-env.sh
 	@bash tests/test-env-example-inline-comments.sh
 	@bash tests/test-phase06-secret-generation.sh
+	@bash tests/test-phase06-env-rerun-quoting.sh
 	@echo ""
 	@echo "=== health-check.sh --json output contract ==="
 	@bash tests/test-health-check-json-output.sh
@@ -89,6 +95,7 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== mode switch status and switching ==="
 	@bash tests/test-mode-switch-status.sh
+	@bash tests/test-env-append-final-newline.sh
 	@echo ""
 	@echo "=== Bind address sweep ==="
 	@bash tests/test-bind-address-sweep.sh
@@ -123,6 +130,7 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== Bash 3.2 guard contracts ==="
 	@bash tests/test-bash32-guards.sh
+	@bash tests/test-ods-doctor-bash32-guard.sh
 	@echo ""
 	@echo "=== CLI update post-verification ==="
 	@bash tests/test-cli-update-verification.sh
@@ -141,18 +149,26 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== CLI preset restore user extensions ==="
 	@bash tests/test-cli-preset-restore-user-extensions.sh
+	@bash tests/test-preset-export-permissions.sh
 	@echo ""
 	@echo "=== bootstrap OpenClaw compose-guard regression ==="
 	@bash tests/test-bootstrap-openclaw-compose-guard.sh
 	@echo ""
 	@echo "=== ods-update.sh backup command ==="
+	@bash tests/test-update-backup-retention-labels.sh
 	@bash tests/test-update-script-backup.sh
 	@bash tests/test-update-backup-retention-spaces.sh
+	@bash tests/test-update-current-version.sh
+	@bash tests/test-update-rollback-restore-failure.sh
 	@bash tests/test-backup-data-coverage.sh
 	@echo ""
 	@echo "=== backup integrity and restore round-trip ==="
 	@bash tests/test-backup-integrity.sh
 	@bash tests/test-backup-restore-roundtrip.sh
+	@python3 tests/test-rsync-transfer-failures.py
+	@echo ""
+	@echo "=== ods-update.sh rollback picks the newest backup ==="
+	@bash tests/test-update-rollback-latest-backup.sh
 	@echo ""
 	@echo "=== bootstrap-upgrade spawn closes inherited FDs ==="
 	@bash tests/test-bootstrap-upgrade-close-inherited-fds.sh
@@ -173,9 +189,13 @@ test: ## Run unit and contract tests
 	@bash tests/test-macos-env-quote-strip.sh
 	@echo "=== macOS generated .env validates against the schema ==="
 	@bash tests/test-macos-env-schema.sh
+	@echo "=== macOS native llama port is relocatable ==="
+	@bash tests/test-macos-native-llama-port.sh
 	@echo ""
 	@echo "=== macOS uninstall LaunchAgent cleanup ==="
 	@bash tests/test-macos-uninstall-launchagents.sh
+	@echo "=== uninstall removes the ods-mdns systemd unit ==="
+	@bash tests/test-uninstall-mdns-unit.sh
 	@echo ""
 	@echo "=== token-spy session manager active-id extraction ==="
 	@bash tests/test-token-spy-session-manager.sh

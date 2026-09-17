@@ -77,6 +77,31 @@ test("returns only a structurally matched host promotion receipt", async () => {
   assert.match(result.content[0].text, /"sha256":"a{64}"/);
 });
 
+test("promotes the full advertised filename length without widening parent paths", async () => {
+  const requests = [];
+  const tool = createDownloadPromoteTool({ request: async (request) => {
+    requests.push(request);
+    return success(request);
+  } });
+  for (const length of [128, 129, 200]) {
+    const filename = "a".repeat(length - 4) + ".pdf";
+    for (const relativePath of [filename, `downloads/${filename}`]) {
+      const result = await tool.execute("long-name", { ...params, filename, relativePath });
+      assert.equal(result.details.status, "succeeded", relativePath);
+      assert.equal(requests.at(-1).relativePath, relativePath);
+    }
+  }
+  const before = requests.length;
+  for (const changed of [
+    { filename: "a".repeat(201), relativePath: "a".repeat(201) },
+    { relativePath: `${"a".repeat(129)}/${params.filename}` },
+    { relativePath: `downloads/../${params.filename}` },
+  ]) {
+    assert.equal((await tool.execute("invalid-name", { ...params, ...changed })).isError, true);
+  }
+  assert.equal(requests.length, before);
+});
+
 test("explains the captured argument-name mistake before any host request and permits correction", async () => {
   const requests = [];
   const tool = createDownloadPromoteTool({

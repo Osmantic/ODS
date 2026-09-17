@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { configurationError } from './settings/pixelProviderForm.js'
 import PixelAdviceRuntime from './PixelAdviceRuntime.jsx'
+import {browserUuid} from '../lib/browserUuid'
 
 const STORAGE = 'ods.pixel.advice.job.v1'
 const jobPattern = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/
@@ -116,7 +117,7 @@ export default function PixelAdvice({ onInsert, canInsert = true }) {
     jobVersion.current++
     let id
     try {
-      id = crypto.randomUUID()
+      id = browserUuid()
       // Only an opaque ID is persisted, before any possibly billable request.
       // A reload queries that ID; it never submits the capsule automatically.
       localStorage.setItem(STORAGE, id)
@@ -183,7 +184,7 @@ export default function PixelAdvice({ onInsert, canInsert = true }) {
             <button className={button} disabled={!canInsert || !onInsert} onClick={() => { onInsert(`Advisory response (untrusted; evaluate before acting):\n${job.result.text}`); close() }}>Paste advice into composer (does not send)</button>
           </>}
         </div> : <>
-          <p className="text-sm">{providerReady ? `Configured advisor: ${advisor.label} · ${advisor.model} · ${advisor.baseUrl} · saved revision ${config.revision}` : 'Select and save an enabled advisor in Settings → Pixel providers first.'}</p>
+          <p className="text-sm">{providerReady ? `Configured advisor: ${advisor.label} · ${advisor.model} · ${advisor.baseUrl} · saved revision ${config.revision}` : 'Select and save an enabled advisor in Settings → Portal connections first.'}</p>
           <button className={button} onClick={load}>Reload saved providers</button>
           <label className="block space-y-2 text-sm">Capsule to send<textarea className={field} rows={7} value={capsule} onChange={event => { setCapsule(event.target.value); setCloud(false); setCost(false) }} placeholder="Describe the specific problem and include only the details this advisor needs." /></label>
           <p className="text-xs">Maximum 16 KiB; one attempt; up to {Math.min(1024, advisor?.maxOutputTokens || 1024)} output tokens. Price is unknown, not zero. No fallback provider is used for advice.</p>

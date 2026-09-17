@@ -596,11 +596,11 @@ if command -v pwsh >/dev/null 2>&1; then
         if ([string]::IsNullOrWhiteSpace($litellmKey)) {
             throw "Expected Windows AMD Lemonade installs to generate LITELLM_KEY"
         }
-        if ($envText -notmatch "(?m)^HERMES_LLM_BASE_URL=http://litellm:4000/v1\r?$") {
-            throw "Expected Windows AMD Lemonade Hermes to route through LiteLLM"
+        if ($envText -notmatch "(?m)^HERMES_LLM_BASE_URL=http://model-router:9099/v1\r?$") {
+            throw "Expected Windows AMD Lemonade Hermes to route through model-router"
         }
-        if ($envText -notmatch "(?m)^HERMES_LLM_API_KEY=$([regex]::Escape($litellmKey))\r?$") {
-            throw "Expected Windows AMD Lemonade Hermes to authenticate with LITELLM_KEY"
+        if ($envText -notmatch "(?m)^HERMES_LLM_API_KEY=no-key\r?$") {
+            throw "Expected Windows AMD Lemonade Hermes to use the local model-router key"
         }
         if ($envText -match "(?m)^HERMES_LLM_BASE_URL=http://host\.docker\.internal:8080/api/v1$") {
             throw "Windows AMD Lemonade Hermes must not stream directly against native Lemonade"
@@ -701,7 +701,7 @@ echo "[contract] Linux AMD/Lemonade avoids Whisper port 9000"
 if grep -q 'AMD/Lemonade detected; reserving host port 9000' installers/phases/04-requirements.sh \
     && grep -q 'AMD/Lemonade detected; Whisper reassigned to host port' installers/phases/06-directories.sh \
     && grep -q 'WHISPER_PORT_VALUE="9100"' installers/phases/06-directories.sh \
-    && grep -q 'WHISPER_PORT=${WHISPER_PORT_VALUE}' installers/phases/06-directories.sh; then
+    && grep -qF 'WHISPER_PORT=$(dotenv_value "${WHISPER_PORT_VALUE}")' installers/phases/06-directories.sh; then
     pass "Linux AMD/Lemonade defaults Whisper to alternate host port"
 else
     fail "Linux AMD/Lemonade must avoid Lemonade host port 9000 collision"

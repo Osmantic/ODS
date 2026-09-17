@@ -75,6 +75,7 @@ from routers import (
     usage,
     node,
     pixel,
+    pixel_teams,
     pixel_providers,
     pixel_settings,
     portal_identity,
@@ -1216,6 +1217,7 @@ app.include_router(tailscale.router)
 app.include_router(usage.router)
 app.include_router(node.router)
 app.include_router(pixel.router)
+app.include_router(pixel_teams.router)
 app.include_router(pixel_providers.router)
 app.include_router(pixel_settings.router)
 app.include_router(portal_identity.router)

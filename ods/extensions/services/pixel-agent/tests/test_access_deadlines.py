@@ -9,7 +9,9 @@ import contextlib
 import json
 import os
 from pathlib import Path
+import socket
 import socketserver
+import struct
 import sys
 import threading
 import time
@@ -27,17 +29,28 @@ def local_server(mode):
         def handle(self):
             self.request.settimeout(1)
             seen.append(self.request.recv(8192))
+            response_mode = mode[min(len(seen) - 1, len(mode) - 1)] if isinstance(mode, list) else mode
             try:
-                if mode == "headers":
+                if response_mode == "reset":
+                    self.request.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+                    return
+                if response_mode == "disconnect": return
+                if response_mode == "refused":
+                    self.request.sendall(b"HTTP/1.1 503 Unavailable\r\nContent-Length: 0\r\n\r\n")
+                    return
+                if response_mode == "incomplete":
+                    self.request.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 99\r\n\r\n{")
+                    return
+                if response_mode == "headers":
                     self.request.sendall(b"HTTP/1.1 200 OK\r\nX-Slow: ")
-                elif mode == "body":
+                elif response_mode == "body":
                     self.request.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 99999\r\n\r\n{")
-                elif mode == "redirect":
+                elif response_mode == "redirect":
                     self.request.sendall(b"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:1/steal\r\nContent-Length: 0\r\n\r\n")
                     return
                 else:
                     raw = json.dumps({"ok": True}).encode()
-                    if mode == "duplicate": raw = b'{"ok":true,"ok":false}'
+                    if response_mode == "duplicate": raw = b'{"ok":true,"ok":false}'
                     self.request.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: " + str(len(raw)).encode() + b"\r\n\r\n" + raw)
                     return
                 for _ in range(30):
@@ -68,7 +81,7 @@ def test_slow_trickle_is_bounded_by_absolute_http_deadline(tmp_path, mode):
         assert len(seen) == 1
 
 
-@pytest.mark.parametrize("mode", ["redirect", "duplicate"])
+@pytest.mark.parametrize("mode", ["redirect", "duplicate", "refused", "incomplete"])
 def test_http_does_not_follow_redirect_or_accept_duplicate_json(tmp_path, mode):
     adapter = bridge.SystemdAccessBridge(tmp_path, "key")
     with local_server(mode) as (origin, seen):
@@ -81,6 +94,58 @@ def test_successful_http_keeps_key_out_of_response(tmp_path):
     with local_server("ok") as (origin, seen):
         assert adapter.http(origin, "/health", "synthetic-key") == {"ok": True}
         assert b"Authorization: Bearer synthetic-key" in seen[0]
+
+
+@pytest.mark.parametrize("mode", ["reset", "disconnect"])
+def test_read_reset_gets_two_fresh_connections_and_uses_only_complete_response(tmp_path, mode):
+    adapter = bridge.SystemdAccessBridge(tmp_path, "key")
+    with local_server([mode, mode, "ok"]) as (origin, seen):
+        assert adapter.http(origin, "/pixel-ods/access-runtime", "synthetic-key") == {"ok": True}
+        assert len(seen) == 3
+        assert all(request.startswith(b"GET /pixel-ods/access-runtime ") for request in seen)
+
+
+def test_read_reset_stops_after_three_connections(tmp_path):
+    adapter = bridge.SystemdAccessBridge(tmp_path, "key")
+    with local_server("reset") as (origin, seen):
+        with pytest.raises(bridge.AccessError, match="runtime-unavailable-or-busy"):
+            adapter.http(origin, "/pixel-ods/access-runtime", "synthetic-key")
+        assert len(seen) == 3
+
+
+@pytest.mark.parametrize("mode", ["reset", "disconnect"])
+def test_mutation_reset_is_never_replayed(tmp_path, mode):
+    adapter = bridge.SystemdAccessBridge(tmp_path, "key")
+    with local_server([mode, "ok"]) as (origin, seen):
+        with pytest.raises(bridge.AccessError, match="runtime-unavailable-or-busy"):
+            adapter.http(origin, "/pixel-ods/access-runtime", "synthetic-key", {"operation": "acquire"})
+        assert len(seen) == 1
+        assert seen[0].startswith(b"POST /pixel-ods/access-runtime ")
+
+
+def test_read_retries_share_deadline_and_close_each_previous_connection(tmp_path, monkeypatch):
+    adapter = bridge.SystemdAccessBridge(tmp_path, "key")
+    now = [100.0]
+    connections = []
+    class ResetConnection:
+        def __init__(self, host, port, timeout):
+            assert not connections or connections[-1].closed
+            self.timeout, self.closed, self.sock = timeout, False, self
+            connections.append(self)
+        def connect(self): pass
+        def request(self, method, *args, **kwargs): assert method == "GET"
+        def getresponse(self):
+            now[0] += 0.3
+            raise ConnectionResetError()
+        def close(self): self.closed = True
+        def shutdown(self, how): pass
+    monkeypatch.setattr(bridge.http.client, "HTTPConnection", ResetConnection)
+    monkeypatch.setattr(bridge.time, "monotonic", lambda: now[0])
+    with pytest.raises(bridge.AccessError, match="runtime-operation-timeout"):
+        adapter.http("http://127.0.0.1:1", "/pixel-ods/access-runtime", "synthetic-key", timeout=0.5)
+    assert len(connections) == 2
+    assert [connection.timeout for connection in connections] == pytest.approx([0.5, 0.2])
+    assert all(connection.closed for connection in connections)
 
 
 def test_nested_and_concurrent_deadlines_do_not_leak_between_requests(tmp_path):

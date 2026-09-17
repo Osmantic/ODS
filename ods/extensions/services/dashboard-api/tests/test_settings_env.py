@@ -134,6 +134,70 @@ def settings_env_fixture(tmp_path, monkeypatch):
     }
 
 
+@pytest.fixture()
+def constrained_settings(settings_env_fixture):
+    """Use the shipped constraints, through the real Settings save boundary."""
+    schema_path = settings_env_fixture["schema_path"]
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    shipped = json.loads((Path(__file__).resolve().parents[4] / ".env.schema.json").read_text())
+    for key in ("REMOTE_LLM_SSH_PORT", "LLAMA_ARG_N_CPU_MOE", "N8N_PASS",
+                "PIXEL_OPENWEBUI_KEY", "TS_HOSTNAME"):
+        schema["properties"][key] = shipped["properties"][key]
+    schema_path.write_text(json.dumps(schema), encoding="utf-8")
+    return settings_env_fixture
+
+
+@pytest.mark.parametrize("key,value", [
+    ("REMOTE_LLM_SSH_PORT", "0"),
+    ("REMOTE_LLM_SSH_PORT", "65536"),
+    ("LLAMA_ARG_N_CPU_MOE", "-1"),
+    ("N8N_PASS", "tiny-pass"),
+    ("PIXEL_OPENWEBUI_KEY", "a" * 65),
+    ("PIXEL_OPENWEBUI_KEY", "g" * 64),
+    ("TS_HOSTNAME", "invalid/hostname"),
+])
+def test_settings_rejects_shipped_schema_violations_before_host_write(
+    test_client, constrained_settings, monkeypatch, key, value,
+):
+    from unittest.mock import Mock
+
+    import main
+    write = Mock(wraps=main._call_agent_env_update)
+    monkeypatch.setattr("main._call_agent_env_update", write)
+    env_path = constrained_settings["env_path"]
+    original = env_path.read_bytes()
+    response = test_client.put("/api/settings/env", headers=test_client.auth_headers,
+                               json={"mode": "form", "values": {key: value}})
+
+    assert response.status_code == 400, response.text
+    assert any(issue["key"] == key for issue in response.json()["detail"]["issues"])
+    if key in {"N8N_PASS", "PIXEL_OPENWEBUI_KEY"}:
+        assert value not in response.text
+    write.assert_not_called()
+    assert env_path.read_bytes() == original
+    assert not (constrained_settings["data_root"] / "config-backups").exists()
+
+
+@pytest.mark.parametrize("port", ["1", "65535"])
+def test_settings_saves_valid_schema_boundaries_and_keeps_blank_secret(
+    test_client, constrained_settings, port,
+):
+    values = {"REMOTE_LLM_SSH_PORT": port, "LLAMA_ARG_N_CPU_MOE": "0",
+              "N8N_PASS": "a" * 10, "PIXEL_OPENWEBUI_KEY": "a" * 64,
+              "TS_HOSTNAME": "ods-local"}
+    response = test_client.put("/api/settings/env", headers=test_client.auth_headers,
+                               json={"mode": "form", "values": values})
+    assert response.status_code == 200, response.text
+    response = test_client.put("/api/settings/env", headers=test_client.auth_headers,
+                               json={"mode": "form", "values": {"N8N_PASS": ""}})
+    assert response.status_code == 200, response.text
+    from settings import _parse_env_text
+    persisted, issues = _parse_env_text(constrained_settings["env_path"].read_text())
+    assert issues == []
+    assert {key: persisted[key] for key in values} == values
+    assert (constrained_settings["data_root"] / "config-backups/.env.backup.test").exists()
+
+
 def test_api_settings_env_masks_secret_values(test_client, settings_env_fixture):
     response = test_client.get("/api/settings/env", headers=test_client.auth_headers)
 
@@ -149,6 +213,27 @@ def test_api_settings_env_masks_secret_values(test_client, settings_env_fixture)
     assert payload["values"]["LLM_BACKEND"] == "local"
     assert payload["fields"]["LLM_BACKEND"]["value"] == "local"
     assert payload["agentAvailable"] is True
+
+
+def test_api_settings_env_recognizes_library_ports_and_keeps_library_secrets_masked(
+    test_client, settings_env_fixture,
+):
+    schema = Path(__file__).resolve().parents[4] / ".env.schema.json"
+    settings_env_fixture["schema_path"].write_bytes(schema.read_bytes())
+    settings_env_fixture["env_path"].write_text(
+        "DIFY_PORT=18002\nFLOWISE_PASSWORD=library-secret-fixture\nMINIFLUX_ADMIN_PASSWORD=miniflux-secret-fixture\n", encoding="utf-8",
+    )
+    response = test_client.get("/api/settings/env", headers=test_client.auth_headers)
+    assert response.status_code == 200
+    fields = response.json()["fields"]
+    assert fields["DIFY_PORT"]["type"] == "integer"
+    assert fields["DIFY_PORT"]["value"] == "18002"
+    assert fields["FLOWISE_PASSWORD"]["secret"] is True
+    assert fields["FLOWISE_PASSWORD"]["hasValue"] is True
+    assert "library-secret-fixture" not in response.text
+    assert fields["MINIFLUX_ADMIN_PASSWORD"]["secret"] is True
+    assert fields["MINIFLUX_ADMIN_PASSWORD"]["hasValue"] is True
+    assert "miniflux-secret-fixture" not in response.text
 
 
 def test_api_settings_env_does_not_treat_plural_tokens_as_a_secret(

@@ -1,5 +1,5 @@
 import {render} from '../test/test-utils'
-import {screen, fireEvent} from '@testing-library/react'
+import {screen} from '@testing-library/react'
 import Pixel from './Pixel'
 import {saveConversation} from '../lib/pixelConversations'
 
@@ -21,11 +21,8 @@ it('treats a republished older snapshot as the latest retained publication', asy
   vi.stubGlobal('fetch',vi.fn(async()=>({ok:true,json:async()=>({available:true,model:'pixel/default'})})))
   render(<Pixel/> )
   await screen.findByText('Available')
-  const selector = screen.getByLabelText('Published version')
-  expect([...selector.querySelectorAll('option')].map(option => option.value)).toEqual([b.siteId,a.siteId])
+  expect(screen.queryByLabelText('Published version')).toBeNull()
   expect(screen.queryByRole('button',{name:'Show latest publication'})).toBeNull()
-  fireEvent.change(selector,{target:{value:b.siteId}})
-  fireEvent.click(screen.getByRole('button',{name:'Show latest publication'}))
   expect(screen.getByTitle('Interactive Portal preview')).toHaveAttribute('src',`/pixel-preview/${a.siteId}/__ods_view__.html`)
   expect(fetch.mock.calls.some(([url]) => url === '/api/pixel/chat/stream')).toBe(false)
 })

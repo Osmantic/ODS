@@ -578,6 +578,7 @@ FAKE_PYTHON
     }
     read_env_value() {
         case "$2" in
+            GGUF_FILE) printf 'test.gguf\n' ;;
             ODS_MODE) printf 'local\n' ;;
             BIND_ADDRESS) printf '%s\n' "$TEST_BIND" ;;
             ODS_MACOS_HOST_GATEWAY) printf '%s\n' "$TEST_GATEWAY" ;;

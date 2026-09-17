@@ -35,7 +35,7 @@ it('downloads the live unsaved draft and complete message text when storage writ
   expect(restored.inFlight).toBe(false)
   expect(restored.preview).toBeNull()
   expect(localStorage.getItem('ods.pixel.conversations.v1')).toBe(before)
-  expect(fetch.mock.calls.every(([,options]) => !options?.method || options.method === 'GET')).toBe(true)
+  expect(fetch.mock.calls.every(([url,options]) => !options?.method || options.method === 'GET' || url === '/api/pixel/chat/context')).toBe(true)
   expect(window.HTMLAnchorElement.prototype.click.mock.instances[0].isConnected).toBe(false)
   await act(async () => {await vi.advanceTimersByTimeAsync(1000)})
   expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:recovery')

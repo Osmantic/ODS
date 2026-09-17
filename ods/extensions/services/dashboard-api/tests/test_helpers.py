@@ -384,6 +384,16 @@ class TestGetCpuMetrics:
         result = get_cpu_metrics()
         assert result == {"percent": 0, "temp_c": None}
 
+    def test_linux_cpu_metrics_handles_corrupt_sensor(self, monkeypatch):
+        from unittest.mock import mock_open
+        fake_stat = "cpu  100 200 300 400 500 600 700 800\n"
+        monkeypatch.setattr("builtins.open", mock_open(read_data="corrupted_not_a_number\n"))
+        monkeypatch.setattr("glob.glob", lambda pat: ["/sys/class/thermal/thermal_zone0/type"])
+        from helpers import _get_cpu_metrics_linux
+        res = _get_cpu_metrics_linux()
+        assert res["temp_c"] is None
+        assert 0.0 <= res["percent"] <= 100.0
+
 
 class TestGetRamMetrics:
 
@@ -398,6 +408,15 @@ class TestGetRamMetrics:
         result = get_ram_metrics()
         assert result == {"used_gb": 0, "total_gb": 0, "percent": 0}
 
+    def test_linux_ram_metrics_clamps_bounds(self, monkeypatch):
+        from unittest.mock import mock_open
+        fake_mem = "MemTotal:        16000000 kB\nMemAvailable:    18000000 kB\n"
+        monkeypatch.setattr("builtins.open", mock_open(read_data=fake_mem))
+        from helpers import _get_ram_metrics_linux
+        res = _get_ram_metrics_linux()
+        assert res["used_gb"] == 0
+        assert res["percent"] == 0.0
+
 
 # --- check_service_health ---
 
@@ -411,6 +430,29 @@ class TestCheckServiceHealth:
         "health": "/health",
         "host": "localhost",
     }
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("field,value", [
+        ("port", "invalid"), ("port", True), ("port", 8080.5),
+        ("port", -1), ("port", 65536), ("external_port", "invalid"),
+        ("health_port", "invalid"), ("health_port", 0),
+        ("health_port", 65536), ("health_port", float("inf")),
+        ("health", 42), ("health", None), ("health", []),
+    ])
+    async def test_bad_config_returns_down_without_guessing_an_endpoint(self, monkeypatch, field, value):
+        get_session = AsyncMock()
+        monkeypatch.setattr("helpers._get_aio_session", get_session)
+        result = await check_service_health("test-svc", {**self._CONFIG, field: value})
+        assert result.status == "down"
+        get_session.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_empty_health_path_preserves_root_probe(self, mock_aiohttp_session, monkeypatch):
+        session = mock_aiohttp_session(status=200)
+        monkeypatch.setattr("helpers._get_aio_session", AsyncMock(return_value=session))
+        result = await check_service_health("test-svc", {**self._CONFIG, "health": "", "health_port": "9091"})
+        assert result.status == "healthy"
+        assert session.get.call_args[0][0] == "http://localhost:9091/"
 
     @pytest.mark.asyncio
     async def test_healthy_on_200(self, mock_aiohttp_session, monkeypatch):
@@ -481,6 +523,25 @@ class TestCheckServiceHealth:
         session.get = MagicMock(side_effect=OSError("connection refused"))
         monkeypatch.setattr("helpers._get_aio_session", AsyncMock(return_value=session))
 
+        result = await check_service_health("test-svc", self._CONFIG)
+        assert result.status == "down"
+
+    @pytest.mark.asyncio
+    async def test_normalizes_health_endpoint_without_leading_slash(self, mock_aiohttp_session, monkeypatch):
+        session = mock_aiohttp_session(status=200)
+        monkeypatch.setattr("helpers._get_aio_session", AsyncMock(return_value=session))
+        cfg = dict(self._CONFIG, health="api/health")
+        result = await check_service_health("test-svc", cfg)
+        assert result.status == "healthy"
+        session.get.assert_called_once()
+        url = session.get.call_args[0][0]
+        assert url == "http://localhost:8080/api/health"
+
+    @pytest.mark.asyncio
+    async def test_down_on_value_error(self, monkeypatch):
+        session = MagicMock()
+        session.get = MagicMock(side_effect=ValueError("Invalid URL"))
+        monkeypatch.setattr("helpers._get_aio_session", AsyncMock(return_value=session))
         result = await check_service_health("test-svc", self._CONFIG)
         assert result.status == "down"
 

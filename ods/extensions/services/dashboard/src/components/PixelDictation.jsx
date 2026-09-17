@@ -22,6 +22,7 @@ export default function PixelDictation({ disabled, conversationId, onInsert }) {
   }, [])
   useEffect(() => { stop() }, [disabled, conversationId])
   function start() {
+    if (finishing) { stop(); setNotice('Dictation cancelled. Text already received is kept; pending speech was discarded.'); return }
     if (listening) { recognition.current?.stop(); setFinishing(true); return }
     if (disabled) return
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
@@ -46,7 +47,7 @@ export default function PixelDictation({ disabled, conversationId, onInsert }) {
     try { active.start(); setListening(true) } catch { recognition.current = null; setNotice('Dictation could not start in this browser.') }
   }
   return <div className="pixel-dictation">
-    <button type="button" disabled={disabled || finishing} aria-label={listening ? 'Stop dictation' : 'Dictate message'} aria-pressed={listening} title="Browser dictation may use your browser provider’s online speech service. Audio is not sent to the ODS model." onClick={start}>{listening ? <Square size={15}/> : <Mic size={16}/>}</button>
+    <button type="button" disabled={disabled} aria-label={finishing ? 'Cancel dictation' : listening ? 'Stop dictation' : 'Dictate message'} aria-pressed={listening} title="Browser dictation may use your browser provider’s online speech service. Audio is not sent to the ODS model." onClick={start}>{listening ? <Square size={15}/> : <Mic size={16}/>}</button>
     {listening && <span role="status">{finishing ? 'Finishing dictation…' : 'Listening…'}</span>}
     {notice && <span role="status" className="pixel-dictation-notice">{notice}</span>}
   </div>

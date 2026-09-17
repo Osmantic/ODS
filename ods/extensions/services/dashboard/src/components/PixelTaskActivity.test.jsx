@@ -31,6 +31,18 @@ it('shares strict schema behavior with the host and rejects nonterminal/cross-ru
   expect(parseTaskActivityFrame({id:task.runId,pixel_task:task,choices:[{finish_reason:null}]})).toBeNull()
 })
 
+it('keeps version 4 workspace-project validation identical to the host',()=>{
+  const project={schemaVersion:1,kind:'ods-workspace-project',relativeDirectory:'Playground/notes',observedAt:'2026-09-08T19:00:00.000Z'}
+  const latest={...task,schemaVersion:4,calls:0,failures:0,blocked:0,activities:[],events:[],context:null,goal:null,projects:[project]}
+  const cases=[latest,{...latest,projects:[]},{...latest,projects:[project,project]},
+    {...latest,projects:[{...project,observedAt:'2026-09-08T20:00:02.001Z'}]},
+    {...latest,projects:[{...project,privatePath:'/private'}]},
+    ...['Playground/COM1.txt','Playground/a.','Playground/../outside','Playground/a/b','Playground/COM10','Playground/ok-name'].map(relativeDirectory=>
+      ({...latest,projects:[{...project,relativeDirectory}]}))]
+  for(const value of cases)expect(parseTaskActivity(value,task.runId)).toEqual(hostParse(value,task.runId))
+  expect(parseTaskActivity(latest,task.runId)).toBe(latest)
+})
+
 it('accepts only explicit live observation packets and renders tools during the turn',()=>{
   const live={...task,state:'running',finishedAt:null}
   const packet={object:'ods.task.activity',id:task.runId,pixel_task:live}

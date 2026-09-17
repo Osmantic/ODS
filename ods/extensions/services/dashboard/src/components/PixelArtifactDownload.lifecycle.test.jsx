@@ -6,32 +6,31 @@ const bytes = new TextEncoder().encode('verified artifact')
 const digest = createHash('sha256').update(bytes).digest('hex')
 const preview = {siteId:'site-'+'a'.repeat(24)}
 const file = {path:'index.html', bytes:bytes.byteLength, sha256:digest}
-const hash = () => Uint8Array.from(digest.match(/../g), part => parseInt(part,16)).buffer
 
 beforeEach(() => {
   vi.useFakeTimers()
   vi.stubGlobal('fetch',vi.fn(async () => ({ok:true,arrayBuffer:async () => bytes.buffer})))
-  vi.stubGlobal('crypto',{subtle:{digest:vi.fn(async () => hash())}})
   vi.spyOn(URL,'createObjectURL').mockReturnValue('blob:artifact')
   vi.spyOn(URL,'revokeObjectURL').mockImplementation(() => {})
   vi.spyOn(HTMLAnchorElement.prototype,'click').mockImplementation(() => {})
 })
 afterEach(() => {vi.useRealTimers();vi.restoreAllMocks();vi.unstubAllGlobals()})
 
-it('expires a pending digest, permits retry and ignores late verification',async () => {
+it('expires a pending body, permits retry and ignores late verification',async () => {
   let finish
-  crypto.subtle.digest.mockImplementationOnce(() => new Promise(resolve => {finish=resolve}))
+  fetch.mockResolvedValueOnce({ok:true,arrayBuffer:() => new Promise(resolve => {finish=resolve})})
   render(<PixelArtifactDownload preview={preview} file={file}/>)
   const button = screen.getByRole('button',{name:'Download index.html'})
   await act(async () => {fireEvent.click(button)})
-  expect(crypto.subtle.digest).toHaveBeenCalledOnce()
+  expect(fetch).toHaveBeenCalledOnce()
+  expect(finish).toBeTypeOf('function')
   await act(async () => {await vi.advanceTimersByTimeAsync(12000)})
   expect(button).toBeEnabled()
   expect(screen.getByRole('alert')).toHaveTextContent('Download could not be verified')
   expect(URL.createObjectURL).not.toHaveBeenCalled()
   await act(async () => {fireEvent.click(button)})
   expect(screen.getByRole('status')).toHaveTextContent('Verified download started')
-  await act(async () => {finish(hash())})
+  await act(async () => {finish(bytes.buffer)})
   expect(HTMLAnchorElement.prototype.click).toHaveBeenCalledOnce()
   expect(screen.queryByRole('alert')).toBeNull()
 })
