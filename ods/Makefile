@@ -29,6 +29,7 @@ test: ## Run unit and contract tests
 	@echo "=== Hermes slash worker prune ==="
 	@bash tests/test-hermes-slash-worker-prune.sh
 	@python3 tests/contracts/test-hermes-worker-guardrails.py
+	@python3 tests/test-installation-context-output.py
 	@echo ""
 	@echo "=== Installer contracts ==="
 	@bash tests/contracts/test-installer-contracts.sh

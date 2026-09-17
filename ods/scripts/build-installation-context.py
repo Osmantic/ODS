@@ -404,17 +404,12 @@ def build_soul(
         assembled = build_compact_soul(env_path)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    # Self-heal a pathological state: Docker's bind-mount engine auto-creates
-    # the source path as a *directory* when the path doesn't exist at
-    # compose-up time. If a previous install ran compose-up before this
-    # script generated the file, ``data/persona/SOUL.md`` is now an empty
-    # directory, and the next compose-up keeps failing with "not a directory:
-    # Are you trying to mount a directory onto a file." Remove that directory
-    # so we can write the real file in its place. Caught when re-running
-    # /ods-fleet-test on mac-mini after a prior failed install.
+    # Self-heal the empty directory Docker creates when a bind-mount source is
+    # missing at compose-up time. Use rmdir rather than recursive deletion: a
+    # non-empty path is operator data or an unexpected state and must fail
+    # visibly without deleting its contents.
     if output_path.exists() and not output_path.is_file():
-        import shutil
-        shutil.rmtree(output_path)
+        output_path.rmdir()
     previous = output_path.read_text(encoding="utf-8") if output_path.is_file() else ""
     if previous == assembled:
         return False
