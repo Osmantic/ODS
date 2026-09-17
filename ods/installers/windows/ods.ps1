@@ -2409,13 +2409,20 @@ function Invoke-Chat {
             -Method POST -Body $body -ContentType "application/json" -TimeoutSec 120
 
         if ($resp.choices -and $resp.choices[0].message) {
+            $content = [string]$resp.choices[0].message.content
+            if ([string]::IsNullOrWhiteSpace($content)) {
+                throw "Chat response did not contain assistant content"
+            }
             Write-Host ""
-            Write-Host $resp.choices[0].message.content
+            Write-Host $content
             Write-Host ""
+        } else {
+            throw "Chat response did not contain assistant content"
         }
     } catch {
         Write-AIError "Chat request failed: $_"
         Write-AI "Is llama-server running? Try: .\ods.ps1 status"
+        exit 1
     }
 }
 

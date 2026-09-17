@@ -43,6 +43,11 @@ cat > "$MOCK_BIN/jq" <<'MOCK_JQ'
 #!/usr/bin/env bash
 if [[ "${1:-}" == "-n" ]]; then
     printf '%s\n' '{"model":"default","messages":[{"role":"user","content":"test"}]}'
+elif [[ "${TEST_CHAT_API_ERROR:-0}" == "1" ]]; then
+    if [[ " $* " == *" -e"* || " $* " == *" -er "* ]]; then
+        exit 1
+    fi
+    printf '%s\n' 'model unavailable'
 else
     printf '%s\n' 'mock answer'
 fi
@@ -57,6 +62,10 @@ for arg in "$@"; do
         exit 0
     fi
 done
+if [[ "${TEST_CHAT_API_ERROR:-0}" == "1" ]]; then
+    printf '%s\n' '{"error":{"message":"model unavailable"}}'
+    exit 0
+fi
 printf '%s\n' '{"choices":[{"message":{"content":"mock answer"}}]}'
 MOCK_CURL
 
@@ -125,6 +134,15 @@ if run_cli chat "missing key" >/dev/null 2>&1; then
 fi
 [[ ! -s "$CURL_LOG" ]] || fail "cloud chat contacted LiteLLM without a key"
 pass "cloud chat fails before transport when authentication is unavailable"
+
+write_local_env
+: > "$CURL_LOG"
+if TEST_CHAT_API_ERROR=1 run_cli chat "API error" > "$TMP_DIR/chat-error.out" 2>&1; then
+    fail "macOS chat returned success for an API error payload"
+fi
+grep -Fq 'LLM error: model unavailable' "$TMP_DIR/chat-error.out" \
+    || fail "macOS chat did not surface the API error message"
+pass "macOS chat fails on an API error payload"
 
 write_local_env
 : > "$CURL_LOG"

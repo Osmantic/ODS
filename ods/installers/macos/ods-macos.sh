@@ -983,8 +983,16 @@ cmd_chat() {
         return 1
     }
 
+    local content
+    if ! content=$(printf '%s' "$response" | jq -er '.choices[0].message.content'); then
+        local api_error
+        api_error=$(printf '%s' "$response" | jq -r '.error.message // "unparseable response"')
+        ai_err "LLM error: ${api_error}"
+        return 1
+    fi
+
     echo ""
-    echo "$response" | jq -r '.choices[0].message.content // .error.message // "Error: no response"'
+    printf '%s\n' "$content"
     echo ""
 }
 
