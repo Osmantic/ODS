@@ -28,6 +28,43 @@ pytestmark = pytest.mark.skipif(os.name != 'posix', reason='POSIX file custody')
 HEX = 'a' * 64
 
 
+@pytest.fixture(autouse=True)
+def _root_custody(monkeypatch):
+    """Coordinator custody checks pin st_uid == 0 (production runs as root).
+
+    Remap the current user's ownership to uid 0 so CI runners (non-root)
+    exercise the same mode/link/type checks; no-op on real root.
+    """
+    if os.geteuid() == 0:
+        return
+    euid = os.geteuid()
+    real_fstat = os.fstat
+    real_lstat = Path.lstat
+
+    def _remap(info):
+        if info.st_uid == euid:
+            fields = list(info)
+            fields[4] = 0  # st_uid
+            return os.stat_result(fields)
+        return info
+
+    real_stat = os.stat
+    real_os_lstat = os.lstat
+    real_pstat = Path.stat
+
+    monkeypatch.setattr(os, 'fstat', lambda fd: _remap(real_fstat(fd)))
+    monkeypatch.setattr(os, 'stat',
+                        lambda *a, **k: _remap(real_stat(*a, **k)))
+    monkeypatch.setattr(os, 'lstat',
+                        lambda *a, **k: _remap(real_os_lstat(*a, **k)))
+    monkeypatch.setattr(Path, 'lstat',
+                        lambda self, *a, **k: _remap(real_lstat(self, *a, **k)))
+    monkeypatch.setattr(Path, 'stat',
+                        lambda self, *a, **k: _remap(real_pstat(self, *a, **k)))
+    monkeypatch.setattr(os, 'geteuid', lambda: 0)
+    monkeypatch.setattr(os, 'getuid', lambda: 0)
+
+
 def canonical(value):
     return (json.dumps(value, ensure_ascii=True, sort_keys=True,
                        separators=(',', ':'), allow_nan=False) + '\n').encode('ascii')
