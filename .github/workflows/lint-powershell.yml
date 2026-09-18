@@ -113,3 +113,25 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         run: bash tests/test-atomic-env-writes.sh
+
+      - name: Windows Stack Contract Suites
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -e
+          for suite in \
+            tests/test-windows-amd-memory-detection.sh \
+            tests/test-windows-cli-model.sh \
+            tests/test-windows-env-dotfile-recovery.sh \
+            tests/test-windows-hermes-soul.sh \
+            tests/test-windows-llm-endpoint.sh \
+            tests/test-windows-opencode-config.sh \
+            tests/test-windows-phase-abort.sh \
+            tests/test-windows-port-preflight.sh \
+            tests/test-windows-restart-recreate-env.sh \
+            tests/test-windows-stop-native-helpers.sh \
+            tests/test-windows-uninstall-command.sh \
+            tests/test-windows-whisper-compose-fallback.sh; do
+            echo "=== $suite"
+            bash "$suite"
+          done

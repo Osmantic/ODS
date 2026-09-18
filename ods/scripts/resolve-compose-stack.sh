@@ -549,7 +549,7 @@ def _append_macos_cloud_auth_overlay(files, overlay_path):
         )
         sys.exit(1)
 
-    files.append(str(overlay_path.relative_to(script_dir)))
+    files.append(overlay_path.relative_to(script_dir).as_posix())
 
 
 base_stack_services = _declared_compose_services(resolved, strict=False)
@@ -592,7 +592,7 @@ if ext_dir.exists():
                 compose_path = _extension_base_path(service_dir, service, service_dir.name)
                 if compose_path is None:
                     continue
-                resolved.append(str(compose_path.relative_to(script_dir)))
+                resolved.append(compose_path.relative_to(script_dir).as_posix())
             else:
                 # Core services may keep their base definition in the primary
                 # stack and ship only specialized fragments here. Permit that
@@ -604,7 +604,7 @@ if ext_dir.exists():
             # GPU-specific overlay (filesystem discovery — not in manifest)
             gpu_overlay = service_dir / f"compose.{gpu_backend}.yaml"
             if service_dir.name.lower() not in skip_gpu_overlays and gpu_overlay.exists():
-                resolved.append(str(gpu_overlay.relative_to(script_dir)))
+                resolved.append(gpu_overlay.relative_to(script_dir).as_posix())
 
             # Mode-specific overlay — depends_on for local/hybrid mode only.
             # Skip on Apple Silicon: macOS runs llama-server natively on the host
@@ -619,13 +619,13 @@ if ext_dir.exists():
             if ods_mode in ("local", "hybrid", "lemonade") and tier != "CLOUD" and gpu_backend != "apple" and not lemonade_external and not external_llm:
                 local_mode_overlay = service_dir / "compose.local.yaml"
                 if local_mode_overlay.exists():
-                    resolved.append(str(local_mode_overlay.relative_to(script_dir)))
+                    resolved.append(local_mode_overlay.relative_to(script_dir).as_posix())
 
             # Multi-GPU overlay if we have more than 1 GPU
             if gpu_count > 1:
                 multi_gpu_overlay = service_dir / f"compose.multigpu-{gpu_backend}.yaml"
                 if multi_gpu_overlay.exists():
-                    resolved.append(str(multi_gpu_overlay.relative_to(script_dir)))
+                    resolved.append(multi_gpu_overlay.relative_to(script_dir).as_posix())
 
         except Exception as e:
             # Narrow exception handling to specific parse/structure errors
@@ -699,7 +699,7 @@ if user_ext_dir.exists():
                     print(f"WARNING: {service_dir.name}: {w}", file=sys.stderr)
                 if not ok:
                     continue
-                resolved.append(str(compose_path.relative_to(script_dir)))
+                resolved.append(compose_path.relative_to(script_dir).as_posix())
                 # GPU-specific overlay (filesystem discovery — not in manifest)
                 gpu_overlay = service_dir / f"compose.{gpu_backend}.yaml"
                 if service_dir.name.lower() not in skip_gpu_overlays and gpu_overlay.exists():
@@ -726,7 +726,7 @@ if user_ext_dir.exists():
                                 file=sys.stderr,
                             )
                         else:
-                            resolved.append(str(gpu_overlay.relative_to(script_dir)))
+                            resolved.append(gpu_overlay.relative_to(script_dir).as_posix())
 
                 # Mode-specific overlay — depends_on for local/hybrid mode only.
                 # Skip on Apple Silicon: macOS runs llama-server natively on the host
@@ -749,7 +749,7 @@ if user_ext_dir.exists():
                         for w in warnings:
                             print(f"WARNING: {service_dir.name}: {w}", file=sys.stderr)
                         if ok:
-                            resolved.append(str(local_mode_overlay.relative_to(script_dir)))
+                            resolved.append(local_mode_overlay.relative_to(script_dir).as_posix())
 
                 # Multi-GPU overlay if we have more than 1 GPU
                 if gpu_count > 1:
@@ -761,7 +761,7 @@ if user_ext_dir.exists():
                         for w in warnings:
                             print(f"WARNING: {service_dir.name}: {w}", file=sys.stderr)
                         if ok:
-                            resolved.append(str(multi_gpu_overlay.relative_to(script_dir)))
+                            resolved.append(multi_gpu_overlay.relative_to(script_dir).as_posix())
 
             except Exception as e:
                 # Narrow exception handling to specific parse/structure errors
@@ -817,7 +817,7 @@ if model_stores_overlay.exists():
     resolved.append(".model-stores.compose.json")
     resolved = [item for item in resolved if pathlib.Path(item).name != ".active-model-store.compose.json"]
     if active_mount:
-        resolved.append(str(active_mount.relative_to(script_dir)))
+        resolved.append(active_mount.relative_to(script_dir).as_posix())
 
 # Include docker-compose.override.yml if it exists (user customizations).
 # Even though the operator placed this file themselves, the resolver runs
