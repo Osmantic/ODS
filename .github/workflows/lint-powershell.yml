@@ -119,6 +119,7 @@ jobs:
         shell: bash
         run: |
           set -e
+          python3 -m pip install --quiet pyyaml
           for suite in \
             tests/test-windows-amd-memory-detection.sh \
             tests/test-windows-cli-model.sh \
