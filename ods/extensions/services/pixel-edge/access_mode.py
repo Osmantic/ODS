@@ -34,7 +34,7 @@ def public_status(value):
 def valid_model_contract(value):
     required = {'model', 'contextLength', 'maxTokens', 'reasoning'}
     return (type(value) is dict and set(value) in (required, required | {'routeFingerprint'})
-            and type(value['model']) is str
+            and type(value['model']) is str and value['model'] == value['model'].strip()
             and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._+:/ @(),=-]{0,255}', value['model']) is not None
             and type(value['contextLength']) is int and 4096 <= value['contextLength'] <= 10000000
             and type(value['maxTokens']) is int and 1 <= value['maxTokens'] <= value['contextLength']
