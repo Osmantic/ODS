@@ -90,6 +90,19 @@ test: ## Run unit and contract tests
 	@echo "=== health-check.sh --json output contract ==="
 	@bash tests/test-health-check-json-output.sh
 	@echo ""
+	@echo "=== health-check.sh --json output contract ==="
+	@bash tests/test-health-check-json-output.sh
+	@echo ""
+	@echo "=== orphaned suites: doctor, backup, compose images, disk, GPU ==="
+	@bash tests/test-doctor-command.sh
+	@bash tests/test-backup-delete-status.sh
+	@bash tests/test-compose-image-discovery.sh
+	@bash tests/test-docker-image-pull-retry.sh
+	@bash tests/test-disk-check-install-dir.sh
+	@bash tests/test-enable-gpu-validation.sh
+	@bash tests/test-extension-integration.sh
+	@bash tests/test-amd-topo.sh
+	@echo ""
 	@echo "=== QR code helper LAN detection ==="
 	@bash tests/test-qrcode-helper.sh
 	@echo ""
