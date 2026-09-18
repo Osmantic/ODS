@@ -29,18 +29,27 @@ jobs:
       should_proceed: ${{ steps.dedup.outputs.should_proceed }}
 
     steps:
-      - name: Validate required secrets
+      - name: Check required secrets
+        id: creds
         env:
           HAS_API_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
         run: |
-          if [ "$HAS_API_KEY" != "true" ]; then
-            echo "::error::ANTHROPIC_API_KEY not configured"
-            exit 1
+          if [ "$HAS_API_KEY" = "true" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+            echo "Required secrets present"
+          else
+            # Do NOT fail: this job is triggered by labeling an issue, so a hard
+            # failure emails whoever applied the label for a missing org secret
+            # they may not control (and fails on every fork). Skip downstream
+            # work instead — should_proceed stays unset, so `implement` is
+            # skipped and this run succeeds as a no-op.
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::ANTHROPIC_API_KEY not configured; skipping issue-to-pr (no-op)."
           fi
-          echo "Required secrets present"
 
       - name: Check for duplicate PRs
         id: dedup
+        if: steps.creds.outputs.configured == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
