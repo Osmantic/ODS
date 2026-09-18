@@ -108,6 +108,11 @@ def _prepare(payload, grant):
     if 'tools' in payload and (not isinstance(payload['tools'], list) or any(
             not isinstance(tool, dict) or tool.get('type') != 'function' for tool in payload['tools'])):
         raise ShareError(400, 'unsupported_tools')
+    for penalty_field in ('presence_penalty', 'frequency_penalty'):
+        if penalty_field in payload:
+            pen = payload[penalty_field]
+            if type(pen) not in (int, float) or type(pen) is bool or not (-2.0 <= pen <= 2.0):
+                raise ShareError(400, f'invalid_{penalty_field}')
     if 'chat_template_kwargs' in payload and (
             not isinstance(payload['chat_template_kwargs'], dict)
             or set(payload['chat_template_kwargs']) != {'enable_thinking'}
