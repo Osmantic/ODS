@@ -621,5 +621,25 @@ else
     fail "Library port was rejected for the wrong reason: $out"
 fi
 
+# 25. LEMONADE_API_KEY / LEMONADE_ADMIN_API_KEY are the documented overrides
+# for an existing Lemonade SDK service (--lemonade-api-key,
+# docs/LEMONADE-SDK-COMPAT.md, docs/ENGINE-PROVIDER-MODES.md) and are read from
+# .env by the dashboard routers, host agent, and ods-doctor. Undeclared keys
+# make `ods config validate` reject a documented configuration.
+cp "$TMP_DIR/valid.env" "$TMP_DIR/lemonade.env"
+cat >> "$TMP_DIR/lemonade.env" <<'EOF'
+LEMONADE_API_KEY=sk-owner-external-lemonade
+LEMONADE_ADMIN_API_KEY=sk-owner-lemonade-admin
+EOF
+set +e
+out=$("$VALIDATE_ENV_BASH" "$ROOT_DIR/scripts/validate-env.sh" "$TMP_DIR/lemonade.env" "$ROOT_DIR/.env.schema.json" 2>&1)
+r=$?
+set -e
+if [[ $r -eq 0 ]]; then
+    pass "Documented Lemonade override keys validate cleanly"
+else
+    fail "Lemonade override keys should validate, got exit $r: $(echo "$out" | grep -iE 'LEMONADE' | tr '\n' ' ')"
+fi
+
 echo "Result: $PASSED passed, $FAILED failed"
 [[ $FAILED -eq 0 ]]
