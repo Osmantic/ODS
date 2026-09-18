@@ -28,7 +28,11 @@ export default function DailyUsageExport({daily, available, source}) {
       setError(`Daily usage export failed: ${cause.message}`)
     } finally {
       link?.remove()
-      if (url) URL.revokeObjectURL(url)
+      // The browser consumes the blob URL asynchronously after click();
+      // revoking it synchronously can race the handoff and yield a failed or
+      // zero-byte download in Firefox and on slower clients. Give the browser
+      // a beat to start the navigation, then reclaim the URL.
+      if (url) setTimeout(() => URL.revokeObjectURL(url), 1000)
     }
   }
   return <div>
