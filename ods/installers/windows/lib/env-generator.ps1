@@ -667,7 +667,11 @@ function New-ODSEnv {
     # resolve the host's LAN IP from the interface carrying the default route
     # (mirrors `ip -4 route get 1.1.1.1` in the Linux phase).
     $hostLanIp = ""
-    if ($networkExposed) {
+    # Get-NetRoute/Get-NetIPAddress only exist in the Windows NetTCPIP module;
+    # this library is also dot-sourced by pwsh contract tests on Linux.
+    $netTcpIpAvailable = [bool](Get-Command Get-NetRoute -CommandType Cmdlet -ErrorAction SilentlyContinue) -and
+        [bool](Get-Command Get-NetIPAddress -CommandType Cmdlet -ErrorAction SilentlyContinue)
+    if ($networkExposed -and $netTcpIpAvailable) {
         $defaultIfIndex = (Get-NetRoute -DestinationPrefix "0.0.0.0/0" -ErrorAction SilentlyContinue |
             Sort-Object -Property RouteMetric, InterfaceMetric |
             Select-Object -First 1 -ExpandProperty InterfaceIndex)
