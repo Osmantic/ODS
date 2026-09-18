@@ -104,6 +104,10 @@ jobs:
         shell: pwsh
         run: ./tests/contracts/test-windows-runtime-recovery.ps1
 
+      - name: Windows Restart Model Preflight Contract
+        shell: pwsh
+        run: ./tests/test-windows-restart-model-preflight.ps1
+
       - name: Windows Installed Footprint Contract
         if: runner.os == 'Windows'
         shell: pwsh
