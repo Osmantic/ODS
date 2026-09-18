@@ -3406,6 +3406,18 @@ META
                 error "Archive contains unsafe paths (absolute or ../) — refusing to import"
             fi
 
+            # Defense in depth: a preset archive only ever holds regular files
+            # and directories (env, meta.txt, extensions.list). Reject any
+            # symlink, hardlink, or special entry. The name check above never
+            # sees a symlink's target, so without this only the tar
+            # implementation's own — version-dependent — guard would stop a
+            # write *through* an extracted link from escaping the presets dir.
+            # ('l' = symlink, 'h' = hardlink; 'c'/'b'/'p'/'s' = device/fifo/socket.)
+            if tar -tvzf "$archive" 2>/dev/null \
+                | awk '{ t = substr($1, 1, 1); if (t != "-" && t != "d") bad = 1 } END { exit(bad ? 0 : 1) }'; then
+                error "Archive contains a symlink, hardlink, or special file — refusing to import"
+            fi
+
             # Validate archive structure
             local archive_name
             archive_name=$(tar tzf "$archive" 2>/dev/null | sed -n '1p' | cut -d/ -f1)
@@ -3426,17 +3438,21 @@ META
             if tar xzf "$archive" 2>/dev/null; then
                 # Validate extracted preset
                 if [[ ! -f "${archive_name}/meta.txt" ]]; then
-                    rm -rf "${archive_name}"
+                    rm -rf -- "${archive_name}"
                     error "Invalid preset: missing meta.txt"
                 fi
                 if [[ ! -f "${archive_name}/extensions.list" ]]; then
-                    rm -rf "${archive_name}"
+                    rm -rf -- "${archive_name}"
                     error "Invalid preset: missing extensions.list"
                 fi
 
                 success "Preset '${archive_name}' imported successfully"
                 log "Use 'ods preset load ${archive_name}' to apply it"
             else
+                # A partial extraction can leave the top-level entry behind
+                # (e.g. a dangling symlink). Remove it so a failed import does
+                # not litter the presets directory.
+                rm -rf -- "${archive_name}"
                 error "Failed to extract archive"
             fi
             cd "$INSTALL_DIR"
