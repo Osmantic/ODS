@@ -52,7 +52,7 @@ try {
     [IO.File]::WriteAllText($runtime, 'fixture runtime; never execute')
     [IO.File]::WriteAllText((Join-Path $ssd 'model.gguf'), 'fixture checkpoint')
     Copy-Item -LiteralPath (Join-Path $root 'scripts/resolve-model-store.py') -Destination (Join-Path $InstallDir 'scripts')
-    foreach ($module in @('model_stores.py','env_values.py')) {
+    foreach ($module in @('model_stores.py','env_values.py','model_mtp.py')) {
         Copy-Item -LiteralPath (Join-Path $root "extensions/services/dashboard-api/$module") -Destination (Join-Path $InstallDir 'extensions/services/dashboard-api')
     }
     $script:Registry = @{ schemaVersion = 1; stores = @(@{ id = 'ssd'; hostPath = $ssd; containerPath = '/model-stores/ssd';

@@ -18,7 +18,7 @@ try {
         New-Item -ItemType Directory -Path (Join-Path $InstallDir $directory) -Force | Out-Null
     }
     Copy-Item -LiteralPath (Join-Path $root 'scripts/model-store-compose-flags.py') -Destination (Join-Path $InstallDir 'scripts')
-    foreach ($module in @('model_stores.py','env_values.py')) {
+    foreach ($module in @('model_stores.py','env_values.py','model_mtp.py')) {
         Copy-Item -LiteralPath (Join-Path $root "extensions/services/dashboard-api/$module") -Destination (Join-Path $InstallDir 'extensions/services/dashboard-api')
     }
     $cache = Join-Path $InstallDir '.compose-flags'
