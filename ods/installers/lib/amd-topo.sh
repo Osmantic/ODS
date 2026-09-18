@@ -414,7 +414,9 @@ detect_amd_topo() {
 
         device_id=$(cat "$card_dir/device" 2>/dev/null | sed 's/^0x//') || device_id="0000"
         vram_bytes=$(cat "$card_dir/mem_info_vram_total" 2>/dev/null) || vram_bytes=0
-        vram_gb=$(awk -v bytes="$vram_bytes" 'BEGIN { printf "%.1f", bytes / 1073741824 }')
+        # LC_ALL=C: awk's %.1f honours LC_NUMERIC, so a decimal-comma locale
+        # would print "24,0" and the jq `tonumber` below could not parse it.
+        vram_gb=$(LC_ALL=C awk -v bytes="$vram_bytes" 'BEGIN { printf "%.1f", bytes / 1073741824 }')
 
         uuid=$(amd_gpu_id "$card_dir" "$idx")
         gfx_ver=$(amd_gfx_version "$card_dir" "$idx")

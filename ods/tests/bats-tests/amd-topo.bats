@@ -77,6 +77,42 @@ setup() {
     assert_equal "$(echo "$output" | jq -r '.gpus[].memory_type' | sort -u)" "discrete"
 }
 
+@test "detect_amd_topo: memory_gb stays numeric when awk honours a decimal-comma locale" {
+    local drm="$BATS_TEST_TMPDIR/sys/class/drm"
+    local card_dir="$drm/card0/device"
+    mkdir -p "$card_dir"
+    echo "0x1002" > "$card_dir/vendor"
+    echo "0x74b5" > "$card_dir/device"
+    echo "$((16 * 1073741824))" > "$card_dir/mem_info_vram_total"
+    echo "0" > "$card_dir/mem_info_gtt_total"
+    echo "AMD card0" > "$card_dir/product_name"
+    echo "0x0000000000000000" > "$card_dir/unique_id"
+
+    amd-smi() { return 1; }
+    rocm-smi() { return 1; }
+    rocminfo() { return 1; }
+    export ODS_DRM_SYS="$drm"
+
+    # Simulate a decimal-comma locale without needing one installed: awk's
+    # printf "%.1f" honours LC_NUMERIC, so any awk call that did not pin
+    # LC_ALL=C gets its decimal point rewritten — exactly what de_DE/fr_FR
+    # produce. A call under LC_ALL=C passes through untouched.
+    awk() {
+        case "${LC_ALL:-${LC_NUMERIC:-}}" in
+            C|POSIX|"") command awk "$@" ;;
+            *) command awk "$@" | tr '.' ',' ;;
+        esac
+    }
+
+    LC_NUMERIC=de_DE.UTF-8
+    local output
+    output=$(detect_amd_topo)
+
+    # memory_gb must survive jq tonumber — a "16,0" field makes the whole
+    # gpus_json conversion fail and the topology comes back empty.
+    assert_equal "$(echo "$output" | jq -r '.gpus[0].memory_gb')" "16.0"
+}
+
 # ── amd_render_node ─────────────────────────────────────────────────────────
 
 @test "amd_render_node: returns numeric ID, not full name" {
