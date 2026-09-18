@@ -144,4 +144,6 @@ class ChatResultStore:
         return self.db.execute("SELECT 1 FROM attempts WHERE owner=? AND chat=? AND state IN ('active','unresolved')", conversation).fetchone() is not None
 
     def chunks(self, key, after=-1):
+        if not isinstance(after, int) or isinstance(after, bool):
+            raise ValueError("after sequence must be an integer")
         return self.db.execute("SELECT sequence,data FROM chunks WHERE owner=? AND chat=? AND attempt=? AND sequence>? ORDER BY sequence", (*key, after)).fetchall()
