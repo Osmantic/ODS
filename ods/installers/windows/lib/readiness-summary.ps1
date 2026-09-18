@@ -55,6 +55,9 @@ function Write-ODSInstallReadinessSummary {
         [string]$StatusCommand = ".\ods.ps1 status",
         [string]$LogPath = "",
         [string]$DashboardUrl = "http://localhost:3001",
+        # Non-HTTP findings that still belong in "Needs attention" — e.g. a
+        # degraded capability recorded during install (see install-state.ps1).
+        [string[]]$ExtraAttention = @(),
         [switch]$PassThru
     )
 
@@ -82,6 +85,12 @@ function Write-ODSInstallReadinessSummary {
                 $detail = "$detail; $($check.Hint)"
             }
             [void]$attention.Add(("{0,-28} {1} - {2}" -f $check.Name, $state, $detail))
+        }
+    }
+
+    foreach ($item in $ExtraAttention) {
+        if (-not [string]::IsNullOrWhiteSpace($item)) {
+            [void]$attention.Add($item)
         }
     }
 

@@ -313,7 +313,10 @@ function Invoke-ODSHuggingFaceDownloadFallback {
     $checkArgs = @($python.PrefixArgs) + @("-c", "import huggingface_hub, hf_xet")
     if ((Invoke-ODSNativeQuiet -FilePath $python.FilePath -Arguments $checkArgs) -ne 0) {
         $installArgs = @($python.PrefixArgs) + @("-m", "pip", "install", "--user", "-q", "huggingface_hub[hf_xet]>=0.27")
-        Invoke-ODSNativeQuiet -FilePath $python.FilePath -Arguments $installArgs | Out-Null
+        $installExit = Invoke-ODSNativeQuiet -FilePath $python.FilePath -Arguments $installArgs
+        if ($installExit -ne 0) {
+            Write-AIWarn "Could not install huggingface_hub[hf_xet]; the retry will likely fail. Fix with: python -m pip install --user 'huggingface_hub[hf_xet]>=0.27'"
+        }
     }
 
     Write-AI "Retrying with Hugging Face client..."

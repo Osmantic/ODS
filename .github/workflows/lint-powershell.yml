@@ -104,6 +104,10 @@ jobs:
         shell: pwsh
         run: ./tests/contracts/test-windows-runtime-recovery.ps1
 
+      - name: Windows HF Xet Degraded State Contract
+        shell: pwsh
+        run: ./tests/contracts/test-windows-hf-xet-degraded-state.ps1
+
       - name: Windows Installed Footprint Contract
         if: runner.os == 'Windows'
         shell: pwsh

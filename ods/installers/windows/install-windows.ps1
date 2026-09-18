@@ -89,6 +89,7 @@ $LibDir = Join-Path $ScriptDir "lib"
 . (Join-Path $LibDir "llm-endpoint.ps1")
 . (Join-Path $LibDir "opencode-config.ps1")
 . (Join-Path $LibDir "readiness-summary.ps1")
+. (Join-Path $LibDir "install-state.ps1")
 . (Join-Path $LibDir "service-plan.ps1")
 
 # Preserve the caller's Docker client configuration before any installer phase
@@ -2472,10 +2473,15 @@ if (Test-ODSWindowsServiceEnabled -ServiceId "privacy-shield" -Plan $servicePlan
     $privacyPort = Get-ReadinessPort -Name "SHIELD_PORT" -Default "8085"
     $readinessChecks += @{ Name = "Privacy Shield"; Url = "http://localhost:$privacyPort/health"; Container = "ods-privacy-shield"; OpenUrl = "http://localhost:$privacyPort" }
 }
+$extraReadinessAttention = @()
+if (Test-ODSHfXetDegraded -InstallDir $installDir) {
+    $extraReadinessAttention += "HF Xet downloader           degraded - model downloads may fail on Xet-backed models; run: python -m pip install --user 'huggingface_hub[hf_xet]>=0.27'"
+}
 $installReadiness = Write-ODSInstallReadinessSummary -Checks $readinessChecks `
     -StatusCommand ".\ods.ps1 status" `
     -LogPath (Join-Path $installDir "logs\install.log") `
     -DashboardUrl "http://localhost:$dashboardPort" `
+    -ExtraAttention $extraReadinessAttention `
     -PassThru
 
 # The first post-compose persona render happens as soon as the required core
