@@ -162,6 +162,9 @@ jobs:
       - name: Test Postgres SSE cursor
         run: python -m pytest tests/test_recent_events_cursor_postgres.py -v
 
+      - name: Previously unwired Token Spy suites
+        run: python -m pytest -q tests/test_accumulated_turn_checkpoints.py tests/test_filters.py tests/test_local_reset_target.py tests/test_local_session_memory.py tests/test_prompt_sections.py tests/test_report_memory.py tests/test_retired_tool_turns.py tests/test_routed_telemetry.py tests/test_session_poll_responsiveness.py tests/test_sqlite_session_memory.py
+
   integration-smoke:
     runs-on: ubuntu-latest
     defaults:
