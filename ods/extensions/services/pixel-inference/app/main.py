@@ -108,6 +108,10 @@ def _prepare(payload, grant):
     if 'tools' in payload and (not isinstance(payload['tools'], list) or any(
             not isinstance(tool, dict) or tool.get('type') != 'function' for tool in payload['tools'])):
         raise ShareError(400, 'unsupported_tools')
+    if 'top_p' in payload:
+        top_p = payload['top_p']
+        if type(top_p) not in (int, float) or type(top_p) is bool or not (0.0 <= top_p <= 1.0):
+            raise ShareError(400, 'invalid_top_p')
     if 'chat_template_kwargs' in payload and (
             not isinstance(payload['chat_template_kwargs'], dict)
             or set(payload['chat_template_kwargs']) != {'enable_thinking'}
