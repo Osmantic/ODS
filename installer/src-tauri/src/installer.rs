@@ -2,9 +2,10 @@ use crate::state::{InstallPhase, InstallState};
 use serde::Serialize;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 
 const DEFAULT_REPO_URL: &str = "https://github.com/Osmantic/ODS.git";
 const DEFAULT_INSTALL_REF: &str = "main";
@@ -27,6 +28,30 @@ pub struct ProgressEvent {
     pub phase: String,
     pub percent: u8,
     pub message: String,
+}
+
+/// The in-flight installer subprocess and its progress state, retained so an
+/// explicit cancel or an app exit can terminate the child instead of leaving
+/// it mutating the checkout and Docker project with no supervising UI.
+static ACTIVE_CHILD: Mutex<Option<(Child, Arc<Mutex<InstallState>>)>> = Mutex::new(None);
+
+/// Terminate the in-flight installer subprocess, if any, and persist a
+/// cancelled state. Returns true when a child was terminated.
+pub fn terminate_active_child() -> bool {
+    let entry = ACTIVE_CHILD.lock().unwrap().take();
+    match entry {
+        Some((mut child, state)) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            if let Ok(mut s) = state.lock() {
+                s.phase = InstallPhase::Error;
+                s.progress_message = "Installation cancelled.".to_string();
+                let _ = s.save();
+            }
+            true
+        }
+        None => false,
+    }
 }
 
 /// Run the full ODS installation.
@@ -142,9 +167,44 @@ pub fn run_install(
         }
     }
 
-    let output = child
-        .wait()
-        .map_err(|e| format!("Installer process error: {}", e))?;
+    // Retain the child so cancel/exit can terminate it. try_wait polling keeps
+    // the slot reachable: a blocking wait() would hold the mutex and deadlock
+    // the terminate path.
+    *ACTIVE_CHILD.lock().unwrap() = Some((child, Arc::clone(&state)));
+
+    enum ChildPoll {
+        Exited(ExitStatus),
+        Running,
+        Gone,
+        Failed(std::io::Error),
+    }
+
+    let output = loop {
+        let poll = {
+            let mut guard = ACTIVE_CHILD.lock().unwrap();
+            match guard.as_mut() {
+                None => ChildPoll::Gone,
+                Some((child, _)) => match child.try_wait() {
+                    Ok(Some(status)) => ChildPoll::Exited(status),
+                    Ok(None) => ChildPoll::Running,
+                    Err(e) => ChildPoll::Failed(e),
+                },
+            }
+        };
+        match poll {
+            ChildPoll::Exited(status) => {
+                ACTIVE_CHILD.lock().unwrap().take();
+                break status;
+            }
+            ChildPoll::Running => thread::sleep(Duration::from_millis(100)),
+            // terminate_active_child() took, killed, and marked the state.
+            ChildPoll::Gone => return Err("Installation cancelled.".to_string()),
+            ChildPoll::Failed(e) => {
+                ACTIVE_CHILD.lock().unwrap().take();
+                return Err(format!("Installer process error: {}", e));
+            }
+        }
+    };
     let stderr_lines = stderr_handle
         .and_then(|handle| handle.join().ok())
         .unwrap_or_default();
@@ -428,5 +488,54 @@ mod tests {
             "https://github.com/example/ODS.git",
             DEFAULT_REPO_URL
         ));
+    }
+
+    fn spawn_idle_child() -> Child {
+        if cfg!(target_os = "windows") {
+            Command::new("powershell.exe")
+                .args(["-NoProfile", "-Command", "Start-Sleep", "-Seconds", "600"])
+                .spawn()
+                .expect("spawn idle powershell")
+        } else {
+            Command::new("sleep")
+                .arg("600")
+                .spawn()
+                .expect("spawn idle sleep")
+        }
+    }
+
+    #[test]
+    fn terminate_active_child_kills_child_and_marks_state_cancelled() {
+        // Redirect the persisted state file away from the real user dir.
+        let tmp = std::env::temp_dir().join(format!("ods-installer-test-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::env::set_var("XDG_DATA_HOME", &tmp);
+        std::env::set_var("LOCALAPPDATA", &tmp);
+
+        let state = Arc::new(Mutex::new(InstallState {
+            phase: InstallPhase::Installing,
+            ..Default::default()
+        }));
+        *ACTIVE_CHILD.lock().unwrap() = Some((spawn_idle_child(), Arc::clone(&state)));
+
+        assert!(terminate_active_child(), "registered child should terminate");
+        {
+            let s = state.lock().unwrap();
+            assert_eq!(s.phase, InstallPhase::Error);
+            assert!(s.progress_message.contains("cancelled"));
+        }
+        assert!(
+            ACTIVE_CHILD.lock().unwrap().is_none(),
+            "child slot must be cleared after termination"
+        );
+        assert!(
+            !terminate_active_child(),
+            "a second terminate must be a no-op"
+        );
+    }
+
+    #[test]
+    fn terminate_active_child_without_install_is_noop() {
+        assert!(!terminate_active_child());
     }
 }

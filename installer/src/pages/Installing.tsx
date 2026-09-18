@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { startInstall, getInstallProgress, type ProgressInfo } from "../hooks/useTauri";
+import { startInstall, cancelInstall, getInstallProgress, type ProgressInfo } from "../hooks/useTauri";
 
 interface Props {
   tier: number;
@@ -114,9 +114,21 @@ export default function Installing({
         })}
       </div>
 
-      <p className="mt-10 text-xs text-gray-600 text-center max-w-sm">
-        Please don't close this window. If the install is interrupted, you can
-        re-run the installer and it will resume where it left off.
+      <button
+        type="button"
+        onClick={() => {
+          // The rejected start_install promise surfaces "Installation
+          // cancelled." through onError once the child is terminated.
+          cancelInstall().catch(() => {});
+        }}
+        className="mt-8 px-4 py-2 text-sm rounded-md border border-gray-700 text-gray-400 hover:text-gray-200 hover:border-gray-500 transition-colors"
+      >
+        Cancel installation
+      </button>
+
+      <p className="mt-6 text-xs text-gray-600 text-center max-w-sm">
+        Cancelling or closing this window stops the installer process. You can
+        re-run the installer later to resume.
       </p>
     </div>
   );
