@@ -32,6 +32,7 @@ from models import GPUInfo
 
 
 _EVIDENCE_PATH = Path(__file__).with_name("performance_evidence.json")
+_SPLIT_GGUF_FILENAME_RE = re.compile(r"^(?P<prefix>.+)-(?P<part>\d{5})-of-(?P<total>\d{5})\.gguf$", re.IGNORECASE)
 _DEFAULT_RECOMMENDATION_POLICY = "catalog-fit-pre-download"
 _VRAM_FIT_TOLERANCE_GB = 0.25
 _MODEL_SELECTOR_POLICY = "context-aware-largest-capable-general-v1"
@@ -1555,11 +1556,24 @@ def build_models_payload(gpu_info: Optional[GPUInfo], loaded_model: Optional[str
         seen_files.update(seen)
         append_model(model, path, "downloaded" if downloaded else "available")
 
+    split_shards: dict[tuple[str, int], dict[int, Path]] = {}
+    local_files = []
     for path in downloaded_files.values():
-        if path.name.lower() in seen_files:
+        if path.name.lower() in seen_files or not path.exists():
             continue
-        if not path.exists():
-            continue
+        split = _SPLIT_GGUF_FILENAME_RE.fullmatch(path.name)
+        if split:
+            group = (split.group("prefix").lower(), int(split.group("total")))
+            split_shards.setdefault(group, {})[int(split.group("part"))] = path
+        else:
+            local_files.append(path)
+    # llama.cpp loads a split model from its -00001 entry and derives siblings;
+    # an incomplete set or a later shard alone is not a valid model option.
+    for (_, total), parts in split_shards.items():
+        if set(parts) == set(range(1, total + 1)):
+            local_files.append(parts[1])
+
+    for path in local_files:
         size_mb = path.stat().st_size / (1024 * 1024)
         fallback = {
             "id": local_model_id(path.stem),
