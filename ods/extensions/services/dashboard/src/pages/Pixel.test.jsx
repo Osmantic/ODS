@@ -900,8 +900,13 @@ describe('Pixel', () => {
     const view = render(<Pixel />)
     await screen.findByText('Available')
     fireEvent.change(screen.getByPlaceholderText('Message Portal...'), {target: {value: 'continue'}})
+    // The composer stays disabled until every readiness gate clears; the
+    // context probe can resolve after 'Available' first paints.
+    await waitFor(() => expect(screen.getByTitle('Send')).toBeEnabled())
     fireEvent.click(screen.getByTitle('Send'))
-    await screen.findByText('Latest answer')
+    // The reply reveals through the streaming animation; allow a margin over
+    // the 1s default find timeout on loaded runners.
+    await screen.findByText('Latest answer', {}, {timeout: 5000})
     expect(screen.getByText('History item 0')).toBeVisible()
     const call = globalThis.fetch.mock.calls.find(([url]) => url === '/api/pixel/chat/stream')
     expect(JSON.parse(call[1].body).messages.length).toBeLessThanOrEqual(50)
@@ -909,7 +914,7 @@ describe('Pixel', () => {
     view.unmount()
     render(<Pixel />)
     expect(screen.getByText('History item 0')).toBeVisible()
-    expect(screen.getByText('Latest answer')).toBeVisible()
+    expect(await screen.findByText('Latest answer', {}, {timeout: 5000})).toBeVisible()
   })
 
   it('restores the bounded local chat and reuses its opaque session after reload', async () => {
