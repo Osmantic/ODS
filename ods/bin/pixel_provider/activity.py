@@ -39,6 +39,8 @@ class ActivitySnapshot:
 
 
 def _bad(reason: str) -> ActivitySnapshot:
+    if not isinstance(reason, str) or not reason:
+        raise ValueError("reason must be a non-empty string")
     return ActivitySnapshot(_UNKNOWN_STATUS, (), reason)
 
 
