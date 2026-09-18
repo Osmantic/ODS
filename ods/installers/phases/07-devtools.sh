@@ -194,7 +194,7 @@ else
             _opencode_key="no-key"
         fi
         if [[ -z "${_opencode_key:-}" ]]; then
-            ai_err "OpenCode switchboard config requires LITELLM_KEY, but it is empty."
+            ai_bad "OpenCode switchboard config requires LITELLM_KEY, but it is empty."
             exit 1
         fi
         # OpenCode reserves `limit.output` from `limit.context` when deciding
@@ -203,7 +203,7 @@ else
         # loop on 32K installs. Keep at least three quarters for the prompt.
         _opencode_context="${MAX_CONTEXT:-65536}"
         if [[ ! "$_opencode_context" =~ ^[0-9]+$ ]] || (( _opencode_context < 1024 )); then
-            ai_err "OpenCode requires a numeric context of at least 1024 tokens."
+            ai_bad "OpenCode requires a numeric context of at least 1024 tokens."
             exit 1
         fi
         _opencode_output_limit=$(( _opencode_context / 4 ))

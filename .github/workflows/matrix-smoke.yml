@@ -34,6 +34,9 @@ jobs:
       - name: Mobile Dispatch Smoke
         run: bash tests/smoke/mobile-dispatch.sh
 
+      - name: Installer Env Smoke
+        run: bash tests/smoke/installer-env-smoke.sh
+
   # Multi-distro installer detection tests (dry-run, no GPU required)
   distro-matrix:
     strategy:
