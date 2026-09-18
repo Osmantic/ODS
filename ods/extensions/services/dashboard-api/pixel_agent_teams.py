@@ -83,6 +83,8 @@ def planned_count(text):
 
 
 def worker(team_id, index, role):
+    if not isinstance(index, int) or isinstance(index, bool) or not 0 <= index <= 5:
+        raise ValueError("index must be an integer between 0 and 5")
     return {"id": str(index), "name": ROLES[role][0], "role": role, "task": ROLES[role][1],
             "status": "queued", "turn": 0, "chat_id": f"team-{team_id}-{index}", "request_id": "turn-0",
             "messages": [], "conversation": [], "activity": None, "questions": None,
