@@ -108,6 +108,10 @@ def _prepare(payload, grant):
     if 'tools' in payload and (not isinstance(payload['tools'], list) or any(
             not isinstance(tool, dict) or tool.get('type') != 'function' for tool in payload['tools'])):
         raise ShareError(400, 'unsupported_tools')
+    if 'stream_options' in payload and (
+            not isinstance(payload['stream_options'], dict)
+            or any(k != 'include_usage' or type(v) is not bool for k, v in payload['stream_options'].items())):
+        raise ShareError(400, 'unsupported_stream_options')
     if 'chat_template_kwargs' in payload and (
             not isinstance(payload['chat_template_kwargs'], dict)
             or set(payload['chat_template_kwargs']) != {'enable_thinking'}
