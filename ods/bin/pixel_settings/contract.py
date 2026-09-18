@@ -92,7 +92,7 @@ def _capabilities(value):
             or type(value["pixelOnlyRuntime"]) is not bool):
         raise SettingsError("invalid-runtime-capabilities")
     levels = value["supportedThinkingLevels"]
-    if (type(levels) is not list or any(type(level) is not str or level not in CONTROLS["thinking"][1:] for level in levels)
+    if (type(levels) is not list or len(levels) == 0 or any(type(level) is not str or level not in CONTROLS["thinking"][1:] for level in levels)
             or len(set(levels)) != len(levels)):
         raise SettingsError("invalid-runtime-capabilities")
     return dict(value, supportedThinkingLevels=list(levels))
