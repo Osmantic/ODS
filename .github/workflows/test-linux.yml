@@ -79,6 +79,14 @@ jobs:
         run: python -m pytest extensions/services/model-router/tests -q
       - name: LiteLLM metadata-only telemetry contracts
         run: python -m pytest extensions/services/litellm/tests -q
+      - name: Install ape and pixel-model-relay test dependencies
+        run: python -m pip install 'aiohttp>=3.11,<3.12' 'pyyaml>=6.0'
+      - name: Privacy Shield PII detection and proxy contracts
+        run: python -m pytest -q extensions/services/privacy-shield/tests
+      - name: APE approval governance contracts
+        run: python -m pytest -q extensions/services/ape/tests
+      - name: Pixel model relay contracts
+        run: python -m pytest -q extensions/services/pixel-model-relay/tests
       - name: Test verified preview source and diff contracts
         run: |
           python -m pytest -q extensions/services/pixel-agent/tests/test_workspace_preview.py \
