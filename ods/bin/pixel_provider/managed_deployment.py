@@ -94,7 +94,7 @@ def required_policy(previous=None):
 
 
 def _path(value):
-    if (type(value) is not str or not 1 < _units(value, 'invalid-managed-deployment') <= 4096
+    if (type(value) is not str or value != value.strip() or not 1 < _units(value, 'invalid-managed-deployment') <= 4096
             or not value.startswith('/') or value.startswith('//')
             or posixpath.normpath(value) != value or '\\' in value
             or any(ord(c) < 32 or ord(c) == 127 for c in value)):
