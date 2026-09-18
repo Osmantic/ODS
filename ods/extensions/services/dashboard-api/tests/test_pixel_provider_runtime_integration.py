@@ -1,5 +1,6 @@
 """Actual dashboard/host HTTP; explicitly simulated privileged control socket."""
 import copy
+import time
 
 import pytest
 from routers import pixel_providers
@@ -130,8 +131,18 @@ def test_uncertain_response_is_not_retried_and_releases_lifecycle(provider_stack
     response = client.post('/api/pixel/providers/runtime', json=CHANGE)
     assert response.status_code == 503 and 'private-sentinel' not in response.text
     assert len(calls) == 1 and handler.posts == 1
-    acquired, _ = agent._begin_model_lifecycle('model_switch')
-    assert acquired
+    # The handler's error path sends the response before its finally releases
+    # the lifecycle lock, so the client can observe the answer a tick before
+    # the release lands. Poll the acquire briefly instead of asserting on the
+    # first observation — the invariant is "the lock is released", not
+    # "released before the response is delivered".
+    acquired = False
+    deadline = time.monotonic() + 2.0
+    while not acquired and time.monotonic() < deadline:
+        acquired, _ = agent._begin_model_lifecycle('model_switch')
+        if not acquired:
+            time.sleep(0.01)
+    assert acquired, 'model lifecycle lock was not released after the request'
     agent._end_model_lifecycle('model_switch')
 
 
