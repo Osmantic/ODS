@@ -28,6 +28,8 @@ MAX_BYTES = 4 * 1024 * 1024
 
 def project_receipts_valid(task):
     """Preserve only bounded, structured host associations across team reloads."""
+    if not isinstance(task, dict):
+        return False
     projects = task.get('projects')
     if not isinstance(projects, list) or len(projects) > 8:
         return False
