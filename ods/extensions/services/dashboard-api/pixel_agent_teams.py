@@ -99,9 +99,9 @@ def questions_valid(value):
         if not isinstance(q["id"], str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,39}", q["id"]) or q["id"] in ids:
             return False
         ids.add(q["id"])
-        if not isinstance(q["question"], str) or not 1 <= len(q["question"].strip()) <= 300:
+        if not isinstance(q["question"], str) or q["question"] != q["question"].strip() or not 1 <= len(q["question"]) <= 300:
             return False
-        if not isinstance(q["options"], list) or not 2 <= len(q["options"]) <= 4:
+        if not isinstance(q["options"], list) or not 2 <= len(q["options"]) <= 4 or any(not isinstance(x, str) or x != x.strip() for x in q["options"]):
             return False
         if re.search(r"[\x00-\x1f\x7f]", q["question"]) or any(not isinstance(x, str) or not 1 <= len(x.strip()) <= 160 or re.search(r"[\x00-\x1f\x7f]", x) for x in q["options"]):
             return False
