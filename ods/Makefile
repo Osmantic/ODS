@@ -234,11 +234,11 @@ test: ## Run unit and contract tests
 	@python3 tests/test-model-library-verdicts.py
 	@python3 tests/test-model-store-compose-flags.py
 	@python3 tests/test-perplexica-embedding-defaults.py
-	@python3 tests/test-port-contracts.py
-	@python3 tests/test-remote-provider-cli.py
-	@python3 tests/test-remote-provider-ssh-tunnel-service.py
+	@python3 tests/contracts/test-port-contracts.py
+	@python3 tests/contracts/test-remote-provider-cli.py
+	@python3 tests/contracts/test-remote-provider-ssh-tunnel-service.py
 	@python3 tests/test-service-registry-encoding.py
-	@python3 tests/test-ods-cli-contracts.py
+	@python3 tests/contracts/test-ods-cli-contracts.py
 	@python3 tests/contracts/test-wsl-stack.py
 
 bats: ## Run BATS unit tests for shell libraries
