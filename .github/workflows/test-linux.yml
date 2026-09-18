@@ -237,7 +237,9 @@ jobs:
         run: python3 -m unittest discover -s tests -p 'test_pixel_*.py' -v
 
       - name: Service Registry Tests
-        run: bash tests/test-service-registry.sh
+        run: |
+          python3 tests/test_pixel_inference_temperature.py
+          bash tests/test-service-registry.sh
 
       - name: Switchboard Bypass Inventory
         run: python3 tests/test-switchboard-bypass-inventory.py
