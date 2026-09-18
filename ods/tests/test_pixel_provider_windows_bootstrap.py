@@ -82,8 +82,15 @@ class NativeBootstrap(unittest.TestCase):
                 create.assert_not_called()
 
     def test_path_budget_reserves_transaction_filename_in_utf16_units(self):
-        # This path is <=240 Python code points but exceeds the reserved UTF-16 budget.
-        target = str(self.directory) + '\\' + '\U0001f331' * 50
+        # The leaf must push target + reserved transaction filename just past
+        # the 240 UTF-16-unit budget on any temp root length, while the target
+        # itself stays under it. Each emoji is one code point but two UTF-16
+        # units, which is exactly the unit/codepoint gap under test.
+        suffix_units = len(('\\' + '.ods-txn-' + 'f' * 32 + '.tmp').encode('utf-16-le')) // 2
+        base_units = len(str(self.directory).encode('utf-16-le')) // 2
+        needed = 241 - base_units - suffix_units
+        emoji = max((needed + 1) // 2, 1)
+        target = str(self.directory) + '\\' + '\U0001f331' * emoji
         with patch.object(B, '_create_api') as create, self.assertRaises(W.WindowsCustodyError):
             B.create_private_root(target)
         create.assert_not_called()
