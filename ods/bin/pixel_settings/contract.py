@@ -141,7 +141,7 @@ def preview_preferences(preferences, capabilities):
     if shared_change and not caps["pixelOnlyRuntime"]:
         raise SettingsError("shared-compaction-requires-pixel-isolation")
     thinking = desired.get("thinking")
-    if thinking is not None and thinking not in caps["supportedThinkingLevels"]:
+    if thinking is not None and thinking != "off" and thinking not in caps["supportedThinkingLevels"]:
         raise SettingsError("thinking-level-not-supported")
     if desired.get("reasoningVisibility") in ("on", "stream") and not any(
             level != "off" for level in caps["supportedThinkingLevels"]):
