@@ -15,7 +15,7 @@ def checksum(value):
 def target(value):
     keys = {"model", "contextLength", "maxTokens", "reasoning"}
     if (type(value) is not dict or not keys <= set(value) or set(value) - keys - {"routeFingerprint"}
-            or type(value["model"]) is not str
+            or type(value["model"]) is not str or value["model"] != value["model"].strip()
             or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+:/ @(),=-]{0,255}", value["model"])
             or type(value["contextLength"]) is not int or not 4096 <= value["contextLength"] <= 10_000_000
             or type(value["maxTokens"]) is not int or not 1 <= value["maxTokens"] <= value["contextLength"]
