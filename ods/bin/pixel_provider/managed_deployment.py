@@ -118,6 +118,8 @@ def deployment(binding, source_root, host_python, provider_directory, owner_scop
         checked = _binding(binding['revision'], binding['allowCloud'], binding['activationId'])
     except StoreError:
         raise StoreError(code) from None
+    if source_root == provider_directory:
+        raise StoreError(code)
     result = {
         'binding': checked, 'sourceRoot': _path(source_root), 'hostPython': _path(host_python),
         'providerDirectory': _path(provider_directory), 'ownerScopes': owner_scopes,
