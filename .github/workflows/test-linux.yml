@@ -335,6 +335,17 @@ jobs:
       - name: Preset Export Archive Permissions
         run: bash tests/test-preset-export-permissions.sh
 
+      - name: Preset Compatibility and Import/Export Contracts
+        run: |
+          bash tests/test-preset-compatibility.sh
+          bash tests/test-preset-import-export.sh
+
+      - name: Voice Repair Command Wiring
+        run: bash tests/test-voice-repair-command.sh
+
+      - name: macOS Native Model Store Resolver Contract
+        run: bash tests/test-macos-native-model-store.sh
+
       - name: Legacy Update Fallback Backup Round Trip
         run: python3 tests/test-cli-legacy-update-backup.py
 
@@ -393,6 +404,7 @@ jobs:
       - name: Installer Contract Checks
         run: |
           bash tests/contracts/test-installer-contracts.sh
+          bash tests/test-llama-memory-budget.sh
           bash tests/test-linux-ollama-port-override.sh
           bash tests/test-external-services.sh
           bash tests/test-resolve-compose-resilient.sh
@@ -450,6 +462,8 @@ jobs:
           bash tests/test-backup-integrity.sh
           bash tests/test-backup-restore-roundtrip.sh
           python3 tests/test-rsync-transfer-failures.py
+          bash tests/test-disk-space-preflight.sh
+          bash tests/test-restore-safety-ux.sh
 
       - name: Backup retention and integrity
         run: |

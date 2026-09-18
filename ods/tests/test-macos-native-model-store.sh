@@ -9,7 +9,17 @@ SSD_DIR="$TMP_DIR/External SSD"
 export INSTALL_DIR SSD_DIR
 mkdir -p "$INSTALL_DIR/scripts" "$INSTALL_DIR/extensions/services/dashboard-api" "$INSTALL_DIR/data/models" "$INSTALL_DIR/bin" "$SSD_DIR"
 cp "$ROOT_DIR/scripts/resolve-model-store.py" "$INSTALL_DIR/scripts/"
-cp "$ROOT_DIR/extensions/services/dashboard-api/"{model_stores,env_values}.py "$INSTALL_DIR/extensions/services/dashboard-api/"
+cp "$ROOT_DIR/extensions/services/dashboard-api/"{model_stores,env_values,model_mtp}.py "$INSTALL_DIR/extensions/services/dashboard-api/"
+# model_stores.py loads model_mtp.py as a sibling; the fixture runtime is a Mach-O
+# magic stub that cannot execute on any host, so shadow the subprocess boundary
+# with a shape check (real exec coverage lives in test_model_mtp.py).
+cat >> "$INSTALL_DIR/extensions/services/dashboard-api/model_mtp.py" <<'PY'
+
+
+def validate_runtime_command(command):
+    if not command or any(not isinstance(value, str) or '\x00' in value for value in command):
+        raise ValueError("Invalid native runtime command")
+PY
 source "$ROOT_DIR/installers/macos/lib/native-model.sh"
 read_env_value() { sed -n "s/^$2=//p" "$1" | head -1; }
 fail() { echo "[FAIL] $*" >&2; exit 1; }

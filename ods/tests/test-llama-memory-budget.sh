@@ -28,7 +28,7 @@ assert_eq "$(ods_default_nvidia_llama_memory_limit 128)" "64G" "absolute cap"
 
 # These are intentional source-contract literals, not shell expansions.
 # shellcheck disable=SC2016
-grep -qF 'LLAMA_SERVER_MEMORY_LIMIT_VALUE="$(_env_get LLAMA_SERVER_MEMORY_LIMIT "$_llama_memory_default")"' \
+grep -qF 'LLAMA_SERVER_MEMORY_LIMIT_VALUE="$(_env_get LLAMA_SERVER_MEMORY_LIMIT "${LLAMA_SERVER_MEMORY_LIMIT:-$_llama_memory_default}")"' \
     "$ROOT_DIR/installers/phases/06-directories.sh"
 # shellcheck disable=SC2016
 grep -qF 'LLAMA_SERVER_MEMORY_LIMIT=${LLAMA_SERVER_MEMORY_LIMIT_VALUE}' \
