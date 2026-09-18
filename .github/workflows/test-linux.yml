@@ -107,6 +107,35 @@ jobs:
       - name: Test preview publication directory failures
         run: python -m pytest -q extensions/services/pixel-agent/tests/test_preview_directory_errors.py
 
+      - name: Previously unwired Python contract suites
+        run: |
+          python -m pip install pyyaml
+          python -m pytest -q \
+            tests/test_build_installation_context_port.py \
+            tests/test_chromadb_healthcheck.py \
+            tests/test_compose_failure_report_port_check.py \
+            tests/test_healthcheck_redirect_policy.py \
+            tests/test_hf_download_helper.py \
+            tests/test_miniflux_extension.py \
+            tests/test_ntfy_extension.py \
+            tests/test_persona_running_containers.py \
+            tests/test_pixel_access_http.py \
+            tests/test_pixel_access_reconcile.py \
+            tests/test_pixel_activity.py \
+            tests/test_pixel_extension_catalog.py \
+            tests/test_pixel_onboarding_upgrade.py \
+            tests/test_pixel_provider_boundaries.py \
+            tests/test_pixel_provider_config.py \
+            tests/test_pixel_provider_credentials.py \
+            tests/test_pixel_provider_host_api.py \
+            tests/test_pixel_provider_store.py \
+            tests/test_pixel_provider_store_factory.py \
+            tests/test_setup_card.py \
+            tests/test_system_uninstall.py \
+            tests/test_todo_fixes.py \
+            tests/test_update_rollback_atomicity.py \
+            tests/pixel_settings/test_pixel_settings_store.py
+
   token-spy-pricing:
     runs-on: ubuntu-latest
     defaults:
