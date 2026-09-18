@@ -31,6 +31,8 @@ class ResultCapacity(Exception):
 
 
 def owner_namespace(credential: str) -> str:
+    if not isinstance(credential, str) or not credential or credential != credential.strip():
+        raise ValueError("invalid-owner-credential")
     return hashlib.sha256(credential.encode("utf-8")).hexdigest()
 
 
