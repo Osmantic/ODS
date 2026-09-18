@@ -346,6 +346,7 @@ jobs:
 
       - name: Previously Unwired Python Contract Suites
         run: |
+          python3 -m pip install 'pytest>=8,<9' 'pyyaml>=6.0'
           python3 tests/test-catalog-invalid-manifest.py
           python3 tests/test-embedding-model-contract.py
           python3 tests/test-external-completion-probe.py
