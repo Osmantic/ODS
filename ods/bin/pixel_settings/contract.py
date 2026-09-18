@@ -80,8 +80,10 @@ def _capabilities(value):
                 "supportedThinkingLevels", "samplingSupported", "pixelOnlyRuntime"}
     if type(value) is not dict or set(value) != required:
         raise SettingsError("invalid-runtime-capabilities")
-    for name in ("providerContextTokens", "providerMaxOutputTokens", "activeContextTokens", "activeMaxOutputTokens"):
+    for name in ("providerMaxOutputTokens", "activeMaxOutputTokens"):
         _integer(value[name])
+    for name in ("providerContextTokens", "activeContextTokens"):
+        _integer(value[name], minimum=4096)
     if value["backendContextTokens"] is not None:
         _integer(value["backendContextTokens"])
     if (value["providerMaxOutputTokens"] > value["providerContextTokens"]
