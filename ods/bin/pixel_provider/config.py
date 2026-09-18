@@ -63,7 +63,7 @@ _METADATA_ADDRS = {
 def _validate_base_url(value, label):
     # This is syntax validation, not network authorization. The transport must
     # resolve/pin addresses, reject forbidden destinations and disable redirects.
-    if not isinstance(value, str) or len(value) > 2048 or _has_control(value):
+    if not isinstance(value, str) or value != value.strip() or len(value) > 2048 or _has_control(value):
         raise ConfigError(f"{label}: invalid URL", "invalid_url")
     raw = value.strip()
     if any(c in raw for c in ("\\", "?", "#", "@")) or any(c.isspace() for c in raw):
