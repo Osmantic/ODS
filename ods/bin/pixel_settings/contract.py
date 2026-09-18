@@ -86,6 +86,7 @@ def _capabilities(value):
         _integer(value["backendContextTokens"])
     if (value["providerMaxOutputTokens"] > value["providerContextTokens"]
             or value["activeMaxOutputTokens"] > value["activeContextTokens"]
+            or value["activeMaxOutputTokens"] > value["providerMaxOutputTokens"]
             or value["capacitySource"] not in ("provider-declared", "owner-declared", "backend-observed")
             or value["capacitySource"] == "backend-observed" and value["backendContextTokens"] is None
             or type(value["samplingSupported"]) is not bool
