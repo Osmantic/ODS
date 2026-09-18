@@ -86,7 +86,7 @@ def projection(config):
               **{key: compaction.get(key) for key in ("reserveTokens", "reserveTokensFloor", "keepRecentTokens")}}
     if any(value is not None and (type(value) is not int or not 0 <= value <= 10_000_000) for value in limits.values()):
         raise ModelError("invalid-model-limits")
-    if any(type(limits[key]) is not int or limits[key] < 1 for key in ("contextTokens", "maxOutputTokens", "pluginContext")):
+    if limits["contextTokens"] < 4096 or any(type(limits[key]) is not int or limits[key] < 1 for key in ("contextTokens", "maxOutputTokens", "pluginContext")):
         raise ModelError("invalid-model-limits")
     return {"contract": contract, "limits": limits}
 
