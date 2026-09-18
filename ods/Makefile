@@ -217,6 +217,15 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== session cleanup lifecycle ==="
 	@bash tests/test-session-cleanup.sh
+	@echo ""
+	@echo "=== bootstrap pixel catalog permissions ==="
+	@bash tests/test-bootstrap-pixel-catalog-permissions.sh
+	@echo "=== installer feature state sync ==="
+	@bash tests/test-installer-feature-state-sync.sh
+	@echo "=== ods-cli restart hermes readiness ==="
+	@bash tests/test-ods-cli-restart-hermes-ready.sh
+	@echo "=== systemctl user env ==="
+	@bash tests/test-systemctl-user-env.sh
 
 bats: ## Run BATS unit tests for shell libraries
 	@echo "=== BATS unit tests ==="
