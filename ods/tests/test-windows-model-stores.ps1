@@ -29,7 +29,7 @@ $script:EnvMap = @{ ODS_ACTIVE_MODEL_STORE = 'ssd'; GGUF_FILE = 'model.gguf'; CT
 function Read-ODSEnv { return $script:EnvMap }
 function Sync-ODSNativeInferenceConfig { }
 function Get-ODSEnvValue { param($Name, $Default) if ($script:EnvMap[$Name]) { return $script:EnvMap[$Name] }; return $Default }
-function Resolve-ODSHostAgentPython { return [pscustomobject]@{ FilePath = (Get-Command python -CommandType Application).Source; PrefixArgs = @() } }
+function Resolve-ODSHostAgentPython { return [pscustomobject]@{ FilePath = (Get-Command python -CommandType Application | Where-Object { $_.Source -notlike '*WindowsApps*' } | Select-Object -First 1).Source; PrefixArgs = @() } }
 function Write-AI { param($Message) }
 function Write-AIWarn { param($Message) }
 function Write-AISuccess { param($Message) }

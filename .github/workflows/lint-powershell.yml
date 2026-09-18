@@ -104,6 +104,51 @@ jobs:
         shell: pwsh
         run: ./tests/contracts/test-windows-runtime-recovery.ps1
 
+      - name: Windows Docker Pull Contract
+        shell: pwsh
+        run: ./tests/contracts/test-windows-docker-pull.ps1
+
+      - name: Windows AMD Memory Detection Contract
+        shell: pwsh
+        run: ./tests/test-windows-amd-memory-detection.ps1
+
+      - name: Windows Compose Model Stores Contract
+        shell: pwsh
+        run: ./tests/test-windows-compose-model-stores.ps1
+
+      - name: Windows Hermes Soul Refresh Contract
+        shell: pwsh
+        run: ./tests/test-windows-hermes-soul-refresh.ps1
+
+      - name: Windows Llama Memory Budget Contract
+        shell: pwsh
+        run: ./tests/test-windows-llama-memory-budget.ps1
+
+      - name: Windows Model Stores Contract
+        shell: pwsh
+        run: ./tests/test-windows-model-stores.ps1
+
+      - name: Windows Restart Model Preflight Contract
+        shell: pwsh
+        run: ./tests/test-windows-restart-model-preflight.ps1
+
+      - name: WSL Lifecycle Output Contract
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tests/contracts/test-wsl-lifecycle-output.ps1
+
+      - name: WSL Lifecycle Contract
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tests/contracts/test-wsl-lifecycle.ps1
+
+      - name: Windows Pixel Settings Store Tests
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          python -m pip install --quiet pytest
+          python -m pytest -q tests/pixel_settings/test_store_windows.py
+
       - name: Windows Installed Footprint Contract
         if: runner.os == 'Windows'
         shell: pwsh
