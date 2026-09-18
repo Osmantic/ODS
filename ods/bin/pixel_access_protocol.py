@@ -118,7 +118,8 @@ def request(value):
     allowed = KEYS.get(operation)
     if allowed is None or set(value) not in (allowed, allowed | {'expected_projection'} if operation == 'provider-change' else allowed):
         raise ProtocolError("owner-protocol-failed")
-    if (type(value["openclaw"]) is not str or not PurePosixPath(value["openclaw"]).is_absolute()
+    if (type(value["openclaw"]) is not str or len(value["openclaw"]) > 4096
+            or not PurePosixPath(value["openclaw"]).is_absolute()
             or "\x00" in value["openclaw"] or type(value["confirmed"]) is not bool):
         raise ProtocolError("owner-protocol-failed")
     if operation.endswith("status"):
