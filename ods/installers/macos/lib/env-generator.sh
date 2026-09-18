@@ -481,6 +481,12 @@ generate_ods_env() {
     if [[ "${BIND_ADDRESS:-127.0.0.1}" == "0.0.0.0" ]]; then
         host_lan_ip=$(detect_host_lan_ip)
     fi
+    # n8n builds webhook URLs from WEBHOOK_URL; on a LAN install "localhost"
+    # yields URLs no LAN client can reach, so prefer the detected LAN IP.
+    local n8n_webhook_url="http://localhost:5678"
+    if [[ -n "$host_lan_ip" ]]; then
+        n8n_webhook_url="http://${host_lan_ip}:5678"
+    fi
     local device_name
     device_name=$(detect_device_name)
 
@@ -691,7 +697,7 @@ OPEN_WEBUI_LLM_API_KEY=${open_webui_llm_api_key}
 
 #=== n8n Settings ===
 N8N_HOST=localhost
-N8N_WEBHOOK_URL=http://localhost:5678
+N8N_WEBHOOK_URL=${n8n_webhook_url}
 TIMEZONE=${tz}
 
 #=== Langfuse (LLM Observability) ===

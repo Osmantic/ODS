@@ -976,6 +976,22 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
     # used for every other persistent value in this phase).
     HOST_LAN_IP=$(_env_get HOST_LAN_IP "$HOST_LAN_IP")
 
+    # n8n builds the webhook URLs it shows in the editor (and hands to
+    # external callers) from WEBHOOK_URL. On a LAN install the literal
+    # "localhost" yields URLs no LAN client can reach, so point it at the
+    # detected HOST_LAN_IP instead. Operator override preserved via _env_get;
+    # a stored "localhost" on a LAN install is upgraded below because the old
+    # generator emitted that literal unconditionally — it was never an
+    # operator choice.
+    _n8n_webhook_default="http://localhost:5678"
+    if [[ -n "$HOST_LAN_IP" ]]; then
+        _n8n_webhook_default="http://${HOST_LAN_IP}:5678"
+    fi
+    N8N_WEBHOOK_URL=$(_env_get N8N_WEBHOOK_URL "$_n8n_webhook_default")
+    if [[ -n "$HOST_LAN_IP" && "$N8N_WEBHOOK_URL" == "http://localhost:5678" ]]; then
+        N8N_WEBHOOK_URL="http://${HOST_LAN_IP}:5678"
+    fi
+
     # Device name — used by ods-mdns (publishes <name>.local + per-service
     # subdomains: auth.<name>.local, chat.<name>.local, etc.) and by magic-
     # link URL generation in dashboard-api. The previous default literal
@@ -1367,7 +1383,7 @@ WEB_SEARCH_ENGINE=searxng
 
 #=== n8n Settings ===
 N8N_HOST=localhost
-N8N_WEBHOOK_URL=http://localhost:5678
+N8N_WEBHOOK_URL=$(dotenv_value "${N8N_WEBHOOK_URL}")
 TIMEZONE=${SYSTEM_TZ:-UTC}
 
 #=== Langfuse (LLM Observability) ===

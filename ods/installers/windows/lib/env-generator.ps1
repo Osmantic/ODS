@@ -662,6 +662,30 @@ function New-ODSEnv {
         return Select-AutoCpuValue -Key $Key -Detected (Select-CappedCpuValue -Desired $Desired -Ceiling $Limit)
     }
 
+    # n8n builds the webhook URLs it shows in the editor from WEBHOOK_URL.
+    # On a LAN install "localhost" yields URLs no LAN client can reach, so
+    # resolve the host's LAN IP from the interface carrying the default route
+    # (mirrors `ip -4 route get 1.1.1.1` in the Linux phase).
+    $hostLanIp = ""
+    if ($networkExposed) {
+        $defaultIfIndex = (Get-NetRoute -DestinationPrefix "0.0.0.0/0" -ErrorAction SilentlyContinue |
+            Sort-Object -Property RouteMetric, InterfaceMetric |
+            Select-Object -First 1 -ExpandProperty InterfaceIndex)
+        if ($defaultIfIndex) {
+            $hostLanIp = Get-NetIPAddress -AddressFamily IPv4 -InterfaceIndex $defaultIfIndex -ErrorAction SilentlyContinue |
+                Where-Object { $_.IPAddress -notlike "169.254.*" } |
+                Select-Object -First 1 -ExpandProperty IPAddress
+        }
+    }
+    $n8nWebhookDefault = "http://localhost:5678"
+    if ($hostLanIp) { $n8nWebhookDefault = "http://${hostLanIp}:5678" }
+    $n8nWebhookUrl = Get-EnvOrNew "N8N_WEBHOOK_URL" $n8nWebhookDefault
+    if ($EnableLan -and $hostLanIp -and $n8nWebhookUrl -eq "http://localhost:5678") {
+        # An explicit -Lan rerun upgrades the generator-hardcoded loopback
+        # literal — it was never an operator choice.
+        $n8nWebhookUrl = "http://${hostLanIp}:5678"
+    }
+
     # Generate secrets (reuse existing on re-install)
     $webuiSecret     = Get-EnvOrNew "WEBUI_SECRET"       (New-SecureHex -Bytes 32)
     $n8nPass         = Get-EnvOrNew "N8N_PASS"           (New-SecureBase64 -Bytes 16)
@@ -1080,7 +1104,7 @@ WEB_SEARCH_ENGINE=searxng
 
 #=== n8n Settings ===
 N8N_HOST=localhost
-N8N_WEBHOOK_URL=http://localhost:5678
+N8N_WEBHOOK_URL=$n8nWebhookUrl
 TIMEZONE=$tz
 
 #=== Langfuse Observability ===
