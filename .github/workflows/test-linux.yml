@@ -357,6 +357,7 @@ jobs:
         run: |
           python3 tests/test-offline-model-validation.py
           python3 tests/test_external_model_validation.py
+          bash tests/test-offline-phase-fail-closed.sh
 
       - name: Runtime Config Renderer Tests
         run: python3 tests/test-render-runtime-configs.py

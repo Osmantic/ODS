@@ -22,9 +22,6 @@ if [[ "$OFFLINE_MODE" == "true" ]] && $DRY_RUN; then
 elif [[ "$OFFLINE_MODE" == "true" ]] && ! $DRY_RUN; then
     chapter "CONFIGURING OFFLINE MODE (M1)"
 
-    # Create offline mode marker
-    touch "$INSTALL_DIR/.offline-mode"
-
     # Disable any cloud-dependent features in .env
     _sed_i 's/^BRAVE_API_KEY=.*/BRAVE_API_KEY=/' "$INSTALL_DIR/.env" 2>/dev/null || true
     _sed_i 's/^ANTHROPIC_API_KEY=.*/ANTHROPIC_API_KEY=/' "$INSTALL_DIR/.env" 2>/dev/null || true
@@ -79,12 +76,27 @@ M1_EOF
     # Download embeddinggemma GGUF (small, ~300MB)
     if command -v curl &> /dev/null; then
         EMBED_URL="https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/main/nomic-embed-text-v1.5.Q4_K_M.gguf"
-        if ! [[ -f "$INSTALL_DIR/models/embeddings/nomic-embed-text-v1.5.Q4_K_M.gguf" ]]; then
-            curl -L --max-time 3600 -o "$INSTALL_DIR/models/embeddings/nomic-embed-text-v1.5.Q4_K_M.gguf" "$EMBED_URL" 2>/dev/null || \
-                ai_warn "Could not pre-download embeddings. Memory search will download on first use."
+        EMBED_FILE="$INSTALL_DIR/models/embeddings/nomic-embed-text-v1.5.Q4_K_M.gguf"
+        if ! [[ -s "$EMBED_FILE" ]]; then
+            # Offline mode has no "first use" retry: a failed or partial
+            # download must fail the install, not degrade to a warn. Stage to
+            # a .part file so an interrupted curl can never masquerade as the
+            # finished model on a rerun.
+            if curl -L --max-time 3600 -o "${EMBED_FILE}.part" "$EMBED_URL" 2>/dev/null; then
+                mv "${EMBED_FILE}.part" "$EMBED_FILE"
+            else
+                rm -f "${EMBED_FILE}.part"
+                ai_bad "Could not download the offline embeddings model."
+                ai "An air-gapped install needs this file; re-run while online or place it manually:"
+                ai "  $EMBED_FILE"
+                return 1
+            fi
         else
             log "Embeddings already downloaded"
         fi
+    else
+        ai_bad "curl is required to download the offline embeddings model."
+        return 1
     fi
 
     # Whisper STT model: Phase 12 pre-downloads it by POSTing to the running
@@ -101,6 +113,11 @@ M1_EOF
         log "    ods stt download"
         log "  Or use 'scripts/pre-download.sh --with-voice' to pre-cache before install."
     fi
+
+    # All required offline assets are staged — mark the install offline-ready.
+    # Creating this marker before the downloads completed would claim offline
+    # readiness the system does not have (issue #5112).
+    touch "$INSTALL_DIR/.offline-mode"
 
     # Offline docs already copied by rsync/cp block above
     ai_ok "Offline mode configured"
