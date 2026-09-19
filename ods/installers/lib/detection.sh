@@ -700,7 +700,7 @@ fix_nvidia_secure_boot() {
         ods_sudo openssl req -new -x509 -newkey rsa:2048 \
             -keyout "$mok_dir/MOK.priv" \
             -outform DER -out "$mok_dir/MOK.der" \
-            -nodes -days 36500 \
+            -nodes -days 3650 \
             -subj "/CN=ODS Module Signing/" 2>>"$LOG_FILE"
         ods_sudo chmod 600 "$mok_dir/MOK.priv"
         ai_ok "Generated MOK signing key"
