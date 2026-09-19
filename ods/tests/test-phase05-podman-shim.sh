@@ -28,10 +28,15 @@ pass() {
 [[ -f "$PHASE" ]] || fail "missing phase 05: $PHASE"
 
 # Static guard: the podman arm must sit between the docker-found arm and the
-# Docker CE install branch.
-docker_line="$(grep -n 'elif command -v docker &> /dev/null; then' "$PHASE" | head -1 | cut -d: -f1)"
-podman_line="$(grep -n 'elif command -v podman &> /dev/null; then' "$PHASE" | head -1 | cut -d: -f1)"
-install_line="$(grep -n 'ods_progress 31 "docker" "Installing Docker engine"' "$PHASE" | head -1 | cut -d: -f1)"
+# Docker CE install branch. The docker-found arm now also probes `docker
+# --version`, so anchor on its `command -v docker` prefix rather than a fixed
+# `; then` suffix. Tolerate a missing match (|| true) so a future refactor
+# trips the explicit guard below instead of aborting this command substitution
+# under `set -o pipefail` (grep's non-zero exit, or SIGPIPE from `head -1`,
+# would otherwise kill the test here with no diagnostic).
+docker_line="$(grep -n 'elif command -v docker &> /dev/null' "$PHASE" | head -1 | cut -d: -f1 || true)"
+podman_line="$(grep -n 'elif command -v podman &> /dev/null; then' "$PHASE" | head -1 | cut -d: -f1 || true)"
+install_line="$(grep -n 'ods_progress 31 "docker" "Installing Docker engine"' "$PHASE" | head -1 | cut -d: -f1 || true)"
 [[ -n "$docker_line" && -n "$podman_line" && -n "$install_line" \
     && "$docker_line" -lt "$podman_line" && "$podman_line" -lt "$install_line" ]] \
     || fail "phase 05 must check for podman after docker and before the Docker CE install branch"
