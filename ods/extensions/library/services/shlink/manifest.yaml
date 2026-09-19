@@ -1,0 +1,41 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: shlink
+  name: Shlink
+  description: "Self-hosted URL shortener with REST API, QR code generator, and detailed link analytics."
+  aliases: [url-shortener, shortener, links]
+  container_name: ods-shlink
+  host_env: SHLINK_HOST
+  default_host: shlink
+  port: 8080
+  external_port_env: SHLINK_PORT
+  external_port_default: 7856
+  health: /rest/health
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [urls, shortener, links, analytics, qr, local]
+  env_vars:
+    - key: SHLINK_PORT
+      default: "7856"
+      description: Published Shlink redirect and REST API port
+    - key: DEFAULT_DOMAIN
+      default: "localhost:7856"
+      description: Default domain name used to generate short URLs
+features:
+  - id: url-shortening
+    name: URL Shortening
+    description: "Generate private shortened links, QR codes, and track visitor click analytics"
+    icon: Link
+    category: productivity
+    requirements:
+      services: [shlink]
+      vram_gb: 0
+      disk_gb: 1
+    enabled_services_all: [shlink]
+    setup_time: "~1 minute"
+    priority: 43
