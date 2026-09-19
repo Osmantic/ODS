@@ -550,7 +550,7 @@ def _read_env_var_from_file_state(key: str) -> tuple[bool, str]:
     install_dir = os.environ.get("ODS_INSTALL_DIR", os.path.expanduser("~/ods"))
     env_path = Path(install_dir) / ".env"
     try:
-        for line in env_path.read_text().splitlines():
+        for line in env_path.read_text(encoding="utf-8").splitlines():
             if line.startswith(f"{key}="):
                 return True, parse_env_value(line[len(key) + 1:])
     except OSError:

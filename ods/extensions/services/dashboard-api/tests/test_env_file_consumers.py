@@ -5,11 +5,15 @@ import pytest
 from env_values import quote_env_value
 
 
-@pytest.mark.parametrize("value", ["it's $5 \"q\" back\\slash", "  model #1  ", "ordinary"])
+# "pässwörd ═╪" carries bytes that are invalid or different under a Windows
+# cp1252 default locale — the .env on-disk contract is UTF-8 and every reader
+# must say so explicitly or it crashes/mangles values on cp1252 hosts.
+@pytest.mark.parametrize("value", ["it's $5 \"q\" back\\slash", "  model #1  ", "pässwörd ═╪", "ordinary"])
 def test_persisted_readers_decode_writer_output(tmp_path, monkeypatch, value):
     import config
     import gpu
     import helpers
+    import main
     import performance_oracle
     from routers import models, updates
 
@@ -23,6 +27,7 @@ def test_persisted_readers_decode_writer_output(tmp_path, monkeypatch, value):
     monkeypatch.setattr(helpers, "INSTALL_DIR", str(tmp_path))
     monkeypatch.setattr(models, "_ENV_PATH", env_path)
     monkeypatch.setattr(updates, "INSTALL_DIR", str(tmp_path))
+    monkeypatch.setattr(main, "_resolve_install_root", lambda: tmp_path)
     monkeypatch.setenv("ODS_INSTALL_DIR", str(tmp_path))
     assert config._find_env_file_value("LLM_MODEL") == (True, value)
     assert gpu._read_env_var_from_file_state("LLM_MODEL") == (True, value)
@@ -30,6 +35,7 @@ def test_persisted_readers_decode_writer_output(tmp_path, monkeypatch, value):
     assert performance_oracle.read_context_length(tmp_path) == 8192
     assert models._read_active_model() == value
     assert updates._read_current_version() == value
+    assert main._read_installed_version() == value
     assert helpers.get_model_info().name == value
 
 

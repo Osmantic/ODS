@@ -139,7 +139,7 @@ def constrained_settings(settings_env_fixture):
     """Use the shipped constraints, through the real Settings save boundary."""
     schema_path = settings_env_fixture["schema_path"]
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
-    shipped = json.loads((Path(__file__).resolve().parents[4] / ".env.schema.json").read_text())
+    shipped = json.loads((Path(__file__).resolve().parents[4] / ".env.schema.json").read_text(encoding="utf-8"))
     for key in ("REMOTE_LLM_SSH_PORT", "LLAMA_ARG_N_CPU_MOE", "N8N_PASS",
                 "PIXEL_OPENWEBUI_KEY", "TS_HOSTNAME"):
         schema["properties"][key] = shipped["properties"][key]
@@ -192,7 +192,7 @@ def test_settings_saves_valid_schema_boundaries_and_keeps_blank_secret(
                                json={"mode": "form", "values": {"N8N_PASS": ""}})
     assert response.status_code == 200, response.text
     from settings import _parse_env_text
-    persisted, issues = _parse_env_text(constrained_settings["env_path"].read_text())
+    persisted, issues = _parse_env_text(constrained_settings["env_path"].read_text(encoding="utf-8"))
     assert issues == []
     assert {key: persisted[key] for key in values} == values
     assert (constrained_settings["data_root"] / "config-backups/.env.backup.test").exists()

@@ -160,7 +160,7 @@ def _read_installed_version() -> str:
     env_file = install_root / ".env"
     if env_file.exists():
         try:
-            for line in env_file.read_text().splitlines():
+            for line in env_file.read_text(encoding="utf-8").splitlines():
                 if line.startswith("ODS_VERSION="):
                     env_version = parse_env_value(line.split("=", 1)[1])
                     if env_version:
@@ -1588,12 +1588,12 @@ async def service_tokens():
             for path in [Path("/data/openclaw/home/gateway-token"), Path("/ods/.env")]:
                 try:
                     if path.suffix == ".env":
-                        for line in path.read_text().splitlines():
+                        for line in path.read_text(encoding="utf-8").splitlines():
                             if line.startswith("OPENCLAW_TOKEN="):
                                 oc_token = line.split("=", 1)[1].strip()
                                 break
                     else:
-                        oc_token = path.read_text().strip()
+                        oc_token = path.read_text(encoding="utf-8").strip()
                 except (OSError, ValueError):
                     continue
                 if oc_token:
