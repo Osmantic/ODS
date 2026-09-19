@@ -242,7 +242,11 @@ async def pixel_chat_context(body: ChatCancelRequest):
 @router.post("/chat/compact")
 async def pixel_chat_compact(body: ChatResultRequest, owner: str = Depends(verify_api_key)):
     store = _chat_results()
-    if store.has_pending((owner_namespace(owner), body.chat_id)):
+    try:
+        pending = store.has_pending((owner_namespace(owner), body.chat_id))
+    except ResultConflict as exc:
+        raise HTTPException(423, str(exc)) from None
+    if pending:
         raise HTTPException(423, "Recover or finish the current response before compacting this conversation")
     issue = await _model_readiness_issue()
     if issue is not None:
@@ -258,16 +262,19 @@ async def pixel_chat_result(body: ChatResultRequest, owner: str = Depends(verify
     """Read an owner's attempt without resubmitting any model request."""
     store = _chat_results()
     key = (owner_namespace(owner), body.chat_id, body.request_id)
-    row = _result_state(store, key)
-    if row is None:
-        return {"state": "unknown", "events": ""}
-    if row["state"] == "unresolved":
-        activity = await pixel_chat_activity(ChatCancelRequest(chat_id=body.chat_id))
-        if activity["state"] == "terminal":
-            store.finish(key, "interrupted")
-            row = store.get(key)
-    events = b"" if row["state"] == "active" else b"".join(chunk["data"] for chunk in store.chunks(key))
-    return {"state": row["state"], "events": events.decode("utf-8", errors="replace")}
+    try:
+        row = _result_state(store, key)
+        if row is None:
+            return {"state": "unknown", "events": ""}
+        if row["state"] == "unresolved":
+            activity = await pixel_chat_activity(ChatCancelRequest(chat_id=body.chat_id))
+            if activity["state"] == "terminal":
+                store.finish(key, "interrupted")
+                row = store.get(key)
+        events = b"" if row["state"] == "active" else b"".join(chunk["data"] for chunk in store.chunks(key))
+        return {"state": row["state"], "events": events.decode("utf-8", errors="replace")}
+    except ResultConflict as exc:
+        raise HTTPException(423, str(exc)) from None
 
 
 class PixelAccessChange(BaseModel):
@@ -697,32 +704,39 @@ async def pixel_chat_cancel(body: ChatCancelRequest, owner: str = Depends(verify
     if body.request_id is not None:
         store = _chat_results()
         identity = (owner_namespace(owner), body.chat_id, body.request_id)
-        row = _result_state(store, identity)
-        # A late Stop for a completed/unknown attempt must not stop a newer run.
-        if row is None or row["state"] not in {"active", "unresolved"}:
-            return {"aborted": False}
-        if identity[:2] in _result_stops:
-            return {"aborted": False}
-        _result_stops.add(identity[:2])
         try:
-            aborted = await _cancel_edge_run(edge_url, key, body.chat_id)
-            if aborted:
-                if store.get(identity)["state"] == "complete":
-                    return {"aborted": False}
-                _result_abort_ack.add(identity)
-                task = _result_tasks.get(identity)
-                if task is not None and not task.done():
-                    task.cancel()
-                    await asyncio.gather(task, return_exceptions=True)
-                if store.get(identity)["state"] == "complete":
-                    return {"aborted": False}
-                store.finish(identity, "cancelled")
-            return {"aborted": aborted}
-        finally:
-            _result_abort_ack.discard(identity)
-            _result_stops.discard(identity[:2])
-    if isinstance(owner, str) and _result_store is not None and _result_store.has_pending((owner_namespace(owner), body.chat_id)):
-        return {"aborted": False}
+            row = _result_state(store, identity)
+            # A late Stop for a completed/unknown attempt must not stop a newer run.
+            if row is None or row["state"] not in {"active", "unresolved"}:
+                return {"aborted": False}
+            if identity[:2] in _result_stops:
+                return {"aborted": False}
+            _result_stops.add(identity[:2])
+            try:
+                aborted = await _cancel_edge_run(edge_url, key, body.chat_id)
+                if aborted:
+                    if store.get(identity)["state"] == "complete":
+                        return {"aborted": False}
+                    _result_abort_ack.add(identity)
+                    task = _result_tasks.get(identity)
+                    if task is not None and not task.done():
+                        task.cancel()
+                        await asyncio.gather(task, return_exceptions=True)
+                    if store.get(identity)["state"] == "complete":
+                        return {"aborted": False}
+                    store.finish(identity, "cancelled")
+                return {"aborted": aborted}
+            finally:
+                _result_abort_ack.discard(identity)
+                _result_stops.discard(identity[:2])
+        except ResultConflict as exc:
+            raise HTTPException(423, str(exc)) from None
+    if isinstance(owner, str) and _result_store is not None:
+        try:
+            if _result_store.has_pending((owner_namespace(owner), body.chat_id)):
+                return {"aborted": False}
+        except ResultConflict as exc:
+            raise HTTPException(423, str(exc)) from None
     return {"aborted": await _cancel_edge_run(edge_url, key, body.chat_id)}
 
 
@@ -762,7 +776,10 @@ async def _retained_chat_stream(request, body, owner):
     if body.history_snapshot is not None:
         fingerprint_input = {"messages": fingerprint_input, "history_snapshot": body.history_snapshot.model_dump()}
     fingerprint = hashlib.sha256(json.dumps(fingerprint_input, sort_keys=True, ensure_ascii=True).encode()).hexdigest()
-    existing = store.get(identity)
+    try:
+        existing = store.get(identity)
+    except ResultConflict as exc:
+        raise HTTPException(status_code=423, detail=str(exc)) from None
     direct_reply = None
     if existing is None:
         if asks_display_name(body.messages):
@@ -813,8 +830,14 @@ async def _retained_chat_stream(request, body, owner):
             # Snapshot terminal state before yielding any bytes. Sending a chunk
             # can suspend this subscriber while the producer commits its tail.
             # If it was active, take another snapshot before deciding to close.
-            row = _result_state(store, identity)
-            for chunk in store.chunks(identity, after):
+            try:
+                row = _result_state(store, identity)
+                pending_chunks = store.chunks(identity, after)
+            except ResultConflict:
+                yield _error_event("Chat result storage is busy; retry shortly")
+                yield b"data: [DONE]\n\n"
+                return
+            for chunk in pending_chunks:
                 after = chunk["sequence"]
                 yield chunk["data"]
                 last_sent = time.monotonic()
@@ -1001,8 +1024,12 @@ async def pixel_chat_stream(request: Request, body: ChatStreamRequest, owner: st
     """Forward one bounded chat over authenticated, unbuffered SSE."""
     if body.request_id is not None:
         return await _retained_chat_stream(request, body, owner)
-    if isinstance(owner, str) and _result_store is not None and _result_store.has_pending((owner_namespace(owner), body.chat_id)):
-        raise HTTPException(status_code=423, detail="Recover or stop the retained attempt before starting another turn")
+    if isinstance(owner, str) and _result_store is not None:
+        try:
+            if _result_store.has_pending((owner_namespace(owner), body.chat_id)):
+                raise HTTPException(status_code=423, detail="Recover or stop the retained attempt before starting another turn")
+        except ResultConflict as exc:
+            raise HTTPException(status_code=423, detail=str(exc)) from None
     if asks_display_name(body.messages):
         reply = display_name_stream(await confirmed_display_name())
         async def direct_stream():

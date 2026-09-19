@@ -42,6 +42,48 @@ def body(request="attempt-one", text="Do work"):
     return pixel.ChatStreamRequest(chat_id="chat-test", request_id=request, messages=[{"role":"user", "content":text}])
 
 
+class LockedDB:
+    """Connection stand-in whose every operation hits exhausted SQLITE_BUSY."""
+    def __init__(self, real, errorcode=sqlite3.SQLITE_BUSY):
+        self.real = real
+        self.errorcode = errorcode
+    def execute(self, *_args):
+        error = sqlite3.OperationalError("database is locked")
+        error.sqlite_errorcode = self.errorcode
+        raise error
+    def __enter__(self):
+        return self
+    def __exit__(self, *_args):
+        return False
+    def close(self):
+        self.real.close()
+
+
+def test_sqlite_contention_maps_to_the_conflict_contract(store, monkeypatch):
+    monkeypatch.setattr(store, "db", LockedDB(store.db))
+    for call in (lambda: store.get(IDENTITY), lambda: store.has_pending(IDENTITY[:2]),
+                 lambda: store.chunks(IDENTITY), lambda: store.finish(IDENTITY, "cancelled"),
+                 lambda: store.reserve(IDENTITY, "hash"), lambda: store.append(IDENTITY, b"x"),
+                 lambda: store.complete_direct(IDENTITY, b"x")):
+        with pytest.raises(receipts.ResultConflict, match="busy"):
+            call()
+
+
+def test_non_busy_operational_errors_still_propagate(store, monkeypatch):
+    monkeypatch.setattr(store, "db", LockedDB(store.db, sqlite3.SQLITE_IOERR))
+    with pytest.raises(sqlite3.OperationalError):
+        store.get(IDENTITY)
+
+
+@pytest.mark.asyncio
+async def test_busy_storage_returns_a_controlled_423(store, monkeypatch):
+    monkeypatch.setattr(store, "db", LockedDB(store.db))
+    request = pixel.ChatResultRequest.model_validate({"chat_id": "chat-test", "request_id": "attempt-one"})
+    with pytest.raises(HTTPException) as exc:
+        await pixel.pixel_chat_compact(request, owner=OWNER)
+    assert exc.value.status_code == 423
+
+
 def test_receipt_survives_restart_without_reexecuting_and_scopes_owner(store, tmp_path):
     store.reserve(IDENTITY, "input-hash")
     store.append(IDENTITY, FINAL)

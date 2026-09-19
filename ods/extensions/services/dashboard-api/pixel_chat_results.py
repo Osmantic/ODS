@@ -7,6 +7,7 @@ No prompt, credential, or provider configuration is stored here.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import hashlib
 import os
 from pathlib import Path
@@ -32,6 +33,24 @@ class ResultCapacity(Exception):
 
 def owner_namespace(credential: str) -> str:
     return hashlib.sha256(credential.encode("utf-8")).hexdigest()
+
+
+@contextmanager
+def _contention():
+    """Translate sqlite lock contention into the store's conflict contract.
+
+    reserve() serializes writers with BEGIN IMMEDIATE, and readers can briefly
+    block on a commit in progress; once connect(timeout) is exhausted sqlite
+    raises OperationalError(SQLITE_BUSY). That is transient contention, not a
+    defect, so report it as ResultConflict like the other busy conditions
+    instead of leaking an uncontrolled sqlite error to callers.
+    """
+    try:
+        yield
+    except sqlite3.OperationalError as exc:
+        if getattr(exc, "sqlite_errorcode", 0) & 0xFF == sqlite3.SQLITE_BUSY:
+            raise ResultConflict("Chat result storage is busy; retry shortly") from None
+        raise
 
 
 class ChatResultStore:
@@ -79,7 +98,8 @@ class ChatResultStore:
         self.db.close()
 
     def get(self, key):
-        row = self.db.execute("SELECT * FROM attempts WHERE owner=? AND chat=? AND attempt=?", key).fetchone()
+        with _contention():
+            row = self.db.execute("SELECT * FROM attempts WHERE owner=? AND chat=? AND attempt=?", key).fetchone()
         if row is None:
             return None
         result = dict(row)
@@ -89,7 +109,7 @@ class ChatResultStore:
 
     def reserve(self, key, fingerprint):
         """Commit identity before upstream submission; duplicate POSTs never run twice."""
-        with self.db:
+        with _contention(), self.db:
             self.db.execute("BEGIN IMMEDIATE")
             self.db.execute("DELETE FROM attempts WHERE state NOT IN ('active','unresolved') AND created < ?", (time.time() - RETENTION_SECONDS,))
             previous = self.get(key)
@@ -111,7 +131,7 @@ class ChatResultStore:
         return True
 
     def append(self, key, data, *, terminal=False):
-        with self.db:
+        with _contention(), self.db:
             row = self.get(key)
             if row is None or row["state"] != "active":
                 raise ResultConflict("Attempt is no longer active")
@@ -124,7 +144,7 @@ class ChatResultStore:
 
     def complete_direct(self, key, data):
         """Atomically publish a small local-data answer without starting an agent."""
-        with self.db:
+        with _contention(), self.db:
             row = self.get(key)
             if row is None or row["state"] != "active" or row["size"] != 0:
                 raise ResultConflict("Direct answer requires an empty active attempt")
@@ -137,11 +157,13 @@ class ChatResultStore:
     def finish(self, key, state):
         if state not in {"complete", "interrupted", "cancelled", "unresolved"}:
             raise ValueError("Invalid receipt state")
-        with self.db:
+        with _contention(), self.db:
             self.db.execute("UPDATE attempts SET state=? WHERE owner=? AND chat=? AND attempt=? AND state IN ('active','unresolved')", (state, *key))
 
     def has_pending(self, conversation):
-        return self.db.execute("SELECT 1 FROM attempts WHERE owner=? AND chat=? AND state IN ('active','unresolved')", conversation).fetchone() is not None
+        with _contention():
+            return self.db.execute("SELECT 1 FROM attempts WHERE owner=? AND chat=? AND state IN ('active','unresolved')", conversation).fetchone() is not None
 
     def chunks(self, key, after=-1):
-        return self.db.execute("SELECT sequence,data FROM chunks WHERE owner=? AND chat=? AND attempt=? AND sequence>? ORDER BY sequence", (*key, after)).fetchall()
+        with _contention():
+            return self.db.execute("SELECT sequence,data FROM chunks WHERE owner=? AND chat=? AND attempt=? AND sequence>? ORDER BY sequence", (*key, after)).fetchall()
