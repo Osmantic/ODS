@@ -283,6 +283,41 @@ test_gfx_version_mixed() {
     assert_eq "GPU[1] gfx1101" "gfx1101" "$gfx1"
 }
 
+# ── Test: detect_amd_topo VRAM format is locale-stable ─────────────────────
+
+test_vram_format_decimal_comma_locale() {
+    echo -e "${BLU}Testing: detect_amd_topo VRAM GiB under decimal-comma locale${NC}"
+
+    # detect_amd_topo renders VRAM GiB with awk's printf "%.1f", which honors
+    # LC_NUMERIC. Stub awk so the %.1f program emits a decimal-comma value
+    # unless LC_ALL=C is set — simulating de_DE/fr_FR hosts without needing
+    # the locale installed.
+    local stub_dir fixture_root real_awk
+    stub_dir=$(mktemp -d)
+    fixture_root=$(mktemp -d)
+    real_awk=$(command -v awk)
+    cat > "$stub_dir/awk" <<EOS
+#!/usr/bin/env bash
+if [[ "\${LC_ALL:-}" == "C" ]]; then exec "$real_awk" "\$@"; fi
+case "\$*" in *'%.1f'*) printf '24,0';; *) exec "$real_awk" "\$@";; esac
+EOS
+    chmod +x "$stub_dir/awk"
+
+    mkdir -p "$fixture_root/card0/device"
+    printf '0x1002\n' > "$fixture_root/card0/device/vendor"
+    printf '0x744c\n' > "$fixture_root/card0/device/device"
+    printf '25769803776\n' > "$fixture_root/card0/device/mem_info_vram_total"
+
+    source "$TOPO_SCRIPT"
+
+    local out mem
+    out=$(PATH="$stub_dir:$PATH" ODS_DRM_SYS="$fixture_root" detect_amd_topo 2>/dev/null)
+    mem=$(printf '%s' "$out" | jq -r '.gpus[0].memory_gb')
+    assert_eq "VRAM GiB stays numeric under decimal-comma locale" "24.0" "$mem"
+
+    rm -rf "$stub_dir" "$fixture_root"
+}
+
 # ── Main test runner ───────────────────────────────────────────────────────
 
 echo -e "${MAG}=== AMD Topology Detection Tests ===${NC}\n"
@@ -302,6 +337,8 @@ echo
 test_gfx_version_parsing
 echo
 test_gfx_version_mixed
+echo
+test_vram_format_decimal_comma_locale
 
 echo -e "\n${MAG}=== Test Summary ===${NC}"
 echo -e "Tests run:    $TESTS_RUN"
