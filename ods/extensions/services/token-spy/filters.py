@@ -286,7 +286,7 @@ def _filter_history(body: dict, cfg: dict, result: FilterResult,
             units[i] = new_unit
 
     # Step 5: Truncate tool result content in all kept messages
-    if truncate_tool_results_chars:
+    if truncate_tool_results_chars and truncate_tool_results_chars > 0:
         for unit in units:
             for msg in unit:
                 if msg.get("role") == "tool":
