@@ -1,0 +1,37 @@
+services:
+  kroki:
+    image: yuzutech/kroki:0.32.1@sha256:6980bfb218b48b74ea14b888d9c7e8c032d1cb6325f3292277abdf62483abd9d
+    container_name: ods-kroki
+    restart: unless-stopped
+    user: "1001:1001"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp:rw,exec,nosuid,size=256m,mode=1777
+    environment:
+      KROKI_LISTEN: 0.0.0.0:8000
+      KROKI_SAFE_MODE: secure
+      KROKI_PLANTUML_SECURITY_PROFILE: SANDBOX
+      KROKI_PLANTUML_ALLOW_INCLUDE: "false"
+      KROKI_BODY_LIMIT: "1048576"
+      KROKI_COMMAND_TIMEOUT: 5s
+      KROKI_CONVERT_TIMEOUT: 20s
+      JAVA_TOOL_OPTIONS: -Xms128m -Xmx768m
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${KROKI_API_PORT:-7829}:8000"
+    healthcheck:
+      test: [CMD, wget, -q, --tries=1, --timeout=5, -O, /dev/null, http://127.0.0.1:8000/health]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks: [ods-network]
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1536M
+networks:
+  ods-network:
+    external: true
