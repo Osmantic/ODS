@@ -1801,3 +1801,15 @@ def test_flatten_bounds_cycles_and_large_depth_without_losing_empty_leaves():
         nested = {"child": nested}
     result = dict_flatten_nested_safe(nested, max_depth=100000)
     assert len(next(iter(result)).split(".")) == 128
+
+
+class TestDictCompactKeysByPrefixSafe:
+    def test_valid_compacting(self):
+        from helpers import dict_compact_keys_by_prefix_safe
+        d = {"_temp": 1, "status": "ok", "_debug": True}
+        assert dict_compact_keys_by_prefix_safe(d, "_") == {"status": "ok"}
+
+    def test_invalid_inputs(self):
+        from helpers import dict_compact_keys_by_prefix_safe
+        assert dict_compact_keys_by_prefix_safe(None, "_") == {}
+        assert dict_compact_keys_by_prefix_safe({"a": 1}, None) == {"a": 1}
