@@ -549,13 +549,22 @@ def _read_env_var_from_file_state(key: str) -> tuple[bool, str]:
     """Read a live .env value while preserving present-but-empty assignments."""
     install_dir = os.environ.get("ODS_INSTALL_DIR", os.path.expanduser("~/ods"))
     env_path = Path(install_dir) / ".env"
+    found = False
+    result = ""
+    prefix = f"{key}="
+    export_prefix = f"export {key}="
     try:
-        for line in env_path.read_text().splitlines():
-            if line.startswith(f"{key}="):
-                return True, parse_env_value(line[len(key) + 1:])
-    except OSError:
+        for raw in env_path.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = raw.strip()
+            if line.startswith(prefix):
+                found = True
+                result = parse_env_value(line[len(prefix):])
+            elif line.startswith(export_prefix):
+                found = True
+                result = parse_env_value(line[len(export_prefix):])
+    except (OSError, UnicodeError):
         pass
-    return False, ""
+    return found, result
 
 
 def _read_env_var_from_file(key: str) -> str:
