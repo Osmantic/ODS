@@ -108,6 +108,10 @@ def _prepare(payload, grant):
     if 'tools' in payload and (not isinstance(payload['tools'], list) or any(
             not isinstance(tool, dict) or tool.get('type') != 'function' for tool in payload['tools'])):
         raise ShareError(400, 'unsupported_tools')
+    if 'seed' in payload:
+        seed = payload['seed']
+        if type(seed) is not int or seed < 0 or seed > 2**63 - 1:
+            raise ShareError(400, 'invalid_seed')
     if 'chat_template_kwargs' in payload and (
             not isinstance(payload['chat_template_kwargs'], dict)
             or set(payload['chat_template_kwargs']) != {'enable_thinking'}
