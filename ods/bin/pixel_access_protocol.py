@@ -135,7 +135,7 @@ def request(value):
                        for key in ('python', 'launcher', 'providerDirectory'))
                 or PurePosixPath(probe['launcher']).name != 'ods-pixel-route-lease'):
             raise ProtocolError('owner-protocol-failed')
-    if operation in ("settings-apply", "settings-recover", "provider-change", "provider-recover"):
+    if operation in ("settings-apply", "settings-recover", "provider-change", "provider-recover", "model-begin", "model-apply", "model-rollback", "model-finish"):
         if type(value["transaction_id"]) is not str or not HEX.fullmatch(value["transaction_id"]):
             raise ProtocolError("owner-protocol-failed")
     if operation.startswith("model-") and operation != "model-status":
