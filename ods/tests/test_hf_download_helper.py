@@ -86,3 +86,43 @@ def test_download_snapshot_passes_cache_revision_and_patterns(monkeypatch, tmp_p
             "allow_patterns": ["onnx/model.onnx"],
         }
     ]
+
+
+def test_download_snapshot_pins_resolved_commit_when_revision_omitted(
+    monkeypatch, tmp_path, capsys
+):
+    helper = _load_snapshot_helper()
+    calls = []
+    pinned_sha = "a" * 40
+
+    def fake_snapshot_download(**kwargs):
+        calls.append(kwargs)
+        snapshot = tmp_path / "models--BAAI--bge-base-en-v1.5" / "snapshots" / pinned_sha
+        snapshot.mkdir(parents=True)
+        return str(snapshot)
+
+    class FakeHfApi:
+        def model_info(self, repo_id):
+            assert repo_id == "BAAI/bge-base-en-v1.5"
+            return SimpleNamespace(sha=pinned_sha)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "huggingface_hub",
+        SimpleNamespace(
+            snapshot_download=fake_snapshot_download,
+            HfApi=FakeHfApi,
+        ),
+    )
+
+    result = helper.download_snapshot("BAAI/bge-base-en-v1.5", tmp_path / "cache")
+
+    assert result.name == pinned_sha
+    assert calls == [
+        {
+            "repo_id": "BAAI/bge-base-en-v1.5",
+            "cache_dir": str(tmp_path / "cache"),
+            "revision": pinned_sha,
+        }
+    ]
+    assert pinned_sha in capsys.readouterr().out
