@@ -541,3 +541,63 @@ def test_token_spy_api_key_preserves_opaque_secret_and_handles_unicode_error(tmp
     bad_key_file.write_bytes(b"\x80\x81\x82")
     monkeypatch.setattr(usage_router, "TOKEN_SPY_KEY_FILE", bad_key_file)
     assert usage_router._token_spy_api_key() == ""
+
+
+def _fake_urlopen_response(body: bytes):
+    class _FakeResponse:
+        def read(self, *args):
+            return body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    return lambda *args, **kwargs: _FakeResponse()
+
+
+def test_usage_report_degrades_on_non_object_token_spy_payload(test_client, monkeypatch):
+    """A reachable Token Spy returning a JSON array must not 500 the report."""
+    import routers.usage as usage_router
+
+    monkeypatch.setattr(usage_router, "TOKEN_SPY_URL", "http://token-spy:8080")
+    monkeypatch.setattr(usage_router, "_token_spy_api_key", lambda: "")
+    monkeypatch.setattr(
+        usage_router.urllib.request, "urlopen", _fake_urlopen_response(b"[1, 2, 3]")
+    )
+    monkeypatch.setattr(
+        usage_router, "_fetch_local_runtime_counters", AsyncMock(return_value=[])
+    )
+
+    resp = test_client.get(
+        "/api/usage/report?start=2026-05-01&end=2026-05-02",
+        headers=test_client.auth_headers,
+    )
+
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["source"]["status"] == "unavailable"
+    assert "invalid" in (data["source"].get("detail") or "").lower()
+
+
+def test_usage_report_degrades_on_malformed_token_spy_json(test_client, monkeypatch):
+    """Invalid JSON from Token Spy degrades like a transport failure."""
+    import routers.usage as usage_router
+
+    monkeypatch.setattr(usage_router, "TOKEN_SPY_URL", "http://token-spy:8080")
+    monkeypatch.setattr(usage_router, "_token_spy_api_key", lambda: "")
+    monkeypatch.setattr(
+        usage_router.urllib.request, "urlopen", _fake_urlopen_response(b"<html>proxy error")
+    )
+    monkeypatch.setattr(
+        usage_router, "_fetch_local_runtime_counters", AsyncMock(return_value=[])
+    )
+
+    resp = test_client.get(
+        "/api/usage/report?start=2026-05-01&end=2026-05-02",
+        headers=test_client.auth_headers,
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["source"]["status"] == "unavailable"
