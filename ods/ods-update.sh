@@ -264,7 +264,15 @@ snapshot_pre_update() {
     fi
 
     local snap_dir="${ROLLBACK_DIR}/pre-update-${timestamp}"
-    log_info "Creating rollback snapshot: pre-update-${timestamp}" >&2
+    # Two updates started in the same wall-clock second would share one
+    # snapshot directory; keep the timestamped base name and disambiguate
+    # with a numeric suffix only on collision.
+    local _coll_n=2
+    while [[ -e "$snap_dir" ]]; do
+        snap_dir="${ROLLBACK_DIR}/pre-update-${timestamp}-${_coll_n}"
+        _coll_n=$(( _coll_n + 1 ))
+    done
+    log_info "Creating rollback snapshot: $(basename "$snap_dir")" >&2
     mkdir -p "${snap_dir}"
 
     local files_saved=0
@@ -676,7 +684,15 @@ cmd_backup() {
     fi
     
     local backup_path="${BACKUP_DIR}/${backup_id}"
-    
+    # Two backups started in the same wall-clock second would share one
+    # directory; disambiguate with a numeric suffix only on collision.
+    local _coll_n=2
+    while [[ -e "$backup_path" ]]; do
+        backup_path="${BACKUP_DIR}/${backup_id}-${_coll_n}"
+        _coll_n=$(( _coll_n + 1 ))
+    done
+    backup_id="$(basename "$backup_path")"
+
     log_info "Creating backup: ${backup_id}"
     
     mkdir -p "$backup_path"
@@ -753,7 +769,7 @@ cmd_backup() {
     # unlabelled "backup-<ts>", which would prune the backup just created.
     # Only the fixed-width timestamps and array indexes are sorted.
     local backup_dirs=() dir index stamp count=0 order=""
-    local stamp_re='-([0-9]{8}-[0-9]{6})$'
+    local stamp_re='-([0-9]{8}-[0-9]{6})(-[0-9]+)?$'
     for dir in "$BACKUP_DIR"/backup-*; do
         [[ -d "$dir" && ! -L "$dir" ]] || continue
         [[ "$dir" =~ $stamp_re ]] || continue
@@ -898,7 +914,7 @@ cmd_update() {
 #   before that stamp (backup-<label>-<stamp>), so whole names do not sort by age.
 _latest_backup_dir() {
     local root="$1" prefix="$2" dir stamp latest="" latest_stamp=0
-    local stamp_re='-([0-9]{8})-([0-9]{6})$'
+    local stamp_re='-([0-9]{8})-([0-9]{6})(-[0-9]+)?$'
     for dir in "$root"/"$prefix"*; do
         [[ -d "$dir" && ! -L "$dir" && "$dir" =~ $stamp_re ]] || continue
         stamp="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
