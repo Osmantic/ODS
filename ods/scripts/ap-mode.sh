@@ -65,7 +65,7 @@ err() { printf '[ap-mode] ERROR: %s\n' "$*" >&2; }
 # length (24). `ip addr add` requires the prefix form. If conversion
 # fails we exit with an error rather than guessing.
 _netmask_to_prefix() {
-  local mask="$1"
+  local mask="${1//[ \"\']/}"
   local count=0 octet bits seen_zero=0
   local -a octets
   IFS='.' read -r -a octets <<< "$mask"
