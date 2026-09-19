@@ -1801,3 +1801,13 @@ def test_flatten_bounds_cycles_and_large_depth_without_losing_empty_leaves():
         nested = {"child": nested}
     result = dict_flatten_nested_safe(nested, max_depth=100000)
     assert len(next(iter(result)).split(".")) == 128
+
+
+class TestListExtractByIndicesSafe:
+    def test_valid(self):
+        from helpers import list_extract_by_indices_safe
+        assert list_extract_by_indices_safe(['a', 'b', 'c'], [0, 2, 5]) == ['a', 'c']
+
+    def test_invalid(self):
+        from helpers import list_extract_by_indices_safe
+        assert list_extract_by_indices_safe(None, [0]) == []
