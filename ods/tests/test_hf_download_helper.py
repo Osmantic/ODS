@@ -54,6 +54,22 @@ def test_parse_huggingface_resolve_url_rejects_non_hf_url():
         helper.parse_huggingface_resolve_url("https://example.com/model.gguf")
 
 
+def test_parse_huggingface_resolve_url_with_port():
+    helper = _load_helper()
+
+    repo_id, revision, filename = helper.parse_huggingface_resolve_url(
+        "https://huggingface.co:443/unsloth/Llama-4-Scout-GGUF/resolve/main/model.gguf"
+    )
+    assert repo_id == "unsloth/Llama-4-Scout-GGUF"
+    assert revision == "main"
+    assert filename == "model.gguf"
+
+    with pytest.raises(ValueError, match="not a Hugging Face URL"):
+        helper.parse_huggingface_resolve_url(
+            "https://huggingface.co:8443/unsloth/Llama-4-Scout-GGUF/resolve/main/model.gguf"
+        )
+
+
 def test_download_snapshot_passes_cache_revision_and_patterns(monkeypatch, tmp_path):
     helper = _load_snapshot_helper()
     calls = []

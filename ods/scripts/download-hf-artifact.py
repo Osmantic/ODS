@@ -17,8 +17,10 @@ from urllib.parse import unquote, urlparse
 
 def parse_huggingface_resolve_url(url: str) -> tuple[str, str, str]:
     parsed = urlparse(url)
-    host = parsed.netloc.lower()
+    host = (parsed.hostname or "").lower()
     if host not in {"huggingface.co", "www.huggingface.co", "hf.co"}:
+        raise ValueError("URL is not a Hugging Face URL")
+    if parsed.port not in {None, 80, 443}:
         raise ValueError("URL is not a Hugging Face URL")
 
     parts = [unquote(part) for part in parsed.path.split("/") if part]
