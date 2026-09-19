@@ -28,8 +28,20 @@ def download_snapshot(
         "repo_id": repo_id,
         "cache_dir": str(cache_dir),
     }
-    if revision:
-        kwargs["revision"] = revision
+    if not revision:
+        # Resolve the mutable default branch to an immutable commit SHA so the
+        # prefetched artifact is pinned and reproducible (Bandit B615).
+        from huggingface_hub import HfApi
+        revision = HfApi().model_info(repo_id).sha
+        if not revision:
+            raise RuntimeError(
+                f"unable to resolve an immutable revision for {repo_id}"
+            )
+        print(
+            f"Resolved {repo_id} default revision to commit {revision}",
+            file=sys.stderr,
+        )
+    kwargs["revision"] = revision
     if allow_patterns:
         kwargs["allow_patterns"] = allow_patterns
 
