@@ -83,7 +83,7 @@ def _capabilities(value):
     for name in ("providerContextTokens", "providerMaxOutputTokens", "activeContextTokens", "activeMaxOutputTokens"):
         _integer(value[name])
     if value["backendContextTokens"] is not None:
-        _integer(value["backendContextTokens"])
+        _integer(value["backendContextTokens"], minimum=4096)
     if (value["providerMaxOutputTokens"] > value["providerContextTokens"]
             or value["activeMaxOutputTokens"] > value["activeContextTokens"]
             or value["activeContextTokens"] > value["providerContextTokens"]
