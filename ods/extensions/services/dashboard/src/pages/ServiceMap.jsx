@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ExternalLink, GitBranch, RefreshCw, X } from 'lucide-react'
 import { serviceUrl } from '../lib/serviceUrls'
+import ServiceImpact from '../components/ServiceImpact'
 import PanelSelect from '../components/PanelSelect'
 import IntegrationSnapshotDownload from '../components/IntegrationSnapshotDownload'
 
@@ -292,6 +293,7 @@ function CompactIntegrations({ nodes, edges, capturedAt, refresh, error }) {
   return <section className="portal-integrations">
     <header className="integrations-header"><div><h2>Integrations</h2><p>{nodes.length} services · {nodes.filter(node => node.status === 'healthy').length} healthy</p></div><button type="button" aria-label="Refresh integrations" onClick={refresh}><RefreshCw size={15} /></button></header>
     <IntegrationSnapshotDownload nodes={nodes} edges={edges} capturedAt={capturedAt} refreshFailed={Boolean(error)} />
+    <ServiceImpact nodes={nodes} edges={edges} />
     <nav className="settings-view-tabs" aria-label="Integration views"><button type="button" aria-pressed={view === 'list'} onClick={() => setView('list')}>Service list</button><button type="button" aria-pressed={view === 'map'} onClick={() => setView('map')}>View map</button></nav>
     {error && <p role="alert" className="text-red-400">Status could not be refreshed. {error}</p>}
     <div className="integrations-filters"><input type="search" aria-label="Search integrations" placeholder="Search services…" value={search} onChange={event => setSearch(event.target.value)} /><PanelSelect label="Service status" value={filter} onChange={setFilter} options={[{value:'all',label:'All statuses'},{value:'healthy',label:'Healthy'},{value:'attention',label:'Not healthy'}]} /></div>
@@ -419,6 +421,7 @@ export default function ServiceMap({ compact = false }) {
         <span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-zinc-500" />Not deployed</span>
       </div>
 
+      <ServiceImpact nodes={nodes} edges={edges} />
       <div className="relative overflow-hidden rounded-xl border border-theme-border bg-theme-bg">
         <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-theme-border">
           <span className="text-xs text-theme-text-muted">Service connections</span>
