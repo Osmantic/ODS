@@ -190,11 +190,11 @@ fi
 log ""
 
 # 4. LLM Endpoint check
-# OLLAMA_PORT controls the external port for llama-server.
-# Canonical default is 8080 (config/ports.json, docker-compose.base.yml).
-# 11434 is only used on Strix Halo AMD installs where phase 06 writes
-# OLLAMA_PORT=11434 to .env automatically — it will be picked up via the
-# ${OLLAMA_PORT:-...} expansion below, so the fallback should be 8080.
+# OLLAMA_PORT controls the external port for llama-server. The canonical
+# host default is 11434 (config/ports.json external_default,
+# docker-compose.base.yml maps ${OLLAMA_PORT:-11434} to container :8080).
+# 8080 is the container-internal port and is never bound on the host, so
+# the fallback must be 11434 or a healthy install reports no endpoint.
 log "[4/8] Checking LLM endpoint..."
 if is_external_lemonade; then
     LLM_PORT="${LITELLM_PORT:-4000}"
@@ -203,7 +203,7 @@ if is_external_lemonade; then
     LLM_CONTAINER_MATCH="ods-litellm"
     LLM_START_CMD="docker compose up -d litellm"
 else
-    LLM_PORT="${OLLAMA_PORT:-${LLAMA_SERVER_PORT:-8080}}"
+    LLM_PORT="${OLLAMA_PORT:-${LLAMA_SERVER_PORT:-11434}}"
     # Also probe the actual mapped port in case docker remapped it
     EXTERNAL_PORT="$(docker port ods-llama-server 8080/tcp 2>/dev/null | head -1 | cut -d: -f2 || true)"
     [[ -n "$EXTERNAL_PORT" ]] || EXTERNAL_PORT="$LLM_PORT"
