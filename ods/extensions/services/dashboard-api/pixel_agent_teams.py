@@ -152,10 +152,16 @@ class TeamStore:
         # A single bounded directory; names never include owner-supplied paths.
         rows = []
         for path in self.directory.glob(f"{owner}-*.json"):
-            row = self.get(owner, path.stem[65:])
-            if row["chat_id"] == chat:
+            team_id = path.stem[65:]
+            if not re.fullmatch(r"[a-f0-9]{32}", team_id):
+                continue
+            try:
+                row = self.get(owner, team_id)
+            except (ValueError, OSError):
+                continue
+            if isinstance(row, dict) and row.get("chat_id") == chat:
                 rows.append(row)
-        return sorted(rows, key=lambda x: x["created"], reverse=True)
+        return sorted(rows, key=lambda x: x.get("created", 0), reverse=True)
 
     def save(self, owner, row):
         path = self._path(owner, row["id"])

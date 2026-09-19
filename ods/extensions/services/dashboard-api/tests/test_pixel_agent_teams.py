@@ -337,3 +337,14 @@ async def test_empty_model_answer_is_never_completed(tmp_path):
     manager.start(OWNER,'chat','empty','Do work',1,'')
     await settle(manager)
     assert manager.list(OWNER,'chat')[0]['status']=='failed'
+
+
+def test_team_store_list_ignores_non_conforming_or_corrupt_files(tmp_path):
+    store = TeamStore(tmp_path / 'teams')
+    row = {"id": "a" * 32, "chat_id": "chat", "created": 1000, "status": "completed"}
+    store.save(OWNER, row)
+    (tmp_path / 'teams' / f"{OWNER}-invalid.json").write_text("{}")
+    (tmp_path / 'teams' / f"{OWNER}-{'b' * 32}.json").write_text("{}")
+    listed = store.list(OWNER, "chat")
+    assert len(listed) == 1
+    assert listed[0]["id"] == "a" * 32
