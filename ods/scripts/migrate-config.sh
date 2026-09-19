@@ -71,8 +71,10 @@ set_last_migrated_version() {
 # Compare semantic versions
 # Returns: 0 if equal, 1 if v1 > v2, 2 if v1 < v2
 compare_versions() {
-    local v1="${1#v}"
-    local v2="${2#v}"
+    local v1="${1#[vV]}"
+    local v2="${2#[vV]}"
+    v1="${v1//[[:space:]]/}"
+    v2="${v2//[[:space:]]/}"
     
     if [[ "$v1" == "$v2" ]]; then
         return 0
