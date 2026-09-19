@@ -29,10 +29,13 @@ draw_progress_bar() {
     
     # Calculate percentage
     local percent=$((current * 100 / total))
+    [[ $percent -gt 100 ]] && percent=100
+    [[ $percent -lt 0 ]] && percent=0
     
     # Calculate filled width
     local filled=$((width * current / total))
     [[ $filled -gt $width ]] && filled=$width
+    [[ $filled -lt 0 ]] && filled=0
     local empty=$((width - filled))
     
     # Build bar
