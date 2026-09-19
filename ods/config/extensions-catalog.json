@@ -3178,6 +3178,68 @@
       "configuration_scope": "declared-environment-keys"
     },
     {
+      "id": "rabbitmq",
+      "name": "RabbitMQ (Local Work Queues)",
+      "description": "Authenticated AMQP work queues with acknowledgements, durable messages and a management console.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 15672,
+      "external_port_default": 15672,
+      "health_endpoint": "/",
+      "env_vars": [
+        {
+          "key": "RABBITMQ_PORT",
+          "description": "Management console HTTP port",
+          "default": "15672"
+        },
+        {
+          "key": "RABBITMQ_AMQP_PORT",
+          "description": "AMQP client port",
+          "default": "5672"
+        },
+        {
+          "key": "RABBITMQ_PASSWORD",
+          "description": "Initial ods administrator password; rotate existing users in RabbitMQ",
+          "required": true
+        }
+      ],
+      "tags": [
+        "queues",
+        "automation",
+        "messaging"
+      ],
+      "features": [
+        {
+          "id": "durable-work-queues",
+          "name": "Local Work Queues",
+          "description": "Inspect and route acknowledged background jobs through a local AMQP broker",
+          "icon": "Workflow",
+          "category": "automation",
+          "requirements": {
+            "services": [
+              "rabbitmq"
+            ],
+            "vram_gb": 0
+          },
+          "enabled_services_all": [
+            "rabbitmq"
+          ],
+          "setup_time": "~1 minute",
+          "priority": 40,
+          "launch": {
+            "type": "service",
+            "service": "rabbitmq",
+            "path": "/"
+          }
+        }
+      ],
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
       "id": "remote-provider-egress",
       "name": "Remote Provider Egress",
       "description": "Internal-only OpenAI-compatible egress boundary for optional remote LLM providers. It reads generated remote routing state and a private provider secret file, enforces the remote-provider egress policy, and exposes no host port.\n",
