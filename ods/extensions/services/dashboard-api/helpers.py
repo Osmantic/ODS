@@ -1417,3 +1417,15 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+import base64
+
+def string_safe_base64_encode(text: str | None) -> str:
+    """Safely base64 encode a string. Returns empty string on invalid inputs.
+    """
+    if text is None or not isinstance(text, str):
+        return ""
+    try:
+        return base64.b64encode(text.encode('utf-8')).decode('utf-8')
+    except (UnicodeEncodeError, AttributeError):
+        return ""
