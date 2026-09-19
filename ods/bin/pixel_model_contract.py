@@ -75,7 +75,7 @@ def projection(config):
             if key not in params: continue
             declared = True
             value = params[key]
-            if (type(value) is int or type(value) is float and math.isfinite(value)) and value >= 0:
+            if type(value) is int and not isinstance(value, bool) and value >= 0:
                 output, resolved = value, True
                 break
     if declared and not resolved: raise ModelError("invalid-model-limits")
