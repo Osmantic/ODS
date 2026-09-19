@@ -127,6 +127,7 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== offline model validation ==="
 	@python3 tests/test-offline-model-validation.py
+	@python3 tests/test-provider-probe-redirects.py
 	@echo ""
 	@echo "=== Bash 3.2 guard contracts ==="
 	@bash tests/test-bash32-guards.sh
