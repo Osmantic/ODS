@@ -179,7 +179,10 @@ class TestScanUserExtensions:
         _write_manifest(ext_dir, _make_manifest("real-ext"))
         (ext_dir / "compose.yaml").write_text("services: {}\n")
 
-        (user_dir / "link-ext").symlink_to(ext_dir)
+        try:
+            (user_dir / "link-ext").symlink_to(ext_dir)
+        except OSError:
+            pytest.skip("Windows symlink creation requires Developer Mode or administrator privileges")
 
         result = scan_user_extension_services(user_dir)
         assert "real-ext" in result
