@@ -816,6 +816,7 @@ write_evidence
 write_manifest
 
 tar -czf "$ARCHIVE_PATH" -C "$OUTPUT_DIR" "$BUNDLE_NAME"
+chmod 600 "$ARCHIVE_PATH" 2>/dev/null || true
 
 if [[ "$JSON_OUTPUT" == "true" ]]; then
     write_summary_json
