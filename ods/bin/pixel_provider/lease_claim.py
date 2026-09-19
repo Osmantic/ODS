@@ -69,7 +69,7 @@ class LeaseClaim:
         return self
 
     def finish(self,status,events=()):
-        if self._fd is None or status not in ('closed','failed','deadline'):
+        if self._fd is None or status not in ('closed','failed','deadline') or not isinstance(events,(tuple,list)):
             raise StoreError('provider-lease-status-invalid')
         # Do not persist free-form upstream response fields (even model labels).
         fields = {'requestId','revision','providerId','result','attempt','upstreamStatus'}
