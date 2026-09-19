@@ -1,0 +1,45 @@
+services:
+  minio:
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    container_name: ods-minio
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    command: server /data --address ":9000" --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: "${MINIO_ROOT_USER:-minioadmin}"
+      MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD before enabling MinIO}"
+      MINIO_TELEMETRY_DISABLED: "1"
+      MINIO_BROWSER: "${MINIO_BROWSER:-on}"
+      MINIO_SERVER_URL: "http://${BIND_ADDRESS:-127.0.0.1}:${MINIO_PORT:-9020}"
+      MINIO_BROWSER_REDIRECT_URL: "http://${BIND_ADDRESS:-127.0.0.1}:${MINIO_CONSOLE_PORT:-9021}"
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${MINIO_PORT:-9020}:9000"
+      - "${BIND_ADDRESS:-127.0.0.1}:${MINIO_CONSOLE_PORT:-9021}:9001"
+    volumes:
+      - ./data/minio:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:9000/minio/health/live || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - ods-network
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+        reservations:
+          cpus: "0.1"
+          memory: 128M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  ods-network:
+    external: true
