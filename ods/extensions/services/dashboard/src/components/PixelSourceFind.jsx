@@ -5,6 +5,7 @@ export default function PixelSourceFind({source, codeRef}) {
   const [query, setQuery] = useState('')
   const [index, setIndex] = useState(0)
   const [matchCase, setMatchCase] = useState(false)
+  const [wholeWord, setWholeWord] = useState(false)
   const [requestedLine, setRequestedLine] = useState('')
   const [jumpedLine, setJumpedLine] = useState(null)
   const lineCount = source.replace(/\n$/u, '').split('\n').length
@@ -13,8 +14,13 @@ export default function PixelSourceFind({source, codeRef}) {
   const matches = useMemo(() => {
     if (!query) return []
     const needle = matchCase ? query : query.toLocaleLowerCase()
-    return source.split('\n').flatMap((line, at) => (matchCase ? line : line.toLocaleLowerCase()).includes(needle) ? [at + 1] : [])
-  }, [source, query, matchCase])
+    const literal = needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const word = wholeWord ? new RegExp(`(^|[^\\p{L}\\p{N}\\p{M}_])${literal}(?=$|[^\\p{L}\\p{N}\\p{M}_])`, 'u') : null
+    return source.split('\n').flatMap((line, at) => {
+      const candidate = matchCase ? line : line.toLocaleLowerCase()
+      return (word ? word.test(candidate) : candidate.includes(needle)) ? [at + 1] : []
+    })
+  }, [source, query, matchCase, wholeWord])
   const line = jumpedLine ?? matches[index] ?? matches[0]
   useEffect(() => {
     if (!line) return
@@ -31,6 +37,7 @@ export default function PixelSourceFind({source, codeRef}) {
       if (event.key === 'Escape') {setQuery(''); setIndex(0); setJumpedLine(null)}
     }}/>
     <label><input type="checkbox" checked={matchCase} onChange={event => {setMatchCase(event.target.checked); setIndex(0); setJumpedLine(null)}}/> Match case</label>
+    <label><input type="checkbox" checked={wholeWord} onChange={event => {setWholeWord(event.target.checked); setIndex(0); setJumpedLine(null)}}/> Whole word</label>
     <button type="button" disabled={!matches.length} aria-label="Previous matching line" onClick={() => move(-1)}>Previous</button>
     <button type="button" disabled={!matches.length} aria-label="Next matching line" onClick={() => move(1)}>Next</button>
     <form onSubmit={event => {event.preventDefault(); if (canJump) {setJumpedLine(target); setQuery(''); setIndex(0)}}}>
