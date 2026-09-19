@@ -162,7 +162,7 @@ describe('Extensions page — unhealthy + install derivations', () => {
     expect(badge.className).toContain('text-amber-400')
   })
 
-  it('renders toggle switch for unhealthy user ext (isToggleable=true)', async () => {
+  it('does not render a conflicting toggle for unhealthy user ext', async () => {
     installFetchMock({
       extensions: [
         {
@@ -183,10 +183,34 @@ describe('Extensions page — unhealthy + install derivations', () => {
     const { container } = render(<Extensions />)
     await screen.findByText('Unhealthy User Service')
 
-    // The toggle button is rendered (L676-695) when isToggleable is true.
-    await waitFor(() => {
-      expect(findToggleButton(container)).toBeTruthy()
+    await waitFor(() => expect(findToggleButton(container)).toBeUndefined())
+    expect(screen.getByRole('button', { name: /Check Logs/i })).toBeInTheDocument()
+  })
+
+  it.each([
+    ['stopped', 'Start'],
+    ['error', 'Retry'],
+  ])('uses the dedicated %s recovery action without a toggle', async (status, action) => {
+    installFetchMock({
+      extensions: [{
+        id: `svc-${status}`,
+        name: `${status} service`,
+        status,
+        source: 'user',
+        installable: false,
+        features: [baseFeature],
+        description: 'desc',
+      }],
+      summary: baseSummary({ [status]: 1 }),
+      gpu_backend: 'apple',
+      agent_available: true,
     })
+
+    const { container } = render(<Extensions />)
+    await screen.findByText(`${status} service`)
+
+    expect(findToggleButton(container)).toBeUndefined()
+    expect(screen.getByRole('button', { name: action })).toBeInTheDocument()
   })
 
   it('renders cli_installed user ext as installed and toggleable', async () => {
