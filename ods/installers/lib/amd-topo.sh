@@ -414,7 +414,11 @@ detect_amd_topo() {
 
         device_id=$(cat "$card_dir/device" 2>/dev/null | sed 's/^0x//') || device_id="0000"
         vram_bytes=$(cat "$card_dir/mem_info_vram_total" 2>/dev/null) || vram_bytes=0
-        vram_gb=$(awk -v bytes="$vram_bytes" 'BEGIN { printf "%.1f", bytes / 1073741824 }')
+        # Pin LC_ALL=C: awk's %.1f honours LC_NUMERIC, so a decimal-comma
+        # locale (de_DE, fr_FR, ...) would emit "24,0" here, and the jq
+        # `tonumber` conversion downstream cannot parse it — the whole
+        # topology JSON fails to build.
+        vram_gb=$(LC_ALL=C awk -v bytes="$vram_bytes" 'BEGIN { printf "%.1f", bytes / 1073741824 }')
 
         uuid=$(amd_gpu_id "$card_dir" "$idx")
         gfx_ver=$(amd_gfx_version "$card_dir" "$idx")
