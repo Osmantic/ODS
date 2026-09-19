@@ -217,6 +217,29 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== session cleanup lifecycle ==="
 	@bash tests/test-session-cleanup.sh
+	@echo ""
+	@echo "=== previously unwired standalone Python contracts ==="
+	@python3 tests/test-catalog-invalid-manifest.py
+	@python3 tests/test-embedding-model-contract.py
+	@python3 tests/test-external-completion-probe.py
+	@python3 tests/test-external-lemonade-model-selector.py
+	@python3 tests/test-fedora-strix-compat.py
+	@python3 tests/test-gemma4-artifact-pins.py
+	@python3 tests/test-generated-config-backups.py
+	@python3 tests/test-gpu-layer-contract.py
+	@python3 tests/test-hermes-dashboard-session-token.py
+	@python3 tests/test-install-footprint-contract.py
+	@python3 tests/test-llm-cold-storage-arithmetic.py
+	@python3 tests/test-model-library-coverage.py
+	@python3 tests/test-model-library-verdicts.py
+	@python3 tests/test-model-store-compose-flags.py
+	@python3 tests/test-perplexica-embedding-defaults.py
+	@python3 tests/contracts/test-port-contracts.py
+	@python3 tests/contracts/test-remote-provider-cli.py
+	@python3 tests/contracts/test-remote-provider-ssh-tunnel-service.py
+	@python3 tests/test-service-registry-encoding.py
+	@python3 tests/contracts/test-ods-cli-contracts.py
+	@python3 tests/contracts/test-wsl-stack.py
 
 bats: ## Run BATS unit tests for shell libraries
 	@echo "=== BATS unit tests ==="
