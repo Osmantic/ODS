@@ -15,15 +15,12 @@
 # Bootstrap model: Tier 0 (Qwen 3.5 2B, Q4_K_M quantization, ~1.22 GiB).
 # Hermes requires at least a 64K context window, so fast-start installs keep
 # the bootstrap server at that floor instead of the older 8K default.
-BOOTSTRAP_GGUF_FILE="Qwen3.5-2B-Q4_K_M.gguf"
-# Exact artifact size rounded down to MiB. This is display metadata for the
-# pinned GGUF below; keep it aligned with tier-map.sh when the artifact changes.
-BOOTSTRAP_GGUF_SIZE_MB=1221
-BOOTSTRAP_GGUF_URL="https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q4_K_M.gguf"
-BOOTSTRAP_GGUF_SHA256="aaf42c8b7c3cab2bf3d69c355048d4a0ee9973d48f16c731c0520ee914699223"
-BOOTSTRAP_LLM_MODEL="qwen3.5-2b"
-BOOTSTRAP_MAX_CONTEXT=65536
-
+readonly BOOTSTRAP_GGUF_FILE="Qwen3.5-2B-Q4_K_M.gguf"
+readonly BOOTSTRAP_GGUF_SIZE_MB=1221
+readonly BOOTSTRAP_GGUF_URL="https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q4_K_M.gguf"
+readonly BOOTSTRAP_GGUF_SHA256="aaf42c8b7c3cab2bf3d69c355048d4a0ee9973d48f16c731c0520ee914699223"
+readonly BOOTSTRAP_LLM_MODEL="qwen3.5-2b"
+readonly BOOTSTRAP_MAX_CONTEXT=65536
 # bootstrap_needed — Should we use the fast-start bootstrap pattern?
 #
 # Returns 0 (true) when ALL of these hold:
