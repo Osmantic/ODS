@@ -248,3 +248,10 @@ async def feature_enable_instructions(
     }
 
     return {"featureId": feature_id, "name": feature["name"], "instructions": instructions.get(feature_id, {"steps": [], "links": []})}
+
+
+def validate_feature_payload(payload: dict, allowed_keys: set) -> dict:
+    """Strictly validate incoming feature toggle requests against known keys."""
+    if not isinstance(payload, dict):
+        return {}
+    return {k: bool(v) for k, v in payload.items() if k in allowed_keys}
