@@ -143,6 +143,79 @@ def test_load_workflow_catalog_invalid_inner_types(tmp_path, monkeypatch):
     assert result["categories"] == {}
 
 
+def test_load_workflow_catalog_decodes_utf8(tmp_path, monkeypatch):
+    """The shipped catalog/workflow JSON is UTF-8 (e.g. workflow descriptions
+    carry non-ASCII punctuation); the reader must not fall back to the
+    platform default encoding — on a cp1252 host names come back mangled."""
+    import routers.workflows as wf_mod
+
+    name = "Résumé — vídeo « pipeline » ═╪"
+    catalog = {
+        "workflows": [{"id": "utf8-wf", "name": name, "description": "déployé",
+                       "file": "utf8-wf.json", "dependencies": []}],
+        "categories": {},
+    }
+    catalog_file = tmp_path / "catalog.json"
+    catalog_file.write_text(json.dumps(catalog, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(wf_mod, "WORKFLOW_CATALOG_FILE", catalog_file)
+
+    result = wf_mod.load_workflow_catalog()
+    assert result["workflows"][0]["name"] == name
+
+
+def test_workflow_enable_reads_utf8_workflow_file(test_client, tmp_path, monkeypatch):
+    """The enable path ships the workflow JSON to n8n — a non-ASCII node name
+    must survive the file read on hosts whose default locale is not UTF-8."""
+    import routers.workflows as wf_mod
+
+    node_name = "Summarise — ünïcodé ═╪"
+    catalog = {
+        "workflows": [
+            {"id": "utf8-wf", "name": "UTF-8 Workflow", "description": "test",
+             "file": "utf8-wf.json", "dependencies": []}
+        ],
+        "categories": {},
+    }
+    catalog_file = tmp_path / "catalog.json"
+    catalog_file.write_text(json.dumps(catalog), encoding="utf-8")
+    monkeypatch.setattr(wf_mod, "WORKFLOW_CATALOG_FILE", catalog_file)
+
+    workflow_dir = tmp_path / "workflows"
+    workflow_dir.mkdir()
+    (workflow_dir / "utf8-wf.json").write_text(
+        json.dumps({"name": node_name, "nodes": []}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(wf_mod, "WORKFLOW_DIR", workflow_dir)
+
+    create_resp = AsyncMock()
+    create_resp.status = 201
+    create_resp.json = AsyncMock(return_value={"data": {"id": "n8n-1"}})
+    activate_resp = AsyncMock()
+    activate_resp.status = 200
+    create_ctx = AsyncMock()
+    create_ctx.__aenter__ = AsyncMock(return_value=create_resp)
+    create_ctx.__aexit__ = AsyncMock(return_value=False)
+    activate_ctx = AsyncMock()
+    activate_ctx.__aenter__ = AsyncMock(return_value=activate_resp)
+    activate_ctx.__aexit__ = AsyncMock(return_value=False)
+    session_mock = AsyncMock()
+    session_mock.post = MagicMock(return_value=create_ctx)
+    session_mock.patch = MagicMock(return_value=activate_ctx)
+    session_mock.__aenter__ = AsyncMock(return_value=session_mock)
+    session_mock.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("routers.workflows.aiohttp.ClientSession", return_value=session_mock):
+        resp = test_client.post(
+            "/api/workflows/utf8-wf/enable",
+            headers=test_client.auth_headers,
+        )
+
+    assert resp.status_code == 200
+    posted = session_mock.post.call_args.kwargs.get("json") or session_mock.post.call_args[1].get("json")
+    assert posted is not None and posted["name"] == node_name
+
+
 # ---------------------------------------------------------------------------
 # get_n8n_workflows() unit tests
 # ---------------------------------------------------------------------------
