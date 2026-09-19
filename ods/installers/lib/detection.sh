@@ -258,10 +258,10 @@ apply_cpu_gpu_fallback() {
 
 select_cpu_fallback_tier() {
     local ram_gb="${1:-0}"
+    ram_gb="${ram_gb%.*}"
     if ! [[ "$ram_gb" =~ ^[0-9]+$ ]]; then
         ram_gb=0
     fi
-
     if [[ "$ram_gb" -ge 96 ]]; then
         echo "3"
     elif [[ "$ram_gb" -ge 48 ]]; then
