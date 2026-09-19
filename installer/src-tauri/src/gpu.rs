@@ -18,14 +18,15 @@ pub fn detect() -> GpuInfo {
 }
 
 /// Recommend a ODS tier based on detected GPU VRAM.
+/// Thresholds mirror the CLI installer's auto-detection in
+/// ods/installers/phases/02-detection.sh (4000/12000/20000/40000 MB).
 pub fn recommend_tier(gpu: &GpuInfo) -> u8 {
     match gpu.vram_mb {
-        0 => 0,                    // CPU-only / cloud
-        v if v < 8192 => 1,       // < 8GB
-        v if v < 12288 => 1,      // 8GB — Tier 1
-        v if v < 24576 => 2,      // 12-24GB — Tier 2
-        v if v < 49152 => 3,      // 24-48GB — Tier 3
-        _ => 4,                    // 48GB+ — Tier 4
+        v if v < 4000 => 0,       // < 4GB — bootstrap tier
+        v if v < 12000 => 1,      // 4-12GB — Tier 1
+        v if v < 20000 => 2,      // 12-20GB — Tier 2
+        v if v < 40000 => 3,      // 20-40GB — Tier 3
+        _ => 4,                    // 40GB+ — Tier 4
     }
 }
 
@@ -251,5 +252,37 @@ fn parse_vram_string(s: &str) -> u64 {
         }
     } else {
         0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn gpu_with_vram(vram_mb: u64) -> GpuInfo {
+        GpuInfo {
+            vendor: GpuVendor::Nvidia,
+            name: "test".into(),
+            vram_mb,
+            driver_version: None,
+        }
+    }
+
+    #[test]
+    fn recommend_tier_matches_cli_installer_boundaries() {
+        // Mirror ods/installers/phases/02-detection.sh:
+        // <4000 → 0, ≥12000 → 2, ≥20000 → 3, ≥40000 → 4.
+        assert_eq!(recommend_tier(&gpu_with_vram(0)), 0);
+        assert_eq!(recommend_tier(&gpu_with_vram(3999)), 0);
+        assert_eq!(recommend_tier(&gpu_with_vram(4000)), 1);
+        assert_eq!(recommend_tier(&gpu_with_vram(8192)), 1);
+        assert_eq!(recommend_tier(&gpu_with_vram(11999)), 1);
+        assert_eq!(recommend_tier(&gpu_with_vram(12000)), 2);
+        assert_eq!(recommend_tier(&gpu_with_vram(19999)), 2);
+        assert_eq!(recommend_tier(&gpu_with_vram(20000)), 3);
+        assert_eq!(recommend_tier(&gpu_with_vram(24576)), 3);
+        assert_eq!(recommend_tier(&gpu_with_vram(39999)), 3);
+        assert_eq!(recommend_tier(&gpu_with_vram(40000)), 4);
+        assert_eq!(recommend_tier(&gpu_with_vram(49152)), 4);
     }
 }
