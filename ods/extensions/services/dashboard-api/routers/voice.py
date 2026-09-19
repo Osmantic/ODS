@@ -25,33 +25,24 @@ async def voice_status(api_key: str = Depends(verify_api_key)):
     Stub implementation — returns service health based on the existing
     service health infrastructure. Full voice API is not yet implemented.
     """
+    import asyncio
     from helpers import check_service_health
     from config import SERVICES
 
-    services_status = {}
-    for svc_key, display_name in [("whisper", "stt"), ("tts", "tts")]:
+    async def _check(svc_key: str) -> str:
         cfg = SERVICES.get(svc_key)
-        if cfg:
-            try:
-                result = await check_service_health(svc_key, cfg)
-                services_status[display_name] = {"status": result.status}
-            except Exception:
-                logger.warning("Health check failed for %s", svc_key, exc_info=True)
-                services_status[display_name] = {"status": "unavailable"}
-        else:
-            services_status[display_name] = {"status": NOT_CONFIGURED}
-
-    # LiveKit is optional and not in SERVICES by default
-    livekit_cfg = SERVICES.get("livekit")
-    if livekit_cfg:
+        if not cfg:
+            return NOT_CONFIGURED
         try:
-            result = await check_service_health("livekit", livekit_cfg)
-            services_status["livekit"] = {"status": result.status}
+            result = await check_service_health(svc_key, cfg)
+            return result.status
         except Exception:
-            logger.warning("Health check failed for livekit", exc_info=True)
-            services_status["livekit"] = {"status": "unavailable"}
-    else:
-        services_status["livekit"] = {"status": NOT_CONFIGURED}
+            logger.warning("Health check failed for %s", svc_key, exc_info=True)
+            return "unavailable"
+
+    targets = [("whisper", "stt"), ("tts", "tts"), ("livekit", "livekit")]
+    statuses = await asyncio.gather(*[_check(svc_key) for svc_key, _ in targets])
+    services_status = {display: {"status": st} for (_, display), st in zip(targets, statuses)}
 
     # An uninstalled optional service is not a failure, so it sits out the
     # verdict. Everything that IS installed still has to be healthy.
