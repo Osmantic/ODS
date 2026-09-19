@@ -14,13 +14,23 @@
 
 install_elapsed() {
   local now_epoch="${INSTALL_NOW_EPOCH:-$(date +%s)}"
-  local secs=$(( now_epoch - INSTALL_START_EPOCH ))
+  local start_epoch="${INSTALL_START_EPOCH:-$now_epoch}"
+  local secs=$(( now_epoch - start_epoch ))
   local m=$(( secs / 60 ))
   local s=$(( secs % 60 ))
   printf '%dm %02ds' "$m" "$s"
 }
 
-log() { echo -e "${GRN}[INFO]${NC} $1" | tee -a "$LOG_FILE"; }
-success() { echo -e "${BGRN}[OK]${NC} $1" | tee -a "$LOG_FILE"; }
-warn() { echo -e "${AMB}[WARN]${NC} $1" | tee -a "$LOG_FILE"; }
-error() { echo -e "${RED}[ERROR]${NC} $1" | tee -a "$LOG_FILE"; exit 1; }
+_log_out() {
+  local msg="$1"
+  if [[ -n "${LOG_FILE:-}" ]]; then
+    echo -e "$msg" | tee -a "$LOG_FILE"
+  else
+    echo -e "$msg"
+  fi
+}
+
+log() { _log_out "${GRN:-}[INFO]${NC:-} ${1:-}"; }
+success() { _log_out "${BGRN:-}[OK]${NC:-} ${1:-}"; }
+warn() { _log_out "${AMB:-}[WARN]${NC:-} ${1:-}"; }
+error() { _log_out "${RED:-}[ERROR]${NC:-} ${1:-}"; exit 1; }
