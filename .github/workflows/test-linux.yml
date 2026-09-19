@@ -414,6 +414,7 @@ jobs:
           python3 -m unittest -v tests/test_pixel_native_search.py
           bash tests/test-pixel-compose-wiring.sh
           python3 tests/test_pixel_timeout_contract.py
+          python3 -m unittest -v tests/test_pixel_model_contract_limits.py
           python3 -m unittest -v extensions/services/pixel-agent/tests/test_artifact_promoter.py
           node --test extensions/services/pixel-agent/tests/*.test.mjs
 
