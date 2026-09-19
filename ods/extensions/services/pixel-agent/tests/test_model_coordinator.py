@@ -211,6 +211,22 @@ def test_prepatch_pending_journal_can_complete_without_adopting_drift(adapter):
     assert json.loads(adapter.marker_path.read_text())['configuration_sha256'] == c._marker_digest(json.loads(adapter.path.read_text()))
 
 
+def test_model_finish_refuses_changed_before_snapshot_without_rebinding_marker(adapter):
+    begin(adapter); apply(adapter)
+    before_path = adapter.state / 'model-before.json'
+    before = json.loads(before_path.read_text())
+    marker = adapter.marker_path.read_bytes()
+    atomic_json(before_path, {**before, 'tampered': True})
+
+    with pytest.raises(AccessError, match='model-before-changed'):
+        finish(adapter)
+
+    assert adapter.pending()
+    assert adapter.marker_path.read_bytes() == marker
+    atomic_json(before_path, before)
+    assert finish(adapter)['outcome'] == 'commit'
+
+
 def test_six_switches_keep_installer_marker_bound(adapter):
     # Repeated browser cycles must not strand the uninstall/reinstall guard.
     for cycle in range(1, 7):
