@@ -8138,6 +8138,40 @@ class TestWindowsObservability:
         assert "private" not in json.dumps(payload)
         assert auth_headers == ["Bearer secret-key", "Bearer secret-key"]
 
+    def test_windows_llm_status_sends_litellm_lemonade_api_key(
+        self, tmp_path, monkeypatch,
+    ):
+        # Installers persist the Lemonade credential as LITELLM_LEMONADE_API_KEY
+        # (phase 06 / Windows env-generator); the bare LEMONADE_API_KEY name is
+        # only a legacy alias and is never written to .env.
+        monkeypatch.setattr(_mod.platform, "system", lambda: "Windows")
+        monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
+        (tmp_path / ".env").write_text(
+            "AMD_INFERENCE_PORT=8080\nLITELLM_LEMONADE_API_KEY=sk-litellm-key\n"
+        )
+        monkeypatch.setattr(_mod, "_windows_llm_status_cache", (0.0, None))
+        auth_headers = []
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self, _size=-1):
+                return b'{"status":"ok","model_loaded":"test"}'
+
+        def urlopen(url, timeout):
+            auth_headers.append(url.get_header("Authorization"))
+            return Response()
+
+        monkeypatch.setattr(_mod.urllib_request, "urlopen", urlopen)
+
+        _mod._windows_llm_status()
+
+        assert auth_headers == ["Bearer sk-litellm-key", "Bearer sk-litellm-key"]
+
     def test_windows_llm_stats_exclude_unrelated_health_fields(
         self, tmp_path, monkeypatch,
     ):

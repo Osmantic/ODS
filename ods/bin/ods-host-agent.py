@@ -6085,7 +6085,9 @@ def _windows_llm_status() -> dict | None:
         if port < 1 or port > 65535:
             port = 8080
         base = f"http://127.0.0.1:{port}"
-        api_key = str(env.get("LEMONADE_API_KEY") or "").strip()
+        api_key = str(
+            env.get("LITELLM_LEMONADE_API_KEY") or env.get("LEMONADE_API_KEY") or ""
+        ).strip()
 
         def fetch_json(name: str) -> dict:
             last_error: Exception | None = None
