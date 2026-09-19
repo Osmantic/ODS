@@ -51,13 +51,44 @@ class MigrationCeilingTests(unittest.TestCase):
         output = self.invoke("migrate")
         value = (self.install / ".env").read_text()
         self.assertIn("ENABLE_VOICE=true", value)
-        self.assertIn("VOICE_PROFILE=voice", value)
+        # VOICE_PROFILE was a dead key: nothing consumes it and it is not a
+        # schema property, so writing it made `ods env validate` fail with an
+        # unknown-key error on every migrated install.
+        self.assertNotIn("VOICE_PROFILE", value)
         self.assertNotIn("SHIELD_API_KEY", value)
         self.assertNotIn("Running migration: 2.4.1", output)
         self.assertEqual((self.data / ".migration-state").read_text().strip(), "0.2.0")
         backups = list((self.data / "backups").glob("config-*/.env"))
         self.assertEqual(len(backups), 1)
         self.assertEqual(backups[0].read_text(), self.original_env)
+
+    def test_migrations_only_write_schema_known_env_keys(self):
+        schema = json.loads((ODS / ".env.schema.json").read_text())
+        known_keys = set(schema["properties"])
+        for migration in sorted((ODS / "migrations").glob("migrate-v*.sh")):
+            with self.subTest(migration=migration.name):
+                env_file = self.install / ".env"
+                env_file.write_text(self.original_env)
+                before = {
+                    line.split("=", 1)[0]
+                    for line in env_file.read_text().splitlines()
+                    if "=" in line
+                }
+                subprocess.run(
+                    ["bash", str(migration)],
+                    env=self.environment,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    timeout=20,
+                    check=True,
+                )
+                after = {
+                    line.split("=", 1)[0]
+                    for line in env_file.read_text().splitlines()
+                    if "=" in line
+                }
+                self.assertEqual(after - before - known_keys, set())
 
     def test_future_only_scripts_do_not_mutate_configuration(self):
         self.configure("2.4.0", "0.2.0", json_version=True)
