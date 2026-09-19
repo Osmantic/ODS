@@ -265,7 +265,9 @@ jobs:
         run: bash tests/test-brave-search-searxng-compat.sh
 
       - name: ODS Doctor Tests
-        run: bash tests/test-ods-doctor.sh
+        run: |
+          bash tests/test-ods-doctor.sh
+          python3 tests/test_doctor_standalone_registry.py
 
       - name: Windows Report Command Tests
         run: bash tests/test-windows-report-command.sh
