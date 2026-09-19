@@ -9,7 +9,7 @@ class ModelError(ValueError):
 
 
 def checksum(value):
-    return type(value) is str and re.fullmatch(r"[a-f0-9]{64}", value) is not None
+    return type(value) is str and re.fullmatch(r"[a-f0-9]{64}", value.lower()) is not None
 
 
 def target(value):
