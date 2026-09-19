@@ -215,9 +215,9 @@ test_disk_space() {
     # macOS df with -g flag shows GB
     local free_gb
     free_gb=$(df -g "$path" 2>/dev/null | tail -1 | awk '{print $4}')
-    if [[ -z "$free_gb" || "$free_gb" == "0" ]]; then
-        # Fallback: use df -BG (Linux-style, unlikely on macOS but safe)
-        free_gb=$(df -BG "$path" 2>/dev/null | tail -1 | awk '{gsub(/G/, "", $4); print int($4)}')
+    if [[ -z "$free_gb" || ! "$free_gb" =~ ^[0-9]+$ ]]; then
+        # Fallback: use POSIX df -Pk (returns KB) then convert to GB
+        free_gb=$(df -Pk "$path" 2>/dev/null | tail -1 | awk '{print int($4/1048576)}')
     fi
     DISK_FREE_GB="${free_gb:-0}"
     DISK_REQUIRED_GB="$required_gb"
