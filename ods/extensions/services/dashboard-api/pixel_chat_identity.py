@@ -13,7 +13,7 @@ def asks_display_name(messages):
     if not messages or messages[-1].role != "user":
         return False
     text = messages[-1].content
-    if len(text) > 160:
+    if not isinstance(text, str) or len(text) > 160:
         return False
     text = "".join(char for char in unicodedata.normalize("NFKD", text.casefold())
                    if not unicodedata.combining(char))
