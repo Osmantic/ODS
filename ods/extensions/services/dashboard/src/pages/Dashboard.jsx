@@ -25,6 +25,7 @@ import {
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import CompactDashboard from '../components/CompactDashboard'
+import ResourceSnapshotDownload from '../components/ResourceSnapshotDownload'
 import { serviceUrl } from '../lib/serviceUrls'
 
 // Compute overall health from services (excludes not_deployed from counts)
@@ -609,7 +610,9 @@ function buildChartPoints(values, maxValue) {
 
 export default function Dashboard({ status, loading, compact = false }) {
   const [featuresData, setFeaturesData] = useState(null)
-  const [serviceResources, setServiceResources] = useState(null)
+  const [resourceSnapshot, setResourceSnapshot] = useState(null)
+  const [resourceRefreshFailed, setResourceRefreshFailed] = useState(false)
+  const serviceResources = resourceSnapshot?.data
 
   useEffect(() => {
     let mounted = true
@@ -644,11 +647,16 @@ export default function Dashboard({ status, loading, compact = false }) {
     const fetchServiceResources = async () => {
       try {
         const res = await fetch('/api/services/resources')
-        if (!res.ok) return
+        if (!res.ok) throw new Error('Resource refresh failed')
         const data = await res.json()
-        if (mounted) setServiceResources(data)
+        if (!Array.isArray(data?.services)) throw new Error('Resource inventory unavailable')
+        if (mounted) {
+          setResourceSnapshot({ data, receivedAt: new Date().toISOString() })
+          setResourceRefreshFailed(false)
+        }
       } catch {
         // Service rows keep rendering status data when per-container metrics are unavailable.
+        if (mounted) setResourceRefreshFailed(true)
       }
     }
 
@@ -809,7 +817,8 @@ export default function Dashboard({ status, loading, compact = false }) {
     }
   )
 
-  if (compact) return <CompactDashboard metrics={systemMetrics} services={status?.services || []} health={health}/>
+  const resourceExport = <ResourceSnapshotDownload snapshot={resourceSnapshot} refreshFailed={resourceRefreshFailed} />
+  if (compact) return <CompactDashboard metrics={systemMetrics} services={status?.services || []} health={health} resourceExport={resourceExport}/>
 
   return (
     <div className="p-8">
@@ -900,6 +909,7 @@ export default function Dashboard({ status, loading, compact = false }) {
         <SystemMetricsPanel metrics={systemMetrics} />
       </div>
 
+      <div className="mb-2 flex justify-end">{resourceExport}</div>
       <ServicesPanel services={serviceRows} />
 
       {/* Feature Discovery is already shown at the top */}
