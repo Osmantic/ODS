@@ -20,6 +20,11 @@ Your data is preserved when disabling. To re-enable later: `ods enable paperless
 
 - **URL:** `http://localhost:7807`
 
+The application also has the `paperless` alias on `ods-network`, matching the
+dashboard's default internal health target. Apply an updated Compose definition
+by recreating the application container; a process-only restart does not update
+Docker network aliases. Existing data and the published browser port are preserved.
+
 ## First-Time Setup
 
 1. Enable the service: `ods enable paperless-ngx`
