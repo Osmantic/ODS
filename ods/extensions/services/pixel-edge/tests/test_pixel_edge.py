@@ -681,6 +681,27 @@ class TestCancellation(BaseEdgeTest):
                 self.assertEqual(resp.status, 400)
         self.assertEqual(self.up_runner.app["cancel_users"], [])
 
+    async def test_cancel_rejects_query_parameters(self):
+        async with self.client.post(
+            "http://localhost/v1/chat/cancel?user=conversation-42",
+            headers=self.auth(),
+            json={"user": "conversation-42"},
+        ) as resp:
+            self.assertEqual(resp.status, 400)
+            self.assertEqual(await resp.json(), {"error": "query parameters not allowed"})
+        self.assertEqual(self.up_runner.app["cancel_users"], [])
+
+    async def test_cancel_rejects_duplicate_json_keys(self):
+        raw = b'{"user":"conversation-42","user":"conversation-42"}'
+        async with self.client.post(
+            "http://localhost/v1/chat/cancel",
+            headers={**self.auth(), "Content-Type": "application/json"},
+            data=raw,
+        ) as resp:
+            self.assertEqual(resp.status, 400)
+            self.assertEqual(await resp.json(), {"error": "invalid JSON"})
+        self.assertEqual(self.up_runner.app["cancel_users"], [])
+
     async def test_cancelled_stream_ends_cleanly_without_late_upstream_error(self):
         self.up_runner.app["release_on_cancel"] = True
         async with self.client.post(
