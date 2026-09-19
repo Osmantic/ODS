@@ -113,6 +113,10 @@ def _prepare(payload, grant):
             or set(payload['chat_template_kwargs']) != {'enable_thinking'}
             or type(payload['chat_template_kwargs']['enable_thinking']) is not bool):
         raise ShareError(400, 'unsupported_template_options')
+    if 'temperature' in payload:
+        temp = payload['temperature']
+        if type(temp) not in (int, float) or type(temp) is bool or not 0.0 <= float(temp) <= 2.0:
+            raise ShareError(400, 'invalid_temperature')
     token_field = 'max_completion_tokens' if 'max_completion_tokens' in payload else 'max_tokens'
     limit = payload.get(token_field, min(1024, grant['maxOutputTokens']))
     if type(limit) is not int or not 1 <= limit <= grant['maxOutputTokens']:
