@@ -1417,3 +1417,16 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def string_replace_all_occurrences_safe(text: str | None, old: str | None, new: str | None) -> str:
+    """Safely replace all occurrences of old with new in text string.
+    Returns "" on None or non-string inputs.
+    """
+    if text is None or not isinstance(text, str):
+        return ""
+    if old is None or not isinstance(old, str) or not old:
+        return text
+    if new is None or not isinstance(new, str):
+        new = ""
+    return text.replace(old, new)
