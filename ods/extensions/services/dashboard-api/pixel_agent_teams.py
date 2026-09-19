@@ -83,6 +83,8 @@ def planned_count(text):
 
 
 def worker(team_id, index, role):
+    if not isinstance(role, str) or role not in ROLES:
+        raise ValueError(f"unknown role: {role}")
     return {"id": str(index), "name": ROLES[role][0], "role": role, "task": ROLES[role][1],
             "status": "queued", "turn": 0, "chat_id": f"team-{team_id}-{index}", "request_id": "turn-0",
             "messages": [], "conversation": [], "activity": None, "questions": None,
