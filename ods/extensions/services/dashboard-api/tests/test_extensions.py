@@ -4173,6 +4173,28 @@ def test_production_core_service_ids_include_hermes_services():
     assert {"hermes", "hermes-proxy"} <= core_ids
 
 
+def test_core_service_ids_cover_all_bundled_services():
+    """Every bundled service manifest must be in the core-service allowlist.
+
+    core-service-ids.json backs two guards: the extensions router rejects
+    user-compose services that shadow a core name, and the host agent
+    refuses management operations on core services. Bundled services added
+    without updating the list (brave-search, ods-proxy, tailscale, the
+    pixel-* services) slipped past both guards.
+    """
+    ods_root = Path(__file__).resolve().parents[4]
+    core_ids_path = ods_root / "config" / "core-service-ids.json"
+    core_ids = set(json.loads(core_ids_path.read_text(encoding="utf-8")))
+
+    bundled = {
+        p.parent.name
+        for p in (ods_root / "extensions" / "services").glob("*/manifest.yaml")
+    }
+    assert bundled, "expected at least one bundled service manifest"
+    missing = bundled - core_ids
+    assert not missing, f"bundled services missing from core-service-ids.json: {sorted(missing)}"
+
+
 class TestCallAgentErrorNarrowing:
     """_call_agent swallows network errors but not programmer errors."""
 

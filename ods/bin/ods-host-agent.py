@@ -182,6 +182,8 @@ _FALLBACK_CORE_IDS = frozenset({
     "perplexica", "searxng", "qdrant", "remote-provider-egress",
     "remote-provider-ssh-tunnel", "tts", "whisper",
     "embeddings", "token-spy", "comfyui", "ape", "privacy-shield",
+    "brave-search", "ods-proxy", "tailscale",
+    "pixel-agent", "pixel-edge", "pixel-inference", "pixel-model-relay",
 })
 
 INSTALL_DIR: Path = Path()

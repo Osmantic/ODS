@@ -662,6 +662,8 @@ def _load_core_service_ids() -> frozenset:
         "perplexica", "searxng", "qdrant", "remote-provider-egress",
         "remote-provider-ssh-tunnel", "tts", "whisper",
         "embeddings", "token-spy", "comfyui", "ape", "privacy-shield",
+        "brave-search", "ods-proxy", "tailscale",
+        "pixel-agent", "pixel-edge", "pixel-inference", "pixel-model-relay",
     })
 
 
