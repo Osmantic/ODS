@@ -68,7 +68,7 @@ jobs:
       - name: Compressed backup extraction safety and recovery
         run: python -m pytest tests/test_restore_archive.py -q
       - name: GPU assignment capacity contracts
-        run: python -m pytest tests/test-assign-gpus.py tests/test_gpu_spare_capacity.py -q
+        run: python -m pytest tests/test-assign-gpus.py tests/test_gpu_spare_capacity.py tests/test_classify_hardware_longest_name_pattern.py -q
       - name: macOS TCP bridge lifecycle contracts
         run: python -m pytest tests/test_macos_llm_bridge.py -q
       - name: Sharing credential and owner control tests
