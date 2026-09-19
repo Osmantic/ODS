@@ -40,7 +40,6 @@ export function useVersion() {
       } catch (err) {
         if (!disposed) {
           setError(err.message)
-          setVersion(null)
         }
         delay = 60000
       } finally {

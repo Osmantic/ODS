@@ -8,6 +8,7 @@ describe('useVersion', () => {
   })
 
   afterEach(() => {
+    vi.useRealTimers()
     vi.restoreAllMocks()
   })
 
@@ -104,6 +105,53 @@ describe('useVersion', () => {
     })
     expect(result.current.error).toBeTruthy()
     expect(result.current.version).toBeNull()
+  })
+
+  test('retains the last good snapshot across a failed poll and clears the error on recovery', async () => {
+    vi.useFakeTimers()
+    fetch
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ current: '1.0.0', latest: '2.0.0', update_available: true })
+      })
+      .mockRejectedValueOnce(new Error('dashboard-api restarting'))
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ current: '1.0.0', latest: '2.1.0', update_available: true })
+      })
+
+    const { result } = renderHook(() => useVersion())
+    await act(async () => { await Promise.resolve() })
+
+    expect(result.current.version.latest).toBe('2.0.0')
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(30 * 60 * 1000) })
+    expect(result.current.error).toBe('dashboard-api restarting')
+    expect(result.current.version.latest).toBe('2.0.0')
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(30 * 60 * 1000) })
+    expect(result.current.error).toBeNull()
+    expect(result.current.version.latest).toBe('2.1.0')
+  })
+
+  test.each(['HTTP', 'JSON'])('retains a dismissed snapshot after a %s failure', async (failure) => {
+    vi.useFakeTimers()
+    fetch.mockResolvedValueOnce({ ok: true, json: async () => ({ current: '1', latest: '2', update_available: true }) })
+      .mockResolvedValueOnce(failure === 'HTTP'
+        ? { ok: false }
+        : { ok: true, json: async () => { throw new SyntaxError('invalid version JSON') } })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ current: '1', latest: '3', update_available: true }) })
+    const { result, unmount } = renderHook(() => useVersion())
+    await act(async () => { await Promise.resolve() })
+    act(() => result.current.dismissUpdate())
+    await act(async () => { await vi.advanceTimersByTimeAsync(30 * 60 * 1000) })
+    expect(result.current.version).toMatchObject({ latest: '2' })
+    expect(result.current.showUpdate).toBe(false)
+    expect(result.current.error).toBeTruthy()
+    await act(async () => { await vi.advanceTimersByTimeAsync(30 * 60 * 1000) })
+    expect(result.current.version).toMatchObject({ latest: '3', update_available: true })
+    expect(result.current.error).toBeNull()
+    unmount()
   })
 
   test('does not announce a stale release and retries a pending first check', async () => {
