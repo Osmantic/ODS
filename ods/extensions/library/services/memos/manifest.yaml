@@ -1,0 +1,35 @@
+schema_version: ods.services.v1
+service:
+  id: memos
+  name: Memos
+  aliases: [local-notes]
+  container_name: ods-memos
+  host_env: MEMOS_HOST
+  default_host: memos
+  port: 5230
+  external_port_env: MEMOS_PORT
+  external_port_default: 8099
+  health: /healthz
+  type: docker
+  gpu_backends: [amd, nvidia, apple, cpu]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  description: "Local Markdown notes, tags and a token-authenticated API for saving workflow results."
+  env_vars:
+    - key: MEMOS_PORT
+      required: false
+      description: Host port for Memos (default 8099)
+features:
+  - id: local-notes
+    name: Local Notes
+    description: Capture Markdown notes and workflow results in a local notebook
+    icon: NotebookPen
+    category: productivity
+    requirements:
+      services: [memos]
+      vram_gb: 0
+    enabled_services_all: [memos]
+    setup_time: ~1 minute
+    priority: 65
+    gpu_backends: [amd, nvidia, apple, cpu]

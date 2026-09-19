@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-13T16:53:56Z",
+  "generated_at": "2026-09-14T04:53:11Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -2290,6 +2290,58 @@
             "localai"
           ],
           "priority": 9
+        }
+      ],
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
+      "id": "memos",
+      "name": "Memos",
+      "description": "Local Markdown notes, tags and a token-authenticated API for saving workflow results.",
+      "category": "optional",
+      "gpu_backends": [
+        "amd",
+        "nvidia",
+        "apple",
+        "cpu"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 5230,
+      "external_port_default": 8099,
+      "health_endpoint": "/healthz",
+      "env_vars": [
+        {
+          "key": "MEMOS_PORT",
+          "required": false,
+          "description": "Host port for Memos (default 8099)"
+        }
+      ],
+      "tags": [],
+      "features": [
+        {
+          "id": "local-notes",
+          "name": "Local Notes",
+          "description": "Capture Markdown notes and workflow results in a local notebook",
+          "icon": "NotebookPen",
+          "category": "productivity",
+          "requirements": {
+            "services": [
+              "memos"
+            ],
+            "vram_gb": 0
+          },
+          "enabled_services_all": [
+            "memos"
+          ],
+          "setup_time": "~1 minute",
+          "priority": 65,
+          "gpu_backends": [
+            "amd",
+            "nvidia",
+            "apple",
+            "cpu"
+          ]
         }
       ],
       "configuration_scope": "declared-environment-keys"
