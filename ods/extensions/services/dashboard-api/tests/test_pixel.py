@@ -1065,6 +1065,57 @@ async def test_stream_line_limit_fails_closed():
 
 
 @pytest.mark.asyncio
+async def test_unterminated_done_marker_is_forwarded_as_one_framed_done():
+    calls = []
+    upstream = FakeResponse(
+        content_type="text/event-stream",
+        chunks=[b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n', b"data: [DONE]"],
+    )
+    body = pixel.ChatStreamRequest.model_validate(
+        {"chat_id": "c1", "messages": [{"role": "user", "content": "hello"}]}
+    )
+    with patch.object(pixel.httpx, "AsyncClient", return_value=CancelAwareClient(upstream, calls)):
+        response = await pixel.pixel_chat_stream(ConnectedRequest(), body)
+        streamed = await stream_body(response)
+    assert streamed.count(b"data: [DONE]") == 1
+    assert streamed.endswith(b"data: [DONE]\n")
+    # A real upstream terminator means the completed edge run is never
+    # redundantly cancelled during release.
+    assert [call["url"] for call in calls] == ["http://pixel-edge:9595/v1/chat/completions"]
+
+
+@pytest.mark.asyncio
+async def test_unterminated_partial_line_cannot_swallow_the_terminal_done():
+    upstream = FakeResponse(
+        content_type="text/event-stream",
+        chunks=[b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n', b'data: {"partial"'],
+    )
+    body = pixel.ChatStreamRequest.model_validate(
+        {"chat_id": "c1", "messages": [{"role": "user", "content": "hello"}]}
+    )
+    with patch.object(pixel.httpx, "AsyncClient", return_value=FakeClient(upstream)):
+        response = await pixel.pixel_chat_stream(ConnectedRequest(), body)
+        streamed = await stream_body(response)
+    assert streamed.endswith(b'data: {"partial"\ndata: [DONE]\n\n')
+
+
+@pytest.mark.asyncio
+async def test_content_after_done_never_emits_a_second_terminal_done():
+    upstream = FakeResponse(
+        content_type="text/event-stream",
+        chunks=[b"data: [DONE]\n\n", b"data: " + b"x" * (1024 * 1024 + 1) + b"\n"],
+    )
+    body = pixel.ChatStreamRequest.model_validate(
+        {"chat_id": "c1", "messages": [{"role": "user", "content": "hello"}]}
+    )
+    with patch.object(pixel.httpx, "AsyncClient", return_value=FakeClient(upstream)):
+        response = await pixel.pixel_chat_stream(ConnectedRequest(), body)
+        streamed = await stream_body(response)
+    assert b"safety limit" in streamed
+    assert streamed.count(b"data: [DONE]") == 1
+
+
+@pytest.mark.asyncio
 async def test_stream_handles_split_utf8_without_decoding_or_corruption():
     value = "hello 😀".encode("utf-8")
     upstream = FakeResponse(

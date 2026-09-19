@@ -1102,17 +1102,24 @@ async def pixel_chat_stream(request: Request, body: ChatStreamRequest, owner: st
                         del buffered[: newline + 1]
                         if len(line.rstrip(b"\r\n")) > _MAX_SSE_LINE_BYTES:
                             yield _error_event("Pixel stream exceeded its safety limit")
-                            yield b"data: [DONE]\n\n"
+                            if not done_seen:
+                                yield b"data: [DONE]\n\n"
                             return
                         yield line
                         if line.rstrip(b"\r\n") == b"data: [DONE]":
                             done_seen = True
                     if len(buffered) > _MAX_SSE_LINE_BYTES:
                         yield _error_event("Pixel stream exceeded its safety limit")
-                        yield b"data: [DONE]\n\n"
+                        if not done_seen:
+                            yield b"data: [DONE]\n\n"
                         return
                 if buffered:
-                    yield bytes(buffered)
+                    # The final upstream line may lack a newline. Forward it
+                    # terminated so it cannot fuse with the appended [DONE],
+                    # and recognize a bare trailing marker as a real [DONE].
+                    if buffered.rstrip(b"\r\n") == b"data: [DONE]":
+                        done_seen = True
+                    yield bytes(buffered) + b"\n"
         except _ClientDisconnected:
             return
         except (GeneratorExit, asyncio.CancelledError):
