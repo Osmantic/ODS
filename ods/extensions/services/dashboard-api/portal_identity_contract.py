@@ -14,7 +14,7 @@ MAX_NAME_CODEPOINTS = 60
 MAX_RAW_NAME_CODEPOINTS = 240
 REQUEST_ENVELOPE_MAX_BYTES = 2048  # caller-enforced
 
-_FORBIDDEN_CATEGORIES = {"Cc", "Cs", "Zl", "Zp"}
+_FORBIDDEN_CATEGORIES = {"Cc", "Cs", "Zl", "Zp", "Co"}
 _ALLOWED_FORMAT = "\u200c\u200d"  # ZWNJ/ZWJ joiners; every other Cf code is rejected
 
 
