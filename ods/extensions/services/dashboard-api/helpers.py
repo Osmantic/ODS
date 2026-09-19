@@ -1417,3 +1417,22 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def dict_group_by_key_safe(items: list[dict] | None, key: str | None) -> dict[str, list]:
+    """Safely group a list of dictionaries by a specified key.
+    Returns {} on None or invalid inputs.
+    """
+    if not items or not isinstance(items, (list, tuple)):
+        return {}
+    if not isinstance(key, str) or not key:
+        return {}
+    result = {}
+    for item in items:
+        if isinstance(item, dict):
+            val = item.get(key, "unknown")
+            str_val = str(val)
+            if str_val not in result:
+                result[str_val] = []
+            result[str_val].append(item)
+    return result
