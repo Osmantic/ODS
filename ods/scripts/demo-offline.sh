@@ -44,6 +44,9 @@ clear_screen() {
 }
 
 pause() {
+    if [[ ! -t 0 ]]; then
+        return 0
+    fi
     echo ""
     echo -e "${DIM}Press Enter to continue...${NC}"
     read -r
