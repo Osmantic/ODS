@@ -549,7 +549,12 @@ async def stream_prompt(session_key: str, text: str) -> AsyncIterator[dict[str, 
                 logger.info("hermes-bridge: retrying once after stale WS (%s)", exc)
                 # Drop the lock + loop to attempt 2 with a fresh connection.
                 continue
-            except HermesUnavailable:
+            except BaseException:
+                # Once submitted, an interrupted turn can still leave delayed
+                # session-scoped events on this socket. Never let a later
+                # prompt consume them as its own answer. This includes timeout,
+                # protocol error, task cancellation and generator close; none
+                # is safe to transparently retry after possible tool execution.
                 await _drop_connection(session_key, conn)
                 raise
 
