@@ -169,7 +169,7 @@ PY
 external_llm_env_value() {
     local env_file="${1:-}" key="${2:-}" value
     [[ -f "$env_file" ]] || return 1
-    value="$(grep -m1 "^${key}=" "$env_file" 2>/dev/null | cut -d= -f2- || true)"
+    value="$(awk -F'=' -v k="$key" '$1 == k { sub(/\r$/, ""); print substr($0, length(k)+2); exit }' "$env_file" 2>/dev/null)"
     value="${value%\"}"
     value="${value#\"}"
     value="${value%\'}"
