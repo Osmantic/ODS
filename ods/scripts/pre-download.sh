@@ -159,7 +159,7 @@ download_model() {
     
     log "Downloading $label: $model"
     
-    "${ODS_PYTHON_CMD:-python3}" << EOF
+    if "${ODS_PYTHON_CMD:-python3}" << EOF
 from huggingface_hub import snapshot_download
 import sys
 
@@ -174,8 +174,7 @@ except Exception as e:
     print(f"Error: {e}", file=sys.stderr)
     sys.exit(1)
 EOF
-    
-    if [[ $? -eq 0 ]]; then
+    then
         success "Downloaded $label"
         return 0
     else
@@ -427,4 +426,6 @@ main() {
     esac
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
+fi
