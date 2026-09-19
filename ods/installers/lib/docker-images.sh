@@ -20,14 +20,16 @@ docker_image_available() {
 
     [[ -n "$image" ]] || return 1
 
-    if ${DOCKER_CMD:-docker} image inspect "$image" >/dev/null 2>&1; then
+    local docker_bin="${DOCKER_CMD:-docker}"
+
+    if "$docker_bin" image inspect "$image" >/dev/null 2>&1; then
         return 0
     fi
 
     if command -v timeout >/dev/null 2>&1; then
-        timeout "$timeout_seconds" ${DOCKER_CMD:-docker} manifest inspect "$image" >/dev/null 2>&1
+        timeout "$timeout_seconds" "$docker_bin" manifest inspect "$image" >/dev/null 2>&1
     else
-        ${DOCKER_CMD:-docker} manifest inspect "$image" >/dev/null 2>&1
+        "$docker_bin" manifest inspect "$image" >/dev/null 2>&1
     fi
 }
 
