@@ -7,18 +7,18 @@ when unprivileged mount namespaces are disabled.
 """
 
 import os
-from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 
 SHEPHERD = Path(__file__).resolve().parents[1] / 'memory-shepherd/memory-shepherd.sh'
 
 
 def exercise():
     class ScratchArchiveTests(unittest.TestCase):
-        def reset_fixture(self, remote, content, *, archive_failure=False, full_backup=False):
+        def reset_fixture(self, remote, content, *, archive_failure=False, full_backup=False, separator="---"):
             with tempfile.TemporaryDirectory(prefix='ods-scratch-') as directory:
                 root = Path(directory)
                 baseline = b'# Curated baseline\n' + b'Keep durable instructions.\n' * 30
@@ -32,7 +32,7 @@ def exercise():
                 location = ('remote_host=fixture.invalid\nremote_user=fixture\n'
                             'remote_memory=/fixture/MEMORY.md\n') if remote else f'memory_file={memory}\n'
                 conf.write_text(f'[general]\nbaseline_dir={root}\narchive_dir={archive}\n'
-                                f'[fixture]\nbaseline=baseline.md\n{location}')
+                                f'separator={separator}\n[fixture]\nbaseline=baseline.md\n{location}')
                 binary = root / 'bin'
                 binary.mkdir()
                 scp = binary / 'scp'
@@ -52,7 +52,7 @@ fi
                 env = {**os.environ, 'MEMORY_SHEPHERD_CONF': str(conf),
                        'PATH': f'{binary}:{os.environ["PATH"]}', 'ODS_TEST_MEMORY': str(memory)}
                 result = subprocess.run(['bash', str(SHEPHERD), 'fixture'], env=env,
-                                        capture_output=True, text=True, timeout=15)
+                                        capture_output=True, text=True, timeout=15, check=False)
                 if archive_failure:
                     self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
                     self.assertEqual(memory.read_bytes(), content, 'Failed archive must not reset memory')
@@ -64,12 +64,23 @@ fi
                     self.assertEqual(len(files), 1, result.stdout)
                     self.assertEqual(files[0].read_bytes(), content)
                     return
-                notes = content.split(b'---\n', 1)[1] if b'---\n' in content else b''
+                boundary = separator.encode() + b'\n'
+                notes = content.split(boundary, 1)[1] if boundary in content else b''
                 if notes.strip():
                     self.assertEqual(len(files), 1, result.stdout)
                     self.assertIn(notes.rstrip(b'\n'), files[0].read_bytes())
                 else:
                     self.assertEqual(files, [])
+
+        def test_scratch_horizontal_rules_do_not_discard_earlier_notes(self):
+            for remote in (False, True):
+                with self.subTest(remote=remote):
+                    self.reset_fixture(remote, b'# Baseline\n---\nFirst important note\n---\nSecond note\n---\nFinal note')
+
+        def test_separator_is_literal_even_with_regex_metacharacters(self):
+            for remote in (False, True):
+                with self.subTest(remote=remote):
+                    self.reset_fixture(remote, b'# Baseline\n[scratch]\nFirst note\ns\nFinal note', separator='[scratch]')
 
         def test_final_note_without_newline(self):
             for remote in (False, True):

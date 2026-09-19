@@ -171,8 +171,10 @@ reset_agent() {
         log "WARN: Memory file for $agent is ${memory_size} bytes (over limit) — forcing reset"
     fi
 
+    # Notes may contain more Markdown rules; the first literal boundary owns
+    # the scratch region. Choosing the last one silently discards earlier notes.
     local separator_line
-    separator_line=$(grep -n "^${SEPARATOR}$" "$memory_file" | tail -1 | cut -d: -f1 || echo "")
+    separator_line=$(grep -n -m 1 -F -x -- "$SEPARATOR" "$memory_file" | cut -d: -f1 || echo "")
 
     if [ -n "$separator_line" ]; then
         # wc -l counts newline bytes, not the final unterminated line. Read
@@ -239,8 +241,10 @@ reset_remote_agent() {
     fi
 
     # Extract and archive scratch notes locally
+    # Notes may contain more Markdown rules; the first literal boundary owns
+    # the scratch region. Choosing the last one silently discards earlier notes.
     local separator_line
-    separator_line=$(grep -n "^${SEPARATOR}$" "$tmpfile" | tail -1 | cut -d: -f1 || echo "")
+    separator_line=$(grep -n -m 1 -F -x -- "$SEPARATOR" "$tmpfile" | cut -d: -f1 || echo "")
 
     if [ -n "$separator_line" ]; then
         # Keep the same suffix-based decision as local resets: SCP does not
