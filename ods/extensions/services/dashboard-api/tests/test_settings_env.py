@@ -1708,7 +1708,8 @@ def test_rendered_env_values_match_bash_reader(tmp_path):
     from pathlib import Path
 
     safe_env = Path(__file__).resolve().parents[4] / "lib" / "safe-env.sh"
-    if not safe_env.is_file() or shutil.which("bash") is None:
+    bash = shutil.which("bash")
+    if not safe_env.is_file() or bash is None:
         pytest.skip("lib/safe-env.sh or bash not available in this checkout")
 
     from main import _render_env_from_values
@@ -1723,11 +1724,21 @@ def test_rendered_env_values_match_bash_reader(tmp_path):
     env_file = tmp_path / ".env"
     env_file.write_text(_render_env_from_values(values), encoding="utf-8")
 
+    # Run the bash which() resolved: a bare "bash" on Windows finds
+    # System32\bash.exe (the WSL launcher) first, and its argument forwarding
+    # mangles the quoting below. pytest also hands bash Windows paths
+    # (D:\...); backslashes are consumed as escapes inside the script.
+    # Translate through whichever converter the resolved bash ships — cygpath
+    # for MSYS2/Git Bash, wslpath under WSL — and pass POSIX paths through
+    # unchanged on Linux/macOS.
     script = (
-        f". '{safe_env}'; load_env_file '{env_file}'; "
+        "p() { command -v cygpath >/dev/null 2>&1 && cygpath -u \"$1\""
+        " || { command -v wslpath >/dev/null 2>&1 && wslpath -u \"$1\""
+        " || printf '%s' \"$1\"; }; }; "
+        f". \"$(p '{safe_env}')\"; load_env_file \"$(p '{env_file}')\"; "
         + " ".join(f"printf '%s\\0' \"${key}\";" for key in values)
     )
-    out = subprocess.run(["bash", "-c", script], capture_output=True, check=True)
+    out = subprocess.run([bash, "-c", script], capture_output=True, check=True)
     decoded = out.stdout.decode("utf-8").split("\0")[: len(values)]
     assert decoded == list(values.values())
 
