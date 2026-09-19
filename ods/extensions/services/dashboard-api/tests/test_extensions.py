@@ -4372,3 +4372,30 @@ class TestUpdateHardening(TestUpdateExtension):
         assert ext_mod._call_agent_sync_config(
             "my-ext", preserve_existing=True,
         ) is True
+
+
+class TestScanComposeMalformedPorts:
+    """A null or scalar ports: value is malformed compose; the scanner
+    must treat it as 'nothing to bind' instead of iterating it and
+    crashing with TypeError -> 500 (matching volumes/labels guards)."""
+
+    def _scan(self, tmp_path, compose_text):
+        from routers.extensions import _scan_compose_content
+        compose = tmp_path / "compose.yaml"
+        compose.write_text(compose_text)
+        _scan_compose_content(compose)
+
+    def test_null_ports_passes(self, tmp_path):
+        self._scan(tmp_path, "services:\n  svc:\n    image: test\n    ports:\n")
+
+    def test_scalar_ports_passes(self, tmp_path):
+        self._scan(tmp_path, "services:\n  svc:\n    image: test\n    ports: 8080\n")
+
+    def test_list_ports_still_enforced(self, tmp_path):
+        with pytest.raises(HTTPException) as exc:
+            self._scan(
+                tmp_path,
+                "services:\n  svc:\n    image: test\n    ports:\n      - '8080:80'\n",
+            )
+        assert exc.value.status_code == 400
+        assert "127.0.0.1" in exc.value.detail
