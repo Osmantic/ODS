@@ -36,7 +36,8 @@ teardown() {
 TEST_KEY=test-value
 ENV_EOF
         )
-        stat -c "%a" "'"$INSTALL_DIR"'/.env"
+        # GNU stat uses -c "%a"; BSD/macOS stat uses -f "%Lp".
+        stat -c "%a" "'"$INSTALL_DIR"'/.env" 2>/dev/null || stat -f "%Lp" "'"$INSTALL_DIR"'/.env"
     '
     assert_success
     assert_output "600"
@@ -67,7 +68,7 @@ ENV_EOF
             "'"$INSTALL_DIR"'/config/searxng" \
             "'"$INSTALL_DIR"'/config/llama-server" \
             "'"$INSTALL_DIR"'/data/comfyui/output"; do
-            mode=$(stat -c "%a" "$d")
+            mode=$(stat -c "%a" "$d" 2>/dev/null || stat -f "%Lp" "$d")
             # Octal world-traverse bit is the 1s digit & 1.
             world_x=$(( 8#$mode & 1 ))
             if [[ $world_x -ne 1 ]]; then
