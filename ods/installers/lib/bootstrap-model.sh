@@ -35,7 +35,8 @@ BOOTSTRAP_MAX_CONTEXT=65536
 #
 bootstrap_needed() {
     local tier_rank
-    tier_rank="$(tier_rank "$TIER")"
+    tier_rank="$(tier_rank "${TIER:-0}" 2>/dev/null)" || tier_rank=0
+    [[ "$tier_rank" =~ ^[0-9]+$ ]] || tier_rank=0
 
     # Tier 0: the full model IS the bootstrap model — no point
     [[ "$tier_rank" -le 0 ]] && return 1
