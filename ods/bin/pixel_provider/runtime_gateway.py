@@ -127,7 +127,8 @@ def create_app(config,credentials,token,*,events=None,client_factory=None):
     async def complete(request:Request):
         nonlocal active,terminal,requests
         supplied = request.headers.getlist('authorization')
-        if len(supplied) != 1 or not hmac.compare_digest(supplied[0],'Bearer '+token):
+        provided = supplied[0].encode('utf-8', 'surrogateescape') if len(supplied) == 1 else b''
+        if len(supplied) != 1 or not hmac.compare_digest(provided, ('Bearer ' + token).encode('ascii')):
             return failure('invalid-runtime-credential',401)
         if request.headers.get('X-ODS-Pixel-Route-Hop'):
             return failure('provider-route-cycle',409)
