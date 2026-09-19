@@ -1009,3 +1009,131 @@ def test_workflow_enable_rejects_path_traversal_in_catalog_file(test_client, mon
     )
     assert resp.status_code == 400
     assert resp.json()["detail"] == "Invalid workflow file path"
+
+
+# ---------------------------------------------------------------------------
+# Malformed catalog / n8n response tolerance
+# ---------------------------------------------------------------------------
+
+
+def test_load_workflow_catalog_filters_malformed_entries(tmp_path, monkeypatch):
+    """Records without string id/name, and non-dict deps, must not survive."""
+    import routers.workflows as wf_mod
+
+    catalog_file = tmp_path / "catalog.json"
+    catalog_file.write_text(json.dumps({
+        "workflows": [
+            42,
+            "not-a-dict",
+            {"id": "no-name"},
+            {"name": "no-id"},
+            {"id": 7, "name": "int id"},
+            {
+                "id": "ok",
+                "name": "OK Flow",
+                "description": "fine",
+                "dependencies": ["llama-server", {"bad": 1}, 9],
+            },
+        ],
+        "categories": {},
+    }))
+    monkeypatch.setattr(wf_mod, "WORKFLOW_CATALOG_FILE", catalog_file)
+
+    result = wf_mod.load_workflow_catalog()
+
+    assert [wf["id"] for wf in result["workflows"]] == ["ok"]
+    assert result["workflows"][0]["dependencies"] == ["llama-server"]
+
+
+def test_workflows_endpoint_tolerates_malformed_catalog(test_client, tmp_path, monkeypatch):
+    """A malformed catalog record must not 500 GET /api/workflows."""
+    import routers.workflows as wf_mod
+
+    catalog_file = tmp_path / "catalog.json"
+    catalog_file.write_text(json.dumps({
+        "workflows": [
+            42,
+            {"id": "broken"},  # no "name" -> used to KeyError in the endpoint
+            {"id": "ok", "name": "OK Flow", "dependencies": []},
+        ],
+        "categories": {},
+    }))
+    monkeypatch.setattr(wf_mod, "WORKFLOW_CATALOG_FILE", catalog_file)
+    monkeypatch.setattr(wf_mod, "get_n8n_workflows", AsyncMock(return_value=[]))
+    monkeypatch.setattr(wf_mod, "check_n8n_available", AsyncMock(return_value=False))
+
+    resp = test_client.get("/api/workflows", headers=test_client.auth_headers)
+    assert resp.status_code == 200
+    ids = [w["id"] for w in resp.json()["workflows"]]
+    assert ids == ["ok"]
+
+
+def test_workflows_endpoint_tolerates_malformed_n8n_statistics(test_client, monkeypatch):
+    """Non-dict n8n statistics/executions must degrade to executions=0."""
+    import routers.workflows as wf_mod
+
+    monkeypatch.setattr(wf_mod, "load_workflow_catalog", lambda: {
+        "workflows": [{"id": "wf1", "name": "My Flow", "dependencies": []}],
+        "categories": {},
+    })
+    monkeypatch.setattr(wf_mod, "get_n8n_workflows", AsyncMock(return_value=[
+        {"id": "1", "name": "my flow", "active": True, "statistics": {"executions": "lots"}},
+    ]))
+
+    resp = test_client.get("/api/workflows", headers=test_client.auth_headers)
+    assert resp.status_code == 200
+    wf = resp.json()["workflows"][0]
+    assert wf["id"] == "wf1"
+    assert wf["executions"] == 0
+    assert wf["status"] == "active"
+
+
+def test_enable_workflow_missing_file_field(test_client, monkeypatch):
+    """A catalog entry without a deployable file must 404, not KeyError->500."""
+    import routers.workflows as wf_mod
+
+    monkeypatch.setattr(wf_mod, "load_workflow_catalog", lambda: {
+        "workflows": [{"id": "wf1", "name": "My Flow", "dependencies": []}],
+        "categories": {},
+    })
+
+    resp = test_client.post(
+        "/api/workflows/wf1/enable",
+        headers=test_client.auth_headers,
+    )
+    assert resp.status_code == 404
+
+
+def test_workflow_executions_non_dict_n8n_response(test_client, monkeypatch):
+    """A non-object executions payload must yield an empty list, not a 500."""
+    import routers.workflows as wf_mod
+
+    monkeypatch.setattr(wf_mod, "load_workflow_catalog", lambda: {
+        "workflows": [{"id": "wf1", "name": "my flow", "dependencies": []}],
+        "categories": {},
+    })
+    monkeypatch.setattr(wf_mod, "get_n8n_workflows", AsyncMock(return_value=[
+        {"id": "9", "name": "my flow"},
+    ]))
+
+    resp_mock = AsyncMock()
+    resp_mock.status = 200
+    resp_mock.json = AsyncMock(return_value=["not", "a", "dict"])
+
+    ctx = AsyncMock()
+    ctx.__aenter__ = AsyncMock(return_value=resp_mock)
+    ctx.__aexit__ = AsyncMock(return_value=False)
+
+    session_mock = AsyncMock()
+    session_mock.get = MagicMock(return_value=ctx)
+    session_mock.__aenter__ = AsyncMock(return_value=session_mock)
+    session_mock.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("routers.workflows.aiohttp.ClientSession", return_value=session_mock):
+        resp = test_client.get(
+            "/api/workflows/wf1/executions",
+            headers=test_client.auth_headers,
+        )
+
+    assert resp.status_code == 200
+    assert resp.json()["executions"] == []
