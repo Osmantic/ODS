@@ -41,7 +41,7 @@ bootstrap_needed() {
     [[ "$tier_rank" -le 0 ]] && return 1
 
     # Full model already on disk — skip bootstrap, use it directly
-    [[ -f "${INSTALL_DIR}/data/models/${GGUF_FILE}" ]] && return 1
+[   [ -n "$GGUF_FILE" && -f "${INSTALL_DIR}/data/models/${GGUF_FILE}" ]] && return 1
 
     # User opted out
     [[ "${NO_BOOTSTRAP:-false}" == "true" ]] && return 1
