@@ -31,6 +31,19 @@ describe('usePwaInstallPrompt', () => {
     vi.restoreAllMocks()
   })
 
+  test.each(['localStorage', 'sessionStorage'])('survives denied access to the %s property', (storage) => {
+    vi.spyOn(globalThis, storage, 'get').mockImplementation(() => {
+      throw new window.DOMException('Storage blocked', 'SecurityError')
+    })
+    const { result } = renderHook(() => usePwaInstallPrompt())
+    expect(result.current.visitCount).toBe(1)
+    act(() => { fireBeforeInstall() })
+    act(() => { result.current.dismiss() })
+    expect(result.current.shouldShow).toBe(false)
+    act(() => { fireAppInstalled() })
+    expect(result.current.installed).toBe(true)
+  })
+
   // --------------------------------------------------------------------
   // Visit-count gating
   // --------------------------------------------------------------------

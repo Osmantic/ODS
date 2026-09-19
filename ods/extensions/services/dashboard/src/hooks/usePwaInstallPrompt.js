@@ -31,10 +31,10 @@ const INSTALLED_KEY = 'ods-pwa-installed'
 const MIN_VISITS_BEFORE_PROMPT = 3
 
 function safeGet(storage, key, fallback = null) {
-  try { return storage?.getItem(key) ?? fallback } catch { return fallback }
+  try { return globalThis[storage]?.getItem(key) ?? fallback } catch { return fallback }
 }
 function safeSet(storage, key, value) {
-  try { storage?.setItem(key, value) } catch { /* private mode / quota */ }
+  try { globalThis[storage]?.setItem(key, value) } catch { /* private mode / quota */ }
 }
 
 function isStandalone() {
@@ -53,7 +53,7 @@ function isStandalone() {
 
 function isAlreadyInstalled() {
   if (isStandalone()) return true
-  return safeGet(globalThis.localStorage, INSTALLED_KEY) === '1'
+  return safeGet('localStorage', INSTALLED_KEY) === '1'
 }
 
 function isIos() {
@@ -71,11 +71,11 @@ export function usePwaInstallPrompt() {
   const [installable, setInstallable] = useState(false)
   const [installed, setInstalled] = useState(() => isAlreadyInstalled())
   const [visitCount, setVisitCount] = useState(() => {
-    const raw = safeGet(globalThis.localStorage, VISIT_COUNT_KEY, '0')
+    const raw = safeGet('localStorage', VISIT_COUNT_KEY, '0')
     return Number.parseInt(raw, 10) || 0
   })
   const [dismissed, setDismissed] = useState(
-    () => safeGet(globalThis.localStorage, DISMISSED_KEY) === '1'
+    () => safeGet('localStorage', DISMISSED_KEY) === '1'
   )
   const [ios] = useState(() => isIos())
 
@@ -84,11 +84,11 @@ export function usePwaInstallPrompt() {
   // same tab.
   useEffect(() => {
     if (installed) return
-    if (safeGet(globalThis.sessionStorage, SESSION_TICKED_KEY) === '1') return
-    safeSet(globalThis.sessionStorage, SESSION_TICKED_KEY, '1')
+    if (safeGet('sessionStorage', SESSION_TICKED_KEY) === '1') return
+    safeSet('sessionStorage', SESSION_TICKED_KEY, '1')
     setVisitCount(prev => {
       const next = prev + 1
-      safeSet(globalThis.localStorage, VISIT_COUNT_KEY, String(next))
+      safeSet('localStorage', VISIT_COUNT_KEY, String(next))
       return next
     })
   }, [installed])
@@ -102,7 +102,7 @@ export function usePwaInstallPrompt() {
       // marker may outlive an uninstall; keep listening so it cannot suppress
       // every future offer, including in a tab that observed appinstalled.
       promptEventRef.current = event
-      safeSet(globalThis.localStorage, INSTALLED_KEY, '0')
+      safeSet('localStorage', INSTALLED_KEY, '0')
       setInstalled(false)
       setInstallable(true)
     }
@@ -110,7 +110,7 @@ export function usePwaInstallPrompt() {
       promptEventRef.current = null
       setInstallable(false)
       setInstalled(true)
-      safeSet(globalThis.localStorage, INSTALLED_KEY, '1')
+      safeSet('localStorage', INSTALLED_KEY, '1')
     }
     window.addEventListener('beforeinstallprompt', onBeforeInstall)
     window.addEventListener('appinstalled', onInstalled)
@@ -150,11 +150,11 @@ export function usePwaInstallPrompt() {
       setInstallable(false)
       if (choice?.outcome === 'accepted') {
         setInstalled(true)
-        safeSet(globalThis.localStorage, INSTALLED_KEY, '1')
+        safeSet('localStorage', INSTALLED_KEY, '1')
       } else {
         // User chose "not now" in the OS dialog — same as our dismiss.
         setDismissed(true)
-        safeSet(globalThis.localStorage, DISMISSED_KEY, '1')
+        safeSet('localStorage', DISMISSED_KEY, '1')
       }
       return choice
     } catch {
@@ -168,7 +168,7 @@ export function usePwaInstallPrompt() {
 
   const dismiss = useCallback(() => {
     setDismissed(true)
-    safeSet(globalThis.localStorage, DISMISSED_KEY, '1')
+    safeSet('localStorage', DISMISSED_KEY, '1')
   }, [])
 
   return {
