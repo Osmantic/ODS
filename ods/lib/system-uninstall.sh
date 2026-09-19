@@ -52,8 +52,21 @@ PY
         # Disabled services can still be active. Stop every verified unit and
         # retain its definition on any failure so cleanup can be retried.
         if ! run_sudo timeout 30s systemctl disable --now "$unit"; then
-            log_error "Could not stop $unit; its files and installation were retained"
-            return 1
+            # `timeout` kills the systemctl client, not the service — a wedged
+            # unit keeps running and the state check below aborts the uninstall
+            # forever. Escalate to SIGKILL like the orphan-PID reaper does.
+            log_error "Graceful stop timed out for $unit; escalating to SIGKILL"
+            run_sudo systemctl kill --signal=SIGKILL "$unit" || return 1
+            run_sudo systemctl disable "$unit" || return 1
+            # Give systemd a moment to reap the killed processes before the
+            # state check reads ActiveState.
+            local _wait=0
+            while (( _wait < 10 )); do
+                state=$(systemctl show "$unit" --property=ActiveState --value) || return 1
+                case "$state" in inactive|failed) break ;; esac
+                sleep 1
+                _wait=$(( _wait + 1 ))
+            done
         fi
         state=$(systemctl show "$unit" --property=ActiveState --value) || return 1
         case "$state" in
