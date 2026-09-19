@@ -320,6 +320,9 @@ jobs:
       - name: Installer Rerun .env Quoting Tests
         run: bash tests/test-phase06-env-rerun-quoting.sh
 
+      - name: Secret Security Tests
+        run: bash tests/test-secret-security.sh
+
       - name: Dotenv Serializer Tests
         run: bash tests/test-dotenv-serializer.sh
 
