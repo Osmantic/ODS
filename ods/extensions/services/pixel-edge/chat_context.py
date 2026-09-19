@@ -3,7 +3,7 @@ import re
 
 
 def _text(value, maximum, pattern=r"^[^\x00-\x1f\x7f]+$"):
-    return isinstance(value, str) and 0 < len(value) <= maximum and re.fullmatch(pattern, value) is not None
+    return isinstance(value, str) and value == value.strip() and 0 < len(value) <= maximum and re.fullmatch(pattern, value) is not None
 
 
 def _number(value, maximum=100_000_000):
