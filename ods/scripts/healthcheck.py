@@ -22,6 +22,7 @@ Options
 -------
   --timeout SECONDS              Overall timeout for the request/connection
   --retries N                    Retry count (with small backoff)
+  --max-latency-ms N             Fail successful checks exceeding N milliseconds
   --method {HEAD,GET}            HTTP method (default: HEAD, with GET fallback)
   --expect-status 200,204,3xx    Allowed HTTP status codes/ranges
   --expect-body-regex REGEX      Regex to match in response body (GET only)
@@ -55,7 +56,7 @@ import time
 import urllib.error
 import urllib.request
 import urllib.response
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import List, Optional, Sequence, Set, Tuple
 
 
@@ -284,11 +285,19 @@ def with_retries(fn, *, retries: int, base_sleep: float = 0.15):
 # -----------------------------
 
 
+def _latency_budget(value: str) -> int:
+    budget = int(value)
+    if budget <= 0:
+        raise argparse.ArgumentTypeError("latency budget must be a positive integer in milliseconds")
+    return budget
+
+
 def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(prog="healthcheck.py", add_help=True)
     p.add_argument("target", help="http(s) URL, tcp://host:port, or host:port")
     p.add_argument("--timeout", type=float, default=5.0, help="Timeout seconds (default: 5)")
     p.add_argument("--retries", type=int, default=1, help="Retry count (default: 1)")
+    p.add_argument("--max-latency-ms", type=_latency_budget, help="Maximum total check duration in milliseconds, including retries; does not cancel requests")
     p.add_argument("--method", default="HEAD", choices=["HEAD", "GET"], help="HTTP method")
     p.add_argument(
         "--expect-status",
@@ -416,6 +425,9 @@ def main(argv: Sequence[str]) -> int:
             status=int(status) if status is not None else None,
             elapsed_ms=elapsed_ms,
         )
+
+    if res.ok and args.max_latency_ms is not None and res.elapsed_ms > args.max_latency_ms:
+        res = replace(res, ok=False, detail=f"latency budget exceeded: {res.elapsed_ms}ms > {args.max_latency_ms}ms")
 
     if args.json:
         print(res.to_json())
