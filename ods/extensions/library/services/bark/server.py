@@ -94,7 +94,14 @@ def _load_models():
 class TTSRequest(BaseModel):
     text: str = Field(..., max_length=MAX_TEXT_LENGTH, description="Text to synthesize (max 10K chars)")
     voice_preset: Optional[str] = "v2/en_speaker_6"
-    output_format: Optional[str] = "wav"  # wav, mp3, ogg, flac
+    output_format: str = "wav"  # wav, mp3, ogg, flac
+
+    @field_validator("text")
+    @classmethod
+    def validate_text(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("Text cannot be empty or whitespace")
+        return v
 
     @field_validator("output_format")
     @classmethod
