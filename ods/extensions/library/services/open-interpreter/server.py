@@ -147,6 +147,8 @@ def chat(req: ChatRequest, _auth=Depends(verify_api_key)):
 
         return {"output": result.stdout}
 
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=504, detail="Interpreter execution timed out") from exc
     finally:
         os.unlink(script_path)
 
