@@ -189,3 +189,15 @@ def test_cancel_waiting_headers_releases_and_closes_lease():
         assert cancelled.is_set()
         assert (await request_to(app,payload())).status_code==409
     asyncio.run(check())
+
+
+def test_invalid_stream_options_and_parallel_calls_fail_closed():
+    def handler(_request):
+        pytest.fail('must not forward invalid inference request')
+    for change in (dict(stream_options={'include_usage': True}), dict(stream=True, stream_options='bad'), dict(parallel_tool_calls='yes')):
+        app = make_app(handler)
+        bad = payload(stream=change.get('stream', False))
+        bad.update(change)
+        response = asyncio.run(request_to(app, bad))
+        assert response.status_code == 400
+        assert response.json()['error']['code'] == 'invalid-inference-request'
