@@ -1,0 +1,40 @@
+services:
+  radicale:
+    image: ghcr.io/kozea/radicale:3.8.0@sha256:0d60d544710bda0fa83bfdea685db731b6cbf74e12d7f22b4997e9cff3a50468
+    container_name: ods-radicale
+    user: "1000:1000"
+    entrypoint: [/app/bin/python, /run/ods-radicale.py]
+    environment:
+      RADICALE_PASSWORD: "${RADICALE_PASSWORD:?Set RADICALE_PASSWORD before enabling Radicale}"
+      PYTHONDONTWRITEBYTECODE: "1"
+      HOME: /var/lib/radicale
+    volumes:
+      - ./data/radicale:/var/lib/radicale
+      - type: bind
+        source: ./config/radicale/entrypoint.py
+        target: /run/ods-radicale.py
+        read_only: true
+        bind:
+          create_host_path: false
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${RADICALE_PORT:-5232}:5232"
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: ["/tmp:size=32m,mode=1777"]
+    healthcheck:
+      test: [CMD, /app/bin/python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5232/.web/', timeout=3).read()"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    networks: [ods-network]
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+networks:
+  ods-network:
+    external: true
