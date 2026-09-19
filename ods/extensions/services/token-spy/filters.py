@@ -124,6 +124,13 @@ def _filter_tools(body: dict, cfg: dict, result: FilterResult,
 
     if removed_names:
         body["tools"] = kept
+        # A forced function choice becomes invalid when that tool is removed,
+        # even if other tools survive. Leave retained choices and policy strings
+        # (auto/required/none) unchanged while at least one tool remains.
+        choice = body.get("tool_choice")
+        function = choice.get("function") if isinstance(choice, dict) else None
+        if isinstance(function, dict) and function.get("name") in removed_names:
+            body.pop("tool_choice", None)
         # If all tools removed, also drop tool_choice to avoid API errors
         if not kept:
             body.pop("tools", None)
