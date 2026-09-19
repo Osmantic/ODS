@@ -14,9 +14,11 @@ _ods_rootless_docker_info() {
 }
 
 ods_docker_rootless_state() {
-    case "${ODS_ASSUME_ROOTLESS:-}" in
-        1|true) return 0 ;;
-        0|false) return 1 ;;
+    local val
+    val="$(echo "${ODS_ASSUME_ROOTLESS:-}" | tr '[:upper:]' '[:lower:]')"
+    case "$val" in
+        1|true|yes) return 0 ;;
+        0|false|no) return 1 ;;
     esac
 
     # Docker reports rootless via .SecurityOptions (contains "name=rootless").
