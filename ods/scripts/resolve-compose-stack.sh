@@ -86,7 +86,10 @@ gpu_backend = (sys.argv[3] or "nvidia").lower()
 profile_overlays = [x.strip() for x in (sys.argv[4] or "").split(",") if x.strip()]
 env_mode = (sys.argv[5] or "false").lower() == "true"
 skip_broken = (sys.argv[6] or "false").lower() == "true"
-gpu_count = int(sys.argv[7] or "1")
+try:
+    gpu_count = max(0, int(sys.argv[7] or "1"))
+except (ValueError, TypeError):
+    gpu_count = 1
 ods_mode = (sys.argv[8] or os.environ.get("ODS_MODE", "local")).lower()
 skip_gpu_overlays = {
     x.strip().lower()
