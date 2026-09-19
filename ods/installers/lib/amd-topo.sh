@@ -47,12 +47,11 @@ _amd_sort_card_dirs() {
 amd_memory_type() {
     local vram_bytes="${1:-0}"
     local gtt_bytes="${2:-0}"
-    local gtt_gb_int=$(( gtt_bytes / 1073741824 ))
-    local vram_gb_int=$(( vram_bytes / 1073741824 ))
+    local gtt_gb=$(( ${gtt_bytes:-0} / 1073741824 ))
+    local vram_gb=$(( ${vram_bytes:-0} / 1073741824 ))
 
-    # GTT is the reliable unified-memory signal for AMD APUs. VRAM alone is
-    # not: MI300X and future 32 GB+ discrete cards report large VRAM too.
-    if [[ $gtt_gb_int -ge 16 && $vram_gb_int -le 4 ]] || [[ $gtt_gb_int -ge 32 ]]; then
+    # GTT is the reliable unified-memory signal for AMD APUs.
+    if [[ $gtt_gb -ge 16 && $vram_gb -le 4 ]] || [[ $gtt_gb -ge 32 ]]; then
         echo "unified"
     else
         echo "discrete"
