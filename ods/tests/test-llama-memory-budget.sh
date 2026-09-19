@@ -13,6 +13,14 @@ assert_eq() {
     fi
 }
 
+assert_contains() {
+    local needle="$1" file="$2" label="$3"
+    if ! grep -qF "$needle" "$file"; then
+        printf '[FAIL] %s: pattern not found in %s: %s\n' "$label" "${file##*/}" "$needle" >&2
+        exit 1
+    fi
+}
+
 assert_eq "$(ods_effective_container_memory_gb 64 8)" "8" "Docker Desktop VM is the lower bound"
 assert_eq "$(ods_effective_container_memory_gb 8 64)" "8" "physical host can be the lower bound"
 assert_eq "$(ods_effective_container_memory_gb 32 0)" "32" "host fallback"
@@ -27,20 +35,27 @@ assert_eq "$(ods_default_nvidia_llama_memory_limit 64)" "60G" "64 GiB host"
 assert_eq "$(ods_default_nvidia_llama_memory_limit 128)" "64G" "absolute cap"
 
 # These are intentional source-contract literals, not shell expansions.
+# An existing LLAMA_SERVER_MEMORY_LIMIT in the process environment or .env
+# wins over the computed default so installer reruns keep the user's setting.
 # shellcheck disable=SC2016
-grep -qF 'LLAMA_SERVER_MEMORY_LIMIT_VALUE="$(_env_get LLAMA_SERVER_MEMORY_LIMIT "$_llama_memory_default")"' \
-    "$ROOT_DIR/installers/phases/06-directories.sh"
+assert_contains 'LLAMA_SERVER_MEMORY_LIMIT_VALUE="$(_env_get LLAMA_SERVER_MEMORY_LIMIT "${LLAMA_SERVER_MEMORY_LIMIT:-$_llama_memory_default}")"' \
+    "$ROOT_DIR/installers/phases/06-directories.sh" \
+    "phase 06 honors an explicit memory limit before the computed default"
 # shellcheck disable=SC2016
-grep -qF 'LLAMA_SERVER_MEMORY_LIMIT=${LLAMA_SERVER_MEMORY_LIMIT_VALUE}' \
-    "$ROOT_DIR/installers/phases/06-directories.sh"
+assert_contains 'LLAMA_SERVER_MEMORY_LIMIT=${LLAMA_SERVER_MEMORY_LIMIT_VALUE}' \
+    "$ROOT_DIR/installers/phases/06-directories.sh" \
+    "phase 06 emits the resolved memory limit"
 # shellcheck disable=SC2016
-grep -qF 'memory: ${LLAMA_SERVER_MEMORY_LIMIT:-64G}' \
-    "$ROOT_DIR/docker-compose.nvidia.yml"
+assert_contains 'memory: ${LLAMA_SERVER_MEMORY_LIMIT:-64G}' \
+    "$ROOT_DIR/docker-compose.nvidia.yml" \
+    "nvidia compose keeps the 64G fallback"
 
 # install-core.sh defines SCRIPT_DIR as the ODS root, so phase 06 must resolve
 # the helper through the installed installers/lib tree.
-grep -qF 'source "$SCRIPT_DIR/installers/lib/llama-memory-budget.sh"' \
-    "$ROOT_DIR/installers/phases/06-directories.sh"
+# shellcheck disable=SC2016
+assert_contains 'source "$SCRIPT_DIR/installers/lib/llama-memory-budget.sh"' \
+    "$ROOT_DIR/installers/phases/06-directories.sh" \
+    "phase 06 resolves the budget helper from installers/lib"
 if grep -qF 'source "$SCRIPT_DIR/lib/llama-memory-budget.sh"' \
     "$ROOT_DIR/installers/phases/06-directories.sh"; then
     printf '[FAIL] phase 06 resolves llama-memory-budget.sh outside installers/lib\n' >&2
