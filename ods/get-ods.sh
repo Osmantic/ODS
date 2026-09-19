@@ -427,7 +427,13 @@ if [[ -d "$INSTALL_DIR" ]]; then
             exit 1
         else
             echo -n "  Remove and reinstall? [y/N] "
-            read -r response
+            # The documented install path is `curl | bash`, where stdin is the
+            # spent download pipe — a bare `read` hits EOF, returns non-zero,
+            # and `set -e` kills the script right after the prompt with no
+            # message. Read from the terminal instead so the prompt actually
+            # works, and fall back to an empty response (the abort branch)
+            # when no tty exists at all.
+            read -r response </dev/tty || response=""
             if [[ "$response" =~ ^[Yy]$ ]]; then
                 remove_install_dir "$INSTALL_DIR" || error "Failed to remove incomplete install at $INSTALL_DIR. Try: sudo rm -rf \"$INSTALL_DIR\""
             else
