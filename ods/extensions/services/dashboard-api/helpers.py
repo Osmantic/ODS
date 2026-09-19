@@ -1417,3 +1417,18 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def dict_rename_keys_safe(d: dict | None, mapping: dict | None) -> dict:
+    """Safely rename dictionary keys according to a mapping dict {old_key: new_key}.
+    Returns {} on None or non-dict inputs.
+    """
+    if not isinstance(d, dict) or d is None:
+        return {}
+    if not isinstance(mapping, dict) or not mapping:
+        return dict(d)
+    result = {}
+    for k, v in d.items():
+        new_k = mapping.get(k, k)
+        result[new_k] = v
+    return result
