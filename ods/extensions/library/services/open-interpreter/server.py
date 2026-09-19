@@ -104,7 +104,7 @@ interpreter.auto_run = config["auto_run"]
 interpreter.offline = True
 
 for chunk in interpreter.chat(config["message"], stream=True):
-    print(f"SSE: {chunk}", flush=True)
+    print("SSE: " + json.dumps(chunk), flush=True)
 """
 
 
