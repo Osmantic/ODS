@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+a#!/usr/bin/env bash
 # ============================================================================
 # ODS Installer — AMD GPU Topology Detection
 # ============================================================================
@@ -89,7 +89,10 @@ amd_gpu_id() {
 
     # Method 3: Composite PCI BDF ID (works on all AMD GPUs)
     local pci_bdf device_id subsystem_id
-    pci_bdf=$(readlink -f "$card_dir" | grep -oP '[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9]' | tail -1) || pci_bdf="unknown"
+    local full_path
+    full_path=$(readlink -f "$card_dir" 2>/dev/null) || full_path=""
+    pci_bdf="${full_path##*/}"
+    [[ "$pci_bdf" =~ ^[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9]$ ]] || pci_bdf="unknown"
     device_id=$(cat "$card_dir/device" 2>/dev/null | sed 's/^0x//') || device_id="0000"
     subsystem_id=$(cat "$card_dir/subsystem_device" 2>/dev/null | sed 's/^0x//') || subsystem_id="0000"
     echo "AMD-${pci_bdf}-${device_id}-${subsystem_id}"
