@@ -136,8 +136,13 @@ tier_rank_map = {
     "T2": 2,
     "T3": 3,
     "T4": 4,
+    # Mirrors installers/lib/detection.sh tier_rank():
+    # NV_ULTRA|SH_LARGE=5, 4=4, SH_COMPACT|3=3, ARC|2=2, ARC_LITE|1=1, 0=0
+    "NV_ULTRA": 5,
     "SH_COMPACT": 3,
-    "SH_LARGE": 4,
+    "SH_LARGE": 5,
+    "ARC": 2,
+    "ARC_LITE": 1,
 }
 tier_rank = tier_rank_map.get(tier_key, 1)
 
@@ -155,6 +160,8 @@ min_ram_map = {
     "T4": 64,
     "SH_COMPACT": 64,
     "SH_LARGE": 96,
+    # Mirrors the MIN_RAM table in installers/phases/04-requirements.sh
+    "NV_ULTRA": 96,
 }
 min_disk_map = {
     "0": 15,
