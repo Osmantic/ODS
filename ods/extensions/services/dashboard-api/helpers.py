@@ -1417,3 +1417,12 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def dict_pick_non_none_values_safe(d: dict | None) -> dict:
+    """Safely extract dictionary entries whose values are not None.
+    Returns {} on None or non-dict inputs.
+    """
+    if not isinstance(d, dict) or d is None:
+        return {}
+    return {k: v for k, v in d.items() if v is not None}
