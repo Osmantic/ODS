@@ -6,6 +6,7 @@ caller before these functions are reached.
 """
 from __future__ import annotations
 
+import re
 import unicodedata
 
 DEFAULT_NAME = "Portal"
@@ -58,3 +59,14 @@ def normalize_edit(value):
         raise ValueError("invalid-edit")
     return {"expectedRevision": value["expectedRevision"],
             "displayName": normalize_name(value["displayName"])}
+
+def normalize_device_hostname(name: str, default: str = "ods") -> str:
+    """Normalize a device string into an RFC 1123 compliant DNS label."""
+    if not isinstance(name, str) or not name.strip():
+        return default
+    label = name.strip().lower()
+    label = re.sub(r"[^a-z0-9-]+", "-", label)
+    label = label.strip("-")
+    if not label:
+        return default
+    return label[:63]
