@@ -461,6 +461,23 @@ _ensure_podman_dockerhub_search() {
     ods_podman_ensure_dockerhub_search
 }
 
+# Explain how to reach Docker without sudo after this installer session.
+# The docker group is only added above when ODS installs Docker itself, so on
+# a host where Docker was already installed the user may not be in that group
+# at all — "log out and back in" then changes nothing and every later ods
+# command fails on the socket. Name the exact command in that case.
+_docker_sudo_fallback_hint() {
+    local hint_user="${SUDO_USER:-$USER}"
+    warn "Docker commands are running via sudo in this installer session."
+    if id -nG "$hint_user" 2>/dev/null | tr ' ' '\n' | grep -qx docker; then
+        warn "After the install finishes, log out/in (or run 'newgrp docker') to use docker without sudo."
+        return 0
+    fi
+    warn "$hint_user is not in the 'docker' group, so 'ods status' and the other ods commands cannot reach Docker."
+    warn "Run: sudo usermod -aG docker $hint_user"
+    warn "Then log out/in (or run 'newgrp docker') and verify with: docker ps"
+}
+
 _docker_post_install_checks() {
     # Best-effort checks. Should not hard-fail in dry-run.
     if $DRY_RUN; then
@@ -506,8 +523,7 @@ _docker_post_install_checks() {
 
     # Optional: give the user a clear hint if they are likely missing group perms
     if [[ "$DOCKER_CMD" == "sudo docker" ]]; then
-        warn "Docker commands are running via sudo in this installer session."
-        warn "After the install finishes, log out/in (or run 'newgrp docker') to use docker without sudo."
+        _docker_sudo_fallback_hint
     fi
 }
 

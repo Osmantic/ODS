@@ -275,6 +275,9 @@ jobs:
 
       - name: Uninstall Compose Flags Tests
         run: bash tests/test-uninstall-compose-flags.sh
+
+      - name: Docker Sudo Fallback Hint
+        run: bash tests/test-docker-sudo-fallback-hint.sh
       - name: System service ownership and shutdown recovery
         run: bash tests/test-uninstall-mdns-unit.sh
 
