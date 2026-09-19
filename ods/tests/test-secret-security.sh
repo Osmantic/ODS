@@ -53,6 +53,20 @@ header() {
     echo -e "${CYAN}$(printf '%.0s─' {1..70})${NC}"
 }
 
+# Iterate service source files owned by ODS. Vendored and generated trees
+# (node_modules, dist, virtualenvs, caches) hold third-party code we must
+# not audit — a dev checkout with npm/pip artifacts fails this suite if
+# they are scanned.
+find_service_sources() {
+    find extensions/services \
+        -path '*/node_modules' -prune -o \
+        -path '*/dist' -prune -o \
+        -path '*/.venv' -prune -o \
+        -path '*/venv' -prune -o \
+        -path '*/__pycache__' -prune -o \
+        -name "$1" -print0
+}
+
 # ============================================
 # TEST 1: Hardcoded Secrets Detection
 # ============================================
@@ -82,7 +96,7 @@ while IFS= read -r -d '' pyfile; do
             fi
         fi
     done
-done < <(find extensions/services -name "*.py" -print0)
+done < <(find_service_sources "*.py")
 
 # Check JavaScript files
 while IFS= read -r -d '' jsfile; do
@@ -93,7 +107,7 @@ while IFS= read -r -d '' jsfile; do
             fail "Potential hardcoded secret in $(basename "$jsfile")" "$(grep -iE "$pattern" "$jsfile" | head -1 | sed 's/^[[:space:]]*//')"
         fi
     done
-done < <(find extensions/services -name "*.js" -print0)
+done < <(find_service_sources "*.js")
 
 # Check configuration files
 config_files=(config/**/*.json config/**/*.yaml config/**/*.yml extensions/services/*/config/*.json)
@@ -137,7 +151,7 @@ while IFS= read -r -d '' pyfile; do
             pass "Service '$service_name' uses environment variables"
         fi
     fi
-done < <(find extensions/services -name "*.py" -print0)
+done < <(find_service_sources "*.py")
 
 # Check .env.example for secret placeholders
 if [[ -f ".env.example" ]]; then
@@ -177,7 +191,7 @@ while IFS= read -r -d '' pyfile; do
             pass "Service '$service_name' implements API key validation"
         fi
     fi
-done < <(find extensions/services -name "*.py" -print0)
+done < <(find_service_sources "*.py")
 
 # Check for secure key generation
 key_generation=0
@@ -185,7 +199,7 @@ while IFS= read -r -d '' pyfile; do
     if grep -q "secrets\.\|os\.urandom\|uuid\.uuid4\|random\.SystemRandom" "$pyfile"; then
         key_generation=$((key_generation + 1))
     fi
-done < <(find extensions/services -name "*.py" -print0)
+done < <(find_service_sources "*.py")
 
 if [[ $key_generation -gt 0 ]]; then
     pass "Secure key generation methods found in $key_generation files"
@@ -237,7 +251,7 @@ while IFS= read -r -d '' pyfile; do
     if grep -q "validate.*config\|schema.*validation\|config.*check" "$pyfile"; then
         config_validation=$((config_validation + 1))
     fi
-done < <(find extensions/services -name "*.py" -print0)
+done < <(find_service_sources "*.py")
 
 if [[ $config_validation -gt 0 ]]; then
     pass "Configuration validation found in $config_validation files"
@@ -260,7 +274,7 @@ while IFS= read -r -d '' pyfile; do
         service_name=$(basename "$(dirname "$(dirname "$pyfile")")")
         pass "Service '$service_name' supports secret rotation"
     fi
-done < <(find extensions/services -name "*.py" -print0)
+done < <(find_service_sources "*.py")
 
 # Check for token expiration handling
 expiration_handling=0
@@ -268,7 +282,7 @@ while IFS= read -r -d '' pyfile; do
     if grep -q "expir\|ttl\|timeout\|valid.*until" "$pyfile"; then
         expiration_handling=$((expiration_handling + 1))
     fi
-done < <(find extensions/services -name "*.py" -print0)
+done < <(find_service_sources "*.py")
 
 if [[ $expiration_handling -gt 0 ]]; then
     pass "Token expiration handling found in $expiration_handling files"
@@ -293,7 +307,7 @@ while IFS= read -r -d '' pyfile; do
         service_name=$(basename "$(dirname "$(dirname "$pyfile")")")
         pass "Service '$service_name' uses encryption/hashing"
     fi
-done < <(find extensions/services -name "*.py" -print0)
+done < <(find_service_sources "*.py")
 
 # Check for SQL injection prevention in token-spy (from security audit)
 token_spy_db="extensions/services/token-spy/db.py"
@@ -350,7 +364,7 @@ while IFS= read -r -d '' pyfile; do
         service_name=$(basename "$(dirname "$(dirname "$pyfile")")")
         pass "Service '$service_name' uses secure password hashing"
     fi
-done < <(find extensions/services -name "*.py" -print0)
+done < <(find_service_sources "*.py")
 
 if [[ $password_hashing -eq 0 ]]; then
     skip "No secure password hashing libraries found"
