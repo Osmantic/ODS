@@ -27,6 +27,7 @@ Each extension is a self-contained directory with a `manifest.yaml` (service met
 | [`piper-audio/`](services/piper-audio/) | Piper — fast, lightweight TTS for edge devices | AMD, NVIDIA, Apple |
 | [`rvc/`](services/rvc/) | RVC — real-time voice conversion/cloning | AMD, NVIDIA |
 | [`audiocraft/`](services/audiocraft/) | Meta AudioCraft — text-to-music and sound effects | NVIDIA |
+| [`navidrome/`](services/navidrome/) | Navidrome — personal music server and Subsonic streamer | CPU |
 
 ### Image Generation
 
@@ -114,6 +115,7 @@ Quick reference for hardware requirements. Data sourced from each service's `man
 | librechat | ✓ | ✓ | ✓ | — | — |
 | localai | ✓ | ✓ | — | — | 4 GB |
 | milvus | — | — | — | ✓ | — |
+| navidrome | — | — | — | ✓ | — |
 | ollama | ✓ | ✓ | — | — | 8 GB |
 | open-interpreter | — | — | — | ✓ | — |
 | paperless-ngx | — | — | — | ✓ | — |
