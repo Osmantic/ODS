@@ -18,12 +18,16 @@ export default function PixelSourceExcerpt({source}) {
     if(!valid||!bounded||busy)return
     const current=++revision.current
     setBusy(true);setNotice('');setError('')
+    let timer
     try {
-      await navigator.clipboard.writeText(excerpt)
+      await Promise.race([
+        navigator.clipboard.writeText(excerpt),
+        new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error('Clipboard timed out')),5000)}),
+      ])
       if(current===revision.current)setNotice('Excerpt copied.')
     } catch {
       if(current===revision.current)setError('Clipboard unavailable. Select the excerpt below and copy manually.')
-    } finally {if(current===revision.current)setBusy(false)}
+    } finally {clearTimeout(timer);if(current===revision.current)setBusy(false)}
   }
   return <details className="my-2 rounded border border-theme-border p-2">
     <summary className="cursor-pointer text-xs">Extract lines</summary>
