@@ -4845,6 +4845,13 @@ cmd_remote_provider() {
     esac
 }
 
+cmd_tts() {
+    check_install
+    local TTS_PORT="${TTS_PORT:-8880}"
+    load_env
+    python3 "$SCRIPT_DIR/scripts/tts-client.py" --port "$TTS_PORT" "$@"
+}
+
 cmd_stt() {
     check_install; cd "$INSTALL_DIR"
     local subcmd="${1:-status}"
@@ -6646,6 +6653,9 @@ ${CYAN}Commands:${NC}
                       Configure, test, disable, or inspect remote GPU provider routing
   stt [current|status|download] [MODEL]
                       View Whisper STT model, check cache, or trigger download
+  tts voices         List available local Kokoro voices as JSON
+  tts speak TEXT OUTPUT.wav [--voice VOICE]
+                      Create a new WAV file (TEXT '-' reads standard input)
   backup [options]    Create a backup of user data and config
   backup verify <id>   Verify checksum integrity for a backup
   restore [backup_id] Restore from a backup
@@ -6806,6 +6816,7 @@ case "${1:-help}" in
     model)       shift; cmd_model "$@" ;;
     remote-provider) shift; cmd_remote_provider "$@" ;;
     stt)         shift; cmd_stt "$@" ;;
+    tts)         shift; cmd_tts "$@" ;;
     backup)      shift; cmd_backup "$@" ;;
     restore)     shift; cmd_restore "$@" ;;
     rollback)    shift; cmd_rollback "$@" ;;

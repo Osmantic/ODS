@@ -368,6 +368,8 @@ The `ods` CLI is the primary management tool. It's installed automatically at `~
 ods status              # Health checks + GPU status
 ods list                # Show all services and their state
 ods logs <service>      # Tail logs (accepts aliases: llm, stt, tts)
+ods tts voices         # List local Kokoro voice IDs as JSON
+ods tts speak "Hello" greeting.wav --voice af_heart
 ods restart [service]   # Restart one or all services
 ods start / stop        # Start or stop the stack
 
