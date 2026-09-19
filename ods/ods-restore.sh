@@ -394,6 +394,36 @@ dry_run_preview() {
     log_info "Dry run complete. No changes were made."
 }
 
+# Resolve the compose stack the installer persisted. The repo does not ship a
+# top-level docker-compose.yml, so bare `docker compose down` finds no project.
+resolve_compose_flags() {
+    local flags=""
+
+    if [[ -f "$ODS_DIR/.compose-flags" ]]; then
+        flags="$(tr '\n' ' ' < "$ODS_DIR/.compose-flags" | xargs 2>/dev/null || true)"
+    fi
+
+    if [[ -z "$flags" && -x "$ODS_DIR/scripts/resolve-compose-stack.sh" ]]; then
+        flags="$("$ODS_DIR/scripts/resolve-compose-stack.sh" \
+            --script-dir "$ODS_DIR" \
+            --tier "${TIER:-1}" \
+            --gpu-backend "${GPU_BACKEND:-nvidia}" \
+            --gpu-count "${GPU_COUNT:-1}" \
+            --ods-mode "${ODS_MODE:-local}" 2>/dev/null || true)"
+    fi
+
+    if [[ -z "$flags" && -f "$ODS_DIR/docker-compose.base.yml" ]]; then
+        flags="-f docker-compose.base.yml"
+        case "${GPU_BACKEND:-}" in
+            amd|nvidia|intel|apple|arc|cpu)
+                [[ -f "$ODS_DIR/docker-compose.${GPU_BACKEND}.yml" ]] && flags="$flags -f docker-compose.${GPU_BACKEND}.yml"
+                ;;
+        esac
+    fi
+
+    printf '%s\n' "$flags"
+}
+
 # Stop running containers
 stop_containers() {
     log_step "Stopping containers..."
@@ -408,8 +438,13 @@ stop_containers() {
         return 0
     fi
 
+    local compose_flags
+    compose_flags="$(resolve_compose_flags)"
+    local -a compose_args=()
+    [[ -n "$compose_flags" ]] && read -ra compose_args <<< "$compose_flags"
+
     cd "$ODS_DIR"
-    if docker compose down; then
+    if docker compose "${compose_args[@]}" down --remove-orphans; then
         log_success "Containers stopped"
     else
         log_error "Containers did not stop; refusing to restore live data."
@@ -663,7 +698,7 @@ do_restore() {
     echo ""
     echo "Next steps:"
     echo "  1. Review restored configuration: cat $ODS_DIR/.env"
-    echo "  2. Start services: docker compose up -d"
+    echo "  2. Start services: ods start"
     echo "  3. Check status: ./ods-preflight.sh"
 }
 
