@@ -45,7 +45,7 @@ validate_docker_image_or_fallback() {
         return 0
     fi
 
-    if [[ -n "$fallback_env" ]]; then
+    if [[ -n "$fallback_env" && "$fallback_env" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
         fallback="${!fallback_env:-}"
     fi
 
