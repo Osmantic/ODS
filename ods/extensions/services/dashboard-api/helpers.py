@@ -1417,3 +1417,15 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+import textwrap
+
+def string_word_wrap_safe(text: str | None, width: int = 70) -> str:
+    """Safely wrap text lines to specified maximum width without splitting words.
+    Returns "" on None or non-string inputs.
+    """
+    if text is None or not isinstance(text, str):
+        return ""
+    if not isinstance(width, int) or isinstance(width, bool) or width <= 0:
+        width = 70
+    return textwrap.fill(text, width=width)
