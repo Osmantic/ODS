@@ -160,7 +160,7 @@ def transition_decision(
     # --- malformed snapshot rejection ---
     if not isinstance(snapshot.status, str) or snapshot.status not in (_IDLE_STATUS, _BUSY_STATUS, _UNKNOWN_STATUS):
         return {"allowed": False, "reason": "invalid-request"}
-    if not isinstance(snapshot.reason, str):
+    if not isinstance(snapshot.reason, str) or (snapshot.status != _UNKNOWN_STATUS and snapshot.reason != ""):
         return {"allowed": False, "reason": "invalid-request"}
 
     runs = snapshot.active_runs
