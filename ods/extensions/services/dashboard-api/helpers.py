@@ -1417,3 +1417,15 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def numeric_safe_percentage_calc(part: float | int | None, total: float | int | None) -> float:
+    """Safely calculate percentage (part/total * 100), avoiding division by zero.
+    """
+    if part is None or total is None:
+        return 0.0
+    if not isinstance(part, (int, float)) or not isinstance(total, (int, float)):
+        return 0.0
+    if isinstance(part, bool) or isinstance(total, bool) or total == 0:
+        return 0.0
+    return (float(part) / float(total)) * 100.0
