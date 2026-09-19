@@ -43,13 +43,21 @@ if [[ -f "$SCRIPT_DIR/lib/service-registry.sh" ]]; then
 fi
 INSTALL_DIR="${INSTALL_DIR:-$HOME/ods}"
 LLM_HOST="${LLM_HOST:-localhost}"
-LLM_PORT="${LLM_PORT:-8080}"
+# Resolved after .env load + sr_resolve_ports below — an explicit LLM_PORT
+# always wins, but the default must be the configured host port, not a
+# hardcoded guess.
+LLM_PORT="${LLM_PORT:-}"
 TIMEOUT="${TIMEOUT:-5}"
 
 # Safe .env loading for port overrides (no eval; use lib/safe-env.sh)
 [[ -f "$SCRIPT_DIR/lib/safe-env.sh" ]] && . "$SCRIPT_DIR/lib/safe-env.sh"
 load_env_file "${INSTALL_DIR}/.env"
 sr_resolve_ports
+
+# llama-server publishes the container-internal 8080 on the host as
+# OLLAMA_PORT (default 11434); Lemonade (AMD) listens on AMD_INFERENCE_PORT.
+# Probing 8080 on the host reports a healthy install as critical.
+LLM_PORT="${LLM_PORT:-${AMD_INFERENCE_PORT:-${SERVICE_PORTS[llama-server]:-11434}}}"
 
 # Colors (disabled for JSON/quiet)
 if $JSON_OUTPUT || $QUIET; then
