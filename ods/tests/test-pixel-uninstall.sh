@@ -68,6 +68,10 @@ container_id="$(printf 'e%.0s' {1..64})"
 case "${1:-} ${2:-}" in
     "image inspect")
         reference="${*: -1}"
+        if [[ "$reference" == pixel-sandbox-candidate:* \
+            && "${DOCKER_CANDIDATE_MISSING:-false}" == true ]]; then
+            exit 1
+        fi
         if [[ "$reference" == openclaw-sandbox:test && ! -e "$DOCKER_STATE" ]]; then
             exit 1
         fi
@@ -909,6 +913,23 @@ if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME_DIR"; then
         || fail "managed Pixel Docker state was not retired exactly"
 else
     fail "fully bound ODS Pixel active state was not safely deactivated"
+fi
+
+write_active_fixture
+export DOCKER_CANDIDATE_MISSING=true
+if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME_DIR"; then
+    unset DOCKER_CANDIDATE_MISSING
+    exact_image_id="sha256:$(printf 'd%.0s' {1..64})"
+    [[ ! -e "$HOME_DIR/.local/share/pixel/current" \
+        && ! -e "$HOME_DIR/.local/share/pixel/runtime-attestation.json" \
+        && ! -e "$HOME_DIR/.config/ods/pixel-managed.json" \
+        && ! -e "$DOCKER_STATE" \
+        && "$(grep -cF "image inspect --format {{.Id}}|{{index .Config.Labels \"org.osmantic.pixel.sandbox-version\"}}|{{index .Config.Labels \"org.osmantic.pixel.sandbox-uid\"}}|{{.Config.User}} $exact_image_id" "$DOCKER_LOG" || true)" == 1 ]] \
+        && pass "fully bound Pixel cleanup survives pruning of the redundant preservation tag" \
+        || fail "missing preservation-tag recovery did not use the exact bound image"
+else
+    unset DOCKER_CANDIDATE_MISSING
+    fail "fully bound Pixel cleanup rejected its exact image after preservation-tag pruning"
 fi
 
 write_ops_fixture

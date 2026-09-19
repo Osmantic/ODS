@@ -2025,12 +2025,28 @@ PY
         }
 
         candidate_image="pixel-sandbox-candidate:${release_version}-uid-${owner_uid}"
-        observed_image="$(timeout 30s docker image inspect --format \
+        if observed_image="$(timeout 30s docker image inspect --format \
             '{{.Id}}|{{index .Config.Labels "org.osmantic.pixel.sandbox-version"}}|{{index .Config.Labels "org.osmantic.pixel.sandbox-uid"}}|{{.Config.User}}' \
-            "$candidate_image" 2>/dev/null)" || {
+            "$candidate_image" 2>/dev/null)"; then
+            :
+        elif [[ "$sandbox_image_id" == derive ]]; then
+            # An interrupted first apply has no durable image-id binding yet;
+            # only its deterministic candidate tag can establish custody.
             log_error "The ODS-managed Pixel sandbox preservation tag is missing"
             return 1
-        }
+        else
+            # Docker pruning may remove the redundant preservation tag while
+            # retaining the same live image under the shared tag or an active
+            # container. A fully bound marker already commits the exact image
+            # ID. Revalidate that immutable object and all of its ODS labels;
+            # never fall back to a mutable shared tag or a discovered image.
+            observed_image="$(timeout 30s docker image inspect --format \
+                '{{.Id}}|{{index .Config.Labels "org.osmantic.pixel.sandbox-version"}}|{{index .Config.Labels "org.osmantic.pixel.sandbox-uid"}}|{{.Config.User}}' \
+                "$sandbox_image_id" 2>/dev/null)" || {
+                log_error "The exact ODS-managed Pixel sandbox image is missing"
+                return 1
+            }
+        fi
         if [[ "$sandbox_image_id" == derive ]]; then
             sandbox_image_id="${observed_image%%|*}"
             [[ "$sandbox_image_id" =~ ^sha256:[0-9a-f]{64}$ ]] || {

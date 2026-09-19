@@ -69,7 +69,7 @@ EOF
     cat > "$stub_dir/sudo" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${SUDO_LOG:?}"
-if [[ "$*" == "-n -v" ]]; then
+if [[ "$*" == "-n true" ]]; then
     exit "${SUDO_VALIDATE_EXIT_CODE:-0}"
 fi
 exit 0
@@ -217,7 +217,7 @@ main() {
         || fail "failed non-interactive sudo preflight must not mutate the install tree"
     [[ ! -s "$log_noninteractive" ]] \
         || fail "failed non-interactive sudo preflight must happen before Docker cleanup"
-    grep -qx -- '-n -v' "$sudo_noninteractive" \
+    grep -qx -- '-n true' "$sudo_noninteractive" \
         || fail "non-interactive uninstall must validate sudo without prompting"
     grep -qF 'Non-interactive uninstall requires cached or passwordless sudo' "$out_noninteractive" \
         || fail "non-interactive sudo failure must explain how to retry"

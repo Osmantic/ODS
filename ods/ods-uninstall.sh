@@ -46,7 +46,13 @@ prepare_sudo_credential() {
 
     log_info "Administrator privileges are required for system-owned ODS files."
     if $NON_INTERACTIVE; then
-        if ! sudo -n -v; then
+        # `sudo -n -v` follows the sudoers `verifypw` policy and can demand a
+        # password even when every command this installer needs is covered by
+        # a user-specific NOPASSWD rule (for example, a user that also belongs
+        # to a passworded `%sudo` group). Probe an actual harmless command so
+        # unattended cleanup tests the authority that later `sudo -n -- ...`
+        # calls will use.
+        if ! sudo -n true; then
             log_error "Non-interactive uninstall requires cached or passwordless sudo. Run sudo -v in a terminal, then retry."
             return 1
         fi
