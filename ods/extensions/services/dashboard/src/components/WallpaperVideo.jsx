@@ -2,7 +2,7 @@ import {useEffect, useRef, useState} from 'react'
 import {useTheme} from '../contexts/ThemeContext'
 
 export default function WallpaperVideo() {
-  const {theme, wallpapers = [], wallpaperMotion = true} = useTheme()
+  const {theme, wallpapers = [], wallpaperMotion = true, wallpaperFit = 'cover'} = useTheme()
   const wallpaper = wallpapers.find(item => item.id === theme)
   const blob = wallpaper?.kind === 'video' ? wallpaper.video : null
   const videoRef = useRef(null)
@@ -48,7 +48,7 @@ export default function WallpaperVideo() {
   }, [url, wallpaperMotion, failed])
 
   if (!url || failed) return null
-  return <video ref={videoRef} className="workspace-wallpaper-video" src={url} poster={wallpaper.image}
+  return <video ref={videoRef} className="workspace-wallpaper-video" style={{objectFit:wallpaperFit}} src={url} poster={wallpaper.image}
     muted loop playsInline preload="auto" aria-hidden="true" tabIndex={-1}
     disablePictureInPicture onError={() => setFailed(true)}/>
 }

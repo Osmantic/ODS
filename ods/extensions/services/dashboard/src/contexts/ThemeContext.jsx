@@ -6,12 +6,19 @@ const STORAGE_KEY = 'ods-theme'
 const THEMES = WALLPAPERS.map(item => item.id)
 const THEME_LABELS = Object.fromEntries(WALLPAPERS.map(item => [item.id, item.name]))
 const DEFAULT_THEME = 'ods'
+const FIT_KEY = 'ods-wallpaper-fit'
+const fitValue = value => value === 'contain' ? 'contain' : 'cover'
 
 const ThemeContext = createContext(null)
 
 export function ThemeProvider({ children }) {
   const [custom, setCustom] = useState([])
   const [wallpaperError, setWallpaperError] = useState('')
+  const [wallpaperFitError, setWallpaperFitError] = useState('')
+  const [wallpaperFit, setWallpaperFitState] = useState(() => {
+    try {return fitValue(localStorage.getItem(FIT_KEY))}
+    catch (error) {if (!(error instanceof globalThis.DOMException)) throw error; return 'cover'}
+  })
   const [wallpaperMotion, setWallpaperMotionState] = useState(() => {
     try { return localStorage.getItem('ods-wallpaper-motion') !== 'paused' } catch { return true }
   })
@@ -41,10 +48,15 @@ export function ThemeProvider({ children }) {
       }).catch(error => { if (active && revision === galleryRevision.current) setWallpaperError(error.message) })
     }
     const sync = event => {
-      if (event.key !== null && event.key !== STORAGE_KEY && event.key !== 'ods-wallpaper-motion') return
+      if (event.key !== null && event.key !== STORAGE_KEY && event.key !== 'ods-wallpaper-motion' && event.key !== FIT_KEY) return
       try {
         // Storage events can queue behind newer writes from another tab.
         // Read current storage rather than replaying an obsolete event value.
+        if (event.key === null || event.key === FIT_KEY) {
+          setWallpaperFitState(fitValue(localStorage.getItem(FIT_KEY)))
+          setWallpaperFitError('')
+        }
+        if (event.key === FIT_KEY) return
         if (event.key === null || event.key === 'ods-wallpaper-motion') {
           setWallpaperMotionState(localStorage.getItem('ods-wallpaper-motion') !== 'paused')
         }
@@ -63,6 +75,21 @@ export function ThemeProvider({ children }) {
     window.addEventListener('focus', refresh)
     window.addEventListener('storage', sync)
     return () => { active = false; window.removeEventListener(CUSTOM_WALLPAPER_EVENT, refresh); window.removeEventListener('focus', refresh); window.removeEventListener('storage', sync) }
+  }, [])
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-wallpaper-fit', wallpaperFit)
+    return () => document.documentElement.removeAttribute('data-wallpaper-fit')
+  }, [wallpaperFit])
+
+  const setWallpaperFit = useCallback(value => {
+    if (!['cover', 'contain'].includes(value)) return
+    setWallpaperFitState(value)
+    try {localStorage.setItem(FIT_KEY, value); setWallpaperFitError('')}
+    catch (error) {
+      if (!(error instanceof globalThis.DOMException)) throw error
+      setWallpaperFitError('Wallpaper fit applies in this tab, but could not be saved for next time.')
+    }
   }, [])
 
   useEffect(() => {
@@ -116,7 +143,7 @@ export function ThemeProvider({ children }) {
   }, [])
 
   return (
-    <ThemeContext.Provider value={{ theme, setTheme, cycleTheme, themes: wallpapers.map(item => item.id), labels: {...THEME_LABELS, ...Object.fromEntries(custom.map(item => [item.id, item.name]))}, wallpapers, addWallpaper, removeWallpaper, wallpaperError, wallpaperMotion, setWallpaperMotion }}>
+    <ThemeContext.Provider value={{ theme, setTheme, cycleTheme, themes: wallpapers.map(item => item.id), labels: {...THEME_LABELS, ...Object.fromEntries(custom.map(item => [item.id, item.name]))}, wallpapers, addWallpaper, removeWallpaper, wallpaperError, wallpaperMotion, setWallpaperMotion, wallpaperFit, setWallpaperFit, wallpaperFitError }}>
       {children}
     </ThemeContext.Provider>
   )
