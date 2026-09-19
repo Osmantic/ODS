@@ -46,12 +46,22 @@ class ContextUsage(_Projection):
     window: int = Field(ge=1, le=10_000_000)
     measuredAt: str = Field(min_length=1, max_length=64, pattern=r"^[0-9TZ: .+\-]+$")
 
+    @field_validator("used", "window", mode="before")
+    @classmethod
+    def _coerce_integer(cls, value):
+        return int(value) if isinstance(value, float) and value.is_integer() else value
+
 
 class ContextModel(_Projection):
     id: str = Field(min_length=1, max_length=512, pattern=r"^[^\x00-\x1f\x7f]+$")
     provider: str = Field(min_length=1, max_length=128, pattern=r"^[^\x00-\x1f\x7f]+$")
     contextWindow: int = Field(ge=1, le=10_000_000)
     routeFingerprint: str | None = Field(default=None, min_length=64, max_length=64, pattern=r"^[a-f0-9]{64}$")
+
+    @field_validator("contextWindow", mode="before")
+    @classmethod
+    def _coerce_window(cls, value):
+        return int(value) if isinstance(value, float) and value.is_integer() else value
 
 
 class CompactionState(_Projection):
