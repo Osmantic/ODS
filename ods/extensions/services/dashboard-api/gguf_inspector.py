@@ -217,6 +217,13 @@ def inspect_gguf(path: Path | str, max_metadata_bytes: int = 32 * 1024 * 1024) -
     }
     if not p.exists() or not p.is_file():
         return result
+    try:
+        if p.stat().st_size < 16:
+            result["error"] = "file too short to be a valid GGUF"
+            return result
+    except OSError as exc:
+        result["error"] = str(exc)
+        return result
 
     try:
         result["size_bytes"] = p.stat().st_size
