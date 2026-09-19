@@ -41,7 +41,7 @@ _ods_report_port_line() {
 
 _ods_report_failed_images() {
     local log_file="$1"
-    [[ -f "$log_file" ]] || return 0
+    [[ -n "$log_file" && -f "$log_file" ]] || return 0
     grep -Eio '([a-z0-9._-]+([.:][0-9]+)?/)?[a-z0-9._/-]+:[A-Za-z0-9._-]+' "$log_file" 2>/dev/null \
         | grep -E 'ghcr\.io|docker\.io|quay\.io|nvidia|llama|ods|open-webui|qdrant|speaches|comfy|litellm|perplexica' \
         | sort -u \
