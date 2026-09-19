@@ -243,7 +243,16 @@ def check_http(
             # HTTPError is a valid response with status code; treat via status checks.
             status = getattr(exc, "code", None)
             if allowed_status is not None and status in allowed_status:
-                return (True, f"http {m}: ok (error status allowed)", int(status) if status is not None else None)
+                with exc:
+                    if body_regex is not None:
+                        try:
+                            body = exc.read(1024 * 1024)
+                        except socket.timeout:
+                            return (False, f"http {m}: timeout", status)
+                        if not body_regex.search(body.decode("utf-8", errors="replace")):
+                            return (False, f"http {m}: body regex did not match", status)
+                    return (True, f"http {m}: ok (error status allowed)", int(status) if status is not None else None)
+            exc.close()
             last_err = f"http {m}: HTTPError {status}"
 
             # If HEAD is rejected, allow retry with GET.

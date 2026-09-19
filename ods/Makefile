@@ -217,6 +217,7 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== session cleanup lifecycle ==="
 	@bash tests/test-session-cleanup.sh
+	@python3 tests/test-healthcheck-error-body.py
 
 bats: ## Run BATS unit tests for shell libraries
 	@echo "=== BATS unit tests ==="
