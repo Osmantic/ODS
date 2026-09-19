@@ -60,7 +60,12 @@ class SystemUninstall(unittest.TestCase):
             (self.install/'scripts/systemd'/unit).write_text(template)
             content = template.replace('__INSTALL_DIR__', str(self.install)).replace('__HOME__', str(self.home))
             content = content.replace('__INSTALL_USER__', 'fixture-user').replace('__PYTHON3__', '/usr/bin/python3')
-            (self.units/unit).write_text(content)
+            unit_file = self.units/unit
+            unit_file.write_text(content)
+            # Real system units are 0644 root-owned; the custody check rejects
+            # group/other-writable files, so pin the mode instead of relying on
+            # the caller's umask (fails under e.g. umask 002 shared-group dev).
+            unit_file.chmod(0o644)
         stub = self.bin/'systemctl'
         stub.write_text(STUB)
         stub.chmod(0o755)
