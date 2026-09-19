@@ -1801,3 +1801,13 @@ def test_flatten_bounds_cycles_and_large_depth_without_losing_empty_leaves():
         nested = {"child": nested}
     result = dict_flatten_nested_safe(nested, max_depth=100000)
     assert len(next(iter(result)).split(".")) == 128
+
+
+class TestDictSafeNestedSet:
+    def test_valid(self):
+        from helpers import dict_safe_nested_set
+        assert dict_safe_nested_set({}, ['a', 'b'], 1) == {'a': {'b': 1}}
+
+    def test_invalid(self):
+        from helpers import dict_safe_nested_set
+        assert dict_safe_nested_set(None, ['a'], 1) == {'a': 1}
