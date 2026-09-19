@@ -31,6 +31,9 @@ export function useGPUDetailed() {
       try {
         const snapshot = Promise.all(['detailed', 'history', 'topology'].map(async endpoint => {
           const response = await fetch(`/api/gpu/${endpoint}`, {signal:controller.signal})
+          if (endpoint === 'detailed' && !response.ok) {
+            throw new Error(`GPU detail request failed (${response.status})`)
+          }
           return response.ok ? response.json() : undefined
         }))
         const [details, samples, links] = await Promise.race([snapshot, aborted])
