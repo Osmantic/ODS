@@ -70,7 +70,7 @@ def assess_activity(
         return _bad(REASON_MALFORMED_SOURCE)
 
     observed_at = value.get("observedAt")
-    if isinstance(observed_at, bool) or not isinstance(observed_at, int) or observed_at < 0:
+    if isinstance(observed_at, bool) or not isinstance(observed_at, int) or not 0 <= observed_at <= 2**53 - 1:
         return _bad(REASON_MALFORMED_SOURCE)
 
     source_epoch = value.get("sourceEpoch")
