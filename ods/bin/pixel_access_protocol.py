@@ -46,6 +46,8 @@ def _finite(value):
 
 
 def decode_frame(raw, maximum):
+    if type(maximum) is not int or maximum <= 0:
+        raise ProtocolError("owner-protocol-failed")
     try:
         if type(raw) is not str or not raw.endswith("\n") or len(raw.encode("utf-8")) > maximum:
             raise ProtocolError("owner-protocol-failed")
