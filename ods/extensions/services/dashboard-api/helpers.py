@@ -1417,3 +1417,12 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+import re
+
+def string_extract_alphanumeric_safe(text: str | None) -> str:
+    """Safely extract only alphanumeric characters from a string.
+    """
+    if text is None or not isinstance(text, str):
+        return ""
+    return re.sub(r'[^a-zA-Z0-9]', '', text)
