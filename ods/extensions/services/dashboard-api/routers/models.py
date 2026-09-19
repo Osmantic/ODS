@@ -1458,6 +1458,8 @@ def model_download_status(api_key: str = Depends(verify_api_key)):
         }
     try:
         status = json.loads(status_path.read_text(encoding="utf-8"))
+        if not isinstance(status, dict):
+            status = {"status": "idle"}
         if _is_cancelled_download_status(status) or _is_stale_terminal_download_status(status):
             idle_status = _idle_download_status(last_terminal_status=status)
             if lifecycle:

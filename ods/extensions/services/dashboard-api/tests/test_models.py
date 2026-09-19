@@ -2792,6 +2792,48 @@ def test_download_status_treats_cancelled_status_file_as_idle(test_client, monke
     assert payload["lastTerminalStatus"]["model"] == "Qwen3-30B-A3B-Q4_K_M.gguf"
 
 
+def test_download_status_treats_non_dict_status_file_as_idle(
+    test_client, monkeypatch, tmp_path
+):
+    """Parseable-but-wrong-shape status JSON must not leak or crash."""
+    models_router, _install_dir, data_dir = _patch_model_router_paths(monkeypatch, tmp_path)
+    monkeypatch.setattr(models_router, "_get_agent_model_status", lambda: None)
+    status_path = data_dir / "model-download-status.json"
+    status_path.write_text("[1, 2, 3]", encoding="utf-8")
+
+    resp = test_client.get("/api/models/download-status", headers=test_client.auth_headers)
+
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["status"] == "idle"
+
+
+def test_download_status_non_dict_file_with_active_lifecycle(
+    test_client, monkeypatch, tmp_path
+):
+    """Non-dict status file + active lifecycle used to TypeError -> 500."""
+    models_router, _install_dir, data_dir = _patch_model_router_paths(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        models_router,
+        "_get_agent_model_status",
+        lambda: {
+            "status": "idle",
+            "lifecycleActive": True,
+            "activeOperation": "model_download",
+            "activeModelId": "Phi-4-mini-instruct-Q4_K_M.gguf",
+        },
+    )
+    status_path = data_dir / "model-download-status.json"
+    status_path.write_text('"partial"', encoding="utf-8")
+
+    resp = test_client.get("/api/models/download-status", headers=test_client.auth_headers)
+
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["status"] == "idle"
+    assert payload["modelLifecycle"]["operation"] == "model_download"
+
+
 def test_load_model_resolves_local_gguf_by_stem_with_mixed_case_extension(
     test_client,
     monkeypatch,
