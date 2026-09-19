@@ -48,12 +48,17 @@ elif command -v python >/dev/null 2>&1; then
 fi
 
 # Wait for Perplexica to be ready (up to 60s)
-for i in $(seq 1 12); do
+_perplexica_ready=false
+_perplexica_retries="${PERPLEXICA_WAIT_RETRIES:-12}"
+_perplexica_sleep="${PERPLEXICA_WAIT_SLEEP:-5}"
+for i in $(seq 1 "$_perplexica_retries"); do
     if curl -sf --max-time 5 "${PERPLEXICA_URL}/api/config" >/dev/null 2>&1; then
+        _perplexica_ready=true
         break
     fi
-    [[ $i -lt 12 ]] && sleep 5
+    [[ $i -lt "$_perplexica_retries" ]] && sleep "$_perplexica_sleep"
 done
+[[ "$_perplexica_ready" == "true" ]] || { echo "error: Perplexica unreachable at $PERPLEXICA_URL after $(( _perplexica_retries * _perplexica_sleep ))s" >&2; exit 1; }
 
 # Seed config via API — export vars so Python reads from env (no shell interpolation)
 export PERPLEXICA_URL PERPLEXICA_MODEL PERPLEXICA_LLM_BASE_URL PERPLEXICA_API_KEY
