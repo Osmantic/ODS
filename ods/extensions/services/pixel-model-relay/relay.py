@@ -46,7 +46,8 @@ async def _inference(request):
         raise web.HTTPNotFound()
     if request.path == "/v1/chat/completions" and request.method != "POST":
         raise web.HTTPNotFound()
-    if not hmac.compare_digest(request.headers.get("Authorization", ""), "Bearer " + KEY):
+    provided = request.headers.get("Authorization", "").encode("utf-8", "surrogateescape")
+    if not hmac.compare_digest(provided, ("Bearer " + KEY).encode("ascii")):
         raise web.HTTPUnauthorized()
     body = await request.read()
     if len(body) > MAX_BODY:

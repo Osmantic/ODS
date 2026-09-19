@@ -51,6 +51,7 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         fake.router.add_post("/v1/chat/completions", chat)
         self.fake_runner, relay.UPSTREAM = await start(fake)
         self.relay_runner, self.url = await start(relay.create_app())
+        self.port = int(self.url.rsplit(":", 1)[1])
 
     async def asyncTearDown(self):
         await self.relay_runner.cleanup()
@@ -93,6 +94,22 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
                 await relay._write(StalledResponse(), b"data: stalled\n\n")
         finally:
             relay.WRITE_TIMEOUT_SECONDS = original
+
+    async def test_non_ascii_authorization_header_returns_401(self):
+        # Raw obs-text bytes in the header decode to non-ASCII str; the
+        # credential check must still answer 401 instead of crashing.
+        reader, writer = await asyncio.open_connection("127.0.0.1", self.port)
+        try:
+            writer.write(
+                b"GET /v1/models HTTP/1.1\r\nHost: x\r\n"
+                b"Authorization: Bearer \xff\xfebad\r\n"
+                b"Connection: close\r\n\r\n"
+            )
+            status = (await reader.readline()).split()[1]
+            self.assertEqual(status, b"401")
+        finally:
+            writer.close()
+            await writer.wait_closed()
 
     async def test_non_ascii_key_fails_at_startup(self):
         original = relay.KEY
