@@ -47,7 +47,7 @@ def _finite(value):
 
 def decode_frame(raw, maximum):
     try:
-        if type(raw) is not str or not raw.endswith("\n") or len(raw.encode("utf-8")) > maximum:
+        if type(raw) is not str or raw.endswith("\r\n") or not raw.endswith("\n") or len(raw.encode("utf-8")) > maximum:
             raise ProtocolError("owner-protocol-failed")
         return json.loads(raw, object_pairs_hook=_pairs, parse_constant=_finite, parse_float=_finite)
     except (ValueError, UnicodeError, RecursionError, OverflowError):
