@@ -195,10 +195,11 @@ class TeamManager:
                     agent["status"] = "interrupted"
         for key in ["instance", "fingerprint", "stop_requested"]:
             row.pop(key, None)
-        for agent in row["agents"] + ([row["planning"]] if row.get("planning") else []):
-            if agent['status']=='failed' and not any(m['role']=='assistant' for m in agent['conversation']):
+        for agent in row.get("agents", []) + ([row["planning"]] if row.get("planning") else []):
+            conversation = agent.get("conversation") or []
+            if agent.get("status") == "failed" and not any(isinstance(m, dict) and m.get("role") == "assistant" for m in conversation):
                 agent['error'] = 'No completed response was received from the model runtime. Earlier results were preserved; this review is incomplete.'
-            agent['retryable'] = row['status']=='failed' and agent['status']=='failed' and agent['role']!='builder' and agent.get('retries',0)<2
+            agent['retryable'] = row.get("status") == "failed" and agent.get("status") == "failed" and agent.get("role") != "builder" and agent.get("retries", 0) < 2
             for key in ["chat_id", "request_id", "messages", "context_messages", "context_request_id", "recovery_request_ids", "stop_requested"]:
                 agent.pop(key, None)
         return row
