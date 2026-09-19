@@ -342,7 +342,9 @@ jobs:
         run: bash tests/test-validate-sim-summary.sh
 
       - name: Golden Path Contract Tests
-        run: bash tests/test-golden-paths.sh
+        run: |
+          bash tests/test-golden-paths.sh
+          python3 tests/test_golden_health_urls.py
 
       - name: Generated Config Contract Tests
         run: |
