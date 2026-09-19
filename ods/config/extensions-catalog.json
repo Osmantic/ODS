@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-13T16:53:56Z",
+  "generated_at": "2026-09-14T10:22:40Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -3159,6 +3159,28 @@
       "configuration_scope": "declared-environment-keys"
     },
     {
+      "id": "pixel-inference",
+      "name": "Pixel inference sharing (development)",
+      "description": "Disabled by default. Owner-provisioned, inference-only device credentials; loopback transport only. Does not provide Pixel agent or computer access. Private state must be provisioned before service activation. Native Windows private-state support and guided setup are not yet implemented.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [
+        "model-router"
+      ],
+      "port": 8093,
+      "external_port_default": 4005,
+      "health_endpoint": "/health",
+      "env_vars": [],
+      "tags": [],
+      "features": [],
+      "startup_check": false,
+      "catalog_source": "builtin",
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
       "id": "qdrant",
       "name": "Qdrant (Vector DB)",
       "description": "Qdrant (Vector DB)",
@@ -3344,6 +3366,72 @@
       "tags": [],
       "features": [],
       "catalog_source": "builtin",
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
+      "id": "sftpgo",
+      "name": "SFTPGo",
+      "description": "Authenticated local file exchange with per-user storage, SFTP and browser access.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 8080,
+      "external_port_default": 7828,
+      "health_endpoint": "/healthz",
+      "env_vars": [
+        {
+          "key": "SFTPGO_PORT",
+          "default": "7828",
+          "description": "Published port for the SFTPGo browser interface"
+        },
+        {
+          "key": "SFTPGO_SFTP_PORT",
+          "default": "2022",
+          "description": "Published port for SFTP clients"
+        },
+        {
+          "key": "SFTPGO_ADMIN_USER",
+          "default": "admin",
+          "description": "Initial administrator username"
+        },
+        {
+          "key": "SFTPGO_ADMIN_PASSWORD",
+          "required": true,
+          "description": "Initial administrator password (existing accounts retain their password)"
+        }
+      ],
+      "tags": [
+        "files",
+        "sftp",
+        "datasets",
+        "local",
+        "sharing"
+      ],
+      "features": [
+        {
+          "id": "local-file-exchange",
+          "name": "Local File Exchange",
+          "description": "Transfer datasets and generated artifacts with separate user accounts",
+          "icon": "FolderOpen",
+          "category": "productivity",
+          "requirements": {
+            "services": [
+              "sftpgo"
+            ],
+            "vram_gb": 0,
+            "disk_gb": 1
+          },
+          "enabled_services_all": [
+            "sftpgo"
+          ],
+          "setup_time": "~2 minutes",
+          "priority": 34
+        }
+      ],
+      "startup_timeout": 120,
       "configuration_scope": "declared-environment-keys"
     },
     {
