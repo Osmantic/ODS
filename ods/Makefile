@@ -246,5 +246,6 @@ doctor: ## Run diagnostic report
 	@bash scripts/ods-doctor.sh
 
 gate: lint test bats smoke simulate ## Full pre-release validation (lint + test + bats + smoke + simulate)
+	@python3 scripts/check-version-consistency.py
 	@echo ""
 	@echo "Release gate passed."
