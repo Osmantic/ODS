@@ -196,6 +196,8 @@ test: ## Run unit and contract tests
 	@bash tests/test-macos-uninstall-launchagents.sh
 	@echo "=== uninstall removes the ods-mdns systemd unit ==="
 	@bash tests/test-uninstall-mdns-unit.sh
+	@echo "=== uninstall user-manager helper targets the invoking user under sudo ==="
+	@bash tests/test-uninstall-user-manager-owner.sh
 	@echo ""
 	@echo "=== token-spy session manager active-id extraction ==="
 	@bash tests/test-token-spy-session-manager.sh

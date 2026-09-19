@@ -24,6 +24,11 @@ log_error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 ods_uninstall_systemctl_user() {
     local user_uid user_runtime_dir user_bus_address
     user_uid="$(id -u)"
+    # `sudo ./ods-uninstall.sh` reports uid 0 while the ODS user units live in
+    # the invoking user's manager; SUDO_UID keeps the real owner.
+    if [[ "$user_uid" -eq 0 && "${SUDO_UID:-}" =~ ^[1-9][0-9]*$ ]]; then
+        user_uid="$SUDO_UID"
+    fi
     user_runtime_dir="${XDG_RUNTIME_DIR:-/run/user/$user_uid}"
     user_bus_address="${DBUS_SESSION_BUS_ADDRESS:-unix:path=$user_runtime_dir/bus}"
     env XDG_RUNTIME_DIR="$user_runtime_dir" \
