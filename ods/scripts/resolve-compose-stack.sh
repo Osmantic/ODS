@@ -586,6 +586,8 @@ if ext_dir.exists():
             if manifest.get("schema_version") != "ods.services.v1":
                 continue
             service = manifest.get("service", {})
+            if not isinstance(service, dict):
+                raise TypeError(f"manifest 'service' must be a mapping, got {type(service).__name__}")
             # Check GPU backend compatibility
             backends = service.get("gpu_backends", ["amd", "nvidia"])
             # "none" means CPU-only — compatible with any GPU backend
@@ -677,6 +679,8 @@ if user_ext_dir.exists():
                     if isinstance(manifest, dict) and manifest.get("schema_version") != "ods.services.v1":
                         continue
                     service = manifest.get("service", {}) if isinstance(manifest, dict) else {}
+                    if not isinstance(service, dict):
+                        raise TypeError(f"manifest 'service' must be a mapping, got {type(service).__name__}")
                 else:
                     service = {}
                 # Apply gpu_backends filter — same predicate as the built-in loop above.

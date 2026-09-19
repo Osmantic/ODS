@@ -776,6 +776,59 @@ else
     skip "Docker Compose unavailable; real external-LLM render skipped"
 fi
 
+# ============================================================================
+# 27. Manifest with non-mapping 'service' is a structure error, not a crash
+# ============================================================================
+# A scalar 'service' key used to raise AttributeError, which bypassed the
+# structure-error handler and crashed even with --skip-broken.
+mkdir -p "$TEMP_DIR/extensions/services/scalar-service"
+cat > "$TEMP_DIR/extensions/services/scalar-service/manifest.yaml" <<'EOF'
+schema_version: ods.services.v1
+service: not-a-mapping
+EOF
+
+scalar_exit=0
+scalar_stderr_file="$TEMP_DIR/scalar-service.stderr"
+bash "$ROOT_DIR/scripts/resolve-compose-stack.sh" \
+    --script-dir "$TEMP_DIR" --tier 1 --gpu-backend nvidia --skip-broken \
+    > /dev/null 2>"$scalar_stderr_file" || scalar_exit=$?
+scalar_stderr=$(cat "$scalar_stderr_file")
+
+if [[ $scalar_exit -ne 0 ]]; then
+    fail "--skip-broken should not exit on non-mapping 'service' (exit $scalar_exit)"
+elif echo "$scalar_stderr" | grep -q "Failed to parse manifest for scalar-service"; then
+    pass "--skip-broken: non-mapping 'service' reported as structure error and skipped"
+else
+    fail "--skip-broken: non-mapping 'service' produced no structure-error message"
+fi
+
+if echo "$scalar_stderr" | grep -q "Traceback"; then
+    fail "non-mapping 'service' produced an uncaught Python traceback"
+fi
+
+mkdir -p "$TEMP_DIR/data/user-extensions/scalar-user"
+cat > "$TEMP_DIR/data/user-extensions/scalar-user/manifest.yaml" <<'EOF'
+schema_version: ods.services.v1
+service: 42
+EOF
+
+user_scalar_exit=0
+user_scalar_stderr_file="$TEMP_DIR/scalar-user.stderr"
+bash "$ROOT_DIR/scripts/resolve-compose-stack.sh" \
+    --script-dir "$TEMP_DIR" --tier 1 --gpu-backend nvidia --skip-broken \
+    > /dev/null 2>"$user_scalar_stderr_file" || user_scalar_exit=$?
+user_scalar_stderr=$(cat "$user_scalar_stderr_file")
+
+if [[ $user_scalar_exit -ne 0 ]]; then
+    fail "--skip-broken should not exit on user-ext non-mapping 'service' (exit $user_scalar_exit)"
+elif echo "$user_scalar_stderr" | grep -q "Failed to parse manifest for scalar-user"; then
+    pass "--skip-broken: user-ext non-mapping 'service' reported and skipped"
+else
+    fail "--skip-broken: user-ext non-mapping 'service' produced no structure-error message"
+fi
+
+rm -rf "$TEMP_DIR/extensions/services/scalar-service" "$TEMP_DIR/data/user-extensions/scalar-user"
+
 echo ""
 echo "Result: $PASSED passed, $FAILED failed"
 [[ $FAILED -eq 0 ]]
