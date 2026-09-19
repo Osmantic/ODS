@@ -281,10 +281,16 @@ export default function SetupWizard({ onComplete }) {
               <p className="text-theme-text-secondary mb-8">
                 Pick the voice your AI assistant will use when speaking to you.
               </p>
-              <div className="grid gap-3">
+              <fieldset
+                aria-label="Assistant voice"
+                className="grid gap-3"
+              >
                 {voices.map(voice => (
                   <button
                     key={voice.id}
+                    type="button"
+                    role="radio"
+                    aria-checked={config.voice === voice.id}
                     onClick={() => setConfig(c => ({ ...c, voice: voice.id }))}
                     className={`flex items-center gap-4 p-4 rounded-xl border transition-all text-left ${
                       config.voice === voice.id
@@ -303,7 +309,7 @@ export default function SetupWizard({ onComplete }) {
                     </div>
                   </button>
                 ))}
-              </div>
+              </fieldset>
             </div>
           )}
 
