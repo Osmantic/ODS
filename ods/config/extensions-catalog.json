@@ -3159,6 +3159,62 @@
       "configuration_scope": "declared-environment-keys"
     },
     {
+      "id": "prefect",
+      "name": "Prefect (Local Flow Orchestration)",
+      "description": "Authenticated local Python flow state, task history, schedules and artifacts; clients execute their own code.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 4200,
+      "external_port_default": 4200,
+      "health_endpoint": "/api/ready",
+      "env_vars": [
+        {
+          "key": "PREFECT_PORT",
+          "description": "Loopback UI and API port",
+          "default": "4200"
+        },
+        {
+          "key": "PREFECT_PASSWORD",
+          "description": "Shared operator password; 16-128 URL-safe characters",
+          "required": true
+        }
+      ],
+      "tags": [
+        "workflows",
+        "python",
+        "orchestration"
+      ],
+      "features": [
+        {
+          "id": "local-python-flows",
+          "name": "Orchestrate Local Python Flows",
+          "description": "Inspect Python flow and task state on your local Prefect server",
+          "icon": "Workflow",
+          "category": "automation",
+          "requirements": {
+            "services": [
+              "prefect"
+            ],
+            "vram_gb": 0
+          },
+          "enabled_services_all": [
+            "prefect"
+          ],
+          "setup_time": "~1 minute",
+          "priority": 40,
+          "launch": {
+            "type": "service",
+            "service": "prefect"
+          }
+        }
+      ],
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
       "id": "qdrant",
       "name": "Qdrant (Vector DB)",
       "description": "Qdrant (Vector DB)",

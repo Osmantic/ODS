@@ -1,0 +1,44 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: prefect
+  name: Prefect (Local Flow Orchestration)
+  description: "Authenticated local Python flow state, task history, schedules and artifacts; clients execute their own code."
+  aliases: [flow-orchestration]
+  container_name: ods-prefect
+  container_uid: 1000
+  default_host: prefect
+  port: 4200
+  external_port_env: PREFECT_PORT
+  external_port_default: 4200
+  health: /api/ready
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [workflows, python, orchestration]
+  env_vars:
+    - key: PREFECT_PORT
+      description: "Loopback UI and API port"
+      default: "4200"
+    - key: PREFECT_PASSWORD
+      description: "Shared operator password; 16-128 URL-safe characters"
+      required: true
+      secret: true
+features:
+  - id: local-python-flows
+    name: Orchestrate Local Python Flows
+    description: "Inspect Python flow and task state on your local Prefect server"
+    icon: Workflow
+    category: automation
+    requirements:
+      services: [prefect]
+      vram_gb: 0
+    enabled_services_all: [prefect]
+    setup_time: "~1 minute"
+    priority: 40
+    launch:
+      type: service
+      service: prefect
