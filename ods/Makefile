@@ -66,6 +66,9 @@ test: ## Run unit and contract tests
 	@bash tests/test-cli-status-docker-error.sh
 	@python3 tests/test-cli-stt-env.py
 	@echo ""
+	@echo "=== AMD topology output trimming ==="
+	@bash tests/test-amd-topo-trim.sh
+	@echo ""
 	@echo "=== AMD/Lemonade contracts ==="
 	@bash tests/contracts/test-amd-lemonade-contracts.sh
 	@bash tests/test-litellm-amd-auth-enforced.sh
