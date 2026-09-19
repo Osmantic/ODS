@@ -3531,17 +3531,28 @@ META
                 # used (which missed _PASS, _SALT, email admin fields, etc.).
                 _cmd_config_load_secret_schema
 
-                # Parse both env files
+                # Parse both env files. Decode values the way load_env_file
+                # does — quoting style, inline comments, and CRLF endings are
+                # formatting, not differences.
                 declare -A env1 env2
-                while IFS='=' read -r key value; do
-                    [[ "$key" =~ ^[[:space:]]*# ]] && continue
+                local line key
+                while IFS= read -r line || [[ -n "$line" ]]; do
+                    [[ "$line" =~ ^[[:space:]]*# || "$line" != *=* ]] && continue
+                    key="${line%%=*}"
+                    key="${key#"${key%%[![:space:]]*}"}"
+                    key="${key%"${key##*[![:space:]]}"}"
                     [[ -z "$key" ]] && continue
-                    env1["$key"]="$value"
+                    _safe_env_decode_value "${line#*=}"
+                    env1["$key"]="$_SAFE_ENV_VALUE"
                 done < "$dir1/env"
-                while IFS='=' read -r key value; do
-                    [[ "$key" =~ ^[[:space:]]*# ]] && continue
+                while IFS= read -r line || [[ -n "$line" ]]; do
+                    [[ "$line" =~ ^[[:space:]]*# || "$line" != *=* ]] && continue
+                    key="${line%%=*}"
+                    key="${key#"${key%%[![:space:]]*}"}"
+                    key="${key%"${key##*[![:space:]]}"}"
                     [[ -z "$key" ]] && continue
-                    env2["$key"]="$value"
+                    _safe_env_decode_value "${line#*=}"
+                    env2["$key"]="$_SAFE_ENV_VALUE"
                 done < "$dir2/env"
 
                 # Find all unique keys
