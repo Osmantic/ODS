@@ -188,6 +188,74 @@ else
 fi
 
 # ============================================================================
+# 10b. Non-mapping manifest service: user extension must warn+skip, not crash
+# ============================================================================
+# Regression for issue #5712: a manifest whose `service:` is a scalar crashed
+# the resolver with AttributeError, bypassing --skip-broken and breaking every
+# `ods` invocation while the malformed dir exists under data/user-extensions/.
+mkdir -p "$TEMP_DIR/data/user-extensions/badsvc"
+cat > "$TEMP_DIR/data/user-extensions/badsvc/manifest.yaml" <<'EOF'
+schema_version: "ods.services.v1"
+service: "oops"
+EOF
+printf 'services: {}\n' > "$TEMP_DIR/data/user-extensions/badsvc/compose.yaml"
+
+nonmap_exit=0
+nonmap_stderr_file="$TEMP_DIR/nonmap.stderr"
+nonmap_stdout=$(bash "$ROOT_DIR/scripts/resolve-compose-stack.sh" \
+    --script-dir "$TEMP_DIR" --tier 1 --gpu-backend nvidia --skip-broken \
+    2>"$nonmap_stderr_file") || nonmap_exit=$?
+nonmap_stderr=$(cat "$nonmap_stderr_file")
+
+if [[ $nonmap_exit -eq 0 ]]; then
+    pass "Non-mapping service: resolver completes under --skip-broken"
+else
+    fail "Non-mapping service: resolver crashed (exit $nonmap_exit)"
+fi
+
+if echo "$nonmap_stderr" | grep -q "AttributeError\|Traceback"; then
+    fail "Non-mapping service: Python traceback leaked (AttributeError not guarded)"
+else
+    pass "Non-mapping service: no AttributeError traceback"
+fi
+
+if echo "$nonmap_stderr" | grep -qi "WARNING.*service.*not a mapping"; then
+    pass "Non-mapping service: WARNING emitted for badsvc"
+else
+    fail "Non-mapping service: expected WARNING for badsvc"
+fi
+
+if echo "$nonmap_stdout" | grep -q "badsvc"; then
+    fail "Non-mapping service: badsvc should not be in output"
+else
+    pass "Non-mapping service: badsvc correctly excluded"
+fi
+
+# Also exercise the built-in loop with the same malformed shape.
+rm -rf "$TEMP_DIR/data/user-extensions/badsvc"
+mkdir -p "$TEMP_DIR/extensions/services/badsvc"
+cat > "$TEMP_DIR/extensions/services/badsvc/manifest.yaml" <<'EOF'
+schema_version: "ods.services.v1"
+service: "oops"
+EOF
+
+builtin_nonmap_exit=0
+builtin_nonmap_stderr_file="$TEMP_DIR/builtin-nonmap.stderr"
+bash "$ROOT_DIR/scripts/resolve-compose-stack.sh" \
+    --script-dir "$TEMP_DIR" --tier 1 --gpu-backend nvidia --skip-broken \
+    >/dev/null 2>"$builtin_nonmap_stderr_file" || builtin_nonmap_exit=$?
+builtin_nonmap_stderr=$(cat "$builtin_nonmap_stderr_file")
+
+if [[ $builtin_nonmap_exit -eq 0 ]] \
+    && ! echo "$builtin_nonmap_stderr" | grep -q "AttributeError\|Traceback" \
+    && echo "$builtin_nonmap_stderr" | grep -qi "WARNING.*service.*not a mapping"; then
+    pass "Non-mapping service: builtin loop warns+skips under --skip-broken"
+else
+    fail "Non-mapping service: builtin loop crashed or missed warning (exit $builtin_nonmap_exit)"
+fi
+rm -rf "$TEMP_DIR/extensions/services/badsvc"
+
+# ============================================================================
 # 11. Path-traversal hardening: compose_file with .. must not escape ext dir
 # ============================================================================
 # Clean prior broken-ext fixture so it doesn't interfere with traversal checks.

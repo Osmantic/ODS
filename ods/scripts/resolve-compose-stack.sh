@@ -586,6 +586,9 @@ if ext_dir.exists():
             if manifest.get("schema_version") != "ods.services.v1":
                 continue
             service = manifest.get("service", {})
+            if not isinstance(service, dict):
+                print(f"WARNING: manifest 'service' is not a mapping for {service_dir.name} at {manifest_path}, skipping", file=sys.stderr)
+                continue
             # Check GPU backend compatibility
             backends = service.get("gpu_backends", ["amd", "nvidia"])
             # "none" means CPU-only — compatible with any GPU backend
@@ -684,6 +687,9 @@ if user_ext_dir.exists():
                 # carve-out (legacy user extensions that pre-date the manifest convention)
                 # falls through unfiltered.
                 if isinstance(manifest, dict):
+                    if not isinstance(service, dict):
+                        print(f"WARNING: manifest 'service' is not a mapping for {service_dir.name} at {manifest_path}, skipping", file=sys.stderr)
+                        continue
                     backends = service.get("gpu_backends", ["amd", "nvidia"])
                     # "none" means CPU-only — compatible with any GPU backend
                     if gpu_backend not in backends and "all" not in backends and "none" not in backends:
