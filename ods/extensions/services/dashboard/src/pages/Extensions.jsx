@@ -9,6 +9,7 @@ import { TemplatePicker } from '../components/TemplatePicker'
 import { getTemplateStatus } from '../lib/templates'
 import { serviceUrl } from '../lib/serviceUrls'
 import { createRecoveryTracker } from '../utils/recoveryTracker'
+import { useExtensionFavorites } from '../hooks/useExtensionFavorites'
 import MetalMetricIcon from '../components/MetalMetricIcon'
 import FittedLibraryPage from '../components/FittedLibraryPage'
 import './extensions-refined.css'
@@ -95,6 +96,8 @@ const STATUS_DESCRIPTIONS = {
 }
 
 export default function Extensions({ compact = false }) {
+  const { favorites, favoriteNotice, toggleFavorite } = useExtensionFavorites()
+  const [favoritesOnly, setFavoritesOnly] = useState(false)
   const [catalog, setCatalog] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -371,6 +374,7 @@ export default function Extensions({ compact = false }) {
   // Filter extensions
   const query = search.toLowerCase()
   const filtered = extensions.filter(ext => {
+    if (favoritesOnly && !favorites.includes(ext.id)) return false
     if (libraryView === 'installed' && ['not_installed','incompatible'].includes(ext.status)) return false
     if (libraryView === 'available' && ext.status !== 'not_installed') return false
     if (libraryView === 'updates' && !ext.update_available) return false
@@ -473,8 +477,13 @@ export default function Extensions({ compact = false }) {
         />
       </div>
 
-      {/* Agent offline banner */}
       </>}
+      {!showingCollections && <div className="mb-4 flex flex-wrap items-center gap-3 text-sm text-theme-text">
+        <label><input type="checkbox" checked={favoritesOnly} onChange={event => setFavoritesOnly(event.target.checked)} className="mr-2" />Favorites only</label>
+        <span className="text-theme-text-muted">Saved in this browser; does not install or enable services.</span>
+        {favoriteNotice && <span role="status">{favoriteNotice}</span>}
+      </div>}
+      {/* Agent offline banner */}
       {catalog?.agent_available === false && (
         <div className="mb-4 rounded-xl border border-amber-500/20 bg-amber-500/[0.06] px-4 py-3 text-[11px] text-amber-300/80 flex items-center gap-2.5">
           <span className="shrink-0 text-amber-400">!</span>
@@ -500,13 +509,15 @@ export default function Extensions({ compact = false }) {
           <p className="text-[10px] uppercase tracking-[0.14em] text-theme-text-muted/40 mt-1.5">Try adjusting your search or filters</p>
         </div>
       ) : showingCollections ? <FittedLibraryPage key={`collections:${search}`} items={filteredCollections} label="Collection library">{items => <TemplatePicker templates={items} onApplied={fetchCatalog} variant="library"/>}</FittedLibraryPage> : (
-        <FittedLibraryPage key={`${libraryView}:${search}:${statusFilter}:${category}`} items={filtered} label="Extension library">
+        <FittedLibraryPage key={`${libraryView}:${search}:${statusFilter}:${category}:${favoritesOnly}`} items={filtered} label="Extension library">
         {items => (
         <div className="extensions-list" aria-label="Extension library">
           {items.map(ext => (
             <ExtensionCard
               key={ext.id}
               ext={ext}
+              favorite={favorites.includes(ext.id)}
+              onFavorite={() => toggleFavorite(ext.id)}
               gpuBackend={catalog?.gpu_backend}
               agentAvailable={catalog?.agent_available}
               onDetails={() => setExpanded(ext.id)}
@@ -647,7 +658,7 @@ function LlmSwapBadge({ llm }) {
   )
 }
 
-function ExtensionCard({ ext, gpuBackend, agentAvailable, onDetails, onConsole, onAction, mutating, progressData }) {
+function ExtensionCard({ ext, favorite, onFavorite, gpuBackend, agentAvailable, onDetails, onConsole, onAction, mutating, progressData }) {
   const Icon = extensionIcon(ext)
   const status = ext.status || 'not_installed'
   const statusStyle = STATUS_STYLES[status] || STATUS_STYLES.not_installed
@@ -691,6 +702,7 @@ function ExtensionCard({ ext, gpuBackend, agentAvailable, onDetails, onConsole, 
           </div>
           <div className="flex flex-wrap items-center justify-end gap-2">
             <LlmSwapBadge llm={ext.llm} />
+            <button type="button" aria-label={`Favorite ${ext.name}`} aria-pressed={favorite} onClick={onFavorite} className="rounded border border-theme-border px-2 py-1 text-xs text-theme-text">{favorite ? 'Saved' : 'Save'}</button>
             {isCore ? (
               <span
                 className="text-[10px] px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-400 border border-blue-500/15 uppercase tracking-wider cursor-help"
