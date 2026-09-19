@@ -515,3 +515,92 @@ def test_oauth_providers_reports_credential_status(oauth_client, monkeypatch):
     assert by_id["google"]["configured"] is True
     assert by_id["spotify"]["configured"] is False
     assert by_id["google"]["found_credentials"] == ["hermes/google_client_secret.json"]
+
+
+# ---------------------------------------------------------------------------
+# Malformed-but-parseable nonce/callback JSON — valid JSON of the wrong
+# shape must never 500 init, callback, or pending.
+# ---------------------------------------------------------------------------
+
+
+def test_oauth_init_tolerates_malformed_nonce_files(oauth_client):
+    """Structurally invalid nonce files get pruned like expired ones
+    instead of crashing every subsequent /api/oauth/init."""
+    nonce_dir = oauth_client.tmp / "oauth-nonces"
+    nonce_dir.mkdir(parents=True, exist_ok=True)
+    (nonce_dir / ("a" * 30 + ".json")).write_text("[1, 2, 3]")
+    (nonce_dir / ("b" * 30 + ".json")).write_text(
+        json.dumps({"created_at": "not-an-int", "ttl_seconds": {"x": 1}})
+    )
+
+    resp = oauth_client.post(
+        "/api/oauth/init",
+        json={"skill_id": "google-workspace"},
+        headers=oauth_client.auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    assert not (nonce_dir / ("a" * 30 + ".json")).exists()
+    assert not (nonce_dir / ("b" * 30 + ".json")).exists()
+
+
+def test_callback_tolerates_non_dict_nonce(oauth_client):
+    """A nonce file containing a JSON array is consumed and answered with
+    the friendly expired page — never a bare 500 and never replayable."""
+    state = "a" * 40
+    nonce_dir = oauth_client.tmp / "oauth-nonces"
+    nonce_dir.mkdir(parents=True, exist_ok=True)
+    nonce_file = nonce_dir / f"{state}.json"
+    nonce_file.write_text("[1, 2, 3]")
+
+    resp = oauth_client.get(
+        "/api/oauth/callback", params={"code": "fake", "state": state}
+    )
+    assert resp.status_code == 400
+    assert not nonce_file.exists(), "malformed nonce should be consumed"
+    assert not (oauth_client.tmp / "oauth_callback.json").exists()
+
+
+def test_callback_tolerates_malformed_nonce_fields(oauth_client):
+    """created_at/ttl_seconds of the wrong type behave like expiry."""
+    state = "b" * 40
+    nonce_dir = oauth_client.tmp / "oauth-nonces"
+    nonce_dir.mkdir(parents=True, exist_ok=True)
+    nonce_file = nonce_dir / f"{state}.json"
+    nonce_file.write_text(
+        json.dumps({"created_at": "not-an-int", "ttl_seconds": {"x": 1}})
+    )
+
+    resp = oauth_client.get(
+        "/api/oauth/callback", params={"code": "fake", "state": state}
+    )
+    assert resp.status_code == 400
+    assert not nonce_file.exists()
+    assert not (oauth_client.tmp / "oauth_callback.json").exists()
+
+
+def test_oauth_pending_tolerates_non_dict_callback_file(oauth_client):
+    cb_dir = oauth_client.tmp
+    cb_dir.mkdir(parents=True, exist_ok=True)
+    (cb_dir / "oauth_callback.json").write_text("[1, 2]")
+
+    resp = oauth_client.get(
+        "/api/oauth/pending", headers=oauth_client.auth_headers
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["pending"] is False
+    assert "error" in resp.json()
+
+
+def test_oauth_pending_tolerates_malformed_captured_at(oauth_client):
+    cb_dir = oauth_client.tmp
+    cb_dir.mkdir(parents=True, exist_ok=True)
+    (cb_dir / "oauth_callback.json").write_text(
+        json.dumps({"state": "x", "captured_at": "not-an-int"})
+    )
+
+    resp = oauth_client.get(
+        "/api/oauth/pending", headers=oauth_client.auth_headers
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["pending"] is True
+    assert resp.json()["age_seconds"] >= 0

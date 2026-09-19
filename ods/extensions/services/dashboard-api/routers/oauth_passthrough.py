@@ -232,6 +232,14 @@ def _consume_nonce(state: str) -> None:
         logger.debug("could not unlink nonce %s", path, exc_info=True)
 
 
+def _nonce_int(value) -> int:
+    """int() that never raises — malformed nonce fields coerce to 0."""
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _prune_expired_nonces(nonce_dir: Path) -> None:
     """Best-effort cleanup of expired nonces. Called opportunistically on
     init so a long-running deployment doesn't accumulate stale files.
@@ -251,8 +259,10 @@ def _prune_expired_nonces(nonce_dir: Path) -> None:
             except OSError:
                 pass
             continue
-        created = int(payload.get("created_at", 0) or 0)
-        ttl = int(payload.get("ttl_seconds", 0) or 0)
+        if not isinstance(payload, dict):
+            payload = {}
+        created = _nonce_int(payload.get("created_at"))
+        ttl = _nonce_int(payload.get("ttl_seconds"))
         if not created or not ttl or (now - created) > ttl:
             try:
                 path.unlink(missing_ok=True)
@@ -454,9 +464,11 @@ async def oauth_callback(
             status_code=400,
         )
 
+    if not isinstance(nonce_payload, dict):
+        nonce_payload = {}
     now = int(time.time())
-    created = int(nonce_payload.get("created_at", 0) or 0)
-    ttl = int(nonce_payload.get("ttl_seconds", 0) or 0)
+    created = _nonce_int(nonce_payload.get("created_at"))
+    ttl = _nonce_int(nonce_payload.get("ttl_seconds"))
     if not created or not ttl or (now - created) > ttl:
         try:
             nonce_path.unlink(missing_ok=True)
@@ -528,7 +540,9 @@ async def oauth_pending(api_key: str = Depends(verify_api_key)):
         payload = json.loads(target.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         return {"pending": False, "error": f"could not read callback file: {exc}"}
-    age = max(0, int(time.time()) - int(payload.get("captured_at", 0)))
+    if not isinstance(payload, dict):
+        return {"pending": False, "error": "callback file is not a JSON object"}
+    age = max(0, int(time.time()) - _nonce_int(payload.get("captured_at")))
     return {
         "pending": True,
         "state": payload.get("state"),
