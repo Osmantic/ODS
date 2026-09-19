@@ -172,24 +172,29 @@ def find_llama_subset(ordered_subsets: list, model_size_mb: float) -> Subset:
     Returns the first match (best topology, smallest size, most VRAM).
     """
     for subset in ordered_subsets:
-        if subset.total_vram_mb >= model_size_mb and subset_can_host_equal_split(subset, model_size_mb):
+        if subset.total_vram_mb >= model_size_mb and subset_can_host_model(subset, model_size_mb):
             return subset
     return None
 
 
-def subset_can_host_equal_split(subset: Subset, model_size_mb: float) -> bool:
-    """Conservative fit check for llama.cpp layer/pipeline splits.
+def subset_can_host_model(subset: Subset, model_size_mb: float) -> bool:
+    """Check the model-file share assigned by the actual emitted split.
 
-    ODS emits equal tensor-split weights for non-heterogeneous pipeline splits.
-    A multi-GPU host with one mostly busy GPU can therefore have enough total
-    VRAM but still crash when llama.cpp allocates that GPU's share. Treat free
-    VRAM as the scheduling budget when topology provides it, and require every
-    selected GPU to be able to carry an equal share of the model file.
+    Heterogeneous tensor/hybrid plans publish proportional free-VRAM weights.
+    Pipeline plans without explicit weights still use the installer's equal
+    split, so those retain the conservative per-device equal-share check.
+    This does not estimate KV-cache or runtime overhead.
     """
-    if not subset.gpus:
+    if not subset.gpus or any(g.memory_mb <= 0 for g in subset.gpus):
         return False
-    required_per_gpu = model_size_mb / len(subset.gpus)
-    return all(g.memory_mb >= required_per_gpu for g in subset.gpus)
+    weights = select_parallelism(subset).tensor_split
+    if weights is None:
+        weights = [1.0] * len(subset.gpus)
+    total_weight = sum(weights)
+    if total_weight <= 0 or any(weight <= 0 for weight in weights):
+        return False
+    return all(model_size_mb * weight / total_weight <= gpu.memory_mb
+               for gpu, weight in zip(subset.gpus, weights))
 
 
 def span_subsets(all_gpus: list, rank_matrix: dict, model_size_mb: float, ordered_subsets: list) -> Subset:
@@ -212,7 +217,7 @@ def span_subsets(all_gpus: list, rank_matrix: dict, model_size_mb: float, ordere
     for gpu in remaining:
         accumulated.append(gpu)
         candidate = compute_subset(accumulated, rank_matrix)
-        if candidate.total_vram_mb >= model_size_mb and subset_can_host_equal_split(candidate, model_size_mb):
+        if candidate.total_vram_mb >= model_size_mb and subset_can_host_model(candidate, model_size_mb):
             return candidate
 
     raise ValueError(
@@ -288,7 +293,7 @@ def assign_services(all_gpus: list, llama_gpus: list, rank_matrix: dict, enabled
             expanded = compute_subset(final_llama_gpus + remaining[3:], rank_matrix)
             # Adding a mostly occupied device can make an equal layer split fail
             # even though the originally selected LLM group comfortably fits.
-            if subset_can_host_equal_split(expanded, model_size_mb):
+            if subset_can_host_model(expanded, model_size_mb):
                 final_llama_gpus = expanded.gpus
         strategy = "dedicated"
 

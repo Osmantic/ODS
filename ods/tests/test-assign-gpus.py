@@ -652,3 +652,60 @@ class TestParallelismModeSelection:
     def test_mem_util_pipeline_is_095(self):
         _, out, _ = run(fixture_path("nvidia_smi_topo_matrix_4gpus_soc.json"), 100000)
         assert parallelism(out)["gpu_memory_utilization"] == 0.95
+
+
+class TestUnevenFreeVramSplits:
+    def topology(self, tmp_path, rank, free=(24, 48)):
+        path = tmp_path / 'uneven-free.json'
+        path.write_text(json.dumps({
+            'gpu_count': len(free),
+            'gpus': [{'index': index, 'uuid': f'GPU-{index}', 'name': '80 GB fixture',
+                      'memory_gb': 80, 'memory_free_gb': amount}
+                     for index, amount in enumerate(free)],
+            'links': [{'gpu_a': a, 'gpu_b': b, 'rank': rank, 'link_type': 'fixture', 'link_label': 'fixture'}
+                      for a in range(len(free)) for b in range(a + 1, len(free))],
+        }))
+        return str(path)
+
+    def test_tensor_plan_uses_its_proportional_split_for_capacity(self, tmp_path):
+        size = 60 * 1024
+        code, output, error = run(self.topology(tmp_path, 100), size, 'llama_server')
+        assert code == 0, error
+        plan = llama(output)
+        assert plan['parallelism']['mode'] == 'tensor'
+        assert set(plan['gpu_indices']) == {0, 1}
+        weights = plan['parallelism']['tensor_split']
+        capacities = {0: 24 * 1024, 1: 48 * 1024}
+        for index, weight in zip(plan['gpu_indices'], weights):
+            assert 0 < size * weight / sum(weights) <= capacities[index]
+
+    def test_equal_pipeline_plan_still_rejects_uneven_overallocation(self, tmp_path):
+        for rank in (0, 30):
+            code, output, error = run(self.topology(tmp_path, rank), 60 * 1024, 'llama_server')
+            assert code == 1 and output is None
+            assert 'exceeds assignable free VRAM' in error
+
+    def test_rounded_weights_and_total_capacity_are_checked(self, tmp_path):
+        # 1/3 rounds down and 2/3 rounds up: exact aggregate fit is not
+        # sufficient when the actual published split overfills one device.
+        for size in (72 * 1024, 73 * 1024):
+            code, output, error = run(self.topology(tmp_path, 100), size, 'llama_server')
+            assert code == 1 and output is None
+            assert 'exceeds assignable free VRAM' in error
+
+    def test_zero_free_device_is_not_added_as_a_tensor_participant(self, tmp_path):
+        code, output, error = run(self.topology(tmp_path, 100, (0, 48)), 40 * 1024, 'llama_server')
+        assert code == 0, error
+        assert llama(output)['gpu_indices'] == [1]
+
+    def test_hybrid_plan_preserves_every_proportional_capacity(self, tmp_path):
+        free = (16, 32, 32, 32)
+        size = 104 * 1024
+        code, output, error = run(self.topology(tmp_path, 100, free), size, 'llama_server')
+        assert code == 0, error
+        plan = llama(output)
+        assert plan['parallelism']['mode'] == 'hybrid'
+        assert set(plan['gpu_indices']) == {0, 1, 2, 3}
+        weights = plan['parallelism']['tensor_split']
+        for index, weight in zip(plan['gpu_indices'], weights):
+            assert 0 < size * weight / sum(weights) <= free[index] * 1024
