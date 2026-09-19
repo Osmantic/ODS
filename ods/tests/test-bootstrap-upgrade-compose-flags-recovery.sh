@@ -55,6 +55,18 @@ printf 'Linux\n'
 EOF
 chmod +x "$fakebin/uname"
 
+# The fake uname forces bootstrap-upgrade's Linux path, which acquires the
+# model lifecycle lock via flock(1) — util-linux only, absent on macOS and
+# some minimal environments. The lock guards a single process here, so a
+# no-op shim keeps the fixture faithful on hosts without flock.
+if ! command -v flock >/dev/null 2>&1; then
+    cat > "$fakebin/flock" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+    chmod +x "$fakebin/flock"
+fi
+
 # Docker is "up" with a running llama-server so the restart branch is taken.
 # inspect reports a restarting container so the health wait aborts quickly.
 cat > "$fakebin/docker" <<'EOF'
