@@ -21,6 +21,12 @@ Your data is preserved when disabling. To re-enable later: `ods enable text-gene
 - **URL:** `http://localhost:7862`
 - **API:** `http://localhost:5001` (OpenAI-compatible)
 
+Set `TEXT_GEN_WEBUI_API_PORT` in the ODS `.env` to change the host API port,
+then recreate the service. For example, `TEXT_GEN_WEBUI_API_PORT=15001` exposes
+`http://localhost:15001/v1`; the container continues to listen on port 5001.
+This applies to both NVIDIA and AMD deployments. The web UI port is configured
+separately with `TEXT_GEN_WEBUI_PORT`.
+
 ## First-Time Setup
 
 1. Enable the service: `ods enable text-generation-webui`
