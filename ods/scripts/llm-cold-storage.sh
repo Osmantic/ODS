@@ -127,6 +127,7 @@ do_archive() {
             else
                 log "ARCHIVING: $name ($size, idle ${idle_days}d)"
                 # Move to cold storage
+                mkdir -p "$COLD_DIR"
                 mv "$model_dir" "$COLD_DIR/$name"
                 # Create symlink so HF cache still resolves
                 ln -s "$COLD_DIR/$name" "${model_dir%/}"
