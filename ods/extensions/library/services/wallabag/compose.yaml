@@ -1,0 +1,30 @@
+services:
+  wallabag:
+    image: wallabag/wallabag:2.6.10
+    container_name: ods-wallabag
+    restart: unless-stopped
+    security_opt: [no-new-privileges:true]
+    environment:
+      SYMFONY__ENV__DATABASE_DRIVER: pdo_sqlite
+      SYMFONY__ENV__DOMAIN_NAME: ${SYMFONY__ENV__DOMAIN_NAME:-http://localhost:7853}
+      SYMFONY__ENV__SERVER_NAME: "Dream Server Wallabag"
+    volumes:
+      - ./data/wallabag/data:/var/www/wallabag/data
+      - ./data/wallabag/images:/var/www/wallabag/web/assets/images
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${WALLABAG_PORT:-7853}:80"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:80/api/version"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+    networks: [ods-network]
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+networks:
+  ods-network:
+    external: true
