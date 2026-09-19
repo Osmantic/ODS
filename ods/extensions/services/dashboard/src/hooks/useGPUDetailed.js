@@ -16,9 +16,10 @@ export function useGPUDetailed() {
     // the replacement lifetime or release its in-flight guard.
     let fetchInFlight = false
     let disposed = false
+    let hasFetched = false
     let activeController = null
     const fetchAll = async () => {
-      if (disposed || document.hidden || fetchInFlight) return
+      if (disposed || (document.hidden && hasFetched) || fetchInFlight) return
       fetchInFlight = true
       const controller = new AbortController()
       activeController = controller
@@ -38,6 +39,7 @@ export function useGPUDetailed() {
         if (details !== undefined) setDetailed(details)
         if (samples !== undefined) setHistory(samples)
         if (links !== undefined) setTopology(links)
+        hasFetched = true
         setError(null)
       } catch (err) {
         if (!disposed) setError(err.message)
