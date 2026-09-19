@@ -16,6 +16,39 @@ ods disable piper-audio
 
 Your data is preserved when disabling. To re-enable later: `ods enable piper-audio`
 
+## Voice model storage
+
+The shipped LinuxServer Piper 1.6.3 process uses `/config` for both voice lookup
+and downloads. ODS mounts `data/piper` there, so `.onnx` models and their matching
+`.onnx.json` configuration files survive container recreation. Put custom voice
+pairs directly in `data/piper`, then select their voice name with `PIPER_VOICE`.
+
+Older ODS definitions mounted only `/config/piper`. The image declares a volume
+at the parent `/config`, so downloaded models went to an anonymous Docker volume
+outside `data/piper`. Compose can reuse that anonymous volume during some
+recreations, but removing the container and creating it again does not reconnect
+that cache. Before replacing an old container, preserve files you need:
+
+```bash
+# Run from the ODS install directory, while the old container still exists.
+docker stop ods-piper-audio
+mkdir piper-config-backup
+docker cp ods-piper-audio:/config/. piper-config-backup/
+```
+
+Keep that backup and the existing `data/piper` directory. Copy the required voice
+`.onnx`/`.onnx.json` pairs from the backup's top level into `data/piper`, checking
+for same-named files before replacing anything. Apply the updated definition and
+recreate through ODS, then verify the configured voice before removing backups.
+Standard voices can be downloaded again. After container removal, recovery of
+custom voices requires a backup or identifying the retained anonymous volume;
+removing that volume also removes its files. If the update is postponed, start
+the stopped container with `docker start ods-piper-audio`.
+
+On rollback, retain the `/config` mount target to keep using the persistent voice
+directory. The change affects storage placement only; Wyoming's port and voice
+selection are unchanged. On Windows, run the commands in the ODS WSL terminal.
+
 ## Access
 
 - **Wyoming Protocol:** `tcp://localhost:10200`
