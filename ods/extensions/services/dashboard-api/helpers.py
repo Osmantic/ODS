@@ -1417,3 +1417,15 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def list_difference_order_preserved_safe(list1: list | None, list2: list | None) -> list:
+    """Safely compute list1 - list2 relative difference while preserving list1 order.
+    Returns [] on None or non-list inputs.
+    """
+    if not isinstance(list1, (list, tuple)):
+        return []
+    if not isinstance(list2, (list, tuple)) or not list2:
+        return list(list1)
+    exclude_set = set(list2)
+    return [x for x in list1 if x not in exclude_set]
