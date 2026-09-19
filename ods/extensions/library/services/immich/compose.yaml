@@ -20,6 +20,8 @@ services:
         condition: service_healthy
       immich-redis:
         condition: service_healthy
+      immich-machine-learning:
+        condition: service_started
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -34,6 +36,23 @@ services:
       timeout: 10s
       retries: 3
       start_period: 120s
+    networks:
+      - ods-network
+
+  immich-machine-learning:
+    image: ghcr.io/immich-app/immich-machine-learning:v1.131.3
+    container_name: ods-immich-machine-learning
+    volumes:
+      - ./data/immich/model-cache:/cache
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: '2.0'
+    # Keep the image's /ping healthcheck and internal port 3003.
     networks:
       - ods-network
 

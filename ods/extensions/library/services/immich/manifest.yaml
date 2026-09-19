@@ -31,7 +31,7 @@ features:
     category: media
     requirements:
       services: [immich]
-      vram_gb: 2
+      vram_gb: 0
     enabled_services_all: [immich]
     setup_time: ~3 minutes
     priority: 14
