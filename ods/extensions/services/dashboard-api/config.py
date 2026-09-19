@@ -869,3 +869,19 @@ def load_templates() -> list[dict]:
 
 
 TEMPLATES = load_templates()
+
+
+# ── config guard: coerce_port_int ──────────────────────────────
+def coerce_port_int(value: Any, default: int = 8080) -> int:
+    """Return *value* as a valid TCP port (1-65535) or *default*.
+
+    Accepts integers, numeric strings and float-like strings.
+    Returns *default* for None, empty strings, or out-of-range inputs.
+    """
+    if value is None:
+        return default
+    try:
+        port = int(float(str(value).strip()))
+    except (ValueError, TypeError):
+        return default
+    return port if 1 <= port <= 65535 else default
