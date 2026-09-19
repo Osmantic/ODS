@@ -380,7 +380,7 @@ async def _fetch_token_spy_report(start: str, end: str) -> dict[str, Any]:
             end,
             detail=f"Token Spy returned HTTP {exc.code}: {detail[:160]}",
         )
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError, TypeError) as exc:
         return _empty_report(start, end, detail=f"Token Spy unavailable: {exc}")
 
 
@@ -390,6 +390,8 @@ def _request_token_spy_report(start: str, end: str, headers: dict[str, str]) -> 
     request = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(request, timeout=10) as response:
         payload = json.loads(response.read().decode("utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("Token Spy report payload must be a dictionary")
     payload["source"] = {
         "name": "token-spy",
         "status": "ok",
