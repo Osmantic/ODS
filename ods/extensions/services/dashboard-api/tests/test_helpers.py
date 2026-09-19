@@ -1801,3 +1801,14 @@ def test_flatten_bounds_cycles_and_large_depth_without_losing_empty_leaves():
         nested = {"child": nested}
     result = dict_flatten_nested_safe(nested, max_depth=100000)
     assert len(next(iter(result)).split(".")) == 128
+
+
+class TestStringMaskIpAddressSafe:
+    def test_valid_masking(self):
+        from helpers import string_mask_ip_address_safe
+        assert string_mask_ip_address_safe("192.168.1.100") == "192.168.x.x"
+
+    def test_invalid_inputs(self):
+        from helpers import string_mask_ip_address_safe
+        assert string_mask_ip_address_safe(None) == ""
+        assert string_mask_ip_address_safe("invalid_ip") == "invalid_ip"
