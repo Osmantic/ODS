@@ -210,9 +210,12 @@ amd_gpu_runtime_devices_available() {
 }
 
 amd_gpu_missing_devices_csv() {
-    local missing
-    missing="$(amd_gpu_missing_runtime_devices | xargs || true)"
-    printf '%s' "${missing// /, }"
+    local missing_arr=($(amd_gpu_missing_runtime_devices))
+    if [[ ${#missing_arr[@]} -gt 0 ]]; then
+        local joined
+        joined=$(IFS=','; echo "${missing_arr[*]}")
+        printf '%s' "${joined//,/, }"
+    fi
 }
 
 show_amd_gpu_device_guidance() {
