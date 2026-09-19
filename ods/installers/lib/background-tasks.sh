@@ -42,7 +42,11 @@ pid = int(sys.argv[3])
 description = sys.argv[4]
 log_file = sys.argv[5]
 
-tasks = json.loads(registry_path.read_text())
+try:
+    tasks = json.loads(registry_path.read_text())
+except (json.JSONDecodeError, FileNotFoundError):
+    tasks = []
+
 tasks.append({
     "id": task_id,
     "pid": pid,
