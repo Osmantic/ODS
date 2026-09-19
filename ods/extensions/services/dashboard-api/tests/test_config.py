@@ -417,6 +417,17 @@ class TestLoadExtensionManifests:
         assert services["perplexica"]["llm"]["probe"]["path"] == "/api/search"
         assert services["privacy-shield"]["llm"]["probe"]["path"] == "/v1/chat/completions"
 
+    def test_open_webui_core_consumer_is_discoverable_on_cpu_backend(self):
+        """CPU/external-LLM installs still run Open WebUI through the gateway."""
+        services_dir = Path(__file__).resolve().parents[2]
+
+        services, _, errors = load_extension_manifests(services_dir, "cpu")
+
+        assert errors == []
+        assert services["open-webui"]["category"] == "core"
+        assert services["open-webui"]["llm"]["consumes"] is True
+        assert services["open-webui"]["llm"]["route"] == "gateway"
+
     def test_external_port_default_zero_disables_external_port_fallback(self, tmp_path):
         svc_dir = tmp_path / "internal-service"
         svc_dir.mkdir()
