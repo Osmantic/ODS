@@ -22,7 +22,7 @@ class LeaseClaim:
     def __init__(self,directory,run_id,session_id,revision):
         if not isinstance(run_id,str) or not RUN_ID.fullmatch(run_id):
             raise StoreError('provider-run-invalid')
-        if not isinstance(session_id,str) or not session_id or len(session_id)>256:
+        if not isinstance(session_id,str) or not session_id or len(session_id)>256 or session_id != session_id.strip():
             raise StoreError('provider-session-invalid')
         if type(revision) is not int or not 0<=revision<=2**53-1:
             raise StoreError('provider-revision-invalid')
