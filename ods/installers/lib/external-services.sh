@@ -131,6 +131,8 @@ external_llm_detect_provider() {
 
 external_llm_resolve_model() {
     local provider="${1:-}" url="${2:-}" requested="${3:-}" target="${4:-}"
+    [[ -n "$provider" && -n "$url" ]] || return 1
+
     local models
     models="$(external_llm_models "$provider" "$url")" || return 1
     if [[ -n "$requested" ]]; then
