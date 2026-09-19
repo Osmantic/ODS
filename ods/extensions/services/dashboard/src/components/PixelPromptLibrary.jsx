@@ -35,7 +35,14 @@ export default function PixelPromptLibrary({input, disabled, onInsert}) {
   }, [editing, removing])
   function rememberOpener(event) {listOpener.current = {id:event.currentTarget.dataset.promptId, action:event.currentTarget.dataset.promptAction}}
   function close() {listOpener.current = null; dialog.current?.close(); setEditing(null); setRemoving(null); trigger.current?.focus()}
-  function edit(item) {previous.current = item; setEditing(item || {id:'prompt-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2, 10), title:'', text:input}); setError('')}
+  function edit(item, duplicate = false) {
+    previous.current = duplicate ? null : item
+    setEditing(item && !duplicate ? item : {
+      id:'prompt-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2, 10),
+      title:duplicate ? item.title : '', text:duplicate ? item.text : input,
+    })
+    setError('')
+  }
   function save(event) {
     event.preventDefault()
     try {setItems(writeSavedPrompt({...editing, title:editing.title.trim()}, previous.current)); setEditing(null); setError('')}
@@ -53,6 +60,7 @@ export default function PixelPromptLibrary({input, disabled, onInsert}) {
       <h3>Saved prompts</h3><p>Reusable text stored in this browser. Insert a prompt into your draft, then review it before sending.</p>
       {error && <p role="alert">{error}</p>}
       {editing ? <form onSubmit={save}>
+        {!previous.current && <p>Save as a new prompt. Existing prompts are kept.</p>}
         <label>Prompt name<input autoFocus className={fieldClass} maxLength={80} value={editing.title} onChange={event => setEditing({...editing, title:event.target.value})}/></label>
         <label>Prompt text<textarea className={fieldClass} rows={6} maxLength={16000} value={editing.text} onChange={event => setEditing({...editing, text:event.target.value})}/></label>
         <footer><button type="button" onClick={() => {setEditing(null); setError('')}}>Cancel edit</button><button type="submit">Save prompt</button></footer>
@@ -75,6 +83,7 @@ export default function PixelPromptLibrary({input, disabled, onInsert}) {
             <div className="mt-2 flex flex-wrap gap-2">
             <button className={buttonClass} type="button" disabled={disabled || !fits} aria-label={`Insert prompt: ${item.title}`} onClick={() => {onInsert(item.text); close()}}>Insert</button>
             <button className={buttonClass} type="button" data-prompt-id={item.id} data-prompt-action="edit" aria-label={`Edit prompt: ${item.title}`} onClick={event => {rememberOpener(event); edit(item)}}>Edit</button>
+            <button className={buttonClass} type="button" disabled={items.length >= 30} data-prompt-id={item.id} data-prompt-action="duplicate" aria-label={`Duplicate prompt: ${item.title}`} onClick={event => {rememberOpener(event); edit(item, true)}}>Duplicate</button>
             <button className={buttonClass} type="button" data-prompt-id={item.id} data-prompt-action="delete" aria-label={`Delete prompt: ${item.title}`} onClick={event => {rememberOpener(event); setRemoving(item); setError('')}}>Delete</button>
             </div>
             {!fits && <p>Shorten the current draft before inserting this prompt.</p>}
