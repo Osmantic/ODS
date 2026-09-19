@@ -150,9 +150,9 @@ def transition_decision(
         return {"allowed": False, "reason": "invalid-request"}
     if not isinstance(requested_mode, str) or requested_mode not in VALID_MODES:
         return {"allowed": False, "reason": "invalid-request"}
-    if isinstance(expected_revision, bool) or not isinstance(expected_revision, int) or expected_revision < 0:
+    if isinstance(expected_revision, bool) or not isinstance(expected_revision, int) or not 0 <= expected_revision < 2**53 - 1:
         return {"allowed": False, "reason": "invalid-request"}
-    if isinstance(current_revision, bool) or not isinstance(current_revision, int) or current_revision < 0:
+    if isinstance(current_revision, bool) or not isinstance(current_revision, int) or not 0 <= current_revision < 2**53 - 1:
         return {"allowed": False, "reason": "invalid-request"}
     if not isinstance(confirmed, bool):
         return {"allowed": False, "reason": "invalid-request"}
