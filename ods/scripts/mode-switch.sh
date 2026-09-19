@@ -62,7 +62,7 @@ show_status() {
 }
 
 switch_mode() {
-    local mode="$1"
+    local mode="${1,,}"
 
     # Validate
     case "$mode" in
