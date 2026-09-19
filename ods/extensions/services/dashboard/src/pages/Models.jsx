@@ -20,6 +20,7 @@ import { Link } from 'react-router-dom'
 import { useModels } from '../hooks/useModels'
 import { useDownloadProgress } from '../hooks/useDownloadProgress'
 import HuggingFaceModelBrowser from '../components/model-library/HuggingFaceModelBrowser'
+import ModelComparison from '../components/model-library/ModelComparison'
 import MetalMetricIcon from '../components/MetalMetricIcon'
 import FittedLibraryPage from '../components/FittedLibraryPage'
 import './models-refined.css'
@@ -370,6 +371,7 @@ export default function Models({ compact = false }) {
         recommendedCount={odsCatalogModels.length}
       />
 
+      <ModelComparison models={models} />
       {libraryScope === 'huggingface' ? (
         <section
           ref={libraryRef}
