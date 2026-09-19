@@ -124,6 +124,11 @@ def _filter_tools(body: dict, cfg: dict, result: FilterResult,
 
     if removed_names:
         body["tools"] = kept
+        choice = body.get("tool_choice")
+        selected_function = choice.get("function") if isinstance(choice, dict) else None
+        if isinstance(selected_function, dict) and selected_function.get("name") in removed_names:
+            # A forced choice cannot refer to a tool the filter removed.
+            body.pop("tool_choice")
         # If all tools removed, also drop tool_choice to avoid API errors
         if not kept:
             body.pop("tools", None)
