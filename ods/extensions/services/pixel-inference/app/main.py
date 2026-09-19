@@ -108,6 +108,10 @@ def _prepare(payload, grant):
     if 'tools' in payload and (not isinstance(payload['tools'], list) or any(
             not isinstance(tool, dict) or tool.get('type') != 'function' for tool in payload['tools'])):
         raise ShareError(400, 'unsupported_tools')
+    if 'stop' in payload:
+        stop = payload['stop']
+        if not (isinstance(stop, str) or (isinstance(stop, list) and all(isinstance(s, str) for s in stop) and len(stop) <= 4)):
+            raise ShareError(400, 'invalid_stop')
     if 'chat_template_kwargs' in payload and (
             not isinstance(payload['chat_template_kwargs'], dict)
             or set(payload['chat_template_kwargs']) != {'enable_thinking'}
