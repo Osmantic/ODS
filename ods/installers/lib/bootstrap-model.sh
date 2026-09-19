@@ -44,14 +44,14 @@ bootstrap_needed() {
     [[ -f "${INSTALL_DIR}/data/models/${GGUF_FILE}" ]] && return 1
 
     # User opted out
-    [[ "${NO_BOOTSTRAP:-false}" == "true" ]] && return 1
+    [[ "${NO_BOOTSTRAP:-false}" =~ ^(true|1)$ ]] && return 1
 
     # Offline mode — can't download anything
-    [[ "${OFFLINE_MODE:-false}" == "true" ]] && return 1
+    [[ "${OFFLINE_MODE:-false}" =~ ^(true|1)$ ]] && return 1
 
     # Cloud mode — no local model needed
     [[ "${ODS_MODE:-local}" == "cloud" ]] && return 1
-    [[ "${LEMONADE_EXTERNAL:-false}" == "true" ]] && return 1
+    [[ "${LEMONADE_EXTERNAL:-false}" =~ ^(true|1)$ ]] && return 1
 
     return 0
 }
