@@ -1,0 +1,50 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: couchdb
+  name: CouchDB (Local JSON Documents)
+  description: "Authenticated single-node JSON documents, binary attachments, revisions and replication APIs."
+  aliases: [couch]
+  container_name: ods-couchdb
+  container_uid: 5984
+  default_host: couchdb
+  port: 5984
+  external_port_env: COUCHDB_PORT
+  external_port_default: 5984
+  ui_path: /_utils/
+  health: /_up
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [database, documents, replication]
+  env_vars:
+    - key: COUCHDB_PORT
+      description: "Loopback HTTP and Fauxton port"
+      default: "5984"
+    - key: COUCHDB_PASSWORD
+      description: "Initial ods administrator password; 16-128 URL-safe characters"
+      required: true
+      secret: true
+    - key: COUCHDB_SECRET
+      description: "Initial cookie signing secret; 32-128 URL-safe characters"
+      required: true
+      secret: true
+features:
+  - id: local-json-documents
+    name: Manage Local JSON Documents
+    description: "Store revisioned JSON documents and attachments in a local CouchDB node"
+    icon: Database
+    category: storage
+    requirements:
+      services: [couchdb]
+      vram_gb: 0
+    enabled_services_all: [couchdb]
+    setup_time: "~1 minute"
+    priority: 40
+    launch:
+      type: service
+      service: couchdb
+      path: /_utils/

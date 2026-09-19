@@ -1,0 +1,62 @@
+services:
+  couchdb:
+    image: couchdb:3.5.2.1@sha256:9ea24cbd76522fe845d1c32c7fd1dcfc8a3ba73dcc4817d62f8a7f7f1dfaffe3
+    container_name: ods-couchdb
+    user: "5984:5984"
+    entrypoint: [tini, --, /bin/bash, -euc]
+    command:
+      - |
+        set -o pipefail
+        for key in COUCHDB_PASSWORD COUCHDB_SECRET; do
+          value=$${!key}
+          minimum=16
+          if [ "$$key" = COUCHDB_SECRET ]; then minimum=32; fi
+          if [[ ! "$$value" =~ ^[A-Za-z0-9_-]+$$ ]] || [ "$${#value}" -lt "$$minimum" ] || [ "$${#value}" -gt 128 ]; then
+            printf '%s requires %s-128 URL-safe characters\n' "$$key" "$$minimum" >&2
+            exit 1
+          fi
+        done
+        unset value
+        umask 077
+        exec /docker-entrypoint.sh /opt/couchdb/bin/couchdb
+    environment:
+      COUCHDB_USER: ods
+      COUCHDB_PASSWORD: "${COUCHDB_PASSWORD:?Set COUCHDB_PASSWORD before enabling CouchDB}"
+      COUCHDB_SECRET: "${COUCHDB_SECRET:?Set COUCHDB_SECRET before enabling CouchDB}"
+      ERL_FLAGS: "+S 2:2 -kernel inet_dist_use_interface {127,0,0,1}"
+      ERL_EPMD_ADDRESS: 127.0.0.1
+      ERL_CRASH_DUMP: /tmp/erl_crash.dump
+      HOME: /tmp
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${COUCHDB_PORT:-5984}:5984"
+    volumes:
+      - ./data/couchdb/databases:/opt/couchdb/data
+      - ./data/couchdb/config:/opt/couchdb/etc/local.d
+      - type: bind
+        source: ./config/couchdb/local.ini
+        target: /opt/couchdb/etc/local.ini
+        read_only: true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=64m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+    stop_grace_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1G
+    healthcheck:
+      test: [CMD, curl, --fail, --silent, --show-error, --max-time, "3", http://127.0.0.1:5984/_up]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 45s
+    networks: [ods-network]
+
+networks:
+  ods-network:
+    external: true
+    name: ods-network
