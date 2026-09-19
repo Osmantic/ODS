@@ -252,21 +252,27 @@ demo "Watching tokens stream in real-time..."
 echo ""
 
 # Simple streaming demo - just show it works
-curl -sN "${LLM_URL}/v1/chat/completions" \
+stream_tokens=0
+while read -r line; do
+    if [[ "$line" == data:* ]]; then
+        content=$(echo "${line#data: }" | jq -r '.choices[0].delta.content // empty' 2>/dev/null)
+        if [[ -n "$content" ]]; then
+            printf "%s" "$content"
+            ((++stream_tokens))
+        fi
+    fi
+done < <(curl -sfN "${LLM_URL}/v1/chat/completions" \
     -H "Content-Type: application/json" \
     -d "{\"model\": \"${DEMO_MODEL}\", \"messages\": [{\"role\": \"user\", \"content\": \"Count from 1 to 5, one number per line.\"}], \"max_tokens\": 50, \"temperature\": 0, \"stream\": true}" \
-    2>/dev/null | while read -r line; do
-        if [[ "$line" == data:* ]]; then
-            content=$(echo "${line#data: }" | jq -r '.choices[0].delta.content // empty' 2>/dev/null)
-            if [[ -n "$content" ]]; then
-                printf "%s" "$content"
-            fi
-        fi
-    done
+    2>/dev/null)
 
 echo ""
 echo ""
-success "Streaming works! Great for real-time UIs."
+if [[ $stream_tokens -gt 0 ]]; then
+    success "Streaming works! Great for real-time UIs."
+else
+    fail "No streaming response from LLM"
+fi
 
 wait_key
 
