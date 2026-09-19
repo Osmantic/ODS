@@ -134,12 +134,21 @@ function Get-ComposeFlags {
 
     $flagsFile = Join-Path $InstallDir ".compose-flags"
     if (Test-Path $flagsFile) {
-        $raw = (Get-Content $flagsFile -Raw).Trim()
-        if ((Test-Path -LiteralPath (Join-Path $InstallDir '.model-stores.compose.json')) -or
-            (Test-Path -LiteralPath (Join-Path $InstallDir 'data/model-stores.json'))) {
-            return (Resolve-ODSModelStoreComposeFlags -Flags ($raw -split "\s+"))
+        # -Raw returns $null for an empty file; -join '' keeps .Trim() safe.
+        $raw = ((Get-Content $flagsFile -Raw) -join '').Trim()
+        $savedFlags = $raw -split "\s+"
+        if (Test-ODSComposeFlagsFilesAvailable -ComposeFlags $savedFlags) {
+            if ((Test-Path -LiteralPath (Join-Path $InstallDir '.model-stores.compose.json')) -or
+                (Test-Path -LiteralPath (Join-Path $InstallDir 'data/model-stores.json'))) {
+                return (Resolve-ODSModelStoreComposeFlags -Flags $savedFlags)
+            }
+            return $savedFlags
         }
-        return ($raw -split "\s+")
+        # Stale cache: a compose file it references was renamed or removed
+        # across an upgrade. Drop it like the bash CLI (get_compose_flags) and
+        # rebuild instead of handing docker compose a path that cannot resolve.
+        Write-AIWarn ".compose-flags is stale; rebuilding compose flags"
+        Remove-Item -LiteralPath $flagsFile -Force -ErrorAction SilentlyContinue
     }
 
     $launchRecord = Join-Path (Join-Path $InstallDir "logs") "compose-launch.txt"
@@ -149,13 +158,15 @@ function Get-ComposeFlags {
             Select-Object -First 1
         if ($composeFlagsLine) {
             $raw = ($composeFlagsLine -replace "^compose_flags=", "").Trim()
-            if (-not [string]::IsNullOrWhiteSpace($raw)) {
+            $savedFlags = $raw -split "\s+"
+            if (-not [string]::IsNullOrWhiteSpace($raw) -and
+                (Test-ODSComposeFlagsFilesAvailable -ComposeFlags $savedFlags)) {
                 Write-AIWarn ".compose-flags is missing; using compose flags from logs\compose-launch.txt"
                 if ((Test-Path -LiteralPath (Join-Path $InstallDir '.model-stores.compose.json')) -or
                     (Test-Path -LiteralPath (Join-Path $InstallDir 'data/model-stores.json'))) {
-                    return (Resolve-ODSModelStoreComposeFlags -Flags ($raw -split "\s+"))
+                    return (Resolve-ODSModelStoreComposeFlags -Flags $savedFlags)
                 }
-                return ($raw -split "\s+")
+                return $savedFlags
             }
         }
     }
