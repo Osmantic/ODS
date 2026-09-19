@@ -404,8 +404,8 @@ detect_gpu() {
             local vendor device
             vendor=$(cat "$card_dir/vendor" 2>/dev/null) || continue
             device=$(cat "$card_dir/device" 2>/dev/null) || continue
-            # Intel vendor ID: 0x8086, Arc device IDs: 0x56a0-0x56c1 (Alchemist), 0x5690-0x569f (DG2)
-            if [[ "$vendor" == "0x8086" ]] && [[ "$device" =~ ^0x(56[a-c][0-9a-f]|569[0-9a-f])$ ]]; then
+            # Intel vendor ID: 0x8086, Arc device IDs: 0x56a0-0x56c1 (Alchemist), 0x5690-0x569f (DG2), 0xe202-0xe223 (Battlemage)
+            if [[ "$vendor" == "0x8086" ]] && [[ "$device" =~ ^0x(56[a-c][0-9a-f]|569[0-9a-f]|e2[0-2][0-9a-d])$ ]]; then
                 GPU_BACKEND="intel"
                 GPU_MEMORY_TYPE="discrete"
                 GPU_DEVICE_ID="$device"
