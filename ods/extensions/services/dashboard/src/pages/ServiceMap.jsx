@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ExternalLink, GitBranch, RefreshCw, X } from 'lucide-react'
 import { serviceUrl } from '../lib/serviceUrls'
+import ServiceImpact from '../components/ServiceImpact'
 import PanelSelect from '../components/PanelSelect'
 import IntegrationSnapshotDownload from '../components/IntegrationSnapshotDownload'
 
@@ -419,6 +420,7 @@ export default function ServiceMap({ compact = false }) {
         <span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-zinc-500" />Not deployed</span>
       </div>
 
+      <ServiceImpact nodes={nodes} edges={edges} />
       <div className="relative overflow-hidden rounded-xl border border-theme-border bg-theme-bg">
         <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-theme-border">
           <span className="text-xs text-theme-text-muted">Service connections</span>
