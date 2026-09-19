@@ -1,17 +1,20 @@
-// Dashboard extension template.
-// Copy this file and import it from your plugin entrypoint.
+// Dashboard extension template — registration entrypoint (.js, no JSX).
+//
+// Copy this file and dashboard-plugin-template-page.jsx into:
+//   extensions/services/dashboard/src/plugins/<your-plugin>/
+// then load the entry by adding to extensions/services/dashboard/src/main.jsx:
+//   import './plugins/<your-plugin>/dashboard-plugin-template'
+//
+// Convention (see src/plugins/core.js): registration lives in .js files;
+// page components live in .jsx files and are lazy-imported. @vitejs/plugin-react
+// only transforms JSX in .jsx/.tsx files, so a .js file containing JSX fails
+// to parse at build time.
 
+import { lazy } from 'react'
 import { Sparkles } from 'lucide-react'
-import { registerRoutes, registerExternalLinks } from '../../dashboard/src/plugins/registry'
+import { registerRoutes, registerExternalLinks } from '../registry'
 
-function MyExtensionPage() {
-  return (
-    <div className="p-8">
-      <h1 className="text-2xl font-bold text-white">My Extension</h1>
-      <p className="text-zinc-400 mt-2">Replace with your extension UI.</p>
-    </div>
-  )
-}
+const MyExtensionPage = lazy(() => import('./dashboard-plugin-template-page'))
 
 registerRoutes([
   {
