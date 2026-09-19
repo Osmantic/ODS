@@ -9,7 +9,7 @@ foreach ($name in @('Get-ComposeFlags', 'Resolve-ODSModelStoreComposeFlags', 'Ge
 }
 function Ensure-HermesDashboardSessionToken { }
 function Read-ODSEnv { return @{ODS_ACTIVE_MODEL_STORE='default'; GGUF_FILE='fixture.gguf'} }
-function Resolve-ODSHostAgentPython { return [pscustomobject]@{ FilePath = (Get-Command python -CommandType Application).Source; PrefixArgs = @() } }
+function Resolve-ODSHostAgentPython { return [pscustomobject]@{ FilePath = (Get-Command python -CommandType Application | Where-Object { $_.Source -notlike '*WindowsApps*' } | Select-Object -First 1).Source; PrefixArgs = @() } }
 function Assert-True { param($Value, $Message) if (-not $Value) { throw $Message } }
 $fixture = Join-Path ([IO.Path]::GetTempPath()) ('ods-compose-models-'+[Guid]::NewGuid().ToString('N'))
 $InstallDir = Join-Path $fixture 'install'
@@ -18,7 +18,7 @@ try {
         New-Item -ItemType Directory -Path (Join-Path $InstallDir $directory) -Force | Out-Null
     }
     Copy-Item -LiteralPath (Join-Path $root 'scripts/model-store-compose-flags.py') -Destination (Join-Path $InstallDir 'scripts')
-    foreach ($module in @('model_stores.py','env_values.py')) {
+    foreach ($module in @('model_stores.py','env_values.py','model_mtp.py')) {
         Copy-Item -LiteralPath (Join-Path $root "extensions/services/dashboard-api/$module") -Destination (Join-Path $InstallDir 'extensions/services/dashboard-api')
     }
     $cache = Join-Path $InstallDir '.compose-flags'
