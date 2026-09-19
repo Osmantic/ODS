@@ -7,6 +7,11 @@
 #
 # Expects: DOCKER_CMD, LOG_FILE, ai(), ai_ok(), ai_warn(), ai_bad()
 # Provides: docker_image_available(), validate_docker_image_or_fallback()
+
+command -v ai >/dev/null 2>&1 || ai() { echo "[AI] $*"; }
+command -v ai_ok >/dev/null 2>&1 || ai_ok() { echo "[OK] $*"; }
+command -v ai_warn >/dev/null 2>&1 || ai_warn() { echo "[WARN] $*"; }
+command -v ai_bad >/dev/null 2>&1 || ai_bad() { echo "[FAIL] $*"; }
 #
 # Modder notes:
 #   Use validate_docker_image_or_fallback before compose up for configurable
