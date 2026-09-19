@@ -94,6 +94,7 @@ class Result:
 
 def _parse_target(raw: str) -> Tuple[str, str]:
     """Return (kind, normalized_target)."""
+    raw = raw.strip()
     if raw.startswith("http://") or raw.startswith("https://"):
         return ("http", raw)
 
