@@ -310,6 +310,7 @@ set_gemma4_tier_config() {
 }
 
 resolve_tier_config() {
+    TIER="$(printf '%s' "${TIER:-}" | tr '[:lower:]' '[:upper:]')"
     MODEL_PROFILE_REQUESTED="$(normalize_model_profile)"
     MODEL_PROFILE_EFFECTIVE="$(effective_model_profile "$MODEL_PROFILE_REQUESTED")"
 
@@ -331,7 +332,8 @@ resolve_tier_config() {
 
 # Map a tier name to its LLM_MODEL value (used by ods model swap)
 tier_to_model() {
-    local t="$1"
+    local t
+    t="$(printf '%s' "${1:-}" | tr '[:lower:]' '[:upper:]')"
     local requested effective
     local previous_tier="${TIER:-}"
     requested="$(normalize_model_profile "${2:-}")"
