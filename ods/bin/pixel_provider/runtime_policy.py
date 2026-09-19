@@ -4,6 +4,8 @@ from .store import StoreError
 
 
 def select_candidates(config,payload):
+    if not isinstance(payload, dict) or not isinstance(payload.get('messages'), list):
+        raise StoreError('invalid-inference-payload')
     if not config['enabled']:
         raise StoreError('provider-routing-disabled')
     by_id = {p['id']:p for p in config['providers']}
