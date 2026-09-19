@@ -1,0 +1,37 @@
+services:
+  mealie:
+    image: ghcr.io/mealie-recipes/mealie:v3.26.0@sha256:a4d12ab3a009832cc94058345e22aea831c3e992e94783fefc1cd5a08544fe0c
+    container_name: ods-mealie
+    restart: unless-stopped
+    user: "1000:1000"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      PUID: "1000"
+      PGID: "1000"
+      DB_ENGINE: sqlite
+      ALLOW_SIGNUP: "false"
+      ALLOW_PASSWORD_LOGIN: "true"
+      BASE_URL: ${MEALIE_BASE_URL:-http://localhost:7835}
+      TZ: ${TZ:-UTC}
+    volumes:
+      - ./data/mealie:/app/data
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=128m"]
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${MEALIE_PORT:-7835}:9000"
+    healthcheck:
+      test: [CMD, curl, --fail, --silent, --show-error, "http://127.0.0.1:9000/api/app/about"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    networks: [ods-network]
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1G
+networks:
+  ods-network:
+    external: true
