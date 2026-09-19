@@ -1,0 +1,44 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: readeck
+  name: Readeck (Local Reading Library)
+  description: "Save web articles, labels and reading progress locally with native authenticated export."
+  aliases: [read-later]
+  container_name: ods-readeck
+  container_uid: 1000
+  default_host: readeck
+  port: 8000
+  external_port_env: READECK_PORT
+  external_port_default: 8096
+  health: /login
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [reading, bookmarks, knowledge]
+  env_vars:
+    - key: READECK_PORT
+      description: "Loopback reading library port"
+      default: "8096"
+    - key: READECK_PASSWORD
+      description: "Initial ods administrator password; 16-128 URL-safe characters"
+      required: true
+      secret: true
+features:
+  - id: local-reading-library
+    name: Read Saved Articles
+    description: "Save and search articles in a private local reading library"
+    icon: BookOpen
+    category: productivity
+    requirements:
+      services: [readeck]
+      vram_gb: 0
+    enabled_services_all: [readeck]
+    setup_time: "~1 minute"
+    priority: 40
+    launch:
+      type: service
+      service: readeck
