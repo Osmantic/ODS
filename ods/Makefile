@@ -140,6 +140,7 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== Manifest schema source of truth ==="
 	@bash tests/test-validate-manifest-schema.sh
+	@python3 tests/test-milvus-persistence.py
 	@echo "=== ComfyUI user directory is persisted ==="
 	@bash tests/test-comfyui-user-dir-persisted.sh
 	@echo ""
