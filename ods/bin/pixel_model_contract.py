@@ -88,6 +88,8 @@ def projection(config):
         raise ModelError("invalid-model-limits")
     if any(type(limits[key]) is not int or limits[key] < 1 for key in ("contextTokens", "maxOutputTokens", "pluginContext")):
         raise ModelError("invalid-model-limits")
+    if limits["maxOutputTokens"] > limits["contextTokens"]:
+        raise ModelError("invalid-model-limits")
     return {"contract": contract, "limits": limits}
 
 

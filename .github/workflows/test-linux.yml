@@ -251,6 +251,7 @@ jobs:
       - name: Service Registry Tests
         run: |
           python3 tests/test_pixel_agent_teams_roles_count.py
+          python3 tests/test_pixel_model_output_le_context_limit.py
           bash tests/test-service-registry.sh
 
       - name: Switchboard Bypass Inventory
