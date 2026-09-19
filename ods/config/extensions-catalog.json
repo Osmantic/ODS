@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-13T16:53:56Z",
+  "generated_at": "2026-09-15T02:35:05Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -1373,6 +1373,68 @@
       ],
       "tags": [],
       "features": [],
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
+      "id": "grafana",
+      "name": "Grafana",
+      "description": "Local dashboards and queries for metrics sources deliberately connected by the operator.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 3000,
+      "external_port_default": 3033,
+      "health_endpoint": "/api/health",
+      "env_vars": [
+        {
+          "key": "GRAFANA_ADMIN_PASSWORD",
+          "required": true,
+          "description": "Initial admin password; existing account passwords are managed inside Grafana"
+        },
+        {
+          "key": "GRAFANA_SECRET_KEY",
+          "required": true,
+          "description": "Stable encryption key; retain with the data directory and backups"
+        },
+        {
+          "key": "GRAFANA_PORT",
+          "default": "3033",
+          "description": "Published local dashboard port"
+        },
+        {
+          "key": "GRAFANA_ROOT_URL",
+          "description": "Optional complete public URL for a deliberately configured remote route"
+        }
+      ],
+      "tags": [],
+      "features": [
+        {
+          "id": "local-metrics-dashboards",
+          "name": "Local Metrics Dashboards",
+          "description": "Explore time series and retain dashboards for your chosen local metrics sources.",
+          "icon": "BarChart3",
+          "category": "monitoring",
+          "requirements": {
+            "services": [
+              "grafana"
+            ],
+            "vram_gb": 0
+          },
+          "enabled_services_all": [
+            "grafana"
+          ],
+          "setup_time": "~2 minutes",
+          "priority": 30,
+          "launch": {
+            "type": "service",
+            "service": "grafana",
+            "path": "/"
+          }
+        }
+      ],
       "configuration_scope": "declared-environment-keys"
     },
     {

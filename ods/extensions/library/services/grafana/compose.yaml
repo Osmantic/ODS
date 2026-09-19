@@ -1,0 +1,47 @@
+services:
+  grafana:
+    image: grafana/grafana:13.2.1@sha256:f772d434e8fab0049deb2b1b30abd43342bcfca1537614aa8d36080232cf4283
+    container_name: ods-grafana
+    restart: unless-stopped
+    user: "472:472"
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_ADMIN_PASSWORD:?Set the initial GRAFANA_ADMIN_PASSWORD}"
+      GF_SECURITY_SECRET_KEY: "${GRAFANA_SECRET_KEY:?Set and retain GRAFANA_SECRET_KEY with the database}"
+      GF_SECRETS_MANAGER_ENCRYPTION_SECRET_KEY_V1_SECRET_KEY: "${GRAFANA_SECRET_KEY:?Set and retain GRAFANA_SECRET_KEY with the database}"
+      GF_SERVER_ROOT_URL: "${GRAFANA_ROOT_URL:-http://localhost:${GRAFANA_PORT:-3033}}"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_SECURITY_DISABLE_GRAVATAR: "true"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+      GF_ANALYTICS_FEEDBACK_LINKS_ENABLED: "false"
+      GF_PLUGINS_PREINSTALL_DISABLED: "true"
+      GF_PLUGINS_PREINSTALL_AUTO_UPDATE: "false"
+      GF_LOG_MODE: console
+      GF_DATABASE_WAL: "true"
+    volumes:
+      - ./data/grafana:/var/lib/grafana
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=128m,mode=1777
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${GRAFANA_PORT:-3033}:3000"
+    healthcheck:
+      test: [CMD, wget, --quiet, --timeout=3, --output-document=/dev/null, "http://127.0.0.1:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 120s
+    networks: [ods-network]
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1G
+networks:
+  ods-network:
+    external: true
