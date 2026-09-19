@@ -22,7 +22,8 @@ KEY, CHAT = 'o'*64, 'c'*64
 
 def resolve(root, *, adopt=False, edge=None):
     namespace = {'source': root, 'owner': types.SimpleNamespace(pw_uid=os.getuid()),
-        'os': os, 'stat': stat, 'sys': types.SimpleNamespace(argv=['-', '', '', '', str(adopt).lower()], stderr=sys.stderr),
+        'os': os, 'stat': stat,
+        'sys': types.SimpleNamespace(argv=['-', '', '', '', '18790', str(adopt).lower(), 'false'], stderr=sys.stderr),
         'json': json, 'subprocess': subprocess, 'settings_data_directory': lambda install, text: str(install/'data')}
     with patch.object(subprocess, 'run', return_value=types.SimpleNamespace(stdout=json.dumps([edge]).encode())) as run:
         exec(PROGRAM, namespace)

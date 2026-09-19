@@ -21,6 +21,19 @@ function processAlive(pid) {
   catch (error) { if (error.code === 'ESRCH') return false; throw error; }
 }
 
+function structuredOwnerAlive(pid) {
+  try { return processAlive(pid); }
+  catch (error) {
+    // process.json is a private, owner-created file and every structured lock
+    // is written by this same uid. A still-live owner is therefore signalable.
+    // EPERM means Linux has recycled the PID to a different security principal;
+    // ProtectProc=invisible can also hide its /proc identity, so retaining that
+    // foreign PID would otherwise disable admission permanently.
+    if (error.code === 'EPERM') return false;
+    throw error;
+  }
+}
+
 function processStartTicks(pid) {
   let stat;
   try { stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8'); }
@@ -104,7 +117,7 @@ function previousProcessAlive(previous) {
       !/^(0|[1-9][0-9]*)$/.test(previous.startTicks) || process.platform !== 'linux') throw new Error('unknown process lock identity');
   // Death is independently verifiable even if an older record used boot_id
   // and this gateway's namespace now hides it. A live unknown owner stays held.
-  if (!processAlive(previous.pid)) return false;
+  if (!structuredOwnerAlive(previous.pid)) return false;
   // A reused PID may belong to an unrelated process whose environment is
   // unreadable under proc restrictions. A different start time already proves
   // that the recorded owner is gone; do not require that stranger's identity.
@@ -141,6 +154,12 @@ export function createAccessRuntime({directory = path.join(os.homedir(), '.openc
   // their hook coverage is qualified. Held state always continues to block.
   const qualified = runtimeVersion === '2026.6.33' && hooksAllowed === true;
   const runs = new Set(), tools = new Set(), detached = new Map(), internalRuns = new Set();
+  const transitionFailures = new WeakMap();
+  const transitionError = code => {
+    const failure = new Error('runtime transition refused');
+    transitionFailures.set(failure, code);
+    return failure;
+  };
   const filename = path.join(directory, 'state.json');
   let state, failed = false, probeRun = null, proof = null, probeFailure = null;
   let processTimer = null, processCheck = null;
@@ -321,9 +340,19 @@ export function createAccessRuntime({directory = path.join(os.homedir(), '.openc
     }
   }
   function acquire(token, expected) {
-    if (failed || !qualified || !hex(token) || !hex(expected)) throw new Error('runtime unavailable');
+    if (failed || !qualified || !hex(token) || !hex(expected)) throw transitionError('native-transition-unavailable');
     if (state.phase === 'held' && state.tokenHash === hash(token)) return status();
-    if (expected !== state.revision || busy() || !['idle','interrupted'].includes(state.phase)) throw new Error('runtime busy or changed');
+    if (expected !== state.revision) throw transitionError('native-transition-revision-changed');
+    // Preserve a bounded, non-forgeable reason for a refused transition.  The
+    // controller exposes only this trusted token, never run/tool identifiers or
+    // conversation data.  Distinguishing the owner class is essential on first
+    // boot where a leaked startup run and a detached command require different
+    // recovery paths.
+    if (runs.size) throw transitionError('native-transition-busy-active-run');
+    if (tools.size) throw transitionError('native-transition-busy-active-tool');
+    if (detached.size) throw transitionError('native-transition-busy-detached-process');
+    if (state.phase === 'held') throw transitionError('native-transition-busy-held');
+    if (!['idle','interrupted'].includes(state.phase)) throw transitionError('native-transition-busy-phase');
     state.phase = 'held'; state.tokenHash = hash(token); proof = null; changed(); return status();
   }
   function owns(token) { return !failed && hex(token) && state.phase === 'held' && state.tokenHash === hash(token); }
@@ -422,5 +451,5 @@ export function createAccessRuntime({directory = path.join(os.homedir(), '.openc
     }
   }
   return {status, admit, finish, beforeTool, afterTool, acquire, release, probe, owns, readSettings, readModel, reconcileDetached,
-    isProbe: isInternal};
+    classifyTransitionError: failure => transitionFailures.get(failure) ?? null, isProbe: isInternal};
 }

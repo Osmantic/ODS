@@ -596,11 +596,11 @@ if command -v pwsh >/dev/null 2>&1; then
         if ([string]::IsNullOrWhiteSpace($litellmKey)) {
             throw "Expected Windows AMD Lemonade installs to generate LITELLM_KEY"
         }
-        if ($envText -notmatch "(?m)^HERMES_LLM_BASE_URL=http://litellm:4000/v1\r?$") {
-            throw "Expected Windows AMD Lemonade Hermes to route through LiteLLM"
+        if ($envText -notmatch "(?m)^HERMES_LLM_BASE_URL=http://model-router:9099/v1\r?$") {
+            throw "Expected Windows AMD Lemonade Hermes to route through model-router"
         }
-        if ($envText -notmatch "(?m)^HERMES_LLM_API_KEY=$([regex]::Escape($litellmKey))\r?$") {
-            throw "Expected Windows AMD Lemonade Hermes to authenticate with LITELLM_KEY"
+        if ($envText -notmatch "(?m)^HERMES_LLM_API_KEY=no-key\r?$") {
+            throw "Expected Windows AMD Lemonade Hermes to use the local model-router key"
         }
         if ($envText -match "(?m)^HERMES_LLM_BASE_URL=http://host\.docker\.internal:8080/api/v1$") {
             throw "Windows AMD Lemonade Hermes must not stream directly against native Lemonade"

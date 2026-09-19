@@ -81,4 +81,3 @@ def public_model_control(value):
         raise ValueError('invalid-model-control-response')
     return {key: value[key] for key in keys}
 
-

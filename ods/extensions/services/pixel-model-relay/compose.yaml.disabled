@@ -1,0 +1,29 @@
+# Pixel's authenticated host-local model path; shared LiteLLM remains intact.
+services:
+  pixel-model-relay:
+    build:
+      context: ./extensions/services/pixel-model-relay
+      dockerfile: Dockerfile
+    image: ods-pixel-model-relay:local
+    container_name: ods-pixel-model-relay
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      - PIXEL_MODEL_RELAY_KEY=${PIXEL_MODEL_RELAY_KEY:?Set PIXEL_MODEL_RELAY_KEY in .env}
+    ports:
+      - "127.0.0.1:${PIXEL_MODEL_RELAY_PORT:-4006}:4102"
+    depends_on:
+      model-router:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, python3, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4102/health', timeout=4)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M

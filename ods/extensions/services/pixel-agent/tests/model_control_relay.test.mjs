@@ -54,7 +54,9 @@ test('real HTTP lifecycle uses owner authority, bounded exact frames, and one co
     assert.equal(response.status,200);
     assert.deepEqual(await response.json(),state);
   }
-  assert.deepEqual(calls.map(item=>item.value),operations);
+  assert.deepEqual(calls.map(item=>item.value),operations.map(operation=>({
+    ...operation,operation:operation.operation.replace(/^model-/, 'model-route-')
+  })));
   assert.equal(calls[0].options.timeout,20000);
   assert.equal(calls[1].options.timeout,305000);
   result={status:409,body:{error:'private detail'}};

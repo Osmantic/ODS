@@ -158,6 +158,12 @@ MAX_TELEMETRY_RESPONSE_BYTES = 1024 * 1024
 SUBPROCESS_TIMEOUT_START = 600  # 10 min — image pulls can be slow
 SUBPROCESS_TIMEOUT_STOP = 120   # 2 min — stop should be fast
 HOOK_TIMEOUT = 120              # 2 min — hook execution timeout
+MODEL_ACTIVATION_HEALTH_ATTEMPTS = 60
+# Hermes can spend roughly two minutes in image/config bootstrap before its
+# 30-second Docker healthcheck observes the live dashboard.  Give that service
+# two additional health intervals during model activation while preserving the
+# same bounded, fail-closed health contract.
+HERMES_MODEL_ACTIVATION_HEALTH_ATTEMPTS = 90
 VALID_HOOK_NAMES = frozenset({
     "pre_install", "post_install", "pre_start", "post_start",
     "pre_uninstall", "post_uninstall",
@@ -386,13 +392,19 @@ def _windows_whisper_cuda_supported(env: dict) -> bool:
 def _find_usable_bash() -> str | None:
     """Return a Bash executable compatible with this host's path contract.
 
-    A successfully validated executable is stable enough to cache.  Failed
-    probes are deliberately retried: on Windows Git Bash can be temporarily
-    unavailable while the installer or endpoint protection is still settling.
+    On success the resolved path is cached for the lifetime of the process.
+    On failure the cache is *not* set to ``False`` — a transient startup
+    condition (installer still writing, AV scan, first-run setup) can make
+    the initial probe fail even when the binary is genuinely present.  By
+    only caching positive results we permit safe retry without changing the
+    happy path.
     """
     global _usable_bash
     if isinstance(_usable_bash, str):
         return _usable_bash
+    # Deliberately do NOT short-circuit on ``False`` here.  A previous
+    # failed probe must be allowed to re-run in case the transient condition
+    # has cleared.  We only reset to None (below) on failure.
 
     candidates: list[str] = []
     if platform.system() == "Windows":
@@ -3076,6 +3088,15 @@ def _reconcile_ods_managed_pixel_model(
         source_path = Path(source_url)
         if not source_path.is_absolute() or source_path == Path("/"):
             raise RuntimeError("The configured Pixel source must be the canonical URL or an absolute local checkout")
+    configured_pixel_gateway_port = env_values.get("PIXEL_GATEWAY_PORT")
+    pixel_gateway_port = (
+        "18789"
+        if configured_pixel_gateway_port is None
+        else str(configured_pixel_gateway_port).strip()
+    )
+    if not re.fullmatch(r"[1-9][0-9]{0,4}", pixel_gateway_port) \
+            or int(pixel_gateway_port) > 65535:
+        raise RuntimeError("The configured Pixel gateway port is invalid")
 
     script = r'''
 set -uo pipefail
@@ -3113,6 +3134,7 @@ ods_pixel_reconcile_promoted_model "$owner" "$home" "$target_model" ready \
         "LOGNAME": owner,
         "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
         "PIXEL_SOURCE_URL": source_url,
+        "PIXEL_GATEWAY_PORT": pixel_gateway_port,
     }
     if os.environ.get("TMPDIR"):
         child_env["TMPDIR"] = str(os.environ["TMPDIR"])
@@ -5123,6 +5145,19 @@ def _detect_docker_bridge_gateway() -> str:
     return _detect_docker_network_gateway("bridge")
 
 
+def _local_bind_address_available(address: str) -> bool:
+    """Return whether an address belongs to this host network namespace."""
+    if not address:
+        return False
+    family = socket.AF_INET6 if ":" in address else socket.AF_INET
+    try:
+        with socket.socket(family, socket.SOCK_STREAM) as probe:
+            probe.bind((address, 0))
+    except OSError:
+        return False
+    return True
+
+
 def _running_under_wsl(
     system_name: str | None = None,
     kernel_release: str | None = None,
@@ -5143,7 +5178,19 @@ def _resolve_agent_bind_addr(env: dict, system_name: str | None = None) -> str:
             return "0.0.0.0"
         return explicit
 
-    if system_name in ("Darwin", "Windows") or _running_under_wsl(system_name):
+    if system_name in ("Darwin", "Windows"):
+        return "127.0.0.1"
+
+    if _running_under_wsl(system_name):
+        # A native Docker daemon inside WSL owns its default bridge locally,
+        # and Compose's host-gateway mapping resolves to that address. Bind
+        # only that scoped bridge so dashboard-api can reach the agent without
+        # exposing it on WSL's LAN-facing interface. Docker Desktop reports a
+        # bridge gateway from a different network namespace; the bindability
+        # check preserves its existing loopback-forwarding path.
+        bridge_gateway = _detect_docker_bridge_gateway()
+        if _local_bind_address_available(bridge_gateway):
+            return bridge_gateway
         return "127.0.0.1"
 
     if system_name == "Linux":
@@ -6955,9 +7002,11 @@ def _find_update_bash() -> str | None:
     global _update_usable_bash
     if isinstance(_update_usable_bash, str):
         return _update_usable_bash
+    # Do not short-circuit on False — re-probe every time the underlying
+    # function hasn't cached a success yet.
 
     bash = _find_usable_bash()
-    _update_usable_bash = bash
+    _update_usable_bash = bash if bash else None
     return bash
 
 
@@ -11767,7 +11816,25 @@ class AgentHandler(BaseHTTPRequestHandler):
                     container_states["ods-hermes"],
                     recreate=True,
                 ):
-                    _wait_for_container_health("ods-hermes")
+                    try:
+                        _wait_for_container_health("ods-hermes")
+                    except ContainerUnhealthyError:
+                        # Docker health can enter ``unhealthy`` while Hermes is
+                        # still starting after a model swap. A clean recreate
+                        # recovered this exact transient on the fleet. Retry
+                        # only that explicit state once; every other error and
+                        # a second unhealthy start still trigger rollback.
+                        logger.warning(
+                            "Hermes became unhealthy after model activation; "
+                            "recreating it once before rollback"
+                        )
+                        if not _restart_existing_container(
+                            "ods-hermes",
+                            container_states["ods-hermes"],
+                            recreate=True,
+                        ):
+                            raise
+                        _wait_for_container_health("ods-hermes")
                     _verify_running_hermes_route(
                         hermes_model_name,
                         hermes_base_url,
@@ -14213,8 +14280,18 @@ def _capture_container_state(container: str) -> dict[str, bool]:
     return {"exists": True, "running": value == "true"}
 
 
-def _wait_for_container_health(container: str, attempts: int = 60) -> None:
+class ContainerUnhealthyError(RuntimeError):
+    """A running dependent reached Docker's explicit unhealthy state."""
+
+
+def _wait_for_container_health(container: str, attempts: int | None = None) -> None:
     """Wait until a restarted dependent is healthy, failing on terminal states."""
+    if attempts is None:
+        attempts = (
+            HERMES_MODEL_ACTIVATION_HEALTH_ATTEMPTS
+            if container == "ods-hermes"
+            else MODEL_ACTIVATION_HEALTH_ATTEMPTS
+        )
     for attempt in range(attempts):
         try:
             result = subprocess.run(
@@ -14238,7 +14315,9 @@ def _wait_for_container_health(container: str, attempts: int = 60) -> None:
                 return
             raise RuntimeError(f"{container} exited while waiting for health")
         if status == "unhealthy":
-            raise RuntimeError(f"{container} became unhealthy after model activation")
+            raise ContainerUnhealthyError(
+                f"{container} became unhealthy after model activation"
+            )
         if status != "starting":
             raise RuntimeError(f"Docker returned invalid health state for {container}: {status!r}")
         if attempt + 1 < attempts:
@@ -14541,6 +14620,11 @@ def _opencode_model_route(env: dict, model_id: str) -> tuple[str, str, str]:
     return provider_id, model_id, model_id
 
 
+def _opencode_output_limit(context_length: int) -> int:
+    """Leave prompt room after a model switch, as the fresh installers do."""
+    return min(32768, max(1, context_length // 4))
+
+
 def _opencode_config_matches(
     config: object,
     provider_id: str,
@@ -14566,6 +14650,7 @@ def _opencode_config_matches(
         and options.get("apiKey") == api_key
         and isinstance(limit, dict)
         and limit.get("context") == context_length
+        and limit.get("output") == _opencode_output_limit(context_length)
     )
 
 
@@ -14631,7 +14716,7 @@ def _update_opencode_config(
             limit = {}
             model["limit"] = limit
         limit["context"] = context_length
-        limit["output"] = min(32768, context_length)
+        limit["output"] = _opencode_output_limit(context_length)
 
         _atomic_write_json(path, config, 0o600)
         try:
@@ -15494,6 +15579,7 @@ def _select_runtime_profile(model: dict, env: dict) -> dict | None:
                 "NVIDIA VRAM could not be determined; refusing an unprofiled "
                 "model activation"
             )
+    hardware_matches: list[dict] = []
     for profile in profiles:
         if not isinstance(profile, dict):
             continue
@@ -15514,11 +15600,32 @@ def _select_runtime_profile(model: dict, env: dict) -> dict | None:
                 continue
             if profile.get("vram_max_gb") is not None and vram_gb > float(profile["vram_max_gb"]):
                 continue
+        except (TypeError, ValueError):
+            continue
+        hardware_matches.append(profile)
+        try:
             if profile.get("system_ram_min_gb") is not None and float(ram_gb or 0) < float(profile["system_ram_min_gb"]):
                 continue
         except (TypeError, ValueError):
             continue
         return profile
+    if hardware_matches:
+        requirements = []
+        for profile in hardware_matches:
+            try:
+                requirements.append(float(profile.get("system_ram_min_gb") or 0))
+            except (TypeError, ValueError):
+                continue
+        minimum_ram_gb = min(requirements) if requirements else 0
+        requirement = (
+            f"; the lowest hardware-matching profile requires {minimum_ram_gb:g}GB"
+            if minimum_ram_gb > 0
+            else ""
+        )
+        raise RuntimeError(
+            "No runtime profile fits the available system RAM "
+            f"({ram_gb:g}GB){requirement}; refusing an unprofiled model activation"
+        )
     return None
 
 
@@ -16359,9 +16466,9 @@ def main():
 
     # Determine bind address: explicit env override, or a platform-aware safe
     # default. Native Linux prefers the ods-network gateway so dashboard-api
-    # containers can reach the agent without exposing it to the LAN. WSL uses
-    # loopback because Docker Desktop forwards host.docker.internal there; its
-    # compose gateway belongs to Docker Desktop and is not locally bindable.
+    # containers can reach the agent without exposing it to the LAN. Native
+    # Docker inside WSL binds its locally owned default bridge; Docker Desktop
+    # keeps the loopback path because its reported bridge is not locally bindable.
     # The bridge gateway fallback keeps partial/older native-Linux installs
     # reachable until phase 11 can restart the service after ods-network exists.
     bind_addr = _resolve_agent_bind_addr(env)

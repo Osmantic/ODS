@@ -27,7 +27,9 @@ class OnboardingUpgradeTests(unittest.TestCase):
         self.owner = pwd.getpwuid(os.getuid()).pw_name
         self.env = dict(os.environ, MAX_CONTEXT="65536", LLAMA_REASONING="off",
                         ODS_MODEL_SWITCHBOARD="observe", LITELLM_PORT="4000",
-                        LITELLM_KEY="disposable-test-key", INSTALL_DIR=str(self.home),
+                        LITELLM_KEY="disposable-shared-test-key",
+                        PIXEL_MODEL_RELAY_PORT="4006",
+                        PIXEL_MODEL_RELAY_KEY="disposable-test-key", INSTALL_DIR=str(self.home),
                         EXTERNAL_LLM_URL="http://127.0.0.1:18080",
                         EXTERNAL_LLM_MODEL="test-model")
         self.write()
@@ -59,7 +61,7 @@ class OnboardingUpgradeTests(unittest.TestCase):
         self.answers.chmod(0o600)
 
     def test_upgrade_preserves_budget_across_credential_rotation(self):
-        self.write(env=dict(self.env, LITELLM_KEY="rotated-test-key"))
+        self.write(env=dict(self.env, PIXEL_MODEL_RELAY_KEY="rotated-test-key"))
         value = json.loads(self.answers.read_text())
         self.assertEqual(value["modelMaxTokens"], 16384)
         self.assertEqual(value["modelContextWindow"], 65536)
@@ -119,7 +121,7 @@ class OnboardingUpgradeTests(unittest.TestCase):
                  "contextWindow": 65536, "maxTokens": 16384, "reasoning": False}
         live = {"models": {"providers": {"ods-gateway": {
                     "api": "openai-completions", "apiKey": "disposable-test-key",
-                    "baseUrl": "http://127.0.0.1:4000/v1", "models": [model]}}},
+                    "baseUrl": "http://127.0.0.1:4006/v1", "models": [model]}}},
                 "agents": {"list": [{"id": "pixel", "model": "ods-gateway/ods/current"}]}}
         for name, value in ((".openclaw/openclaw.json", live),
                             (".config/ods/pixel-managed.json", {"manager": "ods"}),
