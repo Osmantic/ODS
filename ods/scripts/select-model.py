@@ -548,8 +548,8 @@ def main() -> int:
     parser.add_argument("--catalog", required=True, type=Path)
     parser.add_argument("--backend", default="unknown")
     parser.add_argument("--memory-type", default="discrete")
-    parser.add_argument("--vram-mb", type=int, default=0)
-    parser.add_argument("--ram-gb", type=int, default=0)
+    parser.add_argument("--vram-mb", type=float, default=0)
+    parser.add_argument("--ram-gb", type=float, default=0)
     parser.add_argument("--profile", default="qwen")
     parser.add_argument("--tier", default="1")
     parser.add_argument(
