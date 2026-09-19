@@ -52,7 +52,7 @@ _ods_report_redact_stream() {
     local env_file="${1:-}"
     awk -v env_file="$env_file" '
         BEGIN {
-            secret_re = "(key|token|secret|password|pass|salt|auth|credential)"
+            secret_re = "(key|token|secret|password|pass|salt|auth|credential|private)"
             if (env_file != "") {
                 while ((getline line < env_file) > 0) {
                     sub(/\r$/, "", line)
