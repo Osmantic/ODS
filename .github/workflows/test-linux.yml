@@ -344,6 +344,88 @@ jobs:
       - name: Golden Path Contract Tests
         run: bash tests/test-golden-paths.sh
 
+      - name: Previously Unwired Shell Contract Suites
+        run: |
+          set -e
+          for t in \
+            tests/test-llama-mtp-args.sh \
+            tests/test-local-app-auth-defaults.sh \
+            tests/test-locale-safe-cpu-formatting.sh \
+            tests/test-model-integrity.sh \
+            tests/test-network-timeouts.sh \
+            tests/test-ods-cli-rollback-delegation.sh \
+            tests/test-ods-cli-update-verification.sh \
+            tests/test-ods-doctor-install-diagnoses.sh \
+            tests/test-ods-list-json-escaping.sh \
+            tests/test-ods-test.sh \
+            tests/test-ods-update-runtime-compose.sh \
+            tests/test-openclaw-device-auth-default.sh \
+            tests/test-openclaw-inject-token.sh \
+            tests/test-parallel-health-checks.sh \
+            tests/test-phase11-compose-recovery-status.sh \
+            tests/test-phase11-exited-service-recovery.sh \
+            tests/test-phase11-local-build-failure.sh \
+            tests/test-pixel-output-budget.sh \
+            tests/test-podman-rootless-contracts.sh \
+            tests/test-port-ollama-detection.sh \
+            tests/test-preset-diff.sh \
+            tests/test-restore-data-transaction-contract.sh \
+            tests/test-rollback-compose-stack.sh \
+            tests/test-searxng-config-contract.sh \
+            tests/test-service-registry-cache.sh \
+            tests/test-systemctl-user-env.sh \
+            tests/test-systemd-resume-registration.sh \
+            tests/test-templates.sh \
+            tests/test-tier-map-parity.sh \
+            tests/test-update-compose-restart-contract.sh \
+            tests/test-update-current-branch-contract.sh \
+            tests/test-windows-env-dotfile-recovery.sh \
+            tests/test-windows-hermes-soul.sh \
+            tests/test-windows-opencode-config.sh \
+            tests/test-windows-restart-recreate-env.sh \
+            tests/test-windows-stop-native-helpers.sh \
+            tests/test-windows-whisper-compose-fallback.sh \
+            tests/test-windows-uninstall-command.sh \
+            tests/test-wsl-docker-desktop-nvidia.sh \
+            tests/test-wsl-nvidia-detection.sh \
+            tests/test-wsl-windows-port-detection.sh \
+            tests/test-macos-bootstrap-resume.sh \
+            tests/test-macos-cli-compose-failure.sh \
+            tests/test-macos-cli-mode-routing.sh \
+            tests/test-macos-cli-update-verification.sh \
+            tests/test-macos-cloud-resolver.sh \
+            tests/test-macos-compose-image-cache.sh \
+            tests/test-macos-direct-bind-bridge.sh \
+            tests/test-macos-installer-transitions.sh \
+            tests/test-macos-native-llama-launch-cwd.sh \
+            tests/test-hardware-compatibility.sh \
+            tests/test-linux-installer-model-lifecycle-lock.sh \
+            tests/test-linux-opencode-opt-in.sh \
+            tests/test-linux-opencode-path.sh \
+            tests/test-linux-whisper-cuda-gating.sh \
+            tests/test-doctor-extension-diagnostics.sh \
+            tests/test-hermes-data-ownership.sh \
+            tests/test-installer-feature-state-sync.sh \
+            tests/test-installer-noninteractive-sudo.sh \
+            tests/test-litellm-config-selection.sh \
+            tests/test-backup-restore-cli.sh \
+            tests/test-bootstrap-pixel-catalog-permissions.sh \
+            tests/test-bootstrap-upgrade-docker-rollback.sh \
+            tests/test-bootstrap-upgrade-download-finalization.sh \
+            tests/test-bootstrap-upgrade-hotswap-contract.sh \
+            tests/test-bootstrap-upgrade-resume-status.sh \
+            tests/test-bootstrap-upgrade-sha-retry.sh \
+            tests/test-bootstrap-upgrade-windows-native-llama.sh \
+            tests/test-hermes-proxy-caddyfile.sh \
+            tests/contracts/test-ods-cli-model-activation.sh \
+            tests/contracts/test-port-contracts.sh \
+            tests/contracts/test-windows-amd-local-compose.sh \
+            tests/contracts/test-wsl-lifecycle.sh \
+            ; do
+            echo "=== $t"
+            bash "$t"
+          done
+
       - name: Generated Config Contract Tests
         run: |
           sudo apt-get update

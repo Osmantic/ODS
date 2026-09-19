@@ -217,6 +217,81 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== session cleanup lifecycle ==="
 	@bash tests/test-session-cleanup.sh
+	@echo ""
+	@echo "=== additional contract suites ==="
+	@bash tests/test-llama-mtp-args.sh
+	@bash tests/test-local-app-auth-defaults.sh
+	@bash tests/test-locale-safe-cpu-formatting.sh
+	@bash tests/test-model-integrity.sh
+	@bash tests/test-network-timeouts.sh
+	@bash tests/test-ods-cli-rollback-delegation.sh
+	@bash tests/test-ods-cli-update-verification.sh
+	@bash tests/test-ods-doctor-install-diagnoses.sh
+	@bash tests/test-ods-list-json-escaping.sh
+	@bash tests/test-ods-test.sh
+	@bash tests/test-ods-update-runtime-compose.sh
+	@bash tests/test-openclaw-device-auth-default.sh
+	@bash tests/test-openclaw-inject-token.sh
+	@bash tests/test-parallel-health-checks.sh
+	@bash tests/test-phase11-compose-recovery-status.sh
+	@bash tests/test-phase11-exited-service-recovery.sh
+	@bash tests/test-phase11-local-build-failure.sh
+	@bash tests/test-pixel-output-budget.sh
+	@bash tests/test-podman-rootless-contracts.sh
+	@bash tests/test-port-ollama-detection.sh
+	@bash tests/test-preset-diff.sh
+	@bash tests/test-restore-data-transaction-contract.sh
+	@bash tests/test-rollback-compose-stack.sh
+	@bash tests/test-searxng-config-contract.sh
+	@bash tests/test-service-registry-cache.sh
+	@bash tests/test-systemctl-user-env.sh
+	@bash tests/test-systemd-resume-registration.sh
+	@bash tests/test-templates.sh
+	@bash tests/test-tier-map-parity.sh
+	@bash tests/test-update-compose-restart-contract.sh
+	@bash tests/test-update-current-branch-contract.sh
+	@bash tests/test-windows-env-dotfile-recovery.sh
+	@bash tests/test-windows-hermes-soul.sh
+	@bash tests/test-windows-opencode-config.sh
+	@bash tests/test-windows-restart-recreate-env.sh
+	@bash tests/test-windows-stop-native-helpers.sh
+	@bash tests/test-windows-whisper-compose-fallback.sh
+	@bash tests/test-windows-uninstall-command.sh
+	@bash tests/test-wsl-docker-desktop-nvidia.sh
+	@bash tests/test-wsl-nvidia-detection.sh
+	@bash tests/test-wsl-windows-port-detection.sh
+	@bash tests/test-macos-bootstrap-resume.sh
+	@bash tests/test-macos-cli-compose-failure.sh
+	@bash tests/test-macos-cli-mode-routing.sh
+	@bash tests/test-macos-cli-update-verification.sh
+	@bash tests/test-macos-cloud-resolver.sh
+	@bash tests/test-macos-compose-image-cache.sh
+	@bash tests/test-macos-direct-bind-bridge.sh
+	@bash tests/test-macos-installer-transitions.sh
+	@bash tests/test-macos-native-llama-launch-cwd.sh
+	@bash tests/test-hardware-compatibility.sh
+	@bash tests/test-linux-installer-model-lifecycle-lock.sh
+	@bash tests/test-linux-opencode-opt-in.sh
+	@bash tests/test-linux-opencode-path.sh
+	@bash tests/test-linux-whisper-cuda-gating.sh
+	@bash tests/test-doctor-extension-diagnostics.sh
+	@bash tests/test-hermes-data-ownership.sh
+	@bash tests/test-installer-feature-state-sync.sh
+	@bash tests/test-installer-noninteractive-sudo.sh
+	@bash tests/test-litellm-config-selection.sh
+	@bash tests/test-backup-restore-cli.sh
+	@bash tests/test-bootstrap-pixel-catalog-permissions.sh
+	@bash tests/test-bootstrap-upgrade-docker-rollback.sh
+	@bash tests/test-bootstrap-upgrade-download-finalization.sh
+	@bash tests/test-bootstrap-upgrade-hotswap-contract.sh
+	@bash tests/test-bootstrap-upgrade-resume-status.sh
+	@bash tests/test-bootstrap-upgrade-sha-retry.sh
+	@bash tests/test-bootstrap-upgrade-windows-native-llama.sh
+	@bash tests/test-hermes-proxy-caddyfile.sh
+	@bash tests/contracts/test-ods-cli-model-activation.sh
+	@bash tests/contracts/test-port-contracts.sh
+	@bash tests/contracts/test-windows-amd-local-compose.sh
+	@bash tests/contracts/test-wsl-lifecycle.sh
 
 bats: ## Run BATS unit tests for shell libraries
 	@echo "=== BATS unit tests ==="
