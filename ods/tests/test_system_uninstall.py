@@ -1,4 +1,9 @@
 """Exercise the imported system-service uninstaller without host service access."""
+import sys
+if sys.platform == "win32":
+    from unittest import SkipTest
+    raise SkipTest("Requires POSIX host ownership, file locks, or Unix sockets; run under Linux/WSL")
+
 import os
 from pathlib import Path
 import subprocess
