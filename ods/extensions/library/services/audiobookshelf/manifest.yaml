@@ -1,0 +1,39 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: audiobookshelf
+  name: Audiobookshelf
+  description: "Organize local audiobooks and generated speech, stream audio and keep listening progress."
+  aliases: [audio-library]
+  container_name: ods-audiobookshelf
+  container_uid: 1000
+  default_host: audiobookshelf
+  port: 8080
+  external_port_env: AUDIOBOOKSHELF_PORT
+  external_port_default: 7833
+  health: /healthcheck
+  startup_timeout: 120
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [audio, books, speech, local, library]
+  env_vars:
+    - key: AUDIOBOOKSHELF_PORT
+      default: "7833"
+      description: Published audio library port; create the first administrator locally
+features:
+  - id: local-audio-library
+    name: Local Audio Library
+    description: "Browse and stream local recordings with persistent listening progress"
+    icon: Headphones
+    category: productivity
+    requirements:
+      services: [audiobookshelf]
+      vram_gb: 0
+      disk_gb: 1
+    enabled_services_all: [audiobookshelf]
+    setup_time: "~2 minutes"
+    priority: 31

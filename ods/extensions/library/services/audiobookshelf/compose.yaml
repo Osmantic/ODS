@@ -1,0 +1,35 @@
+services:
+  audiobookshelf:
+    image: ghcr.io/advplyr/audiobookshelf:2.36.0@sha256:180acad33d69c99ed208676465d8edcb268fa46967735579a7810859885b1a8e
+    container_name: ods-audiobookshelf
+    restart: unless-stopped
+    user: "1000:1000"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      PORT: "8080"
+      CONFIG_PATH: /config
+      METADATA_PATH: /metadata
+    volumes:
+      - ./data/audiobookshelf/config:/config
+      - ./data/audiobookshelf/metadata:/metadata
+      - ./data/audiobookshelf/audiobooks:/audiobooks:ro
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=128m"]
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${AUDIOBOOKSHELF_PORT:-7833}:8080"
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:8080/healthcheck',{signal:AbortSignal.timeout(5000)}).then(r=>{if(!r.ok)process.exit(1)}).catch(e=>{console.error(e.message);process.exit(1)})"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks: [ods-network]
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1G
+networks:
+  ods-network:
+    external: true
