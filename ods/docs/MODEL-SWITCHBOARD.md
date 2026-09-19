@@ -187,6 +187,7 @@ Product API:
 - Existing `POST /api/models/{id}/load`: unchanged user contract; backed by the reconciler
 - `POST /api/models/rollback`: activate a requested verified history entry, defaulting to the newest, through the same reconciler
 - `GET /api/models/routes/{probeId}`: authenticated dashboard-api proxy to bounded in-memory route evidence for fleet validation
+- `POST /api/models/routes/query`: authenticated batch lookup for 1-50 unique probe IDs, with ordered per-item status and bounded router concurrency
 
 Host-agent API:
 
