@@ -31,6 +31,7 @@ import PortalResponseError from '../components/PortalResponseError'
 import {publicationDisplayText} from '../lib/publicationDisplay'
 import {isQuestionAnswer, parseQuestionsFrame, questionMetadata} from '../lib/pixelQuestions'
 import PixelTurnNavigation from '../components/PixelTurnNavigation'
+import PixelConversationFind from '../components/PixelConversationFind'
 import PixelSnapshotChanges from '../components/PixelSnapshotChanges'
 import PortalWorkspace from '../components/PortalWorkspace'
 import { parseTaskActivity, parseTaskActivityFrame } from '../lib/pixelTaskActivity'
@@ -1393,6 +1394,11 @@ export default function Pixel({ systemStatus = null }) {
             <label className="block p-2 text-xs">Send shortcut<select className="mt-1 block w-full rounded border border-theme-border bg-theme-bg p-2" aria-label="Send shortcut" value={sendKey.mode} onChange={event => sendKey.change(event.target.value)}><option value="enter">Enter to send</option><option value="mod-enter">Ctrl/⌘+Enter to send</option></select></label>
             {sendKey.error && <p role="alert" className="p-2 text-xs">{sendKey.error}</p>}
 
+            <PixelConversationFind key={chatIdRef.current} messages={messages} onNavigate={index => {
+              const row = scrollRef.current?.parentElement?.querySelector(`[data-pixel-message-index="${index}"]`)
+              row?.scrollIntoView?.({block:'start', behavior:'auto'})
+              row?.focus?.({preventScroll:true})
+            }}/>
             <PixelTurnNavigation messages={messages} onNavigate={index => {
               const row = scrollRef.current?.parentElement?.querySelector(`[data-pixel-message-index="${index}"]`)
               row?.scrollIntoView?.({block:'start', behavior:'auto'})
