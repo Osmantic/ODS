@@ -312,6 +312,7 @@ get_remote_size() {
 write_status() {
     local status="$1" percent="${2:-}" downloaded="${3:-0}" total="${4:-0}" speed="${5:-0}" eta="${6:-}"
     local _safe_model="${FULL_GGUF_FILE//\"/\\\"}"
+    mkdir -p "$(dirname "$STATUS_FILE")"
     cat > "$STATUS_FILE.tmp" << STATUSEOF
 {
   "status": "$status",
