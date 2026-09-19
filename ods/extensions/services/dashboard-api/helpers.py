@@ -1417,3 +1417,15 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def list_safe_rotate(items: list | None, shifts: int = 1) -> list:
+    """Safely rotate a list left (negative) or right (positive).
+    """
+    if not items or not isinstance(items, (list, tuple)):
+        return []
+    if not isinstance(shifts, int) or isinstance(shifts, bool):
+        shifts = 1
+    n = len(items)
+    shifts = shifts % n
+    return list(items[-shifts:] + items[:-shifts])
