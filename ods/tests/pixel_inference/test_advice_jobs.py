@@ -95,6 +95,18 @@ def child_job(root,body,ready):
     time.sleep(30)
 
 
+def test_malformed_cancel_marker_cannot_block_the_result_commit(manager):
+    body=request(); manager.start(body)
+    path=manager.root/body['requestId']
+    # A corrupted or tampered marker fails the {'cancel':True} contract, so the
+    # job is not cancelled -- but its durable result must still be committed.
+    fd=os.open(path/'cancel.json',os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+    os.write(fd,b'{}'); os.close(fd)
+    result=wait(manager,body['requestId'])
+    assert result['status']=='failed'
+    assert json.loads((path/'result.json').read_text())['status']=='failed'
+
+
 def test_process_loss_is_interrupted_never_automatic_replay(manager):
     context=multiprocessing.get_context('fork')
     ready=context.Event(); body=request()
