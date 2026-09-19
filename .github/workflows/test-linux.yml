@@ -351,7 +351,9 @@ jobs:
           bash tests/test-generated-config-contracts.sh
 
       - name: Dependency Pin Contract Tests
-        run: python3 tests/test-dependency-pins.py
+        run: |
+          python3 tests/test-dependency-pins.py
+          python3 tests/test-dependency-stage-refs.py
 
       - name: Offline Model Validation Tests
         run: |
