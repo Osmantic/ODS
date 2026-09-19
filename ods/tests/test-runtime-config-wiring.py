@@ -34,7 +34,9 @@ def test_bootstrap_upgrade_promotes_lemonade_model_id() -> None:
     text = read("scripts/bootstrap-upgrade.sh")
     assert 'write_env_value LEMONADE_MODEL "$_promotion_lemonade_model_id"' in text
     assert 'lemonade_model_id_matches_gguf "$_loaded_model_id" "$FULL_GGUF_FILE"' in text
-    assert 'resolve_live_lemonade_model_id "${OLLAMA_PORT:-8080}" "$FULL_GGUF_FILE"' in text
+    assert 'resolve_live_lemonade_model_id "$lemonade_port" "$FULL_GGUF_FILE"' in text
+    assert 'lemonade_port="$(read_env_value AMD_INFERENCE_PORT)"' in text
+    assert 'resolve_live_lemonade_model_id "${OLLAMA_PORT' not in text
     assert 'json_has_id "$models_json" "$model_id"' in text
 
 
