@@ -1801,3 +1801,14 @@ def test_flatten_bounds_cycles_and_large_depth_without_losing_empty_leaves():
         nested = {"child": nested}
     result = dict_flatten_nested_safe(nested, max_depth=100000)
     assert len(next(iter(result)).split(".")) == 128
+
+
+class TestStringMaskSensitiveTokenSafe:
+    def test_valid_masking(self):
+        from helpers import string_mask_sensitive_token_safe
+        assert string_mask_sensitive_token_safe("secret_api_key_12345", 4, 4) == "secr**********2345"
+
+    def test_invalid_inputs(self):
+        from helpers import string_mask_sensitive_token_safe
+        assert string_mask_sensitive_token_safe(None) == ""
+        assert string_mask_sensitive_token_safe("short", 5, 5) == "*****"

@@ -1417,3 +1417,20 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def string_mask_sensitive_token_safe(token: str | None, unmasked_prefix: int = 2, unmasked_suffix: int = 2) -> str:
+    """Safely mask sensitive token string preserving unmasked prefix and suffix lengths.
+    Returns "" on None or non-string inputs.
+    """
+    if token is None or not isinstance(token, str):
+        return ""
+    if not isinstance(unmasked_prefix, int) or isinstance(unmasked_prefix, bool) or unmasked_prefix < 0:
+        unmasked_prefix = 2
+    if not isinstance(unmasked_suffix, int) or isinstance(unmasked_suffix, bool) or unmasked_suffix < 0:
+        unmasked_suffix = 2
+    n = len(token)
+    if n <= unmasked_prefix + unmasked_suffix:
+        return "*" * n
+    masked_len = n - unmasked_prefix - unmasked_suffix
+    return token[:unmasked_prefix] + ("*" * masked_len) + token[n - unmasked_suffix:]
