@@ -86,3 +86,46 @@ def test_download_snapshot_passes_cache_revision_and_patterns(monkeypatch, tmp_p
             "allow_patterns": ["onnx/model.onnx"],
         }
     ]
+
+
+def test_download_snapshot_resolves_omitted_revision_to_commit(monkeypatch, tmp_path):
+    helper = _load_snapshot_helper()
+    calls = []
+
+    def fake_snapshot_download(**kwargs):
+        calls.append(kwargs)
+        snapshot = tmp_path / "snapshots" / "deadbeef123"
+        snapshot.mkdir(parents=True)
+        return str(snapshot)
+
+    class FakeHfApi:
+        def model_info(self, repo_id):
+            assert repo_id == "BAAI/bge-base-en-v1.5"
+            return SimpleNamespace(sha="deadbeef123")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "huggingface_hub",
+        SimpleNamespace(snapshot_download=fake_snapshot_download, HfApi=FakeHfApi),
+    )
+
+    helper.download_snapshot("BAAI/bge-base-en-v1.5", tmp_path / "cache")
+
+    assert calls[0]["revision"] == "deadbeef123"
+
+
+def test_download_snapshot_fails_when_revision_unresolvable(monkeypatch, tmp_path):
+    helper = _load_snapshot_helper()
+
+    class FakeHfApi:
+        def model_info(self, repo_id):
+            return SimpleNamespace(sha=None)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "huggingface_hub",
+        SimpleNamespace(snapshot_download=object(), HfApi=FakeHfApi),
+    )
+
+    with pytest.raises(RuntimeError, match="immutable revision"):
+        helper.download_snapshot("BAAI/bge-base-en-v1.5", tmp_path / "cache")
