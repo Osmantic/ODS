@@ -482,7 +482,7 @@ jobs:
       - name: Test support bundle command deadlines
         run: |
           python3 -m pip install pytest==8.4.2
-          python3 -m pytest -q tests/test_support_bundle_timeouts.py tests/test_support_bundle_log_scope.py tests/test_support_bundle_uri_credentials.py
+          python3 -m pytest -q tests/test_support_bundle_timeouts.py tests/test_support_bundle_log_scope.py tests/test_support_bundle_uri_credentials.py tests/test_support_bundle_auth_redaction.py
 
       - name: Linux Node runtime path tests
         run: |
