@@ -8,6 +8,7 @@ from fastapi import APIRouter,Depends,HTTPException,Request
 from fastapi.responses import JSONResponse
 from host_agent_client import AgentHTTPError,AgentProtocolError,AgentUnavailable,async_request_json as request_agent_json
 from security import verify_api_key
+from request_body import read_bounded_body
 from .pixel_providers import _pairs,_float,_constant,_check_depth
 
 router=APIRouter(tags=['pixel-handoff'])
@@ -61,10 +62,7 @@ def normalize_status(value,*,checkpoint):
 
 
 async def _body(request,action):
-    raw=bytearray()
-    async for chunk in request.stream():
-        if len(raw)+len(chunk)>4096: raise HTTPException(413,'Handoff decision too large')
-        raw.extend(chunk)
+    raw = await read_bounded_body(request, 4096, 'Handoff decision too large')
     try:
         body=_parse(bytes(raw).decode())
         if type(body) is not dict or set(body)!=({'runId'} if action=='status' else DECISION if action=='decide' else set()):

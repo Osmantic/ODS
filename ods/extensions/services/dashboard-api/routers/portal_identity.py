@@ -7,6 +7,7 @@ from host_agent_client import AgentHTTPError, AgentProtocolError, AgentUnavailab
 from host_agent_client import async_request_json as request_agent_json
 from portal_identity_contract import normalize_document, normalize_edit
 from security import verify_api_key
+from request_body import read_bounded_body
 
 from routers.pixel_providers import _check_depth, _constant, _float, _pairs
 
@@ -15,11 +16,7 @@ NO_STORE = {"Cache-Control": "no-store"}
 
 
 async def _body(request):
-    raw = bytearray()
-    async for chunk in request.stream():
-        if len(raw) + len(chunk) > 2048:
-            raise HTTPException(413, "Assistant identity request is too large", headers=NO_STORE)
-        raw.extend(chunk)
+    raw = await read_bounded_body(request, 2048, "Assistant identity request is too large", headers=NO_STORE)
     try:
         text = bytes(raw).decode("utf-8")
         _check_depth(text)

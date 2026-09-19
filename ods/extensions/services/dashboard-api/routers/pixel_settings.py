@@ -22,16 +22,13 @@ from routers.pixel_providers import (
     MAX_BYTES,
 )
 from security import verify_api_key
+from request_body import read_bounded_body
 
 router = APIRouter(tags=["pixel-settings"])
 
 
 async def _body(request: Request, validator=normalize_edit) -> dict[str, Any]:
-    raw = bytearray()
-    async for chunk in request.stream():
-        if len(raw) + len(chunk) > MAX_BYTES:
-            raise HTTPException(413, "Settings request exceeds size limit")
-        raw.extend(chunk)
+    raw = await read_bounded_body(request, MAX_BYTES, "Settings request exceeds size limit")
     try:
         text = bytes(raw).decode("utf-8")
         _check_depth(text)
@@ -132,5 +129,4 @@ async def export_workspace_snapshot(_key: str = Depends(verify_api_key)):
         raise HTTPException(503, "Settings are unavailable for export", headers={"Cache-Control": "no-store"}) from None
     except (AgentProtocolError, ValueError, TypeError, RecursionError):
         raise HTTPException(502, "Invalid response during export", headers={"Cache-Control": "no-store"}) from None
-
 
