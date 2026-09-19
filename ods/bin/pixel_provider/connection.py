@@ -9,6 +9,8 @@ from .store import StoreError
 
 
 def _integer(value, low, high):
+    if low > high:
+        raise ValueError("low bound must not exceed high bound")
     return type(value) is int and low <= value <= high
 
 
