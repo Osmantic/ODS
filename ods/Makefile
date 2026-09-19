@@ -214,6 +214,7 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== CLI user-extension dependency resolution ==="
 	@bash tests/test-cli-user-extension-deps.sh
+	@python3 tests/test-stale-branch-exclusions.py
 	@echo ""
 	@echo "=== session cleanup lifecycle ==="
 	@bash tests/test-session-cleanup.sh
