@@ -20,6 +20,14 @@ Your data is preserved when disabling. To re-enable later: `ods enable baserow`
 
 - **URL:** `http://localhost:3007`
 
+Set `BASEROW_PORT` to change the published port. The default public URL follows
+that port, for example `BASEROW_PORT=8307` advertises `http://localhost:8307`.
+Set `BASEROW_PUBLIC_URL` explicitly when using a hostname, another device or an
+HTTPS reverse proxy; that complete URL takes precedence over the local default.
+Changing the public URL does not configure TLS or change the bind address.
+Recreate the service after changing its environment. Existing explicitly set
+public URLs are retained and must be updated separately if their origin changes.
+
 ## First-Time Setup
 
 1. Enable the service: `ods enable baserow`
