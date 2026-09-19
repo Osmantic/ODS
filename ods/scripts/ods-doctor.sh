@@ -61,6 +61,8 @@ if [[ -z "$DOCTOR_BASH_CMD" || ! -x "$DOCTOR_BASH_CMD" ]]; then
 fi
 
 # Source service registry and safe env helpers
+declare -A SERVICE_PORTS=()
+declare -A SERVICE_HEALTH=()
 if [[ -f "$ROOT_DIR/lib/service-registry.sh" ]]; then
     export SCRIPT_DIR="$ROOT_DIR"
     . "$ROOT_DIR/lib/service-registry.sh"
@@ -95,7 +97,9 @@ load_env_safe() {
     done < "$env_file"
 }
 load_env_safe "$ROOT_DIR/.env"
-sr_resolve_ports
+if declare -F sr_resolve_ports >/dev/null 2>&1; then
+    sr_resolve_ports
+fi
 _DASHBOARD_PORT="${SERVICE_PORTS[dashboard]:-3001}"
 _WEBUI_PORT="${SERVICE_PORTS[open-webui]:-3000}"
 
