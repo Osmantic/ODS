@@ -31,7 +31,6 @@ load_capability_profile() {
         return 1
     fi
 
-    local env_out
     if env_out="$("$builder" --output "$CAPABILITY_PROFILE_FILE" --env 2>>"$LOG_FILE")"; then
         load_env_from_output <<< "$env_out"
         CAP_PROFILE_LOADED="true"
@@ -43,6 +42,20 @@ load_capability_profile() {
 
     warn "Capability profile generation failed, falling back to installer-local detection."
     return 1
+}
+
+format_multi_gpu_name() {
+    local first_name="$1"
+    local second_name="$2"
+    local count="$3"
+
+    if [[ "$first_name" == "$second_name" ]]; then
+        echo "${first_name} × ${count}"
+    else
+        local name="${first_name} + ${second_name}"
+        [[ $count -gt 2 ]] && name="${name} + $((count - 2)) more"
+        echo "$name"
+    fi
 }
 
 normalize_profile_tier() {
@@ -379,16 +392,10 @@ detect_gpu() {
             pci_id=$(nvidia-smi --query-gpu=pci.device_id --format=csv,noheader 2>/dev/null | head -1 | xargs)
             [[ -n "$pci_id" ]] && GPU_DEVICE_ID="${pci_id:0:6}"
             if [[ $GPU_COUNT -gt 1 ]]; then
-                # Build a display name for multi-GPU (e.g. "RTX 3090 + RTX 4090" or "RTX 4090 × 2")
                 local first_name second_name
                 first_name=$(echo "$GPU_INFO" | sed -n '1p' | cut -d',' -f1 | xargs)
                 second_name=$(echo "$GPU_INFO" | sed -n '2p' | cut -d',' -f1 | xargs)
-                if [[ "$first_name" == "$second_name" ]]; then
-                    GPU_NAME="${first_name} × ${GPU_COUNT}"
-                else
-                    GPU_NAME="${first_name} + ${second_name}"
-                    [[ $GPU_COUNT -gt 2 ]] && GPU_NAME="${GPU_NAME} + $((GPU_COUNT - 2)) more"
-                fi
+                GPU_NAME=$(format_multi_gpu_name "$first_name" "$second_name" "$GPU_COUNT")
                 log "GPU: ${GPU_COUNT}x NVIDIA (${GPU_VRAM}MB total VRAM) — ${GPU_NAME}"
             else
                 log "GPU: $GPU_NAME (${GPU_VRAM}MB VRAM)"
@@ -491,14 +498,7 @@ detect_gpu() {
         if [[ $GPU_COUNT -eq 1 ]]; then
             GPU_NAME="${gpu_names[0]}"
         else
-            local first_name="${gpu_names[0]}"
-            local second_name="${gpu_names[1]}"
-            if [[ "$first_name" == "$second_name" ]]; then
-                GPU_NAME="${first_name} × ${GPU_COUNT}"
-            else
-                GPU_NAME="${first_name} + ${second_name}"
-                [[ $GPU_COUNT -gt 2 ]] && GPU_NAME="${GPU_NAME} + $((GPU_COUNT - 2)) more"
-            fi
+            GPU_NAME=$(format_multi_gpu_name "${gpu_names[0]}" "${gpu_names[1]}" "$GPU_COUNT")
         fi
 
         # Check for NPU (Ryzen AI) for Lemonade hybrid mode
