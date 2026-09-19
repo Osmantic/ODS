@@ -74,7 +74,9 @@ jobs:
       - name: Sharing credential and owner control tests
         run: python -m pytest tests/pixel_inference -q
       - name: Inference perimeter and cancellation tests
-        run: python -m pytest extensions/services/pixel-inference/tests -q
+        run: |
+          python -m pytest extensions/services/pixel-inference/tests -q
+          python3 tests/test_pixel_stream_revocation.py
       - name: Model router compatibility and route pins
         run: python -m pytest extensions/services/model-router/tests -q
       - name: LiteLLM metadata-only telemetry contracts
