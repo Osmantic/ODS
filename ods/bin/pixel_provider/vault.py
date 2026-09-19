@@ -46,7 +46,7 @@ def validate_edit(body):
             raise StoreError("invalid-request")
         ids.add(provider["id"])
     for pid, action in changes.items():
-        if pid not in ids or not isinstance(action, dict):
+        if pid not in ids or not isinstance(action, dict) or pid != pid.strip():
             raise StoreError("invalid-request")
         if action.get("action") == "set" and set(action) == {"action", "value"}:
             _key(action["value"])
