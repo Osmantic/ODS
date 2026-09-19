@@ -1319,6 +1319,8 @@ async def _stream_upstream(
                     await response.write(line + b"\n")
                     passthrough = True
                     continue
+                if content is not None:
+                    pending_text += content
                 if finish_reason is not None:
                     normalized = pending_text.strip()
                     if not normalized or normalized in _RESERVED_ASSISTANT_REPLIES:
@@ -1326,23 +1328,21 @@ async def _stream_upstream(
                             (item[1] for item in reversed(pending) if isinstance(item[1], dict)),
                             {"model": _PIXEL_REWRITE},
                         )
-                        await replace_pending(template, synthesize_finish=False)
+                        await replace_pending(template, synthesize_finish=True)
                     else:
                         await flush_pending()
-                    await response.write(line + b"\n")
+                        await response.write(line + b"\n")
                     passthrough = True
                     continue
 
                 queue_pending(line, event, content, finish_reason)
-                if content is not None:
-                    pending_text += content
-                    normalized = pending_text.strip()
-                    if normalized and not any(
-                        reserved.startswith(normalized)
-                        for reserved in _RESERVED_ASSISTANT_REPLIES
-                    ):
-                        await flush_pending()
-                        passthrough = True
+                normalized = pending_text.strip()
+                if normalized and not any(
+                    reserved.startswith(normalized)
+                    for reserved in _RESERVED_ASSISTANT_REPLIES
+                ):
+                    await flush_pending()
+                    passthrough = True
         if cancel_event is not None and cancel_event.is_set():
             pending = []
             await response.write(b"data: [DONE]\n\n")
