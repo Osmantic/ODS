@@ -135,7 +135,7 @@ class TeamStore:
         self.instance = uuid.uuid4().hex
 
     def _path(self, owner, team_id):
-        if not re.fullmatch(r"[a-f0-9]{64}", owner) or not re.fullmatch(r"[a-f0-9]{32}", team_id):
+        if not isinstance(owner, str) or not isinstance(team_id, str) or not re.fullmatch(r"[a-f0-9]{64}", owner) or not re.fullmatch(r"[a-f0-9]{32}", team_id):
             raise ValueError("Invalid team identity")
         return self.directory / f"{owner}-{team_id}.json"
 
