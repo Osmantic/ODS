@@ -105,11 +105,16 @@ import json
 import sys
 
 provider = sys.argv[1]
-payload = json.load(sys.stdin)
+try:
+    payload = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+
 if provider == "ollama":
     values = (item.get("name") or item.get("model") for item in payload.get("models", []))
 else:
     values = (item.get("id") for item in payload.get("data", []))
+
 for value in values:
     if isinstance(value, str) and value:
         print(value)
