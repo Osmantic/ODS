@@ -219,6 +219,8 @@ def manager(data_dir):
 
 
 def handle(data_dir, action, body):
+    if action not in ('status', 'begin', 'end', 'select', 'return'):
+        raise StoreError('invalid-scope-request')
     store = manager(data_dir)
     if action == 'status':
         if type(body) is not dict or set(body) != {'chatId'}:
