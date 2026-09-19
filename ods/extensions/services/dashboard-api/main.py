@@ -513,7 +513,11 @@ def _serialize_gpu(gpu_info) -> Optional[dict]:
             round(gpu_info.memory_used_mb / 1024, 1)
             if gpu_info.memory_usage_available else None
         ),
-        "vramTotal": round(gpu_info.memory_total_mb / 1024, 1),
+        "vramTotal": (
+            round(gpu_info.memory_total_mb / 1024, 1)
+            if gpu_info.memory_total_mb is not None
+            else 0.0
+        ),
         "utilization": gpu_info.utilization_percent if gpu_info.utilization_available else None,
         "temperature": gpu_info.temperature_c if gpu_info.temperature_available else None,
         "memoryType": gpu_info.memory_type,
