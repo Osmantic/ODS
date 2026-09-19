@@ -1,0 +1,50 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: stirling-pdf
+  name: Stirling-PDF
+  description: "Self-hosted PDF rotation, merging, splitting and conversion with local accounts."
+  aliases: [pdf-tools]
+  container_name: ods-stirling-pdf
+  container_uid: 1000
+  default_host: stirling-pdf
+  port: 8080
+  external_port_env: STIRLING_PDF_PORT
+  external_port_default: 7823
+  health: /api/v1/info/status
+  ui_path: /
+  startup_timeout: 600
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [documents, pdf, productivity, local]
+  env_vars:
+    - key: STIRLING_PDF_PORT
+      default: "7823"
+      description: Published port for the local PDF application
+    - key: STIRLING_PDF_ADMIN_USER
+      default: admin
+      description: Initial administrator username, used only when the account database is new
+    - key: STIRLING_PDF_ADMIN_PASSWORD
+      required: true
+      secret: true
+      description: Initial administrator password; change existing passwords inside Stirling-PDF
+features:
+  - id: local-pdf-tools
+    name: PDF Tools
+    description: "Rotate, merge, split and convert PDFs on the local server"
+    icon: FileText
+    category: productivity
+    requirements:
+      services: [stirling-pdf]
+      vram_gb: 0
+      disk_gb: 8
+    enabled_services_all: [stirling-pdf]
+    setup_time: "~3-10 minutes"
+    priority: 32
+    launch:
+      type: service
+      service: stirling-pdf
