@@ -1,0 +1,44 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: typesense
+  name: Typesense (In-Memory Search)
+  description: "Fast, typo-tolerant in-memory search engine supporting hybrid faceted search and vector similarity indexing for local applications."
+  aliases: [search-engine, typesense-search, search]
+  container_name: ods-typesense
+  default_host: typesense
+  port: 8108
+  external_port_env: TYPESENSE_PORT
+  external_port_default: 8108
+  health: /health
+  ui_path: ""
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [search, vector-search, indexing, in-memory, typo-tolerant]
+  env_vars:
+    - key: TYPESENSE_PORT
+      description: "Published HTTP port for Typesense search API"
+      default: "8108"
+    - key: TYPESENSE_API_KEY
+      description: "Master API key for all Typesense index, search, and admin operations"
+      required: true
+      secret: true
+features:
+  - id: in-memory-search
+    name: Fast Typo-Tolerant Search
+    description: "Sub-50ms typo-tolerant search and vector similarity indexing for local catalogs and documentation"
+    icon: Search
+    category: search
+    requirements:
+      services: [typesense]
+      vram_gb: 0
+    enabled_services_all: [typesense]
+    setup_time: "~1 minute after setting credentials"
+    priority: 36
+    launch:
+      type: service
+      service: typesense
