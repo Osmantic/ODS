@@ -29,7 +29,8 @@ def _hex(value):
 
 
 def safe_reason(value, fallback="provider-controller-unavailable"):
-    return value if type(value) is str and value in REASONS else fallback
+    target_fallback = fallback if type(fallback) is str and fallback in REASONS else "provider-controller-unavailable"
+    return value if type(value) is str and value in REASONS else target_fallback
 
 
 def normalize_binding(value):
