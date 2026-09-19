@@ -86,3 +86,28 @@ it('keeps a drag owned by its starting pointer until that pointer ends it', () =
   pointer(handle, 'pointermove', 520, 0, 2)
   expect(resize).toHaveBeenLastCalledWith(480)
 })
+
+
+it('shrinks a CSS-constrained panel on the first keyboard press', () => {
+  const resize = vi.fn()
+  const {container} = render(<main className="portal-workspace"><aside style={{maxWidth:'75%'}}><PanelResizeHandle width={1680} onResize={resize}/></aside></main>)
+  Object.defineProperty(container.querySelector('main'), 'clientWidth', {value:2000})
+  container.querySelector('aside').getBoundingClientRect = () => ({width:1500})
+  fireEvent.keyDown(screen.getByRole('separator'), {key:'ArrowRight'})
+  expect(resize).toHaveBeenLastCalledWith(1468)
+  fireEvent.keyDown(screen.getByRole('separator'), {key:'ArrowLeft'})
+  expect(resize).toHaveBeenLastCalledWith(1500)
+})
+
+it('reports the visible width and CSS-constrained range after layout changes', () => {
+  const resize = vi.fn()
+  const {container, rerender} = render(<main className="preview-container"><aside style={{maxWidth:'60%'}}><PanelResizeHandle width={1000} onResize={resize} container=".preview-container" minimum={240}/></aside></main>)
+  Object.defineProperty(container.querySelector('main'), 'clientWidth', {value:1200})
+  container.querySelector('aside').getBoundingClientRect = () => ({width:720})
+  rerender(<main className="preview-container"><aside style={{maxWidth:'60%'}}><PanelResizeHandle width={1001} onResize={resize} container=".preview-container" minimum={240}/></aside></main>)
+  const handle = screen.getByRole('separator')
+  expect(handle).toHaveAttribute('aria-valuenow','720')
+  expect(handle).toHaveAttribute('aria-valuemax','720')
+  fireEvent.keyDown(handle, {key:'ArrowRight'})
+  expect(resize).toHaveBeenLastCalledWith(688)
+})
