@@ -640,3 +640,35 @@ describe('ODSTalk', () => {
     expect(screen.getByRole('button', { name: 'Deny' })).toBeEnabled()
   })
 })
+
+test.each(['md', 'json'])('exports the displayed conversation as %s without another network request', async (format) => {
+  const fetchMock = vi.fn(async url => url === '/api/talk/status'
+    ? response({ capabilities: { text_chat: true } })
+    : sseResponse([{ type: 'complete', text: 'Answer with Unicode ß', status: 'ok' }, { type: 'done' }]))
+  vi.stubGlobal('fetch', fetchMock)
+  const create = vi.fn(() => 'blob:transcript')
+  vi.stubGlobal('URL', Object.assign(URL, { createObjectURL: create, revokeObjectURL: vi.fn() }))
+  vi.spyOn(window.HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+  render(<ODSTalk />)
+  expect(screen.getByRole('button', { name: 'Export conversation' })).toBeDisabled()
+  await screen.findByText('Ready')
+  fireEvent.change(screen.getByPlaceholderText('Message ODS'), { target: { value: 'Keep this note' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+  expect(screen.getByRole('button', { name: 'Export conversation' })).toBeDisabled()
+  await screen.findByText('Answer with Unicode ß')
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Export conversation' })).toBeEnabled())
+  fireEvent.change(screen.getByLabelText('Transcript format'), { target: { value: format } })
+  const requests = fetchMock.mock.calls.length
+  fireEvent.click(screen.getByRole('button', { name: 'Export conversation' }))
+  const blob = create.mock.calls[0][0]
+  const text = await new Promise(resolve => {
+    const reader = new window.FileReader()
+    reader.onload = () => resolve(reader.result)
+    reader.readAsText(blob)
+  })
+  expect(text).toContain('Keep this note')
+  expect(text).toContain('Answer with Unicode ß')
+  expect(text).not.toContain("Hey, I'm ODS")
+  if (format === 'json') expect(JSON.parse(text).messages).toHaveLength(2)
+  expect(fetchMock).toHaveBeenCalledTimes(requests)
+})
