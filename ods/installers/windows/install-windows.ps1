@@ -90,6 +90,7 @@ $LibDir = Join-Path $ScriptDir "lib"
 . (Join-Path $LibDir "opencode-config.ps1")
 . (Join-Path $LibDir "readiness-summary.ps1")
 . (Join-Path $LibDir "service-plan.ps1")
+. (Join-Path $LibDir "build-diagnostics.ps1")
 
 # Preserve the caller's Docker client configuration before any installer phase
 # changes location. Docker accepts relative DOCKER_CONFIG values, whose meaning
@@ -1783,6 +1784,8 @@ litellm_settings:
             $_buildServices += "comfyui"
         }
         $_buildLog = Join-Path $_composeLogDir "compose-build.log"
+        $_buildDiagnosticsPath = Join-Path $_composeLogDir "compose-build-diagnostics.json"
+        $_buildDiagnostics = [System.Collections.Generic.List[object]]::new()
         "" | Out-File -FilePath $_buildLog -Encoding ascii
 
         Push-Location $installDir
@@ -1817,6 +1820,8 @@ litellm_settings:
             $_defaultDockerConfigServices = @()
             foreach ($_svc in $_buildServices) {
                 Write-AI "  building $_svc ..."
+                $_buildStartedAt = Get-Date
+                $_buildLogStartLine = @(Get-Content -LiteralPath $_buildLog -ErrorAction SilentlyContinue).Count
                 $_buildExit = Invoke-ODSWindowsComposeBuildService `
                     -Service $_svc `
                     -DockerClientArgs $script:ODSWindowsDockerClientArgs `
@@ -1853,6 +1858,12 @@ litellm_settings:
                     $_failedBuildServices += $_svc
                     Write-AIError "$_svc build failed (see $_buildLog)"
                 }
+                $_buildFinishedAt = Get-Date
+                $_buildDiagnostics.Add((New-ODSWindowsBuildDiagnostic `
+                    -Service $_svc -StartedAt $_buildStartedAt -FinishedAt $_buildFinishedAt `
+                    -ExitCode $_buildExit -CacheMode "no-cache" -LogPath $_buildLog `
+                    -LogStartLine $_buildLogStartLine))
+                Write-ODSWindowsBuildDiagnostics -Path $_buildDiagnosticsPath -Records @($_buildDiagnostics)
             }
             if ($_legacyBuilderServices.Count -gt 0) {
                 Write-AIWarn "Used Docker legacy builder fallback for: $($_legacyBuilderServices -join ', ')"
