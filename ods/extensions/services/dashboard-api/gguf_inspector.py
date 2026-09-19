@@ -145,7 +145,7 @@ def _skip_value(reader: _Reader, value_type: int, depth: int = 0) -> None:
     raise ValueError(f"unsupported GGUF value type: {value_type}")
 
 
-def _read_array(reader: _Reader, depth: int = 0) -> Any:
+def _read_array(reader: _Reader, depth: int = 0, sample_limit: int = 64) -> Any:
     if depth >= _MAX_ARRAY_DEPTH:
         raise ValueError("GGUF array nesting too deep")
     item_type = reader.unpack("<I")
@@ -153,7 +153,6 @@ def _read_array(reader: _Reader, depth: int = 0) -> Any:
     if item_type not in _STRUCTS and item_type not in (8, 9):
         raise ValueError(f"unsupported GGUF array type: {item_type}")
 
-    sample_limit = 64
     sample = [_read_value(reader, item_type, depth + 1) for _ in range(min(length, sample_limit))]
     remaining = max(length - sample_limit, 0)
     if item_type in _STRUCTS:
@@ -233,7 +232,14 @@ def inspect_gguf(path: Path | str, max_metadata_bytes: int = 32 * 1024 * 1024) -
         for _ in range(metadata_count):
             key = reader.string()
             value_type = reader.unpack("<I")
-            metadata[key] = _read_value(reader, value_type)
+            if value_type == 9 and key.endswith(".attention.head_count_kv"):
+                # Hybrid models can have more than 64 layers (e.g. Nemotron's
+                # 88). KV estimation needs the complete per-layer array, not
+                # the generic tokenizer sample. Keep a bounded allocation;
+                # larger arrays still degrade to the sampled representation.
+                metadata[key] = _read_array(reader, sample_limit=1024)
+            else:
+                metadata[key] = _read_value(reader, value_type)
 
         file_type = metadata.get("general.file_type")
         architecture = metadata.get("general.architecture", "unknown")
