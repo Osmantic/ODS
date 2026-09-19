@@ -1417,3 +1417,20 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def string_truncate_right_suffix_safe(text: str | None, max_length: int = 30, suffix: str = "...") -> str:
+    """Safely truncate text on the right side ensuring total length <= max_length.
+    Returns "" on None or non-string inputs.
+    """
+    if text is None or not isinstance(text, str):
+        return ""
+    if not isinstance(max_length, int) or isinstance(max_length, bool) or max_length <= 0:
+        max_length = 30
+    if not isinstance(suffix, str):
+        suffix = "..."
+    if len(text) <= max_length:
+        return text
+    if max_length <= len(suffix):
+        return text[:max_length]
+    return text[:max_length - len(suffix)] + suffix
