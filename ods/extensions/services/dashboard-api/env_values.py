@@ -78,4 +78,4 @@ def parse_env_value(raw: str) -> str:
         return match.group(1)
     if value[:1] in {"'", '"'}:
         return strip_matching_quotes(value)
-    return value.split(" #", 1)[0].rstrip()
+    return re.split(r"[ \t]+#", value, maxsplit=1)[0].rstrip()
