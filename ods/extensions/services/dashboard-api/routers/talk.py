@@ -234,16 +234,22 @@ async def _stream_vision_chat(image_bytes: bytes, content_type: str, prompt_text
                         chunk = json.loads(payload_str)
                     except json.JSONDecodeError:
                         continue
-                    if isinstance(chunk, dict) and chunk.get("error") is not None:
+                    if not isinstance(chunk, dict):
+                        continue
+                    if chunk.get("error") is not None:
                         yield _sse_event("error", {"status_code": 502, "detail": "The vision model returned an error before completing."})
                         yield _sse_event("done", {})
                         return
-                    delta = chunk.get("choices", [{}])[0].get("delta", {})
-                    text = delta.get("content")
+                    choices = chunk.get("choices")
+                    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+                        continue
+                    choice = choices[0]
+                    delta = choice.get("delta")
+                    text = delta.get("content") if isinstance(delta, dict) else None
                     if isinstance(text, str) and text:
                         accumulated.append(text)
                         yield _sse_event("delta", {"text": text})
-                    finish_reason = chunk.get("choices", [{}])[0].get("finish_reason")
+                    finish_reason = choice.get("finish_reason")
                     if finish_reason in ("stop", "length"):
                         completed = True
                         if finish_reason == "length":
