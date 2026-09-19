@@ -110,6 +110,7 @@ for sid in "${SERVICE_IDS[@]}"; do
         continue
     fi
 
+    [[ "$health" != /* ]] && health="/$health"
     url="http://127.0.0.1:${port}${health}"
     if curl -sf --max-time "$timeout_sec" "$url" >/dev/null; then
         ok_line "[$sid] $disp — running, health OK ($url)"
