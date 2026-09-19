@@ -396,6 +396,8 @@ detect_amd_topo() {
     done
     if [[ ${#card_dirs[@]} -gt 1 ]]; then
         mapfile -t card_dirs < <(_amd_sort_card_dirs "${card_dirs[@]}")
+    elif [[ ${#card_dirs[@]} -eq 1 ]]; then
+        card_dirs=("${card_dirs[0]}")
     fi
 
     local gpu_count=${#card_dirs[@]}
