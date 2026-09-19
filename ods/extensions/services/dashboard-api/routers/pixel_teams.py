@@ -133,9 +133,11 @@ async def _run(owner, agent):
         history_snapshot={"schemaVersion": 1, "messages": history} if history else None,
     )
     response = await pixel._retained_chat_stream(_Subscription(), body, owner)
+    import codecs
     buffered = ""
+    decoder = codecs.getincrementaldecoder("utf-8")()
     async for chunk in response.body_iterator:
-        buffered += chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk
+        buffered += decoder.decode(chunk) if isinstance(chunk, bytes) else chunk
         while "\n" in buffered:
             line, buffered = buffered.split("\n", 1)
             if not line.startswith("data:"):
