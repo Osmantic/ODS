@@ -454,10 +454,10 @@ def main():
 
     # Load topology
     try:
-        with open(args.topology) as f:
+        with open(args.topology, encoding="utf-8") as f:
             topology = json.load(f)
-    except FileNotFoundError:
-        print(f"ERROR: topology file not found: {args.topology}", file=sys.stderr)
+    except OSError as e:
+        print(f"ERROR: cannot read topology file {args.topology}: {e}", file=sys.stderr)
         sys.exit(1)
     except json.JSONDecodeError as e:
         print(f"ERROR: invalid JSON in topology file: {e}", file=sys.stderr)
