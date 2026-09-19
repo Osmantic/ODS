@@ -257,7 +257,11 @@ jobs:
         run: |
           echo "## Security Scan Results" >> $GITHUB_STEP_SUMMARY
 
-          # Run Bandit on ODS Python files
+          # Run Bandit on ODS Python files. Bandit exits 1 when it finds
+          # issues and >1 on tool errors — keep scanning on findings but
+          # fail the job when the scanner itself could not complete, so a
+          # broken run cannot masquerade as "zero findings".
+          set +e
           bandit -r ods/extensions/services/dashboard-api \
                     ods/scripts \
                     .github/scripts \
@@ -265,8 +269,13 @@ jobs:
             --output /tmp/bandit-results.json \
             --severity-level medium \
             --confidence-level medium \
-            --exclude __pycache__ \
-            || true  # Don't fail on findings
+            --exclude __pycache__
+          scan_rc=$?
+          set -e
+          if [ "$scan_rc" -gt 1 ]; then
+            echo "::error::Bandit scan failed to complete (exit $scan_rc)"
+            exit "$scan_rc"
+          fi
 
           # Count findings by severity
           if [ -f /tmp/bandit-results.json ]; then
@@ -331,6 +340,12 @@ jobs:
             /tmp/bandit-results.json
             /tmp/high-severity.json
           retention-days: 7
+
+      - name: Gate on high-severity findings
+        if: steps.filter-findings.outputs.high_count != '0'
+        run: |
+          echo "::error::Bandit reported ${{ steps.filter-findings.outputs.high_count }} high-severity finding(s). See the security-findings artifact."
+          exit 1
 
   # Job 4: Cost Tracker (5 min)
   cost-tracker:
