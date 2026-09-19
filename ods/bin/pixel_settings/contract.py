@@ -11,6 +11,10 @@ import math
 
 class SettingsError(ValueError):
     """Stable, nonsecret rejection suitable for the owner-facing preview."""
+    def __init__(self, message):
+        if not isinstance(message, str) or not message.strip():
+            raise ValueError("SettingsError requires non-empty message")
+        super().__init__(message)
 
 
 # Fixed scalar controls only. None explicitly requests automatic/default behavior;
