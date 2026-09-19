@@ -91,6 +91,14 @@ pass "Show-Help EXAMPLES include model swap"
 # ============================================================================
 # Integration Test: Invoke-Model without requiring Docker
 # ============================================================================
+# The integration block needs Windows PowerShell (powershell.exe) plus WSL
+# interop for the .bat docker stub and WSLENV translation. On Linux/macOS
+# hosts where only the static checks can run, skip it instead of dying 127.
+if ! command -v powershell.exe >/dev/null 2>&1; then
+    info "powershell.exe not available -- skipping integration tests (static checks still ran)"
+    exit 0
+fi
+
 info "Integration: model subcommands work without running Docker"
 
 to_unix_path() {
