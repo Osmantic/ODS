@@ -155,7 +155,7 @@ class TeamStore:
         rows = []
         for path in self.directory.glob(f"{owner}-*.json"):
             row = self.get(owner, path.stem[65:])
-            if row["chat_id"] == chat:
+            if row is not None and row.get("chat_id") == chat:
                 rows.append(row)
         return sorted(rows, key=lambda x: x["created"], reverse=True)
 
