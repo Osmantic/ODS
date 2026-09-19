@@ -51,8 +51,11 @@ if action not in {"verify", "remove"}:
     raise SystemExit("invalid Pixel access cleanup action")
 if marker_state not in {"installing", "ready", "deactivating"}:
     raise SystemExit("invalid Pixel access marker state")
-owner_uid, owner_gid = int(owner_uid_raw), int(owner_gid_raw)
-root_uid, root_gid = int(root_uid_raw), int(root_gid_raw)
+try:
+    owner_uid, owner_gid = int(owner_uid_raw), int(owner_gid_raw)
+    root_uid, root_gid = int(root_uid_raw), int(root_gid_raw)
+except (ValueError, TypeError):
+    raise SystemExit("invalid UID/GID arguments")
 install = pathlib.Path(install_raw)
 unit = pathlib.Path(unit_raw)
 program = pathlib.Path(program_raw)
