@@ -43,7 +43,13 @@ class PIIDetector:
             r'|'
             r'(?:[0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}'  # Middle ::
         ),
-        'api_key': re.compile(r'\b(?:api[_-]?key|apikey|token)[\s]*[=:]\s*["\']?[a-zA-Z0-9_\-]{16,}["\']?\b', re.IGNORECASE),
+        # Preserve the label/separator/quotes and replace only the credential.
+        # Optional escaped quotes cover JSON snippets inside chat strings.
+        'api_key': re.compile(
+            r'\b(?:api[_-]?key|apikey|token)(?:\\?["\'])?\s*[=:]\s*'
+            r'(?:\\?["\'])?(?P<api_value>[a-zA-Z0-9_\-]{16,})\b',
+            re.IGNORECASE,
+        ),
         'credit_card': re.compile(r'\b(?:\d{4}[-\s]?){3}\d{4}\b'),
     }
 
@@ -81,7 +87,9 @@ class PIIDetector:
 
         for pii_type, pattern in self.PATTERNS.items():
             def replace_match(found):
-                match = found.group(0)
+                api_value = found.groupdict().get('api_value')
+                match = api_value if api_value is not None else found.group(0)
+                prefix = found.group(0)[:-len(match)] if api_value is not None else ''
 
                 # Credit card: validate with Luhn to reduce false positives.
                 if pii_type == 'credit_card' and not self._luhn_check(match):
@@ -89,11 +97,11 @@ class PIIDetector:
 
                 for token, original in self.pii_map.items():
                     if original == match:
-                        return token
+                        return prefix + token
 
                 token = self._generate_token(pii_type, match)
                 self.pii_map[token] = match
-                return token
+                return prefix + token
 
             # Replace exactly the regex match. A same-valued substring earlier
             # in the text may not satisfy the pattern's boundary conditions.

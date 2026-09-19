@@ -95,6 +95,30 @@ def client():
     return TestClient(proxy.app)
 
 
+@pytest.mark.parametrize("label", ["api_key", "apikey", "token"])
+@pytest.mark.parametrize("embedded", [False, True])
+def test_quoted_key_values_are_scrubbed_without_breaking_json(client, install_upstream, label, embedded):
+    secret = "private_credential_abcdefghijklmnop"
+    document = {label: secret, "note": "ordinary text"}
+    payload = {"messages": [{"role": "user", "content": json.dumps(document)}]} if embedded else document
+    sent = []
+
+    def upstream(request):
+        sent.append(request.content)
+        return _resp(200, {"Content-Type": "application/json"}, [request.content])
+
+    install_upstream(upstream)
+    response = client.post("/v1/chat/completions", json=payload, headers=AUTH)
+    assert response.status_code == 200
+    assert len(sent) == 1
+    assert secret.encode() not in sent[0]
+    forwarded = json.loads(sent[0])
+    redacted = json.loads(forwarded["messages"][0]["content"]) if embedded else forwarded
+    assert redacted[label].startswith("<PII_api_key_")
+    assert redacted["note"] == "ordinary text"
+    assert response.json() == payload
+
+
 # ── 1. Streaming API used; response is a StreamingResponse ──────────────────
 
 class TestStreamingNotBuffered:
