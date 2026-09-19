@@ -596,6 +596,44 @@ test('starts and cancels peer model download through proxy endpoints', async () 
   expect(globalThis.fetch.mock.calls[6][1].method).toBe('POST')
 })
 
+test('polls an active peer download until it reaches a terminal state', async () => {
+  vi.useFakeTimers()
+  globalThis.fetch
+    .mockResolvedValueOnce(response(peerReadyStatusPayload))
+    .mockResolvedValueOnce(response(peerModelsPayload))
+    .mockResolvedValueOnce(response(peerActiveDownloadStatusPayload))
+    .mockResolvedValueOnce(response(peerModelsPayload))
+    .mockResolvedValueOnce(response(peerDownloadStatusPayload))
+
+  try {
+    render(createElement(RemoteProvider))
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(screen.getByText('Downloading - remote-available - 42%')).toBeInTheDocument()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000)
+    })
+    expect(screen.getByText('Idle')).toBeInTheDocument()
+    expect(globalThis.fetch.mock.calls.slice(3).map(call => call[0])).toEqual([
+      '/api/remote-provider/peer/models',
+      '/api/remote-provider/peer/models/download-status',
+    ])
+
+    const terminalCallCount = globalThis.fetch.mock.calls.length
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(4000)
+    })
+    expect(globalThis.fetch).toHaveBeenCalledTimes(terminalCallCount)
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
 test('confirms peer model delete before proxying removal', async () => {
   const confirmSpy = vi.spyOn(window, 'confirm').mockImplementation(() => true)
   globalThis.fetch
