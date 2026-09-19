@@ -252,21 +252,44 @@ demo "Watching tokens stream in real-time..."
 echo ""
 
 # Simple streaming demo - just show it works
-curl -sN "${LLM_URL}/v1/chat/completions" \
+if curl -sfN "${LLM_URL}/v1/chat/completions" \
     -H "Content-Type: application/json" \
     -d "{\"model\": \"${DEMO_MODEL}\", \"messages\": [{\"role\": \"user\", \"content\": \"Count from 1 to 5, one number per line.\"}], \"max_tokens\": 50, \"temperature\": 0, \"stream\": true}" \
-    2>/dev/null | while read -r line; do
+    2>/dev/null | {
+    stream_complete=false
+    stream_content=false
+    while IFS= read -r line; do
+        line="${line%$'\r'}"
         if [[ "$line" == data:* ]]; then
-            content=$(echo "${line#data: }" | jq -r '.choices[0].delta.content // empty' 2>/dev/null)
+            data="${line#data:}"
+            data="${data# }"
+            if [[ "$data" == '[DONE]' ]]; then
+                stream_complete=true
+                continue
+            fi
+            if ! content=$(printf '%s' "$data" | jq -r '
+                if type != "object" or has("error") then error("Invalid stream event")
+                else .choices[0].delta.content // empty |
+                    if type == "string" then . else error("Invalid stream content") end
+                end' 2>/dev/null); then
+                exit 1
+            fi
             if [[ -n "$content" ]]; then
                 printf "%s" "$content"
+                stream_content=true
             fi
         fi
     done
-
-echo ""
-echo ""
-success "Streaming works! Great for real-time UIs."
+    [[ "$stream_complete" == true && "$stream_content" == true ]]
+}; then
+    echo ""
+    echo ""
+    success "Streaming works! Great for real-time UIs."
+else
+    echo ""
+    fail "Streaming demo did not complete. Check the model service and retry."
+    exit 1
+fi
 
 wait_key
 
