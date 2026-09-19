@@ -40,7 +40,14 @@ class ImageRef:
 def _strip_inline_comment(line: str) -> str:
     in_single = False
     in_double = False
+    escaped = False
     for idx, char in enumerate(line):
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\":
+            escaped = True
+            continue
         if char == "'" and not in_double:
             in_single = not in_single
         elif char == '"' and not in_single:
