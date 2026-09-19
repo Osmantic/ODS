@@ -153,6 +153,8 @@ def _parse_expected_status(expr: str) -> Set[int]:
 
 def check_tcp(host: str, port: int, timeout: float) -> Tuple[bool, str]:
     """Check TCP port is open."""
+    if timeout <= 0:
+        return (False, "timeout must be positive")
     try:
         with socket.create_connection((host, port), timeout=timeout):
             return (True, "tcp connect ok")
@@ -202,6 +204,8 @@ def check_http(
     follow_redirects: bool = True,
 ) -> Tuple[bool, str, Optional[int]]:
     """Check HTTP endpoint matches expected status and optional body regex."""
+    if timeout <= 0:
+        return (False, "timeout must be positive", None)
 
     # If a body regex is provided, we must use GET.
     if body_regex is not None:
