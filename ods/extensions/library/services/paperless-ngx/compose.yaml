@@ -10,6 +10,7 @@ services:
       - PAPERLESS_HOST=${PAPERLESS_HOST:-paperless}
       - PAPERLESS_DBHOST=${PAPERLESS_DBHOST:-paperless-postgres}
       - PAPERLESS_DBPORT=${PAPERLESS_DBPORT:-5432}
+      - PAPERLESS_DBPASS=${PAPERLESS_DB_PASSWORD:-paperless}
       - PAPERLESS_REDIS=${PAPERLESS_REDIS:-redis://paperless-redis:6379}
       - "PAPERLESS_SECRET_KEY=${PAPERLESS_SECRET_KEY:?PAPERLESS_SECRET_KEY must be set – generate with: python3 -c \"import secrets; print(secrets.token_urlsafe(50))\"}"
       - PAPERLESS_URL=http://${PAPERLESS_HOST:-paperless}:${PAPERLESS_PORT:-7807}
