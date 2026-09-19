@@ -432,8 +432,15 @@ if (Test-Path $_agentScript) {
             $_installExit = Invoke-ODSNativeQuiet -FilePath $_python3.FilePath -Arguments $_installArgs -LogPath $script:LOG_FILE
             if ($_installExit -eq 0) {
                 Write-AISuccess "ODS host-agent Hugging Face downloader ready"
+                # A marker from an earlier failed run must not keep reporting
+                # a capability that has since recovered.
+                Remove-ODSHfXetDegradedMarker -InstallDir $installDir
             } else {
                 Write-AIWarn "Could not install huggingface_hub[hf_xet]; model manager downloads may fail on Xet-backed Hugging Face models."
+                # Persist the degraded capability so the readiness summary and
+                # the install report can surface it instead of letting the
+                # install look fully healthy.
+                Write-ODSHfXetDegradedMarker -InstallDir $installDir | Out-Null
             }
         }
 
