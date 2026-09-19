@@ -422,9 +422,21 @@ class TestAuth(BaseEdgeTest):
                                    headers=self.auth()) as resp:
             self.assertEqual(resp.status, 200)
 
+    async def test_models_rejects_query_parameters(self):
+        async with self.client.get("http://localhost/v1/models?extra=1",
+                                   headers=self.auth()) as resp:
+            self.assertEqual(resp.status, 400)
+            self.assertEqual(await resp.json(), {"error": "query parameters not allowed"})
+
     async def test_activity_requires_auth(self):
         async with self.client.get("http://localhost/v1/activity") as resp:
             self.assertEqual(resp.status, 401)
+
+    async def test_activity_rejects_query_parameters(self):
+        async with self.client.get("http://localhost/v1/activity?extra=1",
+                                   headers=self.auth()) as resp:
+            self.assertEqual(resp.status, 400)
+            self.assertEqual(await resp.json(), {"error": "query parameters not allowed"})
 
     async def test_activity_is_content_free_when_idle(self):
         async with self.client.get(

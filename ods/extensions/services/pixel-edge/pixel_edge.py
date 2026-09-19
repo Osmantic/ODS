@@ -769,6 +769,8 @@ async def handle_models(request: web.Request):
     # through to the protected handler.
     if fail is not None:
         return fail
+    if request.query_string:
+        return web.json_response({"error": "query parameters not allowed"}, status=400)
     if not await _ingress_ready():
         return web.json_response({"error": "service unavailable"}, status=503)
 
@@ -781,6 +783,8 @@ async def handle_activity(request: web.Request):
     fail = _check_auth(request)
     if fail is not None:
         return fail
+    if request.query_string:
+        return web.json_response({"error": "query parameters not allowed"}, status=400)
     streams = len(request.app[_ACTIVE_REQUESTS_KEY])
     return web.json_response({"active": streams > 0, "streams": streams})
 
