@@ -124,15 +124,21 @@ do_archive() {
         if (( idle_days >= MAX_IDLE_DAYS )); then
             if [[ "$dry_run" == "true" ]]; then
                 log "WOULD ARCHIVE: $name ($size, idle ${idle_days}d)"
+                ((archived++))
             else
                 log "ARCHIVING: $name ($size, idle ${idle_days}d)"
                 # Move to cold storage
-                mv "$model_dir" "$COLD_DIR/$name"
-                # Create symlink so HF cache still resolves
-                ln -s "$COLD_DIR/$name" "${model_dir%/}"
-                log "ARCHIVED: $name -> $COLD_DIR/$name"
+                mkdir -p "$COLD_DIR"
+                if mv "$model_dir" "$COLD_DIR/$name"; then
+                    # Create symlink so HF cache still resolves
+                    ln -s "$COLD_DIR/$name" "${model_dir%/}"
+                    log "ARCHIVED: $name -> $COLD_DIR/$name"
+                    ((archived++))
+                else
+                    log "ERROR: failed to move $name to $COLD_DIR/$name"
+                    ((skipped++))
+                fi
             fi
-            ((archived++))
         else
             log "SKIP (recent, ${idle_days}d): $name ($size)"
             ((skipped++))
@@ -164,6 +170,7 @@ do_restore() {
     fi
 
     log "RESTORING: $name to $cache_path"
+    mkdir -p "$HF_CACHE"
     mv "$cold_path" "$cache_path"
     log "RESTORED: $name"
     echo "Restored: $name"
@@ -182,6 +189,7 @@ do_restore_all() {
         fi
 
         log "RESTORING: $name"
+        mkdir -p "$HF_CACHE"
         mv "$cold_model" "$cache_path"
         log "RESTORED: $name"
     done
