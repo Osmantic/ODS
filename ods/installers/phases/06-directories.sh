@@ -653,6 +653,10 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
     LIVEKIT_SECRET=$(_env_get LIVEKIT_API_SECRET "$(openssl rand -base64 32 2>/dev/null || head -c 32 /dev/urandom | base64)")
     LIVEKIT_API_KEY=$(_phase06_env_hex_secret LIVEKIT_API_KEY 16)
     DASHBOARD_API_KEY=$(_phase06_env_hex_secret DASHBOARD_API_KEY 32)
+    # Dedicated bearer for the model-router internal endpoints (route evidence,
+    # swap-gate admission). Without it both sides fall back to DASHBOARD_API_KEY,
+    # which scopes the browser-facing dashboard credential to router control.
+    ODS_ROUTER_INTERNAL_KEY=$(_phase06_env_hex_secret ODS_ROUTER_INTERNAL_KEY 32)
     ODS_AGENT_KEY=$(_phase06_env_hex_secret ODS_AGENT_KEY 32)
     # HMAC key for signing ods-session cookies (magic-link redemption).
     # 32 random bytes hex-encoded. Rotating invalidates every issued cookie —
@@ -1303,6 +1307,7 @@ ODS_AUTH_UPSTREAM=${ODS_AUTH_UPSTREAM:-ods-dashboard-api:3002}
 #=== Security (auto-generated, keep secret!) ===
 WEBUI_SECRET=$(dotenv_value "${WEBUI_SECRET}")
 DASHBOARD_API_KEY=$(dotenv_value "${DASHBOARD_API_KEY}")
+ODS_ROUTER_INTERNAL_KEY=$(dotenv_value "${ODS_ROUTER_INTERNAL_KEY}")
 ODS_AGENT_KEY=$(dotenv_value "${ODS_AGENT_KEY}")
 ODS_SESSION_SECRET=$(dotenv_value "${ODS_SESSION_SECRET}")
 HERMES_DASHBOARD_SESSION_TOKEN=$(dotenv_value "${HERMES_DASHBOARD_SESSION_TOKEN}")
