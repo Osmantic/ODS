@@ -63,11 +63,17 @@ env_mode = sys.argv[2] == "true"
 platform_id = sys.argv[3]
 gpu_vendor = sys.argv[4]
 memory_type = sys.argv[5]
-vram_mb = int(float(sys.argv[6] or 0))
+def safe_int_float(val):
+    try:
+        return int(float(val or 0))
+    except (ValueError, TypeError):
+        return 0
+
+vram_mb = safe_int_float(sys.argv[6] if len(sys.argv) > 6 else 0)
 device_id = sys.argv[7]
 gpu_name = sys.argv[8]
 cpu_name = sys.argv[9]
-ram_mb = int(float(sys.argv[10] or 0))
+ram_mb = safe_int_float(sys.argv[10] if len(sys.argv) > 10 else 0)
 
 with open(db_path, "r", encoding="utf-8") as f:
     db = json.load(f)
