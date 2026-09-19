@@ -46,7 +46,7 @@ clear_screen() {
 pause() {
     echo ""
     echo -e "${DIM}Press Enter to continue...${NC}"
-    read -r
+    read -r || true
 }
 
 print_header() {
@@ -378,7 +378,10 @@ while true; do
     print_header
     print_menu
 
-    read -r choice
+    if ! read -r choice; then
+        echo ""
+        exit 0
+    fi
 
     case "${choice,,}" in
         1) demo_chat ;;
