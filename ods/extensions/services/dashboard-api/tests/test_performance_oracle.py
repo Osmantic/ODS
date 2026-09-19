@@ -357,6 +357,55 @@ def test_local_model_payload_prefers_persisted_context_over_stale_process_value(
     assert payload["models"][0]["contextLength"] == 65536
 
 
+def test_local_payload_hides_incomplete_split_shards(data_dir, tmp_path):
+    """A lone shard of a manual split model is not a loadable model option."""
+    install_dir = tmp_path / "ods"
+    models_dir = install_dir / "data" / "models"
+    models_dir.mkdir(parents=True)
+    (install_dir / ".env").write_text("CTX_SIZE=8192\n", encoding="utf-8")
+    shard = models_dir / "manual-00002-of-00003.gguf"
+    shard.write_text("partial download", encoding="utf-8")
+
+    payload = build_models_payload(
+        _gpu(),
+        None,
+        0,
+        install_dir,
+        data_dir,
+        catalog=[],
+        evidence=[],
+        downloaded_files_override={shard.name: shard},
+    )
+
+    assert payload["models"] == []
+
+
+def test_local_payload_offers_only_first_part_of_complete_split(data_dir, tmp_path):
+    """llama.cpp loads a split set from its -00001 entry; later parts are not options."""
+    install_dir = tmp_path / "ods"
+    models_dir = install_dir / "data" / "models"
+    models_dir.mkdir(parents=True)
+    (install_dir / ".env").write_text("CTX_SIZE=8192\n", encoding="utf-8")
+    parts = {}
+    for index in range(1, 4):
+        part = models_dir / f"manual-0000{index}-of-00003.gguf"
+        part.write_text(f"shard {index}", encoding="utf-8")
+        parts[part.name] = part
+
+    payload = build_models_payload(
+        _gpu(),
+        None,
+        0,
+        install_dir,
+        data_dir,
+        catalog=[],
+        evidence=[],
+        downloaded_files_override=parts,
+    )
+
+    assert [model["gguf"] for model in payload["models"]] == ["manual-00001-of-00003.gguf"]
+
+
 def test_model_payload_projects_explicit_app_compatibility(data_dir, tmp_path):
     install_dir = tmp_path / "ods"
     (install_dir / "data" / "models").mkdir(parents=True)
