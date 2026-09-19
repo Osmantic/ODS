@@ -54,7 +54,7 @@ print_dashboard_qr() {
 
 # Print a stylish URL box (fallback when qrencode unavailable)
 print_url_box() {
-    local url=$1
+    local url="${1:-http://localhost:3001}"
     local url_len=${#url}
     local box_width=$((url_len + 6))
     
