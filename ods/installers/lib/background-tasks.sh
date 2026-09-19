@@ -121,7 +121,10 @@ bg_task_wait() {
     local timeout="${2:-1200}"
     local check_interval="${3:-5}"
     local elapsed=0
-    
+
+    [[ "$check_interval" =~ ^[0-9]+$ ]] || check_interval=5
+    [[ "$check_interval" -gt 0 ]] || check_interval=1
+
     while [[ $elapsed -lt $timeout ]]; do
         bg_task_status "$task_id"
         local status=$?
