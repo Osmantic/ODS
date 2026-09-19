@@ -24,7 +24,7 @@ def connection_url(value):
             raise ValueError('path')
         # HTTP localhost is always literal loopback in the saved client config,
         # not a hostname whose later resolution could send the key elsewhere.
-        if parts.scheme == 'http' and parts.hostname == 'localhost':
+        if parts.scheme == 'http' and parts.hostname in ('localhost', '::1', '[::1]'):
             result = 'http://127.0.0.1' + (f':{parts.port}' if parts.port else '') + '/v1'
         return result
     except (ValueError, TypeError, AttributeError):
