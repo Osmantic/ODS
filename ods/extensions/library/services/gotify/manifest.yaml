@@ -1,0 +1,41 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: gotify
+  name: Gotify
+  description: "Self-hosted push notification server for sending and receiving messages in real time via WebSockets and webhooks."
+  aliases: [notifications, push-notifications]
+  container_name: ods-gotify
+  host_env: GOTIFY_HOST
+  default_host: gotify
+  port: 80
+  external_port_env: GOTIFY_PORT
+  external_port_default: 7843
+  health: /version
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [notifications, push, messaging, alerts, local]
+  env_vars:
+    - key: GOTIFY_PORT
+      default: "7843"
+      description: Published Gotify web UI and REST/WebSocket notification port
+    - key: GOTIFY_DEFAULTUSER_PASS
+      default: "admin"
+      description: Initial admin password (change immediately after first login)
+features:
+  - id: push-notifications
+    name: Push Notifications
+    description: "Send and receive push notifications from local AI agents and workflow automations"
+    icon: Bell
+    category: productivity
+    requirements:
+      services: [gotify]
+      vram_gb: 0
+      disk_gb: 1
+    enabled_services_all: [gotify]
+    setup_time: "~1 minute"
+    priority: 35

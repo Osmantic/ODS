@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-13T16:53:56Z",
+  "generated_at": "2026-09-14T16:10:29Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -1371,6 +1371,61 @@
       ],
       "tags": [],
       "features": [],
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
+      "id": "gotify",
+      "name": "Gotify",
+      "description": "Self-hosted push notification server for sending and receiving messages in real time via WebSockets and webhooks.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 80,
+      "external_port_default": 7843,
+      "health_endpoint": "/version",
+      "env_vars": [
+        {
+          "key": "GOTIFY_PORT",
+          "default": "7843",
+          "description": "Published Gotify web UI and REST/WebSocket notification port"
+        },
+        {
+          "key": "GOTIFY_DEFAULTUSER_PASS",
+          "default": "admin",
+          "description": "Initial admin password (change immediately after first login)"
+        }
+      ],
+      "tags": [
+        "notifications",
+        "push",
+        "messaging",
+        "alerts",
+        "local"
+      ],
+      "features": [
+        {
+          "id": "push-notifications",
+          "name": "Push Notifications",
+          "description": "Send and receive push notifications from local AI agents and workflow automations",
+          "icon": "Bell",
+          "category": "productivity",
+          "requirements": {
+            "services": [
+              "gotify"
+            ],
+            "vram_gb": 0,
+            "disk_gb": 1
+          },
+          "enabled_services_all": [
+            "gotify"
+          ],
+          "setup_time": "~1 minute",
+          "priority": 35
+        }
+      ],
       "configuration_scope": "declared-environment-keys"
     },
     {
@@ -3153,6 +3208,28 @@
           ]
         }
       ],
+      "catalog_source": "builtin",
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
+      "id": "pixel-inference",
+      "name": "Pixel inference sharing (development)",
+      "description": "Disabled by default. Owner-provisioned, inference-only device credentials; loopback transport only. Does not provide Pixel agent or computer access. Private state must be provisioned before service activation. Native Windows private-state support and guided setup are not yet implemented.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [
+        "model-router"
+      ],
+      "port": 8093,
+      "external_port_default": 4005,
+      "health_endpoint": "/health",
+      "env_vars": [],
+      "tags": [],
+      "features": [],
+      "startup_check": false,
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
     },
