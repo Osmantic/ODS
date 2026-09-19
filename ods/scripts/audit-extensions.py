@@ -116,10 +116,14 @@ def parse_args() -> argparse.Namespace:
 
 
 def load_document(path: Path) -> Any:
-    with path.open("r", encoding="utf-8") as handle:
-        if path.suffix == ".json":
-            return json.load(handle)
-        return yaml.safe_load(handle)
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            if path.suffix == ".json":
+                return json.load(handle)
+            return yaml.safe_load(handle)
+    except Exception as e:
+        print(f"WARN: failed to load {path}: {e}", file=sys.stderr)
+        return None
 
 
 def find_manifest(service_dir: Path) -> Path | None:
