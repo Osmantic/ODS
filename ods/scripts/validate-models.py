@@ -186,7 +186,13 @@ def check_gguf_set(candidate: Path) -> tuple[bool, str]:
 
 
 def check_llm(root: Path) -> tuple[bool, str]:
-    models_dir = root / "data" / "models"
+    models_dir_raw = env_value(root, "MODELS_DIR")
+    if models_dir_raw:
+        models_dir = Path(models_dir_raw).expanduser()
+        if not models_dir.is_absolute():
+            models_dir = root / models_dir
+    else:
+        models_dir = root / "data" / "models"
     configured = env_value(root, "GGUF_FILE")
     if configured:
         if Path(configured).name != configured:
