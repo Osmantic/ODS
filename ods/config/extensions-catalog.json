@@ -1679,6 +1679,68 @@
       "configuration_scope": "declared-environment-keys"
     },
     {
+      "id": "jaeger",
+      "name": "Jaeger (Distributed Tracing)",
+      "description": "Inspect authenticated OTLP traces across local workflow services with retained span history.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 16686,
+      "external_port_default": 16686,
+      "health_endpoint": "/status",
+      "env_vars": [
+        {
+          "key": "JAEGER_PORT",
+          "description": "Jaeger authenticated query UI host port",
+          "default": "16686"
+        },
+        {
+          "key": "JAEGER_OTLP_PORT",
+          "description": "Jaeger authenticated OTLP HTTP traces host port",
+          "default": "4318"
+        },
+        {
+          "key": "JAEGER_HTPASSWD",
+          "description": "One bcrypt htpasswd line, generated with htpasswd -nB ods; used for ingestion and query authentication",
+          "required": true
+        }
+      ],
+      "tags": [
+        "observability",
+        "tracing",
+        "workflows"
+      ],
+      "features": [
+        {
+          "id": "distributed-tracing",
+          "name": "Distributed Tracing",
+          "description": "Follow a trace across local services through authenticated Jaeger queries",
+          "icon": "Activity",
+          "category": "monitoring",
+          "requirements": {
+            "services": [
+              "jaeger"
+            ],
+            "vram_gb": 0
+          },
+          "enabled_services_all": [
+            "jaeger"
+          ],
+          "setup_time": "~1 minute",
+          "priority": 40,
+          "launch": {
+            "type": "service",
+            "service": "jaeger",
+            "path": "/"
+          }
+        }
+      ],
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
       "id": "jan",
       "name": "Jan",
       "description": "Jan is a ChatGPT alternative that runs 100% offline on your computer.\nMulti-engine support (llama.cpp, TensorRT-LLM). Local-first, privacy-focused.\n",
