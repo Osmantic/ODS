@@ -50,6 +50,8 @@ def project_context(value):
         if not valid:
             raise ValueError("invalid compaction detail")
         result["compaction"][key] = item
+    if compact.get("status") == "completed" and result["compaction"].get("tokensBefore") is not None and result["compaction"].get("tokensAfter") is not None and result["compaction"]["tokensAfter"] > result["compaction"]["tokensBefore"]:
+        raise ValueError("invalid compaction detail")
     history = value.get("history")
     if (not isinstance(history, dict) or history.get("status") not in {"ready", "pending", "unknown"}
             or not _number(history.get("acknowledgedMessages"), 2000)
