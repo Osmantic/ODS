@@ -83,18 +83,18 @@ _ods_completion() {
                     case $prev in
                         save|load|delete)
                             # Complete with existing preset names
-                            local preset_dir="${ODS_HOME:-$HOME/ods}/.presets"
+                            local preset_dir="${ODS_HOME:-$HOME/ods}/presets"
                             if [[ -d "$preset_dir" ]]; then
-                                local presets=$(ls -1 "$preset_dir" 2>/dev/null | sed 's/\.preset$//')
+                                local presets=$(ls -1 "$preset_dir" 2>/dev/null)
                                 COMPREPLY=($(compgen -W "$presets" -- "$cur"))
                             fi
                             return 0
                             ;;
                         export)
                             # Complete with existing preset names for export
-                            local preset_dir="${ODS_HOME:-$HOME/ods}/.presets"
+                            local preset_dir="${ODS_HOME:-$HOME/ods}/presets"
                             if [[ -d "$preset_dir" ]]; then
-                                local presets=$(ls -1 "$preset_dir" 2>/dev/null | sed 's/\.preset$//')
+                                local presets=$(ls -1 "$preset_dir" 2>/dev/null)
                                 COMPREPLY=($(compgen -W "$presets" -- "$cur"))
                             fi
                             return 0
