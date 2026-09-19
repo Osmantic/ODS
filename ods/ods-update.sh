@@ -1075,7 +1075,17 @@ cmd_changelog() {
         else
             log_warn "No local CHANGELOG.md found."
             log_info "Fetching latest release notes from GitHub..."
-            cmd_changelog "$(curl -sf --max-time 15 "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" | jq -r '.tag_name // empty')" || true
+            # Resolve the latest tag first: recursing into cmd_changelog with an
+            # empty version (offline, or a release payload without tag_name)
+            # re-enters this branch and spins forever.
+            local latest_tag
+            if latest_tag=$(curl -sf --max-time 15 "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" | jq -r '.tag_name // empty') \
+                && [[ -n "$latest_tag" ]]; then
+                cmd_changelog "$latest_tag"
+            else
+                log_error "Could not determine the latest release (offline or no published releases)"
+                return 1
+            fi
         fi
     fi
 }
