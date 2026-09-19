@@ -36,6 +36,7 @@ export default function HuggingFaceModelBrowser({ gpu, downloadBusy, onImportSta
   const [importingArtifact, setImportingArtifact] = useState(null)
   const [searchAttempt, setSearchAttempt] = useState(0)
   const detailsRequestRef = useRef(0)
+  const detailsControllerRef = useRef(null)
 
   useEffect(() => {
     const controller = new AbortController()
@@ -73,7 +74,15 @@ export default function HuggingFaceModelBrowser({ gpu, downloadBusy, onImportSta
     }
   }, [query, sort, searchAttempt])
 
+  useEffect(() => () => {
+    detailsRequestRef.current += 1
+    detailsControllerRef.current?.abort()
+  }, [])
+
   const openRepository = async (model) => {
+    detailsControllerRef.current?.abort()
+    const controller = new AbortController()
+    detailsControllerRef.current = controller
     const requestId = detailsRequestRef.current + 1
     detailsRequestRef.current = requestId
     setSelectedRepo(model)
@@ -81,7 +90,10 @@ export default function HuggingFaceModelBrowser({ gpu, downloadBusy, onImportSta
     setDetailsError(null)
     setDetailsLoading(true)
     try {
-      const response = await fetch(`/api/models/huggingface/repositories/${encodeURI(model.id)}`)
+      const response = await fetch(
+        `/api/models/huggingface/repositories/${encodeURI(model.id)}`,
+        { signal: controller.signal },
+      )
       const body = await responseJson(response)
       if (!response.ok) throw new Error(errorMessage(body, 'Could not inspect this repository'))
       if (detailsRequestRef.current !== requestId) return
@@ -90,18 +102,24 @@ export default function HuggingFaceModelBrowser({ gpu, downloadBusy, onImportSta
       }
       setDetails(body)
     } catch (requestError) {
-      if (detailsRequestRef.current === requestId) setDetailsError(requestError.message)
+      if (requestError?.name !== 'AbortError' && detailsRequestRef.current === requestId) {
+        setDetailsError(requestError.message)
+      }
     } finally {
+      if (detailsControllerRef.current === controller) detailsControllerRef.current = null
       if (detailsRequestRef.current === requestId) setDetailsLoading(false)
     }
   }
 
   const closeRepository = () => {
     if (importingArtifact) return
+    detailsControllerRef.current?.abort()
+    detailsControllerRef.current = null
     detailsRequestRef.current += 1
     setSelectedRepo(null)
     setDetails(null)
     setDetailsError(null)
+    setDetailsLoading(false)
   }
 
   const importArtifact = async (artifact) => {
