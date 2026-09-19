@@ -656,6 +656,28 @@ def test_api_settings_env_rejects_null_byte_in_value(test_client, settings_env_f
     assert "invalid characters" in response.json()["detail"]
 
 
+@pytest.mark.parametrize("active", [False, True])
+@pytest.mark.parametrize("port", ["5678", "5679"])
+def test_settings_save_reports_disabled_service_changes(
+    test_client, settings_env_fixture, monkeypatch, active, port,
+):
+    env_path = settings_env_fixture["env_path"]
+    env_path.write_text(env_path.read_text(encoding="utf-8") + "N8N_PORT=5678\n", encoding="utf-8")
+    monkeypatch.setattr("main._active_settings_apply_services", lambda: {"n8n"} if active else set())
+    response = test_client.put(
+        "/api/settings/env", headers=test_client.auth_headers,
+        json={"mode": "form", "values": {"N8N_PORT": port}},
+    )
+    assert response.status_code == 200
+    plan = response.json()["applyPlan"]
+    changed = port != "5678"
+    expected_status = ("ready" if active else "staged") if changed else "none"
+    assert plan["status"] == expected_status
+    assert plan["inactiveServices"] == (["n8n"] if changed and not active else [])
+    assert plan["services"] == (["n8n"] if changed and active else [])
+    assert f"N8N_PORT={port}" in env_path.read_text(encoding="utf-8")
+
+
 def test_api_settings_env_save_returns_llama_apply_plan(test_client, settings_env_fixture):
     env_path = settings_env_fixture["env_path"]
     env_path.write_text(
