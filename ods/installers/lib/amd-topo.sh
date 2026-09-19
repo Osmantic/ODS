@@ -369,9 +369,13 @@ _sysfs_link_type() {
         fi
 
         # Check for shared upstream PCI bridge
+        # Check for shared upstream PCI bridge
         local upstream_a upstream_b
-        upstream_a=$(readlink -f "$card_a/../" 2>/dev/null | xargs basename 2>/dev/null) || upstream_a=""
-        upstream_b=$(readlink -f "$card_b/../" 2>/dev/null | xargs basename 2>/dev/null) || upstream_b=""
+        local real_a real_b
+        real_a=$(readlink -f "$card_a/.." 2>/dev/null) || real_a=""
+        real_b=$(readlink -f "$card_b/.." 2>/dev/null) || real_b=""
+        upstream_a="${real_a##*/}"
+        upstream_b="${real_b##*/}"
         if [[ -n "$upstream_a" && -n "$upstream_b" && "$upstream_a" == "$upstream_b" ]]; then
             echo "PXB"; return 0
         fi
