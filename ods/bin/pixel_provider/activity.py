@@ -50,9 +50,9 @@ def assess_activity(
     expected_epoch: str,
 ) -> ActivitySnapshot:
     # --- strict clock parameter gates (content-free) ---
-    if isinstance(now_ms, bool) or not isinstance(now_ms, int) or now_ms < 0:
+    if isinstance(now_ms, bool) or not isinstance(now_ms, int) or not 0 <= now_ms <= 2**53 - 1:
         return _bad(REASON_INVALID_CLOCK)
-    if isinstance(max_age_ms, bool) or not isinstance(max_age_ms, int) or max_age_ms <= 0:
+    if isinstance(max_age_ms, bool) or not isinstance(max_age_ms, int) or not 1 <= max_age_ms <= 2**53 - 1:
         return _bad(REASON_INVALID_CLOCK)
     if not isinstance(expected_epoch, str) or not ID_RE.fullmatch(expected_epoch):
         return _bad(REASON_MALFORMED_SOURCE)
