@@ -109,6 +109,16 @@ jobs:
         shell: pwsh
         run: ./tests/contracts/test-install-footprint-windows.ps1
 
+      - name: Install pytest for Windows contract tests
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: python -m pip install 'pytest>=8,<9'
+
+      - name: Pixel Provider Windows Contracts
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: python -m pytest -q tests/test_pixel_provider_windows_bootstrap.py tests/test_pixel_provider_windows_credentials.py tests/test_pixel_provider_windows_custody.py tests/test_pixel_provider_windows_host_api.py tests/test_pixel_provider_windows_transactions.py tests/pixel_settings/test_store_windows.py
+
       - name: Atomic Environment Write Tests
         if: runner.os == 'Windows'
         shell: bash
