@@ -57,6 +57,8 @@ CLASS_ENV="$("${SCRIPT_DIR}/classify-hardware.sh" \
 load_env_from_output <<< "$CLASS_ENV"
 
 # Source service registry for LLM port
+declare -A SERVICE_PORTS=()
+declare -A SERVICE_HEALTH=()
 if [[ -f "$ROOT_DIR/lib/service-registry.sh" ]]; then
     export SCRIPT_DIR="$ROOT_DIR"
     . "$ROOT_DIR/lib/service-registry.sh"
