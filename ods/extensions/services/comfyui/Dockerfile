@@ -45,7 +45,7 @@ RUN git clone --branch v0.16.4 --depth 1 https://github.com/comfyanonymous/Comfy
 RUN cd "$COMFYUI_DIR/custom_nodes" \
     && git clone --branch 4.1b2 --depth 1 https://github.com/ltdrdata/ComfyUI-Manager.git \
     && cd ComfyUI-Manager \
-    && pip3 install --no-cache-dir -r requirements.txt 2>/dev/null || true
+    && pip3 install --no-cache-dir -r requirements.txt
 
 # ---------------------------------------------------------------------------
 # Layer 5a: ComfyUI-GGUF (GGUF model loading)
@@ -54,7 +54,7 @@ RUN cd "$COMFYUI_DIR/custom_nodes" \
     && git clone https://github.com/city96/ComfyUI-GGUF.git \
     && cd ComfyUI-GGUF \
     && git checkout 6ea2651e \
-    && pip3 install --no-cache-dir -r requirements.txt 2>/dev/null || true
+    && pip3 install --no-cache-dir -r requirements.txt
 
 # ---------------------------------------------------------------------------
 # Layer 5b: ComfyUI-KJNodes (LTX-2 node graphs)
@@ -63,7 +63,7 @@ RUN cd "$COMFYUI_DIR/custom_nodes" \
     && git clone https://github.com/kijai/ComfyUI-KJNodes.git \
     && cd ComfyUI-KJNodes \
     && git checkout 2747d76e \
-    && pip3 install --no-cache-dir -r requirements.txt 2>/dev/null || true
+    && pip3 install --no-cache-dir -r requirements.txt
 
 # ---------------------------------------------------------------------------
 # Layer 5c: ComfyUI-VideoHelperSuite (video output)
@@ -72,7 +72,7 @@ RUN cd "$COMFYUI_DIR/custom_nodes" \
     && git clone https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite.git \
     && cd ComfyUI-VideoHelperSuite \
     && git checkout 993082e4 \
-    && pip3 install --no-cache-dir -r requirements.txt 2>/dev/null || true
+    && pip3 install --no-cache-dir -r requirements.txt
 
 # ---------------------------------------------------------------------------
 # Layer 5d: ComfyUI-LTXVideo (Lightricks nodes)
@@ -81,7 +81,7 @@ RUN cd "$COMFYUI_DIR/custom_nodes" \
     && git clone https://github.com/Lightricks/ComfyUI-LTXVideo.git \
     && cd ComfyUI-LTXVideo \
     && git checkout 531512f7 \
-    && pip3 install --no-cache-dir -r requirements.txt 2>/dev/null || true
+    && pip3 install --no-cache-dir -r requirements.txt
 
 # ---------------------------------------------------------------------------
 # Layer 6: comfy-kitchen — NVIDIA NVFP4 acceleration
