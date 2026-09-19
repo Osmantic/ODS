@@ -111,6 +111,8 @@ class ChatResultStore:
         return True
 
     def append(self, key, data, *, terminal=False):
+        if not isinstance(data, (bytes, bytearray)):
+            raise TypeError("Chunk data must be bytes")
         with self.db:
             row = self.get(key)
             if row is None or row["state"] != "active":
