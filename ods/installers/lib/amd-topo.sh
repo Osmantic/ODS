@@ -25,6 +25,18 @@
 #     SYS  = 10  Cross-NUMA
 # ============================================================================
 
+# Strip CR and surrounding whitespace from sysfs/tool output. sysfs reads via
+# $() lose the trailing newline but keep a stray CR or padding; rocm-smi and
+# lspci lines can carry trailing spaces. Untrimmed values corrupt the TSV/JSON
+# rows and break gfx-version comparisons downstream.
+_amd_trim() {
+    local s="$1"
+    s="${s//$'\r'/}"
+    s="${s#"${s%%[![:space:]]*}"}"
+    s="${s%"${s##*[![:space:]]}"}"
+    printf '%s' "$s"
+}
+
 _amd_card_id() {
     local card_dir="$1"
     local card_name
@@ -71,6 +83,7 @@ amd_gpu_id() {
     if command -v amd-smi &>/dev/null; then
         local uuid
         uuid=$(amd-smi list --json 2>/dev/null | jq -r ".[$gpu_idx].uuid // empty" 2>/dev/null)
+        uuid=$(_amd_trim "$uuid")
         if [[ -n "$uuid" && "$uuid" != "null" && "$uuid" != "N/A" ]]; then
             echo "$uuid"
             return 0
@@ -81,6 +94,7 @@ amd_gpu_id() {
     if [[ -f "$card_dir/unique_id" ]]; then
         local uid
         uid=$(cat "$card_dir/unique_id" 2>/dev/null)
+        uid=$(_amd_trim "$uid")
         if [[ -n "$uid" && "$uid" != "0x0000000000000000" ]]; then
             echo "AMD-UID-${uid}"
             return 0
@@ -92,7 +106,7 @@ amd_gpu_id() {
     pci_bdf=$(readlink -f "$card_dir" | grep -oP '[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9]' | tail -1) || pci_bdf="unknown"
     device_id=$(cat "$card_dir/device" 2>/dev/null | sed 's/^0x//') || device_id="0000"
     subsystem_id=$(cat "$card_dir/subsystem_device" 2>/dev/null | sed 's/^0x//') || subsystem_id="0000"
-    echo "AMD-${pci_bdf}-${device_id}-${subsystem_id}"
+    echo "AMD-${pci_bdf}-$(_amd_trim "$device_id")-$(_amd_trim "$subsystem_id")"
 }
 
 # Detect gfx version for an AMD GPU
@@ -109,6 +123,7 @@ amd_gfx_version() {
             | grep "GPU\[$gpu_idx\].*GFX Version" \
             | sed 's/.*GFX Version:[[:space:]]*//' \
             | head -1)
+        gfx=$(_amd_trim "$gfx")
         [[ -n "$gfx" && "$gfx" != "N/A" ]] && echo "$gfx" && return 0
     fi
 
@@ -117,6 +132,7 @@ amd_gfx_version() {
         local gfx
         gfx=$(amd-smi static --json --asic 2>/dev/null \
             | jq -r ".[$gpu_idx].asic.target_graphics_version // empty" 2>/dev/null)
+        gfx=$(_amd_trim "$gfx")
         [[ -n "$gfx" && "$gfx" != "null" ]] && echo "$gfx" && return 0
     fi
 
@@ -124,9 +140,9 @@ amd_gfx_version() {
     local ip_path="$card_dir/ip_discovery/die/0/GC/0"
     if [[ -d "$ip_path" ]]; then
         local major minor revision
-        major=$(cat "$ip_path/major" 2>/dev/null) || major=""
-        minor=$(cat "$ip_path/minor" 2>/dev/null) || minor=""
-        revision=$(cat "$ip_path/revision" 2>/dev/null) || revision="0"
+        major=$(_amd_trim "$(cat "$ip_path/major" 2>/dev/null)") || major=""
+        minor=$(_amd_trim "$(cat "$ip_path/minor" 2>/dev/null)") || minor=""
+        revision=$(_amd_trim "$(cat "$ip_path/revision" 2>/dev/null)") || revision="0"
         if [[ -n "$major" && -n "$minor" ]]; then
             echo "gfx${major}${minor}${revision}"
             return 0
@@ -140,6 +156,7 @@ amd_gfx_version() {
         if [[ -n "$pci_bdf" ]]; then
             local gfx
             gfx=$(rocminfo 2>/dev/null | grep -A10 "$pci_bdf" | grep -oP 'gfx\d+' | head -1)
+            gfx=$(_amd_trim "$gfx")
             [[ -n "$gfx" ]] && echo "$gfx" && return 0
         fi
     fi
@@ -177,6 +194,7 @@ amd_gpu_name() {
     if [[ -f "$card_dir/product_name" ]]; then
         local name
         name=$(cat "$card_dir/product_name" 2>/dev/null)
+        name=$(_amd_trim "$name")
         if [[ -n "$name" && "$name" != "(null)" && -n "${name// /}" ]]; then
             echo "$name"
             return 0
@@ -189,6 +207,7 @@ amd_gpu_name() {
     if [[ -n "$pci_bdf" ]] && command -v lspci &>/dev/null; then
         local lspci_name
         lspci_name=$(lspci -s "$pci_bdf" 2>/dev/null | sed 's/.*: //')
+        lspci_name=$(_amd_trim "$lspci_name")
         [[ -n "$lspci_name" ]] && echo "$lspci_name" && return 0
     fi
 
