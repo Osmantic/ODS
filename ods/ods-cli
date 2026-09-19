@@ -965,6 +965,7 @@ get_compose_flags() {
 _compose_run_with_summary() {
     local _verb="$1"; shift
     log "${_verb}..."
+    _require_compose_v2
     _check_docker_access
 
     local _compose_log
@@ -1150,6 +1151,29 @@ _compose_run_with_summary() {
 # and users have no idea what to do next. macOS Docker Desktop grants
 # socket access to the logged-in user, so the check is Linux-only.
 #=============================================================================
+# Compose v2 capability gate (issue #4607). ODS compose files rely on v2-only
+# grammar (profiles, extends, merge semantics). On hosts with the standalone
+# docker-compose v1 binary — or no compose plugin at all — every mutating
+# compose call used to fail-open into cryptic YAML errors after partially
+# starting the stack. `docker compose` (space) exists only as the v2 CLI
+# plugin, so checking `docker compose version` once per invocation and
+# requiring major >= 2 fails fast with an actionable message instead.
+#=============================================================================
+_compose_v2_checked=""
+_require_compose_v2() {
+    [[ -n "$_compose_v2_checked" ]] && return 0
+    local _ver
+    if ! _ver=$(docker compose version --format short 2>/dev/null) || [[ -z "$_ver" ]]; then
+        error "Docker Compose v2 plugin not found. ODS requires 'docker compose' v2 — install it via your Docker package (docker-compose-plugin) or Docker Desktop."
+    fi
+    local _maj="${_ver#v}"
+    _maj="${_maj%%.*}"
+    if ! [[ "$_maj" =~ ^[0-9]+$ ]] || (( _maj < 2 )); then
+        error "Docker Compose $_ver is too old. ODS requires Compose v2 for profiles/extends support — upgrade the compose plugin."
+    fi
+    _compose_v2_checked=1
+}
+
 _check_docker_access() {
     [[ "$(uname -s)" == Linux* ]] || return 0
     local _docker_ps_output
@@ -1183,6 +1207,7 @@ _ods_cli_rebuild_images() {
     # Other GPU backends pull pre-built images.
     [[ "${ENABLE_COMFYUI:-}" == "true" ]] && svcs+=(comfyui)
     [[ "${GPU_BACKEND:-}" == "amd" ]] && svcs+=(llama-server)
+    _require_compose_v2
     _check_docker_access
     log "Rebuilding local-built images (--rebuild-images)..."
     if ! docker compose "${flags[@]}" build --no-cache "${svcs[@]}"; then
@@ -1223,6 +1248,7 @@ _ods_cli_pull_external_images() {
         return 0
     fi
 
+    _require_compose_v2
     _check_docker_access
     log "Pulling latest images..."
 
