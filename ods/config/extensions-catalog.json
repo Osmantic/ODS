@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-13T16:53:56Z",
+  "generated_at": "2026-09-14T16:10:32Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -449,6 +449,57 @@
           ],
           "setup_time": "~1 minute",
           "priority": 19
+        }
+      ],
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
+      "id": "beszel",
+      "name": "Beszel",
+      "description": "Lightweight self-hosted server monitoring hub with real-time docker container metrics and historical graphs.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 8090,
+      "external_port_default": 7848,
+      "health_endpoint": "/api/health",
+      "env_vars": [
+        {
+          "key": "BESZEL_PORT",
+          "default": "7848",
+          "description": "Published Beszel web hub port"
+        }
+      ],
+      "tags": [
+        "monitoring",
+        "metrics",
+        "system",
+        "docker",
+        "telemetry",
+        "local"
+      ],
+      "features": [
+        {
+          "id": "server-monitoring",
+          "name": "Server Monitoring",
+          "description": "Track CPU, memory, disk, network, and container resource metrics in real time",
+          "icon": "Activity",
+          "category": "productivity",
+          "requirements": {
+            "services": [
+              "beszel"
+            ],
+            "vram_gb": 0,
+            "disk_gb": 1
+          },
+          "enabled_services_all": [
+            "beszel"
+          ],
+          "setup_time": "~1 minute",
+          "priority": 36
         }
       ],
       "configuration_scope": "declared-environment-keys"
@@ -3153,6 +3204,28 @@
           ]
         }
       ],
+      "catalog_source": "builtin",
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
+      "id": "pixel-inference",
+      "name": "Pixel inference sharing (development)",
+      "description": "Disabled by default. Owner-provisioned, inference-only device credentials; loopback transport only. Does not provide Pixel agent or computer access. Private state must be provisioned before service activation. Native Windows private-state support and guided setup are not yet implemented.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [
+        "model-router"
+      ],
+      "port": 8093,
+      "external_port_default": 4005,
+      "health_endpoint": "/health",
+      "env_vars": [],
+      "tags": [],
+      "features": [],
+      "startup_check": false,
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
     },

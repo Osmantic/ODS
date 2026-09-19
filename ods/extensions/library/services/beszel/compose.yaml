@@ -1,0 +1,25 @@
+services:
+  beszel:
+    image: henrygd/beszel:0.9.1
+    container_name: ods-beszel
+    restart: unless-stopped
+    security_opt: [no-new-privileges:true]
+    volumes:
+      - ./data/beszel:/beszel_data
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${BESZEL_PORT:-7848}:8090"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8090/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks: [ods-network]
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+networks:
+  ods-network:
+    external: true
