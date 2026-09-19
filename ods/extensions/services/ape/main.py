@@ -1058,6 +1058,11 @@ async def audit(last_n: int = 50, api_key: str = Depends(verify_api_key)):
                 lines_found += chunk.count(b'\n')
                 position = chunk_start
             f.seek(position)
+            if position > 0:
+                # The reverse scan stops at a byte boundary, possibly inside
+                # JSON or a UTF-8 code point. Discard that leading fragment
+                # before decoding. The extra newline above retains N rows.
+                f.readline()
             for line in f:
                 total_lines += 1
                 if line.strip():
