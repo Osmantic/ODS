@@ -124,6 +124,8 @@ class SharingStore(ProviderStore):
             return public_sharing(self._commit(directory_fd, current, revision))
 
     def revoke(self, device_id, *, expected_revision):
+        if not isinstance(device_id, str) or not re.fullmatch(r'device-[a-f0-9]{16}', device_id):
+            raise StoreError('invalid-request')
         def update(doc):
             device = next((item for item in doc['devices'] if item['id'] == device_id), None)
             if device is None:
