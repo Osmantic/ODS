@@ -2479,17 +2479,42 @@ cmd_chat() {
 }
 
 cmd_benchmark() {
+    local json_mode=false
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --json) json_mode=true ;;
+            --help|-h) printf 'Usage: ods benchmark [--json]\n'; return 0 ;;
+            *) printf 'Usage: ods benchmark [--json]; unknown argument: %s\n' "$1" >&2; return 2 ;;
+        esac
+        shift
+    done
     check_install
     load_env  # B6 fix: use safe env loading function
 
     log "Running quick benchmark..."
 
-    local start=$(date +%s)
+    local start
+    if [[ "$json_mode" == true ]]; then
+        start=$(python3 -c 'import time; print(time.monotonic())')
+    else
+        start=$(date +%s)
+    fi
     local response
-    if ! response=$(cmd_chat "Say exactly: Hello World" 2>&1); then
+    if ! response=$(cmd_chat "Say exactly: Hello World"); then
         error "Benchmark failed: LLM unreachable or error - see 'ods chat' for details"
     fi
-    local end=$(date +%s)
+    if [[ "$json_mode" == true ]]; then
+        printf '%s' "$response" | python3 -c '
+import json, sys, time
+elapsed = time.monotonic() - float(sys.argv[1])
+print(json.dumps({"schemaVersion": 1, "probe": "chat_round_trip",
+                  "durationSeconds": round(elapsed, 6), "response": sys.stdin.read()},
+                 ensure_ascii=False))
+' "$start"
+        return 0
+    fi
+    local end
+    end=$(date +%s)
 
     local duration=$(( end - start ))
 
@@ -6663,7 +6688,7 @@ ${CYAN}Commands:${NC}
   config [show|edit|validate]
                       View, edit, or validate configuration
   chat "<message>"    Quick chat with the LLM
-  benchmark           Run a quick performance test
+  benchmark [--json]  Run a quick chat round-trip test
   doctor [report|--json]   Run diagnostics (--json writes JSON to stdout)
   repair|fix [voice|hermes-workers]
                       Repair voice services or prune leaked Hermes slash workers
@@ -6818,7 +6843,7 @@ case "${1:-help}" in
     shell|sh)    shift; cmd_shell "$@" ;;
     config|cfg)  shift; cmd_config "$@" ;;
     chat|c)      shift; cmd_chat "$@" ;;
-    benchmark|bench|b) cmd_benchmark ;;
+    benchmark|bench|b) shift; cmd_benchmark "$@" ;;
     doctor|diag|d) shift; cmd_doctor "$@" ;;
     audit)        shift; cmd_audit "$@" ;;
     template|tmpl) shift; cmd_template "$@" ;;
