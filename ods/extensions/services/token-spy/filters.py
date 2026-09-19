@@ -107,7 +107,10 @@ def _filter_tools(body: dict, cfg: dict, result: FilterResult,
         if not isinstance(tool, dict):
             continue
         func = tool.get("function")
-        name = func.get("name", "") if isinstance(func, dict) else ""
+        name = func.get("name", "").strip() if isinstance(func, dict) else ""
+        if not name:
+            removed_names.append("<unnamed>")
+            continue
         if mode == "allowlist":
             if name in allowlist:
                 kept.append(tool)
