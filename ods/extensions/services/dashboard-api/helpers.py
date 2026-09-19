@@ -1417,3 +1417,20 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def dict_safe_merge_lists(d1: dict | None, d2: dict | None) -> dict:
+    """Safely merge two dictionaries where values are lists, extending lists on collision.
+    """
+    res = {}
+    if d1 and isinstance(d1, dict):
+        for k, v in d1.items():
+            res[k] = list(v) if isinstance(v, (list, tuple)) else [v]
+    if d2 and isinstance(d2, dict):
+        for k, v in d2.items():
+            add = list(v) if isinstance(v, (list, tuple)) else [v]
+            if k in res:
+                res[k].extend(add)
+            else:
+                res[k] = add
+    return res
