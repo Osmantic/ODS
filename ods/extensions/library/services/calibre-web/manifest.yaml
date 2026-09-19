@@ -1,0 +1,38 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: calibre-web
+  name: Calibre-Web
+  description: "Web application for browsing, reading, and downloading eBooks stored in a Calibre library database."
+  aliases: [books, ebooks, library]
+  container_name: ods-calibre-web
+  host_env: CALIBRE_WEB_HOST
+  default_host: calibre-web
+  port: 8083
+  external_port_env: CALIBRE_WEB_PORT
+  external_port_default: 7852
+  health: /
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [books, ebooks, library, reader, epub, pdf, local]
+  env_vars:
+    - key: CALIBRE_WEB_PORT
+      default: "7852"
+      description: Published Calibre-Web web interface port
+features:
+  - id: ebook-library
+    name: eBook Library
+    description: "Browse, read, and download digital books, EPUBs, and PDFs from a self-hosted library"
+    icon: BookOpen
+    category: productivity
+    requirements:
+      services: [calibre-web]
+      vram_gb: 0
+      disk_gb: 2
+    enabled_services_all: [calibre-web]
+    setup_time: "~1 minute"
+    priority: 39

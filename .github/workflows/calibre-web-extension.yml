@@ -1,0 +1,25 @@
+name: Calibre-Web ebook library contract
+
+on:
+  pull_request:
+    paths:
+      - 'ods/extensions/library/services/calibre-web/**'
+      - 'ods/tests/test_calibre_web_extension.py'
+      - '.github/workflows/calibre-web-extension.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  calibre-web-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install pytest PyYAML
+      - name: Verify Calibre-Web extension contract
+        run: python -m pytest -q ods/tests/test_calibre_web_extension.py
