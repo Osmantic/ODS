@@ -30,7 +30,7 @@ grep -q '^cmd_repair()' "$ODS_CLI" && pass "ods-cli defines cmd_repair" || fail 
 grep -q 'cmd_stt download' "$ODS_CLI" && pass "repair reuses STT download command" || fail "repair does not cache STT model"
 grep -q 'Starting voice services' "$ODS_CLI" && pass "repair starts voice services" || fail "repair does not start voice services"
 grep -q 'Voice Readiness' "$ODS_CLI" && pass "doctor displays voice readiness" || fail "doctor voice readiness missing"
-grep -q 'repair|fix \[voice\]' "$ODS_CLI" && pass "help documents repair voice" || fail "help missing repair voice"
+grep -q 'repair|fix \[voice|' "$ODS_CLI" && pass "help documents repair voice" || fail "help missing repair voice"
 
 grep -q '"tts_http"' "$ODS_DOCTOR" && pass "doctor report includes TTS status" || fail "doctor missing TTS status"
 grep -q 'ods repair voice' "$ODS_DOCTOR" && pass "doctor suggests repair voice" || fail "doctor missing repair hint"

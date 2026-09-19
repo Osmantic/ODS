@@ -47,7 +47,7 @@ test_function_exists() {
 # Test 2: Verify function checks for meta.txt
 test_checks_meta_txt() {
     info "Test 2: Checking if function validates meta.txt"
-    if grep -A20 "^validate_preset_compatibility()" "$ODS_CLI" 2>/dev/null | grep -q "meta.txt"; then
+    if grep -A20 "^validate_preset_compatibility()" "$ODS_CLI" 2>/dev/null | grep "meta.txt" >/dev/null; then
         pass "Function checks for meta.txt"
     else
         fail "Function does not check for meta.txt"
@@ -57,7 +57,7 @@ test_checks_meta_txt() {
 # Test 3: Verify function checks for extensions.list
 test_checks_extensions_list() {
     info "Test 3: Checking if function validates extensions.list"
-    if grep -A20 "^validate_preset_compatibility()" "$ODS_CLI" 2>/dev/null | grep -q "extensions.list"; then
+    if grep -A20 "^validate_preset_compatibility()" "$ODS_CLI" 2>/dev/null | grep "extensions.list" >/dev/null; then
         pass "Function checks for extensions.list"
     else
         fail "Function does not check for extensions.list"
@@ -67,7 +67,7 @@ test_checks_extensions_list() {
 # Test 4: Verify function checks for env file
 test_checks_env_file() {
     info "Test 4: Checking if function validates env file"
-    if grep -A20 "^validate_preset_compatibility()" "$ODS_CLI" 2>/dev/null | grep -q "env"; then
+    if grep -A20 "^validate_preset_compatibility()" "$ODS_CLI" 2>/dev/null | grep "env" >/dev/null; then
         pass "Function checks for env file"
     else
         fail "Function does not check for env file"
@@ -77,7 +77,7 @@ test_checks_env_file() {
 # Test 5: Verify cmd_preset calls validate_preset_compatibility
 test_cmd_preset_calls_validation() {
     info "Test 5: Checking if cmd_preset calls validate_preset_compatibility"
-    if grep -A100 "^cmd_preset()" "$ODS_CLI" 2>/dev/null | grep -q "validate_preset_compatibility"; then
+    if grep -A100 "^cmd_preset()" "$ODS_CLI" 2>/dev/null | grep "validate_preset_compatibility" >/dev/null; then
         pass "cmd_preset calls validate_preset_compatibility"
     else
         fail "cmd_preset does not call validate_preset_compatibility"
@@ -99,7 +99,7 @@ test_validation_before_restore() {
 # Test 7: Verify function returns 0 on success
 test_function_returns_zero() {
     info "Test 7: Checking if function returns 0 on success"
-    if grep -A30 "^validate_preset_compatibility()" "$ODS_CLI" 2>/dev/null | grep -q "return 0"; then
+    if grep -A30 "^validate_preset_compatibility()" "$ODS_CLI" 2>/dev/null | grep "return 0" >/dev/null; then
         pass "Function returns 0 on success"
     else
         fail "Function does not return 0"
@@ -109,7 +109,7 @@ test_function_returns_zero() {
 # Test 8: Verify function warns about missing extensions
 test_warns_missing_extensions() {
     info "Test 8: Checking if function warns about missing extensions"
-    if grep -A30 "^validate_preset_compatibility()" "$ODS_CLI" 2>/dev/null | grep -q "warn"; then
+    if grep -A30 "^validate_preset_compatibility()" "$ODS_CLI" 2>/dev/null | grep "warn" >/dev/null; then
         pass "Function warns about missing extensions"
     else
         fail "Function does not warn about missing extensions"

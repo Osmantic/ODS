@@ -77,7 +77,7 @@ test_import_in_help() {
 # Test 4: Verify export case exists
 test_export_case() {
     info "Test 4: Checking if 'export' case exists in cmd_preset"
-    if grep -A2 "export|e)" "$ODS_CLI" 2>/dev/null | grep -q "preset export"; then
+    if grep -A2 "export|e)" "$ODS_CLI" 2>/dev/null | grep "preset export" >/dev/null; then
         pass "'export' case exists in cmd_preset"
         return 0
     else
@@ -89,7 +89,7 @@ test_export_case() {
 # Test 5: Verify import case exists
 test_import_case() {
     info "Test 5: Checking if 'import' case exists in cmd_preset"
-    if grep -A2 "import|i)" "$ODS_CLI" 2>/dev/null | grep -q "preset import"; then
+    if grep -A2 "import|i)" "$ODS_CLI" 2>/dev/null | grep "preset import" >/dev/null; then
         pass "'import' case exists in cmd_preset"
         return 0
     else
@@ -101,7 +101,7 @@ test_import_case() {
 # Test 6: Verify export uses tar
 test_export_uses_tar() {
     info "Test 6: Checking if export uses tar for archiving"
-    if grep -A20 "export|e)" "$ODS_CLI" 2>/dev/null | grep -q "tar czf"; then
+    if grep -A45 "export|e)" "$ODS_CLI" 2>/dev/null | grep "tar czf" >/dev/null; then
         pass "Export uses tar for archiving"
         return 0
     else
@@ -113,7 +113,7 @@ test_export_uses_tar() {
 # Test 7: Verify import validates path traversal
 test_import_security() {
     info "Test 7: Checking if import validates against path traversal"
-    if grep -A30 "import|i)" "$ODS_CLI" 2>/dev/null | grep -q "path traversal"; then
+    if grep -A30 "import|i)" "$ODS_CLI" 2>/dev/null | grep "path traversal" >/dev/null; then
         pass "Import checks for path traversal attacks"
         return 0
     else
@@ -125,7 +125,7 @@ test_import_security() {
 # Test 8: Verify export validates preset exists
 test_export_validation() {
     info "Test 8: Checking if export validates preset exists"
-    if grep -A10 "export|e)" "$ODS_CLI" 2>/dev/null | grep -q "Preset not found"; then
+    if grep -A10 "export|e)" "$ODS_CLI" 2>/dev/null | grep "Preset not found" >/dev/null; then
         pass "Export validates preset existence"
         return 0
     else
@@ -137,7 +137,7 @@ test_export_validation() {
 # Test 9: Verify import validates archive structure
 test_import_validation() {
     info "Test 9: Checking if import validates archive structure"
-    if grep -A50 "import|i)" "$ODS_CLI" 2>/dev/null | grep -q "meta.txt"; then
+    if grep -A50 "import|i)" "$ODS_CLI" 2>/dev/null | grep "meta.txt" >/dev/null; then
         pass "Import validates archive structure"
         return 0
     else
@@ -149,7 +149,7 @@ test_import_validation() {
 # Test 10: Verify export creates relative paths
 test_export_relative_paths() {
     info "Test 10: Checking if export avoids absolute paths"
-    if grep -A15 "export|e)" "$ODS_CLI" 2>/dev/null | grep -q "cd.*PRESETS_DIR"; then
+    if grep -A45 "export|e)" "$ODS_CLI" 2>/dev/null | grep "cd.*PRESETS_DIR" >/dev/null; then
         pass "Export creates relative paths"
         return 0
     else
@@ -161,7 +161,7 @@ test_export_relative_paths() {
 # Test 11: Verify import handles overwrite confirmation
 test_import_overwrite() {
     info "Test 11: Checking if import handles existing presets"
-    if grep -A30 "import|i)" "$ODS_CLI" 2>/dev/null | grep -q "already exists"; then
+    if grep -A30 "import|i)" "$ODS_CLI" 2>/dev/null | grep "already exists" >/dev/null; then
         pass "Import handles overwrite confirmation"
         return 0
     else

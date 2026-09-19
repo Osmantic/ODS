@@ -75,6 +75,7 @@ test: ## Run unit and contract tests
 	@bash tests/contracts/test-windows-hermes-config-patching.sh
 	@bash tests/contracts/test-llama-metrics-flag.sh
 	@bash tests/contracts/test-llama-reasoning-format.sh
+	@bash tests/test-llama-memory-budget.sh
 	@echo ""
 	@echo "=== Overlay/plist contracts ==="
 	@bash tests/contracts/test-overlay-map-coherence.sh
@@ -121,6 +122,7 @@ test: ## Run unit and contract tests
 	@bash tests/test-cli-prompts-noninteractive.sh
 	@bash tests/test-agent-restart-nonfatal.sh
 	@bash tests/test-unix-restart-recreate-env.sh
+	@bash tests/test-voice-repair-command.sh
 	@echo ""
 	@echo "=== ods-cli install directory resolution ==="
 	@bash tests/test-cli-install-dir-resolution.sh
@@ -150,6 +152,8 @@ test: ## Run unit and contract tests
 	@echo "=== CLI preset restore user extensions ==="
 	@bash tests/test-cli-preset-restore-user-extensions.sh
 	@bash tests/test-preset-export-permissions.sh
+	@bash tests/test-preset-compatibility.sh
+	@bash tests/test-preset-import-export.sh
 	@echo ""
 	@echo "=== bootstrap OpenClaw compose-guard regression ==="
 	@bash tests/test-bootstrap-openclaw-compose-guard.sh
@@ -166,6 +170,8 @@ test: ## Run unit and contract tests
 	@bash tests/test-backup-integrity.sh
 	@bash tests/test-backup-restore-roundtrip.sh
 	@python3 tests/test-rsync-transfer-failures.py
+	@bash tests/test-disk-space-preflight.sh
+	@bash tests/test-restore-safety-ux.sh
 	@echo ""
 	@echo "=== ods-update.sh rollback picks the newest backup ==="
 	@bash tests/test-update-rollback-latest-backup.sh
@@ -191,6 +197,8 @@ test: ## Run unit and contract tests
 	@bash tests/test-macos-env-schema.sh
 	@echo "=== macOS native llama port is relocatable ==="
 	@bash tests/test-macos-native-llama-port.sh
+	@echo "=== macOS native model store resolver contract ==="
+	@bash tests/test-macos-native-model-store.sh
 	@echo ""
 	@echo "=== macOS uninstall LaunchAgent cleanup ==="
 	@bash tests/test-macos-uninstall-launchagents.sh

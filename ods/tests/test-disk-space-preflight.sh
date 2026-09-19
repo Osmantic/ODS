@@ -38,6 +38,9 @@ chmod +x "$STUB_BIN/df"
 FAKE_ODS="$TMP/ods"
 mkdir -p "$FAKE_ODS/data/open-webui"
 mkdir -p "$FAKE_ODS/.backups"
+mkdir -p "$FAKE_ODS/lib"
+# ods-backup.sh/ods-restore.sh source shared helpers from $ODS_DIR/lib
+cp "$SCRIPT_DIR/../lib/rsync.sh" "$SCRIPT_DIR/../lib/backup-paths.sh" "$FAKE_ODS/lib/"
 echo test > "$FAKE_ODS/.version"
 echo hello > "$FAKE_ODS/data/open-webui/file.txt"
 
