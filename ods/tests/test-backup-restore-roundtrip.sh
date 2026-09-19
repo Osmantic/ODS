@@ -27,6 +27,9 @@ trap 'rm -rf "$TMP"' EXIT
 SRC="$TMP/src"
 mkdir -p "$SRC/data/open-webui" "$SRC/data/hermes/sessions" "$SRC/data/persona"
 mkdir -p "$SRC/data/n8n"
+mkdir -p "$SRC/data/auth"
+printf '%s\n' '{"tokens":[{"token_hash":"owner-fixture","revoked_at":null},{"token_hash":"revoked-fixture","revoked_at":"2026-09-01T00:00:00Z"}]}' > "$SRC/data/auth/magic-links.json"
+chmod 600 "$SRC/data/auth/magic-links.json"
 mkdir -p "$SRC/config"
 mkdir -p "$SRC/models"
 # Cache tier: the directories the compose stack bind-mounts for weights and
@@ -82,6 +85,10 @@ pass "Full backup captures the cache tier (data/models, data/whisper, data/embed
     || fail "Full backup lost its environment config"
 
 BACKUP_DIR="$SRC/.backups/$BACKUP_ID"
+cmp "$SRC/data/auth/magic-links.json" "$BACKUP_DIR/data/auth/magic-links.json" \
+    || fail "Backup omitted the magic-link registry"
+jq -e '.paths.data_auth == "data/auth"' "$BACKUP_DIR/manifest.json" >/dev/null \
+    || fail "Manifest omitted the authentication registry path"
 [[ -f "$BACKUP_DIR/data/hermes/sessions/session.jsonl" ]] \
     || fail "Backup omitted data/hermes"
 [[ -f "$BACKUP_DIR/data/persona/SOUL.md" ]] \
@@ -154,6 +161,16 @@ pass "All expected files/dirs present after restore"
     || fail "whisper cache content mismatch"
 
 pass "All file contents match after restore"
+cmp "$SRC/data/auth/magic-links.json" "$DST/data/auth/magic-links.json" \
+    || fail "Restore lost owner cards or revocation records"
+python3 - "$DST/data/auth/magic-links.json" <<'PY'
+import os
+import stat
+import sys
+
+assert stat.S_IMODE(os.stat(sys.argv[1]).st_mode) == 0o600, "Registry permissions widened"
+PY
+pass "Owner cards and revocation records survive backup and restore"
 
 # The default user-data type must keep skipping the cache tier: it is the
 # re-downloadable, tens-of-GB part a routine backup deliberately leaves out.
