@@ -46,7 +46,7 @@ def project_context(value):
         if item is None:
             continue
         valid = (_text(item, 128, r"^[A-Za-z0-9_-]+$") if key == "requestId" else
-                 _text(item, 96, r"^[a-z][a-z0-9-]*$") if key == "reason" else _number(item))
+                 _text(item, 96, r"^[a-z](?:[a-z0-9-]{0,94}[a-z0-9])?$") if key == "reason" else _number(item))
         if not valid:
             raise ValueError("invalid compaction detail")
         result["compaction"][key] = item
