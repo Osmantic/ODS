@@ -20,6 +20,8 @@ test: ## Run unit and contract tests
 	@echo "=== Install documentation contract ==="
 	@bash tests/test-install-docs.sh
 	@bash tests/test-hosted-bootstrap-verifier.sh
+	@echo "=== gitattributes eol coverage ==="
+	@bash tests/test-gitattributes-eol-coverage.sh
 	@echo ""
 	@echo "=== Tier map tests ==="
 	@bash tests/test-tier-map.sh
@@ -35,6 +37,7 @@ test: ## Run unit and contract tests
 	@bash tests/test-external-services.sh
 	@bash tests/test-resolve-compose-resilient.sh
 	@bash tests/test-phase03-multigpu-tty.sh
+	@bash tests/test-gpu-apple.sh
 	@bash tests/test-pixel-support-services.sh
 	@bash tests/test-phase03-no-gpu-assignment-message.sh
 	@bash tests/contracts/test-preflight-fixtures.sh
