@@ -200,12 +200,10 @@ for agent in "${AGENTS[@]}"; do
     TIMER_FILE="$PREFIX/${SERVICE_NAME}.timer"
 
     # Stagger: offset each agent by 10 minutes within the 3-hour window
-    stagger_min=$((stagger * 10))
-    if [ "$stagger_min" -eq 0 ]; then
-        calendar="*-*-* 00/3:00:00"
-    else
-        calendar="*-*-* 00/3:${stagger_min}:00"
-    fi
+    stagger_total_min=$((stagger * 10))
+    stagger_hour=$(( (stagger_total_min / 60) % 3 ))
+    stagger_min=$((stagger_total_min % 60))
+    calendar=$(printf "*-*-* %02d/3:%02d:00" "$stagger_hour" "$stagger_min")
 
     echo ""
     echo "--- ${SERVICE_NAME}.service ---"
