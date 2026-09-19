@@ -83,6 +83,7 @@ load_env_safe() {
         return 0
     fi
     while IFS='=' read -r key value; do
+        key="${key#"${key%%[![:space:]]*}"}"
         value="${value%$'\r'}"
         [[ "$key" =~ ^[[:space:]]*# ]] && continue
         [[ -z "$key" ]] && continue
