@@ -22,6 +22,18 @@ chapter "REQUIREMENTS CHECK"
 [[ -f "${SCRIPT_DIR:-}/lib/safe-env.sh" ]] && . "${SCRIPT_DIR}/lib/safe-env.sh"
 [[ -f "$SCRIPT_DIR/lib/service-registry.sh" ]] && . "$SCRIPT_DIR/lib/service-registry.sh"
 
+# Re-resolve SERVICE_PORTS against the install's .env so conflict checks probe
+# the configured ports (e.g. a preserved OLLAMA_PORT on reinstall), not stale
+# manifest defaults. Subshell + declare -p keeps unrelated .env keys out of the
+# installer environment; sr_resolve_ports itself only runs in phase 12.
+if declare -f sr_resolve_ports >/dev/null 2>&1 \
+    && declare -f load_env_file >/dev/null 2>&1 \
+    && [[ -f "${INSTALL_DIR:-}/.env" ]]; then
+    eval "$(load_env_file "$INSTALL_DIR/.env" >/dev/null 2>&1
+            sr_resolve_ports
+            declare -p SERVICE_PORTS 2>/dev/null)"
+fi
+
 REQUIREMENTS_MET=true
 TIER_RANK="$(tier_rank "$TIER")"
 
@@ -340,11 +352,11 @@ fi
 
 # Port conflict detection with detailed process information
 PORTS_TO_CHECK="${SERVICE_PORTS[open-webui]:-3000}"
-[[ -z "${EXTERNAL_LLM_URL:-}" ]] && PORTS_TO_CHECK="${SERVICE_PORTS[llama-server]:-8080} ${PORTS_TO_CHECK}"
+[[ -z "${EXTERNAL_LLM_URL:-}" ]] && PORTS_TO_CHECK="${SERVICE_PORTS[llama-server]:-11434} ${PORTS_TO_CHECK}"
 [[ "$ENABLE_VOICE" == "true" ]] && PORTS_TO_CHECK="$PORTS_TO_CHECK ${SERVICE_PORTS[whisper]:-9000} ${SERVICE_PORTS[tts]:-8880}"
 [[ "$ENABLE_WORKFLOWS" == "true" ]] && PORTS_TO_CHECK="$PORTS_TO_CHECK ${SERVICE_PORTS[n8n]:-5678}"
 [[ "${ENABLE_QDRANT:-${ENABLE_RAG:-false}}" == "true" ]] && PORTS_TO_CHECK="$PORTS_TO_CHECK ${SERVICE_PORTS[qdrant]:-6333}"
-[[ "$ENABLE_COMFYUI" == "true" ]] && PORTS_TO_CHECK="$PORTS_TO_CHECK ${SERVICE_PORTS[comfyui]:-8188}"
+[[ "${ENABLE_COMFYUI:-false}" == "true" ]] && PORTS_TO_CHECK="$PORTS_TO_CHECK ${SERVICE_PORTS[comfyui]:-8188}"
 
 for port in $PORTS_TO_CHECK; do
     if check_port_conflict "$port"; then
