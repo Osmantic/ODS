@@ -229,6 +229,8 @@ setup() {
 }
 
 @test "amd_gpu_name: skips empty product_name" {
+    # Falls through to `readlink -f | grep -oP`, which BSD grep cannot parse.
+    [[ "$(uname -s)" == "Darwin" ]] && skip "requires GNU grep (Linux sysfs library)"
     local tmpdir
     tmpdir=$(mktemp -d)
     echo "" > "$tmpdir/product_name"
@@ -242,6 +244,7 @@ setup() {
 }
 
 @test "amd_gpu_name: skips (null) product_name" {
+    [[ "$(uname -s)" == "Darwin" ]] && skip "requires GNU grep (Linux sysfs library)"
     local tmpdir
     tmpdir=$(mktemp -d)
     echo "(null)" > "$tmpdir/product_name"
@@ -254,6 +257,7 @@ setup() {
 }
 
 @test "amd_gpu_name: falls back to device ID format" {
+    [[ "$(uname -s)" == "Darwin" ]] && skip "requires GNU grep (Linux sysfs library)"
     local tmpdir
     tmpdir=$(mktemp -d)
     # No product_name file
