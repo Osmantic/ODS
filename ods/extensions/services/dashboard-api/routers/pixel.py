@@ -189,6 +189,22 @@ def _chat_results() -> ChatResultStore:
     return _result_store
 
 
+def _persisted_chat_results() -> ChatResultStore | None:
+    """Return the result store only when persisted state could exist.
+
+    A restarted process has no _result_store until something calls
+    _chat_results(), but a previous process may have left an attempt
+    unresolved on disk. Open the store when its database already exists
+    without creating one for installs that never used retained results.
+    """
+    if _result_store is not None:
+        return _result_store
+    directory = Path(os.environ.get("ODS_DATA_DIR", "/data")) / "pixel-chat-results"
+    if not (directory / "results.sqlite3").is_file():
+        return None
+    return _chat_results()
+
+
 def _result_state(store, identity):
     row = store.get(identity)
     task = _result_tasks.get(identity)
@@ -721,7 +737,8 @@ async def pixel_chat_cancel(body: ChatCancelRequest, owner: str = Depends(verify
         finally:
             _result_abort_ack.discard(identity)
             _result_stops.discard(identity[:2])
-    if isinstance(owner, str) and _result_store is not None and _result_store.has_pending((owner_namespace(owner), body.chat_id)):
+    store = _persisted_chat_results() if isinstance(owner, str) else None
+    if store is not None and store.has_pending((owner_namespace(owner), body.chat_id)):
         return {"aborted": False}
     return {"aborted": await _cancel_edge_run(edge_url, key, body.chat_id)}
 
@@ -1001,7 +1018,8 @@ async def pixel_chat_stream(request: Request, body: ChatStreamRequest, owner: st
     """Forward one bounded chat over authenticated, unbuffered SSE."""
     if body.request_id is not None:
         return await _retained_chat_stream(request, body, owner)
-    if isinstance(owner, str) and _result_store is not None and _result_store.has_pending((owner_namespace(owner), body.chat_id)):
+    store = _persisted_chat_results() if isinstance(owner, str) else None
+    if store is not None and store.has_pending((owner_namespace(owner), body.chat_id)):
         raise HTTPException(status_code=423, detail="Recover or stop the retained attempt before starting another turn")
     if asks_display_name(body.messages):
         reply = display_name_stream(await confirmed_display_name())

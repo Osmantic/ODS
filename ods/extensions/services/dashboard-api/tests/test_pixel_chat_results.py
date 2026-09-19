@@ -14,7 +14,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import pixel_chat_results as receipts
 from routers import pixel
 import pixel_chat_identity
-from test_pixel import FakeClient, FakeResponse, ConnectedRequest, DisconnectedRequest, stream_body
+from test_pixel import CancelAwareClient, FakeClient, FakeResponse, ConnectedRequest, DisconnectedRequest, stream_body
+from unittest.mock import patch
 
 OWNER = "dashboard-test-key"
 IDENTITY = (receipts.owner_namespace(OWNER), "chat-test", "attempt-one")
@@ -54,6 +55,56 @@ def test_receipt_survives_restart_without_reexecuting_and_scopes_owner(store, tm
         assert other.reserve(IDENTITY, "input-hash") is False
         with pytest.raises(receipts.ResultConflict): other.reserve(IDENTITY, "changed")
     finally: other.close()
+
+
+@pytest.mark.asyncio
+async def test_cold_start_honors_a_persisted_pending_attempt(tmp_path, monkeypatch):
+    # A process that restarted has _result_store unset until a retained request
+    # arrives, but a previous process may have left an attempt unresolved on
+    # disk. Plain stream and cancel must still honor that persisted state.
+    monkeypatch.setenv("ODS_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(pixel, "_result_store", None)
+    monkeypatch.setenv("PIXEL_OPENWEBUI_KEY", "e" * 64)
+    previous = receipts.ChatResultStore(tmp_path / "pixel-chat-results")
+    try:
+        previous.reserve(IDENTITY, "hash")
+    finally:
+        previous.close()
+    assert pixel._result_store is None
+    calls = []
+    request = pixel.ChatStreamRequest.model_validate(
+        {"chat_id": "chat-test", "messages": [{"role": "user", "content": "Do work"}]})
+    cancel = pixel.ChatCancelRequest.model_validate({"chat_id": "chat-test"})
+    with patch.object(pixel.httpx, "AsyncClient", return_value=CancelAwareClient(FakeResponse(), calls)):
+        with pytest.raises(HTTPException) as exc:
+            await pixel.pixel_chat_stream(ConnectedRequest(), request, owner=OWNER)
+        assert exc.value.status_code == 423
+        assert await pixel.pixel_chat_cancel(cancel, owner=OWNER) == {"aborted": False}
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_cold_start_without_persisted_results_still_streams(tmp_path, monkeypatch):
+    # No database exists yet: the guard must stay inert and the request must
+    # reach the edge without creating receipt storage it never needed.
+    monkeypatch.setenv("ODS_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(pixel, "_result_store", None)
+    monkeypatch.setenv("PIXEL_OPENWEBUI_KEY", "e" * 64)
+    async def ready():
+        return None
+    monkeypatch.setattr(pixel, "_model_readiness_issue", ready)
+    async def passthrough(messages):
+        return [m.model_dump() for m in messages]
+    monkeypatch.setattr(pixel, "messages_with_identity", passthrough)
+    capture = {}
+    upstream = FakeResponse(content_type="text/event-stream", chunks=[FINAL])
+    request = pixel.ChatStreamRequest.model_validate(
+        {"chat_id": "chat-test", "messages": [{"role": "user", "content": "Do work"}]})
+    with patch.object(pixel.httpx, "AsyncClient", return_value=FakeClient(upstream, capture)):
+        response = await pixel.pixel_chat_stream(ConnectedRequest(), request, owner=OWNER)
+        assert await stream_body(response) == FINAL
+    assert capture["url"] == "http://pixel-edge:9595/v1/chat/completions"
+    assert pixel._result_store is None
 
 
 def test_restart_does_not_adopt_or_duplicate_unfinished_work(store, tmp_path):
