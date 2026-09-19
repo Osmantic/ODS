@@ -1,0 +1,46 @@
+{
+  "producer": "pixel-agent/host/workspace_preview.py publish_snapshot + snapshot_manifest",
+  "preview": {
+    "schemaVersion": 1,
+    "kind": "ods-pixel-workspace-preview",
+    "status": "succeeded",
+    "relativeDirectory": "demo",
+    "siteId": "site-f685911012f10427189ba0df",
+    "files": 3,
+    "bytes": 12,
+    "sha256": "f685911012f10427189ba0dfcb51dbc66e08ce6a01737849d547259f27296546",
+    "entryFile": "index.html",
+    "entrySha256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+    "executable": false,
+    "overwritten": false,
+    "boundary": "Create-only static-site snapshot from the configured Pixel workspace to a dedicated loopback preview origin; no arbitrary host path, network destination, server process, overwrite, or execution authority."
+  },
+  "manifest": {
+    "schemaVersion": 1,
+    "siteId": "site-f685911012f10427189ba0df",
+    "sha256": "f685911012f10427189ba0dfcb51dbc66e08ce6a01737849d547259f27296546",
+    "bytes": 12,
+    "files": [
+      {
+        "path": "assets/site.css",
+        "bytes": 7,
+        "sha256": "af8a0b23a3e367b60946310b7a6c07938a958ae35dea9e477f2aab052d3bf143"
+      },
+      {
+        "path": "empty.js",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "path": "index.html",
+        "bytes": 5,
+        "sha256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+      }
+    ]
+  },
+  "contents": {
+    "index.html": "hello",
+    "assets/site.css": "a{b:c;}",
+    "empty.js": ""
+  }
+}
