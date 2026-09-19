@@ -297,6 +297,17 @@ pub fn open_ods() -> Result<(), String> {
     Ok(())
 }
 
+/// Cancel the in-flight install: kills the installer subprocess, which the
+/// blocked `start_install` task then reports as a cancelled failure.
+#[tauri::command]
+pub fn cancel_install() -> Result<String, String> {
+    if installer::terminate_active_child() {
+        Ok("Installation cancelled.".to_string())
+    } else {
+        Err("No installation is currently running.".to_string())
+    }
+}
+
 // ---- Helpers ----
 
 fn state_file_path() -> std::path::PathBuf {
