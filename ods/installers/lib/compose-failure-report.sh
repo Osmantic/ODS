@@ -121,7 +121,7 @@ write_compose_failure_report() {
         echo "- GPU backend: $gpu_backend"
         echo "- Compose command: $compose_command"
         [[ -n "$log_file" ]] && echo "- Installer log: $log_file"
-        [[ -f "$compose_flags_file" ]] && echo "- Cached compose flags: $(cat "$compose_flags_file" 2>/dev/null)"
+        [[ -r "$compose_flags_file" ]] && echo "- Cached compose flags: $(cat "$compose_flags_file" 2>/dev/null)"
         echo "- Next step: $next_step"
         echo ""
         echo "Configured model/runtime"
