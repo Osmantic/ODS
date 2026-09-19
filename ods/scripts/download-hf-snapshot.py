@@ -23,6 +23,7 @@ def download_snapshot(
             "python -m pip install 'huggingface_hub[hf_xet]>=0.27'"
         ) from exc
 
+    cache_dir = cache_dir.expanduser().resolve()
     cache_dir.mkdir(parents=True, exist_ok=True)
     kwargs: dict[str, object] = {
         "repo_id": repo_id,
