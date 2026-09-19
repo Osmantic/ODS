@@ -83,6 +83,8 @@ def planned_count(text):
 
 
 def worker(team_id, index, role):
+    if not isinstance(team_id, str) or not re.fullmatch(r"[a-f0-9]{32}", team_id):
+        raise ValueError("team_id must be a 32-character hexadecimal string")
     return {"id": str(index), "name": ROLES[role][0], "role": role, "task": ROLES[role][1],
             "status": "queued", "turn": 0, "chat_id": f"team-{team_id}-{index}", "request_id": "turn-0",
             "messages": [], "conversation": [], "activity": None, "questions": None,
