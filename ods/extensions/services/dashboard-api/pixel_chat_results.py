@@ -124,6 +124,8 @@ class ChatResultStore:
 
     def complete_direct(self, key, data):
         """Atomically publish a small local-data answer without starting an agent."""
+        if not isinstance(data, (bytes, bytearray)):
+            raise TypeError("Chunk data must be bytes")
         with self.db:
             row = self.get(key)
             if row is None or row["state"] != "active" or row["size"] != 0:
