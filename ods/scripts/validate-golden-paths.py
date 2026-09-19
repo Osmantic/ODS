@@ -185,8 +185,8 @@ def main(argv: list[str]) -> int:
         return 1
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        print(f"[FAIL] invalid JSON in {path}: {exc}")
+    except (json.JSONDecodeError, OSError) as exc:
+        print(f"[FAIL] cannot read golden path file {path}: {exc}")
         return 1
 
     issues = Issues()
