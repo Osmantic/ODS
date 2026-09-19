@@ -28,6 +28,8 @@ def normalize_health(value):
 def probe_provider(provider, credential):
     from pixel_provider.connection_transport import _target
     from pixel_provider.store import MAX_BYTES, StoreError, decode_document
+    if not isinstance(provider, dict) or not isinstance(provider.get("baseUrl"), str):
+        return {"status": "offline"}
     parts = urlsplit(provider["baseUrl"])
     client = sock = None
     try:
