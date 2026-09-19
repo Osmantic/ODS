@@ -61,6 +61,8 @@ def parse_dotenv(path: Path) -> dict[str, str]:
         return values
     for raw_line in lines:
         line = raw_line.strip()
+        if line.startswith("export ") and len(line) > 7:
+            line = line[7:].lstrip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, raw_value = line.split("=", 1)
