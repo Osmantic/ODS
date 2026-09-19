@@ -43,3 +43,12 @@ it.each([
   {...exported,conversation:{...exported.conversation,messages:Array.from({length:2001},()=>({role:'user',content:'x'}))}},
   {...exported,conversation:{...exported.conversation,messages:[{role:'assistant',content:'x'.repeat(4*1024*1024+1)}]}},
 ])('rejects unsupported, oversized and non-conversation records',value=>expect(()=>parseConversationImport(value)).toThrow())
+
+it('bounds combined imported text including UTF-8 draft bytes', () => {
+  const draft = 'é'.repeat(1024 * 1024)
+  const archive = {...exported, conversation:{...exported.conversation, draft,
+    messages:[{role:'assistant', content:'x'.repeat(2 * 1024 * 1024)}]}}
+  expect(parseConversationImport(archive).draft).toBe(draft)
+  archive.conversation.draft += 'é'
+  expect(() => parseConversationImport(archive)).toThrow(/4 MB/)
+})

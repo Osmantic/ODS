@@ -14,7 +14,7 @@ beforeEach(() => {
 })
 afterEach(() => {cleanup();vi.restoreAllMocks();vi.unstubAllGlobals();vi.useRealTimers()})
 
-it('downloads the live unsaved draft and complete message text when storage writes fail', async () => {
+it.each(['Newest unsaved draft', 'x'.repeat(16384) + '\nKeep this ending.'])('downloads an importable recovery copy of the complete live draft', async draft => {
   saveConversation({schema:1,chatId:'recover-me',messages:[{role:'user',content:'Original question'},{role:'assistant',content:'Retained answer',status:'done'}],draft:'Old saved draft'})
   const before = localStorage.getItem('ods.pixel.conversations.v1')
   const original = window.Storage.prototype.setItem
@@ -24,13 +24,13 @@ it('downloads the live unsaved draft and complete message text when storage writ
   })
   render(<Pixel/>)
   await screen.findByText('Available')
-  fireEvent.change(screen.getByPlaceholderText(/^Message .+\.\.\.$/),{target:{value:'Newest unsaved draft'}})
+  fireEvent.change(screen.getByPlaceholderText(/^Message .+\.\.\.$/),{target:{value:draft}})
   await screen.findByText(/Your browser could not save this conversation/)
   vi.useFakeTimers()
   fireEvent.click(screen.getByRole('button',{name:'Download recovery copy'}))
   const archive = JSON.parse(await URL.createObjectURL.mock.calls[0][0].text())
   const restored = parseConversationImport(archive)
-  expect(restored.draft).toBe('Newest unsaved draft')
+  expect(restored.draft).toBe(draft)
   expect(restored.messages.map(message => message.content)).toEqual(['Original question','Retained answer'])
   expect(restored.inFlight).toBe(false)
   expect(restored.preview).toBeNull()
