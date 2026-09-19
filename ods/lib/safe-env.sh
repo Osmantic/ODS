@@ -127,6 +127,9 @@ load_env_from_output() {
         if [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=\"(.*)\"$ ]]; then
             key="${BASH_REMATCH[1]}"
             value="$(_safe_env_unescape_double_quoted "${BASH_REMATCH[2]}")"
+            case "$key" in
+                UID|EUID|PPID|GROUPS|SHELLOPTS|BASHOPTS) continue ;;
+            esac
             export "$key=$value"
         fi
     done
