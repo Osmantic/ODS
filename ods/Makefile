@@ -20,6 +20,8 @@ test: ## Run unit and contract tests
 	@echo "=== Install documentation contract ==="
 	@bash tests/test-install-docs.sh
 	@bash tests/test-hosted-bootstrap-verifier.sh
+	@echo "=== gitattributes eol coverage ==="
+	@bash tests/test-gitattributes-eol-coverage.sh
 	@echo ""
 	@echo "=== Tier map tests ==="
 	@bash tests/test-tier-map.sh
