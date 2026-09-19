@@ -103,6 +103,7 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== config migration (version check under set -e) ==="
 	@bash tests/test-migrate-config.sh
+	@python3 tests/test_migration_version_order.py
 	@echo "=== installer simulation harness records real exit codes ==="
 	@bash tests/test-simulate-installers-exit-codes.sh
 	@echo ""

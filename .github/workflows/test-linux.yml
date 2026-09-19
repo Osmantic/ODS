@@ -474,7 +474,9 @@ jobs:
           python3 -m pytest -q tests/test_node_runtime_paths.py
 
       - name: Config Migration Tests
-        run: bash tests/test-migrate-config.sh
+        run: |
+          bash tests/test-migrate-config.sh
+          python3 tests/test_migration_version_order.py
 
       - name: Atomic Environment Write Tests
         run: bash tests/test-atomic-env-writes.sh

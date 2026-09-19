@@ -11,7 +11,7 @@ When ODS is updated between versions, configuration files (`.env`, `docker-compo
 1. **Version Tracking**: The system tracks which migrations have run using `.migration-state` file
 2. **Automatic Detection**: `migrate-config.sh check` compares current version vs last migrated
 3. **Safe Migration**: Each migration creates a backup before making changes
-4. **Incremental**: Migrations run in order (v0.1.0 → v0.2.0 → v0.3.0)
+4. **Incremental**: Migrations run in numeric version order (v2.4.2 → v2.4.10 → v2.10.0), including the `check` preview.
 
 Both `check` and `migrate` select scripts newer than `.migration-state` and no
 newer than the installation's `.version`. A newer script bundle can therefore
