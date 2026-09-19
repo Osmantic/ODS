@@ -1,0 +1,41 @@
+services:
+  phoenix:
+    image: arizephoenix/phoenix:version-20.11.0@sha256:8246fb5a2f9889fda9ec2d8e999d97c30dd69eaee87e1e9b56b54c841e603263
+    container_name: ods-phoenix
+    restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: ["/tmp:size=128m,mode=1777"]
+    environment:
+      PHOENIX_HOST: "0.0.0.0"
+      PHOENIX_PORT: "6006"
+      PHOENIX_WORKING_DIR: /data/phoenix
+      PHOENIX_ENABLE_AUTH: "true"
+      PHOENIX_SECRET: "${PHOENIX_SECRET:?Set PHOENIX_SECRET before enabling Phoenix}"
+      PHOENIX_DEFAULT_ADMIN_INITIAL_PASSWORD: "${PHOENIX_DEFAULT_ADMIN_INITIAL_PASSWORD:?Set the initial Phoenix admin password}"
+      PHOENIX_DEFAULT_RETENTION_POLICY_DAYS: "${PHOENIX_RETENTION_DAYS:-30}"
+      PHOENIX_TELEMETRY_ENABLED: "false"
+      PHOENIX_ALLOW_EXTERNAL_RESOURCES: "false"
+      PHOENIX_DISABLE_AGENT_ASSISTANT: "true"
+      PHOENIX_ENABLE_MCP_SERVER: "false"
+    volumes:
+      - ./data/phoenix:/data/phoenix
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${PHOENIX_PORT:-8606}:6006"
+    healthcheck:
+      test: [CMD, /usr/bin/python3.13, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:6006/readyz', timeout=3).read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    networks: [ods-network]
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+networks:
+  ods-network:
+    external: true

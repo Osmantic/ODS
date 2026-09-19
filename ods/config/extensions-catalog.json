@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-13T16:53:56Z",
+  "generated_at": "2026-09-14T18:58:42Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -2971,6 +2971,72 @@
         }
       },
       "catalog_source": "builtin",
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
+      "id": "phoenix",
+      "name": "Phoenix (Local LLM Traces)",
+      "description": "Authenticated local OpenInference traces for debugging LLM and retrieval workflows. Instrumentation is opt-in.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 6006,
+      "external_port_default": 8606,
+      "health_endpoint": "/readyz",
+      "env_vars": [
+        {
+          "key": "PHOENIX_PORT",
+          "description": "Published UI and HTTP collector port; internal listener remains 6006",
+          "default": "8606"
+        },
+        {
+          "key": "PHOENIX_SECRET",
+          "description": "JWT signing secret: at least 32 characters, including a digit and lowercase letter; retain with database backups",
+          "required": true
+        },
+        {
+          "key": "PHOENIX_DEFAULT_ADMIN_INITIAL_PASSWORD",
+          "description": "Strong initial admin@localhost password; subsequent changes use the Phoenix account UI",
+          "required": true
+        },
+        {
+          "key": "PHOENIX_RETENTION_DAYS",
+          "description": "Default trace retention in days; 0 retains indefinitely; existing project policies are managed in Phoenix",
+          "default": "30"
+        }
+      ],
+      "tags": [
+        "tracing",
+        "observability",
+        "llm"
+      ],
+      "features": [
+        {
+          "id": "local-trace-lab",
+          "name": "Local Trace Lab",
+          "description": "Inspect explicitly instrumented LLM spans, latency and token metadata in a private workspace",
+          "icon": "Activity",
+          "category": "monitoring",
+          "requirements": {
+            "services": [
+              "phoenix"
+            ],
+            "vram_gb": 0
+          },
+          "enabled_services_all": [
+            "phoenix"
+          ],
+          "setup_time": "~3 minutes after setting credentials",
+          "priority": 33,
+          "launch": {
+            "type": "service",
+            "service": "phoenix"
+          }
+        }
+      ],
       "configuration_scope": "declared-environment-keys"
     },
     {
