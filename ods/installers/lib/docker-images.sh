@@ -40,11 +40,12 @@ validate_docker_image_or_fallback() {
     local fallback=""
 
     if docker_image_available "$image"; then
-        printf -v "$result_var" '%s' "$image"
+        if [[ -n "$result_var" && "$result_var" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+            printf -v "$result_var" '%s' "$image"
+        fi
         ai_ok "$label image available: $image"
         return 0
     fi
-
     if [[ -n "$fallback_env" ]]; then
         fallback="${!fallback_env:-}"
     fi
