@@ -30,7 +30,7 @@ ods_model_lifecycle_lock_file() {
     # and a later SSH/systemd installer can have different environment values
     # while still operating on the same installation.
     lock_root="${ODS_MODEL_LIFECYCLE_LOCK_ROOT:-/tmp/ods-model-lifecycle-${UID:-$(id -u)}}"
-    lock_key="$(printf '%s\0' "$resolved" | cksum | awk '{print $1}')"
+    lock_key="$(printf '%s' "$resolved" | cksum | awk '{print $1}')"
     printf '%s/ods-model-lifecycle-%s.lock\n' "${lock_root%/}" "$lock_key"
 }
 
