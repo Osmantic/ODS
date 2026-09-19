@@ -520,7 +520,8 @@ async def get_llama_metrics(model_hint: Optional[str] = None) -> dict:
         if _prev_tokens["time"] > 0 and curr > _prev_tokens["count"]:
             delta_secs = gen_secs - _prev_tokens.get("gen_secs", 0)
             if delta_secs > 0:
-                _prev_tokens["tps"] = round((curr - _prev_tokens["count"]) / delta_secs, 1)
+                raw_tps = (curr - _prev_tokens["count"]) / delta_secs
+                _prev_tokens["tps"] = round(raw_tps, 1) if is_plausible_single_request_tps(raw_tps) else 0.0
             else:
                 _prev_tokens["tps"] = 0.0
         else:
