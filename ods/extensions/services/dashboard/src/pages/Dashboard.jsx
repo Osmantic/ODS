@@ -613,8 +613,11 @@ export default function Dashboard({ status, loading, compact = false }) {
 
   useEffect(() => {
     let mounted = true
+    let inFlight = false
 
     const fetchFeatures = async () => {
+      if (inFlight) return
+      inFlight = true
       try {
         const res = await fetch('/api/features')
         if (!res.ok) return
@@ -622,6 +625,8 @@ export default function Dashboard({ status, loading, compact = false }) {
         if (mounted) setFeaturesData(data)
       } catch {
         // Feature cards degrade gracefully to status-only view when API fails.
+      } finally {
+        inFlight = false
       }
     }
 
@@ -640,8 +645,11 @@ export default function Dashboard({ status, loading, compact = false }) {
 
   useEffect(() => {
     let mounted = true
+    let inFlight = false
 
     const fetchServiceResources = async () => {
+      if (inFlight) return
+      inFlight = true
       try {
         const res = await fetch('/api/services/resources')
         if (!res.ok) return
@@ -649,6 +657,8 @@ export default function Dashboard({ status, loading, compact = false }) {
         if (mounted) setServiceResources(data)
       } catch {
         // Service rows keep rendering status data when per-container metrics are unavailable.
+      } finally {
+        inFlight = false
       }
     }
 
