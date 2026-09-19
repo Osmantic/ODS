@@ -869,3 +869,24 @@ def load_templates() -> list[dict]:
 
 
 TEMPLATES = load_templates()
+
+
+# ── config guard: clamp_timeout ───────────────────────────────
+_MIN_TIMEOUT_S = 0.1
+_MAX_TIMEOUT_S = 3600.0
+
+def clamp_timeout(value: Any, default: float = 30.0) -> float:
+    """Return *value* clamped to [0.1, 3600] seconds.
+
+    Accepts numeric types and numeric strings.  Returns *default*
+    for None, non-numeric, zero, or negative inputs.
+    """
+    if value is None:
+        return default
+    try:
+        secs = float(value)
+    except (TypeError, ValueError):
+        return default
+    if secs <= 0:
+        return default
+    return max(_MIN_TIMEOUT_S, min(secs, _MAX_TIMEOUT_S))
