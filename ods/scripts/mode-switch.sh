@@ -74,7 +74,8 @@ switch_mode() {
 
     local configured_backend
     configured_backend=$(grep -m1 "^LLM_BACKEND=" "$ENV_FILE" 2>/dev/null | cut -d= -f2- | tr -d '"\047\r' || true)
-    if [[ "${configured_backend,,}" == "external" ]]; then
+    configured_backend=$(printf '%s' "$configured_backend" | tr '[:upper:]' '[:lower:]')
+    if [[ "$configured_backend" == "external" ]]; then
         error "External LLM routing is installer-managed. Run './install.sh --no-external-llm' first, then retry the mode switch."
     fi
 
@@ -85,7 +86,8 @@ switch_mode() {
         env_set "LLM_API_URL" "http://llama-server:8080"
         local switchboard_mode
         switchboard_mode=$(grep -m1 "^ODS_MODEL_SWITCHBOARD=" "$ENV_FILE" 2>/dev/null | cut -d= -f2- | tr -d '"\047\r' || true)
-        if [[ "${switchboard_mode,,}" == "enabled" ]]; then
+        switchboard_mode=$(printf '%s' "$switchboard_mode" | tr '[:upper:]' '[:lower:]')
+        if [[ "$switchboard_mode" == "enabled" ]]; then
             env_set "HERMES_LLM_BASE_URL" "http://model-router:9099/v1"
             env_set "HERMES_LLM_API_KEY" "no-key"
         else
