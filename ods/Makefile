@@ -162,6 +162,7 @@ test: ## Run unit and contract tests
 	@bash tests/test-update-current-version.sh
 	@bash tests/test-update-rollback-restore-failure.sh
 	@bash tests/test-backup-data-coverage.sh
+	@python3 tests/test-healthcheck-error-body.py
 	@echo ""
 	@echo "=== backup integrity and restore round-trip ==="
 	@bash tests/test-backup-integrity.sh
