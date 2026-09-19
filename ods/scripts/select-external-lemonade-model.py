@@ -59,10 +59,16 @@ PARAMETER_COUNT = re.compile(
 def _labels(item: dict[str, Any]) -> set[str]:
     raw = item.get("labels", [])
     if isinstance(raw, str):
-        raw = [raw]
+        raw = raw.split(",")
     if not isinstance(raw, list):
         return set()
-    return {str(label).strip().lower() for label in raw if str(label).strip()}
+    result = set()
+    for label in raw:
+        for part in str(label).split(","):
+            part = part.strip().lower()
+            if part:
+                result.add(part)
+    return result
 
 
 def _finite_number(value: Any) -> float:
@@ -109,7 +115,14 @@ def select_model(payload: Any) -> str | None:
     if not candidates:
         return None
 
-    downloaded = [item for item in candidates if item.get("downloaded") is True]
+    def _is_downloaded(val: Any) -> bool:
+        if isinstance(val, str):
+            return val.strip().lower() in ("true", "1", "yes", "downloaded")
+        if isinstance(val, (int, float)):
+            return val == 1
+        return bool(val)
+
+    downloaded = [item for item in candidates if _is_downloaded(item.get("downloaded"))]
     legacy = [item for item in candidates if "downloaded" not in item]
     if downloaded:
         candidates = downloaded
@@ -130,7 +143,7 @@ def select_model(payload: Any) -> str | None:
             _finite_number(item.get("size")),
             _finite_number(item.get("max_context_window")),
             1.0 if "hot" in labels else 0.0,
-            1.0 if item.get("suggested") is True else 0.0,
+            1.0 if (item.get("suggested") is True or str(item.get("suggested", "")).lower() in ("true", "1")) else 0.0,
             -float(index),
         )
 
