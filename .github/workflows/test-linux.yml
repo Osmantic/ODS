@@ -215,6 +215,7 @@ jobs:
       - name: Manifest Compatibility Checks
         run: |
           python3 tests/test_compatibility_compose_list.py
+          python3 tests/test_patch_hermes_config_file_guard.py
           bash scripts/check-compatibility.sh
           bash scripts/check-release-claims.sh
 

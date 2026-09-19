@@ -307,6 +307,10 @@ def main() -> int:
 
     if not args.path.exists():
         return 0
+    if not args.path.is_file():
+        import sys
+        print(f"error: config path is not a file: {args.path}", file=sys.stderr)
+        return 1
     changed = patch_config(
         args.path,
         args.model,
