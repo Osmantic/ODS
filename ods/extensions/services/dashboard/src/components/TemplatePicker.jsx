@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import MetalMetricIcon from './MetalMetricIcon'
 import {
   MessageSquare, Image, Code, Shield, Layers, Package,
@@ -11,14 +11,19 @@ const TEMPLATE_APPLY_TIMEOUT_MS = 30 * 60 * 1000
 
 const fetchJson = async (url, options = {}) => {
   const c = new AbortController()
-  const t = setTimeout(() => c.abort(), options.timeout || 30000)
+  const { signal, timeout = 30000, ...fetchOptions } = options
+  const abort = () => c.abort()
+  if (signal?.aborted) abort()
+  signal?.addEventListener('abort', abort, { once: true })
+  const t = setTimeout(abort, timeout)
   try {
-    const response = await fetch(url, { ...options, signal: c.signal })
+    const response = await fetch(url, { ...fetchOptions, signal: c.signal })
     const data = await response.json()
     if (c.signal.aborted) throw new globalThis.DOMException('Request timed out', 'AbortError')
     return { ok: response.ok, status: response.status, data }
   } finally {
     clearTimeout(t)
+    signal?.removeEventListener('abort', abort)
   }
 }
 
@@ -131,28 +136,40 @@ export function TemplatePicker({ templates, onApplied, compact = false, variant 
  */
 export function TemplatePreview({ template, onClose, onApplied }) {
   const [previewData, setPreviewData] = useState(null)
-  const [loading, setLoading] = useState(false)
+  const [loading, setLoading] = useState(true)
   const [applying, setApplying] = useState(false)
   const [error, setError] = useState(null)
   const [applied, setApplied] = useState(false)
   const [applyResult, setApplyResult] = useState(null)
+  const [previewAttempt, setPreviewAttempt] = useState(0)
   const requestClose = () => { if (!applying) onClose() }
 
   const Icon = ICON_MAP[template.icon] || Package
 
-  const loadPreview = async () => {
-    setLoading(true)
-    setError(null)
-    try {
-      const res = await fetchJson(`/api/templates/${template.id}/preview`, { method: 'POST' })
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      setPreviewData(res.data)
-    } catch (err) {
-      setError(err.name === 'AbortError' ? 'Request timed out' : 'Failed to load preview')
-    } finally {
-      setLoading(false)
+  useEffect(() => {
+    const controller = new AbortController()
+    const loadPreview = async () => {
+      setLoading(true)
+      setError(null)
+      setPreviewData(null)
+      try {
+        const res = await fetchJson(`/api/templates/${template.id}/preview`, {
+          method: 'POST', signal: controller.signal,
+        })
+        if (controller.signal.aborted) return
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        setPreviewData(res.data)
+      } catch (err) {
+        if (!controller.signal.aborted) {
+          setError(err.name === 'AbortError' ? 'Request timed out' : 'Failed to load preview')
+        }
+      } finally {
+        if (!controller.signal.aborted) setLoading(false)
+      }
     }
-  }
+    void loadPreview()
+    return () => controller.abort()
+  }, [template.id, previewAttempt])
 
   const handleApply = async () => {
     if (applying || !canApply) return
@@ -179,11 +196,6 @@ export function TemplatePreview({ template, onClose, onApplied }) {
     } finally {
       setApplying(false)
     }
-  }
-
-  // Load preview on mount
-  if (!previewData && !loading && !error) {
-    loadPreview()
   }
 
   const changes = previewData?.changes || {}
@@ -238,7 +250,7 @@ export function TemplatePreview({ template, onClose, onApplied }) {
                 <h4 className="text-sm font-medium text-blue-400">Installation in progress</h4>
                 <ul className="mt-2 text-xs text-theme-text">{changes.in_progress.map(svc => <li key={svc}>{svc}</li>)}</ul>
                 <p className="mt-2 text-xs text-theme-text-muted">Wait for these installations to finish before applying this template.</p>
-                <button type="button" disabled={loading || applying} onClick={loadPreview} className="mt-2 text-xs text-theme-accent-light disabled:opacity-50">Refresh preview</button>
+                <button type="button" disabled={loading || applying} onClick={() => setPreviewAttempt(value => value + 1)} className="mt-2 text-xs text-theme-accent-light disabled:opacity-50">Refresh preview</button>
               </section>
             )}
             {changes.to_enable?.length > 0 && (
