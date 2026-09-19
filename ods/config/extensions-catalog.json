@@ -3591,6 +3591,67 @@
       "configuration_scope": "declared-environment-keys"
     },
     {
+      "id": "victorialogs",
+      "name": "VictoriaLogs (Log History)",
+      "description": "Authenticated local log ingestion, retention and LogsQL search for explicitly connected producers.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 9428,
+      "external_port_default": 9428,
+      "health_endpoint": "/health",
+      "env_vars": [
+        {
+          "key": "VLOGS_PORT",
+          "description": "Published HTTP port; internal listener remains 9428",
+          "default": "9428"
+        },
+        {
+          "key": "VLOGS_PASSWORD",
+          "description": "Strong Basic Auth password for the ods account; required for ingestion, queries and UI",
+          "required": true
+        },
+        {
+          "key": "VLOGS_RETENTION",
+          "description": "Log retention, for example 7d; shortening it deletes older records",
+          "default": "7d"
+        }
+      ],
+      "tags": [
+        "logs",
+        "monitoring",
+        "search"
+      ],
+      "features": [
+        {
+          "id": "persistent-log-history",
+          "name": "Local Log History",
+          "description": "Search retained structured logs from explicitly configured producers",
+          "icon": "Code",
+          "category": "monitoring",
+          "requirements": {
+            "services": [
+              "victorialogs"
+            ],
+            "vram_gb": 0
+          },
+          "enabled_services_all": [
+            "victorialogs"
+          ],
+          "setup_time": "~1 minute after setting credentials",
+          "priority": 37,
+          "launch": {
+            "type": "service",
+            "service": "victorialogs"
+          }
+        }
+      ],
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
       "id": "weaviate",
       "name": "Weaviate",
       "description": "Weaviate is an open-source vector database that stores both objects and vectors.\nSupports semantic search, hybrid search, structured filtering, and multi-tenancy.\nA cloud-native alternative to ChromaDB with gRPC support and horizontal scaling.\n",
