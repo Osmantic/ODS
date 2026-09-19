@@ -866,16 +866,25 @@ get_compose_flags() {
             # Protects against renames across upgrades (e.g. multigpu.yml →
             # multigpu-nvidia.yml) where the cache would otherwise hand docker
             # compose a path that no longer resolves.
-            local stale=0 prev="" tok
-            for tok in $cached; do
-                if [[ "$prev" == "-f" ]]; then
-                    if [[ "$tok" = /* ]]; then
-                        [[ -f "$tok" ]] || { stale=1; break; }
-                    else
-                        [[ -f "$INSTALL_DIR/$tok" ]] || { stale=1; break; }
-                    fi
+            # The cache is a sequence of `-f <path>` pairs and nothing else, so
+            # a path may itself contain spaces (installs under spaced dirs).
+            # Walk `-f `-delimited segments instead of word-splitting, which
+            # would check only the first fragment of a spaced path.
+            local stale=0 _flag_rest="$cached" _flag_path
+            while [[ "$_flag_rest" == -f\ * ]]; do
+                _flag_rest="${_flag_rest#-f }"
+                if [[ "$_flag_rest" == *" -f "* ]]; then
+                    _flag_path="${_flag_rest%% -f *}"
+                    _flag_rest="-f ${_flag_rest#* -f }"
+                else
+                    _flag_path="$_flag_rest"
+                    _flag_rest=""
                 fi
-                prev="$tok"
+                if [[ "$_flag_path" = /* ]]; then
+                    [[ -f "$_flag_path" ]] || { stale=1; break; }
+                else
+                    [[ -f "$INSTALL_DIR/$_flag_path" ]] || { stale=1; break; }
+                fi
             done
             local _ods_mode="${ODS_MODE:-local}"
             local _lemonade_external="${LEMONADE_EXTERNAL:-false}"
