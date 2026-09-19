@@ -67,8 +67,16 @@ _ae_load() {
     TTS_PORT=$(_ae_read_env_var "TTS_PORT") || \
         TTS_PORT="8880"
 
+    # Host-side LLM probe port. Native Lemonade listens on AMD_INFERENCE_PORT;
+    # containerized llama-server publishes the external OLLAMA_PORT (default
+    # 11434 — 8080 is the container-internal port nothing host-side uses).
+    LLM_PORT=$(_ae_read_env_var "AMD_INFERENCE_PORT" || true)
+    [ -z "$LLM_PORT" ] && LLM_PORT=$(_ae_read_env_var "OLLAMA_PORT" || true)
+    [ -z "$LLM_PORT" ] && LLM_PORT=$(_ae_read_env_var "LLAMA_SERVER_PORT" || true)
+    LLM_PORT="${LLM_PORT:-11434}"
+
     export AE_AUTH_HEADER DASHBOARD_API_PORT DASHBOARD_PORT \
-           WHISPER_PORT TTS_PORT
+           WHISPER_PORT TTS_PORT LLM_PORT
 }
 
 _ae_require_key() {

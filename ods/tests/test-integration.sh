@@ -221,8 +221,8 @@ echo -e "${BLUE}▸ Core Services${NC}"
 
 # llama-server
 if ! $QUICK; then
-    test_http "llama-server health" "http://localhost:${OLLAMA_PORT:-8080}/health"
-    test_llm "llama-server inference" "http://localhost:${OLLAMA_PORT:-8080}" "Say hello in exactly 3 words."
+    test_http "llama-server health" "http://localhost:${LLM_PORT:-11434}/health"
+    test_llm "llama-server inference" "http://localhost:${LLM_PORT:-11434}" "Say hello in exactly 3 words."
 else
     log_skip "llama-server inference test"
 fi
