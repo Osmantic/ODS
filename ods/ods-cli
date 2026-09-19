@@ -2829,6 +2829,13 @@ cmd_audit() {
 # Track visited services during recursive enable to prevent circular deps
 declare -a _ENABLE_VISITED=()
 
+# Resolved service IDs are spliced into extension directory paths. Reject
+# anything that isn't a plain kebab-case id so a resolved input like
+# `../../x` cannot make enable/disable operate outside the install tree.
+_require_safe_service_id() {
+    [[ "$1" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || error "Invalid service name: $1"
+}
+
 cmd_enable() {
     check_install
     sr_load
@@ -2839,6 +2846,7 @@ cmd_enable() {
 
     local service_id
     service_id=$(sr_resolve "$input")
+    _require_safe_service_id "$service_id"
 
     # Circular dependency guard
     for _visited in "${_ENABLE_VISITED[@]}"; do
@@ -2968,6 +2976,7 @@ cmd_disable() {
 
     local service_id
     service_id=$(sr_resolve "$input")
+    _require_safe_service_id "$service_id"
     # Check built-in extensions first, then dashboard-installed user extensions
     local ext_dir="$INSTALL_DIR/extensions/services/$service_id"
     [[ ! -d "$ext_dir" ]] && ext_dir="$INSTALL_DIR/data/user-extensions/$service_id"
