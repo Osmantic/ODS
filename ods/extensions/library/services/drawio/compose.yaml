@@ -1,0 +1,37 @@
+services:
+  drawio:
+    image: jgraph/drawio:31.4.5@sha256:a2c1de83dae975d44eb4ff4ccaa4f2d9f954c4915c767b000bc78909ae4e4dff
+    container_name: ods-drawio
+    user: "1001:999"
+    restart: unless-stopped
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      DRAWIO_USE_HTTP: "1"
+      DRAWIO_CONFIG: '{"enableAi":false}'
+      # The image writes this value inside a JavaScript string literal.
+      DRAWIO_CSP_HEADER: >-
+        default-src \'self\'; script-src \'self\' \'unsafe-inline\';
+        connect-src \'self\'; img-src \'self\' data: blob:;
+        font-src \'self\' data:; style-src \'self\' \'unsafe-inline\';
+        frame-src \'self\'; object-src \'none\'; base-uri \'self\';
+      JAVA_OPTS: "-Xms64m -Xmx512m"
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${DRAWIO_PORT:-8106}:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    networks: [ods-network]
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 768M
+
+networks:
+  ods-network:
+    external: true
