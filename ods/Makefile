@@ -176,6 +176,9 @@ test: ## Run unit and contract tests
 	@echo "=== bootstrap-upgrade compose-flags recovery ==="
 	@bash tests/test-bootstrap-upgrade-compose-flags-recovery.sh
 	@echo ""
+	@echo "=== enable/disable service-id validation ==="
+	@bash tests/test-cli-service-id-validation.sh
+	@echo ""
 	@echo "=== macOS ods-host-agent bootstrap verification ==="
 	@bash tests/test-macos-host-agent-verification.sh
 	@echo ""
