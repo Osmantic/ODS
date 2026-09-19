@@ -129,9 +129,19 @@ chmod +x "$STUB_BIN"/*
 
 # Deliberately do NOT stub nvidia-smi. `command -v nvidia-smi` must return
 # false under GPU_BACKEND=apple so the apple branch is the only one taken.
-# For negative tests we rely on nvidia-smi being absent from PATH too.
+# For negative tests we rely on nvidia-smi being absent from PATH too —
+# so drop every PATH entry that ships a real nvidia-smi (developer machines
+# with a NVIDIA driver would otherwise leak the host GPU into the stubs).
 
-STUB_PATH="$STUB_BIN:$PATH"
+STUB_PATH="$STUB_BIN"
+_old_ifs="$IFS"
+IFS=:
+for _path_dir in $PATH; do
+    [[ -n "$_path_dir" && -x "$_path_dir/nvidia-smi" ]] && continue
+    STUB_PATH="$STUB_PATH:$_path_dir"
+done
+IFS="$_old_ifs"
+unset _old_ifs _path_dir
 
 # Run ods-cli under the fixture. Returns captured stdout+stderr via $OUT,
 # rc via $RC (using globals to keep set -e friendly).
