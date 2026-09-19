@@ -488,6 +488,13 @@ jobs:
       - name: NVIDIA Multi-GPU Visibility Contract Tests
         run: bash tests/test-multigpu-nvidia-visibility.sh
 
+      - name: Post-merge Installer and Restart Contract Suites
+        run: |
+          bash tests/test-bootstrap-pixel-catalog-permissions.sh
+          bash tests/test-installer-feature-state-sync.sh
+          bash tests/test-ods-cli-restart-hermes-ready.sh
+          bash tests/test-systemctl-user-env.sh
+
       - name: Upload Installer Simulation Artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
