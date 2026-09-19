@@ -1,0 +1,40 @@
+services:
+  mailpit:
+    image: axllent/mailpit:v1.22.4
+    container_name: ods-mailpit
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      MP_DATA_DIR: "/data"
+      MP_SMTP_AUTH_ACCEPT_ANY: "1"
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${MAILPIT_PORT:-8025}:8025"
+      - "${BIND_ADDRESS:-127.0.0.1}:${MAILPIT_SMTP_PORT:-1025}:1025"
+    volumes:
+      - ./data/mailpit:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:8025/api/v1/info || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - ods-network
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+        reservations:
+          cpus: "0.05"
+          memory: 64M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  ods-network:
+    external: true
