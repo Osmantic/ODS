@@ -1,4 +1,5 @@
 import { AlertTriangle } from 'lucide-react'
+import { useEffect, useRef } from 'react'
 
 const STATUS_DOTS = {
   enabled: 'bg-green-500',
@@ -41,16 +42,25 @@ export function DependencyBadges({ dependsOn, dependencyStatus }) {
  * Shows when enabling a service that has missing dependencies.
  */
 export function DependencyConfirmDialog({ ext, missingDeps, onConfirm, onCancel }) {
+  const dialog = useRef(null), cancel = useRef(null)
+  const visible = Boolean(ext && missingDeps?.length)
+  useEffect(() => {
+    if (!visible) return
+    const previous = document.activeElement
+    const element = dialog.current
+    element.showModal()
+    cancel.current?.focus()
+    return () => { element.close(); if (previous?.isConnected) previous.focus() }
+  }, [visible])
   if (!ext || !missingDeps || missingDeps.length === 0) return null
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={onCancel}>
+    <dialog ref={dialog} aria-label="Enable dependencies"
+      className="fixed inset-0 m-0 h-screen w-screen max-h-none max-w-none border-0 p-0 bg-black/50 flex items-center justify-center z-50"
+      onCancel={event => { event.preventDefault(); onCancel() }} onClick={onCancel}>
       <div
         className="bg-theme-card border border-theme-border rounded-xl p-6 max-w-md mx-4"
         onClick={e => e.stopPropagation()}
-        role="dialog"
-        aria-modal="true"
-        aria-label="Enable dependencies"
       >
         <h3 className="text-lg font-semibold text-theme-text mb-2">
           Enable Dependencies
@@ -71,7 +81,7 @@ export function DependencyConfirmDialog({ ext, missingDeps, onConfirm, onCancel 
         <div className="flex justify-end gap-3">
           <button
             onClick={onCancel}
-            autoFocus
+            ref={cancel}
             className="px-4 py-2 text-sm text-theme-text-muted hover:text-theme-text transition-colors"
           >
             Cancel
@@ -84,7 +94,7 @@ export function DependencyConfirmDialog({ ext, missingDeps, onConfirm, onCancel 
           </button>
         </div>
       </div>
-    </div>
+    </dialog>
   )
 }
 
