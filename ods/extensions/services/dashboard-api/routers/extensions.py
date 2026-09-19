@@ -222,6 +222,8 @@ def _read_progress(service_id: str) -> dict | None:
         return None
     try:
         data = json.loads(progress_file.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return None
         updated = data.get("updated_at", "")
         if updated and _is_stale(updated, max_age_seconds=3600):
             if data.get("status") not in ("error",):
@@ -239,6 +241,8 @@ def _cleanup_stale_progress() -> None:
     for f in progress_dir.glob("*.json"):
         try:
             data = json.loads(f.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                continue
             if data.get("status") == "started" and _is_stale(data.get("updated_at", ""), 900):
                 f.unlink(missing_ok=True)
             elif _is_stale(data.get("updated_at", ""), 3600):
@@ -272,7 +276,11 @@ def _write_error_progress(service_id: str, error_msg: str) -> None:
             "phase_label": "", "started_at": now, "updated_at": now}
     try:
         if progress_file.exists():
-            data = json.loads(progress_file.read_text(encoding="utf-8"))
+            existing = json.loads(progress_file.read_text(encoding="utf-8"))
+            if isinstance(existing, dict):
+                data = existing
+            else:
+                logger.warning("Progress file for %s is not a JSON object; replacing it", service_id)
     except (json.JSONDecodeError, OSError) as exc:
         logger.warning("Failed to read progress file for %s: %s", service_id, exc)
     data["status"] = "error"
