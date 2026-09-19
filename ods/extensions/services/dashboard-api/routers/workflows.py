@@ -7,6 +7,7 @@ import re
 
 import aiohttp
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse
 
 from config import (
     SERVICES, WORKFLOW_DIR, WORKFLOW_CATALOG_FILE,
@@ -121,6 +122,32 @@ async def check_n8n_available() -> bool:
 
 
 # --- Endpoints ---
+
+@router.get("/api/workflows/n8n/{n8n_id}/export")
+async def export_installed_workflow(n8n_id: str, api_key: str = Depends(verify_api_key)):
+    """Export an installed n8n workflow's portable definition without modifying it."""
+    _validate_workflow_id(n8n_id)
+    headers = {"X-N8N-API-KEY": N8N_API_KEY} if N8N_API_KEY else {}
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
+            async with session.get(f"{N8N_URL}/api/v1/workflows/{n8n_id}", headers=headers, params={"excludePinnedData": "true"}, allow_redirects=False) as response:
+                if response.status == 404:
+                    raise HTTPException(status_code=404, detail="Installed workflow not found")
+                if response.status != 200:
+                    raise HTTPException(status_code=502, detail="n8n could not export the workflow")
+                workflow = await response.json()
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(status_code=504, detail="n8n workflow export timed out") from exc
+    except (aiohttp.ClientError, OSError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=502, detail="n8n workflow export unavailable") from exc
+    if not isinstance(workflow, dict) or not isinstance(workflow.get("name"), str) or not isinstance(workflow.get("nodes"), list) or not isinstance(workflow.get("connections"), dict) or not isinstance(workflow.get("settings", {}), dict):
+        raise HTTPException(status_code=502, detail="n8n returned an invalid workflow definition")
+    portable = {key: workflow[key] for key in ("name", "nodes", "connections")}
+    portable["settings"] = workflow.get("settings", {})
+    return JSONResponse(portable, headers={
+        "Content-Disposition": f'attachment; filename="ods-workflow-{n8n_id}.json"',
+        "Cache-Control": "no-store",
+    })
 
 @router.get("/api/workflows/categories")
 async def api_workflow_categories(api_key: str = Depends(verify_api_key)):
