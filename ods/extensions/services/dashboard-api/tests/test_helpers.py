@@ -1801,3 +1801,16 @@ def test_flatten_bounds_cycles_and_large_depth_without_losing_empty_leaves():
         nested = {"child": nested}
     result = dict_flatten_nested_safe(nested, max_depth=100000)
     assert len(next(iter(result)).split(".")) == 128
+
+
+class TestDictMergeShallowOverrideSafe:
+    def test_valid_merging(self):
+        from helpers import dict_merge_shallow_override_safe
+        d1 = {"a": 1, "b": 2}
+        d2 = {"b": 20, "c": 30}
+        assert dict_merge_shallow_override_safe(d1, d2) == {"a": 1, "b": 20, "c": 30}
+
+    def test_invalid_inputs(self):
+        from helpers import dict_merge_shallow_override_safe
+        assert dict_merge_shallow_override_safe(None, {"a": 1}) == {"a": 1}
+        assert dict_merge_shallow_override_safe({"a": 1}, None) == {"a": 1}
