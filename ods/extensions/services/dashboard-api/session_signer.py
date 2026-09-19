@@ -167,3 +167,12 @@ def verify(cookie_value: str) -> Tuple[bool, str]:
         return False, "expired"
 
     return True, "ok"
+
+
+import hmac
+
+def secure_compare_tokens(val1: str, val2: str) -> bool:
+    """Compare two session tokens in constant time to prevent timing attacks."""
+    if not isinstance(val1, str) or not isinstance(val2, str):
+        return False
+    return hmac.compare_digest(val1.encode('utf-8'), val2.encode('utf-8'))
