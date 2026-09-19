@@ -72,14 +72,13 @@ get_last_access_days() {
     local newest_atime=""
     if [[ "$(uname -s)" == "Darwin" ]]; then
         # BSD: stat -f %a (atime as epoch seconds)
-        newest_atime="$(find "$dir" -type f -exec stat -f %a {} + 2>/dev/null | sort -rn | sed -n '1p')"
+        newest_atime="$(find "$dir" -type f -exec stat -f %a {} + | sort -rn | sed -n '1p')" || return 1
     else
         # GNU: stat -c %X (atime as epoch seconds)
-        newest_atime="$(find "$dir" -type f -exec stat -c %X {} + 2>/dev/null | sort -rn | sed -n '1p')"
+        newest_atime="$(find "$dir" -type f -exec stat -c %X {} + | sort -rn | sed -n '1p')" || return 1
     fi
     if [[ -z "$newest_atime" || ! "${newest_atime%.*}" =~ ^[0-9]+$ ]]; then
-        echo "9999"
-        return
+        return 1
     fi
     local now
     now="$(date +%s)"
@@ -91,6 +90,7 @@ do_archive() {
     local dry_run="${1:-true}"
     local archived=0
     local skipped=0
+    local scan_failed=0
 
     log "========== LLM cold storage scan started (dry_run=$dry_run) =========="
 
@@ -117,7 +117,11 @@ do_archive() {
         fi
 
         local idle_days
-        idle_days="$(get_last_access_days "$model_dir")"
+        if ! idle_days="$(get_last_access_days "$model_dir")"; then
+            log "SKIP (access scan failed): $name; model left in place"
+            ((scan_failed++))
+            continue
+        fi
         local size
         size="$(du -sh "$model_dir" 2>/dev/null | cut -f1)"
 
@@ -139,7 +143,8 @@ do_archive() {
         fi
     done
 
-    log "========== Scan complete: $archived archived, $skipped skipped =========="
+    log "========== Scan complete: $archived archived, $skipped skipped, $scan_failed access scans failed =========="
+    (( scan_failed == 0 ))
 }
 
 do_restore() {
@@ -204,10 +209,14 @@ show_status() {
         else
             local size idle_days status=""
             size="$(du -sh "$model_dir" 2>/dev/null | cut -f1)"
-            idle_days="$(get_last_access_days "$model_dir")"
+            if idle_days="$(get_last_access_days "$model_dir")"; then
+                idle_days="${idle_days}d"
+            else
+                idle_days="unknown"
+            fi
             is_protected "$name" && status=" [protected]"
             is_model_in_use "$name" && status=" [in use]"
-            echo "  [HOT] $name ($size, idle ${idle_days}d)${status}"
+            echo "  [HOT] $name ($size, idle ${idle_days})${status}"
         fi
     done
 
