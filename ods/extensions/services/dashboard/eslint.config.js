@@ -1,9 +1,18 @@
 import js from "@eslint/js";
+import react from "eslint-plugin-react";
+import reactHooks from "eslint-plugin-react-hooks";
 
 export default [
   js.configs.recommended,
   {
     files: ["**/*.{js,jsx}"],
+    plugins: {
+      react,
+      "react-hooks": reactHooks,
+    },
+    settings: {
+      react: { version: "detect" },
+    },
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: "module",
@@ -68,6 +77,15 @@ export default [
     },
     rules: {
       "no-unused-vars": ["warn", { argsIgnorePattern: "^_" }],
+      // Mark JSX identifiers as used — without this, no-unused-vars reports
+      // every component import that is only referenced inside JSX (~700
+      // false-positive warnings that drown out real ones).
+      "react/jsx-uses-vars": "warn",
+      // Conditional/misnested hook calls corrupt React state; gate on them.
+      // exhaustive-deps stays a warning: some effects intentionally take a
+      // narrower dep set (mount-once listeners, debounced reloads).
+      "react-hooks/rules-of-hooks": "error",
+      "react-hooks/exhaustive-deps": "warn",
     },
   },
   {
