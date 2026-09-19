@@ -95,8 +95,14 @@ function ActivityView({report,available}) {
 
 function Trend({label,data,keys,available,currency=false,gapDays=1}) {
   const [selected,setSelected]=useState(null)
+  const [pinned,setPinned]=useState(null)
+  useEffect(() => {
+    if (!available || !data.some(point => point.date === pinned)) setPinned(null)
+  }, [available, data, pinned])
   const max=Math.max(0,...data.flatMap(point=>keys.map(key=>Number(point[key] || 0))))
-  const active=data.find(point=>point.date===selected)
+  const active=data.find(point=>point.date===(pinned || selected))
+  const toggle = date => {setPinned(value => value === date ? null : date); setSelected(null)}
+  const clear = () => {setPinned(null); setSelected(null)}
   const fmt=currency ? money : compactNumber
   const valueLabel=value=>value==null ? 'Unavailable' : currency ? money(value) : integer(value)
   const x=index=>data.length<2 ? 50 : 1+index/(data.length-1)*98
@@ -109,10 +115,14 @@ function Trend({label,data,keys,available,currency=false,gapDays=1}) {
         {[4,51,98].map(value=><line key={value} x1="1" x2="99" y1={value} y2={value} className="usage-gridline" vectorEffect="non-scaling-stroke"/>)}
         {keys.map(key=><g key={key}><path d={data.map((point,index)=>point[key]==null ? '' : `${index===0 || data[index-1][key]==null || new Date(point.date)-new Date(data[index-1].date)>86400000*gapDays ? 'M' : 'L'}${x(index)},${y(point[key])}`).join(' ')} fill="none" stroke={seriesInfo[key]?.color || '#c5cbd2'} strokeWidth="1.65" vectorEffect="non-scaling-stroke"/>{data.filter(point=>point[key]>0).map(point=><ellipse key={point.date} cx={x(data.indexOf(point))} cy={y(point[key])} rx=".6" ry="1.6" fill={seriesInfo[key]?.color || '#c5cbd2'}/>)}</g>)}
         {active && <line x1={x(data.indexOf(active))} x2={x(data.indexOf(active))} y1="0" y2="100" stroke="#ffffff40" strokeDasharray="2 3" vectorEffect="non-scaling-stroke"/>}
-        {data.map((point,index)=><rect key={point.date} x={Math.max(0,x(index)-50/Math.max(data.length,1))} y="0" width={100/Math.max(data.length,1)} height="100" fill="transparent" tabIndex={0} role="button" aria-label={`${dayLabel(point.date)}: ${keys.map(key=>`${seriesInfo[key]?.label || key} ${valueLabel(point[key])}`).join(', ')}`} onMouseEnter={()=>setSelected(point.date)} onMouseLeave={()=>setSelected(null)} onFocus={()=>setSelected(point.date)} onBlur={()=>setSelected(null)}/>) }
+        {data.map((point,index)=><rect key={point.date} x={Math.max(0,x(index)-50/Math.max(data.length,1))} y="0" width={100/Math.max(data.length,1)} height="100" fill="transparent" tabIndex={0} role="button" aria-pressed={pinned===point.date} aria-label={`${dayLabel(point.date)}: ${keys.map(key=>`${seriesInfo[key]?.label || key} ${valueLabel(point[key])}`).join(', ')}`} onMouseEnter={()=>setSelected(point.date)} onMouseLeave={()=>setSelected(null)} onFocus={()=>setSelected(point.date)} onBlur={()=>setSelected(null)} onClick={()=>toggle(point.date)} onKeyDown={event=>{
+          if (event.key==='Enter' || event.key===' ') {event.preventDefault(); toggle(point.date)}
+          if (event.key==='Escape') {event.preventDefault(); clear()}
+        }}/>) }
       </svg>
       <div className="usage-chart-axis"><span>{data[0] ? dayLabel(data[0].date) : '—'}</span><span>{data.length ? dayLabel(data.at(-1).date) : '—'}</span></div>
-      <p className="usage-chart-reading">{active ? `${dayLabel(active.date)} · ${keys.map(key=>`${seriesInfo[key]?.label || key}: ${valueLabel(active[key])}`).join(' · ')}` : max ? 'Hover or focus a day for exact values.' : 'No recorded activity in this period.'}</p>
+      <p className="usage-chart-reading" role="status">{active ? `${dayLabel(active.date)} · ${keys.map(key=>`${seriesInfo[key]?.label || key}: ${valueLabel(active[key])}`).join(' · ')}` : max ? 'Hover or focus a day for exact values. Click, tap or press Enter to keep a reading.' : 'No recorded activity in this period.'}</p>
+      {pinned && <button type="button" className="usage-text-button" onClick={clear}>Clear selected day</button>}
     </>}
   </section>
 }
