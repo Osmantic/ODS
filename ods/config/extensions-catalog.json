@@ -183,6 +183,50 @@
       "configuration_scope": "declared-environment-keys"
     },
     {
+      "id": "apprise",
+      "name": "Apprise (Fixed Notification Routes)",
+      "description": "Deliver workflow notifications to operator-configured native Apprise targets through an authenticated fixed-route API.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 0,
+      "external_port_default": 0,
+      "health_endpoint": "/status",
+      "env_vars": [
+        {
+          "key": "APPRISE_PORT",
+          "description": "Authenticated fixed-route notification gateway host port",
+          "default": "8094"
+        },
+        {
+          "key": "APPRISE_AUTH_HASH",
+          "description": "bcrypt password hash for the gateway's ods account",
+          "required": true
+        },
+        {
+          "key": "APPRISE_CONFIG_TEXT",
+          "description": "Native Apprise TEXT configuration containing only operator-approved target URLs and optional tags; rebuilt on recreation",
+          "required": true
+        },
+        {
+          "key": "APPRISE_DJANGO_SECRET",
+          "description": "Long random Django secret; distinct from the gateway password and destination credentials",
+          "required": true
+        }
+      ],
+      "tags": [
+        "notifications",
+        "workflows",
+        "webhooks"
+      ],
+      "features": [],
+      "startup_check": true,
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
       "id": "audiocraft",
       "name": "AudioCraft",
       "description": "Meta's AudioCraft is a generative AI for audio. Features MusicGen for\ntext-to-music generation and AudioGen for text-to-sound effects.\nCreate royalty-free music and sound effects from text descriptions.\n",
