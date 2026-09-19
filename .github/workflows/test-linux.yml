@@ -344,6 +344,17 @@ jobs:
       - name: Golden Path Contract Tests
         run: bash tests/test-golden-paths.sh
 
+      - name: Previously Unwired Test Suites
+        run: |
+          bash tests/test-doctor-command.sh
+          bash tests/test-backup-delete-status.sh
+          bash tests/test-compose-image-discovery.sh
+          bash tests/test-docker-image-pull-retry.sh
+          bash tests/test-disk-check-install-dir.sh
+          bash tests/test-enable-gpu-validation.sh
+          bash tests/test-extension-integration.sh
+          bash tests/test-amd-topo.sh
+
       - name: Generated Config Contract Tests
         run: |
           sudo apt-get update
