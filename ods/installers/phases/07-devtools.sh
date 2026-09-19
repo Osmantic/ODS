@@ -18,6 +18,8 @@
 ods_progress 42 "devtools" "Installing developer tools"
 # shellcheck source=../lib/node-runtime.sh
 . "$SCRIPT_DIR/installers/lib/node-runtime.sh"
+# shellcheck source=../../lib/safe-env.sh
+. "$SCRIPT_DIR/lib/safe-env.sh"
 if $DRY_RUN; then
     log "[DRY RUN] Would install AI developer tools (Claude Code and Codex CLI)"
     if [[ "${ENABLE_OPENCODE:-false}" == "true" ]]; then
@@ -151,13 +153,19 @@ else
         mkdir -p "$OPENCODE_CONFIG_DIR"
         # Read OLLAMA_PORT and ODS_MODE from .env generated in phase 06
         if [[ -f "$INSTALL_DIR/.env" ]]; then
-            [[ -z "${OLLAMA_PORT:-}" ]] && OLLAMA_PORT=$(grep -m1 '^OLLAMA_PORT=' "$INSTALL_DIR/.env" | cut -d= -f2-)
+            # Decode each value with the same dotenv grammar as phase 06's
+            # _env_get — a quoted or CRLF-terminated ODS_MODE="lemonade" must
+            # still take the LiteLLM branch below.
+            _phase07_env_get() {
+                safe_env_decode_value "$(grep -m1 "^$1=" "$INSTALL_DIR/.env" | cut -d= -f2-)"
+            }
+            [[ -z "${OLLAMA_PORT:-}" ]] && OLLAMA_PORT=$(_phase07_env_get OLLAMA_PORT)
             # Always re-read ODS_MODE from .env — Phase 06 may have changed it
             # (e.g. "local" → "lemonade" for AMD) but the shell variable is stale.
-            ODS_MODE=$(grep -m1 '^ODS_MODE=' "$INSTALL_DIR/.env" | cut -d= -f2-)
-            [[ -z "${ODS_MODEL_SWITCHBOARD:-}" ]] && ODS_MODEL_SWITCHBOARD=$(grep -m1 '^ODS_MODEL_SWITCHBOARD=' "$INSTALL_DIR/.env" | cut -d= -f2-)
-            [[ -z "${LITELLM_KEY:-}" ]] && LITELLM_KEY=$(grep -m1 '^LITELLM_KEY=' "$INSTALL_DIR/.env" | cut -d= -f2-)
-            [[ -z "${LITELLM_PORT:-}" ]] && LITELLM_PORT=$(grep -m1 '^LITELLM_PORT=' "$INSTALL_DIR/.env" | cut -d= -f2-)
+            ODS_MODE=$(_phase07_env_get ODS_MODE)
+            [[ -z "${ODS_MODEL_SWITCHBOARD:-}" ]] && ODS_MODEL_SWITCHBOARD=$(_phase07_env_get ODS_MODEL_SWITCHBOARD)
+            [[ -z "${LITELLM_KEY:-}" ]] && LITELLM_KEY=$(_phase07_env_get LITELLM_KEY)
+            [[ -z "${LITELLM_PORT:-}" ]] && LITELLM_PORT=$(_phase07_env_get LITELLM_PORT)
         fi
         # Route through LiteLLM on AMD/Lemonade, direct to llama-server otherwise.
         #
