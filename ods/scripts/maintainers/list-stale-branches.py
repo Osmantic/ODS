@@ -2,8 +2,9 @@
 """List remote branches that may be safe to clean up.
 
 This helper is intentionally dry-run only. It never deletes branches. It uses
-local git remote refs, and when the GitHub CLI is available it excludes branches
-that currently back open pull requests.
+local git remote refs and excludes branches that currently back open pull requests.
+If that inventory cannot be verified, it stops before listing candidates.
+Use --include-open-prs explicitly to inspect branches without that protection.
 """
 
 from __future__ import annotations
@@ -42,26 +43,23 @@ def repo_root() -> Path:
 
 
 def open_pr_heads() -> set[str]:
-    result = run(
-        [
-            "gh",
-            "pr",
-            "list",
-            "--state",
-            "open",
-            "--limit",
-            "500",
-            "--json",
-            "headRefName",
-        ]
-    )
+    error = "error: cannot verify open PR exclusions; restore gh access or explicitly use --include-open-prs"
+    limit = 10000
+    try:
+        result = run(["gh", "pr", "list", "--state", "open", "--limit", str(limit), "--json", "headRefName"])
+    except FileNotFoundError as exc:
+        raise SystemExit(error) from exc
     if result.returncode != 0:
-        return set()
+        raise SystemExit(error)
     try:
         rows = json.loads(result.stdout)
-    except json.JSONDecodeError:
-        return set()
-    return {row.get("headRefName", "") for row in rows if row.get("headRefName")}
+    except json.JSONDecodeError as exc:
+        raise SystemExit(error) from exc
+    if not isinstance(rows, list) or len(rows) >= limit:
+        raise SystemExit(error)
+    if any(not isinstance(row, dict) or not isinstance(row.get("headRefName"), str) or not row["headRefName"] for row in rows):
+        raise SystemExit(error)
+    return {row["headRefName"] for row in rows}
 
 
 def default_remote_branch() -> str | None:
@@ -110,7 +108,7 @@ def main() -> int:
     if heads:
         print(f"Excluding {len(heads)} open PR branch(es)")
     elif not args.include_open_prs:
-        print("Open PR branch exclusion unavailable or empty")
+        print("Verified: no open PR branches")
     print()
 
     candidates: list[tuple[int, str, str, str]] = []
