@@ -22,7 +22,7 @@ def public_status(value):
             or any(result[key] not in ('sandboxed', 'full-access', 'unknown')
                    for key in ('configured_mode', 'effective_mode'))
             or result['revision'] is not None and (type(result['revision']) is not str or not re.fullmatch('[a-f0-9]{64}', result['revision']))
-            or result['reason'] is not None and (type(result['reason']) is not str or not re.fullmatch('[a-z][a-z0-9-]{0,95}', result['reason']))
+            or result['reason'] is not None and (type(result['reason']) is not str or not re.fullmatch(r'[a-z](?:[a-z0-9-]{0,94}[a-z0-9])?', result['reason']))
             or result['runtime_verified'] != (result['effective_mode'] != 'unknown')
             or result['runtime_verified'] and (not result['available'] or result['pending']
                 or result['configured_mode'] != result['effective_mode'])):
