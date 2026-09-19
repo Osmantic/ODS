@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 
 // Auth: nginx injects the Authorization header for /api/ requests
 // (see nginx.conf). The fetch below is a plain relative URL.
@@ -23,26 +23,33 @@ export function useFirstRun() {
   const [firstRun, setFirstRun] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  const requestGeneration = useRef(0)
 
   const refresh = useCallback(async () => {
+    const generation = ++requestGeneration.current
     setLoading(true)
     try {
       const resp = await fetch('/api/setup/status')
       if (!resp.ok) throw new Error(`setup-status returned ${resp.status}`)
       const data = await resp.json()
+      if (generation !== requestGeneration.current) return
       setFirstRun(!!data.first_run)
       setError(null)
     } catch (err) {
+      if (generation !== requestGeneration.current) return
       // See the failure-mode comment above. We mark loading=false so the
       // UI proceeds normally; the wizard is hidden until the next refresh.
       setFirstRun(false)
       setError(err.message)
     } finally {
-      setLoading(false)
+      if (generation === requestGeneration.current) setLoading(false)
     }
   }, [])
 
-  useEffect(() => { refresh() }, [refresh])
+  useEffect(() => {
+    refresh()
+    return () => { requestGeneration.current += 1 }
+  }, [refresh])
 
   return { firstRun, loading, error, refresh }
 }
