@@ -3724,6 +3724,63 @@
       "configuration_scope": "declared-environment-keys"
     },
     {
+      "id": "wiremock",
+      "name": "WireMock (Local API Fixtures)",
+      "description": "Reproduce HTTP responses and failure cases locally with persistent fixtures and authenticated administration.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 8080,
+      "external_port_default": 8099,
+      "health_endpoint": "/__ods_status.json",
+      "env_vars": [
+        {
+          "key": "WIREMOCK_PORT",
+          "description": "Local HTTP fixture and administration port",
+          "default": "8099"
+        },
+        {
+          "key": "WIREMOCK_PASSWORD",
+          "description": "WireMock ods administrator password; changes apply after recreation",
+          "required": true
+        }
+      ],
+      "tags": [
+        "testing",
+        "development",
+        "automation"
+      ],
+      "features": [
+        {
+          "id": "local-http-fixtures",
+          "name": "Local API Fixtures",
+          "description": "Test workflow HTTP integrations against repeatable responses and simulated failures",
+          "icon": "FlaskConical",
+          "category": "automation",
+          "requirements": {
+            "services": [
+              "wiremock"
+            ],
+            "vram_gb": 0
+          },
+          "enabled_services_all": [
+            "wiremock"
+          ],
+          "setup_time": "~1 minute",
+          "priority": 40,
+          "launch": {
+            "type": "service",
+            "service": "wiremock",
+            "path": "/__admin/docs"
+          }
+        }
+      ],
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
       "id": "xtts",
       "name": "XTTS (Coqui TTS)",
       "description": "Coqui XTTS voice cloning and multilingual text-to-speech server.",
