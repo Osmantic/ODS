@@ -342,9 +342,12 @@ _sysfs_link_type() {
     local card_a="$1" card_b="$2"
 
     # Read NUMA nodes
+    # Read NUMA nodes
     local numa_a numa_b
     numa_a=$(cat "$card_a/numa_node" 2>/dev/null) || numa_a="-1"
     numa_b=$(cat "$card_b/numa_node" 2>/dev/null) || numa_b="-1"
+    [[ "$numa_a" =~ ^-?[0-9]+$ ]] || numa_a="-1"
+    [[ "$numa_b" =~ ^-?[0-9]+$ ]] || numa_b="-1"
 
     # Cross-NUMA → SYS
     if [[ "$numa_a" != "$numa_b" && "$numa_a" != "-1" && "$numa_b" != "-1" ]]; then
