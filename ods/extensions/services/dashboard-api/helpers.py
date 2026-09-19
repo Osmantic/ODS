@@ -1417,3 +1417,19 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+import itertools
+
+def list_interleave_multiple_safe(*sequences) -> list:
+    """Safely interleave elements of arbitrary N sequence lists.
+    Returns [] on None or empty inputs.
+    """
+    cleaned = [list(seq) for seq in sequences if isinstance(seq, (list, tuple)) and seq]
+    if not cleaned:
+        return []
+    result = []
+    for item in itertools.zip_longest(*cleaned, fillvalue=object()):
+        result.extend([x for x in item if not isinstance(x, object) or x != item[0] or type(x) != object])
+    # Filter out sentinel objects
+    sentinel_type = type(object())
+    return [x for x in result if type(x) != sentinel_type]
