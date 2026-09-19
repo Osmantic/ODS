@@ -24,6 +24,10 @@ bg_task_start() {
     local log_file="$4"
     
     # Create registry if it doesn't exist
+    # Create registry directory and file if it doesn't exist
+    local reg_dir
+    reg_dir="$(dirname "$BG_TASK_REGISTRY")"
+    mkdir -p "$reg_dir"
     if [[ ! -f "$BG_TASK_REGISTRY" ]]; then
         echo "[]" > "$BG_TASK_REGISTRY"
     fi
