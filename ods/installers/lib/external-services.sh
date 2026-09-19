@@ -160,7 +160,10 @@ print(json.dumps({
 }))
 PY
     )"
-    curl -fsS --max-time "${EXTERNAL_LLM_PROBE_TIMEOUT:-60}" \
+    local timeout="${EXTERNAL_LLM_PROBE_TIMEOUT:-60}"
+    [[ "$timeout" =~ ^[0-9]+$ ]] || timeout=60
+
+    curl -fsS --max-time "$timeout" \
         -H "Content-Type: application/json" \
         -d "$body" \
         "${url}/v1/chat/completions" >/dev/null
