@@ -429,6 +429,7 @@ jobs:
           test -f artifacts/installer-sim/summary.json
           test -f artifacts/installer-sim/SUMMARY.md
           python3 scripts/validate-sim-summary.py artifacts/installer-sim/summary.json
+          python3 tests/test_validate_golden_paths_file_guard.py
 
       - name: Rollback Picks the Newest Backup
         run: bash tests/test-update-rollback-latest-backup.sh
