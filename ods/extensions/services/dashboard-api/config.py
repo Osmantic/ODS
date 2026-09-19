@@ -529,6 +529,7 @@ def load_extension_manifests(
                     "macos_host_supported": bool(service.get("macos_host_supported", False)),
                     "container_name": service.get("container_name", f"ods-{service_id}"),
                     "depends_on": service.get("depends_on", []),
+                    "aliases": service.get("aliases", []),
                     "category": service.get("category", "optional"),
                     "host_network": bool(service.get("host_network", False)),
                     "socket_only": bool(service.get("socket_only", False)),
