@@ -44,6 +44,10 @@ detect_compose_file() {
         COMPOSE_FILE_ARGS=(-f "$ODS_DIR/docker-compose.base.yml" -f "$ODS_DIR/docker-compose.amd.yml")
     elif [[ -f "$ODS_DIR/docker-compose.base.yml" && -f "$ODS_DIR/docker-compose.nvidia.yml" ]]; then
         COMPOSE_FILE_ARGS=(-f "$ODS_DIR/docker-compose.base.yml" -f "$ODS_DIR/docker-compose.nvidia.yml")
+    elif [[ -f "$ODS_DIR/docker-compose.base.yml" && -f "$ODS_DIR/docker-compose.apple.yml" ]]; then
+        COMPOSE_FILE_ARGS=(-f "$ODS_DIR/docker-compose.base.yml" -f "$ODS_DIR/docker-compose.apple.yml")
+    elif [[ -f "$ODS_DIR/docker-compose.base.yml" && -f "$ODS_DIR/docker-compose.cloud.yml" ]]; then
+        COMPOSE_FILE_ARGS=(-f "$ODS_DIR/docker-compose.base.yml" -f "$ODS_DIR/docker-compose.cloud.yml")
     elif [[ -f "$ODS_DIR/docker-compose.yml" ]]; then
         COMPOSE_FILE_ARGS=(-f "$ODS_DIR/docker-compose.yml")
     fi
