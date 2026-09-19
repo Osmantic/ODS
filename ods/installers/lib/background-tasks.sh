@@ -104,8 +104,8 @@ except OSError:
     # Process not running - check log for success/failure
     log_file = task.get("log_file", "")
     if log_file and Path(log_file).exists():
-        log_content = Path(log_file).read_text()
-        if "ERROR" in log_content or "FAILED" in log_content or "failed" in log_content:
+        log_content = Path(log_file).read_text().lower()
+        if "error" in log_content or "failed" in log_content:
             sys.exit(2)  # Failed
         else:
             sys.exit(1)  # Completed
