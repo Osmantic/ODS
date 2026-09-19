@@ -22,6 +22,10 @@ trap 'rm -rf "$TMP"' EXIT
 
 FAKE_ODS="$TMP/ods"
 mkdir -p "$FAKE_ODS/.backups"
+# ods-restore.sh sources these from the install it runs against; without
+# them the script dies at startup before reaching the confirmation prompt.
+mkdir -p "$FAKE_ODS/lib"
+cp "$SCRIPT_DIR/../lib/rsync.sh" "$SCRIPT_DIR/../lib/backup-paths.sh" "$FAKE_ODS/lib/"
 # minimal marker so 'is this a ODS dir' check passes
 mkdir -p "$FAKE_ODS/data"
 
