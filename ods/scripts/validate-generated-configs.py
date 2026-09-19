@@ -188,12 +188,12 @@ def validate_surface(issues: Issues, surface: Any, path: str) -> str | None:
 
 def main(argv: list[str]) -> int:
     path = Path(argv[0]) if argv else DEFAULT_PATH
-    if not path.exists():
+    if not path.is_file():
         print(f"[FAIL] generated config contract file not found: {path}")
         return 1
     try:
         data = load_json(path)
-    except json.JSONDecodeError as exc:
+    except (OSError, json.JSONDecodeError) as exc:
         print(f"[FAIL] invalid JSON in {path}: {exc}")
         return 1
 
