@@ -875,7 +875,7 @@ def get_model_info() -> Optional[ModelInfo]:
     if env_path.exists():
         try:
             env_values = {}
-            with open(env_path) as f:
+            with open(env_path, encoding="utf-8") as f:
                 for line in f:
                     if "=" not in line or line.lstrip().startswith("#"):
                         continue
