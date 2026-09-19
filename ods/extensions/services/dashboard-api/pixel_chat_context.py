@@ -84,6 +84,8 @@ def public_context(value):
     state = ChatContextState.model_validate(value)
     if state.context and state.model and state.context.window != state.model.contextWindow:
         raise ValueError("Context measurement does not belong to the active model")
+    if state.context and state.context.used > state.context.window:
+        raise ValueError("Context measurement exceeds context window")
     result = state.model_dump(exclude_none=True)
     # These explicit nulls distinguish unavailable measurements from zero.
     for key in ("sessionRevision", "context", "model"):
