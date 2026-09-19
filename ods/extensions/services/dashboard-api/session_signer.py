@@ -139,6 +139,7 @@ def verify(cookie_value: str) -> Tuple[bool, str]:
     if not cookie_value or not isinstance(cookie_value, str):
         return False, "malformed"
 
+    cookie_value = cookie_value.strip()
     parts = cookie_value.split(".")
     if len(parts) != 3:
         return False, "malformed"
