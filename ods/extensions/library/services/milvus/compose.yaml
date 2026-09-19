@@ -10,6 +10,7 @@ services:
     environment:
       - MODE=standalone
       - ETCD_USE_EMBED=true
+      - ETCD_DATA_DIR=/var/lib/milvus/etcd
       - COMMON_STORAGETYPE=local
     command: ["milvus", "run", "standalone"]
     restart: unless-stopped
