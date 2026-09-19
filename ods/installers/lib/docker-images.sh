@@ -17,6 +17,7 @@
 docker_image_available() {
     local image="${1:-}"
     local timeout_seconds="${DOCKER_IMAGE_CHECK_TIMEOUT:-45}"
+    [[ "$timeout_seconds" =~ ^[0-9]+$ ]] || timeout_seconds=45
 
     [[ -n "$image" ]] || return 1
 
