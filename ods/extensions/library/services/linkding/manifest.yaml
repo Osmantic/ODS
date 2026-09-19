@@ -1,0 +1,40 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: linkding
+  name: Linkding (Research Bookmarks)
+  description: "Private tagged bookmarks and notes with a token-authenticated research workflow API."
+  aliases: [bookmarks]
+  container_name: ods-linkding
+  default_host: linkding
+  port: 9090
+  external_port_env: LINKDING_PORT
+  external_port_default: 8100
+  health: /health
+  ui_path: /
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [bookmarks, research, local]
+  env_vars:
+    - key: LINKDING_PORT
+      description: "Published port for Linkding's web interface and API"
+      default: "8100"
+features:
+  - id: research-bookmarks
+    name: Research Bookmarks
+    description: "Organize sources with tags and notes, then access them from authenticated workflows"
+    icon: Bookmark
+    category: productivity
+    requirements:
+      services: [linkding]
+      vram_gb: 0
+    enabled_services_all: [linkding]
+    setup_time: "~1 minute plus account creation"
+    priority: 30
+    launch:
+      type: service
+      service: linkding

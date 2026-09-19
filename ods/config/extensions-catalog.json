@@ -2070,6 +2070,57 @@
       "configuration_scope": "declared-environment-keys"
     },
     {
+      "id": "linkding",
+      "name": "Linkding (Research Bookmarks)",
+      "description": "Private tagged bookmarks and notes with a token-authenticated research workflow API.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 9090,
+      "external_port_default": 8100,
+      "health_endpoint": "/health",
+      "env_vars": [
+        {
+          "key": "LINKDING_PORT",
+          "description": "Published port for Linkding's web interface and API",
+          "default": "8100"
+        }
+      ],
+      "tags": [
+        "bookmarks",
+        "research",
+        "local"
+      ],
+      "features": [
+        {
+          "id": "research-bookmarks",
+          "name": "Research Bookmarks",
+          "description": "Organize sources with tags and notes, then access them from authenticated workflows",
+          "icon": "Bookmark",
+          "category": "productivity",
+          "requirements": {
+            "services": [
+              "linkding"
+            ],
+            "vram_gb": 0
+          },
+          "enabled_services_all": [
+            "linkding"
+          ],
+          "setup_time": "~1 minute plus account creation",
+          "priority": 30,
+          "launch": {
+            "type": "service",
+            "service": "linkding"
+          }
+        }
+      ],
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
       "id": "litellm",
       "name": "LiteLLM (API Gateway)",
       "description": "LiteLLM (API Gateway)",
