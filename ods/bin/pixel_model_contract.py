@@ -47,7 +47,7 @@ def binding(config):
             name = model_id
             if row["name"] != "ODS Local " + name: raise ValueError()
         plugin = config["plugins"]["entries"]["pixel-ods"]
-        if plugin.get("enabled", True) is not True: raise ValueError()
+        if type(plugin) is not dict or plugin.get("enabled", True) is not True: raise ValueError()
         settings = plugin.get("config", {})
         if type(settings) is not dict or "managedProvider" in settings: raise ValueError()
         return agent, row, settings, provider, name
