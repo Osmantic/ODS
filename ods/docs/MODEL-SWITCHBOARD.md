@@ -182,7 +182,7 @@ Rules:
 
 Product API:
 
-- `GET /api/models/state`: sanitized desired/active/history summary and capability impact
+- `GET /api/models/state`: sanitized desired/active/history summary and capability impact; accepts `history_limit=0..10` and returns an `ETag` for authenticated `If-None-Match` polling
 - `GET /api/models/events`: SSE stream keyed by `seq` and operation ID; retains at most 1,024 events for 15 minutes, emits a heartbeat every 15 seconds, supports `Last-Event-ID`, and sends a `model.state.snapshot` event before live events when the requested ID is absent or expired
 - Existing `POST /api/models/{id}/load`: unchanged user contract; backed by the reconciler
 - `POST /api/models/rollback`: activate a requested verified history entry, defaulting to the newest, through the same reconciler
