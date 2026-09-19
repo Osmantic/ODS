@@ -1,0 +1,40 @@
+services:
+  victoriametrics:
+    image: victoriametrics/victoria-metrics:v1.152.0@sha256:86ca5fdb6d87d56ba047b044039019ba2bd9042b36e35f6ea34e437b6c825cef
+    container_name: ods-victoriametrics
+    command:
+      - -envflag.enable=true
+      - -envflag.prefix=VM_
+      - -httpListenAddr=:8428
+      - -storageDataPath=/storage
+      - -memory.allowedBytes=512MiB
+      - -search.maxConcurrentRequests=4
+      - -selfScrapeInterval=30s
+    environment:
+      VM_httpAuth_username: ods
+      VM_httpAuth_password: "${VMETRICS_PASSWORD:?Set VMETRICS_PASSWORD before enabling VictoriaMetrics}"
+      VM_retentionPeriod: "${VMETRICS_RETENTION:-30d}"
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: ["/tmp:size=32m,mode=1777"]
+    volumes:
+      - ./data/victoriametrics:/storage
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${VMETRICS_PORT:-8428}:8428"
+    healthcheck:
+      test: [CMD, /bin/busybox, wget, -q, -T, "3", -O, /dev/null, "http://127.0.0.1:8428/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    networks: [ods-network]
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1G
+networks:
+  ods-network:
+    external: true
