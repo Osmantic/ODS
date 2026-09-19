@@ -1,0 +1,43 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: datasette
+  name: Datasette
+  description: "Privately explore read-only SQLite snapshots with SQL, filters and CSV export (x86-64)."
+  aliases: [dataset-explorer]
+  container_name: ods-datasette
+  container_uid: 1000
+  default_host: datasette
+  port: 8001
+  external_port_env: DATASETTE_PORT
+  external_port_default: 7827
+  health: /-/static/app.css
+  startup_timeout: 120
+  type: docker
+  gpu_backends: [amd, nvidia, cpu]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [data, sqlite, sql, research, local]
+  env_vars:
+    - key: DATASETTE_PORT
+      default: "7827"
+      description: Published port for the dataset browser
+    - key: DATASETTE_SECRET
+      required: true
+      secret: true
+      description: Stable random signing secret for private browser sessions
+features:
+  - id: sqlite-dataset-explorer
+    name: SQLite Dataset Explorer
+    description: "Browse and query local SQLite snapshots without changing the source files"
+    icon: Database
+    category: productivity
+    requirements:
+      services: [datasette]
+      vram_gb: 0
+      disk_gb: 1
+    enabled_services_all: [datasette]
+    setup_time: "~2 minutes"
+    priority: 33
