@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from test_router import router  # noqa: F401
+from test_router import router as router
 
 
 def test_requests_keep_the_previous_route_while_fixture_writes_replacement(router, monkeypatch):

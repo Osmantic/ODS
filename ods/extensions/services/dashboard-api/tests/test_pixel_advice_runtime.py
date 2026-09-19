@@ -20,16 +20,19 @@ def job():
 def client(monkeypatch):
     import security
     monkeypatch.setattr(security,'DASHBOARD_API_KEY','test-key-12345')
-    app=FastAPI(); app.include_router(api.router)
+    app=FastAPI()
+    app.include_router(api.router)
     with TestClient(app) as client: yield client
 
 @pytest.fixture
 def host():
     with patch.object(api,'request_agent_json',new_callable=AsyncMock) as mock:
-        mock.return_value=state(); yield mock
+        mock.return_value=state()
+        yield mock
 
 def test_auth_before_host_and_no_cache(client,host):
-    assert client.get('/api/pixel/advice-runtime').status_code==401; host.assert_not_called()
+    assert client.get('/api/pixel/advice-runtime').status_code==401
+    host.assert_not_called()
     result=client.get('/api/pixel/advice-runtime',headers=KEY)
     assert result.status_code==200 and result.json()==state() and result.headers['cache-control']=='no-store'
 

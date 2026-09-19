@@ -1,4 +1,3 @@
-import copy
 import hashlib
 import uuid
 from unittest.mock import AsyncMock,patch
@@ -30,7 +29,8 @@ def result():
 def client(monkeypatch):
     import security
     monkeypatch.setattr(security,'DASHBOARD_API_KEY','test-key-12345')
-    app=FastAPI(); app.include_router(api.router)
+    app=FastAPI()
+    app.include_router(api.router)
     with TestClient(app) as client:
         yield client
 
@@ -80,7 +80,8 @@ def test_bad_response_is_rejected_without_leak(client,host,change):
 
 @pytest.mark.parametrize('trusted',[None,0,'',True])
 def test_only_explicit_untrusted_false_is_accepted(client,host,trusted):
-    host.return_value=result(); host.return_value['result']['trusted']=trusted
+    host.return_value=result()
+    host.return_value['result']['trusted']=trusted
     assert client.post('/api/pixel/advice/start',headers=KEY,json=body()).status_code==502
 
 

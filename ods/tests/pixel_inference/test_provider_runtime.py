@@ -1,5 +1,4 @@
 import asyncio
-from copy import deepcopy
 import json
 from pathlib import Path
 import sys
@@ -65,7 +64,8 @@ def test_backup_receives_exact_completed_tool_history_and_own_key():
 def test_auth_config_and_redirect_never_fall_back(status):
     calls = []
     def handler(request):
-        calls.append(request); return httpx.Response(status)
+        calls.append(request)
+        return httpx.Response(status)
     app = make_app(handler)
     async def check():
         first = await request_to(app,payload())
@@ -88,7 +88,8 @@ def test_refusal_is_a_response_not_a_failure():
 def test_total_attempt_budget_and_terminal_lease():
     calls = []
     def handler(request):
-        calls.append(request); return httpx.Response(503)
+        calls.append(request)
+        return httpx.Response(503)
     app = make_app(handler)
     async def check():
         assert (await request_to(app,payload())).json()['error']['code'] == 'provider-attempts-exhausted'
@@ -98,10 +99,12 @@ def test_total_attempt_budget_and_terminal_lease():
 
 
 def test_smaller_backup_is_not_sent_tool_history():
-    config = configuration(); config['providers'][1]['contextTokens'] = 16384
+    config = configuration()
+    config['providers'][1]['contextTokens'] = 16384
     calls = []
     def handler(request):
-        calls.append(request); return httpx.Response(503)
+        calls.append(request)
+        return httpx.Response(503)
     response = asyncio.run(request_to(make_app(handler,config),payload()))
     assert response.status_code == 400 and len(calls)==1
 
@@ -109,8 +112,10 @@ def test_smaller_backup_is_not_sent_tool_history():
 def test_missing_output_budget_is_bounded():
     calls = []
     def handler(request):
-        calls.append(json.loads(request.content)); return answer(request)
-    body = payload(); del body['max_tokens']
+        calls.append(json.loads(request.content))
+        return answer(request)
+    body = payload()
+    del body['max_tokens']
     asyncio.run(request_to(make_app(handler),body))
     assert calls[0]['max_tokens']==1024
 
@@ -118,7 +123,8 @@ def test_missing_output_budget_is_bounded():
 def test_policy_copy_pins_revision():
     config,events = configuration(),[]
     app = make_app(answer,config,events)
-    config['revision'] = 100; config['roles']['leader']='backup'
+    config['revision'] = 100
+    config['roles']['leader']='backup'
     result = asyncio.run(request_to(app,payload()))
     assert result.headers['x-ods-provider-revision']=='4'
     assert result.headers['x-ods-provider']=='primary'
@@ -158,7 +164,8 @@ def test_partial_stream_never_splices_backup():
 
 
 def test_one_deadline_cancels_waiting_headers():
-    config = configuration(); config['policy']['deadlineSeconds']=1
+    config = configuration()
+    config['policy']['deadlineSeconds']=1
     cancelled = []
     async def handler(request):
         try:

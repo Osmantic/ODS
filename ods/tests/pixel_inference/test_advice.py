@@ -1,5 +1,4 @@
 import asyncio
-import copy
 import json
 import os
 from pathlib import Path
@@ -27,8 +26,11 @@ def request(**changes):
 
 @pytest.fixture
 def saved(tmp_path):
-    root = tmp_path/'providers'; root.mkdir(mode=0o700)
-    config = configuration(); config['revision']=0; config['roles']['advisor']='backup'
+    root = tmp_path/'providers'
+    root.mkdir(mode=0o700)
+    config = configuration()
+    config['revision']=0
+    config['roles']['advisor']='backup'
     result = CredentialStore(root).save_public(dict(expectedRevision=0,document=public_config(config),
         credentialChanges={'backup':dict(action='set',value='fixture-advisor-key')}))
     return root,result
@@ -45,7 +47,8 @@ def response(content='Check the assumption.',**message):
 
 def test_only_exact_capsule_and_instruction_reach_advisor(saved):
     root,original = saved
-    body = request(); call = AdvisoryCall(root,body)
+    body = request()
+    call = AdvisoryCall(root,body)
     requests = []
     def handler(req):
         requests.append(req)
@@ -83,7 +86,8 @@ def test_advisor_cannot_return_executable_tools(saved,message):
 
 def test_cloud_needs_both_transfer_and_unknown_cost_agreement(saved):
     root,config = saved
-    config['providers'][1]['kind']='cloud'; config['policy']['allowCloud']=True
+    config['providers'][1]['kind']='cloud'
+    config['policy']['allowCloud']=True
     CredentialStore(root).save_public(dict(expectedRevision=1,document=config,
         credentialChanges={'backup':dict(action='set',value='fictional-not-real-cloud-key')}))
     with pytest.raises(StoreError,match='cloud-transfer-confirmation-required'):
@@ -101,7 +105,8 @@ def test_revision_target_and_budget_are_bound(saved):
         with pytest.raises(StoreError,match=error):
             AdvisoryCall(saved[0],request(**changes))
     root,config = saved
-    config['providers'][1]['contextTokens']=1024; config['providers'][1]['maxOutputTokens']=512
+    config['providers'][1]['contextTokens']=1024
+    config['providers'][1]['maxOutputTokens']=512
     CredentialStore(root).save_public(dict(expectedRevision=1,document=config))
     with pytest.raises(StoreError,match='advice-context-limit'):
         AdvisoryCall(root,request(expectedRevision=2,capsule='a'*700))

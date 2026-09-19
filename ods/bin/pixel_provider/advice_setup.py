@@ -88,7 +88,8 @@ class SetupJobs:
 
     def start(self,body):
         import fcntl
-        body=validate_start(body); path=self._job(body['requestId'])
+        body=validate_start(body)
+        path=self._job(body['requestId'])
         fingerprint=hashlib.sha256(_json(body)).hexdigest()
         with self.mutex,ProviderStore(self.providers)._locked(False):
             self.root.mkdir(mode=0o700,exist_ok=True)
@@ -167,9 +168,11 @@ class SetupJobs:
                 elif cancelled():
                     result=dict(status='cancelled',error=None)
                 with ProviderStore(path)._locked(True):
-                    _write_private(path/'result.json',_json(result)); _sync_dir(path)
+                    _write_private(path/'result.json',_json(result))
+                    _sync_dir(path)
             finally:
-                os.close(running); os.close(slot)
+                os.close(running)
+                os.close(slot)
 
     def cancel(self,job_id):
         path=self._job(job_id)
@@ -177,7 +180,8 @@ class SetupJobs:
             with ProviderStore(path)._locked(True):
                 if not (path/'result.json').exists():
                     try:
-                        _write_private(path/'cancel.json',_json({'cancel':True})); _sync_dir(path)
+                        _write_private(path/'cancel.json',_json({'cancel':True}))
+                        _sync_dir(path)
                     except FileExistsError:
                         pass
         return self.status(job_id)
