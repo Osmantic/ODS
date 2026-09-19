@@ -6,9 +6,9 @@ _ods_completion() {
     local cur prev words cword
     _init_completion || return
 
-    # Main commands and their aliases
-    local main_commands="gpu status status-json list enable disable preset mode model backup restore logs restart start stop update shell config chat benchmark doctor help version"
-    local aliases="g s ls p m l r u sh cfg c bench b diag d h v"
+    # Main commands and their aliases (kept in sync with the ods-cli dispatcher)
+    local main_commands="gpu status status-json list enable disable purge preset mode model remote-provider stt backup restore rollback logs restart repair start stop update shell config chat benchmark doctor audit template agent help version"
+    local aliases="g s ls p m l r u sh cfg c bench b diag d h v log fix tmpl"
 
     # Service names (from ods-cli aliases section)
     local services="ape policy guard embeddings embed llama-server llm n8n workflows open-webui web ui webui opencode opencode-web qdrant vector searxng search tts kokoro whisper voice stt"
@@ -49,9 +49,48 @@ _ods_completion() {
                     COMPREPLY=($(compgen -W "--json" -- "$cur"))
                     return 0
                     ;;
-                enable|disable|logs|log|l|restart|r|start|stop|shell|sh)
+                enable|disable|purge|logs|log|l|restart|r|start|stop|shell|sh)
                     # Complete with service names
                     COMPREPLY=($(compgen -W "$services" -- "$cur"))
+                    return 0
+                    ;;
+                remote-provider)
+                    COMPREPLY=($(compgen -W "status plan configure test enable disable remove peer-models peer-model" -- "$cur"))
+                    return 0
+                    ;;
+                stt)
+                    COMPREPLY=($(compgen -W "current status download" -- "$cur"))
+                    return 0
+                    ;;
+                template|tmpl)
+                    COMPREPLY=($(compgen -W "list preview apply" -- "$cur"))
+                    return 0
+                    ;;
+                audit)
+                    COMPREPLY=($(compgen -W "extensions --json --strict" -- "$cur"))
+                    return 0
+                    ;;
+                repair|fix)
+                    COMPREPLY=($(compgen -W "voice stt tts hermes-workers slash-workers rootless-ownership rootless" -- "$cur"))
+                    return 0
+                    ;;
+                agent)
+                    COMPREPLY=($(compgen -W "status start stop restart logs" -- "$cur"))
+                    return 0
+                    ;;
+                rollback)
+                    # Rollback targets: pre-update snapshots in data/backups and
+                    # general backups in ~/.ods/backups; ods-update.sh accepts
+                    # the full name or the name minus its pre-update-/backup-
+                    # prefix, so offer both forms.
+                    local snap_dir="${ODS_HOME:-$HOME/ods}/data/backups"
+                    local backup_dir="$HOME/.ods/backups"
+                    local targets=$( {
+                        [[ -d "$snap_dir" ]] && ls -1 "$snap_dir" 2>/dev/null
+                        [[ -d "$backup_dir" ]] && ls -1 "$backup_dir" 2>/dev/null
+                    } | grep -E '^(pre-update|backup)-' | sort -r)
+                    local short=$(printf '%s\n' "$targets" | sed -E 's/^pre-update-//; s/^backup-//')
+                    COMPREPLY=($(compgen -W "$targets $short" -- "$cur"))
                     return 0
                     ;;
                 restore)
