@@ -1,5 +1,5 @@
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest'
-import {fireEvent, render, screen} from '@testing-library/react'
+import {fireEvent, render, screen, waitFor} from '@testing-library/react'
 import UsageView from './UsageView'
 
 const report = {
@@ -32,7 +32,11 @@ describe('daily usage download at the activity view boundary', () => {
     expect(csv).toBe('date,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,requests\r\n2026-01-01,0,12,3,4,\r\n2026-01-02,24,,,,2')
     expect(click.mock.instances[0].download).toBe('ods-daily-usage-2026-01-01-to-2026-01-02.csv')
     expect(click.mock.instances[0].isConnected).toBe(false)
-    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:daily-usage')
+    // The blob URL must outlive the click handoff: revoking it synchronously
+    // races the browser's download navigation (issue #5113).
+    expect(URL.revokeObjectURL).not.toHaveBeenCalled()
+    await waitFor(() => expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:daily-usage'), {timeout: 2000})
+    expect(click.mock.invocationCallOrder[0]).toBeLessThan(URL.revokeObjectURL.mock.invocationCallOrder[0])
   })
 
   it.each([{loading: true}, {error: 'offline'}, {report: {...report, source: {status: 'unavailable'}}}, {report: {...report, daily: []}}])('disables unavailable or empty snapshots: %j', overrides => {
@@ -40,13 +44,13 @@ describe('daily usage download at the activity view boundary', () => {
     expect(screen.getByRole('button', {name: 'Export daily CSV'})).toBeDisabled()
   })
 
-  it('reports a failed browser download, cleans up, and permits an explicit retry', () => {
+  it('reports a failed browser download, cleans up, and permits an explicit retry', async () => {
     click.mockImplementationOnce(() => { throw new Error('Downloads blocked') })
     show()
     fireEvent.click(screen.getByRole('button', {name: 'Export daily CSV'}))
     expect(screen.getByRole('alert')).toHaveTextContent('Downloads blocked')
     expect(document.querySelector('a[download]')).toBeNull()
-    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:daily-usage')
+    await waitFor(() => expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:daily-usage'), {timeout: 2000})
     fireEvent.click(screen.getByRole('button', {name: 'Export daily CSV'}))
     expect(screen.queryByRole('alert')).toBeNull()
     expect(click).toHaveBeenCalledTimes(2)
