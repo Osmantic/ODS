@@ -26,6 +26,17 @@ PROBE_RECEIPT_SCHEMA = "ods.remote-provider-probe-receipt.v1"
 UrlOpener = Callable[..., Any]
 
 
+class _RejectProbeRedirects(urllib_request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        # A redirect target has not passed route/address policy and must not
+        # receive the configured provider credential, even on the same host.
+        return None
+
+
+def _open_probe_request(request, *, timeout: float):
+    return urllib_request.build_opener(_RejectProbeRedirects()).open(request, timeout=timeout)
+
+
 class ProbeError(Exception):
     """HTTP-friendly remote-provider probe failure."""
 
@@ -149,6 +160,9 @@ def _probe_models_endpoint(
             body = _read_probe_body(response)
             content_type = str(response.headers.get("content-type", ""))
     except urllib_error.HTTPError as exc:
+        if 300 <= exc.code < 400:
+            exc.close()
+            raise ProbeError(502, "provider_redirect_rejected", "remote provider probe redirects are not allowed") from exc
         raise ProbeError(
             int(exc.code),
             "provider_http_error",
@@ -183,7 +197,7 @@ def probe_provider_route(
     *,
     provider_secret: str,
     resolver: Callable[..., list[tuple[Any, ...]]] = socket.getaddrinfo,
-    opener: UrlOpener = urllib_request.urlopen,
+    opener: UrlOpener = _open_probe_request,
     timeout: float = DEFAULT_PROBE_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
     """Probe an OpenAI-compatible provider through the route's transport boundary."""
@@ -224,7 +238,7 @@ def probe_direct_provider(
     *,
     provider_secret: str,
     resolver: Callable[..., list[tuple[Any, ...]]] = socket.getaddrinfo,
-    opener: UrlOpener = urllib_request.urlopen,
+    opener: UrlOpener = _open_probe_request,
     timeout: float = DEFAULT_PROBE_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
     """Probe an OpenAI-compatible direct provider without leaking credentials."""
