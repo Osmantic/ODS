@@ -78,6 +78,11 @@ class PIIDetector:
         if not isinstance(text, str):
             raise TypeError("PII scrub requires text")
         scrubbed = text
+        # Build once per request so restored/imported session maps stay valid.
+        # Preserve the first token when a supplied map has duplicate values.
+        tokens_by_original = {}
+        for token, original in self.pii_map.items():
+            tokens_by_original.setdefault(original, token)
 
         for pii_type, pattern in self.PATTERNS.items():
             def replace_match(found):
@@ -87,12 +92,12 @@ class PIIDetector:
                 if pii_type == 'credit_card' and not self._luhn_check(match):
                     return match
 
-                for token, original in self.pii_map.items():
-                    if original == match:
-                        return token
+                if match in tokens_by_original:
+                    return tokens_by_original[match]
 
                 token = self._generate_token(pii_type, match)
                 self.pii_map[token] = match
+                tokens_by_original[match] = token
                 return token
 
             # Replace exactly the regex match. A same-valued substring earlier
