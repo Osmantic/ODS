@@ -20,6 +20,10 @@ OPENCLAW_DIR="${OPENCLAW_DIR:-$HOME/ods/data/openclaw/home}"
 SESSIONS_DIR="${SESSIONS_DIR:-$OPENCLAW_DIR/agents/main/sessions}"
 SESSIONS_JSON="$SESSIONS_DIR/sessions.json"
 MAX_SIZE="${MAX_SIZE:-256000}"
+if [[ ! "$MAX_SIZE" =~ ^[0-9]+$ || "$MAX_SIZE" -le 0 ]]; then
+    echo "ERROR: MAX_SIZE must be a positive integer" >&2
+    exit 1
+fi
 
 usage() {
     echo "Usage: $0 [OPTIONS]"
