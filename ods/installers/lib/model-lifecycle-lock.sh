@@ -47,11 +47,14 @@ ods_model_lifecycle_lock_acquire() {
     fi
 
     lock_file="$(ods_model_lifecycle_lock_file "$install_dir")" || return 1
-    if ! (umask 077 && mkdir -p "$(dirname "$lock_file")"); then
+    local lock_dir
+    lock_dir="$(dirname "$lock_file")"
+
+    if ! (umask 077 && mkdir -p "$lock_dir"); then
         return 1
     fi
-    if [[ ! -O "$(dirname "$lock_file")" ]]; then
-        _ods_model_lifecycle_log "Refusing model lifecycle lock directory not owned by this user: $(dirname "$lock_file")"
+    if [[ ! -O "$lock_dir" ]]; then
+        _ods_model_lifecycle_log "Refusing model lifecycle lock directory not owned by this user: $lock_dir"
         return 1
     fi
     if ! exec {ODS_MODEL_LIFECYCLE_LOCK_FD}>"$lock_file"; then
