@@ -40,7 +40,11 @@ fi
 
 # Build env-file flag if provided (allows compose to resolve required variable references)
 ENV_FILE_FLAG=""
-if [[ -n "$ENV_FILE" && -f "$ENV_FILE" ]]; then
+if [[ -n "$ENV_FILE" ]]; then
+    if [[ ! -f "$ENV_FILE" ]]; then
+        echo "ERROR: Specified env file not found: $ENV_FILE" >&2
+        exit 1
+    fi
     ENV_FILE_FLAG="--env-file $ENV_FILE"
 fi
 
