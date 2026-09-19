@@ -266,6 +266,8 @@ async def pixel_chat_result(body: ChatResultRequest, owner: str = Depends(verify
         if activity["state"] == "terminal":
             store.finish(key, "interrupted")
             row = store.get(key)
+    if row is None:
+        return {"state": "unknown", "events": ""}
     events = b"" if row["state"] == "active" else b"".join(chunk["data"] for chunk in store.chunks(key))
     return {"state": row["state"], "events": events.decode("utf-8", errors="replace")}
 

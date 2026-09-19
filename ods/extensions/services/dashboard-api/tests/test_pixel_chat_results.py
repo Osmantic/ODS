@@ -377,3 +377,22 @@ def test_completed_stream_wins_stop_during_upstream_context_teardown(store, monk
         assert store.get(IDENTITY)['state'] == 'complete'
         assert b'Saved result' in b''.join(row['data'] for row in store.chunks(IDENTITY))
     asyncio.run(run())
+
+
+def test_evicted_unresolved_attempt_result_returns_unknown(store, monkeypatch):
+    async def run():
+        store.reserve(IDENTITY, "hash")
+        async def terminal_activity(*_args, **_kwargs):
+            return {"state": "terminal"}
+        monkeypatch.setattr(pixel, "pixel_chat_activity", terminal_activity)
+        original_get = store.get
+        def get_and_evict(key):
+            row = original_get(key)
+            if row and row["state"] == "interrupted":
+                return None
+            return row
+        monkeypatch.setattr(store, "get", get_and_evict)
+        res = await pixel.pixel_chat_result(pixel.ChatResultRequest(chat_id="chat-test", request_id="attempt-one"), OWNER)
+        assert res == {"state": "unknown", "events": ""}
+    asyncio.run(run())
+
