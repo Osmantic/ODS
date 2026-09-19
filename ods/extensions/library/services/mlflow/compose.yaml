@@ -1,0 +1,46 @@
+services:
+  mlflow:
+    image: ods-mlflow:3.16.0-r1
+    pull_policy: never
+    container_name: ods-mlflow
+    user: "1000:1000"
+    environment:
+      MLFLOW_ADMIN_PASSWORD: "${MLFLOW_ADMIN_PASSWORD:?Set MLFLOW_ADMIN_PASSWORD before enabling MLflow}"
+      MLFLOW_SECRET_KEY: "${MLFLOW_SECRET_KEY:?Set MLFLOW_SECRET_KEY before enabling MLflow}"
+      MLFLOW_DISABLE_TELEMETRY: "true"
+      MLFLOW_BASIC_AUTH_FAIL_CLOSED: "true"
+      MLFLOW_ENABLE_WORKSPACES: "false"
+      MLFLOW_ENABLE_REMOTE_ASSISTANT: "false"
+      MLFLOW_ENABLE_ASSISTANT_SANDBOX: "true"
+      MLFLOW_SERVER_ALLOWED_HOSTS: localhost,localhost:*,127.0.0.1,127.0.0.1:*,mlflow,mlflow:*,ods-mlflow,ods-mlflow:*
+      HOME: /tmp
+      PYTHONDONTWRITEBYTECODE: "1"
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${MLFLOW_PORT:-5051}:5000"
+    volumes:
+      - ./data/mlflow:/data
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=128m
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 90s
+    networks:
+      - ods-network
+
+networks:
+  ods-network:
+    external: true
+    name: ods-network

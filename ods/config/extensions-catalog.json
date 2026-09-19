@@ -2379,6 +2379,68 @@
       "configuration_scope": "declared-environment-keys"
     },
     {
+      "id": "mlflow",
+      "name": "MLflow (Experiments and Artifacts)",
+      "description": "Authenticated local experiment tracking, metrics and artifact storage for explicitly configured ML clients.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 5000,
+      "external_port_default": 5051,
+      "health_endpoint": "/health",
+      "env_vars": [
+        {
+          "key": "MLFLOW_PORT",
+          "description": "Loopback tracking UI and API port",
+          "default": "5051"
+        },
+        {
+          "key": "MLFLOW_ADMIN_PASSWORD",
+          "description": "Initial ods administrator password; 16-128 printable ASCII characters without spaces",
+          "required": true
+        },
+        {
+          "key": "MLFLOW_SECRET_KEY",
+          "description": "Stable CSRF signing secret; 32-128 printable ASCII characters without spaces",
+          "required": true
+        }
+      ],
+      "tags": [
+        "experiments",
+        "models",
+        "artifacts",
+        "development"
+      ],
+      "features": [
+        {
+          "id": "local-experiment-tracking",
+          "name": "Track Local Experiments",
+          "description": "Keep experiment runs, measurements and artifacts on ODS hardware",
+          "icon": "FlaskConical",
+          "category": "productivity",
+          "requirements": {
+            "services": [
+              "mlflow"
+            ],
+            "vram_gb": 0
+          },
+          "enabled_services_all": [
+            "mlflow"
+          ],
+          "setup_time": "~2 minutes to build authentication support",
+          "priority": 40,
+          "launch": {
+            "type": "service",
+            "service": "mlflow"
+          }
+        }
+      ],
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
       "id": "model-router",
       "name": "ODS Model Router",
       "description": "ODS Model Router",
