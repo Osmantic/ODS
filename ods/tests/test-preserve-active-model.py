@@ -194,6 +194,10 @@ def test_verified_switchboard_state_recovers_an_interrupted_installer_env() -> N
             + "\n",
             encoding="utf-8",
         )
+        # The host agent writes this file at 0644 (model_switchboard/state.py),
+        # and the helper refuses a group-writable proof. Pin the same mode so a
+        # umask of 002 (stock Ubuntu) does not make the fixture untrusted.
+        state.chmod(0o644)
         replace_env(env, "LLM_MODEL=agent-test", "LLM_MODEL=bootstrap-model")
         replace_env(env, "GGUF_FILE=Agent-Test-Q4_K_M.gguf", "GGUF_FILE=Bootstrap-2B.gguf")
         replace_env(env, "MAX_CONTEXT=65536", "MAX_CONTEXT=32768")
