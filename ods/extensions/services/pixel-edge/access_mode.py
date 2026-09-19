@@ -19,8 +19,8 @@ def public_status(value):
     if (any(type(result[key]) is not bool for key in ('available', 'runtime_verified', 'busy', 'pending'))
             or result['surface'] not in ('linux-systemd', 'wsl-systemd', 'linux', 'darwin', 'windows')
             or result['scope'] != 'owner-host'
-            or any(result[key] not in ('sandboxed', 'full-access', 'unknown')
-                   for key in ('configured_mode', 'effective_mode'))
+            or result['configured_mode'] not in ('sandboxed', 'full-access')
+            or result['effective_mode'] not in ('sandboxed', 'full-access', 'unknown')
             or result['revision'] is not None and (type(result['revision']) is not str or not re.fullmatch('[a-f0-9]{64}', result['revision']))
             or result['reason'] is not None and (type(result['reason']) is not str or not re.fullmatch('[a-z][a-z0-9-]{0,95}', result['reason']))
             or result['runtime_verified'] != (result['effective_mode'] != 'unknown')
