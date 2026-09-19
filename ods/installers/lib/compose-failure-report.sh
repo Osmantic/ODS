@@ -8,7 +8,7 @@
 # Provides: write_compose_failure_report()
 # ============================================================================
 
-_ods_report_env_value() {
+_ods_report_env_value() {git checkout -b fix/compose-report-path-quoting main
     local env_file="${1:-}" key="${2:-}" default="${3:-}"
     [[ -f "$env_file" ]] || { printf '%s' "$default"; return 0; }
     local value
@@ -97,7 +97,7 @@ write_compose_failure_report() {
     local gpu_backend="${5:-unknown}"
     local next_step="${6:-Review the failed image, Docker daemon, ports, and compose config sections below; then re-run the installer.}"
 
-    mkdir -p "$install_dir" "$install_dir/logs" 2>/dev/null || true
+    mkdir -p "${install_dir}" "${install_dir}/logs" 2>/dev/null || true
 
     local stamp report env_file compose_flags_file
     stamp="$(date '+%Y-%m-%d-%H%M%S')"
