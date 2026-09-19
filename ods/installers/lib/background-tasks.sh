@@ -176,16 +176,12 @@ for task in tasks:
     
     # Check if still running
     try:
-        os.kill(pid, 0)
-        status = "running"
+    os.kill(pid, 0)
+    status = "running"
     except OSError:
-        log_file = task.get("log_file", "")
-        if log_file and Path(log_file).exists():
-            log_content = Path(log_file).read_text()
-            if "ERROR" in log_content or "failed" in log_content:
-                status = "failed"
-            else:
-                status = "completed"
+        log_file = Path(task.get("log_file", ""))
+        if log_file.exists() and any(k in log_file.read_text() for k in ("ERROR", "FAILED", "failed")):
+            status = "failed"
         else:
             status = "completed"
     
