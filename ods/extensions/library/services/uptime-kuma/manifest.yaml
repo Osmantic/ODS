@@ -1,0 +1,40 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: uptime-kuma
+  name: Uptime Kuma (Service Monitoring)
+  description: "Authenticated service uptime monitoring with local history and operator-configured alerts."
+  aliases: [uptime]
+  container_name: ods-uptime-kuma
+  default_host: uptime-kuma
+  port: 3001
+  external_port_env: UPTIME_KUMA_WEB_PORT
+  external_port_default: 8102
+  health: /
+  ui_path: /
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [monitoring, operations, local]
+  env_vars:
+    - key: UPTIME_KUMA_WEB_PORT
+      description: "Published web port; the internal monitor UI listens on 3001"
+      default: "8102"
+features:
+  - id: service-uptime-monitoring
+    name: Service Uptime
+    description: "Monitor service availability and retain a local incident history"
+    icon: Activity
+    category: productivity
+    requirements:
+      services: [uptime-kuma]
+      vram_gb: 0
+    enabled_services_all: [uptime-kuma]
+    setup_time: "~1 minute plus account and monitor setup"
+    priority: 30
+    launch:
+      type: service
+      service: uptime-kuma
