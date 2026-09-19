@@ -146,7 +146,7 @@ collect_backups() {
         while IFS= read -r -d '' entry; do
             base=$(basename "$entry")
             # Keep the existing ID shapes, including multi-segment labels.
-            [[ "$base" =~ ^([A-Za-z0-9_][A-Za-z0-9_-]*-)?([0-9]{8}-[0-9]{6})(\.tar\.gz)?$ ]] || continue
+            [[ "$base" =~ ^([A-Za-z0-9_][A-Za-z0-9_-]*-)?([0-9]{8}-[0-9]{6})(-[0-9]+)?(\.tar\.gz)?$ ]] || continue
             # Sort by the embedded creation timestamp before the optional
             # label. NUL records preserve whitespace in the backup root.
             printf '%s\t%s\0' "${BASH_REMATCH[2]}" "$entry"
