@@ -59,6 +59,7 @@ clamp_int() {
     v=$(as_int "${1:-0}")
     min=$(as_int "${2:-0}")
     max=$(as_int "${3:-0}")
+    (( max < min )) && max=$min
     (( v < min )) && v=$min
     (( v > max )) && v=$max
     echo "$v"
