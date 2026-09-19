@@ -1,0 +1,39 @@
+services:
+  trilium:
+    image: triliumnext/trilium:v0.105.0@sha256:cc6a15edd7ac3df9bb98ad39dd40af8ffda6c1c0bfafe37c26137ddcbecdb7e5
+    container_name: ods-trilium
+    restart: unless-stopped
+    user: "1000:1000"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    # ODS prepares container_uid ownership; start Node directly without the
+    # image's recursive root chown/usermod wrapper.
+    entrypoint: [node, /usr/src/app/main.cjs]
+    environment:
+      TRILIUM_DATA_DIR: /home/node/trilium-data
+      TRILIUM_NETWORK_HOST: 0.0.0.0
+      TRILIUM_NETWORK_PORT: "8080"
+      TRILIUM_GENERAL_NOAUTHENTICATION: "false"
+      TRILIUM_SECURITY_BACKEND_SCRIPTING_ENABLED: "false"
+      TRILIUM_SECURITY_SQL_CONSOLE_ENABLED: "false"
+    volumes:
+      - ./data/trilium:/home/node/trilium-data
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=128m"]
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${TRILIUM_PORT:-7832}:8080"
+    healthcheck:
+      test: [CMD, node, /usr/src/app/docker_healthcheck.cjs]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks: [ods-network]
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1G
+networks:
+  ods-network:
+    external: true
