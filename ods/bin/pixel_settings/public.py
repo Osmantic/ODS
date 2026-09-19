@@ -25,7 +25,8 @@ def normalize_outcome(value):
     if (type(value) is not dict or set(value) != {"outcome", "appliedRevision"}
             or value["outcome"] not in ("applied", "rolled-back")
             or value["appliedRevision"] is not None and not _revision(value["appliedRevision"])
-            or value["outcome"] == "applied" and value["appliedRevision"] is None):
+            or value["outcome"] == "applied" and value["appliedRevision"] is None
+            or value["outcome"] == "rolled-back" and value["appliedRevision"] is not None):
         raise SettingsError("invalid-settings-response")
     return dict(value)
 
