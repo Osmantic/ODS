@@ -185,8 +185,9 @@ def test_tts_concurrent_requests(mock_bark_preload_models, mock_bark_generate_au
         for t in threads:
             t.join()
 
-        # All requests should succeed
-        assert all(code == 200 for code in results)
+        # Work that overlaps an active synthesis is rejected instead of queued.
+        assert all(code in (200, 503) for code in results)
+        assert any(code == 200 for code in results)
         # preload_models should be called exactly once
         assert mock_bark_preload_models.call_count == 1
 
