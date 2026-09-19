@@ -1417,3 +1417,24 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def numeric_safe_exponential_moving_avg_safe(values: list | None, alpha: float = 0.3) -> list[float]:
+    """Safely compute exponential moving average (EMA) with smoothing factor alpha.
+    Returns [] on None, non-sequence, or invalid alpha.
+    """
+    if not values or not isinstance(values, (list, tuple)):
+        return []
+    if not isinstance(alpha, (int, float)) or isinstance(alpha, bool) or not (0 < alpha <= 1):
+        alpha = 0.3
+    cleaned = []
+    for v in values:
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            cleaned.append(float(v))
+    if not cleaned:
+        return []
+    ema = [cleaned[0]]
+    for val in cleaned[1:]:
+        new_ema = alpha * val + (1 - alpha) * ema[-1]
+        ema.append(round(new_ema, 4))
+    return ema
