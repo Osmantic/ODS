@@ -109,6 +109,36 @@ jobs:
         shell: pwsh
         run: ./tests/contracts/test-install-footprint-windows.ps1
 
+      - name: Windows Docker Pull Contract
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tests/contracts/test-windows-docker-pull.ps1
+
+      - name: WSL Lifecycle Contract
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tests/contracts/test-wsl-lifecycle.ps1
+
+      - name: WSL Lifecycle Output Contract
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tests/contracts/test-wsl-lifecycle-output.ps1
+
+      - name: Windows AMD Memory Detection Contract
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tests/test-windows-amd-memory-detection.ps1
+
+      - name: Windows Hermes Soul Refresh Contract
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tests/test-windows-hermes-soul-refresh.ps1
+
+      - name: Windows Llama Memory Budget Contract
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tests/test-windows-llama-memory-budget.ps1
+
       - name: Atomic Environment Write Tests
         if: runner.os == 'Windows'
         shell: bash
