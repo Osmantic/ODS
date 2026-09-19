@@ -1,0 +1,51 @@
+services:
+  questdb:
+    image: questdb/questdb:10.0.1@sha256:67eaed863ebb2383227919ea9a5499a4a39ceca3862c20b974c84a10e11cdf89
+    container_name: ods-questdb
+    user: "10001:10001"
+    restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+    environment:
+      QDB_HTTP_USER: ods
+      QDB_HTTP_PASSWORD: "${QUESTDB_PASSWORD:?Set QUESTDB_PASSWORD before enabling QuestDB}"
+      QDB_PG_USER: ods
+      QDB_PG_PASSWORD: "${QUESTDB_PASSWORD:?Set QUESTDB_PASSWORD before enabling QuestDB}"
+      QDB_PG_READONLY_USER_ENABLED: "false"
+      QDB_LINE_TCP_ENABLED: "false"
+      QDB_LINE_UDP_ENABLED: "false"
+      QDB_QWP_UDP_ENABLED: "false"
+      QDB_HTTP_MIN_NET_BIND_TO: "127.0.0.1:9003"
+      QDB_HTTP_HEALTH_CHECK_AUTHENTICATION_REQUIRED: "false"
+      QDB_TELEMETRY_ENABLED: "false"
+      QDB_TELEMETRY_DISABLE_COMPLETELY: "true"
+      QDB_CONFIG_VALIDATION_STRICT: "true"
+      QDB_SHARED_NETWORK_WORKER_COUNT: "2"
+      QDB_SHARED_QUERY_WORKER_COUNT: "2"
+      QDB_SHARED_WRITE_WORKER_COUNT: "2"
+      JVM_PREPEND: "-Xms128m -Xmx512m -XX:ActiveProcessorCount=2"
+    volumes:
+      - ./data/questdb:/var/lib/questdb
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${QUESTDB_PORT:-9100}:9000"
+      - "${BIND_ADDRESS:-127.0.0.1}:${QUESTDB_PG_PORT:-8812}:8812"
+    healthcheck:
+      test: [CMD, curl, --fail, --silent, --output, /dev/null, "http://127.0.0.1:9003/status"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    networks: [ods-network]
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+
+networks:
+  ods-network:
+    external: true

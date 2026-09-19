@@ -1,0 +1,30 @@
+name: QuestDB extension
+on:
+  pull_request:
+    paths:
+      - 'ods/extensions/library/services/questdb/**'
+      - 'ods/tests/test_questdb.py'
+      - '.github/workflows/questdb-extension.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install pytest
+      - run: python -m pytest ods/tests/test_questdb.py -q
+  live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install pytest 'psycopg[binary]==3.2.10'
+      - run: sudo --preserve-env=PATH env ODS_TEST_QUESTDB=1 python -m pytest ods/tests/test_questdb.py -q -s
