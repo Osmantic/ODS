@@ -1,0 +1,44 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: gatus
+  name: Gatus (Local Service History)
+  description: "Record local chat and inference endpoint availability with native status history and protected detailed status APIs."
+  aliases: [service-history]
+  container_name: ods-gatus
+  container_uid: 1000
+  default_host: gatus
+  port: 8080
+  external_port_env: GATUS_PORT
+  external_port_default: 8102
+  health: /health
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [monitoring, health, history]
+  env_vars:
+    - key: GATUS_PORT
+      description: "Loopback status page port"
+      default: "8102"
+    - key: GATUS_PASSWORD_BCRYPT
+      description: "Native URL-safe base64 bcrypt hash for ods; generate locally using hash-password.py"
+      required: true
+      secret: true
+features:
+  - id: local-service-history
+    name: Inspect Service History
+    description: "Review availability checks for local chat and inference endpoints"
+    icon: Activity
+    category: productivity
+    requirements:
+      services: [gatus]
+      vram_gb: 0
+    enabled_services_all: [gatus]
+    setup_time: "~1 minute after generating the local password hash"
+    priority: 40
+    launch:
+      type: service
+      service: gatus

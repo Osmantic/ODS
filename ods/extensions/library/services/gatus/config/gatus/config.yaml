@@ -1,0 +1,35 @@
+web:
+  address: 0.0.0.0
+  port: 8080
+metrics: false
+concurrency: 2
+security:
+  basic:
+    username: ods
+    password-bcrypt-base64: "${GATUS_PASSWORD_BCRYPT}"
+storage:
+  type: sqlite
+  path: /data/gatus.db
+  caching: true
+  maximum-number-of-results: 100
+  maximum-number-of-events: 50
+ui:
+  title: ODS Service History
+  description: Local endpoint availability; a healthy probe does not prove inference quality.
+endpoints:
+  - name: chat
+    group: ods
+    url: http://open-webui:8080/health
+    interval: 30s
+    client:
+      timeout: 5s
+    conditions:
+      - "[STATUS] == 200"
+  - name: inference
+    group: ods
+    url: http://llama-server:8080/health
+    interval: 30s
+    client:
+      timeout: 5s
+    conditions:
+      - "[STATUS] == 200"
