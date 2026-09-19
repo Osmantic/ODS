@@ -357,6 +357,7 @@ jobs:
         run: |
           python3 tests/test-offline-model-validation.py
           python3 tests/test_external_model_validation.py
+          python3 tests/test_register_model_store_encoding.py
 
       - name: Runtime Config Renderer Tests
         run: python3 tests/test-render-runtime-configs.py

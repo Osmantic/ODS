@@ -47,7 +47,7 @@ def register(install: Path, identifier: str, directory: Path, qualified: Path | 
     registry_path = data/'model-stores.json'
     if registry_path.is_symlink() or (registry_path.exists() and registry_path.stat().st_size > MAX_REGISTRY_BYTES):
         raise ValueError('Unsafe model store configuration')
-    document = json.loads(registry_path.read_text()) if registry_path.exists() else {'schemaVersion':1,'stores':[]}
+    document = json.loads(registry_path.read_text(encoding='utf-8')) if registry_path.exists() else {'schemaVersion':1,'stores':[]}
     if document.get('schemaVersion') != 1 or not isinstance(document.get('stores'), list) or len(document['stores']) > 16:
         raise ValueError('Invalid or full model store configuration')
     previous = next((item for item in document['stores'] if item.get('id') == identifier), None)
