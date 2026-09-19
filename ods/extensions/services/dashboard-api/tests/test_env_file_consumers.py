@@ -39,6 +39,20 @@ def test_persisted_readers_decode_writer_output(tmp_path, monkeypatch, value):
     assert helpers.get_model_info().name == value
 
 
+def test_gpu_topology_reads_utf8_json(tmp_path, monkeypatch):
+    """gpu-topology.json is UTF-8 (GPU names carry characters like ™);
+    the reader must not fall back to the platform locale on Windows."""
+    import gpu
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "gpu-topology.json").write_text(
+        '{"gpus": [{"name": "AMD Radeon™ Pro W7900 — 48 GB"}]}', encoding="utf-8"
+    )
+    monkeypatch.setenv("ODS_INSTALL_DIR", str(tmp_path))
+    assert gpu.read_gpu_topology() == {"gpus": [{"name": "AMD Radeon™ Pro W7900 — 48 GB"}]}
+
+
 def test_process_environment_is_not_reparsed_as_dotenv(tmp_path, monkeypatch):
     import performance_oracle
 

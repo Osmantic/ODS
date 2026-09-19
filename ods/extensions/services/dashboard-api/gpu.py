@@ -521,8 +521,8 @@ def read_gpu_topology() -> Optional[dict]:
         logger.warning("Topology file not found at %s", topo_path)
         return None
     try:
-        return _json.loads(topo_path.read_text())
-    except (OSError, _json.JSONDecodeError) as exc:
+        return _json.loads(topo_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, _json.JSONDecodeError) as exc:
         logger.warning("Failed to read topology file %s: %s", topo_path, exc)
         return None
 
