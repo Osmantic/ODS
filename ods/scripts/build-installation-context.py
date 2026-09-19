@@ -230,6 +230,16 @@ def _capabilities_block(running: set[str], device: str) -> list[str]:
     return bullets
 
 
+def _configured_model(env: dict[str, str]) -> str | None:
+    """Use the same configured listener for every generated persona profile."""
+    port_raw = env.get("LLM_PORT") or env.get("LLAMACPP_PORT")
+    try:
+        configured_llm_port = int(port_raw) if port_raw else 8080
+    except ValueError:
+        configured_llm_port = 8080
+    return _loaded_model(llm_port=configured_llm_port)
+
+
 def build_context_block(env_path: Path) -> str:
     """Render the dynamic 'About this installation' Markdown block."""
     env = _read_env(env_path)
@@ -239,12 +249,7 @@ def build_context_block(env_path: Path) -> str:
     device = env.get("ODS_DEVICE_NAME") or socket.gethostname() or "this machine"
     gpu = _humanize_gpu(env)
     model_hint = env.get("LLM_MODEL") or env.get("GGUF_FILE") or "the locally-served model"
-    port_raw = env.get("LLM_PORT") or env.get("LLAMACPP_PORT")
-    try:
-        configured_llm_port = int(port_raw) if port_raw else 8080
-    except ValueError:
-        configured_llm_port = 8080
-    live_model = _loaded_model(llm_port=configured_llm_port)
+    live_model = _configured_model(env)
     if live_model:
         model_hint = live_model
 
@@ -325,7 +330,7 @@ def build_compact_soul(env_path: Path) -> str:
 
     device = env.get("ODS_DEVICE_NAME") or socket.gethostname() or "this machine"
     gpu = _humanize_gpu(env)
-    model = _loaded_model() or env.get("LLM_MODEL") or env.get("GGUF_FILE") or "the locally-served model"
+    model = _configured_model(env) or env.get("LLM_MODEL") or env.get("GGUF_FILE") or "the locally-served model"
     ctx_size = env.get("CTX_SIZE") or env.get("MAX_CONTEXT") or "?"
     service_names: list[str] = []
     for sid in sorted(running):
@@ -377,23 +382,23 @@ def build_soul(
 ) -> bool:
     """Render the assembled SOUL.md. Returns True if the file actually
     changed (so callers can decide whether to bounce Hermes)."""
-    template = template_path.read_text(encoding="utf-8")
-    context = build_context_block(env_path)
-
-    if _INSERT_MARKER in template:
-        # Replace only the dedicated insertion line. The template also names
-        # the literal marker in its operator-facing regeneration instructions;
-        # replacing every occurrence duplicated the full install context at
-        # the end of SOUL.md and could double an already-large system prompt.
-        assembled = template.replace(_INSERT_MARKER, context, 1)
-    else:
-        # Template doesn't have the marker yet — append the block so
-        # operators upgrading from an older template still get the
-        # installation-context behaviour.
-        assembled = template.rstrip() + "\n\n" + context + "\n"
-
     if profile == "local-lemonade":
         assembled = build_compact_soul(env_path)
+    else:
+        template = template_path.read_text(encoding="utf-8")
+        context = build_context_block(env_path)
+
+        if _INSERT_MARKER in template:
+            # Replace only the dedicated insertion line. The template also names
+            # the literal marker in its operator-facing regeneration instructions;
+            # replacing every occurrence duplicated the full install context at
+            # the end of SOUL.md and could double an already-large system prompt.
+            assembled = template.replace(_INSERT_MARKER, context, 1)
+        else:
+            # Template doesn't have the marker yet — append the block so
+            # operators upgrading from an older template still get the
+            # installation-context behaviour.
+            assembled = template.rstrip() + "\n\n" + context + "\n"
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     # Self-heal a pathological state: Docker's bind-mount engine auto-creates

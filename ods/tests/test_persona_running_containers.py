@@ -35,7 +35,7 @@ def test_cli_lists_application_only_when_its_manifest_container_runs(
         return subprocess.CompletedProcess(command, 0, names, '')
 
     monkeypatch.setattr(persona.subprocess, 'run', docker_ps)
-    monkeypatch.setattr(persona, '_loaded_model', lambda: None)
+    monkeypatch.setattr(persona, '_loaded_model', lambda **_kwargs: None)
     assert persona.main(['--env', str(env), '--check', '--profile', profile]) == 0
     output = capsys.readouterr().out
     assert ('Langfuse' in output) is primary_up
