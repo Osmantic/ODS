@@ -215,6 +215,7 @@ jobs:
       - name: Manifest Compatibility Checks
         run: |
           python3 tests/test_compatibility_compose_list.py
+          python3 tests/test_download_hf_snapshot_user_tilde.py
           bash scripts/check-compatibility.sh
           bash scripts/check-release-claims.sh
 
