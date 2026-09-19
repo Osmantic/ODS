@@ -66,3 +66,35 @@ set -e
 grep -q "Cancelled" "$out2" || fail "a piped 'n' should cancel the download"
 grep -q "Pre-download complete" "$out2" && fail "download ran despite a piped 'n'"
 pass "a piped 'n' still cancels the download"
+
+# The interactive menu hits the same hazard twice: the tier read and the
+# voice read both ran under set -e with no EOF tolerance, so a closed stdin
+# aborted mid-menu before any download. Bare invocation (no --tier) must
+# fall back to the documented defaults and run to completion.
+out3="$TMP_DIR/out3.txt"
+set +e
+PATH="$BIN:$PATH" ODS_PYTHON_CMD="$BIN/python3" "$BASH" "$TARGET" </dev/null >"$out3" 2>&1
+rc3=$?
+set -e
+
+if [[ $rc3 -ne 0 ]]; then
+    fail "interactive menu aborted with stdin closed (rc=$rc3): $(tail -n 3 "$out3" | tr '\n' ' ')"
+fi
+grep -q "Pre-download complete" "$out3" \
+    || fail "interactive menu did not run to completion with stdin closed: $(tail -n 3 "$out3" | tr '\n' ' ')"
+pass "interactive menu falls back to defaults with stdin closed"
+
+# A partial answer must not leave the next read unguarded: piped tier input
+# reaches the voice prompt with stdin already at EOF.
+out4="$TMP_DIR/out4.txt"
+set +e
+printf 'edge\n' | PATH="$BIN:$PATH" ODS_PYTHON_CMD="$BIN/python3" "$BASH" "$TARGET" >"$out4" 2>&1
+rc4=$?
+set -e
+
+if [[ $rc4 -ne 0 ]]; then
+    fail "voice prompt aborted when stdin hit EOF after the tier answer (rc=$rc4): $(tail -n 3 "$out4" | tr '\n' ' ')"
+fi
+grep -q "Pre-download complete" "$out4" \
+    || fail "menu did not default the voice prompt at EOF: $(tail -n 3 "$out4" | tr '\n' ' ')"
+pass "a piped tier answer leaves the voice prompt safely defaulted"

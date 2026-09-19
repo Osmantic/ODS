@@ -332,11 +332,16 @@ interactive_menu() {
     list_models
     
     echo ""
-    read -p "Select tier to download [nano/edge/pro/cluster] ($recommended): " tier_choice
+    # Same closed-stdin hazard as the --tier confirmation in download_tier:
+    # with stdin at EOF (CI, a pipe, nohup) `read` returns non-zero and
+    # `set -e` aborts the whole script mid-menu. Tolerate EOF and fall back
+    # to the prompts' documented defaults. -r keeps backslashes literal so
+    # input cannot be mangled into a different tier name.
+    read -p "Select tier to download [nano/edge/pro/cluster] ($recommended): " -r tier_choice || tier_choice=""
     tier_choice="${tier_choice:-$recommended}"
     
     echo ""
-    read -p "Also download voice components (STT/TTS)? [y/N] " -n 1 -r voice_choice
+    read -p "Also download voice components (STT/TTS)? [y/N] " -n 1 -r voice_choice || voice_choice=""
     echo
     
     local include_voice="false"
