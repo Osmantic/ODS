@@ -94,6 +94,9 @@ STUB
 }
 
 @test "check_port_conflict: detects conflict when port is occupied" {
+    # The replayed function only exercises the iproute2 `ss` branch, which
+    # does not exist on macOS — the replay can only ever report CLEAR there.
+    [[ "$(uname -s)" == "Darwin" ]] && skip "requires iproute2 ss (Linux-only)"
     # Start a background listener on a test port
     local test_port=59877
     python3 -c "
