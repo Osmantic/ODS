@@ -179,7 +179,10 @@ class ScopeStore(ProviderStore):
         if not config['enabled'] or rule['providerId'] != config['roles']['handoff']:
             raise StoreError('handoff-recipient-not-configured')
         providers = {item['id']: item for item in config['providers']}
-        target, leader = providers[rule['providerId']], providers[config['roles']['leader']]
+        leader_id = config['roles'].get('leader')
+        if not leader_id or leader_id not in providers:
+            raise StoreError('handoff-recipient-not-configured')
+        target, leader = providers[rule['providerId']], providers[leader_id]
         if (not target['enabled'] or target['id'] == leader['id']
                 or target['contextTokens'] < leader['contextTokens']
                 or target['maxOutputTokens'] < leader['maxOutputTokens']
