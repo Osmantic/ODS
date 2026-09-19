@@ -79,7 +79,7 @@ external_llm_host_url() {
 external_llm_container_url() {
     local url
     url="$(external_llm_strip_url "${1:-}")"
-    if [[ "$url" =~ ^(https?://)(localhost|127\.0\.0\.1|\[::1\])([:/].*|$) ]]; then
+    if [[ "${url,,}" =~ ^(https?://)(localhost|127\.0\.0\.1|\[::1\])([:/].*|$) ]]; then
         url="${BASH_REMATCH[1]}host.docker.internal${BASH_REMATCH[3]}"
     fi
     printf '%s\n' "$url"
