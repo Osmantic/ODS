@@ -178,7 +178,7 @@ def provider_binding(value):
 
 
 def hook_reply(operation, name, value):
-    if name not in HOOKS.get(operation, ()):
+    if type(operation) is not str or type(name) is not str or name not in HOOKS.get(operation, ()):
         raise ProtocolError("owner-protocol-failed")
     if name in ("settings-activate", "provider-activate"):
         valid = type(value) is str and value in ("verified", "rejected", "unavailable")
