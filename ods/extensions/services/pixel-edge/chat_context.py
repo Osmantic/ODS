@@ -23,6 +23,7 @@ def project_context(value):
     if context is not None:
         if (not isinstance(context, dict) or not _number(context.get("used"))
                 or not _number(context.get("window"), 10_000_000) or context["window"] < 1
+                or context["used"] > context["window"]
                 or not _text(context.get("measuredAt"), 64, r"^[0-9TZ: .+\-]+$")):
             raise ValueError("invalid context measurement")
         result["context"] = {key: context[key] for key in ("used", "window", "measuredAt")}
