@@ -1417,3 +1417,14 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def list_chunk_by_size_safe(items: list | None, chunk_size: int = 10) -> list[list]:
+    """Safely split a sequence into non-overlapping chunks of size chunk_size.
+    Returns [] on None or non-sequence inputs.
+    """
+    if not items or not isinstance(items, (list, tuple)):
+        return []
+    if not isinstance(chunk_size, int) or isinstance(chunk_size, bool) or chunk_size <= 0:
+        chunk_size = 10
+    return [list(items[i:i + chunk_size]) for i in range(0, len(items), chunk_size)]
