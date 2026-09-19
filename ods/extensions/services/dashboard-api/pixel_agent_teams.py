@@ -105,7 +105,7 @@ def questions_valid(value):
             return False
         if re.search(r"[\x00-\x1f\x7f]", q["question"]) or any(not isinstance(x, str) or not 1 <= len(x.strip()) <= 160 or re.search(r"[\x00-\x1f\x7f]", x) for x in q["options"]):
             return False
-        if len(set(q["options"])) != len(q["options"]):
+        if len({x.strip() for x in q["options"]}) != len(q["options"]):
             return False
     return True
 
