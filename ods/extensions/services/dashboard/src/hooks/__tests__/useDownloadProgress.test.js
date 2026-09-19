@@ -120,6 +120,28 @@ describe('useDownloadProgress', () => {
     })
   })
 
+  test.each(['failed', 'error', 'cancelled'])('keeps a dismissed %s receipt hidden until a new transfer', async (status) => {
+    let snapshot = { status, model: 'model.gguf', error: 'transfer stopped', updatedAt: 'first' }
+    fetch.mockImplementation(async () => ({ ok: true, json: async () => snapshot }))
+    const { result } = renderHook(() => useDownloadProgress())
+    await waitFor(() => expect(result.current.progress?.status).toBe(status))
+    act(() => result.current.clearTerminal())
+    await act(async () => { await result.current.refresh() })
+    expect(result.current.progress).toBeNull()
+
+    snapshot = { ...snapshot, updatedAt: 'second' }
+    await act(async () => { await result.current.refresh() })
+    expect(result.current.progress?.status).toBe(status)
+    act(() => result.current.clearTerminal())
+    const nextFailure = snapshot
+    snapshot = { status: 'downloading', model: 'model.gguf', bytesDownloaded: 1, bytesTotal: 10 }
+    await act(async () => { await result.current.refresh() })
+    expect(result.current.isDownloading).toBe(true)
+    snapshot = nextFailure
+    await act(async () => { await result.current.refresh() })
+    expect(result.current.progress?.status).toBe(status)
+  })
+
   test('does not let an older idle response overwrite newer download progress', async () => {
     const olderRequest = deferred()
     const newerRequest = deferred()
