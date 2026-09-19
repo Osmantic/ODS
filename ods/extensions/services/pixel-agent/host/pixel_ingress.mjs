@@ -1021,8 +1021,33 @@ export function streamTaskActivity(res, user, token, gatewayPort, signal, deps =
   return () => { stopped = true; deps.clearTimeout(timer); inFlight?.abort(); };
 }
 
-async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps, hooks = {}) {
+function registerActiveGatewayTransport(activeGatewayTransports, user, controller) {
+  if (!(activeGatewayTransports instanceof Map) || typeof user !== "string") {
+    return () => {};
+  }
+  let controllers = activeGatewayTransports.get(user);
+  if (!controllers) {
+    controllers = new Set();
+    activeGatewayTransports.set(user, controllers);
+  }
+  controllers.add(controller);
+  return () => {
+    controllers.delete(controller);
+    if (controllers.size === 0 && activeGatewayTransports.get(user) === controllers) {
+      activeGatewayTransports.delete(user);
+    }
+  };
+}
+
+function abortActiveGatewayTransports(activeGatewayTransports, user) {
+  const controllers = activeGatewayTransports.get(user);
+  if (!controllers) return;
+  for (const controller of [...controllers]) controller.abort();
+}
+
+async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps, hooks = {}, activeGatewayTransports = new Map()) {
   const controller = new AbortController();
+  const unregisterGatewayTransport = registerActiveGatewayTransport(activeGatewayTransports, outgoing.user, controller);
   hooks.onController?.(controller);
   const totalTimer = deps.setTimeout(() => controller.abort(), TOTAL_TIMEOUT_MS);
   const abortOnDownstreamClose = () => {
@@ -1160,6 +1185,7 @@ async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps
     stopActivity?.();
     res.off("close", abortOnDownstreamClose);
     deps.clearTimeout(totalTimer);
+    unregisterGatewayTransport();
   }
 }
 
@@ -1434,6 +1460,9 @@ export async function writeStatus(
 }
 
 export function createIngressServer({ token, gatewayPort, deps = defaultDeps, historyLedger = null, accessOwnerKey = null }) {
+  // Cancellation is scoped to this ingress instance and the opaque ODS user.
+  // A Set preserves correct behavior if one chat has overlapping transports.
+  const activeGatewayTransports = new Map();
   const historyAborters=new Map();
   return http.createServer((req, res) => {
     let pathname;
@@ -1479,7 +1508,7 @@ export function createIngressServer({ token, gatewayPort, deps = defaultDeps, hi
         sendError(res, 415, "content type must be application/json");
         return;
       }
-      void handleChat(req, res, token, gatewayPort, deps, historyLedger, historyAborters);
+      void handleChat(req, res, token, gatewayPort, deps, historyLedger, historyAborters, activeGatewayTransports);
       return;
     }
 
@@ -1501,7 +1530,7 @@ export function createIngressServer({ token, gatewayPort, deps = defaultDeps, hi
         sendError(res, 415, "content type must be application/json");
         return;
       }
-      void handleCancel(req, res, token, gatewayPort, deps, historyLedger, historyAborters);
+      void handleCancel(req, res, token, gatewayPort, deps, historyLedger, historyAborters, activeGatewayTransports);
       return;
     }
 
@@ -1509,7 +1538,7 @@ export function createIngressServer({ token, gatewayPort, deps = defaultDeps, hi
   });
 }
 
-async function handleCancel(req, res, token, gatewayPort, deps, ledger, historyAborters) {
+async function handleCancel(req, res, token, gatewayPort, deps, ledger, historyAborters, activeGatewayTransports) {
   let raw;
   try {
     raw = await readBody(req, MAX_CANCEL_BODY);
@@ -1545,6 +1574,9 @@ async function handleCancel(req, res, token, gatewayPort, deps, ledger, historyA
     if(local && pending && local.requestId===pending.requestId) local.controller.abort();
     const aborted=await abortGatewayRun(user, token, gatewayPort, deps);
     if(aborted) {
+      // The run acknowledgment covers OpenClaw; also close the matching
+      // provider transport so generation cannot outlive a terminal UI.
+      abortActiveGatewayTransports(activeGatewayTransports, user);
       ledger?.interrupt(user,pending?.requestId);
       sendJson(res,200,{aborted:true});
       return;
@@ -1564,7 +1596,7 @@ async function handleCancel(req, res, token, gatewayPort, deps, ledger, historyA
   } catch {sendError(res,503,'cancellation-unconfirmed');}
 }
 
-async function handleChat(req, res, token, gatewayPort, deps, historyLedger, historyAborters) {
+async function handleChat(req, res, token, gatewayPort, deps, historyLedger, historyAborters, activeGatewayTransports) {
   let raw;
   try {
     raw = await readBody(req, MAX_HISTORY_BODY);
@@ -1595,7 +1627,7 @@ async function handleChat(req, res, token, gatewayPort, deps, historyLedger, his
     user=computeSessionUser(parsed);
     const outgoing = buildOutgoing(parsed, user);
     if(historyLedger && user) release=historyLedger.lock(user);
-    if(!parsed.history_snapshot) {await forwardChat(res,outgoing,token,gatewayPort,deps);return;}
+    if(!parsed.history_snapshot) {await forwardChat(res,outgoing,token,gatewayPort,deps,{},activeGatewayTransports);return;}
     if(!historyLedger || !user) throw new HistoryError('history-storage-unavailable',503);
     const native=await nativeContextRequest('context',{user},token,gatewayPort,deps);
     prepared=historyLedger.prepare(user,parsed.request_id,parsed.history_snapshot,native);
@@ -1636,7 +1668,7 @@ async function handleChat(req, res, token, gatewayPort, deps, historyLedger, his
         historyLedger.complete(user,prepared,completion,verification,after);
         completed=true;
       },
-    });
+    },activeGatewayTransports);
   } catch (error) {
     sendError(
       res,

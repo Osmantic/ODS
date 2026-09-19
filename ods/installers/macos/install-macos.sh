@@ -453,6 +453,9 @@ model_name = os.environ["ODS_OPENCODE_MODEL"]
 base_url = os.environ["ODS_OPENCODE_BASE_URL"]
 api_key = os.environ["ODS_OPENCODE_API_KEY"]
 context = int(os.environ["ODS_OPENCODE_CONTEXT"])
+if context < 1024:
+    raise SystemExit("OpenCode requires at least 1024 context tokens")
+output_limit = min(32768, context // 4)
 provider_id = "llama-server"
 provider = data.setdefault("provider", {}).setdefault(provider_id, {})
 provider.update({
@@ -462,7 +465,7 @@ provider.update({
     "models": {
         model_name: {
             "name": model_name,
-            "limit": {"context": context, "output": min(32768, context)},
+            "limit": {"context": context, "output": output_limit},
         }
     },
 })
@@ -1843,8 +1846,8 @@ else
                 ai_err "Switchboard mode requires the generated LiteLLM master key, but LITELLM_KEY is empty."
                 exit 1
             fi
-            upsert_env_value "${INSTALL_DIR}/.env" "HERMES_LLM_BASE_URL" "http://litellm:4000/v1"
-            upsert_env_value "${INSTALL_DIR}/.env" "HERMES_LLM_API_KEY" "$_macos_litellm_key"
+            upsert_env_value "${INSTALL_DIR}/.env" "HERMES_LLM_BASE_URL" "http://model-router:9099/v1"
+            upsert_env_value "${INSTALL_DIR}/.env" "HERMES_LLM_API_KEY" "no-key"
             upsert_env_value "${INSTALL_DIR}/.env" "OPEN_WEBUI_LLM_BASE_URL" "http://litellm:4000"
             upsert_env_value "${INSTALL_DIR}/.env" "OPEN_WEBUI_LLM_API_KEY" "$_macos_litellm_key"
         fi
@@ -2045,7 +2048,8 @@ else
     # it later, and persisted /opt/data/config.yaml wins over the template.
     _hermes_tpl="${INSTALL_DIR}/extensions/services/hermes/cli-config.yaml.template"
     if [[ -f "$_hermes_tpl" ]]; then
-            _hermes_base_url="${CONTAINER_LLM_URL%/}/v1"
+            _hermes_base_url="$(read_env_value "${INSTALL_DIR}/.env" "HERMES_LLM_BASE_URL")"
+            [[ -n "$_hermes_base_url" ]] || _hermes_base_url="${CONTAINER_LLM_URL%/}/v1"
             _hermes_model="$GGUF_FILE"
             $CLOUD_MODE && _hermes_model="default"
             _hermes_patcher="${INSTALL_DIR}/scripts/patch-hermes-config.py"

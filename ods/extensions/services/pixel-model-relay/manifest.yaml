@@ -1,0 +1,28 @@
+schema_version: ods.services.v1
+
+compatibility:
+  ods_min: "2.0.0"
+
+service:
+  id: pixel-model-relay
+  name: Pixel Model Relay
+  aliases: []
+  container_name: ods-pixel-model-relay
+  host_env: PIXEL_MODEL_RELAY_HOST
+  default_host: pixel-model-relay
+  port: 4102
+  external_port_env: PIXEL_MODEL_RELAY_PORT
+  external_port_default: 4006
+  external_link: false
+  health: /health
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: core
+  depends_on: [model-router]
+  startup_check: true
+  env_vars:
+    - key: PIXEL_MODEL_RELAY_KEY
+      required: true
+      secret: true
+      description: Pixel-only bearer key for host-local inference

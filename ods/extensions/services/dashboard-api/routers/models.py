@@ -495,22 +495,32 @@ def _verified_activation_context(loaded_model: str | None) -> int | None:
     return context if context > 0 else None
 
 
-def _already_active_model(model_id: str, model: dict) -> tuple[bool, str | None]:
+def _configured_model_identity_matches(model: dict) -> bool:
     gguf_file = model.get("gguf_file")
     if not gguf_file:
-        return False, None
+        return False
     if _read_active_model() != gguf_file:
-        return False, None
+        return False
     configured_llm = (
         read_env_file_value("LLM_MODEL", INSTALL_DIR)
         or read_env_value("LLM_MODEL", INSTALL_DIR)
     )
     if not (_model_name_tokens(configured_llm) & _catalog_model_tokens(model)):
-        return False, None
+        return False
     if not (Path(DATA_DIR) / "models" / gguf_file).exists():
-        return False, None
+        return False
+    return True
 
+
+def _already_active_model(model_id: str, model: dict) -> tuple[bool, str | None]:
+    # Fetch the live backend identity even when the bind-mounted .env identity
+    # is stale. Model activation replaces .env atomically on the host, so a
+    # long-running container with a single-file bind mount can retain the old
+    # inode until it is recreated.
     loaded_model = _fetch_loaded_model_sync()
+    if not _configured_model_identity_matches(model):
+        return False, loaded_model
+
     if _model_name_tokens(loaded_model) & _catalog_model_tokens(model):
         # Lemonade's health endpoint is the authoritative loaded-model source.
         # A one-token chat probe against a large already-active model can take
@@ -2054,8 +2064,31 @@ def load_model(
 
     # Activation includes downstream synchronization and a bounded rollback.
     activation_body: dict[str, Any] = {"model_id": model_id}
-    if requested_context is not None:
-        activation_body["context_length"] = requested_context
+    activation_context = requested_context
+    if (
+        activation_context is None
+        and (
+            _configured_model_identity_matches(model)
+            or (
+                loaded_model
+                and (_model_name_tokens(loaded_model) & _catalog_model_tokens(model))
+            )
+        )
+    ):
+        # A matching live backend may still require reconciliation when its
+        # activation receipt is absent or stale (for example immediately after
+        # bootstrap promotion).  Preserve the verified runtime context across
+        # that repair.  Otherwise the host agent falls back to the catalog's
+        # conservative default and can silently shrink a 64K Hermes-capable
+        # runtime to 32K during an idempotent dashboard reload.
+        configured_context = _configured_context_length()
+        if (
+            configured_context is not None
+            and _MIN_MODEL_CONTEXT <= configured_context <= _MAX_MODEL_CONTEXT
+        ):
+            activation_context = configured_context
+    if activation_context is not None:
+        activation_body["context_length"] = activation_context
     result = _call_agent_model(
         "/v1/model/activate",
         activation_body,

@@ -63,18 +63,51 @@ def control_request(value):
     if type(value) is not dict or type(value.get("operation")) is not str:
         raise ProtocolError("invalid-request")
     operation = value["operation"]
-    keys = {"status": {"operation"}, "change": {"operation", "request"},
+    keys = {"status": {"operation"}, "model-status": {"operation"},
+            "change": {"operation", "request"},
+            "model-begin": {"operation"}, "model-finish": {"operation", "request"},
+            # Browser model switching and installer promotion are distinct
+            # transactions even though their public operation names overlap.
+            "model-route-status": {"operation"},
+            "model-route-begin": {"operation", "request"},
+            "model-route-apply": {"operation", "request"},
+            "model-route-finish": {"operation", "request"},
             "settings-status": {"operation", "data_dir_id"},
             "settings-change": {"operation", "data_dir_id", "request"},
             "provider-status": {"operation", "data_dir_id"},
             "provider-change": {"operation", "data_dir_id", "request"}}
-    keys.update({"model-status": {"operation"}, **{name: {"operation", "request"} for name in ("model-begin", "model-apply", "model-finish")}})
     if operation not in keys or set(value) != keys[operation]:
         raise ProtocolError("invalid-request")
     if operation.startswith(("settings-", "provider-")) and (type(value["data_dir_id"]) is not str or not HEX.fullmatch(value["data_dir_id"])):
         raise ProtocolError("invalid-request")
     if "request" in value and type(value["request"]) is not dict:
         raise ProtocolError("invalid-request")
+    if operation == "model-finish":
+        request_value = value["request"]
+        if (set(request_value) != {"transaction_id", "outcome"}
+                or type(request_value["transaction_id"]) is not str
+                or not HEX.fullmatch(request_value["transaction_id"])
+                or request_value["outcome"] not in ("applied", "rolled-back")):
+            raise ProtocolError("invalid-request")
+    if operation.startswith("model-route-") and operation != "model-route-status":
+        request_value = value["request"]
+        expected = {
+            "model-route-begin": {"transactionId", "revision"},
+            "model-route-apply": {"transactionId", "target"},
+            "model-route-finish": {"transactionId", "outcome"},
+        }[operation]
+        if (set(request_value) != expected
+                or type(request_value.get("transactionId")) is not str
+                or not HEX.fullmatch(request_value["transactionId"])):
+            raise ProtocolError("invalid-request")
+        if (operation == "model-route-begin"
+                and (type(request_value["revision"]) is not str
+                     or not HEX.fullmatch(request_value["revision"]))):
+            raise ProtocolError("invalid-request")
+        if operation == "model-route-apply" and type(request_value["target"]) is not dict:
+            raise ProtocolError("invalid-request")
+        if operation == "model-route-finish" and request_value["outcome"] not in ("commit", "rollback"):
+            raise ProtocolError("invalid-request")
     return value
 
 

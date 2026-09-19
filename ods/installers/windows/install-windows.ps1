@@ -264,19 +264,32 @@ function Set-ODSWindowsHermesRuntimeModel {
     }
     $hermesBaseUrl = Get-WindowsODSEnvValue `
         -EnvMap $runtimeEnv -Keys @("HERMES_LLM_BASE_URL") `
-        -Default $(if ($cloudMode -or $gpuInfo.Backend -eq "amd" -or $switchboardEnabled) {
+        -Default $(if ($cloudMode) {
+            "http://litellm:4000/v1"
+        } elseif ($switchboardEnabled) {
+            "http://model-router:9099/v1"
+        } elseif ($gpuInfo.Backend -eq "amd") {
             "http://litellm:4000/v1"
         } else {
             "http://llama-server:8080/v1"
         })
+    $hermesApiKey = Get-WindowsODSEnvValue `
+        -EnvMap $runtimeEnv -Keys @("HERMES_LLM_API_KEY") `
+        -Default $(if ($switchboardEnabled -and -not $cloudMode) {
+            "no-key"
+        } elseif ($cloudMode -or $gpuInfo.Backend -eq "amd") {
+            Get-WindowsODSEnvValue -EnvMap $runtimeEnv -Keys @("LITELLM_KEY") -Default ""
+        } else {
+            "sk-ods-hermes-local"
+        })
     $hermesTemplate = Join-Path (Join-Path (Join-Path $installDir "extensions") "services\hermes") "cli-config.yaml.template"
     $hermesLive = Join-Path (Join-Path $installDir "data\hermes") "config.yaml"
     $hermesRequestTimeout = $(if ($cloudMode -and -not $switchboardEnabled) { 180 } else { 900 })
-    $templateUpdated = Update-HermesConfigFile -Path $hermesTemplate -Model $ModelId -BaseUrl $hermesBaseUrl -ContextLength ([int]$tierConfig.MaxContext) `
+    $templateUpdated = Update-HermesConfigFile -Path $hermesTemplate -Model $ModelId -BaseUrl $hermesBaseUrl -ApiKey $hermesApiKey -ContextLength ([int]$tierConfig.MaxContext) `
         -RequestTimeoutSeconds $hermesRequestTimeout `
         -LemonadeCompact:($gpuInfo.Backend -eq "amd")
     $liveUpdated = Update-HermesConfigFile `
-        -Path $hermesLive -Model $ModelId -BaseUrl $hermesBaseUrl `
+        -Path $hermesLive -Model $ModelId -BaseUrl $hermesBaseUrl -ApiKey $hermesApiKey `
         -ContextLength ([int]$tierConfig.MaxContext) `
         -RequestTimeoutSeconds $hermesRequestTimeout `
         -LemonadeCompact:($gpuInfo.Backend -eq "amd")
@@ -342,6 +355,20 @@ if ($dryRun) {
                 }
             } elseif (Test-Path $modelPath) {
                 Write-AISuccess "Model already present: $($tierConfig.GgufFile)"
+            }
+
+            if ($needsDownload) {
+                $handoffWait = Get-ODSPositiveIntEnv -Name "ODS_BOOTSTRAP_HANDOFF_WAIT_SECONDS" -Default 7200
+                $handoff = Wait-ODSBootstrapDownloadHandoff `
+                    -InstallDir $installDir `
+                    -ModelFile $tierConfig.GgufFile `
+                    -Destination $modelPath `
+                    -WaitSeconds $handoffWait
+                if ($handoff.TimedOut) {
+                    Write-AIError "Refusing to race the active bootstrap downloader. Re-run the installer after it finishes."
+                    exit 1
+                }
+                $needsDownload = -not (Test-Path -LiteralPath $modelPath -PathType Leaf)
             }
 
             if ($needsDownload) {
@@ -1760,6 +1787,30 @@ litellm_settings:
 
         Push-Location $installDir
         try {
+            $_composeServicesDockerArgs = @($script:ODSWindowsDockerClientArgs)
+            $_enabledComposeServices = @(
+                & docker @_composeServicesDockerArgs compose @composeFlags config --services 2>> $_buildLog
+            )
+            if ($LASTEXITCODE -ne 0) {
+                Write-AIError "Could not resolve Windows compose services before local image rebuilds."
+                Write-AI "Inspect compose config with: cd '$installDir'; docker compose $($composeFlags -join ' ') config --services"
+                exit 1
+            }
+            $_enabledComposeServices = @(
+                $_enabledComposeServices |
+                    ForEach-Object { ([string]$_).Trim() } |
+                    Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+            )
+            $_selectedBuildServices = @()
+            foreach ($_svc in $_buildServices) {
+                if ($_enabledComposeServices -contains $_svc) {
+                    $_selectedBuildServices += $_svc
+                } else {
+                    Write-AI "Skipping local image build for disabled service: $_svc"
+                }
+            }
+            $_buildServices = $_selectedBuildServices
+
             Write-AI "Rebuilding local-built images (no-cache)..."
             $_failedBuildServices = @()
             $_legacyBuilderServices = @()

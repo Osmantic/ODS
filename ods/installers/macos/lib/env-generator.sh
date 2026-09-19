@@ -274,8 +274,8 @@ generate_ods_env() {
             _litellm_key="$(read_env_value "$env_path" "LITELLM_KEY")"
             upsert_env_value "$env_path" "OPEN_WEBUI_LLM_BASE_URL" "http://litellm:4000"
             upsert_env_value "$env_path" "OPEN_WEBUI_LLM_API_KEY" "$_litellm_key"
-            upsert_env_value "$env_path" "HERMES_LLM_BASE_URL" "http://litellm:4000/v1"
-            upsert_env_value "$env_path" "HERMES_LLM_API_KEY" "$_litellm_key"
+            upsert_env_value "$env_path" "HERMES_LLM_BASE_URL" "http://model-router:9099/v1"
+            upsert_env_value "$env_path" "HERMES_LLM_API_KEY" "no-key"
         fi
 
         # Upsert ODS_AGENT_KEY when missing (pre-PR-#979 upgrade path)
@@ -495,8 +495,8 @@ generate_ods_env() {
     local open_webui_llm_base_url=""
     local open_webui_llm_api_key=""
     if [[ "$switchboard_mode" == "enabled" ]]; then
-        hermes_llm_base_url="http://litellm:4000/v1"
-        hermes_llm_api_key="$litellm_key"
+        hermes_llm_base_url="http://model-router:9099/v1"
+        hermes_llm_api_key="no-key"
         open_webui_llm_base_url="http://litellm:4000"
         open_webui_llm_api_key="$litellm_key"
     fi
@@ -759,6 +759,9 @@ engines:
   - name: google
     disabled: false
   - name: brave
+    disabled: false
+  - name: seznam
+    # Independent general-web fallback when major engines block this household IP.
     disabled: false
   - name: wikipedia
     disabled: false

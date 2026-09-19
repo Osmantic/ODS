@@ -751,6 +751,24 @@ async def test_stream_rejections_never_reflect_upstream_body(upstream):
 
 
 @pytest.mark.asyncio
+async def test_stream_projects_edge_transition_as_actionable_conflict_without_reflection():
+    upstream = FakeResponse(
+        status=409,
+        content_type="application/json",
+        chunks=[b'{"error":"pixel_transition_in_progress","private":"secret upstream body"}'],
+    )
+    body = pixel.ChatStreamRequest.model_validate(
+        {"chat_id": "c1", "messages": [{"role": "user", "content": "hello"}]}
+    )
+    with patch.object(pixel.httpx, "AsyncClient", return_value=FakeClient(upstream)):
+        with pytest.raises(HTTPException) as exc_info:
+            await pixel.pixel_chat_stream(ConnectedRequest(), body)
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == pixel._MODEL_SWITCH_DETAIL
+    assert "secret upstream body" not in str(exc_info.value.detail)
+
+
+@pytest.mark.asyncio
 async def test_stream_line_limit_fails_closed():
     upstream = FakeResponse(
         content_type="text/event-stream",

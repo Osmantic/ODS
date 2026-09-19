@@ -209,6 +209,32 @@ test('reused live PID with mismatched boot or start identity recovers idle admis
   }
 });
 
+test('structured lock recovers from a foreign recycled PID while legacy lock stays conservative', linux, () => {
+  const foreignPid = 424242, structured = {
+    version: 3, pid: foreignPid, invocationId: 'd'.repeat(32), startTicks: '123',
+  };
+  const original = process.kill;
+  process.kill = function (pid, signal) {
+    if (pid === foreignPid && signal === 0) {
+      throw Object.assign(new Error('not permitted'), {code: 'EPERM'});
+    }
+    return original.call(this, pid, signal);
+  };
+  try {
+    const recovered = fixture(); seed(recovered, structured);
+    const runtime = createAccessRuntime(recovered);
+    assert.equal(runtime.status().available, true);
+    assert.equal(runtime.status().phase, 'idle');
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(recovered.directory, 'process.json'))), identity());
+    assert.equal(runtime.admit({}, {runId: 'after-foreign-reuse'}).outcome, 'pass');
+
+    const legacy = fixture(); seed(legacy, {pid: foreignPid});
+    const before = fs.readFileSync(path.join(legacy.directory, 'process.json'), 'utf8');
+    assert.equal(createAccessRuntime(legacy).status().available, false);
+    assert.equal(fs.readFileSync(path.join(legacy.directory, 'process.json'), 'utf8'), before);
+  } finally { process.kill = original; }
+});
+
 test('PID reuse recovery preserves held and interrupted gates and interrupts busy work', linux, () => {
   for (const phase of ['held', 'busy', 'interrupted']) {
     const options = fixture(), previous = identity(); previous.startTicks = String(BigInt(previous.startTicks) + 1n);
@@ -420,8 +446,51 @@ test('stale revision and missing run identity cannot gain admission', () => {
   const runtime = createAccessRuntime(fixture());
   const old = runtime.status().revision;
   runtime.admit({}, {runId: 'work'}); runtime.finish({}, {runId: 'work'});
-  assert.throws(() => runtime.acquire(token, old));
+  let failure;
+  try { runtime.acquire(token, old); } catch (error) { failure = error; }
+  assert.ok(failure);
+  assert.equal(runtime.classifyTransitionError(failure), 'native-transition-revision-changed');
+  assert.equal(runtime.classifyTransitionError(new Error('native-transition-revision-changed')), null);
   assert.equal(runtime.admit({}, {}).outcome, 'block');
+});
+
+test('native transition refusal distinguishes unavailable and busy state', () => {
+  const unavailable = createAccessRuntime({...fixture(), hooksAllowed: false});
+  let failure;
+  try { unavailable.acquire(token, token); } catch (error) { failure = error; }
+  assert.ok(failure);
+  assert.equal(unavailable.classifyTransitionError(failure), 'native-transition-unavailable');
+  const busy = createAccessRuntime(fixture());
+  busy.admit({}, {runId: 'work'});
+  failure = null;
+  try { busy.acquire(token, busy.status().revision); } catch (error) { failure = error; }
+  assert.ok(failure);
+  assert.equal(busy.classifyTransitionError(failure), 'native-transition-busy-active-run');
+});
+
+test('native transition refusal distinguishes active tools and detached processes', () => {
+  const toolBusy = createAccessRuntime(fixture());
+  toolBusy.beforeTool({toolCallId: 'tool-1'}, {});
+  let failure;
+  try { toolBusy.acquire(token, toolBusy.status().revision); } catch (error) { failure = error; }
+  assert.equal(toolBusy.classifyTransitionError(failure), 'native-transition-busy-active-tool');
+
+  const detachedBusy = createAccessRuntime(fixture());
+  detachedBusy.beforeTool({toolCallId: 'exec-1'}, {});
+  detachedBusy.afterTool({toolCallId: 'exec-1', toolName: 'exec', result: {details: {
+    status: 'running', sessionId: 'child', startedAt: 1,
+  }}}, {});
+  failure = null;
+  try { detachedBusy.acquire(token, detachedBusy.status().revision); } catch (error) { failure = error; }
+  assert.equal(detachedBusy.classifyTransitionError(failure), 'native-transition-busy-detached-process');
+});
+
+test('native transition refusal distinguishes a foreign held lease', () => {
+  const runtime = createAccessRuntime(fixture());
+  runtime.acquire('b'.repeat(64), runtime.status().revision);
+  let failure;
+  try { runtime.acquire(token, runtime.status().revision); } catch (error) { failure = error; }
+  assert.equal(runtime.classifyTransitionError(failure), 'native-transition-busy-held');
 });
 
 test('direct tools and detached exec keep transition busy after agent end', () => {

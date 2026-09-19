@@ -37,6 +37,7 @@ _restart_windows_lemonade = _mod._restart_windows_lemonade
 _is_windows_host_llama_server = _mod._is_windows_host_llama_server
 _restart_windows_native_llama_server = _mod._restart_windows_native_llama_server
 _write_windows_native_litellm_config = _mod._write_windows_native_litellm_config
+_wait_for_container_health = _mod._wait_for_container_health
 
 
 @pytest.fixture(autouse=True)
@@ -78,6 +79,78 @@ def _install_runtime_renderer(tmp_path):
 
 def test_host_agent_backlog_handles_dashboard_poll_bursts():
     assert _mod.ThreadedHTTPServer.request_queue_size >= 64
+
+
+def test_hermes_health_wait_covers_delayed_docker_health_transition(monkeypatch):
+    statuses = iter(
+        ["starting"] * (_mod.HERMES_MODEL_ACTIVATION_HEALTH_ATTEMPTS - 1)
+        + ["healthy"]
+    )
+    inspections = []
+    sleeps = []
+
+    def inspect(*args, **_kwargs):
+        inspections.append(args)
+        return subprocess.CompletedProcess(args, 0, next(statuses) + "\n", "")
+
+    monkeypatch.setattr(_mod.subprocess, "run", inspect)
+    monkeypatch.setattr(_mod.time, "sleep", lambda seconds: sleeps.append(seconds))
+    monkeypatch.setattr(
+        _mod,
+        "_capture_container_state",
+        lambda _container: {"exists": True, "running": True},
+    )
+
+    _wait_for_container_health("ods-hermes")
+
+    assert len(inspections) == _mod.HERMES_MODEL_ACTIVATION_HEALTH_ATTEMPTS
+    assert sleeps == [2] * (_mod.HERMES_MODEL_ACTIVATION_HEALTH_ATTEMPTS - 1)
+
+
+def test_hermes_health_wait_remains_bounded_and_fail_closed(monkeypatch):
+    inspections = []
+    sleeps = []
+
+    def inspect(*args, **_kwargs):
+        inspections.append(args)
+        return subprocess.CompletedProcess(args, 0, "starting\n", "")
+
+    monkeypatch.setattr(_mod.subprocess, "run", inspect)
+    monkeypatch.setattr(_mod.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    with pytest.raises(
+        RuntimeError,
+        match="ods-hermes did not become healthy after model activation",
+    ):
+        _wait_for_container_health("ods-hermes")
+
+    assert len(inspections) == _mod.HERMES_MODEL_ACTIVATION_HEALTH_ATTEMPTS
+    assert sleeps == [2] * (_mod.HERMES_MODEL_ACTIVATION_HEALTH_ATTEMPTS - 1)
+
+
+@pytest.mark.parametrize(
+    ("container", "attempts", "expected_attempts"),
+    [
+        ("ods-openclaw", None, _mod.MODEL_ACTIVATION_HEALTH_ATTEMPTS),
+        ("ods-hermes", 3, 3),
+    ],
+)
+def test_container_health_wait_preserves_other_defaults_and_explicit_overrides(
+    monkeypatch, container, attempts, expected_attempts,
+):
+    inspections = []
+
+    def inspect(*args, **_kwargs):
+        inspections.append(args)
+        return subprocess.CompletedProcess(args, 0, "starting\n", "")
+
+    monkeypatch.setattr(_mod.subprocess, "run", inspect)
+    monkeypatch.setattr(_mod.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(RuntimeError, match="did not become healthy after model activation"):
+        _wait_for_container_health(container, attempts=attempts)
+
+    assert len(inspections) == expected_attempts
 
 
 def test_external_lemonade_runtime_overrides_wsl_cpu_discovery():
@@ -3815,16 +3888,28 @@ def test_managed_pixel_reconcile_is_noop_when_this_install_does_not_own_pixel(
     assert _mod._reconcile_ods_managed_pixel_model("safe-model", 65536) == "not_installed"
 
 
+@pytest.mark.parametrize(
+    ("gateway_setting", "expected_gateway_port"),
+    [
+        ("PIXEL_GATEWAY_PORT=18790\n", "18790"),
+        ('PIXEL_GATEWAY_PORT="18790"\n', "18790"),
+        ("PIXEL_GATEWAY_PORT=65535\n", "65535"),
+        ("", "18789"),
+    ],
+)
 def test_managed_pixel_reconcile_uses_positional_args_and_minimal_environment(
     tmp_path,
     monkeypatch,
+    gateway_setting,
+    expected_gateway_port,
 ):
     install_dir = tmp_path / "install"
     home = tmp_path / "owner-home"
     install_dir.mkdir()
     home.mkdir()
     (install_dir / ".env").write_text(
-        "PIXEL_SOURCE_URL=https://github.com/Osmantic/Pixel.git\n",
+        "PIXEL_SOURCE_URL=https://github.com/Osmantic/Pixel.git\n"
+        f"{gateway_setting}",
         encoding="utf-8",
     )
     captured = {}
@@ -3864,7 +3949,41 @@ def test_managed_pixel_reconcile_uses_positional_args_and_minimal_environment(
     assert captured["kwargs"]["env"]["PIXEL_SOURCE_URL"] == (
         "https://github.com/Osmantic/Pixel.git"
     )
+    assert captured["kwargs"]["env"]["PIXEL_GATEWAY_PORT"] == expected_gateway_port
     assert "UNRELATED_SECRET" not in captured["kwargs"]["env"]
+
+
+@pytest.mark.parametrize(
+    "gateway_port",
+    ["", "   ", "0", "01", "65536", "123456", "abc", "-1"],
+)
+def test_managed_pixel_reconcile_rejects_invalid_gateway_port(
+    tmp_path,
+    monkeypatch,
+    gateway_port,
+):
+    install_dir = tmp_path / "install"
+    home = tmp_path / "owner-home"
+    install_dir.mkdir()
+    home.mkdir()
+    (install_dir / ".env").write_text(
+        f"PIXEL_GATEWAY_PORT={gateway_port}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+    monkeypatch.setattr(
+        _mod,
+        "_ods_managed_pixel_identity",
+        lambda: ("pixel-owner", home),
+    )
+    monkeypatch.setattr(
+        _mod.subprocess,
+        "run",
+        lambda *_args, **_kwargs: pytest.fail("an invalid port must fail before subprocess"),
+    )
+
+    with pytest.raises(RuntimeError, match="gateway port is invalid"):
+        _mod._reconcile_ods_managed_pixel_model("safe-model", 65536)
 
 
 def test_managed_pixel_reconcile_rejects_context_below_pixel_contract(monkeypatch):
@@ -4305,6 +4424,39 @@ class TestModelActivateRollback:
                     ]
                 },
                 {"GPU_BACKEND": "nvidia"},
+            )
+
+    def test_nvidia_profile_selection_fails_closed_when_system_ram_is_too_low(
+        self,
+        monkeypatch,
+    ):
+        monkeypatch.setattr(_mod, "_nvidia_vram_gb", lambda: 8.0)
+        monkeypatch.setattr(_mod, "_system_ram_gb", lambda: 13)
+        monkeypatch.setattr(_mod.platform, "machine", lambda: "x86_64")
+
+        with pytest.raises(
+            RuntimeError,
+            match=r"available system RAM \(13GB\).*requires 15GB.*unprofiled",
+        ):
+            _mod._select_runtime_profile(
+                {
+                    "runtime_profiles": [
+                        {
+                            "id": "nvidia-8gb-profile",
+                            "backend": "nvidia",
+                            "host_arch": ["amd64"],
+                            "memory_type": "discrete",
+                            "vram_min_gb": 7.5,
+                            "vram_max_gb": 8.5,
+                            "system_ram_min_gb": 15,
+                        }
+                    ]
+                },
+                {
+                    "GPU_BACKEND": "nvidia",
+                    "GPU_MEMORY_TYPE": "discrete",
+                    "SYSTEM_RAM_GB": "13",
+                },
             )
 
     def test_nvidia_vram_probe_uses_wsl_bridge_outside_service_path(
@@ -6897,7 +7049,7 @@ class TestModelActivateRollback:
             assert provider["options"]["apiKey"] == "no-key"
             assert provider["models"][expected_model_id]["limit"] == {
                 "context": 4096,
-                "output": 4096,
+                "output": 1024,
             }
         primary_config = json.loads(primary.read_text(encoding="utf-8"))
         compat_config = json.loads(compat.read_text(encoding="utf-8"))
@@ -6969,7 +7121,7 @@ class TestModelActivateRollback:
             assert "qwen3-coder-next" not in provider["models"]
             assert provider["models"]["ods/current"]["limit"] == {
                 "context": 4096,
-                "output": 4096,
+                "output": 1024,
             }
 
     def test_opencode_update_failure_restores_exact_files(self, tmp_path, monkeypatch):
@@ -7371,7 +7523,70 @@ class TestModelActivateRollback:
         assert env_path.read_text(encoding="utf-8") == expected_env
         assert restarts == []
 
-    def test_dependent_health_failure_rolls_back_previous_route(
+    def test_transient_hermes_unhealthy_recreates_once_without_rollback(
+        self, tmp_path, monkeypatch,
+    ):
+        install_dir, env_path, _env_text, _models_ini, _ini_text, _yaml, _yaml_text = (
+            _write_model_activation_fixture(tmp_path)
+        )
+        hermes_live = install_dir / "data" / "hermes" / "config.yaml"
+        hermes_template = (
+            install_dir / "extensions" / "services" / "hermes" / "cli-config.yaml.template"
+        )
+        hermes_live.parent.mkdir(parents=True)
+        hermes_template.parent.mkdir(parents=True)
+        old_config = (
+            "model:\n"
+            '  default: "old-model.gguf"\n'
+            "  context_length: 2048\n"
+        )
+        hermes_live.write_text(old_config, encoding="utf-8")
+        hermes_template.write_text(old_config, encoding="utf-8")
+        states = {
+            "ods-litellm": {"exists": False, "running": False},
+            "ods-hermes": {"exists": True, "running": True},
+            "ods-openclaw": {"exists": False, "running": False},
+            "ods-perplexica": {"exists": False, "running": False},
+        }
+        runtime_models = []
+        restart_calls = []
+        health_checks = []
+
+        def restart(container, _state=None, **kwargs):
+            restart_calls.append((container, kwargs.get("recreate")))
+            return container == "ods-hermes"
+
+        def check_health(container):
+            health_checks.append(container)
+            if len(health_checks) == 1:
+                raise _mod.ContainerUnhealthyError("simulated transient unhealthy Hermes")
+
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.setattr(_mod, "_capture_container_state", lambda name: states[name])
+        monkeypatch.setattr(
+            _mod,
+            "_compose_restart_llama_server",
+            lambda env: runtime_models.append(env["GGUF_FILE"]),
+        )
+        monkeypatch.setattr(_mod, "_wait_for_model_readiness", _mock_verified_readiness)
+        monkeypatch.setattr(_mod, "_restart_existing_container", restart)
+        monkeypatch.setattr(_mod, "_verify_running_hermes_route", lambda *_args: None)
+        monkeypatch.setattr(_mod, "_wait_for_container_health", check_health)
+        handler = _ResponseHandler()
+
+        _mod.AgentHandler._do_model_activate(handler, "target-model")
+
+        assert handler.response_code == 200
+        assert runtime_models == ["new-model.gguf"]
+        assert [call for call in restart_calls if call[0] == "ods-hermes"] == [
+            ("ods-hermes", True),
+            ("ods-hermes", True),
+        ]
+        assert health_checks == ["ods-hermes", "ods-hermes"]
+        assert _mod.load_env(env_path)["GGUF_FILE"] == "new-model.gguf"
+        assert handler.parse_response()["consumers"]["hermes"] == "restarted"
+
+    def test_repeated_hermes_unhealthy_rolls_back_previous_route(
         self, tmp_path, monkeypatch,
     ):
         install_dir, env_path, env_text, _models_ini, _ini_text, _yaml, _yaml_text = (
@@ -7413,8 +7628,8 @@ class TestModelActivateRollback:
             nonlocal health_checks
             assert container == "ods-hermes"
             health_checks += 1
-            if health_checks == 1:
-                raise RuntimeError("simulated unhealthy Hermes")
+            if health_checks <= 2:
+                raise _mod.ContainerUnhealthyError("simulated unhealthy Hermes")
 
         monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
         monkeypatch.setattr(_mod, "_capture_container_state", lambda name: states[name])
@@ -7445,7 +7660,7 @@ class TestModelActivateRollback:
         assert handler.response_code == 500
         assert handler.parse_response()["rolled_back"] is True
         assert runtime_models == ["new-model.gguf", "old-model.gguf"]
-        assert health_checks == 2
+        assert health_checks == 3
         assert env_path.read_text(encoding="utf-8") == env_text
         assert hermes_live.read_text(encoding="utf-8") == old_config
         assert json.loads(completion_receipt.read_text(encoding="utf-8")) == old_receipt
@@ -7699,6 +7914,32 @@ class TestModelActivateRollback:
         )
 
         assert json.loads(compat.read_text(encoding="utf-8"))["theme"] == "current"
+
+    @pytest.mark.parametrize(
+        ("context_length", "expected_output"),
+        [(4096, 1024), (32768, 8192), (65536, 16384), (131072, 32768)],
+    )
+    def test_model_switch_opencode_output_reserves_prompt_context(
+        self, tmp_path, monkeypatch, context_length, expected_output,
+    ):
+        config_path = tmp_path / "config.json"
+        config_path.write_text("{}", encoding="utf-8")
+        monkeypatch.setattr(_mod, "_opencode_config_paths", lambda: (config_path,))
+        snapshot = _mod._capture_opencode_config()
+
+        _mod._update_opencode_config(
+            {"ODS_MODEL_SWITCHBOARD": "enabled", "LITELLM_KEY": "test-key"},
+            snapshot,
+            "qwen3.5-27b-q4",
+            context_length,
+        )
+
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        assert config["model"] == "llama-server/ods/current"
+        assert config["small_model"] == config["model"]
+        limit = config["provider"]["llama-server"]["models"]["ods/current"]["limit"]
+        assert limit == {"context": context_length, "output": expected_output}
+        assert limit["output"] < limit["context"]
 
     def test_litellm_is_verified_before_active_opencode_restarts(
         self, tmp_path, monkeypatch,

@@ -80,7 +80,10 @@ export async function handleModelControl(req, res, {ownerKey, request = requestA
     let payload;
     try {payload=JSON.parse(Buffer.concat(chunks).toString('utf8'));} catch {return reply(400,{error:'invalid-request'});}
     if (!validModelControl(payload)) return reply(400,{error:'invalid-request'});
-    const result=await request(payload,{timeout:payload.operation === 'model-status' ? 20000 : 305000});
+    // The root socket also serves ODS installer model promotion, whose
+    // model-status/begin/finish shapes differ from browser model switching.
+    const controllerPayload={...payload,operation:payload.operation.replace(/^model-/, 'model-route-')};
+    const result=await request(controllerPayload,{timeout:payload.operation === 'model-status' ? 20000 : 305000});
     return reply(result.status,result.status === 200 ? publicModelControl(result.body) : {error:'model-change-unconfirmed'});
   } catch {return reply(503,{error:'model-control-unavailable'});}
 }

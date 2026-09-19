@@ -164,6 +164,7 @@ load_model_selector_env_from_output() {
         MODEL_RUNTIME_PROFILE_LABEL \
         MODEL_RUNTIME_PROFILE_SOURCE \
         MODEL_SELECTION_SOURCE \
+        PIXEL_AGENT_MODEL_READY \
         ODS_ACTIVE_MODEL_STORE \
         LLAMA_SERVER_IMAGE \
         LLAMA_SERVER_MEMORY_LIMIT \

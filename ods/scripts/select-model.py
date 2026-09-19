@@ -200,12 +200,20 @@ def selector_required_memory_gb(model: dict[str, Any]) -> float:
     return round(max(declared, size_gb + estimated_context_kv_gb(model)), 2)
 
 
-def matching_runtime_profile(model: dict[str, Any], backend: str, memory_type: str,
-                             vram_mb: int, ram_gb: int, host_arch: str) -> dict[str, Any] | None:
+def hardware_matching_profiles(model: dict[str, Any], backend: str, memory_type: str,
+                               vram_mb: int, host_arch: str) -> list[dict[str, Any]]:
+    """Return profiles anchored to this hardware before system-RAM filtering.
+
+    Once a catalog model has a profile for this exact backend/architecture/
+    memory envelope, that profile is its safety contract. If the system-RAM
+    requirement is not met, callers must not silently score the same model as
+    though the hardware-specific profile did not exist.
+    """
     backend_key = normalize_key(backend)
     memory_key = normalize_key(memory_type)
     arch_key = normalize_host_arch(host_arch)
     vram_gb = float(vram_mb or 0) / 1024.0
+    matches: list[dict[str, Any]] = []
     for profile in model.get("runtime_profiles", []) or []:
         if not isinstance(profile, dict):
             continue
@@ -222,6 +230,18 @@ def matching_runtime_profile(model: dict[str, Any], backend: str, memory_type: s
                 continue
             if profile.get("vram_max_gb") is not None and vram_gb > float(profile["vram_max_gb"]):
                 continue
+        except (TypeError, ValueError):
+            continue
+        matches.append(profile)
+    return matches
+
+
+def matching_runtime_profile(model: dict[str, Any], backend: str, memory_type: str,
+                             vram_mb: int, ram_gb: int, host_arch: str) -> dict[str, Any] | None:
+    for profile in hardware_matching_profiles(
+        model, backend, memory_type, vram_mb, host_arch
+    ):
+        try:
             if profile.get("system_ram_min_gb") is not None and float(ram_gb or 0) < float(profile["system_ram_min_gb"]):
                 continue
         except (TypeError, ValueError):
@@ -324,6 +344,10 @@ def rank_models(catalog: list[dict[str, Any]], capacity_gb: float, profile: str,
             runtime_profile = matching_runtime_profile(
                 model, backend, memory_type, vram_mb, ram_gb, host_arch
             )
+            if runtime_profile is None and hardware_matching_profiles(
+                model, backend, memory_type, vram_mb, host_arch
+            ):
+                continue
             candidate_model = (
                 {**model, "_runtime_profile": runtime_profile}
                 if runtime_profile
@@ -370,24 +394,35 @@ def rank_models(catalog: list[dict[str, Any]], capacity_gb: float, profile: str,
         if not size_within_ceiling(model, max_size_mb):
             continue
         runtime_profile = matching_runtime_profile(model, backend, memory_type, vram_mb, ram_gb, host_arch)
+        if runtime_profile is None and hardware_matching_profiles(
+            model, backend, memory_type, vram_mb, host_arch
+        ):
+            continue
         candidate_model = {**model, "_runtime_profile": runtime_profile} if runtime_profile else model
         required = effective_required_memory_gb(candidate_model, runtime_profile)
         if not fits(required, capacity_gb):
             continue
         candidates.append((score_model(candidate_model, capacity_gb, profile), candidate_model))
     if not candidates:
+        # A hardware-matching profile is a safety boundary. If it failed its
+        # RAM gate, do not reintroduce that model through the generic fallback.
         fallback_pool = [
             model for model in catalog
             if (not installable_only or install_recommendation_allowed(model))
             and family_allowed(model, profile)
             and size_within_ceiling(model, max_size_mb)
+            and not hardware_matching_profiles(
+                model, backend, memory_type, vram_mb, host_arch
+            )
         ] or [
             model for model in catalog
             if (not installable_only or install_recommendation_allowed(model)) and family_allowed(model, profile)
-        ] or [
-            model for model in catalog
-            if install_recommendation_allowed(model)
-        ] or catalog
+            and not hardware_matching_profiles(
+                model, backend, memory_type, vram_mb, host_arch
+            )
+        ]
+        if not fallback_pool:
+            return []
         fallback = min(fallback_pool, key=lambda m: float(m.get("vram_required_gb") or 999))
         return [fallback]
     candidates.sort(
@@ -555,10 +590,11 @@ def main() -> int:
         args.agent_ready_only,
     )
     if not ranked:
-        print(
-            "error: no explicitly verified Pixel agent model fits the detected hardware",
-            file=sys.stderr,
-        )
+        if args.agent_ready_only:
+            message = "no explicitly verified Pixel agent model fits the detected hardware"
+        else:
+            message = "no installable model fits the detected hardware runtime profiles"
+        print(f"error: {message}", file=sys.stderr)
         return 2
     arch_selected, arch_policy_tag = (None, None)
     if not args.agent_ready_only:
@@ -643,6 +679,7 @@ def main() -> int:
         "MODEL_RECOMMENDATION_CONFIDENCE": payload["confidence"],
         "MODEL_RECOMMENDATION_REASON": payload["reason"],
         "MODEL_RECOMMENDED_ALTERNATIVES": alt_value,
+        "PIXEL_AGENT_MODEL_READY": "true" if pixel_agent_ready(selected) else "false",
     }
     if runtime_profile:
         env["MODEL_RUNTIME_PROFILE"] = runtime_profile.get("id", "")

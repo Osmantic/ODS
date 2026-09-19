@@ -1101,7 +1101,12 @@ test('keeps Run visible with the VRAM requirement when the model does not fit', 
   const loadModel = vi.fn()
   useModelsMock.mockReturnValue(baseState({
     loadModel,
-    models: [model({ status: 'downloaded', fitsVram: false, vramRequired: 12 })],
+    models: [model({
+      status: 'downloaded',
+      fitsVram: false,
+      vramRequired: 12,
+      contextOptions: [{ contextLength: 65536, estimatedRequired: 12, fitsVram: false }],
+    })],
   }))
 
   renderModels()
@@ -1111,6 +1116,38 @@ test('keeps Run visible with the VRAM requirement when the model does not fit', 
   expect(runButton).toHaveAttribute('title', 'Requires 12 GB VRAM; the detected GPU has 8.0 GB total.')
   fireEvent.click(runButton)
   expect(loadModel).not.toHaveBeenCalled()
+})
+
+test('runs a downloaded model at the highest fitting Hermes context when its default context exceeds VRAM', () => {
+  const loadModel = vi.fn()
+  useModelsMock.mockReturnValue(baseState({
+    loadModel,
+    models: [model({
+      id: 'granite4.1-3b-q4',
+      name: 'Granite 4.1 3B',
+      status: 'downloaded',
+      contextLength: 131072,
+      maxContextLength: 131072,
+      estimatedRequired: 12.05,
+      vramRequired: 4,
+      fitsVram: false,
+      contextOptions: [
+        { contextLength: 16384, estimatedRequired: 4, fitsVram: true },
+        { contextLength: 65536, estimatedRequired: 7.05, fitsVram: true },
+        { contextLength: 131072, estimatedRequired: 12.05, fitsVram: false, recommended: true },
+      ],
+    })],
+  }))
+
+  renderModels()
+
+  expect(screen.getByText('Shorter context')).toBeInTheDocument()
+  const runButton = screen.getByRole('button', { name: /^run$/i })
+  expect(runButton).toBeEnabled()
+  fireEvent.click(runButton)
+  expect(screen.getByRole('button', { name: 'Run model' })).toBeEnabled()
+  confirmModelRun()
+  expect(loadModel).toHaveBeenCalledWith('granite4.1-3b-q4', { contextLength: 65536 })
 })
 
 test('allows the selected install model to run even when the VRAM estimate is high', () => {

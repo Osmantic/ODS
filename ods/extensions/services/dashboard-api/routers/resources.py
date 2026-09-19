@@ -5,7 +5,7 @@ import logging
 import re
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from config import DATA_DIR, GPU_BACKEND, SERVICES
 from helpers import dir_size_gb
@@ -135,15 +135,19 @@ async def _resource_snapshot(key: str, collector, ttl: int):
 
 
 @router.get("/api/services/resources")
-async def service_resources(api_key: str = Depends(verify_api_key)):
+async def service_resources(service: list[str] | None = Query(default=None, max_length=50), include_disk: bool = True, api_key: str = Depends(verify_api_key)):
     """Get per-service resource metrics (CPU, RAM, disk)."""
     from main import _cache  # noqa: PLC0415 — deferred import to avoid circular dependency
 
+    selected = set(service or [])
+    if any(not _SERVICE_ID_RE.fullmatch(sid) for sid in selected):
+        raise HTTPException(status_code=400, detail="Invalid service filter")
+
     container_stats = _cache.get("service_resources_containers")
-    disk_usage = _cache.get("service_resources_disk")
+    disk_usage = _cache.get("service_resources_disk") if include_disk else {}
 
     need_containers = container_stats is None
-    need_disk = disk_usage is None
+    need_disk = include_disk and disk_usage is None
 
     if need_containers or need_disk:
         tasks = []
@@ -213,13 +217,23 @@ async def service_resources(api_key: str = Depends(verify_api_key)):
     total_mem = sum(s.get("memory_used_mb", 0) for s in container_stats)
     total_disk = sum(d.get("data_gb", 0) for d in disk_usage.values())
 
+    if selected:
+        unknown = selected - {entry["id"] for entry in services}
+        if unknown:
+            raise HTTPException(status_code=404, detail=f"Unknown services: {', '.join(sorted(unknown))}")
+        services = [entry for entry in services if entry["id"] in selected]
+        total_cpu = sum(entry["container"].get("cpu_percent", 0) for entry in services if entry["container"])
+        total_mem = sum(entry["container"].get("memory_used_mb", 0) for entry in services if entry["container"])
+        total_disk = sum(entry["disk"].get("data_gb", 0) for entry in services if entry["disk"])
+
     return {
         "services": services,
         "totals": {
             "cpu_percent": round(total_cpu, 1),
             "memory_used_mb": round(total_mem),
-            "disk_data_gb": round(total_disk, 2),
+            "disk_data_gb": round(total_disk, 2) if include_disk else None,
         },
+        "scope": {"services": sorted(selected) if selected else None, "disk_included": include_disk},
         "caveats": {
             "docker_desktop_memory": GPU_BACKEND == "apple",
         },

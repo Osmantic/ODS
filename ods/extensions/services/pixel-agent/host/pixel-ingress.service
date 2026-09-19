@@ -14,6 +14,11 @@ Group=ods-pixel
 SupplementaryGroups=__PIXEL_SERVICE_GID__
 ExecStart=/usr/bin/env node /usr/local/libexec/ods-pixel-ingress.mjs
 Restart=on-failure
+# Model-route reconciliation uses SIGHUP as a narrowly scoped, owner-safe
+# request for systemd to replace this process. systemd normally treats SIGHUP
+# as a clean termination, so force a restart for that signal while preserving
+# ordinary clean-stop behavior.
+RestartForceExitStatus=SIGHUP
 RestartSec=5
 TimeoutStartSec=30
 TimeoutStopSec=20
