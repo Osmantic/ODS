@@ -7,7 +7,7 @@ def valid_change(value):
             and value['mode'] in ('sandboxed', 'full-access')
             and type(value['confirmed']) is bool
             and (value['mode'] != 'full-access' or value['confirmed'])
-            and type(value['revision']) is str and re.fullmatch('[a-f0-9]{64}', value['revision']))
+            and type(value['revision']) is str and re.fullmatch('[a-f0-9]{64}', value['revision']) is not None)
 
 
 def public_status(value):
