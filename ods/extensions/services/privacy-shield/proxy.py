@@ -16,8 +16,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Depends, HTTPException, Security, WebSocket
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from functools import lru_cache
-from cachetools import TTLCache
+from cachetools import TTLCache, cached
 
 from pii_scrubber import PrivacyShield, StreamRestorer
 from key_management import resolve_shield_api_key
@@ -127,12 +126,12 @@ sessions = TTLCache(maxsize=SESSION_MAXSIZE, ttl=SESSION_TTL)
 
 
 class CachedPrivacyShield(PrivacyShield):
-    """PrivacyShield with LRU cache for PII patterns."""
+    """PrivacyShield with a bounded, expiring cache for short request text."""
 
     def __init__(self, backend_client=None):
         super().__init__(backend_client)
         if CACHE_ENABLED:
-            self._scrub_cached = lru_cache(maxsize=CACHE_SIZE)(self._scrub_impl)
+            self._scrub_cached = cached(TTLCache(maxsize=CACHE_SIZE, ttl=CACHE_TTL))(self._scrub_impl)
 
     def _scrub_impl(self, text: str) -> str:
         """Internal scrub implementation."""
