@@ -1,0 +1,55 @@
+services:
+  dagu:
+    image: ghcr.io/dagucloud/dagu:2.16.6@sha256:b242dc7b605aa20d6db78ba192beb82135d390025a7d9c8dfd7f08e14464c69f
+    container_name: ods-dagu
+    user: "1000:1000"
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    entrypoint: [/usr/local/bin/tini, -g, --]
+    command: [dagu, start-all]
+    environment:
+      DAGU_HOME: /var/lib/dagu
+      DAGU_HOST: 0.0.0.0
+      DAGU_PORT: "8080"
+      DAGU_AUTH_MODE: builtin
+      DAGU_AUTH_BUILTIN_INITIAL_ADMIN_USERNAME: ods
+      DAGU_AUTH_BUILTIN_INITIAL_ADMIN_PASSWORD: "${DAGU_ADMIN_PASSWORD:?Set DAGU_ADMIN_PASSWORD before enabling Dagu}"
+      DAGU_AUTH_TOKEN_SECRET: "${DAGU_TOKEN_SECRET:?Set DAGU_TOKEN_SECRET before enabling Dagu}"
+      DAGU_AUTH_TOKEN_TTL: 1h
+      DAGU_DEFAULT_EXECUTION_MODE: local
+      DAGU_COORDINATOR_HOST: 127.0.0.1
+      DAGU_COORDINATOR_ADVERTISE: 127.0.0.1
+      DAGU_COORDINATOR_ENABLED: "false"
+      DAGU_TUNNEL_ENABLED: "false"
+      DAGU_GITSYNC_ENABLED: "false"
+      DAGU_SKIP_EXAMPLES: "true"
+      DAGU_TERMINAL_ENABLED: "false"
+      DAGU_SERVER_METRICS: private
+      DAGU_DEBUG: "false"
+      DAGU_TZ: Etc/UTC
+      GOMEMLIMIT: 512MiB
+      GOMAXPROCS: "2"
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${DAGU_PORT:-8525}:8080"
+    volumes:
+      - ./data/dagu:/var/lib/dagu
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+    stop_grace_period: 45s
+    healthcheck:
+      test: [CMD, curl, --fail, --silent, --output, /dev/null, "http://127.0.0.1:8080/api/v1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    networks: [ods-network]
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1G
+networks:
+  ods-network:
+    external: true
