@@ -1801,3 +1801,15 @@ def test_flatten_bounds_cycles_and_large_depth_without_losing_empty_leaves():
         nested = {"child": nested}
     result = dict_flatten_nested_safe(nested, max_depth=100000)
     assert len(next(iter(result)).split(".")) == 128
+
+
+class TestStringExtractJsonSubstringSafe:
+    def test_valid_json_extraction(self):
+        from helpers import string_extract_json_substring_safe
+        text = "Response text: {\"status\": \"ok\", \"code\": 200} end"
+        assert string_extract_json_substring_safe(text) == {"status": "ok", "code": 200}
+
+    def test_invalid_inputs(self):
+        from helpers import string_extract_json_substring_safe
+        assert string_extract_json_substring_safe(None) is None
+        assert string_extract_json_substring_safe("no json here") is None

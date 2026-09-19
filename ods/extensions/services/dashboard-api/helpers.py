@@ -1417,3 +1417,20 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+import json
+import re
+
+def string_extract_json_substring_safe(text: str | None) -> dict | list | None:
+    """Safely extract and parse valid JSON substring enclosed in braces/brackets from text.
+    Returns None on invalid inputs or parse failures.
+    """
+    if text is None or not isinstance(text, str):
+        return None
+    match = re.search(r'(\{.*\}|\[.*\])', text, re.DOTALL)
+    if not match:
+        return None
+    try:
+        return json.loads(match.group(0))
+    except Exception:
+        return None
