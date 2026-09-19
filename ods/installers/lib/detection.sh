@@ -775,11 +775,11 @@ fix_nvidia_secure_boot() {
     #     automatically after reboot (user doesn't have to re-run manually)
     local svc_name="ods-install-resume"
     local resume_args="--force --non-interactive"
-    $ENABLE_VOICE && resume_args="$resume_args --voice"
-    $ENABLE_WORKFLOWS && resume_args="$resume_args --workflows"
-    $ENABLE_RAG && resume_args="$resume_args --rag"
-    $ENABLE_HERMES && resume_args="$resume_args --hermes"
-    $ENABLE_OPENCLAW && resume_args="$resume_args --openclaw"
+    [[ "${ENABLE_VOICE:-false}" == "true" ]] && resume_args="$resume_args --voice"
+    [[ "${ENABLE_WORKFLOWS:-false}" == "true" ]] && resume_args="$resume_args --workflows"
+    [[ "${ENABLE_RAG:-false}" == "true" ]] && resume_args="$resume_args --rag"
+    [[ "${ENABLE_HERMES:-false}" == "true" ]] && resume_args="$resume_args --hermes"
+    [[ "${ENABLE_OPENCLAW:-false}" == "true" ]] && resume_args="$resume_args --openclaw"
     [[ -n "$TIER" ]] && resume_args="$resume_args --tier $TIER"
     [[ "$OFFLINE_MODE" == "true" ]] && resume_args="$resume_args --offline"
 
