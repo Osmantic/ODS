@@ -32,6 +32,10 @@ QUICK_TIMEOUT=5
 
 # Source service registry for port resolution
 _DT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Always declare the map: without the registry the ${SERVICE_PORTS[x]:-default}
+# fallbacks below would otherwise abort under set -u on an unset subscript,
+# long before any default could apply.
+declare -A SERVICE_PORTS
 if [[ -f "$_DT_DIR/lib/service-registry.sh" ]]; then
     export SCRIPT_DIR="$_DT_DIR"
     . "$_DT_DIR/lib/service-registry.sh"
@@ -50,7 +54,7 @@ WHISPER_PORT="${WHISPER_PORT:-${SERVICE_PORTS[whisper]:-9000}}"
 TTS_HOST="${TTS_HOST:-localhost}"
 TTS_PORT="${TTS_PORT:-${SERVICE_PORTS[tts]:-8880}}"
 EMBEDDING_HOST="${EMBEDDING_HOST:-localhost}"
-EMBEDDING_PORT="${EMBEDDING_PORT:-${SERVICE_PORTS[embeddings]:-9103}}"
+EMBEDDING_PORT="${EMBEDDING_PORT:-${SERVICE_PORTS[embeddings]:-8090}}"
 LIVEKIT_HOST="${LIVEKIT_HOST:-localhost}"
 LIVEKIT_PORT="${LIVEKIT_PORT:-7880}"
 PRIVACY_SHIELD_PORT="${PRIVACY_SHIELD_PORT:-${SERVICE_PORTS[privacy-shield]:-8085}}"
@@ -88,7 +92,9 @@ RESULTS_DETAILS=()
 
 load_env() {
     [[ -f "$_DT_DIR/lib/safe-env.sh" ]] && . "$_DT_DIR/lib/safe-env.sh"
-    load_env_file "$ENV_FILE"
+    if declare -f load_env_file >/dev/null; then
+        load_env_file "$ENV_FILE"
+    fi
 }
 
 log() {
@@ -297,6 +303,14 @@ test_gpu() {
     return 0  # results are tallied by record_result; never surface a status to set -e
 }
 
+# First "id" from /v1/models — the model actually loaded, so requests don't
+# name a checkpoint the install doesn't have ("local" when the list is down).
+_llm_model_id() {
+    local id
+    id=$(curl -s --max-time 10 "$LLM_URL/v1/models" 2>/dev/null | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4) || id=""
+    echo "${id:-local}"
+}
+
 test_llm() {
     print_section "LLM Inference (llama-server)"
 
@@ -313,8 +327,7 @@ test_llm() {
     fi
 
     local model_id
-    model_id=$(curl -s --max-time 10 "$LLM_URL/v1/models" 2>/dev/null | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4) || model_id=""
-    model_id="${model_id:-local}"
+    model_id=$(_llm_model_id)
 
     local payload="{\"model\": \"$model_id\", \"messages\": [{\"role\": \"user\", \"content\": \"Say hello\"}], \"max_tokens\": 10}"
     local response
@@ -347,7 +360,9 @@ test_tool_calling() {
     fi
     
     local tools='[{"type":"function","function":{"name":"get_weather","description":"Get weather","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}}]}'
-    local payload="{\"model\": \"Qwen/Qwen2.5-32B-Instruct-AWQ\", \"messages\": [{\"role\": \"user\", \"content\": \"What is the weather in Tokyo?\"}], \"tools\": $tools, \"tool_choice\": \"auto\", \"max_tokens\": 100}"
+    local model_id
+    model_id=$(_llm_model_id)
+    local payload="{\"model\": \"$model_id\", \"messages\": [{\"role\": \"user\", \"content\": \"What is the weather in Tokyo?\"}], \"tools\": $tools, \"tool_choice\": \"auto\", \"max_tokens\": 100}"
     
     local response
     response=$(curl -s --max-time 30 \
@@ -475,7 +490,9 @@ test_voice_roundtrip() {
     local start_time end_time duration_ms
     start_time=$(_now_ms)
 
-    local llm_payload='{"model": "Qwen/Qwen2.5-32B-Instruct-AWQ", "messages": [{"role": "user", "content": "What is the weather today?"}], "max_tokens": 50}'
+    local model_id
+    model_id=$(_llm_model_id)
+    local llm_payload="{\"model\": \"$model_id\", \"messages\": [{\"role\": \"user\", \"content\": \"What is the weather today?\"}], \"max_tokens\": 50}"
     local llm_response
     llm_response=$(curl -s --max-time 15 \
         -X POST "$LLM_URL/v1/chat/completions" \
@@ -541,8 +558,22 @@ test_privacy_shield() {
 
 test_livekit() {
     print_section "LiveKit Voice Infrastructure"
-    
-    test_tcp "LiveKit Port" "$LIVEKIT_HOST" "$LIVEKIT_PORT" || log "LiveKit port check failed"
+
+    # LiveKit is optional external voice infra (LIVEKIT_* keys in .env.schema) —
+    # nothing in the compose stack deploys it, and test-integration.sh already
+    # treats it as optional. Skip unless it is configured or actually reachable.
+    if ! timeout "$TIMEOUT" bash -c "cat < /dev/null > /dev/tcp/$LIVEKIT_HOST/$LIVEKIT_PORT" 2>/dev/null; then
+        if [[ -z "${LIVEKIT_API_KEY:-}" ]]; then
+            record_result "LiveKit" "skip" "not deployed (optional)"
+            print_test "LiveKit" "skip" "not deployed"
+            return 0
+        fi
+        record_result "LiveKit Port" "fail" "port $LIVEKIT_PORT unreachable"
+        print_test "LiveKit Port" "fail" "port closed"
+    else
+        record_result "LiveKit Port" "pass"
+        print_test "LiveKit Port" "pass"
+    fi
     livekit_health_exit=0
     test_http "LiveKit Health" "http://${LIVEKIT_HOST}:${LIVEKIT_PORT}/" "200" || livekit_health_exit=$?
     [[ $livekit_health_exit -ne 0 ]] && log "LiveKit health check failed (exit $livekit_health_exit)"
@@ -633,7 +664,7 @@ _print_text_summary() {
                 case "${RESULTS_NAMES[$i]}" in
                     "Tool Calling") echo "  - Tool calling failed - check llama-server tool support" ;;
                     "Whisper Port") echo "  - Whisper not running - start: docker compose up whisper" ;;
-                    "TTS Port") echo "  - TTS not running - start: docker compose up kokoro-tts" ;;
+                    "TTS Port") echo "  - TTS not running - start: docker compose up tts" ;;
                 esac
             fi
         done
