@@ -117,6 +117,9 @@ def extract_entry(manifest: dict) -> dict | None:
     if isinstance(service.get("llm"), dict):
         entry["llm"] = service["llm"]
 
+    if service.get("ui_scheme") == "https":
+        entry["ui_scheme"] = "https"
+
     if "startup_check" in service:
         entry["startup_check"] = service.get("startup_check")
     if "startup_timeout" in service:
