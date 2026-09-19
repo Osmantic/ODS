@@ -65,6 +65,8 @@ def validate_preferences(value):
 
 def merge_preferences(current, changes):
     """No mutation of either document; null resets only the named preference."""
+    if type(current) is not dict or type(changes) is not dict:
+        raise SettingsError("invalid-settings-fields")
     return {**validate_preferences(current), **validate_preferences(changes)}
 
 
