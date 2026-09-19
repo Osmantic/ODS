@@ -28,6 +28,11 @@ if [[ -z "$BACKEND_ID" ]]; then
     exit 1
 fi
 
+if [[ ! "$BACKEND_ID" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+    echo "Invalid backend identifier: $BACKEND_ID" >&2
+    exit 1
+fi
+
 CONTRACT_FILE="${ROOT_DIR}/config/backends/${BACKEND_ID}.json"
 if [[ ! -f "$CONTRACT_FILE" ]]; then
     echo "Backend contract not found: $CONTRACT_FILE" >&2
