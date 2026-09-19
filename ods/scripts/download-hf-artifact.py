@@ -16,8 +16,9 @@ from urllib.parse import unquote, urlparse
 
 
 def parse_huggingface_resolve_url(url: str) -> tuple[str, str, str]:
+    url = url.strip()
     parsed = urlparse(url)
-    host = parsed.netloc.lower()
+    host = (parsed.hostname or parsed.netloc).lower()
     if host not in {"huggingface.co", "www.huggingface.co", "hf.co"}:
         raise ValueError("URL is not a Hugging Face URL")
 
