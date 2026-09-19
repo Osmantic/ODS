@@ -1801,3 +1801,14 @@ def test_flatten_bounds_cycles_and_large_depth_without_losing_empty_leaves():
         nested = {"child": nested}
     result = dict_flatten_nested_safe(nested, max_depth=100000)
     assert len(next(iter(result)).split(".")) == 128
+
+
+class TestStringExtractHashtagsSafe:
+    def test_valid_hashtags(self):
+        from helpers import string_extract_hashtags_safe
+        assert string_extract_hashtags_safe("Hello #world #python_3 test") == ["#world", "#python_3"]
+
+    def test_invalid_inputs(self):
+        from helpers import string_extract_hashtags_safe
+        assert string_extract_hashtags_safe(None) == []
+        assert string_extract_hashtags_safe(100) == []
