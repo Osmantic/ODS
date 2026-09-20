@@ -332,8 +332,10 @@ resolve_tier_config() {
 # Map a tier name to its LLM_MODEL value (used by ods model swap)
 tier_to_model() {
     local t="$1"
-    local requested effective
+    local requested effective model
     local previous_tier="${TIER:-}"
+    local previous_tier_set=0
+    [[ -n "${TIER+x}" ]] && previous_tier_set=1
     requested="$(normalize_model_profile "${2:-}")"
     TIER="$t"
     effective="$(effective_model_profile "$requested")"
