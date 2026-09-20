@@ -2353,7 +2353,10 @@ def disable_extension(service_id: str, include_data_info: bool = Query(True), ap
     # Call agent to stop BEFORE renaming (prevents zombie containers)
     agent_ok = _call_agent("stop", service_id)
     if not agent_ok:
-        logger.warning("Could not stop %s via agent — container may still be running", service_id)
+        raise HTTPException(
+            status_code=502,
+            detail=f"Host agent failed to stop extension: {service_id}; leaving it enabled",
+        )
 
     with _extensions_lock():
         # lstat check inside lock (TOCTOU prevention)
