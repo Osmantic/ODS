@@ -1,0 +1,40 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: netdata
+  name: Netdata (Monitoring)
+  description: "Real-time host and container monitoring — CPU, memory, disk, network, and per-container metrics."
+  aliases: [metrics, monitoring]
+  container_name: ods-netdata
+  default_host: netdata
+  port: 19999
+  external_port_env: NETDATA_PORT
+  external_port_default: 19999
+  health: /
+  ui_path: /
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [monitoring, metrics, observability]
+  env_vars:
+    - key: NETDATA_PORT
+      description: "Published HTTP port"
+      default: "19999"
+features:
+  - id: host-monitoring
+    name: Host Monitoring
+    description: "Real-time per-second metrics for the host and every container"
+    icon: Activity
+    category: monitoring
+    requirements:
+      services: [netdata]
+      vram_gb: 0
+    enabled_services_all: [netdata]
+    setup_time: "~2 minutes"
+    priority: 33
+    launch:
+      type: service
+      service: netdata
