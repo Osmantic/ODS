@@ -1,0 +1,43 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: metube
+  name: MeTube (Video Downloader)
+  description: "Self-hosted yt-dlp web UI — queue and download web videos into a local media folder."
+  aliases: [youtube-dl, ytdlp]
+  container_name: ods-metube
+  default_host: metube
+  port: 8081
+  external_port_env: METUBE_PORT
+  external_port_default: 8081
+  health: /
+  ui_path: /
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [video, downloader, media]
+  env_vars:
+    - key: METUBE_PORT
+      description: "Published HTTP port"
+      default: "8081"
+    - key: METUBE_DOWNLOAD_DIR
+      description: "Download directory inside the container"
+      default: "/downloads"
+features:
+  - id: media-downloads
+    name: Media Downloads
+    description: "Queue web videos into a local folder for archiving"
+    icon: Download
+    category: media
+    requirements:
+      services: [metube]
+      vram_gb: 0
+    enabled_services_all: [metube]
+    setup_time: "~2 minutes"
+    priority: 33
+    launch:
+      type: service
+      service: metube
