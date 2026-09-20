@@ -357,6 +357,17 @@
       "llm_model_name": "granite-4.0-h-tiny",
       "llama_server_image": null,
       "app_compatibility": {
+        "pixel_agent": {
+          "status": "unsupported_until_revalidated",
+          "label": "Pixel revalidation required",
+          "reason": "In the 2026-09-20 Tower3 exact-head release cycle, Pixel routed correctly to Granite 4.0 H-Tiny and completed its SSE stream, but returned only the signed route-probe marker instead of the requested verification phrase. ODS Talk, LiteLLM, Open WebUI, OpenCode, and Perplexica passed on the same loaded model with exact route evidence, and the neighboring Granite 4.0 H-1B passed Pixel on Tower3. Keep this model out of Tower3 all-app release coverage until Pixel behavior is revalidated.",
+          "evidence": "ods-public-beta-fleet-green-20260911/release-candidate-01d81ef8-hb71daee-r377/model-ui/cycle-002/tower3/model-ui.json",
+          "recordedAt": "2026-09-20T05:27:38Z",
+          "productSha": "01d81ef885a655909eec4265cbe7f8d204a6b977",
+          "harnessSha": "b71daee54c3a676c52acf6c5355d74e454f627a0",
+          "hostScope": ["tower3"],
+          "expiresAt": "2026-10-20T00:00:00Z"
+        },
         "opencode": {
           "status": "unsupported_until_revalidated",
           "label": "OpenCode revalidation required",

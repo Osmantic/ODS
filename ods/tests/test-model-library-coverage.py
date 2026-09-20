@@ -491,6 +491,21 @@ def test_granite4_h_tiny_opencode_warning_is_scoped_to_tower1():
     assert _agent_viable_for_release(model, host="tower3")
 
 
+def test_granite4_h_tiny_pixel_warning_is_scoped_to_tower3():
+    catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
+    by_id = {model["id"]: model for model in catalog["models"]}
+
+    model = by_id["granite4.0-h-tiny-q4"]
+    pixel = model["app_compatibility"]["pixel_agent"]
+
+    assert pixel["status"] == "unsupported_until_revalidated"
+    assert pixel["hostScope"] == ["tower3"]
+    assert "returned only the signed route-probe marker" in pixel["reason"]
+    assert "cycle-002/tower3/model-ui.json" in pixel["evidence"]
+    assert pixel["productSha"] == "01d81ef885a655909eec4265cbe7f8d204a6b977"
+    assert pixel["harnessSha"] == "b71daee54c3a676c52acf6c5355d74e454f627a0"
+
+
 def test_granite4_h_350m_is_not_agent_viable_after_talk_probe_failure():
     catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
     by_id = {model["id"]: model for model in catalog["models"]}
