@@ -60,12 +60,12 @@ _pkg_retry() {
 _pkg_prepare_pacman_keyrings() {
     command -v pacman-key >/dev/null 2>&1 || return 0
 
-    _pkg_run pacman-key --init 2>>"$LOG_FILE" || true
+    _pkg_run pacman-key --init 2>>"${LOG_FILE:-/dev/null}" || true
 
     local ring
     for ring in archlinux manjaro cachyos; do
         if [[ -f "/usr/share/pacman/keyrings/${ring}.gpg" ]]; then
-            _pkg_run pacman-key --populate "$ring" 2>>"$LOG_FILE" || true
+            _pkg_run pacman-key --populate "$ring" 2>>"${LOG_FILE:-/dev/null}" || true
         fi
     done
 }
