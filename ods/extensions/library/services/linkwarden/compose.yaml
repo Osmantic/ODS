@@ -1,0 +1,62 @@
+services:
+  linkwarden:
+    image: ghcr.io/linkwarden/linkwarden:v2.13.2
+    container_name: ods-linkwarden
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: ["/tmp:size=64m,mode=1777"]
+    environment:
+      DATABASE_URL: "postgresql://postgres:${LINKWARDEN_DB_PASSWORD}@linkwarden-db:5432/postgres"
+      NEXTAUTH_SECRET: "${LINKWARDEN_SECRET:?Set LINKWARDEN_SECRET before enabling Linkwarden}"
+      NEXTAUTH_URL: "http://localhost:${LINKWARDEN_PORT:-3200}"
+      POSTGRES_PASSWORD: "${LINKWARDEN_DB_PASSWORD}"
+      DISABLE_NEW_SSO_USERS: "true"
+    volumes:
+      - ./data/linkwarden:/data/data
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${LINKWARDEN_PORT:-3200}:3200"
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO /dev/null http://127.0.0.1:3000/api/v1/logins || wget -qO /dev/null http://127.0.0.1:3000/ || exit 1']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks: [ods-network, linkwarden-private]
+    depends_on:
+      linkwarden-db:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+  linkwarden-db:
+    image: postgres:17.6-alpine
+    container_name: ods-linkwarden-db
+    restart: unless-stopped
+    security_opt: [no-new-privileges:true]
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_DB: postgres
+      POSTGRES_PASSWORD: "${LINKWARDEN_DB_PASSWORD:?Set LINKWARDEN_DB_PASSWORD before enabling Linkwarden (Bookmarks)}"
+    volumes:
+      - ./data/linkwarden/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD, pg_isready, -U, postgres, -d, postgres]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks: [linkwarden-private]
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+networks:
+  ods-network:
+    external: true
+  linkwarden-private:
+    internal: true

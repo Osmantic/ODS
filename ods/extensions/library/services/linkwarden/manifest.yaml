@@ -1,0 +1,48 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: linkwarden
+  name: Linkwarden (Bookmarks)
+  description: "Bookmark manager with preserved copies — archive web pages (screenshot, PDF, HTML) locally."
+  aliases: [bookmarks, read-later]
+  container_name: ods-linkwarden
+  default_host: linkwarden
+  port: 3200
+  external_port_env: LINKWARDEN_PORT
+  external_port_default: 3200
+  health: /
+  ui_path: /
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [bookmarks, archive, reading]
+  env_vars:
+    - key: LINKWARDEN_PORT
+      description: "Published HTTP port"
+      default: "3200"
+    - key: LINKWARDEN_DB_PASSWORD
+      description: "Password for the private PostgreSQL database"
+      required: true
+      secret: true
+    - key: LINKWARDEN_SECRET
+      description: "NextAuth secret for session signing (openssl rand -hex 32)"
+      required: true
+      secret: true
+features:
+  - id: bookmark-archive
+    name: Bookmark Archive
+    description: "Save and preserve web pages with local copies"
+    icon: Bookmark
+    category: productivity
+    requirements:
+      services: [linkwarden]
+      vram_gb: 0
+    enabled_services_all: [linkwarden]
+    setup_time: "~2 minutes"
+    priority: 33
+    launch:
+      type: service
+      service: linkwarden
