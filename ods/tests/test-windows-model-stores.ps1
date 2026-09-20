@@ -29,7 +29,7 @@ $script:EnvMap = @{ ODS_ACTIVE_MODEL_STORE = 'ssd'; GGUF_FILE = 'model.gguf'; CT
 function Read-ODSEnv { return $script:EnvMap }
 function Sync-ODSNativeInferenceConfig { }
 function Get-ODSEnvValue { param($Name, $Default) if ($script:EnvMap[$Name]) { return $script:EnvMap[$Name] }; return $Default }
-function Resolve-ODSHostAgentPython { return [pscustomobject]@{ FilePath = (Get-Command python -CommandType Application).Source; PrefixArgs = @() } }
+function Resolve-ODSHostAgentPython { return [pscustomobject]@{ FilePath = (Get-Command python -CommandType Application | Where-Object { $_.Source -notlike '*WindowsApps*' } | Select-Object -First 1).Source; PrefixArgs = @() } }
 function Write-AI { param($Message) }
 function Write-AIWarn { param($Message) }
 function Write-AISuccess { param($Message) }
@@ -38,11 +38,10 @@ function Start-Sleep { param($Seconds, $Milliseconds) }
 function Invoke-WebRequest { param($Uri, $TimeoutSec, [switch]$UseBasicParsing, $ErrorAction) return @{ StatusCode = 200 } }
 function Get-NativeInferenceStatus { return @{ Running = $false; Backend = 'llama-server' } }
 function Write-FixtureRegistry {
-    $script:Registry | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $InstallDir 'data/model-stores.json') -Encoding utf8
+    [IO.File]::WriteAllText((Join-Path $InstallDir 'data/model-stores.json'), ($script:Registry | ConvertTo-Json -Depth 8))
 }
 function Write-FixtureEnv {
-    @($script:EnvMap.Keys | ForEach-Object { "$_=$($script:EnvMap[$_])" }) |
-        Set-Content -LiteralPath (Join-Path $InstallDir '.env') -Encoding utf8
+    [IO.File]::WriteAllText((Join-Path $InstallDir '.env'), (($script:EnvMap.Keys | ForEach-Object { "$_=$($script:EnvMap[$_])" }) -join "`n"))
 }
 try {
     foreach ($directory in @('data/models','scripts','extensions/services/dashboard-api')) {
@@ -52,9 +51,18 @@ try {
     [IO.File]::WriteAllText($runtime, 'fixture runtime; never execute')
     [IO.File]::WriteAllText((Join-Path $ssd 'model.gguf'), 'fixture checkpoint')
     Copy-Item -LiteralPath (Join-Path $root 'scripts/resolve-model-store.py') -Destination (Join-Path $InstallDir 'scripts')
-    foreach ($module in @('model_stores.py','env_values.py')) {
+    foreach ($module in @('model_stores.py','env_values.py','model_mtp.py')) {
         Copy-Item -LiteralPath (Join-Path $root "extensions/services/dashboard-api/$module") -Destination (Join-Path $InstallDir 'extensions/services/dashboard-api')
     }
+    # The fixture runtime is a text stub that must never execute; subprocess
+    # probing is covered by dashboard-api/tests/test_model_mtp.py. Keep the
+    # assembled-command shape check so a malformed launch still fails here.
+    Add-Content -LiteralPath (Join-Path $InstallDir 'extensions/services/dashboard-api/model_mtp.py') -Encoding utf8 -Value @'
+
+def validate_runtime_command(command):
+    if not command or "--model" not in command or "--ctx-size" not in command:
+        raise ValueError("assembled native runtime command is malformed")
+'@
     $script:Registry = @{ schemaVersion = 1; stores = @(@{ id = 'ssd'; hostPath = $ssd; containerPath = '/model-stores/ssd';
         profiles = @{ 'model.gguf' = @{ backend = 'vulkan'; executable = $runtime; contextLength = 16384; mtp = $true; draftTokens = 2;
             runtimeSha256 = (Get-FileHash -LiteralPath $runtime -Algorithm SHA256).Hash.ToLowerInvariant();
