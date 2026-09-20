@@ -176,7 +176,11 @@ if ! $DRY_RUN; then
         ENABLE_SEARXNG=false
     fi
     ENABLE_WEB_SEARCH="$ENABLE_SEARXNG"
-    _sync_extension_compose "${ENABLE_RECOMMENDED:-}" litellm    "LiteLLM"       "recommended services not enabled"
+    _litellm_required="${ENABLE_RECOMMENDED:-false}"
+    if [[ "${ODS_MODEL_SWITCHBOARD:-enabled}" == "enabled" ]]; then
+        _litellm_required=true
+    fi
+    _sync_extension_compose "$_litellm_required" litellm    "LiteLLM"       "model switchboard gateway not enabled"
     _sync_extension_compose "${ENABLE_SEARXNG:-}"     searxng    "SearXNG"       "web search backend not required"
     _sync_extension_compose "${ENABLE_RECOMMENDED:-}" token-spy  "Token Spy"     "recommended services not enabled"
     _sync_extension_compose "${ENABLE_VOICE:-}"      whisper    "Whisper (STT)" "voice not enabled"
