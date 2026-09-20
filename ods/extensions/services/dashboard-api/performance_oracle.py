@@ -374,6 +374,23 @@ def _app_compatibility_entry(
     default_label: str,
     runtime_context: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
+    if isinstance(raw, dict):
+        # A fresh positive result on one host must not erase an older negative
+        # result on other hosts. Only an explicitly host-scoped override can
+        # replace the default record for a matching runtime context.
+        overrides = raw.get("scopedOverrides")
+        if isinstance(overrides, list):
+            for override in overrides:
+                if (
+                    isinstance(override, dict)
+                    and _scope_values(
+                        override, "hostScope", "host_scope", "fleetHostScope", "fleet_host_scope"
+                    )
+                    and str(override.get("status") or "").strip()
+                    and _compatibility_scope_matches(override, runtime_context)
+                ):
+                    raw = override
+                    break
     if isinstance(raw, dict) and not _compatibility_scope_matches(raw, runtime_context):
         return {
             "status": "unknown",

@@ -456,6 +456,66 @@ def test_host_scoped_app_compatibility_applies_only_to_matching_host():
     assert strixy["agentViability"]["status"] == "unknown"
 
 
+def test_host_scoped_positive_override_preserves_global_negative_elsewhere():
+    model = {
+        "id": "smollm3-3b-q4",
+        "app_compatibility": {
+            "perplexica": {
+                "status": "unsupported_until_revalidated",
+                "reason": "Earlier cross-platform challenge failure",
+                "scopedOverrides": [
+                    {
+                        "status": "verified",
+                        "label": "Perplexica verified on Strixy",
+                        "reason": "Fresh exact Strixy proof",
+                        "hostScope": ["strixy"],
+                        "llmBackendScope": ["lemonade"],
+                    },
+                    {"status": "verified", "reason": "Unsafe unscoped result"},
+                ],
+            },
+        },
+    }
+
+    strixy = model_app_compatibility(
+        model, runtime_context={"hosts": ["strixy"], "llmBackend": "lemonade"},
+    )
+    wrong_backend = model_app_compatibility(
+        model, runtime_context={"hosts": ["strixy"], "llmBackend": "llama-server"},
+    )
+    tower2 = model_app_compatibility(
+        model, runtime_context={"hosts": ["tower2"], "llmBackend": "lemonade"},
+    )
+
+    assert strixy["perplexica"] == {
+        "status": "verified",
+        "label": "Perplexica verified on Strixy",
+        "reason": "Fresh exact Strixy proof",
+    }
+    assert wrong_backend["perplexica"]["status"] == "unsupported_until_revalidated"
+    assert tower2["perplexica"]["status"] == "unsupported_until_revalidated"
+
+
+def test_real_smollm3_strixy_revalidation_is_not_global():
+    model = next(
+        model for model in _official_model_catalog() if model["id"] == "smollm3-3b-q4"
+    )
+    strixy = model_app_compatibility(
+        model, runtime_context={"hosts": ["strixy"], "llmBackend": "lemonade"},
+    )
+    windows = model_app_compatibility(
+        model, runtime_context={"hosts": ["windows-laptop"], "llmBackend": "llama-server"},
+    )
+    tower2 = model_app_compatibility(
+        model, runtime_context={"hosts": ["tower2"], "llmBackend": "lemonade"},
+    )
+
+    assert strixy["perplexica"]["status"] == "verified"
+    assert "r391/cycle-001/strixy-wsl-beta" in strixy["perplexica"]["evidence"]
+    assert windows["perplexica"]["status"] == "unsupported_until_revalidated"
+    assert tower2["perplexica"]["status"] == "unsupported_until_revalidated"
+
+
 def test_pixel_compatibility_is_explicit_and_host_scoped():
     model = {
         "id": "pixel-probe-model",
