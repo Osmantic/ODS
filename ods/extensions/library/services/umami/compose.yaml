@@ -1,0 +1,60 @@
+services:
+  umami:
+    image: ghcr.io/umami-software/umami:postgresql-v3.0.2
+    container_name: ods-umami
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: ["/tmp:size=64m,mode=1777"]
+    environment:
+      DATABASE_URL: "postgres://umami:${UMAMI_DB_PASSWORD}@umami-db/umami"
+      DATABASE_TYPE: postgresql
+      APP_SECRET: "${UMAMI_APP_SECRET:?Set UMAMI_APP_SECRET before enabling Umami}"
+      TRACKER_SCRIPT_NAME: "script.js"
+      DISABLE_TELEMETRY: "1"
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${UMAMI_PORT:-3030}:3030"
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO /dev/null http://127.0.0.1:3000/api/heartbeat || exit 1']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks: [ods-network, umami-private]
+    depends_on:
+      umami-db:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+  umami-db:
+    image: postgres:17.6-alpine
+    container_name: ods-umami-db
+    restart: unless-stopped
+    security_opt: [no-new-privileges:true]
+    environment:
+      POSTGRES_USER: umami
+      POSTGRES_DB: umami
+      POSTGRES_PASSWORD: "${UMAMI_DB_PASSWORD:?Set UMAMI_DB_PASSWORD before enabling Umami (Analytics)}"
+    volumes:
+      - ./data/umami/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD, pg_isready, -U, umami, -d, umami]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks: [umami-private]
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+networks:
+  ods-network:
+    external: true
+  umami-private:
+    internal: true
