@@ -104,23 +104,27 @@ signal()   { echo -e "  ${GRN}░▒▓█▓▒░${NC} $1" | tee -a "$LOG_FILE
 
 # Consistent section header
 chapter() {
-  local title="$1"
-  echo ""
-  bootline
-  echo -e "${BGRN}${title}${NC}"
-  bootline
+    local title="$1"
+    local rule
+    rule="$(printf '=%.0s' $(seq 1 60 2>/dev/null || yes '=' | head -n 60 | tr -d '\n'))"
+    echo ""
+    printf '  %s%s%s\n' "${DGRN:-}" "$rule" "${NC:-}"
+    printf '  %s%s%s\n' "${WHT:-}" "$title" "${NC:-}"
+    printf '  %s%s%s\n' "${DGRN:-}" "$rule" "${NC:-}"
 }
 
-# Phase screen
 show_phase() {
-  local phase=$1 total=$2 name=$3 estimate=$4
-  local ts
-  ts=$(date '+%H:%M:%S')
-  echo ""
-  bootline
-  echo -e "${BGRN}ODSGATE SEQUENCE [${ts}]${NC}  ${GRN}PHASE ${phase}/${total} — ${name}${NC}"
-  [[ -n "$estimate" ]] && echo -e "${AMB}EST. TIME:${NC} ${estimate}"
-  bootline
+    local phase=$1 total=$2 name=$3 estimate=$4
+    local elapsed rule
+    elapsed=$(install_elapsed)
+    rule="$(printf -- '-%.0s' $(seq 1 60 2>/dev/null || yes '-' | head -n 60 | tr -d '\n'))"
+    echo ""
+    printf '  %sODSGATE SEQUENCE [%s]%s  %sPHASE %s/%s%s %s-- %s%s\n' \
+        "${DGRN:-}" "$elapsed" "${NC:-}" "${WHT:-}" "$phase" "$total" "${NC:-}" "${BGRN:-}" "$name" "${NC:-}"
+    if [[ -n "$estimate" ]]; then
+        printf '  %sEstimated: %s%s\n' "${DGRN:-}" "$estimate" "${NC:-}"
+    fi
+    printf '  %s%s%s\n' "${DGRN:-}" "$rule" "${NC:-}"
 }
 
 # Cinematic boot splash
