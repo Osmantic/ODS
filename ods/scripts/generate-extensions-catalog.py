@@ -24,6 +24,10 @@ EXCLUDED_IDS = {"privacy-shield"}
 SERVICE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
 
+class CatalogGenerationError(ValueError):
+    """Raised when a manifest cannot be represented in the catalog."""
+
+
 def parse_args() -> argparse.Namespace:
     script_dir = Path(__file__).resolve().parent
     parser = argparse.ArgumentParser(
@@ -53,38 +57,34 @@ def strip_secrets(env_vars: list[dict]) -> list[dict]:
     return cleaned
 
 
-def load_manifest(manifest_path: Path) -> dict | None:
-    """Load and validate a single manifest file. Returns None on failure."""
+def load_manifest(manifest_path: Path) -> dict:
+    """Load and validate one manifest, failing with its path on any error."""
     try:
         data = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
     except (yaml.YAMLError, OSError) as e:
-        print(f"WARNING: Failed to read {manifest_path}: {e}", file=sys.stderr)
-        return None
+        raise CatalogGenerationError(f"{manifest_path}: failed to read manifest: {e}") from e
 
     if not isinstance(data, dict):
-        print(f"WARNING: Skipping {manifest_path}: root is not a mapping", file=sys.stderr)
-        return None
+        raise CatalogGenerationError(f"{manifest_path}: root is not a mapping")
 
     if data.get("schema_version") != SCHEMA_VERSION:
-        print(
-            f"WARNING: Skipping {manifest_path}: "
-            f"schema_version is '{data.get('schema_version')}', expected '{SCHEMA_VERSION}'",
-            file=sys.stderr,
+        raise CatalogGenerationError(
+            f"{manifest_path}: schema_version is '{data.get('schema_version')}', "
+            f"expected '{SCHEMA_VERSION}'"
         )
-        return None
 
     return data
 
 
-def extract_entry(manifest: dict) -> dict | None:
+def extract_entry(manifest: dict, manifest_path: Path) -> dict:
     """Extract a catalog entry from a validated manifest dict."""
     service = manifest.get("service")
     if not isinstance(service, dict):
-        return None
+        raise CatalogGenerationError(f"{manifest_path}: service must be a mapping")
 
     service_id = service.get("id")
-    if not service_id or not SERVICE_ID_RE.match(service_id):
-        return None
+    if not isinstance(service_id, str) or not service_id or not SERVICE_ID_RE.match(service_id):
+        raise CatalogGenerationError(f"{manifest_path}: service.id is missing or invalid")
 
     if service_id in EXCLUDED_IDS:
         return None
@@ -139,10 +139,7 @@ def generate_catalog(library_dir: Path) -> list[dict]:
         if manifest is None:
             continue
 
-        entry = extract_entry(manifest)
-        if entry is None:
-            continue
-
+        entry = extract_entry(manifest, manifest_path)
         entries.append(entry)
 
     entries.sort(key=lambda e: e["id"])
@@ -154,7 +151,11 @@ def main() -> None:
     library_dir = args.library_dir.resolve()
     output_path = args.output.resolve()
 
-    entries = generate_catalog(library_dir)
+    try:
+        entries = generate_catalog(library_dir)
+    except CatalogGenerationError as exc:
+        print(f"ERROR: catalog generation failed: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
 
     catalog = {
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
