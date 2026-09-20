@@ -1449,9 +1449,14 @@ for tool in ("create_goal", "get_goal", "update_goal", "update_plan"):
     assert tool in value["tools"]["sandbox"]["tools"]["allow"]
 compact_context = model["contextWindow"] < 32768
 model_label = "{} {}".format(model.get("id", ""), model.get("name", "")).casefold()
-small_model = any(
-    float(marker) <= 4
-    for marker in re.findall(r"(?<![a-z0-9.])(\d+(?:\.\d+)?)\s*b(?![a-z0-9])", model_label)
+parameter_markers = re.findall(
+    r"(?<![a-z0-9.])(\d+(?:\.\d+)?)\s*b(?![a-z0-9])", model_label,
+)
+small_model = (
+    any(float(marker) <= 4 for marker in parameter_markers)
+    or (not parameter_markers and re.search(
+        r"(?<![a-z0-9])(mini|micro|tiny)(?![a-z0-9])", model_label,
+    ) is not None)
 )
 lean_prompt = compact_context or small_model
 assert agent["bootstrapMaxChars"] == (2000 if lean_prompt else 14000)
@@ -1637,6 +1642,30 @@ destination.chmod(0o600)
 PY
 check test "$(_ods_pixel_apply_runtime_budget "$owner" "$runtime_home" "$runtime_small_large_config" "$runtime_validator")" = changed
 check python3 -c 'import json,sys; v=json.load(open(sys.argv[1])); a=v["agents"]["list"][0]; m=v["models"]["providers"]["ods-local"]["models"][0]; assert m["contextWindow"] == 65536; assert a["bootstrapMaxChars"] == 2000 and a["bootstrapTotalMaxChars"] == 6000 and a["contextInjection"] == "never" and a["contextLimits"] == {"toolResultMaxChars":16000}; assert {k:a["params"][k] for k in ("temperature","topP","frequencyPenalty","presencePenalty")} == {"temperature":0.7,"topP":0.8,"frequencyPenalty":0.6,"presencePenalty":0.2}; assert v["plugins"]["entries"]["pixel-ods"]["config"] == {"modelContextWindow":65536,"leanPrompt":True,"perplexicaPort":3004}' "$runtime_small_large_config"
+for size_class_id in phi4-mini-q4 granite4.0-h-micro-q4 granite4.0-h-tiny-q4 micro-70b-q4; do
+    runtime_size_class_config="$runtime_home/.openclaw/size-class-$size_class_id.json"
+    python3 - "$runtime_config" "$runtime_size_class_config" "$size_class_id" <<'PY'
+import json, pathlib, sys
+
+source, destination = map(pathlib.Path, sys.argv[1:3])
+model_id = sys.argv[3]
+value = json.loads(source.read_text(encoding="utf-8"))
+model = value["models"]["providers"]["ods-local"]["models"][0]
+model.update({
+    "id": model_id,
+    "name": f"ODS Local {model_id}",
+    "contextWindow": 65536,
+    "maxTokens": 4096,
+})
+value["agents"]["list"][0]["model"] = f"ods-local/{model_id}"
+destination.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
+destination.chmod(0o600)
+PY
+    check test "$(_ods_pixel_apply_runtime_budget "$owner" "$runtime_home" "$runtime_size_class_config" "$runtime_validator")" = changed
+    expected_lean=true
+    if [[ "$size_class_id" == micro-70b-q4 ]]; then expected_lean=false; fi
+    check python3 -c 'import json,sys; v=json.load(open(sys.argv[1])); expected=sys.argv[2]=="true"; a=v["agents"]["list"][0]; assert v["plugins"]["entries"]["pixel-ods"]["config"]["leanPrompt"] is expected; assert a["bootstrapMaxChars"] == (2000 if expected else 14000); assert a["bootstrapTotalMaxChars"] == (6000 if expected else 36000)' "$runtime_size_class_config" "$expected_lean"
+done
 runtime_full_candidate="$TEST_ROOT/runtime-full-candidate.json"
 runtime_transition_answers="$TEST_ROOT/runtime-transition-onboarding.json"
 cp "$runtime_config" "$runtime_full_candidate"
