@@ -1,0 +1,22 @@
+services:
+  watchtower:
+    image: containrrr/watchtower:1.13.0
+    container_name: ods-watchtower
+    restart: unless-stopped
+    security_opt: [no-new-privileges:true]
+    environment:
+      WATCHTOWER_LABEL_ENABLE: "true"
+      WATCHTOWER_CLEANUP: "true"
+      WATCHTOWER_POLL_INTERVAL: "86400"
+      WATCHTOWER_ROLLING_RESTART: "true"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks: [ods-network]
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+networks:
+  ods-network:
+    external: true

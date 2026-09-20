@@ -1,0 +1,37 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: watchtower
+  name: Watchtower (Image Updater)
+  description: "Polls registries and updates labelled containers — opt-in per container, does not touch ODS-managed images by default."
+  aliases: [image-updater, auto-update]
+  container_name: ods-watchtower
+  default_host: watchtower
+  port: 0
+  external_port_env: ''
+  external_port_default: 0
+  health: ""
+  type: docker
+  startup_check: false  # no published port/health endpoint
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [docker, updates, automation]
+  env_vars: []
+features:
+  - id: image-updates
+    name: Image Updates
+    description: "Automatically update opt-in containers when new images publish"
+    icon: RefreshCw
+    category: management
+    requirements:
+      services: [watchtower]
+      vram_gb: 0
+    enabled_services_all: [watchtower]
+    setup_time: "~2 minutes"
+    priority: 33
+    launch:
+      type: service
+      service: watchtower
