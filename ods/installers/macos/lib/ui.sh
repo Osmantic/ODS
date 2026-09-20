@@ -151,7 +151,7 @@ download_with_progress() {
         if curl -C - -L --progress-bar \
             --connect-timeout "$connect_timeout" \
             --speed-time "$low_speed_time" --speed-limit "$low_speed_limit" \
-            "${curl_http_flags[@]}" \
+            ${curl_http_flags+"${curl_http_flags[@]}"} \
             -o "$part_file" "$url"; then
             mv "$part_file" "$destination"
             ai_ok "${label} complete"
