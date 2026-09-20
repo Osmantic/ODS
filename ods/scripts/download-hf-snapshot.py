@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
@@ -15,6 +16,11 @@ def download_snapshot(
     revision: str | None = None,
     allow_patterns: list[str] | None = None,
 ) -> Path:
+    if not revision or not re.fullmatch(r"[0-9a-fA-F]{40}", revision):
+        raise ValueError(
+            "an immutable Hugging Face revision (commit SHA) is required"
+        )
+
     try:
         from huggingface_hub import snapshot_download
     except ImportError as exc:
@@ -28,8 +34,7 @@ def download_snapshot(
         "repo_id": repo_id,
         "cache_dir": str(cache_dir),
     }
-    if revision:
-        kwargs["revision"] = revision
+    kwargs["revision"] = revision
     if allow_patterns:
         kwargs["allow_patterns"] = allow_patterns
 

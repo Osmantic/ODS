@@ -86,3 +86,24 @@ def test_download_snapshot_passes_cache_revision_and_patterns(monkeypatch, tmp_p
             "allow_patterns": ["onnx/model.onnx"],
         }
     ]
+
+
+@pytest.mark.parametrize("revision", [None, "main", "master", "HEAD"])
+def test_download_snapshot_rejects_mutable_or_missing_revision(monkeypatch, tmp_path, revision):
+    helper = _load_snapshot_helper()
+    called = False
+
+    def fake_snapshot_download(**kwargs):
+        nonlocal called
+        called = True
+        return str(tmp_path)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "huggingface_hub",
+        SimpleNamespace(snapshot_download=fake_snapshot_download),
+    )
+
+    with pytest.raises(ValueError, match="immutable Hugging Face revision"):
+        helper.download_snapshot("BAAI/bge-base-en-v1.5", tmp_path / "cache", revision=revision)
+    assert called is False

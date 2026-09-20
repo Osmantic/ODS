@@ -144,6 +144,11 @@ _phase11_prefetch_embeddings_model() {
     local python_cmd="${ODS_PYTHON_CMD:-${_python_cmd:-}}"
     local prefetch_pid
 
+    if [[ ! "$revision" =~ ^[0-9a-fA-F]{40}$ ]]; then
+        ai_bad "EMBEDDING_MODEL_REVISION must be an immutable Hugging Face commit SHA."
+        return 1
+    fi
+
     if [[ -z "$model" ]] && declare -f _phase11_env_get >/dev/null 2>&1; then
         model="$(_phase11_env_get EMBEDDING_MODEL "BAAI/bge-base-en-v1.5")"
     fi
@@ -175,11 +180,7 @@ _phase11_prefetch_embeddings_model() {
 
     mkdir -p "$cache_dir"
     ai "Caching embeddings model for RAG: $model"
-    if [[ -n "$revision" ]]; then
-        "$python_cmd" "$helper" "$model" "$cache_dir" --revision "$revision" >> "$LOG_FILE" 2>&1 &
-    else
-        "$python_cmd" "$helper" "$model" "$cache_dir" >> "$LOG_FILE" 2>&1 &
-    fi
+    "$python_cmd" "$helper" "$model" "$cache_dir" --revision "$revision" >> "$LOG_FILE" 2>&1 &
     prefetch_pid=$!
     if spin_task "$prefetch_pid" "Caching embeddings model"; then
         ai_ok "Embeddings model cached for TEI"
