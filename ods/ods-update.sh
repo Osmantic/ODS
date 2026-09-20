@@ -745,6 +745,16 @@ cmd_update() {
 # COMMAND: ROLLBACK
 #==============================================================================
 
+_latest_backup_dir() {
+    local root="$1" pattern="$2"
+    [[ -d "$root" ]] || return 0
+    find "$root" -maxdepth 1 -type d -name "$pattern" -print 2>/dev/null \
+        | while IFS= read -r dir; do
+            local base="$(basename "$dir")"
+            printf '%s\t%s\n' "${base: -15}" "$dir"
+        done | sort -r | cut -f2- | sed -n '1p'
+}
+
 cmd_rollback() {
     local target="${1:-}"
     local backup_path=""
@@ -764,11 +774,9 @@ cmd_rollback() {
     else
         # No target: prefer the most recent pre-update rollback snapshot,
         # fall back to the most recent general backup.
-        backup_path=$(find "${ROLLBACK_DIR}" -maxdepth 1 -type d -name "pre-update-*" \
-            2>/dev/null | sort -r | head -1)
+        backup_path=$(_latest_backup_dir "$ROLLBACK_DIR" 'pre-update-*')
         if [[ -z "$backup_path" ]]; then
-            backup_path=$(find "${BACKUP_DIR}" -maxdepth 1 -type d -name "backup-*" \
-                2>/dev/null | sort -r | head -1)
+            backup_path=$(_latest_backup_dir "$BACKUP_DIR" 'backup-*')
         fi
     fi
 
