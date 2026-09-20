@@ -53,8 +53,9 @@ fi
 
 REPORT_FILE="${1:-/tmp/ods-doctor-report.json}"
 
-CAP_FILE="/tmp/ods-doctor-capabilities.json"
-PREFLIGHT_FILE="/tmp/ods-doctor-preflight.json"
+CAP_FILE="${TMPDIR:-/tmp}/ods-doctor-capabilities-$$.json"
+PREFLIGHT_FILE="${TMPDIR:-/tmp}/ods-doctor-preflight-$$.json"
+trap 'rm -f "$CAP_FILE" "$PREFLIGHT_FILE"' EXIT
 DOCTOR_BASH_CMD="${BASH:-}"
 if [[ -z "$DOCTOR_BASH_CMD" || ! -x "$DOCTOR_BASH_CMD" ]]; then
     DOCTOR_BASH_CMD="$(command -v bash 2>/dev/null || printf '%s\n' bash)"
