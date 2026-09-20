@@ -224,9 +224,21 @@ export function createManagedRuntimeRegistry({environment = process.env,
           try { return await accessRuntime.acquire(token, revision); }
           catch { throw transitionError('managed-transition-access-owner-refused'); }
         }
+        async function qualifyTransition(token, revision) {
+          // A managed config hot reload deliberately poisons the old provider
+          // owner, but an already-held model transaction must still be able to
+          // run its fixed access proof and release.  Reuse only the drained
+          // control channel; never revive inference, tools, or provider work.
+          const held = await readControlStatus();
+          if (held.available !== true || held.phase !== 'held' || held.active !== 0 ||
+              held.revision !== revision || accessRuntime.owns(token) !== true) {
+            throw transitionError('managed-transition-invalid-owner');
+          }
+          return held;
+        }
         current = {accessRuntime, deploymentText: raw, binding: canonical(deployment.binding),
           routing, commands, valid, shutdown, admit, finish, select, assertTransition, status,
-          readControlStatus, acquireTransition,
+          readControlStatus, acquireTransition, qualifyTransition,
           classifyTransitionError: failure => transitionFailures.get(failure) ?? null,
           readRegistration() {
             assertTransition();

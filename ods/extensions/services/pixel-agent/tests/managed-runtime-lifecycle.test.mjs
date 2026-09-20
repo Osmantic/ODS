@@ -152,12 +152,22 @@ test('existing held management channel survives drained config invalidation, not
   assert.equal(owner.status().available, false);
   const status = await owner.readControlStatus();
   assert.equal(status.available, true); assert.equal(status.phase, 'held'); assert.equal(status.active, 0);
+  assert.equal((await owner.qualifyTransition('a'.repeat(64), status.revision)).phase, 'held');
+  await assert.rejects(owner.qualifyTransition('b'.repeat(64), status.revision));
+  await assert.rejects(owner.qualifyTransition('a'.repeat(64), 'b'.repeat(64)));
   assert.equal((await owner.acquireTransition('a'.repeat(64), status.revision)).phase, 'held');
   await assert.rejects(owner.acquireTransition('b'.repeat(64), status.revision));
   assert.throws(owner.assertTransition); assert.throws(() => owner.readRegistration());
   assert.equal((await owner.select({}, context())).modelOverride, 'unavailable');
   assert.equal((await owner.admit({}, context())).outcome, 'block');
   assert.equal(owner.beforeCommandRun({commandId: 'after-drift'}, {}).action, 'block');
+});
+
+test('managed proof qualification refuses active provider ownership', async () => {
+  const f = fixture(), owner = f.register(), ctx = context();
+  await owner.select({}, ctx); f.hold();
+  await assert.rejects(owner.qualifyTransition('a'.repeat(64), 'synthetic-revision'));
+  await owner.finish({}, ctx); await owner.shutdown();
 });
 
 test('invalid idle owner cannot gain a new management hold', async () => {

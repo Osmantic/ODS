@@ -46,10 +46,14 @@ printf '%s\n' starting healthy > "$sequence_file"
 ODS_HERMES_READY_TIMEOUT=2 ODS_HERMES_READY_INTERVAL=1 \
     _ods_cli_wait_for_hermes_ready
 
-printf '%s\n' unhealthy > "$sequence_file"
+printf '%s\n' unhealthy healthy > "$sequence_file"
+ODS_HERMES_READY_TIMEOUT=2 ODS_HERMES_READY_INTERVAL=1 \
+    _ods_cli_wait_for_hermes_ready
+
+printf '%s\n' unhealthy unhealthy > "$sequence_file"
 if ODS_HERMES_READY_TIMEOUT=2 ODS_HERMES_READY_INTERVAL=1 \
     _ods_cli_wait_for_hermes_ready; then
-    echo "Hermes readiness accepted an unhealthy container" >&2
+    echo "Hermes readiness accepted a persistently unhealthy container" >&2
     exit 1
 fi
 

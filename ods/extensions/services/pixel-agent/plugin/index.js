@@ -346,7 +346,7 @@ export default definePluginEntry({
           }
           else if (value.operation === "release") result = accessRuntime.release(value.token);
           else if (value.operation === "probe") {
-            managedRuntime?.assertTransition();
+            await managedRuntime?.qualifyTransition(value.token, value.revision);
             result = await accessRuntime.probe(value.token);
           }
           else if (value.operation === "settings-readback") {
