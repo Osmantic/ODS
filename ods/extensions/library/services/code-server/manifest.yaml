@@ -1,0 +1,44 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: code-server
+  name: code-server (VS Code)
+  description: "VS Code in the browser, bound to the ODS install directory — edit configs and extensions without SSH."
+  aliases: [vscode, ide]
+  container_name: ods-code-server
+  default_host: code-server
+  port: 8443
+  external_port_env: CODE_SERVER_PORT
+  external_port_default: 8443
+  health: /
+  ui_path: /
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [editor, ide, development]
+  env_vars:
+    - key: CODE_SERVER_PORT
+      description: "Published HTTP port"
+      default: "8443"
+    - key: CODE_SERVER_PASSWORD
+      description: "Browser login password for the editor"
+      required: true
+      secret: true
+features:
+  - id: web-ide
+    name: Web IDE
+    description: "Full VS Code in the browser scoped to the ODS install directory"
+    icon: Code
+    category: development
+    requirements:
+      services: [code-server]
+      vram_gb: 0
+    enabled_services_all: [code-server]
+    setup_time: "~2 minutes"
+    priority: 33
+    launch:
+      type: service
+      service: code-server

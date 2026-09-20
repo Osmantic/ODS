@@ -1,0 +1,35 @@
+services:
+  code-server:
+    image: lscr.io/linuxserver/code-server:4.105.1-ls278
+    container_name: ods-code-server
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: ["/tmp:size=64m,mode=1777"]
+    environment:
+      PASSWORD: "${CODE_SERVER_PASSWORD:?Set CODE_SERVER_PASSWORD before enabling code-server}"
+      SUDO_PASSWORD: ""
+      PUID: "1000"
+      PGID: "1000"
+      DEFAULT_WORKSPACE: /config/workspace
+    volumes:
+      - ./:/config/workspace
+      - ./data/code-server:/config/data
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${CODE_SERVER_PORT:-8443}:8443"
+    healthcheck:
+      test: ['CMD-SHELL', 'curl -fsS http://localhost:8443/healthz || exit 1']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks: [ods-network]
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+networks:
+  ods-network:
+    external: true

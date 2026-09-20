@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-13T16:53:56Z",
+  "generated_at": "2026-09-20T05:15:56Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -41,6 +41,13 @@
           "description": "AI pair programming in your terminal",
           "icon": "Terminal",
           "category": "development",
+          "gpu_backends": [
+            "amd",
+            "nvidia",
+            "apple",
+            "cpu",
+            "none"
+          ],
           "requirements": {
             "services": [
               "aider"
@@ -552,6 +559,62 @@
           ],
           "setup_time": "~1 minute",
           "priority": 9
+        }
+      ],
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
+      "id": "code-server",
+      "name": "code-server (VS Code)",
+      "description": "VS Code in the browser, bound to the ODS install directory — edit configs and extensions without SSH.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 8443,
+      "external_port_default": 8443,
+      "health_endpoint": "/",
+      "env_vars": [
+        {
+          "key": "CODE_SERVER_PORT",
+          "description": "Published HTTP port",
+          "default": "8443"
+        },
+        {
+          "key": "CODE_SERVER_PASSWORD",
+          "description": "Browser login password for the editor",
+          "required": true
+        }
+      ],
+      "tags": [
+        "editor",
+        "ide",
+        "development"
+      ],
+      "features": [
+        {
+          "id": "web-ide",
+          "name": "Web IDE",
+          "description": "Full VS Code in the browser scoped to the ODS install directory",
+          "icon": "Code",
+          "category": "development",
+          "requirements": {
+            "services": [
+              "code-server"
+            ],
+            "vram_gb": 0
+          },
+          "enabled_services_all": [
+            "code-server"
+          ],
+          "setup_time": "~2 minutes",
+          "priority": 33,
+          "launch": {
+            "type": "service",
+            "service": "code-server"
+          }
         }
       ],
       "configuration_scope": "declared-environment-keys"
@@ -2708,8 +2771,7 @@
       "description": "Open WebUI (Chat)",
       "category": "core",
       "gpu_backends": [
-        "amd",
-        "nvidia"
+        "all"
       ],
       "compose_file": "",
       "depends_on": [
@@ -3155,6 +3217,56 @@
           ]
         }
       ],
+      "catalog_source": "builtin",
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
+      "id": "pixel-inference",
+      "name": "Pixel inference sharing (development)",
+      "description": "Disabled by default. Owner-provisioned, inference-only device credentials; loopback transport only. Does not provide Pixel agent or computer access. Private state must be provisioned before service activation. Native Windows private-state support and guided setup are not yet implemented.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [
+        "model-router"
+      ],
+      "port": 8093,
+      "external_port_default": 4005,
+      "health_endpoint": "/health",
+      "env_vars": [],
+      "tags": [],
+      "features": [],
+      "startup_check": false,
+      "catalog_source": "builtin",
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
+      "id": "pixel-model-relay",
+      "name": "Pixel Model Relay",
+      "description": "Pixel Model Relay",
+      "category": "core",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [
+        "model-router"
+      ],
+      "port": 4102,
+      "external_port_default": 4006,
+      "health_endpoint": "/health",
+      "env_vars": [
+        {
+          "key": "PIXEL_MODEL_RELAY_KEY",
+          "required": true,
+          "description": "Pixel-only bearer key for host-local inference"
+        }
+      ],
+      "tags": [],
+      "features": [],
+      "startup_check": true,
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
     },
