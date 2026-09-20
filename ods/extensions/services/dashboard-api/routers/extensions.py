@@ -1492,6 +1492,12 @@ def _install_from_library(service_id: str) -> None:
     """
     dest = USER_EXTENSIONS_DIR / service_id
 
+    if dest.is_symlink():
+        raise HTTPException(
+            status_code=409,
+            detail=f"Refusing to reinstall symlinked extension directory: {service_id}",
+        )
+
     # Re-check under lock to prevent double-install race.
     if dest.exists():
         has_compose = (dest / "compose.yaml").exists()
@@ -1610,6 +1616,12 @@ def install_extension(service_id: str, api_key: str = Depends(verify_api_key)):
     _assert_not_core(service_id)
 
     dest = USER_EXTENSIONS_DIR / service_id
+
+    if dest.is_symlink():
+        raise HTTPException(
+            status_code=409,
+            detail=f"Refusing to reinstall symlinked extension directory: {service_id}",
+        )
 
     # Early check (non-authoritative, rechecked under lock in _install_from_library)
     if dest.exists():
