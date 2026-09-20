@@ -1,0 +1,40 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: changedetection
+  name: Change Detection
+  description: "Website change detection — watch pages for updates and diff content locally."
+  aliases: [changedetection-io, watch-pages]
+  container_name: ods-changedetection
+  default_host: changedetection
+  port: 5555
+  external_port_env: CHANGEDETECTION_PORT
+  external_port_default: 5555
+  health: /
+  ui_path: /
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [monitoring, scraping, automation]
+  env_vars:
+    - key: CHANGEDETECTION_PORT
+      description: "Published HTTP port"
+      default: "5555"
+features:
+  - id: page-watch
+    name: Page Watch
+    description: "Track web pages for changes with local diff history"
+    icon: Eye
+    category: monitoring
+    requirements:
+      services: [changedetection]
+      vram_gb: 0
+    enabled_services_all: [changedetection]
+    setup_time: "~2 minutes"
+    priority: 33
+    launch:
+      type: service
+      service: changedetection
