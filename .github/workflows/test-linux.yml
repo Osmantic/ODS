@@ -8,6 +8,64 @@ on:
       - master
 
 jobs:
+  pixel-advice-host-stdlib:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ['3.9', '3.11', '3.12']
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Host import and runtime status require no optional dependencies
+        working-directory: ods
+        run: python -I -S tests/pixel_inference/check_advice_stdlib.py
+
+  pixel-inference-contracts:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ['3.11', '3.12']
+    defaults:
+      run:
+        working-directory: ods
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install isolated inference test dependencies
+        run: python -m pip install -r extensions/services/pixel-inference/requirements.txt 'pytest>=8,<9'
+      - name: Sharing credential and owner control tests
+        run: python -m pytest tests/pixel_inference -q
+      - name: Inference perimeter and cancellation tests
+        run: python -m pytest extensions/services/pixel-inference/tests -q
+      - name: Model router compatibility and route pins
+        run: python -m pytest extensions/services/model-router/tests -q
+      - name: Test verified preview source and diff contracts
+        run: |
+          python -m pytest -q extensions/services/pixel-agent/tests/test_workspace_preview.py \
+            extensions/services/pixel-agent/tests/test_workspace_preview_charset.py \
+            extensions/services/pixel-agent/tests/test_workspace_preview_git.py \
+            extensions/services/pixel-agent/tests/test_preview_empty_assets.py
+
+      - name: Settings transaction and access preservation contracts
+        run: |
+          python -m pytest -q tests/pixel_settings/test_contract.py tests/pixel_settings/test_projection.py \
+            tests/pixel_settings/test_runtime.py tests/pixel_settings/test_coordinator.py \
+            tests/pixel_settings/test_public_runtime.py tests/pixel_settings/test_host_http.py \
+            extensions/services/pixel-agent/tests/test_settings_transaction.py \
+            extensions/services/pixel-agent/tests/test_settings_worker_protocol.py \
+            extensions/services/pixel-agent/tests/test_access_bridge.py \
+            extensions/services/pixel-agent/tests/test_access_deadlines.py \
+            extensions/services/pixel-agent/tests/test_settings_control_transport.py \
+            extensions/services/pixel-agent/tests/test_pixel_access_mode.py \
+            extensions/services/pixel-agent/tests/test_access_mode_config.py
+
+      - name: Test preview publication directory failures
+        run: python -m pytest -q extensions/services/pixel-agent/tests/test_preview_directory_errors.py
+
   token-spy-postgres:
     runs-on: ubuntu-latest
     services:
@@ -65,6 +123,9 @@ jobs:
       - name: Install manifest validator dependencies
         run: python3 -m pip install "PyYAML>=6.0,<7.0" "jsonschema>=4.21,<5.0"
 
+      - name: Branch cleanup release exclusions
+        run: python3 tests/test-stale-branch-release-refs.py
+
       - name: Docs Link Checks
         run: bash tests/test-doc-links.sh
 
@@ -100,6 +161,15 @@ jobs:
 
       - name: Tier Map Unit Tests
         run: bash tests/test-tier-map.sh
+
+      - name: Active Model Preservation Tests
+        run: python3 tests/test-preserve-active-model.py
+
+      - name: Pixel Agent Model Selection Tests
+        run: python3 tests/test-pixel-model-selector.py
+
+      - name: Pixel Provider and Access Contracts
+        run: python3 -m unittest discover -s tests -p 'test_pixel_*.py' -v
 
       - name: Service Registry Tests
         run: bash tests/test-service-registry.sh
@@ -148,6 +218,12 @@ jobs:
       - name: CLI Enable Compose Reconciliation Tests
         run: bash tests/test-cli-enable-compose-reconciliation.sh
 
+      - name: CLI Link Refresh Tests
+        run: bash tests/test-cli-link-refresh.sh
+
+      - name: Installer Mode Preservation Tests
+        run: bash tests/test-installer-mode-preservation.sh
+
       - name: Windows Missing Service Hint Tests
         run: bash tests/test-windows-missing-service-hints.sh
 
@@ -178,6 +254,9 @@ jobs:
       - name: CLI Install Directory Resolution Tests
         run: bash tests/test-cli-install-dir-resolution.sh
 
+      - name: Legacy Update Fallback Backup Round Trip
+        run: python3 tests/test-cli-legacy-update-backup.py
+
       - name: Validate Simulation Summary Tests
         run: bash tests/test-validate-sim-summary.sh
 
@@ -185,7 +264,10 @@ jobs:
         run: bash tests/test-golden-paths.sh
 
       - name: Generated Config Contract Tests
-        run: bash tests/test-generated-config-contracts.sh
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rsync jq
+          bash tests/test-generated-config-contracts.sh
 
       - name: Dependency Pin Contract Tests
         run: python3 tests/test-dependency-pins.py
@@ -198,6 +280,9 @@ jobs:
 
       - name: Runtime Config Wiring Tests
         run: python3 tests/test-runtime-config-wiring.py
+
+      - name: OpenClaw HTTP Shim Lifecycle Tests
+        run: node --test tests/test-openclaw-shim-lifecycle.mjs
 
       - name: Perplexica Entrypoint Contract Tests
         run: python3 tests/test-perplexica-entrypoint.py
@@ -219,9 +304,20 @@ jobs:
           bash tests/contracts/test-preflight-fixtures.sh
           bash tests/test-preflight-resolver-bug.sh
           bash tests/test-desktop-agent-host-env.sh
+          bash tests/test-pixel-uninstall.sh
           python3 tests/contracts/test-network-exposure-contracts.py
           python3 tests/contracts/test-remote-provider-egress-policy.py
           python3 tests/contracts/test-remote-provider-egress-service.py
+
+      - name: Pixel Default Agent Contract Tests
+        run: |
+          bash tests/test-pixel-integration.sh
+          bash tests/test-pixel-host-install.sh
+          python3 -m unittest -v tests/test_pixel_native_search.py
+          bash tests/test-pixel-compose-wiring.sh
+          python3 tests/test_pixel_timeout_contract.py
+          python3 -m unittest -v extensions/services/pixel-agent/tests/test_artifact_promoter.py
+          node --test extensions/services/pixel-agent/tests/*.test.mjs
 
       - name: Linux install preflight tests
         run: |
@@ -239,13 +335,30 @@ jobs:
         run: bash tests/test-update-rollback-contract.sh
 
       - name: Backup Data Coverage Contract
-        run: bash tests/test-backup-data-coverage.sh
+        run: |
+          command -v rsync
+          command -v jq
+          bash tests/test-backup-data-coverage.sh
+          bash tests/test-backup-integrity.sh
+          bash tests/test-backup-restore-roundtrip.sh
+          python3 tests/test-rsync-transfer-failures.py
+
+      - name: Backup retention and integrity
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rsync jq
+          bash tests/test-backup-integrity.sh
 
       - name: Bootstrap Upgrade Compose Flags Recovery Tests
         run: bash tests/test-bootstrap-upgrade-compose-flags-recovery.sh
 
       - name: Support Bundle Evidence Tests
         run: bash tests/test-support-bundle.sh
+
+      - name: Test support bundle command deadlines
+        run: |
+          python3 -m pip install pytest==8.4.2
+          python3 -m pytest -q tests/test_support_bundle_timeouts.py tests/test_support_bundle_log_scope.py
 
       - name: Config Migration Tests
         run: bash tests/test-migrate-config.sh

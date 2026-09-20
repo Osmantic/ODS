@@ -16,6 +16,7 @@ import re
 import secrets
 import shlex
 import tempfile
+import threading
 import time
 from pathlib import Path
 from urllib.parse import urlparse
@@ -26,6 +27,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Streamin
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from filters import apply_filters
 from providers import ProviderRegistry
+from providers.anthropic import cumulative_usage_update
 from routed_telemetry import (
     TelemetryValidationError,
     routed_event_to_usage,
@@ -440,7 +442,7 @@ async def _poll_remote_agents():
                 if needs_reset:
                     reason = f"tool loop ({tool_results} calls)" if tool_results >= 480 else f"history {chars:,} >= {limit:,}"
                     log.warning(f"[REMOTE-POLL] {agent}: auto-reset — {reason}")
-                    _kill_session(agent, reason=f"auto-reset ({reason})")
+                    await asyncio.to_thread(_kill_session, agent, reason=f"auto-reset ({reason})")
                     _last_auto_reset[agent] = time.time()
                 elif chars > 0:
                     log.info(f"[REMOTE-POLL] {agent}: {chars:,} / {limit:,} chars ({chars*100//limit}%)")
@@ -448,7 +450,9 @@ async def _poll_remote_agents():
             for agent in AGENT_SESSION_DIRS:
                 if agent == AGENT_NAME or agent in REMOTE_AGENTS:
                     continue  # skip agents that go through this proxy instance
-                status = _get_local_session_status(agent)
+                status = await asyncio.to_thread(
+                    _get_local_session_status, agent, include_session_id=True,
+                )
                 if not status:
                     continue
                 chars = status.get("current_history_chars", 0)
@@ -461,8 +465,12 @@ async def _poll_remote_agents():
                 if needs_reset:
                     reason = f"tool loop ({tool_results} calls)" if tool_results >= 480 else f"history {chars:,} >= {limit:,}"
                     log.warning(f"[LOCAL-POLL] {agent}: auto-reset — {reason}")
-                    _kill_session(agent, reason=f"auto-reset ({reason})")
-                    _last_auto_reset[agent] = time.time()
+                    result = await asyncio.to_thread(
+                        _kill_session, agent, reason=f"auto-reset ({reason})",
+                        session_id=status["_reset_session_id"],
+                    )
+                    if result.get("action") == "killed":
+                        _last_auto_reset[agent] = time.time()
                 elif chars > 0:
                     log.info(f"[LOCAL-POLL] {agent}: {chars:,} / {limit:,} chars ({chars*100//limit}%)")
         except Exception as e:
@@ -745,8 +753,10 @@ async def _handle_streaming(client, raw_body, headers, model, sys_analysis,
 
                         elif current_event == "message_delta":
                             delta_usage = data.get("usage", {})
-                            if delta_usage.get("output_tokens") is not None:
-                                usage["output_tokens"] = delta_usage["output_tokens"]
+                            # Anthropic deltas carry cumulative counters, including
+                            # revised input/cache usage. Omitted fields retain
+                            # the last observation; explicit zero is authoritative.
+                            usage.update(cumulative_usage_update(delta_usage))
                             stop = data.get("delta", {}).get("stop_reason")
                             if stop:
                                 usage["stop_reason"] = stop
@@ -1083,7 +1093,7 @@ _last_auto_reset: dict[str, float] = {}
 
 
 
-def _get_local_session_status(agent: str) -> dict:
+def _get_local_session_status(agent: str, *, include_session_id: bool = False) -> dict:
     """Get session status for a local agent by reading JSONL files directly.
     Used for agents whose traffic doesn't pass through the token monitor proxy
     (e.g. agents using a local model via vLLM/Ollama)."""
@@ -1097,38 +1107,39 @@ def _get_local_session_status(agent: str) -> dict:
         return None
 
     largest = files[0]
-    try:
-        with open(largest) as f:
-            lines = f.readlines()
-    except Exception:
-        log.warning(f"[SESSION] Failed to read session file: {largest}")
-        return None
-
     user_turns = 0
     assistant_turns = 0
     history_chars = 0
     tool_results = 0
-    for line in lines:
-        try:
-            d = json.loads(line)
-            if d.get("type") == "message":
-                msg = d.get("message", {})
-                if isinstance(msg, str):
-                    msg = json.loads(msg)
-                role = msg.get("role", "")
-                if role == "user":
-                    user_turns += 1
-                elif role == "assistant":
-                    assistant_turns += 1
-                if role in ("toolResult", "tool") or msg.get("tool_call_id"):
-                    tool_results += 1
-                c = msg.get("content", "")
-                if isinstance(c, list):
-                    history_chars += sum(len(str(x)) for x in c)
-                elif isinstance(c, str):
-                    history_chars += len(c)
-        except (json.JSONDecodeError, KeyError, TypeError):
-            pass  # skip malformed JSONL lines
+    total_lines = 0
+    try:
+        with open(largest) as session_file:
+            for line in session_file:
+                total_lines += 1
+                try:
+                    d = json.loads(line)
+                    if d.get("type") == "message":
+                        msg = d.get("message", {})
+                        if isinstance(msg, str):
+                            msg = json.loads(msg)
+                        role = msg.get("role", "")
+                        if role == "user":
+                            user_turns += 1
+                        elif role == "assistant":
+                            assistant_turns += 1
+                        if role in ("toolResult", "tool") or msg.get("tool_call_id"):
+                            tool_results += 1
+                        c = msg.get("content", "")
+                        if isinstance(c, list):
+                            history_chars += sum(len(str(x)) for x in c)
+                        elif isinstance(c, str):
+                            history_chars += len(c)
+                except (json.JSONDecodeError, KeyError, TypeError):
+                    pass  # skip malformed JSONL lines
+
+    except (OSError, UnicodeError):
+        log.warning(f"[SESSION] Failed to read session file: {largest}")
+        return None
 
     limit = get_agent_setting(agent, "session_char_limit") or AUTO_RESET_HISTORY_CHARS
     if tool_results >= 480:
@@ -1146,7 +1157,7 @@ def _get_local_session_status(agent: str) -> dict:
     # agents whose OpenClaw gateway doesn't log user messages in the JSONL.
     turns = user_turns if user_turns > 0 else assistant_turns
 
-    return {
+    result = {
         "agent": agent,
         "current_session_turns": turns,
         "current_history_chars": history_chars,
@@ -1159,12 +1170,25 @@ def _get_local_session_status(agent: str) -> dict:
         "is_local_model": agent in LOCAL_MODEL_AGENTS,
         "tool_results": tool_results,
         "file_bytes": os.path.getsize(largest),
-        "total_lines": len(lines),
+        "total_lines": total_lines,
         "session_files": len(files),
     }
+    if include_session_id:
+        # Poller-only selection: public status responses keep their existing shape.
+        result["_reset_session_id"] = os.path.basename(largest)[:-len(".jsonl")]
+    return result
+
+
+_accumulated_turns_lock = threading.Lock()
 
 
 def _get_local_accumulated_turns(agent: str) -> int:
+    # Summary handlers run in worker threads; serialize checkpoint updates.
+    with _accumulated_turns_lock:
+        return _read_local_accumulated_turns(agent)
+
+
+def _read_local_accumulated_turns(agent: str) -> int:
     """Count total turns across ALL session files for a local-model agent,
     with a persistent accumulator to survive session file cleanup/purge.
     Unlike _get_local_session_status (current session only), this gives the
@@ -1179,9 +1203,11 @@ def _get_local_accumulated_turns(agent: str) -> int:
     # whose OpenClaw gateway doesn't log user messages in the JSONL.
     import glob
     files = glob.glob(os.path.join(sessions_dir, "*.jsonl"))
-    user_turns = 0
-    assistant_turns = 0
+    file_counts = {}
+    scan_failed = False
     for fpath in files:
+        user_turns = 0
+        assistant_turns = 0
         try:
             with open(fpath) as f:
                 for line in f:
@@ -1198,9 +1224,17 @@ def _get_local_accumulated_turns(agent: str) -> int:
                                 assistant_turns += 1
                     except (json.JSONDecodeError, KeyError, TypeError):
                         pass  # skip malformed JSONL lines
-        except Exception:
+        except (OSError, UnicodeError):
             log.warning(f"[SESSION] Failed to read session file: {fpath}")
-    current_file_turns = user_turns if user_turns > 0 else assistant_turns
+            scan_failed = True
+        file_counts[os.path.basename(fpath)] = (user_turns, assistant_turns)
+    use_user_turns = any(counts[0] > 0 for counts in file_counts.values())
+    count_role = "user" if use_user_turns else "assistant"
+    current_counts = {
+        name: counts[0 if use_user_turns else 1]
+        for name, counts in file_counts.items()
+    }
+    current_file_turns = sum(current_counts.values())
 
     # Persistent accumulator — survives session purge (250KB/24h cleanup)
     acc_path = os.path.join(os.path.dirname(__file__), "data", f"{agent}-accumulated-turns.json")
@@ -1213,20 +1247,53 @@ def _get_local_accumulated_turns(agent: str) -> int:
     last_file_turns = acc.get("last_file_turns", 0)
     total = acc.get("total", 0)
 
-    if current_file_turns >= last_file_turns:
-        # Normal growth or no change — add the delta
-        total += (current_file_turns - last_file_turns)
-    else:
-        # Session files were purged (current < last) — add what's on disk now
-        total += current_file_turns
+    if scan_failed:
+        # A temporarily unreadable file is not evidence of cleanup. Keep the
+        # last complete snapshot so its recovery cannot count old turns again.
+        return total
 
-    acc = {"total": total, "last_file_turns": current_file_turns}
+    if "file_turns" in acc:
+        previous_counts = acc["file_turns"]
+        # Keep the existing user/assistant fallback rule. If its source changes,
+        # establish a fresh baseline instead of comparing unlike counters.
+        delta = (
+            sum(max(count - previous_counts.get(name, 0), 0)
+                for name, count in current_counts.items())
+            if not previous_counts or acc["count_role"] == count_role else 0
+        )
+    else:
+        # Migrate the scalar accumulator without recounting surviving history.
+        # Growth can be credited; a smaller snapshot cannot identify new work.
+        delta = max(current_file_turns - last_file_turns, 0)
+    total += delta
+
+    acc = {
+        "total": total, "last_file_turns": current_file_turns,
+        "count_role": count_role, "file_turns": current_counts,
+    }
+    temporary_path = None
     try:
-        os.makedirs(os.path.dirname(acc_path), exist_ok=True)
-        with open(acc_path, "w") as f:
+        directory = os.path.dirname(acc_path)
+        os.makedirs(directory, exist_ok=True)
+        # Never truncate the last valid checkpoint before the new one is ready.
+        # A sibling temporary file also keeps replacement on the same filesystem.
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=directory, prefix=".turns-", delete=False,
+        ) as f:
+            temporary_path = f.name
             json.dump(acc, f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temporary_path, acc_path)
+        temporary_path = None
     except Exception:
         log.warning(f"[SESSION] Failed to save accumulated turns for {agent}")
+    finally:
+        if temporary_path is not None:
+            try:
+                os.unlink(temporary_path)
+            except OSError:
+                log.warning(f"[SESSION] Failed to clean temporary checkpoint for {agent}")
 
     return total
 
@@ -1375,8 +1442,8 @@ def _kill_remote_session(agent: str, reason: str = "dashboard") -> dict:
         log.error(f"Remote session check failed for {agent}: {e}")
         return {"agent": agent, "action": "none", "reason": "Remote check failed"}
 
-def _kill_session(agent: str, reason: str = "manual") -> dict:
-    """Kill the largest active session for an agent. Returns result dict."""
+def _kill_session(agent: str, reason: str = "manual", *, session_id: str | None = None) -> dict:
+    """Reset the selected local session, or the largest for manual/proxy calls."""
     import subprocess
     if agent in REMOTE_AGENTS:
         return _kill_remote_session(agent, reason)
@@ -1385,16 +1452,20 @@ def _kill_session(agent: str, reason: str = "manual") -> dict:
     if not sessions_dir:
         return {"agent": agent, "action": "none", "reason": f"unknown agent: {agent}"}
 
-    result = subprocess.run(
-        ["ls", "-S", f"{sessions_dir}/"],
-        capture_output=True, text=True,
-    )
-    largest = None
-    for line in result.stdout.strip().split("\n"):
-        line = line.strip()
-        if line.endswith(".jsonl"):
-            largest = line.replace(".jsonl", "")
-            break
+    largest = session_id
+    if session_id is not None:
+        if not session_id or os.path.basename(session_id) != session_id or "\0" in session_id:
+            return {"agent": agent, "action": "none", "reason": "invalid session selection"}
+    else:
+        result = subprocess.run(
+            ["ls", "-S", f"{sessions_dir}/"],
+            capture_output=True, text=True,
+        )
+        for line in result.stdout.strip().split("\n"):
+            line = line.strip()
+            if line.endswith(".jsonl"):
+                largest = line.replace(".jsonl", "")
+                break
 
     if not largest:
         return {"agent": agent, "action": "none", "reason": "no active sessions found"}
@@ -2312,17 +2383,20 @@ async function loadSettingsUI() {
       const cfg = s.agents[agent];
       const div = document.createElement('div');
       div.className = 'setting-group';
-      const safeId = agent.replace(/[^a-zA-Z0-9]/g, '-');
+      // Different names can normalize to the same id (e.g. a-b and a_b).
+      const safeId = 'agent-' + idx;
+      div.dataset.agent = agent;
       div.innerHTML =
-        '<h4>' + agent + ' Override</h4>' +
+        '<h4></h4>' +
         '<div class="setting-row">' +
           '<label>Session char limit</label>' +
-          '<div><input type="number" id="set-' + safeId + '-limit" step="10000" min="10000" placeholder="inherit" > <span class="unit">chars</span> <span id="set-' + safeId + '-limit-tok" class="unit" style="color:#58a6ff"></span></div>' +
+          '<div><input type="number" data-setting="limit" id="set-' + safeId + '-limit" step="10000" min="10000" placeholder="inherit" > <span class="unit">chars</span> <span id="set-' + safeId + '-limit-tok" class="unit" style="color:#58a6ff"></span></div>' +
         '</div>' +
         '<div class="setting-row">' +
           '<label>Poll frequency</label>' +
-          '<div><input type="number" id="set-' + safeId + '-poll" step="1" min="1" max="60" placeholder="inherit"> <span class="unit">min</span></div>' +
+          '<div><input type="number" data-setting="poll" id="set-' + safeId + '-poll" step="1" min="1" max="60" placeholder="inherit"> <span class="unit">min</span></div>' +
         '</div>';
+      div.querySelector('h4').textContent = agent + ' Override';
       grid.appendChild(div);
       // Set values
       document.getElementById('set-' + safeId + '-limit').value = cfg.session_char_limit != null ? cfg.session_char_limit : '';
@@ -2344,24 +2418,21 @@ async function saveSettings() {
   btn.disabled = true;
   btn.textContent = 'Saving...';
 
-  const getVal = (id) => {
-    const el = document.getElementById(id);
+  const inputValue = (el) => {
     if (!el) return null;
     const v = el.value;
     return v === '' ? null : parseInt(v, 10);
   };
+  const getVal = id => inputValue(document.getElementById(id));
 
   // Build agents object from current UI
-  const agents = {};
-  const groups = document.querySelectorAll('.setting-group');
+  const agents = Object.create(null);
+  const groups = document.querySelectorAll('.setting-group[data-agent]');
   groups.forEach(g => {
-    const h4 = g.querySelector('h4');
-    if (!h4 || h4.textContent === 'Global Defaults') return;
-    const agent = h4.textContent.replace(' Override', '');
-    const safeId = agent.replace(/[^a-zA-Z0-9]/g, '-');
+    const agent = g.dataset.agent;
     agents[agent] = {
-      session_char_limit: getVal('set-' + safeId + '-limit'),
-      poll_interval_minutes: getVal('set-' + safeId + '-poll'),
+      session_char_limit: inputValue(g.querySelector('[data-setting="limit"]')),
+      poll_interval_minutes: inputValue(g.querySelector('[data-setting="poll"]')),
     };
   });
 

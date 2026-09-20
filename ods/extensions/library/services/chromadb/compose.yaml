@@ -18,7 +18,19 @@ services:
           memory: 2G
           cpus: '2.0'
     healthcheck:
-      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v2/heartbeat')\""]
+      # Chroma 1.x ships a Rust server, not Python or curl. Probe the HTTP
+      # heartbeat with the Bash/coreutils already present in the image.
+      test:
+        - CMD
+        - timeout
+        - '8'
+        - bash
+        - -ec
+        - >-
+          exec 3<>/dev/tcp/127.0.0.1/8000;
+          printf 'GET /api/v2/heartbeat HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3;
+          read -r protocol status remainder <&3;
+          [[ $$protocol == HTTP/* && $$status == 200 ]]
       interval: 30s
       timeout: 10s
       retries: 3

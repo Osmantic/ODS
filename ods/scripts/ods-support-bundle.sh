@@ -5,6 +5,7 @@ TOOL_VERSION="1"
 REDACTION_VERSION="1"
 DEFAULT_LOG_TAIL=200
 MAX_LOG_CONTAINERS=25
+COMMAND_TIMEOUT="${ODS_SUPPORT_COMMAND_TIMEOUT:-60}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -25,6 +26,10 @@ Options:
   --json         Print machine-readable result JSON
   --no-logs      Skip Docker container log collection
   -h, --help     Show this help
+
+Environment:
+  ODS_SUPPORT_COMMAND_TIMEOUT  Per-command deadline in seconds (1-3600; default 60).
+                               Timed-out diagnostics retain partial output and exit 124.
 
 The generated archive is safe-by-default, but review it before posting to a
 public issue. Raw .env is never included; only config/env.redacted is written.
@@ -57,6 +62,11 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+if [[ ! "$COMMAND_TIMEOUT" =~ ^[1-9][0-9]{0,3}$ ]] || (( COMMAND_TIMEOUT > 3600 )); then
+    echo "ERROR: ODS_SUPPORT_COMMAND_TIMEOUT must be an integer from 1 to 3600" >&2
+    exit 2
+fi
 
 detect_python() {
     if command -v python3 >/dev/null 2>&1; then
@@ -159,6 +169,34 @@ path.write_text(text, encoding="utf-8")
 PY
 }
 
+# Python is already required, so this deadline also works without GNU timeout
+# on macOS. Each read-only probe owns a process group; kill its descendants too.
+run_bounded() {
+    "$PYTHON_CMD" - "$COMMAND_TIMEOUT" "$@" <<'PY'
+import os
+import signal
+import subprocess
+import sys
+
+seconds = int(sys.argv[1])
+process = subprocess.Popen(sys.argv[2:], stdin=subprocess.DEVNULL, start_new_session=True)
+try:
+    code = process.wait(timeout=seconds)
+except subprocess.TimeoutExpired:
+    print(f"Diagnostic timed out after {seconds} seconds; partial output retained.", file=sys.stderr)
+    raise SystemExit(124)
+finally:
+    if process.poll() is None:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            # The command exited between the deadline and process-group cleanup.
+            pass
+        process.wait()
+raise SystemExit(code if code >= 0 else 128 - code)
+PY
+}
+
 collect_shell() {
     local rel_path="$1"
     local label="$2"
@@ -170,7 +208,7 @@ collect_shell() {
     set +e
     (
         cd "$ROOT_DIR" || exit 1
-        "$BASH_CMD" -lc "$command"
+        run_bounded "$BASH_CMD" -lc "$command"
     ) > "$abs_path" 2>&1
     exit_code=$?
     set -e
@@ -282,15 +320,11 @@ docker_cli_available() {
 
 docker_daemon_available() {
     docker_cli_available || return 1
-    if command -v timeout >/dev/null 2>&1; then
-        timeout 10 "$DOCKER_BIN" info >/dev/null 2>&1
-    else
-        "$DOCKER_BIN" info >/dev/null 2>&1
-    fi
+    run_bounded "$DOCKER_BIN" info >/dev/null 2>&1
 }
 
 docker_compose_available() {
-    docker_cli_available && "$DOCKER_BIN" compose version >/dev/null 2>&1
+    docker_cli_available && run_bounded "$DOCKER_BIN" compose version >/dev/null 2>&1
 }
 
 safe_filename() {
@@ -412,7 +446,7 @@ collect_compose_validation() {
         LEMONADE_EXTERNAL="$lemonade_external" \
         AMD_INFERENCE_RUNTIME="$amd_runtime" \
         AMD_INFERENCE_MANAGED="$amd_managed" \
-        "$BASH_CMD" scripts/resolve-compose-stack.sh \
+        run_bounded "$BASH_CMD" scripts/resolve-compose-stack.sh \
             --script-dir "$ROOT_DIR" \
             --tier "$tier" \
             --gpu-backend "$gpu_backend" \
@@ -489,7 +523,7 @@ collect_docker() {
     local names_file="$BUNDLE_DIR/docker/container-names.txt"
     local names_exit
     set +e
-    "$DOCKER_BIN" ps --format '{{.Names}}' > "$names_file" 2>&1
+    run_bounded "$DOCKER_BIN" ps --format '{{.Names}}' > "$names_file" 2>&1
     names_exit=$?
     set -e
     redact_file "$names_file"
@@ -501,7 +535,7 @@ collect_docker() {
     while IFS= read -r container; do
         [[ -n "$container" ]] || continue
         case "$container" in
-            ods-*|*ods*)
+            ods-*)
                 ;;
             *)
                 continue

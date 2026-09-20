@@ -1,17 +1,22 @@
 import { useState } from 'react'
+import MetalMetricIcon from './MetalMetricIcon'
 import {
   MessageSquare, Image, Code, Shield, Layers, Package,
-  Loader2, X, Check, AlertTriangle, HardDrive,
+  Loader2, X, Check, AlertTriangle, HardDrive, ChevronRight,
+  Code2, MessagesSquare, Server, Network, Microscope, Bot, Blocks, Library, ShieldCheck, Mic,
 } from 'lucide-react'
 
-const ICON_MAP = { MessageSquare, Image, Code, Shield, Layers, Package }
+const ICON_MAP = { MessageSquare, Image, Code, Shield, Layers, Package, Code2, MessagesSquare, Server, Network, Microscope, Bot, Blocks, Library, ShieldCheck, Mic }
 const TEMPLATE_APPLY_TIMEOUT_MS = 30 * 60 * 1000
 
 const fetchJson = async (url, options = {}) => {
   const c = new AbortController()
   const t = setTimeout(() => c.abort(), options.timeout || 30000)
   try {
-    return await fetch(url, { ...options, signal: c.signal })
+    const response = await fetch(url, { ...options, signal: c.signal })
+    const data = await response.json()
+    if (c.signal.aborted) throw new globalThis.DOMException('Request timed out', 'AbortError')
+    return { ok: response.ok, status: response.status, data }
   } finally {
     clearTimeout(t)
   }
@@ -25,14 +30,14 @@ const fetchJson = async (url, options = {}) => {
  * per state and is only clickable in 'available'. Callers that prefer to
  * hide applied templates (Extensions page) can filter them out upstream.
  */
-export function TemplatePicker({ templates, onApplied, compact = false }) {
+export function TemplatePicker({ templates, onApplied, compact = false, variant = 'cards' }) {
   const [preview, setPreview] = useState(null)
 
   if (!templates || templates.length === 0) return null
 
   return (
     <>
-      <div className={`grid gap-3 ${compact ? 'grid-cols-1 sm:grid-cols-2' : 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3'}`}>
+      <div className={variant === 'library' ? 'collection-list' : `grid gap-3 ${compact ? 'grid-cols-1 sm:grid-cols-2' : 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3'}`}>
         {templates.map(tmpl => {
           const Icon = ICON_MAP[tmpl.icon] || Package
           const status = tmpl._status || 'available'
@@ -40,6 +45,12 @@ export function TemplatePicker({ templates, onApplied, compact = false }) {
           const hasErrors = status === 'has_errors'
           const isApplied = status === 'applied'
           const disabled = inProgress || hasErrors || isApplied
+
+          if (variant === 'library') return <button key={tmpl.id} className="collection-entry" disabled={disabled} aria-disabled={disabled} onClick={() => setPreview(tmpl)}>
+            <MetalMetricIcon icon={inProgress ? Loader2 : hasErrors ? AlertTriangle : isApplied ? Check : Icon} size={19}/>
+            <span className="collection-copy"><strong>{tmpl.name}</strong><span>{tmpl.description}</span><small>{tmpl.services?.length || 0} services{tmpl.estimated_disk_gb ? ` · ~${tmpl.estimated_disk_gb} GB` : ''}{inProgress ? ' · Installing…' : hasErrors ? ' · Has errors' : isApplied ? ' · Applied' : ''}</small></span>
+            <ChevronRight size={14} aria-hidden="true"/>
+          </button>
 
           const cardBase = 'text-left rounded-xl p-4 transition-all group border'
           const cardByStatus = inProgress
@@ -125,6 +136,7 @@ export function TemplatePreview({ template, onClose, onApplied }) {
   const [error, setError] = useState(null)
   const [applied, setApplied] = useState(false)
   const [applyResult, setApplyResult] = useState(null)
+  const requestClose = () => { if (!applying) onClose() }
 
   const Icon = ICON_MAP[template.icon] || Package
 
@@ -134,7 +146,7 @@ export function TemplatePreview({ template, onClose, onApplied }) {
     try {
       const res = await fetchJson(`/api/templates/${template.id}/preview`, { method: 'POST' })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      setPreviewData(await res.json())
+      setPreviewData(res.data)
     } catch (err) {
       setError(err.name === 'AbortError' ? 'Request timed out' : 'Failed to load preview')
     } finally {
@@ -143,6 +155,7 @@ export function TemplatePreview({ template, onClose, onApplied }) {
   }
 
   const handleApply = async () => {
+    if (applying) return
     setApplying(true)
     setError(null)
     try {
@@ -151,7 +164,7 @@ export function TemplatePreview({ template, onClose, onApplied }) {
         timeout: TEMPLATE_APPLY_TIMEOUT_MS,
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const data = await res.json()
+      const data = res.data
       setApplyResult(data)
       if (data.failed_services?.length > 0 || data.skipped_services?.length > 0) {
         setApplied('partial')
@@ -162,7 +175,7 @@ export function TemplatePreview({ template, onClose, onApplied }) {
       }
       onApplied?.()
     } catch (err) {
-      setError(err.name === 'AbortError' ? 'Request timed out' : 'Failed to apply template')
+      setError(err.name === 'AbortError' ? 'Request timed out. Close and check extension status before retrying.' : 'Failed to apply template')
     } finally {
       setApplying(false)
     }
@@ -176,7 +189,7 @@ export function TemplatePreview({ template, onClose, onApplied }) {
   const changes = previewData?.changes || {}
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={onClose}>
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={requestClose}>
       <div
         className="bg-theme-card border border-theme-border rounded-xl p-6 max-w-lg mx-4 w-full"
         onClick={e => e.stopPropagation()}
@@ -195,7 +208,7 @@ export function TemplatePreview({ template, onClose, onApplied }) {
               <p className="text-xs text-theme-text-muted">{template.description}</p>
             </div>
           </div>
-          <button onClick={onClose} className="text-theme-text-muted hover:text-theme-text transition-colors">
+          <button onClick={requestClose} disabled={applying} className="text-theme-text-muted hover:text-theme-text transition-colors disabled:opacity-50">
             <X size={18} />
           </button>
         </div>
@@ -225,7 +238,7 @@ export function TemplatePreview({ template, onClose, onApplied }) {
 
             {changes.already_enabled?.length > 0 && (
               <div>
-                <h4 className="text-xs font-medium text-theme-text-muted uppercase tracking-wider mb-1.5">Already running</h4>
+                <h4 className="text-xs font-medium text-theme-text-muted uppercase tracking-wider mb-1.5">Already available</h4>
                 <div className="flex flex-wrap gap-1.5">
                   {changes.already_enabled.map(svc => (
                     <span key={svc} className="text-xs px-2 py-1 rounded bg-green-500/10 text-green-400 border border-green-500/20">
@@ -277,7 +290,7 @@ export function TemplatePreview({ template, onClose, onApplied }) {
               <p className="text-sm text-green-400">Template applied — check extension cards for installation progress</p>
             )}
             {applied === 'already_active' && (
-              <p className="text-sm text-green-400">All services in this template are already active</p>
+              <p className="text-sm text-green-400">All services in this template are already available</p>
             )}
             {applied === 'restart_required' && (
               <>
@@ -318,10 +331,12 @@ export function TemplatePreview({ template, onClose, onApplied }) {
         )}
 
         {/* Actions */}
+        {applying && <p role="status" className="mt-4 text-xs text-theme-text-muted">Applying template. Keep this dialog open while the services are prepared.</p>}
         <div className="flex justify-end gap-3 mt-4">
           <button
-            onClick={onClose}
-            className="px-4 py-2 text-sm text-theme-text-muted hover:text-theme-text transition-colors"
+            onClick={requestClose}
+            disabled={applying}
+            className="px-4 py-2 text-sm text-theme-text-muted hover:text-theme-text transition-colors disabled:opacity-50"
           >
             {applied ? 'Close' : 'Cancel'}
           </button>

@@ -94,7 +94,10 @@ test_docker_running() {
     return 0
 }
 
-test_install() {
+# Install-directory checks only. Commands that read or edit local files
+# (config show / config edit) use this so they keep working while the Docker
+# runtime is down -- which is exactly when a user needs to look at .env.
+test_install_dir() {
     if [[ ! -d "$INSTALL_DIR" ]]; then
         ai_err "ODS not found at ${INSTALL_DIR}."
         ai "Invoke from inside the install dir (bash <install>/ods-macos.sh status), export ODS_HOME=<install>, or run the installer."
@@ -106,6 +109,12 @@ test_install() {
         ai_err "docker-compose.base.yml not found in ${INSTALL_DIR}"
         exit 1
     fi
+}
+
+# Install directory plus a reachable Docker runtime, for commands that talk
+# to compose.
+test_install() {
+    test_install_dir
     test_docker_running || exit 1
 }
 
@@ -201,6 +210,22 @@ read_ods_env() {
         if [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
             local key="${BASH_REMATCH[1]}"
             local val="${BASH_REMATCH[2]}"
+            # Apply Docker Compose's value grammar, mirrored from
+            # lib/safe-env.sh, before stripping quotes: trim surrounding
+            # whitespace (Compose trims leading space, so "KEY=  # x" becomes
+            # the literal "# x"), then for an unquoted value cut at the first
+            # " #", and for a quoted value drop a " #..." after the closing
+            # quote. "#" without a leading space and "#" inside quotes stay.
+            val="${val#"${val%%[![:space:]]*}"}"
+            val="${val%"${val##*[![:space:]]}"}"
+            case "$val" in
+                \"*) [[ "$val" =~ ^(\"(\\.|[^\"\\])*\")[[:space:]]+# ]] && val="${BASH_REMATCH[1]}" ;;
+                \'*) [[ "$val" =~ ^(\'[^\']*\')[[:space:]]+# ]] && val="${BASH_REMATCH[1]}" ;;
+                *)
+                    val="${val%% #*}"
+                    val="${val%"${val##*[![:space:]]}"}"
+                    ;;
+            esac
             # Strip exactly one matching pair of surrounding quotes. The old
             # sed removed a leading and a trailing quote independently (either
             # type), so KEY=abc" lost its trailing quote and "abc' was cut on
@@ -209,6 +234,11 @@ read_ods_env() {
             if [[ "$val" == '"'*'"' ]]; then
                 val="${val#\"}"
                 val="${val%\"}"
+                # Decode writer escapes without evaluating shell expansions.
+                # Single-quoted values below remain literal.
+                val="${val//\\\"/\"}"
+                val="${val//\\\$/\$}"
+                val="${val//\\\\/\\}"
             elif [[ "$val" == "'"*"'" ]]; then
                 val="${val#\'}"
                 val="${val%\'}"
@@ -912,7 +942,7 @@ cmd_logs() {
 }
 
 cmd_config_show() {
-    test_install
+    test_install_dir
 
     echo ""
     echo -e "  ${GRN}Configuration${NC}"
@@ -1070,7 +1100,7 @@ case "$COMMAND" in
         ACTION="${1:-show}"
         case "$ACTION" in
             edit)
-                test_install
+                test_install_dir
                 ${EDITOR:-nano} "${INSTALL_DIR}/.env"
                 ;;
             *)

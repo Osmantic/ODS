@@ -9,7 +9,11 @@ on:
 
 jobs:
   frontend:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     defaults:
       run:
         working-directory: ods/extensions/services/dashboard
@@ -24,6 +28,11 @@ jobs:
 
       - name: Install Dependencies (strict lock file check)
         run: npm ci
+
+      - name: Setup Python for embedded Token Spy dashboard tests
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: "3.12"
 
       - name: Lint
         run: npm run lint

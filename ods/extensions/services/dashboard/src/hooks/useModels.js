@@ -72,6 +72,7 @@ const MOCK_GPU = { vramTotal: 16, vramUsed: 13.2, vramFree: 2.8 }
 const MOCK_CURRENT_MODEL = 'Qwen/Qwen2.5-32B-Instruct-AWQ'
 const MOCK_MODES = { odsMode: 'local', configuredMode: 'local' }
 const DEFAULT_HERMES_MIN_CONTEXT = 65536
+const DEFAULT_PIXEL_MIN_CONTEXT = 16384
 const DEFAULT_POLL_MS = 30000
 const PENDING_MODEL_ACTION_POLL_MS = 2000
 const MODELS_FETCH_TIMEOUT_MS = 30000
@@ -165,6 +166,7 @@ export function useModels() {
   const [models, setModels] = useState(USE_MOCK_DATA ? getMockModels() : [])
   const [gpu, setGpu] = useState(USE_MOCK_DATA ? MOCK_GPU : null)
   const [currentModel, setCurrentModel] = useState(USE_MOCK_DATA ? MOCK_CURRENT_MODEL : null)
+  const [loadedModel, setLoadedModel] = useState(USE_MOCK_DATA ? MOCK_CURRENT_MODEL : null)
   const [activationReadyModel, setActivationReadyModel] = useState(USE_MOCK_DATA ? MOCK_CURRENT_MODEL : null)
   const [configuredModel, setConfiguredModel] = useState(USE_MOCK_DATA ? MOCK_CURRENT_MODEL : null)
   const [modelLifecycle, setModelLifecycle] = useState(null)
@@ -173,6 +175,7 @@ export function useModels() {
   const [llmBackend, setLlmBackend] = useState(USE_MOCK_DATA ? 'llama-server' : 'unknown')
   const [recommendationAlternatives, setRecommendationAlternatives] = useState([])
   const [hermesMinimumContext, setHermesMinimumContext] = useState(DEFAULT_HERMES_MIN_CONTEXT)
+  const [pixelMinimumContext, setPixelMinimumContext] = useState(DEFAULT_PIXEL_MIN_CONTEXT)
   const [loading, setLoading] = useState(USE_MOCK_DATA ? false : true)
   const [fetchError, setFetchError] = useState(null)
   const [mutationError, setMutationError] = useState(null)
@@ -237,12 +240,13 @@ export function useModels() {
       const data = await response.json()
 
       // A slower, older request must not overwrite a newer snapshot.
-      if (requestId < latestSettledModelsRequestRef.current) return data
+      if (requestId < latestSettledModelsRequestRef.current) return null
       latestSettledModelsRequestRef.current = requestId
 
       setModels(data.models)
       setGpu(data.gpu)
       setCurrentModel(data.currentModel)
+      setLoadedModel(data.loadedModel ?? null)
       setActivationReadyModel(data.activationReadyModel ?? null)
       setConfiguredModel(data.configuredModel ?? null)
       setModelLifecycle(normalizeModelLifecycle(data.modelLifecycle))
@@ -252,6 +256,7 @@ export function useModels() {
       setLlmBackend(typeof data.llmBackend === 'string' ? data.llmBackend.trim().toLowerCase() : 'unknown')
       setRecommendationAlternatives(data.recommendationAlternatives ?? [])
       setHermesMinimumContext(Number(data.hermesMinimumContext || DEFAULT_HERMES_MIN_CONTEXT))
+      setPixelMinimumContext(Number(data.pixelMinimumContext || DEFAULT_PIXEL_MIN_CONTEXT))
       setFetchError(null)
       reconcilePendingActions(data.models)
       return data
@@ -388,6 +393,13 @@ export function useModels() {
 
         const body = await responseJson(response)
         if (response.status === 409) {
+          if (body?.detail?.code === 'pixel_chat_active') {
+            activationError = errorMessageFromPayload(
+              body,
+              'Pixel is working. Stop the active response before changing models.'
+            )
+            return
+          }
           const activeModelId = conflictActiveModelId(body)
           if (activeModelId === modelId && !requestedContextLength) return
 
@@ -420,11 +432,12 @@ export function useModels() {
       // Take one final authoritative snapshot at the deadline or after a POST
       // failure. This cannot turn an unverified 409 into same-target success.
       const finalData = await fetchModels()
-      if (!activationError && activationMatches(finalData)) targetLoaded = true
+      const confirmed = !activationError && activationMatches(finalData)
 
-      if (!targetLoaded) {
-        setMutationError(activationError ||
-          `Timed out after 10 minutes waiting for ${modelId} to activate. The server may still be finishing; refresh before retrying.`)
+      if (!confirmed) {
+        setMutationError(activationError || (targetLoaded
+          ? `Could not confirm activation of ${modelId} against the latest model status. Refresh before retrying.`
+          : `Timed out after 10 minutes waiting for ${modelId} to activate. The server may still be finishing; refresh before retrying.`))
       }
     } finally {
       controller.abort()
@@ -487,6 +500,7 @@ export function useModels() {
     models,
     gpu,
     currentModel,
+    loadedModel,
     activationReadyModel,
     configuredModel,
     modelLifecycle,
@@ -497,6 +511,7 @@ export function useModels() {
     activationModeError,
     recommendationAlternatives,
     hermesMinimumContext,
+    pixelMinimumContext,
     loading,
     error,
     actionLoading,

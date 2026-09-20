@@ -188,7 +188,7 @@ select_backup() {
     fi
 
     echo "Select a backup to restore (enter number):" >&2
-    read -r selection
+    read -r selection || selection=""
 
     local backups=()
     while IFS= read -r -d '' backup; do
@@ -197,7 +197,8 @@ select_backup() {
 
     local index=$((selection - 1))
     if [[ $index -lt 0 || $index -ge ${#backups[@]} ]]; then
-        log_error "Invalid selection: $selection"
+        # stdout is the captured backup ID; the error must reach the user.
+        log_error "Invalid selection: $selection" >&2
         return 1
     fi
 
@@ -536,7 +537,7 @@ do_restore() {
         log_warn "This will copy backup data into: $ODS_DIR"
         log_warn "Existing files may be overwritten."
         echo ""
-        read -rp "Type the backup ID ('$backup_id') to continue, or press Enter to cancel: " confirm
+        read -rp "Type the backup ID ('$backup_id') to continue, or press Enter to cancel: " confirm || confirm=""
         if [[ "$confirm" != "$backup_id" ]]; then
             log_info "Restore cancelled"
             return 0
@@ -650,7 +651,7 @@ main() {
     if [[ "$has_compose" == "false" && ! -d "$ODS_DIR/data" ]]; then
         log_warn "This doesn't appear to be a ODS directory"
         log_warn "Expected: docker-compose.yml or data/ directory"
-        read -rp "Continue anyway? [y/N] " confirm
+        read -rp "Continue anyway? [y/N] " confirm || confirm=""
         if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
             exit 1
         fi

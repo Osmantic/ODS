@@ -18,9 +18,10 @@ import aiohttp
 import httpx
 
 from config import SERVICES, INSTALL_DIR, DATA_DIR, LLM_BACKEND, read_live_env_value
-from env_values import strip_matching_quotes
+from env_values import parse_env_value
 from host_agent_client import AgentClientError, async_request_json as request_agent_json
 from models import ServiceStatus, DiskUsage, ModelInfo, BootstrapStatus
+from service_health_dns import ServiceHealthResolver
 
 
 class _DirSizeCache:
@@ -72,6 +73,7 @@ logger = logging.getLogger(__name__)
 
 _aio_session: Optional[aiohttp.ClientSession] = None
 _aio_session_lock: Optional[asyncio.Lock] = None
+_health_resolver: Optional[ServiceHealthResolver] = None
 _HEALTH_TIMEOUT = aiohttp.ClientTimeout(total=30)
 # Short timeout for the catalog fan-out: one slow probe must not stall the
 # whole Extensions page (frontend aborts after 8 s).
@@ -87,16 +89,31 @@ def _get_aio_session_lock() -> asyncio.Lock:
 
 async def _get_aio_session() -> aiohttp.ClientSession:
     """Return (and lazily create) a module-level aiohttp session."""
-    global _aio_session
+    global _aio_session, _health_resolver
     if _aio_session is not None and not _aio_session.closed:
         return _aio_session
     async with _get_aio_session_lock():
         if _aio_session is None or _aio_session.closed:
+            if _health_resolver is not None:
+                await _health_resolver.close()
+            _health_resolver = ServiceHealthResolver()
             _aio_session = aiohttp.ClientSession(
                 timeout=_HEALTH_TIMEOUT,
-                connector=aiohttp.TCPConnector(family=socket.AF_INET),
+                connector=aiohttp.TCPConnector(family=socket.AF_INET, resolver=_health_resolver),
             )
     return _aio_session
+
+
+async def shutdown_service_health_client() -> None:
+    """Close health sockets and cancel queued resolver work at app shutdown."""
+    global _aio_session, _health_resolver, _aio_session_lock
+    if _aio_session is not None:
+        await _aio_session.close()
+        _aio_session = None
+    if _health_resolver is not None:
+        await _health_resolver.close()
+        _health_resolver = None
+    _aio_session_lock = None
 
 
 # Shared httpx client for llama-server requests (connection pooling)
@@ -120,6 +137,15 @@ async def _get_httpx_client() -> httpx.AsyncClient:
         if _httpx_client is None or _httpx_client.is_closed:
             _httpx_client = httpx.AsyncClient(timeout=5.0)
     return _httpx_client
+
+
+async def shutdown_llm_client() -> None:
+    """Close the pooled LLM client after application users have stopped."""
+    global _httpx_client, _httpx_client_lock
+    if _httpx_client is not None:
+        await _httpx_client.aclose()
+        _httpx_client = None
+    _httpx_client_lock = None
 
 
 def _service_status_from_config(service_id: str, config: dict, status: str) -> ServiceStatus:
@@ -827,7 +853,7 @@ def get_model_info() -> Optional[ModelInfo]:
                     key = key.strip()
                     if not key:
                         continue
-                    value = strip_matching_quotes(value)
+                    value = parse_env_value(value)
                     env_values[key] = value
 
             model_name = env_values.get("LLM_MODEL")
@@ -1146,3 +1172,212 @@ def get_ram_metrics() -> dict:
     elif _system == "Darwin":
         return _get_ram_metrics_sysctl()
     return {"used_gb": 0, "total_gb": 0, "percent": 0}
+
+
+def string_extract_domain_names_safe(text: str) -> list:
+    """
+    Safely extract domain names (hostnames) from a raw string or text block.
+    Guards against None, non-string input, empty string, malformed URLs, and regex exceptions.
+    Returns a sorted list of unique lowercase domain names.
+    """
+    if not isinstance(text, str) or not text.strip():
+        return []
+    if len(text) > 65536:
+        return []
+    # Tokenize first so an invalid long label cannot match a valid suffix.
+    # This extracts text candidates; it is not an SSRF/URL authorization check.
+    domains = set()
+    for candidate in re.findall(r"[A-Za-z0-9.-]+", text):
+        candidate = candidate.lower().strip(".")
+        labels = candidate.split(".")
+        if (len(candidate) <= 253 and len(labels) >= 2
+                and 2 <= len(labels[-1]) <= 63 and labels[-1].isalpha()
+                and all(re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label)
+                        for label in labels)):
+            domains.add(candidate)
+    return sorted(domains)
+
+
+def dict_key_path_setter_safe(d: dict, path_keys: list, value: any) -> dict:
+    """
+    Safely set a nested key value in a dictionary given a list of path keys.
+    Guards against invalid dictionaries, paths over 128 keys, and unsupported keys.
+    Invalid paths leave the dictionary untouched; valid paths replace scalar parents.
+    Returns the modified dictionary (or a new dict if d is None/invalid).
+    """
+    if d is None or not isinstance(d, dict):
+        d = {}
+    if (not isinstance(path_keys, (list, tuple)) or not 1 <= len(path_keys) <= 128
+            or any(type(key) not in (str, int) for key in path_keys)):
+        return d
+    
+    current = d
+    for key in path_keys[:-1]:
+        k_str = key
+        if k_str not in current or not isinstance(current[k_str], dict):
+            current[k_str] = {}
+        current = current[k_str]
+    
+    final_key = path_keys[-1]
+    current[final_key] = value
+    return d
+
+
+def numeric_safe_geometric_mean(numbers: list) -> float:
+    """
+    Safely compute the geometric mean of a list of positive numbers.
+    Guards against None, empty list, non-sequence types, negative/zero numbers,
+    NaN/Inf values, and float overflow/underflow using log-sum.
+    """
+    if not isinstance(numbers, (list, tuple)) or not numbers:
+        return 0.0
+    import math
+    valid_nums = []
+    for x in numbers:
+        if isinstance(x, (int, float)) and not isinstance(x, bool):
+            try:
+                number = float(x)
+            except (OverflowError, ValueError):
+                continue
+            if math.isfinite(number) and number > 0:
+                valid_nums.append(number)
+    if not valid_nums:
+        return 0.0
+    try:
+        scale = max(valid_nums)
+        smallest = min(valid_nums)
+        if smallest == scale:
+            return scale
+        mean_log = math.fsum(math.log(x) / len(valid_nums) for x in valid_nums)
+        return min(scale, max(smallest, math.exp(mean_log)))
+    except OverflowError:
+        return scale  # Rounding at the largest representable finite float.
+    except ValueError:
+        return 0.0
+
+
+def list_deduplicate_by_key_safe(items: list, key_or_attr: any) -> list:
+    """
+    Safely deduplicate a list of dictionaries or objects by a specified key or attribute,
+    preserving original order and guarding against None, unhashable keys, type errors, or missing keys.
+    """
+    if not isinstance(items, (list, tuple)):
+        return []
+    if key_or_attr is None or not isinstance(key_or_attr, (str, int)):
+        return list(items)
+    
+    seen = set()
+    structured = []
+    missing = object()
+    result = []
+    for item in items:
+        val = missing
+        if isinstance(item, dict):
+            val = item.get(key_or_attr, missing)
+        else:
+            try:
+                val = getattr(item, str(key_or_attr), missing)
+            except (AttributeError, TypeError, ValueError):
+                val = missing
+        if val is missing:
+            result.append(item)
+            continue
+        try:
+            key_val = (type(val), val)
+            hash(key_val)
+        except TypeError:
+            # Do not equate a list with its string representation or discard
+            # unrelated records that have no key.
+            try:
+                duplicate = any(type(val) is type(previous) and val == previous for previous in structured)
+            except (TypeError, ValueError, RecursionError):
+                duplicate = False
+            if not duplicate:
+                structured.append(val)
+                result.append(item)
+            continue
+        
+        if key_val not in seen:
+            seen.add(key_val)
+            result.append(item)
+    return result
+
+
+def string_snake_to_pascal_case_safe(text: str) -> str:
+    """
+    Safely convert snake_case or kebab-case string to PascalCase.
+    Guards against None, non-string, whitespace, numbers, and multiple delimiters.
+    """
+    if not isinstance(text, str) or not text.strip():
+        return ""
+    import re
+    clean = text.strip().replace("-", "_")
+    parts = [p for p in re.split(r'_+', clean) if p]
+    if not parts:
+        return ""
+    return "".join(p.capitalize() for p in parts)
+
+
+def dict_flatten_nested_safe(d: dict, separator: str = '.', max_depth: int = 10) -> dict:
+    """
+    Safely flatten a nested dictionary into a flat dictionary with delimiter-separated keys.
+    Guards against None, non-dict, maximum recursion depth limit, circular references, and non-string separators.
+    """
+    if not isinstance(d, dict):
+        return {}
+    if not isinstance(separator, str):
+        separator = '.'
+    if type(max_depth) is not int or max_depth < 1:
+        max_depth = 10
+    max_depth = min(max_depth, 128)
+    
+    result = {}
+    
+    # Iterative traversal avoids Python recursion limits. Cycles and depth
+    # boundaries remain leaf values, just like other unflattened dictionaries.
+    pending = [(d, '', 0, frozenset({id(d)}))]
+    while pending:
+        current, prefix, depth, ancestors = pending.pop()
+        for k, v in current.items():
+            str_key = str(k)
+            new_key = f"{prefix}{separator}{str_key}" if prefix else str_key
+            if isinstance(v, dict) and v and depth + 1 < max_depth and id(v) not in ancestors:
+                pending.append((v, new_key, depth + 1, ancestors | {id(v)}))
+            else:
+                result[new_key] = v
+    
+    return result
+
+
+def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) -> list:
+    """
+    Safely compute Exponential Moving Average (EMA) over a numeric sequence.
+    Guards against None, non-sequence types, empty lists, NaN/Inf floats, and invalid alpha range (0 < alpha <= 1).
+    """
+    if not isinstance(values, (list, tuple)) or not values:
+        return []
+    import math
+    if not isinstance(alpha, (int, float)) or isinstance(alpha, bool) or not 0 < alpha <= 1:
+        alpha = 0.2
+    if alpha <= 0 or alpha > 1:
+        alpha = 0.2
+    
+    valid_vals = []
+    for v in values:
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            try:
+                number = float(v)
+            except (OverflowError, ValueError):
+                continue
+            if math.isfinite(number):
+                valid_vals.append(number)
+    if not valid_vals:
+        return []
+    
+    ema = []
+    current = valid_vals[0]
+    ema.append(current)
+    for v in valid_vals[1:]:
+        current = alpha * v + (1 - alpha) * current
+        ema.append(current)
+    return ema

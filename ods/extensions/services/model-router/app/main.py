@@ -33,9 +33,11 @@ import re
 import time
 import uuid
 from collections import OrderedDict
+from contextlib import suppress
 from pathlib import Path
 from typing import Any, AsyncIterator
 
+import anyio
 import httpx
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -60,7 +62,7 @@ INSTANCE_ID = str(uuid.uuid4())
 
 MAX_BODY_BYTES = int(os.environ.get("ODS_ROUTER_MAX_BODY_BYTES", str(2 * 1024 * 1024)))
 MAX_QUEUE_DEPTH = int(os.environ.get("ODS_ROUTER_MAX_QUEUE_DEPTH", "64"))
-QUEUE_WAIT_SECONDS = int(os.environ.get("ODS_ROUTER_QUEUE_WAIT_SECONDS", "60"))
+QUEUE_WAIT_SECONDS = int(os.environ.get("ODS_ROUTER_QUEUE_WAIT_SECONDS", "600"))
 UPSTREAM_TIMEOUT_SECONDS = float(os.environ.get("ODS_ROUTER_UPSTREAM_TIMEOUT", "600"))
 UPSTREAM_MAX_CONNECTIONS = max(
     1, int(os.environ.get(
@@ -91,13 +93,14 @@ _HOP_BY_HOP = {
     "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
     "te", "trailer", "transfer-encoding", "upgrade", "host", "authorization",
     "content-length",
+    "x-ods-expected-catalog", "x-ods-expected-model", "x-ods-expected-route",
 }
 
 _PROBE_RE = re.compile(
     r"\[ODS_PROBE id=([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}) "
     r"sig=([A-Za-z0-9_-]+)\]"
 )
-_SSE_DELIMITER_RE = re.compile(rb"(?:\r\n|\r|\n)(?:\r\n|\r|\n)")
+_SSE_DELIMITER_RE = re.compile(rb"(?:\r\n|\r(?!\n)|(?<!\r)\n){2}")
 _CHAT_TEMPLATE_ARTIFACTS = (
     re.compile(r"<\|im_start\|>\s*(?:assistant|user|system|tool)?\s*<\|im_end\|>"),
     re.compile(r"<\|start_header_id\|>\s*(?:assistant|user|system|tool)?\s*<\|end_header_id\|>"),
@@ -109,6 +112,8 @@ app = FastAPI(title="ODS Model Router", docs_url=None, redoc_url=None,
 
 _inflight = 0
 _inflight_lock = asyncio.Lock()
+_waiting = 0
+_swap_gate: dict[str, Any] | None = None
 
 _state_cache: dict[str, Any] = {"mtime": None, "doc": None}
 _endpoints_cache: dict[str, Any] = {"mtime": None, "endpoints": {}}
@@ -553,7 +558,10 @@ def _active_route() -> dict[str, Any]:
     availability = (doc or {}).get("availability") or {}
     return {
         "routeSeq": int(active.get("routeSeq") or 0),
+        "catalogId": str(active.get("catalogId") or ""),
         "runtimeModelId": str(active.get("runtimeModelId") or ""),
+        "contextLength": active["contextLength"],
+        "capabilities": dict(active["capabilities"]),
         "backendKind": str((active.get("backend") or {}).get("kind") or "unknown"),
         "endpointId": endpoint_id,
         "baseUrl": endpoint["baseUrl"],
@@ -622,8 +630,13 @@ def _verify_probe_marker(body_text: str) -> str | None:
 
 def _sanitize_headers(request: Request) -> dict[str, str]:
     headers: dict[str, str] = {}
+    connection_fields = {
+        token.strip().lower()
+        for value in request.headers.getlist("connection")
+        for token in value.split(",")
+    }
     for name, value in request.headers.items():
-        if name.lower() in _HOP_BY_HOP:
+        if name.lower() in _HOP_BY_HOP or name.lower() in connection_fields:
             continue
         headers[name] = value
     headers["content-type"] = "application/json"
@@ -680,36 +693,56 @@ def _sanitize_choice_content(obj: dict[str, Any]) -> bool:
 def _rewrite_sse_event(
     event: bytes, alias: str
 ) -> tuple[bytes, list[str], list[dict[str, Any]], bool]:
-    """Rewrite complete SSE data lines and return observable response metadata."""
-    out_lines: list[bytes] = []
-    models: list[str] = []
-    payloads: list[dict[str, Any]] = []
-    saw_done = False
+    """Join an event's data fields before decoding JSON and observing metadata."""
+    lines: list[tuple[bytes, bytes]] = []
+    data_indices: list[int] = []
+    data_values: list[bytes] = []
     for line in event.splitlines(keepends=True):
         content = line.rstrip(b"\r\n")
-        ending = line[len(content):]
-        if content.startswith(b"data:"):
-            payload = content[5:].strip()
-            if payload == b"[DONE]":
-                saw_done = True
-            elif payload:
-                try:
-                    obj = json.loads(payload)
-                except ValueError:
-                    obj = None
-                if isinstance(obj, dict):
-                    payloads.append(obj)
-                    if isinstance(obj.get("model"), str):
-                        if obj["model"]:
-                            models.append(obj["model"])
-                        obj["model"] = alias
-                    _sanitize_choice_content(obj)
-                    content = (
-                        b"data: "
-                        + json.dumps(obj, separators=(",", ":")).encode("utf-8")
-                    )
-        out_lines.append(content + ending)
-    return b"".join(out_lines), models, payloads, saw_done
+        lines.append((content, line[len(content):]))
+        field, _, value = content.partition(b":")
+        if field == b"data":
+            data_indices.append(len(lines) - 1)
+            # SSE removes exactly one optional space after the colon, then
+            # joins all data fields with LF, including fields without a colon.
+            data_values.append(value.removeprefix(b" "))
+    payload = b"\n".join(data_values)
+    if payload.strip() == b"[DONE]":
+        return event, [], [], True
+    try:
+        obj = json.loads(payload)
+    except ValueError:
+        return event, [], [], False
+    if not isinstance(obj, dict):
+        return event, [], [], False
+
+    models: list[str] = []
+    model_objects = [obj]
+    # Responses lifecycle events wrap their response object. Observe the
+    # concrete identity before restoring either top-level or nested aliases.
+    if (isinstance(obj.get("type"), str)
+            and obj["type"].startswith("response.")
+            and isinstance(obj.get("response"), dict)):
+        model_objects.append(obj["response"])
+    for model_object in model_objects:
+        if isinstance(model_object.get("model"), str):
+            if model_object["model"]:
+                models.append(model_object["model"])
+            model_object["model"] = alias
+    _sanitize_choice_content(obj)
+
+    # Emit one compact data field, preserving comments and other SSE fields.
+    # The last retained line inherits the original final ending so deleting
+    # later data fields cannot introduce an extra blank event delimiter.
+    first_data = data_indices[0]
+    removed = set(data_indices[1:])
+    retained = [line for index, line in enumerate(lines) if index not in removed]
+    retained[first_data] = (
+        b"data: " + json.dumps(obj, separators=(",", ":")).encode("utf-8"),
+        lines[first_data][1],
+    )
+    retained[-1] = (retained[-1][0], lines[-1][1])
+    return b"".join(content + ending for content, ending in retained), models, [obj], False
 
 
 def _is_terminal_stream_payload(payload: dict[str, Any]) -> bool:
@@ -762,6 +795,9 @@ class _SSERewriter:
         self.buffer += chunk
         output: list[bytes] = []
         while match := _SSE_DELIMITER_RE.search(self.buffer):
+            if match.end() == len(self.buffer) and self.buffer.endswith(b"\r"):
+                # A transport split may put the LF of CRLF in the next chunk.
+                break
             event = self.buffer[:match.start()]
             delimiter = self.buffer[match.start():match.end()]
             self.buffer = self.buffer[match.end():]
@@ -808,14 +844,124 @@ async def _read_bounded_body(request: Request) -> bytes:
 
 async def _release_admission() -> None:
     global _inflight
+    with anyio.CancelScope(shield=True):
+        async with _inflight_lock:
+            _inflight -= 1
+
+
+class _OwnedStream(StreamingResponse):
+    """Response, not its possibly unstarted iterator, owns upstream admission."""
+    def __init__(self, *args, cleanup, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._cleanup = cleanup
+        self._closed = False
+
+    async def close(self):
+        with anyio.CancelScope(shield=True):
+            if not self._closed:
+                self._closed = True
+                await self._cleanup()
+
+    async def __call__(self, scope, receive, send):
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            await self.close()
+
+
+async def _while_connected(request, operation):
+    """Propagate client cancellation while queued or waiting for model headers."""
+    stopped = False
+    async def disconnected():
+        while not stopped:
+            if await request.is_disconnected():
+                return
+            if stopped:
+                return
+            await asyncio.sleep(0.25)
+
+    work = asyncio.create_task(operation)
+    watcher = asyncio.create_task(disconnected())
+    handed_off = False
+    try:
+        done, _ = await asyncio.wait((work, watcher), return_when=asyncio.FIRST_COMPLETED)
+        if watcher in done:
+            await watcher
+            return Response(status_code=499)
+        result = await work
+        handed_off = True
+        return result
+    finally:
+        stopped = True
+        with anyio.CancelScope(shield=True):
+            watcher.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await watcher
+            if not work.done():
+                work.cancel()
+                with suppress(asyncio.CancelledError):
+                    await work
+            # Completion and disconnect can arrive together. Dispose of the
+            # ready streaming response if no caller accepted its ownership.
+            if not handed_off and work.done() and not work.cancelled() and work.exception() is None:
+                orphan = work.result()
+                if isinstance(orphan, _OwnedStream):
+                    await orphan.close()
+
+
+def _expire_swap_gate_locked() -> None:
+    """Expire an abandoned admission gate while holding ``_inflight_lock``."""
+    global _swap_gate
+    if _swap_gate is not None and time.monotonic() >= _swap_gate["expiresAt"]:
+        logger.warning("model-swap admission gate lease expired; reopening admission")
+        _swap_gate = None
+
+
+async def _admit_request() -> tuple[bool, str]:
+    """Atomically wait out a model swap and reserve an upstream slot.
+
+    The swap controller and this function share ``_inflight_lock``. Once the
+    controller closes the gate, no request can slip between an idle check and
+    the runtime restart. Waiting requests are bounded separately from active
+    upstream work, so a closed gate can drain to a mechanically stable zero.
+    """
+    global _inflight, _waiting
+    deadline = time.monotonic() + QUEUE_WAIT_SECONDS
     async with _inflight_lock:
-        _inflight -= 1
+        _expire_swap_gate_locked()
+        if _inflight + _waiting >= MAX_QUEUE_DEPTH:
+            return False, "queue_full"
+        _waiting += 1
+
+    admitted = False
+    try:
+        while True:
+            async with _inflight_lock:
+                _expire_swap_gate_locked()
+                if _swap_gate is None:
+                    _waiting -= 1
+                    _inflight += 1
+                    admitted = True
+                    return True, ""
+            if time.monotonic() >= deadline:
+                return False, "model_swap_in_progress"
+            await asyncio.sleep(0.25)
+    finally:
+        if not admitted:
+            with anyio.CancelScope(shield=True):
+                async with _inflight_lock:
+                    _waiting -= 1
 
 
 @app.get("/health")
 async def health() -> dict[str, Any]:
     doc = _read_state()
     endpoints = _load_endpoints()
+    async with _inflight_lock:
+        _expire_swap_gate_locked()
+        active_requests = _inflight
+        queued_requests = _waiting
+        swap_gate_active = _swap_gate is not None
     # Body-level signal only: with an empty allowlist every forward answers
     # endpoint_not_allowlisted, but the HTTP status stays 200 so the compose
     # healthcheck does not cascade a config gap into container restarts.
@@ -827,6 +973,9 @@ async def health() -> dict[str, Any]:
         "routeSeq": (doc or {}).get("routeSeq"),
         "instanceId": INSTANCE_ID,
         "probeKeyConfigured": bool(_current_probe_key()),
+        "activeRequests": active_requests,
+        "queuedRequests": queued_requests,
+        "modelSwapGateActive": swap_gate_active,
     }
 
 
@@ -837,10 +986,12 @@ async def list_models() -> dict[str, Any]:
     try:
         route = _active_route()
         metadata = {"routedModel": route["runtimeModelId"],
+                    "catalogId": route["catalogId"],
                     "backend": route["backendKind"],
-                    "routeSeq": route["routeSeq"]}
+                    "routeSeq": route["routeSeq"], "contextLength": route["contextLength"],
+                    "capabilities": route["capabilities"]}
     except RouterError:
-        metadata = {"routedModel": None, "backend": None, "routeSeq": None}
+        metadata = {"routedModel": None, "catalogId": None, "backend": None, "routeSeq": None}
     return {"object": "list", "data": data, "ods": metadata}
 
 
@@ -854,6 +1005,59 @@ async def route_evidence(probe_id: str, request: Request) -> Response:
         return JSONResponse({"error": "not_found"}, status_code=404)
     public = {k: v for k, v in record.items() if k != "storedAt"}
     return JSONResponse(public)
+
+
+@app.post("/internal/model-swap/admission")
+async def model_swap_admission(request: Request) -> Response:
+    """Lease the request-admission gate for a serialized runtime swap.
+
+    This endpoint is reachable only inside the Compose network and requires
+    the router's internal bearer key. Leases are deliberately short: the
+    upgrader renews while it owns the lifecycle lock, and a killed upgrader
+    cannot strand the router closed.
+    """
+    provided = request.headers.get("authorization", "")
+    if not INTERNAL_KEY or provided != f"Bearer {INTERNAL_KEY}":
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        body = await request.json()
+    except (ValueError, json.JSONDecodeError):
+        return JSONResponse({"error": "invalid_json"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "invalid_request"}, status_code=400)
+    action = body.get("action")
+    token = body.get("token")
+    if action not in {"begin", "end"} or not isinstance(token, str) \
+            or not re.fullmatch(r"[A-Za-z0-9._-]{16,128}", token):
+        return JSONResponse({"error": "invalid_request"}, status_code=400)
+
+    global _swap_gate
+    async with _inflight_lock:
+        _expire_swap_gate_locked()
+        if action == "end":
+            if _swap_gate is None:
+                return JSONResponse({"status": "open", "activeRequests": _inflight})
+            if _swap_gate["token"] != token:
+                return JSONResponse({"error": "gate_owned"}, status_code=409)
+            _swap_gate = None
+            return JSONResponse({"status": "open", "activeRequests": _inflight})
+
+        lease_seconds = body.get("leaseSeconds", 30)
+        if not isinstance(lease_seconds, int) or isinstance(lease_seconds, bool) \
+                or not 5 <= lease_seconds <= 120:
+            return JSONResponse({"error": "invalid_lease"}, status_code=400)
+        if _swap_gate is not None and _swap_gate["token"] != token:
+            return JSONResponse({"error": "gate_owned"}, status_code=409)
+        _swap_gate = {
+            "token": token,
+            "expiresAt": time.monotonic() + lease_seconds,
+        }
+        return JSONResponse({
+            "status": "closed",
+            "activeRequests": _inflight,
+            "queuedRequests": _waiting,
+            "leaseSeconds": lease_seconds,
+        })
 
 
 @app.api_route("/{full_path:path}", methods=["GET", "POST", "PUT", "DELETE",
@@ -888,16 +1092,23 @@ async def forward(full_path: str, request: Request) -> Response:
         )
 
     requested_alias = str(payload.get("model") or PUBLIC_ALIASES[0])
+    return await _while_connected(request, _forward_admitted(request, path, payload, requested_alias, body))
 
-    global _inflight
-    async with _inflight_lock:
-        if _inflight >= MAX_QUEUE_DEPTH:
+
+async def _forward_admitted(request, path, payload, requested_alias, body):
+    admitted, reason = await _admit_request()
+    if not admitted:
+        if reason == "queue_full":
             return JSONResponse(
                 {"error": {"message": "Router queue is full",
                            "type": "overloaded", "code": "503"}},
                 status_code=503, headers={"Retry-After": "5"},
             )
-        _inflight += 1
+        return JSONResponse(
+            {"error": {"message": "A model swap is in progress",
+                       "type": "model_swap_in_progress", "code": "503"}},
+            status_code=503, headers={"Retry-After": "10"},
+        )
     stream_owns_admission = False
     try:
         response, stream_owns_admission = await _forward_inner(
@@ -932,6 +1143,23 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
                 status_code=503, headers={"Retry-After": "10"},
             ), False
         await asyncio.sleep(0.25)
+
+    # Additive precondition for inference-only sharing. It is checked after
+    # admission/queueing and before any upstream bytes are sent. Legacy clients
+    # omit all three headers and retain their existing alias behavior.
+    pin_names = ("x-ods-expected-catalog", "x-ods-expected-model", "x-ods-expected-route")
+    pinned_route = any(name in request.headers for name in pin_names)
+    if pinned_route:
+        values = [request.headers.getlist(name) for name in pin_names]
+        if (any(len(value) != 1 or not value[0] for value in values)
+                or not re.fullmatch(r"0|[1-9][0-9]{0,15}", values[2][0])
+                or int(values[2][0]) > 2**53 - 1):
+            return JSONResponse({"error": {"message": "Invalid route precondition",
+                "type": "route_precondition_invalid", "code": "400"}}, status_code=400), False
+        if (values[0][0] != route["catalogId"] or values[1][0] != route["runtimeModelId"]
+                or int(values[2][0]) != route["routeSeq"]):
+            return JSONResponse({"error": {"message": "The selected model route changed",
+                "type": "route_changed", "code": "409"}}, status_code=409), False
 
     payload["model"] = route["runtimeModelId"]
     request_id = str(uuid.uuid4())
@@ -975,19 +1203,32 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
             if lemonade_route:
                 ods_headers["X-Lemonade-Route"] = lemonade_route
 
+            async def cleanup_stream():
+                try:
+                    with suppress(httpx.HTTPError, OSError):
+                        await upstream.aclose()
+                finally:
+                    await _release_admission()
+
             async def stream_body() -> AsyncIterator[bytes]:
                 rewriter = _SSERewriter(requested_alias)
                 completed = False
                 try:
                     async for chunk in upstream.aiter_bytes():
-                        for event in rewriter.feed(chunk):
+                        before = len(rewriter.models)
+                        events = rewriter.feed(chunk)
+                        if pinned_route and any(model != route['runtimeModelId'] for model in rewriter.models[before:]):
+                            raise RouterError(502, 'response_identity_mismatch', 'Backend response identity changed')
+                        for event in events:
                             yield event
+                    before = len(rewriter.models)
                     tail = rewriter.finish()
+                    if pinned_route and any(model != route['runtimeModelId'] for model in rewriter.models[before:]):
+                        raise RouterError(502, 'response_identity_mismatch', 'Backend response identity changed')
                     if tail:
                         yield tail
                     completed = True
                 finally:
-                    await upstream.aclose()
                     if (
                         completed
                         and rewriter.completed
@@ -1021,13 +1262,12 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
                             usage=rewriter.usage,
                             stop_reason=rewriter.stop_reason,
                         ))
-                    await _release_admission()
 
             media_type = upstream.headers.get("content-type",
                                               "text/event-stream")
-            return StreamingResponse(
+            return _OwnedStream(
                 stream_body(), status_code=upstream.status_code,
-                media_type=media_type, headers=ods_headers,
+                media_type=media_type, headers=ods_headers, cleanup=cleanup_stream,
             ), True
 
         upstream = await client.post(
@@ -1077,6 +1317,10 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
             content = json.dumps(parsed).encode("utf-8")
     except (ValueError, UnicodeDecodeError):
         pass
+
+    if pinned_route and 200 <= upstream.status_code < 300 and response_model != route['runtimeModelId']:
+        return JSONResponse({'error': {'message': 'Backend response identity changed',
+            'type': 'response_identity_mismatch', 'code': '502'}}, status_code=502, headers=ods_headers), False
 
     if probe_id:
         _record_evidence({**evidence_base,

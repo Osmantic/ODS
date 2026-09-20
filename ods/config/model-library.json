@@ -15,7 +15,7 @@
       "max_context_length": 262144,
       "quantization": "Q4_K_M",
       "specialty": "Low-VRAM Chat",
-      "description": "Qwen's compact hybrid model with a native 256K context limit, tool-use support, broad multilingual coverage, and a 64K operating target. It remains available for manual testing, but is not agent-ready after required app probes failed on four of six fleet hosts.",
+      "description": "Qwen's compact hybrid model with a native 256K context limit, tool-use support, broad multilingual coverage, and a 64K operating target. Pixel supports it in adaptive mode; historical cross-app probes show lower reliability on four of six fleet hosts, so complex work may need more guidance or a stronger model.",
       "tokens_per_sec_estimate": 120,
       "llm_model_name": "qwen3.5-2b",
       "llama_server_image": null,
@@ -50,7 +50,7 @@
         },
         "agent_viability": {
           "status": "not_agent_viable",
-          "label": "Not agent-ready",
+          "label": "Adaptive; reliability varies",
           "reason": "Only tower2 and strix-halo completed the full rotation. Four hosts failed required candidate-phase app probes, although every failure recovery restored the original model and deleted the test artifact cleanly.",
           "evidence": "fleet-test/runs/2026-07-27T08-54-24Z-model-ui-product-b5da3792c281-harness-19d43e6f9f25-hosts-tower2-strix-halo-spark-m5-mbp-windows-laptop-strixy/cycle-001/{tower2,strix-halo,spark,m5-mbp,windows-laptop,strixy}",
           "recordedAt": "2026-07-27T09:13:58Z",
@@ -73,7 +73,7 @@
       "max_context_length": 262144,
       "quantization": "Q4_K_M",
       "specialty": "Efficient Reasoning",
-      "description": "AI21's compact hybrid reasoning model combines 26 Mamba layers with 2 attention layers for low-memory long-context work. It remains available for manual testing, but is not agent-ready after required OpenCode probes failed on two independent fleet backends.",
+      "description": "AI21's compact hybrid reasoning model combines 26 Mamba layers with 2 attention layers for low-memory long-context work. Pixel supports it in adaptive mode; historical OpenCode probes show lower reliability on two independent fleet backends, so complex work may need more guidance or a stronger model.",
       "tokens_per_sec_estimate": 90,
       "llm_model_name": "jamba-reasoning-3b",
       "llama_server_image": null,
@@ -111,7 +111,7 @@
         },
         "agent_viability": {
           "status": "not_agent_viable",
-          "label": "Not agent-ready",
+          "label": "Adaptive; reliability varies",
           "reason": "Four hosts completed the full rotation, but two independent backends failed the required OpenCode candidate probe after successful load and Talk inference. Every host restored its original model and deleted the test artifact cleanly.",
           "evidence": "fleet-test/runs/2026-07-27T10-47-19Z-model-ui-product-ca730791caca-harness-19d43e6f9f25-hosts-tower2-strix-halo-spark-m5-mbp-windows-laptop-strixy/cycle-001/{tower2,strix-halo,spark,m5-mbp,windows-laptop,strixy}",
           "recordedAt": "2026-07-27T11:12:30Z",
@@ -619,6 +619,18 @@
           "productSha": "651e048b61d9a5cc2133f342014b9ceb64800d41",
           "harnessSha": "19d43e6f9f2533e8768ed85b33de9f4ace232129",
           "hostScope": ["tower2", "strix-halo", "spark", "m5-mbp", "windows-laptop", "strixy"]
+        },
+        "pixel_agent": {
+          "status": "not_agent_viable",
+          "label": "Pixel tool loop failed on Windows",
+          "reason": "A real Pixel coding turn created an incorrect TTL/LRU cache, retained two independently reproduced test failures, made no useful repair, and failed to provide a concise honest terminal result. Generic route, Talk, and consumer validation does not establish Pixel capability.",
+          "evidence": "docs/pixel/model-capability-qualification.md#nvidia-nemotron-3-nano-4b",
+          "recordedAt": "2026-08-30T06:30:00Z",
+          "productSha": "df05a732ed7aedac6c527e1f9e7eeeeccfed3a5b",
+          "pixelSha": "f1f811d02bffd5a1589eb6feb34323f6dadf7832",
+          "harnessSha": "f1f811d02bffd5a1589eb6feb34323f6dadf7832",
+          "hostScope": ["windows-laptop"],
+          "expiresAt": "2026-09-30T00:00:00Z"
         }
       },
       "install_recommendation": true
@@ -901,6 +913,22 @@
       "llama_server_image": null,
       "runtime_profiles": [
         {
+          "id": "cpu-16k-agent-memory",
+          "label": "CPU 16K agent context with 8G memory budget",
+          "backend": "cpu",
+          "system_ram_min_gb": 16,
+          "context_length": 16384,
+          "estimated_required_gb": 7.8,
+          "fit_label": "16K CPU agent profile",
+          "env": {
+            "LLAMA_PARALLEL": "1",
+            "LLAMA_ARG_FLASH_ATTN": "auto",
+            "LLAMA_ARG_CACHE_TYPE_K": "f16",
+            "LLAMA_ARG_CACHE_TYPE_V": "f16",
+            "LLAMA_SERVER_MEMORY_LIMIT": "8G"
+          }
+        },
+        {
           "id": "nvidia-8gb-64k-q4-kv",
           "label": "NVIDIA 8GB 64K context with Q4 KV cache",
           "backend": "nvidia",
@@ -917,6 +945,26 @@
             "LLAMA_ARG_FLASH_ATTN": "on",
             "LLAMA_ARG_CACHE_TYPE_K": "q4_0",
             "LLAMA_ARG_CACHE_TYPE_V": "q4_0"
+          }
+        },
+        {
+          "id": "nvidia-8gb-32k-q8-kv",
+          "label": "NVIDIA 8GB 32K context with Q8 KV cache",
+          "backend": "nvidia",
+          "host_arch": ["amd64"],
+          "memory_type": "discrete",
+          "vram_min_gb": 7.5,
+          "vram_max_gb": 8.5,
+          "system_ram_min_gb": 15,
+          "context_length": 32768,
+          "estimated_required_gb": 6.8,
+          "fit_label": "32K 8GB Q8 KV constrained-runtime profile",
+          "env": {
+            "LLAMA_PARALLEL": "1",
+            "LLAMA_ARG_FLASH_ATTN": "on",
+            "LLAMA_ARG_CACHE_TYPE_K": "q8_0",
+            "LLAMA_ARG_CACHE_TYPE_V": "q8_0",
+            "LLAMA_SERVER_MEMORY_LIMIT": "12G"
           }
         }
       ],
@@ -960,6 +1008,18 @@
           "productSha": "7629cd20c0ec75a274187aea52b8cc9ad6fa2a2a",
           "harnessSha": "19d43e6f9f2533e8768ed85b33de9f4ace232129",
           "hostScope": ["tower2", "strix-halo", "spark", "m5-mbp", "windows-laptop", "strixy"]
+        },
+        "pixel_agent": {
+          "status": "not_agent_viable",
+          "label": "Pixel tool loop failed on Windows",
+          "reason": "A real Pixel coding turn wrote tests to the wrong directory, ran the wrong verification command, hallucinated a filename correction after an import failure, emitted invalid and ineffective edits, and recursively deleted the requested project tree without owner authorization.",
+          "evidence": "docs/pixel/model-capability-qualification.md#ministral-3-8b-instruct-2512",
+          "recordedAt": "2026-08-30T06:50:00Z",
+          "productSha": "df05a732ed7aedac6c527e1f9e7eeeeccfed3a5b",
+          "pixelSha": "f1f811d02bffd5a1589eb6feb34323f6dadf7832",
+          "harnessSha": "f1f811d02bffd5a1589eb6feb34323f6dadf7832",
+          "hostScope": ["windows-laptop"],
+          "expiresAt": "2026-09-30T00:00:00Z"
         }
       },
       "install_recommendation": true
@@ -1184,6 +1244,18 @@
           "harnessSha": "954deb755b0730719512ac3675a748474180e01c",
           "hostScope": ["windows-laptop"],
           "expiresAt": "2026-08-24T00:00:00Z"
+        },
+        "pixel_agent": {
+          "status": "not_agent_viable",
+          "label": "Pixel repair loop failed on Windows",
+          "reason": "A real Pixel coding turn at 24K context ignored the deterministic fake-clock contract, wrote defective cache code and tests, independently retained two failures out of seven, and then made ineffective and duplicate repairs until the bounded verification guard terminated the continuation honestly. Direct tool calls and generic route, Talk, or consumer evidence do not establish Pixel capability.",
+          "evidence": "docs/pixel/model-capability-qualification.md#qwen3-4b-instruct-2507",
+          "recordedAt": "2026-08-30T08:10:12Z",
+          "productSha": "df05a732ed7aedac6c527e1f9e7eeeeccfed3a5b",
+          "pixelSha": "f1f811d02bffd5a1589eb6feb34323f6dadf7832",
+          "harnessSha": "f1f811d02bffd5a1589eb6feb34323f6dadf7832",
+          "hostScope": ["windows-laptop"],
+          "expiresAt": "2026-09-30T00:00:00Z"
         }
       },
       "runtime_profiles": [
@@ -1359,6 +1431,18 @@
           "evidence": "fleet-test/runs/2026-07-24T18-23-guardrail-fullapp-windows-qwen25-coder-3b-product-f35e9af8eeab-harness-7c6cd3af853b/cycle-001/windows-laptop",
           "recordedAt": "2026-07-24T18:30:00Z",
           "hostScope": ["windows-laptop"]
+        },
+        "pixel_agent": {
+          "status": "not_agent_viable",
+          "label": "Pixel protocol failed on Windows",
+          "reason": "A real Pixel coding turn made no tool calls, created no files, and returned malformed mock example protocol text instead of operating the requested workspace.",
+          "evidence": "docs/pixel/model-capability-qualification.md#qwen-25-coder-3b-128k",
+          "recordedAt": "2026-08-30T06:25:00Z",
+          "productSha": "df05a732ed7aedac6c527e1f9e7eeeeccfed3a5b",
+          "pixelSha": "f1f811d02bffd5a1589eb6feb34323f6dadf7832",
+          "harnessSha": "f1f811d02bffd5a1589eb6feb34323f6dadf7832",
+          "hostScope": ["windows-laptop"],
+          "expiresAt": "2026-09-30T00:00:00Z"
         },
         "hermes_talk": {
           "status": "unsupported_until_revalidated",
@@ -1600,6 +1684,18 @@
           "harnessSha": "954deb755b0730719512ac3675a748474180e01c",
           "hostScope": ["windows-laptop"],
           "expiresAt": "2026-08-24T00:00:00Z"
+        },
+        "pixel_agent": {
+          "status": "not_agent_viable",
+          "label": "Pixel repair loop failed on Windows",
+          "reason": "A real Pixel coding turn reached a unittest NameError, made one ineffective duplicate edit, exhausted its bounded tool loop, and ended without rerunning verification or reporting the remaining failure honestly. Independent replay retained the error and found additional contract defects.",
+          "evidence": "docs/pixel/model-capability-qualification.md#qwen-35-4b",
+          "recordedAt": "2026-08-30T06:20:00Z",
+          "productSha": "df05a732ed7aedac6c527e1f9e7eeeeccfed3a5b",
+          "pixelSha": "f1f811d02bffd5a1589eb6feb34323f6dadf7832",
+          "harnessSha": "f1f811d02bffd5a1589eb6feb34323f6dadf7832",
+          "hostScope": ["windows-laptop"],
+          "expiresAt": "2026-09-30T00:00:00Z"
         }
       },
       "runtime_profiles": [
@@ -1692,7 +1788,63 @@
       "description": "Excellent general-purpose model. Default for most systems. Great at coding, reasoning, and multilingual tasks.",
       "tokens_per_sec_estimate": 90,
       "llm_model_name": "qwen3.5-9b",
-      "llama_server_image": null
+      "llama_server_image": null,
+      "app_compatibility": {
+        "pixel_agent": {
+          "status": "verified",
+          "label": "Pixel verified at 64K context on Windows laptop",
+          "reason": "Fresh Pixel sessions on the auto-paired 64K profile created and debugged a new CLI, then repaired two seeded implementation defects while preserving fixed tests. The load-bearing repair ran the exact 12-second unittest command as a background process, polled an initial four-failure terminal result, made only two focused implementation edits, polled the rerun to 9/9 and exit zero, and passed an exact functional marker plus independent replay. This is capability evidence for the named host, artifact, profile, ODS source, and Pixel source; the earlier failed 24K, 32K, and 64K probes remain preserved as historical evidence rather than an access restriction.",
+          "evidence": "docs/pixel/model-capability-qualification.md#qwen-35-9b-revalidation-2026-09-02",
+          "recordedAt": "2026-09-02T23:04:24Z",
+          "productSha": "d0808d08645841ffcbb3cf3919a9c81fe485937b",
+          "pixelSha": "d99923246e5ea22c0f1c8c8fc7b0927ac8b523fe",
+          "harnessSha": "d99923246e5ea22c0f1c8c8fc7b0927ac8b523fe",
+          "hostScope": ["windows-laptop"],
+          "expiresAt": "2026-10-02T23:04:24Z"
+        }
+      },
+      "runtime_profiles": [
+        {
+          "id": "nvidia-8gb-64k-q8-kv",
+          "label": "NVIDIA 8GB 64K context with Q8 KV cache",
+          "backend": "nvidia",
+          "host_arch": ["amd64"],
+          "memory_type": "discrete",
+          "vram_min_gb": 7.5,
+          "vram_max_gb": 8.5,
+          "system_ram_min_gb": 15,
+          "context_length": 65536,
+          "estimated_required_gb": 7.2,
+          "fit_label": "64K 8GB Q8 KV interactive-agent profile",
+          "env": {
+            "LLAMA_PARALLEL": "1",
+            "LLAMA_ARG_FLASH_ATTN": "on",
+            "LLAMA_ARG_CACHE_TYPE_K": "q8_0",
+            "LLAMA_ARG_CACHE_TYPE_V": "q8_0",
+            "LLAMA_SERVER_MEMORY_LIMIT": "12G"
+          }
+        },
+        {
+          "id": "nvidia-8gb-32k-q8-kv",
+          "label": "NVIDIA 8GB 32K context with Q8 KV cache",
+          "backend": "nvidia",
+          "host_arch": ["amd64"],
+          "memory_type": "discrete",
+          "vram_min_gb": 7.5,
+          "vram_max_gb": 8.5,
+          "system_ram_min_gb": 15,
+          "context_length": 32768,
+          "estimated_required_gb": 6.8,
+          "fit_label": "32K 8GB Q8 KV interactive-agent profile",
+          "env": {
+            "LLAMA_PARALLEL": "1",
+            "LLAMA_ARG_FLASH_ATTN": "on",
+            "LLAMA_ARG_CACHE_TYPE_K": "q8_0",
+            "LLAMA_ARG_CACHE_TYPE_V": "q8_0",
+            "LLAMA_SERVER_MEMORY_LIMIT": "12G"
+          }
+        }
+      ]
     },
     {
       "id": "phi4-q4",
