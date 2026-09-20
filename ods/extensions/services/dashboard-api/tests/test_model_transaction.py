@@ -88,6 +88,38 @@ def test_restart_recovery_finishes_only_exact_saved_state_and_current_proof(cont
     assert calls.count('model-begin')==1 and calls.count('model-apply')==(outcome=='commit')
 
 
+@pytest.mark.parametrize('proof,other_drift,proof_drift', [
+    (True, False, False), (False, False, False),
+    (True, True, False), (True, False, True),
+])
+def test_commit_recovery_accepts_only_proven_stable_env_only_drift(
+        controller,monkeypatch,proof,other_drift,proof_drift):
+    _,_,calls,_=controller
+    env_file=host.INSTALL_DIR/'.env';env_file.write_text('MODEL=old\n')
+    other_file=host.INSTALL_DIR/'model-config';other_file.write_text('old')
+    monkeypatch.setattr(host,'_pixel_model_config_paths',lambda:{
+        '.env':env_file,'model-config':other_file,
+    })
+    env={'PIXEL_OPENWEBUI_KEY':'configured'}
+    transaction=host._begin_pixel_model_transaction(env)
+    env_file.write_text('MODEL=new\n');other_file.write_text('new')
+    transaction.apply(NEW);transaction._save('committing')
+    env_file.write_text('MODEL=new\nUNRELATED_SETTING=changed\n')
+    if other_drift:
+        other_file.write_text('changed-after-commit')
+    def prove(*_args):
+        if proof_drift:
+            env_file.write_text('MODEL=new\nCHANGED_DURING_PROOF=true\n')
+        return proof
+    monkeypatch.setattr(host,'_prove_pixel_model_contract',prove)
+
+    result=host._recover_pixel_model_transaction(env)
+
+    expected_pending=not proof or other_drift or proof_drift
+    assert result['pending'] is expected_pending
+    assert calls.count('model-finish')==(0 if expected_pending else 1)
+
+
 def test_partial_host_mutation_cannot_be_recovered_by_a_generic_reset(controller):
     config,state,calls,_=controller
     env={'PIXEL_OPENWEBUI_KEY':'configured'}

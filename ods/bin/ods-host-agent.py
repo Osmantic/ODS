@@ -4126,9 +4126,25 @@ def _recover_pixel_model_transaction(config: dict) -> dict:
             else:
                 transaction.finish('commit')
             return {'pending':False,'phase':'completed','transactionId':journal['transactionId'],'outcome':'commit'}
+        after = journal['after']
+        # A concurrent settings save can rewrite the complete .env after the
+        # host committed every model consumer.  Do not strand the native hold
+        # when that is the *only* changed artifact: the transaction/target must
+        # still be exact, and the live proof plus the stable-digest check below
+        # must independently confirm the target before model-finish is sent.
+        env_only_drift = (
+            after is not None
+            and status is not None
+            and status['contract'] == journal['target']
+            and status['status'] in {'applied', 'completed'}
+            and set(current) == set(after)
+            and current.get('.env') not in {None, 'unavailable'}
+            and current.get('.env') != after.get('.env')
+            and all(current[name] == digest for name, digest in after.items() if name != '.env')
+        )
         if (journal['phase']=='committing' and journal['target'] is not None
-                and journal['after'] is not None and 'unavailable' not in journal['after'].values()
-                and current==journal['after'] and (status is None or (
+                and after is not None and 'unavailable' not in after.values()
+                and (current==after or env_only_drift) and (status is None or (
                     status['contract']==journal['target'] and status['status'] in {'applied','completed'}))):
             outcome='commit'
         elif (((status is None and journal['phase'] in {'prepared','rolling-back'})
