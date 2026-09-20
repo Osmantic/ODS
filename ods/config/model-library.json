@@ -144,14 +144,26 @@
           "reason": "Fleet diagnostic on m5-mbp at 42b3a95c returned the requested verification code in 4/4 direct OpenAI-compatible chat completions."
         },
         "hermes_talk": {
-          "status": "unsupported_until_revalidated",
-          "reason": "Fleet model-UI run 2026-07-20T10:45Z on strixy loaded Phi-4 Mini successfully, but ODS Talk returned a corrupted verification phrase during release app probing; keep it out of Talk and all-app release coverage until revalidated.",
-          "evidence": "fleet-test/runs/2026-07-20T10-45-12Z-release-product-6b152663c2e3-harness-ec9ada8148fa-hosts-windows-laptop-strixy/model-ui/cycle-001/strixy"
+          "status": "verified",
+          "label": "ODS Talk revalidated on Strixy",
+          "reason": "Fresh exact-head qualification on Strixy loaded Phi-4 Mini through the externally managed Lemonade runtime, passed challenge-bound ODS Talk and every required deployed LLM-consumer probe, restored the Qwen 3.6 baseline, repeated Talk and consumer probes, and finished with a clean inventory. This supersedes the older corrupted-phrase result for this host while leaving other hosts unclaimed.",
+          "evidence": "ods-public-beta-fleet-green-20260911/release-candidate-01d81ef8-hb71daee-r377/model-ui/cycle-002/strixy-wsl-beta/model-ui.json",
+          "recordedAt": "2026-09-20T06:23:21Z",
+          "productSha": "01d81ef885a655909eec4265cbe7f8d204a6b977",
+          "harnessSha": "b71daee54c3a676c52acf6c5355d74e454f627a0",
+          "hostScope": ["strixy"],
+          "expiresAt": "2026-10-20T00:00:00Z"
         },
         "agent_viability": {
-          "status": "not_agent_viable",
-          "reason": "ODS Talk release probe failed exact verification after successful Phi-4 Mini load; not agent-viable until a Talk revalidation passes.",
-          "evidence": "fleet-test/runs/2026-07-20T10-45-12Z-release-product-6b152663c2e3-harness-ec9ada8148fa-hosts-windows-laptop-strixy/model-ui/cycle-001/strixy"
+          "status": "verified",
+          "label": "All-app route verified on Strixy",
+          "reason": "Fresh exact-head qualification on Strixy passed ODS Talk plus Open WebUI, Perplexica, Pixel, OpenCode, and the conditional OpenClaw policy against the exact Phi-4 Mini runtime, then proved exact baseline restoration and cleanup. Scope this positive evidence to Strixy until other hosts are revalidated.",
+          "evidence": "ods-public-beta-fleet-green-20260911/release-candidate-01d81ef8-hb71daee-r377/model-ui/cycle-002/strixy-wsl-beta/model-ui.json",
+          "recordedAt": "2026-09-20T06:23:21Z",
+          "productSha": "01d81ef885a655909eec4265cbe7f8d204a6b977",
+          "harnessSha": "b71daee54c3a676c52acf6c5355d74e454f627a0",
+          "hostScope": ["strixy"],
+          "expiresAt": "2026-10-20T00:00:00Z"
         }
       }
     },

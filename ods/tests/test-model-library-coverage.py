@@ -157,19 +157,20 @@ def test_llama32_3b_is_not_agent_viable_until_revalidated():
     assert not _agent_viable_for_release(by_id["llama3.2-3b-instruct-q4"])
 
 
-def test_phi4_mini_is_not_agent_viable_after_strixy_talk_probe_failure():
+def test_phi4_mini_is_revalidated_for_strixy_only():
     catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
     by_id = {model["id"]: model for model in catalog["models"]}
     compatibility = by_id["phi4-mini-q4"]["app_compatibility"]
 
     assert compatibility["openai_chat"]["status"] == "verified"
     assert "42b3a95c" in compatibility["openai_chat"]["reason"]
-    assert compatibility["agent_viability"]["status"] == "not_agent_viable"
-    assert "strixy" in compatibility["agent_viability"]["evidence"]
-    assert "cycle-001" in compatibility["agent_viability"]["evidence"]
-    assert compatibility["hermes_talk"]["status"] == "unsupported_until_revalidated"
-    assert "strixy" in compatibility["hermes_talk"]["evidence"]
-    assert not _agent_viable_for_release(by_id["phi4-mini-q4"])
+    assert compatibility["agent_viability"]["status"] == "verified"
+    assert compatibility["agent_viability"]["hostScope"] == ["strixy"]
+    assert "cycle-002/strixy-wsl-beta/model-ui.json" in compatibility["agent_viability"]["evidence"]
+    assert compatibility["hermes_talk"]["status"] == "verified"
+    assert compatibility["hermes_talk"]["hostScope"] == ["strixy"]
+    assert compatibility["hermes_talk"]["productSha"] == "01d81ef885a655909eec4265cbe7f8d204a6b977"
+    assert compatibility["hermes_talk"]["harnessSha"] == "b71daee54c3a676c52acf6c5355d74e454f627a0"
 
 
 def test_phi3_mini_128k_requires_perplexica_revalidation_after_strixy_failure():
