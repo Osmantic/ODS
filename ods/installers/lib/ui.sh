@@ -22,6 +22,21 @@
 #   Dead code removed: subline() and progress_bar() were never called.
 # ============================================================================
 
+# Matches the CRT narrator voice from installers/lib/ui.sh
+# ============================================================================
+
+GRN="${GRN:-}"
+BGRN="${BGRN:-}"
+AMB="${AMB:-}"
+RED="${RED:-}"
+DGRN="${DGRN:-}"
+WHT="${WHT:-}"
+DIM="${DIM:-}"
+NC="${NC:-}"
+
+ODS_LOG_FILE="${ODS_LOG_FILE:-/tmp/ods-install.log}"
+INSTALL_START_EPOCH="${INSTALL_START_EPOCH:-$(date +%s)}"
+
 DIVIDER="──────────────────────────────────────────────────────────────────────────────"
 
 # Typing effect with block cursor
