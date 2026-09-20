@@ -1259,3 +1259,20 @@ def test_store_falls_back_when_primary_parent_is_unwritable(
 
     assert fallback_store.exists()
     assert magic_link_module._ensure_store() == {"tokens": []}
+
+
+def test_store_failure_is_explicit_when_no_candidate_is_writable(
+    magic_link_module, tmp_path, monkeypatch
+):
+    blocked_one = tmp_path / "blocked-one"
+    blocked_two = tmp_path / "blocked-two"
+    blocked_one.write_text("not a directory", encoding="utf-8")
+    blocked_two.write_text("not a directory", encoding="utf-8")
+    monkeypatch.setattr(
+        magic_link_module,
+        "_magic_link_store_candidates",
+        lambda: [blocked_one / "magic-links.json", blocked_two / "magic-links.json"],
+    )
+
+    with pytest.raises(RuntimeError, match="unable to create a writable magic-link store"):
+        magic_link_module._ensure_store()

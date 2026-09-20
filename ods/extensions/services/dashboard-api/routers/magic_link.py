@@ -227,8 +227,9 @@ def _writable_store_path() -> Path:
             return path
         except OSError as exc:
             last_error = exc
-    assert last_error is not None
-    raise last_error
+    if last_error is None:
+        raise RuntimeError("no magic-link store candidates were configured")
+    raise RuntimeError("unable to create a writable magic-link store") from last_error
 
 
 def _ensure_store() -> dict:
