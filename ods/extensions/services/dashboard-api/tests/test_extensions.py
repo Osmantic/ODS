@@ -1132,6 +1132,25 @@ class TestDisableExtension:
         assert (user_dir / "my-ext" / "compose.yaml.disabled").exists()
         assert not (user_dir / "my-ext" / "compose.yaml").exists()
 
+    def test_disable_preserves_enabled_definition_when_stop_fails(
+        self, test_client, monkeypatch, tmp_path,
+    ):
+        user_dir = _setup_user_ext(tmp_path, "my-ext", enabled=True)
+        _patch_mutation_config(monkeypatch, tmp_path, user_dir=user_dir)
+        monkeypatch.setattr(
+            "routers.extensions._call_agent", lambda action, sid: False,
+        )
+
+        resp = test_client.post(
+            "/api/extensions/my-ext/disable",
+            headers=test_client.auth_headers,
+        )
+
+        assert resp.status_code == 502
+        assert "failed to stop" in resp.json()["detail"]
+        assert (user_dir / "my-ext" / "compose.yaml").exists()
+        assert not (user_dir / "my-ext" / "compose.yaml.disabled").exists()
+
     def test_disable_builtin_delegates_to_host_agent(
         self, test_client, monkeypatch, tmp_path,
     ):
