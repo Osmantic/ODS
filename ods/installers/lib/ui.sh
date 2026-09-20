@@ -91,13 +91,15 @@ static_line() {
   sleep 0.3
 }
 
-bootline() { echo -e "${GRN}${DIVIDER}${NC}"; }
+log() { printf '%s[INFO]%s %s\n' "${GRN:-}" "${NC:-}" "$1" | tee -a "${ODS_LOG_FILE:-/tmp/ods-install.log}"; }
 
-# "AI narrator" voice
-ai()       { echo -e "  ${GRN}▸${NC} $1" | tee -a "$LOG_FILE"; }
-ai_ok()    { echo -e "  ${BGRN}✓${NC} $1" | tee -a "$LOG_FILE"; }
-ai_warn()  { echo -e "  ${AMB}⚠${NC} $1" | tee -a "$LOG_FILE"; }
-ai_bad()   { echo -e "  ${RED}✗${NC} $1" | tee -a "$LOG_FILE"; }
+# ── AI narrator voice ──
+
+ai()       { printf '  %s>%s %s\n' "${GRN:-}" "${NC:-}" "$1" | tee -a "${ODS_LOG_FILE:-/tmp/ods-install.log}"; }
+ai_ok()    { printf '  %s[OK]%s %s\n' "${BGRN:-}" "${NC:-}" "$1" | tee -a "${ODS_LOG_FILE:-/tmp/ods-install.log}"; }
+ai_warn()  { printf '  %s[!!]%s %s\n' "${AMB:-}" "${NC:-}" "$1" | tee -a "${ODS_LOG_FILE:-/tmp/ods-install.log}"; }
+ai_err()   { printf '  %s[XX]%s %s\n' "${RED:-}" "${NC:-}" "$1" | tee -a "${ODS_LOG_FILE:-/tmp/ods-install.log}"; }
+info_box() { printf '  %s%s%s %s%s%s\n' "${DGRN:-}" "$1" "${NC:-}" "${WHT:-}" "$2" "${NC:-}" | tee -a "${ODS_LOG_FILE:-/tmp/ods-install.log}"; }
 
 # Little signal flourish (tasteful)
 signal()   { echo -e "  ${GRN}░▒▓█▓▒░${NC} $1" | tee -a "$LOG_FILE"; }
