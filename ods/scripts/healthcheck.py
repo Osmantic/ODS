@@ -202,6 +202,8 @@ def check_http(
     follow_redirects: bool = True,
 ) -> Tuple[bool, str, Optional[int]]:
     """Check HTTP endpoint matches expected status and optional body regex."""
+    if not (url.startswith("http://") or url.startswith("https://")):
+        return (False, "url scheme must be http or https", None)
 
     # If a body regex is provided, we must use GET.
     if body_regex is not None:
