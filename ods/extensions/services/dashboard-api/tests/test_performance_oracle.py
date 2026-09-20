@@ -470,6 +470,7 @@ def test_host_scoped_positive_override_preserves_global_negative_elsewhere():
                         "reason": "Fresh exact Strixy proof",
                         "hostScope": ["strixy"],
                         "llmBackendScope": ["lemonade"],
+                        "expiresAt": "2999-01-01T00:00:00Z",
                     },
                     {"status": "verified", "reason": "Unsafe unscoped result"},
                 ],
@@ -494,6 +495,33 @@ def test_host_scoped_positive_override_preserves_global_negative_elsewhere():
     }
     assert wrong_backend["perplexica"]["status"] == "unsupported_until_revalidated"
     assert tower2["perplexica"]["status"] == "unsupported_until_revalidated"
+
+
+def test_host_scoped_positive_override_must_be_current_and_dated():
+    model = {
+        "app_compatibility": {
+            "perplexica": {
+                "status": "unsupported_until_revalidated",
+                "scopedOverrides": [
+                    {"status": "verified", "hostScope": ["strixy"],
+                     "expiresAt": "2020-01-01T00:00:00Z"},
+                    {"status": "verified", "hostScope": ["strixy"],
+                     "expiresAt": "not-a-date"},
+                    {"status": "verified", "hostScope": ["strixy"]},
+                ],
+            },
+        },
+    }
+    context = {"hosts": ["strixy"], "llmBackend": "lemonade"}
+    assert model_app_compatibility(model, runtime_context=context)["perplexica"]["status"] == (
+        "unsupported_until_revalidated"
+    )
+    model["app_compatibility"]["perplexica"]["scopedOverrides"].append({
+        "status": "verified",
+        "hostScope": ["strixy"],
+        "expiresAt": "2999-01-01T00:00:00Z",
+    })
+    assert model_app_compatibility(model, runtime_context=context)["perplexica"]["status"] == "verified"
 
 
 def test_real_smollm3_strixy_revalidation_is_not_global():
