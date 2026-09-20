@@ -100,14 +100,14 @@ ods_readiness_summary() {
     echo "Ready now: ${#ready_lines[@]}/${total}"
     if [[ ${#ready_lines[@]} -gt 0 ]]; then
         echo "Ready:"
-        for line in "${ready_lines[@]}"; do
+        for line in "${ready_lines[@]+"${ready_lines[@]}"}"; do
             echo "  [OK] $line"
         done
     fi
 
     if [[ ${#attention_lines[@]} -gt 0 ]]; then
         echo "Needs attention:"
-        for line in "${attention_lines[@]}"; do
+        for line in "${attention_lines[@]+"${attention_lines[@]}"}"; do
             echo "  [!!] $line"
         done
     fi
