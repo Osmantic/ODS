@@ -792,12 +792,18 @@ cmd_start() {
     elif [[ -n "$service" ]]; then
         ai "Starting ${service}..."
         # shellcheck disable=SC2086
-        docker compose $flags up -d "$service"
+        if ! docker compose $flags up -d "$service"; then
+            ai_err "Failed to start ${service} with Docker Compose"
+            return 1
+        fi
         ai_ok "${service} started"
     else
         ai "Starting all services..."
         # shellcheck disable=SC2086
-        docker compose $flags up -d
+        if ! docker compose $flags up -d; then
+            ai_err "Failed to start services with Docker Compose"
+            return 1
+        fi
         ai_ok "All services started"
     fi
 
@@ -857,7 +863,10 @@ cmd_restart() {
     elif [[ -n "$service" ]]; then
         ai "Restarting ${service}..."
         # shellcheck disable=SC2086
-        docker compose $flags up -d --force-recreate --no-build --pull never "$service"
+        if ! docker compose $flags up -d --force-recreate --no-build --pull never "$service"; then
+            ai_err "Failed to restart ${service} with Docker Compose"
+            return 1
+        fi
         ai_ok "${service} restarted"
     else
         # Restart native llama-server
@@ -869,7 +878,10 @@ cmd_restart() {
 
         ai "Restarting all services..."
         # shellcheck disable=SC2086
-        docker compose $flags up -d --force-recreate --no-build --pull never
+        if ! docker compose $flags up -d --force-recreate --no-build --pull never; then
+            ai_err "Failed to restart services with Docker Compose"
+            return 1
+        fi
         ai_ok "All services restarted"
     fi
 
