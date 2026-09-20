@@ -201,9 +201,9 @@ pkg_install() {
     local pkg resolved
     for pkg in "${requested[@]}"; do
         resolved="$(pkg_resolve "$pkg")"
-        # Some canonical packages intentionally expand to multiple packages.
-        # shellcheck disable=SC2206
-        pkgs+=($resolved)
+        local parsed=()
+        read -ra parsed <<<"$resolved"
+        pkgs+=("${parsed[@]}")
     done
     [[ ${#pkgs[@]} -eq 0 ]] && return 0
 
