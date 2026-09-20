@@ -211,6 +211,10 @@ if gpu_count > 1:
     if (script_dir / multigpu_file).exists():
         resolved.append(multigpu_file)
 
+# Layer Tier 0 memory overlay for low-RAM machines.
+if tier in ("0", "T0") and (script_dir / "docker-compose.tier0.yml").exists():
+    resolved.append("docker-compose.tier0.yml")
+
 # PyYAML is a hard requirement — extensions and overlays are YAML and must be
 # parsed for the compose security scan. Silent fallback used to hide install
 # breakage on systems without PyYAML (Arch/Alpine/Void/some macOS) and let
