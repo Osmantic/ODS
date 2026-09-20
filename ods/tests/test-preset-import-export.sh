@@ -110,6 +110,16 @@ test_export_uses_tar() {
     fi
 }
 
+# Test 6b: Exported archives contain credentials and must be owner-readable only
+test_export_restricts_archive_mode() {
+    info "Test 6b: Checking that exported archives are owner-readable only"
+    if grep -A20 "export|e)" "$ODS_CLI" 2>/dev/null | grep -q 'chmod 600 "\$output"'; then
+        pass "Export restricts archive mode to 0600"
+    else
+        fail "Export does not restrict archive mode"
+    fi
+}
+
 # Test 7: Verify import validates path traversal
 test_import_security() {
     info "Test 7: Checking if import validates against path traversal"
@@ -193,6 +203,7 @@ test_import_in_help
 test_export_case
 test_import_case
 test_export_uses_tar
+test_export_restricts_archive_mode
 test_import_security
 test_export_validation
 test_import_validation

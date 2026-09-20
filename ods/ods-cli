@@ -3273,7 +3273,7 @@ META
 
             # Create archive (relative to presets dir to avoid absolute paths)
             cd "$PRESETS_DIR"
-            if tar czf "$output" "$name" 2>/dev/null; then
+            if tar czf "$output" "$name" 2>/dev/null && chmod 600 "$output"; then
                 local size
                 size=$(du -h "$output" 2>/dev/null | cut -f1 || true)
                 success "Preset exported to: $output ($size)"
