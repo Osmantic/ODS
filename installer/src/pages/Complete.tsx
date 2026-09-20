@@ -1,7 +1,18 @@
+import { useEffect, useState } from "react";
 import Button from "../components/Button";
-import { openODSserver } from "../hooks/useTauri";
+import { getServiceUrls, openODSserver, ServiceUrls } from "../hooks/useTauri";
 
 export default function Complete() {
+  const [urls, setUrls] = useState<ServiceUrls>({
+    webui: "http://localhost:3000",
+    dashboard: "http://localhost:3001",
+    api: "http://localhost:8080/v1",
+  });
+
+  useEffect(() => {
+    getServiceUrls().then(setUrls).catch(() => undefined);
+  }, []);
+
   return (
     <div className="flex flex-col items-center justify-center h-full px-8 text-center">
       <div className="text-6xl mb-6">&#10024;</div>
@@ -15,19 +26,19 @@ export default function Complete() {
         <div className="flex justify-between">
           <span className="text-sm text-gray-500">Chat UI</span>
           <span className="text-sm text-ods-400 font-mono">
-            localhost:3000
+            {urls.webui.replace("http://", "")}
           </span>
         </div>
         <div className="flex justify-between">
           <span className="text-sm text-gray-500">Dashboard</span>
           <span className="text-sm text-ods-400 font-mono">
-            localhost:3001
+            {urls.dashboard.replace("http://", "")}
           </span>
         </div>
         <div className="flex justify-between">
           <span className="text-sm text-gray-500">API</span>
           <span className="text-sm text-ods-400 font-mono">
-            localhost:8080/v1
+            {urls.api.replace("http://", "")}
           </span>
         </div>
       </div>
@@ -40,7 +51,7 @@ export default function Complete() {
       </div>
 
       <p className="mt-8 text-xs text-gray-600 max-w-sm">
-        To manage ODS later, use the Dashboard at localhost:3001 or run
+        To manage ODS later, use the Dashboard at {urls.dashboard.replace("http://", "")} or run
         "ods" from your terminal.
       </p>
     </div>
