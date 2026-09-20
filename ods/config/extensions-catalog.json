@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-13T16:53:56Z",
+  "generated_at": "2026-09-20T05:05:38Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -41,6 +41,13 @@
           "description": "AI pair programming in your terminal",
           "icon": "Terminal",
           "category": "development",
+          "gpu_backends": [
+            "amd",
+            "nvidia",
+            "apple",
+            "cpu",
+            "none"
+          ],
           "requirements": {
             "services": [
               "aider"
@@ -877,6 +884,62 @@
             "amd",
             "nvidia"
           ]
+        }
+      ],
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
+      "id": "dozzle",
+      "name": "Dozzle (Log Viewer)",
+      "description": "Lightweight web viewer for Docker container logs — live tail, search, and per-container filtering for the local ODS stack.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 8080,
+      "external_port_default": 8484,
+      "health_endpoint": "/healthcheck",
+      "env_vars": [
+        {
+          "key": "DOZZLE_PORT",
+          "description": "Published HTTP port",
+          "default": "8484"
+        },
+        {
+          "key": "DOZZLE_BASE",
+          "description": "URL path prefix when serving Dozzle behind a reverse proxy subpath",
+          "default": "/"
+        }
+      ],
+      "tags": [
+        "logs",
+        "monitoring",
+        "docker"
+      ],
+      "features": [
+        {
+          "id": "container-logs",
+          "name": "Container Logs",
+          "description": "Live tail and search of every ODS container log from the browser",
+          "icon": "ScrollText",
+          "category": "monitoring",
+          "requirements": {
+            "services": [
+              "dozzle"
+            ],
+            "vram_gb": 0
+          },
+          "enabled_services_all": [
+            "dozzle"
+          ],
+          "setup_time": "~1 minute",
+          "priority": 32,
+          "launch": {
+            "type": "service",
+            "service": "dozzle"
+          }
         }
       ],
       "configuration_scope": "declared-environment-keys"
@@ -2708,8 +2771,7 @@
       "description": "Open WebUI (Chat)",
       "category": "core",
       "gpu_backends": [
-        "amd",
-        "nvidia"
+        "all"
       ],
       "compose_file": "",
       "depends_on": [
@@ -3155,6 +3217,56 @@
           ]
         }
       ],
+      "catalog_source": "builtin",
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
+      "id": "pixel-inference",
+      "name": "Pixel inference sharing (development)",
+      "description": "Disabled by default. Owner-provisioned, inference-only device credentials; loopback transport only. Does not provide Pixel agent or computer access. Private state must be provisioned before service activation. Native Windows private-state support and guided setup are not yet implemented.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [
+        "model-router"
+      ],
+      "port": 8093,
+      "external_port_default": 4005,
+      "health_endpoint": "/health",
+      "env_vars": [],
+      "tags": [],
+      "features": [],
+      "startup_check": false,
+      "catalog_source": "builtin",
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
+      "id": "pixel-model-relay",
+      "name": "Pixel Model Relay",
+      "description": "Pixel Model Relay",
+      "category": "core",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [
+        "model-router"
+      ],
+      "port": 4102,
+      "external_port_default": 4006,
+      "health_endpoint": "/health",
+      "env_vars": [
+        {
+          "key": "PIXEL_MODEL_RELAY_KEY",
+          "required": true,
+          "description": "Pixel-only bearer key for host-local inference"
+        }
+      ],
+      "tags": [],
+      "features": [],
+      "startup_check": true,
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
     },

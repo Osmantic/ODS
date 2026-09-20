@@ -1,0 +1,33 @@
+services:
+  dozzle:
+    image: amir20/dozzle:v8.14.9
+    container_name: ods-dozzle
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      DOZZLE_BASE: "${DOZZLE_BASE:-/}"
+      DOZZLE_LEVEL: info
+      DOZZLE_NO_ANALYTICS: "true"
+    # Read-only mount of the Docker socket: required to enumerate and tail
+    # containers. Dozzle exposes no write actions over it.
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${DOZZLE_PORT:-8484}:8080"
+    healthcheck:
+      test: [CMD, /dozzle, healthcheck]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks: [ods-network]
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 128M
+networks:
+  ods-network:
+    external: true
