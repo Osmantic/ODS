@@ -125,6 +125,14 @@ describe('Dashboard system overview', () => {
     expect(screen.getByText('Accumulated Output')).toBeInTheDocument()
   })
 
+  it.each([[8.25, '8.3 tok/s'], [0, '0.0 tok/s'], [null, '—'], [undefined, '—']])('shows a real compact throughput reading for %s', async (tokensPerSecond, expected) => {
+    render(<Dashboard compact status={{...baseStatus, inference:{...baseStatus.inference, tokensPerSecond}}} loading={false}/>)
+    const row = screen.getByText('Tokens / second').closest('.dashboard-metric-row')
+    expect(within(row).getByText(expected)).toBeVisible()
+    expect(within(row).getByText(tokensPerSecond == null ? 'telemetry unavailable' : 'runtime reading')).toBeVisible()
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/features'))
+  })
+
   it('uses theme-responsive surfaces instead of fixed dark dashboard panels', async () => {
     await renderDashboard()
 

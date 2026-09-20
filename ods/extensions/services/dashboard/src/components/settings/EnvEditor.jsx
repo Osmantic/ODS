@@ -1,14 +1,12 @@
+import PanelSelect from '../PanelSelect'
+import { useBeforeUnload } from '../../hooks/useBeforeUnload'
 import {
   AlertTriangle,
-  BookOpen,
   CheckCircle2,
   Database,
   Download,
-  ExternalLink,
   Eye,
   EyeOff,
-  FileText,
-  Folder,
   Lock,
   RefreshCw,
   RotateCcw,
@@ -28,6 +26,14 @@ const GROUPS = [
 
 const fieldKeyLabel = (key = '') => key.toLowerCase()
 
+// Match the Settings API's accepted form aliases without rewriting stored text.
+const booleanSelection = value => {
+  const text = String(value).trim().toLowerCase()
+  if (['true', '1', 'yes', 'on'].includes(text)) return 'true'
+  if (['false', '0', 'no', 'off'].includes(text)) return 'false'
+  return value === '' ? '' : null
+}
+
 const countIssueSections = (sections, issues) => {
   const issueKeys = new Set((issues || []).map(issue => issue.key).filter(Boolean))
   return (sections || []).filter(section => section.keys?.some(key => issueKeys.has(key))).length
@@ -41,18 +47,6 @@ const groupSections = (sections = []) => {
     ;(match || grouped[grouped.length - 1]).sections.push(section)
   }
   return grouped.filter(group => group.sections.length > 0)
-}
-
-const sectionDescription = (section) => {
-  const title = String(section?.title || '').toLowerCase()
-  if (title.includes('required')) return 'Required values read from the active .env schema.'
-  if (title.includes('network') || title.includes('port')) return 'Network bindings and port overrides read from the active .env schema.'
-  if (title.includes('llm') || title.includes('cloud')) return 'Model backend, hosted LLM, and provider settings from the active .env schema.'
-  if (title.includes('langfuse')) return 'LLM observability settings from the active .env schema.'
-  if (title.includes('gpu')) return 'GPU and runtime allocation settings from the active .env schema.'
-  if (title.includes('security')) return 'Security-related environment values from the active .env schema.'
-  if (title.includes('proxy')) return 'LAN proxy settings from the active .env schema.'
-  return 'Fields and descriptions are generated from .env.schema.json and the current .env file.'
 }
 
 export default function EnvEditor({
@@ -74,6 +68,7 @@ export default function EnvEditor({
   onRefresh,
   onReload,
   onSave,
+  onExport,
   onApply = () => {},
   dirty,
   saving,
@@ -82,16 +77,19 @@ export default function EnvEditor({
   onCompleteFollowUp = () => {},
   applying = false,
 }) {
+  useBeforeUnload(dirty || saving)
   const activeKeys = activeSection?.keys || []
   const canApply = Boolean(applyPlan?.supported && applyPlan?.services?.length > 0 && editor?.agentAvailable !== false)
   const issueSectionCount = countIssueSections(sections, issues)
 
   return (
-    <section className="settings-premium-card liquid-metal-frame liquid-metal-frame--soft rounded-lg border border-theme-border p-5 lg:p-7">
+    <section className="settings-premium-card settings-environment p-5 lg:p-7">
+      <fieldset disabled={saving} className="m-0 min-w-0 border-0 p-0" aria-busy={saving}>
       <EnvironmentEditorHeader
         onRefresh={onRefresh || onReload}
         onReload={onReload}
         onSave={onSave}
+        onExport={onExport}
         onApply={onApply}
         saving={saving}
         applying={applying}
@@ -105,12 +103,6 @@ export default function EnvEditor({
           fieldCount={Object.keys(fields || {}).length}
           issueCount={issues.length}
           issueSectionCount={issueSectionCount}
-        />
-
-        <EnvironmentBehaviorCards
-          editor={editor}
-          canApply={canApply}
-          applyPlan={applyPlan}
         />
 
         {applyPlan?.status && applyPlan.status !== 'none' ? (
@@ -159,7 +151,7 @@ export default function EnvEditor({
           </div>
         ) : null}
 
-        <div className="grid gap-5 xl:grid-cols-[320px_1fr]">
+        <div className="environment-editor-layout">
           <EnvironmentCategorySidebar
             search={search}
             onSearchChange={onSearchChange}
@@ -168,7 +160,7 @@ export default function EnvEditor({
             onSectionChange={onSectionChange}
           />
 
-          <div className="rounded-lg border border-theme-border bg-theme-card p-5">
+          <div className="settings-environment-fields">
             {activeSection ? (
               <>
                 <div className="mb-5 flex flex-col gap-4 border-b border-theme-border pb-5 lg:flex-row lg:items-center lg:justify-between">
@@ -176,7 +168,6 @@ export default function EnvEditor({
                     <SlidersHorizontal size={20} className="mt-1 shrink-0 text-theme-accent-light" />
                     <div>
                       <h3 className="text-xl font-semibold text-theme-text">{activeSection.title}</h3>
-                      <p className="mt-1 text-sm leading-6 text-theme-text-muted">{sectionDescription(activeSection)}</p>
                     </div>
                   </div>
                   <div className="flex flex-wrap items-center gap-4 text-xs">
@@ -188,7 +179,7 @@ export default function EnvEditor({
                   </div>
                 </div>
 
-                <div className="max-h-[58rem] space-y-4 overflow-y-auto pr-1">
+                <div className="environment-field-list">
                   {activeKeys.map((key) => (
                     <EnvironmentFieldCard
                       key={key}
@@ -202,7 +193,6 @@ export default function EnvEditor({
                       onChange={(value) => onFieldChange(key, value)}
                     />
                   ))}
-                  <EnvironmentHelpCard />
                 </div>
               </>
             ) : (
@@ -213,20 +203,19 @@ export default function EnvEditor({
           </div>
         </div>
       </div>
+      </fieldset>
     </section>
   )
 }
 
-function EnvironmentEditorHeader({ onRefresh, onReload, onSave, onApply, saving, applying, dirty, canApply }) {
+function EnvironmentEditorHeader({ onRefresh, onReload, onSave, onExport, onApply, saving, applying, dirty, canApply }) {
   return (
-    <header className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
+    <header className="settings-environment-header flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
       <div className="flex items-start gap-3.5">
         <Database size={22} strokeWidth={1.7} className="mt-1 shrink-0 text-theme-accent-light" />
         <div>
           <h2 className="text-2xl font-semibold text-theme-text">Environment Editor</h2>
-          <p className="mt-1 max-w-3xl text-sm leading-6 text-theme-text-muted">
-            Edit the ODS .env file directly from the dashboard. Changes are validated and applied securely.
-          </p>
+          <p className="mt-1 text-sm text-theme-text-muted">{dirty ? 'Unsaved changes' : 'Local .env configuration'}</p>
         </div>
       </div>
       <div className="flex flex-wrap items-center gap-3 lg:justify-end">
@@ -237,132 +226,70 @@ function EnvironmentEditorHeader({ onRefresh, onReload, onSave, onApply, saving,
         <ToolbarButton icon={RotateCcw} label="Reload" onClick={onReload} />
         <ToolbarButton icon={Save} label={saving ? 'Saving...' : 'Save .env'} onClick={onSave} disabled={!dirty || saving} />
         <ToolbarButton icon={Zap} label={applying ? 'Applying...' : 'Apply changes'} onClick={onApply} primary disabled={!canApply || applying || saving} />
+        {onExport && <button type="button" onClick={onExport} aria-label="Export configuration" title="Export configuration" className="environment-export"><Download size={16} /></button>}
       </div>
     </header>
   )
 }
 
 function EnvironmentStatusStrip({ editor, fieldCount, issueCount, issueSectionCount }) {
-  return (
-    <div className="grid gap-4 rounded-lg border border-theme-border bg-theme-bg/30 px-5 py-4 md:grid-cols-[1.2fr_1fr_1fr_1fr] md:items-center">
-      <div className="flex items-center gap-3">
-        <Folder size={19} className="shrink-0 text-theme-accent-light" />
-        <div>
-          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-theme-text-muted">Local Configuration</p>
-          <div className="mt-1 flex flex-wrap items-center gap-3">
-            <p className="text-sm font-semibold text-theme-text">Editing ODS .env</p>
-            <span className={`inline-flex items-center gap-1.5 text-xs font-medium ${editor?.agentAvailable === false ? 'text-yellow-200' : 'text-emerald-300'}`}>
-              <span className={`h-1.5 w-1.5 rounded-full ${editor?.agentAvailable === false ? 'bg-yellow-300' : 'bg-emerald-400'}`} />
-              {editor?.agentAvailable === false ? 'Agent offline' : 'Connected'}
-            </span>
-          </div>
-        </div>
-      </div>
-      <StatusMetric icon={FileText} value={fieldCount} label="Fields" />
-      <StatusMetric icon={AlertTriangle} value={issueCount} label="Validation Issues" />
-      <StatusMetric icon={Folder} value={issueSectionCount} label="Sections with Issues" />
-    </div>
-  )
-}
-
-function EnvironmentBehaviorCards({ editor, canApply, applyPlan }) {
-  const applyText = editor?.agentAvailable === false
-    ? 'ODS host agent is offline. Start it first, then use Apply Changes to recreate affected services.'
-    : canApply
-      ? `Apply changes will recreate: ${applyPlan.services.join(', ')}.`
-      : 'Apply Changes becomes available after saving keys that affect running services. You will see affected services before applying.'
-
-  return (
-    <div className="grid overflow-hidden rounded-lg border border-theme-border bg-theme-bg/30 lg:grid-cols-3 lg:divide-x lg:divide-theme-border">
-      <BehaviorCard icon={Download} title="Save Behavior" text={editor.saveHint || 'Saving writes the .env file directly, preserves blank secrets, and stores a backup first.'} />
-      <BehaviorCard icon={RefreshCw} title="Restart Behavior" text={editor.restartHint || 'Some ODS services need a container recreate before changes take effect.'} />
-      <BehaviorCard icon={Zap} title="Apply Behavior" text={applyText} />
-    </div>
-  )
+  return <div className="environment-status-line">
+    <span>{fieldCount} fields</span>
+    <span>{issueCount ? `${issueCount} issues in ${issueSectionCount} sections` : 'No validation issues'}</span>
+    {editor?.agentAvailable === false && <span className="text-amber-300">Host agent offline · applying unavailable</span>}
+  </div>
 }
 
 function EnvironmentCategorySidebar({ search, onSearchChange, sections, activeSection, onSectionChange }) {
   const grouped = groupSections(sections)
   return (
-    <aside className="self-start rounded-lg border border-theme-border bg-theme-card p-3 xl:sticky xl:top-6">
+    <div className="environment-navigation">
       <label className="flex items-center gap-2 rounded-md border border-theme-border bg-theme-bg/35 px-3 py-2.5">
         <span className="sr-only">Filter configuration fields</span>
         <Search size={15} className="text-theme-text-muted" />
         <input
           value={search}
           onChange={(event) => onSearchChange(event.target.value)}
-          placeholder="Filter categories..."
+          placeholder="Search fields or categories…"
           aria-label="Filter configuration fields"
           className="min-w-0 flex-1 bg-transparent text-sm text-theme-text outline-none placeholder:text-theme-text-muted/55"
         />
       </label>
 
-      <div className="mt-3 max-h-[60rem] overflow-y-auto pr-1">
-        {grouped.map(group => (
-          <div key={group.id} className="mb-4 last:mb-0">
-            <div className="mb-2 flex items-center gap-2 px-2">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-theme-text-muted">{group.title}</p>
-              <span className="h-px flex-1 bg-theme-border" />
-            </div>
-            <div className="space-y-1">
-              {group.sections.map(section => (
-                <button
-                  key={section.id}
-                  type="button"
-                  onClick={() => onSectionChange(section.id)}
-                  aria-pressed={activeSection?.id === section.id}
-                  className={`group relative flex w-full items-center justify-between gap-3 rounded-md px-3 py-2.5 text-left transition-colors ${
-                    activeSection?.id === section.id
-                      ? 'bg-theme-accent/24 text-theme-text shadow-[inset_3px_0_0_rgba(215,164,255,0.95)]'
-                      : 'text-theme-text-muted hover:bg-theme-surface-hover hover:text-theme-text'
-                  }`}
-                >
-                  <span className="min-w-0">
-                    <span className="block truncate text-sm font-semibold">{section.title}</span>
-                  </span>
-                  <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${
-                    activeSection?.id === section.id ? 'bg-theme-accent/35 text-theme-accent-light' : 'text-theme-text-muted/65'
-                  }`}>
-                    {section.keys.length}
-                  </span>
-                </button>
-              ))}
-            </div>
-          </div>
-        ))}
-      </div>
-    </aside>
+      <div className="environment-category-picker"><PanelSelect label="Configuration category" value={activeSection?.id || ''} onChange={onSectionChange}
+        options={grouped.flatMap(group => group.sections.map(section => ({ value: section.id, label: `${section.title} · ${section.keys.length}`, group: group.title })))} /></div>
+    </div>
   )
 }
 
 function EnvironmentFieldCard({ field, value, issues, revealed, cleared, onToggleReveal, onClearSecret, onChange }) {
   const hasIssues = issues.length > 0
   const isEnum = Array.isArray(field?.enum) && field.enum.length > 0
+  const unsupportedEnum = isEnum && value !== '' && !field.enum.some(option => String(option) === String(value))
   const isBoolean = field?.type === 'boolean'
   const isInteger = field?.type === 'integer'
+  const selectedBoolean = isBoolean ? booleanSelection(value) : null
   const isReadOnly = Boolean(field?.readOnly)
   const secretPlaceholder = field?.secret ? (field?.hasValue ? 'Stored locally' : 'Not set') : (field?.default !== undefined && field?.default !== null ? String(field.default) : '')
-  const looksValid = !hasIssues && value !== ''
-  const versionLike = /version/i.test(field?.key || '')
 
   return (
-    <div className={`rounded-lg border px-5 py-5 ${hasIssues ? 'border-yellow-500/25 bg-yellow-500/5' : 'border-theme-border bg-theme-bg/30'}`}>
+    <div className={`settings-environment-field ${hasIssues ? 'settings-environment-field--issue' : ''}`}>
       <div>
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <p className="text-base font-semibold text-theme-text">{field?.label}</p>
+            <label htmlFor={`env-field-${field?.key}`} className="text-base font-semibold text-theme-text">{field?.label}</label>
             <Badge muted>{fieldKeyLabel(field?.key)}</Badge>
             {field?.secret ? <Badge accent>Secret</Badge> : null}
-            {field?.required ? <Badge>Required</Badge> : <Badge muted>Optional</Badge>}
+            {field?.required && <Badge>Required</Badge>}
             {isReadOnly ? <Badge muted>read only</Badge> : null}
           </div>
-          <p className="mt-2 text-sm leading-6 text-theme-text-muted">{field?.description || 'No description available.'}</p>
+          {field?.description && <p className="mt-2 text-sm leading-6 text-theme-text-muted">{field.description}</p>}
         </div>
       </div>
 
       <div className="mt-4">
         {isBoolean ? (
-          <div className="inline-flex rounded-lg border border-theme-border bg-theme-bg/40 p-1">
+          <div id={`env-field-${field?.key}`} role="group" aria-label={field?.label} className="inline-flex rounded-lg border border-theme-border bg-theme-bg/40 p-1">
             {[
               { id: '', label: 'Default' },
               { id: 'true', label: 'True' },
@@ -372,9 +299,10 @@ function EnvironmentFieldCard({ field, value, issues, revealed, cleared, onToggl
                 key={option.label}
                 type="button"
                 disabled={isReadOnly}
+                aria-pressed={selectedBoolean === option.id}
                 onClick={() => onChange(option.id)}
                 className={`rounded-lg px-4 py-2 text-xs font-semibold uppercase tracking-[0.14em] transition-colors disabled:cursor-default disabled:opacity-60 ${
-                  String(value).toLowerCase() === option.id ? 'bg-theme-accent text-white' : 'text-theme-text-muted hover:text-theme-text'
+                  selectedBoolean === option.id ? 'bg-theme-accent text-white' : 'text-theme-text-muted hover:text-theme-text'
                 }`}
               >
                 {option.label}
@@ -383,17 +311,21 @@ function EnvironmentFieldCard({ field, value, issues, revealed, cleared, onToggl
           </div>
         ) : isEnum ? (
           <select
+            id={`env-field-${field?.key}`}
             value={value}
             disabled={isReadOnly}
+            aria-invalid={unsupportedEnum || hasIssues || undefined}
             onChange={(event) => onChange(event.target.value)}
             className="w-full rounded-lg border border-theme-border bg-theme-bg/40 px-4 py-3 text-sm text-theme-text outline-none focus:border-theme-accent/60 disabled:cursor-default disabled:opacity-70"
           >
             <option value="">Use default</option>
+            {unsupportedEnum && <option value={value} disabled>Unsupported value: {value}</option>}
             {field.enum.map((option) => <option key={option} value={option}>{option}</option>)}
           </select>
         ) : (
           <div className="flex items-center gap-2">
             <input
+              id={`env-field-${field?.key}`}
               type={field?.secret && !revealed ? 'password' : (isInteger ? 'number' : 'text')}
               value={value}
               disabled={isReadOnly}
@@ -438,12 +370,7 @@ function EnvironmentFieldCard({ field, value, issues, revealed, cleared, onToggl
             />
           ) : null}
         </div>
-      ) : looksValid ? (
-        <p className="mt-3 flex items-center gap-2 text-xs text-emerald-300">
-          <CheckCircle2 size={14} />
-          {versionLike ? 'Valid version format' : 'Value looks valid'}
-        </p>
-      ) : field?.default !== undefined && field?.default !== null ? (
+      ) : value === '' && field?.default !== undefined && field?.default !== null ? (
         <p className="mt-3 text-xs text-theme-text-muted">
           Default: <span className="font-mono text-theme-text">{String(field.default)}</span>
         </p>
@@ -455,50 +382,6 @@ function EnvironmentFieldCard({ field, value, issues, revealed, cleared, onToggl
           {issue}
         </p>
       ))}
-    </div>
-  )
-}
-
-function EnvironmentHelpCard() {
-  return (
-    <div className="flex flex-col gap-4 border-t border-theme-border px-1 pt-5 lg:flex-row lg:items-center lg:justify-between">
-      <div className="flex items-start gap-3">
-        <BookOpen size={18} className="mt-0.5 shrink-0 text-theme-text-muted" />
-        <div>
-          <p className="text-sm font-semibold text-theme-text">Environment reference</p>
-          <p className="mt-1 text-sm text-theme-text-muted">Field labels, helper text, defaults, and validation come from the active ODS environment schema.</p>
-        </div>
-      </div>
-      <a href="https://github.com/Osmantic/ODS/tree/main/ods/docs" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm font-medium text-theme-accent-light hover:text-theme-text">
-        Open documentation
-        <ExternalLink size={15} />
-      </a>
-    </div>
-  )
-}
-
-function StatusMetric({ icon: Icon, value, label }) {
-  return (
-    <div className="flex items-center gap-3 border-theme-border md:justify-center md:border-l">
-      <Icon size={18} className="text-theme-text-muted" strokeWidth={1.6} />
-      <div>
-        <p className="text-lg font-semibold text-theme-text">{value}</p>
-        <p className="text-xs text-theme-text-muted">{label}</p>
-      </div>
-    </div>
-  )
-}
-
-function BehaviorCard({ icon: Icon, title, text }) {
-  return (
-    <div className="p-4">
-      <div className="flex items-start gap-3">
-        <Icon size={17} className="mt-0.5 shrink-0 text-theme-accent-light" />
-        <div>
-          <p className="text-sm font-semibold text-theme-text">{title}</p>
-          <p className="mt-1 text-xs leading-5 text-theme-text-muted">{text}</p>
-        </div>
-      </div>
     </div>
   )
 }

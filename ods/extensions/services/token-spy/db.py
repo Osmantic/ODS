@@ -245,8 +245,11 @@ def query_report(start: str, end: str) -> dict:
         WHERE timestamp >= ? AND timestamp < ?
         ORDER BY timestamp ASC
         """,
-        (f"{start_day.isoformat()}T00:00:00Z", f"{end_exclusive.isoformat()}T00:00:00Z"),
-    ).fetchall()
+        # Match the fractional UTC representation written by the column default.
+        # "." sorts before "Z", so a bare 00:00:00Z excludes that day's
+        # first second while admitting the following day's first second.
+        (f"{start_day.isoformat()}T00:00:00.000Z", f"{end_exclusive.isoformat()}T00:00:00.000Z"),
+    )
 
     report = _empty_report(start, end)
     daily = {row["date"]: row for row in report["daily"]}
@@ -258,7 +261,11 @@ def query_report(start: str, end: str) -> dict:
     local_providers = set()
     untracked_providers = set()
 
+    request_count = 0
+    # Aggregate directly from the cursor. A bounded date range can still hold
+    # millions of requests, while the report only retains grouped totals.
     for sqlite_row in rows:
+        request_count += 1
         row = dict(sqlite_row)
         day = (row.get("timestamp") or "")[:10]
         if day not in daily:
@@ -330,7 +337,7 @@ def query_report(start: str, end: str) -> dict:
             target["cost_usd"] += cost
 
     summary = report["summary"]
-    summary["requests"] = len(rows)
+    summary["requests"] = request_count
     for day_row in report["daily"]:
         summary["spend_usd"] += day_row["spend_usd"]
         summary["input_tokens"] += day_row["input_tokens"]

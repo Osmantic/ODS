@@ -14,6 +14,7 @@ MODELS_MOUNT="/models"
 OUTPUT_MOUNT="/output"
 INPUT_MOUNT="/input"
 WORKFLOWS_MOUNT="/workflows"
+USER_MOUNT="/user"
 
 #-----------------------------------------------------------------------------
 # Create model subdirectories in bind mount (idempotent)
@@ -52,6 +53,39 @@ for pair in "output:${OUTPUT_MOUNT}" "input:${INPUT_MOUNT}"; do
     fi
     ln -s "$mount_path" "$target"
 done
+
+#-----------------------------------------------------------------------------
+# Persist ComfyUI's user directory (saved workflows + UI settings)
+#
+# ComfyUI writes everything the user creates under user/. Without a bind mount
+# that lives only in the container's writable layer and is destroyed on the
+# next recreate — which a routine `ods update` performs (compose down + up).
+# Mount outside the ComfyUI tree and symlink, exactly as output/ and input/ do.
+# Skipped when /user is not mounted, so an older compose file still works.
+#-----------------------------------------------------------------------------
+if [ -d "$USER_MOUNT" ]; then
+    user_target="${COMFYUI_DIR}/user"
+    if [ -L "$user_target" ]; then
+        rm "$user_target"
+    elif [ -d "$user_target" ]; then
+        # First start after this mount was introduced: carry over whatever the
+        # container already holds rather than discarding it. -n keeps anything
+        # already on the host authoritative.
+        user_backup="${COMFYUI_DIR}/user.migration-backup"
+        if [ -e "$user_backup" ] || [ -L "$user_backup" ]; then
+            echo "[startup] User migration backup already exists: $user_backup. Resolve it before retrying." >&2
+            exit 1
+        fi
+        if ! cp -a -n "$user_target/." "$USER_MOUNT/"; then
+            echo "[startup] User persistence copy failed; original files were kept at $user_target." >&2
+            exit 1
+        fi
+        # Retain the original even after a successful copy, including files
+        # skipped because the host already has an authoritative copy.
+        mv "$user_target" "$user_backup"
+    fi
+    ln -s "$USER_MOUNT" "$user_target"
+fi
 
 #-----------------------------------------------------------------------------
 # Copy workflow templates (read-only mount → writable user dir)

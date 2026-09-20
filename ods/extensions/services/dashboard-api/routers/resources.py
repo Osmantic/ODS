@@ -21,6 +21,7 @@ from security import verify_api_key
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["resources"])
 _SERVICE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+_resource_refreshes: dict[str, asyncio.Task] = {}
 
 _DATA_DIR_MAP = {
     "models": "llama-server",
@@ -89,6 +90,40 @@ def _post_agent_json(path: str, body: dict, timeout: int = 65) -> dict:
         raise HTTPException(status_code=500, detail=f"Host agent call failed: {exc}") from exc
 
 
+def _observe_resource_refresh(task: asyncio.Task) -> None:
+    # Retrieve failures even if every HTTP waiter has disconnected. Awaiters
+    # still receive the same exception; no failed value enters the cache.
+    error = None if task.cancelled() else task.exception()
+    if error is not None:
+        logger.error("Resource collection failed", exc_info=(type(error), error, error.__traceback__))
+
+
+async def _resource_snapshot(key: str, collector, ttl: int):
+    from main import _cache  # noqa: PLC0415
+
+    cached = _cache.get(key)
+    if cached is not None:
+        return cached
+    task = _resource_refreshes.get(key)
+    if task is None:
+        async def collect():
+            try:
+                value = await asyncio.to_thread(collector)
+                if _resource_refreshes.get(key) is asyncio.current_task():
+                    _cache.set(key, value, ttl)
+                return value
+            finally:
+                if _resource_refreshes.get(key) is asyncio.current_task():
+                    del _resource_refreshes[key]
+
+        task = asyncio.create_task(collect())
+        _resource_refreshes[key] = task
+        task.add_done_callback(_observe_resource_refresh)
+    # Cancelling an HTTP request cannot stop a running to_thread collector.
+    # Keep its ownership until completion so the next request can join it.
+    return await asyncio.shield(task)
+
+
 @router.get("/api/services/resources")
 async def service_resources(api_key: str = Depends(verify_api_key)):
     """Get per-service resource metrics (CPU, RAM, disk)."""
@@ -103,19 +138,17 @@ async def service_resources(api_key: str = Depends(verify_api_key)):
     if need_containers or need_disk:
         tasks = []
         if need_containers:
-            tasks.append(asyncio.to_thread(_fetch_container_stats))
+            tasks.append(_resource_snapshot("service_resources_containers", _fetch_container_stats, 20))
         if need_disk:
-            tasks.append(asyncio.to_thread(_scan_service_disk))
+            tasks.append(_resource_snapshot("service_resources_disk", _scan_service_disk, 60))
 
         results = await asyncio.gather(*tasks)
         idx = 0
         if need_containers:
             container_stats = results[idx]
             idx += 1
-            _cache.set("service_resources_containers", container_stats, 20)
         if need_disk:
             disk_usage = results[idx]
-            _cache.set("service_resources_disk", disk_usage, 60)
 
     container_stats = container_stats or []
     disk_usage = disk_usage or {}
@@ -208,5 +241,8 @@ async def restart_service(service_id: str, api_key: str = Depends(verify_api_key
     )
 
     from main import _cache  # noqa: PLC0415 — deferred import to avoid circular dependency
+    # An older in-flight read may finish after the restart acknowledgement.
+    # Let its existing waiters finish without republishing it for new readers.
+    _resource_refreshes.pop("service_resources_containers", None)
     _cache.invalidate("service_resources_containers")
     return result

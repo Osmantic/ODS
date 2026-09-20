@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 
@@ -51,12 +52,224 @@ def _patch_state_path(monkeypatch, path):
     from routers import remote_provider_status as rps
 
     monkeypatch.setattr(rps, "_state_path", lambda: path)
+    activation_path = path.with_name("activation-public.json")
+    monkeypatch.setattr(rps, "_activation_path", lambda: activation_path)
+    async def verified_activation(value):
+        return value
+
+    monkeypatch.setattr(rps, "_reconcile_activation_with_host", verified_activation)
+    if path.exists():
+        try:
+            state = json.loads(path.read_text(encoding="utf-8"))
+        except ValueError:
+            state = {}
+        provider = state.get("provider") if isinstance(state.get("provider"), dict) else {}
+        if state.get("enabled") is True:
+            activation_path.write_text(
+                json.dumps({
+                    "schema": "ods.remote-provider-activation-state.v1",
+                    "active": True,
+                    "proven": True,
+                    "gateway": "litellm-cloud",
+                    "publicModel": "ods/current",
+                    "model": provider.get("model", "qwen/remote:latest"),
+                    "routeFingerprint": rps._route_fingerprint(state),
+                    "contextLength": provider.get("contextLength", 32768),
+                    "maxTokens": provider.get("maxTokens", 4096),
+                    "reasoning": provider.get("reasoning", False),
+                    "pixel": "reconciled",
+                    "updatedAt": "2026-07-26T00:00:00+00:00",
+                }),
+                encoding="utf-8",
+            )
     return rps
 
 
 def test_remote_provider_status_requires_auth(test_client):
     resp = test_client.get("/api/remote-provider/status")
     assert resp.status_code == 401
+
+
+def test_overall_status_requires_a_proven_consumer_activation():
+    from routers import remote_provider_status as rps
+
+    route = {
+        "valid": True,
+        "enabled": True,
+        "provider": {
+            "transport": "direct",
+            "baseUrl": "https://gpu.example.test/v1",
+            "model": "qwen/remote:latest",
+            "contextLength": 32768,
+            "maxTokens": 4096,
+            "reasoning": False,
+        },
+    }
+    egress = {"reachable": True, "ready": True}
+    assert rps._overall_status(
+        route,
+        egress,
+        {"valid": True, "active": False, "proven": False},
+    ) == "degraded"
+    assert rps._overall_status(
+        route,
+        egress,
+        {
+            "valid": True,
+            "active": True,
+            "proven": True,
+            "routeFingerprint": rps._route_fingerprint(route),
+        },
+    ) == "ready"
+    assert rps._overall_status(
+        route,
+        egress,
+        {
+            "valid": True,
+            "active": True,
+            "proven": True,
+            "routeFingerprint": "0" * 64,
+        },
+    ) == "degraded"
+
+
+def test_activation_status_rejects_incomplete_ready_claim(monkeypatch, tmp_path):
+    from routers import remote_provider_status as rps
+
+    path = tmp_path / "activation-public.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema": "ods.remote-provider-activation-state.v1",
+                "active": True,
+                "proven": True,
+                "gateway": "litellm-cloud",
+                "publicModel": "ods/current",
+                "model": "org/qwen:remote",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(rps, "_activation_path", lambda: path)
+
+    assert rps._read_activation() == {
+        "valid": False,
+        "active": True,
+        "proven": False,
+        "reason": "invalid_activation_contract",
+    }
+
+
+def test_activation_status_treats_missing_receipt_as_not_activated(monkeypatch, tmp_path):
+    from routers import remote_provider_status as rps
+
+    monkeypatch.setattr(rps, "_activation_path", lambda: tmp_path / "missing.json")
+
+    assert rps._read_activation() == {
+        "valid": True,
+        "active": False,
+        "proven": False,
+        "reason": "not_activated",
+    }
+
+
+def test_activation_reconciliation_rejects_current_host_consumer_drift(monkeypatch):
+    from routers import remote_provider_status as rps
+
+    activation = {
+        "valid": True,
+        "active": True,
+        "proven": True,
+        "reason": "active_and_proven",
+        "gateway": "litellm-cloud",
+        "publicModel": "ods/current",
+        "model": "remote-owner-model",
+        "routeFingerprint": "e" * 64,
+        "contextLength": 131072,
+        "maxTokens": 16384,
+        "reasoning": False,
+        "pixel": "reconciled",
+        "updatedAt": "2026-08-31T18:05:36Z",
+    }
+
+    async def local_runtime(*_args, **_kwargs):
+        return {
+            "status": "idle",
+            "activeAgentViable": False,
+            "activeRuntime": None,
+        }
+
+    monkeypatch.setattr(rps, "async_request_agent_json", local_runtime)
+    result = asyncio.run(rps._reconcile_activation_with_host(activation))
+
+    assert result["active"] is True
+    assert result["valid"] is False
+    assert result["proven"] is False
+    assert result["reason"] == "consumer_drift"
+    assert result["pixel"] == "drifted"
+
+
+def test_activation_reconciliation_accepts_exact_remote_host_runtime(monkeypatch):
+    from routers import remote_provider_status as rps
+
+    activation = {
+        "valid": True,
+        "active": True,
+        "proven": True,
+        "reason": "active_and_proven",
+        "model": "remote-owner-model",
+        "contextLength": 131072,
+        "maxTokens": 16384,
+        "reasoning": False,
+        "pixel": "reconciled",
+    }
+
+    async def remote_runtime(*_args, **_kwargs):
+        return {
+            "status": "idle",
+            "activeAgentViable": True,
+            "activeRuntime": {
+                "source": "remote-provider",
+                "model": "remote-owner-model",
+                "contextLength": 131072,
+                "maxTokens": 16384,
+                "reasoning": False,
+            },
+        }
+
+    monkeypatch.setattr(rps, "async_request_agent_json", remote_runtime)
+    result = asyncio.run(rps._reconcile_activation_with_host(activation))
+
+    assert result == activation
+
+
+def test_activation_reconciliation_fails_closed_when_host_status_is_unavailable(monkeypatch):
+    from host_agent_client import AgentUnavailable
+    from routers import remote_provider_status as rps
+
+    activation = {
+        "valid": True,
+        "active": True,
+        "proven": True,
+        "reason": "active_and_proven",
+        "model": "remote-owner-model",
+        "contextLength": 131072,
+        "maxTokens": 16384,
+        "reasoning": False,
+        "pixel": "reconciled",
+    }
+
+    async def unavailable_runtime(*_args, **_kwargs):
+        raise AgentUnavailable("host agent is unavailable")
+
+    monkeypatch.setattr(rps, "async_request_agent_json", unavailable_runtime)
+    result = asyncio.run(rps._reconcile_activation_with_host(activation))
+
+    assert result["active"] is True
+    assert result["valid"] is False
+    assert result["proven"] is False
+    assert result["reason"] == "consumer_status_unavailable"
+    assert result["pixel"] == "unverified"
 
 
 def test_remote_provider_status_missing_state_is_disabled(
@@ -108,7 +321,42 @@ def test_remote_provider_status_missing_state_is_disabled(
     assert body["routeState"]["provider"] is None
     assert body["availableActions"]["configure"] is True
     assert body["availableActions"]["test"] is False
+    assert body["availableActions"]["enable"] is False
     assert body["sshSupervisor"]["status"] == "disabled"
+
+
+def test_disabled_route_exposes_only_saved_profile_availability(monkeypatch, tmp_path):
+    from routers import remote_provider_status as rps
+
+    state_path = tmp_path / "routing-state.json"
+    state_path.write_text(
+        json.dumps({
+            "schema": "ods.remote-routing-state.v1",
+            "enabled": False,
+            "mode": "cloud",
+            "provider": None,
+            "ssh": None,
+            "peer": None,
+            "resume": {
+                "available": True,
+                "profileSha256": "a" * 64,
+                "savedAt": "2026-08-31T19:00:00+00:00",
+                "baseUrl": "https://must-not-leak.example.test/v1",
+            },
+            "status": {"proven": False, "reason": "disabled"},
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(rps, "_state_path", lambda: state_path)
+
+    state = rps._read_route_state()
+
+    assert state["valid"] is True
+    assert state["enabled"] is False
+    assert state["resumeAvailable"] is True
+    assert state["provider"] is None
+    assert "resume" not in state
+    assert "must-not-leak" not in json.dumps(state)
 
 
 def test_remote_provider_status_sanitizes_egress_secret_health(
@@ -1122,7 +1370,7 @@ def test_remote_provider_probe_posts_to_egress_and_sanitizes_receipt(
         },
     }
     assert calls == [
-        ("timeout", 3.0),
+        ("timeout", 60.0),
         ("post", "http://egress.internal:8091/probe"),
     ]
     assert agent_calls == [
@@ -1151,7 +1399,7 @@ def test_remote_provider_probe_posts_to_egress_and_sanitizes_receipt(
                     "process": {"status": "running", "pid": 4242},
                 },
             },
-            5,
+            1800.0,
         )
     ]
     assert "unit-test-provider-token" not in dumped
@@ -1320,7 +1568,12 @@ def test_remote_provider_apply_proxies_to_host_agent(
     assert body["action"] == "configure"
     assert body["mutated"] is True
     assert "unit-test-provider-token" not in dumped
-    assert calls == [("POST", "/v1/remote-provider/apply", payload, 10)]
+    assert calls == [(
+        "POST",
+        "/v1/remote-provider/apply",
+        payload,
+        rps.LIFECYCLE_APPLY_TIMEOUT_SECONDS,
+    )]
 
 
 def test_remote_provider_apply_preserves_host_agent_validation_errors(
@@ -1342,3 +1595,131 @@ def test_remote_provider_apply_preserves_host_agent_validation_errors(
 
     assert resp.status_code == 500
     assert resp.json()["detail"] == "Remote provider apply failed: disk full"
+
+
+def test_remote_provider_enable_completes_staged_ssh_proof(
+    test_client,
+    monkeypatch,
+):
+    from routers import remote_provider_status as rps
+
+    calls = []
+
+    async def fake_request(method, path, *, payload, timeout):
+        calls.append((method, path, payload, timeout))
+        return {
+            "schema": "ods.remote-provider-lifecycle-operation.v1",
+            "action": "enable",
+            "ok": True,
+            "applied": False,
+            "staged": True,
+            "mutated": True,
+            "rollback": {"attempted": False, "ok": None},
+        }
+
+    async def fake_probe():
+        return {
+            "ok": True,
+            "probe": {"ok": True, "httpStatus": 200},
+            "routeProof": {
+                "recorded": True,
+                "activation": {"active": True, "proven": True},
+            },
+        }
+
+    monkeypatch.setattr(rps, "async_request_agent_json", fake_request)
+    monkeypatch.setattr(rps, "remote_provider_probe", fake_probe)
+
+    resp = test_client.post(
+        "/api/remote-provider/enable",
+        headers=test_client.auth_headers,
+    )
+
+    body = resp.json()
+    assert resp.status_code == 200
+    assert body["action"] == "enable"
+    assert body["applied"] is True
+    assert body["staged"] is False
+    assert body["routeProof"]["recorded"] is True
+    assert calls == [(
+        "POST",
+        "/v1/remote-provider/apply",
+        {"action": "enable"},
+        rps.LIFECYCLE_APPLY_TIMEOUT_SECONDS,
+    )]
+
+
+def test_remote_provider_enable_repauses_after_ssh_probe_failure(
+    test_client,
+    monkeypatch,
+):
+    from routers import remote_provider_status as rps
+
+    actions = []
+
+    async def fake_request(_method, _path, *, payload, timeout):
+        assert timeout == rps.LIFECYCLE_APPLY_TIMEOUT_SECONDS
+        actions.append(payload["action"])
+        if payload["action"] == "enable":
+            return {
+                "action": "enable",
+                "applied": False,
+                "staged": True,
+                "mutated": True,
+            }
+        return {"action": "disable", "applied": True, "mutated": True}
+
+    async def failing_probe():
+        raise rps.HTTPException(status_code=503, detail={"type": "ssh_tunnel_not_ready"})
+
+    monkeypatch.setattr(rps, "async_request_agent_json", fake_request)
+    monkeypatch.setattr(rps, "remote_provider_probe", failing_probe)
+
+    resp = test_client.post(
+        "/api/remote-provider/enable",
+        headers=test_client.auth_headers,
+    )
+
+    body = resp.json()
+    assert resp.status_code == 503
+    assert body["detail"]["error"] == "remote_provider_enable_failed"
+    assert body["detail"]["rollback"] == {"attempted": True, "ok": True}
+    assert actions == ["enable", "disable"]
+
+
+def test_remote_provider_enable_reports_unexpected_rollback_failure(
+    test_client,
+    monkeypatch,
+):
+    from routers import remote_provider_status as rps
+
+    actions = []
+
+    async def fake_request(_method, _path, *, payload, timeout):
+        assert timeout == rps.LIFECYCLE_APPLY_TIMEOUT_SECONDS
+        actions.append(payload["action"])
+        if payload["action"] == "enable":
+            return {
+                "action": "enable",
+                "applied": False,
+                "staged": True,
+                "mutated": True,
+            }
+        raise RuntimeError("simulated rollback transport failure")
+
+    async def failing_probe():
+        raise rps.HTTPException(status_code=503, detail={"type": "ssh_tunnel_not_ready"})
+
+    monkeypatch.setattr(rps, "async_request_agent_json", fake_request)
+    monkeypatch.setattr(rps, "remote_provider_probe", failing_probe)
+
+    resp = test_client.post(
+        "/api/remote-provider/enable",
+        headers=test_client.auth_headers,
+    )
+
+    body = resp.json()
+    assert resp.status_code == 503
+    assert body["detail"]["error"] == "remote_provider_enable_failed"
+    assert body["detail"]["rollback"] == {"attempted": True, "ok": False}
+    assert actions == ["enable", "disable"]
