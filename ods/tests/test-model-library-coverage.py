@@ -173,6 +173,18 @@ def test_phi4_mini_is_revalidated_for_strixy_only():
     assert compatibility["hermes_talk"]["harnessSha"] == "b71daee54c3a676c52acf6c5355d74e454f627a0"
 
 
+def test_qwen35_9b_open_webui_failure_is_scoped_to_strixy():
+    catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
+    by_id = {model["id"]: model for model in catalog["models"]}
+    compatibility = by_id["qwen3.5-9b-q4"]["app_compatibility"]
+
+    assert compatibility["open_webui"]["status"] == "unsupported_until_revalidated"
+    assert compatibility["open_webui"]["hostScope"] == ["strixy"]
+    assert "cycle-006/strixy-wsl-beta/model-ui.json" in compatibility["open_webui"]["evidence"]
+    assert compatibility["open_webui"]["productSha"] == "01d81ef885a655909eec4265cbe7f8d204a6b977"
+    assert compatibility["open_webui"]["harnessSha"] == "b71daee54c3a676c52acf6c5355d74e454f627a0"
+
+
 def test_phi3_mini_128k_requires_perplexica_revalidation_after_strixy_failure():
     catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
     by_id = {model["id"]: model for model in catalog["models"]}

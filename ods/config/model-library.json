@@ -1826,6 +1826,17 @@
       "llm_model_name": "qwen3.5-9b",
       "llama_server_image": null,
       "app_compatibility": {
+        "open_webui": {
+          "status": "unsupported_until_revalidated",
+          "label": "Open WebUI revalidation required on Strixy",
+          "reason": "In the 2026-09-20 exact-head Strixy cycle, Qwen 3.5 9B loaded through Lemonade at the exact 64K runtime and passed ODS Talk, Pixel retained and non-retained inference, LiteLLM, OpenCode, and Perplexica, but Open WebUI refused the benign challenge as a credential request instead of returning the requested phrase. Exact route evidence named Qwen3.5-9B-GGUF and automated failure recovery restored the Qwen 3.6 baseline. Keep this host/model/app pairing out of all-app release coverage until its Open WebUI response behavior is revalidated.",
+          "evidence": "ods-public-beta-fleet-green-20260911/release-candidate-01d81ef8-hb71daee-r377/model-ui/cycle-006/strixy-wsl-beta/model-ui.json",
+          "recordedAt": "2026-09-20T07:16:24Z",
+          "productSha": "01d81ef885a655909eec4265cbe7f8d204a6b977",
+          "harnessSha": "b71daee54c3a676c52acf6c5355d74e454f627a0",
+          "hostScope": ["strixy"],
+          "expiresAt": "2026-10-20T00:00:00Z"
+        },
         "pixel_agent": {
           "status": "verified",
           "label": "Pixel verified at 64K context on Windows laptop",

@@ -1115,6 +1115,18 @@ def test_real_catalog_scopes_phi4_revalidation_to_strixy():
     assert windows["agentViability"]["status"] == "unknown"
 
 
+def test_real_catalog_scopes_qwen35_9b_open_webui_failure_to_strixy():
+    catalog = _official_model_catalog()
+    model = next(model for model in catalog if model["id"] == "qwen3.5-9b-q4")
+
+    strixy = model_app_compatibility(model, runtime_context={"hosts": ["strixy"]})
+    windows = model_app_compatibility(model, runtime_context={"hosts": ["windows-laptop"]})
+
+    assert strixy["openWebui"]["status"] == "unsupported_until_revalidated"
+    assert "cycle-006/strixy-wsl-beta/model-ui.json" in strixy["openWebui"]["evidence"]
+    assert windows["openWebui"]["status"] == "unknown"
+
+
 def test_installer_recommended_model_survives_bootstrap_env(data_dir, tmp_path):
     install_dir = tmp_path / "ods"
     (install_dir / "data" / "models").mkdir(parents=True)
