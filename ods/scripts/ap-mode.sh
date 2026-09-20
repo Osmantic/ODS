@@ -281,6 +281,10 @@ bring_up_interface() {
   if [[ -z "${prefix}" ]]; then
     prefix="$(_netmask_to_prefix "${ODS_AP_NETMASK}")" || return 1
   fi
+  if [[ ! "$prefix" =~ ^[0-9]+$ ]] || (( prefix < 1 || prefix > 32 )); then
+    err "invalid CIDR prefix '$prefix' (expected integer 1-32)"
+    return 1
+  fi
   ip link set dev "${ODS_AP_INTERFACE}" up
   ip addr flush dev "${ODS_AP_INTERFACE}"
   ip addr add "${ODS_AP_GATEWAY_IP}/${prefix}" dev "${ODS_AP_INTERFACE}"

@@ -219,6 +219,7 @@ jobs:
         run: |
           bash tests/test-ap-mode.sh
           python3 tests/test-ap-identity-preflight.py
+          python3 tests/test_ap_mode_prefix_validation.py
 
       - name: Phase C P1 Static Checks
         run: bash tests/test-phase-c-p1.sh
