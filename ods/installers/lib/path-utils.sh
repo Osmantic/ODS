@@ -31,15 +31,16 @@ normalize_path() {
     fi
     
     # Resolve symlinks and normalize (remove .., ., //)
+    local res=""
     if command -v realpath &>/dev/null; then
-        # GNU realpath (Linux)
-        realpath -m "$path" 2>/dev/null || echo "$path"
+        res="$(realpath -m "$path" 2>/dev/null)"
     elif command -v grealpath &>/dev/null; then
-        # GNU realpath via Homebrew (macOS)
-        grealpath -m "$path" 2>/dev/null || echo "$path"
+        res="$(grealpath -m "$path" 2>/dev/null)"
+    fi
+
+    if [[ -n "$res" ]]; then
+        echo "$res"
     else
-        # Fallback: basic normalization without external dependencies
-        # This handles most cases but doesn't resolve all edge cases
         echo "$path"
     fi
 }
