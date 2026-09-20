@@ -31,8 +31,18 @@ pass "Compose files present"
 
 # ===== Test 2: Compose is valid =====
 info "Test 2: Validating compose..."
+# docker-compose.yml is the *resolved* stack, written by the installer. A bare
+# checkout does not have it, and docker-compose.base.yml cannot stand in: it
+# declares install-time secrets as ${WEBUI_SECRET:?...} with no default, so
+# `config` refuses it. Test 1 already accepts either file, so before this guard
+# every clean checkout reported "Invalid compose configuration" — a QA step in
+# docs/OSS-LAUNCH-CHECKLIST.md that could only fail (#5633).
+# Skip here exactly as this suite already skips when Docker is absent; when the
+# resolved stack IS present, validation runs and still fails on a bad stack.
 # Try docker compose (plugin) first, then docker-compose (standalone)
-if command -v docker &> /dev/null && docker compose version &> /dev/null 2>&1; then
+if [[ ! -f "docker-compose.yml" ]]; then
+    info "No resolved docker-compose.yml (pre-install checkout), skipping compose validation"
+elif command -v docker &> /dev/null && docker compose version &> /dev/null 2>&1; then
     docker compose -f docker-compose.yml config > /dev/null 2>&1 || fail "Invalid compose configuration"
 elif command -v docker-compose &> /dev/null; then
     docker-compose -f docker-compose.yml config > /dev/null 2>&1 || fail "Invalid compose configuration"
