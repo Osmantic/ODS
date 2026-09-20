@@ -145,7 +145,8 @@ detect_nvidia_topo() {
   local numa_json="{}"
   if command -v numactl &>/dev/null; then
     local numa_nodes
-    numa_nodes=$(numactl --hardware 2>/dev/null | grep "^node [0-9]* cpus" | wc -l)
+    numa_nodes=$(numactl --hardware 2>/dev/null | grep -c "^node [0-9]* cpus" || echo "0")
+    [[ "$numa_nodes" =~ ^[0-9]+$ ]] || numa_nodes=0
     numa_json=$(jq -n --argjson n "$numa_nodes" '{nodes: $n}')
   fi
 
