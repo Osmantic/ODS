@@ -84,13 +84,13 @@ jobs:
           TTS_PORT=8860
           QDRANT_PORT=6333
           EMBEDDINGS_PORT=8800
-          SEARXNG_PORT=8080
+          SEARXNG_PORT=8888
           APE_PORT=7890
           OPENCLAW_PORT=3100
           OPENCLAW_CONFIG=prosumer.json
           OPENCLAW_API_KEY=sk-test-openclaw
           PRIVACY_SHIELD_PORT=8085
-          TOKEN_SPY_PORT=3003
+          TOKEN_SPY_PORT=3005
           LIVEKIT_PORT=7880
           LIVEKIT_API_KEY=devkey
           LIVEKIT_API_SECRET=devsecret
