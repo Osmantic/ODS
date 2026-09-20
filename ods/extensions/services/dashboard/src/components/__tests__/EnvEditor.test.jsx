@@ -56,6 +56,26 @@ const renderEditor = (overrides = {}) =>
   )
 
 describe('EnvEditor', () => {
+  test('hides fields documented as macOS-only on non-macOS hosts', () => {
+    renderEditor({
+      fields: {
+        OPENAI_API_KEY: baseFields.OPENAI_API_KEY,
+        MACOS_ONLY: {
+          key: 'MACOS_ONLY',
+          label: 'Unified system RAM',
+          type: 'integer',
+          description: 'macOS Apple Silicon only.',
+          default: 16,
+        },
+      },
+      values: { OPENAI_API_KEY: '', MACOS_ONLY: '16' },
+      sections: [{ id: 'platform', title: 'Platform', keys: ['OPENAI_API_KEY', 'MACOS_ONLY'] }],
+      activeSection: { id: 'platform', title: 'Platform', keys: ['OPENAI_API_KEY', 'MACOS_ONLY'] },
+    })
+
+    expect(screen.queryByRole('spinbutton', { name: /Unified system RAM/i })).toBeNull()
+  })
+
   test('renders stored secrets as masked placeholders instead of exposing values', () => {
     renderEditor()
 
