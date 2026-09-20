@@ -1,0 +1,51 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: karakeep
+  name: Karakeep (AI Bookmarks)
+  description: "Self-hosted bookmark hoarder with AI tagging — can auto-tag saved pages through the local ODS LLM."
+  aliases: [hoarder, ai-bookmarks]
+  container_name: ods-karakeep
+  default_host: karakeep
+  port: 3300
+  external_port_env: KARAKEEP_PORT
+  external_port_default: 3300
+  health: /
+  ui_path: /
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [bookmarks, ai, archive]
+  env_vars:
+    - key: KARAKEEP_PORT
+      description: "Published HTTP port"
+      default: "3300"
+    - key: KARAKEEP_SECRET
+      description: "NextAuth secret for session signing (openssl rand -hex 32)"
+      required: true
+      secret: true
+    - key: MEILI_MASTER_KEY
+      description: "Meilisearch master key for the private search index"
+      required: true
+      secret: true
+    - key: KARAKEEP_USE_LOCAL_LLM
+      description: "Auto-tag with the local llama-server instead of an external API"
+      default: "true"
+features:
+  - id: ai-bookmarks
+    name: AI Bookmarks
+    description: "Save pages and let the local LLM auto-tag and summarize them"
+    icon: Sparkles
+    category: productivity
+    requirements:
+      services: [karakeep]
+      vram_gb: 0
+    enabled_services_all: [karakeep]
+    setup_time: "~2 minutes"
+    priority: 33
+    launch:
+      type: service
+      service: karakeep

@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-13T16:53:56Z",
+  "generated_at": "2026-09-20T05:21:32Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -41,6 +41,13 @@
           "description": "AI pair programming in your terminal",
           "icon": "Terminal",
           "category": "development",
+          "gpu_backends": [
+            "amd",
+            "nvidia",
+            "apple",
+            "cpu",
+            "none"
+          ],
           "requirements": {
             "services": [
               "aider"
@@ -1775,6 +1782,72 @@
       "configuration_scope": "declared-environment-keys"
     },
     {
+      "id": "karakeep",
+      "name": "Karakeep (AI Bookmarks)",
+      "description": "Self-hosted bookmark hoarder with AI tagging — can auto-tag saved pages through the local ODS LLM.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 3300,
+      "external_port_default": 3300,
+      "health_endpoint": "/",
+      "env_vars": [
+        {
+          "key": "KARAKEEP_PORT",
+          "description": "Published HTTP port",
+          "default": "3300"
+        },
+        {
+          "key": "KARAKEEP_SECRET",
+          "description": "NextAuth secret for session signing (openssl rand -hex 32)",
+          "required": true
+        },
+        {
+          "key": "MEILI_MASTER_KEY",
+          "description": "Meilisearch master key for the private search index",
+          "required": true
+        },
+        {
+          "key": "KARAKEEP_USE_LOCAL_LLM",
+          "description": "Auto-tag with the local llama-server instead of an external API",
+          "default": "true"
+        }
+      ],
+      "tags": [
+        "bookmarks",
+        "ai",
+        "archive"
+      ],
+      "features": [
+        {
+          "id": "ai-bookmarks",
+          "name": "AI Bookmarks",
+          "description": "Save pages and let the local LLM auto-tag and summarize them",
+          "icon": "Sparkles",
+          "category": "productivity",
+          "requirements": {
+            "services": [
+              "karakeep"
+            ],
+            "vram_gb": 0
+          },
+          "enabled_services_all": [
+            "karakeep"
+          ],
+          "setup_time": "~2 minutes",
+          "priority": 33,
+          "launch": {
+            "type": "service",
+            "service": "karakeep"
+          }
+        }
+      ],
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
       "id": "label-studio",
       "name": "Label Studio",
       "description": "Label Studio is an open source data labeling tool.\nLabel images, audio, text, time series, and more for ML model training.\n",
@@ -2708,8 +2781,7 @@
       "description": "Open WebUI (Chat)",
       "category": "core",
       "gpu_backends": [
-        "amd",
-        "nvidia"
+        "all"
       ],
       "compose_file": "",
       "depends_on": [
@@ -3155,6 +3227,56 @@
           ]
         }
       ],
+      "catalog_source": "builtin",
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
+      "id": "pixel-inference",
+      "name": "Pixel inference sharing (development)",
+      "description": "Disabled by default. Owner-provisioned, inference-only device credentials; loopback transport only. Does not provide Pixel agent or computer access. Private state must be provisioned before service activation. Native Windows private-state support and guided setup are not yet implemented.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [
+        "model-router"
+      ],
+      "port": 8093,
+      "external_port_default": 4005,
+      "health_endpoint": "/health",
+      "env_vars": [],
+      "tags": [],
+      "features": [],
+      "startup_check": false,
+      "catalog_source": "builtin",
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
+      "id": "pixel-model-relay",
+      "name": "Pixel Model Relay",
+      "description": "Pixel Model Relay",
+      "category": "core",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [
+        "model-router"
+      ],
+      "port": 4102,
+      "external_port_default": 4006,
+      "health_endpoint": "/health",
+      "env_vars": [
+        {
+          "key": "PIXEL_MODEL_RELAY_KEY",
+          "required": true,
+          "description": "Pixel-only bearer key for host-local inference"
+        }
+      ],
+      "tags": [],
+      "features": [],
+      "startup_check": true,
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
     },

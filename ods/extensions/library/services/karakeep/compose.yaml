@@ -1,0 +1,81 @@
+services:
+  karakeep:
+    image: ghcr.io/karakeep-app/karakeep:0.27.1
+    container_name: ods-karakeep
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: ["/tmp:size=64m,mode=1777"]
+    environment:
+      NEXTAUTH_SECRET: "${KARAKEEP_SECRET:?Set KARAKEEP_SECRET before enabling Karakeep}"
+      MEILI_MASTER_KEY: "${MEILI_MASTER_KEY:?Set MEILI_MASTER_KEY before enabling Karakeep}"
+      NEXTAUTH_URL: "http://localhost:${KARAKEEP_PORT:-3300}"
+      DATA_DIR: /data
+      MEILI_ADDR: http://karakeep-meilisearch:7700
+      BROWSER_WEB_URL: http://karakeep-chrome:9222
+      OPENAI_BASE_URL: http://llama-server:8080/v1
+      OPENAI_API_KEY: "local"
+      INFERENCE_TEXT_MODEL: "${LLM_MODEL:-local-model}"
+      INFERENCE_ENABLE_AUTO_TAGGING: "${KARAKEEP_USE_LOCAL_LLM:-true}"
+    volumes:
+      - ./data/karakeep:/data
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${KARAKEEP_PORT:-3300}:3300"
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO /dev/null http://127.0.0.1:3000/api/health || exit 1']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks: [ods-network, karakeep-private]
+    depends_on:
+      karakeep-meilisearch:
+        condition: service_started
+      karakeep-chrome:
+        condition: service_started
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+  karakeep-meilisearch:
+    image: getmeili/meilisearch:v1.15.2
+    container_name: ods-karakeep-meilisearch
+    restart: unless-stopped
+    security_opt: [no-new-privileges:true]
+    environment:
+      MEILI_MASTER_KEY: "${MEILI_MASTER_KEY:?Set MEILI_MASTER_KEY before enabling Karakeep}"
+      MEILI_NO_ANALYTICS: "true"
+    volumes:
+      - ./data/karakeep/meilisearch:/meili_data
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO /dev/null http://127.0.0.1:7700/health || exit 1']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks: [karakeep-private]
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+  karakeep-chrome:
+    image: gcr.io/zenika-hub/alpine-chrome:124
+    container_name: ods-karakeep-chrome
+    restart: unless-stopped
+    security_opt: [no-new-privileges:true]
+    command: >
+      chromium-browser --headless --disable-gpu --no-sandbox --remote-debugging-address=0.0.0.0 --remote-debugging-port=9222 --hide-scrollbars
+    networks: [karakeep-private]
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+networks:
+  ods-network:
+    external: true
+  karakeep-private:
+    internal: true
