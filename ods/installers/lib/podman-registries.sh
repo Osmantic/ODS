@@ -1,6 +1,10 @@
 #!/bin/bash
 # Keep Podman's effective short-name search configuration valid and idempotent.
 
+command -v log >/dev/null 2>&1 || log() { echo "[LOG] $*"; }
+command -v ai_ok >/dev/null 2>&1 || ai_ok() { echo "[OK] $*"; }
+command -v ai_warn >/dev/null 2>&1 || ai_warn() { echo "[WARN] $*"; }
+
 ods_podman_ensure_dockerhub_search() {
     local conf_dir="${XDG_CONFIG_HOME:-$HOME/.config}/containers"
     local user_conf="$conf_dir/registries.conf"
