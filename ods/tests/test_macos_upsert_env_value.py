@@ -1,8 +1,18 @@
-"""Literal key and delimiter-safe updates in macOS upsert_env_value."""
+"""Literal key and delimiter-safe updates in macOS upsert_env_value.
+
+Two copies of upsert_env_value ship on macOS — one in the env generator library
+and one in the ods-macos CLI — and both must decide "does this key exist?" with
+the same literal-prefix test they use to update. A regex probe (grep "^${key}=")
+or a sed replacement (s|^${key}=.*|${key}=${value}|) treats dots/brackets in the
+key as wildcards (so FOO.BAR clobbers FOO_BAR) and treats | & \\ in the value as
+sed syntax (so a URL/token is dropped or corrupted). Exercise both copies.
+"""
 
 import subprocess
 import tempfile
 from pathlib import Path
+
+import pytest
 
 
 def extract_helper_func(script_path: Path) -> str:
@@ -22,10 +32,9 @@ def extract_helper_func(script_path: Path) -> str:
     return "\n".join(collected)
 
 
-def test_upsert_env_value_handles_delimiters_and_literal_keys():
-    repo_root = Path(__file__).resolve().parents[1]
-    env_gen = repo_root / "installers/macos/lib/env-generator.sh"
-    helper_code = extract_helper_func(env_gen)
+def _assert_delimiters_and_literal_keys(script_path: Path) -> None:
+    helper_code = extract_helper_func(script_path)
+    assert helper_code, f"could not extract upsert_env_value from {script_path}"
 
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
@@ -37,7 +46,7 @@ def test_upsert_env_value_handles_delimiters_and_literal_keys():
 set -euo pipefail
 {helper_code}
 
-# 1. Setting a key with regex dot should not overwrite FOO_BAR
+# 1. Setting a key with a regex dot must not overwrite FOO_BAR
 upsert_env_value "{env_file}" "FOO.BAR" "new_dot_val"
 
 grep -q "FOO_BAR=existing_value" "{env_file}" || {{ echo "FOO_BAR was clobbered by FOO.BAR"; exit 2; }}
@@ -45,7 +54,7 @@ grep -q "FOO_BAR=existing_value" "{env_file}" || {{ echo "FOO_BAR was clobbered 
 # 2. Setting a value containing pipe and ampersand
 upsert_env_value "{env_file}" "PIPE_VAR" "http://host|auth&token"
 
-# 3. In-place update of existing value with delimiter
+# 3. In-place update of an existing value with delimiter characters
 upsert_env_value "{env_file}" "FOO_BAR" "updated|pipe&amp"
 """)
         runner.chmod(0o755)
@@ -59,6 +68,19 @@ upsert_env_value "{env_file}" "FOO_BAR" "updated|pipe&amp"
         assert "PIPE_VAR=http://host|auth&token" in content
 
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_UPSERT_SCRIPTS = {
+    "env-generator": _REPO_ROOT / "installers/macos/lib/env-generator.sh",
+    "ods-macos": _REPO_ROOT / "installers/macos/ods-macos.sh",
+}
+
+
+@pytest.mark.parametrize("script_path", _UPSERT_SCRIPTS.values(), ids=list(_UPSERT_SCRIPTS))
+def test_upsert_env_value_handles_delimiters_and_literal_keys(script_path):
+    _assert_delimiters_and_literal_keys(script_path)
+
+
 if __name__ == "__main__":
-    test_upsert_env_value_handles_delimiters_and_literal_keys()
-    print("test_macos_upsert_env_value passed.")
+    for name, path in _UPSERT_SCRIPTS.items():
+        _assert_delimiters_and_literal_keys(path)
+        print(f"test_macos_upsert_env_value[{name}] passed.")
