@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-13T16:53:56Z",
+  "generated_at": "2026-09-20T05:13:52Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -41,6 +41,13 @@
           "description": "AI pair programming in your terminal",
           "icon": "Terminal",
           "category": "development",
+          "gpu_backends": [
+            "amd",
+            "nvidia",
+            "apple",
+            "cpu",
+            "none"
+          ],
           "requirements": {
             "services": [
               "aider"
@@ -1536,6 +1543,57 @@
       "configuration_scope": "declared-environment-keys"
     },
     {
+      "id": "homepage",
+      "name": "Homepage (Start Page)",
+      "description": "Customizable start page with service discovery — a self-hosted landing dashboard for the ODS stack.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 3100,
+      "external_port_default": 3100,
+      "health_endpoint": "/",
+      "env_vars": [
+        {
+          "key": "HOMEPAGE_PORT",
+          "description": "Published HTTP port",
+          "default": "3100"
+        }
+      ],
+      "tags": [
+        "dashboard",
+        "startpage",
+        "portal"
+      ],
+      "features": [
+        {
+          "id": "start-page",
+          "name": "Start Page",
+          "description": "A customizable landing dashboard linking every enabled ODS service",
+          "icon": "Home",
+          "category": "productivity",
+          "requirements": {
+            "services": [
+              "homepage"
+            ],
+            "vram_gb": 0
+          },
+          "enabled_services_all": [
+            "homepage"
+          ],
+          "setup_time": "~2 minutes",
+          "priority": 33,
+          "launch": {
+            "type": "service",
+            "service": "homepage"
+          }
+        }
+      ],
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
       "id": "immich",
       "name": "Immich",
       "description": "Self-hosted Google Photos alternative with AI-powered face and object detection.",
@@ -2708,8 +2766,7 @@
       "description": "Open WebUI (Chat)",
       "category": "core",
       "gpu_backends": [
-        "amd",
-        "nvidia"
+        "all"
       ],
       "compose_file": "",
       "depends_on": [
@@ -3155,6 +3212,56 @@
           ]
         }
       ],
+      "catalog_source": "builtin",
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
+      "id": "pixel-inference",
+      "name": "Pixel inference sharing (development)",
+      "description": "Disabled by default. Owner-provisioned, inference-only device credentials; loopback transport only. Does not provide Pixel agent or computer access. Private state must be provisioned before service activation. Native Windows private-state support and guided setup are not yet implemented.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [
+        "model-router"
+      ],
+      "port": 8093,
+      "external_port_default": 4005,
+      "health_endpoint": "/health",
+      "env_vars": [],
+      "tags": [],
+      "features": [],
+      "startup_check": false,
+      "catalog_source": "builtin",
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
+      "id": "pixel-model-relay",
+      "name": "Pixel Model Relay",
+      "description": "Pixel Model Relay",
+      "category": "core",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [
+        "model-router"
+      ],
+      "port": 4102,
+      "external_port_default": 4006,
+      "health_endpoint": "/health",
+      "env_vars": [
+        {
+          "key": "PIXEL_MODEL_RELAY_KEY",
+          "required": true,
+          "description": "Pixel-only bearer key for host-local inference"
+        }
+      ],
+      "tags": [],
+      "features": [],
+      "startup_check": true,
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
     },
