@@ -491,6 +491,28 @@ class TestInstallExtension:
         assert data["action"] == "installed"
         assert (user_dir / "my-ext" / "compose.yaml").exists()
 
+    def test_install_rejects_symlinked_destination(
+        self, test_client, monkeypatch, tmp_path,
+    ):
+        if os.name == "nt" and not can_create_symlinks(tmp_path):
+            pytest.skip("Windows symlink creation requires Developer Mode or administrator privileges")
+        lib_dir = _setup_library_ext(tmp_path, "my-ext")
+        user_dir = tmp_path / "user"
+        user_dir.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (user_dir / "my-ext").symlink_to(outside, target_is_directory=True)
+        _patch_mutation_config(monkeypatch, tmp_path, lib_dir=lib_dir, user_dir=user_dir)
+
+        resp = test_client.post(
+            "/api/extensions/my-ext/install",
+            headers=test_client.auth_headers,
+        )
+
+        assert resp.status_code == 409
+        assert "symlinked" in resp.json()["detail"]
+        assert not (outside / "compose.yaml").exists()
+
     def test_install_stages_tmp_under_user_extensions_dir(
         self, test_client, monkeypatch, tmp_path,
     ):
