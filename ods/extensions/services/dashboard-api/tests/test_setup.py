@@ -32,6 +32,37 @@ def test_chat_handles_empty_choices(test_client, monkeypatch):
     assert data["response"] == ""
 
 
+def test_chat_uses_live_llm_api_url(test_client, monkeypatch, tmp_path):
+    """Chat must use the current .env URL instead of stale container env."""
+    monkeypatch.setenv("OLLAMA_URL", "http://stale-llm:8080")
+
+    env_file = tmp_path / ".env"
+    env_file.write_text("LLM_API_URL=http://current-llm:4000\n")
+    monkeypatch.setattr("config.INSTALL_DIR", str(tmp_path))
+
+    mock_resp = MagicMock()
+    mock_resp.status = 200
+    mock_resp.json = AsyncMock(return_value={"choices": [{"message": {"content": "ok"}}]})
+    post_cm = MagicMock()
+    post_cm.__aenter__ = AsyncMock(return_value=mock_resp)
+    post_cm.__aexit__ = AsyncMock(return_value=False)
+    mock_session = MagicMock()
+    mock_session.post = MagicMock(return_value=post_cm)
+    session_cm = MagicMock()
+    session_cm.__aenter__ = AsyncMock(return_value=mock_session)
+    session_cm.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("routers.setup.aiohttp.ClientSession", return_value=session_cm):
+        resp = test_client.post(
+            "/api/chat", json={"message": "hi"}, headers=test_client.auth_headers
+        )
+
+    assert resp.status_code == 200
+    called_url = mock_session.post.call_args.args[0]
+    assert called_url.startswith("http://current-llm:4000/v1/")
+    assert "stale-llm" not in called_url
+
+
 # ---------------------------------------------------------------------------
 # Auth enforcement — 401 without Bearer token
 # ---------------------------------------------------------------------------

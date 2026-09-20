@@ -198,7 +198,9 @@ async def chat(request: ChatRequest, api_key: str = Depends(verify_api_key)):
         system_prompt = await asyncio.to_thread(get_active_persona_prompt)
 
     _llm = SERVICES.get("llama-server", {})
-    llm_url = os.environ.get("OLLAMA_URL", f"http://{_llm.get('host', 'llama-server')}:{_llm.get('port', 0)}")
+    llm_url = read_live_env_value("LLM_API_URL") or (
+        f"http://{_llm.get('host', 'llama-server')}:{_llm.get('port', 0)}"
+    )
     model = read_live_env_value("LLM_MODEL", "qwen3-coder-next")
 
     payload = {
