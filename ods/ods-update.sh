@@ -432,21 +432,24 @@ _update_rollback() {
             log_warn "docker compose v2 down failed, trying v1..."
             docker-compose ${compose_flags_arg} down --remove-orphans
         fi
-        if ! docker compose ${compose_flags_arg} up -d; then
-            log_warn "docker compose v2 up failed, trying v1..."
-            docker-compose ${compose_flags_arg} up -d
-        fi
+        _compose_up_or_fail ${compose_flags_arg} || return 1
     else
         if ! docker compose down --remove-orphans; then
             log_warn "docker compose v2 down failed, trying v1..."
             docker-compose down --remove-orphans
         fi
-        if ! docker compose up -d; then
-            log_warn "docker compose v2 up failed, trying v1..."
-            docker-compose up -d
-        fi
+        _compose_up_or_fail || return 1
     fi
     log_warn "Rollback complete. Run 'ods-update.sh health' to verify."
+}
+
+_compose_up_or_fail() {
+    local compose_args=("$@")
+    if docker compose "${compose_args[@]}" up -d; then
+        return 0
+    fi
+    log_warn "docker compose v2 up failed, trying v1..."
+    docker-compose "${compose_args[@]}" up -d
 }
 
 #==============================================================================
@@ -697,19 +700,19 @@ cmd_update() {
             log_warn "docker compose v2 down failed, trying v1..."
             docker-compose ${compose_flags} down --remove-orphans
         fi
-        if ! docker compose ${compose_flags} up -d; then
-            log_warn "docker compose v2 up failed, trying v1..."
-            docker-compose ${compose_flags} up -d
-        fi
+        _compose_up_or_fail ${compose_flags} || {
+            _update_rollback "Compose restart failed after update." "$snap_dir" "$compose_flags"
+            return 1
+        }
     elif [[ -f "${INSTALL_DIR}/docker-compose.yml" ]]; then
         if ! docker compose down --remove-orphans; then
             log_warn "docker compose v2 down failed, trying v1..."
             docker-compose down --remove-orphans
         fi
-        if ! docker compose up -d; then
-            log_warn "docker compose v2 up failed, trying v1..."
-            docker-compose up -d
-        fi
+        _compose_up_or_fail || {
+            _update_rollback "Compose restart failed after update." "$snap_dir" "$compose_flags"
+            return 1
+        }
     else
         log_warn "No compose files found. Skipping container restart."
     fi
