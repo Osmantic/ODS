@@ -116,9 +116,11 @@ ods_ensure_python_pip() {
 }
 
 ods_python_pip_install_user() {
-    local pycmd="$1"
+    local pycmd="${1:-}"
     local log_file="${2:-${LOG_FILE:-/dev/null}}"
-    shift 2
+    if [[ $# -ge 2 ]]; then
+        shift 2
+    fi
 
     "$pycmd" -m pip install --user -q "$@" >> "$log_file" 2>&1 && return 0
     "$pycmd" -m pip install --user --break-system-packages -q "$@" >> "$log_file" 2>&1
