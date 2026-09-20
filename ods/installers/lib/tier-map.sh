@@ -368,7 +368,7 @@ tier_to_model() {
                     ;;
                 # SH_LARGE substituted to 35B-A3B for the same unified-
                 # memory reason as NV_ULTRA on aarch64 (see the SH_LARGE
-                # block in select_tier_model() above for the rationale).
+                # block in set_qwen_tier_config() above for the rationale).
                 SH_LARGE)       model="qwen3.6-35b-a3b" ;;
                 SH_COMPACT|SH)  model="qwen3-30b-a3b" ;;
                 ARC)            model="qwen3.5-9b" ;;
