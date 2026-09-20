@@ -58,3 +58,6 @@ jobs:
 
       - name: Run Unit Tests
         run: pytest tests/ -v --cov=. --cov-report=term --cov-report=lcov:coverage.lcov
+
+      - name: Dashboard Authentication Contract
+        run: bash tests/contracts/test-dashboard-auth-contract.sh
