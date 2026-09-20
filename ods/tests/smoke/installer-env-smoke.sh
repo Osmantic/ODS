@@ -178,6 +178,20 @@ export ENABLE_OPENCLAW=true
     export EMBEDDINGS_MEMORY_LIMIT=8GB
     export HERMES_DASHBOARD_SESSION_TOKEN=replacement-must-not-win
     source installers/phases/06-directories.sh
+
+    # A third run where the operator re-installs with LAN exposure. A stubbed
+    # `hostname -I` keeps HOST_LAN_IP deterministic; the loopback webhook URL
+    # stored by the first run must be upgraded to the detected LAN address.
+    mkdir -p \"$INSTALL_DIR/smoke-bin\"
+    cat > \"$INSTALL_DIR/smoke-bin/hostname\" <<'SHIM'
+#!/usr/bin/env bash
+if [[ \"\${1:-}\" == \"-I\" ]]; then echo \"192.0.2.10\"; else echo \"ods-smoke\"; fi
+SHIM
+    chmod +x \"$INSTALL_DIR/smoke-bin/hostname\"
+    export PATH=\"$INSTALL_DIR/smoke-bin:\$PATH\"
+    export BIND_ADDRESS=0.0.0.0
+    export BIND_ADDRESS_EXPLICIT=true
+    source installers/phases/06-directories.sh
 " 2>/dev/null; then
     ENV_GENERATED=true
     pass ".env generation completed"
@@ -256,6 +270,17 @@ if [[ "$ENV_GENERATED" == true && -f "$INSTALL_DIR/.env" ]]; then
         pass "Hermes dashboard token is generated once and survives a Linux installer rerun"
     else
         fail "Hermes dashboard token is missing, malformed, or replaced on rerun"
+    fi
+
+    # The third phase-06 run re-installed with BIND_ADDRESS=0.0.0.0 and a
+    # stubbed LAN IP of 192.0.2.10. The webhook URL n8n advertises must follow
+    # HOST_LAN_IP — a stored "localhost" from the loopback run is a generator
+    # artifact, not an operator choice.
+    if grep -q '^N8N_WEBHOOK_URL=http://192\.0\.2\.10:5678$' "$INSTALL_DIR/.env" \
+        && grep -q '^HOST_LAN_IP=192\.0\.2\.10$' "$INSTALL_DIR/.env"; then
+        pass "n8n webhook URL follows the detected LAN IP on a LAN rerun"
+    else
+        fail "n8n webhook URL did not follow HOST_LAN_IP on a LAN rerun"
     fi
 fi
 
