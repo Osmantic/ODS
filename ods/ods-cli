@@ -4834,11 +4834,11 @@ cmd_agent() {
                         rm -f "$pid_file"
                     fi
                     if ! command -v python3 &>/dev/null; then
-                        error "python3 not found in PATH"
+                        log_error "python3 not found in PATH"
                         return 1
                     fi
                     if [[ ! -f "$agent_script" ]]; then
-                        error "ODS host agent script not found: $agent_script"
+                        log_error "ODS host agent script not found: $agent_script"
                         return 1
                     fi
                     nohup python3 "$agent_script" --pid-file "$pid_file" \
@@ -4856,7 +4856,7 @@ cmd_agent() {
                     done
                     _agent_process_owned "$agent_pid" && kill "$agent_pid" 2>/dev/null || true
                     rm -f "$pid_file"
-                    error "Agent did not become healthy on port ${port}; check $log_file"
+                    log_error "Agent did not become healthy on port ${port}; check $log_file"
                     return 1
                     ;;
             esac
