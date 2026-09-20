@@ -75,7 +75,7 @@ ods_prepare_sudo() {
         return 0
     fi
 
-    if [[ "${INTERACTIVE:-true}" == "true" ]]; then
+    if [[ "${INTERACTIVE:-true}" == "true" ]] && [[ -t 0 ]]; then
         ai "Requesting sudo access for privileged setup steps (you may be prompted)..."
         if sudo -v 2>/dev/null; then
             export ODS_SUDO_AVAILABLE=true
@@ -83,7 +83,7 @@ ods_prepare_sudo() {
         fi
         ai_warn "sudo authentication unavailable — continuing without privileged steps."
     else
-        ai_warn "sudo needs a password and this run is --non-interactive — continuing rootless."
+        ai_warn "sudo needs a password or TTY, and interactive authentication is unavailable — continuing rootless."
     fi
     ai "Root-only extras (system package installs, systemd units, GPU tuning)"
     ai "will be skipped. Core ODS runs rootless via Docker/Podman."
