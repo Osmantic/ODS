@@ -229,7 +229,9 @@ pkg_install() {
 # Check if a package is available in the repos
 # Usage: if pkg_available jq; then ...
 pkg_available() {
-    local pkg="$1"
+    local raw_pkg="$1"
+    local pkg
+    pkg="$(pkg_resolve "$raw_pkg" | awk '{print $1}')"
     case "$PKG_MANAGER" in
         apt)    apt-cache show "$pkg" &>/dev/null ;;
         dnf)    dnf info "$pkg" &>/dev/null ;;
