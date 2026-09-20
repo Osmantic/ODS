@@ -1,0 +1,40 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: stirling-pdf
+  name: Stirling PDF
+  description: "Self-hosted PDF toolkit — merge, split, compress, convert, OCR, and sign PDFs locally."
+  aliases: [pdf, pdf-tools]
+  container_name: ods-stirling-pdf
+  default_host: stirling-pdf
+  port: 8920
+  external_port_env: STIRLING_PDF_PORT
+  external_port_default: 8920
+  health: /
+  ui_path: /
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [pdf, documents, productivity]
+  env_vars:
+    - key: STIRLING_PDF_PORT
+      description: "Published HTTP port"
+      default: "8920"
+features:
+  - id: pdf-toolkit
+    name: PDF Toolkit
+    description: "Merge, split, compress, and OCR PDFs entirely on the local host"
+    icon: FileText
+    category: productivity
+    requirements:
+      services: [stirling-pdf]
+      vram_gb: 0
+    enabled_services_all: [stirling-pdf]
+    setup_time: "~2 minutes"
+    priority: 33
+    launch:
+      type: service
+      service: stirling-pdf
