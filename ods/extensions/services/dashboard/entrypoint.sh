@@ -7,7 +7,7 @@
 
 set -e
 
-NGINX_CONF="/etc/nginx/conf.d/default.conf"
+NGINX_CONF="${NGINX_CONF:-/etc/nginx/conf.d/default.conf}"
 API_KEY="${DASHBOARD_API_KEY:-}"
 KEY_FILE="/data/dashboard-api-key.txt"
 
@@ -24,8 +24,8 @@ fi
 # We need to substitute it with the actual value
 if [ -n "$API_KEY" ]; then
     echo "[dashboard] Configuring nginx with API key auth injection"
-    # Escape sed special characters in the API key to prevent injection
-    ESCAPED_KEY=$(printf '%s\n' "$API_KEY" | sed 's/[&/\]/\\&/g')
+    # Escape sed replacement metacharacters and the '|' delimiter used below
+    ESCAPED_KEY=$(printf '%s\n' "$API_KEY" | sed 's/[&|\]/\\&/g')
     # Replace the placeholder (envsubst already ran, but may have left empty value)
     sed -i "s|Bearer \${DASHBOARD_API_KEY}|Bearer ${ESCAPED_KEY}|g" "$NGINX_CONF"
     sed -i "s|Bearer \"\"|Bearer \"${ESCAPED_KEY}\"|g" "$NGINX_CONF"

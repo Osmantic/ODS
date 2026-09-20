@@ -78,6 +78,9 @@ test: ## Run unit and contract tests
 	@bash tests/test-bind-address-sweep.sh
 	@bash tests/test-n8n-cookie-policy.sh
 	@echo ""
+	@echo "=== dashboard entrypoint API key injection ==="
+	@bash tests/test-dashboard-entrypoint-key.sh
+	@echo ""
 	@echo "=== config migration (version check under set -e) ==="
 	@bash tests/test-migrate-config.sh
 	@echo ""
