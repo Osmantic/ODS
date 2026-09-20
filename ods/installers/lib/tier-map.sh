@@ -310,6 +310,8 @@ set_gemma4_tier_config() {
 }
 
 resolve_tier_config() {
+    GPU_BACKEND=""
+    N_GPU_LAYERS=""
     MODEL_PROFILE_REQUESTED="$(normalize_model_profile)"
     MODEL_PROFILE_EFFECTIVE="$(effective_model_profile "$MODEL_PROFILE_REQUESTED")"
 
