@@ -4102,6 +4102,30 @@ def _recover_pixel_model_transaction(config: dict) -> dict:
             return pending
         outcome = None
         current = _pixel_model_config_digests()
+        if journal['phase']=='applying' and journal['target'] is not None:
+            # The native coordinator can durably apply the exact target before
+            # the host participant receives its reply.  Explicit recovery may
+            # complete that same transaction, but only after the native hold,
+            # target contract, host files, and live inference all agree.  This
+            # never replays model-apply (or any other inference mutation).
+            if (status is None or status['status'] not in {'applied','completed'}
+                    or status['contract']!=journal['target']
+                    or (status['status']=='applied' and (
+                        status['pending'] is not True or status['outcome'] is not None))
+                    or (status['status']=='completed' and (
+                        status['pending'] is not False or status['outcome']!='commit'))
+                    or 'unavailable' in current.values()
+                    or not _prove_pixel_model_contract(config,journal['target'])
+                    or _pixel_model_config_digests()!=current):
+                return pending
+            transaction=_PixelModelTransaction(config)
+            transaction.id=journal['transactionId'];transaction.previous=journal['previous']
+            transaction.target=journal['target'];transaction.journal=journal
+            if status['status']=='completed':
+                transaction._save('completed','commit')
+            else:
+                transaction.finish('commit')
+            return {'pending':False,'phase':'completed','transactionId':journal['transactionId'],'outcome':'commit'}
         if (journal['phase']=='committing' and journal['target'] is not None
                 and journal['after'] is not None and 'unavailable' not in journal['after'].values()
                 and current==journal['after'] and (status is None or (

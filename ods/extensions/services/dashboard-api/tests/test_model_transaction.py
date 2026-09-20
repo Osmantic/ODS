@@ -100,6 +100,46 @@ def test_partial_host_mutation_cannot_be_recovered_by_a_generic_reset(controller
     assert calls.count('model-begin')==1
 
 
+def test_explicit_recovery_commits_exact_applied_target_without_replaying_apply(controller):
+    config,state,calls,_=controller
+    env={'PIXEL_OPENWEBUI_KEY':'configured'}
+    transaction=host._begin_pixel_model_transaction(env)
+    transaction.target=copy.deepcopy(NEW)
+    transaction._save('applying')
+    config.write_text('new')
+    state.update(status='applied',contract=copy.deepcopy(NEW),pending=True,
+                 transactionId=transaction.id,outcome=None)
+
+    result=host._recover_pixel_model_transaction(env)
+
+    assert result=={'pending':False,'phase':'completed',
+                    'transactionId':transaction.id,'outcome':'commit'}
+    assert calls.count('model-apply')==0 and calls.count('model-finish')==1
+    assert host._read_pixel_model_journal()['phase']=='completed'
+
+
+@pytest.mark.parametrize('proof,change_during_proof',[(False,False),(True,True)])
+def test_explicit_recovery_leaves_unproved_applied_target_pending(
+        controller,monkeypatch,proof,change_during_proof):
+    config,state,calls,_=controller
+    env={'PIXEL_OPENWEBUI_KEY':'configured'}
+    transaction=host._begin_pixel_model_transaction(env)
+    transaction.target=copy.deepcopy(NEW)
+    transaction._save('applying')
+    config.write_text('new')
+    state.update(status='applied',contract=copy.deepcopy(NEW),pending=True,
+                 transactionId=transaction.id,outcome=None)
+    def prove(*_args):
+        if change_during_proof:config.write_text('changed-during-proof')
+        return proof
+    monkeypatch.setattr(host,'_prove_pixel_model_contract',prove)
+
+    result=host._recover_pixel_model_transaction(env)
+
+    assert result['pending'] is True and result['phase']=='applying'
+    assert calls.count('model-apply')==0 and calls.count('model-finish')==0
+
+
 def test_unreceived_begin_cannot_clear_hold_when_external_model_changed(controller,monkeypatch):
     _,state,calls,_=controller
     env={'PIXEL_OPENWEBUI_KEY':'configured'}
