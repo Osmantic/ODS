@@ -173,4 +173,10 @@ detect_nvidia_topo() {
 # Topology lookup helpers (used by 03-features.sh custom assignment path)
 # ============================================================================
 
-get_rank()  { echo "${LINK_RANK["$1,$2"]:-0}"; }
+get_rank() {
+  if [[ -n "${1:-}" && -n "${2:-}" ]] && declare -p LINK_RANK 2>/dev/null | grep -q 'declare -A'; then
+    echo "${LINK_RANK["$1,$2"]:-0}"
+  else
+    echo "0"
+  fi
+}
