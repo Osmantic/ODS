@@ -85,11 +85,12 @@ ods_readiness_summary() {
             detail="container $container_state, HTTP $http_code"
         fi
 
-        line=$(printf "%-28s %s (%s)" "$name" "$open_url" "$detail")
+        line="$(printf "%-28s %s (%s)" "$name" "$open_url" "$detail")"
         if [[ "$state" == "ready" ]]; then
             ready_lines+=("$line")
         else
-            attention_lines+=("$(printf "%-28s %s - %s" "$name" "$state" "$detail")")
+            line_att="$(printf "%-28s %s - %s" "$name" "$state" "$detail")"
+            attention_lines+=("$line_att")
         fi
     done
 
