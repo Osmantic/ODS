@@ -135,7 +135,9 @@ detect_nvidia_topo() {
 
   # Driver version
   local driver_ver
-  driver_ver=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1 | xargs)
+  driver_ver=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1 || true)
+  driver_ver="${driver_ver#"${driver_ver%%[![:space:]]*}"}"
+  driver_ver="${driver_ver%"${driver_ver##*[![:space:]]}"}"
 
   # Topology matrix
   local topo_pairs
