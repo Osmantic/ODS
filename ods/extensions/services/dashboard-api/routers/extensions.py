@@ -1083,8 +1083,9 @@ def _extensions_lock_path() -> Path:
             return lock_path
         except OSError as exc:
             last_error = exc
-    assert last_error is not None
-    raise last_error
+    if last_error is None:
+        raise RuntimeError("no extension lock candidates were configured")
+    raise RuntimeError("unable to create a writable extension lock") from last_error
 
 
 @router.get("/api/extensions/catalog")
