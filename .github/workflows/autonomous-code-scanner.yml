@@ -258,6 +258,7 @@ jobs:
           echo "## Security Scan Results" >> $GITHUB_STEP_SUMMARY
 
           # Run Bandit on ODS Python files
+          set +e
           bandit -r ods/extensions/services/dashboard-api \
                     ods/scripts \
                     .github/scripts \
@@ -265,8 +266,9 @@ jobs:
             --output /tmp/bandit-results.json \
             --severity-level medium \
             --confidence-level medium \
-            --exclude __pycache__ \
-            || true  # Don't fail on findings
+            --exclude __pycache__
+          BANDIT_STATUS=$?
+          set -e
 
           # Count findings by severity
           if [ -f /tmp/bandit-results.json ]; then
@@ -277,6 +279,11 @@ jobs:
             echo "- **High severity**: $HIGH" >> $GITHUB_STEP_SUMMARY
             echo "- **Medium severity**: $MEDIUM" >> $GITHUB_STEP_SUMMARY
             echo "- **Low severity**: $LOW" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          if [ "$BANDIT_STATUS" -ne 0 ]; then
+            echo "::error::Bandit found security findings at or above the configured severity/confidence threshold"
+            exit "$BANDIT_STATUS"
           fi
 
       - name: Filter high severity findings
