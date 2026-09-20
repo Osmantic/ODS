@@ -238,8 +238,9 @@ show_success_card() {
     echo ""
     echo -e "       ${DGRN}Chat UI:${NC}    ${WHT}http://localhost:${webui_port}${NC}"
     echo -e "       ${DGRN}Dashboard:${NC}  ${WHT}http://localhost:${dashboard_port}${NC}"
-    local _bind
-    _bind=$(grep "^BIND_ADDRESS=" "$ODS_INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2- | tr -d '"' || echo "127.0.0.1")
+    local _bind install_dir
+    install_dir="${ODS_INSTALL_DIR:-.}"
+    _bind=$(grep "^BIND_ADDRESS=" "${install_dir}/.env" 2>/dev/null | cut -d= -f2- | tr -d '"' || echo "127.0.0.1")
     [[ -z "$_bind" ]] && _bind="127.0.0.1"
     if [[ "$_bind" == "0.0.0.0" ]]; then
         echo -e "       ${DGRN}Network:${NC}    ${WHT}http://${local_ip}:${webui_port}${NC}"
