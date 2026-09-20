@@ -22,8 +22,10 @@ normalize_path() {
         return 1
     fi
     
-    # Expand tilde to HOME
-    path="${path/#\~/$HOME}"
+    # Expand tilde to HOME safely
+    if [[ "$path" == "~"* ]]; then
+        path="${HOME}${path#\~}"
+    fi
     
     # Make absolute if relative
     if [[ "$path" != /* ]]; then
