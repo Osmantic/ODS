@@ -87,16 +87,18 @@ validate_install_path() {
     fi
     
     # Check if parent directory exists and is writable
-    local parent_dir
-    parent_dir="$(dirname "$path")"
-    
-    if [[ ! -d "$parent_dir" ]]; then
-        echo "ERROR: Parent directory does not exist: $parent_dir" >&2
+    local target_check="$path"
+    if [[ ! -d "$target_check" ]]; then
+        target_check="$(dirname "$path")"
+    fi
+
+    if [[ ! -d "$target_check" ]]; then
+        echo "ERROR: Target or parent directory does not exist: $target_check" >&2
         return 1
     fi
-    
-    if [[ ! -w "$parent_dir" ]]; then
-        echo "ERROR: Parent directory is not writable: $parent_dir" >&2
+
+    if [[ ! -w "$target_check" ]]; then
+        echo "ERROR: Directory is not writable: $target_check" >&2
         return 1
     fi
     
