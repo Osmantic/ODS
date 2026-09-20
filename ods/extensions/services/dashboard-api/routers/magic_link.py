@@ -227,7 +227,8 @@ def _writable_store_path() -> Path:
             return path
         except OSError as exc:
             last_error = exc
-    assert last_error is not None
+    if last_error is None:
+        raise RuntimeError("unable to create magic-link store")
     raise last_error
 
 
