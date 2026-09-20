@@ -34,6 +34,7 @@ env_set() {
             if (index($0, k "=") == 1) print k "=" v; else print
         }' "$ENV_FILE" > "${ENV_FILE}.tmp" && cat "${ENV_FILE}.tmp" > "$ENV_FILE" && rm -f "${ENV_FILE}.tmp"
     else
+        [[ ! -s "$ENV_FILE" || "$(tail -c 1 "$ENV_FILE")" == $'\n' ]] || printf '\n' >> "$ENV_FILE"
         echo "${key}=${val}" >> "$ENV_FILE"
     fi
 }

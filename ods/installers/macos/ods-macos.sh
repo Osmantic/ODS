@@ -194,7 +194,7 @@ read_ods_env() {
         return
     fi
     # Parse .env safely (no eval)
-    while IFS= read -r line; do
+    while IFS= read -r line || [[ -n "$line" ]]; do
         line=$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         [[ "$line" =~ ^# ]] && continue
         [[ -z "$line" ]] && continue
@@ -398,6 +398,7 @@ upsert_env_value() {
     if grep -qE "^${key}=" "$env_file" 2>/dev/null; then
         sed -i '' "s|^${key}=.*|${key}=${value}|" "$env_file"
     else
+        [[ ! -s "$env_file" || "$(tail -c 1 "$env_file")" == $'\n' ]] || printf '\n' >> "$env_file"
         printf '%s=%s\n' "$key" "$value" >> "$env_file"
     fi
 }

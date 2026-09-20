@@ -78,6 +78,7 @@ upsert_env_value() {
     if grep -qE "^${key}=" "$env_path" 2>/dev/null; then
         sed -i '' "s|^${key}=.*|${key}=${value}|" "$env_path"
     else
+        [[ ! -s "$env_path" || "$(tail -c 1 "$env_path")" == $'\n' ]] || printf '\n' >> "$env_path"
         printf '%s=%s\n' "$key" "$value" >> "$env_path"
     fi
 }
