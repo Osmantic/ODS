@@ -629,7 +629,11 @@ cmd_backup() {
     
     # Cleanup old backups
     local backup_dirs
-    backup_dirs=$(find "$BACKUP_DIR" -maxdepth 1 -type d -name "backup-*" | sort -r)
+    backup_dirs=$(find "$BACKUP_DIR" -maxdepth 1 -type d -name "backup-*" -print \
+        | while IFS= read -r dir; do
+            local base="$(basename "$dir")"
+            printf '%s\t%s\n' "${base: -15}" "$dir"
+        done | sort -r | cut -f2-)
     local count=0
     for dir in $backup_dirs; do
         count=$((count + 1))

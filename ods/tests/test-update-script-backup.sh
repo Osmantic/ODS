@@ -111,6 +111,19 @@ else
     fail "rotation removed the backup it just created"
 fi
 
+# ---------------------------------------------------------------------------
+# 4. rotation orders by the trailing timestamp, not the label prefix
+# ---------------------------------------------------------------------------
+rm -rf "$BACKUPS"
+mkdir -p "$BACKUPS/backup-dashboard-20250101-010101-20250101-010101"
+mkdir -p "$BACKUPS/backup-dashboard-20250202-020202-20250202-020202"
+output=$(MAX_BACKUPS=2 run_backup fresh)
+if [[ -d "$BACKUPS/backup-fresh-"* ]] && [[ -d "$BACKUPS/backup-dashboard-20250202-020202-20250202-020202" ]]; then
+    pass "rotation keeps the newest labelled and unlabelled backups"
+else
+    fail "rotation ordered backups by label instead of timestamp: $output"
+fi
+
 echo ""
 echo "Results: $PASSED passed, $FAILED failed"
 [[ $FAILED -eq 0 ]] || exit 1
