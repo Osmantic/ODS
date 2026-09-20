@@ -29,8 +29,10 @@ log_warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $*"; }
 
 # Source shared rsync utilities
-. "$ODS_DIR/lib/rsync.sh"
-. "$ODS_DIR/lib/backup-paths.sh"
+LIB_DIR="$ODS_DIR/lib"
+[[ -f "$LIB_DIR/rsync.sh" ]] || LIB_DIR="$SCRIPT_DIR/lib"
+. "$LIB_DIR/rsync.sh"
+. "$LIB_DIR/backup-paths.sh"
 
 # Convert bytes to a human-friendly string (best-effort)
 fmt_bytes() {
