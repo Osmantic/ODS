@@ -4272,6 +4272,16 @@ def test_extensions_lock_falls_back_when_data_root_is_unwritable(
         assert fallback_lock.exists()
 
 
+def test_extensions_lock_reports_empty_candidate_set(monkeypatch):
+    """An empty lock candidate set must raise a diagnostic error."""
+    from routers import extensions as ext_module
+
+    monkeypatch.setattr(ext_module, "_extensions_lock_candidates", lambda: [])
+
+    with pytest.raises(RuntimeError, match="unable to create extensions lock"):
+        ext_module._extensions_lock_path()
+
+
 def test_extension_operation_lock_falls_back_when_primary_lock_parent_cannot_create(
     tmp_path, monkeypatch,
 ):

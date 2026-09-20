@@ -1088,7 +1088,8 @@ def _extensions_lock_path() -> Path:
             return lock_path
         except OSError as exc:
             last_error = exc
-    assert last_error is not None
+    if last_error is None:
+        raise RuntimeError("unable to create extensions lock")
     raise last_error
 
 
