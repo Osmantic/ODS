@@ -444,7 +444,7 @@
               "status": "verified",
               "label": "Perplexica verified on Strixy",
               "reason": "A targeted exact-head Strixy WSL native-Lemonade switch to SmolLM3 passed challenge-bound Perplexica and every other required deployed LLM consumer, signed model-route checks, Pixel retained and non-retained SSE, ODS Talk, and exact baseline restoration with an identical final inventory. The original coordinator false-red on the intentionally null external currentModel; corrected harness c959bc6 accepted the unchanged artifact. This is one host/backend app-compatibility proof, not full release-cycle coverage.",
-              "evidence": "tower2:/home/michael/.local/state/dream-fleet/tasks/ods-public-beta-fleet-green-20260911/model-ui-strixy-smollm3-revalidate-dd15084f-h9b98068-r391/cycle-001/strixy-wsl-beta",
+              "evidence": "ods-public-beta-fleet-green-20260911/model-ui-strixy-smollm3-revalidate-dd15084f-h9b98068-r391/cycle-001/strixy-wsl-beta",
               "recordedAt": "2026-09-20T20:01:05Z",
               "productSha": "dd15084fb0cc10d03b8b322fd34cdaa474fc513f",
               "harnessSha": "9b98068fad8ae732b87d0273ab28809843996c7d",
