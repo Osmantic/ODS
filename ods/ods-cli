@@ -374,7 +374,7 @@ _ods_cli_reload_model_env() {
 
 _get_host_logical_cpus() {
     local cores
-    cores=$(nproc 2>/dev/null || grep -c '^processor' /proc/cpuinfo 2>/dev/null || echo "1")
+    cores=$(nproc 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || grep -c '^processor' /proc/cpuinfo 2>/dev/null || echo "1")
     if [[ "$cores" =~ ^[0-9]+$ ]] && [[ "$cores" -gt 0 ]]; then
         echo "$cores"
     else
