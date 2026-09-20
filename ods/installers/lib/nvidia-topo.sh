@@ -85,7 +85,7 @@ parse_nvidia_topo_matrix() {
       rank=$(link_rank "$cell")
       local label
       label=$(link_label "$cell")
-      pairs_tsv+="${gpu_a}	${gpu_b}	${cell}	${label}	${rank}"$'\n'
+      pairs_tsv+="${gpu_a}"$'\t'"${gpu_b}"$'\t'"${cell}"$'\t'"${label}"$'\t'"${rank}"$'\n'
     done
   done <<<"$matrix"
 
