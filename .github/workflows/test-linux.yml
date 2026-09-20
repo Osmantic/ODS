@@ -275,6 +275,11 @@ jobs:
       - name: Post-install Inference Validation Tests
         run: python3 tests/test_validate_chat_response.py
 
+      - name: Preset Import/Export Assertions
+        run: |
+          bash tests/test-preset-import-export.sh
+          bash tests/test-preset-assertions-track-case-arm.sh
+
       - name: QR Code Helper Tests
         run: bash tests/test-qrcode-helper.sh
 

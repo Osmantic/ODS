@@ -122,6 +122,8 @@ test: ## Run unit and contract tests
 	@bash tests/test-ods-cli-pipefail-tolerance.sh
 	@bash tests/test-cli-prompts-noninteractive.sh
 	@bash tests/test-agent-restart-nonfatal.sh
+	@bash tests/test-preset-import-export.sh
+	@bash tests/test-preset-assertions-track-case-arm.sh
 	@bash tests/test-unix-restart-recreate-env.sh
 	@bash tests/test-ods-cli-host-cpu-fallback.sh
 	@echo ""
