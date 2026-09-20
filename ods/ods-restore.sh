@@ -395,16 +395,28 @@ restore_user_data() {
     log_step "Restoring user data..."
 
     local data_dirs=("${ODS_USER_DATA_PATHS[@]}")
+    local stage_dir="$ODS_DIR/.ods-restore-user-data.$$.staging"
+    local rollback_dir="$ODS_DIR/.ods-restore-user-data.$$.rollback"
+    local staged_dirs=()
+    local activated_dirs=()
+    local dir
+
+    # Stage every source directory before touching the live installation.  A
+    # failure while reading a later directory must not leave a mixed snapshot.
+    rm -rf "$stage_dir" "$rollback_dir"
+    mkdir -p "$stage_dir" "$rollback_dir"
 
     local restored_any=false
     for dir in "${data_dirs[@]}"; do
         if [[ -d "$backup_dir/$dir" ]]; then
             restored_any=true
-            mkdir -p "$ODS_DIR/$(dirname "$dir")"
-            # Note: Using -a without --delete to preserve any new files created after backup
-            # Use --force flag or manually delete target if you need exact restoration
-            rsync_with_progress "$backup_dir/$dir" "$ODS_DIR/$(dirname "$dir")/" "Restoring $dir"
-            log_success "Restored: $dir"
+            mkdir -p "$stage_dir/$(dirname "$dir")"
+            if ! rsync_with_progress "$backup_dir/$dir" "$stage_dir/$(dirname "$dir")/" "Staging $dir"; then
+                log_error "Failed to stage user data: $dir"
+                rm -rf "$stage_dir" "$rollback_dir"
+                return 1
+            fi
+            staged_dirs+=("$dir")
         else
             log_warn "Skipped (not in backup): $dir"
         fi
@@ -412,7 +424,44 @@ restore_user_data() {
 
     if [[ "$restored_any" == "false" ]]; then
         log_warn "No user data directories were found in this backup."
+        rm -rf "$stage_dir" "$rollback_dir"
+        return 0
     fi
+
+    # Activate the complete staged set, keeping the old directories available
+    # until every move succeeds so a partial activation can be rolled back.
+    for dir in "${staged_dirs[@]}"; do
+        local target="$ODS_DIR/$dir"
+        local staged="$stage_dir/$dir"
+        local old="$rollback_dir/$dir"
+        mkdir -p "$(dirname "$old")"
+        if [[ -e "$target" || -L "$target" ]]; then
+            if ! mv "$target" "$old"; then
+                log_error "Failed to prepare user data activation: $dir"
+                for activated_dir in "${activated_dirs[@]}"; do
+                    rm -rf "$ODS_DIR/$activated_dir"
+                    mv "$rollback_dir/$activated_dir" "$ODS_DIR/$activated_dir"
+                done
+                rm -rf "$stage_dir" "$rollback_dir"
+                return 1
+            fi
+        fi
+        mkdir -p "$(dirname "$target")"
+        if ! mv "$staged" "$target"; then
+            log_error "Failed to activate user data: $dir"
+            [[ -e "$old" || -L "$old" ]] && mv "$old" "$target"
+            for activated_dir in "${activated_dirs[@]}"; do
+                rm -rf "$ODS_DIR/$activated_dir"
+                mv "$rollback_dir/$activated_dir" "$ODS_DIR/$activated_dir"
+            done
+            rm -rf "$stage_dir" "$rollback_dir"
+            return 1
+        fi
+        activated_dirs+=("$dir")
+        log_success "Restored: $dir"
+    done
+
+    rm -rf "$stage_dir" "$rollback_dir"
 }
 
 validate_restore_config_source() {
