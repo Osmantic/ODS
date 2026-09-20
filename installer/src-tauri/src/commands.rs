@@ -245,9 +245,51 @@ pub fn get_install_state() -> InstallState {
 
 // ---- Open ODS ----
 
+#[derive(Serialize)]
+pub struct ServiceUrls {
+    pub webui: String,
+    pub dashboard: String,
+    pub api: String,
+}
+
+fn installed_env_value(key: &str) -> Option<String> {
+    let state = get_install_state();
+    let root = state.install_dir?;
+    let root_path = std::path::Path::new(&root);
+    let env_path = [root_path.join("ods/.env"), root_path.join(".env")]
+        .into_iter()
+        .find(|path| path.is_file())?;
+    let content = std::fs::read_to_string(env_path).ok()?;
+    content.lines().find_map(|line| {
+        let (name, value) = line.split_once('=')?;
+        (name.trim() == key).then(|| {
+            value
+                .trim()
+                .trim_matches(|character| character == '"' || character == '\'')
+                .to_string()
+        })
+    })
+}
+
+fn installed_service_urls() -> ServiceUrls {
+    let port = |key: &str, default: &str| {
+        installed_env_value(key).filter(|value| !value.is_empty()).unwrap_or_else(|| default.into())
+    };
+    ServiceUrls {
+        webui: format!("http://localhost:{}", port("WEBUI_PORT", "3000")),
+        dashboard: format!("http://localhost:{}", port("DASHBOARD_PORT", "3001")),
+        api: format!("http://localhost:{}/v1", port("OLLAMA_PORT", "8080")),
+    }
+}
+
+#[tauri::command]
+pub fn get_service_urls() -> ServiceUrls {
+    installed_service_urls()
+}
+
 #[tauri::command]
 pub fn open_ods() -> Result<(), String> {
-    let url = "http://localhost:3000";
+    let url = installed_service_urls().webui;
     #[cfg(target_os = "windows")]
     {
         std::process::Command::new("cmd")
