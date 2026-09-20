@@ -123,6 +123,7 @@ _env_set() {
             if (index($0, k "=") == 1) print k "=" v; else print
         }' "$file" > "${file}.tmp" && cat "${file}.tmp" > "$file" && rm -f "${file}.tmp"
     else
+        [[ ! -s "$file" || "$(tail -c 1 "$file")" == $'\n' ]] || printf '\n' >> "$file"
         echo "${key}=${val}" >> "$file"
     fi
 }
