@@ -31,6 +31,7 @@ import signal
 import socket
 import stat as stat_mod
 import subprocess
+import tempfile
 import sys
 import tempfile
 import threading
@@ -6296,9 +6297,12 @@ class AgentHandler(BaseHTTPRequestHandler):
             # Use docker logs directly (faster than docker compose logs, no flag resolution needed)
             container_name = f"ods-{service_id}"
             cmd = ["docker", "logs", "--tail", str(tail), container_name]
-            result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=5,
-            )
+            with tempfile.SpooledTemporaryFile(max_size=65536) as log_buffer:
+                result = subprocess.run(
+                    cmd, stdout=log_buffer, stderr=log_buffer, timeout=5,
+                )
+                log_buffer.seek(0)
+                output = log_buffer.read()[-50000:].decode("utf-8", errors="replace")
             # Handle container not yet created (e.g. during image pull)
             if result.returncode != 0 and "no such container" in (result.stderr or "").lower():
                 json_response(self, 200, {
@@ -6308,7 +6312,6 @@ class AgentHandler(BaseHTTPRequestHandler):
                 })
                 return
             # docker logs writes to stderr for some containers
-            output = result.stdout or result.stderr or ""
             json_response(self, 200, {
                 "service_id": service_id,
                 "logs": output[-50000:],
@@ -6345,11 +6348,14 @@ class AgentHandler(BaseHTTPRequestHandler):
         container_name = _resolve_container_name(sid)
 
         try:
-            result = subprocess.run(
-                ["docker", "logs", "--tail", str(tail), container_name],
-                capture_output=True, text=True, timeout=5,
-            )
-            if result.returncode != 0 and "no such container" in (result.stderr or "").lower():
+            with tempfile.SpooledTemporaryFile(max_size=65536) as log_buffer:
+                result = subprocess.run(
+                    ["docker", "logs", "--tail", str(tail), container_name],
+                    stdout=log_buffer, stderr=log_buffer, timeout=5,
+                )
+                log_buffer.seek(0)
+                output = log_buffer.read()[-50000:].decode("utf-8", errors="replace")
+            if result.returncode != 0 and "no such container" in output.lower():
                 json_response(self, 200, {
                     "service_id": sid,
                     "container_name": container_name,
@@ -6358,9 +6364,8 @@ class AgentHandler(BaseHTTPRequestHandler):
                 })
                 return
             if result.returncode != 0:
-                json_response(self, 500, {"error": f"docker logs failed: {(result.stderr or '')[:500]}"})
+                json_response(self, 500, {"error": f"docker logs failed: {output[:500]}"})
                 return
-            output = result.stdout or result.stderr or ""
             json_response(self, 200, {
                 "service_id": sid,
                 "container_name": container_name,
