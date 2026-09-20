@@ -98,6 +98,7 @@ _pkg_configure_zypper_ci_network() {
     max_silent_tries="$(_pkg_bounded_positive_int "${ODS_ZYPPER_CI_MAX_SILENT_TRIES:-3}" 3 3)"
 
     tmp="$(mktemp "${TMPDIR:-/tmp}/ods-zypp-ci-network.XXXXXX")" || return 0
+    chmod 0600 "$tmp" 2>/dev/null || true
 
     cat >"$tmp" <<EOF
 [main]
