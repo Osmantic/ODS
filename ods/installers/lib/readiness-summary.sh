@@ -62,7 +62,7 @@ ods_readiness_summary() {
         launch_record="$INSTALL_DIR/logs/compose-launch.txt"
     fi
 
-    while IFS='|' read -r name health_url container open_url; do
+    while IFS='|' read -r name health_url container open_url || [[ -n "$name" ]]; do
         [[ -n "$name" ]] || continue
         total=$((total + 1))
         [[ -n "$open_url" ]] || open_url="$health_url"
