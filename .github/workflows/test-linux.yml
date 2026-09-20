@@ -256,6 +256,9 @@ jobs:
       - name: Issue-to-PR Security Contract Tests
         run: bash tests/test-issue-to-pr-security.sh
 
+      - name: Secret Security Audit
+        run: bash tests/test-secret-security.sh
+
       - name: NVIDIA Multi-GPU Visibility Contract Tests
         run: bash tests/test-multigpu-nvidia-visibility.sh
 
