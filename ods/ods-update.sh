@@ -183,6 +183,12 @@ ensure_source_checkout_for_update() {
         log_info "No files, services, or rollback snapshots were changed."
         return 1
     fi
+
+    if ! git -C "${INSTALL_DIR}" symbolic-ref --quiet --short HEAD >/dev/null 2>&1; then
+        log_error "ods-update.sh update requires a checked-out source branch; detached HEAD is ambiguous."
+        log_info "Check out the source branch you want to update, then retry."
+        return 1
+    fi
 }
 
 # Semver compare: returns 0 if equal, 1 if v1 > v2, 2 if v1 < v2
@@ -667,8 +673,14 @@ cmd_update() {
     # ── Step 2: pull latest changes ───────────────────────────────────────────
     log_info "Pulling latest changes..."
     cd "$INSTALL_DIR"
+    local source_branch
+    source_branch=$(git symbolic-ref --quiet --short HEAD) || {
+        _update_rollback "Unable to determine the checked-out source branch." "$snap_dir" "$compose_flags"
+        return 1
+    }
+    log_info "Following source branch: ${source_branch}"
     git fetch origin
-    if ! git pull origin main && ! git pull origin master; then
+    if ! git pull origin "$source_branch"; then
         _update_rollback "Git pull failed." "$snap_dir" "$compose_flags"
         return 1
     fi
