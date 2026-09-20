@@ -421,7 +421,12 @@ fi
 
 # Auto-detect tier if not specified
 if [[ -z "$TIER" ]]; then
-    PROFILE_TIER="$(normalize_profile_tier "${CAP_RECOMMENDED_TIER:-}")"
+    _profile_tier_raw="${CAP_RECOMMENDED_TIER:-}"
+    PROFILE_TIER="$(normalize_profile_tier "$_profile_tier_raw")"
+    if [[ -n "$_profile_tier_raw" && -z "$PROFILE_TIER" ]]; then
+        ai_bad "GPU capability detection returned unsupported tier '${_profile_tier_raw}'."
+        error "Cannot safely select a model tier from failed GPU detection; refresh hardware detection or set TIER explicitly."
+    fi
     if [[ -n "$PROFILE_TIER" ]]; then
         TIER="$PROFILE_TIER"
     elif [[ "$GPU_BACKEND" == "intel" ]]; then
