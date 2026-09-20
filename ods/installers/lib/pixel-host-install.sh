@@ -1395,6 +1395,19 @@ if existing_binds not in ([], [exec_control_bind]):
     raise SystemExit("live Pixel sandbox binds are outside the ODS contract")
 normalized_sandbox_docker["binds"] = [exec_control_bind]
 normalized_sandbox_docker["dangerouslyAllowExternalBindSources"] = True
+# Docker's nproc ulimit is accounted against the host UID, not only this
+# container. On a busy inference host it can therefore prevent even the fixed
+# sandbox proof from forking while the independent per-container pidsLimit is
+# still almost empty. Keep that cgroup limit and any other ulimits, but remove
+# the cross-service nproc ceiling from the ODS-managed Pixel sandbox.
+normalized_sandbox_docker["pidsLimit"] = 1024
+normalized_sandbox_ulimits = normalized_sandbox_docker.get("ulimits")
+if normalized_sandbox_ulimits is not None:
+    if not isinstance(normalized_sandbox_ulimits, dict):
+        raise SystemExit("live Pixel sandbox ulimits are outside the ODS contract")
+    normalized_sandbox_ulimits.pop("nproc", None)
+    if not normalized_sandbox_ulimits:
+        normalized_sandbox_docker.pop("ulimits", None)
 # OpenClaw's OpenAI-compatible transport adds a 1.25 character-based input
 # safety margin after its independent pre-prompt compaction estimate. Reserve
 # enough headroom that the precheck runs before that transport can silently
@@ -1857,6 +1870,17 @@ if existing_binds not in ([], [exec_control_bind]):
 # the host tree owner/mode, and exposes it read-only inside the sandbox.
 updated_sandbox_docker["binds"] = [exec_control_bind]
 updated_sandbox_docker["dangerouslyAllowExternalBindSources"] = True
+# RLIMIT_NPROC follows the real host UID across containers and host services.
+# The sandbox already has a per-container pidsLimit, so retaining the OpenClaw
+# default nproc=1024 can starve exec on large local-inference installations.
+updated_sandbox_docker["pidsLimit"] = 1024
+updated_sandbox_ulimits = updated_sandbox_docker.get("ulimits")
+if updated_sandbox_ulimits is not None:
+    if not isinstance(updated_sandbox_ulimits, dict):
+        raise SystemExit("OpenClaw sandbox ulimits are outside the ODS Pixel runtime contract")
+    updated_sandbox_ulimits.pop("nproc", None)
+    if not updated_sandbox_ulimits:
+        updated_sandbox_docker.pop("ulimits", None)
 # Model budgets must preserve native web-search provider choices.
 # OpenClaw validates the complete candidate below; search provisioning and
 # readiness belong to bootstrap, not this context/sandbox budget overlay.
