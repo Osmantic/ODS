@@ -1,0 +1,32 @@
+services:
+  filebrowser:
+    image: filebrowser/filebrowser:v2.44.2
+    container_name: ods-filebrowser
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: ["/tmp:size=64m,mode=1777"]
+    environment:
+      FB_ADMIN_PASSWORD: "${FILEBROWSER_ADMIN_PASSWORD:?Set FILEBROWSER_ADMIN_PASSWORD before enabling File Browser}"
+    volumes:
+      - ./data:/srv/data
+      - ./data/filebrowser:/config
+      - ./data/filebrowser/db:/database
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${FILEBROWSER_PORT:-8087}:8087"
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO /dev/null http://127.0.0.1:80/health || exit 1']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks: [ods-network]
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+networks:
+  ods-network:
+    external: true

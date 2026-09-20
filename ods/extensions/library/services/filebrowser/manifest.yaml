@@ -1,0 +1,44 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: filebrowser
+  name: File Browser
+  description: "Web file manager for the ODS data directory — browse, upload, and share files from the browser."
+  aliases: [files, file-manager]
+  container_name: ods-filebrowser
+  default_host: filebrowser
+  port: 8087
+  external_port_env: FILEBROWSER_PORT
+  external_port_default: 8087
+  health: /
+  ui_path: /
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [files, storage, sharing]
+  env_vars:
+    - key: FILEBROWSER_PORT
+      description: "Published HTTP port"
+      default: "8087"
+    - key: FILEBROWSER_ADMIN_PASSWORD
+      description: "Initial admin password; change it in the UI after first login"
+      required: true
+      secret: true
+features:
+  - id: file-browser
+    name: File Browser
+    description: "Browse and manage ODS data files from the browser"
+    icon: FolderOpen
+    category: productivity
+    requirements:
+      services: [filebrowser]
+      vram_gb: 0
+    enabled_services_all: [filebrowser]
+    setup_time: "~2 minutes"
+    priority: 33
+    launch:
+      type: service
+      service: filebrowser
