@@ -120,12 +120,8 @@ EOF
 # Sets: PKG_MANAGER, DISTRO_ID, DISTRO_ID_LIKE
 detect_pkg_manager() {
     if [[ -f /etc/os-release ]]; then
-        local _saved_version="${VERSION:-}"
-        # shellcheck source=/dev/null
-        source /etc/os-release
-        VERSION="$_saved_version"
-        DISTRO_ID="${ID:-unknown}"
-        DISTRO_ID_LIKE="${ID_LIKE:-}"
+        DISTRO_ID="$(sed -n 's/^ID=//p' /etc/os-release | tr -d '"' || echo "unknown")"
+        DISTRO_ID_LIKE="$(sed -n 's/^ID_LIKE=//p' /etc/os-release | tr -d '"' || echo "")"
     else
         DISTRO_ID="unknown"
         DISTRO_ID_LIKE=""
