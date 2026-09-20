@@ -118,10 +118,5 @@ validate_install_path() {
 
 # Get platform-specific default install directory
 get_default_install_dir() {
-    case "$(uname -s)" in
-        Darwin|Linux|*)
-            # All platforms: use home directory (backward compatible)
-            echo "$HOME/ods"
-            ;;
-    esac
+    printf '%s/ods\n' "$HOME"
 }
