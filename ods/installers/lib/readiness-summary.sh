@@ -11,6 +11,9 @@
 #   container_name may be empty for host-native services.
 # ============================================================================
 
+BGRN="${BGRN:-}"
+NC="${NC:-}"
+
 _ods_readiness_http_code() {
     local url="$1" timeout="${2:-3}"
     local code
