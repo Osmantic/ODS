@@ -53,7 +53,7 @@ configure_llama_runtime_defaults() {
 }
 
 set_qwen_tier_config() {
-    case $TIER in
+    case "$TIER" in
         CLOUD)
             TIER_NAME="Cloud (API)"
             LLM_MODEL="anthropic/claude-sonnet-4-5-20250514"
