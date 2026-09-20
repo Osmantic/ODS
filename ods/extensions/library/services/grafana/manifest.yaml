@@ -1,0 +1,44 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: grafana
+  name: Grafana (Dashboards)
+  description: "Metrics and log dashboards — visualize ODS resource usage and service telemetry."
+  aliases: [dashboards, metrics-ui]
+  container_name: ods-grafana
+  default_host: grafana
+  port: 3101
+  external_port_env: GRAFANA_PORT
+  external_port_default: 3101
+  health: /
+  ui_path: /
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [monitoring, dashboards, metrics]
+  env_vars:
+    - key: GRAFANA_PORT
+      description: "Published HTTP port"
+      default: "3101"
+    - key: GRAFANA_ADMIN_PASSWORD
+      description: "Initial admin password"
+      required: true
+      secret: true
+features:
+  - id: metrics-dashboards
+    name: Metrics Dashboards
+    description: "Build dashboards over host and service metrics"
+    icon: BarChart3
+    category: monitoring
+    requirements:
+      services: [grafana]
+      vram_gb: 0
+    enabled_services_all: [grafana]
+    setup_time: "~2 minutes"
+    priority: 33
+    launch:
+      type: service
+      service: grafana
