@@ -1,0 +1,43 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: dockge
+  name: Dockge (Compose Manager)
+  description: "Web UI for managing Docker Compose stacks — edit, start, stop, and inspect additional side stacks."
+  aliases: [compose-manager, stacks]
+  container_name: ods-dockge
+  default_host: dockge
+  port: 5001
+  external_port_env: DOCKGE_PORT
+  external_port_default: 5001
+  health: /
+  ui_path: /
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [docker, compose, management]
+  env_vars:
+    - key: DOCKGE_PORT
+      description: "Published HTTP port"
+      default: "5001"
+    - key: DOCKGE_STACKS_DIR
+      description: "Host directory Dockge manages stacks from"
+      default: "./data/dockge/stacks"
+features:
+  - id: stack-manager
+    name: Stack Manager
+    description: "Manage additional Docker Compose side-stacks from a web UI"
+    icon: Layers
+    category: management
+    requirements:
+      services: [dockge]
+      vram_gb: 0
+    enabled_services_all: [dockge]
+    setup_time: "~2 minutes"
+    priority: 33
+    launch:
+      type: service
+      service: dockge

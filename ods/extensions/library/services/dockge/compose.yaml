@@ -1,0 +1,29 @@
+services:
+  dockge:
+    image: louislam/dockge:1.5.0
+    container_name: ods-dockge
+    restart: unless-stopped
+    security_opt: [no-new-privileges:true]
+    environment:
+      DOCKGE_STACKS_DIR: /opt/stacks
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./data/dockge:/app/data
+      - ./data/dockge/stacks:/opt/stacks
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${DOCKGE_PORT:-5001}:5001"
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO /dev/null http://127.0.0.1:5001/ || exit 1']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks: [ods-network]
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+networks:
+  ods-network:
+    external: true
