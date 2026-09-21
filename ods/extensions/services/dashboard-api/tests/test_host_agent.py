@@ -5195,6 +5195,88 @@ class TestModelActivationModeAndMacosBridge:
                 tmp_path / "llama.pid",
             )
 
+    def test_native_restart_uses_shared_launchagent_manager(self, tmp_path, monkeypatch):
+        install_dir = tmp_path / "ods"
+        service_script = (
+            install_dir / "installers" / "macos" / "lib" / "native-llama-service.sh"
+        )
+        service_script.parent.mkdir(parents=True)
+        service_script.write_text("#!/bin/bash\n", encoding="utf-8")
+        llama_bin = install_dir / "bin" / "llama-server"
+        llama_bin.parent.mkdir(parents=True)
+        llama_bin.write_bytes(b"binary")
+        env_path = install_dir / ".env"
+        env_path.write_text(
+            "GGUF_FILE=model.gguf\n"
+            "CTX_SIZE=4096\n"
+            "BIND_ADDRESS=127.0.0.1\n",
+            encoding="utf-8",
+        )
+        pid_file = install_dir / "data" / ".llama-server.pid"
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            if cmd[:3] == ["/bin/bash", str(service_script), "start"]:
+                pid_file.parent.mkdir(parents=True, exist_ok=True)
+                pid_file.write_text("4321\n", encoding="utf-8")
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.setattr(_mod.platform, "system", lambda: "Darwin")
+        monkeypatch.setattr(_mod, "_find_usable_bash", lambda: "/bin/bash")
+        monkeypatch.setattr(_mod.subprocess, "run", fake_run)
+        monkeypatch.setattr(
+            _mod.subprocess,
+            "Popen",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("native macOS launch must remain under LaunchAgent custody")
+            ),
+        )
+
+        _mod._stop_macos_native_llama_server(pid_file)
+        _mod._launch_native_llama_server(
+            env_path,
+            llama_bin,
+            install_dir / "data" / "llama.log",
+            pid_file,
+        )
+
+        assert calls[0][0] == [
+            "/bin/bash",
+            str(service_script),
+            "stop",
+            str(install_dir),
+            str(llama_bin),
+            str(pid_file),
+        ]
+        assert calls[1][0][:6] == [
+            "/bin/bash",
+            str(service_script),
+            "start",
+            str(install_dir),
+            str(llama_bin),
+            str(pid_file),
+        ]
+        assert calls[1][0][6:] == [
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "8080",
+            "--model",
+            str(install_dir / "data" / "models" / "model.gguf"),
+            "--ctx-size",
+            "4096",
+            "--n-gpu-layers",
+            "auto",
+            "--parallel",
+            "1",
+            "--reasoning-format",
+            "none",
+            "--metrics",
+        ]
+        assert pid_file.read_text(encoding="utf-8").strip() == "4321"
+
 
 class TestModelActivationLemonadePersistence:
 

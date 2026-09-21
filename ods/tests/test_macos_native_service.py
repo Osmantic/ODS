@@ -2,6 +2,7 @@
 import os
 from pathlib import Path
 import plistlib
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -11,6 +12,42 @@ SCRIPT = Path(__file__).resolve().parents[1] / "installers/macos/lib/native-llam
 
 
 class NativeServiceTests(unittest.TestCase):
+    def test_stop_reaps_untracked_install_owned_process(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            commands = root / "commands"
+            commands.mkdir()
+            (commands / "launchctl").write_text("#!/bin/sh\nexit 1\n")
+            (commands / "launchctl").chmod(0o700)
+            install = root / "ods"
+            binary = install / "bin" / "llama-server"
+            binary.parent.mkdir(parents=True)
+            shutil.copy2("/bin/sleep", binary)
+            binary.chmod(0o700)
+            child = subprocess.Popen([str(binary), "120"])
+            self.addCleanup(lambda: child.poll() is None and child.kill())
+            pid_file = install / "data" / ".llama-server.pid"
+            pid_file.parent.mkdir(parents=True)
+            pid_file.write_text("999999\n")
+            env = dict(
+                os.environ,
+                HOME=str(root),
+                PATH=f"{commands}:{os.environ['PATH']}",
+            )
+
+            result = subprocess.run(
+                ["bash", str(SCRIPT), "stop", str(install), str(binary), str(pid_file)],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            child.wait(timeout=5)
+            self.assertIsNotNone(child.returncode)
+            self.assertFalse(pid_file.exists())
+
     def test_live_old_process_blocks_replacement_and_preserves_recovery_files(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
