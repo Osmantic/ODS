@@ -259,7 +259,7 @@ def verify_service_binding(root, services_digest):
 
 
 def build(*, node, runtime, destination, plugins=(), expected_version='2026.6.33',
-          stream_progress_fix=False, services_digest=None):
+          stream_progress_fix=False, services_digest=None, exec_wrapper=None):
     if services_digest is not None and (type(services_digest) is not str
             or not re.fullmatch('[a-f0-9]{64}', services_digest)):
         raise BundleError('invalid-service-bundle-digest')
@@ -281,6 +281,10 @@ def build(*, node, runtime, destination, plugins=(), expected_version='2026.6.33
     node_record = _file(node.parent, node.name)
     if node_record[1] != 0o755:
         raise BundleError('bundle-node-not-executable')
+    wrapper = Path(exec_wrapper).absolute() if exec_wrapper is not None else None
+    wrapper_record = _file(wrapper.parent, wrapper.name) if wrapper else None
+    if wrapper_record is not None and wrapper_record[1] != 0o755:
+        raise BundleError('bundle-exec-wrapper-not-executable')
     staged = Path(tempfile.mkdtemp(prefix='.ods-pixel-bundle-', dir=parent))
     try:
         with (staged / 'node').open('xb') as output:
@@ -289,6 +293,13 @@ def build(*, node, runtime, destination, plugins=(), expected_version='2026.6.33
             output.flush()
             os.fsync(output.fileno())
         (staged / 'node').chmod(0o755)
+        if wrapper is not None:
+            with (staged / 'cancellable-exec.sh').open('xb') as output:
+                if _file(wrapper.parent, wrapper.name, output) != wrapper_record:
+                    raise BundleError('bundle-exec-wrapper-changed')
+                output.flush()
+                os.fsync(output.fileno())
+            (staged / 'cancellable-exec.sh').chmod(0o755)
         _copy_tree(runtime, staged / 'runtime', snapshots[0])
         if stream_progress_fix:
             receipt = _patch_stream_progress(staged / 'runtime')

@@ -50,6 +50,38 @@ def test_service_only_change_has_distinct_deterministic_deployment_identity(arti
         bundle.verify_service_binding(third_args['destination'], 'a' * 64)
 
 
+def test_exec_wrapper_is_content_bound_and_versions_are_preserved(artifacts):
+    wrapper = artifacts['node'].with_name('wrapper.sh')
+    wrapper.write_bytes(b'#!/bin/sh\nprintf old')
+    wrapper.chmod(0o755)
+    old = bundle.build(**artifacts, exec_wrapper=wrapper)
+    assert (artifacts['destination'] / 'cancellable-exec.sh').read_bytes() == wrapper.read_bytes()
+    assert (artifacts['destination'] / 'cancellable-exec.sh').stat().st_mode & 0o777 == 0o755
+    same = dict(artifacts, destination=artifacts['destination'].with_name('same'))
+    assert bundle.build(**same, exec_wrapper=wrapper) == old
+    wrapper.write_bytes(b'#!/bin/sh\nprintf new')
+    newer = dict(artifacts, destination=artifacts['destination'].with_name('newer'))
+    assert bundle.build(**newer, exec_wrapper=wrapper) != old
+    assert (artifacts['destination'] / 'cancellable-exec.sh').read_bytes().endswith(b'old')
+    bundle.verify(artifacts['destination'], expected_digest=old)
+    (artifacts['destination'] / 'cancellable-exec.sh').write_bytes(b'changed')
+    with pytest.raises(bundle.BundleError):
+        bundle.verify(artifacts['destination'], expected_digest=old)
+
+
+@pytest.mark.parametrize('fault', ['mode', 'link'])
+def test_exec_wrapper_requires_a_regular_executable_before_staging(artifacts, fault):
+    wrapper = artifacts['node'].with_name('wrapper.sh')
+    if fault == 'link':
+        wrapper.symlink_to(artifacts['node'])
+    else:
+        wrapper.write_bytes(b'#!/bin/sh\nexit 0')
+        wrapper.chmod(0o644)
+    with pytest.raises((bundle.BundleError, OSError)):
+        bundle.build(**artifacts, exec_wrapper=wrapper)
+    assert not artifacts['destination'].exists()
+
+
 @pytest.mark.parametrize('value', ['', 'a' * 63, 'G' * 64, [], 1])
 def test_invalid_service_binding_is_rejected_before_staging(artifacts, value):
     with pytest.raises(bundle.BundleError, match='invalid-service'):

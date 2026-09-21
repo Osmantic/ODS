@@ -398,6 +398,26 @@ function execMarkerId(runId) {
   return createHash("sha256").update(runId, "utf8").digest("hex");
 }
 
+export function nativeRuntimeExecWrapper(executable = process.execPath, platform = process.platform, stat = fs.lstatSync) {
+  if (platform !== "darwin" || !/^\/usr\/local\/libexec\/ods-pixel-runtimes\/[a-f0-9]{64}\/node$/.test(executable)) return undefined;
+  const directory = path.dirname(executable);
+  const wrapper = path.join(directory, "cancellable-exec.sh");
+  let entry;
+  try { entry = stat(wrapper); } catch (error) {
+    // Older attested bundles predate the immutable wrapper and retain the
+    // verified owner-side wrapper. Other failures must not downgrade silently.
+    if (error?.code === "ENOENT") return undefined;
+    throw error;
+  }
+  const parent = stat(directory);
+  if (!entry.isFile() || entry.isSymbolicLink() || entry.uid !== 0 || entry.nlink !== 1
+      || (entry.mode & 0o7777) !== 0o755 || !parent.isDirectory() || parent.isSymbolicLink()
+      || parent.uid !== 0 || (parent.mode & 0o7777) !== 0o755) {
+    throw new Error("unsafe native runtime exec wrapper");
+  }
+  return wrapper;
+}
+
 export function createExecCancellationControl({
   root = path.join(homedir(), ".openclaw", ".ods-exec-control"),
   executionHost = "sandbox",
@@ -450,10 +470,12 @@ export function createExecCancellationControl({
       const encoded = Buffer.from(command, "utf8").toString("base64");
       // Validate the owner-side file above even when execution uses its sandbox
       // bind mount. Gateway execution uses that same verified file directly.
+      const immutableWrapper = executionHost === "gateway" ? nativeRuntimeExecWrapper(process.execPath, platform) : undefined;
       const wrapper = executionHost === "sandbox"
         ? EXEC_CONTROL_WRAPPER
-        : `'${hostWrapper.replace(/'/g, "'\"'\"'")}'`;
-      return `${wrapper} ${execMarkerId(runId)} ${encoded}`;
+        : `'${(immutableWrapper ?? hostWrapper).replace(/'/g, "'\"'\"'")}'`;
+      const markers = immutableWrapper ? ` '${resolvedRoot.replace(/'/g, "'\"'\"'")}'` : "";
+      return `${wrapper} ${execMarkerId(runId)} ${encoded}${markers}`;
     },
 
     signal(runId) {

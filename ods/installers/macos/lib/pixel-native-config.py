@@ -356,7 +356,8 @@ def stage_bundle(*, source, ref, candidate, node, runtime, destination, services
         staged = temporary / 'bundle'
         digest = bundle.build(node=node, runtime=runtime / 'node_modules/openclaw',
             destination=staged, plugins=paths, expected_version=release['openclaw'],
-            stream_progress_fix=True, services_digest=services_digest)
+            stream_progress_fix=True, services_digest=services_digest,
+            exec_wrapper=Path(__file__).resolve().parents[3] / 'extensions/services/pixel-agent/host/cancellable-exec.sh')
         relocated = copy.deepcopy(config)
         relocated['plugins']['load']['paths'] = [str(staged / ('plugins/' + str(i)))
                                                 for i in range(len(paths))]

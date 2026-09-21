@@ -2086,3 +2086,13 @@ Actual wrapper tests cover exact file bytes, no login-profile execution, exit
 status and cancellation before a descendant's side effect. Full native
 regression: 2,088 passed, 17 skipped, four subtests. This shell change still
 requires protected deployment and a successful exact-byte Portal retest.
+
+Native bundles now include the cancellation wrapper in their content manifest.
+Gateway execution selects the root-owned wrapper next to its attested Node
+executable and passes the existing private marker directory separately. Updating
+or rolling back the runtime therefore selects the corresponding wrapper without
+overwriting owner files or cancellation state. Legacy bundles without the file
+retain the verified owner-side wrapper; an invalid present wrapper fails closed.
+The sandbox mount remains unchanged. Packaging/custody and separate-marker
+cancellation tests pass; protected activation of this versioned-wrapper path
+remains required before claiming the shell fix is deployed.

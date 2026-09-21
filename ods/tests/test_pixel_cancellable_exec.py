@@ -23,15 +23,30 @@ class CancellableExecTests(unittest.TestCase):
         self.wrapper.chmod(0o500)
         self.marker_id = 'a' * 64
 
-    def start(self, command):
+    def start(self, command, marker_root=None):
         return subprocess.Popen(['/bin/sh', str(self.wrapper), self.marker_id,
-            base64.b64encode(command.encode()).decode()],
+            base64.b64encode(command.encode()).decode(), *([str(marker_root)] if marker_root else [])],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
     def test_command_output_and_exit_code(self):
         process = self.start("printf '%s' 'ods proof'; exit 7")
         stdout, stderr = process.communicate(timeout=10)
         self.assertEqual((process.returncode, stdout, stderr), (7, 'ods proof', ''))
+
+    def test_versioned_wrapper_uses_separate_private_marker_directory(self):
+        markers = self.root / "owner's private markers"
+        markers.mkdir(mode=0o700)
+        process = self.start('sleep 30', marker_root=markers)
+        try:
+            time.sleep(0.4)
+            (markers / f'{self.marker_id}.cancel').touch(mode=0o600)
+            process.communicate(timeout=10)
+            self.assertEqual(process.returncode, 130)
+            self.assertFalse((self.root / f'{self.marker_id}.cancel').exists())
+        finally:
+            if process.poll() is None:
+                process.terminate()
+                process.communicate(timeout=10)
 
     @unittest.skipUnless(sys.platform == 'darwin', 'native macOS shell contract')
     def test_native_bash_writes_exact_bytes_and_preserves_argument_boundaries(self):
