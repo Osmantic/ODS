@@ -1189,7 +1189,7 @@ def test_real_catalog_scopes_granite_h_tiny_pixel_failure_to_tower3():
     assert tower1["pixelAgent"]["status"] == "unknown"
 
 
-def test_real_catalog_scopes_phi4_revalidation_to_strixy():
+def test_real_catalog_scopes_phi4_talk_pass_and_later_pixel_failure_to_strixy():
     catalog = _official_model_catalog()
     model = next(model for model in catalog if model["id"] == "phi4-mini-q4")
 
@@ -1197,9 +1197,11 @@ def test_real_catalog_scopes_phi4_revalidation_to_strixy():
     windows = model_app_compatibility(model, runtime_context={"hosts": ["windows-laptop"]})
 
     assert strixy["hermesTalk"]["status"] == "verified"
-    assert strixy["agentViability"]["status"] == "verified"
-    assert "cycle-002/strixy-wsl-beta/model-ui.json" in strixy["hermesTalk"]["evidence"]
+    assert strixy["pixelAgent"]["status"] == "unsupported_until_revalidated"
+    assert strixy["agentViability"]["status"] == "unsupported_until_revalidated"
+    assert "cycle-006/strixy-wsl-beta/model-ui.json" in strixy["hermesTalk"]["evidence"]
     assert windows["hermesTalk"]["status"] == "unknown"
+    assert windows["pixelAgent"]["status"] == "unknown"
     assert windows["agentViability"]["status"] == "unknown"
 
 
