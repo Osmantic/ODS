@@ -1,10 +1,63 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {readFileSync} from 'node:fs';
-import {canonicalWorkspaceParams,extensionlessHtmlWrite,workspaceFileParent} from '../plugin/workspace-path-contract.mjs';
-import {createToolLoopGuard} from '../plugin/tool-loop-guard.mjs';
+import {readFileSync,mkdtempSync,mkdirSync,writeFileSync,rmSync,realpathSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import path from 'node:path';
+import {execFileSync} from 'node:child_process';
+import {canonicalWorkspaceParams,extensionlessHtmlWrite,workspaceFileParent,nativeExecWorkdir} from '../plugin/workspace-path-contract.mjs';
+import {createToolLoopGuard,createExecCancellationControl} from '../plugin/tool-loop-guard.mjs';
 const root='/home/owner/.openclaw/workspace-pixel';
 const context={agentId:'pixel',runId:'path-contract',sessionId:'session-path'};
+
+test('native exec selects the configured workspace without altering command text',t=>{
+  const actual=mkdtempSync(path.join(tmpdir(),'pixel native cwd '));
+  t.after(()=>rmSync(actual,{recursive:true,force:true}));
+  mkdirSync(path.join(actual,'project'));
+  writeFileSync(path.join(actual,'plain.txt'),'x');
+  for (const alias of [undefined,'.','/workspace','workspace']) {
+    assert.equal(nativeExecWorkdir(alias,actual).workdir,actual);
+  }
+  for (const alias of ['project','workspace/project','/workspace/project',path.join(actual,'project')]) {
+    const selected=nativeExecWorkdir(alias,actual);
+    assert.equal(selected.workdir,path.join(actual,'project'));
+    const output=execFileSync(process.execPath,['-e','process.stdout.write(require("node:fs").realpathSync(process.cwd()))'],{cwd:selected.workdir,encoding:'utf8'});
+    assert.equal(output,realpathSync(selected.workdir));
+  }
+  for (const alias of ['/workspace/missing','plain.txt','/workspace/../escape','../escape',null,'',42]) {
+    assert.equal(nativeExecWorkdir(alias,actual).block,true,String(alias));
+  }
+  assert.equal(nativeExecWorkdir('.',undefined).block,true);
+  assert.equal(nativeExecWorkdir('.', '/').block,true);
+  assert.equal(nativeExecWorkdir(actual,actual).workdir,actual);
+
+  for (const tool of ['exec','tool_call']) {
+    let command;
+    const guard=createToolLoopGuard({execControl:{
+      resolveWorkdir:nativeExecWorkdir,
+      prepare:(_run,text)=>{command=text;return 'wrapped-command';},
+    }});
+    guard.observeRun(context,'pixel',{prompt:'Run pwd.'},{workspaceRoot:actual});
+    const args={command:'pwd',workdir:'/workspace/project'};
+    const decision=guard.beforeToolCall({toolName:tool,params:tool==='exec'?args:{id:'openclaw:core:exec',args}},context);
+    assert.notEqual(decision?.block,true);
+    const result=tool==='exec'?decision.params:decision.params.args;
+    assert.equal(result.workdir,path.join(actual,'project'));
+    assert.equal(command,'pwd');
+    assert.equal(args.workdir,'/workspace/project');
+    command=undefined;
+    const missing={command:'pwd',workdir:'/workspace/missing'};
+    const blocked=guard.beforeToolCall({toolName:tool,params:tool==='exec'?missing:{id:'exec',args:missing}},context);
+    assert.equal(blocked.block,true);
+    assert.equal(command,undefined);
+  }
+});
+
+test('native cwd translation is limited to macOS gateway execution',()=>{
+  for (const [executionHost,platform] of [['sandbox','darwin'],['sandbox','linux'],['gateway','linux'],['gateway','win32']]) {
+    assert.equal(createExecCancellationControl({executionHost,platform}).resolveWorkdir('/workspace',undefined),undefined);
+  }
+  assert.equal(createExecCancellationControl({executionHost:'gateway',platform:'darwin'}).resolveWorkdir('/workspace',undefined).block,true);
+});
 
 test('plugin passes inherited workspace to evidence tracking for absolute macOS paths',()=>{
   const entry=readFileSync(new URL('../plugin/index.js',import.meta.url),'utf8');

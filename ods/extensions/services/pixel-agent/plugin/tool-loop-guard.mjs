@@ -19,7 +19,7 @@ import { projectWebResult } from "./web-result-projection.mjs";
 import { createCompletionAssurance } from "./completion-assurance.mjs";
 import { parseQuestions, questionsText, requestsChoiceQuestion, choiceQuestionFromText } from "./ask-user.mjs";
 import { createRunProgressBudget, failedToolOutcome, isLiteralEcho, RUN_PROGRESS_STOP_REASON } from "./run-progress-budget.mjs";
-import { canonicalWorkspaceParams, extensionlessHtmlWrite, workspaceFileParent } from "./workspace-path-contract.mjs";
+import { canonicalWorkspaceParams, extensionlessHtmlWrite, workspaceFileParent, nativeExecWorkdir } from "./workspace-path-contract.mjs";
 import { routePlaygroundTool, requestsNewPlaygroundProject } from "./playground-projects.mjs";
 import { workspaceMutationFiles } from "./workspace-projects.mjs";
 
@@ -401,6 +401,7 @@ function execMarkerId(runId) {
 export function createExecCancellationControl({
   root = path.join(homedir(), ".openclaw", ".ods-exec-control"),
   executionHost = "sandbox",
+  platform = process.platform,
 } = {}) {
   if (executionHost !== "sandbox" && executionHost !== "gateway") {
     throw new Error("invalid Pixel execution control host mode");
@@ -432,6 +433,10 @@ export function createExecCancellationControl({
   }
 
   return {
+    resolveWorkdir(value, workspaceRoot) {
+      return executionHost === "gateway" && platform === "darwin"
+        ? nativeExecWorkdir(value, workspaceRoot) : undefined;
+    },
     prepare(runId, command) {
       if (typeof command !== "string" || !command.trim() || command.includes("\0")) {
         throw new Error("invalid Pixel exec command");
@@ -8042,6 +8047,9 @@ export function createToolLoopGuard({
         const params = { ...selectedParams };
         const originalFingerprint = execFingerprint(params);
         const originalVerificationFingerprint = verificationExecFingerprint(params);
+        const directory = execControl.resolveWorkdir?.(params.workdir, state?.configuredWorkspaceRoot);
+        if (directory?.block) return directory;
+        if (directory) params.workdir = directory.workdir;
         try {
           params.command = execControl.prepare(runId, params.command);
         } catch (error) {
