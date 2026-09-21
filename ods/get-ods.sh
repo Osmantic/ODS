@@ -24,10 +24,15 @@ fi
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
 CYAN='\033[0;36m'
+MAGENTA='\033[0;35m'
+BRIGHT_MAGENTA='\033[1;35m'
 BOLD='\033[1m'
 NC='\033[0m'
+
+if [[ -n "${NO_COLOR:-}" || "${TERM:-}" == "dumb" || ! -t 1 ]]; then
+    RED='' GREEN='' YELLOW='' CYAN='' MAGENTA='' BRIGHT_MAGENTA='' BOLD='' NC=''
+fi
 
 REPO_URL="${ODS_REPO_URL:-https://github.com/Osmantic/ODS.git}"
 INSTALL_DIR="${ODS_INSTALL_DIR:-$ODS_BOOTSTRAP_ROOT/ods}"
@@ -250,16 +255,17 @@ refuse_legacy_install() {
 
 # ── Banner ──────────────────────────────────────
 echo ""
-echo -e "${BOLD}${BLUE}"
+echo -e "${BOLD}${GREEN}"
 cat << 'BANNER'
-   OOOOO  DDDD   SSSSS
-  OO   OO DD DD SS
-  OO   OO DD DD  SSS
-  OO   OO DD DD    SS
-   OOOOO  DDDD  SSSS
+    ____   ____    _____
+   / __ \ / __ \  / ___/
+  / / / // / / /  \__ \
+ / /_/ // /_/ /  ___/ /
+ \____//_____/  /____/
 BANNER
 echo -e "${NC}"
-echo -e "${BOLD}  Osmantic Deployment System - Local AI for Everyone${NC}"
+echo -e "${BRIGHT_MAGENTA}  O D S   B O O T S T R A P${NC}  ${GREEN}Acquiring the local stack${NC}"
+echo -e "${CYAN}  The full ODSGATE sequence begins after the source is verified.${NC}"
 echo ""
 
 # ── Detect OS ──────────────────────────────────────
@@ -573,8 +579,8 @@ chmod +x "$INSTALL_DIR/scripts/"*.sh 2>/dev/null || true
 
 # ── Run installer ──────────────────────────────
 echo ""
-log "Launching ODS installer..."
-echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+log "Source acquired. Opening the ODS gateway..."
+echo -e "${MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
 
 cd "$INSTALL_DIR"

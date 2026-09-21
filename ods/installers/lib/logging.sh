@@ -20,7 +20,18 @@ install_elapsed() {
   printf '%dm %02ds' "$m" "$s"
 }
 
-log() { echo -e "${GRN}[INFO]${NC} $1" | tee -a "$LOG_FILE"; }
+log() {
+  # The cinematic UI narrates the useful state transitions; keep implementation
+  # chatter in the log unless verbose output was requested. Plain/CI output
+  # retains the traditional foreground log stream for diagnostics.
+  if declare -F ods_ui_cinematic >/dev/null 2>&1 \
+      && ods_ui_cinematic \
+      && [[ "${ODS_UI_VERBOSE:-0}" != "1" ]]; then
+    echo -e "${GRN}[INFO]${NC} $1" >> "$LOG_FILE"
+  else
+    echo -e "${GRN}[INFO]${NC} $1" | tee -a "$LOG_FILE"
+  fi
+}
 success() { echo -e "${BGRN}[OK]${NC} $1" | tee -a "$LOG_FILE"; }
 warn() { echo -e "${AMB}[WARN]${NC} $1" | tee -a "$LOG_FILE"; }
 error() { echo -e "${RED}[ERROR]${NC} $1" | tee -a "$LOG_FILE"; exit 1; }

@@ -47,11 +47,20 @@ RED='\033[0;31m'
 GRN='\033[0;32m'         # Standard green — body text
 BGRN='\033[1;32m'        # Bright green — emphasis, success, headings
 DGRN='\033[2;32m'        # Dim green — secondary text, lore
+MAG='\033[0;35m'         # Magenta — CRT signal/static accents
+BMAG='\033[1;35m'        # Bright magenta — sequence and finale accents
 AMB='\033[0;33m'         # Amber — warnings, ETA labels
 WHT='\033[1;37m'         # White — key URLs
 DIM='\033[2;37m'         # Dim white
 NC='\033[0m'             # Reset
 CURSOR='█'               # Block cursor for typing
+
+# Machine-readable and redirected output must never contain ANSI escapes.
+# `ODS_UI_MODE=cinematic` may force the layout for screenshots, but color still
+# follows the standard NO_COLOR contract.
+if [[ -n "${NO_COLOR:-}" || "${TERM:-}" == "dumb" || ! -t 1 ]]; then
+    RED='' GRN='' BGRN='' DGRN='' MAG='' BMAG='' AMB='' WHT='' DIM='' NC=''
+fi
 
 #=============================================================================
 # Cross-platform helpers

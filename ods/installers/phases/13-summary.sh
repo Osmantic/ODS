@@ -236,11 +236,18 @@ echo -e "${BGRN}VALIDATING EXTENSION MANIFESTS${NC}"
 bootline
 echo ""
 if [[ -f "$SCRIPT_DIR/scripts/validate-manifests.sh" ]]; then
-    if bash "$SCRIPT_DIR/scripts/validate-manifests.sh"; then
+    _manifest_validation_rc=0
+    if declare -F ods_ui_cinematic >/dev/null 2>&1 && ods_ui_cinematic; then
+        bash "$SCRIPT_DIR/scripts/validate-manifests.sh" >>"$LOG_FILE" 2>&1 || _manifest_validation_rc=$?
+    else
+        bash "$SCRIPT_DIR/scripts/validate-manifests.sh" || _manifest_validation_rc=$?
+    fi
+    if [[ "$_manifest_validation_rc" -eq 0 ]]; then
         ai_ok "Extension manifests validated for this ODS version."
     else
-        warn "Extension manifest validation reported issues. See details above."
+        warn "Extension manifest validation reported issues. See $LOG_FILE for details."
     fi
+    unset _manifest_validation_rc
 else
     log "Extension validation script not found — skipping extension checks"
 fi
