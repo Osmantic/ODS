@@ -195,6 +195,28 @@ if (eval "$INSTALL_LAUNCH") >/dev/null 2>&1; then fail "installer accepted unsup
 cp "$TMP_DIR/checkpoint-runtime" "$LLAMA_SERVER_BIN"
 echo "[PASS] installer launch uses validated cache arguments and preserves live model on rejection"
 
+cp "$INSTALL_DIR/.env" "$TMP_DIR/legacy-cache.env"
+printf 'LLAMA_ARG_CHECKPOINT_MIN_SPACING_NT=1024\n' >> "$INSTALL_DIR/.env"
+assert_rejected_without_stop "conflicting checkpoint dialects"
+printf 'GGUF_FILE=default.gguf\nODS_ACTIVE_MODEL_STORE=default\nLLAMA_ARG_CHECKPOINT_MIN_SPACING_NT=1024\n' > "$INSTALL_DIR/.env"
+assert_rejected_without_stop "old runtime without minimum spacing"
+printf '#!/bin/sh\nprintf "%%s\\n" "--checkpoint-min-step"\n' > "$LLAMA_SERVER_BIN"
+start_native_llama true || fail "new runtime spacing rejected"
+python3 - "$ARGV" <<'PY'
+import sys
+from pathlib import Path
+args = Path(sys.argv[1]).read_bytes().decode().split("\0")[:-1]
+assert "--checkpoint-every-n-tokens" not in args
+assert args.count("--checkpoint-min-step") == 1
+assert args[args.index("--checkpoint-min-step") + 1] == "1024"
+PY
+: > "$CALLS"
+(eval "$INSTALL_LAUNCH") || fail "installer rejected modern spacing runtime"
+[[ "$(cat "$CALLS")" == $'stop\nstart' ]] || fail "modern installer replacement order changed"
+cp "$TMP_DIR/legacy-cache.env" "$INSTALL_DIR/.env"
+cp "$TMP_DIR/checkpoint-runtime" "$LLAMA_SERVER_BIN"
+echo "[PASS] modern checkpoint spacing survives CLI/installer starts without mixing dialects"
+
 mv "$INSTALL_DIR/scripts/resolve-model-store.py" "$TMP_DIR/resolver.py"
 assert_rejected_without_stop "registered stores without resolver"
 rm "$INSTALL_DIR/data/model-stores.json"

@@ -30,10 +30,11 @@ class TestTransitionGate(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.directory = tempfile.TemporaryDirectory()
         os.chmod(self.directory.name, 0o700)
-        initialize(self.directory.name)
+        self.state_directory = str(Path(self.directory.name).resolve())
+        initialize(self.state_directory)
         self.up_sock, self.up_runner = await _start_upstream()
         self.environment = patch.dict(os.environ, {
-            "PIXEL_TRANSITION_STATE_DIR": self.directory.name,
+            "PIXEL_TRANSITION_STATE_DIR": self.state_directory,
             "PIXEL_PREVIEW_PROXY_KEY": OWNER,
         })
         self.environment.start()
@@ -144,6 +145,67 @@ class TestTransitionGate(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.operation("release", revision))[0], 409)
         self.assertEqual((await self.status())["phase"], "held")
 
+    async def test_macos_installer_retries_lost_release_after_edge_restart(self):
+        import http.client
+        import importlib.util
+        import socket
+        root = Path(__file__).resolve().parents[4]
+        sys.path.insert(0, str(root / 'bin'))
+        spec = importlib.util.spec_from_file_location('edge_test_macos_installer',
+            root / 'installers/macos/lib/pixel-macos-access-install.py')
+        installer = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(installer)
+        import pixel_access_bridge as bridge
+        revision = (await self.status())['revision']
+        code, status = await self.operation('acquire', revision)
+        self.assertEqual(code, 200)
+        response = await self.chat()
+        self.assertEqual(response.status, 409)
+        await response.read()
+        record = dict(schemaVersion=1, container='c' * 64, phase='held',
+                      binding=dict(token=BINDING, revision=revision), status=status)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'edge-hold.json'
+            bridge.atomic_json(path, record)
+            private_read = bridge.private_json
+            calls = []
+            def request(plan, container, operation, binding):
+                self.assertEqual(container, record['container'])
+                self.assertEqual(binding, record['binding'])
+                calls.append(operation)
+                connection = http.client.HTTPConnection('localhost', timeout=10)
+                connection.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                connection.sock.settimeout(10)
+                connection.sock.connect(self.sock)
+                try:
+                    connection.request('POST', '/v1/transition/' + operation,
+                        body=json.dumps(binding), headers={**self.auth(), 'Content-Type': 'application/json'})
+                    result = connection.getresponse()
+                    value = json.loads(result.read())
+                    self.assertEqual(result.status, 200)
+                finally:
+                    connection.close()
+                if operation == 'release' and calls.count('release') == 1:
+                    raise TimeoutError('simulate lost successful release response')
+                return value
+            with patch.object(installer, '_edge_hold_journal', lambda plan: path), \
+                 patch.object(installer, '_migration_edge_request', request), \
+                 patch.object(bridge, 'private_json', lambda p, uid, maximum:
+                              private_read(p, os.getuid(), maximum)):
+                with self.assertRaises(TimeoutError):
+                    await asyncio.to_thread(installer._finish_migration_hold, {}, record)
+                pending = json.loads(path.read_text())
+                self.assertEqual(pending['phase'], 'releasing')
+                await self._stop_edge()
+                await self._start_edge()
+                await asyncio.to_thread(installer._finish_migration_hold, {}, pending)
+            self.assertEqual(calls, ['acquire', 'release', 'release'])
+            self.assertEqual(json.loads(path.read_text())['phase'], 'released')
+            self.assertFalse((await self.status())['admission_blocked'])
+            response = await self.chat()
+            self.assertEqual(response.status, 200)
+            await response.read()
+            self.assertEqual(len(self.up_runner.app['chat_requests']), 1)
     async def test_active_stream_refuses_acquisition_and_preserves_activity_schema(self):
         response = await self.chat(hold=True)
         await asyncio.wait_for(self.up_runner.app["stream_started"].wait(), 2)
@@ -241,7 +303,7 @@ gate = TransitionGate(sys.argv[1], set())
 asyncio.run(gate.admit(object()))
 os._exit(0)
 """
-        subprocess.run([sys.executable, "-c", program, self.directory.name],
+        subprocess.run([sys.executable, "-c", program, self.state_directory],
                        cwd=Path(__file__).resolve().parents[1], check=True)
         await self._start_edge()
         self.assertEqual((await self.status())["phase"], "interrupted")
@@ -317,6 +379,5 @@ os._exit(0)
     async def test_initialization_refuses_existing_state(self):
         before = Path(self.directory.name, "transition.json").read_bytes()
         with self.assertRaises(OSError):
-            initialize(self.directory.name)
+            initialize(self.state_directory)
         self.assertEqual(Path(self.directory.name, "transition.json").read_bytes(), before)
-

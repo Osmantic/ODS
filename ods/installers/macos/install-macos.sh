@@ -102,6 +102,7 @@ ENABLE_RECOMMENDED=true
 # deprecated and gates behind --openclaw for the deprecation release.
 ENABLE_HERMES=true
 ENABLE_OPENCLAW=false
+ENABLE_PIXEL=false
 ENABLE_BRAVE_SEARCH=false
 ENABLE_APE=true
 ENABLE_PERPLEXICA=false
@@ -137,6 +138,8 @@ while [[ $# -gt 0 ]]; do
         --no-hermes)     ENABLE_HERMES=false; shift ;;
         --openclaw)      ENABLE_OPENCLAW=true; OPENCLAW_EXPLICIT=true; shift ;;
         --no-openclaw)   ENABLE_OPENCLAW=false; OPENCLAW_EXPLICIT=true; shift ;;
+        --pixel)        ENABLE_PIXEL=true; shift ;;
+        --no-pixel)     ENABLE_PIXEL=false; shift ;;
         --langfuse)      ENABLE_LANGFUSE=true; shift ;;
         --no-langfuse)   ENABLE_LANGFUSE=false; NO_LANGFUSE_EXPLICIT=true; shift ;;
         --all)           ALL_FEATURES=true; shift ;;
@@ -1131,6 +1134,24 @@ _ensure_macos_pyyaml() {
 # Resolve install directory
 INSTALL_DIR="${ODS_INSTALL_DIR}"
 
+if ! $ENABLE_PIXEL && [[ -e "${INSTALL_DIR}/data/pixel-native" || -L "${INSTALL_DIR}/data/pixel-native" ]]; then
+    ai_err "Existing native Pixel installation detected. The base installer cannot migrate it or disable it safely."
+    ai "Your configuration is unchanged. Keep data/pixel-native; use the qualified native migration/update path when available."
+    exit 1
+fi
+
+if $ENABLE_PIXEL; then
+    if [[ "${PIXEL_LICENSE_ACCEPTED:-}" != true ]]; then
+        ai_err "Pixel requires PIXEL_LICENSE_ACCEPTED=true after the applicable written authorization."
+        exit 1
+    fi
+    /usr/bin/python3 "${LIB_DIR}/pixel-native-install.py" --install-dir "$INSTALL_DIR" \
+        --license-authorized --preflight-only || exit 1
+    ENABLE_HERMES=false
+    ENABLE_OPENCLAW=false
+    OPENCLAW_EXPLICIT=true
+fi
+
 if ! $OPENCLAW_EXPLICIT; then
     _existing_openclaw=false
     if command -v docker >/dev/null 2>&1 \
@@ -1540,6 +1561,11 @@ if ! $NON_INTERACTIVE && ! $ALL_FEATURES && ! $DRY_RUN; then
             ENABLE_LANGFUSE=true
             ;;
     esac
+fi
+
+if $ENABLE_PIXEL; then
+    ENABLE_HERMES=false
+    ENABLE_OPENCLAW=false
 fi
 
 if $CLOUD_MODE && ! $ENABLE_RECOMMENDED; then
@@ -1988,6 +2014,9 @@ if $DRY_RUN; then
     ai "[DRY RUN] Would download llama-server (Metal build)"
     ai "[DRY RUN] Would start native llama-server on port 8080"
     ai "[DRY RUN] Would run: docker compose up -d --remove-orphans --no-build --pull never"
+    if $ENABLE_PIXEL; then
+        ai "[DRY RUN] Would prepare and activate native Pixel after the base stack, then bind Open WebUI to Pixel Edge"
+    fi
 else
     # Change to install directory for docker compose
     cd "$INSTALL_DIR"
@@ -2859,6 +2888,26 @@ for service in (data.get("services") or {}).values():
                 >>"$ODS_LOG_FILE" 2>&1 || \
                 ai_warn "Could not sync installation-context SOUL.md into running Hermes container"
         fi
+    fi
+
+    if $ENABLE_PIXEL; then
+        ai "Preparing native Pixel and its Docker services..."
+        _pixel_install_args=(--install-dir "$INSTALL_DIR" --ods-source "$INSTALL_DIR" --license-authorized)
+        [[ -z "${PIXEL_SOURCE_REF:-}" ]] || _pixel_install_args+=(--ref "$PIXEL_SOURCE_REF")
+        for ((_pixel_i=0; _pixel_i<${#COMPOSE_FLAGS[@]}; _pixel_i+=2)); do
+            [[ "${COMPOSE_FLAGS[_pixel_i]}" == -f ]] || { ai_err "Unexpected Compose selection"; exit 1; }
+            _pixel_install_args+=(--compose-file "$INSTALL_DIR/${COMPOSE_FLAGS[_pixel_i+1]}")
+        done
+        if ! /usr/bin/python3 "$LIB_DIR/pixel-native-install.py" "${_pixel_install_args[@]}"; then
+            ai_err "Native Pixel setup stopped. Keep data/pixel-native and its private receipts for diagnosis."
+            exit 1
+        fi
+        COMPOSE_FLAGS+=(
+            -f extensions/services/pixel-model-relay/compose.yaml.disabled
+            -f extensions/services/pixel-edge/compose.yaml.disabled
+            -f installers/macos/pixel-native.compose.yaml.disabled
+        )
+        ai_ok "Native Pixel activated; Open WebUI now routes through Pixel Edge"
     fi
 
     # Save compose flags for ods-macos.sh

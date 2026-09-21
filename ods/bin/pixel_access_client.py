@@ -2,7 +2,12 @@
 import hashlib
 import json
 import socket
+import sys
 from pathlib import Path
+
+
+ACCESS_SOCKET_PATH = ("/private/var/run/ods-pixel-access/control.sock"
+                      if sys.platform == "darwin" else "/run/ods-pixel-access/control.sock")
 
 
 def request_access(operation, request=None, *, settings_data_dir=None):
@@ -18,7 +23,7 @@ def request_access(operation, request=None, *, settings_data_dir=None):
         payload["data_dir_id"] = hashlib.sha256(str(Path(settings_data_dir)).encode("utf-8")).hexdigest()
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
         connection.settimeout(1850 if operation == "model-begin" else 335)
-        connection.connect("/run/ods-pixel-access/control.sock")
+        connection.connect(ACCESS_SOCKET_PATH)
         connection.sendall(json.dumps(payload).encode() + b"\n")
         with connection.makefile("rb") as stream:
             raw = stream.readline(65537)

@@ -1480,8 +1480,12 @@ function exactDownloadTerminalArtifact(event, submissions) {
     typeof artifact !== "object" ||
     Array.isArray(artifact) ||
     typeof artifact.path !== "string" ||
-    artifact.path !==
-      `/var/lib/pixel-ops-broker/artifacts/${requestedJobId}/${submission.filename}` ||
+    ![
+      `/var/lib/pixel-ops-broker/artifacts/${requestedJobId}/${submission.filename}`,
+      ...(process.platform === "darwin"
+        ? [`/private/var/lib/pixel-ops-broker/artifacts/${requestedJobId}/${submission.filename}`]
+        : []),
+    ].includes(artifact.path) ||
     typeof artifact.filename !== "string" ||
     artifact.filename !== submission.filename ||
     !Number.isSafeInteger(artifact.bytes) ||

@@ -10,6 +10,7 @@ OPTIONS = (
     ("--ctx-checkpoints", 0, 64),
     ("--cache-ram", 0, 65536),
     ("--sleep-idle-seconds", -1, 86400),
+    ("--checkpoint-min-step", 0, 262144),
 )
 
 
@@ -28,6 +29,8 @@ def requested_arguments(values):
         if not lower <= number <= upper or zero_forbidden and number == 0:
             raise ValueError(f"{flag} is outside the supported range")
         result.extend((flag, str(number)))
+    if "--checkpoint-every-n-tokens" in result and "--checkpoint-min-step" in result:
+        raise ValueError("Choose either checkpoint interval or minimum spacing, not both")
     return result
 
 
@@ -53,9 +56,10 @@ def main():
     parser.add_argument("--checkpoints", default="")
     parser.add_argument("--cache-mib", default="")
     parser.add_argument("--idle-seconds", default="")
+    parser.add_argument("--min-spacing", default="")
     args = parser.parse_args()
     try:
-        arguments = qualify(args.binary, (args.interval, args.checkpoints, args.cache_mib, args.idle_seconds))
+        arguments = qualify(args.binary, (args.interval, args.checkpoints, args.cache_mib, args.idle_seconds, args.min_spacing))
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         print(f"ODS native runtime tuning rejected: {error}", file=sys.stderr)
         return 1

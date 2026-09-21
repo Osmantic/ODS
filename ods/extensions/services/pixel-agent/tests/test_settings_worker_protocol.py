@@ -5,7 +5,9 @@ if sys.platform == "win32":
     raise SkipTest("Requires POSIX host ownership, file locks, or Unix sockets; run under Linux/WSL")
 
 import io
+import ast
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -32,6 +34,8 @@ def request(operation="settings-apply", **changes):
         value.update(settings_revision=3, preferences={}, capabilities={})
     if operation == "provider-change":
         value['binding'] = None
+    if operation == 'access-relocate':
+        value['relocation'] = {'source_config': '/opt/ods/openclaw.json', 'source_sha256': 'c' * 64}
     if operation == 'provider-worker-status':
         value['provider_probe'] = {'python': '/usr/bin/python3',
             'launcher': '/opt/ods/bin/ods-pixel-route-lease', 'providerDirectory': '/home/owner/data/pixel-providers',
@@ -46,6 +50,51 @@ def request(operation="settings-apply", **changes):
 def test_exact_operation_frames_round_trip(operation):
     value = request(operation)
     assert protocol.request(protocol.read_frame(io.StringIO(json.dumps(value) + "\n"), protocol.MAX_REQUEST)) == value
+
+
+@pytest.mark.parametrize('source', ['relative', '/a/../b', '/a//b', '/a/./b', '/a\nb', '/a\x00b'])
+def test_relocation_rejects_noncanonical_source(source):
+    with pytest.raises(protocol.ProtocolError):
+        protocol.request(request('access-relocate', relocation={
+            'source_config': source, 'source_sha256': 'c' * 64}))
+
+
+def test_relocation_is_internal_and_cannot_select_target_or_privileges():
+    with pytest.raises(protocol.ProtocolError):
+        protocol.control_request({'operation': 'access-relocate', 'request': {}})
+    for changes in ({'confirmed': True}, {'config_sha256': None},
+                    {'relocation': {'source_config': '/old', 'source_sha256': 'c' * 64,
+                                    'target_config': '/new'}}):
+        with pytest.raises(protocol.ProtocolError):
+            protocol.request(request('access-relocate', **changes))
+    assert protocol.result('access-relocate', {'relocated': False}) == {'relocated': False}
+    for value in ({'relocated': 1}, {'relocated': True, 'proof': True}, {}):
+        with pytest.raises(protocol.ProtocolError):
+            protocol.result('access-relocate', value)
+    with pytest.raises(protocol.ProtocolError):
+        protocol.hook_reply('access-relocate', 'restart', True)
+
+
+def test_relocation_worker_uses_bound_destination_and_busy_hook(tmp_path):
+    worker_path = ROOT / 'extensions/services/pixel-agent/host/access_mode_worker.py'
+    tree = ast.parse(worker_path.read_text())
+    main = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'main')
+    events = []
+    target = str(tmp_path / 'openclaw-candidate.json')
+    def relocate(old, new, state, **kwargs):
+        assert old == '/opt/ods/openclaw.json' and new == target
+        assert state == str(tmp_path / '.ods-access-mode')
+        assert kwargs['old_sha256'] == 'c' * 64 and kwargs['new_sha256'] == 'a' * 64
+        assert kwargs['check_no_active_run']() is False
+        return True
+    controller = types.SimpleNamespace(
+        _default_state_dir=lambda: str(tmp_path / 'absent-legacy'), relocate_receipt=relocate)
+    scope = dict(protocol=protocol, controller=controller, emit=events.append,
+        sys=types.SimpleNamespace(stdin=io.StringIO(json.dumps(request('access-relocate')) + '\nfalse\n')),
+        os=types.SimpleNamespace(path=os.path, environ={'HOME': str(tmp_path), 'OPENCLAW_CONFIG_PATH': target}))
+    exec(compile(ast.Module(body=[main], type_ignores=[]), str(worker_path), 'exec'), scope)
+    scope['main']()
+    assert events == [{'hook': 'busy'}, {'result': {'relocated': True}}]
 
 
 @pytest.mark.parametrize("raw", ['{}', '{"x":1,"x":2}\n', '{"x":NaN}\n', '{"x":1e999}\n', 'x\n', '[' * 1500 + '\n', '"' + 'x' * 17000 + '"\n'])
@@ -115,11 +164,15 @@ def pipe_bridge(tmp_path, monkeypatch):
     popen = subprocess.Popen
     children = []
     def launch(code):
-        def spawn(_args, **kwargs):
-            child = popen([sys.executable, "-u", "-c", code], **kwargs)
+        def spawn(env):
+            # These tests exercise real pipe framing/deadlines, not privileged
+            # identity changes. Launch the fixture under the test runner uid.
+            child = popen([sys.executable, "-u", "-c", code], cwd="/", env=env,
+                          stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                          stderr=subprocess.DEVNULL, text=True, bufsize=1)
             children.append(child)
             return child
-        monkeypatch.setattr(bridge.subprocess, "Popen", spawn)
+        monkeypatch.setattr(adapter, "_launch_owner_worker", spawn)
     yield adapter, launch
     assert all(child.poll() is not None for child in children), "worker child leaked"
 

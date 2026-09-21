@@ -24,6 +24,8 @@ KEYS.update({"model-status": BASE, "model-begin": BASE | {"transaction_id"},
              "model-apply": BASE | {"transaction_id", "model_target"},
              "model-rollback": BASE | {"transaction_id"}, "model-finish": BASE | {"transaction_id", "model_outcome"}})
 HOOKS.update({name: (() if name == "model-status" else ("busy",)) for name in KEYS if name.startswith("model-")})
+KEYS['access-relocate'] = BASE | {'relocation'}
+HOOKS['access-relocate'] = ('busy',)
 
 
 class ProtocolError(ValueError):
@@ -126,6 +128,17 @@ def request(value):
             raise ProtocolError("owner-protocol-failed")
     elif type(value["config_sha256"]) is not str or not HEX.fullmatch(value["config_sha256"]):
         raise ProtocolError("owner-protocol-failed")
+    if operation == 'access-relocate':
+        relocation = value['relocation']
+        if (type(relocation) is not dict or set(relocation) != {'source_config', 'source_sha256'}
+                or type(relocation['source_config']) is not str
+                or not relocation['source_config'].startswith('/')
+                or any(c in relocation['source_config'] for c in '\x00\n\r\t')
+                or any(p in ('', '.', '..') for p in relocation['source_config'].split('/')[1:])
+                or type(relocation['source_sha256']) is not str
+                or not HEX.fullmatch(relocation['source_sha256'])
+                or value['confirmed'] is not False):
+            raise ProtocolError('owner-protocol-failed')
     if operation == 'provider-worker-status':
         probe = value['provider_probe']
         if (type(probe) is not dict or set(probe) != {'python', 'launcher', 'providerDirectory', 'receipt'}
@@ -192,6 +205,10 @@ def hook_reply(operation, name, value):
 def result(operation, value):
     if type(value) is not dict:
         raise ProtocolError("owner-protocol-failed")
+    if operation == 'access-relocate':
+        if set(value) != {'relocated'} or type(value['relocated']) is not bool:
+            raise ProtocolError('owner-protocol-failed')
+        return value
     if operation.startswith("model-"):
         if type(value.get("configSha256")) is not str or not HEX.fullmatch(value["configSha256"]):
             raise ProtocolError("owner-protocol-failed")

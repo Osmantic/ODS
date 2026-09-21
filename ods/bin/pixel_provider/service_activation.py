@@ -141,11 +141,13 @@ def activate(bridge, journal, environment, *, qualify_runtime):
         return 'unavailable'
     try:
         before = settings._identity(bridge)
+        running = True
     except AccessError:
         if (journal.get('phase') not in ('invoking', 'restarting') or not settings._valid_identity(journal.get('restartIdentity'))
                 or bridge.stopped_native(journal['token']).get('stopped') is not True):
             return 'unavailable'
         before = journal['restartIdentity']
+        running = False
     # A late pipe reply/recovery callback must not replace an already verified
     # current process. Rollback selects a different side, so it cannot reuse it.
     record, side = environment.select(journal)
@@ -158,6 +160,12 @@ def activate(bridge, journal, environment, *, qualify_runtime):
     journal['phase'] = 'restarting'
     journal['restartIdentity'] = before
     atomic_json(bridge.state / 'transition.json', journal)
+    # A rollback callback may arrive after the replacement gateway started.
+    # launchd must unload that held instance before loading a different plist.
+    if running and getattr(bridge.gateway_service, 'is_launchd', False):
+        bridge.gateway_service.stop(timeout=60)
+        if bridge.stopped_native(journal['token']).get('stopped') is not True:
+            raise AccessError('provider-stop-unconfirmed')
     selection = environment.apply(journal)
     _unchanged(bridge, journal, environment, qualify_runtime)
     bridge.gateway_service.reload()

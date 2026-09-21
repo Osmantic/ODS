@@ -601,9 +601,56 @@ def _load_receipt(state_dir):
     return receipt
 
 
-def _write_receipt(state_dir, receipt):
+def relocate_receipt(old_config, new_config, state_dir, *, old_sha256,
+                     new_sha256, check_no_active_run, lock_timeout=DEFAULT_LOCK_TIMEOUT):
+    """Rebind a full-access receipt during an externally journaled upgrade.
+
+    The caller owns deployment admission and rollback. This does not select a
+    new access mode or establish runtime proof; it preserves the old baseline.
+    """
+    if not callable(check_no_active_run):
+        raise AccessModeRejected('no-active-run-check', 'a live idle check is required')
+    for digest in (old_sha256, new_sha256):
+        if (type(digest) is not str or len(digest) != 64
+                or any(char not in '0123456789abcdef' for char in digest)):
+            raise AccessModeRejected('relocation-digest-invalid', 'explicit config hashes are required')
+    sd = _prepare_state_dir(state_dir)
+    with _Lock(sd, exclusive=True, timeout=lock_timeout):
+        _reject_pending_settings(sd)
+        old_path, _, old_bytes, old_cfg = _load_config(old_config)
+        new_path, _, new_bytes, new_cfg = _load_config(new_config)
+        if old_path == new_path:
+            raise AccessModeRejected('relocation-path-invalid', 'distinct config paths are required')
+        if (_sha256_bytes(old_bytes) != old_sha256 or _sha256_bytes(new_bytes) != new_sha256):
+            raise AccessModeRace('config-changed', 'configuration differs from the approved snapshots')
+        receipt = _load_receipt(sd)
+        if receipt is None or receipt['status'] != STATUS_ENABLED:
+            raise AccessModeRejected('not-managed', 'an applied full-access receipt is required')
+        if _managed_field_mismatches(new_cfg):
+            raise AccessModeRejected('managed-fields-changed', 'relocation cannot change access policy')
+        _require_idle(check_no_active_run)
+        if receipt['config_path'] == new_path and receipt['config_sha256'] == new_sha256:
+            # A failed upgrade may never have rebound the receipt. Recovery can
+            # confirm the already-bound destination without approving the unused
+            # candidate's policy; no receipt or configuration is changed here.
+            return False
+        if _managed_field_mismatches(old_cfg):
+            raise AccessModeRejected('managed-fields-changed', 'relocation cannot change access policy')
+        if receipt['config_path'] != old_path or receipt['config_sha256'] != old_sha256:
+            raise AccessModeRejected('state-path-mismatch', 'receipt is not bound to the approved source')
+        updated = dict(receipt, config_path=new_path, config_sha256=new_sha256)
+        _require_idle(check_no_active_run)
+        if (_sha256_bytes(_load_config(old_config)[2]) != old_sha256
+                or _sha256_bytes(_load_config(new_config)[2]) != new_sha256
+                or _load_receipt(sd) != receipt):
+            raise AccessModeRace('config-changed', 'relocation inputs changed before publication')
+        _write_receipt(sd, updated, durable=True)
+        return True
+
+
+def _write_receipt(state_dir, receipt, *, durable=False):
     data = json.dumps(receipt, indent=2, sort_keys=True).encode("utf-8") + b"\n"
-    _atomic_write(_receipt_path(state_dir), data, 0o600)
+    _atomic_write(_receipt_path(state_dir), data, 0o600, durable=durable)
 
 
 def _remove_receipt(state_dir):

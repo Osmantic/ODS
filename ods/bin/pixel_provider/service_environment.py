@@ -12,7 +12,7 @@ import stat
 import tempfile
 from pathlib import Path
 
-from pixel_access_bridge import AccessError, atomic_json, digest
+from pixel_access_bridge import AccessError, atomic_json, digest, runtime_config_path
 from pixel_access_protocol import HEX, provider_binding
 from pixel_settings.coordinator import _read
 
@@ -231,7 +231,7 @@ class ServiceEnvironment:
 
     def select(self, journal):
         record = self.load(journal)
-        _, checksum = _read(self.bridge.home / '.openclaw/openclaw.json', self.bridge.owner.pw_uid)
+        _, checksum = _read(runtime_config_path(self.bridge), self.bridge.owner.pw_uid)
         if checksum == record['beforeSha']:
             side = 'before'
         elif checksum == record['afterSha']:
@@ -438,7 +438,7 @@ class LaunchdServiceEnvironment(ServiceEnvironment):
 
     def select(self, journal):
         record = self.load(journal)
-        _, checksum = _read(self.bridge.home / '.openclaw/openclaw.json', self.bridge.owner.pw_uid)
+        _, checksum = _read(runtime_config_path(self.bridge), self.bridge.owner.pw_uid)
         if checksum == record['beforeSha']:
             side = 'before'
         elif checksum == record['afterSha']:

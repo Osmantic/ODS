@@ -45,7 +45,10 @@ def main():
     except protocol.ProtocolError:
         emit({"error": "owner-protocol-failed"})
         return
-    path = os.path.join(os.environ["HOME"], ".openclaw", "openclaw.json")
+    # Only the root coordinator launches this worker, with a clean environment
+    # derived from its bound deployment. API requests cannot choose this path.
+    path = os.environ.get("OPENCLAW_CONFIG_PATH") or os.path.join(
+        os.environ["HOME"], ".openclaw", "openclaw.json")
     # New integrated installations keep recovery state under the already
     # private config directory. A user's general XDG state parent may validly
     # be group-writable; do not chmod that shared directory or weaken custody.
@@ -69,6 +72,13 @@ def main():
             return False
 
     try:
+        if request['operation'] == 'access-relocate':
+            selection = request['relocation']
+            changed = controller.relocate_receipt(selection['source_config'], path, state_dir,
+                old_sha256=selection['source_sha256'], new_sha256=request['config_sha256'],
+                check_no_active_run=lambda: hook('busy'))
+            emit({'result': {'relocated': changed}})
+            return
         if request["operation"].startswith("model-"):
             result = model_transaction.operate(path, state_dir=state_dir, operation=request["operation"],
                 transaction_id=request.get("transaction_id"), proposed=request.get("model_target"),

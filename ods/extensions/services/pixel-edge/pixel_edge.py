@@ -22,7 +22,7 @@ import sys
 from datetime import datetime
 from urllib.parse import quote, urlsplit
 
-from aiohttp import web, ClientSession, UnixConnector, ClientTimeout
+from aiohttp import web, ClientSession, UnixConnector, TCPConnector, ClientTimeout
 from transition_gate import TransitionGate, GateError, strict_json, valid_binding
 from chat_context import project_context, valid_history_snapshot
 from access_mode import (public_status as public_access_status, valid_change as valid_access_change,
@@ -933,6 +933,18 @@ def _remember_chat_activity(app, chat_id, state):
             history.pop(previous, None)
 
 
+def _access_transport():
+    transport = os.environ.get('PIXEL_ACCESS_TRANSPORT', 'unix')
+    if transport == 'unix':
+        return UnixConnector(path=_SOCKET_PATH), 'http://pixel-upstream'
+    if transport == 'docker-desktop-host':
+        port = os.environ.get('PIXEL_NATIVE_ACCESS_PORT', '18790')
+        if not re.fullmatch(r'[1-9][0-9]{0,4}', port) or int(port) > 65535:
+            raise ValueError('invalid-native-access-port')
+        return TCPConnector(), 'http://host.docker.internal:' + port
+    raise ValueError('invalid-access-transport')
+
+
 async def handle_access_mode(request: web.Request):
     fail = _check_preview_auth(request)
     if fail is not None:
@@ -955,11 +967,12 @@ async def handle_access_mode(request: web.Request):
     elif request.can_read_body:
         return web.json_response({'error': 'invalid-request'}, status=400)
     try:
-        connector = UnixConnector(path=_SOCKET_PATH)
+        connector, origin = _access_transport()
         timeout = ClientTimeout(total=308 if data is not None else 21, sock_connect=3)
-        async with ClientSession(connector=connector, timeout=timeout) as session:
-            async with session.request(request.method, 'http://pixel-upstream/v1/access-mode',
-                    json=data, headers={'Authorization': 'Bearer ' + preview_proxy_token}) as response:
+        async with ClientSession(connector=connector, timeout=timeout, trust_env=False) as session:
+            async with session.request(request.method, origin + '/v1/access-mode',
+                    json=data, allow_redirects=False,
+                    headers={'Authorization': 'Bearer ' + preview_proxy_token}) as response:
                 raw = await _read_bounded(response.content, 65536)
                 if response.status != 200:
                     # Never retry an ambiguous transition. The controller's
@@ -990,10 +1003,10 @@ async def handle_model_control(request: web.Request):
     except (ValueError, OSError, RecursionError):
         return web.json_response({'error': 'invalid-request'}, status=400)
     try:
-        connector = UnixConnector(path=_SOCKET_PATH)
+        connector, origin = _access_transport()
         timeout = ClientTimeout(total=21 if data['operation'] == 'model-status' else 308, sock_connect=3)
-        async with ClientSession(connector=connector, timeout=timeout) as session:
-            async with session.post('http://pixel-upstream/v1/model-control', json=data,
+        async with ClientSession(connector=connector, timeout=timeout, trust_env=False) as session:
+            async with session.post(origin + '/v1/model-control', json=data, allow_redirects=False,
                     headers={'Authorization': 'Bearer ' + preview_proxy_token}) as response:
                 raw = await _read_bounded(response.content, 65536)
                 if response.status != 200:

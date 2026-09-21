@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Re-prove an unchanged Pixel access mode after an ODS-owned gateway restart."""
 import json
+import errno
 import re
 import stat
 import sys
@@ -10,6 +11,7 @@ from pathlib import Path
 sys.dont_write_bytecode = True
 PROGRAM = Path(__file__).resolve().parent
 HEX = re.compile(r"^[a-f0-9]{64}$")
+STARTUP_REPROOF_VERSION = 1
 DIAGNOSTIC_FIELDS = ("available", "scope", "configured_mode", "effective_mode",
                      "runtime_verified", "busy", "pending", "reason")
 ERROR_CODE = re.compile(r"^[a-z][a-z0-9-]{0,95}$")
@@ -82,8 +84,16 @@ def recoverable_safe_transition(value):
             and HEX.fullmatch(value["revision"]))
 
 
-def reconcile(request=request_access):
-    status, value = request("status")
+def reconcile(request=request_access, *, allow_safe_restore=True):
+    try:
+        status, value = request("status")
+    except OSError as error:
+        # A failed read-only preflight has not submitted a policy mutation.
+        # Do not apply this classification to the change request below.
+        if error.errno in (errno.ENOENT, errno.ECONNREFUSED, errno.ECONNRESET,
+                           errno.EPIPE, errno.ETIMEDOUT) or isinstance(error, TimeoutError):
+            raise ReconcileError('status-transport-unavailable') from None
+        raise
     if status != 200:
         raise ReconcileError("status-unavailable", status=status, projection=value)
     if ready(value):
@@ -95,7 +105,7 @@ def reconcile(request=request_access):
             and value.get("runtime_verified") is False and value.get("busy") is False
             and value.get("pending") is False and value.get("reason") == "runtime-proof-required"
             and isinstance(value.get("revision"), str) and HEX.fullmatch(value["revision"]))
-    recover_safe_mode = recoverable_safe_transition(value)
+    recover_safe_mode = allow_safe_restore and recoverable_safe_transition(value)
     if not (stale_runtime_proof or recover_safe_mode):
         raise ReconcileError("unsafe-state", projection=value)
     status, value = request("change", {
@@ -113,9 +123,9 @@ def reconcile(request=request_access):
     return value, True
 
 
-def main(request=request_access):
+def main(request=request_access, *, startup=False):
     try:
-        value, changed = reconcile(request)
+        value, changed = reconcile(request, allow_safe_restore=not startup)
         print(json.dumps({"result": "reproved" if changed else "already-ready",
                           "mode": value["effective_mode"]}, separators=(",", ":")))
         return 0
@@ -131,4 +141,8 @@ def main(request=request_access):
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    import argparse
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--startup', action='store_true',
+                        help='Re-prove only unchanged policy; never restore pending transitions')
+    raise SystemExit(main(startup=parser.parse_args().startup))

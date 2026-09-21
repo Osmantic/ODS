@@ -19,6 +19,7 @@ import urllib.request
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'bin'))
 from pixel_gateway_service import LaunchdGatewayService
+from pixel_access_bridge import AccessError
 
 
 def main():
@@ -96,10 +97,14 @@ def main():
                     raise RuntimeError('Temporary service definition changed')
 
             def command(argv, timeout=20):
-                return subprocess.check_output(argv, text=True, timeout=timeout)
+                try:
+                    return subprocess.check_output(argv, text=True, stderr=subprocess.DEVNULL, timeout=timeout)
+                except subprocess.CalledProcessError as error:
+                    raise AccessError('host-command-failed', returncode=error.returncode) from None
 
-            service = LaunchdGatewayService(command, RuntimeError, target, verify_fixture,
-                process={'uid':os.getuid(), 'gid':os.getgid(), 'executable':node})
+            service = LaunchdGatewayService(command, AccessError, target, verify_fixture,
+                process={'uid':os.getuid(), 'gid':os.getgid(), 'executable':node},
+                plist=plist, verify_definition=verify_fixture)
             health()
             before = service.process_identity()
             before_transaction = service.transaction_identity()
@@ -116,6 +121,18 @@ def main():
                     or before_transaction['started'] >= after_transaction['started']):
                 raise RuntimeError('Restart transaction identity unconfirmed')
             print('PASS: native restart and new process identity', flush=True)
+            service.stop(timeout=20)
+            service.assert_stopped()
+            service.assert_stopped()
+            print('PASS: unloaded job and captured process identities exited; repeatable check', flush=True)
+            service.reload()
+            health()
+            reloaded = service.transaction_identity()
+            if (reloaded['boot'] != after_transaction['boot']
+                    or reloaded['pid'] == after_transaction['pid']
+                    or reloaded['started'] <= after_transaction['started']):
+                raise RuntimeError('Reload transaction identity unconfirmed')
+            print('PASS: native bootstrap after stop and healthy new process', flush=True)
         finally:
             subprocess.run(['/bin/launchctl', 'bootout', target], capture_output=True, timeout=30)
             for _ in range(30):

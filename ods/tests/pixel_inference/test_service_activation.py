@@ -136,6 +136,23 @@ def test_rejected_forward_uses_same_callback_to_restore_old_env_and_exact_config
     assert b.record['providerServiceVerified']['side'] == 'before'
 
 
+def test_launchd_callback_stops_forward_and_rollback_before_reloading(lifecycle, monkeypatch):
+    p, b = lifecycle, lifecycle.bridge
+    b.gateway_service.is_launchd = True
+    reload = b.gateway_service.reload
+    def require_stopped():
+        assert b.stopped, 'launchd cannot bootstrap over the already loaded job'
+        reload()
+    monkeypatch.setattr(b.gateway_service, 'reload', require_stopped)
+    b.failure = 'registration'
+    result = change(p)
+    assert result['status'] == 'rolled-back'
+    assert b.stops == 2 and b.restarts == 2
+    assert b.config.read_bytes() == b.before
+    assert callback(p) == 'verified'
+    assert b.stops == 2 and b.restarts == 2
+
+
 @pytest.mark.parametrize('failure', ['reload', 'restart'])
 def test_failed_restart_requires_explicit_owner_recovery(lifecycle, failure):
     p, b = lifecycle, lifecycle.bridge
