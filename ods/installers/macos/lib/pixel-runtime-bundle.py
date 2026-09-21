@@ -283,8 +283,6 @@ def build(*, node, runtime, destination, plugins=(), expected_version='2026.6.33
         raise BundleError('bundle-node-not-executable')
     wrapper = Path(exec_wrapper).absolute() if exec_wrapper is not None else None
     wrapper_record = _file(wrapper.parent, wrapper.name) if wrapper else None
-    if wrapper_record is not None and wrapper_record[1] != 0o755:
-        raise BundleError('bundle-exec-wrapper-not-executable')
     staged = Path(tempfile.mkdtemp(prefix='.ods-pixel-bundle-', dir=parent))
     try:
         with (staged / 'node').open('xb') as output:
