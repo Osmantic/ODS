@@ -2023,10 +2023,14 @@ journal. All six jobs stop before replacement; native helpers start before the
 gateway. Recovery restores the previous service definitions, policy, code and
 installation receipt without reprovisioning accounts or deleting runtime spools.
 Unhealthy prior deployments and incomplete file sets fail during preflight.
-This replacement path still requires successful live activation qualification;
-passing simulated failure tests is not that proof. Recovery of the earlier failed
-attempt restored the previous runtime and verified full-access execution without
-deleting owner data.
+On 2026-09-21, a fresh preparation passed real protected activation on the
+development Apple Silicon Mac. All six managed services were included; the
+owner finalizer published the verified selection and refreshed Docker clients.
+The resulting access status was available, not pending, full-access and runtime
+verified. Models, credentials, history and workspace were retained. Recovery of
+the earlier failed attempt had restored the previous runtime and verified
+full-access execution without deleting owner data. This single-machine update
+does not qualify clean installation, reboot or every supported hardware tier.
 
 `PIXEL_LICENSE_ACCEPTED=true ./installers/macos/ods-macos.sh update-pixel`
 uses the installed source's pinned Pixel release. It downloads and prepares the
@@ -2057,6 +2061,10 @@ from inside the dashboard container. A client refresh failure retains the
 published selection; repeating finalization re-verifies activation and retries
 the client refresh instead of reinstalling the native services.
 
-This command's orchestration and failure paths are covered by tests; full live
-update and clean-install/reboot qualification remain release gates. Draft PR
-6155 contains the implementation and is not a claim of completed qualification.
+This command's orchestration and failure paths are covered by tests. Post-update
+Portal artifact creation/preview and clean-install/reboot qualification remain
+release gates. A real game-generation request exceeded the 900-second stream
+observer timeout; later backend evidence showed interruption and an idle model
+slot, not successful artifact creation. Its cancellation caller also timed out,
+so that observation does not prove an acknowledged cancellation response. Draft
+PR 6155 contains the implementation and is not a claim of completed qualification.
