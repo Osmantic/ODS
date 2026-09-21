@@ -11,12 +11,26 @@
 #           LOG_FILE, BGRN, AMB, NC,
 #           WHISPER_PORT, TTS_PORT, OPENCLAW_PORT,
 #           PERPLEXICA_PORT (:-3004), COMFYUI_PORT (:-8188),
-#           show_phase(), check_service(), ai(), ai_ok(), ai_warn(), signal()
+#           show_phase(), check_service(), ai(), ai_ok(), ai_warn(), signal(),
+#           ui_status_line(), ods_ui_cinematic()
 # Provides: Health check results, Perplexica auto-configuration
 #
 # Modder notes:
 #   Add new service health checks or auto-configuration here.
 # ============================================================================
+
+# Keep standalone phase harnesses usable; production defines this in ui.sh.
+if ! declare -F ui_status_line >/dev/null 2>&1; then
+    ui_status_line() {
+        local kind="$1" message="$2" label
+        case "$kind" in ok) label="OK" ;; warn) label="WARN" ;; error) label="ERROR" ;; *) label="INFO" ;; esac
+        printf '  [%s] %s\n' "$label" "$message"
+    }
+fi
+
+_phase12_cinematic() {
+    declare -F ods_ui_cinematic >/dev/null 2>&1 && ods_ui_cinematic
+}
 
 # Source service registry for port/health resolution
 . "$SCRIPT_DIR/lib/service-registry.sh"
@@ -73,13 +87,17 @@ _check_container_health() {
     read -r -a docker_cmd_arr <<< "$docker_cmd"
     [[ ${#docker_cmd_arr[@]} -gt 0 ]] || docker_cmd_arr=(docker)
 
-    printf "  ${GRN}...${NC} Waiting for %-20s " "$name"
+    if _phase12_cinematic; then
+        printf "  ${GRN}...${NC} Waiting for %-20s " "$name"
+    else
+        printf "  ... Waiting for %s\n" "$name"
+    fi
     for attempt in $(seq 1 "$max_attempts"); do
         local state=""
         state=$("${docker_cmd_arr[@]}" inspect --format '{{.State.Status}}' "$container_name" 2>/dev/null || echo "missing")
         case "$state" in
             exited|dead|missing)
-                printf "\r  ${RED}ERR${NC} %-55s\n" "$name container $state"
+                ui_status_line error "$name container $state"
                 ai_warn "$name container is $state; not retrying health probe."
                 return 1
                 ;;
@@ -89,12 +107,12 @@ _check_container_health() {
         health=$("${docker_cmd_arr[@]}" inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$container_name" 2>/dev/null || echo "missing")
         case "$health" in
             healthy)
-                printf "\r  ${BGRN}OK${NC} %-56s\n" "$name healthy"
+                ui_status_line ok "$name healthy"
                 return 0
                 ;;
             running)
                 # No Docker healthcheck declared. Treat running as good enough.
-                printf "\r  ${BGRN}OK${NC} %-56s\n" "$name running"
+                ui_status_line ok "$name running"
                 return 0
                 ;;
         esac
@@ -102,7 +120,7 @@ _check_container_health() {
         sleep 5
     done
 
-    printf "\r  ${AMB}WARN${NC} %-54s\n" "$name delayed (container health not healthy yet)"
+    ui_status_line warn "$name delayed (container health not healthy yet)"
     ai_warn "$name container health is not healthy yet. I will continue."
     return 1
 }
@@ -550,8 +568,8 @@ post("preferences", {
 post_setup_complete()
 print("ok")
 ' >> "$LOG_FILE" 2>&1 && \
-            printf "\r  ${BGRN}✓${NC} %-60s\n" "Perplexica configured (model: ${PERPLEXICA_MODEL})" || \
-            printf "\r  ${AMB}⚠${NC} %-60s\n" "Perplexica config — complete setup at :${PERPLEXICA_PORT:-3004}"
+            ui_status_line ok "Perplexica configured (model: ${PERPLEXICA_MODEL})" || \
+            ui_status_line warn "Perplexica config — complete setup at :${PERPLEXICA_PORT:-3004}"
     fi
 fi
 
@@ -663,11 +681,11 @@ if [[ "$ENABLE_VOICE" == "true" ]]; then
     done
 
     if ! $_stt_api_ready; then
-        printf "\r  ${AMB}⚠${NC} %-60s\n" "STT models API not ready — download manually:"
+        ui_status_line warn "STT models API not ready — download manually:"
         printf "      %s\n" "$STT_RECOVERY_CMD"
     # Step 2: skip download if already cached.
     elif _stt_model_cached "$STT_MODEL_URL"; then
-        printf "\r  ${BGRN}✓${NC} %-60s\n" "STT model already cached (${STT_MODEL})"
+        ui_status_line ok "STT model already cached (${STT_MODEL})"
     else
         # Step 3: POST to trigger download. Log stdout/stderr to install log.
         ai "Downloading STT model (${STT_MODEL})..."
@@ -676,9 +694,9 @@ if [[ "$ENABLE_VOICE" == "true" ]]; then
         # Step 4: verify the model is actually cached. POST can return 200
         # even if the download partially fails, so this GET is the real test.
         if _wait_stt_model_cached "$STT_MODEL_URL"; then
-            printf "\r  ${BGRN}✓${NC} %-60s\n" "STT model cached (${STT_MODEL})"
+            ui_status_line ok "STT model cached (${STT_MODEL})"
         else
-            printf "\r  ${AMB}⚠${NC} %-60s\n" "STT model download failed — run manually:"
+            ui_status_line warn "STT model download failed — run manually:"
             printf "      %s\n" "$STT_RECOVERY_CMD"
             printf "      %s\n" "See $LOG_FILE for details."
         fi

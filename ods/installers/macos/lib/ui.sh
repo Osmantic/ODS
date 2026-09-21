@@ -10,6 +10,43 @@
 
 DIVIDER="──────────────────────────────────────────────────────────────────────────────"
 
+macos_ui_cinematic() {
+    case "${ODS_UI_MODE:-auto}" in
+        cinematic)
+            [[ "${NON_INTERACTIVE:-false}" != "true" \
+                && -z "${NO_COLOR:-}" \
+                && -z "${ODS_INSTALLER_GUI:-}" ]]
+            ;;
+        plain) return 1 ;;
+        auto|"")
+            [[ "${NON_INTERACTIVE:-false}" != "true" \
+                && -t 1 \
+                && "${TERM:-}" != "dumb" \
+                && -z "${CI:-}" \
+                && -z "${NO_COLOR:-}" \
+                && -z "${ODS_INSTALLER_GUI:-}" ]]
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+macos_apply_presentation_mode() {
+    if ! macos_ui_cinematic; then
+        RED='' GRN='' BGRN='' DGRN='' MAG='' BMAG='' AMB='' WHT='' DIM='' NC=''
+    fi
+}
+
+macos_static_line() {
+    macos_ui_cinematic || return 0
+    local chars='░▒▓█' width=63 i
+    printf '  %b' "$MAG"
+    for ((i=0; i<width; i++)); do
+        printf '%s' "${chars:RANDOM%4:1}"
+    done
+    printf '%b\n' "$NC"
+    sleep 0.3
+}
+
 # Elapsed time since install start
 install_elapsed() {
     local now_epoch="${INSTALL_NOW_EPOCH:-$(date +%s)}"
@@ -21,7 +58,13 @@ install_elapsed() {
 
 # ── Logging ──
 
-log() { echo -e "${GRN}[INFO]${NC} $1" | tee -a "$ODS_LOG_FILE"; }
+log() {
+    if macos_ui_cinematic && [[ "${ODS_UI_VERBOSE:-0}" != "1" ]]; then
+        echo -e "${GRN}[INFO]${NC} $1" >> "$ODS_LOG_FILE"
+    else
+        echo -e "${GRN}[INFO]${NC} $1" | tee -a "$ODS_LOG_FILE"
+    fi
+}
 
 # ── AI narrator voice ──
 
@@ -46,7 +89,7 @@ show_phase() {
     local elapsed
     elapsed=$(install_elapsed)
     echo ""
-    echo -e "  ${DGRN}ODSGATE SEQUENCE [${elapsed}]${NC}  ${WHT}PHASE ${phase}/${total}${NC} ${BGRN}-- ${name}${NC}"
+    echo -e "  ${BMAG}ODSGATE SEQUENCE [${elapsed}]${NC}  ${WHT}PHASE ${phase}/${total}${NC} ${BGRN}-- ${name}${NC}"
     if [[ -n "$estimate" ]]; then
         echo -e "  ${DGRN}Estimated: ${estimate}${NC}"
     fi
@@ -55,16 +98,23 @@ show_phase() {
 
 # Boot banner
 show_ods_banner() {
+    if macos_ui_cinematic; then
+        clear 2>/dev/null || true
+    fi
     echo ""
-    echo -e "${BGRN}   OOOOO  DDDD   SSSSS${NC}"
-    echo -e "${BGRN}  OO   OO DD DD SS${NC}"
-    echo -e "${BGRN}  OO   OO DD DD  SSS${NC}"
-    echo -e "${BGRN}  OO   OO DD DD    SS${NC}"
-    echo -e "${BGRN}   OOOOO  DDDD  SSSS${NC}"
+    echo -e "${BGRN}    ____   ____    _____${NC}"
+    echo -e "${BGRN}   / __ \\ / __ \\  / ___/${NC}"
+    echo -e "${BGRN}  / / / // / / /  \\__ \\ ${NC}"
+    echo -e "${BGRN} / /_/ // /_/ /  ___/ / ${NC}"
+    echo -e "${BGRN} \\____//_____/  /____/  ${NC}"
     echo ""
-    echo -e "  ${WHT}ODSGATE macOS Installer v${ODS_VERSION}${NC}"
-    echo -e "  ${DGRN}One command to a full local AI stack.${NC}"
-    echo -e "  ${DGRN}Apple Silicon + Metal acceleration${NC}"
+    macos_static_line
+    echo -e "  ${BMAG}O D S G A T E${NC}   ${GRN}Local AI // Sovereign Intelligence // $(date +%Y)${NC}"
+    echo -e "  ${DGRN}macOS // Apple Silicon + Metal // v${ODS_VERSION}${NC}"
+    macos_static_line
+    echo ""
+    echo -e "  ${GRN}Signal acquired.${NC}"
+    echo -e "  ${GRN}I will guide the installation. Stay with me.${NC}"
     echo ""
 }
 
@@ -234,7 +284,7 @@ show_success_card() {
     echo ""
     echo -e "  ${BGRN}$(printf '=%.0s' {1..60})${NC}"
     echo ""
-    echo -e "       ${WHT}THE GATEWAY IS OPEN${NC}"
+    echo -e "       ${BMAG}THE ODS GATEWAY IS OPEN${NC}"
     echo ""
     echo -e "       ${DGRN}Chat UI:${NC}    ${WHT}http://localhost:${webui_port}${NC}"
     echo -e "       ${DGRN}Dashboard:${NC}  ${WHT}http://localhost:${dashboard_port}${NC}"
@@ -252,6 +302,11 @@ show_success_card() {
     echo -e "       ${DGRN}Stop:${NC}       ${GRN}./ods-macos.sh stop${NC}"
     echo ""
     echo -e "       ${DGRN}Install completed in $(install_elapsed)${NC}"
+    if [[ "${CLOUD_MODE:-false}" == "true" ]]; then
+        echo -e "       ${DGRN}Cloud mode is active; configured providers may receive prompts and responses.${NC}"
+    else
+        echo -e "       ${DGRN}Local inference runs on this machine by default.${NC}"
+    fi
     echo ""
     echo -e "  ${BGRN}$(printf '=%.0s' {1..60})${NC}"
     echo ""

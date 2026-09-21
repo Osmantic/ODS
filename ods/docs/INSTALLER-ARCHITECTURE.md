@@ -68,6 +68,37 @@ the library modules and `lib/service-registry.sh`, parses CLI arguments, then
 sources the 13 phases in order. All files share one global bash namespace —
 everything is sourced, not exec'd.
 
+## Presentation Contract
+
+The 13 Linux implementation phases are intentionally presented to users as six
+stable macro phases: preflight, feature selection, Docker/setup, module
+downloads, service launch, and verification. Windows maps its internal setup
+steps onto the same six-phase journey; macOS already exposes six phases. Adding
+or splitting an implementation phase must not renumber the user journey without
+an explicit installer-UX review.
+
+`ODS_UI_MODE` controls presentation without changing installer behavior:
+
+- `auto` (default) enables the green/magenta ODSGATE sequence only in an
+  interactive terminal;
+- `cinematic` forces the cinematic layout for an interactive capture;
+- `plain` emits deterministic one-line output.
+
+`--non-interactive`, `NO_COLOR`, and `ODS_INSTALLER_GUI=1` always select plain
+behavior. In the default `auto` mode, `TERM=dumb`, `CI`, and redirected stdout
+also select plain behavior; `cinematic` is the explicit operator override for
+an interactive capture. Plain mode never clears the screen, rings the terminal
+bell, or emits cursor-motion animation. Detailed operational messages remain in
+the install log during cinematic runs; warnings and errors stay visible. The
+Tauri installer continues to consume only the structured `ODS_PROGRESS`
+protocol.
+
+Long-wait lore and completion assurances must reflect the active runtime mode.
+Local mode may describe local inference; cloud and external-endpoint modes must
+disclose that the configured provider or endpoint can receive traffic. Do not
+add absolute privacy, telemetry, subscription, rate-limit, or data-residency
+claims unless the selected configuration proves them.
+
 ## File Header Convention
 
 Every module uses a standardized header:
@@ -106,7 +137,7 @@ Common customizations and exactly where to make them:
 |--------|-------------|-----|
 | **Add a hardware tier** | `lib/tier-map.sh` + `lib/detection.sh` | Add a `case` in `resolve_tier_config()` (tier-map.sh) and a detection path in `detection.sh`. Also update `lib/compose-select.sh` if a new compose overlay is needed, and add the tier to `QUICKSTART.md` and `README.md` hardware tables. |
 | **Swap CRT theme colors** | `lib/constants.sh` | Change the ANSI escape code variables (`GRN`, `AMB`, `RED`, etc.) near the top |
-| **Change lore messages** | `lib/ui.sh` | Edit the `LORE_MESSAGES[]` array — add, remove, or reword entries |
+| **Change lore messages** | `lib/ui.sh` | Edit the mode-specific `ODS_LOCAL_LORE_MESSAGES[]`, `ODS_CLOUD_LORE_MESSAGES[]`, and `ODS_EXTERNAL_LORE_MESSAGES[]` arrays together |
 | **Change boot splash** | `lib/ui.sh` | Edit the `show_stranger_boot()` function — it renders the CRT startup sequence |
 | **Skip a phase** | `install-core.sh` | Comment out or remove the `source` line for that phase (e.g., remove phase 07 to skip dev tools) |
 | **Add a new phase** | `installers/phases/` | Create a numbered `.sh` file with the standard header, then add a `source` line in `install-core.sh` in the right order |
@@ -151,9 +182,9 @@ What's shared vs platform-specific across the installer:
 
 | Layer | Shared | Platform-specific |
 |-------|--------|-------------------|
-| Colors, version, paths | `lib/constants.sh` | — |
-| Logging | `lib/logging.sh` | — |
-| CRT UI / spinners | `lib/ui.sh` | — |
+| Colors, version, paths | `lib/constants.sh` | `installers/macos/lib/constants.sh`, `installers/windows/lib/constants.ps1` |
+| Logging | `lib/logging.sh` | macOS and Windows UI helpers |
+| CRT UI / spinners | `lib/ui.sh` | `installers/macos/lib/ui.sh`, `installers/windows/lib/ui.ps1` |
 | GPU detection | `lib/detection.sh`, topology helpers | Backend contract JSONs (`config/backends/`) |
 | Tier → model mapping | `lib/tier-map.sh` | — |
 | Compose selection | `lib/compose-select.sh` | Per-backend compose overlays |

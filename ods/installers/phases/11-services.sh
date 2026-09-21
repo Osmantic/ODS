@@ -10,12 +10,21 @@
 #           GGUF_FILE, GGUF_URL, LLM_MODEL, MAX_CONTEXT,
 #           DOCKER_COMPOSE_CMD, COMPOSE_FLAGS, BGRN, RED, AMB, NC,
 #           show_phase(), bootline(), signal(), ai(), ai_ok(), ai_bad(),
-#           ai_warn(), log(), spin_task()
+#           ai_warn(), log(), spin_task(), ui_status_line()
 # Provides: Running Docker Compose stack
 #
 # Modder notes:
 #   Change model download logic or compose launch flags here.
 # ============================================================================
+
+# Keep standalone phase harnesses usable; production defines this in ui.sh.
+if ! declare -F ui_status_line >/dev/null 2>&1; then
+    ui_status_line() {
+        local kind="$1" message="$2" label
+        case "$kind" in ok) label="OK" ;; warn) label="WARN" ;; error) label="ERROR" ;; *) label="INFO" ;; esac
+        printf '  [%s] %s\n' "$label" "$message"
+    }
+fi
 
 _phase11_build_local_images() {
     local -a build_services=("$@")
@@ -77,7 +86,7 @@ except Exception:
                 break
             fi
 
-            printf "\r  ${AMB}⚠${NC} %-60s\n" "$svc build failed (attempt $attempt/$max_attempts)"
+            ui_status_line warn "$svc build failed (attempt $attempt/$max_attempts)"
             if (( attempt < max_attempts )); then
                 ai_warn "$svc build failed; retrying in ${retry_delay}s (attempt $((attempt + 1))/$max_attempts)..."
                 sleep "$retry_delay"
@@ -85,7 +94,7 @@ except Exception:
         done
 
         if $build_failed; then
-            printf "\r  ${AMB}⚠${NC} %-60s\n" "$svc build failed or image missing"
+            ui_status_line warn "$svc build failed or image missing"
             {
                 echo ""
                 echo "===== $svc build log tail ($build_log) ====="
@@ -94,7 +103,7 @@ except Exception:
             ai "Build log: $build_log"
             failed_build_services+=("$svc")
         else
-            printf "\r  ${BGRN}✓${NC} %-60s\n" "$svc built"
+            ui_status_line ok "$svc built"
         fi
     done
 
@@ -807,37 +816,37 @@ else
                     # fires. A spurious "Model downloaded" line then misleads
                     # later phases that depend on the file existing.
                     if mv "$ODS_ACTIVE_DOWNLOAD_PART" "$GGUF_DIR/$GGUF_FILE" && [[ -s "$GGUF_DIR/$GGUF_FILE" ]]; then
-                        printf "\r  ${BGRN}✓${NC} %-60s\n" "Model downloaded: $GGUF_FILE"
+                        ui_status_line ok "Model downloaded: $GGUF_FILE"
                         _dl_success=true
                         break
                     else
                         rm -f "$GGUF_DIR/$GGUF_FILE" 2>/dev/null || true
-                        printf "\r  ${AMB}⚠${NC} %-60s\n" "Download claimed to succeed but $GGUF_FILE is missing/empty"
+                        ui_status_line warn "Download claimed to succeed but $GGUF_FILE is missing/empty"
                     fi
                 else
                     ODS_ACTIVE_DOWNLOAD_PID=""
                     if _phase11_download_hf_artifact "$GGUF_URL" "$ODS_ACTIVE_DOWNLOAD_PART" "$INSTALL_DIR/logs/model-download.log"; then
                         if mv "$ODS_ACTIVE_DOWNLOAD_PART" "$GGUF_DIR/$GGUF_FILE" && [[ -s "$GGUF_DIR/$GGUF_FILE" ]]; then
-                            printf "\r  ${BGRN}✓${NC} %-60s\n" "Model downloaded via Hugging Face client: $GGUF_FILE"
+                            ui_status_line ok "Model downloaded via Hugging Face client: $GGUF_FILE"
                             _dl_success=true
                             break
                         else
                             rm -f "$GGUF_DIR/$GGUF_FILE" 2>/dev/null || true
-                            printf "\r  ${AMB}⚠${NC} %-60s\n" "Hugging Face fallback completed but $GGUF_FILE is missing/empty"
+                            ui_status_line warn "Hugging Face fallback completed but $GGUF_FILE is missing/empty"
                         fi
                     fi
                 fi
-                printf "\r  ${AMB}⚠${NC} %-60s\n" "Download attempt $_attempt failed"
+                ui_status_line warn "Download attempt $_attempt failed"
                 sleep 3
             done
 
             if [[ "$_dl_success" != "true" ]] && _phase11_model_file_valid "$GGUF_DIR/$GGUF_FILE" "$GGUF_SHA256"; then
-                printf "\r  ${BGRN}✓${NC} %-60s\n" "Model present after download retries: $GGUF_FILE"
+                ui_status_line ok "Model present after download retries: $GGUF_FILE"
                 _dl_success=true
             fi
 
             if [[ "$_dl_success" != "true" ]]; then
-                printf "\r  ${RED}✗${NC} %-60s\n" "Download failed after 3 attempts: $GGUF_FILE"
+                ui_status_line error "Download failed after 3 attempts: $GGUF_FILE"
                 # Nothing above deletes the .part, so the bytes already on disk
                 # are still usable. Users who do not know that re-download from
                 # zero or clear the directory by hand.
@@ -855,7 +864,7 @@ else
                             ai_warn "Could not compute checksum for downloaded file"
                             ai_warn "Proceeding without verification (file may be corrupt)"
                         else
-                            printf "\r  ${RED}✗${NC} %-60s\n" "Downloaded file is corrupt (SHA256 mismatch)"
+                            ui_status_line error "Downloaded file is corrupt (SHA256 mismatch)"
                             ai "  Expected: $GGUF_SHA256"
                             ai "  Got:      $ACTUAL_HASH"
                             rm -f "$GGUF_DIR/$GGUF_FILE"
@@ -1255,7 +1264,7 @@ MODELS_INI_EOF
             if ! _phase11_recreate_exited_services; then
                 log "Bounded exited-service recreation did not complete; continuing the normal launch retry."
             fi
-            printf "\r  ${AMB}⚠${NC} %-60s\n" "Some services still starting..."
+            ui_status_line warn "Some services still starting..."
             ai_warn "Some containers need more time. Waiting 30s before retry..."
             sleep 30
         fi
@@ -1328,14 +1337,14 @@ MODELS_INI_EOF
 
     if $compose_ok; then
         if $_compose_started_with_delayed_health; then
-            printf "\r  ${AMB}⚠${NC} %-60s\n" "Containers launched; waiting on health checks"
+            ui_status_line warn "Containers launched; waiting on health checks"
             echo ""
             ai_warn "Some containers are still becoming healthy. Continuing to the longer health checks."
         else
             if ! _phase11_assert_managed_containers; then
                 exit 1
             fi
-            printf "\r  ${BGRN}✓${NC} %-60s\n" "All containers launched"
+            ui_status_line ok "All containers launched"
             echo ""
             ai_ok "Services started (llama-server)"
         fi
@@ -1358,7 +1367,7 @@ MODELS_INI_EOF
             fi
         fi
     else
-        printf "\r  ${RED}✗${NC} %-60s\n" "Some containers failed to launch"
+        ui_status_line error "Some containers failed to launch"
         echo ""
         ai_warn "Some services failed. Check: docker compose logs"
         ai_warn "Log file: $LOG_FILE"

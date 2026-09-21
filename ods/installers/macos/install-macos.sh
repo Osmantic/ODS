@@ -172,6 +172,7 @@ SOURCE_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 LIB_DIR="${SCRIPT_DIR}/lib"
 source "${LIB_DIR}/constants.sh"
 source "${LIB_DIR}/ui.sh"
+macos_apply_presentation_mode
 source "${LIB_DIR}/bridge-manager.sh"
 source "${LIB_DIR}/native-model.sh"
 source "${LIB_DIR}/tier-map.sh"
