@@ -1096,6 +1096,16 @@ cmd_chat() {
     echo ""
 }
 
+cmd_update_pixel() {
+    test_install
+    if [[ "${PIXEL_LICENSE_ACCEPTED:-}" != true ]]; then
+        ai_err "Native Pixel update requires PIXEL_LICENSE_ACCEPTED=true after the applicable authorization."
+        return 1
+    fi
+    /usr/bin/python3 "${INSTALL_DIR}/installers/macos/lib/pixel-native-update.py" \
+        --install-dir "$INSTALL_DIR" --ods-source "$INSTALL_DIR" --license-authorized "$@"
+}
+
 cmd_update() {
     test_install
     cd "$INSTALL_DIR"
@@ -1150,6 +1160,7 @@ show_help() {
     echo -e "  ${GRN}  config edit${NC}         ${DGRN}Open .env in \$EDITOR${NC}"
     echo -e "  ${GRN}  chat \"message\"${NC}      ${DGRN}Quick chat via API${NC}"
     echo -e "  ${GRN}  update${NC}              ${DGRN}Pull latest images and restart${NC}"
+    echo -e "  ${GRN}  update-pixel${NC}        ${DGRN}Update the native Pixel runtime and services${NC}"
     echo -e "  ${GRN}  version${NC}             ${DGRN}Show version${NC}"
     echo -e "  ${GRN}  help${NC}                ${DGRN}Show this help${NC}"
     echo ""
@@ -1188,6 +1199,7 @@ case "$COMMAND" in
         ;;
     chat)       cmd_chat "$*" ;;
     update)     cmd_update ;;
+    update-pixel) cmd_update_pixel "$@" ;;
     version)    cmd_version ;;
     help)       show_help ;;
     *)

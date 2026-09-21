@@ -226,8 +226,10 @@ def test_real_native_candidate_preserves_shared_ods_policy(tmp_path, qualificati
         before = (candidate / 'openclaw.json').read_bytes()
         destination = tmp_path / 'Complete Runtime Bundle'
         digest = module.stage_bundle(source=source, ref=ref, candidate=candidate,
-                                     node=node, runtime=runtime, destination=destination)
+                                     node=node, runtime=runtime, destination=destination,
+                                     services_digest=service_digest)
         manifest, actual = module.bundle.verify(destination, expected_digest=digest)
+        module.bundle.verify_service_binding(destination, service_digest)
         assert actual == digest
         assert len(manifest['plugins']) == len(value['plugins']['load']['paths'])
         assert (candidate / 'openclaw.json').read_bytes() == before

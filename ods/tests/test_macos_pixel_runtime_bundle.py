@@ -37,8 +37,29 @@ def artifacts(tmp_path):
     return dict(node=node, runtime=runtime, destination=tmp_path / 'bundle', plugins=[plugin])
 
 
+def test_service_only_change_has_distinct_deterministic_deployment_identity(artifacts):
+    first = bundle.build(**artifacts, services_digest='a' * 64)
+    bundle.verify_service_binding(artifacts['destination'], 'a' * 64)
+    second_args = dict(artifacts, destination=artifacts['destination'].with_name('second'))
+    assert bundle.build(**second_args, services_digest='a' * 64) == first
+    third_args = dict(artifacts, destination=artifacts['destination'].with_name('third'))
+    third = bundle.build(**third_args, services_digest='b' * 64)
+    assert third != first
+    bundle.verify(third_args['destination'], expected_digest=third)
+    with pytest.raises(bundle.BundleError, match='binding-mismatch'):
+        bundle.verify_service_binding(third_args['destination'], 'a' * 64)
+
+
+@pytest.mark.parametrize('value', ['', 'a' * 63, 'G' * 64, [], 1])
+def test_invalid_service_binding_is_rejected_before_staging(artifacts, value):
+    with pytest.raises(bundle.BundleError, match='invalid-service'):
+        bundle.build(**artifacts, services_digest=value)
+    assert not artifacts['destination'].exists()
+
+
 def test_bundle_is_deterministic_and_contains_dependencies_and_plugins(artifacts):
     first = bundle.build(**artifacts)
+    bundle.verify_service_binding(artifacts['destination'], 'a' * 64)
     other = dict(artifacts, destination=artifacts['destination'].with_name('second'))
     second = bundle.build(**other)
     assert first == second

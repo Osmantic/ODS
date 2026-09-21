@@ -416,6 +416,7 @@ def bind_initial_services(plan, *, bundle, digest, source_ref):
 
 
 def _bind_services(plan, *, bundle, digest, source_ref):
+    _bundle.verify_service_binding(plan['runtime_bundle']['source'], digest)
     selection = {'bundle': str(_path(bundle).resolve(strict=True)), 'expected_digest': digest,
         'expected_ref': source_ref, 'expected_config_digest': hashlib.sha256(
             plan['runtime_bundle']['source_config_bytes']).hexdigest()}
@@ -600,6 +601,7 @@ def qualify_migration_selection(*, owner_name, current_digest, gateway_port, can
         json.loads(record_body), state_dir=state)
     selected_runtime = _bundle_plan(runtime_bundle, bundle_digest,
         {'OPENCLAW_CONFIG_PATH': str(candidate_path)}, owner)
+    _bundle.verify_service_binding(runtime_bundle, services_digest)
     if selected_runtime['source_config_bytes'] != candidate_body or bundle_digest == current_digest:
         raise InstallError('native-migration-candidate-changed')
     selected_services = {'bundle': str(_path(services_bundle).resolve(strict=True)),

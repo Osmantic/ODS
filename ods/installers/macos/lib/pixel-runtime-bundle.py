@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import stat
 import sys
@@ -246,8 +247,22 @@ def qualify_workspace_root_upgrade(current, candidate, *, current_digest, candid
             'changedEntries': [entry], 'scope': 'plugin content only; no activation'}
 
 
+def verify_service_binding(root, services_digest):
+    path = Path(root) / 'ods-service-binding.json'
+    if not os.path.lexists(path):
+        return  # Legacy bundles predate deployment binding.
+    with os.fdopen(_open_file(Path(root), path.name), 'rb') as stream:
+        body = stream.read(1025)
+    expected = {'schemaVersion': 1, 'serviceBundleDigest': services_digest}
+    if len(body) > 1024 or body != _encode(expected):
+        raise BundleError('bundle-service-binding-mismatch')
+
+
 def build(*, node, runtime, destination, plugins=(), expected_version='2026.6.33',
-          stream_progress_fix=False):
+          stream_progress_fix=False, services_digest=None):
+    if services_digest is not None and (type(services_digest) is not str
+            or not re.fullmatch('[a-f0-9]{64}', services_digest)):
+        raise BundleError('invalid-service-bundle-digest')
     node, runtime = Path(node).resolve(strict=True), Path(runtime).resolve(strict=True)
     plugins = [Path(path).resolve(strict=True) for path in plugins]
     destination = Path(destination)
@@ -283,6 +298,10 @@ def build(*, node, runtime, destination, plugins=(), expected_version='2026.6.33
         (staged / 'plugins').chmod(0o755)
         for index, (source, entries) in enumerate(zip(plugins, snapshots[1:])):
             _copy_tree(source, staged / 'plugins' / str(index), entries)
+        if services_digest is not None:
+            binding = staged / 'ods-service-binding.json'
+            binding.write_bytes(_encode({'schemaVersion': 1, 'serviceBundleDigest': services_digest}))
+            binding.chmod(0o644)
         value = {'schemaVersion': 1, 'openclawVersion': expected_version,
                  'plugins': ['plugins/' + str(i) for i in range(len(plugins))],
                  'entries': inventory(staged)}

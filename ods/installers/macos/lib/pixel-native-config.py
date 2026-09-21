@@ -300,7 +300,7 @@ def validate_candidate(config, *, node, entrypoint, expected, env, cwd):
             raise ValueError('native-config-plugin-not-loaded')
 
 
-def stage_bundle(*, source, ref, candidate, node, runtime, destination):
+def stage_bundle(*, source, ref, candidate, node, runtime, destination, services_digest=None):
     """Package exactly the configured plugins and prove their relocated loader.
 
     The candidate configuration is not edited. Protected publication still uses
@@ -356,7 +356,7 @@ def stage_bundle(*, source, ref, candidate, node, runtime, destination):
         staged = temporary / 'bundle'
         digest = bundle.build(node=node, runtime=runtime / 'node_modules/openclaw',
             destination=staged, plugins=paths, expected_version=release['openclaw'],
-            stream_progress_fix=True)
+            stream_progress_fix=True, services_digest=services_digest)
         relocated = copy.deepcopy(config)
         relocated['plugins']['load']['paths'] = [str(staged / ('plugins/' + str(i)))
                                                 for i in range(len(paths))]

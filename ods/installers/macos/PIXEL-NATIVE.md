@@ -2013,3 +2013,31 @@ renderer/loader qualification passed with an explicit assertion for Docker
 Desktop preview transport. Shared Linux host-installer regression passed all
 294 checks in an isolated container with source mounted read-only and Python
 bytecode cache redirected to `/tmp`.
+
+### Managed Update Command (Qualification In Progress)
+
+`PIXEL_LICENSE_ACCEPTED=true ./installers/macos/ods-macos.sh update-pixel`
+uses the installed source's pinned Pixel release. It downloads and prepares the
+candidate as the signed-in owner, activates it through the existing protected
+joint migration, and publishes a verified atomic management selection. The
+ordinary `update` command still updates Docker images only. `--prepare-only`
+stops before protected activation; preparations are retained under
+`data/pixel-native/update-*` for diagnosis and recovery.
+
+The coordinator can also be invoked from a newer source checkout with explicit
+`--install-dir`, `--ods-source`, and `--license-authorized` arguments using
+`installers/macos/lib/pixel-native-update.py`. It pins subprocesses to the active
+gateway's local Docker socket and restores inherited Docker environment overrides
+on exit. It does not reset credentials or remove models, history, or workspace.
+
+New runtime bundles include a content-checked service bundle binding so a
+services-only change receives a different deployment identity without relaxing
+the upgrade journal's distinct-version requirement. Original bundles remain
+readable. A failed activation must use the existing protected recovery procedure;
+do not run a fresh install or discard its journal. If activation completed but
+management publication failed, `pixel-native-finalize.py --update-existing
+--preparation PATH` re-verifies protected completion before retrying publication.
+
+This command's orchestration and failure paths are covered by tests; full live
+update and clean-install/reboot qualification remain release gates. Draft PR
+6155 contains the implementation and is not a claim of completed qualification.
