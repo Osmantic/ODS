@@ -2043,7 +2043,7 @@ cmd_dry_run() {
             echo "  ${_img_line}"
             _any_compose=true
         done < <(docker compose "${flags[@]}" config 2>/dev/null \
-            | grep -E '^\s+image:' | sed 's/.*image:\s*//' | sort -u)
+            | grep -E '^\s+image:' | sed 's/.*image:[[:space:]]*//' | sort -u)
         [[ "$_any_compose" == "true" ]] && images_shown=true
     fi
     [[ "$images_shown" == "false" ]] && echo "  (could not resolve compose config)"

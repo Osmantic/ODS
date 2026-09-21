@@ -30,7 +30,7 @@ echo ""
 # Source only the functions under test (phase scripts expect installer env).
 SCRIPT_DIR="$ROOT_DIR"
 source "$ROOT_DIR/installers/lib/detection.sh"
-source <(sed -n '/^_phase04_current_install_owns_docker_port\s*()\s*{/,/^}/p;/^check_port_conflict\s*()\s*{/,/^}/p;/^check_ollama_conflict\s*()\s*{/,/^}/p' \
+source <(sed -n '/^_phase04_current_install_owns_docker_port[[:space:]]*()[[:space:]]*{/,/^}/p;/^check_port_conflict[[:space:]]*()[[:space:]]*{/,/^}/p;/^check_ollama_conflict[[:space:]]*()[[:space:]]*{/,/^}/p' \
   "$ROOT_DIR/installers/phases/04-requirements.sh") || {
     echo -e "${RED}✗ FAIL${NC} - Cannot load functions from 04-requirements.sh"
     exit 1
