@@ -154,6 +154,23 @@ def test_real_native_candidate_preserves_shared_ods_policy(tmp_path, qualificati
         research_port=3099, **migration_args)
     value = json.loads((candidate / 'openclaw.json').read_text())
     assert value['plugins']['entries']['pixel-ods']['config']['workspacePreviewTransport'] == 'docker-desktop'
+    if qualification == 'config':
+        # Re-render a managed configuration, not just the historical pixel-ods-only form.
+        state = (tmp_path / 'managed-state').resolve()
+        state.mkdir()
+        managed_agent = next(item for item in value['agents']['list'] if item['id'] == 'pixel')
+        workspace = Path(managed_agent.get('workspace') or value['agents']['defaults']['workspace'])
+        workspace.mkdir(parents=True, exist_ok=True)
+        before = (candidate / 'openclaw.json').read_bytes()
+        updated = module.prepare(source=source, ref=ref, answers=answers, node=node,
+            sandbox_image=image, destination=tmp_path / 'managed-update', runtime=runtime,
+            research_port=3099, previous_config=candidate / 'openclaw.json', previous_state_dir=state)
+        preserved = module.private_json(updated / 'openclaw.json')
+        assert preserved['plugins']['allow'] == value['plugins']['allow']
+        assert preserved['gateway']['auth'] == value['gateway']['auth']
+        assert preserved['models']['providers'] == value['models']['providers']
+        assert (candidate / 'openclaw.json').read_bytes() == before
+        assert module.private_json(updated / 'migration.json')['stateDir'] == str(state)
     if migrating:
         if value['models']['providers']['ods-gateway'] != previous['models']['providers']['ods-gateway']:
             pytest.fail('migration changed the selected model provider')

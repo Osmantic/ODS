@@ -1,4 +1,4 @@
-"""Preserve owner state while staging the legacy native Pixel configuration.
+"""Preserve owner state while staging an existing native Pixel configuration.
 
 This does not authorize or activate a runtime/configuration transition. New tool
 definitions come from the shared renderer; explicit existing access-mode fields
@@ -14,6 +14,20 @@ CONTROLLED_AGENT_FIELDS = frozenset(('sandbox', 'tools', 'contextInjection', 'co
     'contextTokens', 'bootstrapMaxChars', 'bootstrapTotalMaxChars'))
 ACCESS_FIELDS = (('sandbox', 'mode'), ('tools', 'exec', 'host'), ('tools', 'exec', 'security'),
     ('tools', 'exec', 'ask'), ('tools', 'fs', 'workspaceOnly'))
+
+
+def check_plugin_transition(previous, candidate):
+    # Candidate plugins are subsequently qualified against the pinned runtime.
+    # Never silently remove an existing plugin or restore its old runtime path.
+    allowed, selected = previous.get('allow'), candidate.get('allow')
+    entries = previous.get('entries', {})
+    if (type(allowed) is not list or type(selected) is not list
+            or any(type(value) is not str for value in allowed + selected)
+            or len(set(allowed)) != len(allowed) or len(set(selected)) != len(selected)
+            or 'pixel-ods' not in allowed or not set(allowed) <= set(selected)
+            or previous.get('installs') or type(entries) is not dict
+            or not set(entries) <= set(allowed)):
+        raise ValueError('legacy-native-plugin-migration-required')
 
 
 def verify_state_preservation(previous, candidate_bytes, record, *, state_dir):
@@ -69,9 +83,10 @@ def preserve_state(candidate, previous, *, state_dir):
     if any(not isinstance(previous.get(key), dict) for key in ('plugins', 'agents', 'models', 'gateway')):
         raise ValueError('native-migration-configuration-shape-invalid')
     plugins = previous.get('plugins', {})
-    if (plugins.get('allow') != ['pixel-ods'] or plugins.get('installs')
-            or set(plugins.get('entries', {})) - {'pixel-ods'}):
-        raise ValueError('legacy-native-plugin-migration-required')
+    candidate_plugins = candidate.get('plugins')
+    if type(candidate_plugins) is not dict:
+        raise ValueError('native-migration-configuration-shape-invalid')
+    check_plugin_transition(plugins, candidate_plugins)
     old_agents = previous.get('agents', {})
     agents = old_agents.get('list', [])
     if (not isinstance(agents, list) or len(agents) != 1 or not isinstance(agents[0], dict)
@@ -92,7 +107,7 @@ def preserve_state(candidate, previous, *, state_dir):
         raise ValueError('existing-native-model-provider-required')
     old_gateway = previous.get('gateway', {})
     auth = old_gateway.get('auth', {})
-    if (not isinstance(auth, dict) or auth.get('mode') != 'token'
+    if (not isinstance(auth, dict) or auth.get('mode', 'token') != 'token' or auth.get('password')
             or not isinstance(auth.get('token'), str) or not auth['token'] or old_gateway.get('bind') != 'loopback'
             or old_gateway.get('port') != candidate.get('gateway', {}).get('port')):
         raise ValueError('legacy-native-gateway-selection-needs-review')

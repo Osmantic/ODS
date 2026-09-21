@@ -13,7 +13,7 @@ module = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(module)
 
 
-@pytest.mark.parametrize('fault', [None, 'full-access', 'plugins', 'agents', 'model', 'provider', 'port', 'auth', 'workspace', 'state'])
+@pytest.mark.parametrize('fault', [None, 'full-access', 'managed', 'plugins', 'agents', 'model', 'provider', 'port', 'auth', 'ambiguous-auth', 'null-auth-mode', 'workspace', 'state'])
 def test_migration_keeps_owner_state_without_restoring_legacy_tool_policy(tmp_path, fault):
     state, workspace = tmp_path / 'state', tmp_path / 'owner-projects'
     state.mkdir()
@@ -37,16 +37,23 @@ def test_migration_keeps_owner_state_without_restoring_legacy_tool_policy(tmp_pa
     if fault == 'full-access':
         previous['agents']['list'][0]['tools'].update(exec={'host': 'gateway', 'security': 'full', 'ask': 'off'},
             fs={'workspaceOnly': False})
+    if fault == 'managed':
+        previous['gateway']['auth'].pop('mode')
+        previous['plugins']['allow'].append('pixel-operations-broker')
+        previous['plugins']['entries']['pixel-operations-broker'] = {'enabled': True}
+        previous['plugins']['load'] = {'paths': ['/previous/protected/runtime/plugins/1']}
     if fault == 'plugins': previous['plugins']['allow'].append('custom')
     if fault == 'agents': previous['agents']['list'].append({'id': 'custom'})
     if fault == 'model': previous['agents']['list'][0]['model'] = 'other/model'
     if fault == 'provider': previous['models']['providers'] = {}
     if fault == 'port': candidate['gateway']['port'] = 18889
     if fault == 'auth': previous['gateway']['auth']['mode'] = 'password'
+    if fault == 'ambiguous-auth': previous['gateway']['auth']['password'] = 'fixture-password'
+    if fault == 'null-auth-mode': previous['gateway']['auth']['mode'] = None
     if fault == 'workspace': previous['agents']['defaults']['workspace'] = str(tmp_path / 'missing')
     if fault == 'state': state = tmp_path / 'missing-state'
     before_old, before_new = copy.deepcopy(previous), copy.deepcopy(candidate)
-    if fault not in (None, 'full-access'):
+    if fault not in (None, 'full-access', 'managed'):
         with pytest.raises((ValueError, OSError)): module.preserve_state(candidate, previous, state_dir=state)
     else:
         merged, contract = module.preserve_state(candidate, previous, state_dir=state)
@@ -68,6 +75,23 @@ def test_migration_keeps_owner_state_without_restoring_legacy_tool_policy(tmp_pa
         assert (state / 'sessions.json').read_text() == 'retained'
         assert (workspace / 'snake.html').read_text() == 'owner project'
     assert previous == before_old and candidate == before_new
+
+
+@pytest.mark.parametrize('fault', ['removed', 'duplicate', 'invalid-id', 'invalid-list',
+    'entry-outside-allowlist', 'installed', 'invalid-entries', 'candidate-duplicate'])
+def test_managed_plugin_update_rejects_ambiguous_or_lossy_selection(fault):
+    previous = {'allow': ['pixel-ods', 'pixel-operations-broker'], 'entries': {}}
+    candidate = copy.deepcopy(previous)
+    if fault == 'removed': candidate['allow'].pop()
+    if fault == 'duplicate': previous['allow'].append('pixel-ods')
+    if fault == 'invalid-id': previous['allow'].append({})
+    if fault == 'invalid-list': previous['allow'] = 'pixel-ods'
+    if fault == 'entry-outside-allowlist': previous['entries']['custom'] = {}
+    if fault == 'installed': previous['installs'] = {'custom': {}}
+    if fault == 'invalid-entries': previous['entries'] = []
+    if fault == 'candidate-duplicate': candidate['allow'].append('pixel-ods')
+    with pytest.raises(ValueError, match='plugin-migration-required'):
+        module.check_plugin_transition(previous, candidate)
 
 
 @pytest.mark.parametrize('fault', [None, 'key', 'provider', 'workspace', 'state', 'model', 'store',
