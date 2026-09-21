@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import pwd
 import re
+import shlex
 import stat
 import subprocess
 import sys
@@ -115,6 +116,61 @@ def update_selection_records(previous, activation, prepared, proof, install_dir)
         'activation': {**activation, **identities}}
 
 
+def refresh_clients(install_dir):
+    """Recreate native consumers from the resolved stack, preserving volumes.
+
+    The owner selection must already be published and protected activation
+    verified. Failure leaves that selection intact for an explicit replay.
+    """
+    install_dir = Path(install_dir).resolve(strict=True)
+    installer, stack = helper('pixel-macos-access-install'), helper('pixel-native-stack')
+    owner = pwd.getpwuid(os.getuid())
+    _, environment, _, _, _, _ = installer._source_gateway(
+        installer._launchd.GATEWAY_PLIST, owner.pw_name, 18789)
+    transport = {key: environment[name] for key, name in (
+        ('docker', 'PIXEL_HISTORY_DOCKER'), ('project', 'PIXEL_HISTORY_PROJECT'),
+        ('image', 'PIXEL_HISTORY_IMAGE'), ('user', 'PIXEL_HISTORY_USER'))}
+    installer._native_transport_environment(transport, owner)
+    endpoint = environment.get('DOCKER_HOST', '')
+    if not endpoint.startswith('unix:///') or not Path(endpoint[7:]).is_socket():
+        raise ValueError('installed-local-docker-socket-required')
+    process_env = {key: value for key, value in os.environ.items()
+        if key not in ('DOCKER_CONTEXT', 'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH', 'DOCKER_HOST')}
+    process_env['DOCKER_HOST'] = endpoint
+    tokens = shlex.split((install_dir / '.compose-flags').read_text())
+    if not tokens or len(tokens) % 2 or any(token != '-f' for token in tokens[::2]):
+        raise ValueError('resolved-compose-flags-required')
+    command = [transport['docker'], 'compose', '--project-directory', str(install_dir),
+        '--project-name', transport['project'], '--env-file', str(install_dir / '.env')]
+    for value in stack.resolve_files(install_dir, tokens[1::2]):
+        path = (install_dir / value).resolve(strict=True)
+        if install_dir not in path.parents or not path.is_file():
+            raise ValueError('installed-compose-file-required')
+        command.extend(['-f', str(path)])
+    def run(*args, timeout=30):
+        return subprocess.run([*command, *args], cwd=install_dir, env=process_env,
+            capture_output=True, text=True, check=True, timeout=timeout)
+    resolved = json.loads(run('config', '--format', 'json').stdout)
+    if resolved.get('name') != transport['project']:
+        raise ValueError('native-compose-project-mismatch')
+    for name in ('dashboard-api', 'open-webui'):
+        definition = resolved.get('services', {}).get(name)
+        if type(definition) is not dict:
+            raise ValueError('native-client-service-missing')
+        hosts = definition.get('extra_hosts', {})
+        if type(hosts) not in (dict, list):
+            raise ValueError('native-client-hosts-invalid')
+        if any(str(host).split('=', 1)[0].split(':', 1)[0].lower().rstrip('.') == 'pixel-edge' for host in hosts):
+            raise ValueError('native-client-has-legacy-edge-route')
+    run('up', '-d', '--no-deps', '--wait', '--wait-timeout', '120',
+        'dashboard-api', 'open-webui', timeout=180)
+    probe = ('import urllib.request; '
+        'response=urllib.request.build_opener(urllib.request.ProxyHandler({})).open('
+        '"http://pixel-edge:9595/health",timeout=15); '
+        'raise SystemExit(0 if response.status==200 else 1)')
+    run('exec', '-T', 'dashboard-api', 'python3', '-c', probe)
+
+
 def finalize_update(preparation):
     if sys.platform != 'darwin' or os.geteuid() == 0:
         raise ValueError('native-macos-owner-required')
@@ -153,6 +209,7 @@ def finalize_update(preparation):
                 os.fsync(fd)
             finally:
                 os.close(fd)
+        refresh_clients(install_dir)
     finally:
         os.close(lock)
     return {'status': 'selection-ready', 'path': str(directory / stack.UPDATE_SELECTION)}
@@ -169,8 +226,6 @@ def finalize(preparation, docker_preparation):
     storage = config.private_json(docker_preparation / 'storage.compose.json')
     install_dir = Path(prepared['installDir']).resolve(strict=True)
     destination = install_dir / 'data/pixel-native/preparation'
-    if os.path.lexists(destination):
-        raise ValueError('installed-native-selection-already-exists')
     result = subprocess.run(['/usr/bin/sudo', '/usr/bin/python3', str(Path(__file__).resolve()),
         '--verify-protected', '--owner', pwd.getpwuid(os.getuid()).pw_name,
         '--runtime', prepared['runtimeDigest'], '--services', prepared['serviceDigest'],
@@ -178,6 +233,12 @@ def finalize(preparation, docker_preparation):
         text=True, timeout=180, check=True)
     receipt, activation = selection_records(prepared, docker_prepared, docker_record, storage,
         json.loads(result.stdout))
+    if os.path.lexists(destination):
+        expected = {'preparation.json': receipt, 'activation.json': activation, 'storage.compose.json': storage}
+        if any(config.private_json(destination / name) != value for name, value in expected.items()):
+            raise ValueError('installed-native-selection-already-exists')
+        refresh_clients(install_dir)
+        return {'status': 'selection-ready', 'path': str(destination)}
     transport = docker_prepared['nativeTransport']
     for name in helper('pixel-native-compose').SERVICES:
         result = subprocess.run([transport['docker'], 'ps', '--filter',
@@ -217,6 +278,7 @@ def finalize(preparation, docker_preparation):
             os.fsync(fd)
         finally:
             os.close(fd)
+    refresh_clients(install_dir)
     return {'status': 'selection-ready', 'path': str(destination)}
 
 

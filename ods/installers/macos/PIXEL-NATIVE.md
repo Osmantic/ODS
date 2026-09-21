@@ -2050,6 +2050,13 @@ do not run a fresh install or discard its journal. If activation completed but
 management publication failed, `pixel-native-finalize.py --update-existing
 --preparation PATH` re-verifies protected completion before retrying publication.
 
+Finalization also recreates only `dashboard-api` and `open-webui` from the
+resolved native stack, with dependencies and data volumes left in place. It
+rejects a remaining `pixel-edge` host override and requires an HTTP health probe
+from inside the dashboard container. A client refresh failure retains the
+published selection; repeating finalization re-verifies activation and retries
+the client refresh instead of reinstalling the native services.
+
 This command's orchestration and failure paths are covered by tests; full live
 update and clean-install/reboot qualification remain release gates. Draft PR
 6155 contains the implementation and is not a claim of completed qualification.

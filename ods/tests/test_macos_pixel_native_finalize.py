@@ -3,6 +3,7 @@ import base64
 import importlib.util
 import json
 import sys
+import subprocess
 from types import SimpleNamespace
 from pathlib import Path
 
@@ -44,7 +45,7 @@ def test_update_retains_storage_and_supports_verified_replay(fault):
         assert previous['runtimeDigest'] == 'a' * 64
 
 
-@pytest.mark.parametrize('fault', [None, 'proof', 'replace', 'symlink-lock', 'directory-sync'])
+@pytest.mark.parametrize('fault', [None, 'proof', 'replace', 'symlink-lock', 'directory-sync', 'clients'])
 def test_update_publication_is_atomic_and_replayable(tmp_path, monkeypatch, fault):
     stack = module.helper('pixel-native-stack')
     installed = tmp_path / 'ods'
@@ -76,12 +77,24 @@ def test_update_publication_is_atomic_and_replayable(tmp_path, monkeypatch, faul
         assert '--verify-protected' in args
         return SimpleNamespace(stdout=json.dumps(proof))
     monkeypatch.setattr(module.subprocess, 'run', verify)
+    refreshed = []
+    def refresh(path):
+        assert path == installed
+        assert stack.read_selection(directory)[0]['runtimeDigest'] == 'c' * 64
+        refreshed.append(True)
+        if fault == 'clients' and len(refreshed) == 1: raise OSError('client recreation failed')
+    monkeypatch.setattr(module, 'refresh_clients', refresh)
     if fault == 'replace':
         def fail(*args): raise OSError('fixture publication failure')
         monkeypatch.setattr(module.os, 'replace', fail)
     if fault == 'symlink-lock':
         (directory / '.selection.lock').symlink_to(directory / 'preparation.json')
-    if fault == 'directory-sync':
+    if fault == 'clients':
+        with pytest.raises(OSError): module.finalize_update(candidate)
+        assert stack.read_selection(directory)[0]['runtimeDigest'] == 'c' * 64
+        assert module.finalize_update(candidate)['status'] == 'selection-ready'
+        assert len(refreshed) == 2
+    elif fault == 'directory-sync':
         fsync = module.os.fsync
         interrupted = []
         def interrupt_once(fd):
@@ -109,6 +122,54 @@ def test_update_publication_is_atomic_and_replayable(tmp_path, monkeypatch, faul
     assert json.loads((directory / 'preparation.json').read_text()) == previous
     assert json.loads((directory / 'activation.json').read_text()) == activation
     assert not list(directory.glob('.selection-*'))
+
+
+@pytest.mark.parametrize('fault', [None, 'socket', 'flags', 'project', 'missing', 'legacy-map',
+    'legacy-list', 'start', 'probe'])
+def test_refresh_clients_uses_native_stack_and_verifies_from_dashboard(tmp_path, monkeypatch, fault):
+    installed = tmp_path / 'ods'
+    installed.mkdir()
+    (installed / '.compose-flags').write_text('--invalid' if fault == 'flags' else '-f base.yaml -f legacy.yaml')
+    for name in ('base.yaml', 'native.yaml'): (installed / name).write_text('services: {}')
+    environment = dict(PIXEL_HISTORY_DOCKER='/docker', PIXEL_HISTORY_PROJECT='ods',
+        PIXEL_HISTORY_IMAGE='fixture', PIXEL_HISTORY_USER='501:20', DOCKER_HOST='unix:///local.sock')
+    installer = SimpleNamespace(_source_gateway=lambda *a: (None, environment, None, None, None, None),
+        _native_transport_environment=lambda *a: None, _launchd=SimpleNamespace(GATEWAY_PLIST='/gateway.plist'))
+    def resolve(path, files):
+        assert path == installed and files == ['base.yaml', 'legacy.yaml']
+        return ['base.yaml', 'native.yaml']
+    stack = SimpleNamespace(resolve_files=resolve)
+    monkeypatch.setattr(module, 'helper', lambda name: installer if name == 'pixel-macos-access-install' else stack)
+    monkeypatch.setattr(module.Path, 'is_socket', lambda path: fault != 'socket')
+    monkeypatch.setenv('DOCKER_CONTEXT', 'remote')
+    monkeypatch.setenv('DOCKER_TLS_VERIFY', '1')
+    monkeypatch.setenv('DOCKER_CERT_PATH', '/remote/cert')
+    document = dict(name='wrong' if fault == 'project' else 'ods',
+        services={'dashboard-api': {}, 'open-webui': {}})
+    if fault == 'missing': del document['services']['open-webui']
+    if fault == 'legacy-map': document['services']['dashboard-api']['extra_hosts'] = {'pixel-edge': 'host-gateway'}
+    if fault == 'legacy-list': document['services']['open-webui']['extra_hosts'] = ['Pixel-Edge=host-gateway']
+    calls = []
+    def run(command, **kwargs):
+        calls.append(command)
+        assert str(installed / 'native.yaml') in command
+        assert str(installed / 'legacy.yaml') not in command
+        assert kwargs['env']['DOCKER_HOST'] == 'unix:///local.sock'
+        assert not {'DOCKER_CONTEXT', 'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH'} & set(kwargs['env'])
+        if (fault == 'start' and 'up' in command) or (fault == 'probe' and 'exec' in command):
+            raise subprocess.CalledProcessError(1, command)
+        return SimpleNamespace(stdout=json.dumps(document))
+    monkeypatch.setattr(module.subprocess, 'run', run)
+    if fault:
+        with pytest.raises((ValueError, subprocess.CalledProcessError)): module.refresh_clients(installed)
+        if fault not in ('start', 'probe'): assert not any('up' in call for call in calls)
+    else:
+        module.refresh_clients(installed)
+        assert len(calls) == 3
+        assert calls[1][-8:] == ['up', '-d', '--no-deps', '--wait', '--wait-timeout', '120',
+            'dashboard-api', 'open-webui']
+        assert calls[2][-6:-1] == ['exec', '-T', 'dashboard-api', 'python3', '-c']
+        assert 'http://pixel-edge:9595/health' in calls[2][-1]
 
 
 @pytest.mark.parametrize('fault', [None, 'runtime', 'services', 'storage', 'install', 'pending', 'inactive'])
