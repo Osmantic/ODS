@@ -383,12 +383,12 @@
         "pixel_agent": {
           "status": "unsupported_until_revalidated",
           "label": "Pixel revalidation required",
-          "reason": "Pixel routed correctly to Granite 4.0 H-Tiny but failed to answer its verification phrase in exact-head release cycles on Tower3 (2026-09-20) and Tower2 (2026-09-21). On Tower2 it returned the signed route-probe marker and delivery instruction instead, while ODS Talk, LiteLLM, Open WebUI, and OpenCode passed on the same loaded model; baseline recovery succeeded. Keep this model out of Tower2 and Tower3 all-app release coverage until Pixel behavior is revalidated.",
-          "evidence": "ods-public-beta-fleet-green-20260911/release-candidate-9381eff2-h6665980-r400/model-ui/cycle-003/tower2/model-ui.json",
-          "recordedAt": "2026-09-21T03:10:00Z",
+          "reason": "Pixel routed correctly to Granite 4.0 H-Tiny but failed to answer its verification phrase in exact-head release cycles on Tower3 (2026-09-20), Tower2, and the Windows laptop WSL lane (2026-09-21). On Tower2 and Windows it returned delivery instructions instead of the requested phrase, while the exact Granite route was proven and the other required apps passed on the same loaded model; baseline recovery succeeded. Keep this model out of Tower2, Tower3, and Windows laptop all-app release coverage until Pixel behavior is revalidated.",
+          "evidence": "ods-public-beta-fleet-green-20260911/release-candidate-9381eff2-h6665980-r400/model-ui/cycle-003/tower2/model-ui.json; ods-public-beta-fleet-green-20260911/release-candidate-9381eff2-h6665980-r400/model-ui/cycle-005/windows-laptop-wsl-beta/model-ui.json",
+          "recordedAt": "2026-09-21T04:23:13Z",
           "productSha": "9381eff2822390ea0dd44f9471f27c5cffb346e4",
           "harnessSha": "66659802985da37d3289ca33bb815d375b307323",
-          "hostScope": ["tower2", "tower3"],
+          "hostScope": ["tower2", "tower3", "windows-laptop"],
           "expiresAt": "2026-10-21T00:00:00Z"
         },
         "opencode": {

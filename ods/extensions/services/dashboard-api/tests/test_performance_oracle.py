@@ -1177,17 +1177,25 @@ def test_real_catalog_scopes_qwen25_coder_3b_host_failures():
     )
 
 
-def test_real_catalog_scopes_granite_h_tiny_pixel_failure_to_tower2_and_tower3():
+def test_real_catalog_scopes_granite_h_tiny_pixel_failure_to_proven_hosts():
     catalog = _official_model_catalog()
     model = next(model for model in catalog if model["id"] == "granite4.0-h-tiny-q4")
 
     tower3 = model_app_compatibility(model, runtime_context={"hosts": ["tower3"]})
     tower2 = model_app_compatibility(model, runtime_context={"hosts": ["tower2"]})
+    windows = model_app_compatibility(
+        model,
+        runtime_context={"hosts": ["windows-laptop"]},
+    )
     tower1 = model_app_compatibility(model, runtime_context={"hosts": ["tower1"]})
 
     assert tower3["pixelAgent"]["status"] == "unsupported_until_revalidated"
     assert tower2["pixelAgent"]["status"] == "unsupported_until_revalidated"
+    assert windows["pixelAgent"]["status"] == "unsupported_until_revalidated"
     assert "cycle-003/tower2/model-ui.json" in tower2["pixelAgent"]["evidence"]
+    assert "cycle-005/windows-laptop-wsl-beta/model-ui.json" in (
+        windows["pixelAgent"]["evidence"]
+    )
     assert tower1["pixelAgent"]["status"] == "unknown"
 
 
