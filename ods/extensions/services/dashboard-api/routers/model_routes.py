@@ -107,7 +107,8 @@ async def get_model_route_evidence(probe_id: str) -> dict[str, Any]:
             continue
         break
 
-    assert response is not None
+    if response is None:
+        raise RuntimeError("Model router evidence loop ended without a response")
 
     if response.status_code == 404:
         raise HTTPException(status_code=404, detail="Route evidence not found.")
