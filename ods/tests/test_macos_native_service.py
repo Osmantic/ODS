@@ -113,7 +113,10 @@ esac
             install = root / "ODS & quoted ' folder"
             install.mkdir()
             pid_file = install / "native.pid"
-            arguments = ["--model", str(install / "model & ' quoted.gguf"), "--port", "18081"]
+            model = install / "data" / "models" / "model & ' quoted.gguf"
+            model.parent.mkdir(parents=True)
+            model.write_bytes(b"model")
+            arguments = ["--model", str(model), "--port", "18081"]
             command = ["bash", str(SCRIPT), "start", str(install), "/bin/sleep", str(pid_file), *arguments]
             subprocess.run(command, env=env, check=True)
             plist = root / "Library/LaunchAgents/com.ods.llama-server.plist"

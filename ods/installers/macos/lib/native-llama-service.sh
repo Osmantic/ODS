@@ -31,7 +31,7 @@ stop_loaded_service() {
 }
 
 stop_install_owned_processes() {
-    local line pid command attempt still_running=false
+    local line pid command executable attempt still_running=false
 
     process_is_live() {
         local state
@@ -45,8 +45,16 @@ stop_install_owned_processes() {
         command="${line#"$pid"}"
         command="${command#"${command%%[![:space:]]*}"}"
         [[ "$pid" =~ ^[0-9]+$ ]] || continue
-        [[ "$command" == "$binary" || "$command" == "$binary "* \
-            || "$command" == *" --model $install_dir/data/models/"* ]] || continue
+        [[ "$pid" != "$$" ]] || continue
+        executable="${command%%[[:space:]]*}"
+        if [[ "$executable" == "$binary" ]]; then
+            :
+        elif [[ "${executable##*/}" == llama-server \
+            && "$command" == *" --model $install_dir/data/models/"* ]]; then
+            :
+        else
+            continue
+        fi
 
         kill -TERM "$pid" 2>/dev/null || true
         for attempt in {1..20}; do
