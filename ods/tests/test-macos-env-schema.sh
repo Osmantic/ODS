@@ -46,6 +46,7 @@ chmod +x "$STUB_DIR/docker" "$STUB_DIR/hostname"
 generate_env() {
     local tier="$1"
     local install_dir="$2"
+    local force_overwrite="${3:-true}"
     mkdir -p "$install_dir/config/searxng"
     (
         export PATH="$STUB_DIR:$PATH"
@@ -63,7 +64,7 @@ generate_env() {
         DOCKER_BACKEND="docker-desktop"
         ODS_MODEL_SWITCHBOARD="enabled"
         resolve_tier_config "$tier" || exit 3
-        generate_ods_env "$install_dir" "$tier" true
+        generate_ods_env "$install_dir" "$tier" "$force_overwrite"
     ) >"$install_dir/generate.log" 2>&1 \
         || fail "generate_ods_env failed for tier $tier: $(tail -n 3 "$install_dir/generate.log")"
     [[ -f "$install_dir/.env" ]] || fail "tier $tier produced no .env"
@@ -88,6 +89,8 @@ for tier in 1 CLOUD; do
         || fail "tier $tier .env assigns a key more than once: $(printf '%s' "$dupes" | tr '\n' ' ')"
     [[ "$(grep -c '^LLM_BACKEND=' "$env_file")" -eq 1 ]] \
         || fail "tier $tier .env must declare LLM_BACKEND exactly once"
+    grep -qx 'TTS_WORKERS=1' "$env_file" \
+        || fail "tier $tier macOS install must use one TTS worker"
     pass "tier $tier: generated .env assigns every key once"
 
     # validate-env.sh needs Bash 4+ (associative arrays); ods-cli runs it with
@@ -97,6 +100,16 @@ for tier in 1 CLOUD; do
     fi
     pass "tier $tier: generated .env validates against .env.schema.json"
 done
+
+tts_override_dir="$TMP_DIR/tts-worker-override"
+generate_env 1 "$tts_override_dir"
+awk '{ if ($0 == "TTS_WORKERS=1") print "TTS_WORKERS=2"; else print }' \
+    "$tts_override_dir/.env" > "$tts_override_dir/.env.new"
+mv "$tts_override_dir/.env.new" "$tts_override_dir/.env"
+generate_env 1 "$tts_override_dir" false
+grep -qx 'TTS_WORKERS=2' "$tts_override_dir/.env" \
+    || fail 'macOS reinstall did not preserve an explicit TTS worker override'
+pass 'macOS reinstall preserves an explicit TTS worker override'
 
 # A forced reinstall must not rotate credentials already bound to a persisted
 # Langfuse database. Other install secrets may still rotate under --force.
