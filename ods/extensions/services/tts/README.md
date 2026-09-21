@@ -22,7 +22,7 @@ Environment variables (set in `.env`):
 |----------|---------|-------------|
 | `TTS_PORT` | `8880` | External port (maps to internal 8880) |
 | `DEFAULT_VOICE` | `af_heart` | Default voice preset |
-| `TTS_WORKERS` | `2` (`1` on macOS installs) | Number of Kokoro worker processes. Increase only when the Docker VM has memory headroom. |
+| `TTS_WORKERS` | `2` (`1` on native macOS or Docker guests below 12 GiB) | Number of Kokoro worker processes. Increase only when the Docker VM has memory headroom. |
 
 ## API Endpoints
 
