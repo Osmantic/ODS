@@ -1227,21 +1227,22 @@ def test_real_catalog_scopes_phi4_talk_pass_and_later_pixel_failure_to_strixy():
 
     assert strixy["hermesTalk"]["status"] == "verified"
     assert strixy["pixelAgent"]["status"] == "unsupported_until_revalidated"
+    assert strixy["openWebui"]["status"] == "unsupported_until_revalidated"
     assert strixy["agentViability"]["status"] == "unsupported_until_revalidated"
-    assert "cycle-006/strixy-wsl-beta/model-ui.json" in strixy["hermesTalk"]["evidence"]
+    assert "cycle-005/strixy-wsl-beta/model-ui.json" in strixy["hermesTalk"]["evidence"]
     assert windows["hermesTalk"]["status"] == "unknown"
     assert windows["pixelAgent"]["status"] == "unknown"
     assert windows["agentViability"]["status"] == "unknown"
 
 
-def test_real_catalog_scopes_qwen35_9b_open_webui_failure_to_strixy():
+def test_real_catalog_scopes_qwen35_9b_open_webui_revalidation_to_strixy():
     catalog = _official_model_catalog()
     model = next(model for model in catalog if model["id"] == "qwen3.5-9b-q4")
 
     strixy = model_app_compatibility(model, runtime_context={"hosts": ["strixy"]})
     windows = model_app_compatibility(model, runtime_context={"hosts": ["windows-laptop"]})
 
-    assert strixy["openWebui"]["status"] == "unsupported_until_revalidated"
+    assert strixy["openWebui"]["status"] == "verified"
     assert "cycle-006/strixy-wsl-beta/model-ui.json" in strixy["openWebui"]["evidence"]
     assert windows["openWebui"]["status"] == "unknown"
 

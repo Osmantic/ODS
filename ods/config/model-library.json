@@ -146,35 +146,46 @@
         "hermes_talk": {
           "status": "verified",
           "label": "ODS Talk revalidated on Strixy",
-          "reason": "Challenge-bound ODS Talk passed again on Strixy with Phi-4 Mini during the latest six-cycle qualification; this proves Talk on this host, not all-app or Pixel compatibility.",
-          "evidence": "ods-public-beta-fleet-green-20260911/release-candidate-6a66b1fc-h24474cf-r392/model-ui/cycle-006/strixy-wsl-beta/model-ui.json",
-          "recordedAt": "2026-09-21T00:20:15Z",
-          "productSha": "6a66b1fc5f25f8f0ecbc1667cacdcf429ebf68c5",
-          "harnessSha": "24474cfeb97c4acbcf92ba366861a80e36afc477",
+          "reason": "Challenge-bound ODS Talk passed again on Strixy with Phi-4 Mini during the exact e4fd1cae six-cycle qualification; this proves Talk on this host, not all-app, Pixel, or Open WebUI compatibility.",
+          "evidence": "ods-public-beta-fleet-green-20260911/release-strixy-e4fd1cae-h3043027-r401/model-ui/cycle-005/strixy-wsl-beta/model-ui.json",
+          "recordedAt": "2026-09-21T07:30:37Z",
+          "productSha": "e4fd1cae6232af0a9d7438317002b55f94bea2bc",
+          "harnessSha": "30430271ba0b97c83056272a4f4877cb65dee122",
           "hostScope": ["strixy"],
-          "expiresAt": "2026-10-20T00:00:00Z"
+          "expiresAt": "2026-10-21T00:00:00Z"
+        },
+        "open_webui": {
+          "status": "unsupported_until_revalidated",
+          "label": "Open WebUI revalidation required on Strixy",
+          "reason": "The exact e4fd1cae Strixy revalidation loaded Phi-4 Mini through native Lemonade, proved the signed expected route and returned HTTP 200, but Open WebUI mutated a verification digit by changing the requested token from ODSVAL-A6B4422ACC-461A91E67B to ODSVAL-A6B4422ACC-461A891B7B. Keep this host/model/app pairing out of all-app release coverage until exact-answer behavior is revalidated.",
+          "evidence": "ods-public-beta-fleet-green-20260911/release-strixy-e4fd1cae-h3043027-r401/model-ui/cycle-005/strixy-wsl-beta/model-ui.json",
+          "recordedAt": "2026-09-21T07:30:37Z",
+          "productSha": "e4fd1cae6232af0a9d7438317002b55f94bea2bc",
+          "harnessSha": "30430271ba0b97c83056272a4f4877cb65dee122",
+          "hostScope": ["strixy"],
+          "expiresAt": "2026-10-21T00:00:00Z"
         },
         "pixel_agent": {
           "status": "unsupported_until_revalidated",
           "label": "Pixel revalidation required on Strixy",
-          "reason": "Phi-4 Mini reached the signed expected model route with HTTP 200 and completed Pixel SSE, but refused the requested verification phrase in two cycles of the latest six-cycle Strixy qualification. Treat this as intermittent model-response failure, not proven routing failure or permanent incompatibility.",
-          "evidence": "ods-public-beta-fleet-green-20260911/release-candidate-6a66b1fc-h24474cf-r392/model-ui/cycle-006/strixy-wsl-beta/model-ui.json",
-          "recordedAt": "2026-09-21T00:20:15Z",
-          "productSha": "6a66b1fc5f25f8f0ecbc1667cacdcf429ebf68c5",
-          "harnessSha": "24474cfeb97c4acbcf92ba366861a80e36afc477",
+          "reason": "The exact e4fd1cae Strixy revalidation reached Phi-4 Mini over the signed expected route with HTTP 200 and completed retained Pixel SSE, but dropped the leading O from the requested phrase. This repeats earlier exact-answer failures despite correct routing, so keep the host/model pairing excluded until response behavior is revalidated.",
+          "evidence": "ods-public-beta-fleet-green-20260911/release-strixy-e4fd1cae-h3043027-r401/model-ui/cycle-005/strixy-wsl-beta/model-ui.json",
+          "recordedAt": "2026-09-21T07:30:37Z",
+          "productSha": "e4fd1cae6232af0a9d7438317002b55f94bea2bc",
+          "harnessSha": "30430271ba0b97c83056272a4f4877cb65dee122",
           "hostScope": ["strixy"],
-          "expiresAt": "2026-10-20T00:00:00Z"
+          "expiresAt": "2026-10-21T00:00:00Z"
         },
         "agent_viability": {
           "status": "unsupported_until_revalidated",
           "label": "All-app revalidation required on Strixy",
-          "reason": "The newer Strixy six-cycle run did not sustain all-app coverage for Phi-4 Mini: Pixel refused the challenge in cycles one and six despite the correct signed model route; Talk and the other required consumers passed, and failure recovery restored the Qwen 3.6 baseline.",
-          "evidence": "ods-public-beta-fleet-green-20260911/release-candidate-6a66b1fc-h24474cf-r392/model-ui/cycle-006/strixy-wsl-beta/model-ui.json",
-          "recordedAt": "2026-09-21T00:20:15Z",
-          "productSha": "6a66b1fc5f25f8f0ecbc1667cacdcf429ebf68c5",
-          "harnessSha": "24474cfeb97c4acbcf92ba366861a80e36afc477",
+          "reason": "The exact e4fd1cae Strixy revalidation did not sustain all-app coverage for Phi-4 Mini: Pixel dropped the first challenge character and Open WebUI mutated a verification digit despite exact signed routes and HTTP 200 responses. Talk, LiteLLM, OpenCode, and Perplexica passed, and failure recovery restored the Qwen 3.6 baseline.",
+          "evidence": "ods-public-beta-fleet-green-20260911/release-strixy-e4fd1cae-h3043027-r401/model-ui/cycle-005/strixy-wsl-beta/model-ui.json",
+          "recordedAt": "2026-09-21T07:30:37Z",
+          "productSha": "e4fd1cae6232af0a9d7438317002b55f94bea2bc",
+          "harnessSha": "30430271ba0b97c83056272a4f4877cb65dee122",
           "hostScope": ["strixy"],
-          "expiresAt": "2026-10-20T00:00:00Z"
+          "expiresAt": "2026-10-21T00:00:00Z"
         }
       }
     },
@@ -384,7 +395,7 @@
           "status": "unsupported_until_revalidated",
           "label": "Pixel revalidation required",
           "reason": "Pixel routed correctly to Granite 4.0 H-Tiny but failed to answer its verification phrase in exact-head release cycles on Tower3 (2026-09-20), Tower2, and the Windows laptop WSL lane (2026-09-21). On Tower2 and Windows it returned delivery instructions instead of the requested phrase, while the exact Granite route was proven and the other required apps passed on the same loaded model; baseline recovery succeeded. Keep this model out of Tower2, Tower3, and Windows laptop all-app release coverage until Pixel behavior is revalidated.",
-          "evidence": "ods-public-beta-fleet-green-20260911/release-candidate-9381eff2-h6665980-r400/model-ui/cycle-003/tower2/model-ui.json; ods-public-beta-fleet-green-20260911/release-candidate-9381eff2-h6665980-r400/model-ui/cycle-005/windows-laptop-wsl-beta/model-ui.json",
+          "evidence": "ods-public-beta-fleet-green-20260911/release-candidate-01d81ef8-hb71daee-r377/model-ui/cycle-002/tower3/model-ui.json; ods-public-beta-fleet-green-20260911/release-candidate-9381eff2-h6665980-r400/model-ui/cycle-003/tower2/model-ui.json; ods-public-beta-fleet-green-20260911/release-candidate-9381eff2-h6665980-r400/model-ui/cycle-005/windows-laptop-wsl-beta/model-ui.json",
           "recordedAt": "2026-09-21T04:23:13Z",
           "productSha": "9381eff2822390ea0dd44f9471f27c5cffb346e4",
           "harnessSha": "66659802985da37d3289ca33bb815d375b307323",
@@ -1853,15 +1864,15 @@
       "llama_server_image": null,
       "app_compatibility": {
         "open_webui": {
-          "status": "unsupported_until_revalidated",
-          "label": "Open WebUI revalidation required on Strixy",
-          "reason": "In the 2026-09-20 exact-head Strixy cycle, Qwen 3.5 9B loaded through Lemonade at the exact 64K runtime and passed ODS Talk, Pixel retained and non-retained inference, LiteLLM, OpenCode, and Perplexica, but Open WebUI refused the benign challenge as a credential request instead of returning the requested phrase. Exact route evidence named Qwen3.5-9B-GGUF and automated failure recovery restored the Qwen 3.6 baseline. Keep this host/model/app pairing out of all-app release coverage until its Open WebUI response behavior is revalidated.",
-          "evidence": "ods-public-beta-fleet-green-20260911/release-candidate-01d81ef8-hb71daee-r377/model-ui/cycle-006/strixy-wsl-beta/model-ui.json",
-          "recordedAt": "2026-09-20T07:16:24Z",
-          "productSha": "01d81ef885a655909eec4265cbe7f8d204a6b977",
-          "harnessSha": "b71daee54c3a676c52acf6c5355d74e454f627a0",
+          "status": "verified",
+          "label": "Open WebUI revalidated on Strixy",
+          "reason": "The exact e4fd1cae Strixy cycle loaded Qwen 3.5 9B through native Lemonade at 64K context and passed the challenge-bound Open WebUI reply with signed route evidence naming Qwen3.5-9B-GGUF. ODS Talk, Pixel retained and non-retained inference, LiteLLM, OpenCode, and Perplexica also passed before exact Qwen 3.6 baseline restoration and clean inventory verification.",
+          "evidence": "ods-public-beta-fleet-green-20260911/release-strixy-e4fd1cae-h3043027-r401/model-ui/cycle-006/strixy-wsl-beta/model-ui.json",
+          "recordedAt": "2026-09-21T07:48:20Z",
+          "productSha": "e4fd1cae6232af0a9d7438317002b55f94bea2bc",
+          "harnessSha": "30430271ba0b97c83056272a4f4877cb65dee122",
           "hostScope": ["strixy"],
-          "expiresAt": "2026-10-20T00:00:00Z"
+          "expiresAt": "2026-10-21T00:00:00Z"
         },
         "pixel_agent": {
           "status": "verified",

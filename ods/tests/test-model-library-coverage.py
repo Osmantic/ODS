@@ -166,25 +166,31 @@ def test_phi4_mini_talk_pass_does_not_mask_later_strixy_pixel_failure():
     assert "42b3a95c" in compatibility["openai_chat"]["reason"]
     assert compatibility["agent_viability"]["status"] == "unsupported_until_revalidated"
     assert compatibility["agent_viability"]["hostScope"] == ["strixy"]
-    assert "cycle-006/strixy-wsl-beta/model-ui.json" in compatibility["agent_viability"]["evidence"]
+    assert "cycle-005/strixy-wsl-beta/model-ui.json" in compatibility["agent_viability"]["evidence"]
+    assert compatibility["agent_viability"]["productSha"] == "e4fd1cae6232af0a9d7438317002b55f94bea2bc"
+    assert compatibility["agent_viability"]["harnessSha"] == "30430271ba0b97c83056272a4f4877cb65dee122"
     assert compatibility["pixel_agent"]["status"] == "unsupported_until_revalidated"
     assert compatibility["pixel_agent"]["hostScope"] == ["strixy"]
+    assert "dropped the leading O" in compatibility["pixel_agent"]["reason"]
+    assert compatibility["open_webui"]["status"] == "unsupported_until_revalidated"
+    assert compatibility["open_webui"]["hostScope"] == ["strixy"]
+    assert "verification digit" in compatibility["open_webui"]["reason"]
     assert compatibility["hermes_talk"]["status"] == "verified"
     assert compatibility["hermes_talk"]["hostScope"] == ["strixy"]
-    assert compatibility["hermes_talk"]["productSha"] == "6a66b1fc5f25f8f0ecbc1667cacdcf429ebf68c5"
-    assert compatibility["hermes_talk"]["harnessSha"] == "24474cfeb97c4acbcf92ba366861a80e36afc477"
+    assert compatibility["hermes_talk"]["productSha"] == "e4fd1cae6232af0a9d7438317002b55f94bea2bc"
+    assert compatibility["hermes_talk"]["harnessSha"] == "30430271ba0b97c83056272a4f4877cb65dee122"
 
 
-def test_qwen35_9b_open_webui_failure_is_scoped_to_strixy():
+def test_qwen35_9b_open_webui_is_revalidated_on_strixy():
     catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
     by_id = {model["id"]: model for model in catalog["models"]}
     compatibility = by_id["qwen3.5-9b-q4"]["app_compatibility"]
 
-    assert compatibility["open_webui"]["status"] == "unsupported_until_revalidated"
+    assert compatibility["open_webui"]["status"] == "verified"
     assert compatibility["open_webui"]["hostScope"] == ["strixy"]
     assert "cycle-006/strixy-wsl-beta/model-ui.json" in compatibility["open_webui"]["evidence"]
-    assert compatibility["open_webui"]["productSha"] == "01d81ef885a655909eec4265cbe7f8d204a6b977"
-    assert compatibility["open_webui"]["harnessSha"] == "b71daee54c3a676c52acf6c5355d74e454f627a0"
+    assert compatibility["open_webui"]["productSha"] == "e4fd1cae6232af0a9d7438317002b55f94bea2bc"
+    assert compatibility["open_webui"]["harnessSha"] == "30430271ba0b97c83056272a4f4877cb65dee122"
 
 
 def test_phi3_mini_128k_requires_perplexica_revalidation_after_strixy_failure():
@@ -506,7 +512,7 @@ def test_granite4_h_tiny_opencode_warning_is_scoped_to_tower1():
     assert _agent_viable_for_release(model, host="tower3")
 
 
-def test_granite4_h_tiny_pixel_warning_is_scoped_to_tower3():
+def test_granite4_h_tiny_pixel_warning_is_scoped_to_observed_hosts():
     catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
     by_id = {model["id"]: model for model in catalog["models"]}
 
@@ -514,11 +520,13 @@ def test_granite4_h_tiny_pixel_warning_is_scoped_to_tower3():
     pixel = model["app_compatibility"]["pixel_agent"]
 
     assert pixel["status"] == "unsupported_until_revalidated"
-    assert pixel["hostScope"] == ["tower3"]
-    assert "returned only the signed route-probe marker" in pixel["reason"]
+    assert pixel["hostScope"] == ["tower2", "tower3", "windows-laptop"]
+    assert "returned delivery instructions" in pixel["reason"]
     assert "cycle-002/tower3/model-ui.json" in pixel["evidence"]
-    assert pixel["productSha"] == "01d81ef885a655909eec4265cbe7f8d204a6b977"
-    assert pixel["harnessSha"] == "b71daee54c3a676c52acf6c5355d74e454f627a0"
+    assert "cycle-003/tower2/model-ui.json" in pixel["evidence"]
+    assert "cycle-005/windows-laptop-wsl-beta/model-ui.json" in pixel["evidence"]
+    assert pixel["productSha"] == "9381eff2822390ea0dd44f9471f27c5cffb346e4"
+    assert pixel["harnessSha"] == "66659802985da37d3289ca33bb815d375b307323"
 
 
 def test_granite4_h_350m_is_not_agent_viable_after_talk_probe_failure():
