@@ -1191,6 +1191,25 @@ def test_real_catalog_scopes_granite_h_tiny_pixel_failure_to_tower2_and_tower3()
     assert tower1["pixelAgent"]["status"] == "unknown"
 
 
+def test_real_catalog_scopes_granite_h_1b_perplexica_failure_to_proven_hosts():
+    catalog = _official_model_catalog()
+    model = next(model for model in catalog if model["id"] == "granite4.0-h-1b-q4")
+
+    macbook = model_app_compatibility(model, runtime_context={"hosts": ["m5-mbp"]})
+    windows_wsl = model_app_compatibility(
+        model,
+        runtime_context={"hosts": ["windows-laptop-wsl-beta"]},
+    )
+    tower1 = model_app_compatibility(model, runtime_context={"hosts": ["tower1"]})
+
+    assert macbook["perplexica"]["status"] == "unsupported_until_revalidated"
+    assert windows_wsl["perplexica"]["status"] == "unsupported_until_revalidated"
+    assert "cycle-003/windows-laptop-wsl-beta/model-ui.json" in (
+        windows_wsl["perplexica"]["evidence"]
+    )
+    assert tower1["perplexica"]["status"] == "unknown"
+
+
 def test_real_catalog_scopes_phi4_talk_pass_and_later_pixel_failure_to_strixy():
     catalog = _official_model_catalog()
     model = next(model for model in catalog if model["id"] == "phi4-mini-q4")

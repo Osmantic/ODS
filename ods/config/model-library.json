@@ -521,13 +521,13 @@
         "perplexica": {
           "status": "unsupported_until_revalidated",
           "label": "Perplexica revalidation required",
-          "reason": "Fleet model-UI run 2026-07-22T04:37Z on m5-mbp loaded this model and ODS Talk passed, but the Perplexica app probe emitted only a partial verification phrase while the same cycle on strix-halo passed. Keep it out of all-app release coverage until m5-mbp Perplexica compatibility is revalidated.",
-          "evidence": "fleet-test/runs/2026-07-22T04-37-32Z-release-product-0334416e344c-harness-8bdceb20b959-hosts-m5-mbp-strix-halo-windows-laptop-strixy/model-ui/cycle-003/m5-mbp",
-          "recordedAt": "2026-07-22T05:32:17Z",
-          "productSha": "0334416e344c2cdb9124bed88b7a71b98eea9fc4",
-          "harnessSha": "8bdceb20b9594515dae65f7f66df734ec152e1e4",
-          "hostScope": ["m5-mbp"],
-          "revalidateAgainstSha": "892df74a769cf8aa9530e8e10d319281e063483f"
+          "reason": "Perplexica emitted only a partial verification phrase with this model in independent model-UI runs on m5-mbp (2026-07-22) and the Windows WSL beta lane (2026-09-21). In the current WSL run the stream completed and used the exact signed Granite H-1B route, while Pixel, ODS Talk, and the other required consumers passed; baseline recovery succeeded. Keep it out of all-app release coverage on these hosts until Perplexica behavior is revalidated.",
+          "evidence": "ods-public-beta-fleet-green-20260911/release-candidate-9381eff2-h6665980-r400/model-ui/cycle-003/windows-laptop-wsl-beta/model-ui.json",
+          "recordedAt": "2026-09-21T04:04:00Z",
+          "productSha": "9381eff2822390ea0dd44f9471f27c5cffb346e4",
+          "harnessSha": "66659802985da37d3289ca33bb815d375b307323",
+          "hostScope": ["m5-mbp", "windows-laptop-wsl-beta"],
+          "expiresAt": "2026-10-21T00:00:00Z"
         }
       },
       "install_recommendation": false
