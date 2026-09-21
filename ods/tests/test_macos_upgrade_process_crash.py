@@ -59,6 +59,7 @@ def worker(root, checkpoint):
         path = Path(item['path'])
         path.write_bytes(item['before'])
         path.chmod(0o600)
+        item['gid'] = path.stat().st_gid
     def stop_at(name):
         if checkpoint == name:
             print(name, flush=True)

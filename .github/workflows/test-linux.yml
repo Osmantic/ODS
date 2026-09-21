@@ -177,7 +177,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install manifest validator dependencies
-        run: python3 -m pip install "PyYAML>=6.0,<7.0" "jsonschema>=4.21,<5.0"
+        run: python3 -m pip install "PyYAML>=6.0,<7.0" "jsonschema>=4.21,<5.0" "pytest>=8,<9"
 
       - name: Branch cleanup release exclusions
         run: python3 tests/test-stale-branch-release-refs.py
@@ -247,6 +247,9 @@ jobs:
 
       - name: Pixel Provider and Access Contracts
         run: python3 -m unittest discover -s tests -p 'test_pixel_*.py' -v
+
+      - name: Pixel Native Integration Contracts
+        run: python3 -m pytest -q tests/test_pixel_macos_apps.py tests/test_pixel_native_compose_live.py tests/test_pixel_onboarding.py tests/test_pixel_open_app_handler.py tests/test_pixel_runtime_budget.py
 
       - name: Service Registry Tests
         run: |

@@ -37,7 +37,7 @@ def target(tmp_path, monkeypatch):
 
 
 def replace(path, **changes):
-    args = dict(expected=b'original', replacement=b'updated', mode=0o600, gid=os.getgid())
+    args = dict(expected=b'original', replacement=b'updated', mode=0o600, gid=path.stat().st_gid)
     args.update(changes)
     custody.replace_protected_bytes(path, **args)
 
@@ -56,7 +56,7 @@ def test_drift_never_overwrites_target(target, change):
     args = {}
     if change == 'bytes': target.write_bytes(b'changed')
     if change == 'mode': target.chmod(0o644)
-    if change == 'gid': args['gid'] = os.getgid() + 100
+    if change == 'gid': args['gid'] = target.stat().st_gid + 100
     if change == 'hardlink': os.link(target, target.with_name('other'))
     if change == 'symlink':
         other = target.with_name('other')

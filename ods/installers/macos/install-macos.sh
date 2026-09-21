@@ -1566,6 +1566,9 @@ fi
 if $ENABLE_PIXEL; then
     ENABLE_HERMES=false
     ENABLE_OPENCLAW=false
+    # Pixel requires the shared model gateway and search support even when the
+    # owner selects Core Only. Voice, RAG and workflows remain independent.
+    ENABLE_RECOMMENDED=true
 fi
 
 if $CLOUD_MODE && ! $ENABLE_RECOMMENDED; then
@@ -1600,6 +1603,7 @@ info_box "  Workflows:" "$(if $ENABLE_WORKFLOWS; then echo enabled; else echo di
 info_box "  RAG:" "$(if $ENABLE_RAG; then echo enabled; else echo disabled; fi)"
 info_box "  Recommended:" "$(if $ENABLE_RECOMMENDED; then echo enabled; else echo disabled; fi)"
 info_box "  Hermes:" "$(if $ENABLE_HERMES; then echo enabled; else echo disabled; fi)"
+info_box "  Pixel (native):" "$(if $ENABLE_PIXEL; then echo enabled; else echo disabled; fi)"
 info_box "  OpenClaw:" "$(if $ENABLE_OPENCLAW; then echo "enabled (DEPRECATED)"; else echo disabled; fi)"
 info_box "  Perplexica:" "$(if $ENABLE_PERPLEXICA; then echo enabled; else echo disabled; fi)"
 info_box "  Privacy Shield:" "$(if $ENABLE_PRIVACY_SHIELD; then echo enabled; else echo disabled; fi)"

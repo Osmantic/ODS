@@ -56,6 +56,8 @@ def test_never_provisions_as_owner(monkeypatch, tmp_path):
 
 @pytest.fixture
 def provisioning(accounts, monkeypatch, tmp_path):
+    # Hosted macOS temporary directories can inherit a group the runner cannot use.
+    os.chown(tmp_path, -1, os.getgid())
     monkeypatch.setattr(ops.sys, 'platform', 'darwin')
     monkeypatch.setattr(ops.os, 'geteuid', lambda: 0)
     monkeypatch.setattr(ops.custody, 'protected_directory', lambda path: nullcontext())
