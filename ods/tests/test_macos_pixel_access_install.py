@@ -164,7 +164,7 @@ def test_upgrade_executor_holds_controller_lock_through_staging_and_activation(t
 
 
 @pytest.mark.parametrize('failure', [None, 'candidate', 'final'])
-@pytest.mark.parametrize('migration', [False, True])
+@pytest.mark.parametrize('migration', [False, True, 'managed'])
 def test_upgrade_activation_connects_hold_files_services_and_readiness(monkeypatch, failure, migration):
     relocation = Mock()
     monkeypatch.setattr(installer, '_relocate_upgrade_receipt', relocation)
@@ -193,7 +193,8 @@ def test_upgrade_activation_connects_hold_files_services_and_readiness(monkeypat
             verify()
             events.append('journal-finished')
 
-    previous, candidate = ({role: Service(role, version) for role in ('gateway', 'access', 'relay')}
+    roles = installer._upgrade.NATIVE_ROLES if migration == 'managed' else installer._upgrade.CORE_ROLES
+    previous, candidate = ({role: Service(role, version) for role in roles}
                            for version in ('previous', 'candidate'))
     monkeypatch.setattr(installer, '_upgrade_services', lambda *args: (previous, candidate))
     monkeypatch.setattr(installer, '_upgrade_policy_mode', lambda plan: 'sandbox')
@@ -224,6 +225,11 @@ def test_upgrade_activation_connects_hold_files_services_and_readiness(monkeypat
     journal = Journal()
     plan = {'access_settings': {'gateway_port': 18789}}
     if migration: plan['migration_qualification'] = {'approved': True}
+    if migration == 'managed':
+        monkeypatch.setattr(installer, '_managed_service_record', lambda *a:
+            dict(selection={'old': True}, recovery={'identity': {}, 'python': '/usr/bin/python3'}))
+        monkeypatch.setattr(installer._native_services, 'helper', lambda name:
+            SimpleNamespace(validate_published_policy=lambda **kw: events.append('policy-validation')))
     monkeypatch.setattr(installer, '_activate_new_services', lambda plan: events.append('native-start'))
     monkeypatch.setattr(installer, '_restore_new_services', lambda plan: events.append('native-stop'))
     monkeypatch.setattr(installer, '_verify_new_services', lambda plan: events.append('native-ready'))
@@ -234,7 +240,14 @@ def test_upgrade_activation_connects_hold_files_services_and_readiness(monkeypat
         installer._activate_upgrade(plan, records, journal)
     assert events[0] == 'hold'
     assert relocation.call_count == (2 if failure == 'candidate' else 1)
-    if migration:
+    if migration == 'managed':
+        assert 'native-start' not in events and 'native-stop' not in events
+        assert events.index(('stopped', 'previous', 'operations')) < events.index(('write', '/test/code', b'new'))
+        assert events.index('policy-validation') < events.index(('start', 'candidate', 'operations'))
+        if failure == 'candidate':
+            assert events.index(('stopped', 'candidate', 'operations')) < events.index(('write', '/test/code', b'old'))
+            assert events.index(('write', '/test/code', b'old')) < events.index(('start', 'previous', 'operations'))
+    elif migration:
         assert events.index(('write', '/test/code', b'new')) < events.index('native-start')
         assert events.index('native-start') < events.index(('start', 'candidate', 'gateway'))
         if failure == 'candidate':
@@ -435,8 +448,90 @@ def test_upgrade_uses_distinct_config_and_rebinds_gateway(bundled_deployment):
     assert plan['access_settings']['gateway_binding'] == plan['gateway_binding']
 
 
+def managed_service_fixture(plan, monkeypatch):
+    import base64
+    owner = plan['owner']
+    getpwnam = installer.pwd.getpwnam
+    monkeypatch.setattr(installer.pwd, 'getpwnam', lambda name:
+        SimpleNamespace(pw_uid=61000, pw_gid=61000) if name == '_ods_pixel_ops' else getpwnam(name))
+    contract = installer._managed_service_contract()
+    journal = str(installer._launchd.ACCESS_STATE / 'service-installation.json')
+    versions = []
+    for version in ('before', 'after'):
+        contents = {path: (version + ':' + path).encode() for path in contract}
+        definitions = {}
+        for role in ('manager', 'promoter', 'operations'):
+            path = '/Library/LaunchDaemons/com.ods.pixel-native-' + role + '.plist'
+            document = dict(Label='com.ods.pixel-native-' + role,
+                UserName={'manager': owner.pw_name, 'promoter': 'root', 'operations': '_ods_pixel_ops'}[role],
+                ProgramArguments=['/usr/bin/env', '-i', '/usr/bin/python3', '-I', '-B',
+                    '/usr/local/libexec/ods-pixel-services/' + role + '/fixture.py'],
+                StandardOutPath='/private/var/log/' + role + '-' + version + '.log')
+            contents[path] = plistlib.dumps(document)
+            definitions[role] = dict(path=path, body=base64.b64encode(contents[path]).decode('ascii'))
+        record = dict(schemaVersion=1, owner=owner.pw_uid,
+            selection=plan['native_services'] if version == 'after' else {'expected_digest': 'a' * 64},
+            progress={'phase': 'services-active'}, requiresGatewayProof=True,
+            attempted=['manager', 'promoter', 'operations'], stopWitnesses={},
+            recovery=dict(schemaVersion=1, owner=owner.pw_name, python='/usr/bin/python3',
+                identity={'name': '_ods_pixel_ops', 'uid': 61000, 'gid': 61000,
+                    'home': '/private/var/empty'}, definitions=definitions))
+        contents[journal] = json.dumps(record).encode()
+        versions.append(contents)
+    return [dict(path=path, before=versions[0][path], after=versions[1][path], mode=mode, gid=gid)
+        for path, (mode, gid) in contract.items()]
+
+
+@pytest.mark.parametrize('fault', [None, 'pending', 'owner', 'phase', 'incomplete', 'foreign', 'drift', 'metadata'])
+def test_managed_service_snapshots_preserve_existing_state_before_any_write(monkeypatch, fault):
+    import pixel_macos_custody as custody
+    plan = dict(owner=SimpleNamespace(pw_name='fixture', pw_uid=501, pw_gid=20),
+        native_services={'expected_digest': 'b' * 64}, native_manager_port=3002,
+        access_settings={'install_dir': '/Users/fixture/ods'},
+        runtime_bundle={'source_config_bytes': b'{"agents":{"list":[{"id":"pixel","workspace":"/workspace"}]}}'})
+    records = managed_service_fixture(plan, monkeypatch)
+    journal = str(installer._launchd.ACCESS_STATE / 'service-installation.json')
+    disk = {r['path']: r['before'] for r in records}
+    old = json.loads(disk[journal])
+    if fault == 'pending': old['requiresRecovery'] = True
+    if fault == 'owner': old['owner'] = 502
+    if fault == 'phase': old['progress']['phase'] = 'starting'
+    disk[journal] = json.dumps(old).encode()
+    monkeypatch.setattr(custody, 'protected_bytes', lambda path, **kwargs: disk[str(path)])
+    checked = []
+    def metadata(path, body, **kwargs):
+        checked.append(path)
+        assert body == disk[str(path)]
+        if fault == 'metadata': raise installer.InstallError('existing-ods-file-unsafe')
+    monkeypatch.setattr(installer, '_check_existing', metadata)
+    monkeypatch.setattr(installer, '_verify_new_services',
+        lambda previous: previous['native_services'] == old['selection'] or pytest.fail('wrong previous selection'))
+    files = [(Path(r['path']), r['after'], r['mode'], r['gid']) for r in records if r['path'] != journal]
+    if fault == 'incomplete': files.pop(0)
+    if fault == 'foreign': files.append((Path('/foreign'), b'foreign', 0o644, 0))
+    def publication(**kwargs):
+        assert kwargs['workspace'] == Path('/workspace') and kwargs['port'] == 3002
+        assert kwargs['identity'] == old['recovery']['identity']
+        if fault == 'drift': disk[journal] += b'\n'
+        return files
+    monkeypatch.setattr(installer._native_services, 'publication_files', publication)
+    monkeypatch.setattr(installer, '_write_exact', lambda *a, **kw: pytest.fail('snapshot wrote files'))
+    if fault:
+        with pytest.raises(installer.InstallError): installer._managed_service_snapshots(plan)
+    else:
+        result = installer._managed_service_snapshots(plan)
+        assert len(result) == len(records) == len(checked)
+        assert all(item['before'] == disk[item['path']] for item in result)
+        updated = installer._managed_service_record(result, 'after')
+        assert updated['selection'] == plan['native_services']
+        assert updated['recovery']['identity'] == old['recovery']['identity']
+        assert updated['recovery']['python'] == old['recovery']['python']
+        assert not any('/results/' in r['path'] or '/workspace/' in r['path'] for r in result)
+
+
+@pytest.mark.parametrize('managed', [False, True])
 @pytest.mark.parametrize('invalid_version', [None, 'before', 'after'])
-def test_upgrade_services_pin_files_processes_and_separate_stop_witnesses(bundled_deployment, monkeypatch, tmp_path, invalid_version):
+def test_upgrade_services_pin_files_processes_and_separate_stop_witnesses(bundled_deployment, monkeypatch, tmp_path, invalid_version, managed):
     import pixel_macos_custody as custody
     import pixel_access_bridge as bridge
     plan = installer.make_plan(**bundled_deployment)
@@ -444,9 +539,13 @@ def test_upgrade_services_pin_files_processes_and_separate_stop_witnesses(bundle
     files = installer._deployment_files(ROOT, plan)
     records = [dict(path=str(path), before=body, after=body, mode=attrs['mode'], gid=attrs['gid'])
                for path, body, attrs in files]
-    on_disk = {r['path']: r['before'] for r in records}
-    monkeypatch.setattr(custody, 'protected_bytes', lambda path: on_disk[str(path)])
     monkeypatch.setattr(installer._launchd, 'ACCESS_STATE', tmp_path)
+    if managed:
+        plan['native_services'] = {'expected_digest': 'b' * 64}
+        records.extend(managed_service_fixture(plan, monkeypatch))
+    on_disk = {r['path']: r['before'] for r in records}
+    on_disk['/usr/bin/python3'] = b'protected-python-fixture'
+    monkeypatch.setattr(custody, 'protected_bytes', lambda path, **kwargs: on_disk[str(path)])
     if invalid_version:
         record = next(r for r in records if r['path'] == str(installer._launchd.ACCESS_PLIST))
         document = plistlib.loads(record[invalid_version])
@@ -457,11 +556,16 @@ def test_upgrade_services_pin_files_processes_and_separate_stop_witnesses(bundle
         assert not list(tmp_path.glob('runtime-upgrade-stop-*.json'))
         return
     previous, candidate = installer._upgrade_services(plan, records)
-    assert set(previous) == set(candidate) == {'gateway', 'access', 'relay'}
+    roles = installer._upgrade.NATIVE_ROLES if managed else installer._upgrade.CORE_ROLES
+    assert set(previous) == set(candidate) == set(roles)
     for role in previous:
         assert previous[role].target == candidate[role].target
         previous[role].verify_definition()
+        path = str(candidate[role].plist)
+        original = on_disk[path]
+        on_disk[path] = next(r['after'] for r in records if r['path'] == path)
         candidate[role].verify_definition()
+        on_disk[path] = original
     assert previous['gateway'].process == plan['source_process']
     assert candidate['gateway'].process == plan['gateway_binding']['process']
     assert candidate['access'].process is None
@@ -469,7 +573,7 @@ def test_upgrade_services_pin_files_processes_and_separate_stop_witnesses(bundle
         for role, service in services.items():
             service.save_stop({'fixture': version + '-' + role})
     witnesses = list(tmp_path.glob('runtime-upgrade-stop-*.json'))
-    assert len(witnesses) == 6
+    assert len(witnesses) == 2 * len(roles)
     assert all(p.stat().st_mode & 0o077 == 0 for p in witnesses)
     real_read = bridge.private_json
     monkeypatch.setattr(bridge, 'private_json', lambda path, uid, maximum:
@@ -1815,7 +1919,7 @@ def test_rollback_retains_verified_prior_services_when_candidate_never_started(t
         assert verified == [True]
 
 
-def test_existing_native_services_are_rejected_before_gateway_mutation(tmp_path, monkeypatch):
+def test_unqualified_existing_native_services_fail_before_gateway_mutation(tmp_path, monkeypatch):
     from contextlib import nullcontext
     import pixel_access_bridge as bridge
     import pixel_macos_custody as custody
@@ -1830,10 +1934,15 @@ def test_existing_native_services_are_rejected_before_gateway_mutation(tmp_path,
     monkeypatch.setattr(bridge, 'LaunchdAccessBridge', lambda *args, **kwargs:
         SimpleNamespace(state=tmp_path, locked=lambda: nullcontext()))
     monkeypatch.setattr(installer, '_upgrade_file_snapshots',
-        lambda *args: pytest.fail('unsupported service update must fail before staging or stopping'))
+        lambda *args: ([], []))
+    def unqualified(plan):
+        raise installer.InstallError('native-managed-service-not-ready')
+    monkeypatch.setattr(installer, '_managed_service_snapshots', unqualified)
+    monkeypatch.setattr(installer, '_upgrade_services',
+        lambda *args: pytest.fail('unqualified update must fail before staging or stopping'))
     plan = dict(migration_qualification={'approved': True}, upgrade_qualification={'approved': True},
         runtime_bundle={'approved': True}, key=b'fixture-key', owner=SimpleNamespace(pw_name='owner'))
-    with pytest.raises(installer.InstallError, match='managed-service-upgrade-requires-qualification'):
+    with pytest.raises(installer.InstallError, match='native-managed-service-not-ready'):
         installer._execute_upgrade_install(plan, '/fixture')
 
 
@@ -2814,20 +2923,27 @@ def test_load_upgrade_recovery_enforces_independent_contract(monkeypatch, fault)
         runtime.assert_called_once_with(plan)
 
 
+@pytest.mark.parametrize('managed', [False, True])
 @pytest.mark.parametrize('with_profiles', [False, True])
 @pytest.mark.parametrize('completed_phase', [None, 'active', 'restored', 'prepared'])
-def test_load_upgrade_recovery_uses_real_journal_decoder(monkeypatch, with_profiles, completed_phase):
+def test_load_upgrade_recovery_uses_real_journal_decoder(monkeypatch, with_profiles, completed_phase, managed):
     import pixel_access_bridge as bridge
     required, optional = installer._recovery_file_contract()
     contract = {**required, **(optional if with_profiles else {})}
     records = [dict(path=path, mode=mode, gid=gid, before=b'old', after=b'new')
                for path, (mode, gid) in contract.items()]
+    context = {'fixture': True}
+    if managed:
+        context.update(owner=SimpleNamespace(pw_name='owner', pw_uid=501, pw_gid=20),
+            native_services={'expected_digest': 'b' * 64}, migration_qualification={'approved': True})
+        records.extend(managed_service_fixture(context, monkeypatch))
+        contract.update(installer._managed_service_contract())
     value = installer._upgrade.encode_recovery(records, current_digest='a' * 64,
         candidate_digest='b' * 64, allowed_paths=set(contract))
     if completed_phase: value['phase'] = completed_phase
     reader = Mock(return_value=value)
     monkeypatch.setattr(bridge, 'private_json', reader)
-    monkeypatch.setattr(installer, '_load_recovery_context', lambda *a, **kw: {'fixture': True})
+    monkeypatch.setattr(installer, '_load_recovery_context', lambda *a, **kw: context)
     monkeypatch.setattr(installer, '_verify_recovery_runtime', lambda plan: None)
     def load():
         return installer._load_upgrade_recovery(current_digest='a' * 64,

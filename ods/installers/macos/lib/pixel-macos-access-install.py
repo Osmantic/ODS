@@ -994,6 +994,76 @@ def _upgrade_file_snapshots(plan, source):
     return existing, additions
 
 
+def _managed_service_contract():
+    """Fixed native destinations, never derived from a recovery manifest."""
+    broker = pwd.getpwnam('_ods_pixel_ops')
+    root = Path('/usr/local/libexec/ods-pixel-services')
+    names = set(_native_services.helper('config').SERVICE_SOURCES) | {
+        'operations/broker.py', 'operations/policy.json', 'helpers/extension-catalog.json',
+        'operations/broker.sb', 'manager/manager.sb', 'promoter/promoter.sb'}
+    result = {str(root / name): (0o640, broker.pw_gid) if name.endswith('.json') else (0o644, 0)
+              for name in names}
+    result.update({str(Path('/Library/LaunchDaemons') / ('com.ods.pixel-native-' + role + '.plist')):
+        (0o644, 0) for role in ('manager', 'promoter', 'operations')})
+    result[str(_launchd.ACCESS_STATE / 'service-installation.json')] = (0o600, 0)
+    return result
+
+
+def _managed_service_record(records, version):
+    path = str(_launchd.ACCESS_STATE / 'service-installation.json')
+    items = [item for item in records if item['path'] == path]
+    if not items:
+        return None
+    if len(items) != 1 or version not in ('before', 'after'):
+        raise InstallError('native-service-recovery-record-invalid')
+    return json.loads(items[0][version])
+
+
+def _managed_service_snapshots(plan):
+    """Capture a complete existing service set without provisioning its state."""
+    from pixel_macos_custody import protected_bytes
+    journal = _launchd.ACCESS_STATE / 'service-installation.json'
+    before = protected_bytes(journal, limit=2 * 1024 * 1024)
+    record = json.loads(before)
+    if (type(record) is not dict or type(record.get('schemaVersion')) is not int
+            or record['schemaVersion'] != 1 or record.get('owner') != plan['owner'].pw_uid
+            or record.get('requiresRecovery') or record.get('progress', {}).get('phase') != 'services-active'
+            or record.get('attempted') != ['manager', 'promoter', 'operations']):
+        raise InstallError('native-managed-service-not-ready')
+    _verify_new_services(dict(plan, native_services=record['selection']))
+    recovery = record['recovery']
+    document = json.loads(plan['runtime_bundle']['source_config_bytes'])
+    agents = [item for item in document['agents']['list'] if item.get('id') == 'pixel']
+    if len(agents) != 1:
+        raise InstallError('native-service-workspace-required')
+    files = _native_services.publication_files(**plan['native_services'],
+        identity=recovery['identity'], owner=plan['owner'].pw_name,
+        environment=Path(plan['access_settings']['install_dir']) / '.env',
+        workspace=_path(agents[0]['workspace']), port=plan['native_manager_port'], python=recovery['python'])
+    definitions = {role: {'path': str(path), 'body': base64.b64encode(body).decode('ascii')}
+        for role in ('manager', 'promoter', 'operations') for path, body, _, _ in files
+        if path == Path('/Library/LaunchDaemons') / ('com.ods.pixel-native-' + role + '.plist')}
+    if set(definitions) != {'manager', 'promoter', 'operations'}:
+        raise InstallError('complete-native-service-bindings-required')
+    updated = dict(schemaVersion=1, owner=plan['owner'].pw_uid, selection=plan['native_services'],
+        progress={'phase': 'services-active'}, requiresGatewayProof=True,
+        recovery=dict(recovery, definitions=definitions), stopWitnesses={},
+        attempted=['manager', 'promoter', 'operations'])
+    files.append((journal, (json.dumps(updated, sort_keys=True) + '\n').encode(), 0o600, 0))
+    contract = _managed_service_contract()
+    if ({str(path): (mode, gid) for path, _, mode, gid in files} != contract
+            or len(files) != len(contract)):
+        raise InstallError('native-service-replacement-file-contract-invalid')
+    snapshots = []
+    for path, after, mode, gid in files:
+        old = protected_bytes(path, limit=8 * 1024 * 1024)
+        _check_existing(path, old, mode=mode, gid=gid)
+        if path == journal and old != before:
+            raise InstallError('native-service-recovery-journal-changed')
+        snapshots.append(dict(path=str(path), before=old, after=after, mode=mode, gid=gid))
+    return snapshots
+
+
 def _upgrade_service_baseline(body, records):
     """Rebind the sandbox baseline only from the approved deployment pair."""
     from pixel_gateway_service import launchd_definition_digest
@@ -1032,6 +1102,11 @@ def _upgrade_services(plan, records):
         'access': (_launchd.ACCESS_TARGET, _launchd.ACCESS_PLIST),
         'relay': (_launchd.RELAY_TARGET, _launchd.RELAY_PLIST),
     }
+    managed = _managed_service_record(records, 'before') is not None
+    if managed:
+        definitions.update({role: ('system/com.ods.pixel-native-' + role,
+            Path('/Library/LaunchDaemons') / ('com.ods.pixel-native-' + role + '.plist'))
+            for role in ('operations', 'promoter', 'manager')})
 
     def create(role, version, target, path):
         try:
@@ -1054,6 +1129,26 @@ def _upgrade_services(plan, records):
         process = None
         if role in ('gateway', 'relay'):
             process = plan['source_process'] if version == 'previous' else plan['gateway_binding']['process']
+        if role in ('manager', 'promoter', 'operations'):
+            record = _managed_service_record(records, 'before' if version == 'previous' else 'after')
+            recovery = record['recovery']
+            broker = pwd.getpwnam('_ods_pixel_ops')
+            identity = recovery['identity']
+            if (record.get('owner') != plan['owner'].pw_uid or recovery.get('owner') != plan['owner'].pw_name
+                    or any(identity.get(key) != value for key, value in
+                        {'name': '_ods_pixel_ops', 'uid': broker.pw_uid, 'gid': broker.pw_gid}.items())
+                    or recovery['definitions'][role] != {'path': str(path),
+                        'body': base64.b64encode(expected).decode('ascii')}):
+                raise InstallError('native-service-definition-identity-mismatch')
+            user, uid, gid = {'manager': (plan['owner'].pw_name, plan['owner'].pw_uid, plan['owner'].pw_gid),
+                'promoter': ('root', 0, 0), 'operations': ('_ods_pixel_ops', broker.pw_uid, broker.pw_gid)}[role]
+            python = recovery['python']
+            arguments = document.get('ProgramArguments', [])
+            if (document.get('UserName') != user or arguments.count(python) != 1
+                    or arguments[arguments.index(python) + 1:arguments.index(python) + 3] != ['-I', '-B']):
+                raise InstallError('native-service-isolated-python-required')
+            protected_bytes(python, limit=128 * 1024 * 1024)
+            process = dict(uid=uid, gid=gid, executable=python)
         witness = _runtime_upgrade_stop_witness(selection['candidateDigest'], version, role)
         def save(value):
             atomic_json(witness, value)
@@ -1061,7 +1156,7 @@ def _upgrade_services(plan, records):
             return private_json(witness, 0, 1024 * 1024)
         return LaunchdGatewayService(_command, InstallError, target, verify,
             plist=path, verify_definition=verify_definition, process=process,
-            save_stop=save, load_stop=load)
+            save_stop=save, load_stop=load, allow_root_process=role == 'promoter')
 
     return tuple({role: create(role, version, *definition) for role, definition in definitions.items()}
                  for version in ('previous', 'candidate'))
@@ -1071,7 +1166,7 @@ def _runtime_upgrade_stop_witness(candidate_digest, version, role):
     if (not isinstance(candidate_digest, str)
             or not re.fullmatch('[a-f0-9]{64}', candidate_digest)
             or version not in ('previous', 'candidate')
-            or role not in ('gateway', 'access', 'relay')):
+            or role not in _upgrade.NATIVE_ROLES):
         raise InstallError('runtime-upgrade-stop-witness-invalid')
     return Path(_launchd.ACCESS_STATE) / (
         'runtime-upgrade-stop-' + candidate_digest + '-' + version + '-' + role + '.json')
@@ -1087,7 +1182,7 @@ def _clear_candidate_stop_witnesses(plan):
     selection = plan.get('runtime_bundle')
     candidate_digest = selection.get('digest') if isinstance(selection, dict) else None
     paths = [_runtime_upgrade_stop_witness(candidate_digest, 'candidate', role)
-             for role in ('gateway', 'access', 'relay')]
+             for role in _upgrade.NATIVE_ROLES]
     parent = Path(_launchd.ACCESS_STATE)
     from pixel_macos_custody import protected_directory, _require_no_acl
     with protected_directory(parent) as directory_fd:
@@ -1614,7 +1709,7 @@ def _prepare_candidate_stop_witnesses(previous, candidate, records):
     from pixel_gateway_service import launchd_definition_digest
     by_path = {item['path']: item for item in records}
     pending = []
-    for role in ('gateway', 'access', 'relay'):
+    for role in _upgrade.service_roles(previous, candidate):
         old, new = previous[role], candidate[role]
         if old.target != new.target or old.plist != new.plist or new.save_stop is None or new.load_stop is None:
             raise InstallError('runtime-upgrade-stop-binding-changed')
@@ -1641,7 +1736,7 @@ def _prepare_candidate_stop_witnesses(previous, candidate, records):
 
 def _relocate_upgrade_receipt(plan, previous, candidate, *, restore=False):
     """Run owner-state mutation only after proving every installed job stopped."""
-    for role in ('gateway', 'access', 'relay'):
+    for role in _upgrade.service_roles(previous, candidate):
         _assert_upgrade_absent(previous[role], candidate[role])
     hold = _resume_migration_hold(plan)
     selection = plan['runtime_bundle']
@@ -1670,14 +1765,14 @@ def _relocate_upgrade_receipt(plan, previous, candidate, *, restore=False):
     response = json.loads(result.stdout)
     if type(response) is not dict or set(response) != {'relocated'} or type(response['relocated']) is not bool:
         raise InstallError('runtime-upgrade-owner-relocation-failed')
-    for role in ('gateway', 'access', 'relay'):
+    for role in _upgrade.service_roles(previous, candidate):
         _assert_upgrade_absent(previous[role], candidate[role])
     if _resume_migration_hold(plan) != hold:
         raise InstallError('runtime-upgrade-edge-hold-changed')
 
 
 def _restore_upgrade_owner(plan, previous, candidate):
-    if plan.get('migration_qualification'):
+    if plan.get('migration_qualification') and 'operations' not in previous:
         _restore_new_services(plan)
     _relocate_upgrade_receipt(plan, previous, candidate, restore=True)
 
@@ -1706,6 +1801,8 @@ def _activate_upgrade(plan, records, journal, *, previous_guard=False):
         is_candidate = services is candidate
         if is_candidate and plan.get('migration_qualification'):
             _verify_new_services(plan)
+        elif 'operations' in services:
+            _verify_new_services(dict(plan, native_services=_managed_service_record(records, 'before')['selection']))
         verify_files('after' if is_candidate else 'before')
         for service in services.values():
             _upgrade_service_identity(service)
@@ -1726,7 +1823,13 @@ def _activate_upgrade(plan, records, journal, *, previous_guard=False):
 
     def migrate_owner():
         _relocate_upgrade_receipt(plan, previous, candidate)
-        if plan.get('migration_qualification'):
+        if 'operations' in candidate:
+            recovery = _managed_service_record(records, 'after')['recovery']
+            _native_services.helper('ops-service').validate_published_policy(
+                identity=recovery['identity'], python=recovery['python'],
+                program_root='/usr/local/libexec/ods-pixel-services/operations',
+                state='/private/var/lib/pixel-ops-broker')
+        elif plan.get('migration_qualification'):
             _activate_new_services(plan)
 
     def restore_owner():
@@ -1819,6 +1922,8 @@ def _recover_upgrade(plan, records, journal, *, verify_snapshots, previous_guard
     def ready(services):
         if services is not previous:
             raise InstallError('runtime-upgrade-recovery-target-invalid')
+        if 'operations' in services:
+            _verify_new_services(dict(plan, native_services=_managed_service_record(records, 'before')['selection']))
         verify_snapshots()
         _verify_recovery_runtime(plan)
         for item in records:
@@ -2060,6 +2165,10 @@ def _retirement_plan(snapshots, *, current_digest, candidate_digest, owner_name)
             or type(item.get('path')) is not str for item in files)):
         raise InstallError('runtime-upgrade-recovery-file-contract-invalid')
     selected = {item['path'] for item in files}
+    if str(_launchd.ACCESS_STATE / 'service-installation.json') in selected:
+        native_contract = _managed_service_contract()
+        required.update(native_contract)
+        contract.update(native_contract)
     if not set(required).issubset(selected) or not selected.issubset(contract):
         raise InstallError('runtime-upgrade-recovery-file-contract-invalid')
     records = _upgrade.decode_recovery(value, current_digest=current_digest,
@@ -2147,6 +2256,10 @@ def _load_upgrade_recovery(*, current_digest, candidate_digest, owner_name, comp
             or type(item.get('path')) is not str for item in files)):
         raise InstallError('runtime-upgrade-recovery-file-contract-invalid')
     selected = {item['path'] for item in files}
+    if str(_launchd.ACCESS_STATE / 'service-installation.json') in selected:
+        native_contract = _managed_service_contract()
+        required.update(native_contract)
+        contract.update(native_contract)
     if not set(required).issubset(selected) or not selected.issubset(contract):
         raise InstallError('runtime-upgrade-recovery-file-contract-invalid')
     journal, records = _upgrade.RecoveryJournal.load(
@@ -2160,6 +2273,10 @@ def _load_upgrade_recovery(*, current_digest, candidate_digest, owner_name, comp
     plan = _load_recovery_context(
         _launchd.ACCESS_STATE / ('runtime-upgrade-context-' + candidate_digest + '.json'),
         current_digest=current_digest, candidate_digest=candidate_digest, owner_name=owner_name)
+    managed = _managed_service_record(records, 'after')
+    if managed is not None and (not plan.get('migration_qualification')
+            or managed.get('selection') != plan.get('native_services')):
+        raise InstallError('native-service-recovery-selection-changed')
     _verify_recovery_runtime(plan)
     return plan, journal, records
 
@@ -2167,6 +2284,10 @@ def _load_upgrade_recovery(*, current_digest, candidate_digest, owner_name, comp
 def _verify_recovery_bindings(plan, records):
     """Require the context and both journaled service definitions to agree."""
     try:
+        native = _managed_service_record(records, 'after')
+        if native is not None and (not plan.get('migration_qualification')
+                or native.get('selection') != plan.get('native_services')):
+            raise ValueError()
         files = {item['path']: item for item in records}
         gateway = files[str(_destination(_launchd.GATEWAY_PLIST))]
         settings = files[str(_destination(ACCESS_FILES['config']))]
@@ -2456,9 +2577,9 @@ def _execute_upgrade_install(plan, source):
             raise InstallError('runtime-upgrade-pending-recovery')
         if json.loads(protected_bytes(_destination(ACCESS_FILES['config']))) != settings:
             raise InstallError('runtime-upgrade-controller-binding-changed')
-        if plan.get('migration_qualification') and os.path.lexists(bridge.state / 'service-installation.json'):
-            raise InstallError('native-managed-service-upgrade-requires-qualification')
         records, additions = _upgrade_file_snapshots(plan, source)
+        if plan.get('migration_qualification') and os.path.lexists(bridge.state / 'service-installation.json'):
+            records.extend(_managed_service_snapshots(plan))
         previous_guard = _previous_upgrade_guard(records)
         previous, _ = _upgrade_services(plan, records)
         for service in previous.values():
@@ -2482,7 +2603,7 @@ def _execute_upgrade_install(plan, source):
                        _edge_hold_journal(plan)]
         prior_paths.extend(_runtime_upgrade_stop_witness(selection['digest'], version, role)
                            for version in ('previous', 'candidate')
-                           for role in ('gateway', 'access', 'relay'))
+                           for role in _upgrade.NATIVE_ROLES)
         if any(os.path.lexists(path) for path in prior_paths):
             raise InstallError('runtime-upgrade-prior-attempt-requires-archive')
         value = _upgrade.encode_recovery(records,
@@ -2653,7 +2774,7 @@ def _retirement_snapshots(*, current_digest, candidate_digest, history_digest=No
     optional = ['runtime-upgrade-edge-' + candidate_digest + '.json']
     optional.extend(_runtime_upgrade_stop_witness(candidate_digest, version, role).name
                     for version in ('previous', 'candidate')
-                    for role in ('gateway', 'access', 'relay'))
+                    for role in _upgrade.NATIVE_ROLES)
     snapshots = {name: read(name) for name in required}
     for name in optional:
         if os.path.lexists(_launchd.ACCESS_STATE / name):

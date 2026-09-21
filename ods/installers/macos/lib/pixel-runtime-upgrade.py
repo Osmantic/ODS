@@ -14,9 +14,11 @@ import stat
 
 
 JOURNAL_LIMIT = 32 * 1024 * 1024
+CORE_ROLES = ('gateway', 'access', 'relay')
+NATIVE_ROLES = ('operations', 'promoter', 'manager') + CORE_ROLES
 PHASES = {'prepared', 'replacing-files', 'active', 'rolling-back', 'restored', 'recovery-required',
           *(action + '-' + role for action in ('stopping', 'starting')
-            for role in ('gateway', 'access', 'relay'))}
+            for role in NATIVE_ROLES)}
 
 
 class UpgradeError(RuntimeError):
@@ -93,7 +95,7 @@ def validate_retirement_snapshots(snapshots, *, current_digest, candidate_digest
     edge = 'runtime-upgrade-edge-' + candidate_digest + '.json'
     allowed = {archive, context, edge} | {
         'runtime-upgrade-stop-' + candidate_digest + '-' + version + '-' + role + '.json'
-        for version in ('previous', 'candidate') for role in ('gateway', 'access', 'relay')}
+        for version in ('previous', 'candidate') for role in NATIVE_ROLES}
     if (type(snapshots) is not dict or not {archive, context}.issubset(snapshots)
             or not set(snapshots).issubset(allowed)
             or any(type(body) is not bytes for body in snapshots.values())
@@ -184,7 +186,7 @@ def encode_recovery(records, *, current_digest, candidate_digest, allowed_paths)
         if (not isinstance(path, str) or not path.startswith('/')
                 or any(part in ('', '.', '..') for part in path.split('/')[1:])
                 or any(ord(c) < 32 for c in path)
-                or type(item['mode']) is not int or item['mode'] not in (0o600, 0o644, 0o755)
+                or type(item['mode']) is not int or item['mode'] not in (0o600, 0o640, 0o644, 0o755)
                 or type(item['gid']) is not int or item['gid'] < 0):
             raise UpgradeError('runtime-upgrade-record-invalid')
         record = {key: item[key] for key in ('path', 'mode', 'gid')}
@@ -357,6 +359,18 @@ def restore_deployment_files(records, *, read, replace):
                     mode=item['mode'], gid=item['gid'])
 
 
+def service_roles(previous, candidate):
+    """Accept the core deployment or the complete managed native deployment.
+
+    Native helpers start before the gateway and stop after ingress closes.
+    A partial native set cannot be treated as a successful joint update.
+    """
+    for roles in (CORE_ROLES, NATIVE_ROLES):
+        if set(previous) == set(candidate) == set(roles):
+            return roles
+    raise UpgradeError('runtime-upgrade-services-incomplete')
+
+
 def recover_previous(*, previous, candidate, phase, verify_snapshots, observe,
                      assert_absent, restore_files, start, stop, ready, restore_owner=None):
     """Restore an interrupted replacement from fresh service observations.
@@ -366,9 +380,8 @@ def recover_previous(*, previous, candidate, phase, verify_snapshots, observe,
     candidate, or absent. assert_absent must prove process-tree termination,
     not just absence of a launchd job. Unknown states fail before any stop.
     """
-    roles = ('gateway', 'access', 'relay')
-    if (set(previous) != set(roles) or set(candidate) != set(roles)
-            or len({s.target for s in previous.values()}) != len(roles)
+    roles = service_roles(previous, candidate)
+    if (len({s.target for s in previous.values()}) != len(roles)
             or any(previous[r].target != candidate[r].target for r in roles)):
         raise UpgradeError('runtime-upgrade-services-incomplete')
     verify_snapshots()
@@ -404,17 +417,15 @@ def recover_previous(*, previous, candidate, phase, verify_snapshots, observe,
 
 def activate(*, previous, candidate, phase, verify, replace_files, restore_files,
              start, stop, ready, migrate_owner=None, restore_owner=None):
-    """Replace gateway/access/relay as a unit and restore on ordinary failures.
+    """Replace the complete selected service set and restore on ordinary failures.
 
     Durable crash recovery is the caller's responsibility; this function never
     reports success after an interrupted or partially restored transition.
     """
-    roles = ('gateway', 'access', 'relay')
+    roles = service_roles(previous, candidate)
     if ((migrate_owner is None) != (restore_owner is None)
             or migrate_owner is not None and (not callable(migrate_owner) or not callable(restore_owner))):
         raise UpgradeError('runtime-upgrade-owner-hooks-incomplete')
-    if set(previous) != set(roles) or set(candidate) != set(roles):
-        raise UpgradeError('runtime-upgrade-services-incomplete')
     for role in roles:
         if previous[role].target != candidate[role].target:
             raise UpgradeError('runtime-upgrade-target-changed')
@@ -426,7 +437,7 @@ def activate(*, previous, candidate, phase, verify, replace_files, restore_files
     replacing = False
     attempted = []
     try:
-        # Close the owner ingress first, then the controller, then the gateway.
+        # Close ingress, controller and gateway before stopping native helpers.
         for role in reversed(roles):
             phase('stopping-' + role)
             stopped.append(role)

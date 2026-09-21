@@ -51,14 +51,14 @@ def selection(root):
                 allowed_paths={str(root / name) for name in ('first', 'second')})
 
 
-def worker(root, checkpoint):
-    records = [dict(path=str(root / name), mode=0o600, gid=os.getgid(),
+def worker(root, checkpoint, policy_mode=0o600):
+    records = [dict(path=str(root / name), mode=policy_mode if name == 'second' else 0o600, gid=os.getgid(),
                     before=b'original-' + name.encode(), after=b'updated-' + name.encode())
                for name in ('first', 'second')]
     for item in records:
         path = Path(item['path'])
         path.write_bytes(item['before'])
-        path.chmod(0o600)
+        path.chmod(item['mode'])
         item['gid'] = path.stat().st_gid
     def stop_at(name):
         if checkpoint == name:
@@ -82,8 +82,9 @@ def worker(root, checkpoint):
 @pytest.mark.skipif(os.name != 'posix', reason='SIGKILL and POSIX filesystem test')
 @pytest.mark.parametrize('checkpoint', ['prepared', 'replaced-1', 'replaced-2'])
 @pytest.mark.parametrize('drift', [False, True])
-def test_killed_updater_restores_only_known_snapshots(tmp_path, checkpoint, drift):
-    process = subprocess.Popen([sys.executable, __file__, '--worker', str(tmp_path), checkpoint],
+@pytest.mark.parametrize('policy_mode', [0o600, 0o640])
+def test_killed_updater_restores_only_known_snapshots(tmp_path, checkpoint, drift, policy_mode):
+    process = subprocess.Popen([sys.executable, __file__, '--worker', str(tmp_path), checkpoint, str(policy_mode)],
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     try:
         with selectors.DefaultSelector() as selector:
@@ -116,7 +117,7 @@ def test_killed_updater_restores_only_known_snapshots(tmp_path, checkpoint, drif
             def verify():
                 for item in records:
                     assert Path(item['path']).read_bytes() == item['before']
-                    assert stat.S_IMODE(Path(item['path']).stat().st_mode) == 0o600
+                    assert stat.S_IMODE(Path(item['path']).stat().st_mode) == item['mode']
             verify()
             journal.phase('restored')
             journal.finish(verify)
@@ -125,4 +126,4 @@ def test_killed_updater_restores_only_known_snapshots(tmp_path, checkpoint, drif
 
 
 if __name__ == '__main__' and sys.argv[1] == '--worker':
-    worker(Path(sys.argv[2]), sys.argv[3])
+    worker(Path(sys.argv[2]), sys.argv[3], int(sys.argv[4]))

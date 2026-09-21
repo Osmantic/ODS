@@ -279,7 +279,7 @@ def replace_protected_bytes(filename, *, expected, replacement, mode, gid=0):
     """
     if (type(expected) is not bytes or type(replacement) is not bytes
             or max(len(expected), len(replacement)) > 8 * 1024 * 1024
-            or type(mode) is not int or mode not in (0o600, 0o644, 0o755)
+            or type(mode) is not int or mode not in (0o600, 0o640, 0o644, 0o755)
             or type(gid) is not int or gid < 0):
         raise CustodyError('macos-custody-replacement-invalid')
     value = os.fspath(filename)

@@ -42,12 +42,14 @@ def replace(path, **changes):
     custody.replace_protected_bytes(path, **args)
 
 
-def test_replacement_is_new_inode_and_preserves_mode(target):
+@pytest.mark.parametrize('mode', [0o600, 0o640, 0o644, 0o755])
+def test_replacement_is_new_inode_and_preserves_mode(target, mode):
+    target.chmod(mode)
     before = target.stat().st_ino
-    replace(target)
+    replace(target, mode=mode)
     assert target.read_bytes() == b'updated'
     assert target.stat().st_ino != before
-    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+    assert stat.S_IMODE(target.stat().st_mode) == mode
     assert list(target.parent.iterdir()) == [target]
 
 

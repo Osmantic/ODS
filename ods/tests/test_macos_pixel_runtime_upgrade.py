@@ -156,9 +156,9 @@ def test_retirement_history_decoder_rejects_untrusted_shape(fault):
         upgrade.decode_retirement_history(body, history_digest=digest, current_digest=a, candidate_digest=b)
 
 
-def scenario(failure=None, recovery_failure=False):
+def scenario(failure=None, recovery_failure=False, roles=upgrade.CORE_ROLES):
     events = []
-    loaded = {role: 'old' for role in ('gateway', 'access', 'relay')}
+    loaded = {role: 'old' for role in roles}
     current_files = ['old']
     failed = [False]
 
@@ -217,6 +217,63 @@ def test_upgrade_stops_old_before_replacement_and_checks_new():
     assert set(loaded.values()) == {'new'} and files == ['new']
     assert events.index('stop-old-relay') < events.index('stop-old-gateway') < events.index('replace')
     assert events[-2:] == ['ready-new', 'phase-active']
+
+
+@pytest.mark.parametrize('failure', [None, 'replace', 'ready-new'] + [
+    action + '-' + role for action in ('before-stop-old', 'stop-old', 'start-new')
+    for role in upgrade.NATIVE_ROLES])
+def test_complete_native_update_restores_all_six_services_on_failure(failure):
+    args, events, loaded, files = scenario(failure=failure, roles=upgrade.NATIVE_ROLES)
+    if failure:
+        with pytest.raises(RuntimeError): upgrade.activate(**args)
+        assert loaded == dict.fromkeys(upgrade.NATIVE_ROLES, 'old') and files == ['old']
+        assert events[-1] == 'phase-restored'
+    else:
+        upgrade.activate(**args)
+        assert loaded == dict.fromkeys(upgrade.NATIVE_ROLES, 'new') and files == ['new']
+        stops = [event for event in events if event.startswith('stop-old-')]
+        starts = [event for event in events if event.startswith('start-new-')]
+        assert stops == ['stop-old-' + role for role in reversed(upgrade.NATIVE_ROLES)]
+        assert starts == ['start-new-' + role for role in upgrade.NATIVE_ROLES]
+        assert events.index(stops[-1]) < events.index('replace') < events.index(starts[0])
+
+
+@pytest.mark.parametrize('missing', ['operations', 'promoter', 'manager'])
+def test_partial_native_update_is_rejected_before_mutation(missing):
+    args, events, _, _ = scenario(roles=upgrade.NATIVE_ROLES)
+    del args['previous'][missing]
+    del args['candidate'][missing]
+    with pytest.raises(upgrade.UpgradeError, match='services-incomplete'):
+        upgrade.activate(**args)
+    assert not events
+
+
+@pytest.mark.parametrize('versions', list(itertools.product(('old', 'new', None), repeat=6)))
+def test_native_recovery_handles_every_mixture_of_six_service_versions(versions):
+    args, events, loaded, files = scenario(roles=upgrade.NATIVE_ROLES)
+    loaded.clear()
+    loaded.update({role: version for role, version in zip(upgrade.NATIVE_ROLES, versions) if version})
+    files[:] = ['new']
+    def observe(old, new):
+        return {'old': 'previous', 'new': 'candidate', None: 'absent'}[loaded.get(old.role)]
+    def absent(old, new):
+        assert old.role not in loaded
+        events.append('proof-absent-' + old.role)
+    upgrade.recover_previous(previous=args['previous'], candidate=args['candidate'],
+        phase=args['phase'], verify_snapshots=args['verify'], observe=observe,
+        assert_absent=absent, restore_files=args['restore_files'], start=args['start'],
+        stop=args['stop'], ready=args['ready'])
+    assert files == ['old'] and loaded == dict.fromkeys(upgrade.NATIVE_ROLES, 'old')
+    assert events[-1] == 'phase-restored'
+
+
+def test_group_readable_broker_policy_round_trips_through_recovery():
+    records = [dict(path='/usr/local/libexec/ods-pixel-services/operations/policy.json',
+        before=b'previous policy', after=b'candidate policy', mode=0o640, gid=61000)]
+    options = dict(current_digest='a' * 64, candidate_digest='b' * 64,
+        allowed_paths={item['path'] for item in records})
+    value = upgrade.encode_recovery(records, **options)
+    assert upgrade.decode_recovery(value, **options) == records
 
 
 @pytest.mark.parametrize('fault', [None, 'partial-owner', 'ready-new'])

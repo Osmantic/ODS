@@ -2017,11 +2017,16 @@ bytecode cache redirected to `/tmp`.
 ### Managed Update Command (Qualification In Progress)
 
 Current release gate: a real managed update exposed a first-install-only service
-activation path. Existing service installations are now rejected before gateway
-mutation until transactional service replacement is implemented and qualified.
-The preparation command is available, but a successful managed activation must
-not be claimed yet. Recovery of the observed failed attempt restored the previous
-runtime and verified full-access execution without deleting owner data.
+activation path. Managed updates now snapshot the existing manager, promoter and
+operations files alongside the gateway/access/relay files in the same recovery
+journal. All six jobs stop before replacement; native helpers start before the
+gateway. Recovery restores the previous service definitions, policy, code and
+installation receipt without reprovisioning accounts or deleting runtime spools.
+Unhealthy prior deployments and incomplete file sets fail during preflight.
+This replacement path still requires successful live activation qualification;
+passing simulated failure tests is not that proof. Recovery of the earlier failed
+attempt restored the previous runtime and verified full-access execution without
+deleting owner data.
 
 `PIXEL_LICENSE_ACCEPTED=true ./installers/macos/ods-macos.sh update-pixel`
 uses the installed source's pinned Pixel release. It downloads and prepares the
