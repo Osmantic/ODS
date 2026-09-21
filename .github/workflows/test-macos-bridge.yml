@@ -6,6 +6,12 @@ on:
       - 'ods/bin/ods-macos-llm-bridge.py'
       - 'ods/tests/test_macos_llm_bridge.py'
       - 'ods/tests/test_bridge_denied_admission.py'
+      - 'ods/installers/macos/**'
+      - 'ods/tests/test_macos_pixel_native_install.py'
+      - 'ods/tests/test_macos_pixel_native_update.py'
+      - 'ods/tests/test_pixel_startup_reproof.py'
+      - 'ods/tests/test_macos_memory_budget.py'
+      - 'ods/bin/ods-host-agent.py'
       - '.github/workflows/test-macos-bridge.yml'
   push:
     branches: [main, public-beta]
@@ -13,6 +19,12 @@ on:
       - 'ods/bin/ods-macos-llm-bridge.py'
       - 'ods/tests/test_macos_llm_bridge.py'
       - 'ods/tests/test_bridge_denied_admission.py'
+      - 'ods/installers/macos/**'
+      - 'ods/tests/test_macos_pixel_native_install.py'
+      - 'ods/tests/test_macos_pixel_native_update.py'
+      - 'ods/tests/test_pixel_startup_reproof.py'
+      - 'ods/tests/test_macos_memory_budget.py'
+      - 'ods/bin/ods-host-agent.py'
       - '.github/workflows/test-macos-bridge.yml'
 
 permissions:
@@ -30,6 +42,13 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install test dependencies
-        run: python -m pip install 'pytest>=8,<9'
+        run: python -m pip install 'pytest>=8,<9' 'PyYAML>=6,<7'
       - name: Verify bridge admission and real HTTP forwarding
         run: python -m pytest -q ods/tests/test_bridge_denied_admission.py ods/tests/test_macos_llm_bridge.py
+      - name: Verify native installer, update and startup contracts
+        run: >-
+          python -m pytest -q
+          ods/tests/test_macos_pixel_native_install.py
+          ods/tests/test_macos_pixel_native_update.py
+          ods/tests/test_pixel_startup_reproof.py
+          ods/tests/test_macos_memory_budget.py
