@@ -934,6 +934,15 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
         LLAMA_CPU_RESERVATION="$LLAMA_CPU_LIMIT"
     fi
 
+    _tts_docker_memory_gb="$(ods_docker_memory_gb 2>/dev/null || true)"
+    _tts_effective_memory_gb="$(ods_effective_container_memory_gb "${RAM_GB:-0}" "$_tts_docker_memory_gb")"
+    _tts_workers_default="$(ods_default_tts_workers "$_tts_effective_memory_gb")"
+    TTS_WORKERS_VALUE="$(_env_get TTS_WORKERS "${TTS_WORKERS:-$_tts_workers_default}")"
+    if [[ ! "$TTS_WORKERS_VALUE" =~ ^[1-9][0-9]*$ ]]; then
+        TTS_WORKERS_VALUE="$_tts_workers_default"
+    fi
+    unset _tts_docker_memory_gb _tts_effective_memory_gb _tts_workers_default
+
     TTS_CPU_LIMIT=$(_select_service_cpu_limit TTS_CPU_LIMIT "8.0" "$_docker_available_cpus")
     TTS_CPU_RESERVATION=$(_select_service_cpu_reservation TTS_CPU_RESERVATION "2.0" "$TTS_CPU_LIMIT")
     WHISPER_CPU_LIMIT=$(_select_service_cpu_limit WHISPER_CPU_LIMIT "4.0" "$_docker_available_cpus")
@@ -1195,6 +1204,7 @@ LLAMA_CPU_RESERVATION=${LLAMA_CPU_RESERVATION}
 
 # Bundled service CPU budgets. These are capped to CPUs exposed by Docker so
 # small hosts do not fail container creation on fixed compose limits.
+TTS_WORKERS=${TTS_WORKERS_VALUE}
 TTS_CPU_LIMIT=${TTS_CPU_LIMIT}
 TTS_CPU_RESERVATION=${TTS_CPU_RESERVATION}
 WHISPER_CPU_LIMIT=${WHISPER_CPU_LIMIT}
