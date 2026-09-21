@@ -422,7 +422,7 @@ _update_rollback() {
         log_error "  Snapshot : ${snap_dir_arg}"
         log_error "  Steps    :"
         log_error "    1. cp \"${snap_dir_arg}/.env\" \"${INSTALL_DIR}/.env\""
-        log_error "    2. cd \"${INSTALL_DIR}\" && docker compose up -d"
+        log_error "    2. cd \"${INSTALL_DIR}\" && ./ods-cli start"
         return 1
     fi
 

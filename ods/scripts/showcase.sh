@@ -75,7 +75,7 @@ demo_chat() {
     
     if ! check_service "$LLM_URL" "/health"; then
         echo -e "${RED}Error: LLM is not running${NC}"
-        echo "Start ODS first: docker compose up -d"
+        echo "Start ODS first: ./ods-cli start"
         return
     fi
     

@@ -626,7 +626,7 @@ if [[ "$HEALTH_FAILURES" -gt 0 ]]; then
         ai_warn "Embeddings/RAG was selected, but the embeddings service did not become healthy."
         ai_warn "This often means text-embeddings-inference stalled while downloading its ONNX model from Hugging Face."
         ai_warn "Recovery: docker compose logs embeddings"
-        ai_warn "Then retry after network/CDN recovery: docker compose up -d embeddings"
+        ai_warn "Then retry after network/CDN recovery: ./ods-cli start embeddings"
         exit 1
     fi
     if [[ "${COMPOSE_STARTED_WITH_DELAYED_HEALTH:-false}" == "true" ]]; then

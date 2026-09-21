@@ -201,7 +201,7 @@ if is_external_lemonade; then
     LLM_ENDPOINTS=("http://${SERVICE_HOST}:${LLM_PORT}/health/readiness" "http://127.0.0.1:${LLM_PORT}/health/readiness" "http://127.0.0.1:${LLM_PORT}/v1/models")
     LLM_SERVICE_NAME="LiteLLM external Lemonade gateway"
     LLM_CONTAINER_MATCH="ods-litellm"
-    LLM_START_CMD="docker compose up -d litellm"
+    LLM_START_CMD="./ods-cli start litellm"
 else
     LLM_PORT="${OLLAMA_PORT:-${LLAMA_SERVER_PORT:-8080}}"
     # Also probe the actual mapped port in case docker remapped it
@@ -210,7 +210,7 @@ else
     LLM_ENDPOINTS=("http://${SERVICE_HOST}:${EXTERNAL_PORT}/health" "http://${SERVICE_HOST}:${EXTERNAL_PORT}/v1/models" "http://127.0.0.1:${EXTERNAL_PORT}/health" "http://127.0.0.1:${EXTERNAL_PORT}/v1/models" "http://127.0.0.1:${LLM_PORT}/health" "http://127.0.0.1:${LLM_PORT}/v1/models")
     LLM_SERVICE_NAME="llama-server"
     LLM_CONTAINER_MATCH="ods-llama-server"
-    LLM_START_CMD="docker compose up -d llama-server"
+    LLM_START_CMD="./ods-cli start llama-server"
 fi
 
 LLM_FOUND=false

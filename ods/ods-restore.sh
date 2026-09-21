@@ -564,7 +564,7 @@ do_restore() {
     echo ""
     echo "Next steps:"
     echo "  1. Review restored configuration: cat $ODS_DIR/.env"
-    echo "  2. Start services: docker compose up -d"
+    echo "  2. Start services: ./ods-cli start"
     echo "  3. Check status: ./ods-preflight.sh"
 }
 

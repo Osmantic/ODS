@@ -60,7 +60,7 @@ if docker compose $COMPOSE_FLAGS ps | grep -q "$LLM_CONTAINER"; then
     echo -e "${GREEN}✓ running${NC}"
 else
     echo -e "${RED}✗ not running${NC}"
-    echo "  Fix: Run 'docker compose up -d' first"
+    echo "  Fix: Run './ods-cli start' first"
     exit 1
 fi
 
