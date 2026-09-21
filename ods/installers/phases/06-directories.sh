@@ -1204,7 +1204,7 @@ LLAMA_CPU_RESERVATION=${LLAMA_CPU_RESERVATION}
 
 # Bundled service CPU budgets. These are capped to CPUs exposed by Docker so
 # small hosts do not fail container creation on fixed compose limits.
-TTS_WORKERS=${TTS_WORKERS_VALUE}
+TTS_WORKERS=$(dotenv_value "${TTS_WORKERS_VALUE}")
 TTS_CPU_LIMIT=${TTS_CPU_LIMIT}
 TTS_CPU_RESERVATION=${TTS_CPU_RESERVATION}
 WHISPER_CPU_LIMIT=${WHISPER_CPU_LIMIT}
