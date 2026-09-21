@@ -815,7 +815,14 @@ collect_docker
 write_evidence
 write_manifest
 
-tar -czf "$ARCHIVE_PATH" -C "$OUTPUT_DIR" "$BUNDLE_NAME"
+# macOS `tar` (bsdtar) embeds AppleDouble `._*` metadata companions when the
+# bundled files carry extended attributes. They unpack as real `._*` files
+# wherever the bundle is opened, scattering binary junk through a diagnostics
+# archive a maintainer has to read, and breaking tooling that walks the bundle
+# and decodes its files as text. COPYFILE_DISABLE tells bsdtar to omit that
+# metadata; GNU tar on Linux ignores the variable, so this is a no-op there.
+# Mirrors the same guard already applied to the backup archive in ods-backup.sh.
+COPYFILE_DISABLE=1 tar -czf "$ARCHIVE_PATH" -C "$OUTPUT_DIR" "$BUNDLE_NAME"
 
 if [[ "$JSON_OUTPUT" == "true" ]]; then
     write_summary_json
