@@ -28,7 +28,7 @@ function Get-NetIPAddress {
 
 $rendered = (& {
     Write-ODSBanner
-    foreach ($phase in 1..9) {
+    foreach ($phase in 1..13) {
         Write-Phase -Phase $phase -Total 13 -Name "INTERNAL-$phase" -Estimate "test"
     }
     Write-SuccessCard -WebUIPort "3000" -DashboardPort "3001"

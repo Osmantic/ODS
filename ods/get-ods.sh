@@ -20,6 +20,19 @@ if ! cd "$ODS_BOOTSTRAP_ROOT" 2>/dev/null; then
     }
 fi
 
+# Parse presentation-affecting flags before any bootstrap output. A GUI or
+# unattended caller can still own a real TTY, so TTY detection alone is not a
+# sufficient signal that ANSI color is safe.
+BOOTSTRAP_FORCE=false
+BOOTSTRAP_NON_INTERACTIVE=false
+BOOTSTRAP_REINSTALL=false
+for _arg in "$@"; do
+    case "$_arg" in
+        --force) BOOTSTRAP_FORCE=true ;;
+        --non-interactive) BOOTSTRAP_NON_INTERACTIVE=true ;;
+    esac
+done
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -30,7 +43,12 @@ BRIGHT_MAGENTA='\033[1;35m'
 BOLD='\033[1m'
 NC='\033[0m'
 
-if [[ -n "${NO_COLOR:-}" || "${TERM:-}" == "dumb" || ! -t 1 ]]; then
+if [[ -n "${NO_COLOR:-}" \
+    || "${TERM:-}" == "dumb" \
+    || "${BOOTSTRAP_NON_INTERACTIVE}" == "true" \
+    || -n "${ODS_INSTALLER_GUI:-}" \
+    || "${ODS_UI_MODE:-auto}" == "plain" \
+    || ! -t 1 ]]; then
     RED='' GREEN='' YELLOW='' CYAN='' MAGENTA='' BRIGHT_MAGENTA='' BOLD='' NC=''
 fi
 
@@ -38,17 +56,6 @@ REPO_URL="${ODS_REPO_URL:-https://github.com/Osmantic/ODS.git}"
 INSTALL_DIR="${ODS_INSTALL_DIR:-$ODS_BOOTSTRAP_ROOT/ods}"
 PRE_ODS_INSTALL_DIR="${ODS_LEGACY_INSTALL_DIR:-}"
 ODS_REF="${ODS_REF:-${ODS_BOOTSTRAP_REF:-}}"
-BOOTSTRAP_FORCE=false
-BOOTSTRAP_NON_INTERACTIVE=false
-BOOTSTRAP_REINSTALL=false
-
-for _arg in "$@"; do
-    case "$_arg" in
-        --force) BOOTSTRAP_FORCE=true ;;
-        --non-interactive) BOOTSTRAP_NON_INTERACTIVE=true ;;
-    esac
-done
-
 log()     { echo -e "${CYAN}[ods]${NC} $1"; }
 success() { echo -e "${GREEN}[  ok ]${NC} $1"; }
 warn()    { echo -e "${YELLOW}[warn ]${NC} $1"; }

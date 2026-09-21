@@ -501,3 +501,17 @@ MOCK
     [[ "$rc" -eq 23 ]]
     grep -qF "Expected failure" "$rendered"
 }
+
+@test "spin_task: cinematic mode preserves the child failure status" {
+    export ODS_UI_MODE="cinematic"
+    export INTERACTIVE="true"
+    (exit 29) &
+    local task_pid=$!
+    local rendered="$BATS_TEST_TMPDIR/spin-cinematic-failure.out"
+    local rc=0
+
+    spin_task "$task_pid" "Expected cinematic failure" > "$rendered" || rc=$?
+
+    [[ "$rc" -eq 29 ]]
+    grep -qF "Expected cinematic failure" "$rendered"
+}
