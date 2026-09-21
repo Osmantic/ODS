@@ -53,6 +53,11 @@ secure_pixel_catalog_sources() {
     local install_dir="$1" source
     local sources=()
 
+    # BSD chmod (macOS) does not accept GNU's `--` option. Keep every operand
+    # absolute instead so a user-supplied relative install path cannot be
+    # interpreted as an option on either platform.
+    [[ "$install_dir" == /* ]] || install_dir="$PWD/$install_dir"
+
     for source in \
         "$install_dir/config/extensions-catalog.json" \
         "$install_dir/extensions/library/services" \
@@ -62,7 +67,7 @@ secure_pixel_catalog_sources() {
         fi
     done
 
-    (( ${#sources[@]} == 0 )) || chmod -R go-w -- "${sources[@]}"
+    (( ${#sources[@]} == 0 )) || chmod -R go-w "${sources[@]}"
 }
 
 
