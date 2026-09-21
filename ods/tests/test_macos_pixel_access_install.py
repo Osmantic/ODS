@@ -1781,6 +1781,62 @@ def test_new_service_recovery_uses_protected_journal_and_rechecks_before_stop(tm
         assert 'stop' not in events and 'write' not in events
 
 
+@pytest.mark.parametrize('fault', [None, 'not-migration', 'pending', 'phase', 'attempts', 'health', 'drift'])
+def test_rollback_retains_verified_prior_services_when_candidate_never_started(tmp_path, monkeypatch, fault):
+    import pixel_access_bridge as bridge
+    monkeypatch.setattr(installer.sys, 'platform', 'darwin')
+    monkeypatch.setattr(installer.os, 'geteuid', lambda: 0)
+    monkeypatch.setattr(installer._launchd, 'ACCESS_STATE', tmp_path)
+    (tmp_path / 'service-installation.json').touch()
+    old = {'expected_digest': 'a' * 64}
+    record = dict(schemaVersion=1, owner=501, selection=old, stopWitnesses={},
+        attempted=['manager', 'promoter', 'operations'], progress={'phase': 'services-active'})
+    plan = dict(owner=SimpleNamespace(pw_uid=501, pw_name='owner'),
+        native_services={'expected_digest': 'b' * 64}, migration_qualification={'approved': True})
+    if fault == 'not-migration': plan.pop('migration_qualification')
+    if fault == 'pending': record['requiresRecovery'] = True
+    if fault == 'phase': record['progress']['phase'] = 'starting'
+    if fault == 'attempts': record['attempted'] = ['manager']
+    monkeypatch.setattr(bridge, 'private_json', lambda *args: json.loads(json.dumps(record)))
+    verified = []
+    def verify(previous):
+        assert previous['native_services'] == old
+        verified.append(True)
+        if fault == 'health': raise installer.InstallError('native-services-not-ready')
+        if fault == 'drift': record['extra'] = True
+    monkeypatch.setattr(installer, '_verify_new_services', verify)
+    monkeypatch.setattr(installer._native_services, 'stop_new',
+        lambda **kwargs: pytest.fail('prior services must not be stopped'))
+    monkeypatch.setattr(bridge, 'atomic_json', lambda *args: pytest.fail('prior journal must not be replaced'))
+    if fault:
+        with pytest.raises(installer.InstallError): installer._restore_new_services(plan)
+    else:
+        installer._restore_new_services(plan)
+        assert verified == [True]
+
+
+def test_existing_native_services_are_rejected_before_gateway_mutation(tmp_path, monkeypatch):
+    from contextlib import nullcontext
+    import pixel_access_bridge as bridge
+    import pixel_macos_custody as custody
+    monkeypatch.setattr(installer.sys, 'platform', 'darwin')
+    monkeypatch.setattr(installer.os, 'geteuid', lambda: 0)
+    monkeypatch.setattr(installer._launchd, 'ACCESS_STATE', tmp_path)
+    (tmp_path / 'service-installation.json').touch()
+    settings = dict(state_dir=str(tmp_path), install_dir='/owner/ods', gateway_target='system/fixture',
+        gateway_plist='/fixture.plist', gateway_process='fixture', gateway_binding={},
+        openclaw_bin='/fixture/node', owner='owner', gateway_policy={})
+    monkeypatch.setattr(custody, 'protected_bytes', lambda *args, **kwargs: json.dumps(settings).encode())
+    monkeypatch.setattr(bridge, 'LaunchdAccessBridge', lambda *args, **kwargs:
+        SimpleNamespace(state=tmp_path, locked=lambda: nullcontext()))
+    monkeypatch.setattr(installer, '_upgrade_file_snapshots',
+        lambda *args: pytest.fail('unsupported service update must fail before staging or stopping'))
+    plan = dict(migration_qualification={'approved': True}, upgrade_qualification={'approved': True},
+        runtime_bundle={'approved': True}, key=b'fixture-key', owner=SimpleNamespace(pw_name='owner'))
+    with pytest.raises(installer.InstallError, match='managed-service-upgrade-requires-qualification'):
+        installer._execute_upgrade_install(plan, '/fixture')
+
+
 @pytest.mark.parametrize('fault', [None, 'phase', 'selection', 'identity', 'readiness', 'drift'])
 def test_candidate_health_includes_all_native_services_and_stable_journal(monkeypatch, fault):
     import pixel_access_bridge as bridge

@@ -524,9 +524,19 @@ def _restore_new_services(plan):
     record = private_json(journal, 0, 2 * 1024 * 1024)
     if (type(record.get('schemaVersion')) is not int or record['schemaVersion'] != 1
             or record.get('owner') != plan['owner'].pw_uid
-            or record.get('selection') != plan['native_services']
             or type(record.get('attempted')) is not list or type(record.get('stopWitnesses')) is not dict):
         raise InstallError('native-service-recovery-selection-changed')
+    if record.get('selection') != plan['native_services']:
+        # Activation refuses an existing journal before touching these services.
+        # A healthy prior deployment must remain running during gateway rollback.
+        if (not plan.get('migration_qualification') or record.get('requiresRecovery')
+                or record.get('progress', {}).get('phase') != 'services-active'
+                or record['attempted'] != ['manager', 'promoter', 'operations']):
+            raise InstallError('native-service-recovery-selection-changed')
+        _verify_new_services(dict(plan, native_services=record['selection']))
+        if private_json(journal, 0, 2 * 1024 * 1024) != record:
+            raise InstallError('native-service-recovery-journal-changed')
+        return
     attempted = record['attempted']
     if attempted != ['manager', 'promoter', 'operations'][:len(attempted)]:
         raise InstallError('native-service-recovery-attempts-invalid')
@@ -2446,6 +2456,8 @@ def _execute_upgrade_install(plan, source):
             raise InstallError('runtime-upgrade-pending-recovery')
         if json.loads(protected_bytes(_destination(ACCESS_FILES['config']))) != settings:
             raise InstallError('runtime-upgrade-controller-binding-changed')
+        if plan.get('migration_qualification') and os.path.lexists(bridge.state / 'service-installation.json'):
+            raise InstallError('native-managed-service-upgrade-requires-qualification')
         records, additions = _upgrade_file_snapshots(plan, source)
         previous_guard = _previous_upgrade_guard(records)
         previous, _ = _upgrade_services(plan, records)
