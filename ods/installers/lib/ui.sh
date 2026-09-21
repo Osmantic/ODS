@@ -122,6 +122,24 @@ ai_ok()    { echo -e "  ${BGRN}✓${NC} $1" | tee -a "$LOG_FILE"; }
 ai_warn()  { echo -e "  ${AMB}⚠${NC} $1" | tee -a "$LOG_FILE"; }
 ai_bad()   { echo -e "  ${RED}✗${NC} $1" | tee -a "$LOG_FILE"; }
 
+# One-shot operational status. Cinematic terminals may overwrite an active
+# spinner line; plain/CI/GUI output always receives a fresh ASCII-only line.
+ui_status_line() {
+  local kind="$1" message="$2"
+  local color marker label
+  case "$kind" in
+    ok)    color="$BGRN"; marker='✓'; label='OK' ;;
+    warn)  color="$AMB";  marker='⚠'; label='WARN' ;;
+    error) color="$RED";  marker='✗'; label='ERROR' ;;
+    *)     color="$GRN";  marker='>'; label='INFO' ;;
+  esac
+  if ods_ui_cinematic; then
+    printf '\r  %b%s%b %-60s\n' "$color" "$marker" "$NC" "$message"
+  else
+    printf '  [%s] %s\n' "$label" "$message"
+  fi
+}
+
 # Little signal flourish (tasteful)
 signal()   { echo -e "  ${GRN}░▒▓█▓▒░${NC} $1" | tee -a "$LOG_FILE"; }
 
@@ -398,12 +416,12 @@ pull_with_progress() {
       if $DOCKER_CMD inspect "$img" >/dev/null 2>&1; then
         cat "$attempt_log" >> "$LOG_FILE" 2>&1 || true
         rm -f "$attempt_log"
-        printf "\r  ${BGRN}✓${NC} [$count/$total] %-60s\n" "$label"
+        ui_status_line ok "[$count/$total] $label"
         return 0
       else
         cat "$attempt_log" >> "$LOG_FILE" 2>&1 || true
         rm -f "$attempt_log"
-        printf "\r  ${RED}✗${NC} [$count/$total] %-60s (image validation failed)\n" "$label"
+        ui_status_line error "[$count/$total] $label (image validation failed)"
         continue
       fi
     else
@@ -412,24 +430,24 @@ pull_with_progress() {
       # Check for non-retryable errors
       if grep -qiE 'unauthorized|denied|not[[:space:]-]?found|\b404\b|no space left on device|cannot connect to the docker daemon|is the docker daemon running' "$attempt_log"; then
         rm -f "$attempt_log"
-        printf "\r  ${RED}✗${NC} [$count/$total] %-60s (non-retryable error)\n" "$label"
+        ui_status_line error "[$count/$total] $label (non-retryable error)"
         return 1
       fi
 
       # Check for timeout
       if grep -qiE 'timeout|timed out' "$attempt_log" || ! kill -0 "$pull_pid" 2>/dev/null; then
         rm -f "$attempt_log"
-        printf "\r  ${RED}✗${NC} [$count/$total] %-60s (network timeout on attempt $attempt)\n" "$label"
+        ui_status_line error "[$count/$total] $label (network timeout on attempt $attempt)"
         continue
       fi
 
       rm -f "$attempt_log"
-      printf "\r  ${RED}✗${NC} [$count/$total] %-60s (attempt $attempt failed)\n" "$label"
+      ui_status_line error "[$count/$total] $label (attempt $attempt failed)"
     fi
   done
 
   # All attempts failed
-  printf "  ${RED}✗${NC} [$count/$total] Failed after $max_attempts attempts: $label\n"
+  ui_status_line error "[$count/$total] Failed after $max_attempts attempts: $label"
   return 1
 }
 

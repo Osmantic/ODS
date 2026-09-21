@@ -75,6 +75,14 @@ setup() {
     refute_output --partial $'\033'
 }
 
+@test "ui_status_line: plain output has no cursor redraw or Unicode marker" {
+    run ui_status_line warn "Service still starting"
+    assert_success
+    assert_output "  [WARN] Service still starting"
+    refute_output --partial $'\r'
+    refute_output --partial "⚠"
+}
+
 # ── ai ──────────────────────────────────────────────────────────────────────
 
 @test "ai: outputs the ▸ marker and message" {
