@@ -113,7 +113,21 @@ class HostHTTP(unittest.TestCase):
         self.assertEqual(list(self.agent.DATA_DIR.iterdir()), [])
 
     def test_oversized_request_rejected(self):
-        self.assertEqual(self.request("POST", raw=b"x" * (256 * 1024 + 1))[0], 413)
+        connection = http.client.HTTPConnection(*self.server.server_address, timeout=3)
+        try:
+            # Prove rejection before reading the body. Sending it concurrently
+            # races the server's early close and can yield TCP reset on macOS.
+            connection.putrequest("POST", "/v1/pixel/providers/save")
+            connection.putheader("Authorization", "Bearer synthetic-provider-test-key")
+            connection.putheader("Content-Type", "application/json")
+            connection.putheader("Content-Length", str(256 * 1024 + 1))
+            connection.endheaders()
+            response = connection.getresponse()
+            self.assertEqual(response.status, 413)
+            response.read()
+            self.assertEqual(list(self.agent.DATA_DIR.iterdir()), [])
+        finally:
+            connection.close()
 
     def test_corrupt_disk_is_unavailable_not_empty(self):
         self.assertEqual(self.request("POST", {"expectedRevision": 0, "document": default_config()})[0], 200)

@@ -5,6 +5,7 @@ is checked read-only through sudo before publishing disposable owner receipts.
 """
 import argparse
 import base64
+import fcntl
 import hashlib
 import importlib.util
 import json
@@ -12,6 +13,7 @@ import os
 from pathlib import Path
 import pwd
 import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -90,6 +92,72 @@ def selection_records(prepared, docker_prepared, docker_record, storage, proof):
     return receipt, activation
 
 
+def update_selection_records(previous, activation, prepared, proof, install_dir):
+    replay = all(prepared.get(key) == previous.get(key) for key in ('runtimeDigest', 'serviceDigest'))
+    if (prepared.get('kind') != 'legacy-native' or prepared.get('status') != 'prepared'
+            or prepared.get('phase') != 'awaiting-joint-activation'
+            or prepared.get('installDir') != str(install_dir)
+            or not re.fullmatch('[a-f0-9]{40}', str(prepared.get('pixelSourceRef', '')))
+            or (not replay and prepared.get('currentDigest') != previous.get('runtimeDigest'))
+            or activation.get('runtimeDigest') != previous.get('runtimeDigest')
+            or activation.get('serviceDigest') != previous.get('serviceDigest')
+            or activation.get('status') != 'ready' or activation.get('phase') != 'services-ready'
+            or proof.get('status') != 'active'):
+        raise ValueError('native-update-selection-mismatch')
+    for field in ('runtimeDigest', 'serviceDigest'):
+        if (not re.fullmatch('[a-f0-9]{64}', str(prepared.get(field, '')))
+                or proof.get(field) != prepared[field]):
+            raise ValueError('native-update-proof-mismatch')
+    # Keep the original home and external-volume selection; only runtime identity changes.
+    identities = {key: prepared[key] for key in ('runtimeDigest', 'serviceDigest')}
+    return {'schemaVersion': 1, 'preparation': {**previous, **identities,
+        'pixelSourceRef': prepared['pixelSourceRef']},
+        'activation': {**activation, **identities}}
+
+
+def finalize_update(preparation):
+    if sys.platform != 'darwin' or os.geteuid() == 0:
+        raise ValueError('native-macos-owner-required')
+    config, stack = helper('pixel-native-config'), helper('pixel-native-stack')
+    prepared = config.private_json(Path(preparation) / 'preparation.json')
+    install_dir = Path(prepared['installDir']).resolve(strict=True)
+    directory = install_dir / 'data/pixel-native/preparation'
+    if directory.resolve(strict=True) != directory:
+        raise ValueError('canonical-native-selection-required')
+    lock = os.open(directory / '.selection.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    try:
+        info = os.fstat(lock)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1):
+            raise ValueError('private-native-selection-lock-required')
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        stack.resolve_files(install_dir, [])
+        previous, activation = stack.read_selection(directory)
+        result = subprocess.run(['/usr/bin/sudo', '/usr/bin/python3', str(Path(__file__).resolve()),
+            '--verify-protected', '--owner', pwd.getpwuid(os.getuid()).pw_name,
+            '--runtime', prepared['runtimeDigest'], '--services', prepared['serviceDigest'],
+            '--source-ref', prepared['pixelSourceRef']], stdout=subprocess.PIPE,
+            text=True, timeout=180, check=True)
+        document = update_selection_records(previous, activation, prepared, json.loads(result.stdout), install_dir)
+        # One atomic record avoids a mismatched preparation/activation pair after a crash.
+        with tempfile.TemporaryDirectory(prefix='.selection-', dir=directory) as temporary:
+            staged = Path(temporary) / 'selection.json'
+            with staged.open('xb') as stream:
+                os.fchmod(stream.fileno(), 0o600)
+                stream.write((json.dumps(document, sort_keys=True) + '\n').encode())
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(staged, directory / stack.UPDATE_SELECTION)
+            fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+    finally:
+        os.close(lock)
+    return {'status': 'selection-ready', 'path': str(directory / stack.UPDATE_SELECTION)}
+
+
 def finalize(preparation, docker_preparation):
     if sys.platform != 'darwin' or os.geteuid() == 0:
         raise ValueError('native-macos-owner-required')
@@ -157,12 +225,15 @@ def main():
     parser.add_argument('--preparation')
     parser.add_argument('--docker-preparation')
     parser.add_argument('--verify-protected', action='store_true')
+    parser.add_argument('--update-existing', action='store_true')
     for name in ('owner', 'runtime', 'services', 'source-ref'):
         parser.add_argument('--' + name)
     args = parser.parse_args()
     try:
         if args.verify_protected:
             result = protected_proof(args.owner, args.runtime, args.services, args.source_ref)
+        elif args.update_existing:
+            result = finalize_update(args.preparation)
         else:
             result = finalize(args.preparation, args.docker_preparation)
         print(json.dumps(result))

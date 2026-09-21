@@ -34,6 +34,29 @@ def installation(root):
     return directory
 
 
+@pytest.mark.parametrize('fault', [None, 'malformed', 'mismatch', 'symlink'])
+def test_atomic_update_selection_supersedes_original_without_mutating_it(tmp_path, fault):
+    directory = installation(tmp_path)
+    before = (directory / 'preparation.json').read_bytes()
+    previous, activation = module.read_selection(directory)
+    previous['runtimeDigest'] = activation['runtimeDigest'] = 'c' * 64
+    selection = directory / module.UPDATE_SELECTION
+    selection.write_text(json.dumps({'schemaVersion': 1, 'preparation': previous, 'activation': activation}))
+    if fault == 'malformed': selection.write_text('{}')
+    if fault == 'mismatch':
+        activation['runtimeDigest'] = 'd' * 64
+        selection.write_text(json.dumps({'schemaVersion': 1, 'preparation': previous, 'activation': activation}))
+    if fault == 'symlink':
+        selection.unlink()
+        selection.symlink_to(directory / 'preparation.json')
+    if fault:
+        with pytest.raises((ValueError, OSError)): module.resolve_files(tmp_path, [])
+    else:
+        assert module.resolve_files(tmp_path, []) == list(module.installer.FRAGMENTS)
+        assert module.read_selection(directory)[0]['runtimeDigest'] == 'c' * 64
+    assert (directory / 'preparation.json').read_bytes() == before
+
+
 @pytest.mark.parametrize('fault', [None, 'no-native', 'partial', 'digest', 'home', 'missing', 'symlink', 'broken-record', 'array'])
 def test_native_selection_recovers_fixed_order_and_rejects_uncertain_state(tmp_path, fault):
     directory = installation(tmp_path)

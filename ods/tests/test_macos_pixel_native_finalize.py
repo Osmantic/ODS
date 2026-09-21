@@ -14,6 +14,103 @@ module = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(module)
 
 
+@pytest.mark.parametrize('fault', [None, 'current', 'install', 'runtime', 'services', 'pending', 'phase'])
+def test_update_retains_storage_and_supports_verified_replay(fault):
+    previous = dict(runtimeDigest='a' * 64, serviceDigest='b' * 64,
+        storageDigest='retained', home='/owner/home', kind='legacy-native')
+    activation = dict(status='ready', phase='services-ready',
+        runtimeDigest='a' * 64, serviceDigest='b' * 64, storageDigest='retained')
+    prepared = dict(kind='legacy-native', status='prepared', phase='awaiting-joint-activation',
+        currentDigest='a' * 64, runtimeDigest='c' * 64, serviceDigest='d' * 64,
+        pixelSourceRef='e' * 40, installDir='/owner/ods')
+    proof = dict(status='active', runtimeDigest='c' * 64, serviceDigest='d' * 64)
+    if fault == 'current': prepared['currentDigest'] = 'e' * 64
+    if fault == 'install': prepared['installDir'] = '/other'
+    if fault == 'runtime': proof['runtimeDigest'] = 'e' * 64
+    if fault == 'services': proof['serviceDigest'] = 'e' * 64
+    if fault == 'pending': proof['status'] = 'pending'
+    if fault == 'phase': activation['phase'] = 'error'
+    if fault:
+        with pytest.raises(ValueError):
+            module.update_selection_records(previous, activation, prepared, proof, '/owner/ods')
+    else:
+        result = module.update_selection_records(previous, activation, prepared, proof, '/owner/ods')
+        assert result['preparation']['home'] == previous['home']
+        assert result['preparation']['pixelSourceRef'] == prepared['pixelSourceRef']
+        assert result['preparation']['storageDigest'] == result['activation']['storageDigest'] == 'retained'
+        assert result['activation']['runtimeDigest'] == 'c' * 64
+        assert module.update_selection_records(result['preparation'], result['activation'],
+            prepared, proof, '/owner/ods') == result
+        assert previous['runtimeDigest'] == 'a' * 64
+
+
+@pytest.mark.parametrize('fault', [None, 'proof', 'replace', 'symlink-lock', 'directory-sync'])
+def test_update_publication_is_atomic_and_replayable(tmp_path, monkeypatch, fault):
+    stack = module.helper('pixel-native-stack')
+    installed = tmp_path / 'ods'
+    directory = installed / 'data/pixel-native/preparation'
+    directory.mkdir(parents=True)
+    previous = dict(status='prepared', phase='awaiting-protected-activation',
+        runtimeDigest='a' * 64, serviceDigest='b' * 64, home=str(installed / 'data/pixel-native/home'))
+    activation = dict(status='ready', phase='services-ready', runtimeDigest='a' * 64, serviceDigest='b' * 64)
+    for name, value in [('preparation.json', previous), ('activation.json', activation)]:
+        (directory / name).write_text(json.dumps(value))
+        (directory / name).chmod(0o600)
+    for fragment in stack.installer.FRAGMENTS:
+        path = installed / fragment
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('services: {}\n')
+    candidate = tmp_path / 'candidate'
+    candidate.mkdir()
+    prepared = dict(kind='legacy-native', status='prepared', phase='awaiting-joint-activation',
+        currentDigest='a' * 64, runtimeDigest='c' * 64, serviceDigest='d' * 64,
+        pixelSourceRef='e' * 40, installDir=str(installed))
+    (candidate / 'preparation.json').write_text(json.dumps(prepared))
+    (candidate / 'preparation.json').chmod(0o600)
+    proof = dict(status='active', runtimeDigest='c' * 64, serviceDigest='d' * 64)
+    if fault == 'proof': proof['status'] = 'pending'
+    monkeypatch.setattr(module.sys, 'platform', 'darwin')
+    calls = []
+    def verify(args, **kwargs):
+        calls.append(args)
+        assert '--verify-protected' in args
+        return SimpleNamespace(stdout=json.dumps(proof))
+    monkeypatch.setattr(module.subprocess, 'run', verify)
+    if fault == 'replace':
+        def fail(*args): raise OSError('fixture publication failure')
+        monkeypatch.setattr(module.os, 'replace', fail)
+    if fault == 'symlink-lock':
+        (directory / '.selection.lock').symlink_to(directory / 'preparation.json')
+    if fault == 'directory-sync':
+        fsync = module.os.fsync
+        interrupted = []
+        def interrupt_once(fd):
+            if (directory / stack.UPDATE_SELECTION).exists() and not interrupted:
+                interrupted.append(True)
+                raise OSError('fixture durability interruption')
+            return fsync(fd)
+        monkeypatch.setattr(module.os, 'fsync', interrupt_once)
+        with pytest.raises(OSError): module.finalize_update(candidate)
+        assert stack.read_selection(directory)[0]['runtimeDigest'] == 'c' * 64
+        assert module.finalize_update(candidate)['status'] == 'selection-ready'
+        assert len(calls) == 2
+    elif fault:
+        with pytest.raises((ValueError, OSError)):
+            module.finalize_update(candidate)
+        assert not (directory / stack.UPDATE_SELECTION).exists()
+        assert stack.read_selection(directory)[0] == previous
+    else:
+        result = module.finalize_update(candidate)
+        assert result['status'] == 'selection-ready'
+        assert module.finalize_update(candidate) == result
+        assert len(calls) == 2
+        assert stack.read_selection(directory)[0]['runtimeDigest'] == 'c' * 64
+        assert (directory / stack.UPDATE_SELECTION).stat().st_mode & 0o777 == 0o600
+    assert json.loads((directory / 'preparation.json').read_text()) == previous
+    assert json.loads((directory / 'activation.json').read_text()) == activation
+    assert not list(directory.glob('.selection-*'))
+
+
 @pytest.mark.parametrize('fault', [None, 'runtime', 'services', 'storage', 'install', 'pending', 'inactive'])
 def test_selection_binds_corrected_services_to_completed_docker_handover(fault):
     prepared = dict(kind='legacy-native', status='prepared', phase='awaiting-joint-activation',

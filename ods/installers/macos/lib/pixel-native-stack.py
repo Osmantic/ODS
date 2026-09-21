@@ -20,6 +20,7 @@ SPEC = importlib.util.spec_from_file_location('native_stack_install',
 installer = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(installer)
 MIGRATION_STORAGE = 'data/pixel-native/preparation/storage.compose.json'
+UPDATE_SELECTION = 'selection-update.json'
 
 
 def read_record(path):
@@ -33,14 +34,25 @@ def read_record(path):
     return value
 
 
+def read_selection(preparation):
+    updated = preparation / UPDATE_SELECTION
+    if os.path.lexists(updated):
+        value = read_record(updated)
+        if (set(value) != {'schemaVersion', 'preparation', 'activation'}
+                or type(value['schemaVersion']) is not int or value['schemaVersion'] != 1
+                or type(value['preparation']) is not dict or type(value['activation']) is not dict):
+            raise ValueError('invalid-native-update-selection')
+        return value['preparation'], value['activation']
+    return read_record(preparation / 'preparation.json'), read_record(preparation / 'activation.json')
+
+
 def resolve_files(install_dir, files):
     install_dir = Path(install_dir).resolve(strict=True)
     preparation = install_dir / 'data/pixel-native/preparation'
     activation = preparation / 'activation.json'
-    if not os.path.lexists(activation):
+    if not os.path.lexists(activation) and not os.path.lexists(preparation / UPDATE_SELECTION):
         return list(files)
-    record = read_record(activation)
-    prepared = read_record(preparation / 'preparation.json')
+    prepared, record = read_selection(preparation)
     migration = prepared.get('kind') == 'legacy-native'
     if migration:
         selection_valid = (prepared.get('phase') == 'awaiting-joint-activation'
