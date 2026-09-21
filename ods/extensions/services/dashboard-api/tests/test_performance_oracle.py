@@ -716,7 +716,7 @@ def test_real_catalog_gemma_perplexica_block_is_global():
     assert tower2["perplexica"]["status"] == "unsupported_until_revalidated"
 
 
-def test_real_catalog_granite32_perplexica_block_includes_tower1_and_tower3_after_live_failure():
+def test_real_catalog_granite32_perplexica_block_includes_towers_and_mac_after_live_failures():
     by_id = {model["id"]: model for model in _official_model_catalog()}
     model = by_id["granite3.2-2b-instruct-q4"]
 
@@ -744,6 +744,10 @@ def test_real_catalog_granite32_perplexica_block_includes_tower1_and_tower3_afte
         model,
         runtime_context={"host": "tower1", "hosts": ["tower1"]},
     )
+    mac_mini = model_app_compatibility(
+        model,
+        runtime_context={"host": "mac-mini", "hosts": ["mac-mini"]},
+    )
 
     assert windows_laptop["perplexica"]["status"] == "unknown"
     assert strix_halo["perplexica"]["status"] == "unknown"
@@ -751,8 +755,10 @@ def test_real_catalog_granite32_perplexica_block_includes_tower1_and_tower3_afte
     assert m5_mbp["perplexica"]["status"] == "unsupported_until_revalidated"
     assert tower3["perplexica"]["status"] == "unsupported_until_revalidated"
     assert tower1["perplexica"]["status"] == "unsupported_until_revalidated"
+    assert mac_mini["perplexica"]["status"] == "unsupported_until_revalidated"
     assert "Tower3" in tower3["perplexica"]["reason"]
     assert "Tower1" in tower1["perplexica"]["reason"]
+    assert "M4 Mac Mini" in mac_mini["perplexica"]["reason"]
 
 
 def test_real_catalog_smollm3_perplexica_block_is_global():

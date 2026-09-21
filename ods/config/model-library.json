@@ -852,13 +852,13 @@
         "perplexica": {
           "status": "unsupported_until_revalidated",
           "label": "Perplexica revalidation required",
-          "reason": "Fleet runs on Tower2, M5, Tower3, and Tower1 found Perplexica nonce failures with this model. On the 2026-09-17 Tower1 public-beta candidate, Perplexica returned an apologetic response without the verification phrase while Pixel, OpenCode, LiteLLM, Open WebUI, and ODS Talk answered on the selected Granite model. A Tower3 comparator answered the same harmless payload after restoring Qwen3.5-27B. Keep Granite 3.2 2B out of all-app release coverage on these hosts until Perplexica passes a real revalidation.",
-          "evidence": "fleet-test/runs/2026-07-23T21-41-59Z-release-product-cf6dffb8e8bb-harness-47eedd6c0b40-hosts-six-scope-6cycle-switchboard/model-ui/cycle-005/tower2; fleet-test/runs/2026-07-23T21-41-59Z-release-product-cf6dffb8e8bb-harness-47eedd6c0b40-hosts-six-scope-6cycle-switchboard/model-ui/cycle-005/m5-mbp; ods-public-beta-fleet-green-20260911/release-four-host-2f985137-abb61b2-r46/model-ui/cycle-006/tower3/model-ui.json; Tower3 Perplexica live comparator 2026-09-15T16:59Z; ods-public-beta-fleet-green-20260911/release-tower1-pr5579-afe7408-ff56b22-r208/model-ui/cycle-006/tower1/model-ui.json",
-          "recordedAt": "2026-09-17T01:19:42Z",
-          "productSha": "afe74085e572c167f44563efc68476f1a910e179",
-          "harnessSha": "ff56b224a69d8b955a23fd24af8407c9ccf6b4e8",
-          "hostScope": ["tower2", "m5-mbp", "tower3", "tower1"],
-          "expiresAt": "2026-10-17T00:00:00Z"
+          "reason": "Fleet runs on Tower2, M5, Tower3, Tower1, and the M4 Mac Mini found Perplexica failures with this model. In the exact 93a2c4bc Mac release run, the signed Granite 3.2 route and every other required consumer passed, but Perplexica produced no headers for five minutes and timed out; exact Qwen 3.5 baseline recovery and candidate deletion then passed. Keep Granite 3.2 2B out of all-app release coverage on these hosts until Perplexica passes a real revalidation.",
+          "evidence": "fleet-test/runs/2026-07-23T21-41-59Z-release-product-cf6dffb8e8bb-harness-47eedd6c0b40-hosts-six-scope-6cycle-switchboard/model-ui/cycle-005/tower2; fleet-test/runs/2026-07-23T21-41-59Z-release-product-cf6dffb8e8bb-harness-47eedd6c0b40-hosts-six-scope-6cycle-switchboard/model-ui/cycle-005/m5-mbp; ods-public-beta-fleet-green-20260911/release-four-host-2f985137-abb61b2-r46/model-ui/cycle-006/tower3/model-ui.json; ods-public-beta-fleet-green-20260911/release-tower1-pr5579-afe7408-ff56b22-r208/model-ui/cycle-006/tower1/model-ui.json; ods-public-beta-fleet-green-20260911/release-mac-native-93a2c4bc-h6ab9611-r417/model-ui/cycle-006/mac-mini/model-ui.json",
+          "recordedAt": "2026-09-21T15:39:37Z",
+          "productSha": "93a2c4bc9b7e8a47335d468b2b4772ead5091680",
+          "harnessSha": "6ab9611be19b544e9764c456206d1283f371fbb5",
+          "hostScope": ["tower2", "m5-mbp", "tower3", "tower1", "mac-mini"],
+          "expiresAt": "2026-10-21T00:00:00Z"
         },
         "hermes_talk": {
           "status": "unsupported_until_revalidated",

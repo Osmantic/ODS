@@ -494,8 +494,17 @@ def test_granite32_2b_is_direct_chat_only_after_windows_talk_timeout():
     assert "19,349-token Hermes prompt" in compatibility["agent_viability"]["reason"]
     assert compatibility["hermes_talk"]["status"] == "unsupported_until_revalidated"
     assert "cycle-004" in compatibility["hermes_talk"]["evidence"]
+    assert compatibility["perplexica"]["hostScope"] == [
+        "tower2",
+        "m5-mbp",
+        "tower3",
+        "tower1",
+        "mac-mini",
+    ]
+    assert "release-mac-native-93a2c4bc-h6ab9611-r417" in compatibility["perplexica"]["evidence"]
     assert _agent_viable_for_release(model)
     assert not _agent_viable_for_release(model, host="windows-laptop")
+    assert not _agent_viable_for_release(model, host="mac-mini")
 
 
 def test_granite4_h_tiny_opencode_warning_is_scoped_to_tower1():
