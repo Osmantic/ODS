@@ -349,6 +349,9 @@ jobs:
       - name: Preset Export Archive Permissions
         run: bash tests/test-preset-export-permissions.sh
 
+      - name: Preset Import of macOS AppleDouble Archives
+        run: bash tests/test-preset-macos-appledouble.sh
+
       - name: Legacy Update Fallback Backup Round Trip
         run: python3 tests/test-cli-legacy-update-backup.py
 
