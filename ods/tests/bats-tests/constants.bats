@@ -35,7 +35,14 @@ setup() {
 
 @test "color codes: presentation variables are declared" {
     declare -p RED GRN BGRN DGRN MAG BMAG AMB WHT DIM NC >/dev/null
-    [[ -n "$RED$GRN$BGRN$DGRN$MAG$BMAG$AMB$WHT$DIM$NC" ]]
+}
+
+@test "color codes: a capable terminal initializes presentation colors" {
+    run env -u NO_COLOR TERM=xterm bash -c '
+        source "$1"
+        [[ -n "$RED$GRN$BGRN$DGRN$MAG$BMAG$AMB$WHT$DIM$NC" ]]
+    ' _ "$BATS_TEST_DIRNAME/../../installers/lib/constants.sh"
+    assert_success
 }
 
 @test "color codes: NO_COLOR strips ANSI values at source" {
