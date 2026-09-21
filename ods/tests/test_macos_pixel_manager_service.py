@@ -78,6 +78,18 @@ def publication(arguments, monkeypatch, tmp_path):
     return args, events
 
 
+def test_manager_plan_is_read_only(publication, monkeypatch):
+    args, events = publication
+    if args['environment'].stat().st_uid == 0: pytest.skip('owner file fixture requires nonroot test runner')
+    def unexpected(*args, **kwargs): pytest.fail('planning created logs')
+    monkeypatch.setattr(manager, 'prepare_logs', unexpected)
+    files = manager.publication_files(**args)
+    assert len(files) == 4 and not events
+    assert files[-1][0] == Path(args['definition'])
+    assert all(mode == 0o644 and gid == 0 for _, _, mode, gid in files)
+    assert all(b'DASHBOARD_API_KEY=fixture' not in body for _, body, _, _ in files)
+
+
 def test_manager_publication_keeps_credentials_out_of_bundle(publication):
     args, events = publication
     if args['environment'].stat().st_uid == 0: pytest.skip('owner file fixture requires nonroot test runner')

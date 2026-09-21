@@ -72,11 +72,11 @@ def render(*, python, program_root, environment, owner, port,
     return {'profile': profile, 'plist': plistlib.dumps(document, sort_keys=True)}
 
 
-def publish(*, sources, expected_sha256, python, program_root, environment, owner, port,
+def publication_files(*, sources, expected_sha256, python, program_root, environment, owner, port,
             definition, runtime='/private/var/lib/ods-pixel-manager',
             results='/private/var/lib/pixel-ops-broker/results',
             logs='/private/var/log/ods-pixel-manager', label='com.ods.pixel-native-manager'):
-    """Publish approved source under the caller's lock; do not start services.
+    """Validate and render approved source without writing or starting services.
 
     Source hashes must be bound to the selected ODS revision by orchestration.
     Credentials stay in the owner file and are never copied into this bundle.
@@ -107,15 +107,21 @@ def publish(*, sources, expected_sha256, python, program_root, environment, owne
         raise ValueError('manager-definition-label-mismatch')
     helpers = operations_helpers()
     helpers.custody.protected_bytes(str(python), limit=128 * 1024 * 1024)
-    installer = helpers.installer_helpers()
     files = [(program_root / name, sources[name]) for name in sorted(names)]
     files.extend([(program_root / 'manager.sb', rendered['profile']), (definition, rendered['plist'])])
-    for path, body in files:
-        installer._preflight_file(path, body, mode=0o644, uid=0, gid=0)
-    prepare_logs(logs, uid=entry.pw_uid, gid=entry.pw_gid)
-    for path, body in files:
-        installer._write_exact(path, body, mode=0o644, uid=0, gid=0)
-    return definition
+    return [(path, body, 0o644, 0) for path, body in files]
+
+
+def publish(**options):
+    files = publication_files(**options)
+    installer = operations_helpers().installer_helpers()
+    for path, body, mode, gid in files:
+        installer._preflight_file(path, body, mode=mode, uid=0, gid=gid)
+    entry = pwd.getpwnam(options['owner'])
+    prepare_logs(options.get('logs', '/private/var/log/ods-pixel-manager'), uid=entry.pw_uid, gid=entry.pw_gid)
+    for path, body, mode, gid in files:
+        installer._write_exact(path, body, mode=mode, uid=0, gid=gid)
+    return Path(options['definition'])
 
 
 def prepare_logs(directory, *, uid, gid):

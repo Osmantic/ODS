@@ -26,15 +26,18 @@ services = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(services)
 
 
-@pytest.mark.parametrize('fault', [None, 'owner', 'bundle', 'render', 'publish'])
-def test_joint_publication_verifies_before_writes_and_never_starts_jobs(monkeypatch, fault):
+@pytest.mark.parametrize('planning', [False, True])
+@pytest.mark.parametrize('fault', [None, 'owner', 'bundle', 'render', 'plan', 'duplicate', 'preflight', 'publish'])
+def test_joint_publication_verifies_before_writes_and_never_starts_jobs(monkeypatch, fault, planning):
+    if planning and fault in ('preflight', 'publish'):
+        pytest.skip('planning does not invoke publication')
     monkeypatch.setattr(services.sys, 'platform', 'darwin')
     monkeypatch.setattr(services.os, 'geteuid', lambda: 501 if fault == 'owner' else 0)
     calls = []
     snapshots = {'operations/broker.py': b'broker', 'operations/policy.json': b'{"schemaVersion":1}',
         'manager/extension_manager.py': b'manager', 'manager/unix_peer.py': b'peer',
         'promoter/artifact_promoter.py': b'promoter', 'promoter/unix_peer.py': b'peer',
-        'promoter/pixel_macos_custody.py': b'custody'}
+        'promoter/pixel_macos_custody.py': b'custody', 'helpers/example.py': b'helper'}
     def verify(path, **kwargs):
         calls.append('verify')
         assert kwargs == dict(expected_digest='a' * 64, expected_ref='b' * 40, expected_config_digest='c' * 64)
@@ -54,23 +57,43 @@ def test_joint_publication_verifies_before_writes_and_never_starts_jobs(monkeypa
                 prefix = name.removesuffix('-service')
                 assert kwargs['sources'] == {p.split('/', 1)[1]: b for p, b in snapshots.items() if p.startswith(prefix + '/')}
             return kwargs['definition']
-        installer = SimpleNamespace(_preflight_file=lambda *a, **k: None, _write_exact=lambda *a, **k: None)
-        return SimpleNamespace(render=render, publish=publish, installer_helpers=lambda: installer)
+        def publication_files(**kwargs):
+            calls.append('plan:' + name)
+            if fault == 'plan' and name == 'ops-service': raise ValueError('invalid policy')
+            path = kwargs['definition']
+            if fault == 'duplicate': path = Path('/duplicate')
+            return [(path, b'planned', 0o644, 0)]
+        def preflight(*args, **kwargs):
+            calls.append('preflight')
+            if fault == 'preflight': raise ValueError('existing file conflict')
+        installer = SimpleNamespace(_preflight_file=preflight,
+            _write_exact=lambda *a, **k: calls.append('write-helper'))
+        return SimpleNamespace(render=render, publish=publish, publication_files=publication_files,
+            installer_helpers=lambda: installer)
     monkeypatch.setattr(services, 'helper', module)
     def run():
-        return services.publish(bundle='/candidate', expected_digest='a' * 64, expected_ref='b' * 40,
+        method = services.publication_files if planning else services.publish
+        return method(bundle='/candidate', expected_digest='a' * 64, expected_ref='b' * 40,
             expected_config_digest='c' * 64, identity={'name': '_ods_pixel_ops'}, owner='fixture',
             environment='/owner/.env', workspace='/owner/workspace', port=3002, python='/python')
     if fault:
         with pytest.raises(ValueError): run()
         if fault == 'owner': assert not calls
-        if fault in ('bundle', 'render'): assert not any(c.startswith('publish:') for c in calls)
+        if fault in ('bundle', 'render', 'plan', 'duplicate', 'preflight'):
+            assert not any(c.startswith('publish:') or c == 'write-helper' for c in calls)
         if fault == 'publish': assert calls[-1] == 'publish:manager-service'
     else:
         result = run()
-        assert set(result) == {'manager', 'promoter', 'operations'}
-        assert calls == ['verify', 'render:ops-service', 'render:manager-service',
-            'render:promoter-service', 'publish:manager-service', 'publish:promoter-service', 'publish:ops-service']
+        expected = ['verify', 'render:ops-service', 'render:manager-service',
+            'render:promoter-service', 'plan:manager-service', 'plan:promoter-service', 'plan:ops-service']
+        if planning:
+            assert len(result) == 4
+            assert result[0] == (Path('/usr/local/libexec/ods-pixel-services/helpers/example.py'), b'helper', 0o644, 0)
+        else:
+            assert set(result) == {'manager', 'promoter', 'operations'}
+            expected += ['preflight'] * 4 + ['write-helper', 'publish:manager-service',
+                'publish:promoter-service', 'publish:ops-service']
+        assert calls == expected
 
 
 @pytest.mark.skipif(sys.platform != 'darwin' or os.geteuid() != 0 or
@@ -135,7 +158,15 @@ def test_real_joint_publication_and_replay_without_loading_jobs(dashboard, monke
             identity={'name': broker.pw_name, 'uid': broker.pw_uid, 'gid': broker.pw_gid},
             owner=owner.pw_name, environment=environment, workspace=workspace, port=dashboard,
             python=python, program_root=root / 'programs', definitions=root / 'definitions', state=state)
+        planned = services.publication_files(**arguments)
+        assert not (root / 'programs').exists()
+        assert not (root / 'definitions').exists()
         result = services.publish(**arguments)
+        for path, body, mode, gid in planned:
+            assert path.read_bytes() == body
+            info = path.stat()
+            assert info.st_mode & 0o777 == mode
+            assert info.st_uid == 0 and info.st_gid == gid
         assert result == services.publish(**arguments)
         assert set(result) == {'manager', 'promoter', 'operations'}
         for path in result.values():

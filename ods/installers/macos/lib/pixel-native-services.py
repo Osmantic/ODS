@@ -28,15 +28,15 @@ def helper(name):
     return module
 
 
-def publish(*, bundle, expected_digest, expected_ref, expected_config_digest,
+def _publication_plan(*, bundle, expected_digest, expected_ref, expected_config_digest,
             identity, owner, environment, workspace, port, python,
             program_root='/usr/local/libexec/ods-pixel-services',
             definitions='/Library/LaunchDaemons', state='/private/var/lib/pixel-ops-broker'):
-    """Publish exact verified snapshots under the caller's deployment lock.
+    """Prepare exact verified snapshots without changing installed files.
 
     Expected identities must come from the approved transaction. This method
     never accepts candidate-supplied installation paths or launches services.
-    Identical partial publication can be replayed by the individual publishers.
+    File conflict checks belong to publication, not this read-only plan.
     """
     if sys.platform != 'darwin' or os.geteuid() != 0:
         raise ValueError('macos-root-required')
@@ -50,32 +50,51 @@ def publish(*, bundle, expected_digest, expected_ref, expected_config_digest,
         owner=owner, port=port)
     promoter_options = dict(python=python, program_root=root / 'promoter', workspace=workspace,
         owner=owner, state=state)
-    import json
     # Reject inconsistent render inputs before the first publisher writes files.
     operations.render(identity=identity, python=python, program_root=root / 'operations',
         state=state, policy=json.loads(snapshots['operations/policy.json']))
     manager.render(**manager_options)
     promoter.render(**promoter_options)
-    installer = operations.installer_helpers()
     helpers = [(root / name, body, 0o640 if name.endswith('.json') else 0o644,
                 identity['gid'] if name.endswith('.json') else 0)
                for name, body in snapshots.items() if name.startswith('helpers/')]
-    for path, body, mode, gid in helpers:
-        installer._preflight_file(path, body, mode=mode, uid=0, gid=gid)
-    for path, body, mode, gid in helpers:
-        installer._write_exact(path, body, mode=mode, uid=0, gid=gid)
-    result = {}
+    publishers = []
     for name, module, options in (('manager', manager, manager_options), ('promoter', promoter, promoter_options)):
         sources = {path.split('/', 1)[1]: body for path, body in snapshots.items() if path.startswith(name + '/')}
-        result[name] = module.publish(sources=sources,
+        publishers.append((name, module, dict(sources=sources,
             expected_sha256={path: hashlib.sha256(body).hexdigest() for path, body in sources.items()},
-            definition=definitions / ('com.ods.pixel-native-' + name + '.plist'), **options)
-    result['operations'] = operations.publish(broker_body=snapshots['operations/broker.py'],
+            definition=definitions / ('com.ods.pixel-native-' + name + '.plist'), **options)))
+    publishers.append(('operations', operations, dict(broker_body=snapshots['operations/broker.py'],
         expected_broker_sha256=hashlib.sha256(snapshots['operations/broker.py']).hexdigest(),
         policy_body=snapshots['operations/policy.json'], identity=identity, python=python,
         program_root=root / 'operations', state=state,
-        definition=definitions / 'com.ods.pixel-native-operations.plist')
-    return result
+        definition=definitions / 'com.ods.pixel-native-operations.plist')))
+    files = list(helpers)
+    for name, module, options in publishers:
+        files.extend(module.publication_files(**options))
+    if len({path for path, _, _, _ in files}) != len(files):
+        raise ValueError('duplicate-native-service-publication-path')
+    return files, helpers, publishers
+
+
+def publication_files(**options):
+    """Return validated (path, bytes, mode, gid) records without writing.
+
+    The caller must hold the deployment lock and journal old and new bytes
+    before using this plan for a managed replacement.
+    """
+    return _publication_plan(**options)[0]
+
+
+def publish(**options):
+    """Publish a new service set; conflicting installed files are refused."""
+    files, helpers, publishers = _publication_plan(**options)
+    installer = helper('ops-service').installer_helpers()
+    for path, body, mode, gid in files:
+        installer._preflight_file(path, body, mode=mode, uid=0, gid=gid)
+    for path, body, mode, gid in helpers:
+        installer._write_exact(path, body, mode=mode, uid=0, gid=gid)
+    return {name: module.publish(**arguments) for name, module, arguments in publishers}
 
 
 def activation_adapters(*, definitions, expected, owner, identity, python, save_stop=None, load_stop=None):

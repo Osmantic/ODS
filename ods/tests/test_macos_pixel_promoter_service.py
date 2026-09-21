@@ -74,6 +74,17 @@ def publication(arguments, monkeypatch):
     return args, events, installer
 
 
+def test_promoter_plan_is_read_only(publication, monkeypatch):
+    args, events, _ = publication
+    def unexpected(*args, **kwargs): pytest.fail('planning created logs')
+    monkeypatch.setattr(promoter.operations_helpers().custody, 'protected_directory', unexpected)
+    files = promoter.publication_files(**args)
+    assert len(files) == 5
+    assert [item[0] for item in events] == ['python']
+    assert files[-1][0] == Path(args['definition'])
+    assert all(mode == 0o644 and gid == 0 for _, _, mode, gid in files)
+
+
 def test_preflights_all_sources_before_writing_and_publishes_definition_last(publication):
     args, events, _ = publication
     assert promoter.publish(**args) == Path(args['definition'])

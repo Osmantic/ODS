@@ -83,6 +83,15 @@ def publication(arguments, monkeypatch):
     return options, events, helpers
 
 
+def test_operations_plan_is_read_only_and_does_not_execute_broker(publication):
+    options, events, _ = publication
+    files = service.publication_files(**options)
+    assert len(files) == 4
+    assert [event[0] for event in events] == ['python']
+    assert files[1][2:] == (0o640, options['identity']['gid'])
+    assert files[-1][0] == Path(options['definition'])
+
+
 def test_publication_validates_as_limited_account_before_definition(publication):
     options, events, _ = publication
     assert service.publish(**options) == Path(options['definition'])

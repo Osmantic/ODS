@@ -91,15 +91,14 @@ def render(*, identity, python, program_root, state, policy, label='com.ods.pixe
     return {'profile': profile, 'plist': plistlib.dumps(document, sort_keys=True)}
 
 
-def publish(*, broker_body, expected_broker_sha256, policy_body, identity, python,
+def publication_files(*, broker_body, expected_broker_sha256, policy_body, identity, python,
             program_root, state, definition, label='com.ods.pixel-native-operations'):
-    """Publish an explicitly approved broker snapshot, never bootstrap a job.
+    """Validate and render an approved broker snapshot without writing files.
 
     The orchestrator obtains the expected digest from its selected exact Pixel
     source revision, not from an untrusted manifest next to the candidate.
-    It must hold the deployment lock while publishing this immutable candidate.
-    Existing different files are refused; a failed validation leaves no new
-    daemon definition. Identical publication can be replayed after interruption.
+    Installation conflict checks and confined broker policy execution belong
+    to publication, after the caller has journaled any managed replacement.
     """
     if sys.platform != 'darwin' or os.geteuid() != 0:
         raise ValueError('macos-root-required')
@@ -119,17 +118,34 @@ def publish(*, broker_body, expected_broker_sha256, policy_body, identity, pytho
     program_root, definition = Path(program_root), Path(definition)
     if definition.name != label + '.plist':
         raise ValueError('operations-definition-label-mismatch')
-    helpers = installer_helpers()
     # Verify the executable itself, not just a directory containing a user binary.
     custody.protected_bytes(str(python), limit=128 * 1024 * 1024)
     files = [(program_root / 'broker.py', broker_body, 0o644, 0),
              (program_root / 'policy.json', policy_body, 0o640, identity['gid']),
              (program_root / 'broker.sb', rendered['profile'], 0o644, 0),
              (definition, rendered['plist'], 0o644, 0)]
+    return files
+
+
+def publish(**options):
+    files = publication_files(**options)
+    helpers = installer_helpers()
     for path, body, mode, gid in files:
         helpers._preflight_file(path, body, mode=mode, uid=0, gid=gid)
     for path, body, mode, gid in files[:-1]:
         helpers._write_exact(path, body, mode=mode, uid=0, gid=gid)
+    validate_published_policy(identity=options['identity'], python=options['python'],
+        program_root=options['program_root'], state=options['state'])
+    path, body, mode, gid = files[-1]
+    helpers._write_exact(path, body, mode=mode, uid=0, gid=gid)
+    return Path(options['definition'])
+
+
+def validate_published_policy(*, identity, python, program_root, state):
+    """Run the existing policy validator confined to the broker identity."""
+    if sys.platform != 'darwin' or os.geteuid() != 0:
+        raise ValueError('macos-root-required')
+    program_root = Path(program_root)
     validation = ('import runpy,sys; from pathlib import Path; '
         'ns=runpy.run_path(sys.argv[1],run_name="ods_ops_validation"); '
         'ns["validate_policy"](ns["read_regular_json"](Path(sys.argv[2]),ns["MAX_POLICY_BYTES"]))')
@@ -141,6 +157,3 @@ def publish(*, broker_body, expected_broker_sha256, policy_body, identity, pytho
         capture_output=True, timeout=30)
     if result.returncode != 0:
         raise ValueError('native-operations-policy-validation-failed')
-    path, body, mode, gid = files[-1]
-    helpers._write_exact(path, body, mode=mode, uid=0, gid=gid)
-    return definition

@@ -77,16 +77,15 @@ def render(*, python, program_root, workspace, owner,
     return {'profile': profile, 'plist': plistlib.dumps(document, sort_keys=True)}
 
 
-def publish(*, sources, expected_sha256, python, program_root, workspace, owner,
+def publication_files(*, sources, expected_sha256, python, program_root, workspace, owner,
             definition, state='/private/var/lib/pixel-ops-broker',
             runtime='/private/var/lib/ods-pixel-artifact-promoter',
             logs='/private/var/log/ods-pixel-promoter',
             label='com.ods.pixel-native-promoter'):
-    """Publish approved helper bytes under the caller's deployment lock.
+    """Validate and render approved helper bytes without filesystem changes.
 
     Expected hashes come from the selected ODS revision, not a candidate-supplied
-    manifest. No source is executed as root during publication. Conflicting
-    existing files are refused; identical partial publication can be replayed.
+    manifest. No source is executed as root during planning.
     Runtime directories, startup, readiness and rollback belong to orchestration.
     """
     if sys.platform != 'darwin' or os.geteuid() != 0:
@@ -112,13 +111,19 @@ def publish(*, sources, expected_sha256, python, program_root, workspace, owner,
         raise ValueError('promoter-definition-label-mismatch')
     helpers = operations_helpers()
     helpers.custody.protected_bytes(str(python), limit=128 * 1024 * 1024)
-    installer = helpers.installer_helpers()
     files = [(program_root / name, sources[name]) for name in sorted(names)]
     files.extend([(program_root / 'promoter.sb', rendered['profile']), (definition, rendered['plist'])])
-    for path, body in files:
-        installer._preflight_file(path, body, mode=0o644, uid=0, gid=0)
-    with helpers.custody.protected_directory(logs, create=True):
+    return [(path, body, 0o644, 0) for path, body in files]
+
+
+def publish(**options):
+    files = publication_files(**options)
+    helpers = operations_helpers()
+    installer = helpers.installer_helpers()
+    for path, body, mode, gid in files:
+        installer._preflight_file(path, body, mode=mode, uid=0, gid=gid)
+    with helpers.custody.protected_directory(options.get('logs', '/private/var/log/ods-pixel-promoter'), create=True):
         pass
-    for path, body in files:
-        installer._write_exact(path, body, mode=0o644, uid=0, gid=0)
-    return definition
+    for path, body, mode, gid in files:
+        installer._write_exact(path, body, mode=mode, uid=0, gid=gid)
+    return Path(options['definition'])
