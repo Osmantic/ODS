@@ -220,6 +220,9 @@ test: ## Run unit and contract tests
 	@bash tests/test-openclaw-device-auth-default.sh
 	@bash tests/contracts/test-security-suites-wired.sh
 	@echo ""
+	@echo "=== installer temp file cleanup contract ==="
+	@bash tests/test-tmpfile-cleanup.sh
+	@echo ""
 	@echo "=== NVIDIA multi-GPU visibility contract ==="
 	@bash tests/test-multigpu-nvidia-visibility.sh
 	@echo ""

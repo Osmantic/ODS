@@ -80,7 +80,18 @@ fi
 
 # Test 8: Phase 05 has explicit cleanup in error path
 printf "  %-50s " "Phase 05 has explicit cleanup in error path..."
-if grep -B 2 'error "Docker installation failed' "$ROOT_DIR/installers/phases/05-docker.sh" | grep -q "rm -f.*tmpfile"; then
+# Scope this to the function that owns the temp file. The old anchor was the
+# "Docker installation failed" message, which lives in the distro install
+# helpers further down the phase and never had a tmpfile near it, so the check
+# reported a failure no matter what the cleanup did. Assert instead that every
+# early return inside _docker_install_from_script is preceded by the removal.
+if sed -n '/^_docker_install_from_script() {/,/^}/p' \
+        "$ROOT_DIR/installers/phases/05-docker.sh" \
+    | awk '
+        /rm -f.*tmpfile/        { cleaned = 1 }
+        /return 1/              { returned = 1; if (!cleaned) leaked = 1 }
+        END { exit (leaked || !cleaned || !returned) ? 1 : 0 }
+    '; then
     echo -e "${GREEN}✓ PASS${NC}"
     PASSED=$((PASSED + 1))
 else

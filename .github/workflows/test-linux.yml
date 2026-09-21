@@ -501,6 +501,9 @@ jobs:
       - name: Issue-to-PR Security Contract Tests
         run: bash tests/test-issue-to-pr-security.sh
 
+      - name: Installer Temp File Cleanup Contract
+        run: bash tests/test-tmpfile-cleanup.sh
+
       - name: NVIDIA Multi-GPU Visibility Contract Tests
         run: bash tests/test-multigpu-nvidia-visibility.sh
 
