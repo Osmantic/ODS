@@ -330,6 +330,9 @@ bash tests/test-macos-compose-image-cache.sh
 echo "[contract] macOS private networking preserves the active Colima profile"
 bash tests/test-macos-colima-profile.sh
 
+echo "[contract] macOS port conflicts include root-hidden listeners"
+bash tests/test-macos-port-detection.sh
+
 echo "[contract] AMD reassign keeps HSA override Strix-only"
 grep -q '_env_set "HSA_OVERRIDE_GFX_VERSION" "11.5.1"' ods-cli \
   || { echo "[FAIL] ods-cli must set HSA override to 11.5.1 for gfx1151"; exit 1; }

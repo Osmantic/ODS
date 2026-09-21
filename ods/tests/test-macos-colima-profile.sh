@@ -89,6 +89,11 @@ _active_colima stop
     || fail "default profile hint should be empty"
 pass "default Colima context keeps legacy CLI behavior"
 
+COLIMA_PROFILE=""
+[[ -z "$(_active_colima_hint_args)" ]] \
+    || fail "unresolved profile hint should be empty"
+pass "unresolved profile cannot produce a malformed recovery command"
+
 reset_case "custom-context" "unix:///Users/test/.colima/qa_blue/docker.sock"
 _resolve_active_colima_profile || fail "endpoint-backed Colima profile was not resolved"
 [[ "$COLIMA_PROFILE" == "qa_blue" ]] \
@@ -114,6 +119,8 @@ grep -qF '_active_colima stop' "$INSTALLER" \
     || fail "private-route repair does not stop the selected profile"
 grep -qF '_active_colima start --network-address --network-preferred-route' "$INSTALLER" \
     || fail "private-route repair does not restart the selected profile"
+grep -qF 'colima start${profile_args} --cpu ${min_cpus}' "$INSTALLER" \
+    || fail "CPU-budget recovery hint does not preserve the selected profile"
 pass "private-route repair is profile-scoped end to end"
 
 echo "[OK] macOS Colima profile custody contract holds"

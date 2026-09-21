@@ -873,7 +873,7 @@ _active_colima() {
 }
 
 _active_colima_hint_args() {
-    if [[ "$COLIMA_PROFILE" != "default" ]]; then
+    if [[ -n "$COLIMA_PROFILE" && "$COLIMA_PROFILE" != "default" ]]; then
         printf ' --profile %s' "$COLIMA_PROFILE"
     fi
 }
@@ -1405,12 +1405,11 @@ for port_check in "${_conflict_ports[@]}"; do
     fi
 done
 
-# macOS AirPlay Receiver uses port 9000 (Monterey 12.0+, enabled by default).
-# It cannot be killed — it's a system service. Auto-reassign Whisper to 9100.
-if check_port_conflict 9000; then
+# macOS AirPlay Receiver and other resident services commonly use port 9000.
+# Auto-reassign Whisper to 9100 instead of shadowing an existing listener.
+if check_port_conflict 9000 "existing listener"; then
     export WHISPER_PORT=9100
-    ai_ok "Port 9000 in use (AirPlay Receiver) -- Whisper reassigned to port ${WHISPER_PORT}"
-    ai "  To disable AirPlay Receiver: System Settings > General > AirDrop & Handoff > AirPlay Receiver"
+    ai_ok "Port 9000 in use by ${PORT_CONFLICT_PROC} -- Whisper reassigned to port ${WHISPER_PORT}"
 fi
 
 # ============================================================================
@@ -3306,7 +3305,7 @@ if [[ "$ENABLE_VOICE" == "true" ]]; then
                 | cut -d= -f2- | tr -d '"' | tr -d '\r' || true)
     [[ -z "$STT_MODEL" ]] && STT_MODEL="Systran/faster-whisper-base"
     STT_MODEL_ENCODED="${STT_MODEL//\//%2F}"
-    # macOS reassigns Whisper to 9100 if port 9000 is in use (AirPlay Receiver).
+    # macOS reassigns Whisper to 9100 if another service owns port 9000.
     WHISPER_PORT_RESOLVED="${WHISPER_PORT:-9000}"
     WHISPER_URL="http://127.0.0.1:${WHISPER_PORT_RESOLVED}"
     STT_MODEL_URL="${WHISPER_URL}/v1/models/${STT_MODEL_ENCODED}"
