@@ -200,6 +200,15 @@ main() {
     make_install "$install_noninteractive"
     : > "$log_noninteractive"
     : > "$sudo_noninteractive"
+    # `timeout` is GNU coreutils and macOS does not ship it, so the bound is
+    # applied only where it exists — the same guard installers/lib/docker-images.sh
+    # uses. The assertion below already separates a prompt failure from the
+    # 124 timeout exit, so an unbounded run is still a valid observation.
+    local -a noninteractive_cmd=(bash "$install_noninteractive/ods-uninstall.sh"
+        --force --non-interactive)
+    if command -v timeout >/dev/null 2>&1; then
+        noninteractive_cmd=(timeout 5s "${noninteractive_cmd[@]}")
+    fi
     set +e
     HOME="$home_noninteractive" \
     INSTALL_DIR="$install_noninteractive" \
@@ -207,8 +216,7 @@ main() {
     DOCKER_LOG="$log_noninteractive" \
     SUDO_LOG="$sudo_noninteractive" \
     SUDO_VALIDATE_EXIT_CODE=1 \
-        timeout 5s bash "$install_noninteractive/ods-uninstall.sh" \
-            --force --non-interactive >"$out_noninteractive" 2>&1
+        "${noninteractive_cmd[@]}" >"$out_noninteractive" 2>&1
     noninteractive_rc=$?
     set -e
     [[ "$noninteractive_rc" -ne 0 && "$noninteractive_rc" -ne 124 ]] \
