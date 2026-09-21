@@ -14,6 +14,15 @@ json_summary_blockers() {
   fi
 }
 
+json_disk_status() {
+  local f="$1"
+  if command -v jq >/dev/null 2>&1; then
+    jq -r '.checks[] | select(.id == "disk") | .status' "$f"
+  else
+    python3 -c 'import json,sys; print(next(c["status"] for c in json.load(open(sys.argv[1]))["checks"] if c["id"] == "disk"))' "$f"
+  fi
+}
+
 assert_eq() {
   local got="$1"
   local expected="$2"
@@ -166,6 +175,43 @@ if [[ "$blockers" -lt 1 ]]; then
   echo "[FAIL] disk-blocker expected >=1 blocker, got $blockers"
   exit 1
 fi
+
+echo "[contract] preflight fixture: runtime-disk-headroom-warning"
+scripts/preflight-engine.sh \
+  --report "$tmpdir/runtime-disk-headroom-warning.json" \
+  --tier T1 \
+  --ram-gb 16 \
+  --disk-gb 17 \
+  --disk-policy runtime \
+  --gpu-backend cpu \
+  --gpu-vram-mb 0 \
+  --gpu-name "CPU" \
+  --platform-id linux \
+  --compose-overlays docker-compose.base.yml \
+  --script-dir "$ROOT_DIR" \
+  --env >/dev/null
+assert_eq "$(json_summary_blockers "$tmpdir/runtime-disk-headroom-warning.json")" "0" "runtime disk headroom blockers"
+assert_eq "$(json_disk_status "$tmpdir/runtime-disk-headroom-warning.json")" "warn" "runtime disk headroom status"
+
+echo "[contract] preflight fixture: runtime-disk-reserve-blocker"
+scripts/preflight-engine.sh \
+  --report "$tmpdir/runtime-disk-reserve-blocker.json" \
+  --tier T1 \
+  --ram-gb 16 \
+  --disk-gb 9 \
+  --disk-policy runtime \
+  --gpu-backend cpu \
+  --gpu-vram-mb 0 \
+  --gpu-name "CPU" \
+  --platform-id linux \
+  --compose-overlays docker-compose.base.yml \
+  --script-dir "$ROOT_DIR" \
+  --env >/dev/null
+if [[ "$(json_summary_blockers "$tmpdir/runtime-disk-reserve-blocker.json")" -lt 1 ]]; then
+  echo "[FAIL] runtime disk reserve must block below 10GB"
+  exit 1
+fi
+assert_eq "$(json_disk_status "$tmpdir/runtime-disk-reserve-blocker.json")" "blocker" "runtime disk reserve status"
 
 echo "[contract] preflight fixture: cloud-low-storage-good"
 scripts/preflight-engine.sh \

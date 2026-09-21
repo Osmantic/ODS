@@ -13,6 +13,7 @@ COMPOSE_OVERLAYS="${COMPOSE_OVERLAYS:-}"
 SCRIPT_DIR="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 STRICT="false"
 ENV_MODE="false"
+DISK_POLICY="${DISK_POLICY:-install}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -60,6 +61,10 @@ while [[ $# -gt 0 ]]; do
             HOST_ARCH="${2:-}"
             shift 2
             ;;
+        --disk-policy)
+            DISK_POLICY="${2:-$DISK_POLICY}"
+            shift 2
+            ;;
         --strict)
             STRICT="true"
             shift
@@ -85,7 +90,15 @@ elif command -v python >/dev/null 2>&1; then
 fi
 
 HOST_ARCH="${HOST_ARCH:-}"
-"$PYTHON_CMD" - "$REPORT_FILE" "$TIER" "$RAM_GB" "$DISK_GB" "$GPU_BACKEND" "$GPU_VRAM_MB" "$GPU_NAME" "$PLATFORM_ID" "$COMPOSE_OVERLAYS" "$SCRIPT_DIR" "$ENV_MODE" "$STRICT" "$HOST_ARCH" <<'PY'
+case "$DISK_POLICY" in
+    install|runtime) ;;
+    *)
+        echo "Invalid --disk-policy: $DISK_POLICY (expected install or runtime)" >&2
+        exit 1
+        ;;
+esac
+
+"$PYTHON_CMD" - "$REPORT_FILE" "$TIER" "$RAM_GB" "$DISK_GB" "$GPU_BACKEND" "$GPU_VRAM_MB" "$GPU_NAME" "$PLATFORM_ID" "$COMPOSE_OVERLAYS" "$SCRIPT_DIR" "$ENV_MODE" "$STRICT" "$HOST_ARCH" "$DISK_POLICY" <<'PY'
 import json
 import pathlib
 import sys
@@ -105,6 +118,7 @@ from datetime import datetime, timezone
     env_mode,
     strict_mode,
     host_arch,
+    disk_policy,
 ) = sys.argv[1:]
 
 env_mode = env_mode == "true"
@@ -274,6 +288,8 @@ else:
         f"Use a lower tier or increase memory to at least {min_ram}GB.",
     )
 
+runtime_disk_reserve_gb = 10
+
 if disk_gb >= min_disk:
     add_check(
         "disk",
@@ -281,12 +297,21 @@ if disk_gb >= min_disk:
         f"Disk {disk_gb}GB meets tier {tier_key} recommendation ({min_disk}GB).",
         "",
     )
+elif disk_policy == "runtime" and disk_gb >= runtime_disk_reserve_gb:
+    add_check(
+        "disk",
+        "warn",
+        f"Disk {disk_gb}GB is below the tier {tier_key} install recommendation ({min_disk}GB) but above the {runtime_disk_reserve_gb}GB runtime safety reserve.",
+        f"Free at least {min_disk - disk_gb}GB before updates, adding services, or downloading larger models.",
+    )
 else:
+    required_disk = runtime_disk_reserve_gb if disk_policy == "runtime" else min_disk
+    requirement = "runtime safety reserve" if disk_policy == "runtime" else f"required minimum for tier {tier_key}"
     add_check(
         "disk",
         "blocker",
-        f"Disk {disk_gb}GB is below required minimum for tier {tier_key} ({min_disk}GB).",
-        f"Free at least {min_disk - disk_gb}GB or choose a smaller tier.",
+        f"Disk {disk_gb}GB is below the {requirement} ({required_disk}GB).",
+        f"Free at least {required_disk - disk_gb}GB" + ("." if disk_policy == "runtime" else " or choose a smaller tier."),
     )
 
 # GPU checks

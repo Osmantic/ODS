@@ -165,6 +165,7 @@ if [[ -x "$SCRIPT_DIR/scripts/preflight-engine.sh" ]]; then
         --tier "${CAP_RECOMMENDED_TIER:-T1}" \
         --ram-gb "$RAM_GB" \
         --disk-gb "$DISK_GB" \
+        --disk-policy runtime \
         --gpu-backend "${CAP_LLM_BACKEND:-cpu}" \
         --gpu-vram-mb "${CAP_GPU_VRAM_MB:-0}" \
         --gpu-name "${CAP_GPU_NAME:-Unknown}" \
