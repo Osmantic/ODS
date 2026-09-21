@@ -47,6 +47,12 @@ ods_ui_cinematic() {
   esac
 }
 
+ods_apply_presentation_mode() {
+  if ! ods_ui_cinematic; then
+    RED='' GRN='' BGRN='' DGRN='' MAG='' BMAG='' AMB='' WHT='' DIM='' NC=''
+  fi
+}
+
 # Typing effect with block cursor
 type_line() {
   local s="$1"
@@ -123,7 +129,7 @@ ai_warn()  { echo -e "  ${AMB}⚠${NC} $1" | tee -a "$LOG_FILE"; }
 ai_bad()   { echo -e "  ${RED}✗${NC} $1" | tee -a "$LOG_FILE"; }
 
 # One-shot operational status. Cinematic terminals may overwrite an active
-# spinner line; plain/CI/GUI output always receives a fresh ASCII-only line.
+# spinner line; plain/CI/GUI output always receives a fresh control-code-free line.
 ui_status_line() {
   local kind="$1" message="$2"
   local color marker label

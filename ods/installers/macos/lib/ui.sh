@@ -30,6 +30,12 @@ macos_ui_cinematic() {
     esac
 }
 
+macos_apply_presentation_mode() {
+    if ! macos_ui_cinematic; then
+        RED='' GRN='' BGRN='' DGRN='' MAG='' BMAG='' AMB='' WHT='' DIM='' NC=''
+    fi
+}
+
 macos_static_line() {
     macos_ui_cinematic || return 0
     local chars='░▒▓█' width=63 i

@@ -291,6 +291,10 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# Argument parsing establishes interactivity. Resolve the presentation once so
+# non-interactive/CI/GUI output cannot inherit terminal color from a real TTY.
+ods_apply_presentation_mode
+
 _requested_ods_mode="$ODS_MODE"
 ODS_MODE="$(ods_preserve_existing_install_mode "$ODS_MODE" "$ODS_MODE_EXPLICIT" "$INSTALL_DIR/.env")"
 if [[ "$ODS_MODE_EXPLICIT" != "true" && "$ODS_MODE" != "$_requested_ods_mode" ]]; then

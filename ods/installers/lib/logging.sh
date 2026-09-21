@@ -28,10 +28,31 @@ log() {
       && ods_ui_cinematic \
       && [[ "${ODS_UI_VERBOSE:-0}" != "1" ]]; then
     echo -e "${GRN}[INFO]${NC} $1" >> "$LOG_FILE"
+  elif declare -F ods_ui_cinematic >/dev/null 2>&1 && ! ods_ui_cinematic; then
+    printf '[INFO] %s\n' "$1" | tee -a "$LOG_FILE"
   else
     echo -e "${GRN}[INFO]${NC} $1" | tee -a "$LOG_FILE"
   fi
 }
-success() { echo -e "${BGRN}[OK]${NC} $1" | tee -a "$LOG_FILE"; }
-warn() { echo -e "${AMB}[WARN]${NC} $1" | tee -a "$LOG_FILE"; }
-error() { echo -e "${RED}[ERROR]${NC} $1" | tee -a "$LOG_FILE"; exit 1; }
+success() {
+  if declare -F ods_ui_cinematic >/dev/null 2>&1 && ! ods_ui_cinematic; then
+    printf '[OK] %s\n' "$1" | tee -a "$LOG_FILE"
+  else
+    echo -e "${BGRN}[OK]${NC} $1" | tee -a "$LOG_FILE"
+  fi
+}
+warn() {
+  if declare -F ods_ui_cinematic >/dev/null 2>&1 && ! ods_ui_cinematic; then
+    printf '[WARN] %s\n' "$1" | tee -a "$LOG_FILE"
+  else
+    echo -e "${AMB}[WARN]${NC} $1" | tee -a "$LOG_FILE"
+  fi
+}
+error() {
+  if declare -F ods_ui_cinematic >/dev/null 2>&1 && ! ods_ui_cinematic; then
+    printf '[ERROR] %s\n' "$1" | tee -a "$LOG_FILE"
+  else
+    echo -e "${RED}[ERROR]${NC} $1" | tee -a "$LOG_FILE"
+  fi
+  exit 1
+}

@@ -91,7 +91,7 @@ DIM='\033[2;37m'         # Dim white -- subdued hints, lore
 NC='\033[0m'             # Reset
 CURSOR='█'               # Block cursor for typing
 
-if [[ -n "${NO_COLOR:-}" || "${TERM:-}" == "dumb" || ! -t 1 ]]; then
+if [[ -n "${NO_COLOR:-}" || "${TERM:-}" == "dumb" ]]; then
     RED='' GRN='' BGRN='' DGRN='' MAG='' BMAG='' AMB='' WHT='' DIM='' NC=''
 fi
 

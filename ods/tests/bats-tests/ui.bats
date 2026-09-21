@@ -66,6 +66,13 @@ setup() {
     assert_failure
 }
 
+@test "ods_apply_presentation_mode: non-interactive TTY colors are removed" {
+    export INTERACTIVE="false"
+    RED=x GRN=x BGRN=x DGRN=x MAG=x BMAG=x AMB=x WHT=x DIM=x NC=x
+    ods_apply_presentation_mode
+    [[ -z "$RED$GRN$BGRN$DGRN$MAG$BMAG$AMB$WHT$DIM$NC" ]]
+}
+
 @test "show_stranger_boot: plain output keeps the restored ODS gateway identity" {
     run show_stranger_boot
     assert_success

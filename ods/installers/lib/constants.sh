@@ -58,7 +58,7 @@ CURSOR='█'               # Block cursor for typing
 # Machine-readable and redirected output must never contain ANSI escapes.
 # `ODS_UI_MODE=cinematic` may force the layout for screenshots, but color still
 # follows the standard NO_COLOR contract.
-if [[ -n "${NO_COLOR:-}" || "${TERM:-}" == "dumb" || ! -t 1 ]]; then
+if [[ -n "${NO_COLOR:-}" || "${TERM:-}" == "dumb" ]]; then
     RED='' GRN='' BGRN='' DGRN='' MAG='' BMAG='' AMB='' WHT='' DIM='' NC=''
 fi
 
