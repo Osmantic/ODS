@@ -22,7 +22,9 @@ marker="$control_root/$marker_id.cancel"
 if [ "$(uname -s)" = Darwin ]; then
     # macOS has setsid(2), but no setsid command. Keep the child PID as
     # process-group leader so cancellation also reaches its descendants.
-    /usr/bin/python3 -c 'import os, sys; os.setsid(); os.execv("/bin/sh", ["sh", "-lc", sys.argv[1]])' "$command_text" &
+    # Match OpenClaw's noninteractive Bash invocation. macOS sh has different
+    # echo semantics and login profiles can change the requested working dir.
+    /usr/bin/python3 -c 'import os, sys; os.setsid(); os.execv("/bin/bash", ["bash", "--noprofile", "--norc", "-c", sys.argv[1]])' "$command_text" &
 else
     setsid sh -lc "$command_text" &
 fi

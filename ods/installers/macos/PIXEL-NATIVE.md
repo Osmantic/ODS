@@ -2068,3 +2068,21 @@ observer timeout; later backend evidence showed interruption and an idle model
 slot, not successful artifact creation. Its cancellation caller also timed out,
 so that observation does not prove an acknowledged cancellation response. Draft
 PR 6155 contains the implementation and is not a claim of completed qualification.
+
+### Native Exec Working Directory And Shell
+
+Darwin gateway execution translates the `/workspace` alias and relative working
+directories to the configured owner workspace. Missing directories are rejected
+before core exec can fall back to the gateway process directory. This changes
+neither sandbox routing nor access authorization, and it does not create folders
+or rewrite shell commands. The real Portal regression confirmed correct cwd and
+zero failed/blocked calls, but byte verification still caught macOS `sh` writing
+the literal `-n` from an `echo -n` command.
+
+The Darwin cancellation wrapper now uses `/bin/bash --noprofile --norc -c`, the
+noninteractive Bash arguments used by the pinned OpenClaw runtime. It retains
+the same setsid process-group boundary; Linux keeps its existing shell path.
+Actual wrapper tests cover exact file bytes, no login-profile execution, exit
+status and cancellation before a descendant's side effect. Full native
+regression: 2,088 passed, 17 skipped, four subtests. This shell change still
+requires protected deployment and a successful exact-byte Portal retest.
