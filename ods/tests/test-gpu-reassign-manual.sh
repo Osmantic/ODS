@@ -343,11 +343,14 @@ echo "$assignment" | jq -e '
 [[ -z "$(env_value COMFYUI_GPU_UUID)" ]]
 [[ -z "$(env_value EMBEDDINGS_GPU_UUID)" ]]
 
-sed -i \
+# BSD sed (macOS) needs a suffix for -i, otherwise it consumes the following
+# -e as the backup extension. `-i.bak` works on both.
+sed -i.bak \
     -e 's/^LLAMA_ARG_TENSOR_SPLIT=.*/LLAMA_ARG_TENSOR_SPLIT=9,9,9/' \
     -e 's/^COMFYUI_GPU_UUID=.*/COMFYUI_GPU_UUID=GPU-stale/' \
     -e 's/^EMBEDDINGS_GPU_UUID=.*/EMBEDDINGS_GPU_UUID=GPU-stale/' \
     "$FAKE_INSTALL/.env"
+rm -f "$FAKE_INSTALL/.env.bak"
 set +e
 OUTPUT=$(printf 'n\n' |
     ODS_HOME="$FAKE_INSTALL" PATH="$STUB_PATH" "$ODS_CLI" gpu reassign --auto 2>&1)
