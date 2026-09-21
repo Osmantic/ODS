@@ -166,8 +166,10 @@ class _TelemetrySink:
             return False
 
     async def _run(self) -> None:
-        assert self.queue is not None
-        assert self.client is not None
+        if self.queue is None or self.client is None:
+            raise RuntimeError(
+                "Token Spy telemetry worker started before its queue and client existed"
+            )
         while True:
             event = await self.queue.get()
             try:

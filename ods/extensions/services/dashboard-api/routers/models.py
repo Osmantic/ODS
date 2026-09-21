@@ -980,7 +980,10 @@ async def _hf_get_json(
         if attempt == 0:
             await asyncio.sleep(0.25)
     if response is None:
-        assert last_error is not None
+        if last_error is None:
+            raise RuntimeError(
+                "Hugging Face request loop ended without a response or an error"
+            )
         raise last_error
     if response.status_code in {401, 403}:
         raise HTTPException(
