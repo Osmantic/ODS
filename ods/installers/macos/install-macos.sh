@@ -832,6 +832,51 @@ _verify_macos_dashboard_host_agent() {
 COLIMA_VM_IP=""
 COLIMA_HOST_IP=""
 COLIMA_PRIVATE_ROUTE_PREFERRED=false
+COLIMA_PROFILE=""
+
+_resolve_active_colima_profile() {
+    local context endpoint candidate=""
+
+    context="$(docker context show 2>>"$ODS_LOG_FILE" || true)"
+    [[ -n "$context" ]] || return 1
+    case "$context" in
+        colima)
+            candidate="default"
+            ;;
+        colima-*)
+            candidate="${context#colima-}"
+            ;;
+        *)
+            endpoint="$(docker context inspect "$context" \
+                --format '{{.Endpoints.docker.Host}}' 2>>"$ODS_LOG_FILE" || true)"
+            if [[ "$endpoint" =~ /\.colima/([^/]+)/docker\.sock$ ]]; then
+                candidate="${BASH_REMATCH[1]}"
+            fi
+            ;;
+    esac
+
+    # Colima profile names become filesystem and Docker-context components.
+    # Fail closed rather than passing an ambiguous value back to the CLI.
+    [[ "$candidate" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || return 1
+    COLIMA_PROFILE="$candidate"
+}
+
+_active_colima() {
+    local subcommand="$1"
+    shift
+    [[ -n "$COLIMA_PROFILE" ]] || return 1
+    if [[ "$COLIMA_PROFILE" == "default" ]]; then
+        command colima "$subcommand" "$@"
+    else
+        command colima "$subcommand" --profile "$COLIMA_PROFILE" "$@"
+    fi
+}
+
+_active_colima_hint_args() {
+    if [[ "$COLIMA_PROFILE" != "default" ]]; then
+        printf ' --profile %s' "$COLIMA_PROFILE"
+    fi
+}
 
 _detect_colima_private_network() {
     local status_json interface_name colima_config preferred_route
@@ -839,7 +884,7 @@ _detect_colima_private_network() {
     COLIMA_HOST_IP=""
     COLIMA_PRIVATE_ROUTE_PREFERRED=false
 
-    status_json="$(colima status --json 2>>"$ODS_LOG_FILE" || true)"
+    status_json="$(_active_colima status --json 2>>"$ODS_LOG_FILE" || true)"
     [[ -n "$status_json" ]] || return 1
     COLIMA_VM_IP="$(printf '%s' "$status_json" | /usr/bin/python3 -c '
 import json, sys
@@ -865,7 +910,7 @@ valid = vm.version == 4 and host.version == 4 and host != vm and host in network
 raise SystemExit(0 if valid else 1)
 ' >/dev/null 2>&1 || return 1
 
-    colima_config="${COLIMA_HOME:-$HOME/.colima}/default/colima.yaml"
+    colima_config="${COLIMA_HOME:-$HOME/.colima}/${COLIMA_PROFILE}/colima.yaml"
     preferred_route="$(awk '
         /^network:/ { in_network=1; next }
         in_network && /^[^[:space:]]/ { in_network=0 }
@@ -881,6 +926,11 @@ _ensure_colima_private_network() {
         ai_err "Docker is using Colima, but the colima CLI is not on PATH."
         return 1
     fi
+    if ! _resolve_active_colima_profile; then
+        ai_err "Could not map the active Docker context to a safe Colima profile."
+        ai "  Select a Colima context (for example: docker context use colima) and re-run."
+        return 1
+    fi
 
     if _detect_colima_private_network && [[ "$COLIMA_PRIVATE_ROUTE_PREFERRED" == "true" ]]; then
         ai_ok "Colima private host bridge ready (${COLIMA_HOST_IP} <-> ${COLIMA_VM_IP})"
@@ -894,10 +944,12 @@ _ensure_colima_private_network() {
 
     ai_warn "Colima needs a preferred private VM route; restarting its VM to configure one."
     ai_warn "Running non-ODS containers will restart with the Colima VM. Container data is preserved."
-    if ! colima stop >>"$ODS_LOG_FILE" 2>&1 \
-       || ! colima start --network-address --network-preferred-route >>"$ODS_LOG_FILE" 2>&1; then
+    if ! _active_colima stop >>"$ODS_LOG_FILE" 2>&1 \
+       || ! _active_colima start --network-address --network-preferred-route >>"$ODS_LOG_FILE" 2>&1; then
         ai_err "Could not enable Colima private networking."
-        ai "  Run: colima stop && colima start --network-address --network-preferred-route"
+        local profile_args
+        profile_args="$(_active_colima_hint_args)"
+        ai "  Run: colima stop${profile_args} && colima start${profile_args} --network-address --network-preferred-route"
         return 1
     fi
 
@@ -1024,8 +1076,10 @@ _require_docker_cpu_budget() {
         ai_err "Docker daemon only has ${docker_ncpu} CPU(s); ODS's ${workload} pins limits up to ${max_pin} CPUs per service and needs at least ${min_cpus} to avoid 'range of CPUs is from 0.01 to N' compose failures."
         case "${DOCKER_BACKEND:-unknown}" in
             colima)
+                local profile_args
+                profile_args="$(_active_colima_hint_args)"
                 ai "Stop and re-create the Colima VM with more CPUs:"
-                ai "    colima stop && colima start --cpu ${min_cpus} --memory 12 --disk 60"
+                ai "    colima stop${profile_args} && colima start${profile_args} --cpu ${min_cpus} --memory 12 --disk 60"
                 ai "Then re-run this installer."
                 ;;
             desktop)
