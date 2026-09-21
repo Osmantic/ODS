@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import socket
 import subprocess
+import tempfile
 from types import SimpleNamespace
 
 import pytest
@@ -12,6 +13,16 @@ SPEC = importlib.util.spec_from_file_location('native_update',
     Path(__file__).resolve().parents[1] / 'installers/macos/lib/pixel-native-update.py')
 module = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(module)
+
+
+@pytest.fixture
+def docker_endpoint():
+    # Darwin's default pytest temp path can exceed sockaddr_un.sun_path.
+    with tempfile.TemporaryDirectory(prefix='ods-update-', dir='/tmp') as directory:
+        endpoint = Path(directory).resolve() / 'docker.sock'
+        with socket.socket(socket.AF_UNIX) as sock:
+            sock.bind(str(endpoint))
+            yield endpoint
 
 
 @pytest.mark.parametrize('accepted', ['true', '', 'false'])
@@ -38,13 +49,11 @@ python_fixture() { printf '%s\\n' "$@"; }
 
 
 @pytest.mark.parametrize('failure', [None, 'prepare-only', 'acquire', 'prepare', 'activate', 'finalize'])
-def test_update_orders_existing_helpers_and_restores_docker_environment(tmp_path, monkeypatch, failure):
+def test_update_orders_existing_helpers_and_restores_docker_environment(tmp_path, monkeypatch, failure, docker_endpoint):
     installed, source = tmp_path / 'ods', tmp_path / 'source'
     (installed / 'data/pixel-native').mkdir(parents=True)
     source.mkdir()
-    endpoint = tmp_path / 'docker.sock'
-    sock = socket.socket(socket.AF_UNIX)
-    sock.bind(str(endpoint))
+    endpoint = docker_endpoint
     stages = []
     old = 'a' * 64
     def step(name):
@@ -111,9 +120,8 @@ def test_update_orders_existing_helpers_and_restores_docker_environment(tmp_path
             else:
                 assert result['status'] == 'prepared'
             assert stages == expected
-        assert dict(os.environ) == before
     finally:
-        sock.close()
+        assert dict(os.environ) == before
 
 
 @pytest.mark.parametrize('authorized', [False, None, 'yes'])

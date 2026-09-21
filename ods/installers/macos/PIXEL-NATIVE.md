@@ -2096,3 +2096,30 @@ retain the verified owner-side wrapper; an invalid present wrapper fails closed.
 The sandbox mount remains unchanged. Packaging/custody and separate-marker
 cancellation tests pass; protected activation of this versioned-wrapper path
 remains required before claiming the shell fix is deployed.
+
+### Live Portal Qualification (2026-09-21)
+
+The versioned-wrapper deployment subsequently passed protected preparation,
+activation and owner finalization. Installed Node/plugin selection verified the
+root-owned runtime wrapper. Full-access status is available, verified and not
+pending. The startup reconciler returned `already-ready`; this is not a reboot.
+
+A fresh Portal request created a directory, executed the previously failing
+`echo -n` command and read back exactly ten bytes (`ODS_MAC_OK`): three calls,
+zero failed or blocked calls, completed in 158.2 seconds. A separate request
+created/read/published a 4,432-byte single-file snake game: three calls, zero
+failures or blocks, completed in 455.4 seconds. Its newly published URL rendered
+the canvas, snake, food, score and restart control in the browser. This does not
+claim exhaustive gameplay testing or equal latency on other hardware.
+
+Live exact-attempt cancellation also passed: HTTP 200 with `aborted: true` in
+1.53 seconds, stream terminal, retained state `cancelled`, and native inference
+and Edge admission idle within 12.79 seconds. The observer uses the container
+loopback transport, not the removed host Edge listener. These results supersede
+the earlier unacknowledged cancellation observation above.
+
+Focused installer/update/startup tests passed (52 tests). Update tests now use
+a short private socket fixture, avoiding macOS's Unix-socket path length limit
+under the default pytest temporary directory. Clean-machine installation and
+cold-reboot qualification remain outstanding; Apple Silicon tier selection is
+not evidence of testing every Mac or support for Intel Macs.
