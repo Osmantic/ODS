@@ -241,6 +241,31 @@ else
 fi
 
 cat > "$ENV_PATH" <<'ENV'
+ODS_MODE=local
+GPU_BACKEND=cpu
+LLM_BACKEND=external
+LLM_API_URL=http://litellm:4000
+HERMES_LLM_BASE_URL=http://litellm:4000/v1
+EXTERNAL_LLM_URL=http://host.lima.internal:8080
+EXTERNAL_LLM_PROVIDER=openai-compatible
+EXTERNAL_LLM_MODEL=Qwen3.5-9B-Q4_K_M.gguf
+ENV
+cat > "$FLAGS_PATH" <<'FLAGS'
+-f docker-compose.base.yml -f docker-compose.cpu.yml
+FLAGS
+
+(cd "$ROOT_DIR" && PATH="$FAKE_BIN:$PATH" bash scripts/ods-doctor.sh "$REPORT" >/dev/null 2>&1) || true
+if jq -e '
+    .runtime.inference_contract.expected_inference_owner == "external" and
+    .runtime.inference_contract.expected_gateway == "litellm" and
+    ([.runtime.inference_contract.issues[].id] | index("ODS-RUNTIME-LOCAL-LITELLM-ROUTE") | not)
+' "$REPORT" >/dev/null; then
+    pass "generic external inference treats LiteLLM as the expected gateway"
+else
+    fail "generic external inference was misclassified as an unexpected local LiteLLM route"
+fi
+
+cat > "$ENV_PATH" <<'ENV'
 ODS_MODE=lemonade
 GPU_BACKEND=amd
 LLM_API_URL=http://litellm:4000

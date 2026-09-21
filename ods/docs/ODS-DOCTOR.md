@@ -166,8 +166,9 @@ adds diagnoses when the evidence contradicts the selected mode:
   clients to local `llama-server`.
 - `ODS-RUNTIME-LOCAL-CLOUD-OVERLAY`: local mode still has the cloud overlay in
   cached `.compose-flags`.
-- `ODS-RUNTIME-LOCAL-LITELLM-ROUTE`: non-AMD local mode unexpectedly routes
-  through LiteLLM.
+- `ODS-RUNTIME-LOCAL-LITELLM-ROUTE`: non-AMD managed-local mode unexpectedly
+  routes through LiteLLM. Explicit `LLM_BACKEND=external` /
+  `EXTERNAL_LLM_URL` installs expect LiteLLM and do not emit this warning.
 
 The support bundle embeds the same contract evidence in
 `manifest/evidence.json`. Its Compose validation resolves the stack with the
