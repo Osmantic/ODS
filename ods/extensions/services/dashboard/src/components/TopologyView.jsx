@@ -14,6 +14,10 @@ function buildMatrix(gpuCount, links) {
   // matrix[a][b] = link object or null
   const m = Array.from({ length: gpuCount }, () => Array(gpuCount).fill(null))
   for (const link of links) {
+    if (!Number.isInteger(link?.gpu_a) || !Number.isInteger(link?.gpu_b)
+      || link.gpu_a < 0 || link.gpu_a >= gpuCount
+      || link.gpu_b < 0 || link.gpu_b >= gpuCount
+      || link.gpu_a === link.gpu_b) continue
     m[link.gpu_a][link.gpu_b] = link
     m[link.gpu_b][link.gpu_a] = link
   }
@@ -26,6 +30,9 @@ export const TopologyView = memo(function TopologyView({ topology }) {
   const { gpus = [], links = [], gpu_count, vendor, driver_version, mig_enabled } = topology
   const n = gpu_count || gpus.length
   const matrix = buildMatrix(n, links)
+  const validLinks = links.filter(link => Number.isInteger(link?.gpu_a) && Number.isInteger(link?.gpu_b)
+    && link.gpu_a >= 0 && link.gpu_a < n && link.gpu_b >= 0 && link.gpu_b < n && link.gpu_a !== link.gpu_b)
+  const hasInvalidLinks = validLinks.length !== links.length
 
   return (
     <div className="p-5 bg-zinc-900/50 border border-zinc-800 rounded-xl">
@@ -44,6 +51,12 @@ export const TopologyView = memo(function TopologyView({ topology }) {
         </div>
       </div>
 
+      {hasInvalidLinks && (
+        <p role="alert" className="mb-4 text-xs text-amber-400">
+          Some invalid topology links were ignored.
+        </p>
+      )}
+
       {/* GPU reference chips */}
       <div className="flex flex-wrap gap-2 mb-4">
         {gpus.map(g => (
@@ -56,7 +69,7 @@ export const TopologyView = memo(function TopologyView({ topology }) {
       </div>
 
       {/* Topology matrix table */}
-      {n > 1 && links.length > 0 ? (
+      {n > 1 && validLinks.length > 0 ? (
         <div className="overflow-x-auto">
           <table className="w-auto border-collapse text-xs font-mono">
             <thead>
@@ -113,7 +126,7 @@ export const TopologyView = memo(function TopologyView({ topology }) {
       )}
 
       {/* Legend */}
-      {links.length > 0 && (
+      {validLinks.length > 0 && (
         <div className="flex flex-wrap gap-3 mt-4 pt-4 border-t border-zinc-800 text-[10px] text-zinc-500">
           {[
             { label: 'NVLink', rank: 100 },
