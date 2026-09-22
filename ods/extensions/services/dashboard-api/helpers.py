@@ -1417,3 +1417,12 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def string_capitalize_words_safe(text: str | None) -> str:
+    """Safely capitalize the first character of each word in text string.
+    Returns "" on None or non-string inputs.
+    """
+    if text is None or not isinstance(text, str):
+        return ""
+    return " ".join(word.capitalize() for word in text.split())
