@@ -1079,6 +1079,7 @@ function ConsoleModal({ ext, onClose }) {
   const [disconnected, setDisconnected] = useState(false)
   const [atBottom, setAtBottom] = useState(true)
   const [installInfo, setInstallInfo] = useState(null)
+  const terminalInstallRef = useRef(false)
   const logRef = useRef(null)
   const isNearBottom = useRef(true)
 
@@ -1096,7 +1097,10 @@ function ConsoleModal({ ext, onClose }) {
         const res = await fetchJson(`/api/extensions/${ext.id}/progress`)
         if (res.ok && active) {
           const data = await res.json()
-          if (data.status !== 'idle') setInstallInfo(data)
+          if (data.status !== 'idle') {
+            setInstallInfo(data)
+            if (data.status === 'error' || data.status === 'started') terminalInstallRef.current = true
+          }
         }
       } catch { /* ignore */ }
     }
@@ -1119,7 +1123,7 @@ function ConsoleModal({ ext, onClose }) {
     })
 
     const poll = async () => {
-      if (!active) return
+      if (!active || terminalInstallRef.current) return
       if (logRequestInFlight.current) {
         setTimeout(poll, 2000)
         return
@@ -1149,7 +1153,7 @@ function ConsoleModal({ ext, onClose }) {
         logRequestInFlight.current = false
         setFetchingLogs(false)
       }
-      if (active) {
+      if (active && !terminalInstallRef.current) {
         const delay = failCount > 0 ? Math.min(2000 * Math.pow(2, failCount - 1), 30000) : 2000
         setTimeout(poll, delay)
       }
