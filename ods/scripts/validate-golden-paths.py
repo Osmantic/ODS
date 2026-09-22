@@ -180,12 +180,12 @@ def validate_scenario(issues: Issues, scenario: Any, path: str) -> str | None:
 
 def main(argv: list[str]) -> int:
     path = Path(argv[0]) if argv else DEFAULT_PATH
-    if not path.exists():
+    if not path.is_file():
         print(f"[FAIL] golden path file not found: {path}")
         return 1
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
+    except (OSError, json.JSONDecodeError) as exc:
         print(f"[FAIL] invalid JSON in {path}: {exc}")
         return 1
 
