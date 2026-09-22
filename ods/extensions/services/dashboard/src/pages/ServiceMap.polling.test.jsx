@@ -93,3 +93,17 @@ it('pauses hidden polls and refreshes when visible without overlapping a request
   await settle()
   expect(fetch).toHaveBeenCalledTimes(2)
 })
+
+it('marks the full map stale when a refresh fails after initial data', async () => {
+  const fetch = vi.fn()
+    .mockResolvedValueOnce(response('Saved service'))
+    .mockRejectedValueOnce(new Error('refresh unavailable'))
+  vi.stubGlobal('fetch', fetch)
+  render(<ServiceMap />)
+  await settle()
+  fireEvent(document, new Event('visibilitychange'))
+  await settle()
+  expect(screen.getByRole('alert')).toHaveTextContent('Showing stale topology data')
+  expect(screen.getByRole('alert')).toHaveTextContent('refresh unavailable')
+  expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument()
+})
