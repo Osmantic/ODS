@@ -108,6 +108,9 @@ def _parse_target(raw: str) -> Tuple[str, str]:
 
 
 def _parse_host_port(raw: str) -> Tuple[str, int]:
+    raw = raw.strip()
+    if ":" not in raw:
+        raise ValueError("missing port delimiter ':' in target")
     host, port_s = raw.rsplit(":", 1)
     host = host.strip()
     if host.startswith("[") and host.endswith("]"):
