@@ -1160,6 +1160,8 @@ async def handle_chat_cancel(request: web.Request):
     if request.content_type != "application/json":
         return web.json_response({"error": "Content-Type must be application/json"},
                                  status=415)
+    if request.query_string:
+        return web.json_response({"error": "query parameters not allowed"}, status=400)
     if request.content_length and request.content_length > _MAX_CANCEL_BODY:
         return web.json_response({"error": "request too large"}, status=413)
 
@@ -1170,8 +1172,8 @@ async def handle_chat_cancel(request: web.Request):
     if len(raw) > _MAX_CANCEL_BODY:
         return web.json_response({"error": "request too large"}, status=413)
     try:
-        data = json.loads(raw)
-    except (json.JSONDecodeError, ValueError):
+        data = strict_json(raw)
+    except (ValueError, UnicodeDecodeError, RecursionError):
         return web.json_response({"error": "invalid JSON"}, status=400)
     if (
         not isinstance(data, dict)
