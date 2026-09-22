@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { render } from '../test/test-utils'
 import Dashboard from './Dashboard' // eslint-disable-line no-unused-vars
 
@@ -35,6 +35,7 @@ const baseStatus = {
 let mockResources
 let mockFeatures
 let mockFeatureSuggestions
+let mockResourcesHang
 let restartCalls
 let restartDeferred
 
@@ -73,6 +74,7 @@ function installFetchMock() {
       }
     }
     if (String(url).includes('/api/services/resources')) {
+      if (mockResourcesHang) return new Promise(() => {})
       return {
         ok: true,
         json: async () => mockResources,
@@ -85,7 +87,7 @@ function installFetchMock() {
 async function renderDashboard(status = baseStatus) {
   render(<Dashboard status={status} loading={false} />)
   await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/features'))
-  await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/services/resources'))
+  await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/services/resources', expect.objectContaining({ signal: expect.any(AbortSignal) })))
 }
 
 describe('Dashboard system overview', () => {
@@ -93,6 +95,7 @@ describe('Dashboard system overview', () => {
     document.documentElement.dataset.theme = 'light'
     mockFeatures = []
     mockFeatureSuggestions = []
+    mockResourcesHang = false
     mockResources = {
       services: services.map(service => ({
         id: service.name.toLowerCase().replace(/\([^)]*\)/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''),
@@ -487,6 +490,17 @@ describe('Dashboard system overview', () => {
 
     const row = await screen.findByTestId('service-row-ape')
     expect(within(row).getAllByText('—')).toHaveLength(2)
+  })
+
+  it('aborts a stalled resource request at its deadline', async () => {
+    vi.useFakeTimers()
+    mockResourcesHang = true
+    render(<Dashboard status={baseStatus} loading={false} />)
+    await act(async () => { await vi.advanceTimersByTimeAsync(15000) })
+
+    const resourceCall = fetch.mock.calls.find(([url]) => String(url).includes('/api/services/resources'))
+    expect(resourceCall[1].signal.aborted).toBe(true)
+    vi.useRealTimers()
   })
 
   it('shows measured auxiliary containers without granting service restart actions', async () => {

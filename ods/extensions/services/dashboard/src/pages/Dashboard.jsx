@@ -169,6 +169,7 @@ function clamp(value, min, max) {
 
 const OVERVIEW_HISTORY_KEY = 'ods-system-overview-history-v1'
 const SERVICE_CPU_HISTORY_KEY = 'ods-service-cpu-history-v1'
+const RESOURCE_REQUEST_TIMEOUT = 15000
 const OVERVIEW_MAX_SAMPLES = 720
 const SERVICE_CPU_MAX_SAMPLES = 80
 const OVERVIEW_RANGES = [
@@ -642,13 +643,17 @@ export default function Dashboard({ status, loading, compact = false }) {
     let mounted = true
 
     const fetchServiceResources = async () => {
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), RESOURCE_REQUEST_TIMEOUT)
       try {
-        const res = await fetch('/api/services/resources')
+        const res = await fetch('/api/services/resources', { signal: controller.signal })
         if (!res.ok) return
         const data = await res.json()
         if (mounted) setServiceResources(data)
       } catch {
         // Service rows keep rendering status data when per-container metrics are unavailable.
+      } finally {
+        clearTimeout(timeout)
       }
     }
 
