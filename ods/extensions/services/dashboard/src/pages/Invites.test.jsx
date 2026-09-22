@@ -166,6 +166,33 @@ describe('Invites', () => {
     expect(screen.getByDisplayValue('https://ods.example.test/auth/magic-link/plain-owner-token')).toBeInTheDocument()
   })
 
+  test('offers QR retry without generating another invite', async () => {
+    let qrAttempts = 0
+    const fetchMock = vi.fn(async (url, options = {}) => {
+      if (url === '/api/auth/magic-link/list') return response({ tokens: [] })
+      if (url === '/api/auth/magic-link/owner-card/status') return response(ownerCardReady)
+      if (url === '/api/auth/magic-link/generate' && options.method === 'POST') return response({
+        url: 'http://auth.ods.local/magic-link/retry', target_username: 'mike', token_type: 'owner', url_mode: 'lan',
+      })
+      if (String(url).startsWith('/api/auth/magic-link/qr?url=')) {
+        qrAttempts += 1
+        return qrAttempts === 1 ? response({ detail: 'temporary failure' }, 503) : response({ data_url: 'data:image/png;base64,retried' })
+      }
+      throw new Error(`unexpected request: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<Invites />)
+    await screen.findByText('No owner cards yet')
+    fireEvent.click(screen.getByRole('button', { name: 'Print owner card' }))
+    fireEvent.change(screen.getByPlaceholderText('alice'), { target: { value: 'mike' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Generate owner QR' }))
+    await screen.findByRole('dialog', { name: 'Owner card created' })
+    expect(await screen.findByRole('button', { name: 'Retry QR generation' })).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Retry QR generation' }))
+    expect(await screen.findByAltText('QR code for owner card')).toHaveAttribute('src', 'data:image/png;base64,retried')
+    expect(fetchMock.mock.calls.filter(([url]) => url === '/api/auth/magic-link/generate')).toHaveLength(1)
+  })
+
   test('generates guest invite from the backend URL and loads QR', async () => {
     const fetchMock = vi.fn(async (url, options = {}) => {
       if (url === '/api/auth/magic-link/list') {

@@ -643,26 +643,38 @@ function GeneratedTokenModal({ record, onClose }) {
   const [copied, setCopied] = useState(false)
   const [qrDataUrl, setQrDataUrl] = useState(null)
   const [qrError, setQrError] = useState(null)
+  const [qrLoading, setQrLoading] = useState(true)
   const owner = record.token_type === 'owner'
 
-  useEffect(() => {
-    let cancelled = false
-    const loadQr = async () => {
-      try {
-        const resp = await fetchJson(`/api/auth/magic-link/qr?url=${encodeURIComponent(record.url)}`)
-        if (!resp.ok) {
-          setQrError('QR generation unavailable on the server.')
-          return
-        }
-        const data = await resp.json()
-        if (!cancelled) setQrDataUrl(data.data_url)
-      } catch (err) {
-        if (!cancelled) setQrError(err.message)
-      }
+  const loadQr = useCallback(async () => {
+    setQrLoading(true)
+    setQrError(null)
+    setQrDataUrl(null)
+    try {
+      const resp = await fetchJson(`/api/auth/magic-link/qr?url=${encodeURIComponent(record.url)}`)
+      if (!resp.ok) throw new Error('QR generation unavailable on the server.')
+      const data = await resp.json()
+      setQrDataUrl(data.data_url)
+    } catch (err) {
+      setQrError(err.message)
+    } finally {
+      setQrLoading(false)
     }
-    loadQr()
-    return () => { cancelled = true }
   }, [record.url])
+
+  useEffect(() => {
+    void loadQr()
+  }, [loadQr])
+
+  /*
+   * The modal remains open when QR generation fails so the link can still be
+   * copied or printed, and the request can be retried without regenerating it.
+   */
+  const qrRetry = qrError && !qrLoading ? (
+    <button type="button" onClick={loadQr} className="mt-3 rounded-md border border-theme-border px-3 py-1.5 text-xs text-theme-text hover:bg-theme-surface-hover">
+      Retry QR generation
+    </button>
+  ) : null
 
   const copy = async () => {
     try {
@@ -726,6 +738,7 @@ function GeneratedTokenModal({ record, onClose }) {
           <div className="bg-theme-bg border border-theme-border rounded-xl p-6 flex flex-col items-center justify-center mb-4 min-h-56">
             <QrCode size={48} className="text-theme-text-muted mb-2" />
             <p className="text-xs text-theme-text-muted text-center">{qrError || 'Generating QR code...'}</p>
+            {qrRetry}
           </div>
         )}
 
