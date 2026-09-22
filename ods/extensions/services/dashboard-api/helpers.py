@@ -1417,3 +1417,21 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def numeric_interquartile_range_safe(values: list | None) -> float:
+    """Safely calculate interquartile range (IQR = Q3 - Q1) of a numeric sequence.
+    Returns 0.0 on None, non-sequence, or insufficient data inputs.
+    """
+    if not values or not isinstance(values, (list, tuple)):
+        return 0.0
+    cleaned = sorted([float(v) for v in values if isinstance(v, (int, float)) and not isinstance(v, bool)])
+    n = len(cleaned)
+    if n < 4:
+        return 0.0
+    mid = n // 2
+    q1_seq = cleaned[:mid]
+    q3_seq = cleaned[mid + (1 if n % 2 != 0 else 0):]
+    q1 = sum(q1_seq) / len(q1_seq)
+    q3 = sum(q3_seq) / len(q3_seq)
+    return round(q3 - q1, 4)

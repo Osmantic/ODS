@@ -1801,3 +1801,14 @@ def test_flatten_bounds_cycles_and_large_depth_without_losing_empty_leaves():
         nested = {"child": nested}
     result = dict_flatten_nested_safe(nested, max_depth=100000)
     assert len(next(iter(result)).split(".")) == 128
+
+
+class TestNumericInterquartileRangeSafe:
+    def test_valid_iqr(self):
+        from helpers import numeric_interquartile_range_safe
+        assert numeric_interquartile_range_safe([1, 2, 5, 6, 7, 9, 12, 15]) == 7.0
+
+    def test_invalid_inputs(self):
+        from helpers import numeric_interquartile_range_safe
+        assert numeric_interquartile_range_safe(None) == 0.0
+        assert numeric_interquartile_range_safe([1, 2]) == 0.0
