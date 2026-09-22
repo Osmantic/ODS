@@ -386,4 +386,72 @@ brew_install_line="$(grep -n '^  brew install bash' "$INSTALLER" | head -1 | cut
     || fail "Bash bootstrap can hand off to an unsupported shell and recurse"
 pass "cloud health fails closed and dry-run skips host-agent mutation"
 
+# ── Cloud-mode preservation on flagless reinstalls ────────────────────────────
+# A `--cloud` install writes ODS_MODE=cloud into .env, but CLOUD_MODE defaults
+# to false and is only set by the --cloud flag. A later flagless rerun would
+# take every `if $CLOUD_MODE` branch down the local path -- re-running GPU
+# detection, picking a hardware tier, and upserting ODS_MODE=local over the
+# persisted cloud configuration. The persisted mode must be restored before
+# any of those branches run.
+
+eval "$(extract_installer_function _macos_preserve_cloud_mode)"
+[[ "$(type -t _macos_preserve_cloud_mode)" == "function" ]] \
+    || fail "_macos_preserve_cloud_mode is not defined in install-macos.sh"
+
+# Mirror lib/env-generator.sh read_env_value: empty on a missing .env, never
+# fails -- a nonzero read would abort the caller under set -e.
+read_env_value() {
+    [[ -f "$1" ]] || { printf '\n'; return 0; }
+    grep -E "^$2=" "$1" 2>/dev/null | sed -n '1p' | cut -d= -f2- || true
+}
+
+INSTALL_DIR="$TMP_DIR/cloud-preserve"
+mkdir -p "$INSTALL_DIR"
+
+# Persisted cloud install + flagless rerun -> cloud mode restored.
+printf 'ODS_MODE=cloud\n' > "$INSTALL_DIR/.env"
+CLOUD_MODE=false
+_macos_preserve_cloud_mode
+[[ "$CLOUD_MODE" == "true" ]] \
+    || fail "flagless rerun did not restore cloud mode from persisted ODS_MODE"
+
+# Quoted value must also restore (hand-edited .env writes ODS_MODE="cloud").
+printf 'ODS_MODE="cloud"\n' > "$INSTALL_DIR/.env"
+CLOUD_MODE=false
+_macos_preserve_cloud_mode
+[[ "$CLOUD_MODE" == "true" ]] \
+    || fail "quoted ODS_MODE=cloud was not restored on a flagless rerun"
+
+# Local install stays local.
+printf 'ODS_MODE=local\n' > "$INSTALL_DIR/.env"
+CLOUD_MODE=false
+_macos_preserve_cloud_mode
+[[ "$CLOUD_MODE" == "false" ]] \
+    || fail "local install was incorrectly promoted to cloud mode"
+
+# First install (no .env) stays local.
+rm -f "$INSTALL_DIR/.env"
+CLOUD_MODE=false
+_macos_preserve_cloud_mode
+[[ "$CLOUD_MODE" == "false" ]] \
+    || fail "first install without .env was promoted to cloud mode"
+
+# An explicit --cloud still wins even over a persisted local mode.
+printf 'ODS_MODE=local\n' > "$INSTALL_DIR/.env"
+CLOUD_MODE=true
+_macos_preserve_cloud_mode
+[[ "$CLOUD_MODE" == "true" ]] \
+    || fail "explicit --cloud was clobbered by persisted local mode"
+pass "cloud mode persists across flagless reinstalls"
+
+# Wiring contract: the orchestrator must call the helper before generate_ods_env
+# consumes CLOUD_MODE, and only while the flag was not passed.
+grep -Fq '_macos_preserve_cloud_mode' "$INSTALLER" \
+    || fail "install-macos.sh never calls _macos_preserve_cloud_mode"
+preserve_line="$(grep -n '_macos_preserve_cloud_mode' "$INSTALLER" | tail -1 | cut -d: -f1)"
+envgen_line="$(grep -n 'generate_ods_env ' "$INSTALLER" | head -1 | cut -d: -f1)"
+[[ -n "$preserve_line" && -n "$envgen_line" && "$preserve_line" -lt "$envgen_line" ]] \
+    || fail "cloud-mode restore must run before .env regeneration"
+pass "cloud-mode restore is wired before .env regeneration"
+
 echo "[OK] macOS installer transition contracts hold"

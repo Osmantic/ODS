@@ -1183,8 +1183,28 @@ _ensure_macos_pyyaml() {
     exit 1
 }
 
+# A flagless rerun must keep a prior --cloud install in cloud mode. Every
+# downstream decision -- tier selection, .env regeneration, LiteLLM wiring --
+# keys off CLOUD_MODE, so letting it default to false would silently convert
+# the install to a misconfigured "local" stack.
+_macos_preserve_cloud_mode() {
+    local persisted_mode
+    persisted_mode="$(read_env_value "${INSTALL_DIR}/.env" "ODS_MODE")"
+    persisted_mode="${persisted_mode//\"/}"
+    persisted_mode="${persisted_mode//\'/}"
+    if [[ "$persisted_mode" != "cloud" ]]; then
+        return 0
+    fi
+    CLOUD_MODE=true
+    ai "Existing cloud-mode install detected; preserving cloud mode"
+}
+
 # Resolve install directory
 INSTALL_DIR="${ODS_INSTALL_DIR}"
+
+if ! $CLOUD_MODE; then
+    _macos_preserve_cloud_mode
+fi
 
 if ! $OPENCLAW_EXPLICIT; then
     _existing_openclaw=false
