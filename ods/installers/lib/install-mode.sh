@@ -43,3 +43,42 @@ ods_preserve_existing_install_mode() {
         printf '%s\n' "$current_mode"
     fi
 }
+
+# Read the recorded enablement of an optional service from an installed tree.
+# Phase 03 (_sync_extension_compose_at) renames each optional service's
+# compose.yaml to compose.yaml.disabled when its feature is off, so the
+# installed marker pair is the authoritative record of the last selection —
+# the same record resolve-compose-stack.sh consumes when it skips *.disabled
+# files. Prints "true" or "false"; returns 1 when there is no record (fresh
+# install) or when both markers exist (interrupted sync — ambiguous).
+ods_existing_feature_enabled() {
+    local svc_dir="$1" install_root="$2"
+    local compose="$install_root/extensions/services/$svc_dir/compose.yaml"
+
+    if [[ -f "$compose" && ! -e "${compose}.disabled" ]]; then
+        printf 'true\n'
+        return 0
+    fi
+    if [[ -f "${compose}.disabled" && ! -e "$compose" ]]; then
+        printf 'false\n'
+        return 0
+    fi
+    return 1
+}
+
+# Keep a feature flag at its caller value when it was explicitly set this run;
+# when it was not, restore the selection recorded by the previous install.
+# Unknown or ambiguous records keep the caller value (install-core defaults).
+ods_preserve_feature_flag() {
+    local current="$1" explicit="$2" svc_dir="$3" install_root="$4" existing
+
+    if [[ "$explicit" == "true" ]]; then
+        printf '%s\n' "$current"
+        return 0
+    fi
+    if existing="$(ods_existing_feature_enabled "$svc_dir" "$install_root")"; then
+        printf '%s\n' "$existing"
+    else
+        printf '%s\n' "$current"
+    fi
+}

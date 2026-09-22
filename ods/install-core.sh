@@ -129,6 +129,23 @@ ENABLE_BRAVE_SEARCH=false
 # nontrivial even on Tier 3+ systems. Users opt in via --langfuse, --all,
 # the Custom menu, or post-install `ods enable langfuse`.
 ENABLE_LANGFUSE=false
+# Track which feature flags were explicitly passed this run. A rerun that
+# does not restate them restores the selection recorded in the installed
+# tree instead of re-enabling every opted-out service (see the
+# ods_preserve_feature_flag block after argument parsing).
+VOICE_EXPLICIT=false
+WORKFLOWS_EXPLICIT=false
+RAG_EXPLICIT=false
+RECOMMENDED_EXPLICIT=false
+HERMES_EXPLICIT=false
+COMFYUI_EXPLICIT=false
+APE_EXPLICIT=false
+PERPLEXICA_EXPLICIT=false
+PRIVACY_SHIELD_EXPLICIT=false
+LANGFUSE_EXPLICIT=false
+ODS_PROXY_EXPLICIT=false
+TAILSCALE_EXPLICIT=false
+BRAVE_SEARCH_EXPLICIT=false
 INTERACTIVE=true
 ODS_MODE_EXPLICIT=false
 [[ -n "${ODS_MODE:-}" ]] && ODS_MODE_EXPLICIT=true
@@ -247,30 +264,30 @@ while [[ $# -gt 0 ]]; do
         --reuse-external-llm) EXTERNAL_LLM_AUTO_REUSE=true; shift ;;
         --no-external-llm) EXTERNAL_LLM_DISABLE=true; shift ;;
         --reselect-model) ODS_RESELECT_MODEL=true; shift ;;
-        --voice) ENABLE_VOICE=true; shift ;;
-        --no-voice) ENABLE_VOICE=false; shift ;;
-        --workflows) ENABLE_WORKFLOWS=true; shift ;;
-        --no-workflows) ENABLE_WORKFLOWS=false; shift ;;
-        --rag) ENABLE_RAG=true; shift ;;
-        --no-rag) ENABLE_RAG=false; shift ;;
-        --recommended) ENABLE_RECOMMENDED=true; shift ;;
-        --no-recommended) ENABLE_RECOMMENDED=false; shift ;;
-        --hermes) ENABLE_HERMES=true; shift ;;
-        --no-hermes) ENABLE_HERMES=false; shift ;;
+        --voice) ENABLE_VOICE=true; VOICE_EXPLICIT=true; shift ;;
+        --no-voice) ENABLE_VOICE=false; VOICE_EXPLICIT=true; shift ;;
+        --workflows) ENABLE_WORKFLOWS=true; WORKFLOWS_EXPLICIT=true; shift ;;
+        --no-workflows) ENABLE_WORKFLOWS=false; WORKFLOWS_EXPLICIT=true; shift ;;
+        --rag) ENABLE_RAG=true; RAG_EXPLICIT=true; shift ;;
+        --no-rag) ENABLE_RAG=false; RAG_EXPLICIT=true; shift ;;
+        --recommended) ENABLE_RECOMMENDED=true; RECOMMENDED_EXPLICIT=true; shift ;;
+        --no-recommended) ENABLE_RECOMMENDED=false; RECOMMENDED_EXPLICIT=true; shift ;;
+        --hermes) ENABLE_HERMES=true; HERMES_EXPLICIT=true; shift ;;
+        --no-hermes) ENABLE_HERMES=false; HERMES_EXPLICIT=true; shift ;;
         --pixel) ENABLE_PIXEL=true; PIXEL_EXPLICIT=true; shift ;;
         --no-pixel) ENABLE_PIXEL=false; PIXEL_EXPLICIT=true; shift ;;
         --openclaw) ENABLE_OPENCLAW=true; OPENCLAW_EXPLICIT=true; shift ;;
         --no-openclaw) ENABLE_OPENCLAW=false; OPENCLAW_EXPLICIT=true; shift ;;
         --opencode) ENABLE_OPENCODE=true; shift ;;
         --no-opencode) ENABLE_OPENCODE=false; shift ;;
-        --comfyui) ENABLE_COMFYUI=true; shift ;;
-        --no-comfyui) ENABLE_COMFYUI=false; shift ;;
+        --comfyui) ENABLE_COMFYUI=true; COMFYUI_EXPLICIT=true; shift ;;
+        --no-comfyui) ENABLE_COMFYUI=false; COMFYUI_EXPLICIT=true; shift ;;
         --odsforge) warn "ODSForge has been removed; ignoring --odsforge"; shift ;;
         --no-odsforge) warn "ODSForge has been removed; ignoring --no-odsforge"; shift ;;
-        --langfuse) ENABLE_LANGFUSE=true; shift ;;
+        --langfuse) ENABLE_LANGFUSE=true; LANGFUSE_EXPLICIT=true; shift ;;
         # NOTE: with --all, --no-langfuse must appear AFTER --all on the command
         # line (flag processing is case-loop ordered, matching comfyui).
-        --no-langfuse) ENABLE_LANGFUSE=false; shift ;;
+        --no-langfuse) ENABLE_LANGFUSE=false; LANGFUSE_EXPLICIT=true; shift ;;
         # --all enables the Hermes fallback but NOT deprecated OpenClaw —
         # the deprecated agent is opt-in via --openclaw for the deprecation
         # release. Will be dropped entirely in the removal release.
@@ -280,7 +297,7 @@ while [[ $# -gt 0 ]]; do
         # nothing serves it, and a phone clicking the invite gets
         # "site can't be reached." Operators who don't want the LAN-facing
         # surface can set ENABLE_ODS_PROXY=false in .env after install.
-        --all) ENABLE_VOICE=true; ENABLE_WORKFLOWS=true; ENABLE_RAG=true; ENABLE_RECOMMENDED=true; ENABLE_HERMES=true; ENABLE_OPENCLAW=false; ENABLE_OPENCODE=true; ENABLE_COMFYUI=true; ENABLE_APE=true; ENABLE_PERPLEXICA=true; ENABLE_PRIVACY_SHIELD=true; ENABLE_LANGFUSE=true; ENABLE_ODS_PROXY=true; shift ;;
+        --all) ENABLE_VOICE=true; ENABLE_WORKFLOWS=true; ENABLE_RAG=true; ENABLE_RECOMMENDED=true; ENABLE_HERMES=true; ENABLE_OPENCLAW=false; ENABLE_OPENCODE=true; ENABLE_COMFYUI=true; ENABLE_APE=true; ENABLE_PERPLEXICA=true; ENABLE_PRIVACY_SHIELD=true; ENABLE_LANGFUSE=true; ENABLE_ODS_PROXY=true; VOICE_EXPLICIT=true; WORKFLOWS_EXPLICIT=true; RAG_EXPLICIT=true; RECOMMENDED_EXPLICIT=true; HERMES_EXPLICIT=true; COMFYUI_EXPLICIT=true; APE_EXPLICIT=true; PERPLEXICA_EXPLICIT=true; PRIVACY_SHIELD_EXPLICIT=true; LANGFUSE_EXPLICIT=true; ODS_PROXY_EXPLICIT=true; shift ;;
         --non-interactive) INTERACTIVE=false; shift ;;
         --offline) OFFLINE_MODE=true; shift ;;
         --lan) BIND_ADDRESS="0.0.0.0"; BIND_ADDRESS_EXPLICIT=true; shift ;;
@@ -301,6 +318,25 @@ if [[ "$ODS_MODE_EXPLICIT" != "true" && "$ODS_MODE" != "$_requested_ods_mode" ]]
     log "Existing ODS mode detected; preserving ODS_MODE=$ODS_MODE for this installer rerun"
 fi
 unset _requested_ods_mode
+
+# Preserve the prior feature selection on reruns that do not restate it. The
+# installed tree records each optional service's enablement as
+# compose.yaml / compose.yaml.disabled — the record phase 03 maintains and
+# the compose resolver consumes — so a flagless `./install.sh` upgrade must
+# not silently re-enable services the user opted out of.
+ENABLE_VOICE="$(ods_preserve_feature_flag "$ENABLE_VOICE" "$VOICE_EXPLICIT" whisper "$INSTALL_DIR")"
+ENABLE_WORKFLOWS="$(ods_preserve_feature_flag "$ENABLE_WORKFLOWS" "$WORKFLOWS_EXPLICIT" n8n "$INSTALL_DIR")"
+ENABLE_RAG="$(ods_preserve_feature_flag "$ENABLE_RAG" "$RAG_EXPLICIT" qdrant "$INSTALL_DIR")"
+ENABLE_RECOMMENDED="$(ods_preserve_feature_flag "$ENABLE_RECOMMENDED" "$RECOMMENDED_EXPLICIT" token-spy "$INSTALL_DIR")"
+ENABLE_HERMES="$(ods_preserve_feature_flag "$ENABLE_HERMES" "$HERMES_EXPLICIT" hermes "$INSTALL_DIR")"
+ENABLE_COMFYUI="$(ods_preserve_feature_flag "$ENABLE_COMFYUI" "$COMFYUI_EXPLICIT" comfyui "$INSTALL_DIR")"
+ENABLE_APE="$(ods_preserve_feature_flag "$ENABLE_APE" "$APE_EXPLICIT" ape "$INSTALL_DIR")"
+ENABLE_PERPLEXICA="$(ods_preserve_feature_flag "$ENABLE_PERPLEXICA" "$PERPLEXICA_EXPLICIT" perplexica "$INSTALL_DIR")"
+ENABLE_PRIVACY_SHIELD="$(ods_preserve_feature_flag "$ENABLE_PRIVACY_SHIELD" "$PRIVACY_SHIELD_EXPLICIT" privacy-shield "$INSTALL_DIR")"
+ENABLE_LANGFUSE="$(ods_preserve_feature_flag "$ENABLE_LANGFUSE" "$LANGFUSE_EXPLICIT" langfuse "$INSTALL_DIR")"
+ENABLE_ODS_PROXY="$(ods_preserve_feature_flag "$ENABLE_ODS_PROXY" "$ODS_PROXY_EXPLICIT" ods-proxy "$INSTALL_DIR")"
+ENABLE_TAILSCALE="$(ods_preserve_feature_flag "$ENABLE_TAILSCALE" "$TAILSCALE_EXPLICIT" tailscale "$INSTALL_DIR")"
+ENABLE_BRAVE_SEARCH="$(ods_preserve_feature_flag "$ENABLE_BRAVE_SEARCH" "$BRAVE_SEARCH_EXPLICIT" brave-search "$INSTALL_DIR")"
 
 if [[ "${LEMONADE_EXTERNAL,,}" == "true" ]]; then
     ODS_MODE="lemonade"

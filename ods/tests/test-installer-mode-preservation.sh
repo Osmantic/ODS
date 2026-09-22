@@ -65,4 +65,49 @@ result="$(ods_preserve_existing_install_mode local false "$env_file")"
 [[ "$result" == "local" ]] || fail "symlinked mode file was trusted"
 pass "symlinked mode files fail closed"
 
+# ---------------------------------------------------------------------------
+# Feature selection preservation across reruns.
+#
+# Phase 03 records each optional service's enablement as
+# compose.yaml / compose.yaml.disabled inside the installed tree — the same
+# record resolve-compose-stack.sh consumes. A rerun that does not restate the
+# feature flags must keep that selection instead of resetting every
+# ENABLE_* flag to its default.
+# ---------------------------------------------------------------------------
+
+install_root="$TMP_ROOT/install"
+svc="$install_root/extensions/services/whisper"
+mkdir -p "$svc"
+printf 'services: {}\n' >"$svc/compose.yaml"
+
+result="$(ods_preserve_feature_flag true false whisper "$install_root")"
+[[ "$result" == "true" ]] || fail "enabled marker was not preserved as enabled"
+pass "enabled compose marker preserves an enabled feature"
+
+rm "$svc/compose.yaml"
+printf 'services: {}\n' >"$svc/compose.yaml.disabled"
+result="$(ods_preserve_feature_flag true false whisper "$install_root")"
+[[ "$result" == "false" ]] || fail "disabled marker was not preserved as disabled"
+pass "disabled compose marker preserves an opted-out feature"
+
+result="$(ods_preserve_feature_flag false true whisper "$install_root")"
+[[ "$result" == "false" ]] || fail "explicit flag did not override the disabled marker"
+pass "explicit flag overrides the recorded feature selection"
+
+rm "$svc/compose.yaml.disabled"
+result="$(ods_preserve_feature_flag true false whisper "$install_root")"
+[[ "$result" == "true" ]] || fail "missing record did not keep the caller default"
+pass "missing feature record keeps the caller default"
+
+printf 'services: {}\n' >"$svc/compose.yaml"
+printf 'services: {}\n' >"$svc/compose.yaml.disabled"
+result="$(ods_preserve_feature_flag true false whisper "$install_root")"
+[[ "$result" == "true" ]] || fail "ambiguous marker pair was trusted as a record"
+pass "ambiguous marker pairs fail closed to the caller default"
+
+missing_root="$TMP_ROOT/never-installed"
+result="$(ods_preserve_feature_flag false false n8n "$missing_root")"
+[[ "$result" == "false" ]] || fail "fresh install root produced a feature record"
+pass "fresh installs keep the caller default"
+
 printf 'Installer mode preservation tests passed.\n'
