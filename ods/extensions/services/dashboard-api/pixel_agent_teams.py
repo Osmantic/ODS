@@ -73,6 +73,8 @@ def roles_for(count):
 
 def planned_count(text):
     """Only the bounded count is interpreted; model prose is never executable."""
+    if not isinstance(text, str):
+        return None
     try:
         objects = re.findall(r'\{[^{}]*\}', text[:12000])
         if len(objects) != 1:
