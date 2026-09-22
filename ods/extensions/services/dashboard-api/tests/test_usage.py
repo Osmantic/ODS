@@ -541,3 +541,54 @@ def test_token_spy_api_key_preserves_opaque_secret_and_handles_unicode_error(tmp
     bad_key_file.write_bytes(b"\x80\x81\x82")
     monkeypatch.setattr(usage_router, "TOKEN_SPY_KEY_FILE", bad_key_file)
     assert usage_router._token_spy_api_key() == ""
+
+
+def test_usage_report_handles_malformed_json_from_token_spy(test_client, monkeypatch):
+    import routers.usage as usage_router
+    import urllib.request
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            pass
+        def read(self):
+            return b"<html><body>502 Bad Gateway</body></html>"
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *args, **kwargs: FakeResponse())
+    monkeypatch.setattr(usage_router, "_fetch_local_runtime_counters", AsyncMock(return_value=[]))
+
+    resp = test_client.get(
+        "/api/usage/report?start=2026-05-01&end=2026-05-03",
+        headers=test_client.auth_headers,
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["source"]["status"] == "unavailable"
+    assert "Token Spy unavailable" in data["source"]["detail"]
+
+
+def test_usage_report_handles_non_dict_payload_from_token_spy(test_client, monkeypatch):
+    import routers.usage as usage_router
+    import urllib.request
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            pass
+        def read(self):
+            return b"[]"
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *args, **kwargs: FakeResponse())
+    monkeypatch.setattr(usage_router, "_fetch_local_runtime_counters", AsyncMock(return_value=[]))
+
+    resp = test_client.get(
+        "/api/usage/report?start=2026-05-01&end=2026-05-03",
+        headers=test_client.auth_headers,
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["source"]["status"] == "unavailable"
+    assert "Token Spy unavailable" in data["source"]["detail"]
+
