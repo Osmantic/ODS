@@ -65,7 +65,15 @@ export default function PixelHandoffApproval({ label = 'Review handoffs' }) {
     try {
       const response = await fetch('/api/pixel/handoff/' + action, { method: 'POST',
         headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: controller.signal })
-      if (!response.ok) throw new Error('Handoff unavailable')
+      if (!response.ok) {
+        const raw = await response.text().catch(() => '')
+        let detail = ''
+        try {
+          const payload = JSON.parse(raw)
+          detail = payload?.detail || payload?.message || ''
+        } catch { detail = raw.trim() }
+        throw new Error(String(detail || `Handoff unavailable (${response.status})`).slice(0, 500))
+      }
       return await response.json()
     } finally { clearTimeout(timer); controllers.current.delete(controller) }
   }, [])
