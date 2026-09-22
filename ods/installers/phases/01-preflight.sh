@@ -169,15 +169,17 @@ if [[ ! -d "$INSTALL_DIR" ]] && ! _ods_truthy "${ODS_ALLOW_LEGACY_PARALLEL:-}"; 
     }; then
         _pre_ods_findings+=("install directory: $_pre_ods_install_dir")
     fi
-    while IFS= read -r -d '' _pre_ods_candidate; do
-        [[ "${_pre_ods_candidate%/}" == "${INSTALL_DIR%/}" ]] && continue
-        [[ "${_pre_ods_candidate%/}" == "${SCRIPT_DIR%/}" ]] && continue
-        [[ -n "$_pre_ods_install_dir" && "${_pre_ods_candidate%/}" == "${_pre_ods_install_dir%/}" ]] && continue
-        _ods_is_install_backup_dir "$_pre_ods_candidate" && continue
-        if _ods_is_related_install_dir "$_pre_ods_candidate"; then
-            _pre_ods_findings+=("related install directory: $_pre_ods_candidate")
-        fi
-    done < <(find "$HOME" -mindepth 1 -maxdepth 1 \( -type d -o -type l \) -print0 2>/dev/null)
+    if [[ -d "${HOME:-}" ]]; then
+        while IFS= read -r -d '' _pre_ods_candidate; do
+            [[ "${_pre_ods_candidate%/}" == "${INSTALL_DIR%/}" ]] && continue
+            [[ "${_pre_ods_candidate%/}" == "${SCRIPT_DIR%/}" ]] && continue
+            [[ -n "$_pre_ods_install_dir" && "${_pre_ods_candidate%/}" == "${_pre_ods_install_dir%/}" ]] && continue
+            _ods_iss_install_backup_dir "$_pre_ods_candidate" && continue
+            if _ods_is_related_install_dir "$_pre_ods_candidate"; then
+                _pre_ods_findings+=("related install directory: $_pre_ods_candidate")
+            fi
+        done < <(find "$HOME" -mindepth 1 -maxdepth 1 \( -type d -o -type l \) -print0 2>/dev/null)
+    fi
     _pre_ods_containers="$(_ods_related_compose_containers || true)"
     if [[ -n "$_pre_ods_containers" ]]; then
         _pre_ods_findings+=("related Compose containers: $(printf '%s\n' "$_pre_ods_containers" | tr '\n' ' ')")
