@@ -16,10 +16,18 @@ fn main() {
             commands::install_prerequisites,
             commands::detect_gpu,
             commands::start_install,
+            commands::cancel_install,
             commands::get_install_progress,
             commands::get_install_state,
             commands::open_ods,
         ])
+        .on_window_event(|_window, event| {
+            if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
+                // Closing the window must not leave the shell installer mutating
+                // the checkout after the desktop controller has exited.
+                installer::cancel_active_install();
+            }
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

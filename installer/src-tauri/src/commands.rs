@@ -208,6 +208,15 @@ pub async fn start_install(
         .map(|_| "Installation complete!".to_string())
 }
 
+#[tauri::command]
+pub fn cancel_install() -> Result<(), String> {
+    if installer::cancel_active_install() {
+        Ok(())
+    } else {
+        Err("No active installation process to cancel.".into())
+    }
+}
+
 fn validate_install_request(tier: u8, features: &[String]) -> Result<(), String> {
     if tier > 4 {
         return Err(format!("Unsupported install tier: {}", tier));
