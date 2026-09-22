@@ -1,0 +1,51 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: mailpit
+  name: Mailpit (Email Preview)
+  description: "Capture test email locally over authenticated SMTP and inspect it through a private web inbox."
+  aliases: [email-preview]
+  container_name: ods-mailpit
+  container_uid: 1000
+  default_host: mailpit
+  port: 8025
+  external_port_env: MAILPIT_PORT
+  external_port_default: 8025
+  health: /readyz
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [email, smtp, development, workflows]
+  env_vars:
+    - key: MAILPIT_PORT
+      description: "Published inbox and HTTP API port"
+      default: "8025"
+    - key: MAILPIT_SMTP_PORT
+      description: "Published SMTP capture port; internal listener remains 1025"
+      default: "1025"
+    - key: MAILPIT_UI_PASSWORD
+      description: "Inbox password for ods; 16-128 letters, digits, underscores or hyphens"
+      required: true
+      secret: true
+    - key: MAILPIT_SMTP_PASSWORD
+      description: "SMTP submission password for ods; 16-128 letters, digits, underscores or hyphens"
+      required: true
+      secret: true
+features:
+  - id: local-email-preview
+    name: Preview Workflow Email
+    description: "Inspect test emails locally before connecting a workflow to a delivery provider"
+    icon: Mail
+    category: productivity
+    requirements:
+      services: [mailpit]
+      vram_gb: 0
+    enabled_services_all: [mailpit]
+    setup_time: "~1 minute after setting credentials"
+    priority: 39
+    launch:
+      type: service
+      service: mailpit
