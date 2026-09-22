@@ -113,18 +113,15 @@ fi
 # or the user can't opt out of it.
 _sync_extension_compose() {
     local flag="$1" svc_dir="$2" label="$3" reason="$4"
-    local compose="$SCRIPT_DIR/extensions/services/$svc_dir/compose.yaml"
+    local compose="${SCRIPT_DIR}/extensions/services/$svc_dir/compose.yaml"
     if [[ "$flag" == "true" ]]; then
-        # Re-enable if previously disabled (re-install with different options)
         if [[ ! -f "$compose" && -f "${compose}.disabled" ]]; then
-            mv "${compose}.disabled" "$compose"
+            mv "${compose}.disabled" "$compose" 2>/dev/null || true
             log "$label compose re-enabled"
         fi
     else
-        # Disable — prevents resolve-compose-stack.sh from including a compose
-        # file whose image was never built/pulled, blocking ALL containers.
         if [[ -f "$compose" ]]; then
-            mv "$compose" "${compose}.disabled"
+            mv "$compose" "${compose}.disabled" 2>/dev/null || true
             log "$label compose disabled ($reason)"
         fi
     fi
