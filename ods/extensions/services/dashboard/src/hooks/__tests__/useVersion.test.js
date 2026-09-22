@@ -119,6 +119,23 @@ describe('useVersion', () => {
     vi.useRealTimers()
   })
 
+  test('queues a forced version refresh received during an active check', async () => {
+    let resolveFirst
+    fetch.mockImplementationOnce(() => new Promise(resolve => { resolveFirst = resolve }))
+      .mockResolvedValueOnce({ ok:true, json:async () => ({ current:'2.6.0', latest:'2.7.0', update_available:true, check_status:'checked' }) })
+
+    const { result } = renderHook(() => useVersion())
+    act(() => window.dispatchEvent(new Event('ods-version-checked')))
+    expect(fetch).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      resolveFirst({ ok:true, json:async () => ({ current:'2.6.0', latest:null, check_status:'checking' }) })
+    })
+
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(result.current.version.latest).toBe('2.7.0'))
+  })
+
   test('storage failure does not hide a confirmed update or prevent dismissal', async () => {
     vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('disabled') })
     vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('disabled') })
