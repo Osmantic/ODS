@@ -1,0 +1,35 @@
+services:
+  homebox:
+    image: ghcr.io/sysadminsmedia/homebox:0.26.2-rootless@sha256:a41a3081ac724a2f4955b71b9294bd916b0e92035e4ea8438e84def74f4ae692
+    container_name: ods-homebox
+    restart: unless-stopped
+    user: "65532:65532"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      HBOX_AUTH_API_KEY_PEPPER: ${HOMEBOX_API_KEY_PEPPER:?Set a stable random HOMEBOX_API_KEY_PEPPER of at least 32 bytes}
+      HBOX_OPTIONS_ALLOW_REGISTRATION: ${HOMEBOX_ALLOW_REGISTRATION:-false}
+      HBOX_OPTIONS_ALLOW_LOCAL_LOGIN: "true"
+      HBOX_OPTIONS_ALLOW_ANALYTICS: "false"
+      HBOX_OPTIONS_GITHUB_RELEASE_CHECK: "false"
+    volumes:
+      - ./data/homebox:/data
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=64m"]
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${HOMEBOX_PORT:-7834}:7745"
+    healthcheck:
+      test: [CMD, wget, --no-verbose, --tries=1, -O, /dev/null, "http://127.0.0.1:7745/api/v1/status"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    networks: [ods-network]
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+networks:
+  ods-network:
+    external: true
