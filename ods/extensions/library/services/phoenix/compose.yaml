@@ -1,0 +1,43 @@
+services:
+  phoenix:
+    image: arizephoenix/phoenix:version-7.40.0
+    container_name: ods-phoenix
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      PHOENIX_PORT: "6006"
+      PHOENIX_GRPC_PORT: "4317"
+      PHOENIX_WORKING_DIR: "/data"
+      PHOENIX_SECRET: "${PHOENIX_SECRET:?Set PHOENIX_SECRET before enabling phoenix}"
+      PHOENIX_ENABLE_PROMETHEUS: "true"
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${PHOENIX_PORT:-6006}:6006"
+      - "${BIND_ADDRESS:-127.0.0.1}:${PHOENIX_GRPC_PORT:-4317}:4317"
+    volumes:
+      - ./data/phoenix:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:6006/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - ods-network
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+        reservations:
+          cpus: "0.1"
+          memory: 128M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  ods-network:
+    external: true

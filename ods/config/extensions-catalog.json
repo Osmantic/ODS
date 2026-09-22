@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-13T16:53:56Z",
+  "generated_at": "2026-09-15T05:45:52Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -2974,6 +2974,70 @@
       "configuration_scope": "declared-environment-keys"
     },
     {
+      "id": "phoenix",
+      "name": "Phoenix (AI Tracing & Evals)",
+      "description": "Lightweight, open-source LLM observability, trace evaluation, and OpenTelemetry collector for local AI agents.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 6006,
+      "external_port_default": 6006,
+      "health_endpoint": "/",
+      "env_vars": [
+        {
+          "key": "PHOENIX_PORT",
+          "description": "Published Web UI and HTTP trace ingestion port",
+          "default": "6006"
+        },
+        {
+          "key": "PHOENIX_GRPC_PORT",
+          "description": "Published OpenTelemetry gRPC collector port",
+          "default": "4317"
+        },
+        {
+          "key": "PHOENIX_SECRET",
+          "description": "Authentication secret and session signing key for Phoenix web dashboard",
+          "required": true
+        }
+      ],
+      "tags": [
+        "observability",
+        "tracing",
+        "telemetry",
+        "opentelemetry",
+        "evals",
+        "monitoring"
+      ],
+      "features": [
+        {
+          "id": "llm-tracing",
+          "name": "LLM Traces & Observability",
+          "description": "Inspect LLM prompts, token usage, agent execution spans, and latency graphs",
+          "icon": "Activity",
+          "category": "monitoring",
+          "requirements": {
+            "services": [
+              "phoenix"
+            ],
+            "vram_gb": 0
+          },
+          "enabled_services_all": [
+            "phoenix"
+          ],
+          "setup_time": "~1 minute after setting credentials",
+          "priority": 35,
+          "launch": {
+            "type": "service",
+            "service": "phoenix"
+          }
+        }
+      ],
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
       "id": "piper-audio",
       "name": "Piper TTS",
       "description": "Fast and lightweight text-to-speech engine optimized for edge and low-resource devices.",
@@ -3155,6 +3219,28 @@
           ]
         }
       ],
+      "catalog_source": "builtin",
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
+      "id": "pixel-inference",
+      "name": "Pixel inference sharing (development)",
+      "description": "Disabled by default. Owner-provisioned, inference-only device credentials; loopback transport only. Does not provide Pixel agent or computer access. Private state must be provisioned before service activation. Native Windows private-state support and guided setup are not yet implemented.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [
+        "model-router"
+      ],
+      "port": 8093,
+      "external_port_default": 4005,
+      "health_endpoint": "/health",
+      "env_vars": [],
+      "tags": [],
+      "features": [],
+      "startup_check": false,
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
     },
