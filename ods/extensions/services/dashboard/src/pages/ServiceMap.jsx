@@ -409,8 +409,10 @@ export default function ServiceMap({ compact = false }) {
             {counts.other > 0 && <>, <span className="text-zinc-500">{counts.other} other</span></>}
           </p>
         </div>
-        <div className="flex items-center gap-2 rounded-lg border border-theme-border bg-theme-card px-3 py-2 font-mono text-xs text-theme-text-muted"><RefreshCw size={12} className="text-theme-accent" />live · 10s</div>
+        <div className="flex items-center gap-2 rounded-lg border border-theme-border bg-theme-card px-3 py-2 font-mono text-xs text-theme-text-muted"><RefreshCw size={12} className={error ? 'text-red-400' : 'text-theme-accent'} />{error ? 'refresh failed' : 'live · 10s'}</div>
       </div>
+
+      {error && <div role="alert" className="mb-4 text-sm text-red-400">Topology data could not be refreshed. {error}<button className="ml-3 underline" onClick={fetchTopology}>Retry</button></div>}
 
       <div className="mb-4 flex flex-wrap gap-4 text-xs text-theme-text-muted">
         <span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-green-400" />Healthy</span>

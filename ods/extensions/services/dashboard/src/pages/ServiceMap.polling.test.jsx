@@ -50,6 +50,18 @@ it('retains a loaded map while a refresh expires and recovers on the next poll',
   expect(fetch).toHaveBeenCalledTimes(3)
 })
 
+it('marks the full map stale when a refresh fails', async () => {
+  const fetch = vi.fn().mockResolvedValueOnce(response('Saved service'))
+    .mockImplementationOnce(() => new Promise(() => {}))
+  vi.stubGlobal('fetch', fetch)
+  render(<ServiceMap />)
+  await settle()
+  await act(async () => { await vi.advanceTimersByTimeAsync(25000) })
+  expect(screen.getByRole('alert')).toHaveTextContent('Topology data could not be refreshed')
+  expect(screen.getByText('refresh failed')).toBeVisible()
+  expect(screen.queryByText('live · 10s')).toBeNull()
+})
+
 it('gives the replacement StrictMode effect its own request', async () => {
   let resolveOld
   const fetch = vi.fn().mockImplementationOnce(() => new Promise(resolve => {resolveOld = resolve}))
