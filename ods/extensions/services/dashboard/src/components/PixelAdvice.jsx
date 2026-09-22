@@ -34,6 +34,7 @@ export default function PixelAdvice({ onInsert, canInsert = true }) {
   const jobVersion = useRef(0)
   const providerVersion = useRef(0)
   const controllers = useRef(new Set())
+  const mounted = useRef(false)
   const panel = useRef(null)
   const trigger = useRef(null)
   const advisor = config?.providers.find(p => p.id === config.roles.advisor)
@@ -55,8 +56,9 @@ export default function PixelAdvice({ onInsert, canInsert = true }) {
   }, [])
 
   useEffect(() => {
+    mounted.current = true
     const pending = controllers.current
-    return () => { providerVersion.current++; for (const controller of pending) controller.abort() }
+    return () => { mounted.current = false; providerVersion.current++; jobVersion.current++; for (const controller of pending) controller.abort() }
   }, [])
 
   const load = useCallback(async () => {
@@ -96,9 +98,9 @@ export default function PixelAdvice({ onInsert, canInsert = true }) {
     try {
       const value = await request('/api/pixel/advice/status', { jobId })
       if (value.jobId !== jobId || !['running', 'cancelling', ...terminal].includes(value.status)) throw new Error('Invalid job')
-      if (trackedId.current !== jobId || version !== jobVersion.current) return
+      if (!mounted.current || trackedId.current !== jobId || version !== jobVersion.current) return
       setJob(value); setError('')
-    } catch { if (trackedId.current === jobId && version === jobVersion.current) setError('Job status is unknown. Check this job before starting another; a call may have occurred.') }
+    } catch { if (mounted.current && trackedId.current === jobId && version === jobVersion.current) setError('Job status is unknown. Check this job before starting another; a call may have occurred.') }
     finally { polling.current = false }
   }, [jobId, request])
 
@@ -129,13 +131,15 @@ export default function PixelAdvice({ onInsert, canInsert = true }) {
         maxOutputTokens: Math.min(1024, advisor.maxOutputTokens),
         deadlineSeconds: Math.min(120, config.policy.deadlineSeconds) })
       if (value.jobId !== id) throw new Error('Invalid job')
-      if (trackedId.current !== id) return
+      if (!mounted.current || trackedId.current !== id) return
       setJob(value)
     } catch {
+      if (!mounted.current) return
       setError(trackedId.current === id ? 'Start could not be confirmed. Check the tracked job; do not submit again automatically.'
         : 'Could not create a trackable request. Nothing was submitted.')
     } finally {
-      setCloud(false); setCost(false); setSubmitting(false); inFlight.current = false
+      if (mounted.current) { setCloud(false); setCost(false); setSubmitting(false) }
+      inFlight.current = false
     }
   }
 
@@ -145,10 +149,10 @@ export default function PixelAdvice({ onInsert, canInsert = true }) {
     try {
       const value = await request('/api/pixel/advice/cancel', { jobId })
       if (value.jobId !== jobId) throw new Error('Invalid job')
-      if (trackedId.current !== jobId) return
+      if (!mounted.current || trackedId.current !== jobId) return
       setJob(value); setError('')
-    } catch { if (trackedId.current === jobId) setError('Stop is not confirmed. Keep this job ID and check again.') }
-    finally { inFlight.current = false; setSubmitting(false) }
+    } catch { if (mounted.current && trackedId.current === jobId) setError('Stop is not confirmed. Keep this job ID and check again.') }
+    finally { inFlight.current = false; if (mounted.current) setSubmitting(false) }
   }
 
   function forget() {
