@@ -489,6 +489,17 @@ describe('Dashboard system overview', () => {
     expect(within(row).getAllByText('—')).toHaveLength(2)
   })
 
+  it('keeps duplicate id-less services in separate action rows', async () => {
+    mockResources = { services: [] }
+    const duplicateServices = [
+      { name: 'Unnamed Worker', status: 'healthy', port: 7001, uptime: 20 },
+      { name: 'Unnamed Worker', status: 'healthy', port: 7002, uptime: 20 },
+    ]
+    await renderDashboard({ ...baseStatus, services: duplicateServices })
+    expect(await screen.findByTestId('service-row-unnamed-worker')).toBeInTheDocument()
+    expect(screen.getByTestId('service-row-unnamed-worker-1')).toBeInTheDocument()
+  })
+
   it('shows measured auxiliary containers without granting service restart actions', async () => {
     mockResources = {
       services: [{
