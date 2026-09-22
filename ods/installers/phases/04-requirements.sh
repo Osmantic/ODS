@@ -235,7 +235,10 @@ if $OLLAMA_RUNNING && [[ "${EXTERNAL_LLM_PROVIDER:-}" != "ollama" ]]; then
     ai_warn "Ollama is running (PID ${OLLAMA_PID}) and may conflict with ODS."
     ai "  Note: this is usually not a port collision. Open WebUI may auto-discover Ollama (11434) and prefer it over the local llama-server (8080)."
     if $INTERACTIVE && ! $DRY_RUN; then
-        read -r -p "  Stop Ollama for this session? [Y/n] " ollama_choice < /dev/tty
+        ollama_choice="y"
+        if [[ -r /dev/tty ]]; then
+            read -r -p "  Stop Ollama for this session? [Y/n] " ollama_choice < /dev/tty
+        fi
         if [[ ! "$ollama_choice" =~ ^[nN] ]]; then
             kill "$OLLAMA_PID" 2>/dev/null || sudo kill "$OLLAMA_PID" 2>/dev/null || true
             sleep 2
