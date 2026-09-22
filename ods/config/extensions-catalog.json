@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-13T16:53:56Z",
+  "generated_at": "2026-09-14T15:43:47Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -1131,6 +1131,64 @@
           "gpu_backends": [
             "nvidia"
           ]
+        }
+      ],
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
+      "id": "freshrss",
+      "name": "FreshRSS (Feed Aggregator)",
+      "description": "Self-hosted RSS and Atom feed aggregator and reader with responsive UI and Google Reader API compatibility.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 80,
+      "external_port_default": 7858,
+      "health_endpoint": "/",
+      "env_vars": [
+        {
+          "key": "FRESHRSS_PORT",
+          "description": "Published HTTP port",
+          "default": "7858"
+        },
+        {
+          "key": "FRESHRSS_BASE_URL",
+          "description": "Client-facing base URL",
+          "default": "http://localhost:7858"
+        }
+      ],
+      "tags": [
+        "rss",
+        "feed",
+        "news",
+        "reading",
+        "aggregator"
+      ],
+      "features": [
+        {
+          "id": "feed-reader",
+          "name": "Feed Reader",
+          "description": "Follow RSS, Atom, and podcast feeds locally with zero third-party tracking",
+          "icon": "Rss",
+          "category": "productivity",
+          "requirements": {
+            "services": [
+              "freshrss"
+            ],
+            "vram_gb": 0
+          },
+          "enabled_services_all": [
+            "freshrss"
+          ],
+          "setup_time": "~1 minute",
+          "priority": 35,
+          "launch": {
+            "type": "service",
+            "service": "freshrss"
+          }
         }
       ],
       "configuration_scope": "declared-environment-keys"
@@ -3155,6 +3213,28 @@
           ]
         }
       ],
+      "catalog_source": "builtin",
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
+      "id": "pixel-inference",
+      "name": "Pixel inference sharing (development)",
+      "description": "Disabled by default. Owner-provisioned, inference-only device credentials; loopback transport only. Does not provide Pixel agent or computer access. Private state must be provisioned before service activation. Native Windows private-state support and guided setup are not yet implemented.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [
+        "model-router"
+      ],
+      "port": 8093,
+      "external_port_default": 4005,
+      "health_endpoint": "/health",
+      "env_vars": [],
+      "tags": [],
+      "features": [],
+      "startup_check": false,
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
     },
