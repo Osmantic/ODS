@@ -109,7 +109,10 @@ test('uses compact source tabs and collapsible filters in the portal panel', () 
   expect(container.querySelector('.model-filter-disclosure')).not.toHaveAttribute('open')
   expect(container.querySelector('[class*="min-w-[1074px]"]')).toBeNull()
   fireEvent.click(screen.getByRole('tab',{name:/Installed/}))
-  expect(screen.getByRole('tab',{name:/Installed/})).toHaveAttribute('aria-selected','true')
+  const installedTab = screen.getByRole('tab',{name:/Installed/})
+  expect(installedTab).toHaveAttribute('aria-selected','true')
+  expect(installedTab).toHaveAttribute('aria-controls', 'model-source-panel-installed')
+  expect(screen.getByRole('tabpanel')).toHaveAttribute('aria-labelledby', 'model-source-tab-installed')
 })
 
 test('compact Models highlights the running model and keeps configuration behind confirmation', () => {
