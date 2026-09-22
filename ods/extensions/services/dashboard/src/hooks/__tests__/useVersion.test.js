@@ -129,4 +129,21 @@ describe('useVersion', () => {
     expect(result.current.showUpdate).toBe(false)
     expect(result.current.version.latest).toBe('2.7.0')
   })
+
+  test('queues an explicit refresh event while a version check is in flight', async () => {
+    let resolveFirst
+    const first = new Promise(resolve => { resolveFirst = resolve })
+    fetch.mockReturnValueOnce(first).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ current: '2.6.0', latest: '2.7.0', update_available: true }),
+    })
+
+    renderHook(() => useVersion())
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1))
+    window.dispatchEvent(new Event('ods-version-checked'))
+    expect(fetch).toHaveBeenCalledTimes(1)
+
+    resolveFirst({ ok: true, json: async () => ({ current: '2.6.0', latest: null, check_status: 'checking' }) })
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2))
+  })
 })
