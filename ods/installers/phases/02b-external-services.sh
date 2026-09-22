@@ -127,3 +127,8 @@ export EXTERNAL_LLM_MODEL SKIP_MODEL_DOWNLOAD
 
 ai_ok "Using external ${EXTERNAL_LLM_PROVIDER} model ${EXTERNAL_LLM_MODEL}"
 resolve_compose_config
+
+# Clean temporary phase scope
+unset _external_disable _external_url _external_provider _external_model \
+      _detected_provider _detected_url _detected_model _candidate \
+      _candidate_provider _candidate_url _candidate_model _external_reply
