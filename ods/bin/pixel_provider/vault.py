@@ -137,7 +137,7 @@ class CredentialStore(ProviderStore):
 
     def resolve_credential(self, provider_id, *, expected_revision):
         """Host runtime only. Never expose this function through the dashboard."""
-        if type(expected_revision) is not int or not isinstance(provider_id, str):
+        if type(expected_revision) is not int or not 0 <= expected_revision < 2**53 - 1 or not isinstance(provider_id, str):
             raise StoreError("invalid-request")
         with self._locked(False) as directory_fd:
             current = self._load(directory_fd)
