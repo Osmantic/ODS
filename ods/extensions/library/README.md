@@ -1,6 +1,6 @@
 # ODS Extensions Library
 
-**35 service extensions being tested for ODS. 17 are already in production — these are next.**
+**36 service extensions being tested for ODS. 17 are already in production — these are next.**
 
 Each extension is a self-contained directory with a `manifest.yaml` (service metadata), `compose.yaml` (Docker Compose fragment), and optional Dockerfiles, workflows, and documentation. Drop any of these into your ODS's `extensions/services/` directory and run `ods enable <service-id>`.
 
@@ -81,6 +81,7 @@ Each extension is a self-contained directory with a `manifest.yaml` (service met
 
 | Service | Description | GPU |
 |---------|------------|-----|
+| [`kiwix/`](services/kiwix/) | Kiwix — read and search local ZIM knowledge archives | CPU |
 | [`label-studio/`](services/label-studio/) | Label Studio — data labeling for ML training | CPU |
 | [`anythingllm/`](services/anythingllm/) | AnythingLLM — all-in-one RAG + chat + agents | AMD, NVIDIA |
 
@@ -109,6 +110,7 @@ Quick reference for hardware requirements. Data sourced from each service's `man
 | invokeai | ✓ | ✓ | — | — | 8 GB |
 | jan | ✓ | ✓ | — | — | — |
 | jupyter | ✓ | ✓ | — | — | 4 GB |
+| kiwix | ✓ | ✓ | ✓ | ✓ | — |
 | label-studio | — | — | — | ✓ | — |
 | langflow | ✓ | ✓ | ✓ | — | — |
 | librechat | ✓ | ✓ | ✓ | — | — |
@@ -205,4 +207,4 @@ python3 -c "import yaml; yaml.safe_load(open('my-service/manifest.yaml'))"
 
 These extensions are actively tested on ODS development builds. Some are battle-tested (Ollama, ChromaDB, Bark), others are newer. All follow the v1 manifest schema and integrate with the ODS service registry, dashboard, and CLI.
 
-**17 services have already graduated to production** — these 32 are being prepared for the next wave.
+**17 services have already graduated to production** — these 36 are being prepared for the next wave.
