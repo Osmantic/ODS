@@ -1801,3 +1801,15 @@ def test_flatten_bounds_cycles_and_large_depth_without_losing_empty_leaves():
         nested = {"child": nested}
     result = dict_flatten_nested_safe(nested, max_depth=100000)
     assert len(next(iter(result)).split(".")) == 128
+
+
+class TestNumericSafeCubeRootSafe:
+    def test_valid_cube_root(self):
+        from helpers import numeric_safe_cube_root_safe
+        assert round(numeric_safe_cube_root_safe(27), 4) == 3.0
+        assert round(numeric_safe_cube_root_safe(-8), 4) == -2.0
+
+    def test_invalid_inputs(self):
+        from helpers import numeric_safe_cube_root_safe
+        assert numeric_safe_cube_root_safe(None) == 0.0
+        assert numeric_safe_cube_root_safe("27") == 0.0
