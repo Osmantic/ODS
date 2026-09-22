@@ -82,6 +82,8 @@ def control_request(value):
         raise ProtocolError("invalid-request")
     if "request" in value and type(value["request"]) is not dict:
         raise ProtocolError("invalid-request")
+    if operation == "model-begin" and "request" in value:
+        raise ProtocolError("invalid-request")
     if operation == "model-finish":
         request_value = value["request"]
         if (set(request_value) != {"transaction_id", "outcome"}
