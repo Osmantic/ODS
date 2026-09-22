@@ -89,6 +89,8 @@ class ChatResultStore:
 
     def reserve(self, key, fingerprint):
         """Commit identity before upstream submission; duplicate POSTs never run twice."""
+        if not isinstance(key, (tuple, list)) or len(key) != 3 or any(not isinstance(k, str) or not k for k in key):
+            raise ValueError("Invalid attempt key")
         with self.db:
             self.db.execute("BEGIN IMMEDIATE")
             self.db.execute("DELETE FROM attempts WHERE state NOT IN ('active','unresolved') AND created < ?", (time.time() - RETENTION_SECONDS,))
