@@ -155,7 +155,7 @@ def _running_services(repo_root: Path) -> set[str]:
     return running
 
 
-def _loaded_model(llm_port: int = 8080) -> str | None:
+def _loaded_model(llm_port: int = 11434) -> str | None:
     """Best-effort: ask llama-server / Lemonade what's currently loaded.
     Returns the model id, or None on any failure (network, no service)."""
     # Try Lemonade health first — has structured per-model state
@@ -239,12 +239,20 @@ def build_context_block(env_path: Path) -> str:
     device = env.get("ODS_DEVICE_NAME") or socket.gethostname() or "this machine"
     gpu = _humanize_gpu(env)
     model_hint = env.get("LLM_MODEL") or env.get("GGUF_FILE") or "the locally-served model"
-    port_raw = env.get("LLM_PORT") or env.get("LLAMACPP_PORT")
+    port_raw = (
+        env.get("OLLAMA_PORT")
+        or env.get("LLAMA_SERVER_PORT")
+        or env.get("LLM_PORT")
+        or env.get("LLAMACPP_PORT")
+    )
     try:
-        configured_llm_port = int(port_raw) if port_raw else 8080
+        configured_llm_port = int(port_raw) if port_raw else 11434
     except ValueError:
-        configured_llm_port = 8080
-    live_model = _loaded_model(llm_port=configured_llm_port)
+        configured_llm_port = 11434
+    try:
+        live_model = _loaded_model(llm_port=configured_llm_port)
+    except TypeError:
+        live_model = _loaded_model()
     if live_model:
         model_hint = live_model
 
