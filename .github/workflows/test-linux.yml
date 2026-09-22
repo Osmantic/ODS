@@ -261,6 +261,7 @@ jobs:
 
       - name: Validate Manifests Tests
         run: |
+          python3 tests/test_validate_manifests_semver_prefix.py
           bash tests/test-validate-manifests.sh
           bash tests/test-validate-manifest-schema.sh
 

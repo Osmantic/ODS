@@ -103,6 +103,7 @@ schema_errors = False
 
 def parse_version(v: str):
     """Parse "2.0.0" into (2, 0, 0). Non-numeric segments become 0."""
+    v = str(v).strip().lstrip("vV")
     parts = []
     for part in v.split("."):
         try:
