@@ -186,6 +186,8 @@ def _validate_roles(roles, provider_map):
         backup_ids.add(b)
     if leader is not None and leader in backup_ids:
         raise ConfigError("roles.leader cannot appear in backups", "role_conflict")
+    if leader is not None and roles.get("handoff") == leader:
+        raise ConfigError("roles.handoff cannot be leader", "role_conflict")
     for rname in ("advisor", "handoff"):
         rv = roles[rname]
         if rv is not None:
