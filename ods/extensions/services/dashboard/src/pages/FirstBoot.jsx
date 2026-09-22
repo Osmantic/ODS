@@ -99,9 +99,11 @@ export default function FirstBoot({ onComplete }) {
 
   useEffect(() => {
     let cancelled = false
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 10000)
     const loadOwnerCardStatus = async () => {
       try {
-        const resp = await fetch('/api/auth/magic-link/owner-card/status')
+        const resp = await fetch('/api/auth/magic-link/owner-card/status', { signal: controller.signal })
         if (!resp.ok) {
           if (!cancelled) {
             setOwnerCardStatus({
@@ -123,7 +125,11 @@ export default function FirstBoot({ onComplete }) {
       }
     }
     loadOwnerCardStatus()
-    return () => { cancelled = true }
+    return () => {
+      cancelled = true
+      clearTimeout(timeout)
+      controller.abort()
+    }
   }, [])
 
   const finish = async () => {
