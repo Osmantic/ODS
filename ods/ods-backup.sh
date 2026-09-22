@@ -281,6 +281,9 @@ create_manifest() {
     local backup_dir="$1"
     local backup_type="$2"
     local description="${3:-}"
+    # Optional explicit ID: staged backups publish under a different name
+    # than the staging directory, so basename would record the wrong ID.
+    local manifest_id="${4:-$(basename "$backup_dir")}"
     local version
     # .version is a JSON file written by ods-update.sh; extract the version
     # string rather than embedding the entire JSON blob (see get_current_version
@@ -302,7 +305,7 @@ create_manifest() {
     jq -n \
         --arg mv "1.0" \
         --arg bd "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
-        --arg bi "$(basename "$backup_dir")" \
+        --arg bi "$manifest_id" \
         --arg bt "$backup_type" \
         --arg dv "$version" \
         --arg hn "$(hostname)" \
@@ -499,40 +502,58 @@ do_backup() {
     backup_id="backup-$$-$(date +%Y%m%d-%H%M%S)"
     local backup_dir="$BACKUP_ROOT/$backup_id"
 
+    # Stage under a name collect_backups cannot match so a failed backup
+    # never leaves a manifest-bearing, checksum-less directory that
+    # validate_backup would accept as an "older format" restore source.
+    local staging_dir="$BACKUP_ROOT/.partial-$backup_id"
+
+    # Validate the type before staging so an unknown type never creates a dir.
+    case "$backup_type" in
+        full|user-data|config) ;;
+        *)
+            log_error "Unknown backup type: $backup_type"
+            exit 1
+            ;;
+    esac
+
     log_info "Starting $backup_type backup: $backup_id"
     log_info "Backup directory: $backup_dir"
 
     # Disk space preflight (best-effort)
     ensure_backup_space "$backup_type"
 
-    # Create backup directory
-    mkdir -p "$backup_dir"
+    # Create the staging directory, then populate it in a subshell so any
+    # copy failure under set -e removes the staging dir via its EXIT trap.
+    mkdir -p "$staging_dir"
+    (
+        trap 'rm -rf "$staging_dir"' EXIT
 
-    # Create manifest
-    create_manifest "$backup_dir" "$backup_type" "$description"
+        # Create manifest — embed the final published ID, not the staging name
+        create_manifest "$staging_dir" "$backup_type" "$description" "$backup_id"
 
-    # Perform backup based on type
-    case "$backup_type" in
-        full)
-            backup_user_data "$backup_dir"
-            backup_config "$backup_dir"
-            backup_cache "$backup_dir"
-            ;;
-        user-data)
-            backup_user_data "$backup_dir"
-            ;;
-        config)
-            backup_config "$backup_dir"
-            ;;
-        *)
-            log_error "Unknown backup type: $backup_type"
-            rm -rf "$backup_dir"
-            exit 1
-            ;;
-    esac
+        # Perform backup based on type
+        case "$backup_type" in
+            full)
+                backup_user_data "$staging_dir"
+                backup_config "$staging_dir"
+                backup_cache "$staging_dir"
+                ;;
+            user-data)
+                backup_user_data "$staging_dir"
+                ;;
+            config)
+                backup_config "$staging_dir"
+                ;;
+        esac
 
-    # Generate checksums after files are copied into place
-    create_checksums "$backup_dir"
+        # Generate checksums after files are copied into place
+        create_checksums "$staging_dir"
+
+        trap - EXIT
+    )
+
+    # Atomic publish — staging only becomes a visible backup once complete.
+    mv "$staging_dir" "$backup_dir"
 
     # Compress if requested
     if [[ "$compress" == "true" ]]; then

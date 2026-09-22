@@ -212,3 +212,91 @@ for compressed in false true; do
   done
   pass "--list orders mixed IDs and archives by creation timestamp"
 done
+
+# ── Transactional publish: a failed copy must not leave a restorable dir ──
+# do_backup writes manifest.json before copying data, so a mid-copy failure
+# used to leave a manifest-bearing, checksum-less backup-* directory that
+# collect_backups lists and validate_backup accepts as an "older format"
+# restore source. Staging must be invisible to collect_backups and cleaned
+# on failure.
+
+PARTIAL_DIR="$TMP_ROOT/partial-backups"
+mkdir -p "$PARTIAL_DIR"
+RSYNC_STUB="$TMP_ROOT/rsync-stub"
+mkdir -p "$RSYNC_STUB"
+
+# Failing rsync: answers --help so rsync_with_progress picks a branch, then
+# fails the actual copy — emulating a mid-backup transfer abort.
+cat > "$RSYNC_STUB/rsync" <<'SH'
+#!/usr/bin/env bash
+if [[ "$1" == "--help" ]]; then
+  echo "--info=progress2"
+  exit 0
+fi
+echo "rsync: connection reset by peer (104)" >&2
+exit 1
+SH
+chmod +x "$RSYNC_STUB/rsync"
+
+info "Running backup with a failing rsync"
+set +e
+PATH="$RSYNC_STUB:$PATH" ODS_DIR="$FAKE_ODS" "$ODS_BACKUP" \
+  --output "$PARTIAL_DIR" --type full >/dev/null 2>&1
+rc=$?
+set -e
+
+[[ $rc -ne 0 ]] || fail "backup unexpectedly succeeded with a failing rsync"
+if find "$PARTIAL_DIR" -mindepth 1 -maxdepth 1 -type d -name 'backup-*' | grep -q .; then
+  fail "failed backup left a restorable backup-* directory"
+fi
+if find "$PARTIAL_DIR" -mindepth 1 -name 'manifest.json' | grep -q .; then
+  fail "failed backup left a manifest behind"
+fi
+if find "$PARTIAL_DIR" -mindepth 1 -maxdepth 1 -type d | grep -q .; then
+  fail "failed backup left staging debris behind"
+fi
+pass "failed backup leaves no listable or restorable directory"
+
+# A partial dir must also be invisible to --list and retention while it is
+# still being written: emulate an in-flight backup by creating the staging
+# name directly.
+mkdir -p "$PARTIAL_DIR/.partial-backup-0-20260101-000000"
+echo '{"backup_type": "full"}' > "$PARTIAL_DIR/.partial-backup-0-20260101-000000/manifest.json"
+list_out=$(ODS_DIR="$FAKE_ODS" "$ODS_BACKUP" --output "$PARTIAL_DIR" --list)
+if echo "$list_out" | grep -q "partial"; then
+  fail "--list exposes an in-flight staging directory"
+fi
+pass "in-flight staging directory is invisible to --list"
+
+# Working rsync (cp-backed stub): the same staging path must publish
+# atomically as a complete backup with manifest + checksums.
+cat > "$RSYNC_STUB/rsync" <<'SH'
+#!/usr/bin/env bash
+if [[ "$1" == "--help" ]]; then
+  echo "--info=progress2"
+  exit 0
+fi
+args=()
+for a in "$@"; do
+  [[ "$a" == -* ]] || args+=("$a")
+done
+cp -a "${args[0]}" "${args[1]}"
+SH
+chmod +x "$RSYNC_STUB/rsync"
+
+info "Running backup with a working rsync stub"
+PATH="$RSYNC_STUB:$PATH" ODS_DIR="$FAKE_ODS" "$ODS_BACKUP" \
+  --output "$PARTIAL_DIR" --type full >/dev/null
+rm -rf "$PARTIAL_DIR/.partial-backup-0-20260101-000000"
+
+published=$(find "$PARTIAL_DIR" -mindepth 1 -maxdepth 1 -type d -name 'backup-*' | head -1)
+[[ -n "$published" ]] || fail "no backup-* directory published"
+[[ -f "$published/manifest.json" ]] || fail "published backup lacks manifest.json"
+[[ -f "$published/checksums.sha256" ]] || fail "published backup lacks checksums.sha256"
+grep -q "\"backup_id\": \"$(basename "$published")\"" "$published/manifest.json" \
+  || fail "manifest embeds the staging name, not the published backup ID"
+if find "$PARTIAL_DIR" -mindepth 1 -maxdepth 1 -type d -name '.partial-*' | grep -q .; then
+  fail "staging directory left behind after successful publish"
+fi
+ODS_DIR="$FAKE_ODS" "$ODS_BACKUP" --output "$PARTIAL_DIR" verify "$(basename "$published")" >/dev/null
+pass "successful backup publishes atomically with manifest and checksums"
