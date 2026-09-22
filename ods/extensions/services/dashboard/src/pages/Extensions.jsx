@@ -17,7 +17,7 @@ import './extensions-refined.css'
 export { getTemplateStatus }
 
 // API/backend services with no user-facing web UI — show badge instead of port link.
-const HEADLESS_EXTENSIONS = new Set(['embeddings', 'tts', 'whisper', 'privacy-shield'])
+const HEADLESS_EXTENSIONS = new Set(['embeddings', 'tts', 'whisper', 'privacy-shield', 'kroki'])
 const UPDATE_CONFIRMATION_STATES = {
   update_state_unknown: 'unknown',
   locally_modified: 'modified',
