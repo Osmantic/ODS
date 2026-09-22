@@ -125,10 +125,14 @@ def test_staging_is_nonroot_and_publishes_only_verified_runtime(tmp_path, releas
     node, npm = tmp_path / 'node', tmp_path / 'npm-cli.js'
     node.touch()
     npm.touch()
+    ca_bundle = tmp_path / 'system-ca.pem'
+    ca_bundle.write_text('fixture CA bundle')
+    monkeypatch.setattr(bootstrap, 'MACOS_CA_BUNDLE', ca_bundle)
     calls = []
     def command(args, **kwargs):
         calls.append(args)
         assert kwargs['env']['PATH'].startswith(str(node.parent))
+        assert kwargs['env']['NODE_EXTRA_CA_CERTS'] == str(ca_bundle)
         if args[1] == '-p':
             return json.dumps({'platform': 'darwin', 'arch': 'x64' if fault == 'arch' else 'arm64', 'major': 22})
         if 'plugins' in args:

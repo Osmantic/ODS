@@ -30,6 +30,7 @@ PLUGINS = (
 PIXEL_PLUGINS = (('plugin', 'pixel-source-broker'),
                  ('plugin-ops', 'pixel-operations-broker'),
                  ('plugin-frontier', 'pixel-frontier-broker'))
+MACOS_CA_BUNDLE = Path('/etc/ssl/cert.pem')
 
 
 def validate_package(package, name, version):
@@ -168,6 +169,10 @@ def stage(*, source, ref, destination, node, npm):
     node, npm = Path(node).resolve(strict=True), Path(npm).resolve(strict=True)
     env = {'HOME': str(Path.home()), 'PATH': str(node.parent) + ':/usr/bin:/bin:/usr/sbin:/sbin',
            'TMPDIR': tempfile.gettempdir()}
+    # npm's bundled trust store can miss certificates trusted by macOS. Keep
+    # strict TLS verification while giving Node the system's PEM CA bundle.
+    if MACOS_CA_BUNDLE.is_file():
+        env['NODE_EXTRA_CA_CERTS'] = str(MACOS_CA_BUNDLE)
     identity = json.loads(command([str(node), '-p',
         'JSON.stringify({platform:process.platform,arch:process.arch,major:Number(process.versions.node.split(".")[0])})'],
         cwd='/', env=env))
