@@ -82,7 +82,7 @@ Langfuse runs six containers, all on the isolated `langfuse-internal` network:
 | `ods-langfuse-postgres` | `postgres:17.9-alpine` | Relational store |
 | `ods-langfuse-clickhouse` | `clickhouse/clickhouse-server:26.2.4.23` | Analytics store |
 | `ods-langfuse-redis` | `redis:7.4.8-alpine` | Job queue |
-| `ods-langfuse-minio` | `minio/minio` | Object store for event uploads |
+| `ods-langfuse-minio` | `quay.io/minio/minio` | Object store for event uploads |
 
 ## Files
 
