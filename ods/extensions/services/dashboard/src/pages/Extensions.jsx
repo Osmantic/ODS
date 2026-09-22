@@ -1079,6 +1079,7 @@ function ConsoleModal({ ext, onClose }) {
   const [disconnected, setDisconnected] = useState(false)
   const [atBottom, setAtBottom] = useState(true)
   const [installInfo, setInstallInfo] = useState(null)
+  const progressIntervalRef = useRef(null)
   const logRef = useRef(null)
   const isNearBottom = useRef(true)
 
@@ -1096,13 +1097,25 @@ function ConsoleModal({ ext, onClose }) {
         const res = await fetchJson(`/api/extensions/${ext.id}/progress`)
         if (res.ok && active) {
           const data = await res.json()
-          if (data.status !== 'idle') setInstallInfo(data)
+          if (data.status !== 'idle') {
+            setInstallInfo(data)
+            if (data.status === 'error' || data.status === 'started') {
+              if (progressIntervalRef.current) {
+                clearInterval(progressIntervalRef.current)
+                progressIntervalRef.current = null
+              }
+            }
+          }
         }
       } catch { /* ignore */ }
     }
     fetchProgress()
-    const interval = setInterval(fetchProgress, 5000)
-    return () => { active = false; clearInterval(interval) }
+    progressIntervalRef.current = setInterval(fetchProgress, 5000)
+    return () => {
+      active = false
+      if (progressIntervalRef.current) clearInterval(progressIntervalRef.current)
+      progressIntervalRef.current = null
+    }
   }, [ext.id])
 
   useEffect(() => {
