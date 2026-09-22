@@ -171,6 +171,7 @@ const OVERVIEW_HISTORY_KEY = 'ods-system-overview-history-v1'
 const SERVICE_CPU_HISTORY_KEY = 'ods-service-cpu-history-v1'
 const OVERVIEW_MAX_SAMPLES = 720
 const SERVICE_CPU_MAX_SAMPLES = 80
+const SERVICE_CPU_MAX_KEYS = 100
 const OVERVIEW_RANGES = [
   { key: '1H', label: '1H', ms: 60 * 60 * 1000, compareMs: 5 * 60 * 1000, deltaLabel: '5m ago' },
   { key: '6H', label: '6H', ms: 6 * 60 * 60 * 1000, compareMs: 60 * 60 * 1000, deltaLabel: '1h ago' },
@@ -339,7 +340,7 @@ function readServiceCpuHistory() {
     if (!raw) return serviceCpuMemoryHistory
     const parsed = JSON.parse(raw)
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return serviceCpuMemoryHistory
-    return Object.fromEntries(
+    const history = Object.fromEntries(
       Object.entries(parsed).map(([id, samples]) => [
         id,
         Array.isArray(samples)
@@ -347,6 +348,9 @@ function readServiceCpuHistory() {
           : [],
       ])
     )
+    return Object.fromEntries(Object.entries(history)
+      .sort(([, a], [, b]) => (b.at(-1)?.t || 0) - (a.at(-1)?.t || 0))
+      .slice(0, SERVICE_CPU_MAX_KEYS))
   } catch {
     return serviceCpuMemoryHistory
   }
@@ -432,6 +436,17 @@ function useServiceCpuHistory(services) {
         const pruned = (next[serviceId] || []).filter(sample => sample.t >= cutoff)
         if (pruned.length !== next[serviceId].length) {
           next[serviceId] = pruned
+          changed = true
+        }
+      })
+
+      const retainedIds = Object.entries(next)
+        .sort(([, a], [, b]) => (b.at(-1)?.t || 0) - (a.at(-1)?.t || 0))
+        .slice(0, SERVICE_CPU_MAX_KEYS)
+        .map(([serviceId]) => serviceId)
+      Object.keys(next).forEach(serviceId => {
+        if (!retainedIds.includes(serviceId)) {
+          delete next[serviceId]
           changed = true
         }
       })
