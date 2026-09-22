@@ -37,6 +37,13 @@ async function startActivation() {
   expect(posts()).toHaveLength(1)
 }
 
+it('associates model source tabs with their tabpanels', async () => {
+  await openModels()
+  const tab = screen.getByRole('tab', { name: /installed/i })
+  expect(tab).toHaveAttribute('aria-controls', 'models-panel-installed')
+  expect(screen.getByRole('tabpanel')).toHaveAttribute('aria-labelledby', 'models-tab-installed')
+})
+
 beforeEach(() => {
   vi.useFakeTimers()
   Object.defineProperty(document, 'hidden', { configurable: true, value: false })
