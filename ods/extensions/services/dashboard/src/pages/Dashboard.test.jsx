@@ -35,6 +35,7 @@ const baseStatus = {
 let mockResources
 let mockFeatures
 let mockFeatureSuggestions
+let mockFeaturesFailure
 let restartCalls
 let restartDeferred
 
@@ -53,6 +54,7 @@ function installFetchMock() {
   restartDeferred = null
   vi.stubGlobal('fetch', vi.fn(async (url, options = {}) => {
     if (String(url).includes('/api/features')) {
+      if (mockFeaturesFailure) return { ok: false, status: 503, json: async () => ({}) }
       return {
         ok: true,
         json: async () => ({
@@ -93,6 +95,7 @@ describe('Dashboard system overview', () => {
     document.documentElement.dataset.theme = 'light'
     mockFeatures = []
     mockFeatureSuggestions = []
+    mockFeaturesFailure = false
     mockResources = {
       services: services.map(service => ({
         id: service.name.toLowerCase().replace(/\([^)]*\)/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''),
@@ -123,6 +126,16 @@ describe('Dashboard system overview', () => {
     expect(screen.getByText('TOKENS GENERATED')).toBeInTheDocument()
     expect(screen.getByText('Live Throughput')).toBeInTheDocument()
     expect(screen.getByText('Accumulated Output')).toBeInTheDocument()
+  })
+
+  it('reports feature metadata failures and retries them', async () => {
+    mockFeaturesFailure = true
+    await renderDashboard()
+
+    expect(await screen.findByText('Feature metadata request failed (503)')).toBeInTheDocument()
+    mockFeaturesFailure = false
+    fireEvent.click(screen.getByRole('button', { name: 'Retry feature metadata' }))
+    await waitFor(() => expect(screen.getByText('Feature metadata is loading...')).toBeInTheDocument())
   })
 
   it.each([[8.25, '8.3 tok/s'], [0, '0.0 tok/s'], [null, '—'], [undefined, '—']])('shows a real compact throughput reading for %s', async (tokensPerSecond, expected) => {
