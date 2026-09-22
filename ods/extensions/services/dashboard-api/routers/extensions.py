@@ -700,6 +700,10 @@ def _scan_compose_content(
                             ),
                         )
         ports = svc_def.get("ports", [])
+        # A null or scalar ports value is malformed compose; there is no
+        # binding to inspect, matching the other sections' pass-through.
+        if not isinstance(ports, list):
+            ports = []
         for port in ports:
             if isinstance(port, dict):
                 # Dict-form: {target: 80, published: 8080, host_ip: ...}
