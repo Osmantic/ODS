@@ -44,7 +44,12 @@ if $INTERACTIVE && ! $DRY_RUN; then
             else
                 label="[y/N]"
             fi
-            read -p "  ${prompt} ${label} " -r reply < /dev/tty
+            reply=""
+            if [[ -r /dev/tty ]]; then
+                read -p "  ${prompt} ${label} " -r reply < /dev/tty
+            else
+                read -p "  ${prompt} ${label} " -r reply || true
+            fi
             echo
             case "$reply" in
                 [Yy]*) printf -v "$var_name" '%s' "true" ;;
