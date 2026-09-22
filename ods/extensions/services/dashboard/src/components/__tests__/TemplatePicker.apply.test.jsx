@@ -61,6 +61,23 @@ describe('TemplatePreview apply result', () => {
     expect(await screen.findByText(/template applied/i)).toBeInTheDocument()
   })
 
+  test('submits one apply request when activated twice before React disables the button', async () => {
+    let finishApply
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response({ changes: { to_enable: ['svc-a'], already_enabled: [], incompatible: [] }, warnings: [] }))
+      .mockImplementationOnce(() => new Promise(resolve => { finishApply = resolve }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<TemplatePreview template={template} onClose={vi.fn()} />)
+    const applyButton = await screen.findByRole('button', { name: /apply template/i })
+    fireEvent.click(applyButton)
+    fireEvent.click(applyButton)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+
+    await act(async () => { finishApply(response({ enabled_count: 1, started_count: 1, failed_services: [], skipped_services: [], warnings: [], restart_required: false })) })
+    expect(await screen.findByText(/template applied/i)).toBeInTheDocument()
+  })
+
   test('does not report all services active when apply skipped a service', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(response({
