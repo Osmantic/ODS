@@ -1801,3 +1801,15 @@ def test_flatten_bounds_cycles_and_large_depth_without_losing_empty_leaves():
         nested = {"child": nested}
     result = dict_flatten_nested_safe(nested, max_depth=100000)
     assert len(next(iter(result)).split(".")) == 128
+
+
+class TestDictSelectMatchingKeysRegexSafe:
+    def test_valid_matching(self):
+        from helpers import dict_select_matching_keys_regex_safe
+        d = {"sys_cpu": 50, "sys_mem": 80, "app_port": 8080}
+        assert dict_select_matching_keys_regex_safe(d, r'^sys_') == {"sys_cpu": 50, "sys_mem": 80}
+
+    def test_invalid_inputs(self):
+        from helpers import dict_select_matching_keys_regex_safe
+        assert dict_select_matching_keys_regex_safe(None, r'^sys_') == {}
+        assert dict_select_matching_keys_regex_safe({"a": 1}, None) == {"a": 1}
