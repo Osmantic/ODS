@@ -1,6 +1,6 @@
 import { fireEvent, screen, waitFor } from '@testing-library/react'
 import { render } from '../test/test-utils'
-import FirstBoot from './FirstBoot' // eslint-disable-line no-unused-vars
+import FirstBoot, { DoneScreen } from './FirstBoot' // eslint-disable-line no-unused-vars
 
 const response = (body, status = 200) => ({
   ok: status >= 200 && status < 300,
@@ -131,6 +131,14 @@ describe('FirstBoot', () => {
       note: 'First-boot owner card (spark)',
     })
     expect(await screen.findByAltText('QR code for owner card')).toHaveAttribute('src', 'data:image/png;base64,qrpayload')
+  })
+
+  test('explains when copying the owner link is denied', async () => {
+    vi.stubGlobal('navigator', { clipboard: { writeText: vi.fn().mockRejectedValue(new Error('denied')) } })
+
+    render(<DoneScreen invite={{ url: 'http://auth.spark.local/magic-link/token', target_username: 'sam' }} onDone={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Copy owner link' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(/clipboard access failed/i)
   })
 
   test('applies the selected agent stack before creating credentials or completing setup', async () => {
