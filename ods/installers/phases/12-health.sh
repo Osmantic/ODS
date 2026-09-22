@@ -374,7 +374,7 @@ else
         ai "  Monitor progress: tail -f ${INSTALL_DIR}/logs/model-upgrade.log"
     else
         ods_progress 86 "health" "Waiting for LLM engine"
-        _check_health "llama-server" "http://127.0.0.1:${SERVICE_PORTS[llama-server]:-8080}${SERVICE_HEALTH[llama-server]:-/health}" "$_llm_health_attempts" 15 "$(sr_container llama-server)"
+        _check_health "llama-server" "http://127.0.0.1:${SERVICE_PORTS[llama-server]:-11434}${SERVICE_HEALTH[llama-server]:-/health}" "$_llm_health_attempts" 15 "$(sr_container llama-server)"
     fi
 fi
 
@@ -405,7 +405,7 @@ else
         _prewarm_api_path="/api/v1"
         [[ -n "${GGUF_FILE:-}" ]] && _prewarm_model="extra.${GGUF_FILE}"
     fi
-    _prewarm_url="http://127.0.0.1:${SERVICE_PORTS[llama-server]:-8080}${_prewarm_api_path}/chat/completions"
+    _prewarm_url="http://127.0.0.1:${SERVICE_PORTS[llama-server]:-11434}${_prewarm_api_path}/chat/completions"
     _prewarm_body="{\"model\":\"${_prewarm_model}\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1,\"temperature\":0,\"stream\":false}"
     if curl -sf --max-time 120 -X POST "$_prewarm_url" \
         -H "Content-Type: application/json" \

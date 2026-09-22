@@ -412,7 +412,7 @@ if ! $DRY_RUN && command -v ods_readiness_summary >/dev/null 2>&1; then
         printf 'Chat UI (Open WebUI)|http://127.0.0.1:%s%s|%s|%s\n' \
             "${SERVICE_PORTS[open-webui]:-3000}" "${SERVICE_HEALTH[open-webui]:-/}" "$(sr_container open-webui)" "http://localhost:${SERVICE_PORTS[open-webui]:-3000}"
         printf 'llama-server|http://127.0.0.1:%s%s|%s|%s\n' \
-            "${SERVICE_PORTS[llama-server]:-8080}" "${SERVICE_HEALTH[llama-server]:-/health}" "$(sr_container llama-server)" "http://localhost:${SERVICE_PORTS[llama-server]:-8080}/v1"
+            "${SERVICE_PORTS[llama-server]:-11434}" "${SERVICE_HEALTH[llama-server]:-/health}" "$(sr_container llama-server)" "http://localhost:${SERVICE_PORTS[llama-server]:-11434}/v1"
         printf 'Dashboard API|http://127.0.0.1:%s%s|%s|%s\n' \
             "${SERVICE_PORTS[dashboard-api]:-3002}" "${SERVICE_HEALTH[dashboard-api]:-/health}" "$(sr_container dashboard-api)" "http://localhost:${SERVICE_PORTS[dashboard-api]:-3002}"
         printf 'LiteLLM|http://127.0.0.1:%s%s|%s|%s\n' \
