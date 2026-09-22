@@ -42,7 +42,10 @@ def test_package_preserves_source_and_requires_relocated_loader(tmp_path, monkey
     tmp_path = tmp_path.resolve()
     monkeypatch.setattr(config.sys, 'platform', 'darwin')
     monkeypatch.setattr(config.os, 'geteuid', lambda: 0 if fault == 'root' else 501)
-    monkeypatch.setattr(config.bootstrap, 'selected_release', lambda *a: {'openclaw': '2026.6.33'})
+    monkeypatch.setattr(config.bootstrap, 'selected_release',
+                        lambda *a: {'openclaw': '2026.6.33', 'node': '>=22'})
+    monkeypatch.setattr(config.native_node, 'acquire',
+                        lambda destination, **kwargs: tmp_path / 'node')
     plugins = []
     for name in ('pixel-ods', 'searxng'):
         path = tmp_path / name

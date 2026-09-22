@@ -1549,6 +1549,17 @@ resolves the base Compose project and local Docker socket, pulls and probes a
 Linux arm64 Node transport image, then binds its immutable image ID to the native
 layout. It never starts a second OpenClaw gateway in Docker.
 
+The owner-side npm bootstrap retains strict TLS and uses macOS's system PEM CA
+bundle when present. Colima's sandbox proof uses a private temporary directory
+beside the staged source, on the Docker-shared installation filesystem; macOS's
+per-user `/var/folders` temp directory is not shared with Colima. Protected
+gateway bundles do not copy Homebrew's dynamically linked Node, whose libraries
+remain outside protected custody. Instead, packaging fetches the pinned official
+Node 24.21.0 Apple Silicon archive and verifies its archive and executable
+hashes, code signature, system-only library links and runtime identity before
+bundling the executable. Initial installs and managed updates therefore need
+access to `nodejs.org`; verification failure stops before activation.
+
 After preparation, activation starts the shared services, activates the protected
 native gateway and waits for health. It now also recreates Open WebUI with the
 Pixel Edge routing overlay, a previously missing activation step. The main

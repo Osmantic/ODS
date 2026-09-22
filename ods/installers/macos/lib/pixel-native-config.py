@@ -26,6 +26,10 @@ BUNDLE_SPEC = importlib.util.spec_from_file_location('native_config_bundle',
     Path(__file__).with_name('pixel-runtime-bundle.py'))
 bundle = importlib.util.module_from_spec(BUNDLE_SPEC)
 BUNDLE_SPEC.loader.exec_module(bundle)
+NODE_SPEC = importlib.util.spec_from_file_location('native_config_node',
+    Path(__file__).with_name('pixel-native-node.py'))
+native_node = importlib.util.module_from_spec(NODE_SPEC)
+NODE_SPEC.loader.exec_module(native_node)
 
 
 def private_json(path):
@@ -354,7 +358,8 @@ def stage_bundle(*, source, ref, candidate, node, runtime, destination, services
     with tempfile.TemporaryDirectory(prefix='.pixel-package-', dir=destination.parent) as temporary:
         temporary = Path(temporary)
         staged = temporary / 'bundle'
-        digest = bundle.build(node=node, runtime=runtime / 'node_modules/openclaw',
+        protected_node = native_node.acquire(temporary, minimum_major=int(release['node'][2:]))
+        digest = bundle.build(node=protected_node, runtime=runtime / 'node_modules/openclaw',
             destination=staged, plugins=paths, expected_version=release['openclaw'],
             stream_progress_fix=True, services_digest=services_digest,
             exec_wrapper=Path(__file__).resolve().parents[3] / 'extensions/services/pixel-agent/host/cancellable-exec.sh')
