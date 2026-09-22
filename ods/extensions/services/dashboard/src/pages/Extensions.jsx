@@ -114,6 +114,7 @@ export default function Extensions({ compact = false }) {
   const [pollingLost, setPollingLost] = useState(false)
   const installProgressRef = useRef(null)
   const activePollers = useRef({})
+  const progressGenerations = useRef({})
   // Per-service recovery tracker: counts consecutive fetch failures and
   // fires onThresholdReached/onRecovered to drive the polling-lost banner.
   // Keyed by serviceId because multiple installs can be polling concurrently.
@@ -132,8 +133,11 @@ export default function Extensions({ compact = false }) {
       onRecovered: () => setPollingLost(prev => (prev ? false : prev)),
     })
     activePollers.current[serviceId] = setInterval(async () => {
+      const requestId = (progressGenerations.current[serviceId] || 0) + 1
+      progressGenerations.current[serviceId] = requestId
       try {
         const res = await fetchJson(`/api/extensions/${serviceId}/progress`)
+        if (progressGenerations.current[serviceId] !== requestId) return
         // Successful fetch (regardless of HTTP status) means the dashboard
         // is reachable again — reset the failure counter and clear the banner.
         recoveryTrackers.current[serviceId]?.recordSuccess()
@@ -154,6 +158,7 @@ export default function Extensions({ compact = false }) {
           // or "cli_installed" (one-shot CLI tool whose container exits
           // after init), we're done.
           const catRes = await fetchJson('/api/extensions/catalog')
+          if (progressGenerations.current[serviceId] !== requestId) return
           if (!catRes.ok) return
           const catData = await catRes.json()
           setCatalog(catData)
@@ -191,6 +196,7 @@ export default function Extensions({ compact = false }) {
       Object.values(activePollers.current).forEach(clearInterval)
       activePollers.current = {}
       recoveryTrackers.current = {}
+      progressGenerations.current = {}
     }
   }, [])
 
