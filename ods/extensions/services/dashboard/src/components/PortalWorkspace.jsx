@@ -20,8 +20,9 @@ export default function PortalWorkspace({preview,before,access,title,request,onR
   const tabDomId=key=>`${workspaceId}-tab-${encodeURIComponent(key)}`
   const panelDomId=key=>`${workspaceId}-panel-${key.startsWith('file:')?'file':key}`
   const [treeOpen,setTreeOpen]=useState(false),[reviewPath,setReviewPath]=useState(null),[options,setOptions]=useState(false),[retry,setRetry]=useState(0)
-  const consumed=useRef(null),root=useRef(null)
+  const consumed=useRef(null),root=useRef(null),focusTimer=useRef(null)
   const treeLayout=useFileTreeResize(root,{narrowBelow:561})
+  useEffect(()=>()=>{if(focusTimer.current!==null)clearTimeout(focusTimer.current)},[])
   useEffect(()=>{
     setTabs([]);setActive(current=>current==='agents'?'agents':request?.siteId===preview?.siteId && request?.kind==='review'?'review':!preview?'review':'preview');setReviewPath(null);setOptions(false);setPendingPath(null);setMissingPath(null)
   },[preview?.siteId])
@@ -57,7 +58,8 @@ export default function PortalWorkspace({preview,before,access,title,request,onR
   function closeTab(id) {
     if(id==='agents'){setAgentsTabOpen(false);agents?.select(null);if(active===id)setActive('preview')}
     else {const path=id.slice(5);setTabs(value=>value.filter(item=>item!==path));if(active===id)setActive('review')}
-    setTimeout(()=>root.current?.querySelector('[role=tab][aria-selected=true]')?.focus(),0)
+    if(focusTimer.current!==null)clearTimeout(focusTimer.current)
+    focusTimer.current=setTimeout(()=>{focusTimer.current=null;root.current?.querySelector('[role=tab][aria-selected=true]')?.focus()},0)
   }
   return <div ref={root} className="portal-workbench" data-collapsed={collapsed}>
     <header className="portal-workbench-tabs">
