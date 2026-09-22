@@ -84,8 +84,8 @@ function installFetchMock() {
 
 async function renderDashboard(status = baseStatus) {
   render(<Dashboard status={status} loading={false} />)
-  await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/features'))
-  await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/services/resources'))
+  await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/features', expect.objectContaining({ signal: expect.any(AbortSignal) })))
+  await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/services/resources', expect.objectContaining({ signal: expect.any(AbortSignal) })))
 }
 
 describe('Dashboard system overview', () => {
@@ -130,7 +130,7 @@ describe('Dashboard system overview', () => {
     const row = screen.getByText('Tokens / second').closest('.dashboard-metric-row')
     expect(within(row).getByText(expected)).toBeVisible()
     expect(within(row).getByText(tokensPerSecond == null ? 'telemetry unavailable' : 'runtime reading')).toBeVisible()
-    await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/features'))
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/features', expect.objectContaining({ signal: expect.any(AbortSignal) })))
   })
 
   it('uses theme-responsive surfaces instead of fixed dark dashboard panels', async () => {
@@ -171,7 +171,7 @@ describe('Dashboard system overview', () => {
     expect(within(row).getByText('7.8 GB')).toBeVisible()
     expect(within(row).getByText('of 15.8 GB')).toBeVisible()
     expect(within(row).queryByText('41 GB')).toBeNull()
-    await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/features'))
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/features', expect.objectContaining({ signal: expect.any(AbortSignal) })))
   })
 
   it('does not identify an AMD unified GPU as Apple Silicon', async () => {
