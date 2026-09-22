@@ -4372,3 +4372,64 @@ class TestUpdateHardening(TestUpdateExtension):
         assert ext_mod._call_agent_sync_config(
             "my-ext", preserve_existing=True,
         ) is True
+
+
+# ---------------------------------------------------------------------------
+# Malformed progress files — parseable JSON of the wrong shape must never
+# 500 the progress endpoint, the stale-cleanup sweep, or the error writer.
+# ---------------------------------------------------------------------------
+
+
+def test_progress_endpoint_tolerates_non_dict_progress_file(test_client, monkeypatch, tmp_path):
+    _patch_mutation_config(monkeypatch, tmp_path)
+    progress_dir = tmp_path / "extension-progress"
+    progress_dir.mkdir()
+    (progress_dir / "my-ext.json").write_text("[1, 2, 3]")
+
+    resp = test_client.get(
+        "/api/extensions/my-ext/progress",
+        headers=test_client.auth_headers,
+    )
+    # The endpoint passes file contents through; it must not crash.
+    assert resp.status_code == 200
+
+
+def test_read_progress_returns_none_for_non_dict_file(monkeypatch, tmp_path):
+    from routers.extensions import _read_progress
+
+    monkeypatch.setattr("routers.extensions.DATA_DIR", str(tmp_path))
+    progress_dir = tmp_path / "extension-progress"
+    progress_dir.mkdir()
+    (progress_dir / "my-ext.json").write_text("[1, 2, 3]")
+
+    assert _read_progress("my-ext") is None
+
+
+def test_cleanup_stale_progress_skips_non_dict_file(monkeypatch, tmp_path):
+    from routers.extensions import _cleanup_stale_progress
+
+    monkeypatch.setattr("routers.extensions.DATA_DIR", str(tmp_path))
+    progress_dir = tmp_path / "extension-progress"
+    progress_dir.mkdir()
+    bad = progress_dir / "my-ext.json"
+    bad.write_text('"just a string"')
+
+    _cleanup_stale_progress()  # must not raise
+    assert bad.exists()
+
+
+def test_write_error_progress_replaces_non_dict_file(monkeypatch, tmp_path):
+    from routers.extensions import _write_error_progress, _read_progress
+
+    monkeypatch.setattr("routers.extensions.DATA_DIR", str(tmp_path))
+    progress_dir = tmp_path / "extension-progress"
+    progress_dir.mkdir()
+    bad = progress_dir / "my-ext.json"
+    bad.write_text("42")
+
+    _write_error_progress("my-ext", "install failed")
+
+    data = _read_progress("my-ext")
+    assert data is not None
+    assert data["status"] == "error"
+    assert data["error"] == "install failed"
