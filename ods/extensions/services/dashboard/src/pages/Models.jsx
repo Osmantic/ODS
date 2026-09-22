@@ -216,6 +216,11 @@ export default function Models({ compact = false }) {
     if (!deleteConfirmModel?.id) return
     const modelId = deleteConfirmModel.id
     setDeleteConfirmModel(null)
+    const currentEntry = models.find(model => model.id === modelId)
+    if (!currentEntry || currentEntry.name !== deleteConfirmModel.name) {
+      await refresh()
+      return
+    }
     await deleteModel(modelId)
   }
 
