@@ -137,6 +137,8 @@ class SharingStore(ProviderStore):
         document = self.read_snapshot()
         digest = hashlib.sha256(token.encode('ascii')).hexdigest()
         stamp = time.time() if now is None else now
+        if type(stamp) not in (int, float) or not 0 <= stamp < 2**53 - 1:
+            raise StoreError('invalid-credential')
         match = next((item for item in document['devices'] if secrets.compare_digest(item['tokenHash'], digest)), None)
         if (not document['enabled'] or match is None or match['revoked']
                 or not match['createdAt'] <= stamp < match['expiresAt']):
