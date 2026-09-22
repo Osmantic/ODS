@@ -1114,7 +1114,10 @@ async def pixel_chat_stream(request: Request, body: ChatStreamRequest, owner: st
                         yield b"data: [DONE]\n\n"
                         return
                 if buffered:
-                    yield bytes(buffered)
+                    tail = bytes(buffered)
+                    if not tail.endswith(b"\n"):
+                        tail += b"\n"
+                    yield tail
         except _ClientDisconnected:
             return
         except (GeneratorExit, asyncio.CancelledError):
