@@ -386,12 +386,40 @@ if (process.env.OPENCLAW_HTTP_API === 'true') {
     const shimScript = `
 const http = require('http');
 const GATEWAY_PORT = 18789;
+const PID_FILE = '/tmp/openai-shim.pid';
 const MODELS = JSON.stringify({
   object: 'list',
   data: [{ id: 'openclaw', object: 'model', created: ${Math.floor(Date.now() / 1000)}, owned_by: 'openclaw-gateway' }],
 });
 
 let restarts = 0;
+function claimPidFile() {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const fd = require('fs').openSync(PID_FILE, 'wx');
+      require('fs').writeSync(fd, String(process.pid));
+      require('fs').closeSync(fd);
+      return true;
+    } catch (err) {
+      if (err.code !== 'EEXIST') throw err;
+      try {
+        const owner = Number(require('fs').readFileSync(PID_FILE, 'utf8'));
+        process.kill(owner, 0);
+        return false;
+      } catch (ownerError) {
+        if (ownerError.code !== 'ESRCH') throw ownerError;
+        require('fs').unlinkSync(PID_FILE);
+      }
+    }
+  }
+  return false;
+}
+
+if (!claimPidFile()) {
+  console.log('[openai-shim] already running; refusing duplicate process');
+  process.exit(0);
+}
+
 function startServer() {
   const server = http.createServer((req, res) => {
     if (req.url === '/v1/models') {
@@ -446,6 +474,14 @@ process.on('uncaughtException', (err) => {
 process.on('SIGTERM', () => {
   console.error('[openai-shim] received SIGTERM, shutting down');
   process.exit(0);
+});
+process.on('exit', () => {
+  try {
+    const owner = require('fs').readFileSync(PID_FILE, 'utf8');
+    if (owner === String(process.pid)) require('fs').unlinkSync(PID_FILE);
+  } catch (_) {
+    // The pid file may already have been removed during stale-owner recovery.
+  }
 });
 `;
     fs.writeFileSync('/tmp/openai-shim.js', shimScript);
