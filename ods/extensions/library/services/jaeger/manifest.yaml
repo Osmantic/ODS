@@ -1,0 +1,51 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: jaeger
+  name: Jaeger (Distributed Tracing)
+  description: "Inspect authenticated OTLP traces across local workflow services with retained span history."
+  aliases: [distributed-tracing]
+  container_name: ods-jaeger
+  container_uid: 10001
+  default_host: jaeger
+  port: 16686
+  external_port_env: JAEGER_PORT
+  external_port_default: 16686
+  health: /status
+  health_port: 13133
+  health_source: container
+  ui_path: /
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [observability, tracing, workflows]
+  env_vars:
+    - key: JAEGER_PORT
+      description: "Jaeger authenticated query UI host port"
+      default: "16686"
+    - key: JAEGER_OTLP_PORT
+      description: "Jaeger authenticated OTLP HTTP traces host port"
+      default: "4318"
+    - key: JAEGER_HTPASSWD
+      description: "One bcrypt htpasswd line, generated with htpasswd -nB ods; used for ingestion and query authentication"
+      required: true
+      secret: true
+features:
+  - id: distributed-tracing
+    name: Distributed Tracing
+    description: "Follow a trace across local services through authenticated Jaeger queries"
+    icon: Activity
+    category: monitoring
+    requirements:
+      services: [jaeger]
+      vram_gb: 0
+    enabled_services_all: [jaeger]
+    setup_time: "~1 minute"
+    priority: 40
+    launch:
+      type: service
+      service: jaeger
+      path: /
