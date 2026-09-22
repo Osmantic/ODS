@@ -869,3 +869,27 @@ def load_templates() -> list[dict]:
 
 
 TEMPLATES = load_templates()
+
+
+# ── config guard: flatten_config_keys ─────────────────────────
+def flatten_config_keys(
+    config: dict,
+    prefix: str = "",
+    sep: str = ".",
+) -> dict[str, Any]:
+    """Flatten a nested *config* dict into a single-level dict with
+    dot-separated (or *sep*-separated) keys.
+
+    Non-dict leaf values are kept as-is.  Empty nested dicts produce no
+    output keys.  Raises ``TypeError`` for non-dict *config*.
+    """
+    if not isinstance(config, dict):
+        raise TypeError(f"config must be a dict, got {type(config).__name__}")
+    result: dict[str, Any] = {}
+    for key, val in config.items():
+        full_key = f"{prefix}{sep}{key}" if prefix else key
+        if isinstance(val, dict):
+            result.update(flatten_config_keys(val, prefix=full_key, sep=sep))
+        else:
+            result[full_key] = val
+    return result
