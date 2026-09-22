@@ -320,6 +320,16 @@ describe('Usage page', () => {
     fireEvent.click(await screen.findByRole('button',{name:'Restart Token Spy'}))
     await waitFor(()=>expect(fetch).toHaveBeenCalledWith('/api/services/token-spy/restart',{method:'POST'}))
   })
+  it('preserves the HTTP status when a usage action returns non-JSON', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url, options = {}) => {
+      if (options.method === 'POST') return new globalThis.Response('Bad Gateway', { status: 502 })
+      if (String(url).includes('/api/usage/readiness')) return { ok: true, json: async () => offlineReadiness }
+      return { ok: true, json: async () => makeEmptyReport() }
+    }))
+    render(<Usage />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Restart Token Spy' }))
+    expect(await screen.findByText('Usage action failed (HTTP 502).')).toBeVisible()
+  })
   it('includes cache writes and recalculates the visible series scale',async()=>{
     installFetchMock();render(<Usage/>);await ready();tab('Cache')
     const plot=screen.getByRole('region',{name:'Tokens per day'})
