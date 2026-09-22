@@ -202,7 +202,7 @@ teardown() {
     assert_output --partial "Restarting service x failed:"
     # At least one error-keyword line should be surfaced (indented two spaces).
     assert_output --partial "Error response from daemon"
-    assert_output --partial "Full compose output:"
+    assert_output --partial "Full compose output was surfaced"
 }
 
 @test "wrapper: failure propagates the compose exit code (1)" {
@@ -212,17 +212,15 @@ teardown() {
     [ "$status" -eq 1 ]
 }
 
-@test "wrapper: failure preserves the compose log file (not auto-removed)" {
+@test "wrapper: failure removes the temporary compose log" {
     export DOCKER_STUB_MODE=fail-keyword
     run _compose_run_with_summary "Restarting" up -d
     assert_failure
-    # Extract the "Full compose output: /tmp/tmp.XXXXXX" path from output.
+    # The summary is surfaced, but the private temporary file is removed.
     local log_line
-    log_line=$(printf '%s\n' "$output" | grep -E 'Full compose output:' | head -1)
+    assert_output --partial "Full compose output was surfaced"
+    log_line=$(printf '%s\n' "$output" | grep -E 'Full compose output was surfaced' | head -1)
     [ -n "$log_line" ]
-    local log_path="${log_line##*: }"
-    [ -f "$log_path" ]
-    rm -f "$log_path"
 }
 
 # ── failure path, zero keyword matches (nounset/pipefail-hardening) ─────────
@@ -251,7 +249,7 @@ teardown() {
     assert_failure
     assert_output --partial "Stopping service y failed:"
     assert_output --partial "(no error keywords matched in compose log)"
-    assert_output --partial "Full compose output:"
+    assert_output --partial "Full compose output was surfaced"
 }
 
 @test "wrapper: failure with no keyword match still propagates exit code" {
@@ -278,7 +276,7 @@ teardown() {
     assert_output --partial "Docker socket permission denied"
     assert_output --partial "sudo usermod -aG docker"
     assert_output --partial "newgrp docker"
-    assert_output --partial "Full compose output:"
+    assert_output --partial "Full compose output was surfaced"
 }
 
 # ── docker compose args passthrough ─────────────────────────────────────────
