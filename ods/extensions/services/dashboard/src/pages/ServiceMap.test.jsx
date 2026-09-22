@@ -172,4 +172,16 @@ describe('buildTopology', () => {
       expectedEdges.map(([source, target, label]) => expect.objectContaining({ source, target, label }))
     ))
   })
+
+  it('normalizes nameless and malformed service entries before rendering', () => {
+    const topology = buildTopology({
+      services: [null, { id: 'nameless', name: '   ', status: 'healthy' }, { id: 42, name: 123 }],
+    })
+
+    expect(topology.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'nameless', name: 'nameless' }),
+      expect.objectContaining({ id: '42', name: '42' }),
+    ]))
+    expect(topology.nodes.every(node => typeof node.id === 'string' && typeof node.name === 'string')).toBe(true)
+  })
 })
