@@ -869,3 +869,37 @@ def load_templates() -> list[dict]:
 
 
 TEMPLATES = load_templates()
+
+
+# ── config guard: coerce_memory_bytes ─────────────────────────
+_MEM_SUFFIXES = {
+    "": 1,
+    "b": 1,
+    "kb": 1_024,
+    "mb": 1_024 ** 2,
+    "gb": 1_024 ** 3,
+    "tb": 1_024 ** 4,
+    "kib": 1_024,
+    "mib": 1_024 ** 2,
+    "gib": 1_024 ** 3,
+    "tib": 1_024 ** 4,
+}
+
+def coerce_memory_bytes(value: Any) -> int | None:
+    """Convert a human-readable memory size (e.g. ``'4 GB'``, ``'512MB'``)
+    to the equivalent number of bytes as an ``int``.
+
+    Accepts optional whitespace between the number and the suffix.
+    Returns ``None`` for None, empty, or unrecognised input.
+    """
+    if not value:
+        return None
+    raw = str(value).strip()
+    match = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)\s*([a-zA-Z]*)", raw)
+    if not match:
+        return None
+    num_str, suffix = match.group(1), match.group(2).lower()
+    factor = _MEM_SUFFIXES.get(suffix)
+    if factor is None:
+        return None
+    return int(float(num_str) * factor)
