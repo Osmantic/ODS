@@ -560,7 +560,7 @@ if [[ "${ODS_DISABLE_CATALOG_MODEL_SELECTOR:-false}" != "true" && "${TIER:-}" !=
                 --env 2>>"$LOG_FILE" || true)"
             if [[ -n "$_selector_env" ]]; then
                 if command -v load_model_selector_env_from_output >/dev/null 2>&1; then
-                    load_model_selector_env_from_output <<< "$_selector_env"
+                    printf '%s\n' "$_selector_env" | load_model_selector_env_from_output
                     log "Catalog model selector: ${MODEL_RECOMMENDATION_REASON:-$LLM_MODEL}"
                 else
                     log "Catalog model selector output ignored; safe env loader unavailable"
