@@ -50,9 +50,10 @@ STATE_PATH = Path(os.environ.get("ODS_MODEL_STATE_PATH", "/state/model-state.jso
 ENDPOINTS_PATH = Path(
     os.environ.get("ODS_ROUTER_ENDPOINTS_PATH", "/config/endpoints.json")
 )
-INTERNAL_KEY = os.environ.get("ODS_ROUTER_INTERNAL_KEY", "") or os.environ.get(
-    "DASHBOARD_API_KEY", ""
-)
+# Keep the router's private bearer credential separate from the dashboard's
+# user-facing API key. Falling back here turns a dashboard credential leak or
+# accidental exposure into access to internal routing and model-swap APIs.
+INTERNAL_KEY = os.environ.get("ODS_ROUTER_INTERNAL_KEY", "")
 PROBE_KEY = os.environ.get("ODS_FLEET_PROBE_KEY", "")
 _PROBE_KEY_PATH_VALUE = os.environ.get("ODS_FLEET_PROBE_KEY_PATH", "")
 PROBE_KEY_PATH: Path | None = (
