@@ -1,0 +1,40 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: cyberchef
+  name: CyberChef (Data Recipes)
+  description: "Compose repeatable encoding, compression and data analysis recipes in your browser."
+  aliases: [cyber-chef]
+  container_name: ods-cyberchef
+  default_host: cyberchef
+  port: 8080
+  external_port_env: CYBERCHEF_PORT
+  external_port_default: 8103
+  health: /
+  ui_path: /
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [data, development, local]
+  env_vars:
+    - key: CYBERCHEF_PORT
+      description: "Published port for the data recipe workbench"
+      default: "8103"
+features:
+  - id: local-data-recipes
+    name: Data Recipes
+    description: "Chain decoding, decompression and data transformations locally in the browser"
+    icon: Wrench
+    category: productivity
+    requirements:
+      services: [cyberchef]
+      vram_gb: 0
+    enabled_services_all: [cyberchef]
+    setup_time: "~1 minute"
+    priority: 30
+    launch:
+      type: service
+      service: cyberchef
