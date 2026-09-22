@@ -20,7 +20,7 @@ import { useState, useEffect, useCallback } from 'react'
 // re-triggered via the deeper `/setup` route once that exists.
 
 export function useFirstRun() {
-  const [firstRun, setFirstRun] = useState(false)
+  const [firstRun, setFirstRun] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
 
