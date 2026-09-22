@@ -35,9 +35,10 @@ def answer(request):
         'choices':[{'index':0,'message':{'role':'assistant','content':'verified'},'finish_reason':'stop'}]})
 
 
-async def request_to(app,body,**kwargs):
+async def request_to(app,body,headers=None,**kwargs):
+    req_headers = {'Authorization':'Bearer test'} if headers is None else headers
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://client') as client:
-        return await client.post('/v1/chat/completions',headers={'Authorization':'Bearer test'},json=body,**kwargs)
+        return await client.post('/v1/chat/completions',headers=req_headers,json=body,**kwargs)
 
 
 def make_app(handler,config=None,events=None):
@@ -239,3 +240,10 @@ def test_cancel_waiting_headers_releases_and_closes_lease():
         assert cancelled.is_set()
         assert (await request_to(app,payload())).status_code==409
     asyncio.run(check())
+
+
+def test_non_ascii_authorization_header_returns_401():
+    app = make_app(lambda _req: httpx.Response(200))
+    response = asyncio.run(request_to(app, payload(), headers=[('authorization', b'Bearer \xe9bad')]))
+    assert response.status_code == 401
+    assert response.json()['error']['code'] == 'invalid-runtime-credential'
