@@ -1,0 +1,29 @@
+services:
+  shlink:
+    image: ghcr.io/shlinkio/shlink:4.4.2
+    container_name: ods-shlink
+    restart: unless-stopped
+    security_opt: [no-new-privileges:true]
+    environment:
+      DEFAULT_DOMAIN: ${DEFAULT_DOMAIN:-localhost:7856}
+      IS_HTTPS_ENABLED: "false"
+      DB_DRIVER: sqlite
+    volumes:
+      - ./data/shlink:/etc/shlink/data
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${SHLINK_PORT:-7856}:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8080/rest/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks: [ods-network]
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+networks:
+  ods-network:
+    external: true

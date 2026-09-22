@@ -1,0 +1,25 @@
+name: Shlink URL shortener contract
+
+on:
+  pull_request:
+    paths:
+      - 'ods/extensions/library/services/shlink/**'
+      - 'ods/tests/test_shlink_extension.py'
+      - '.github/workflows/shlink-extension.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  shlink-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install pytest PyYAML
+      - name: Verify Shlink extension contract
+        run: python -m pytest -q ods/tests/test_shlink_extension.py
