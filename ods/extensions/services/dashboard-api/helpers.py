@@ -1417,3 +1417,16 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def string_remove_surrounding_quotes_safe(text: str | None) -> str:
+    """Safely strip matching leading/trailing single or double quotes surrounding text.
+    Returns "" on None or non-string inputs.
+    """
+    if text is None or not isinstance(text, str):
+        return ""
+    text = text.strip()
+    if len(text) >= 2:
+        if (text.startswith('"') and text.endswith('"')) or (text.startswith("'") and text.endswith("'")):
+            return text[1:-1]
+    return text
