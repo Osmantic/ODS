@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 
 const POLL_INTERVAL = 5000 // 5 seconds
+const REQUEST_TIMEOUT = 15000
 
 // Mock data for development/demo - gated behind VITE_USE_MOCK_DATA env var
 const USE_MOCK_DATA = import.meta.env.VITE_USE_MOCK_DATA === 'true'
@@ -75,9 +76,11 @@ export function useSystemStatus() {
       // Skip this tick if the previous fetch hasn't returned yet.
       if (fetchInFlight.current) return
       fetchInFlight.current = true
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT)
 
       try {
-        const response = await fetch('/api/status')
+        const response = await fetch('/api/status', { signal: controller.signal })
         if (!response.ok) throw new Error('Failed to fetch status')
         const data = await response.json()
         setStatus(data)
@@ -86,6 +89,7 @@ export function useSystemStatus() {
       } catch (err) {
         setError(err.message)
       } finally {
+        clearTimeout(timeout)
         fetchInFlight.current = false
         setLoading(false)
       }

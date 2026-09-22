@@ -1,4 +1,4 @@
-import { renderHook, waitFor } from '@testing-library/react'
+import { act, renderHook, waitFor } from '@testing-library/react'
 import { useSystemStatus } from '../useSystemStatus'
 
 describe('useSystemStatus', () => {
@@ -7,7 +7,26 @@ describe('useSystemStatus', () => {
   })
 
   afterEach(() => {
+    vi.useRealTimers()
     vi.restoreAllMocks()
+  })
+
+  test('times out a hung request so the next poll can run', async () => {
+    vi.useFakeTimers()
+    let rejectRequest
+    fetch.mockImplementation((_url, { signal }) => {
+      return new Promise((_, reject) => {
+        rejectRequest = reject
+        signal.addEventListener('abort', () => rejectRequest(new Error('request timed out')))
+      })
+    })
+
+    const { result } = renderHook(() => useSystemStatus())
+    await act(async () => { await vi.advanceTimersByTimeAsync(15000) })
+
+    expect(result.current.loading).toBe(false)
+    expect(result.current.error).toBe('request timed out')
+    expect(fetch).toHaveBeenCalledTimes(2)
   })
 
   test('fetches status on mount', async () => {
