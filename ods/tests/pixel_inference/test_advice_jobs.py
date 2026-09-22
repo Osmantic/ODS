@@ -82,11 +82,14 @@ def test_two_global_slots_across_independent_managers_and_cancel(manager):
 
 def test_status_does_not_leak_descriptors(manager):
     body=request(); manager.start(body)
-    initial=len(os.listdir('/proc/self/fd'))
-    for _ in range(100):
-        manager.status(body['requestId'])
-    assert len(os.listdir('/proc/self/fd')) <= initial
-    manager.cancel(body['requestId']); wait(manager,body['requestId'])
+    descriptors = '/dev/fd' if sys.platform == 'darwin' else '/proc/self/fd'
+    try:
+        initial=len(os.listdir(descriptors))
+        for _ in range(100):
+            manager.status(body['requestId'])
+        assert len(os.listdir(descriptors)) <= initial
+    finally:
+        manager.cancel(body['requestId']); wait(manager,body['requestId'])
 
 
 def child_job(root,body,ready):

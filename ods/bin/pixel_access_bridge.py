@@ -13,6 +13,7 @@ import http.client
 import ipaddress
 import json
 import os
+import plistlib
 from pathlib import Path
 import platform
 import re
@@ -27,7 +28,7 @@ import threading
 import time
 from urllib.parse import urlsplit
 import pixel_access_protocol as protocol
-from pixel_gateway_service import SystemdGatewayService
+from pixel_gateway_service import LaunchdGatewayService, SystemdGatewayService
 
 UNIT = "openclaw-gateway.service"
 STATE = Path("/var/lib/ods-pixel-access")
@@ -41,9 +42,10 @@ _DEADLINE = contextvars.ContextVar("pixel_access_operation_deadline", default=No
 
 
 class AccessError(Exception):
-    def __init__(self, code, *, http_status=None):
+    def __init__(self, code, *, http_status=None, returncode=None):
         self.code = code
         self.http_status = http_status
+        self.returncode = returncode
         super().__init__(code)
 
 
@@ -95,6 +97,11 @@ def _pipe_send(stream, value, deadline):
             except BlockingIOError: continue
             if count <= 0: raise AccessError("owner-protocol-failed")
             data = data[count:]
+
+
+def runtime_config_path(bridge):
+    """Use the protected deployment's config, retaining the Linux default."""
+    return getattr(bridge, '_runtime_config_path', None) or bridge.home / '.openclaw/openclaw.json'
 
 
 def private_json(path, uid, maximum=1024 * 1024):
@@ -176,7 +183,7 @@ def _edge_json(raw):
     return value
 
 
-def _edge_container_request(container_id, path, key, payload, timeout=20):
+def _edge_container_request(container_id, path, key, payload, timeout=20, *, process_context=None):
     """Bound one request to the exact running edge, including Docker Desktop.
 
     Container IPs are not necessarily routable from the systemd host. Docker
@@ -211,7 +218,7 @@ def _edge_container_request(container_id, path, key, payload, timeout=20):
             ["docker", "exec", "-i", container_id, "python3", "-I", "-c",
              _EDGE_CONTAINER_SCRIPT, str(timeout)],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            bufsize=0)
+            bufsize=0, **(process_context or {}))
         os.set_blocking(process.stdin.fileno(), False)
         os.set_blocking(process.stdout.fileno(), False)
         with selectors.DefaultSelector() as selector:
@@ -358,6 +365,8 @@ class SystemdAccessBridge:
             result = subprocess.run(args, check=True, stdout=subprocess.PIPE,
                                     stderr=subprocess.DEVNULL, text=True, timeout=timeout)
             return result.stdout.strip()
+        except subprocess.CalledProcessError as error:
+            raise AccessError("host-command-failed", returncode=error.returncode) from None
         except (OSError, subprocess.SubprocessError):
             raise AccessError("host-command-failed") from None
 
@@ -676,29 +685,38 @@ class SystemdAccessBridge:
         budget = remaining(20)
         started = time.monotonic()
         # Pin the inspected running instance, not a replaceable container name.
-        identity = self.command(["docker", "inspect", "ods-pixel-edge", "--format",
-                                 "{{.Id}} {{.State.Running}}"], timeout=budget).split()
+        identity = self._inspect_edge(timeout=budget).split()
         if len(identity) != 2 or not HEX.fullmatch(identity[0]) or identity[1] != "true":
             raise AccessError("edge-container-unavailable")
         payload = dict(token=token, revision=revision) if operation else None
-        return _edge_container_request(identity[0],
+        return self._request_edge(identity[0],
             "/v1/transition" + ("/" + operation if operation else ""),
             self.edge_key, payload, timeout=budget - (time.monotonic() - started))
+
+    def _inspect_edge(self, *, timeout):
+        return self.command(['docker', 'inspect', 'ods-pixel-edge', '--format',
+                             '{{.Id}} {{.State.Running}}'], timeout=timeout)
+
+    def _request_edge(self, *args, **kwargs):
+        return _edge_container_request(*args, **kwargs)
+
+    def _native_owner_identity(self):
+        import pwd
+        owner = pwd.getpwnam(self.owner.pw_name)
+        if (os.geteuid() != 0 or owner.pw_uid <= 0 or owner.pw_gid < 0
+                or owner.pw_uid != self.owner.pw_uid or owner.pw_gid != self.owner.pw_gid):
+            raise AccessError('unsafe-owner-identity')
+        return {'user': owner.pw_uid, 'group': owner.pw_gid,
+                'extra_groups': os.getgrouplist(owner.pw_name, owner.pw_gid)}
 
     def _launch_owner_worker(self, env):
         script = Path(__file__).resolve().parent / "access_mode_worker.py"
         command = [sys.executable, "-I", "-u", str(script)]
         identity = {}
         if platform.system() == "Darwin":
-            import pwd
-            owner = pwd.getpwnam(self.owner.pw_name)
-            if (os.geteuid() != 0 or owner.pw_uid <= 0 or owner.pw_gid < 0
-                    or owner.pw_uid != self.owner.pw_uid or owner.pw_gid != self.owner.pw_gid):
-                raise AccessError("unsafe-owner-identity")
             # Popen drops groups/GID/UID in the child before exec, without a
             # shell, user-controlled launcher, or thread-unsafe preexec_fn.
-            identity = {"user": owner.pw_uid, "group": owner.pw_gid,
-                        "extra_groups": os.getgrouplist(owner.pw_name, owner.pw_gid)}
+            identity = self._native_owner_identity()
         else:
             command = [self._linux_owner_launcher(), "-u", self.owner.pw_name, "--", *command]
         return subprocess.Popen(command, cwd="/", env=env, stdin=subprocess.PIPE,
@@ -726,13 +744,18 @@ class SystemdAccessBridge:
             raise AccessError("owner-launcher-unavailable")
         return launcher
 
+    def worker_environment(self):
+        return {"HOME": str(self.home), "USER": self.owner.pw_name, "LOGNAME": self.owner.pw_name,
+                "PATH": str(Path(self.binary).parent) + ":/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8"}
+
     def worker(self, operation="status", *, confirmed=False, config_hash=None, busy=None, restart=None,
                transaction_id=None, settings_revision=None, preferences=None, capabilities=None, activate_settings=None,
                binding=None, activate_provider=None, expected_projection=None, provider_probe=None,
-               model_target=None, model_outcome=None):
-        env = {"HOME": str(self.home), "USER": self.owner.pw_name, "LOGNAME": self.owner.pw_name,
-               "PATH": str(Path(self.binary).parent) + ":/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8"}
+               model_target=None, model_outcome=None, relocation=None):
+        env = self.worker_environment()
         request = dict(operation=operation, openclaw=self.binary, config_sha256=config_hash, confirmed=confirmed)
+        if operation == 'access-relocate':
+            request['relocation'] = relocation
         if operation == 'provider-worker-status':
             request['provider_probe'] = provider_probe
         if operation in ("settings-apply", "settings-recover", "provider-change", "provider-recover"):
@@ -900,8 +923,12 @@ class SystemdAccessBridge:
     def unit_boundary(self):
         return self.gateway_service.boundary()
 
+    def service_restore_required(self):
+        return self.dropin.exists()
+
     def provision_probe(self):
-        base = Path("/var/lib/ods-pixel-access-probes")
+        base = (Path("/private/var/lib/ods-pixel-access-probes")
+                if platform.system() == "Darwin" else Path("/var/lib/ods-pixel-access-probes"))
         base.mkdir(mode=0o711, exist_ok=True)
         info = base.lstat()
         if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
@@ -1272,7 +1299,7 @@ class SystemdAccessBridge:
 
                 def restart():
                     if busy(): return False
-                    current = private_json(self.home / ".openclaw/openclaw.json", self.owner.pw_uid)
+                    current = private_json(runtime_config_path(self), self.owner.pw_uid)
                     agents = [agent for agent in current.get("agents", {}).get("list", []) if agent.get("id") == "pixel"]
                     if len(agents) != 1: return False
                     self.dropin_for(agents[0].get("sandbox", {}).get("mode") == "off" and agents[0].get("tools", {}).get("exec", {}).get("host") == "gateway")
@@ -1307,7 +1334,7 @@ class SystemdAccessBridge:
                 # a baseline or performing an unnecessary restore.
                 if not (request["mode"] == "sandboxed" and not config.get("managed") and config.get("configured_status") == "sandboxed"):
                     self.worker(request["mode"], confirmed=request["confirmed"], config_hash=config["config_sha256"], busy=busy, restart=restart)
-                elif self.dropin.exists():
+                elif self.service_restore_required():
                     if not restart(): raise AccessError("restore-restart-failed")
                 # A pending journal alone does not mean this pristine config
                 # changed. Recheck the actual service boundary and core tools
@@ -1327,3 +1354,392 @@ class SystemdAccessBridge:
                 atomic_json(self.state / "transition.json", pending)
                 if isinstance(error, AccessError): raise
                 raise AccessError("transition-failed") from None
+
+
+class LaunchdAccessBridge(SystemdAccessBridge):
+    """Darwin bridge for a root-owned system LaunchDaemon gateway.
+
+    The transaction engine is shared with Linux, but every systemd-specific
+    assumption is replaced here: launchd custody, plist identity and pinned
+    Seatbelt profiles. A user LaunchAgent never qualifies as this bridge.
+    """
+    def __init__(self, install_dir, edge_key, *, gateway_target, gateway_plist,
+                 gateway_process, state, gateway_binding, installed_binary,
+                 gateway_owner, gateway_port=None, settings_data_dir=None, gateway_policy=None):
+        if (not isinstance(gateway_target, str)
+                or not re.fullmatch(r'system/[A-Za-z0-9][A-Za-z0-9.-]{0,127}', gateway_target)):
+            raise AccessError('system-launchdaemon-required')
+        gateway_plist = Path(gateway_plist) if isinstance(gateway_plist, str) else gateway_plist
+        if (not isinstance(gateway_plist, Path) or not gateway_plist.is_absolute()
+                or gateway_plist.parent != Path('/Library/LaunchDaemons')
+                or gateway_plist.name != gateway_target.rsplit('/', 1)[1] + '.plist'):
+            raise AccessError('system-launchdaemon-required')
+        super().__init__(install_dir, edge_key, state=state, installed_binary=installed_binary,
+                         gateway_owner=gateway_owner, gateway_port=gateway_port,
+                         settings_data_dir=settings_data_dir, gateway_binding=gateway_binding)
+        self.gateway_target = gateway_target
+        self.gateway_plist = gateway_plist
+        self.gateway_process = dict(gateway_process) if isinstance(gateway_process, dict) else gateway_process
+        self.gateway_policy = gateway_policy
+        self.gateway_service = LaunchdGatewayService(
+            lambda *args, **kwargs: self.command(*args, **kwargs), AccessError,
+            gateway_target, self._verify_launchd_loaded, process=self.gateway_process,
+            plist=self.gateway_plist, verify_definition=self._verify_launchd_definition,
+            save_stop=self._save_gateway_stop, load_stop=self._load_gateway_stop)
+        # The shared change() implementation checks this path only to detect a
+        # legacy systemd drop-in. Darwin mode never creates one.
+        self.dropin = Path('/private/var/empty/ods-pixel-no-systemd-dropin')
+
+    @contextlib.contextmanager
+    def locked(self):
+        with super().locked():
+            # Do not infer successful recovery from a journal phase alone.
+            # The upgrader removes this marker only after live verification.
+            if os.path.lexists(self.state / 'runtime-upgrade.json'):
+                raise AccessError('runtime-upgrade-recovery-required')
+            yield
+
+    @contextlib.contextmanager
+    def recovery_locked(self, *, completed_digest=None):
+        """Reserve the controller for the explicit runtime recovery path.
+
+        Holding this lock does not authorize journal contents or reopening
+        admission. Recovery must validate both before modifying services.
+        """
+        with super().locked():
+            pending = os.path.lexists(self.state / 'runtime-upgrade.json')
+            if completed_digest is None:
+                if not pending:
+                    raise AccessError('runtime-upgrade-journal-required')
+            else:
+                if type(completed_digest) is not str or not re.fullmatch('[a-f0-9]{64}', completed_digest):
+                    raise AccessError('runtime-upgrade-digest-invalid')
+                if pending:
+                    raise AccessError('runtime-upgrade-pending-recovery')
+                if not os.path.lexists(self.state / ('runtime-upgrade-' + completed_digest + '.completed.json')):
+                    raise AccessError('runtime-upgrade-archive-required')
+            if any(os.path.lexists(self.state / name) for name in
+                   ('transition.json', 'policy-activation.json')):
+                raise AccessError('runtime-upgrade-pending-recovery')
+            yield
+
+    def status(self):
+        if os.path.lexists(self.state / 'runtime-upgrade.json'):
+            return {'available': False, 'surface': 'darwin', 'configured_mode': 'unknown',
+                    'effective_mode': 'unknown', 'runtime_verified': False, 'revision': None,
+                    'busy': False, 'pending': True, 'reason': 'runtime-upgrade-recovery-required',
+                    'scope': 'owner-host'}
+        return super().status()
+
+    def _stop_transaction(self):
+        journal = self.pending()
+        if (type(journal) is not dict or journal.get('kind') != 'provider'
+                or journal.get('phase') not in ('invoking', 'restarting')
+                or type(journal.get('token')) is not str or not HEX.fullmatch(journal['token'])):
+            raise AccessError('native-stop-transaction-unavailable')
+        return journal
+
+    def _save_gateway_stop(self, witness):
+        journal = self._stop_transaction()
+        atomic_json(self.state / 'launchd-stop.json', {'token': journal['token'], 'witness': witness})
+
+    def _load_gateway_stop(self):
+        journal = self._stop_transaction()
+        try:
+            value = private_json(self.state / 'launchd-stop.json', 0, 256 * 1024)
+        except (OSError, ValueError):
+            raise AccessError('native-stop-witness-unavailable') from None
+        if (type(value) is not dict or set(value) != {'token', 'witness'}
+                or value['token'] != journal['token'] or value['witness'] is None):
+            raise AccessError('native-stop-witness-unavailable')
+        return value['witness']
+
+    def _launchd_document(self):
+        import grp
+        import pwd
+        from pixel_macos_custody import CustodyError, protected_bytes
+        try:
+            raw = protected_bytes(self.gateway_plist)
+            document = plistlib.loads(raw)
+        except (CustodyError, OSError, ValueError, TypeError, plistlib.InvalidFileException):
+            raise AccessError('gateway-launchd-custody-required') from None
+        if type(document) is not dict:
+            raise AccessError('gateway-launchd-custody-required')
+        try:
+            group = grp.getgrgid(pwd.getpwnam(self.gateway_owner).pw_gid).gr_name
+        except (KeyError, TypeError):
+            raise AccessError('gateway-owner-unavailable') from None
+        if (document.get('Label') != self.gateway_target.rsplit('/', 1)[1]
+                or document.get('UserName') != self.gateway_owner
+                or document.get('GroupName') != group):
+            raise AccessError('gateway-launchdaemon-identity-mismatch')
+        return raw, document
+
+    def _verify_launchd_definition(self):
+        self._launchd_document()
+        if (self.gateway_binding is None or
+                self.gateway_service.definition() != self.gateway_binding.get('definition')):
+            raise AccessError('gateway-installation-changed')
+
+    def _verify_launchd_loaded(self):
+        from pixel_macos_custody import CustodyError, verify_loaded_launchd_definition
+        _, document = self._launchd_document()
+        try:
+            self._verify_launchd_definition()
+            raw = self.command(['/bin/launchctl', 'print', self.gateway_target])
+            verify_loaded_launchd_definition(raw, self.gateway_target, self.gateway_plist, document)
+        except CustodyError as error:
+            raise AccessError(str(error)) from None
+
+    def gateway_installation_binding(self, *, require_running=False):
+        import pwd
+        _, document = self._launchd_document()
+        try:
+            self._verify_launchd_loaded()
+        except AccessError as error:
+            if require_running or error.code != 'host-command-failed' or error.returncode != 113:
+                raise
+            # Recovery can rediscover an intentionally unloaded job only with
+            # a same-transaction, same-boot root witness and fresh OS checks.
+            self.gateway_service.assert_stopped()
+        if require_running:
+            self.gateway_service.pid(require_running=True)
+        owner = pwd.getpwnam(self.gateway_owner)
+        if owner.pw_uid == 0:
+            raise AccessError('unsafe-gateway-owner')
+        process = self.gateway_process
+        if (type(process) is not dict or set(process) != {'uid', 'gid', 'executable'}
+                or process['uid'] != owner.pw_uid or process['gid'] != owner.pw_gid):
+            raise AccessError('gateway-process-specification-required')
+        binding = {'schemaVersion': 1, 'target': self.gateway_target,
+                   'plist': str(self.gateway_plist), 'definition': self.gateway_service.definition(),
+                   'owner': owner.pw_name, 'executable': process['executable'], 'process': process}
+        return binding
+
+    def verify_gateway_installation_binding(self):
+        if self.gateway_binding is None or self.gateway_installation_binding() != self.gateway_binding:
+            raise AccessError('gateway-installation-changed')
+        self._policy_state()
+
+    def _policy_state(self):
+        from pixel_macos_policy import PolicyError, policy_state
+        try:
+            state = policy_state(self.gateway_policy)
+        except (PolicyError, OSError) as error:
+            raise AccessError(str(error) if isinstance(error, PolicyError) else 'policy-unavailable') from None
+        _, document = self._launchd_document()
+        arguments = document.get('ProgramArguments', [])
+        if arguments.count('/usr/bin/sandbox-exec') != 1:
+            raise AccessError('gateway-policy-binding-mismatch')
+        index = arguments.index('/usr/bin/sandbox-exec')
+        if len(arguments) <= index + 3 or arguments[index + 1] != '-f':
+            raise AccessError('gateway-policy-binding-mismatch')
+        profile = arguments[index + 2]
+        # Only Apple's fixed /etc alias is permitted; do not resolve arbitrary
+        # symlinks before the custody checker has inspected the actual paths.
+        if profile.startswith('/etc/'):
+            profile = '/private' + profile
+        if profile != state['active']:
+            raise AccessError('gateway-policy-binding-mismatch')
+        return state
+
+    def _runtime_environment(self):
+        _, document = self._launchd_document()
+        arguments = document.get('ProgramArguments')
+        if (type(arguments) is not list or len(arguments) < 4
+                or arguments[:2] != ['/usr/bin/env', '-i']):
+            raise AccessError('gateway-runtime-environment-unavailable')
+        values = {}
+        for argument in arguments[2:]:
+            if not isinstance(argument, str):
+                raise AccessError('gateway-runtime-environment-unavailable')
+            key, separator, value = argument.partition('=')
+            if not separator or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', key):
+                break
+            if key in values:
+                raise AccessError('gateway-runtime-environment-unavailable')
+            values[key] = value
+        for key in ('HOME', 'OPENCLAW_CONFIG_PATH', 'OPENCLAW_STATE_DIR'):
+            value = values.get(key)
+            if (not isinstance(value, str) or not value.startswith('/') or value == '/'
+                    or any(part in ('', '.', '..') for part in value.split('/')[1:])
+                    or any(ord(char) < 32 for char in value)
+                    or Path(value).resolve() != Path(value)):
+                raise AccessError('gateway-runtime-path-unavailable')
+        return values
+
+    def worker_environment(self):
+        self.verify_gateway_installation_binding()
+        configured = self._runtime_environment()
+        if (Path(configured['HOME']) != self.home
+                or Path(configured['OPENCLAW_CONFIG_PATH']) != runtime_config_path(self)):
+            raise AccessError('gateway-installation-changed')
+        env = super().worker_environment()
+        for key in ('OPENCLAW_CONFIG_PATH', 'OPENCLAW_STATE_DIR', 'PATH', 'TMPDIR',
+                    'DOCKER_HOST', 'DOCKER_CONFIG', 'OPENCLAW_WRAPPER'):
+            if key in configured:
+                env[key] = configured[key]
+        return env
+
+    def _docker_process_context(self):
+        # Docker Desktop and its socket are owner-managed. Drop root before
+        # exec and use only the environment bound to the protected gateway.
+        return dict(cwd='/', env=self.worker_environment(), **self._native_owner_identity())
+
+    def _inspect_edge(self, *, timeout):
+        context = self._docker_process_context()
+        try:
+            result = subprocess.run(['docker', 'inspect', 'ods-pixel-edge', '--format',
+                                     '{{.Id}} {{.State.Running}}'],
+                check=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                text=True, timeout=remaining(timeout), **context)
+            return result.stdout.strip()
+        except subprocess.CalledProcessError as error:
+            raise AccessError('host-command-failed', returncode=error.returncode) from None
+        except (OSError, subprocess.SubprocessError):
+            raise AccessError('host-command-failed') from None
+
+    def _request_edge(self, *args, **kwargs):
+        return _edge_container_request(*args, **kwargs, process_context=self._docker_process_context())
+
+    def discover(self, *, allow_installing=False):
+        if platform.system() != 'Darwin':
+            raise AccessError('macos-platform-required')
+        if os.geteuid() != 0:
+            raise AccessError('root-host-adapter-required')
+        program = Path(__file__).resolve()
+        for path in (program, *program.parents):
+            info = path.lstat()
+            if stat.S_ISLNK(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+                raise AccessError('root-program-custody-required')
+        if self.gateway_binding is None:
+            raise AccessError('gateway-launchd-binding-required')
+        self.verify_gateway_installation_binding()
+        import pwd
+        try:
+            owner = pwd.getpwnam(self.gateway_owner)
+        except KeyError:
+            raise AccessError('gateway-owner-unavailable') from None
+        if owner.pw_uid == 0 or not Path(owner.pw_dir).is_absolute() or Path(owner.pw_dir).resolve() != Path(owner.pw_dir):
+            raise AccessError('unsafe-gateway-owner')
+        # Like Linux's explicit adoption path, the verified root deployment
+        # receipt authorizes discovery without inventing an owner ready marker.
+        environment = self._runtime_environment()
+        runtime_home = Path(environment['HOME'])
+        runtime_config = Path(environment['OPENCLAW_CONFIG_PATH'])
+        home_info = runtime_home.lstat()
+        if (not stat.S_ISDIR(home_info.st_mode) or home_info.st_uid != owner.pw_uid
+                or home_info.st_mode & 0o077):
+            raise AccessError('unsafe-gateway-home')
+        config = private_json(runtime_config, owner.pw_uid)
+        binary = self.installed_binary
+        if not isinstance(binary, str) or not Path(binary).is_absolute() or not os.access(binary, os.X_OK):
+            raise AccessError('installed-validator-unavailable')
+        port = self.configured_gateway_port(config)
+        token = config.get('gateway', {}).get('auth', {}).get('token')
+        if not isinstance(token, str) or not 16 <= len(token) <= 4096:
+            raise AccessError('gateway-auth-unavailable')
+        self.owner, self.home, self.binary = owner, runtime_home, binary
+        self._runtime_config_path = runtime_config
+        if (self.native_port, self.native_key) != (port, token):
+            self.native_port = self.native_key = self.native_origin = self._native_identity = None
+        self.native_port, self.native_key = port, token
+        # Public Edge/Dashboard schemas already use darwin for macOS. Keep
+        # the launchd-specific identity in the private boundary receipt.
+        self.surface = 'darwin'
+
+    def unit_boundary(self):
+        definition = self.gateway_service.definition()
+        value = json.dumps({'schemaVersion': 1, 'platform': 'macos-launchd',
+                            'target': self.gateway_target, 'plist': str(self.gateway_plist),
+                            'definition': definition, 'policy': self._policy_state()},
+                           sort_keys=True, separators=(',', ':'))
+        if len(value) > 4096:
+            raise AccessError('gateway-boundary-unavailable')
+        return value
+
+    def dropin_for(self, enabled):
+        if type(enabled) is not bool:
+            raise AccessError('invalid-access-mode')
+        self._verify_launchd_loaded()
+        self._policy_state()
+        mode = 'full-access' if enabled else 'sandboxed'
+        # Persist before the file switch: interruption must never let an old
+        # process qualify against newly selected on-disk policy bytes.
+        atomic_json(self.state / 'policy-activation.json', {
+            'mode': mode, 'before': self.gateway_service.transaction_identity()})
+        from pixel_macos_policy import PolicyError, select_policy
+        try:
+            select_policy(self.gateway_policy, mode)
+        except (PolicyError, OSError) as error:
+            raise AccessError(str(error) if isinstance(error, PolicyError) else 'policy-selection-failed') from None
+        # change() must still observe the old PID, restart, and run the core
+        # tool proof. Selecting a file alone never establishes an effective mode.
+
+    def service_restore_required(self):
+        return (self._policy_state()['activeMode'] != 'sandboxed'
+                or (self.state / 'policy-activation.json').exists())
+
+    def _policy_activation_identity(self, mode):
+        path = self.state / 'policy-activation.json'
+        if not path.exists():
+            return None
+        record = private_json(path, 0, 8192)
+        current = self.gateway_service.transaction_identity()
+        try:
+            before = record['before']
+            if (set(record) != {'mode', 'before'} or record['mode'] != mode
+                    or type(before) is not dict or set(before) != {'boot', 'pid', 'started'}
+                    or type(before['pid']) is not int or before['pid'] <= 0
+                    or type(before['started']) is not int or before['started'] <= 0
+                    or type(before['boot']) is not str
+                    or current['boot'] != before['boot'] or current['pid'] == before['pid']
+                    or current['started'] <= before['started']):
+                raise ValueError()
+        except (KeyError, TypeError, ValueError):
+            raise AccessError('policy-restart-unconfirmed') from None
+        return current
+
+    def verify_held_mode(self, token, mode):
+        if mode not in ('full-access', 'sandboxed') or type(token) is not str or not HEX.fullmatch(token):
+            raise AccessError('invalid-model-transition')
+        self.provision_probe()
+        baseline_file = self.state / 'service-baseline.json'
+        if not baseline_file.exists():
+            raise AccessError('service-baseline-missing')
+        baseline = private_json(baseline_file, 0, 8192).get('boundary')
+        boundary = self.unit_boundary()
+        try:
+            expected = json.loads(baseline)
+            if expected['policy']['activeMode'] != 'sandboxed':
+                raise ValueError()
+            expected['policy']['activeMode'] = mode
+        except (ValueError, TypeError, KeyError):
+            raise AccessError('service-baseline-invalid') from None
+        if expected != json.loads(boundary):
+            raise AccessError('service-boundary-mismatch')
+        activation_identity = self._policy_activation_identity(mode)
+        try:
+            proof = self.native('probe', token)
+        except AccessError as error:
+            try:
+                snapshot = self.native(timeout=10)
+                failure = snapshot.get('probe_failure') if snapshot.get('phase') == 'held' else None
+            except AccessError:
+                failure = None
+            if failure in PROBE_FAILURES:
+                raise AccessError('runtime-proof-' + failure) from None
+            raise error
+        if proof.get('proof', {}).get('mode') != mode:
+            raise AccessError('runtime-proof-failed')
+        verified_config = self.worker()
+        if verified_config.get('configured_status') != mode:
+            raise AccessError('configured-mode-changed')
+        if activation_identity is not None and (
+                proof.get('pid') != activation_identity['pid']
+                or self.gateway_service.transaction_identity() != activation_identity):
+            raise AccessError('policy-restart-unconfirmed')
+        atomic_json(self.state / 'verified.json', {'pid': proof['pid'], 'proof': proof['proof'],
+                    'config_sha256': verified_config['config_sha256'], 'boundary': boundary})
+        if activation_identity is not None:
+            (self.state / 'policy-activation.json').unlink()

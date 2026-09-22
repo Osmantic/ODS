@@ -264,6 +264,14 @@ jobs:
           python -m pip install -r extensions/services/pixel-edge/requirements.txt pytest
           python -m pytest -q extensions/services/pixel-edge/tests
 
+      - name: Native Pixel Installer And Recovery Tests
+        env:
+          TMPDIR: /private/tmp
+        run: |
+          python -m pip install pytest-subtests "PyYAML>=6.0,<7.0"
+          python -m pytest -q tests/test_macos_pixel_*.py tests/test_macos_runtime_*.py tests/test_macos_upgrade_process_crash.py tests/test_macos_protected_replace.py tests/test_pixel_startup_reproof.py tests/test_pixel_native_compose.py
+          python -m unittest discover -s tests -p 'test_pixel_*.py' -q
+
       - name: Atomic Environment Write Tests
         run: /bin/bash tests/test-atomic-env-writes.sh
 

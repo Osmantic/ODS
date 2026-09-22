@@ -1,10 +1,29 @@
 // Only the configured owner workspace is an alias for /workspace. Never infer
 // a host root from model arguments or expand traversal.
-import {lstatSync} from 'node:fs';
+import {lstatSync, statSync} from 'node:fs';
 import path from 'node:path';
 
 const selectedTool = id => typeof id === 'string' && /^(?:openclaw:core:)?(?:read|write|edit|exec)$/.test(id)
   ? id.split(':').at(-1) : id === 'pixel_ods_workspace_preview' ? id : undefined;
+
+// Core exec falls back to its process cwd for missing directories. Native
+// execution must not silently move a workspace mutation into that directory.
+export function nativeExecWorkdir(value, root, stat = statSync) {
+  const denied = {block:true, blockReason:'Nothing was executed: exec requires an existing working directory. Use the configured workspace as workdir, or create the first file with write (including its parent folders), then run commands there. Do not rely on a fallback directory.'};
+  if (typeof root !== 'string' || !path.isAbsolute(root) || root === '/' || root.includes('\0')) return denied;
+  if (value !== undefined && (typeof value !== 'string' || !value || value.includes('\0') || value.split('/').includes('..'))) return denied;
+  let directory;
+  if (value === undefined || ['.', 'workspace', '/workspace'].includes(value)) directory = root;
+  else if (value.startsWith('/workspace/')) directory = path.join(root, value.slice('/workspace/'.length));
+  else if (value.startsWith('workspace/')) directory = path.join(root, value.slice('workspace/'.length));
+  else directory = path.isAbsolute(value) ? value : path.join(root, value);
+  try {
+    if (!stat(directory).isDirectory()) return denied;
+  } catch { return denied; }
+  // This selects cwd, not authorization. Core policy and the native process
+  // profile remain responsible for access to the selected directory.
+  return {workdir:directory};
+}
 
 export function workspaceFileParent(tool, params, root, stat = lstatSync) {
   if (tool === 'tool_call') return workspaceFileParent(selectedTool(params?.id),params?.args,root,stat);

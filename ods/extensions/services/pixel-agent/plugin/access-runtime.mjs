@@ -141,7 +141,8 @@ export function executionHostForAgent(config, id = 'pixel') {
 export function createAccessRuntime({directory = path.join(os.homedir(), '.openclaw', '.ods-access-runtime'),
   config, settingsConfig, createTools, resolveSandbox, execControl, runtimeVersion = 'unknown', hooksAllowed = false,
   readProcessSessions,
-  probeDirectory = path.join('/var/lib/ods-pixel-access-probes', String(process.getuid?.() ?? 'unsupported'))} = {}) {
+  probeDirectory = path.join(process.platform === 'darwin' ? '/private/var/lib/ods-pixel-access-probes' :
+    '/var/lib/ods-pixel-access-probes', String(process.getuid?.() ?? 'unsupported'))} = {}) {
   if (typeof process.getuid !== 'function') {
     const unavailable = () => { throw new Error('POSIX admission unavailable'); };
     return {status: () => ({available: false, phase: 'unavailable', revision: null, active: 0, proof: null}),
@@ -162,6 +163,7 @@ export function createAccessRuntime({directory = path.join(os.homedir(), '.openc
   };
   const filename = path.join(directory, 'state.json');
   let state, failed = false, probeRun = null, proof = null, probeFailure = null;
+  let initializationStage = 'state-directory', initializationFailure = null;
   let processTimer = null, processCheck = null;
   const isInternal = context => (probeRun !== null && context?.runId === probeRun) || internalRuns.has(context?.runId);
   // Construct only the SDK's scoped process-list reader. Never execute a shell,
@@ -233,8 +235,10 @@ export function createAccessRuntime({directory = path.join(os.homedir(), '.openc
     // Serialize inspection AND replacement, including the missing-lock case.
     // An inode check alone cannot prevent two stale claimants unlinking a new
     // live owner's record. Never unlink the reusable kernel-lock file.
+    initializationStage = 'process-claim';
     const releaseClaim = claimProcess();
     try {
+      initializationStage = 'process-identity';
       const identity = process.platform === 'linux' ? linuxProcessIdentity(process.pid) : {pid: process.pid};
       if (!identity) throw new Error('current process identity unavailable');
       if (fs.existsSync(lock)) {
@@ -250,6 +254,7 @@ export function createAccessRuntime({directory = path.join(os.homedir(), '.openc
       try { fs.writeFileSync(lockFd, JSON.stringify(identity)); fs.fsyncSync(lockFd); }
       finally { fs.closeSync(lockFd); }
     } finally { releaseClaim(); }
+    initializationStage = 'state-read';
     if (fs.existsSync(filename)) {
       privateEntry(filename);
       if (fs.statSync(filename).size > 4096) throw new Error('oversized runtime state');
@@ -259,8 +264,9 @@ export function createAccessRuntime({directory = path.join(os.homedir(), '.openc
       if (state.phase === 'busy') state.phase = 'interrupted';
     } else state = {version: 1, phase: 'idle', revision: revision(), tokenHash: null};
     // Restart invalidates every previous runtime proof, even at identical config.
+    initializationStage = 'state-save';
     state.revision = revision(); save();
-  } catch { failed = true; }
+  } catch { failed = true; initializationFailure = initializationStage; }
   const busy = () => runs.size + tools.size + detached.size > 0;
   function changed() { state.revision = revision(); save(); }
   function scheduleProcessCheck() {
@@ -300,7 +306,9 @@ export function createAccessRuntime({directory = path.join(os.homedir(), '.openc
   function status() {
     return {available: !failed && qualified, phase: failed ? 'unavailable' : state.phase,
       revision: failed ? null : state.revision, active: runs.size + tools.size + detached.size,
-      pid: process.pid, runtime_version: runtimeVersion, proof, probe_failure: probeFailure};
+      pid: process.pid, runtime_version: runtimeVersion, proof, probe_failure: probeFailure,
+      initialization_failure: initializationFailure,
+      qualification_failure: qualified ? null : runtimeVersion !== '2026.6.33' ? 'runtime-version' : 'conversation-hooks'};
   }
   function admit(_event, context) {
     const id = context?.runId;

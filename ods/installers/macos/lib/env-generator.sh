@@ -638,6 +638,8 @@ LLAMA_ARG_CACHE_TYPE_V=${LLAMA_ARG_CACHE_TYPE_V:-f16}
 # Optional native hybrid-model cache tuning; requires matching runtime --help support.
 # Empty/unset preserves runtime defaults; registered model profiles own their arguments.
 # LLAMA_ARG_CHECKPOINT_EVERY_NT=1024
+# Newer runtimes use minimum spacing instead of the legacy interval; never set both.
+# LLAMA_ARG_CHECKPOINT_MIN_SPACING_NT=1024
 # LLAMA_ARG_CTX_CHECKPOINTS=8
 # LLAMA_ARG_CACHE_RAM=512
 # Optional idle unloading: saves RAM between sessions, but loses prompt cache on sleep.

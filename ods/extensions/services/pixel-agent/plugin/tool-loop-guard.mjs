@@ -19,7 +19,7 @@ import { projectWebResult } from "./web-result-projection.mjs";
 import { createCompletionAssurance } from "./completion-assurance.mjs";
 import { parseQuestions, questionsText, requestsChoiceQuestion, choiceQuestionFromText } from "./ask-user.mjs";
 import { createRunProgressBudget, failedToolOutcome, isLiteralEcho, RUN_PROGRESS_STOP_REASON } from "./run-progress-budget.mjs";
-import { canonicalWorkspaceParams, extensionlessHtmlWrite, workspaceFileParent } from "./workspace-path-contract.mjs";
+import { canonicalWorkspaceParams, extensionlessHtmlWrite, workspaceFileParent, nativeExecWorkdir } from "./workspace-path-contract.mjs";
 import { routePlaygroundTool, requestsNewPlaygroundProject } from "./playground-projects.mjs";
 import { workspaceMutationFiles } from "./workspace-projects.mjs";
 
@@ -398,9 +398,30 @@ function execMarkerId(runId) {
   return createHash("sha256").update(runId, "utf8").digest("hex");
 }
 
+export function nativeRuntimeExecWrapper(executable = process.execPath, platform = process.platform, stat = fs.lstatSync) {
+  if (platform !== "darwin" || !/^\/usr\/local\/libexec\/ods-pixel-runtimes\/[a-f0-9]{64}\/node$/.test(executable)) return undefined;
+  const directory = path.dirname(executable);
+  const wrapper = path.join(directory, "cancellable-exec.sh");
+  let entry;
+  try { entry = stat(wrapper); } catch (error) {
+    // Older attested bundles predate the immutable wrapper and retain the
+    // verified owner-side wrapper. Other failures must not downgrade silently.
+    if (error?.code === "ENOENT") return undefined;
+    throw error;
+  }
+  const parent = stat(directory);
+  if (!entry.isFile() || entry.isSymbolicLink() || entry.uid !== 0 || entry.nlink !== 1
+      || (entry.mode & 0o7777) !== 0o755 || !parent.isDirectory() || parent.isSymbolicLink()
+      || parent.uid !== 0 || (parent.mode & 0o7777) !== 0o755) {
+    throw new Error("unsafe native runtime exec wrapper");
+  }
+  return wrapper;
+}
+
 export function createExecCancellationControl({
   root = path.join(homedir(), ".openclaw", ".ods-exec-control"),
   executionHost = "sandbox",
+  platform = process.platform,
 } = {}) {
   if (executionHost !== "sandbox" && executionHost !== "gateway") {
     throw new Error("invalid Pixel execution control host mode");
@@ -432,6 +453,10 @@ export function createExecCancellationControl({
   }
 
   return {
+    resolveWorkdir(value, workspaceRoot) {
+      return executionHost === "gateway" && platform === "darwin"
+        ? nativeExecWorkdir(value, workspaceRoot) : undefined;
+    },
     prepare(runId, command) {
       if (typeof command !== "string" || !command.trim() || command.includes("\0")) {
         throw new Error("invalid Pixel exec command");
@@ -445,10 +470,12 @@ export function createExecCancellationControl({
       const encoded = Buffer.from(command, "utf8").toString("base64");
       // Validate the owner-side file above even when execution uses its sandbox
       // bind mount. Gateway execution uses that same verified file directly.
+      const immutableWrapper = executionHost === "gateway" ? nativeRuntimeExecWrapper(process.execPath, platform) : undefined;
       const wrapper = executionHost === "sandbox"
         ? EXEC_CONTROL_WRAPPER
-        : `'${hostWrapper.replace(/'/g, "'\"'\"'")}'`;
-      return `${wrapper} ${execMarkerId(runId)} ${encoded}`;
+        : `'${(immutableWrapper ?? hostWrapper).replace(/'/g, "'\"'\"'")}'`;
+      const markers = immutableWrapper ? ` '${resolvedRoot.replace(/'/g, "'\"'\"'")}'` : "";
+      return `${wrapper} ${execMarkerId(runId)} ${encoded}${markers}`;
     },
 
     signal(runId) {
@@ -1480,8 +1507,12 @@ function exactDownloadTerminalArtifact(event, submissions) {
     typeof artifact !== "object" ||
     Array.isArray(artifact) ||
     typeof artifact.path !== "string" ||
-    artifact.path !==
-      `/var/lib/pixel-ops-broker/artifacts/${requestedJobId}/${submission.filename}` ||
+    ![
+      `/var/lib/pixel-ops-broker/artifacts/${requestedJobId}/${submission.filename}`,
+      ...(process.platform === "darwin"
+        ? [`/private/var/lib/pixel-ops-broker/artifacts/${requestedJobId}/${submission.filename}`]
+        : []),
+    ].includes(artifact.path) ||
     typeof artifact.filename !== "string" ||
     artifact.filename !== submission.filename ||
     !Number.isSafeInteger(artifact.bytes) ||
@@ -8038,6 +8069,9 @@ export function createToolLoopGuard({
         const params = { ...selectedParams };
         const originalFingerprint = execFingerprint(params);
         const originalVerificationFingerprint = verificationExecFingerprint(params);
+        const directory = execControl.resolveWorkdir?.(params.workdir, state?.configuredWorkspaceRoot);
+        if (directory?.block) return directory;
+        if (directory) params.workdir = directory.workdir;
         try {
           params.command = execControl.prepare(runId, params.command);
         } catch (error) {

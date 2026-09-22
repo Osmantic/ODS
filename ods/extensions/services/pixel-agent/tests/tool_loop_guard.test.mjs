@@ -3287,7 +3287,8 @@ test("requires terminal artifact evidence after a staged-download submission", (
   });
 });
 
-test("accepts a matching terminal staged-download artifact receipt", () => {
+for (const artifactsRoot of ["/var/lib/pixel-ops-broker/artifacts", ...(process.platform === "darwin" ? ["/private/var/lib/pixel-ops-broker/artifacts"] : [])]) {
+test(`accepts a matching terminal staged-download artifact receipt: ${artifactsRoot}`, () => {
   const guard = createToolLoopGuard();
   const jobId = "ops-1234567890123-abcdef123456";
   guard.observeRun(
@@ -3314,7 +3315,7 @@ test("accepts a matching terminal staged-download artifact receipt", () => {
             target: "broker",
             exitCode: 0,
             artifact: {
-              path: `/var/lib/pixel-ops-broker/artifacts/${jobId}/example.html`,
+              path: `${artifactsRoot}/${jobId}/example.html`,
               filename: "example.html",
               bytes: 559,
               sha256: "a".repeat(64),
@@ -3378,6 +3379,8 @@ test("accepts a matching terminal staged-download artifact receipt", () => {
   assert.match(delivered, /a{64}/);
   assert.match(delivered, /Executable: no; overwrite: no/);
 });
+
+}
 
 function verifiedDownloadGuard() {
   const guard = createToolLoopGuard();

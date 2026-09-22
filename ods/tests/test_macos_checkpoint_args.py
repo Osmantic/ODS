@@ -70,6 +70,24 @@ class CheckpointArgumentsTests(unittest.TestCase):
                     cache.qualify('/binary', ('', '', '', value))
                 run.assert_not_called()
 
+    def test_new_minimum_spacing_is_explicit_and_capability_checked(self):
+        with patch.object(cache.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, '--checkpoint-min-step N', '')):
+            self.assertEqual(cache.qualify('/binary', ('', '', '', '', '1024')),
+                             ['--checkpoint-min-step', '1024'])
+        self.assertEqual(cache.requested_arguments(('', '', '', '', '0')),
+                         ['--checkpoint-min-step', '0'])
+        with patch.object(cache.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, '--checkpoint-every-n-tokens N', '')):
+            with self.assertRaises(ValueError):
+                cache.qualify('/binary', ('', '', '', '', '1024'))
+
+    def test_conflicting_or_invalid_spacing_preserves_running_model(self):
+        for values in (('1024', '', '', '', '1024'), ('-1', '', '', '', '0'),
+                       ('', '', '', '', '-1'), ('', '', '', '', '262145')):
+            with self.subTest(values=values), patch.object(cache.subprocess, 'run') as run:
+                with self.assertRaises(ValueError):
+                    cache.qualify('/binary', values)
+                run.assert_not_called()
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -4,9 +4,11 @@ Platform adapters must prove stopped state independently of HTTP reachability.
 Installation custody and access-mode isolation remain separate prerequisites.
 """
 from pathlib import Path
+import errno
 import hashlib
 import plistlib
 import re
+import sys
 import time
 
 
@@ -15,6 +17,40 @@ def _boot_uuid(value, error):
             r'[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}', value):
         raise error('settings-process-unavailable')
     return value
+
+
+def launchd_definition_digest(document, error):
+    """Fingerprint a trusted plist snapshot; does not prove file custody."""
+    if type(document) is not dict:
+        raise error('launchd-provider-environment-unavailable')
+    arguments = document.get('ProgramArguments')
+    # The access coordinator executes isolated Python directly, without the
+    # gateway's provider-editable env wrapper. Bind its entire plist unchanged.
+    if (document.get('Label') == 'com.ods.pixel-access'
+            and arguments == ['/usr/bin/python3', '-I',
+                              '/usr/local/libexec/ods-pixel-access/access_mode_server.py']):
+        return hashlib.sha256(plistlib.dumps(document, fmt=plistlib.FMT_BINARY, sort_keys=True)).hexdigest()
+    if (not isinstance(arguments, list) or len(arguments) < 3
+            or arguments[:2] != ['/usr/bin/env', '-i']
+            or any(not isinstance(value, str) or not value for value in arguments)):
+        raise error('launchd-provider-environment-unavailable')
+    managed = {'OPENCLAW_REQUIRED_PLUGINS', 'PIXEL_ODS_PROVIDER_DEPLOYMENT'}
+    assignments, command = [], []
+    for value in arguments[2:]:
+        if not command and '=' in value and value.partition('=')[0].isidentifier():
+            if value.partition('=')[0] not in managed:
+                assignments.append(value)
+        else:
+            command.append(value)
+    environment = document.get('EnvironmentVariables', {})
+    if not isinstance(environment, dict) or not command or any(
+            value.split('=', 1)[0] in managed for value in environment):
+        raise error('launchd-provider-environment-unavailable')
+    normalized = dict(document)
+    normalized['ProgramArguments'] = ['/usr/bin/env', '-i', *assignments, *command]
+    if 'EnvironmentVariables' in normalized:
+        normalized['EnvironmentVariables'] = dict(environment)
+    return hashlib.sha256(plistlib.dumps(normalized, fmt=plistlib.FMT_BINARY, sort_keys=True)).hexdigest()
 
 
 class SystemdGatewayService:
@@ -84,17 +120,50 @@ class LaunchdGatewayService:
     Production uses a system job; GUI domains support isolated qualification.
     No request may supply target or the verifier.
     """
-    def __init__(self, command, error, target, verify, *, process=None, plist=None):
+    def __init__(self, command, error, target, verify, *, process=None, plist=None,
+                 verify_definition=None, save_stop=None, load_stop=None, allow_root_process=False):
         if (not isinstance(target, str) or not re.fullmatch(
                 r'(?:system|gui/[0-9]+)/[A-Za-z0-9][A-Za-z0-9.-]{0,127}', target)
                 or not callable(verify)):
             raise error('invalid-launchd-service')
         self.command, self.error, self.target, self.verify = command, error, target, verify
+        self.verify_definition = verify_definition or verify
+        if (save_stop is None) != (load_stop is None) or (save_stop is not None
+                and (not callable(save_stop) or not callable(load_stop))):
+            raise error('invalid-launchd-stop-store')
+        self.save_stop, self.load_stop = save_stop, load_stop
         self.is_launchd = True
         # Supplied by the protected deployment, not by an API request or plist
         # inferred from the currently running user-owned qualification job.
         self.process = dict(process) if isinstance(process, dict) else None
+        if (type(allow_root_process) is not bool or allow_root_process and
+                (target != 'system/com.ods.pixel-native-promoter' or not self.process or self.process.get('uid') != 0)):
+            raise error('invalid-root-service-process-opt-in')
+        self.allow_root_process = allow_root_process
         self.plist = Path(plist) if isinstance(plist, str) else plist
+        self._stopping_tree = None
+
+    def _boot_identity(self):
+        raw = self.command(['/usr/sbin/sysctl', '-n', 'kern.bootsessionuuid'])
+        return _boot_uuid(raw.strip().lower(), self.error)
+
+    def _restore_stop(self):
+        if self.load_stop is None:
+            return
+        value = self.load_stop()
+        if (type(value) is not dict or set(value) != {'target', 'boot', 'definition', 'processes'}
+                or value['target'] != self.target or value['boot'] != self._boot_identity()
+                or value['definition'] != self.definition()
+                or type(value['processes']) is not list or not 1 <= len(value['processes']) <= 4096):
+            raise self.error('native-stop-witness-unavailable')
+        processes = value['processes']
+        if (any(type(row) is not list or len(row) != 3
+                or any(type(item) is not int for item in row)
+                or not 0 < row[0] <= 2147483647 or row[1] <= 0 or not 0 <= row[2] < 1000000
+                for row in processes)
+                or len({row[0] for row in processes}) != len(processes)):
+            raise self.error('native-stop-witness-unavailable')
+        self._stopping_tree = tuple(tuple(row) for row in processes)
 
     def process_identity(self, *, timeout=20):
         from pixel_macos_process import ProcessIdentityError, process_identity
@@ -108,7 +177,8 @@ class LaunchdGatewayService:
             return value
         pid = self.pid(timeout=budget(), require_running=True)
         try:
-            identity = process_identity(pid, **self.process)
+            identity = process_identity(pid, **self.process,
+                **({'allow_root': True} if self.allow_root_process else {}))
         except ProcessIdentityError as exc:
             raise self.error(str(exc)) from None
         if self.pid(timeout=budget(), require_running=True) != pid:
@@ -169,28 +239,7 @@ class LaunchdGatewayService:
             document = plistlib.loads(raw)
         except (CustodyError, OSError, ValueError, TypeError, plistlib.InvalidFileException):
             raise self.error('launchd-plist-unavailable') from None
-        arguments = document.get('ProgramArguments')
-        if (not isinstance(arguments, list) or len(arguments) < 3
-                or arguments[:2] != ['/usr/bin/env', '-i']
-                or any(not isinstance(value, str) or not value for value in arguments)):
-            raise self.error('launchd-provider-environment-unavailable')
-        managed = {'OPENCLAW_REQUIRED_PLUGINS', 'PIXEL_ODS_PROVIDER_DEPLOYMENT'}
-        assignments, command = [], []
-        for value in arguments[2:]:
-            if not command and '=' in value and value.partition('=')[0].isidentifier():
-                if value.partition('=')[0] not in managed:
-                    assignments.append(value)
-            else:
-                command.append(value)
-        environment = document.get('EnvironmentVariables', {})
-        if not isinstance(environment, dict) or not command or any(
-                value.split('=', 1)[0] in managed for value in environment):
-            raise self.error('launchd-provider-environment-unavailable')
-        normalized = dict(document)
-        normalized['ProgramArguments'] = ['/usr/bin/env', '-i', *assignments, *command]
-        if 'EnvironmentVariables' in normalized:
-            normalized['EnvironmentVariables'] = dict(environment)
-        return hashlib.sha256(plistlib.dumps(normalized, fmt=plistlib.FMT_BINARY, sort_keys=True)).hexdigest()
+        return launchd_definition_digest(document, self.error)
 
     def pid(self, *, timeout=20, require_running=False):
         self.verify()
@@ -216,13 +265,54 @@ class LaunchdGatewayService:
         self.command(['/bin/launchctl', 'kickstart', '-k', self.target], timeout=timeout)
 
     def stop(self, *, timeout=60):
-        # bootout removes launchd's loaded definition and stops its managed
-        # process. The caller still needs an independent stopped-state proof.
+        # Capture the complete live tree before bootout. The caller still
+        # obtains an independent stopped-state proof after launchd unloads it.
         self.verify()
+        if sys.platform == 'darwin':
+            from pixel_macos_process import ProcessIdentityError, process_tree_snapshot
+            try:
+                self._stopping_tree = process_tree_snapshot(
+                    self.pid(timeout=min(timeout, 20), require_running=True))
+            except ProcessIdentityError as exc:
+                raise self.error(str(exc)) from None
+        if self.save_stop is not None:
+            if not self._stopping_tree or len(self._stopping_tree) > 4096:
+                raise self.error('native-stop-witness-unavailable')
+            self.save_stop({'target': self.target, 'boot': self._boot_identity(),
+                            'definition': self.definition(),
+                            'processes': [list(row) for row in self._stopping_tree]})
         self.command(['/bin/launchctl', 'bootout', self.target], timeout=timeout)
 
     def assert_stopped(self):
-        # Unlike a cgroup, a launchd PID alone cannot prove no descendants live.
+        self._restore_stop()
+        if self._stopping_tree is None:
+            raise self.error('native-idle-unconfirmed')
+        from pixel_macos_process import ProcessIdentityError, process_birth
+        for _ in range(120):
+            try:
+                raw = self.command(['/bin/launchctl', 'print', self.target])
+                if not raw:
+                    raise self.error('native-idle-unconfirmed')
+            except self.error as error:
+                if (getattr(error, 'code', str(error)) != 'host-command-failed'
+                        or getattr(error, 'returncode', None) != 113):
+                    raise
+                raw = ''
+            if raw:
+                time.sleep(0.25)
+                continue
+            survivors = []
+            for pid, started, usec in self._stopping_tree:
+                try:
+                    if process_birth(pid) == (started, usec):
+                        survivors.append(pid)
+                except ProcessIdentityError as error:
+                    if (str(error) != 'gateway-process-unavailable'
+                            or getattr(error, 'errno', None) != errno.ESRCH):
+                        raise self.error(str(error)) from None
+            if not survivors:
+                return
+            time.sleep(0.25)
         raise self.error('native-idle-unconfirmed')
 
     def boundary(self):
@@ -234,5 +324,13 @@ class LaunchdGatewayService:
         # would retain launchd's previous in-memory definition.
         if not isinstance(self.plist, (str, Path)):
             raise self.error('launchd-plist-required')
+        self.assert_stopped()
+        self.verify_definition()
         domain = self.target.rsplit('/', 1)[0]
+        if self.save_stop is not None:
+            # Once a new job can start, the old tree can no longer prove idle.
+            # Persist this before bootstrap so a controller crash cannot reuse
+            # an earlier process witness for a later gateway instance.
+            self.save_stop(None)
+        self._stopping_tree = None
         self.command(['/bin/launchctl', 'bootstrap', domain, str(self.plist)])

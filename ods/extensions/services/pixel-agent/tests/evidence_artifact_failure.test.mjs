@@ -7,7 +7,7 @@ import path from 'node:path';
 import { createEvidenceArtifactWriter } from '../plugin/evidence-artifact.mjs';
 
 test('a partial failed write preserves the previous verified report and cleans staging', () => {
-  const root = fs.mkdtempSync(path.join(tmpdir(), 'pixel-evidence-failure-'));
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(tmpdir(), 'pixel-evidence-failure-')));
   const destination = path.join(root, 'report.txt');
   const original = 'Previous verified report\n';
   const replacement = 'Replacement report that cannot finish\n';
@@ -44,7 +44,7 @@ test('a partial failed write preserves the previous verified report and cleans s
 });
 
 test('a readback mismatch never replaces an existing report', () => {
-  const root = fs.mkdtempSync(path.join(tmpdir(), 'pixel-evidence-readback-'));
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(tmpdir(), 'pixel-evidence-readback-')));
   const destination = path.join(root, 'report.txt');
   fs.writeFileSync(destination, 'Keep this report', {mode:0o600});
   const read = fs.readSync;
@@ -70,7 +70,7 @@ test('a readback mismatch never replaces an existing report', () => {
 
 test('destination symlinks cannot replace the linked report', t => {
   if (process.platform === 'win32') return t.skip('Windows symlink creation needs additional privileges');
-  const root = fs.mkdtempSync(path.join(tmpdir(), 'pixel-evidence-symlink-'));
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(tmpdir(), 'pixel-evidence-symlink-')));
   try {
     fs.writeFileSync(path.join(root, 'original.txt'), 'Keep', {mode:0o600});
     fs.symlinkSync('original.txt', path.join(root, 'report.txt'));

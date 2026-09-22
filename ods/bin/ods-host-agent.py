@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import atexit
 import base64
 import collections
@@ -4035,6 +4036,15 @@ def _begin_or_resume_external_pixel_transaction(config: dict, target: dict):
     return transaction.begin()
 
 
+def _pixel_local_identity_matches(config: dict, identity: str, expected: str) -> bool:
+    if identity == expected:
+        return True
+    gguf = str(config.get('GGUF_FILE') or '')
+    if not gguf or expected != gguf or Path(gguf).name != gguf:
+        return False
+    return identity == str(_active_model_directory(config) / gguf)
+
+
 def _prove_pixel_model_contract(config: dict, contract: dict) -> bool:
     if 'routeFingerprint' in contract:
         route = _read_remote_provider_route_state_for_update()
@@ -4061,7 +4071,7 @@ def _prove_pixel_model_contract(config: dict, contract: dict) -> bool:
         gguf_file=gguf,llm_model_name=str(config.get('LLM_MODEL') or gguf),
         lemonade_model_id=str(config.get('LEMONADE_MODEL') or ''),attempts=1,initial_delay=0,
         interval=0,return_proof=True,require_exact_context=True,allow_model_warmup=False)
-    return (isinstance(proof,dict) and proof.get('identity')==contract['model']
+    return (isinstance(proof,dict) and _pixel_local_identity_matches(config, proof.get('identity'), contract['model'])
             and proof.get('contextVerified') is True and proof.get('contextLength')==contract['contextLength'])
 
 
@@ -7289,6 +7299,38 @@ class AgentHandler(BaseHTTPRequestHandler):
         finally:
             _end_model_lifecycle("pixel_access_mode")
 
+    def _handle_pixel_open_app(self):
+        if not check_auth(self):
+            return
+        body = read_json_body(self)
+        if body is None:
+            return
+        from pixel_macos_apps import launch_application, AppLaunchError
+        from pixel_access_relay import request_runtime_access
+        acquired, _active = _begin_model_lifecycle('pixel_open_app')
+        if not acquired:
+            json_response(self, 409, {'error': 'model-lifecycle-busy'})
+            return
+        try:
+            approvals = INSTALL_DIR / 'config/pixel-approved-apps.json'
+            if approvals.is_symlink() or approvals.stat().st_size > 65536:
+                raise AppLaunchError('app-approvals-invalid')
+            approved = json.loads(approvals.read_text())
+            config = load_env(INSTALL_DIR / '.env')
+            def status():
+                code, value = request_runtime_access('status', config=config)
+                if code != 200:
+                    raise AppLaunchError('access-service-unavailable')
+                return value
+            result = launch_application(body, approved_apps=approved, access_status=status)
+            json_response(self, 200, result)
+        except AppLaunchError as error:
+            json_response(self, 403, {'error': str(error)})
+        except (OSError, ValueError):
+            json_response(self, 503, {'error': 'app-launch-unavailable'})
+        finally:
+            _end_model_lifecycle('pixel_open_app')
+
     def _handle_pixel_ops_status(self, query: dict[str, list[str]]):
         """Return one exact, nonsecret Operations result projection.
 
@@ -7734,6 +7776,8 @@ class AgentHandler(BaseHTTPRequestHandler):
         self.close_connection = True
         if self.path == "/v1/pixel/access-mode":
             self._handle_pixel_access_mode(True)
+        elif self.path == "/v1/pixel/apps/open":
+            self._handle_pixel_open_app()
         elif self.path in ("/v1/extension/start", "/v1/extension/stop"):
             action = "start" if self.path.endswith("/start") else "stop"
             self._handle_extension(action)
@@ -11407,7 +11451,7 @@ class AgentHandler(BaseHTTPRequestHandler):
                     )
                 if pixel_transaction is not None and (
                     not isinstance(previous_proof, dict)
-                    or previous_proof.get('identity') != pixel_transaction.previous['model']
+                    or not _pixel_local_identity_matches(rollback_env, previous_proof.get('identity'), pixel_transaction.previous['model'])
                     or previous_proof.get('contextVerified') is not True
                     or previous_proof.get('contextLength') != pixel_transaction.previous['contextLength']
                 ):
@@ -16176,24 +16220,14 @@ def _stop_macos_native_llama_server(pid_file: Path) -> None:
         if not bash:
             raise RuntimeError("macOS native llama service requires Bash")
         result = subprocess.run(
-            [
-                bash,
-                str(service_script),
-                "stop",
-                str(INSTALL_DIR),
-                str(llama_bin),
-                str(pid_file),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=90,
-            check=False,
+            [bash, str(service_script), "stop", str(INSTALL_DIR),
+             str(llama_bin), str(pid_file)],
+            capture_output=True, text=True, timeout=90, check=False,
         )
         if result.returncode != 0:
             detail = (result.stderr or result.stdout or "").strip() or "no output"
             raise RuntimeError(f"macOS native llama shutdown failed: {detail}")
         return
-
     if not pid_file.exists():
         return
     try:
@@ -16227,6 +16261,28 @@ def _stop_macos_native_llama_server(pid_file: Path) -> None:
         pid_file.unlink(missing_ok=True)
 
 
+def _native_llama_tuning_arguments(env: dict, llama_bin: Path) -> list[str]:
+    """Qualify optional tuning before disrupting an existing listener."""
+    tuning = INSTALL_DIR / "installers/macos/lib/native-checkpoint-args.py"
+    tuning_keys = (
+        ("LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS", "--interval"),
+        ("LLAMA_ARG_CTX_CHECKPOINTS", "--checkpoints"),
+        ("LLAMA_ARG_CACHE_RAM", "--cache-mib"),
+        ("LLAMA_ARG_SLEEP_IDLE_SECONDS", "--idle-seconds"),
+        ("LLAMA_ARG_CHECKPOINT_MIN_STEP", "--min-spacing"),
+    )
+    if platform.system() == "Darwin" and any(env.get(key, "").strip() for key, _ in tuning_keys):
+        if not tuning.is_file():
+            raise RuntimeError("Native runtime tuning validator is missing")
+        command = [sys.executable, str(tuning), "--binary", str(llama_bin)]
+        command.extend(option + "=" + env.get(key, "").strip() for key, option in tuning_keys)
+        result = subprocess.run(command, capture_output=True, timeout=20)
+        if result.returncode:
+            raise RuntimeError("Native runtime tuning was rejected")
+        return [part.decode("utf-8") for part in result.stdout.split(b"\0") if part]
+    return []
+
+
 def _restart_macos_native_llama_server(
     env_path: Path,
     llama_bin: Path,
@@ -16238,6 +16294,10 @@ def _restart_macos_native_llama_server(
     # listener. The actual bridge mutation must happen after shutdown so a
     # direct-bound listener cannot collide with a newly recreated bridge.
     _require_macos_bridge_manager(env_path)
+    env = load_env(env_path)
+    profile = _model_stores.lemonade_profile(INSTALL_DIR / "data", env.get("GGUF_FILE", ""))
+    selected_binary = Path(profile["executable"]) if profile else llama_bin
+    _native_llama_tuning_arguments(env, selected_binary)
     _stop_macos_native_llama_server(pid_file)
     _configure_macos_llm_bridge(env_path)
     _launch_native_llama_server(env_path, llama_bin, llama_log, pid_file)
@@ -16272,6 +16332,7 @@ def _launch_native_llama_server(env_path: Path, llama_bin: Path, llama_log: Path
         str(llama_bin),
         "--host", bind_addr, "--port", str(port),
         "--model", str(model_path),
+        "--alias", gguf_file,
         "--ctx-size", ctx_size,
         "--n-gpu-layers", gpu_layers,
         "--parallel", env.get("LLAMA_PARALLEL", "1"),
@@ -16283,7 +16344,6 @@ def _launch_native_llama_server(env_path: Path, llama_bin: Path, llama_log: Path
         "LLAMA_ARG_CACHE_TYPE_K": "--cache-type-k",
         "LLAMA_ARG_CACHE_TYPE_V": "--cache-type-v",
         "LLAMA_ARG_N_CPU_MOE": "--n-cpu-moe",
-        "LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS": "--checkpoint-every-n-tokens",
         "LLAMA_ARG_SPEC_TYPE": "--spec-type",
         "LLAMA_ARG_SPEC_DRAFT_N_MAX": "--spec-draft-n-max",
         "LLAMA_ARG_SPEC_DRAFT_TYPE_K": "--spec-draft-type-k",
@@ -16293,6 +16353,7 @@ def _launch_native_llama_server(env_path: Path, llama_bin: Path, llama_log: Path
         value = env.get(env_key, "").strip()
         if value:
             args.extend([flag, value])
+    args.extend(_native_llama_tuning_arguments(env, llama_bin))
     if _normalize_key(env.get("LLAMA_ARG_NO_CACHE_PROMPT")) not in {"", "0", "false", "off", "no"}:
         args.append("--no-cache-prompt")
     llama_log.parent.mkdir(parents=True, exist_ok=True)
@@ -16983,6 +17044,87 @@ def _request_server_shutdown(server, signum=None):
     ).start()
 
 
+def _reconcile_native_pixel_startup():
+    """Re-prove an unchanged native policy, serialized with model operations."""
+    helper = Path('/usr/local/libexec/ods-pixel-access/pixel_access_reconcile.py')
+    if platform.system() != 'Darwin' or not helper.exists():
+        return
+    # Execute only the installed root-owned helper, never an owner checkout.
+    try:
+        for entry in (helper, *helper.parents):
+            info = entry.lstat()
+            if (stat_mod.S_ISLNK(info.st_mode) or info.st_uid != 0
+                    or info.st_mode & 0o022):
+                raise ValueError('custody')
+        if not stat_mod.S_ISREG(helper.lstat().st_mode):
+            raise ValueError('custody')
+        if helper.stat().st_size > 65536:
+            raise ValueError('helper-size')
+        declarations = [node for node in ast.parse(helper.read_text()).body
+                        if isinstance(node, ast.Assign) and any(
+                            isinstance(target, ast.Name) and target.id == 'STARTUP_REPROOF_VERSION'
+                            for target in node.targets)]
+        if (len(declarations) != 1 or not isinstance(declarations[0].value, ast.Constant)
+                or type(declarations[0].value.value) is not int or declarations[0].value.value != 1):
+            logger.warning('Pixel startup reproof requires a compatible installed helper')
+            return
+    except (OSError, ValueError, SyntaxError):
+        logger.warning('Pixel startup reproof refused: helper custody')
+        return
+    for attempt in range(12):
+        acquired, _active = _begin_model_lifecycle('pixel_startup_reproof')
+        if acquired:
+            try:
+                result = subprocess.run(
+                    ['/usr/bin/python3', '-I', str(helper), '--startup'],
+                    capture_output=True, timeout=360, check=False,
+                )
+                if result.returncode == 0:
+                    logger.debug('Pixel access reproof check completed')
+                    return True
+                if len(result.stderr) > 8192:
+                    raise ValueError('diagnostic-size')
+                diagnostic = json.loads(result.stderr)
+                projection = diagnostic.get('projection', {})
+                if (diagnostic.get('stage') == 'unsafe-state'
+                        and projection.get('scope') == 'owner-host'
+                        and projection.get('available') is True
+                        and projection.get('pending') is False
+                        and projection.get('busy') is True):
+                    return True
+                # Retry only an unavailable preflight. Never replay an
+                # uncertain mutation or consume another pending transaction.
+                retry = (diagnostic.get('stage') == 'status-transport-unavailable' or (
+                         diagnostic.get('stage') in ('status-unavailable', 'unsafe-state')
+                         and projection.get('available') is False
+                         and projection.get('pending') is False
+                         and projection.get('busy') is False
+                         and projection.get('reason') in (
+                             'admission-gate-unavailable', 'runtime-unavailable-or-busy',
+                             'managed-runtime-unavailable')))
+                if not retry:
+                    logger.warning('Pixel startup reproof requires attention')
+                    return
+            except (OSError, ValueError, TypeError, AttributeError, subprocess.TimeoutExpired):
+                logger.warning('Pixel startup reproof failed; no automatic mutation retry')
+                return
+            finally:
+                _end_model_lifecycle('pixel_startup_reproof')
+        if attempt < 11:
+            time.sleep(5)
+    logger.warning('Pixel startup reproof readiness window exhausted')
+    # Every exhausted attempt was either lock contention or read-only
+    # unavailability. No uncertain change is eligible for another cycle.
+    return True
+
+
+def _monitor_native_pixel_access():
+    """Recheck healthy/busy instances; stop on uncertain policy mutations."""
+    while _reconcile_native_pixel_startup() is True:
+        time.sleep(30)
+    logger.warning('Pixel access monitor stopped; recovery requires attention')
+
+
 def main():
     global INSTALL_DIR, DATA_DIR, AGENT_API_KEY, GPU_BACKEND, STARTUP_ODS_MODE
     global TIER, GPU_COUNT, CORE_SERVICE_IDS
@@ -17095,6 +17237,9 @@ def main():
         STARTUP_ODS_MODE,
     )
     try:
+        if platform.system() == 'Darwin':
+            threading.Thread(target=_monitor_native_pixel_access,
+                             name='ods-pixel-startup-reproof', daemon=True).start()
         server.serve_forever()
     except KeyboardInterrupt:
         logger.info("Shutting down")

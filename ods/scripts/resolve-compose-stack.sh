@@ -844,6 +844,22 @@ if override.exists():
 if ods_mode == "cloud" and gpu_backend == "apple" and macos_cloud_auth.exists():
     _append_macos_cloud_auth_overlay(resolved, macos_cloud_auth)
 
+# A successful native Pixel installation keeps these fragments disabled for
+# generic extension discovery. Restore their explicit selection after cache
+# invalidation, with the same final override order as the macOS installer.
+native_activation = script_dir / 'data/pixel-native/preparation/activation.json'
+if os.path.lexists(native_activation):
+    import importlib.util
+    try:
+        native_spec = importlib.util.spec_from_file_location('ods_native_stack',
+            script_dir / 'installers/macos/lib/pixel-native-stack.py')
+        native_stack = importlib.util.module_from_spec(native_spec)
+        native_spec.loader.exec_module(native_stack)
+        resolved = native_stack.resolve_files(script_dir, resolved)
+    except (ValueError, OSError, ImportError):
+        print('ERROR: Native Pixel Compose selection needs recovery; retain its installation receipts.', file=sys.stderr)
+        sys.exit(1)
+
 def to_flags(files):
     return " ".join(f"-f {f}" for f in files)
 

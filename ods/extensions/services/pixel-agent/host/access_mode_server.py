@@ -3,6 +3,7 @@
 import json
 import os
 from pathlib import Path
+import platform
 import pwd
 import socket
 import socketserver
@@ -34,8 +35,12 @@ for name in ("access_mode_server.py", "unix_peer.py", "pixel_access_bridge.py", 
     protected(PROGRAM / name)
 for name in ("pixel_model_contract.py", "pixel_model_coordinator.py", "model_transaction.py"):
     protected(PROGRAM / name)
+if platform.system() == "Darwin":
+    for name in ("pixel_macos_custody.py", "pixel_macos_process.py", "pixel_macos_policy.py"):
+        protected(PROGRAM / name)
 sys.path.insert(0, str(PROGRAM))
-from pixel_access_bridge import AccessError, SystemdAccessBridge, private_json
+from pixel_access_bridge import (AccessError, LaunchdAccessBridge,
+                                 SystemdAccessBridge, private_json)
 from pixel_access_protocol import control_request, decode_frame
 from unix_peer import peer_ids
 
@@ -70,11 +75,24 @@ def main():
     def make_adapter():
         # Discovery has request-local owner/gateway snapshots. Never let another
         # handler replace the active transition's authentication or runtime data.
+        if platform.system() == "Darwin":
+            required = ("gateway_target", "gateway_plist", "gateway_process", "gateway_binding", "gateway_policy")
+            if any(key not in settings for key in required):
+                raise RuntimeError("incomplete macOS gateway binding")
+            return LaunchdAccessBridge(
+                install, key, gateway_target=settings["gateway_target"],
+                gateway_plist=settings["gateway_plist"], gateway_process=settings["gateway_process"],
+                state=Path(settings.get("state_dir", "/private/var/lib/ods-pixel-access")),
+                gateway_binding=settings["gateway_binding"], installed_binary=settings["openclaw_bin"],
+                gateway_policy=settings["gateway_policy"],
+                gateway_owner=owner.pw_name, settings_data_dir=settings.get("settings_data_dir"),
+                gateway_port=settings.get("gateway_port"))
         return SystemdAccessBridge(install, key, installed_binary=settings["openclaw_bin"],
                                    gateway_owner=owner.pw_name, settings_data_dir=settings.get("settings_data_dir"),
                                    gateway_binding=settings.get('gateway_binding'),
                                    gateway_port=settings.get('gateway_port'))
-    address = "/run/ods-pixel-access/control.sock"
+    address = ("/private/var/run/ods-pixel-access/control.sock"
+               if platform.system() == "Darwin" else "/run/ods-pixel-access/control.sock")
 
     class Handler(socketserver.StreamRequestHandler):
         def handle(self):
@@ -121,8 +139,14 @@ def main():
             except Exception: status, body = 503, {"error": "access-service-unavailable"}
             self.wfile.write(json.dumps({"status": status, "body": body}).encode() + b"\n")
 
-    # RuntimeDirectory is root-only until this daemon provisions the owner socket.
-    os.chmod(Path(address).parent, 0o711)
+    # systemd creates this directory through RuntimeDirectory. launchd has no
+    # equivalent, so the root daemon creates the fixed directory itself.
+    parent = Path(address).parent
+    parent.mkdir(mode=0o711, exist_ok=True)
+    info = parent.lstat()
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022):
+        raise RuntimeError("unsafe socket directory")
+    os.chmod(parent, 0o711)
     if os.path.lexists(address):
         info = os.lstat(address)
         if not stat.S_ISSOCK(info.st_mode) or info.st_uid != 0: raise RuntimeError("unsafe socket")

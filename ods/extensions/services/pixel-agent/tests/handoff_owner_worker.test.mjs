@@ -21,7 +21,9 @@ function command(mode, marker) {
       if(${JSON.stringify(mode)}==='oversize') {process.stdout.end(Buffer.alloc(9000));return;}
       if(${JSON.stringify(mode)}==='bad-size') {process.stdout.end(Buffer.from([255,255,255,255]));return;}
       const receipt={approved:true,checkpointDigest:${JSON.stringify(mode)}==='wrong-digest'?'b'.repeat(64):body.checkpointDigest};
-      if(Object.keys(process.env).some(k=>!['PATH','LANG','PYTHONDONTWRITEBYTECODE'].includes(k))) receipt.checkpointDigest='bad-env';
+      // CoreFoundation adds this key even when spawn receives an empty env.
+      const runtimeKeys=process.platform==='darwin'?['__CF_USER_TEXT_ENCODING']:[];
+      if(Object.keys(process.env).some(k=>!['PATH','LANG','PYTHONDONTWRITEBYTECODE',...runtimeKeys].includes(k))) receipt.checkpointDigest='bad-env';
       const raw=Buffer.from(JSON.stringify(receipt));const prefix=Buffer.alloc(4);prefix.writeUInt32BE(raw.length);
       process.stdout.end(Buffer.concat([prefix,raw]),()=>process.exit(0));
     });

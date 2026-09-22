@@ -1,4 +1,5 @@
 import ctypes
+import errno
 import os
 from pathlib import Path
 import subprocess
@@ -35,6 +36,18 @@ class ProcessIdentityTests(unittest.TestCase):
     def test_stable_identity_reads_process_twice(self):
         self.assertEqual(self.identity(), (*self.record, '/fixture/node'))
         self.assertEqual(self.read.call_count, 2)
+
+    def test_root_requires_explicit_opt_in_and_still_checks_credentials(self):
+        with self.assertRaisesRegex(ValueError, 'specification-invalid'):
+            self.identity(uid=0, gid=0)
+        root = (123, 1700000000, 456, 0, 0, 0, 0, 0, 0)
+        self.read.return_value = root
+        self.assertEqual(self.identity(uid=0, gid=0, allow_root=True), (*root, '/fixture/node'))
+        self.read.return_value = self.record
+        with self.assertRaisesRegex(ValueError, 'owner-mismatch'):
+            self.identity(uid=0, gid=0, allow_root=True)
+        with self.assertRaisesRegex(ValueError, 'specification-invalid'):
+            self.identity(uid=0, gid=0, allow_root=1)
 
     def test_reused_pid_or_changed_credentials_fail(self):
         for field in range(1, 9):
@@ -76,6 +89,19 @@ class ProcessIdentityTests(unittest.TestCase):
 
 
 class NativeRecordTests(unittest.TestCase):
+    def test_failed_record_preserves_kernel_errno_without_stale_values(self):
+        for code in (errno.ESRCH, errno.EPERM, errno.EIO):
+            def failed(*_args):
+                ctypes.set_errno(code)
+                return 0
+            with self.assertRaises(process.ProcessIdentityError) as raised:
+                process._record(Mock(proc_pidinfo=failed), 123)
+            self.assertEqual(raised.exception.errno, code)
+        ctypes.set_errno(errno.ESRCH)
+        with self.assertRaises(process.ProcessIdentityError) as raised:
+            process._record(Mock(proc_pidinfo=Mock(return_value=0)), 123)
+        self.assertEqual(raised.exception.errno, 0)
+
     def test_public_bsd_structure_and_short_read_fail_closed(self):
         self.assertEqual(ctypes.sizeof(process._BsdInfo), 136)
         self.assertEqual(process._BsdInfo.start_sec.offset, 120)

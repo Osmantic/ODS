@@ -14,6 +14,8 @@ from typing import Any
 
 MAX_CATALOG_BYTES = 2 * 1024 * 1024
 MAX_RESULTS = 10
+CATALOG_PATH = pathlib.Path('/usr/local/libexec/ods-pixel-services/helpers/extension-catalog.json'
+    if sys.platform == 'darwin' else '/opt/pixel-ops-broker/ods-extension-catalog.json')
 QUERY_RE = re.compile(r"[A-Za-z0-9 _/+:#.\-]{1,80}")
 CATALOG_KEYS = {"schemaVersion", "kind", "sourceSha256", "extensions"}
 ENTRY_KEYS = {
@@ -156,7 +158,7 @@ def main(argv: list[str]) -> int:
         raise CatalogError("usage: extension_search.py CATALOG QUERY")
     catalog_raw, query = argv
     catalog = pathlib.Path(catalog_raw)
-    if not catalog.is_absolute() or catalog != pathlib.Path("/opt/pixel-ops-broker/ods-extension-catalog.json"):
+    if not catalog.is_absolute() or catalog != CATALOG_PATH:
         raise CatalogError("catalog path is not permitted")
     if QUERY_RE.fullmatch(query) is None:
         raise CatalogError("query is invalid")

@@ -38,6 +38,23 @@ test('creates a real descriptive project, routes files of every type and stores 
   assert.equal(state.binding.directory,'Playground/weather-tool');
 });
 
+test('category words inside file operands do not turn ordinary writes into new projects',t=>{
+  const {root,call}=fixture(t);
+  for (const intent of [
+    'Crie a pasta macos-final-tool-check no workspace e escreva no arquivo probe.txt somente ODS_MAC_OK.',
+    'Create game.txt containing hello.',
+    'Write a note in project-notes.txt.',
+    'Crie o arquivo app.config.json.',
+    'Create a folder named website-check.',
+  ]) {
+    assert.equal(requestsNewPlaygroundProject(intent),false,intent);
+    assert.equal(call('tool_call',{id:'exec',args:{command:'mkdir -p macos-final-tool-check',workdir:root}},
+      {state:{},intent}),undefined,intent);
+  }
+  assert.equal(fs.existsSync(path.join(root,'Playground')),false);
+  assert.equal(requestsNewPlaygroundProject('Create a game in snake-game/index.html.'),true);
+});
+
 test('fresh reservations avoid files, existing names and links without moving legacy content',t=>{
   const {root,call}=fixture(t);
   fs.mkdirSync(path.join(root,'Playground'));

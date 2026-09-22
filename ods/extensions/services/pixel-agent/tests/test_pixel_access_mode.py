@@ -108,6 +108,91 @@ class Harness(unittest.TestCase):
         })
 
 
+class TestRelocation(Harness):
+    def setUp(self):
+        super().setUp()
+        self.enable()
+        self.original = self.receipt()
+        self.new_path = os.path.join(self.tmp, 'openclaw-candidate.json')
+        cfg = self.read_config()
+        cfg['upgradeMarker'] = 'candidate'
+        Path(self.new_path).write_text(json.dumps(cfg))
+        os.chmod(self.new_path, 0o600)
+        self.old_hash = pam._sha256_bytes(Path(self.cfg_path).read_bytes())
+        self.new_hash = pam._sha256_bytes(Path(self.new_path).read_bytes())
+
+    def relocate(self, **kwargs):
+        options = dict(old_sha256=self.old_hash, new_sha256=self.new_hash,
+                       check_no_active_run=lambda: False)
+        options.update(kwargs)
+        return pam.relocate_receipt(self.cfg_path, self.new_path, self.state_dir, **options)
+
+    def test_preserves_baseline_and_is_replayable_and_reversible(self):
+        self.assertTrue(self.relocate())
+        self.assertEqual(self.receipt(), dict(self.original, config_path=self.new_path,
+                                              config_sha256=self.new_hash))
+        self.assertFalse(self.relocate())
+        self.assertTrue(pam.relocate_receipt(self.new_path, self.cfg_path, self.state_dir,
+            old_sha256=self.new_hash, new_sha256=self.old_hash, check_no_active_run=lambda: False))
+        self.assertEqual(self.receipt(), self.original)
+
+    def test_rejects_drift_busy_and_invalid_hash_without_mutation(self):
+        for options in ({'new_sha256': '0' * 64}, {'new_sha256': '../invalid'},
+                        {'check_no_active_run': lambda: True}):
+            with self.assertRaises(AccessModeError):
+                self.relocate(**options)
+            self.assertEqual(self.receipt(), self.original)
+
+    def test_rejects_policy_change_even_with_approved_hash(self):
+        cfg = make_config()
+        Path(self.new_path).write_text(json.dumps(cfg))
+        with self.assertRaises(AccessModeRejected):
+            self.relocate(new_sha256=pam._sha256_bytes(Path(self.new_path).read_bytes()))
+        self.assertEqual(self.receipt(), self.original)
+
+    def test_restore_is_noop_when_unused_candidate_has_a_different_policy(self):
+        Path(self.new_path).write_text(json.dumps(make_config()))
+        candidate_hash = pam._sha256_bytes(Path(self.new_path).read_bytes())
+        self.assertFalse(pam.relocate_receipt(self.new_path, self.cfg_path, self.state_dir,
+            old_sha256=candidate_hash, new_sha256=self.old_hash, check_no_active_run=lambda: False))
+        self.assertEqual(self.receipt(), self.original)
+        with self.assertRaises(AccessModeRejected):
+            self.relocate(new_sha256=candidate_hash)
+
+    def test_rechecks_after_idle_callback(self):
+        calls = []
+        def idle():
+            calls.append(True)
+            if len(calls) == 2:
+                Path(self.new_path).write_text('{}')
+            return False
+        with self.assertRaises(AccessModeRace):
+            self.relocate(check_no_active_run=idle)
+        self.assertEqual(self.receipt(), self.original)
+
+    def test_rejects_pending_or_foreign_receipt(self):
+        for changes in ({'status': pam.STATUS_PENDING}, {'config_path': '/different/config.json'},
+                        {'config_sha256': '0' * 64}):
+            receipt = dict(self.original, **changes)
+            pam._write_receipt(self.state_dir, receipt)
+            with self.assertRaises(AccessModeRejected):
+                self.relocate()
+            self.assertEqual(self.receipt(), receipt)
+
+    def test_rejects_symlink_target(self):
+        os.unlink(self.new_path)
+        os.symlink(self.cfg_path, self.new_path)
+        with self.assertRaises(AccessModeSecurity):
+            self.relocate(new_sha256=self.old_hash)
+        self.assertEqual(self.receipt(), self.original)
+
+    def test_publishes_durably(self):
+        original_write = pam._atomic_write
+        with mock.patch.object(pam, '_atomic_write', wraps=original_write) as write:
+            self.relocate()
+        self.assertTrue(write.call_args.kwargs['durable'])
+
+
 class TestEnable(Harness):
     def test_revision_checked_under_lock_before_enable_or_restore(self):
         before = open(self.cfg_path, "rb").read()

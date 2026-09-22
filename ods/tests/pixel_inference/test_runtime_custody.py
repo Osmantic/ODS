@@ -7,6 +7,8 @@ if sys.platform == "win32":
 import hashlib
 import json
 import os
+import plistlib
+import subprocess
 from pathlib import Path
 import sys
 from types import SimpleNamespace
@@ -59,16 +61,40 @@ def artifact(tmp_path, monkeypatch):
         manifest=mpath, descriptor=descriptor, document=doc, custody=r.RuntimeCustody(SimpleNamespace(binary=str(launcher))))
 
 
+@pytest.mark.parametrize('field,limit', [('descriptor', 16384), ('manifest', r.MAX_MANIFEST)])
+def test_oversized_metadata_is_rejected_before_hashing(artifact, monkeypatch, field, limit):
+    path = getattr(artifact, field)
+    with path.open('r+b') as handle:
+        handle.truncate(limit + 1)
+    original = r.os.fdopen
+    def guarded(fd, *args, **kwargs):
+        assert os.fstat(fd).st_ino != path.stat().st_ino, 'oversized file opened for hashing'
+        return original(fd, *args, **kwargs)
+    monkeypatch.setattr(r.os, 'fdopen', guarded)
+    with pytest.raises(AccessError, match='file-too-large'):
+        artifact.custody.qualify()
+
+
+def test_size_limit_applies_even_to_cached_hash(artifact):
+    cache = {}
+    size = artifact.node.stat().st_size
+    expected = r._regular(artifact.node, cache, maximum=size)
+    assert r._regular(artifact.node, cache, maximum=size) == expected
+    with pytest.raises(AccessError, match='file-too-large'):
+        r._regular(artifact.node, cache, maximum=size - 1)
+
+
 def test_second_qualification_reuses_hashes_but_checks_actual_file_set(artifact, monkeypatch):
     a = artifact
-    original = os.open
-    opened = []
-    def counted(path, *args, **kwargs):
-        if str(path) == str(a.runtime / 'openclaw.mjs'): opened.append(path)
-        return original(path, *args, **kwargs)
-    monkeypatch.setattr(r.os, 'open', counted)
+    original = os.fdopen
+    read = []
+    inode = (a.runtime / 'openclaw.mjs').stat().st_ino
+    def counted(fd, *args, **kwargs):
+        if os.fstat(fd).st_ino == inode: read.append(fd)
+        return original(fd, *args, **kwargs)
+    monkeypatch.setattr(r.os, 'fdopen', counted)
     first = a.custody.qualify()
-    assert a.custody.qualify() == first and len(opened) == 1
+    assert a.custody.qualify() == first and len(read) == 1
     unexpected = a.runtime / 'unexpected.mjs'
     unexpected.write_text('new code')
     unexpected.chmod(0o600)
@@ -128,6 +154,54 @@ def test_another_operation_has_an_independent_hash_cache(artifact):
     assert other.qualify() == a.custody.qualify()
 
 
+@pytest.mark.parametrize('system,expected', [
+    ('Darwin', '/private/etc/ods/pixel-provider-runtime.json'),
+    ('Linux', '/etc/ods/pixel-provider-runtime.json'),
+])
+def test_fixed_descriptor_uses_canonical_host_path(monkeypatch, system, expected):
+    monkeypatch.setattr(r.platform, 'system', lambda: system)
+    monkeypatch.setattr(r, 'DESCRIPTOR', Path('/etc/ods/pixel-provider-runtime.json'))
+    assert r._descriptor_path() == Path(expected)
+    monkeypatch.setattr(r, 'DESCRIPTOR', Path('/operator/selected.json'))
+    assert r._descriptor_path() == Path('/operator/selected.json')
+
+
+@pytest.mark.skipif(sys.platform != 'darwin', reason='Real Darwin ACL API required')
+@pytest.mark.parametrize('target', ['entry', 'directory', 'descriptor', 'manifest', 'node', 'launcher'])
+def test_real_acl_revokes_cached_runtime_qualification(artifact, target):
+    a = artifact
+    nested = a.runtime / 'nested'
+    nested.mkdir(mode=0o700)
+    manifest = json.loads(a.manifest.read_text())
+    manifest['runtime'] = r.tree_manifest(a.runtime)
+    atomic_json(a.manifest, manifest)
+    a.document['manifestSha256'] = hashlib.sha256(a.manifest.read_bytes()).hexdigest()
+    atomic_json(a.descriptor, a.document)
+    a.custody.qualify()
+    path = {'entry': a.runtime / 'openclaw.mjs', 'directory': nested,
+            'descriptor': a.descriptor, 'manifest': a.manifest,
+            'node': a.node, 'launcher': a.launcher}[target]
+    mode = path.stat().st_mode
+    try:
+        subprocess.run(['chmod', '+a', 'everyone allow write', str(path)], check=True, capture_output=True)
+        assert path.stat().st_mode == mode
+        with pytest.raises(AccessError, match='custody-unqualified'):
+            a.custody.qualify()
+    finally:
+        subprocess.run(['chmod', '-N', str(path)], check=True, capture_output=True)
+    a.custody.qualify()
+
+
+def test_tree_scan_error_cannot_be_treated_as_an_empty_subtree(artifact, monkeypatch):
+    def failed_walk(_root, *, followlinks, onerror):
+        assert followlinks is False
+        onerror(PermissionError('unreadable runtime directory'))
+        return iter(())
+    monkeypatch.setattr(r.os, 'walk', failed_walk)
+    with pytest.raises(PermissionError, match='unreadable runtime'):
+        artifact.custody.qualify()
+
+
 def test_worker_probe_uses_qualified_source_and_private_receipt(artifact):
     a = artifact
     a.custody.bridge.owner = SimpleNamespace(pw_uid=os.getuid())
@@ -155,3 +229,57 @@ def test_missing_worker_receipt_does_not_start_owner_probe(artifact):
     a.custody.bridge.worker = lambda *args, **kwargs: pytest.fail('missing receipt executed probe')
     with pytest.raises(AccessError, match='worker-runtime-not-ready'):
         a.custody.require_worker(a.root, a.custody.qualify())
+
+
+def test_macos_runtime_process_is_bound_to_launchd_plist_and_libproc_identity(artifact, monkeypatch):
+    import grp
+    from pixel_settings import coordinator as settings
+    plist = artifact.root / 'gateway.plist'
+    document = {'Label': 'com.ods.fixture',
+                'ProgramArguments': ['/usr/bin/env', '-i', '/usr/bin/sandbox-exec', '-f',
+                                     '/etc/ods/pixel-gateway.sb', str(artifact.launcher), 'gateway', 'run'],
+                'UserName': 'fixture', 'GroupName': grp.getgrgid(os.getgid()).gr_name}
+    plist.write_bytes(plistlib.dumps(document, sort_keys=True))
+    plist.chmod(0o600)
+    identity = {'pid': 123, 'started': 1700000000000000,
+                'boot': '11111111-2222-3333-4444-555555555555'}
+    artifact.custody.bridge.gateway_process = {
+        'uid': os.getuid(), 'gid': os.getgid(), 'executable': str(artifact.node)}
+    artifact.custody.bridge.gateway_service = SimpleNamespace(plist=plist)
+    monkeypatch.setattr(settings, '_identity', lambda _bridge: identity)
+    monkeypatch.setattr(r.platform, 'system', lambda: 'Darwin')
+    if sys.platform != 'darwin':
+        # This fixture simulates Darwin process APIs on Linux, not Darwin ACLs.
+        monkeypatch.setattr('pixel_macos_custody._require_no_acl', lambda fd: os.fstat(fd))
+    monkeypatch.setattr('pixel_macos_custody.protected_bytes', lambda _path: plist.read_bytes())
+    monkeypatch.setattr('pixel_macos_process.process_identity',
+                        lambda pid, **_spec: (pid, 1700000000, 0, os.getuid(), os.getgid(),
+                                              os.getuid(), os.getgid(), os.getuid(), os.getgid(),
+                                              str(artifact.node)))
+    artifact.custody.verify_process()
+
+
+def test_macos_runtime_process_rejects_launchd_command_drift(artifact, monkeypatch):
+    from pixel_settings import coordinator as settings
+    plist = artifact.root / 'gateway.plist'
+    document = {'Label': 'com.ods.fixture',
+                'ProgramArguments': ['/usr/bin/env', '-i', '/usr/bin/sandbox-exec', '-f',
+                                     '/etc/ods/pixel-gateway.sb', '/tmp/unapproved', 'gateway', 'run'],
+                'UserName': 'fixture', 'GroupName': 'staff'}
+    plist.write_bytes(plistlib.dumps(document, sort_keys=True))
+    identity = {'pid': 123, 'started': 1700000000000000,
+                'boot': '11111111-2222-3333-4444-555555555555'}
+    artifact.custody.bridge.gateway_process = {
+        'uid': os.getuid(), 'gid': os.getgid(), 'executable': str(artifact.node)}
+    artifact.custody.bridge.gateway_service = SimpleNamespace(plist=plist)
+    monkeypatch.setattr(settings, '_identity', lambda _bridge: identity)
+    monkeypatch.setattr(r.platform, 'system', lambda: 'Darwin')
+    if sys.platform != 'darwin':
+        monkeypatch.setattr('pixel_macos_custody._require_no_acl', lambda fd: os.fstat(fd))
+    monkeypatch.setattr('pixel_macos_custody.protected_bytes', lambda _path: plist.read_bytes())
+    monkeypatch.setattr('pixel_macos_process.process_identity',
+                        lambda pid, **_spec: (pid, 1700000000, 0, os.getuid(), os.getgid(),
+                                              os.getuid(), os.getgid(), os.getuid(), os.getgid(),
+                                              str(artifact.node)))
+    with pytest.raises(AccessError, match='provider-runtime-process-unqualified'):
+        artifact.custody.verify_process()

@@ -18,6 +18,26 @@ function fixture() {
 const token = 'a'.repeat(64), other = 'b'.repeat(64);
 const runtimeUrl = new URL('../plugin/access-runtime.mjs', import.meta.url).href;
 const linux = {skip: process.platform !== 'linux'};
+test('startup diagnostics distinguish qualification from private state failures', t => {
+  const cases = [
+    {change: o => {o.hooksAllowed = false;}, stage: null, qualification: 'conversation-hooks'},
+    {change: o => {o.runtimeVersion = 'unknown';}, stage: null, qualification: 'runtime-version'},
+    {change: o => {fs.mkdirSync(o.directory, {mode: 0o755});}, stage: 'state-directory', qualification: null},
+    {change: o => {seed(o, {pid: process.pid});}, stage: 'process-identity', qualification: null},
+  ];
+  for (const item of cases) {
+    const options = fixture();
+    t.after(() => fs.rmSync(path.dirname(options.directory), {recursive: true, force: true}));
+    item.change(options);
+    const runtime = createAccessRuntime(options), snapshot = runtime.status();
+    assert.equal(snapshot.available, false);
+    assert.equal(snapshot.initialization_failure, item.stage);
+    assert.equal(snapshot.qualification_failure, item.qualification);
+    assert.equal(JSON.stringify(snapshot).includes(options.directory), false);
+    // Qualification disables access changes, not ordinary legacy admission.
+    assert.equal(runtime.admit({}, {runId: 'diagnostic-test'}).outcome, item.stage ? 'block' : 'pass');
+  }
+});
 function seed(options, lock, phase = 'idle') {
   fs.mkdirSync(options.directory, {mode: 0o700});
   fs.writeFileSync(path.join(options.directory, 'process.json'), JSON.stringify(lock), {mode: 0o600});

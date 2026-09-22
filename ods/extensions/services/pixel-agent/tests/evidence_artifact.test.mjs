@@ -7,6 +7,7 @@ import {
   mkdtempSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -22,7 +23,7 @@ after(() => {
 });
 
 function workspace() {
-  const root = mkdtempSync(path.join(tmpdir(), "pixel-evidence-artifact-"));
+  const root = realpathSync(mkdtempSync(path.join(tmpdir(), "pixel-evidence-artifact-")));
   roots.push(root);
   return root;
 }

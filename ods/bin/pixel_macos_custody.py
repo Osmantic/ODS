@@ -4,6 +4,7 @@ This verifies deployment files, not a running process or its isolation. Callers
 must still verify the loaded launchd job and qualify the host access controls.
 """
 import ctypes
+from contextlib import contextmanager
 import errno
 import hashlib
 import os
@@ -143,6 +144,84 @@ def _verify_fd(fd, *, directory):
     return info
 
 
+@contextmanager
+def protected_directory(filename, *, create=False):
+    """Open a canonical root-owned directory, optionally creating missing parts.
+
+    Every component is checked before descending. Creation never changes an
+    existing directory's ownership, mode or ACL to make it appear trusted.
+    """
+    value = os.fspath(filename)
+    if (not isinstance(value, str) or not value.startswith('/') or value == '/'
+            or any(ord(c) < 32 for c in value)
+            or any(part in ('', '.', '..') for part in value.split('/')[1:])):
+        raise CustodyError('macos-custody-path-invalid')
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    fd = os.open('/', flags)
+    try:
+        _verify_fd(fd, directory=True)
+        for part in value.split('/')[1:]:
+            created = False
+            if create:
+                try:
+                    os.mkdir(part, mode=0o755, dir_fd=fd)
+                    created = True
+                    os.fsync(fd)
+                except FileExistsError:
+                    pass
+            child = os.open(part, flags, dir_fd=fd)
+            os.close(fd)
+            fd = child
+            _verify_fd(fd, directory=True)
+            if created:
+                os.fchmod(fd, 0o755)
+                os.fsync(fd)
+        yield fd
+    finally:
+        os.close(fd)
+
+
+def protected_tree_metadata(root):
+    """Require root custody of every entry; content/link topology is separate.
+
+    Internal links are allowed only to other entries under this verified tree.
+    Target files/directories are checked independently, including their ACLs.
+    This does not authorize any executable or verify manifest hashes.
+    """
+    from pathlib import Path
+    root = Path(root)
+    with protected_directory(root) as root_fd:
+        def visit(directory):
+            for name in os.listdir(directory):
+                info = os.stat(name, dir_fd=directory, follow_symlinks=False)
+                if stat.S_ISLNK(info.st_mode):
+                    if info.st_uid != 0 or info.st_nlink != 1:
+                        raise CustodyError('macos-root-custody-required')
+                    continue
+                is_directory = stat.S_ISDIR(info.st_mode)
+                flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+                fd = os.open(name, flags | (os.O_DIRECTORY if is_directory else 0), dir_fd=directory)
+                try:
+                    _verify_fd(fd, directory=is_directory)
+                    if is_directory:
+                        visit(fd)
+                finally:
+                    os.close(fd)
+        visit(root_fd)
+        # Resolve only after all directories are root verified. The publication
+        # caller holds the root deployment lock while checking this tree.
+        for directory, folders, files in os.walk(root, followlinks=False):
+            for name in folders + files:
+                path = Path(directory) / name
+                if path.is_symlink():
+                    try:
+                        target = path.resolve(strict=True)
+                    except (OSError, RuntimeError):
+                        raise CustodyError('macos-custody-link-invalid') from None
+                    if os.readlink(path).startswith('/') or (target != root and root not in target.parents):
+                        raise CustodyError('macos-custody-link-invalid')
+
+
 def protected_bytes(filename, *, limit=1024 * 1024):
     """Read a bounded root-owned file through individually verified dirfds.
 
@@ -189,6 +268,67 @@ def protected_bytes(filename, *, limit=1024 * 1024):
     finally:
         for fd in reversed(opened):
             os.close(fd)
+
+
+def replace_protected_bytes(filename, *, expected, replacement, mode, gid=0):
+    """Replace an existing protected file while the caller holds its transaction lock.
+
+    No ownership repair, new target creation or symlink resolution is allowed.
+    An fsync failure after rename remains an error: callers must inspect the
+    target and use their durable rollback journal, not assume no write happened.
+    """
+    if (type(expected) is not bytes or type(replacement) is not bytes
+            or max(len(expected), len(replacement)) > 8 * 1024 * 1024
+            or type(mode) is not int or mode not in (0o600, 0o640, 0o644, 0o755)
+            or type(gid) is not int or gid < 0):
+        raise CustodyError('macos-custody-replacement-invalid')
+    value = os.fspath(filename)
+    if not isinstance(value, str) or '/' not in value:
+        raise CustodyError('macos-custody-path-invalid')
+    parent, name = value.rsplit('/', 1)
+    if not name or name in ('.', '..') or any(ord(c) < 32 for c in name):
+        raise CustodyError('macos-custody-path-invalid')
+    identity = lambda s: (s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns, s.st_ctime_ns)
+    with protected_directory(parent) as directory:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+        temporary = None
+        try:
+            before = _verify_fd(fd, directory=False)
+            if stat.S_IMODE(before.st_mode) != mode or before.st_gid != gid:
+                raise CustodyError('macos-custody-replacement-metadata-changed')
+            chunks, length = [], 0
+            while length <= len(expected):
+                chunk = os.read(fd, min(65536, len(expected) + 1 - length))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                length += len(chunk)
+            if b''.join(chunks) != expected or identity(os.fstat(fd)) != identity(before):
+                raise CustodyError('macos-custody-replacement-source-changed')
+            candidate = '.ods-replace-' + os.urandom(16).hex()
+            out = os.open(candidate, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                          0o600, dir_fd=directory)
+            temporary = candidate
+            try:
+                os.fchown(out, 0, gid)
+                os.fchmod(out, mode)
+                _verify_fd(out, directory=False)
+                with os.fdopen(os.dup(out), 'wb') as stream:
+                    stream.write(replacement)
+                    stream.flush()
+                os.fsync(out)
+            finally:
+                os.close(out)
+            current = os.stat(name, dir_fd=directory, follow_symlinks=False)
+            if (identity(current) != identity(before) or identity(os.fstat(fd)) != identity(before)):
+                raise CustodyError('macos-custody-replacement-source-changed')
+            os.rename(temporary, name, src_dir_fd=directory, dst_dir_fd=directory)
+            temporary = None
+            os.fsync(directory)
+        finally:
+            os.close(fd)
+            if temporary is not None:
+                os.unlink(temporary, dir_fd=directory)
 
 
 def launchd_document_binding(filename, expected):

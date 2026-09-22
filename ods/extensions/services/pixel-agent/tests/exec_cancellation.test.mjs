@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
-import { createExecCancellationControl } from "../plugin/tool-loop-guard.mjs";
+import { createExecCancellationControl, nativeRuntimeExecWrapper } from "../plugin/tool-loop-guard.mjs";
 
 const run = promisify(execFile);
 const linux = process.platform === "linux";
@@ -26,6 +26,26 @@ test("execution host only accepts the two explicit modes", () => {
   }
 });
 
+test('native runtime wrapper selection is pinned to the attested Node sibling',()=>{
+  const base='/usr/local/libexec/ods-pixel-runtimes/'+ 'a'.repeat(64);
+  const file={uid:0,nlink:1,mode:0o755,isFile:()=>true,isSymbolicLink:()=>false};
+  const directory={uid:0,mode:0o755,isDirectory:()=>true,isSymbolicLink:()=>false};
+  const stat=p=>p===base?directory:file;
+  assert.equal(nativeRuntimeExecWrapper(base+'/node','darwin',stat),base+'/cancellable-exec.sh');
+  for (const executable of ['/usr/bin/node',base+'/other','/tmp/'+ 'a'.repeat(64)+'/node']) {
+    assert.equal(nativeRuntimeExecWrapper(executable,'darwin',()=>{throw Error('must not inspect');}),undefined);
+  }
+  assert.equal(nativeRuntimeExecWrapper(base+'/node','linux',stat),undefined);
+  assert.equal(nativeRuntimeExecWrapper(base+'/node','darwin',()=>{throw Object.assign(Error(),{code:'ENOENT'});}),undefined);
+  assert.throws(()=>nativeRuntimeExecWrapper(base+'/node','darwin',()=>{throw Object.assign(Error(),{code:'EACCES'});}));
+  for(const mutation of [{uid:501},{nlink:2},{mode:0o777},{isSymbolicLink:()=>true},{isFile:()=>false}]) {
+    assert.throws(()=>nativeRuntimeExecWrapper(base+'/node','darwin',p=>p===base?directory:{...file,...mutation}),/unsafe/);
+  }
+  for(const mutation of [{uid:501},{mode:0o777},{isSymbolicLink:()=>true},{isDirectory:()=>false}]) {
+    assert.throws(()=>nativeRuntimeExecWrapper(base+'/node','darwin',p=>p===base?{...directory,...mutation}:file),/unsafe/);
+  }
+});
+
 test("sandbox preparation validates the host file and retains its mount path", { skip: !linux }, () => {
   const { root, wrapper } = fixture();
   const control = createExecCancellationControl({ root });
@@ -34,7 +54,7 @@ test("sandbox preparation validates the host file and retains its mount path", {
   assert.throws(() => control.prepare("sandbox", "printf ready"), /unsafe Pixel execution control root/);
 });
 
-test("gateway execution handles spaces and apostrophes and preserves command exits", { skip: !linux }, async () => {
+test("gateway execution handles spaces and apostrophes and preserves command exits", { skip: !['linux','darwin'].includes(process.platform) }, async () => {
   const { root } = fixture();
   const control = createExecCancellationControl({ root, executionHost: "gateway" });
   const result = await run("sh", ["-c", control.prepare("normal", "printf 'actual gateway output'")], { timeout: 5000 });

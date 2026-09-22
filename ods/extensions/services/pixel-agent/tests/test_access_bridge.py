@@ -7,12 +7,13 @@ import contextlib
 import hashlib
 import json
 import os
+import stat
 from pathlib import Path
 import sys
 import tempfile
 import types
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "bin"))
 import pixel_access_bridge as bridge
@@ -220,6 +221,290 @@ class HostAgentDiscoveryTests(unittest.TestCase):
             status = self.adapter.status()
         self.assertFalse(status["available"])
         self.assertEqual(status["reason"], "root-host-agent-isolation-required")
+
+
+class LaunchdAccessBridgeTests(unittest.TestCase):
+    def test_docker_inspect_and_exec_drop_to_bound_owner(self):
+        adapter = object.__new__(bridge.LaunchdAccessBridge)
+        context = dict(cwd='/', env={'PATH': '/owner/docker/bin:/usr/bin',
+            'DOCKER_HOST': 'unix:///owner/docker.sock'}, user=501, group=20, extra_groups=[20, 12])
+        with patch.object(adapter, '_docker_process_context', return_value=context), \
+                patch.object(bridge.subprocess, 'run', return_value=types.SimpleNamespace(stdout='a' * 64 + ' true')) as run, \
+                patch.object(bridge, '_edge_container_request', return_value={'phase': 'idle'}) as request:
+            adapter._inspect_edge(timeout=3)
+            self.assertEqual(run.call_args.args[0][:3], ['docker', 'inspect', 'ods-pixel-edge'])
+            for key, value in context.items():
+                self.assertEqual(run.call_args.kwargs[key], value)
+            self.assertNotIn('preexec_fn', run.call_args.kwargs)
+            self.assertNotIn('shell', run.call_args.kwargs)
+            adapter._request_edge('a' * 64, '/v1/transition', 'k' * 64, None, timeout=3)
+            self.assertEqual(request.call_args.kwargs['process_context'], context)
+        with patch.object(adapter, '_docker_process_context', side_effect=bridge.AccessError('unsafe-owner-identity')), \
+                patch.object(bridge.subprocess, 'run') as run, \
+                patch.object(bridge, '_edge_container_request') as request:
+            for action in (lambda: adapter._inspect_edge(timeout=3),
+                           lambda: adapter._request_edge('a' * 64, '/v1/transition', 'k' * 64, None)):
+                with self.assertRaisesRegex(bridge.AccessError, 'unsafe-owner-identity'):
+                    action()
+            run.assert_not_called()
+            request.assert_not_called()
+
+    @unittest.skipUnless(os.geteuid() == 0 and sys.platform == 'linux', 'isolated root fixture')
+    def test_native_docker_child_really_runs_without_root(self):
+        import pwd
+        owner = pwd.getpwnam('nobody')
+        adapter = object.__new__(bridge.LaunchdAccessBridge)
+        adapter.owner = owner
+        with tempfile.TemporaryDirectory(dir='/tmp', prefix='ods-owner-exec-') as directory:
+            root = Path(directory)
+            root.chmod(0o755)
+            docker = root / 'docker'
+            docker.write_text('#!' + sys.executable + '\n'
+                'import json,os,sys\n'
+                'if sys.argv[1] == "exec": sys.stdin.buffer.read()\n'
+                'print(json.dumps({"uid":os.getuid(),"euid":os.geteuid(),'
+                '"gid":os.getgid(),"groups":os.getgroups(),"home":os.environ.get("HOME")}))\n')
+            docker.chmod(0o755)
+            env = {'PATH': str(root), 'HOME': owner.pw_dir}
+            with patch.object(adapter, 'worker_environment', return_value=env):
+                inspected = json.loads(adapter._inspect_edge(timeout=5))
+                executed = adapter._request_edge('a' * 64, '/v1/transition', 'k' * 64, None, timeout=5)
+            for result in (inspected, executed):
+                self.assertEqual(result['uid'], owner.pw_uid)
+                self.assertEqual(result['euid'], owner.pw_uid)
+                self.assertEqual(result['gid'], owner.pw_gid)
+                self.assertEqual(sorted(result['groups']), sorted(os.getgrouplist(owner.pw_name, owner.pw_gid)))
+                self.assertEqual(result['home'], owner.pw_dir)
+
+    def test_discovery_uses_existing_public_macos_surface(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            adapter = object.__new__(bridge.LaunchdAccessBridge)
+            adapter.gateway_binding = {'fixture': True}
+            adapter.gateway_owner = 'fixture'
+            adapter.installed_binary = '/bin/sh'
+            adapter.native_port = adapter.native_key = None
+            owner = types.SimpleNamespace(pw_name='fixture', pw_uid=os.getuid() or 501,
+                                          pw_gid=os.getgid(), pw_dir=str(root))
+            program = Path(bridge.__file__).resolve()
+            protected = {program, *program.parents}
+            original = Path.lstat
+            def info(path):
+                if path in protected:
+                    return types.SimpleNamespace(st_mode=0o755, st_uid=0)
+                if path == root:
+                    return types.SimpleNamespace(st_mode=stat.S_IFDIR | 0o700, st_uid=owner.pw_uid)
+                return original(path)
+            with patch.object(bridge.platform, 'system', return_value='Darwin'), \
+                    patch.object(bridge.os, 'geteuid', return_value=0), \
+                    patch.object(Path, 'lstat', info), \
+                    patch('pwd.getpwnam', return_value=owner), \
+                    patch.object(adapter, 'verify_gateway_installation_binding'), \
+                    patch.object(adapter, '_runtime_environment', return_value={
+                        'HOME': str(root), 'OPENCLAW_CONFIG_PATH': str(root / 'config.json')}), \
+                    patch.object(bridge, 'private_json', return_value={'gateway': {'auth': {'token': 'k' * 64}}}), \
+                    patch.object(adapter, 'configured_gateway_port', return_value=18789):
+                adapter.discover()
+            self.assertEqual(adapter.surface, 'darwin')
+            self.assertEqual(adapter.native_port, 18789)
+
+    def test_stopped_receipt_is_bound_to_current_provider_transaction(self):
+        adapter = object.__new__(bridge.LaunchdAccessBridge)
+        adapter.state = Path('/private/var/lib/ods-pixel-access')
+        journal = {'kind': 'provider', 'phase': 'invoking', 'token': 'a' * 64}
+        witness = {'target': 'system/com.ods.fixture'}
+        with patch.object(adapter, 'pending', return_value=journal), \
+                patch.object(bridge, 'atomic_json') as write:
+            adapter._save_gateway_stop(witness)
+            write.assert_called_once_with(adapter.state / 'launchd-stop.json',
+                {'token': journal['token'], 'witness': witness})
+            for token, stored in (('a' * 64, witness), ('b' * 64, witness), ('a' * 64, None)):
+                with patch.object(bridge, 'private_json', return_value={'token': token, 'witness': stored}):
+                    if token == journal['token'] and stored is not None:
+                        self.assertEqual(adapter._load_gateway_stop(), witness)
+                    else:
+                        with self.assertRaisesRegex(bridge.AccessError, 'witness-unavailable'):
+                            adapter._load_gateway_stop()
+        for journal in (None, {'kind': 'settings', 'phase': 'invoking', 'token': 'a' * 64},
+                        {'kind': 'provider', 'phase': 'complete', 'token': 'a' * 64}):
+            with patch.object(adapter, 'pending', return_value=journal), \
+                    self.assertRaisesRegex(bridge.AccessError, 'transaction-unavailable'):
+                adapter._load_gateway_stop()
+
+    def test_native_worker_uses_bound_config_and_runtime_environment(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            adapter = object.__new__(bridge.LaunchdAccessBridge)
+            adapter.home = root / 'home'
+            adapter._runtime_config_path = root / 'openclaw.json'
+            adapter.owner = types.SimpleNamespace(pw_name='fixture')
+            adapter.binary = str(root / 'bin/openclaw')
+            document = {'ProgramArguments': ['/usr/bin/env', '-i',
+                'HOME=' + str(adapter.home), 'OPENCLAW_CONFIG_PATH=' + str(adapter._runtime_config_path),
+                'OPENCLAW_STATE_DIR=' + str(root / 'state'), 'PATH=/qualified/node/bin:/usr/bin:/bin',
+                'DOCKER_HOST=unix:///fixture/docker.sock', 'NODE_OPTIONS=--inspect',
+                'PRIVATE_TOKEN=do-not-inherit', '/usr/bin/sandbox-exec', '-f', '/etc/ods/gateway.sb']}
+            with patch.object(adapter, 'verify_gateway_installation_binding') as verify, \
+                    patch.object(adapter, '_launchd_document', return_value=(b'', document)):
+                env = adapter.worker_environment()
+            verify.assert_called_once_with()
+            self.assertEqual(env['HOME'], str(adapter.home))
+            self.assertEqual(env['OPENCLAW_CONFIG_PATH'], str(root / 'openclaw.json'))
+            self.assertEqual(env['OPENCLAW_STATE_DIR'], str(root / 'state'))
+            self.assertEqual(env['PATH'], '/qualified/node/bin:/usr/bin:/bin')
+            self.assertNotIn('NODE_OPTIONS', env)
+            self.assertNotIn('PRIVATE_TOKEN', env)
+            self.assertEqual(bridge.runtime_config_path(adapter), root / 'openclaw.json')
+            # Existing Linux/fake adapters retain their original config path.
+            self.assertEqual(bridge.runtime_config_path(types.SimpleNamespace(home=root)),
+                             root / '.openclaw/openclaw.json')
+            document['ProgramArguments'].insert(2, 'HOME=' + str(root / 'other'))
+            with patch.object(adapter, '_launchd_document', return_value=(b'', document)), \
+                    self.assertRaisesRegex(bridge.AccessError, 'environment-unavailable'):
+                adapter._runtime_environment()
+
+    def test_native_runtime_rejects_ambiguous_config_path(self):
+        adapter = object.__new__(bridge.LaunchdAccessBridge)
+        for value in ('relative.json', '/home/../other.json', '/home//other.json'):
+            document = {'ProgramArguments': ['/usr/bin/env', '-i', 'HOME=/Users',
+                'OPENCLAW_CONFIG_PATH=' + value, 'OPENCLAW_STATE_DIR=/Users/state', '/usr/bin/node']}
+            with patch.object(adapter, '_launchd_document', return_value=(b'', document)), \
+                    self.assertRaisesRegex(bridge.AccessError, 'path-unavailable'):
+                adapter._runtime_environment()
+
+    def test_production_bridge_rejects_gui_launchagent(self):
+        with self.assertRaisesRegex(bridge.AccessError, 'system-launchdaemon-required'):
+            bridge.LaunchdAccessBridge(
+                '/opt/ods', 'k' * 64, gateway_target='gui/501/com.ods.fixture',
+                gateway_plist='/Users/fixture/Library/LaunchAgents/com.ods.fixture.plist',
+                gateway_process={'uid': 501, 'gid': 20, 'executable': '/opt/node'},
+                state='/private/var/lib/ods-pixel-access', gateway_binding={},
+                installed_binary='/opt/openclaw', gateway_owner='fixture')
+
+    def test_launchd_unit_boundary_is_a_stable_non_systemd_receipt(self):
+        adapter = object.__new__(bridge.LaunchdAccessBridge)
+        adapter.gateway_target = 'system/com.ods.fixture'
+        adapter.gateway_plist = Path('/Library/LaunchDaemons/com.ods.fixture.plist')
+        adapter.gateway_service = types.SimpleNamespace(definition=lambda: 'd' * 64)
+        with patch.object(adapter, '_policy_state', return_value={'activeMode': 'sandboxed'}):
+            value = adapter.unit_boundary()
+        self.assertEqual(json.loads(value), {
+            'schemaVersion': 1, 'platform': 'macos-launchd',
+            'target': 'system/com.ods.fixture',
+            'plist': '/Library/LaunchDaemons/com.ods.fixture.plist',
+            'definition': 'd' * 64, 'policy': {'activeMode': 'sandboxed'}})
+
+    def test_policy_selection_does_not_claim_a_restart_or_proof(self):
+        adapter = object.__new__(bridge.LaunchdAccessBridge)
+        adapter.gateway_policy = {'fixture': True}
+        adapter.state = Path('/private/var/lib/ods-pixel-access')
+        identity = {'pid': 123, 'boot': 'test-boot', 'started': 1}
+        adapter.gateway_service = types.SimpleNamespace(restart=Mock(), transaction_identity=lambda: identity)
+        with patch.object(adapter, '_verify_launchd_loaded') as loaded, \
+                patch.object(adapter, '_policy_state'), \
+                patch.object(bridge, 'atomic_json') as write, \
+                patch('pixel_macos_policy.select_policy') as select, \
+                patch.object(adapter, 'native') as native:
+            adapter.dropin_for(True)
+            select.assert_called_once_with(adapter.gateway_policy, 'full-access')
+            write.assert_called_once_with(adapter.state / 'policy-activation.json',
+                {'mode': 'full-access', 'before': identity})
+            loaded.assert_called_once_with()
+            adapter.gateway_service.restart.assert_not_called()
+            native.assert_not_called()
+
+    def test_policy_path_must_be_the_bound_launchd_argument(self):
+        adapter = object.__new__(bridge.LaunchdAccessBridge)
+        adapter.gateway_policy = {}
+        document = {'ProgramArguments': ['/usr/bin/env', '-i', '/usr/bin/sandbox-exec',
+                    '-f', '/etc/ods/pixel-gateway.sb', '/opt/launcher']}
+        state = {'active': '/private/etc/ods/pixel-gateway.sb', 'activeMode': 'sandboxed'}
+        with patch.object(adapter, '_launchd_document', return_value=(b'', document)), \
+                patch('pixel_macos_policy.policy_state', return_value=state):
+            self.assertEqual(adapter._policy_state(), state)
+            document['ProgramArguments'][4] = '/etc/ods/unapproved.sb'
+            with self.assertRaisesRegex(bridge.AccessError, 'policy-binding-mismatch'):
+                adapter._policy_state()
+
+    def test_held_mode_requires_matching_profile_and_live_tool_proof(self):
+        for mode in ('sandboxed', 'full-access'):
+            for mismatch in (None, 'profile', 'definition', 'proof', 'config', 'baseline'):
+                with self.subTest(mode=mode, mismatch=mismatch), tempfile.TemporaryDirectory() as directory:
+                    adapter = object.__new__(bridge.LaunchdAccessBridge)
+                    adapter.state = Path(directory)
+                    (adapter.state / 'service-baseline.json').touch()
+                    baseline = {'definition': 'approved', 'policy': {'activeMode': 'sandboxed'}}
+                    current = {'definition': 'approved', 'policy': {'activeMode': mode}}
+                    other = 'sandboxed' if mode == 'full-access' else 'full-access'
+                    proof = {'pid': 123, 'proof': {'mode': mode}}
+                    config = {'configured_status': mode, 'config_sha256': 'c' * 64}
+                    if mismatch == 'profile': current['policy']['activeMode'] = other
+                    if mismatch == 'definition': current['definition'] = 'changed'
+                    if mismatch == 'baseline': baseline['policy']['activeMode'] = 'full-access'
+                    if mismatch == 'proof': proof['proof']['mode'] = other
+                    if mismatch == 'config': config['configured_status'] = other
+                    boundary = json.dumps(current)
+                    with patch.object(adapter, 'provision_probe'), \
+                            patch.object(adapter, 'unit_boundary', return_value=boundary), \
+                            patch.object(bridge, 'private_json', return_value={'boundary': json.dumps(baseline)}), \
+                            patch.object(adapter, 'native', return_value=proof) as native, \
+                            patch.object(adapter, 'worker', return_value=config), \
+                            patch.object(bridge, 'atomic_json') as write:
+                        if mismatch:
+                            with self.assertRaises(bridge.AccessError):
+                                adapter.verify_held_mode('a' * 64, mode)
+                            write.assert_not_called()
+                            if mismatch in ('profile', 'definition', 'baseline'):
+                                native.assert_not_called()
+                        else:
+                            adapter.verify_held_mode('a' * 64, mode)
+                            native.assert_called_once_with('probe', 'a' * 64)
+                            self.assertEqual(write.call_args.args[1]['boundary'], boundary)
+
+    def test_interrupted_policy_selection_requires_a_new_process(self):
+        with tempfile.TemporaryDirectory() as directory:
+            adapter = object.__new__(bridge.LaunchdAccessBridge)
+            adapter.state = Path(directory)
+            (adapter.state / 'policy-activation.json').touch()
+            before = {'boot': 'boot-a', 'pid': 123, 'started': 100}
+            record = {'mode': 'sandboxed', 'before': before}
+            with patch.object(bridge, 'private_json', return_value=record), \
+                    patch.object(adapter, '_policy_state', return_value={'activeMode': 'sandboxed'}):
+                self.assertTrue(adapter.service_restore_required())
+                for current in (before, dict(before, started=101), dict(before, pid=124),
+                                dict(before, pid=124, started=101, boot='boot-b')):
+                    adapter.gateway_service = types.SimpleNamespace(transaction_identity=lambda: current)
+                    with self.assertRaisesRegex(bridge.AccessError, 'policy-restart-unconfirmed'):
+                        adapter._policy_activation_identity('sandboxed')
+                current = dict(before, pid=124, started=101)
+                self.assertEqual(adapter._policy_activation_identity('sandboxed'), current)
+                with self.assertRaisesRegex(bridge.AccessError, 'policy-restart-unconfirmed'):
+                    adapter._policy_activation_identity('full-access')
+            (adapter.state / 'policy-activation.json').unlink()
+            with patch.object(adapter, '_policy_state', return_value={'activeMode': 'sandboxed'}):
+                self.assertFalse(adapter.service_restore_required())
+
+    def test_launchd_document_requires_owner_group_and_system_identity(self):
+        import grp
+        import pwd
+        owner = pwd.getpwuid(os.getuid())
+        group = grp.getgrgid(owner.pw_gid).gr_name
+        adapter = object.__new__(bridge.LaunchdAccessBridge)
+        adapter.gateway_owner = owner.pw_name
+        adapter.gateway_target = 'system/com.ods.fixture'
+        adapter.gateway_plist = Path('/Library/LaunchDaemons/com.ods.fixture.plist')
+        expected = {'Label': 'com.ods.fixture', 'UserName': owner.pw_name,
+                    'GroupName': group, 'ProgramArguments': ['/usr/bin/env', '-i', '/opt/node']}
+        import pixel_macos_custody
+        with patch.object(pixel_macos_custody, 'protected_bytes',
+                          return_value=__import__('plistlib').dumps(expected)):
+            _, actual = adapter._launchd_document()
+        self.assertEqual(actual, expected)
+        bad = dict(expected, UserName='other')
+        with patch.object(pixel_macos_custody, 'protected_bytes',
+                          return_value=__import__('plistlib').dumps(bad)), \
+                self.assertRaisesRegex(bridge.AccessError, 'gateway-launchdaemon-identity-mismatch'):
+            adapter._launchd_document()
 class NativeReacquireTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()

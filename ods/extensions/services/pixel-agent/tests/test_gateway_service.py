@@ -1,13 +1,25 @@
 import sys
+import errno
+import json
+import tempfile
 from pathlib import Path
 import unittest
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / 'bin'))
 from pixel_gateway_service import LaunchdGatewayService, SystemdGatewayService
+from pixel_access_bridge import AccessError
 
 
 class GatewayServiceTests(unittest.TestCase):
+    def test_root_process_opt_in_is_restricted_to_promoter(self):
+        for target, uid in [('system/com.ods.pixel-native-gateway', 0),
+                            ('system/com.ods.pixel-native-manager', 0),
+                            ('system/com.ods.pixel-native-promoter', 501)]:
+            with self.subTest(target=target, uid=uid), self.assertRaisesRegex(ValueError, 'root-service-process'):
+                LaunchdGatewayService(Mock(), ValueError, target, Mock(),
+                    process={'uid': uid, 'gid': 0, 'executable': '/python'}, allow_root_process=True)
+
     def test_systemd_transaction_preserves_existing_receipt_format(self):
         command = Mock(return_value='MainPID=123\nActiveState=active\nExecMainStartTimestampMonotonic=999')
         service = SystemdGatewayService(command, ValueError, 'fixture.service')
@@ -140,9 +152,101 @@ class GatewayServiceTests(unittest.TestCase):
         verify = Mock()
         command = Mock(return_value=target + ' = {\n\tstate = running\n\tpid = 123\n}')
         service = LaunchdGatewayService(command, ValueError, target, verify)
-        service.stop(timeout=11)
+        with patch('pixel_gateway_service.sys.platform', 'linux'):
+            service.stop(timeout=11)
         verify.assert_called_once_with()
         command.assert_called_with(['/bin/launchctl', 'bootout', target], timeout=11)
+
+    def test_launchd_stop_records_tree_and_requires_every_birth_tuple_to_exit(self):
+        from pixel_macos_process import ProcessIdentityError
+        target = 'system/com.ods.pixel.gateway'
+        command = Mock(side_effect=lambda args, timeout=20: (
+            target + ' = {\n\tstate = running\n\tpid = 123\n}'
+            if len(args) == 3 and args[1] == 'print' else ''))
+        service = LaunchdGatewayService(command, AccessError, target, Mock())
+        with patch('pixel_gateway_service.sys.platform', 'darwin'), \
+                patch('pixel_macos_process.process_tree_snapshot', return_value=((123, 10, 20), (124, 11, 21))) as tree:
+            service.stop(timeout=11)
+        tree.assert_called_once_with(123)
+        command.side_effect = AccessError('host-command-failed', returncode=113)
+        with patch('pixel_macos_process.process_birth', side_effect=ProcessIdentityError(
+                'gateway-process-unavailable', errno=errno.ESRCH)):
+            service.assert_stopped()
+            service.assert_stopped()
+        self.assertEqual(service._stopping_tree, ((123, 10, 20), (124, 11, 21)))
+
+    def test_launchd_stopped_check_rejects_unknown_command_and_kernel_errors(self):
+        from pixel_macos_process import ProcessIdentityError
+        command = Mock()
+        service = LaunchdGatewayService(command, AccessError, 'system/com.ods.fixture', Mock())
+        service._stopping_tree = ((123, 10, 20),)
+        command.return_value = ''
+        with self.assertRaisesRegex(AccessError, 'native-idle-unconfirmed'):
+            service.assert_stopped()
+        for code in (None, 1, 5, 127):
+            command.side_effect = AccessError('host-command-failed', returncode=code)
+            with self.assertRaises(AccessError):
+                service.assert_stopped()
+        command.side_effect = AccessError('host-command-failed', returncode=113)
+        for code in (None, 0, errno.EPERM, errno.EIO):
+            with patch('pixel_macos_process.process_birth', side_effect=ProcessIdentityError(
+                    'gateway-process-unavailable', errno=code)), self.assertRaises(AccessError):
+                service.assert_stopped()
+
+    def test_reload_verifies_stopped_job_and_disk_before_bootstrap(self):
+        command, disk, loaded = Mock(), Mock(), Mock()
+        service = LaunchdGatewayService(command, AccessError, 'system/com.ods.fixture', loaded,
+            plist='/Library/LaunchDaemons/com.ods.fixture.plist', verify_definition=disk)
+        service._stopping_tree = ((123, 10, 20),)
+        service.assert_stopped = Mock()
+        service.reload()
+        service.assert_stopped.assert_called_once_with()
+        disk.assert_called_once_with()
+        loaded.assert_not_called()
+        command.assert_called_once_with(['/bin/launchctl', 'bootstrap', 'system',
+                                         '/Library/LaunchDaemons/com.ods.fixture.plist'])
+        self.assertIsNone(service._stopping_tree)
+        command.reset_mock()
+        disk.side_effect = AccessError('custody')
+        with self.assertRaisesRegex(AccessError, 'custody'):
+            service.reload()
+        command.assert_not_called()
+
+    def test_new_service_restores_same_boot_stop_and_invalidates_before_bootstrap(self):
+        from pixel_macos_process import ProcessIdentityError
+        boot = '11111111-2222-3333-4444-555555555555'
+        target = 'system/com.ods.fixture'
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'stop.json'
+            value = {'target': target, 'boot': boot, 'definition': 'd' * 64,
+                     'processes': [[123, 10, 20]]}
+            path.write_text(json.dumps(value))
+            def save(value):
+                path.write_text(json.dumps(value))
+            def command(args, **kwargs):
+                if args[0] == '/usr/sbin/sysctl':
+                    return boot
+                if args[1] == 'print':
+                    raise AccessError('host-command-failed', returncode=113)
+                self.assertEqual(args[1], 'bootstrap')
+                self.assertIsNone(json.loads(path.read_text()))
+                return ''
+            service = LaunchdGatewayService(command, AccessError, target, Mock(),
+                plist='/Library/LaunchDaemons/com.ods.fixture.plist',
+                save_stop=save, load_stop=lambda: json.loads(path.read_text()))
+            service.definition = Mock(return_value='d' * 64)
+            absent = ProcessIdentityError('gateway-process-unavailable', errno=errno.ESRCH)
+            with patch('pixel_macos_process.process_birth', side_effect=absent):
+                service.assert_stopped()
+                service.assert_stopped()
+                self.assertEqual(service._stopping_tree, ((123, 10, 20),))
+                path.write_text(json.dumps(dict(value, boot='aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee')))
+                with self.assertRaisesRegex(AccessError, 'witness-unavailable'):
+                    service.assert_stopped()
+                path.write_text(json.dumps(value))
+                service.reload()
+                with self.assertRaisesRegex(AccessError, 'witness-unavailable'):
+                    service.assert_stopped()
 
     def test_launchd_malformed_duplicate_or_inconsistent_state_fails_closed(self):
         target = 'gui/501/com.ods.fixture'

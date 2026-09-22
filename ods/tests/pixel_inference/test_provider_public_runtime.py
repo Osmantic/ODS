@@ -154,7 +154,7 @@ def test_client_emits_only_fixed_root_operation_and_host_data_hash(monkeypatch, 
         def __enter__(self): return self
         def __exit__(self, *_args): return False
         def settimeout(self, value): assert value == 335
-        def connect(self, path): assert path == '/run/ods-pixel-access/control.sock'
+        def connect(self, path): assert path == pixel_access_client.ACCESS_SOCKET_PATH
         def sendall(self, raw): sent.append(json.loads(raw))
         def makefile(self, mode): return io.BytesIO(b'{"status":200,"body":{}}\n')
     monkeypatch.setattr(pixel_access_client.socket, 'socket', lambda *_args: Socket())

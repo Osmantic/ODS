@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 import socket
 import sys
+import tempfile
 import threading
 
 import pytest
@@ -20,7 +21,8 @@ from pixel_access_protocol import control_request
 
 @pytest.mark.parametrize("operation", ["status", "change", "settings-status", "settings-change"])
 def test_client_uses_fixed_socket_and_only_data_directory_fingerprint(tmp_path, monkeypatch, operation):
-    path = str(tmp_path / "control.sock")
+    temporary = tempfile.TemporaryDirectory(prefix="ods-access-", dir="/tmp")
+    path = str(Path(temporary.name) / "control.sock")
     original = socket.socket
     listener = original(socket.AF_UNIX, socket.SOCK_STREAM)
     listener.bind(path)
@@ -44,7 +46,7 @@ def test_client_uses_fixed_socket_and_only_data_directory_fingerprint(tmp_path, 
         def __exit__(self, *_args): self.real.close()
         def __getattr__(self, name): return getattr(self.real, name)
         def connect(self, address):
-            assert address == "/run/ods-pixel-access/control.sock"
+            assert address == client.ACCESS_SOCKET_PATH
             self.real.connect(path)
         def settimeout(self, seconds):
             assert seconds == 335  # Verify production budget; bound this fixture.
@@ -60,7 +62,9 @@ def test_client_uses_fixed_socket_and_only_data_directory_fingerprint(tmp_path, 
             assert seen[0]["data_dir_id"] == hashlib.sha256(b"/opt/custom data").hexdigest()
             assert "/opt/custom data" not in json.dumps(seen[0])
         else: assert "data_dir_id" not in seen[0]
-    finally: listener.close()
+    finally:
+        listener.close()
+        temporary.cleanup()
 
 
 @pytest.mark.parametrize("operation,directory", [("exec", "/opt/data"), ("settings-status", None),

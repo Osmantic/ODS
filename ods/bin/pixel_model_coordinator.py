@@ -5,7 +5,7 @@ import os
 import stat
 import tempfile
 import time
-from pixel_access_bridge import AccessError, atomic_json, private_json, digest, remaining
+from pixel_access_bridge import AccessError, atomic_json, private_json, digest, remaining, runtime_config_path
 from pixel_settings.coordinator import _read, _identity, _valid_identity
 from pixel_model_contract import ModelError, checksum, target, plan, projection
 
@@ -37,7 +37,7 @@ def _write(bridge, journal):
 
 
 def _config(bridge):
-    return _read(bridge.home / ".openclaw/openclaw.json", bridge.owner.pw_uid)
+    return _read(runtime_config_path(bridge), bridge.owner.pw_uid)
 
 
 def _marker_digest(config):

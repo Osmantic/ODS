@@ -29,6 +29,41 @@ class SystemObserveTests(unittest.TestCase):
         platform.start()
         self.addCleanup(platform.stop)
 
+    def test_native_observations_use_only_fixed_read_commands(self):
+        for action, commands in system_observe.MACOS_OBSERVATIONS.items():
+            with self.subTest(action=action), \
+                    mock.patch.object(system_observe.sys, 'platform', 'darwin'), \
+                    mock.patch.object(system_observe, '_trusted_executable', side_effect=lambda paths: paths[0]), \
+                    mock.patch.object(system_observe, '_run', return_value=mock.Mock(returncode=0, stdout='fixture', stderr='')) as run:
+                value = system_observe.observe_macos(action)
+                self.assertTrue(value['available'])
+                self.assertEqual([call.args[0] for call in run.call_args_list], [list(argv) for argv in commands])
+                self.assertNotIn('-c', [arg for command in commands for arg in command])
+        self.assertIn('ucomm=', ' '.join(system_observe.MACOS_OBSERVATIONS['processes'][0]))
+        self.assertNotIn('args=', ' '.join(system_observe.MACOS_OBSERVATIONS['processes'][0]))
+
+    def test_native_listening_ports_exclude_established_peers(self):
+        results = [mock.Mock(returncode=0, stderr='', stdout='tcp4 0 0 *.80 *.* LISTEN\ntcp4 0 0 127.0.0.1.90 127.0.0.1.91 ESTABLISHED\n'),
+                   mock.Mock(returncode=0, stderr='', stdout='udp4 0 0 *.53 *.*\nudp4 0 0 *.22 10.0.0.1.23\n')]
+        with mock.patch.object(system_observe.sys, 'platform', 'darwin'), \
+                mock.patch.object(system_observe, '_trusted_executable', side_effect=lambda paths: paths[0]), \
+                mock.patch.object(system_observe, '_run', side_effect=results):
+            value = system_observe.observe_macos('listening-ports')
+        self.assertEqual(value['observations'][0]['lines'], ['tcp4 0 0 *.80 *.* LISTEN'])
+        self.assertEqual(value['observations'][1]['lines'], ['udp4 0 0 *.53 *.*'])
+
+    def test_native_observer_bounds_rows_and_reports_unavailability(self):
+        self.assertFalse(system_observe.observe_macos('memory')['available'])
+        with mock.patch.object(system_observe.sys, 'platform', 'darwin'), \
+                mock.patch.object(system_observe, '_trusted_executable', side_effect=lambda paths: paths[0]), \
+                mock.patch.object(system_observe, '_run', return_value=mock.Mock(returncode=0, stdout='row\n' * 300, stderr='')):
+            value = system_observe.observe_macos('processes')
+            self.assertEqual(len(value['observations'][0]['lines']), 256)
+            self.assertTrue(value['observations'][0]['truncated'])
+        with mock.patch.object(system_observe.sys, 'platform', 'darwin'), \
+                mock.patch.object(system_observe, '_trusted_executable', return_value=None):
+            self.assertFalse(system_observe.observe_macos('memory')['available'])
+
     def test_metal_capability_omits_serials_and_does_not_invent_vram(self):
         value = {'SPDisplaysDataType': [{'sppci_model': 'Apple M5',
                  'spdisplays_mtlgpufamilysupport': 'spdisplays_metal4',
@@ -163,7 +198,7 @@ class SystemObserveTests(unittest.TestCase):
         succeeded = mock.Mock(returncode=0, stdout="Running\n", stderr="")
         candidates = [pathlib.Path("/run/WSL/101_interop"), pathlib.Path("/run/WSL/99_interop")]
         with tempfile.TemporaryDirectory() as directory:
-            executable = pathlib.Path(directory) / "powershell.exe"
+            executable = pathlib.Path(directory).resolve() / "powershell.exe"
             executable.write_text("fixture", encoding="utf-8")
             executable.chmod(0o555)
             with mock.patch.object(system_observe, "WINDOWS_POWERSHELL", executable), \

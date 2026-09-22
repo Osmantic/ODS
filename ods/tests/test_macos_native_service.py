@@ -22,7 +22,9 @@ class NativeServiceTests(unittest.TestCase):
             install = root / "ods"
             binary = install / "bin" / "llama-server"
             binary.parent.mkdir(parents=True)
-            shutil.copy2("/bin/sleep", binary)
+            # macOS system binaries can carry protected flags that an
+            # unprivileged temp fixture cannot reproduce with copy2.
+            shutil.copyfile("/bin/sleep", binary)
             binary.chmod(0o700)
             child = subprocess.Popen([str(binary), "120"])
             self.addCleanup(lambda: child.poll() is None and child.kill())
