@@ -37,6 +37,24 @@ def write_private(path, body, mode=0o600):
         stream.write(body)
 
 
+def compose_plugin_directory(docker, owner_home):
+    """Find Compose without exposing the owner's Docker credentials to Pixel."""
+    candidates = (
+        docker.parent / 'cli-plugins',
+        docker.parent.parent / 'cli-plugins',
+        Path('/opt/homebrew/lib/docker/cli-plugins'),
+        Path('/usr/local/lib/docker/cli-plugins'),
+        Path('/Applications/Docker.app/Contents/Resources/cli-plugins'),
+        Path(owner_home) / 'Applications/Docker.app/Contents/Resources/cli-plugins',
+        Path(owner_home) / '.docker/cli-plugins',
+    )
+    for directory in candidates:
+        plugin = directory / 'docker-compose'
+        if plugin.is_file() and os.access(plugin, os.X_OK):
+            return directory
+    raise ValueError('native-docker-compose-plugin-required')
+
+
 def prepare(*, candidate, home, node, runtime, docker, docker_socket, ods_source,
             ingress_image, compose_project, ingress_gid):
     if sys.platform != 'darwin' or os.geteuid() == 0:
@@ -62,6 +80,7 @@ def prepare(*, candidate, home, node, runtime, docker, docker_socket, ods_source
     if (not all(path.is_file() and os.access(path, os.X_OK) for path in (node, docker))
             or not stat.S_ISSOCK(docker_socket.stat().st_mode)):
         raise ValueError('native-executable-and-docker-socket-required')
+    compose_plugin_dir = compose_plugin_directory(docker, owner.pw_dir)
     receipt = config.private_json(candidate / 'candidate.json')
     config_body = config.service_snapshot(candidate, 'openclaw.json', private=True)
     document = json.loads(config_body)
@@ -89,6 +108,8 @@ def prepare(*, candidate, home, node, runtime, docker, docker_socket, ods_source
         staged.mkdir(mode=0o700)
         for relative in ('.openclaw', '.openclaw/.ods-exec-control', 'tmp', 'logs', 'docker-config'):
             (staged / relative).mkdir(mode=0o700)
+        write_private(staged / 'docker-config/config.json',
+            (json.dumps({'cliPluginsExtraDirs': [str(compose_plugin_dir)]}) + '\n').encode())
         config.bundle._copy_tree(candidate / 'workspace', staged / '.openclaw/workspace-pixel', snapshot)
         for directory, _, files in os.walk(staged / '.openclaw/workspace-pixel'):
             Path(directory).chmod(0o700)

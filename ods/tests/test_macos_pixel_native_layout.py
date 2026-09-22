@@ -40,6 +40,10 @@ def inputs(tmp_path, monkeypatch):
     for path in (node, docker):
         path.write_text('fixture, never executed')
         path.chmod(0o700)
+    plugin = root / 'cli-plugins/docker-compose'
+    plugin.parent.mkdir()
+    plugin.write_text('fixture, never executed')
+    plugin.chmod(0o700)
     source = root / 'source'
     wrapper = source / 'extensions/services/pixel-agent/host/cancellable-exec.sh'
     wrapper.parent.mkdir(parents=True)
@@ -68,6 +72,8 @@ def test_layout_preserves_candidate_and_generates_unloaded_private_template(inpu
     assert not any(item.startswith('PIXEL_INGRESS_SOCKET=') for item in template['ProgramArguments'])
     assert template['WorkingDirectory'] == str(home / '.openclaw/workspace-pixel')
     assert (home / 'gateway-template.sb').read_text() == '(version 1)\n(deny default)\n'
+    assert json.loads((home / 'docker-config/config.json').read_text()) == {
+        'cliPluginsExtraDirs': [str(inputs['docker'].parent / 'cli-plugins')]}
     assert '/usr/bin/env -u NODE_OPTIONS -u NODE_PATH' in (home / 'openclaw').read_text()
     assert json.loads((home / '.openclaw/openclaw.json').read_text()) == json.loads(before)
     assert (home / '.openclaw/openclaw.json').read_bytes() == before
