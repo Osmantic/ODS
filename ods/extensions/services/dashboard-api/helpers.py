@@ -1417,3 +1417,23 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def list_partition_chunks_equal_safe(items: list | None, k: int = 2) -> list[list]:
+    """Safely partition list into k roughly equal-sized sublists.
+    Returns [] on None or non-sequence inputs.
+    """
+    if not items or not isinstance(items, (list, tuple)):
+        return []
+    if not isinstance(k, int) or isinstance(k, bool) or k <= 0:
+        k = 2
+    n = len(items)
+    k = min(k, n)
+    q, r = divmod(n, k)
+    result = []
+    stop = 0
+    for i in range(k):
+        start = stop
+        stop += q + (1 if i < r else 0)
+        result.append(list(items[start:stop]))
+    return result
