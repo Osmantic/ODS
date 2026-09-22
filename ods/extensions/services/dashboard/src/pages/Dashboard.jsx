@@ -171,6 +171,8 @@ const OVERVIEW_HISTORY_KEY = 'ods-system-overview-history-v1'
 const SERVICE_CPU_HISTORY_KEY = 'ods-service-cpu-history-v1'
 const OVERVIEW_MAX_SAMPLES = 720
 const SERVICE_CPU_MAX_SAMPLES = 80
+const SERVICE_CPU_MAX_KEYS = 256
+const SERVICE_CPU_MAX_TOTAL_SAMPLES = 4096
 const OVERVIEW_RANGES = [
   { key: '1H', label: '1H', ms: 60 * 60 * 1000, compareMs: 5 * 60 * 1000, deltaLabel: '5m ago' },
   { key: '6H', label: '6H', ms: 6 * 60 * 60 * 1000, compareMs: 60 * 60 * 1000, deltaLabel: '1h ago' },
@@ -339,23 +341,45 @@ function readServiceCpuHistory() {
     if (!raw) return serviceCpuMemoryHistory
     const parsed = JSON.parse(raw)
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return serviceCpuMemoryHistory
-    return Object.fromEntries(
-      Object.entries(parsed).map(([id, samples]) => [
+    const entries = Object.entries(parsed).slice(-SERVICE_CPU_MAX_KEYS)
+    const bounded = Object.fromEntries(
+      entries.map(([id, samples]) => [
         id,
         Array.isArray(samples)
-          ? samples.filter(sample => Number.isFinite(sample?.t) && Number.isFinite(sample?.cpu))
+          ? samples.filter(sample => Number.isFinite(sample?.t) && Number.isFinite(sample?.cpu)).slice(-SERVICE_CPU_MAX_SAMPLES)
           : [],
       ])
     )
+    let sampleCount = 0
+    for (const [id, samples] of Object.entries(bounded).reverse()) {
+      const keep = Math.max(0, Math.min(samples.length, SERVICE_CPU_MAX_TOTAL_SAMPLES - sampleCount))
+      bounded[id] = samples.slice(-keep)
+      sampleCount += keep
+    }
+    return bounded
   } catch {
     return serviceCpuMemoryHistory
   }
 }
 
 function writeServiceCpuHistory(history) {
-  serviceCpuMemoryHistory = history
+  const bounded = Object.fromEntries(Object.entries(history).slice(-SERVICE_CPU_MAX_KEYS).map(([id, samples]) => [
+    id,
+    Array.isArray(samples) ? samples.slice(-SERVICE_CPU_MAX_SAMPLES) : [],
+  ]))
+  let sampleCount = 0
+  for (const [id, samples] of Object.entries(bounded).reverse()) {
+    if (sampleCount + samples.length <= SERVICE_CPU_MAX_TOTAL_SAMPLES) {
+      sampleCount += samples.length
+      continue
+    }
+    const keep = Math.max(0, SERVICE_CPU_MAX_TOTAL_SAMPLES - sampleCount)
+    bounded[id] = samples.slice(-keep)
+    sampleCount += bounded[id].length
+  }
+  serviceCpuMemoryHistory = bounded
   try {
-    globalThis.localStorage?.setItem(SERVICE_CPU_HISTORY_KEY, JSON.stringify(history))
+    globalThis.localStorage?.setItem(SERVICE_CPU_HISTORY_KEY, JSON.stringify(bounded))
   } catch {
     // Memory history keeps the sparkline usable when storage is blocked.
   }
