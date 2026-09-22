@@ -135,12 +135,16 @@ function resolveServiceId(service) {
 export function buildTopology(statusData) {
   const services = Array.isArray(statusData?.services) ? statusData.services : []
   const nodes = services
+    .filter(service => service && typeof service === 'object')
     .map(service => {
       const id = resolveServiceId(service)
       if (!id) return null
+      const name = typeof service.name === 'string' && service.name.trim()
+        ? service.name.trim()
+        : String(id)
       return {
-        id,
-        name: service.name || id,
+        id: String(id),
+        name,
         status: normalizeStatus(service.status),
         port: service.external_port ?? service.port ?? '',
         public_url: service.public_url || '',
