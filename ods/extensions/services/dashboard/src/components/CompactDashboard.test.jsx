@@ -40,3 +40,7 @@ it('does not fabricate a percentage without telemetry', () => {
   expect(screen.queryByRole('progressbar')).toBeNull()
   expect(screen.getByText('No service telemetry available.')).toBeVisible()
 })
+it('keeps duplicate service rows as distinct disclosure elements', () => {
+  render(<CompactDashboard health={{text:'Online'}} services={[{id:'worker',name:'Worker A',status:'healthy'},{id:'worker',name:'Worker B',status:'down'}]} metrics={[]}/>)
+  expect(screen.getByText('Worker A').closest('details')).not.toBe(screen.getByText('Worker B').closest('details'))
+})
