@@ -123,8 +123,8 @@ while [[ -n "$_disk_probe_path" ]] && [[ ! -e "$_disk_probe_path" ]]; do
     _disk_probe_path="$(dirname "$_disk_probe_path")"
 done
 _disk_probe_path="${_disk_probe_path:-$HOME}"
-DISK_AVAIL=$(df -Pk "$_disk_probe_path" 2>/dev/null | tail -1 | awk '{printf "%d", $4 / 1048576}')
-log "Available disk: ${DISK_AVAIL}GB (on filesystem: $_disk_probe_path)"
+DISK_AVAIL=$(df -Pk "$_disk_probe_path" 2>/dev/null | tail -1 | awk '{kb=$4; gb=int(kb/1048576); if(gb<1 && kb>0) gb=1; printf "%d", gb}')
+log "Available disk: ${DISK_AVAIL:-0}GB (on filesystem: $_disk_probe_path)"
 
 # GPU Detection
 if [[ "$GPU_BACKEND_FORCED_CPU" == "true" ]]; then
