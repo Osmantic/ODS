@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # ODS Offline Demo Mode
 # Demonstrates what each feature WOULD do without running services
 # Useful for sales demos, documentation screenshots, presentations
@@ -378,9 +378,10 @@ while true; do
     print_header
     print_menu
 
-    read -r choice
+    read -r choice || break
+    choice_lower="$(echo "${choice:-}" | tr '[:upper:]' '[:lower:]')"
 
-    case "${choice,,}" in
+    case "$choice_lower" in
         1) demo_chat ;;
         2) demo_voice ;;
         3) demo_rag ;;
