@@ -304,6 +304,10 @@ if [[ "$REQUIREMENTS_MET" != "true" ]]; then
     fi
 fi
 
+# Unset internal temporary phase variables
+unset _port_check_warned _model_disk_gb _model_needed_gb _default_whisper_port \
+      _whisper_port_for_check PORTS_TO_CHECK PREFLIGHT_ENV
+
 # This file is sourced by install-core.sh under `set -e`. Keep the phase's
 # final status successful when the user explicitly chose to continue; otherwise
 # a false [[ ... ]] test in the prompt branch can make `source phase-04` return
