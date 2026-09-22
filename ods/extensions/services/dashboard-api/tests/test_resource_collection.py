@@ -170,3 +170,27 @@ def test_pre_restart_collection_cannot_replace_the_new_snapshot(sources):
             assert len(reads) == 2
 
     asyncio.run(scenario())
+
+
+def test_resource_totals_tolerate_null_metrics(sources):
+    release, disk, host = sources
+    release.set()
+
+    host.side_effect = lambda method, path, **kwargs: {
+        'containers': [
+            {'container_name': 'ods-webui', 'cpu_percent': None, 'memory_used_mb': None},
+            {'container_name': 'ods-unknown', 'cpu_percent': 5.0, 'memory_used_mb': 64},
+        ]
+    }
+    disk.side_effect = lambda: {'open-webui': {'data_gb': None, 'path': 'data/open-webui'}}
+
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
+            resp = await client.get(URL, headers=HEADERS)
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data['totals']['cpu_percent'] == 5.0
+            assert data['totals']['memory_used_mb'] == 64
+            assert data['totals']['disk_data_gb'] == 0.0
+
+    asyncio.run(scenario())
