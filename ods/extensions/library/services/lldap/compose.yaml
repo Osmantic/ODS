@@ -1,0 +1,62 @@
+services:
+  lldap:
+    image: ods/lldap:0.6.3-local-v1
+    container_name: ods-lldap
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${LLDAP_PORT:-11066}:17170
+    - 127.0.0.1:${LLDAP_BIND_PORT:-11067}:3890
+    healthcheck:
+      test:
+      - CMD
+      - /app/lldap
+      - healthcheck
+      - --config-file
+      - /data/lldap_config.toml
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    user: 1000:1000
+    environment:
+      LLDAP_LDAP_USER_DN: admin
+      LLDAP_LDAP_USER_PASS: ${LLDAP_ADMIN_PASSWORD:?Set the initial directory admin
+        password}
+      LLDAP_JWT_SECRET: ${LLDAP_JWT_SECRET:?Set a persistent signing secret}
+      LLDAP_KEY_SEED: ${LLDAP_KEY_SEED:?Set a persistent key seed}
+      LLDAP_LDAP_BASE_DN: ${LLDAP_BASE_DN:?Set the directory base DN}
+      LLDAP_HTTP_URL: http://localhost:${LLDAP_PORT:-11066}
+      LLDAP_FORCE_LDAP_USER_PASS_RESET: 'false'
+      LLDAP_SMTP_OPTIONS__ENABLE_PASSWORD_RESET: 'false'
+      LLDAP_LDAPS_OPTIONS__ENABLED: 'false'
+      LLDAP_VERBOSE: 'false'
+    volumes:
+    - lldap-data:/data
+    init: true
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint:
+    - /bin/sh
+    - /ods-start.sh
+    command: []
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  lldap-data: {}

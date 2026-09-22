@@ -1,0 +1,54 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: 2.6.0
+service:
+  id: gotify
+  name: Gotify
+  aliases: []
+  container_name: ods-gotify
+  host_env: GOTIFY_HOST
+  default_host: gotify
+  port: 8080
+  external_port_env: GOTIFY_PORT
+  external_port_default: 11073
+  health: /health
+  type: docker
+  startup_check: true
+  startup_timeout: 180
+  gpu_backends:
+  - all
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  description: Receive application notifications in a local server with per-application
+    tokens and web clients.
+  env_vars:
+  - key: GOTIFY_ADMIN_PASSWORD
+    required: true
+    secret: true
+    description: Initial administrator password; existing accounts are not reset by
+      changing this value.
+  ui_path: /
+tags:
+- notifications
+- automation
+- open-source
+features:
+- id: gotify-notifications
+  name: Gotify
+  description: Receive application notifications in a local server with per-application
+    tokens and web clients.
+  icon: Bell
+  category: productivity
+  requirements:
+    services:
+    - gotify
+    vram_gb: 0
+  enabled_services_all:
+  - gotify
+  setup_time: Initial image download; see README
+  priority: 48
+  launch:
+    type: service
+    service: gotify
+    path: /

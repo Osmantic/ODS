@@ -1,0 +1,51 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: 2.6.0
+service:
+  id: nats
+  name: NATS
+  aliases: []
+  container_name: ods-nats
+  host_env: NATS_HOST
+  default_host: nats
+  port: 4222
+  external_port_env: NATS_PORT
+  external_port_default: 11128
+  health: ''
+  type: docker
+  startup_check: false
+  startup_timeout: 180
+  gpu_backends:
+  - all
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  description: Connect project services with NATS pub/sub, request/reply and persistent
+    JetStream streams.
+  env_vars:
+  - key: NATS_PASSWORD
+    required: true
+    secret: true
+    description: Random 64-hex password for the local ods NATS user.
+  external_link: false
+tags:
+- messaging
+- automation
+- open-source
+features:
+- id: nats-messaging
+  name: NATS JetStream
+  description: Connect project services with NATS pub/sub, request/reply and persistent
+    JetStream streams.
+  icon: Radio
+  category: productivity
+  requirements:
+    services:
+    - nats
+    vram_gb: 0
+  enabled_services_all:
+  - nats
+  setup_time: Initial image download; see README
+  priority: 48
+  launch:
+    type: none

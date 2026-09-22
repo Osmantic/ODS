@@ -1,0 +1,64 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: 2.6.0
+service:
+  id: paperless-gpt
+  name: Paperless GPT
+  aliases: []
+  container_name: ods-paperless-gpt
+  host_env: PAPERLESS_GPT_HOST
+  default_host: paperless-gpt
+  port: 8080
+  external_port_env: PAPERLESS_GPT_PORT
+  external_port_default: 11015
+  health: /
+  type: docker
+  startup_check: true
+  startup_timeout: 180
+  gpu_backends:
+  - all
+  compose_file: compose.yaml
+  category: optional
+  depends_on:
+  - paperless-ngx
+  - docling-serve
+  - litellm
+  description: Generate document titles and tags in Paperless-ngx using the current
+    ODS model, with local Docling OCR.
+  env_vars:
+  - key: PAPERLESS_GPT_API_TOKEN
+    required: true
+    secret: true
+    description: API token from your Paperless-ngx account.
+  ui_path: /
+  llm:
+    consumes: true
+    route: gateway
+    pinning: none
+    probe:
+      kind: chat
+      path: /v1/chat/completions
+      auth: env:LITELLM_KEY
+tags:
+- documents
+- local
+- open-source
+features:
+- id: paperless-gpt-workspace
+  name: Paperless GPT
+  description: Generate document titles and tags in Paperless-ngx using the current
+    ODS model, with local Docling OCR.
+  icon: FileText
+  category: documents
+  requirements:
+    services:
+    - paperless-gpt
+    vram_gb: 0
+  enabled_services_all:
+  - paperless-gpt
+  setup_time: Initial image download; see README
+  priority: 45
+  launch:
+    type: service
+    service: paperless-gpt
+    path: /

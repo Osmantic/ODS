@@ -1,0 +1,52 @@
+services:
+  fooocus:
+    image: ghcr.io/lllyasviel/fooocus@sha256:a1c3251054a38c22f783b680600050bedf7fe547d0239a8d772d0d372a98a5ce
+    platform: linux/amd64
+    container_name: ods-fooocus
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      CMDARGS: --listen 0.0.0.0 --port 7865
+      DATADIR: /content/data
+      config_path: /content/data/config.txt
+      config_example_path: /content/data/config_modification_tutorial.txt
+      path_checkpoints: /content/data/models/checkpoints/
+      path_loras: /content/data/models/loras/
+      path_embeddings: /content/data/models/embeddings/
+      path_vae_approx: /content/data/models/vae_approx/
+      path_upscale_models: /content/data/models/upscale_models/
+      path_inpaint: /content/data/models/inpaint/
+      path_controlnet: /content/data/models/controlnet/
+      path_clip_vision: /content/data/models/clip_vision/
+      path_fooocus_expansion: /content/data/models/prompt_expansion/fooocus_expansion/
+      path_outputs: /content/app/outputs/
+    volumes:
+      - fooocus-data:/content/data
+    ports:
+      - ${BIND_ADDRESS:-127.0.0.1}:${FOOOCUS_PORT:-7865}:7865
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:7865/', timeout=8).read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 1800s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks: [ods-network]
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  fooocus-data: {}

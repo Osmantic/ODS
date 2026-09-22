@@ -54,6 +54,71 @@ function fixture({
   };
 }
 
+test('URL-only reads return bounded untrusted overviews without claiming a query match', async () => {
+  const harness = fixture({body: 'README\n' + 'project details '.repeat(1000)});
+  const result = await harness.tool.execute('overview', {url: 'https://github.com/owner/project'});
+  assert.equal(result.isError, undefined);
+  assert.equal(result.details.mode, 'overview');
+  assert.equal(result.details.matched, false);
+  assert.equal(result.details.evidence_truncated_after, true);
+  assert.match(result.content[0].text, /EXTERNAL_UNTRUSTED_CONTENT/);
+  assert.ok(result.content[0].text.length < 6500);
+  assert.equal(harness.releases(), 1);
+  assert.equal(failedToolOutcome({result}), false);
+});
+
+test('URL-only reads still reject local destinations and explicit invalid queries', async () => {
+  for (const params of [{url:'http://127.0.0.1/'}, {url:'https://github.com/a/b',query:null},
+    {url:'https://github.com/a/b',query:''}]) {
+    const harness = fixture();
+    assert.equal((await harness.tool.execute('invalid', params)).isError, true);
+    assert.equal(harness.calls.length, 0);
+  }
+});
+
+for (const scenario of ['success', 'missing-repository', 'redirect-loop', 'blocked', 'aborted', 'forbidden']) {
+  test('missing GitHub file recovery: ' + scenario, async () => {
+    const calls = [], releases = [];
+    const source = 'https://raw.githubusercontent.com/owner/project/main/missing.py';
+    const controller = new AbortController();
+    const tool = createPublicWebExtractTool({
+      guardedFetch: async options => {
+        calls.push(options);
+        if (calls.length === 2 && scenario === 'blocked') throw new Error('SSRF denied');
+        if (calls.length === 2 && scenario === 'aborted') {
+          assert.equal(options.signal.aborted, true);
+          throw new Error('aborted');
+        }
+        if (scenario === 'aborted') controller.abort();
+        const status = calls.length === 1 ? scenario === 'forbidden' ? 403 : 404
+          : ['missing-repository','redirect-loop'].includes(scenario) ? 404 : 200;
+        return {response:new Response(status === 200 ? 'Actual repository file listing' : 'Missing', {
+          status, headers:{'Content-Type':'text/plain'},
+        }), finalUrl:scenario === 'redirect-loop' ? source : options.url,
+        release:() => releases.push(options.url)};
+      },
+      readResponseText:async response => ({text:await response.text(),truncated:false}),
+      extractBasicHtmlContent:async ({html}) => ({text:html}),
+    });
+    const result = await tool.execute('recover', {url:source,query:'installation'}, controller.signal);
+    assert.equal(calls.length, scenario === 'forbidden' ? 1 : 2);
+    if (calls.length === 2) {
+      assert.equal(calls[1].url, 'https://github.com/owner/project');
+      assert.equal(calls[1].signal, controller.signal);
+      assert.equal(calls[1].useEnvProxy, false);
+      assert.equal(result.details.failed_source_url, source);
+      assert.match(result.content[0].text, /It was not read/);
+    }
+    if (scenario === 'success') {
+      assert.equal(result.isError, undefined);
+      assert.equal(result.details.source_url, 'https://github.com/owner/project');
+      assert.equal(result.details.matched, false);
+      assert.match(result.content[1].text, /Actual repository file listing/);
+    } else assert.equal(result.isError, true);
+    assert.equal(releases.length, ['blocked','aborted','forbidden'].includes(scenario) ? 1 : 2);
+  });
+}
+
 test("selects a bounded evidence window and falls back to the qualified dotted name", () => {
   const text = `${"prefix\n".repeat(300)}Path.exists(*, follow_symlinks=True)\nReturn True for an existing path.\n${"tail\n".repeat(2000)}`;
   const selected = selectEvidenceWindow(text, "pathlib.Path.exists");

@@ -1,0 +1,64 @@
+services:
+  wallabag:
+    image: ods/wallabag:2.6.14-local-v1
+    container_name: ods-wallabag
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${WALLABAG_PORT:-11060}:80
+    healthcheck:
+      test:
+      - CMD
+      - curl
+      - --fail
+      - --silent
+      - --max-time
+      - '5'
+      - http://127.0.0.1/api/info
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    environment:
+      SYMFONY__ENV__SECRET: ${WALLABAG_SECRET:?Set a 64-character hex secret}
+      WALLABAG_INITIAL_PASSWORD: ${WALLABAG_INITIAL_PASSWORD:?Set the initial admin
+        password}
+      WALLABAG_INITIAL_EMAIL: ${WALLABAG_INITIAL_EMAIL:?Set the initial admin email}
+      SYMFONY__ENV__DATABASE_DRIVER: pdo_sqlite
+      SYMFONY__ENV__DOMAIN_NAME: http://localhost:${WALLABAG_PORT:-11060}
+      SYMFONY__ENV__FOSUSER_REGISTRATION: 'false'
+      SYMFONY__ENV__FOSUSER_CONFIRMATION: 'false'
+      SYMFONY__ENV__MAILER_DSN: null://null
+      PHP_MEMORY_LIMIT: 256M
+    volumes:
+    - wallabag-data:/var/www/wallabag/data
+    - wallabag-images:/var/www/wallabag/web/assets/images
+    init: true
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint:
+    - /bin/sh
+    - /ods-start.sh
+    command:
+    - wallabag
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  wallabag-data: {}
+  wallabag-images: {}

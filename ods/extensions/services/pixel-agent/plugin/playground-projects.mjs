@@ -24,7 +24,9 @@ function plainIntent(value) {
     .replace(/^\s*>.*$/gm, ' ');
 }
 export function requestsNewPlaygroundProject(intent) {
-  const text = plainIntent(intent);
+  // Filenames and path components are operands, not project-category words.
+  // For example, creating macos-tool-check/probe.txt is not creating a tool.
+  const text = plainIntent(intent).replace(/\b[A-Za-z0-9_]+(?:[-./\\][A-Za-z0-9_]+)+\b/g, ' ');
   // Continuation quotes the old creation request, not a new reservation.
   // Core tool policy still controls every inspection and mutation.
   if (/^\s*(?:\/goal\s+)?Continue the goal from the preceding conversation using the existing work\./i.test(text)) return false;

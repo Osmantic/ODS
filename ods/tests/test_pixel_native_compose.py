@@ -33,6 +33,7 @@ class NativeComposeTests(unittest.TestCase):
             'PIXEL_NATIVE_CONFIG_PATH': self.temp.name + '/gateway config.json',
             'PIXEL_NATIVE_WORKSPACE': self.temp.name + '/workspace',
             'PIXEL_NATIVE_GATEWAY_PORT': '19876',
+            'PIXEL_NATIVE_ACCESS_PORT': '19877',
             'PIXEL_OPENWEBUI_KEY': 'test-only-edge-key',
             'DASHBOARD_API_KEY': 'test-only-preview-key',
             # Compose interpolates the shared Linux fragment before merging.
@@ -86,6 +87,9 @@ class NativeComposeTests(unittest.TestCase):
     def test_shared_edge_contract_preserved(self):
         services = self.document()['services']
         edge = services['pixel-edge']
+        self.assertEqual(edge['container_name'], 'ods-pixel-edge')
+        self.assertEqual(edge['environment']['PIXEL_ACCESS_TRANSPORT'], 'docker-desktop-host')
+        self.assertEqual(edge['environment']['PIXEL_NATIVE_ACCESS_PORT'], '19877')
         mounts = {item['target']: item for item in edge['volumes']}
         self.assertEqual(len(mounts), 3)
         self.assertEqual(mounts['/pixel-runtime']['type'], 'volume')

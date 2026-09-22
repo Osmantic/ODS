@@ -892,7 +892,23 @@ class _OwnedStream(StreamingResponse):
 
     async def __call__(self, scope, receive, send):
         try:
-            await super().__call__(scope, receive, send)
+            # ASGI 2.4 lets StreamingResponse rely only on a failed send.
+            # Inference can stay silent during prefill or buffered output, so
+            # always observe disconnects while awaiting the next upstream byte.
+            stream = asyncio.create_task(self.stream_response(send))
+            watcher = asyncio.create_task(self.listen_for_disconnect(receive))
+            try:
+                done, _ = await asyncio.wait((stream, watcher), return_when=asyncio.FIRST_COMPLETED)
+                for task in done:
+                    await task
+            finally:
+                with anyio.CancelScope(shield=True):
+                    for task in (stream, watcher):
+                        if not task.done():
+                            task.cancel()
+                    await asyncio.gather(stream, watcher, return_exceptions=True)
+            if self.background is not None:
+                await self.background()
         finally:
             await self.close()
 

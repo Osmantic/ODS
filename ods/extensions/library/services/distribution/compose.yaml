@@ -1,0 +1,52 @@
+services:
+  distribution:
+    image: ods/distribution:3.1.1-local-v1
+    container_name: ods-distribution
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${DISTRIBUTION_PORT:-11136}:5000
+    healthcheck:
+      test:
+      - CMD
+      - /ods-health.sh
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    user: 1000:1000
+    environment:
+      DISTRIBUTION_PASSWORD: ${DISTRIBUTION_PASSWORD:?Set a random 64-hex registry
+        password}
+      REGISTRY_HTTP_SECRET: ${DISTRIBUTION_HTTP_SECRET:?Set a distinct stable random
+        64-hex HTTP secret}
+      OTEL_TRACES_EXPORTER: none
+    init: true
+    build:
+      context: .
+      dockerfile: Dockerfile
+    stop_grace_period: 60s
+    read_only: true
+    tmpfs:
+    - /tmp:rw,noexec,nosuid,size=64m
+    volumes:
+    - distribution-data:/var/lib/registry
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  distribution-data: {}

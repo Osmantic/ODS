@@ -103,6 +103,11 @@
           "maximum": 300,
           "description": "Health check timeout in seconds (default: 10)"
         },
+        "health_auth_env": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]{1,127}$",
+          "description": "Extension-owned secret environment variable used as a Bearer token for dashboard HTTP readiness. Must start with the upper-case service ID (hyphens replaced by underscores), followed by an underscore, and be declared secret in env_vars. Tokens are resolved at probe time, never embedded in the manifest."
+        },
         "health_source": {
           "type": "string",
           "enum": ["http", "container"],

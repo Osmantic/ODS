@@ -36,7 +36,7 @@ def save_settings(data_dir, body):
 
 
 def runtime_status(data_dir, *, request=None):
-    if platform.system() != "Linux":
+    if platform.system() not in ("Linux", "Darwin"):
         return unavailable("macos-launchd-adapter-missing" if platform.system() == "Darwin" else "native-windows-adapter-missing")
     if request is None:
         from pixel_access_client import request_access
@@ -54,7 +54,7 @@ def runtime_status(data_dir, *, request=None):
 def runtime_change(data_dir, body, *, request=None):
     try: body = normalize_change(body)
     except SettingsError: raise StoreError("invalid-request") from None
-    if platform.system() != "Linux": raise StoreError("settings-platform-unavailable")
+    if platform.system() not in ("Linux", "Darwin"): raise StoreError("settings-platform-unavailable")
     if request is None:
         from pixel_access_client import request_access
         request = request_access

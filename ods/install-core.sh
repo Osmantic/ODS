@@ -188,7 +188,7 @@ Options:
     --no-recommended  Disable recommended support services
     --hermes          Enable Hermes Agent alongside Pixel
     --no-hermes       Disable Hermes Agent
-    --pixel           Enable Pixel alongside the existing ODS tools (qualified Linux host and separate license required)
+    --pixel           Require Pixel alongside the existing ODS tools on a qualified Linux host
     --no-pixel        Disable Pixel; keep the other configured ODS tools
     --openclaw        Enable OpenClaw (DEPRECATED — see docs/MIGRATION-OPENCLAW-TO-HERMES.md)
     --no-openclaw     Disable OpenClaw

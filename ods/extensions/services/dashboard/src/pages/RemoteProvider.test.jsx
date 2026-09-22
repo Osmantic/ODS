@@ -587,6 +587,8 @@ test('starts and cancels peer model download through proxy endpoints', async () 
   expect(globalThis.fetch.mock.calls[3][0]).toBe('/api/remote-provider/peer/models/remote-available/download')
   expect(globalThis.fetch.mock.calls[3][1].method).toBe('POST')
 
+  // Fetch completion precedes the action cleanup that enables this control.
+  await waitFor(() => expect(screen.getByRole('button', { name: /cancel download/i })).not.toBeDisabled())
   fireEvent.click(screen.getByRole('button', { name: /cancel download/i }))
 
   await waitFor(() => {

@@ -10,6 +10,16 @@ OLD={'model':'same-model','contextLength':65536,'maxTokens':2048,'reasoning':Fal
 NEW={'model':'same-model','contextLength':65536,'maxTokens':8192,'reasoning':True,'routeFingerprint':'b'*64}
 
 
+def test_local_contract_identity_accepts_only_exact_active_store_path(monkeypatch, tmp_path):
+    monkeypatch.setattr(host, '_active_model_directory', lambda _: tmp_path)
+    config = {'GGUF_FILE': 'model.gguf'}
+    assert host._pixel_local_identity_matches(config, 'model.gguf', 'model.gguf')
+    assert host._pixel_local_identity_matches(config, str(tmp_path / 'model.gguf'), 'model.gguf')
+    assert not host._pixel_local_identity_matches(config, '/other/model.gguf', 'model.gguf')
+    assert not host._pixel_local_identity_matches(config, str(tmp_path / 'model.gguf'), 'other.gguf')
+    assert not host._pixel_local_identity_matches({}, str(tmp_path / 'model.gguf'), 'model.gguf')
+
+
 @pytest.fixture
 def controller(tmp_path,monkeypatch):
     monkeypatch.setattr(host,'INSTALL_DIR',tmp_path)

@@ -1,4 +1,6 @@
+import {createAgentSkillTool} from './agent-skills.mjs';
 import {createActivityTool, ACTIVITY_CONTRACT} from './activity-display.mjs';
+import {compactToolResultEnvelope} from './tool-result-envelope.mjs';
 import {createGoalProgress, createGoalProgressTool, GOAL_CONTRACT} from './goal-progress.mjs';
 // Pixel ODS integration plugin entry.
 //
@@ -42,6 +44,13 @@ import {
 } from "./tool-loop-guard.mjs";
 import { withPixelCronDeliveryDefault } from "./cron-delivery-default.mjs";
 import { createPublicWebExtractTool } from "./web-extract.mjs";
+import { createExtensionRepositoryContext } from './extension-repository-context.mjs';
+
+const extensionRepositoryContext = createExtensionRepositoryContext({
+  tool: createPublicWebExtractTool({
+    guardedFetch: fetchWithWebToolsNetworkGuard, readResponseText, extractBasicHtmlContent,
+  }),
+});
 import { createPerplexicaResearchTool } from "./perplexica-research.mjs";
 import { createDownloadPromoteTool } from "./download-promote.mjs";
 import {
@@ -57,6 +66,7 @@ import { createAccessRuntime, executionHostForAgent } from "./access-runtime.mjs
 import { createManagedRuntimeRegistry } from "./managed-runtime-lifecycle.mjs";
 import {createContextCompaction, readContextRequest, prepareStableContextModel} from './context-compaction.mjs';
 import {registerHistoryIntegration} from './history-context.mjs';
+import {createExtensionProposalTool, createSourceProposalTool, createPythonLibraryProposalTool, createExtensionRequestStatusTool, createExtensionRequestPrepareTool, createExtensionRequestAdvanceTool} from './extension-proposal.mjs';
 import { createOpenClawCodingTools, resolveSandboxContext, OPENCLAW_VERSION } from "openclaw/plugin-sdk/agent-harness";
 
 const AGENT_ID = process.env.PIXEL_AGENT_ID ?? "pixel";
@@ -256,10 +266,12 @@ export default definePluginEntry({
     // separate passes. Keep one process-local guard so the route can see the
     // opaque user -> active session mapping observed by the runtime hook.
     const toolLoopGuard = toolLoopGuardRegistry.get({
-      abortRun: abortAgentHarnessRun,
+      abortRun: (sessionId, sessionKey) => abortAgentHarnessRun(
+        (sessionKey && resolveActiveEmbeddedRunSessionId(sessionKey)) || sessionId
+      ),
       abortRunAndDrain: (sessionId, sessionKey) =>
         abortAndDrainAgentHarnessRun({
-          sessionId,
+          sessionId: (sessionKey && resolveActiveEmbeddedRunSessionId(sessionKey)) || sessionId,
           sessionKey,
           settleMs: 4000,
           forceClear: false,
@@ -274,11 +286,11 @@ export default definePluginEntry({
     // OpenClaw does not replay arbitrary plugin tools after an empty model
     // continuation. Give the Pixel agent an explicit, trusted prompt contract
     // so every ODS lookup is followed by a user-visible answer.
-    api.on("before_prompt_build", (event, context) => {
+    api.on("before_prompt_build", async (event, context) => {
       const privateBrowserAccess = privateBrowserAccessForAgent(api.config, AGENT_ID);
       const workspaceRoot = api.config?.agents?.list?.find(agent => agent.id === AGENT_ID)?.workspace
         ?? api.config?.agents?.defaults?.workspace;
-      toolLoopGuard.observeRun(context, AGENT_ID, event, { privateBrowserAccess, workspaceRoot });
+      toolLoopGuard.observeRun(context, AGENT_ID, event, { privateBrowserAccess, workspaceRoot, executionHost: executionHostForAgent(api.config, AGENT_ID) });
       if (!accessRuntime.isProbe(context)) { goalProgress.begin(event, context); taskActivity.begin(event, context); }
       const contract = promptContractForAgent(context, AGENT_ID, event, {
         verificationStatus: toolLoopGuard.verificationStatus(context?.runId),
@@ -286,7 +298,9 @@ export default definePluginEntry({
         configuredLeanPrompt,
         privateBrowserAccess,
       });
-      return contract ? { ...contract, ...(goalProgress.active(context?.runId ?? event?.runId) ? {appendContext:GOAL_CONTRACT} : {}), appendSystemContext: `${ACTIVITY_CONTRACT} ${goalProgress.active(context?.runId ?? event?.runId) ? GOAL_CONTRACT : ""} ${contract.appendSystemContext} ${executionContext()}` } : undefined;
+      const repositoryEvidence = contract ? await extensionRepositoryContext(event,
+        result => toolLoopGuard.observeRepositorySource(context?.runId ?? event?.runId, result)) : '';
+      return contract ? { ...contract, ...(goalProgress.active(context?.runId ?? event?.runId) ? {appendContext:GOAL_CONTRACT} : {}), appendSystemContext: `${ACTIVITY_CONTRACT} ${goalProgress.active(context?.runId ?? event?.runId) ? GOAL_CONTRACT : ""} ${contract.appendSystemContext} ${executionContext()} ${repositoryEvidence}` } : undefined;
     });
     api.on("model_call_started", (event, context) =>
       toolLoopGuard.observeModelCall(event, context, AGENT_ID)
@@ -294,6 +308,9 @@ export default definePluginEntry({
     api.on("model_call_ended", (event, context) =>
       toolLoopGuard.observeModelEnd(event, context, AGENT_ID)
     );
+    api.on("llm_input", (event, context) => {
+      if (!accessRuntime.isProbe(context)) contextCompaction.observeModelInput(event, context);
+    });
     api.on("llm_output", (event, context) => {
       if (!accessRuntime.isProbe(context)) {
         taskActivity.modelOutput(event, context);
@@ -380,9 +397,13 @@ export default definePluginEntry({
         return true;
       },
     });
-    api.on("tool_result_persist", (event, context) =>
-      toolLoopGuard.toolResultPersist(event, context, AGENT_ID)
-    );
+    api.on("tool_result_persist", (event, context) => {
+      const decision = toolLoopGuard.toolResultPersist(event, context, AGENT_ID);
+      if (context?.agentId !== AGENT_ID) return decision;
+      const original = decision?.message ?? event?.message;
+      const message = compactToolResultEnvelope(original);
+      return message !== original ? {...decision, message} : decision;
+    });
     api.on("before_agent_finalize", (event, context) => {
       const guardDecision = toolLoopGuard.beforeAgentFinalize(event, context, AGENT_ID);
       const verification = toolLoopGuard.deliveryVerificationForRun(context?.runId ?? event?.runId);
@@ -537,9 +558,16 @@ export default definePluginEntry({
     registerTool(api, createPerplexicaResearchTool({ port: api.pluginConfig?.perplexicaPort }), {
       names: ["pixel_ods_research"],
     });
+    registerTool(api, createAgentSkillTool(), {names:['pixel_ods_skill']});
     registerTool(api, createAskUserTool(), {names:['pixel_ods_ask_user']});
     registerTool(api, createGoalProgressTool(), {names:['pixel_ods_goal']});
     registerTool(api, createActivityTool(), {names:['pixel_ods_activity']});
+    api.registerTool(context => createExtensionProposalTool(context), {names:['pixel_ods_extension_proposal']});
+    api.registerTool(context => createSourceProposalTool(context), {names:['pixel_ods_source_proposal']});
+    api.registerTool(context => createPythonLibraryProposalTool(context), {names:['pixel_ods_python_library_proposal']});
+    api.registerTool(context => createExtensionRequestStatusTool(context), {names:['pixel_ods_extension_request_status']});
+    api.registerTool(context => createExtensionRequestPrepareTool(context), {names:['pixel_ods_extension_request_prepare']});
+    api.registerTool(context => createExtensionRequestAdvanceTool(context), {names:['pixel_ods_extension_request_advance']});
 
     registerTool(api, createDownloadPromoteTool(), {
       names: ["pixel_ods_download_promote"],

@@ -1,0 +1,53 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: 2.6.0
+service:
+  id: rest-server
+  name: Restic REST Server
+  aliases: []
+  container_name: ods-rest-server
+  host_env: REST_SERVER_HOST
+  default_host: rest-server
+  port: 8000
+  external_port_env: REST_SERVER_PORT
+  external_port_default: 11144
+  health: ''
+  type: docker
+  startup_check: false
+  startup_timeout: 180
+  gpu_backends:
+  - all
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  description: Store encrypted Restic backups in a persistent authenticated append-only
+    local repository server.
+  env_vars:
+  - key: REST_SERVER_PASSWORD
+    required: true
+    secret: true
+    description: Random 64-hex password for the ods backup transport account; not
+      the Restic encryption password.
+  external_link: false
+tags:
+- backup
+- restic
+- storage
+- open-source
+features:
+- id: rest-server-storage
+  name: Restic REST Server
+  description: Store encrypted Restic backups in a persistent authenticated append-only
+    local repository server.
+  icon: Archive
+  category: productivity
+  requirements:
+    services:
+    - rest-server
+    vram_gb: 0
+  enabled_services_all:
+  - rest-server
+  setup_time: Initial image download; see README
+  priority: 48
+  launch:
+    type: none

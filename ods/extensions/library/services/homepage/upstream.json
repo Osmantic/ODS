@@ -1,0 +1,12 @@
+{
+  "repository": "https://github.com/gethomepage/homepage",
+  "license": "GPL-3.0",
+  "image": "ghcr.io/gethomepage/homepage:v2.4.0@sha256:643bd0be730d40f69d58028a55d1a896739333e8815786df42bc97f109ecbe61",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Official 2.4.0 image with owned persistent configuration. Password auth enabled, exact Host allowlist and native status-only health. Seed has only a configurable ODS link; no invented services, Docker socket or external widget credentials. Versioned LICENSE and image metadata are GPL-3.0 despite stale Apache label in source Dockerfile."
+}

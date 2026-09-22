@@ -181,11 +181,10 @@ pkg_update() {
         pacman) _pkg_prepare_pacman_keyrings; _pkg_retry pacman -Syyu --noconfirm 2>>"$LOG_FILE" ;;  # full sync+upgrade (partial -Sy is unsafe)
         zypper)
             _pkg_configure_zypper_ci_network
-            if [[ -n "${GITHUB_ACTIONS:-}" || -n "${CI:-}" ]]; then
-                log "Skipping zypper refresh in CI; package installs use container image metadata"
-            else
-                _pkg_retry zypper --non-interactive --gpg-auto-import-keys refresh 2>>"$LOG_FILE"
-            fi
+            # Minimal container images may contain repository definitions but
+            # no usable metadata/key cache. Refresh them just like an installed
+            # host; --no-refresh on that initial state silently skips packages.
+            _pkg_retry zypper --non-interactive --gpg-auto-import-keys refresh 2>>"$LOG_FILE"
             ;;
         xbps)   _pkg_run xbps-install -S 2>>"$LOG_FILE" ;;
         apk)    _pkg_run apk update 2>>"$LOG_FILE" ;;
@@ -214,11 +213,7 @@ pkg_install() {
         pacman) _pkg_prepare_pacman_keyrings; _pkg_retry pacman -S --noconfirm --needed "${pkgs[@]}" 2>>"$LOG_FILE" ;;
         zypper)
             _pkg_configure_zypper_ci_network
-            if [[ -n "${GITHUB_ACTIONS:-}" || -n "${CI:-}" ]]; then
-                _pkg_retry zypper --non-interactive --no-refresh install -y "${pkgs[@]}" 2>>"$LOG_FILE"
-            else
-                _pkg_retry zypper --non-interactive install -y "${pkgs[@]}" 2>>"$LOG_FILE"
-            fi
+            _pkg_retry zypper --non-interactive --gpg-auto-import-keys install -y "${pkgs[@]}" 2>>"$LOG_FILE"
             ;;
         xbps)   _pkg_run xbps-install -y "${pkgs[@]}" 2>>"$LOG_FILE" ;;
         apk)    _pkg_run apk add --no-progress "${pkgs[@]}" 2>>"$LOG_FILE" ;;

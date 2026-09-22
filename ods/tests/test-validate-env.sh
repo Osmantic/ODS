@@ -455,6 +455,7 @@ fi
 # a hard validation failure.
 manifest_env_contract() {
     awk '
+        { sub(/\r$/, "") }
         /^[[:space:]]+external_port_env:[[:space:]]*/ {
             if ($2 == "\047\047" || $2 == "\"\"") next
             print FILENAME "	" $2

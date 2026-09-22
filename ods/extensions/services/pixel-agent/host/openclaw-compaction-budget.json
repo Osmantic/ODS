@@ -1,0 +1,11 @@
+{
+  "version": "2026.6.33",
+  "sourceSha256": "ae83457af1947f3eaf3e08f8fbde869a1c023a80acfbf0f27d3db887af1d36d3",
+  "patchedSha256": "edf3d389cf098db7d2f9c8866579542d2aa0faf33730a4a2ab979712718c43e8",
+  "replacements": [
+    [
+      "const COMPACTION_RETRY_AGGREGATE_TIMEOUT_MS = 6e4;",
+      "const COMPACTION_RETRY_AGGREGATE_TIMEOUT_MS = resolveCompactionTimeoutMs(params.config);"
+    ]
+  ]
+}

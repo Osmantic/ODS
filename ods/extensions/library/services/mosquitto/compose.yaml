@@ -1,0 +1,61 @@
+services:
+  mosquitto:
+    image: ods/mosquitto:2.0.22-local-v1
+    container_name: ods-mosquitto
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${MOSQUITTO_PORT:-11087}:1883
+    healthcheck:
+      test:
+      - CMD
+      - mosquitto_sub
+      - -h
+      - 127.0.0.1
+      - -p
+      - '1883'
+      - -t
+      - $$SYS/broker/version
+      - -C
+      - '1'
+      - -W
+      - '5'
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 256M
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    user: mosquitto
+    environment:
+      MOSQUITTO_PASSWORD: ${MOSQUITTO_PASSWORD:?Set a 64-character hexadecimal MQTT
+        password}
+      XDG_CONFIG_HOME: /tmp/ods-mqtt
+    init: true
+    build:
+      context: .
+      dockerfile: Dockerfile
+    stop_grace_period: 60s
+    read_only: true
+    tmpfs:
+    - /tmp:rw,noexec,nosuid,size=8m
+    - /mosquitto/log:rw,noexec,nosuid,size=1m
+    volumes:
+    - mosquitto-data:/mosquitto/data
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  mosquitto-data: {}

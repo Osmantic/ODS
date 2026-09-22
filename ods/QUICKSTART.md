@@ -79,7 +79,7 @@ Useful install flags:
 | `--voice` | `-Voice` | Enable Whisper STT and Kokoro TTS |
 | `--workflows` | `-Workflows` | Enable n8n workflows |
 | `--rag` | `-Rag` | Enable Qdrant and embeddings |
-| `--pixel` | — | Require Pixel on a qualified Linux/systemd host (separate written license required) |
+| `--pixel` | — | Require Pixel on a qualified Linux/systemd host |
 | `--no-pixel` | — | Disable Pixel and use the configured fallback |
 | `--no-hermes` | `-NoHermes` | Disable the Hermes fallback agent |
 | `--no-bootstrap` | `-NoBootstrap` | Wait for the full model instead of fast-start |
@@ -112,8 +112,8 @@ Bootstrap mode is enabled by default when your selected full model is large.
 ODS downloads a small model first so you can start chatting quickly,
 then downloads and hot-swaps the full model in the background.
 
-Pixel is preferred on qualified Ubuntu 24.04/Debian 12 PID1-systemd hosts only
-after separate written license authorization. Everywhere else, ODS uses the
+Pixel is installed automatically on qualified Ubuntu 24.04/26.04 or Debian 12
+PID1-systemd hosts. Everywhere else, ODS uses the
 Hermes fallback. See [docs/PIXEL.md](docs/PIXEL.md). Hermes-enabled installs
 keep the bootstrap model at a 64K context floor, then promote the full local
 model target to 128K after the background swap.

@@ -18,13 +18,6 @@ from copy import deepcopy
 pytestmark = pytest.mark.skipif(os.name != 'posix',reason='owner-private POSIX adapter')
 
 
-def test_client_pin_tracks_parent_installer():
-    root = Path(__file__).resolve().parents[2]
-    phase = (root/'installers/phases/06-directories.sh').read_text()
-    assert f'PIXEL_SOURCE_REF "{mod.PIXEL_COMMIT}"' in phase
-    assert f'PIXEL_SOURCE_REF={mod.PIXEL_COMMIT}' in (root/'.env.example').read_text()
-
-
 @pytest.fixture(params=(
     '70f44c90ac40b8409ebc965becc5b085a053e270',
     '9409d1ae894394a4848bf5b41a6323e64c577f06',

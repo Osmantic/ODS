@@ -1,0 +1,12 @@
+{
+  "repository": "https://github.com/schlagmichdoch/PairDrop",
+  "license": "GPL-3.0",
+  "image": "ghcr.io/schlagmichdoch/pairdrop:v1.11.2@sha256:c4b30977264a76e335740089e693a52a0d0d616330dec7f93c7b96beef7b4a02",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Versioned root LICENSE and published image declare GPL-3.0 despite stale ISC package.json metadata. Native Node server, nonroot read-only filesystem, no external STUN/TURN or websocket file relay. LAN/Internet access requires explicitly configured reverse proxy; default loopback."
+}

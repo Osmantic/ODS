@@ -27,16 +27,16 @@ def test_pixel_timeout_chain_has_ordered_bounded_headroom() -> None:
     nginx = _read("extensions/services/dashboard/nginx.conf")
 
     provider_seconds = _integer(
-        r'updated_provider\["timeoutSeconds"\]\s*=\s*(\d+)', installer
+        r'normalized_provider\["timeoutSeconds"\]\s*=\s*(\d+)', installer
     )
     agent_seconds = _integer(
-        r'updated_defaults\["timeoutSeconds"\]\s*=\s*(\d+)', installer
+        r'normalized_defaults\["timeoutSeconds"\]\s*=\s*(\d+)', installer
     )
     diagnostic_seconds = _integer(
-        r'updated_diagnostics\["stuckSessionAbortMs"\]\s*=\s*(\d+)', installer
+        r'normalized_diagnostics\["stuckSessionAbortMs"\]\s*=\s*(\d+)', installer
     ) // 1000
     lock_seconds = _integer(
-        r'write_lock\["maxHoldMs"\]\s*=\s*(\d+)', installer
+        r'normalized_write_lock\["maxHoldMs"\]\s*=\s*(\d+)', installer
     ) // 1000
     ingress_seconds = _integer(r"TOTAL_TIMEOUT_MS\s*=\s*(\d+)", ingress) // 1000
     edge_total_seconds = _integer(r"_TOTAL_TIMEOUT\s*=\s*(\d+)", edge)
@@ -68,7 +68,8 @@ def test_ingress_does_not_inherit_fetch_body_idle_timeout() -> None:
 
     assert 'import http from "node:http"' in ingress
     assert 'import { Readable } from "node:stream"' in ingress
-    assert "export function gatewayFetch" in ingress
+    assert "function directGatewayFetch" in ingress
+    assert "export const gatewayFetch = createLoopbackGatewayFetch();" in ingress
     assert "http.request(" in ingress
     assert "body: Readable.toWeb(response)" in ingress
     assert "fetch: gatewayFetch" in ingress

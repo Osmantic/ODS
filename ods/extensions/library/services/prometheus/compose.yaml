@@ -1,0 +1,50 @@
+services:
+  prometheus:
+    image: ods/prometheus:3.14.0-local-v1
+    container_name: ods-prometheus
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${PROMETHEUS_PORT:-11101}:9090
+    healthcheck:
+      test:
+      - CMD
+      - wget
+      - -q
+      - -O
+      - /dev/null
+      - http://127.0.0.1:9090/-/ready
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    user: 65534:65534
+    build:
+      context: .
+      dockerfile: Dockerfile
+    stop_grace_period: 60s
+    read_only: true
+    tmpfs:
+    - /tmp:rw,noexec,nosuid,size=64m
+    volumes:
+    - prometheus-data:/prometheus
+    init: true
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  prometheus-data: {}

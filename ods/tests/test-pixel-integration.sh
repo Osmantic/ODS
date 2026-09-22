@@ -6,7 +6,7 @@
 #
 # Covers: host qualification (Ubuntu/Debian, WSL2+systemd, WSL no-systemd,
 #         Ubuntu 22.04, Fedora, macOS-like), os-release safety (malicious
-#         content, symlinks, duplicates), license exactness, true/false/auto
+#         content, symlinks, duplicates), true/false/auto
 #         state machine, source/ref rejection, key shape/uniqueness.
 # ============================================================================
 
@@ -324,7 +324,6 @@ fi
 
 section "ods_pixel_license_accepted"
 
-# Exactly "true"
 export PIXEL_LICENSE_ACCEPTED="true"
 if ods_pixel_license_accepted; then
     pass 'PIXEL_LICENSE_ACCEPTED="true" is accepted'
@@ -332,40 +331,15 @@ else
     fail 'PIXEL_LICENSE_ACCEPTED="true" should be accepted'
 fi
 
-# "True" (capital T) — must be rejected
-PIXEL_LICENSE_ACCEPTED="True"
-if ! ods_pixel_license_accepted; then
-    pass 'PIXEL_LICENSE_ACCEPTED="True" is rejected (case-sensitive)'
-else
-    fail 'PIXEL_LICENSE_ACCEPTED="True" should be rejected'
-fi
-
-# "yes"
-PIXEL_LICENSE_ACCEPTED="yes"
-if ! ods_pixel_license_accepted; then
-    pass 'PIXEL_LICENSE_ACCEPTED="yes" is rejected'
-else
-    fail 'PIXEL_LICENSE_ACCEPTED="yes" should be rejected'
-fi
-
-# "1"
-PIXEL_LICENSE_ACCEPTED="1"
-if ! ods_pixel_license_accepted; then
-    pass 'PIXEL_LICENSE_ACCEPTED="1" is rejected'
-else
-    fail 'PIXEL_LICENSE_ACCEPTED="1" should be rejected'
-fi
-
-# Empty
-PIXEL_LICENSE_ACCEPTED=""
-if ! ods_pixel_license_accepted; then
-    pass 'PIXEL_LICENSE_ACCEPTED="" is rejected'
-else
-    fail 'PIXEL_LICENSE_ACCEPTED="" should be rejected'
-fi
-
-# Unset
-unset PIXEL_LICENSE_ACCEPTED
+for invalid_license in True yes 1 ""; do
+    PIXEL_LICENSE_ACCEPTED="$invalid_license"
+    if ! ods_pixel_license_accepted; then
+        pass "PIXEL_LICENSE_ACCEPTED='$invalid_license' is rejected"
+    else
+        fail "PIXEL_LICENSE_ACCEPTED='$invalid_license' should be rejected"
+    fi
+done
+unset invalid_license PIXEL_LICENSE_ACCEPTED
 if ! ods_pixel_license_accepted; then
     pass 'Unset PIXEL_LICENSE_ACCEPTED is rejected'
 else
@@ -376,7 +350,6 @@ fi
 
 section "ods_pixel_resolve_enablement"
 
-# false -> hermes
 result="$(ods_pixel_resolve_enablement false)"
 if [[ "$result" == "hermes" ]]; then
     pass "enablement false -> hermes"
@@ -384,9 +357,6 @@ else
     fail "enablement false -> expected 'hermes', got '$result'"
 fi
 
-# true with no license -> error (nonzero)
-PIXEL_LICENSE_ACCEPTED=""
-unset PIXEL_LICENSE_ACCEPTED
 QUALIFIED_FIXTURE="$TMPDIR_TEST/ubuntu2404"
 if ! result="$(ods_pixel_resolve_enablement true "$QUALIFIED_FIXTURE/os-release" "$QUALIFIED_FIXTURE/proc1" "$QUALIFIED_FIXTURE/procver" 2>/dev/null)"; then
     pass "enablement true without license fails"
@@ -394,7 +364,6 @@ else
     fail "enablement true without license should fail"
 fi
 
-# auto with no license -> hermes
 result="$(ods_pixel_resolve_enablement auto "$QUALIFIED_FIXTURE/os-release" "$QUALIFIED_FIXTURE/proc1" "$QUALIFIED_FIXTURE/procver")"
 if [[ "$result" == "hermes" ]]; then
     pass "enablement auto without license -> hermes"
@@ -402,7 +371,6 @@ else
     fail "enablement auto without license -> expected 'hermes', got '$result'"
 fi
 
-# true with license but host not qualified (using fixture) -> error
 PIXEL_LICENSE_ACCEPTED="true"
 F_FIXTURE="$TMPDIR_TEST/fedora-en"
 mkdir -p "$F_FIXTURE"
@@ -415,7 +383,6 @@ else
     fail "enablement true with license but unqualified host should fail"
 fi
 
-# auto with license but host not qualified -> hermes
 result="$(ods_pixel_resolve_enablement auto "$F_FIXTURE/os-release" "$F_FIXTURE/proc1" "$F_FIXTURE/procver")"
 if [[ "$result" == "hermes" ]]; then
     pass "enablement auto with license but unqualified host -> hermes"
@@ -423,8 +390,6 @@ else
     fail "enablement auto with license but unqualified host -> expected 'hermes', got '$result'"
 fi
 
-# Explicit true/auto succeed only when both predicates pass.
-PIXEL_LICENSE_ACCEPTED="true"
 result="$(ods_pixel_resolve_enablement true "$QUALIFIED_FIXTURE/os-release" "$QUALIFIED_FIXTURE/proc1" "$QUALIFIED_FIXTURE/procver")"
 if [[ "$result" == "pixel" ]]; then
     pass "enablement true with qualified host and license -> pixel"
@@ -742,7 +707,8 @@ import json, sys
 
 properties = json.load(open(sys.argv[1], encoding="utf-8"))["properties"]
 expected = {
-    "ENABLE_PIXEL", "PIXEL_AGENT_MODE", "PIXEL_LICENSE_ACCEPTED",
+    "ENABLE_PIXEL", "PIXEL_AGENT_MODE",
+    "PIXEL_LICENSE_ACCEPTED",
     "PIXEL_SOURCE_URL", "PIXEL_SOURCE_REF", "PIXEL_SOURCE_DIR",
     "PIXEL_OPENWEBUI_KEY", "PIXEL_INGRESS_RUNTIME_DIR",
     "PIXEL_PREVIEW_RUNTIME_DIR", "PIXEL_INGRESS_GID",
@@ -754,6 +720,7 @@ assert properties["PIXEL_OPENWEBUI_KEY"]["maxLength"] == 64
 assert properties["PIXEL_PREVIEW_RUNTIME_DIR"]["enum"] == ["/run/ods-pixel-preview"]
 assert properties["PIXEL_INGRESS_GID"]["minimum"] == 1
 assert properties["PIXEL_LICENSE_ACCEPTED"]["type"] == "boolean"
+assert properties["PIXEL_LICENSE_ACCEPTED"]["default"] is False
 PY
 then
     pass "Pixel generated environment keys are defined by the strict schema"

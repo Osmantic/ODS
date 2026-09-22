@@ -1,0 +1,69 @@
+services:
+  bookstack:
+    image: lscr.io/linuxserver/bookstack:version-v26.05.5@sha256:189c796273469115cf810e53f450e15b93184018e4728cd65fcaef8aa93584bc
+    container_name: ods-bookstack
+    restart: unless-stopped
+    security_opt: [no-new-privileges:true]
+    environment:
+      PUID: '1000'
+      PGID: '1000'
+      TZ: UTC
+      APP_URL: ${BOOKSTACK_URL:?Set BOOKSTACK_URL}
+      APP_KEY: ${BOOKSTACK_APP_KEY:?Set BOOKSTACK_APP_KEY}
+      DB_HOST: bookstack-db
+      DB_PORT: '3306'
+      DB_DATABASE: bookstack
+      DB_USERNAME: bookstack
+      DB_PASSWORD: ${BOOKSTACK_DB_PASSWORD:?Set BOOKSTACK_DB_PASSWORD}
+    volumes: [bookstack-config:/config]
+    ports:
+      - ${BIND_ADDRESS:-127.0.0.1}:${BOOKSTACK_PORT:-11148}:80
+    depends_on:
+      bookstack-db:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, curl, --fail, --silent, --show-error, --max-time, '8', 'http://127.0.0.1/status']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s
+    deploy:
+      resources:
+        limits: {cpus: '2.0', memory: 2G}
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: '3'}
+    networks: [ods-network, bookstack-private]
+  bookstack-db:
+    image: mariadb:11.4@sha256:70cc072b29b4a89ae07abb2d4da2c64678a7f2dfe092751bb51c87d67dc1338b
+    container_name: ods-bookstack-db
+    restart: unless-stopped
+    security_opt: [no-new-privileges:true]
+    environment:
+      MARIADB_RANDOM_ROOT_PASSWORD: 'yes'
+      MARIADB_DATABASE: bookstack
+      MARIADB_USER: bookstack
+      MARIADB_PASSWORD: ${BOOKSTACK_DB_PASSWORD:?Set BOOKSTACK_DB_PASSWORD}
+    volumes: [bookstack-db:/var/lib/mysql]
+    healthcheck:
+      test: [CMD, healthcheck.sh, --connect, --innodb_initialized]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+    deploy:
+      resources:
+        limits: {cpus: '2.0', memory: 2G}
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: '3'}
+    networks: [bookstack-private]
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+  bookstack-private:
+    internal: true
+volumes:
+  bookstack-config: {}
+  bookstack-db: {}

@@ -1,0 +1,61 @@
+services:
+  invoiceshelf:
+    image: ods/invoiceshelf:2.4.2-local-v1
+    container_name: ods-invoiceshelf
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${INVOICESHELF_PORT:-11122}:8080
+    healthcheck:
+      test:
+      - CMD
+      - php
+      - -r
+      - 'ini_set(''default_socket_timeout'',''5''); exit(@file_get_contents(''http://127.0.0.1:8080/'')
+        === false ? 1 : 0);'
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    build:
+      context: .
+      dockerfile: Dockerfile
+    stop_grace_period: 60s
+    volumes:
+    - invoiceshelf-storage:/var/www/html/storage
+    - invoiceshelf-modules:/var/www/html/Modules
+    environment:
+      APP_NAME: InvoiceShelf
+      APP_ENV: production
+      APP_DEBUG: 'false'
+      INVOICESHELF_KEY: ${INVOICESHELF_KEY:?Set a stable 64-hex encryption key}
+      APP_URL: http://localhost:${INVOICESHELF_PORT:-11122}
+      SESSION_DOMAIN: localhost
+      SANCTUM_STATEFUL_DOMAINS: localhost:${INVOICESHELF_PORT:-11122}
+      DB_CONNECTION: sqlite
+      DB_DATABASE: /var/www/html/storage/app/database.sqlite
+      CACHE_STORE: file
+      SESSION_DRIVER: file
+      AUTORUN_ENABLED: 'true'
+      AUTORUN_LARAVEL_MIGRATION: 'false'
+      AUTORUN_LARAVEL_OPTIMIZE: 'false'
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  invoiceshelf-storage: {}
+  invoiceshelf-modules: {}

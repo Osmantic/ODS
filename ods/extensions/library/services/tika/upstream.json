@@ -1,0 +1,13 @@
+{
+  "repository": "https://github.com/apache/tika",
+  "license": "Apache-2.0",
+  "image": "apache/tika:latest@sha256:a8b442501f601fb15015de974f9afe13dd242b0f14e49a2b144fadcb214a555b",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64",
+    "linux/s390x"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Uses the lightweight Tika 4.0.0 image. OCR executables are not included; use Docling Serve for scanned pages. Parsed output is returned to the caller and is not stored by this stateless service."
+}

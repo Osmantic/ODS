@@ -1,0 +1,55 @@
+services:
+  garage:
+    image: ods/garage:2.3.0-local-v1
+    container_name: ods-garage
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${GARAGE_PORT:-11116}:3900
+    healthcheck:
+      test:
+      - CMD
+      - wget
+      - -q
+      - -O
+      - /dev/null
+      - http://127.0.0.1:3903/health
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    user: 1000:1000
+    build:
+      context: .
+      dockerfile: Dockerfile
+    stop_grace_period: 60s
+    read_only: true
+    tmpfs:
+    - /tmp:rw,noexec,nosuid,size=64m
+    volumes:
+    - garage-meta:/var/lib/garage/meta
+    - garage-data:/var/lib/garage/data
+    init: true
+    environment:
+      GARAGE_RPC_SECRET: ${GARAGE_RPC_SECRET:?Set a stable 64-hex RPC secret}
+      RUST_LOG: garage=info
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  garage-meta: {}
+  garage-data: {}

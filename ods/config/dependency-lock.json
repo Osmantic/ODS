@@ -292,6 +292,12 @@
       "type": "image",
       "path": "installers/windows/docker-compose.windows-amd.local.yml",
       "value": "busybox:1.36.1"
+    },
+    {
+      "id": "fooocus.runtime",
+      "type": "image",
+      "path": "extensions/services/fooocus/compose.yaml.disabled",
+      "value": "ghcr.io/lllyasviel/fooocus@sha256:a1c3251054a38c22f783b680600050bedf7fe547d0239a8d772d0d372a98a5ce"
     }
   ],
   "allow_latest": [

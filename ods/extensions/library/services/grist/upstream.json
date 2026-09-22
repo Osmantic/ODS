@@ -1,0 +1,12 @@
+{
+  "repository": "https://github.com/gristlabs/grist-core",
+  "license": "Apache-2.0",
+  "image": "gristlabs/grist-oss:1.7.19@sha256:3e43d3afc9ca86a9df0d65c247e51556ce5463dde91b278bcf98ae3edc1e1701",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Explicit open-source-only image, not grist/full/enterprise. Original entrypoint/run command with prepared nonroot persist directory and bundled Pyodide formula engine; no privileged runtime. Required local identity and session secret, no actual authentication provider. Runtime, formula compatibility and restore remain pending."
+}

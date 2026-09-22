@@ -22,6 +22,7 @@ COMPACTION_MODULE = "embedded-agent-subscribe.handlers.compaction.runtime.js"
 COMPACTION_CHUNK = "embedded-agent-subscribe.handlers.compaction.runtime-BcFOW95l.js"
 COMPACTION_IDLE_MODULE = "sessions-KE_Xmzwf.js"
 COMPACTION_RESUME_MODULE = "sessions-CZbwb3_c.js"
+COMPACTION_BUDGET_MODULE = "selection-BEwSQKM-.js"
 VERSION = "2026.6.33"
 
 
@@ -76,7 +77,7 @@ def verify_dependencies(runtime_root, manifest, module_name):
 
 def repair(runtime_root, state_dir, *, restore=False, manifest_path=MANIFEST,
            module_name=MODULE):
-    if module_name not in {MODULE, COMPLETION_MODULE, IMAGE_MODULE, COMPACTION_MODULE, COMPACTION_IDLE_MODULE, COMPACTION_RESUME_MODULE}:
+    if module_name not in {MODULE, COMPLETION_MODULE, IMAGE_MODULE, COMPACTION_MODULE, COMPACTION_IDLE_MODULE, COMPACTION_RESUME_MODULE, COMPACTION_BUDGET_MODULE}:
         raise ValueError("unsupported runtime repair module")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     package = json.loads((runtime_root / "package.json").read_text(encoding="utf-8"))
@@ -164,6 +165,7 @@ def main():
     selection.add_argument("--compaction-export", action="store_true")
     selection.add_argument("--compaction-idle", action="store_true")
     selection.add_argument("--compaction-resume", action="store_true")
+    selection.add_argument("--compaction-budget", action="store_true")
     args = parser.parse_args()
     runtime_root = args.openclaw_bin.resolve(strict=True).parent
     options = {}
@@ -176,6 +178,9 @@ def main():
     elif args.compaction_export:
         options = {"module_name": COMPACTION_MODULE,
                    "manifest_path": MANIFEST.with_name("openclaw-compaction-export.json")}
+    elif args.compaction_budget:
+        options = {"module_name": COMPACTION_BUDGET_MODULE,
+                   "manifest_path": MANIFEST.with_name("openclaw-compaction-budget.json")}
     elif args.compaction_resume:
         options = {"module_name": COMPACTION_RESUME_MODULE,
                    "manifest_path": MANIFEST.with_name("openclaw-compaction-resume.json")}

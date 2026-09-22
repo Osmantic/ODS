@@ -1,0 +1,47 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: 2.6.0
+service:
+  id: gotenberg
+  name: Gotenberg
+  aliases: []
+  container_name: ods-gotenberg
+  host_env: GOTENBERG_HOST
+  default_host: gotenberg
+  port: 3000
+  external_port_env: GOTENBERG_PORT
+  external_port_default: 11017
+  health: /health
+  type: docker
+  startup_check: true
+  startup_timeout: 90
+  gpu_backends:
+  - all
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  description: Convert HTML and office documents to PDF through a local Chromium and
+    LibreOffice API.
+  env_vars: []
+  external_link: false
+tags:
+- documents
+- local
+- open-source
+features:
+- id: gotenberg-workspace
+  name: Gotenberg
+  description: Convert HTML and office documents to PDF through a local Chromium and
+    LibreOffice API.
+  icon: Files
+  category: documents
+  requirements:
+    services:
+    - gotenberg
+    vram_gb: 0
+  enabled_services_all:
+  - gotenberg
+  setup_time: Initial image download; see README
+  priority: 47
+  launch:
+    type: none

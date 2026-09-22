@@ -1,0 +1,62 @@
+services:
+  changedetection:
+    image: ods/changedetection:0.60.7-storage-v1
+    container_name: ods-changedetection
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${CHANGEDETECTION_PORT:-11039}:5000
+    healthcheck:
+      test:
+      - CMD
+      - python
+      - -c
+      - import urllib.request; r=urllib.request.urlopen('http://127.0.0.1:5000/login',timeout=5);
+        assert r.status == 200
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    user: 1000:1000
+    environment:
+      CHANGEDETECTION_PASSWORD: ${CHANGEDETECTION_PASSWORD:?Set the changedetection
+        web password}
+      BASE_URL: ${CHANGEDETECTION_BASE_URL:-http://localhost:11039}
+      TZ: ${CHANGEDETECTION_TIMEZONE:-UTC}
+      LISTEN_HOST: 0.0.0.0
+      PORT: '5000'
+      FETCH_WORKERS: '2'
+      MINIMUM_SECONDS_RECHECK_TIME: '60'
+      DISABLE_VERSION_CHECK: 'true'
+      LLM_FEATURES_DISABLED: 'true'
+      ALLOW_FILE_URI: 'false'
+      ALLOW_IANA_RESTRICTED_ADDRESSES: 'false'
+      LOGGER_LEVEL: INFO
+      HOME: /datastore
+    volumes:
+    - changedetection-data:/datastore
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command:
+    - python
+    - /app/ods-start.py
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  changedetection-data: {}

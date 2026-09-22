@@ -226,11 +226,11 @@ export function createPublicWebExtractTool({
   return {
     name: "pixel_ods_web_extract",
     description:
-      "Fetch one public HTTP(S) page through OpenClaw's strict SSRF guard and return a bounded evidence window. Set query to the literal text to find, for example {url: 'https://docs.example.org/reference', query: '--parallel'} or query: 'Path.exists'. Prefer one exact identifier; a short multi-keyword query is accepted only when at least 2-3 terms co-occur in one bounded window. Use when web_fetch found the correct long page but its prefix was truncated before the requested detail. Never use for local/private/raw-IP destinations.",
+      "Read one public HTTP(S) page through OpenClaw's strict SSRF guard. Omit query for a bounded page overview. Set query to a literal identifier such as '--parallel' or 'Path.exists' for targeted extraction beyond a truncated prefix. Short multi-keyword queries require 2-3 terms in one window. For GitHub start with the repository page and follow observed file links instead of guessing branches or filenames. A missing raw GitHub file falls back once to the repository overview, explicitly identified as a different source. Never use for local/private/raw-IP destinations.",
     parameters: {
       type: "object",
       additionalProperties: false,
-      required: ["url", "query"],
+      required: ["url"],
       properties: {
         // llama.cpp's tool grammar rejects a single repetition of 2000 or
         // more. Keep this runtime-enforced bound below that parser ceiling.
@@ -238,15 +238,24 @@ export function createPublicWebExtractTool({
         query: { type: "string", minLength: 2, maxLength: MAX_QUERY_CHARS },
       },
     },
-    execute: async (_toolCallId, params, signal) => {
+    execute: (_toolCallId, params, signal) => execute(_toolCallId, params, signal),
+  };
+
+  async function execute(_toolCallId, params, signal, recoveryAttempted = false) {
       let url;
       let query;
       try {
-        url = normalizedPublicUrl(params?.url);
+        // Smaller models sometimes put the sole page URL in query. This
+        // unambiguous alias still passes the same URL and SSRF validation;
+        // never reinterpret a search phrase or override an explicit URL.
+        const queryIsUrl = params?.url === undefined && params?.identifier === undefined &&
+          typeof params?.query === "string" && /^https?:\/\/\S+$/i.test(params.query);
+        url = normalizedPublicUrl(queryIsUrl ? params.query : params?.url);
         // Some tool-call transports let the model use the descriptive noun
         // "identifier" as the field name. Normalize that one unambiguous
         // alias; an explicitly supplied query must still validate as written.
-        query = normalizedQuery(params?.query === undefined ? params?.identifier : params.query);
+        const requestedQuery = queryIsUrl ? undefined : params?.query === undefined ? params?.identifier : params.query;
+        query = requestedQuery === undefined ? undefined : normalizedQuery(requestedQuery);
       } catch (error) {
         return textResult(`Pixel blocked targeted web extraction: ${error.message}`, {
           boundary: "public-web-read-only",
@@ -272,6 +281,21 @@ export function createPublicWebExtractTool({
         const response = guarded.response;
         const finalUrl = normalizedPublicUrl(guarded.finalUrl);
         if (!response.ok) {
+          // A missing raw file does not prove the repository is unavailable.
+          // Read its index once through the same guard, with explicit provenance.
+          const target = new URL(finalUrl);
+          const parts = target.pathname.split('/').filter(Boolean);
+          if (!recoveryAttempted && response.status === 404 && target.hostname === 'raw.githubusercontent.com' &&
+              parts.length >= 4 && /^[A-Za-z0-9-]{1,39}$/.test(parts[0]) &&
+              /^[A-Za-z0-9._-]{1,100}$/.test(parts[1]) && !['.', '..'].includes(parts[1])) {
+            const repositoryUrl = `https://github.com/${parts[0]}/${parts[1]}`;
+            guarded.release?.(); guarded = undefined;
+            const recovered = await execute(_toolCallId, {url: repositoryUrl}, signal, true);
+            return {...recovered,
+              content: [{type: 'text', text: `The requested file returned HTTP 404: ${finalUrl}. It was not read. The following result is from the repository page; inspect its actual file links before another file request.`}, ...recovered.content],
+              details: {...recovered.details, recovery: 'github-repository-overview',
+                failed_source_url: finalUrl, failed_status: 404}};
+          }
           return textResult(
             `The public page returned HTTP ${response.status}; no evidence was extracted.`,
             { boundary: "public-web-read-only", matched: false, status: response.status },
@@ -307,6 +331,18 @@ export function createPublicWebExtractTool({
           });
           extractedText = extracted?.text ?? "";
         }
+        if (query === undefined) {
+          const overview = extractedText.slice(0, MAX_EVIDENCE_CHARS).trim();
+          if (!overview) return textResult('The public page contained no readable text.', {
+            boundary: 'public-web-read-only', mode: 'overview', matched: false, source_url: finalUrl,
+          }, true);
+          return textResult(wrappedEvidence(overview, finalUrl), {
+            boundary: 'public-web-read-only', mode: 'overview', matched: false,
+            source_url: finalUrl, response_truncated: body.truncated,
+            evidence_truncated_before: false,
+            evidence_truncated_after: extractedText.length > MAX_EVIDENCE_CHARS,
+          });
+        }
         const evidence = selectEvidenceWindow(extractedText, query);
         if (!evidence) {
           const qualifier = body.truncated ? " within the bounded response" : " on the page";
@@ -338,6 +374,5 @@ export function createPublicWebExtractTool({
       } finally {
         guarded?.release?.();
       }
-    },
-  };
+  }
 }

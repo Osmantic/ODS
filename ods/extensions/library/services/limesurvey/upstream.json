@@ -1,0 +1,16 @@
+{
+  "repository": "https://github.com/LimeSurvey/LimeSurvey",
+  "license": "GPL-2.0-or-later",
+  "source_ref": "7.1.1+260914",
+  "image": "martialblog/limesurvey:7-apache@sha256:9ec6e15c653460181e24a175dc2a8c4bdb4227a746233b2f7657f859ae1e0df8",
+  "image_repository": "https://github.com/martialblog/docker-limesurvey",
+  "image_source_ref": "f4c023e9cb08a7a55ca6f39a5f1e2f5d6910050f",
+  "image_recipe_license": "MIT",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Community-maintained image, not an official LimeSurvey image. Native www-data Apache startup and schema migration. Private PostgreSQL and separate uploads/encryption-key volumes. No surveys or recipients created."
+}

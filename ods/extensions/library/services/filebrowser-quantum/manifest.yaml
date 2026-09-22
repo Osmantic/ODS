@@ -1,0 +1,59 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: 2.6.0
+service:
+  id: filebrowser-quantum
+  name: FileBrowser Quantum
+  aliases: []
+  container_name: ods-filebrowser-quantum
+  host_env: FILEBROWSER_QUANTUM_HOST
+  default_host: filebrowser-quantum
+  port: 8080
+  external_port_env: FILEBROWSER_QUANTUM_PORT
+  external_port_default: 11041
+  health: /health
+  type: docker
+  startup_check: true
+  startup_timeout: 180
+  gpu_backends:
+  - all
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  description: Upload, organize, search and preview files in a persistent local repository
+    with account permissions and sharing controls.
+  env_vars:
+  - key: FILEBROWSER_QUANTUM_ADMIN_PASSWORD
+    required: true
+    secret: true
+    description: Initial password for the admin account; use the application account
+      controls for later changes.
+  - key: FILEBROWSER_QUANTUM_JWT_SECRET
+    required: true
+    secret: true
+    description: Persistent random signing secret for login tokens; at least 32 random
+      characters recommended.
+  ui_path: /
+tags:
+- files
+- local
+- open-source
+features:
+- id: filebrowser-quantum-workspace
+  name: FileBrowser Quantum
+  description: Upload, organize, search and preview files in a persistent local repository
+    with account permissions and sharing controls.
+  icon: FolderOpen
+  category: productivity
+  requirements:
+    services:
+    - filebrowser-quantum
+    vram_gb: 0
+  enabled_services_all:
+  - filebrowser-quantum
+  setup_time: Initial image download; see README
+  priority: 48
+  launch:
+    type: service
+    service: filebrowser-quantum
+    path: /

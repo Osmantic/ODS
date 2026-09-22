@@ -1,0 +1,49 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: 2.6.0
+service:
+  id: memos
+  name: Memos
+  aliases: []
+  container_name: ods-memos
+  host_env: MEMOS_HOST
+  default_host: memos
+  port: 5230
+  external_port_env: MEMOS_PORT
+  external_port_default: 11018
+  health: /
+  type: docker
+  startup_check: true
+  startup_timeout: 90
+  gpu_backends:
+  - all
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  description: Keep private Markdown notes, research snippets and attachments in a
+    persistent local notebook.
+  env_vars: []
+  ui_path: /
+tags:
+- productivity
+- local
+- open-source
+features:
+- id: memos-workspace
+  name: Memos
+  description: Keep private Markdown notes, research snippets and attachments in a
+    persistent local notebook.
+  icon: NotebookPen
+  category: productivity
+  requirements:
+    services:
+    - memos
+    vram_gb: 0
+  enabled_services_all:
+  - memos
+  setup_time: Initial image download; see README
+  priority: 48
+  launch:
+    type: service
+    service: memos
+    path: /

@@ -1,0 +1,15 @@
+{
+  "repository": "https://github.com/hedgedoc/hedgedoc",
+  "license": "AGPL-3.0",
+  "image": "quay.io/hedgedoc/hedgedoc:1.12.0@sha256:89bd85d7817fb3e3a4aafdd85aefb0fbb20b848f6dbf1d9ee0d72fdcb76710cc",
+  "companion_images": [
+    "postgres:16-alpine@sha256:3c5c8892d184f738f4fe282d14ddaa613a38f00f4189d2d94725ebe6f2909ddb"
+  ],
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Official 1.12.0 production image with prepared nonroot uploads, private PostgreSQL and required session/database secrets. Separate DB fields preserve special characters. Explicit local hostname/port and closed registration, with upstream account CLI documented. No mail/OAuth/model configured."
+}

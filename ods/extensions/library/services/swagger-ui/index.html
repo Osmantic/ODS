@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Swagger UI · ODS</title>
+  <link rel="stylesheet" href="/swagger-ui.css">
+  <style>
+    body{margin:0;background:#fafafa;color:#20252c;font:15px system-ui,sans-serif}
+    header{padding:24px max(24px,calc((100vw - 1400px)/2));background:#182435;color:#fff}
+    h1{font-size:22px;margin:0 0 8px}p{margin:8px 0;color:#cbd5e1}
+    form{display:flex;gap:10px;flex-wrap:wrap;margin-top:18px;align-items:center}
+    input,button{font:inherit;border:1px solid #718096;border-radius:6px;padding:9px 12px}
+    input[type=url]{flex:1;min-width:240px}button{cursor:pointer;background:#fff;color:#182435}
+    label{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+    #status{min-height:22px}#status[data-error=true]{color:#ffb4b4}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Swagger UI</h1>
+    <p>Explore your project's OpenAPI document. Choose a local JSON file or a specification URL.</p>
+    <form id="open-url">
+      <input id="spec-url" type="url" aria-label="OpenAPI specification URL" placeholder="https://your-api.example/openapi.json" required>
+      <button type="submit">Load URL</button>
+      <label>Open JSON <input id="spec-file" type="file" accept=".json,application/json"></label>
+    </form>
+    <p id="status" role="status" aria-live="polite">No specification loaded. Local files are read in this browser.</p>
+  </header>
+  <div id="swagger-ui"></div>
+  <script src="/swagger-ui-bundle.js"></script>
+  <script src="/swagger-ui-standalone-preset.js"></script>
+  <script src="/ods-initializer.js"></script>
+</body>
+</html>

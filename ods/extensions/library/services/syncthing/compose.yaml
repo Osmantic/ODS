@@ -1,0 +1,56 @@
+services:
+  syncthing:
+    image: ods/syncthing:2.1.5-local-v1
+    container_name: ods-syncthing
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${SYNCTHING_PORT:-11095}:8384
+    - 127.0.0.1:${SYNCTHING_SYNC_PORT:-11096}:22000
+    healthcheck:
+      test:
+      - CMD
+      - curl
+      - -fsS
+      - --max-time
+      - '5'
+      - http://127.0.0.1:8384/rest/noauth/health
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    user: 1000:1000
+    environment:
+      SYNCTHING_GUI_PASSWORD: ${SYNCTHING_GUI_PASSWORD:?Set a 64-hex initial GUI password}
+      STGUIADDRESS: 0.0.0.0:8384
+      STHOMEDIR: /var/syncthing/config
+      HOME: /var/syncthing
+    init: true
+    build:
+      context: .
+      dockerfile: Dockerfile
+    stop_grace_period: 60s
+    read_only: true
+    tmpfs:
+    - /tmp:rw,noexec,nosuid,size=64m
+    volumes:
+    - syncthing-data:/var/syncthing
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  syncthing-data: {}

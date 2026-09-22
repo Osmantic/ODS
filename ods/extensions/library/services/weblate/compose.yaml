@@ -1,0 +1,146 @@
+services:
+  weblate:
+    image: ods/weblate:2026.9.1-local-v1
+    container_name: ods-weblate
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${WEBLATE_PORT:-11138}:8080
+    healthcheck:
+      test:
+      - CMD
+      - /ods-health.sh
+      interval: 30s
+      timeout: 40s
+      retries: 5
+      start_period: 300s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 3G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    - weblate-internal
+    user: 1000:1000
+    environment:
+      POSTGRES_HOST: weblate-db
+      POSTGRES_PORT: '5432'
+      POSTGRES_DB: weblate
+      POSTGRES_USER: weblate
+      POSTGRES_PASSWORD: ${WEBLATE_DB_PASSWORD:?Set a random 64-hex database password}
+      REDIS_HOST: weblate-valkey
+      REDIS_PORT: '6379'
+      WEBLATE_ADMIN_PASSWORD: ${WEBLATE_ADMIN_PASSWORD:?Set a distinct random 64-hex
+        admin password}
+      WEBLATE_ADMIN_EMAIL: ${WEBLATE_ADMIN_EMAIL:?Set the owner email}
+      WEBLATE_ADMIN_NAME: ODS owner
+      WEBLATE_SITE_DOMAIN: localhost:${WEBLATE_PORT:-11138}
+      WEBLATE_ALLOWED_HOSTS: localhost,127.0.0.1,weblate,ods-weblate
+      WEBLATE_REGISTRATION_OPEN: '0'
+      WEBLATE_REQUIRE_LOGIN: '1'
+      WEBLATE_DEBUG: '0'
+      WEBLATE_WORKERS: '1'
+      WEB_WORKERS: '1'
+      CELERY_WORKER_MODE: single
+      WEBLATE_ADMIN_NOTIFY_ERROR: '0'
+      WEBLATE_EMAIL_HOST: 127.0.0.1
+      CLIENT_MAX_BODY_SIZE: 32M
+    build:
+      context: .
+      dockerfile: Dockerfile
+    stop_grace_period: 60s
+    read_only: true
+    tmpfs:
+    - /tmp:rw,nosuid,size=256m
+    - /run:rw,nosuid,size=64m,uid=1000,gid=1000,mode=0700
+    volumes:
+    - weblate-data:/app/data
+    - weblate-cache:/app/cache
+    depends_on:
+      weblate-db:
+        condition: service_healthy
+      weblate-valkey:
+        condition: service_healthy
+  weblate-db:
+    image: postgres:17-alpine@sha256:f02121de6f74d30d8a94cd1d9584125e2178d7e6c377d8130112d4e52d867995
+    restart: unless-stopped
+    networks:
+    - weblate-internal
+    environment:
+      POSTGRES_DB: weblate
+      POSTGRES_USER: weblate
+      POSTGRES_PASSWORD: ${WEBLATE_DB_PASSWORD:?Set a random 64-hex database password}
+    volumes:
+    - weblate-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+      - CMD
+      - pg_isready
+      - -U
+      - weblate
+      - -d
+      - weblate
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    container_name: ods-weblate-db
+  weblate-valkey:
+    image: valkey/valkey:9.1.2-alpine@sha256:a0dbf4c1d5708782907c10e2c72deff317518518b5288a58416981d9db95d30b
+    container_name: ods-weblate-valkey
+    restart: unless-stopped
+    command:
+    - valkey-server
+    - --save
+    - '60'
+    - '1'
+    - --loglevel
+    - warning
+    networks:
+    - weblate-internal
+    volumes:
+    - weblate-valkey-data:/data
+    read_only: true
+    healthcheck:
+      test:
+      - CMD
+      - valkey-cli
+      - ping
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+  weblate-internal:
+    internal: true
+volumes:
+  weblate-data: {}
+  weblate-cache: {}
+  weblate-db-data: {}
+  weblate-valkey-data: {}

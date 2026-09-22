@@ -1,0 +1,100 @@
+services:
+  healthchecks:
+    image: ods/healthchecks:4.4-local-v1
+    container_name: ods-healthchecks
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${HEALTHCHECKS_PORT:-11123}:8000
+    healthcheck:
+      test:
+      - CMD
+      - python
+      - /opt/healthchecks/fetchstatus.py
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    - healthchecks-internal
+    user: hc
+    environment:
+      DB: postgres
+      DB_HOST: healthchecks-db
+      DB_PORT: '5432'
+      DB_NAME: healthchecks
+      DB_USER: healthchecks
+      DB_PASSWORD: ${HEALTHCHECKS_DB_PASSWORD:?Set a distinct 64-hex database password}
+      SECRET_KEY: ${HEALTHCHECKS_SECRET_KEY:?Set a stable 64-hex signing secret}
+      DEBUG: 'False'
+      REGISTRATION_OPEN: 'False'
+      SITE_ROOT: http://localhost:${HEALTHCHECKS_PORT:-11123}
+      ALLOWED_HOSTS: localhost,127.0.0.1,healthchecks,ods-healthchecks
+      SITE_NAME: Healthchecks
+      UWSGI_PROCESSES: '2'
+      PYTHONDONTWRITEBYTECODE: '1'
+      PING_BODY_LIMIT: '10000'
+    init: true
+    build:
+      context: .
+      dockerfile: Dockerfile
+    stop_grace_period: 60s
+    read_only: true
+    tmpfs:
+    - /tmp:rw,noexec,nosuid,size=64m
+    depends_on:
+      healthchecks-db:
+        condition: service_healthy
+  healthchecks-db:
+    image: postgres:17-alpine@sha256:f02121de6f74d30d8a94cd1d9584125e2178d7e6c377d8130112d4e52d867995
+    restart: unless-stopped
+    networks:
+    - healthchecks-internal
+    environment:
+      POSTGRES_DB: healthchecks
+      POSTGRES_USER: healthchecks
+      POSTGRES_PASSWORD: ${HEALTHCHECKS_DB_PASSWORD:?Set a distinct 64-hex database
+        password}
+    volumes:
+    - healthchecks-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+      - CMD
+      - pg_isready
+      - -U
+      - healthchecks
+      - -d
+      - healthchecks
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    container_name: ods-healthchecks-db
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+  healthchecks-internal:
+    internal: true
+volumes:
+  healthchecks-db-data: {}

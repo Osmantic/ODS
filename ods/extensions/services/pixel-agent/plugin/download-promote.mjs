@@ -5,7 +5,9 @@
 
 import net from "node:net";
 
-const SOCKET_PATH = "/run/ods-pixel-artifact-promoter/promoter.sock";
+const SOCKET_PATH = process.platform === "darwin"
+  ? "/private/var/lib/ods-pixel-artifact-promoter/promoter.sock"
+  : "/run/ods-pixel-artifact-promoter/promoter.sock";
 const JOB_ID = /^ops-[0-9]{13}-[a-f0-9]{12}$/;
 const FILENAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
 const PATH_COMPONENT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;

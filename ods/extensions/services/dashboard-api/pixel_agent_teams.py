@@ -218,6 +218,11 @@ class TeamManager:
             if existing["fingerprint"] != fingerprint:
                 raise TeamConflict("This request ID belongs to a different team")
             return self.view(existing)
+        if re.match(r"^(?:/goal\s+)?/extensions?(?:\s|$)", goal.strip(), re.IGNORECASE):
+            raise TeamConflict(
+                "Extension commands must use the chat installation coordinator, not a team worker. "
+                "Reload Portal and send the /extensions command in the main chat."
+            )
         if any(row["status"] in ACTIVE for row in self.list(owner, chat)):
             raise TeamConflict("Finish or stop this conversation's existing team first")
         if len(self.tasks) >= 4:

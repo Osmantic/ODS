@@ -181,6 +181,12 @@
       "lan_exposure": "operator-controlled",
       "auth_required": false,
       "notes": "Speech-to-text model API; audio may be sensitive."
+    },
+    "fooocus": {
+      "risk": "image-generation-ui",
+      "lan_exposure": "operator-controlled",
+      "auth_required": false,
+      "notes": "NVIDIA-only image generation UI; default loopback binding. No application authentication is provisioned; keep local or place behind an authenticated proxy before changing exposure."
     }
   }
 }

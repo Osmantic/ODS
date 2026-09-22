@@ -1,0 +1,13 @@
+{
+  "repository": "https://github.com/wiremock/wiremock",
+  "license": "Apache-2.0",
+  "image": "wiremock/wiremock:3.13.2-2@sha256:27c4b74404f58ceedc6899f73abdfe228d8f80d5efa4d8bd42d6c155558b677c",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64",
+    "linux/arm"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Official standalone 3.13.2-2 with nonroot mapping/file persistence, bounded request journal and loopback API. No proxy/recording mode, auto fixtures or Portal-response interception. Example is explicitly opt-in test data."
+}

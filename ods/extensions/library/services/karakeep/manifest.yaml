@@ -1,0 +1,77 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: 2.6.0
+service:
+  id: karakeep
+  name: Karakeep
+  aliases: []
+  container_name: ods-karakeep
+  host_env: KARAKEEP_HOST
+  default_host: karakeep
+  port: 3000
+  external_port_env: KARAKEEP_PORT
+  external_port_default: 11019
+  health: /api/health
+  type: docker
+  startup_check: true
+  startup_timeout: 180
+  gpu_backends:
+  - all
+  compose_file: compose.yaml
+  category: optional
+  depends_on:
+  - litellm
+  description: Collect web bookmarks with archived content, full-text search and tagging
+    through the current ODS model.
+  env_vars:
+  - key: KARAKEEP_AUTH_SECRET
+    required: true
+    secret: true
+    description: Persistent random session-signing secret; use at least 36 random
+      bytes.
+  - key: KARAKEEP_SEARCH_KEY
+    required: true
+    secret: true
+    description: Private search index key, at least 16 random characters; keep across
+      restarts.
+  - key: KARAKEEP_URL
+    required: false
+    default: http://localhost:11019
+    description: Browser-facing URL; match the host port and any intentional reverse
+      proxy.
+  - key: KARAKEEP_DISABLE_SIGNUPS
+    required: false
+    default: 'false'
+    description: Set true after creating the intended local accounts.
+  ui_path: /
+  llm:
+    consumes: true
+    route: gateway
+    pinning: none
+    probe:
+      kind: chat
+      path: /v1/chat/completions
+      auth: env:LITELLM_KEY
+tags:
+- productivity
+- local
+- open-source
+features:
+- id: karakeep-workspace
+  name: Karakeep
+  description: Collect web bookmarks with archived content, full-text search and tagging
+    through the current ODS model.
+  icon: Bookmark
+  category: productivity
+  requirements:
+    services:
+    - karakeep
+    vram_gb: 0
+  enabled_services_all:
+  - karakeep
+  setup_time: Initial image download; see README
+  priority: 49
+  launch:
+    type: service
+    service: karakeep
+    path: /

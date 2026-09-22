@@ -1,0 +1,55 @@
+services:
+  vikunja:
+    image: ods/vikunja:2.6.0-storage-v1
+    container_name: ods-vikunja
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${VIKUNJA_PORT:-11031}:3456
+    healthcheck:
+      test:
+      - CMD
+      - /app/vikunja/vikunja
+      - healthcheck
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    user: 1000:1000
+    environment:
+      VIKUNJA_SERVICE_SECRET: ${VIKUNJA_SERVICE_SECRET:?Set a persistent random signing
+        secret}
+      VIKUNJA_SERVICE_PUBLICURL: ${VIKUNJA_SERVICE_PUBLICURL:-http://localhost:11031/}
+      VIKUNJA_SERVICE_ENABLEREGISTRATION: ${VIKUNJA_SERVICE_ENABLEREGISTRATION:-true}
+      VIKUNJA_DATABASE_TYPE: sqlite
+      VIKUNJA_DATABASE_PATH: /db/vikunja.db
+      VIKUNJA_MAILER_ENABLED: 'false'
+      VIKUNJA_SERVICE_ENABLEEMAILREMINDERS: 'false'
+      VIKUNJA_SENTRY_ENABLED: 'false'
+      VIKUNJA_SENTRY_FRONTENDENABLED: 'false'
+    volumes:
+    - vikunja-db:/db
+    - vikunja-files:/app/vikunja/files
+    build:
+      context: .
+      dockerfile: Dockerfile
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  vikunja-db: {}
+  vikunja-files: {}

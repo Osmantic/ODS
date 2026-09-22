@@ -1,0 +1,55 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: 2.6.0
+service:
+  id: solr
+  name: Apache Solr
+  aliases: []
+  container_name: ods-solr
+  host_env: SOLR_HOST
+  default_host: solr
+  port: 8983
+  external_port_env: SOLR_PORT
+  external_port_default: 11145
+  health: ''
+  type: docker
+  startup_check: false
+  startup_timeout: 180
+  gpu_backends:
+  - all
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  description: Index and query project documents with Apache Solr full-text search,
+    facets and structured schemas.
+  env_vars:
+  - key: SOLR_ADMIN_PASSWORD
+    required: true
+    secret: true
+    description: Random 64-hex initial ods administrator password; retain or rotate
+      using the native security API.
+  ui_path: /
+tags:
+- search
+- indexing
+- development
+- open-source
+features:
+- id: solr-search
+  name: Apache Solr
+  description: Index and query project documents with Apache Solr full-text search,
+    facets and structured schemas.
+  icon: Search
+  category: productivity
+  requirements:
+    services:
+    - solr
+    vram_gb: 0
+  enabled_services_all:
+  - solr
+  setup_time: Initial image download; see README
+  priority: 48
+  launch:
+    type: service
+    service: solr
+    path: /

@@ -1,0 +1,49 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: 2.6.0
+service:
+  id: cyberchef
+  name: CyberChef
+  aliases: []
+  container_name: ods-cyberchef
+  host_env: CYBERCHEF_HOST
+  default_host: cyberchef
+  port: 8080
+  external_port_env: CYBERCHEF_PORT
+  external_port_default: 11028
+  health: /
+  type: docker
+  startup_check: true
+  startup_timeout: 90
+  gpu_backends:
+  - all
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  description: Compose local browser recipes for encoding, hashes, structured data,
+    timestamps, compression and binary inspection.
+  env_vars: []
+  ui_path: /
+tags:
+- developer-tools
+- local
+- open-source
+features:
+- id: cyberchef-workspace
+  name: CyberChef
+  description: Compose local browser recipes for encoding, hashes, structured data,
+    timestamps, compression and binary inspection.
+  icon: Binary
+  category: productivity
+  requirements:
+    services:
+    - cyberchef
+    vram_gb: 0
+  enabled_services_all:
+  - cyberchef
+  setup_time: Initial image download; see README
+  priority: 48
+  launch:
+    type: service
+    service: cyberchef
+    path: /

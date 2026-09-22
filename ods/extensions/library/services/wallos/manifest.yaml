@@ -1,0 +1,55 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: 2.6.0
+service:
+  id: wallos
+  name: Wallos
+  aliases: []
+  container_name: ods-wallos
+  host_env: WALLOS_HOST
+  default_host: wallos
+  port: 80
+  external_port_env: WALLOS_PORT
+  external_port_default: 11094
+  health: /ods-health.php
+  type: docker
+  startup_check: true
+  startup_timeout: 90
+  gpu_backends:
+  - all
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  description: Track subscription costs, renewal dates, recurring expenses and optional
+    owner-configured reminders.
+  env_vars:
+  - key: WALLOS_TIMEZONE
+    required: false
+    default: Etc/UTC
+    description: IANA timezone used by the native recurring-payment and notification
+      scheduler.
+  ui_path: /
+tags:
+- subscriptions
+- organization
+- productivity
+- open-source
+features:
+- id: wallos-subscriptions
+  name: Wallos
+  description: Track subscription costs, renewal dates, recurring expenses and optional
+    owner-configured reminders.
+  icon: CalendarClock
+  category: productivity
+  requirements:
+    services:
+    - wallos
+    vram_gb: 0
+  enabled_services_all:
+  - wallos
+  setup_time: Initial image download; see README
+  priority: 48
+  launch:
+    type: service
+    service: wallos
+    path: /

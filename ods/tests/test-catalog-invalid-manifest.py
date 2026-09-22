@@ -41,3 +41,7 @@ def test_shipped_catalog_preserves_intentional_exclusions(tmp_path):
     ids = {entry["id"] for entry in json.loads(output.read_text(encoding="utf-8"))["extensions"]}
     assert "pixel-agent" in ids
     assert "privacy-shield" not in ids
+    assert "dify" not in ids
+    assert "apache-answer" in ids
+    assert "jan" not in ids
+    assert "bookstack" in ids

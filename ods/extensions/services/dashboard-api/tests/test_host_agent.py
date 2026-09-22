@@ -24,6 +24,222 @@ _mod = importlib.util.module_from_spec(_spec)
 sys.modules["ods_host_agent"] = _mod
 _spec.loader.exec_module(_mod)
 
+
+def test_core_recreation_excludes_unrelated_secrets_but_keeps_overlays_and_dependencies(tmp_path, monkeypatch):
+    monkeypatch.setattr(_mod, 'INSTALL_DIR', tmp_path)
+    monkeypatch.setattr(_mod, 'EXTENSIONS_DIR', tmp_path / 'extensions')
+    monkeypatch.setattr(_mod, 'USER_EXTENSIONS_DIR', tmp_path / 'user-extensions')
+    monkeypatch.setattr(_mod, 'CORE_SERVICE_IDS', {'litellm', 'open-webui'})
+    fragments = {
+        'extensions/unrelated/compose.yaml': 'services:\n  unrelated:\n    environment:\n      SECRET: ${UNRELATED_SECRET:?Required}\n',
+        'extensions/overlay/compose.yaml': 'services:\n  open-webui:\n    depends_on: [search]\n',
+        'extensions/overlay/compose.cpu.yaml': 'services:\n  helper:\n    image: helper:1\n',
+        'user-extensions/search/compose.yaml': 'services:\n  search:\n    network_mode: service:network\n',
+        'user-extensions/network/compose.yaml': 'services:\n  network:\n    image: network:1\n',
+    }
+    flags = ['-p', 'ods', '-f', 'base.yaml', '-f', 'gpu.yaml']
+    for name, body in fragments.items():
+        file = tmp_path / name
+        file.parent.mkdir(parents=True, exist_ok=True)
+        file.write_text(body)
+        flags += ['-f', name]
+    result = _mod._core_recreate_compose_flags(flags)
+    assert result == [value for value in flags[:6]] + sum(
+        (['-f', name] for name in fragments if '/unrelated/' not in name), [])
+    assert '${UNRELATED_SECRET:?Required}' in (tmp_path / next(iter(fragments))).read_text()
+
+
+def test_core_recreation_does_not_hide_invalid_extension_yaml(tmp_path, monkeypatch):
+    monkeypatch.setattr(_mod, 'INSTALL_DIR', tmp_path)
+    monkeypatch.setattr(_mod, 'EXTENSIONS_DIR', tmp_path / 'extensions')
+    monkeypatch.setattr(_mod, 'USER_EXTENSIONS_DIR', tmp_path / 'user-extensions')
+    file = tmp_path / 'extensions/broken/compose.yaml'
+    file.parent.mkdir(parents=True)
+    file.write_text('services: [unterminated')
+    with pytest.raises(ValueError, match='Invalid extension Compose YAML'):
+        _mod._core_recreate_compose_flags(['-f', str(file)])
+
+
+@pytest.mark.parametrize('exit_code,oom,success', [(0, False, True), (1, False, False), (0, True, False), (False, False, False)])
+def test_cli_success_requires_the_exact_container_exit_receipt(monkeypatch, exit_code, oom, success):
+    calls = []
+    def run(command, **kwargs):
+        calls.append(command)
+        if command[:2] == ['docker', 'compose']:
+            return types.SimpleNamespace(returncode=0, stdout='a' * 64, stderr='')
+        return types.SimpleNamespace(returncode=0, stdout=json.dumps({
+            'Status': 'exited', 'ExitCode': exit_code, 'OOMKilled': oom, 'Error': ''}), stderr='')
+    monkeypatch.setattr(_mod.subprocess, 'run', run)
+    result, _ = _mod._verify_one_shot_exit(['-p', 'ods'], 'specific-cli')
+    assert result is success
+    assert calls[0] == ['docker', 'compose', '-p', 'ods', 'ps', '-a', '-q', 'specific-cli']
+    assert calls[1][-1] == 'a' * 64
+
+
+def test_cli_running_is_not_a_successful_one_shot_exit(monkeypatch):
+    clock = iter([0, 0, 2])
+    monkeypatch.setattr(_mod.time, 'monotonic', lambda: next(clock))
+    monkeypatch.setattr(_mod.time, 'sleep', lambda seconds: None)
+    def run(command, **kwargs):
+        return types.SimpleNamespace(returncode=0, stdout=('a' * 64 if command[1] == 'compose'
+            else json.dumps({'Status': 'running', 'ExitCode': 0})), stderr='')
+    monkeypatch.setattr(_mod.subprocess, 'run', run)
+    assert _mod._verify_one_shot_exit([], 'specific-cli', timeout=1)[0] is False
+
+
+@pytest.mark.parametrize('build_exit', [0, 1])
+def test_install_prepares_only_dependency_images_and_surfaces_build_failure(monkeypatch, build_exit):
+    monkeypatch.setenv('BUILD_TEST_TOKEN', 'private')
+    monkeypatch.setattr(_mod.platform, 'system', lambda: 'Linux')
+    config = {'services': {
+        'demo': {'build': {'context': 'https://github.com/example/demo.git#' + 'a' * 40},
+                 'image': 'ods-source-demo:local', 'depends_on': {'demo-db': {}, 'demo-worker': {}}},
+        'demo-db': {'image': 'postgres:17'},
+        'demo-worker': {'build': {'context': '/extension/worker'}, 'depends_on': ['demo-db']},
+        'unrelated': {'build': {'context': '/unrelated'}},
+    }}
+    calls, progress = [], []
+    def run(command, **kwargs):
+        calls.append(command)
+        return types.SimpleNamespace(returncode=build_exit if 'build' in command else 0,
+                                     stdout=json.dumps(config), stderr='private build output')
+    monkeypatch.setattr(_mod.subprocess, 'run', run)
+    monkeypatch.setattr(_mod, '_write_progress', lambda *args: progress.append(args))
+    ok, error = _mod._prepare_install_images(['-p', 'ods'], 'demo')
+    assert ok is (build_exit == 0)
+    assert 'private' not in error
+    if build_exit:
+        assert '[REDACTED] build output' in error
+    base = ['docker', 'compose', '-p', 'ods']
+    assert calls == [base + ['config', '--format', 'json'], base + ['pull', 'demo-db'],
+                     base + ['build', '--build-arg', 'BUILDKIT_CONTEXT_KEEP_GIT_DIR=1', 'demo', 'demo-worker']]
+    assert progress[-1][2] == 'Building images from source...'
+
+
+def test_build_diagnostic_preserves_actual_pip_failure_and_redacts_before_tail(tmp_path, monkeypatch):
+    monkeypatch.setattr(_mod, 'INSTALL_DIR', tmp_path)
+    (tmp_path / '.env').write_text('SERVICE_API_KEY=persisted-value\n')
+    monkeypatch.setenv('BUILD_TEST_TOKEN', 'process-value')
+    services = {'demo': {'environment': {'PASSWORD': 'compose-value'},
+                         'build': {'args': {'ACCESS_TOKEN': 'build-value'}}}}
+    failure = "ERROR: Directory '.' is not installable. Neither 'setup.py' nor 'pyproject.toml' found."
+    output = ('x' * 16000 + '\nprocess-value persisted-value compose-value build-value\n'
+              'https://user:pass@example.org/repo?token=query-value\nBearer bearer-value\n' + failure)
+    actual = _mod._install_build_diagnostic(types.SimpleNamespace(stderr=output), services)
+    assert actual.endswith(failure)
+    assert len(actual) <= 7600
+    for secret in ['process-value', 'persisted-value', 'compose-value', 'build-value',
+                   'user:pass', 'query-value', 'bearer-value']:
+        assert secret not in actual
+
+
+def test_build_diagnostic_supports_stdout_and_absent_output(tmp_path, monkeypatch):
+    monkeypatch.setattr(_mod, 'INSTALL_DIR', tmp_path)
+    assert _mod._install_build_diagnostic(types.SimpleNamespace(stderr='', stdout='failed step'), {}) == 'failed step'
+    assert 'No build diagnostic' in _mod._install_build_diagnostic(types.SimpleNamespace(), {})
+
+
+@pytest.mark.parametrize('build_exit', [0, 1])
+def test_windows_remote_build_uses_compose_plan_without_url_file_entitlement(monkeypatch, build_exit):
+    monkeypatch.setattr(_mod.platform, 'system', lambda: 'Windows')
+    plan = json.dumps({'target': {'demo': {
+        'context': 'https://github.com/example/demo.git#' + 'a' * 40,
+        'dockerfile-inline': 'FROM scratch', 'tags': ['ods-source-demo:fixed'],
+        'args': {'OPTION': 'value'}, 'platforms': ['linux/arm64']}}})
+    calls = []
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        return types.SimpleNamespace(returncode=0 if '--print' in command else build_exit,
+                                     stdout=plan, stderr='')
+    monkeypatch.setattr(_mod.subprocess, 'run', run)
+    result = _mod._build_install_sources(['docker', 'compose', '-f', 'overlay.yaml'],
+        ['demo'], {'demo': {'build': {'context': 'https://github.com/example/demo.git'}}})
+    assert result.returncode == build_exit
+    assert calls[0][0] == ['docker', 'compose', '-f', 'overlay.yaml', 'build', '--build-arg', 'BUILDKIT_CONTEXT_KEEP_GIT_DIR=1', '--print', 'demo']
+    assert calls[1][0] == ['docker', 'buildx', 'bake', '--file', '-', '--load', '--progress', 'plain', 'demo']
+    assert calls[1][1]['input'] == plan
+    assert len(calls) == 2  # Never replay a failed Dockerfile build.
+
+
+@pytest.mark.parametrize('output,code', [('{}', 0), ('invalid', 0), ('', 1)])
+def test_windows_invalid_or_unsupported_compose_plan_never_builds(monkeypatch, output, code):
+    monkeypatch.setattr(_mod.platform, 'system', lambda: 'Windows')
+    calls = []
+    def run(command, **kwargs):
+        calls.append(command)
+        return types.SimpleNamespace(returncode=code, stdout=output, stderr='')
+    monkeypatch.setattr(_mod.subprocess, 'run', run)
+    result = _mod._build_install_sources(['docker', 'compose'], ['demo'],
+        {'demo': {'build': {'context': 'https://github.com/example/demo.git'}}})
+    assert result.returncode != 0
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize('services', [{}, {'demo': {'depends_on': ['missing'], 'image': 'demo:1'}},
+                                      {'demo': {'build': '.', 'depends_on': 'invalid'}}])
+def test_invalid_image_graph_never_downloads_or_builds(monkeypatch, services):
+    calls = []
+    def run(command, **kwargs):
+        calls.append(command)
+        return types.SimpleNamespace(returncode=0, stdout=json.dumps({'services': services}), stderr='')
+    monkeypatch.setattr(_mod.subprocess, 'run', run)
+    assert _mod._prepare_install_images([], 'demo')[0] is False
+    assert len(calls) == 1
+
+
+def test_image_preparation_allows_cached_images_and_absent_optional_dependency(monkeypatch):
+    calls = []
+    config = {'services': {'demo': {'image': 'demo:1', 'depends_on': {'optional': {'required': False}}}}}
+    def run(command, **kwargs):
+        calls.append(command)
+        return types.SimpleNamespace(returncode=1 if 'pull' in command else 0,
+                                     stdout=json.dumps(config), stderr='')
+    monkeypatch.setattr(_mod.subprocess, 'run', run)
+    monkeypatch.setattr(_mod, '_write_progress', lambda *args: None)
+    assert _mod._prepare_install_images([], 'demo') == (True, '')
+    assert calls[-1] == ['docker', 'compose', 'pull', 'demo']
+
+
+def test_extension_stop_includes_owned_companions_but_not_shared_services(tmp_path, monkeypatch):
+    extension = tmp_path / 'karakeep'
+    extension.mkdir()
+    (extension / 'compose.yaml').write_text('''services:
+  karakeep:
+    depends_on: [litellm]
+  karakeep-chrome: {}
+  karakeep-search: {}
+  karakeep-independent: {}
+  karakeep-protected: {}
+  litellm: {}
+  dashboard: {}
+''', encoding='utf-8')
+    monkeypatch.setattr(_mod, '_find_ext_dir', lambda name: extension if name == 'karakeep' else tmp_path / name if name == 'karakeep-independent' else None)
+    monkeypatch.setattr(_mod, 'CORE_SERVICE_IDS', {'karakeep-protected'})
+    monkeypatch.setattr(_mod, 'resolve_compose_flags', lambda: ['-p', 'ods'])
+    calls = []
+    def run(command, **kwargs):
+        calls.append(command)
+        return types.SimpleNamespace(returncode=0, stderr='')
+    monkeypatch.setattr(_mod.subprocess, 'run', run)
+    assert _mod.docker_compose_action('karakeep', 'stop') == (True, '')
+    assert calls == [['docker', 'compose', '-p', 'ods', 'stop', 'karakeep', 'karakeep-chrome', 'karakeep-search']]
+
+
+@pytest.mark.parametrize('compose', ['services: [broken]', 'services: {other: {}}', 'services: ['])
+def test_extension_stop_rejects_unreadable_ownership_without_running_docker(tmp_path, monkeypatch, compose):
+    (tmp_path / 'compose.yaml').write_text(compose, encoding='utf-8')
+    monkeypatch.setattr(_mod, '_find_ext_dir', lambda _: tmp_path)
+    monkeypatch.setattr(_mod, 'resolve_compose_flags', lambda: [])
+    monkeypatch.setattr(_mod.subprocess, 'run', lambda *a, **k: pytest.fail('Must not run Docker'))
+    ok, error = _mod.docker_compose_action('karakeep', 'stop')
+    assert not ok
+    assert error
+
+
+def test_extension_stop_preserves_single_service_behavior_without_fragment(monkeypatch):
+    monkeypatch.setattr(_mod, '_find_ext_dir', lambda _: None)
+    assert _mod._extension_stop_targets('legacy') == ['legacy']
+
 _parse_mem_value = _mod._parse_mem_value
 
 
@@ -1897,6 +2113,45 @@ class TestSyncExtensionConfigWire:
             assert _body.get("preserve_existing") is True
             assert (target / "settings.yaml").read_text(encoding="utf-8") == "server: customized\n"
             assert (target / "new.yaml").read_text(encoding="utf-8") == "new: default\n"
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+    @pytest.mark.parametrize("layout", ["absent", "no-config", "other-service", "file-conflict"])
+    def test_preserving_sync_noop_receipts_and_file_conflicts(self, tmp_path, monkeypatch, layout):
+        import threading
+        from http.server import HTTPServer
+
+        install_dir = tmp_path / "install"
+        user_root = install_dir / "data" / "user-extensions"
+        user_root.mkdir(parents=True)
+        if layout != "absent":
+            extension = user_root / "fakesvc"
+            extension.mkdir()
+            if layout == "other-service":
+                (extension / "config" / "another").mkdir(parents=True)
+            if layout == "file-conflict":
+                source = extension / "config" / "fakesvc"
+                source.mkdir(parents=True)
+                (source / "settings.yaml").write_text("setting: default", encoding="utf-8")
+                (install_dir / "config" / "fakesvc" / "settings.yaml").mkdir(parents=True)
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.setattr(_mod, "USER_EXTENSIONS_DIR", user_root)
+        monkeypatch.setattr(_mod, "AGENT_API_KEY", "wire-test-secret")
+        server = HTTPServer(("127.0.0.1", 0), _mod.AgentHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            status, body = self._post(server.server_address[1], "fakesvc", preserve_existing=True)
+            if layout == "file-conflict":
+                assert status == 500
+                assert "must be a file" in body["error"]
+                assert (install_dir / "config" / "fakesvc" / "settings.yaml").is_dir()
+            else:
+                assert status == 200
+                assert body["preserve_existing"] is True
+                assert body["synced"] == []
         finally:
             server.shutdown()
             server.server_close()
@@ -4202,6 +4457,63 @@ def _make_body(raw_text: str, backup: bool = True) -> bytes:
     return json.dumps({"raw_text": raw_text, "backup": backup}).encode("utf-8")
 
 
+class TestExtensionConfiguration:
+    def setup_recipe(self, env_update_env, keys=('DEMO_PASSWORD',)):
+        import yaml
+        install, data = env_update_env
+        directory = data / 'extensions-library' / 'demo'
+        directory.mkdir(parents=True)
+        (directory / 'manifest.yaml').write_text(yaml.safe_dump({'service': {'id': 'demo',
+            'env_vars': [{'key': key, 'required': True, 'secret': True} for key in keys]}}))
+        return install, data
+
+    def send(self, values):
+        handler = _FakeHandler(json.dumps({'service_id': 'demo', 'values': values}).encode())
+        _mod.AgentHandler._handle_extension_configure(handler)
+        return handler
+
+    def test_save_preserves_host_values_and_does_not_return_secret(self, env_update_env):
+        install, data = self.setup_recipe(env_update_env)
+        password = 'private $name # test " quote \\ end'
+        handler = self.send({'DEMO_PASSWORD': password})
+        assert handler.response_code == 200
+        assert _mod.load_env(install / '.env')['DEMO_PASSWORD'] == password
+        assert _mod.load_env(install / '.env')['ODS_AGENT_KEY'] == 'existing'
+        assert password not in handler.wfile.getvalue().decode()
+        assert list((data / 'config-backups').iterdir())
+
+    def test_never_rotates_existing_secret_even_when_other_fields_are_empty(self, env_update_env):
+        install, _ = self.setup_recipe(env_update_env, ('DEMO_PASSWORD', 'DEMO_KEY'))
+        previous = 'ODS_AGENT_KEY=existing\nexport DEMO_PASSWORD=original\nDEMO_KEY=\n'
+        (install / '.env').write_text(previous)
+        handler = self.send({'DEMO_PASSWORD': 'replacement', 'DEMO_KEY': 'new'})
+        assert handler.response_code == 409
+        assert (install / '.env').read_text() == previous
+
+    @pytest.mark.parametrize('values', [{'ODS_AGENT_KEY': 'replacement'}, {'DEMO_PASSWORD': 'bad\nNEXT=value'},
+                                      {'DEMO_PASSWORD': 10}, {'DEMO_PASSWORD': ''}])
+    def test_invalid_patch_leaves_environment_unchanged(self, env_update_env, values):
+        install, _ = self.setup_recipe(env_update_env, ('DEMO_PASSWORD', 'ODS_AGENT_KEY'))
+        before = (install / '.env').read_bytes()
+        assert self.send(values).response_code == 400
+        assert (install / '.env').read_bytes() == before
+
+    def test_broken_installed_manifest_cannot_fall_back_to_library(self, env_update_env):
+        install, data = self.setup_recipe(env_update_env)
+        (data / 'user-extensions/demo').mkdir(parents=True)
+        assert self.send({'DEMO_PASSWORD': 'secret'}).response_code == 400
+        assert 'DEMO_PASSWORD' not in _mod.load_env(install / '.env')
+
+    def test_configuration_serializes_with_model_activation(self, env_update_env):
+        install, _ = self.setup_recipe(env_update_env)
+        assert _mod._model_activate_lock.acquire(blocking=False)
+        try:
+            assert self.send({'DEMO_PASSWORD': 'secret'}).response_code == 409
+        finally:
+            _mod._model_activate_lock.release()
+        assert 'DEMO_PASSWORD' not in _mod.load_env(install / '.env')
+
+
 class TestHandleEnvUpdate:
 
     def test_happy_path_writes_file_and_returns_backup(self, env_update_env):
@@ -5265,6 +5577,8 @@ class TestModelActivationModeAndMacosBridge:
             "8080",
             "--model",
             str(install_dir / "data" / "models" / "model.gguf"),
+            "--alias",
+            "model.gguf",
             "--ctx-size",
             "4096",
             "--n-gpu-layers",
@@ -6535,6 +6849,9 @@ class TestInstallStatePollBehavior:
         Compose ``pull`` and ``up`` always succeed (rc=0).
         Returns a ``calls`` list (each entry: ``{'argv': [...], 'kwargs': {...}}``).
         """
+        # Keep this install-state fixture independent of native Windows's
+        # platform probe, which itself uses subprocess to execute `ver`.
+        monkeypatch.setattr(_mod.platform, 'system', lambda: 'Linux')
         calls = []
         responses = list(inspect_responses)
 
@@ -6563,6 +6880,8 @@ class TestInstallStatePollBehavior:
 
             # docker compose ... -> always success.
             if (len(argv) >= 2 and argv[0] == "docker" and argv[1] == "compose"):
+                if argv[-3:] == ['config', '--format', 'json']:
+                    return _CP(0, json.dumps({'services': {'fakesvc': {'image': 'example/fake:1'}}}))
                 return _CP(0, "", "")
 
             # Anything else: refuse so the test fails loudly rather than
@@ -8395,3 +8714,138 @@ class TestObservabilityWire:
             server.shutdown()
             server.server_close()
             thread.join(timeout=2)
+
+@pytest.fixture
+def install_operation_host(tmp_path, monkeypatch):
+    monkeypatch.setattr(_mod, 'DATA_DIR', tmp_path)
+    monkeypatch.setattr(_mod, 'check_auth', lambda handler: True)
+    monkeypatch.setattr(_mod, 'validate_service_id', lambda handler, body: body['service_id'])
+    monkeypatch.setattr(_mod, 'resolve_compose_flags', lambda: [])
+    monkeypatch.setattr(_mod, '_find_ext_dir', lambda service: None)
+    responses, launches = [], []
+    monkeypatch.setattr(_mod, 'json_response', lambda handler, status, body: responses.append((status, body)))
+    class Worker:
+        def __init__(self, target, **kwargs): self.target = target
+        def start(self):
+            launches.append(True)
+            self.target()
+    monkeypatch.setattr(_mod.threading, 'Thread', Worker)
+    def invoke(operation_id, setup=False):
+        monkeypatch.setattr(_mod, 'read_json_body', lambda handler: {
+            'service_id': 'operation-test', 'operation_id': operation_id, 'run_setup_hook': setup})
+        _mod.AgentHandler._handle_install(object())
+    return invoke, responses, launches
+
+
+def test_install_operation_replay_observes_exact_failed_attempt(install_operation_host):
+    invoke, responses, launches = install_operation_host
+    operation_id = 'a' * 32
+    invoke(operation_id)
+    assert responses[-1][0] == 202
+    assert responses[-1][1]['operation_id'] == operation_id
+    record = _mod._read_install_operation('operation-test', operation_id)
+    assert record['state'] == 'failed'
+    invoke(operation_id)
+    assert responses[-1][1]['operation']['state'] == 'failed'
+    assert len(launches) == 1
+    invoke(operation_id, setup=True)
+    assert responses[-1][0] == 409
+    assert len(launches) == 1
+    invoke('b' * 32)
+    assert len(launches) == 2  # New attempt only after a terminal observation.
+
+
+@pytest.mark.skipif(os.name != 'posix', reason='POSIX directory durability barrier')
+def test_install_operation_directory_sync_failure_blocks_worker(install_operation_host, monkeypatch):
+    invoke, responses, launches = install_operation_host
+    real_fsync = os.fsync
+    directory_attempts = []
+
+    def fail_directory_sync(fd):
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            directory_attempts.append(fd)
+            raise OSError('directory sync failed')
+        return real_fsync(fd)
+
+    monkeypatch.setattr(_mod.os, 'fsync', fail_directory_sync)
+    invoke('d' * 32)
+    assert directory_attempts
+    assert responses[-1][0] == 409
+    assert not launches
+
+
+@pytest.mark.parametrize('terminal_state', ['failed', 'succeeded'])
+def test_install_result_is_not_terminal_until_worker_exits(tmp_path, monkeypatch, terminal_state):
+    monkeypatch.setattr(_mod, 'DATA_DIR', tmp_path)
+    identity = ('operation-test', 'b' * 32)
+    live = {identity}
+    monkeypatch.setattr(_mod, '_install_operation_live', live)
+    _mod._save_install_operation({'service_id': identity[0], 'operation_id': identity[1],
+        'run_setup_hook': False, 'state': terminal_state, 'exit_verified': True})
+    observed = _mod._read_install_operation(*identity)
+    assert observed['state'] == 'running'
+    assert observed['exit_verified'] is False
+    # Observation does not erase the durable result; worker release exposes it.
+    live.clear()
+    assert _mod._read_install_operation(*identity)['state'] == terminal_state
+
+
+def test_orphaned_install_is_uncertain_and_blocks_new_attempt(install_operation_host):
+    invoke, responses, launches = install_operation_host
+    _mod._save_install_operation({'service_id': 'operation-test', 'operation_id': 'c' * 32,
+        'run_setup_hook': False, 'state': 'running'})
+    invoke('c' * 32)
+    assert responses[-1][1]['operation']['state'] == 'uncertain'
+    invoke('d' * 32)
+    assert responses[-1][0] == 409
+    assert not launches
+
+
+def test_install_disconnect_does_not_replay_or_release_worker_twice(install_operation_host, monkeypatch):
+    invoke, responses, launches = install_operation_host
+    responder = _mod.json_response
+    monkeypatch.setattr(_mod, 'json_response', lambda *args: (_ for _ in ()).throw(BrokenPipeError()))
+    with pytest.raises(BrokenPipeError): invoke('e' * 32)
+    assert _mod._read_install_operation('operation-test', 'e' * 32)['state'] == 'failed'
+    monkeypatch.setattr(_mod, 'json_response', responder)
+    invoke('e' * 32)
+    assert len(launches) == 1
+
+
+def test_install_timeout_does_not_authorize_replay(install_operation_host, monkeypatch):
+    invoke, responses, launches = install_operation_host
+    def timeout(): raise subprocess.TimeoutExpired(['docker'], 1)
+    monkeypatch.setattr(_mod, 'resolve_compose_flags', timeout)
+    invoke('f' * 32)
+    assert _mod._read_install_operation('operation-test', 'f' * 32)['state'] == 'uncertain'
+    invoke('a' * 32)
+    assert responses[-1][0] == 409
+    assert len(launches) == 1
+
+
+def test_install_operation_http_observation_is_authenticated_and_bound(tmp_path, monkeypatch):
+    import urllib.error
+    import urllib.request
+    from http.server import HTTPServer
+    monkeypatch.setattr(_mod, 'DATA_DIR', tmp_path)
+    monkeypatch.setattr(_mod, 'AGENT_API_KEY', 'operation-test-key')
+    _mod._save_install_operation({'service_id': 'wire-demo', 'operation_id': 'a' * 32,
+        'run_setup_hook': False, 'state': 'succeeded', 'exit_verified': True})
+    server = HTTPServer(('127.0.0.1', 0), _mod.AgentHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    url = f'http://127.0.0.1:{server.server_port}/v1/extension/operation?service_id=wire-demo&operation_id=' + 'a' * 32
+    try:
+        with pytest.raises(urllib.error.HTTPError) as denied:
+            urllib.request.urlopen(url, timeout=2)
+        assert denied.value.code == 401
+        headers = {'Authorization': 'Bearer operation-test-key'}
+        with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=2) as response:
+            assert json.load(response)['operation']['state'] == 'succeeded'
+        with pytest.raises(urllib.error.HTTPError) as missing:
+            urllib.request.urlopen(urllib.request.Request(url.replace('wire-demo', 'other-demo'), headers=headers), timeout=2)
+        assert missing.value.code == 404
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)

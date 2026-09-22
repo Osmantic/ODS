@@ -1,0 +1,15 @@
+{
+  "repository": "https://github.com/go-vikunja/vikunja",
+  "license": "AGPL-3.0",
+  "image": "vikunja/vikunja:2.6.0@sha256:417ada6f94e81f0267aa2f007d0a811fc82d38dd2aa58351e3ea520ca01c2ea5",
+  "build_image": "busybox:1.37.0@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm",
+    "linux/arm",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Official scratch 2.6.0 with named database/attachment directories prepared for UID 1000 in image layer. Uses current service.secret setting rather than deprecated JWTSecret; required public URL and registration control. Built-in health command requires no nonexistent shell/curl."
+}

@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """Focused contract tests for post-restart Pixel access-mode reproof."""
 import copy
+import errno
 import contextlib
 import importlib.util
 import io
 import json
 import pathlib
 import sys
+import socket
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -39,6 +42,63 @@ def projection(**changes):
 
 
 class ReconcileTests(unittest.TestCase):
+    def test_real_unix_socket_missing_or_not_listening_is_preflight_only(self):
+        import pixel_access_client
+        with tempfile.TemporaryDirectory(prefix='ods-access-') as root:
+            endpoint = str(pathlib.Path(root) / 'control.sock')
+            with patch.object(pixel_access_client, 'ACCESS_SOCKET_PATH', endpoint):
+                with self.assertRaises(reconcile.ReconcileError) as missing:
+                    reconcile.reconcile(pixel_access_client.request_access)
+                self.assertEqual(missing.exception.stage, 'status-transport-unavailable')
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
+                    server.bind(endpoint)
+                    with self.assertRaises(reconcile.ReconcileError) as refused:
+                        reconcile.reconcile(pixel_access_client.request_access)
+                    self.assertEqual(refused.exception.stage, 'status-transport-unavailable')
+
+    def test_read_only_transport_failures_are_retryable_without_private_errors(self):
+        for code in (errno.ENOENT, errno.ECONNREFUSED, errno.ECONNRESET, errno.ETIMEDOUT):
+            calls = []
+            def request(operation, body=None):
+                calls.append(operation)
+                raise OSError(code, 'private socket path')
+            output = io.StringIO()
+            with contextlib.redirect_stderr(output):
+                self.assertEqual(reconcile.main(request, startup=True), 1)
+            self.assertEqual(json.loads(output.getvalue())['stage'], 'status-transport-unavailable')
+            self.assertNotIn('private socket path', output.getvalue())
+            self.assertEqual(calls, ['status'])
+
+    def test_permission_denial_is_not_classified_as_startup_delay(self):
+        def request(operation, body=None):
+            raise PermissionError(errno.EACCES, 'private path')
+        with self.assertRaises(PermissionError):
+            reconcile.reconcile(request)
+
+    def test_transport_failure_after_change_is_never_retryable_preflight(self):
+        calls = []
+        def request(operation, body=None):
+            calls.append(operation)
+            if operation == 'status':
+                return 200, projection(effective_mode='unknown', runtime_verified=False,
+                                       reason='runtime-proof-required')
+            raise ConnectionResetError(errno.ECONNRESET, 'private path')
+        output = io.StringIO()
+        with contextlib.redirect_stderr(output):
+            self.assertEqual(reconcile.main(request, startup=True), 1)
+        self.assertEqual(json.loads(output.getvalue())['stage'], 'client-exception')
+        self.assertEqual(calls, ['status', 'change'])
+
+    def test_startup_does_not_restore_even_a_pending_sandbox_transition(self):
+        calls = []
+        def request(operation, body=None):
+            calls.append(operation)
+            return 200, projection(effective_mode='unknown', runtime_verified=False,
+                                   pending=True, reason='transition-recovery-required')
+        with self.assertRaises(reconcile.ReconcileError):
+            reconcile.reconcile(request, allow_safe_restore=False)
+        self.assertEqual(calls, ['status'])
+
     def test_diagnostic_projection_retains_only_bounded_coordinator_error(self):
         diagnostic = reconcile.diagnostic_projection({
             "error": "runtime-proof-failed",

@@ -1,0 +1,14 @@
+{
+  "repository": "https://github.com/OpenRefine/OpenRefine",
+  "license": "BSD-3-Clause",
+  "image": "eclipse-temurin:21-jre-alpine@sha256:1a29e1fe337eb28b5bec30f0ee8ed29f0ff80ab6f75dcf9313efe82911065a52",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "release": "3.10.1",
+  "archive_sha256": "806e38e415fa98c2dee400de575992514557a4e37e82c670b7cd2e34d667c4ba",
+  "notes": "Official Java Linux release without bundled JRE. Original refine launcher, persistent projects/cache and bounded heap. Base image architecture availability is verified; native dependency behavior, startup and import/export on each architecture remain unverified. Bundled dependencies retain their own licenses. Local single-user service, no automated reconciliation or external account."
+}

@@ -1,0 +1,90 @@
+services:
+  microbin:
+    image: ods/microbin-access:2.1.0-local-v1
+    container_name: ods-microbin
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${MICROBIN_PORT:-11051}:8080
+    healthcheck:
+      test:
+      - CMD
+      - /bridge
+      - healthcheck
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 128M
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    user: 65532:65532
+    environment:
+      MICROBIN_ACCESS_PASSWORD: ${MICROBIN_ACCESS_PASSWORD:?Set the site access password}
+    init: true
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      microbin-backend:
+        condition: service_started
+  microbin-backend:
+    image: ods/microbin:2.1.0-local-v1
+    container_name: ods-microbin-backend
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    user: 65532:65532
+    environment:
+      MICROBIN_BIND: 0.0.0.0
+      MICROBIN_PORT: '8080'
+      MICROBIN_DATA_DIR: /data
+      MICROBIN_BASIC_AUTH_USERNAME: ods
+      MICROBIN_BASIC_AUTH_PASSWORD: ${MICROBIN_ACCESS_PASSWORD:?Set the site access
+        password}
+      MICROBIN_ADMIN_USERNAME: admin
+      MICROBIN_ADMIN_PASSWORD: ${MICROBIN_ADMIN_PASSWORD:?Set the administrator password}
+      MICROBIN_DISABLE_TELEMETRY: 'true'
+      MICROBIN_DISABLE_UPDATE_CHECKING: 'true'
+      MICROBIN_DEFAULT_EXPIRY: 24hour
+      MICROBIN_GC_DAYS: '90'
+      MICROBIN_THREADS: '1'
+      MICROBIN_PRIVATE: 'true'
+      MICROBIN_ENABLE_BURN_AFTER: 'true'
+      MICROBIN_ENABLE_READONLY: 'true'
+      MICROBIN_MAX_FILE_SIZE_ENCRYPTED_MB: '32'
+      MICROBIN_MAX_FILE_SIZE_UNENCRYPTED_MB: '64'
+    init: true
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    volumes:
+    - microbin-data:/data
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  microbin-data: {}

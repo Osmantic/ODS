@@ -1,0 +1,58 @@
+services:
+  neo4j:
+    image: ods/neo4j:2026.08.1-local-v1
+    container_name: ods-neo4j
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${NEO4J_PORT:-11139}:7474
+    - 127.0.0.1:${NEO4J_BOLT_PORT:-11140}:7687
+    environment:
+      ODS_NEO4J_PASSWORD: ${NEO4J_PASSWORD:?Set a random 64-hex initial neo4j password}
+      NEO4J_server_default__listen__address: 0.0.0.0
+      NEO4J_server_http_advertised__address: localhost:${NEO4J_PORT:-11139}
+      NEO4J_server_bolt_advertised__address: localhost:${NEO4J_BOLT_PORT:-11140}
+      NEO4J_server_memory_heap_initial__size: 512m
+      NEO4J_server_memory_heap_max__size: 1G
+      NEO4J_server_memory_pagecache_size: 512m
+      NEO4J_PLUGINS: '[]'
+    volumes:
+    - neo4j-data:/data
+    - neo4j-logs:/logs
+    healthcheck:
+      test:
+      - CMD
+      - wget
+      - -q
+      - -O
+      - /dev/null
+      - http://127.0.0.1:7474/
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 180s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 3G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    user: 7474:7474
+    stop_grace_period: 90s
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  neo4j-data: {}
+  neo4j-logs: {}

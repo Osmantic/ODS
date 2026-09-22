@@ -1,0 +1,11 @@
+{
+  "repository": "https://github.com/danielgatis/rembg",
+  "license": "MIT",
+  "image": "danielgatis/rembg:latest@sha256:98e72b790093dec3b21967e22c8eb75a0a67d458fdba7ef5fcc1900cad76396b",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "The upstream image currently supports amd64 only; ARM hosts require Docker x86 emulation. No CUDA acceleration is claimed. Model licenses vary; review the selected checkpoint before redistribution."
+}

@@ -1,0 +1,13 @@
+{
+  "repository": "https://github.com/silverbulletmd/silverbullet",
+  "license": "MIT",
+  "image": "ghcr.io/silverbulletmd/silverbullet:2.11.0@sha256:535efe0a5d97587593edd88dfd7b2523f7c3a11482aa5c75887cce64f741acfc",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/arm64",
+    "linux/amd64",
+    "linux/arm"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Official full 2.11.0 image with bundled headless Chromium, stable nonroot identity and persistent data/home volumes. Current multi-space setup wizard creates admin and first space; no legacy SB_USER, auto-mounted Portal project, model or remote Git credentials. Native instance health is listener readiness only."
+}

@@ -1,0 +1,46 @@
+services:
+  optuna-dashboard:
+    image: ods/optuna-dashboard:0.21.0-storage-v1
+    container_name: ods-optuna-dashboard
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${OPTUNA_DASHBOARD_PORT:-11034}:8080
+    healthcheck:
+      test:
+      - CMD
+      - python
+      - -c
+      - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/studies',
+        timeout=5).close()
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    user: 1000:1000
+    volumes:
+    - optuna-dashboard-data:/data
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command:
+    - sqlite:////data/studies.db
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  optuna-dashboard-data: {}

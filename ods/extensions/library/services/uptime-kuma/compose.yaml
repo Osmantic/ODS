@@ -1,0 +1,44 @@
+services:
+  uptime-kuma:
+    image: louislam/uptime-kuma:2.5.5-rootless@sha256:c4e17ce033deb811aff8a61a5f8f736f35b1bd937458ddeec46c59ca190f0e03
+    container_name: ods-uptime-kuma
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${UPTIME_KUMA_PORT:-11027}:3001
+    healthcheck:
+      test:
+      - CMD
+      - node
+      - -e
+      - const http=require('node:http');const r=http.get('http://127.0.0.1:3001/',s=>{s.resume();process.exit(s.statusCode>=200&&s.statusCode<400?0:1)});r.setTimeout(4000,()=>{r.destroy();process.exit(1)});r.on('error',()=>process.exit(1));
+      interval: 30s
+      timeout: 6s
+      retries: 6
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    user: 1000:1000
+    environment:
+      UPTIME_KUMA_PORT: '3001'
+      UPTIME_KUMA_DB_TYPE: sqlite
+      UPTIME_KUMA_ENABLE_EMBEDDED_MARIADB: '0'
+    volumes:
+    - uptime-kuma-data:/app/data
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  uptime-kuma-data: {}

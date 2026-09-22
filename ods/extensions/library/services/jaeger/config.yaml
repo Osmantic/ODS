@@ -1,0 +1,51 @@
+# Adapted from the Apache-2.0 Jaeger 2.21.0 config-badger.yaml.
+service:
+  extensions: [jaeger_storage, jaeger_query, healthcheckv2]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [jaeger_storage_exporter]
+  telemetry:
+    resource:
+      service.name: jaeger
+    metrics:
+      level: none
+    logs:
+      level: info
+extensions:
+  healthcheckv2:
+    use_v2: true
+    http:
+      endpoint: 127.0.0.1:13133
+      status:
+        enabled: true
+        path: /status
+  jaeger_query:
+    storage:
+      traces: local
+  jaeger_storage:
+    backends:
+      local:
+        badger:
+          directories:
+            keys: /data/keys
+            values: /data/values
+          ephemeral: false
+          ttl:
+            spans: 48h
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+processors:
+  batch:
+    send_batch_size: 512
+    send_batch_max_size: 1024
+    timeout: 5s
+exporters:
+  jaeger_storage_exporter:
+    trace_storage: local

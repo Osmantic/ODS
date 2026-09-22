@@ -1,0 +1,49 @@
+services:
+  presenton:
+    image: ghcr.io/presenton/presenton:latest@sha256:ff59562c2e7683f64f892eb798e32bfcdedd05a94f05c2302ececed94119c77a
+    container_name: ods-presenton
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - ${BIND_ADDRESS:-127.0.0.1}:${PRESENTON_PORT:-11007}:80
+    healthcheck:
+      test:
+      - CMD
+      - node
+      - -e
+      - const r=require('http').get('http://127.0.0.1:80/',s=>process.exit(s.statusCode>=200&&s.statusCode<400?0:1));r.on('error',()=>process.exit(1));r.setTimeout(8000,()=>{r.destroy();process.exit(1)})
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    volumes:
+    - presenton-data:/app_data
+    - presenton-cache:/root/.cache
+    environment:
+      LLM: custom
+      CUSTOM_LLM_URL: http://litellm:4000/v1
+      CUSTOM_LLM_API_KEY: ${LITELLM_KEY:-no-key}
+      CUSTOM_MODEL: ods/current
+      CAN_CHANGE_KEYS: 'false'
+      START_OLLAMA: 'false'
+      DISABLE_IMAGE_GENERATION: 'true'
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  presenton-data: {}
+  presenton-cache: {}

@@ -1,0 +1,63 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: 2.6.0
+service:
+  id: limesurvey
+  name: LimeSurvey
+  aliases: []
+  container_name: ods-limesurvey
+  host_env: LIMESURVEY_HOST
+  default_host: limesurvey
+  port: 8080
+  external_port_env: LIMESURVEY_PORT
+  external_port_default: 11125
+  health: /
+  type: docker
+  startup_check: true
+  startup_timeout: 90
+  gpu_backends:
+  - all
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  description: Build branching surveys and questionnaires, collect responses and export
+    project research.
+  env_vars:
+  - key: LIMESURVEY_DB_PASSWORD
+    required: true
+    secret: true
+    description: 64-hex database password; preserve for existing PostgreSQL data.
+  - key: LIMESURVEY_ADMIN_PASSWORD
+    required: true
+    secret: true
+    description: Distinct 64-hex initial administrator password; existing accounts
+      are not reset.
+  - key: LIMESURVEY_ADMIN_EMAIL
+    required: true
+    secret: false
+    description: Actual owner email address for initial administrator account.
+  ui_path: /index.php/admin
+tags:
+- surveys
+- forms
+- research
+- open-source
+features:
+- id: limesurvey-surveys
+  name: LimeSurvey
+  description: Build branching surveys and questionnaires, collect responses and export
+    project research.
+  icon: ClipboardList
+  category: productivity
+  requirements:
+    services:
+    - limesurvey
+    vram_gb: 0
+  enabled_services_all:
+  - limesurvey
+  setup_time: Initial image download; see README
+  priority: 48
+  launch:
+    type: service
+    service: limesurvey
+    path: /index.php/admin

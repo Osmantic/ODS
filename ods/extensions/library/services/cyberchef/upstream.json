@@ -1,0 +1,13 @@
+{
+  "repository": "https://github.com/gchq/CyberChef",
+  "license": "Apache-2.0",
+  "image": "ghcr.io/gchq/cyberchef:11.5.0@sha256:f04a39926344faf8e4cbbc8c92fb125d2b466f9be62db09aff23c7c406101a51",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64",
+    "linux/arm"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Official 11.5.0 static bundle served by upstream unprivileged Nginx. Browser-side processing/storage, no fictitious server volume or inference route. Loopback UI; explicit operations may contact external endpoints."
+}

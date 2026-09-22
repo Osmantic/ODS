@@ -1,3 +1,4 @@
+import { RUN_PROGRESS_STOP_REASON } from "../plugin/run-progress-budget.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -72,7 +73,6 @@ import {
   PRIVATE_NETWORK_LOOP_ABORT_REASON,
   RECURSIVE_DELETE_REQUIRES_OWNER_REASON,
   REPEATED_WRITE_REQUIRES_PATCH_REASON,
-  REPEATED_WRITE_RETRY_EXHAUSTED_REASON,
   REQUESTED_PARSED_JSON_REQUIRED_REASON,
   REQUESTED_UNITTEST_FINAL_RETRY_REASON,
   REQUESTED_UNITTEST_REQUIRED_REASON,
@@ -89,9 +89,6 @@ import {
   WEB_FETCH_PUBLIC_ONLY_REASON,
   WEB_LOOP_ABORT_REASON,
   WEB_LOOP_DELIVERY_REASON,
-  WORKSPACE_TOOL_SEARCH_COMPLETE_REASON,
-  WORKSPACE_UNREQUESTED_PROJECTION_REASON,
-  WORKSPACE_PREVIEW_REQUIRES_TOOL_REASON,
   WORKSPACE_PREVIEW_NOT_CREATED_DELIVERY_PREFIX,
   WORKSPACE_PREVIEW_UNVERIFIED_DELIVERY_PREFIX,
   WORKSPACE_PREVIEW_PUBLISHED_DELIVERY_PREFIX,
@@ -189,6 +186,43 @@ function seedNamedPreview(guard) {
   assert.equal(guard.verificationForRun("run-1").status, "passed");
   return { write, params, details };
 }
+
+test('GitHub extension preparation preserves ordinary sandbox tool access', () => {
+  const scenarios=[
+    ['write',{path:'recipe/notes.txt',content:'repository findings'}],
+    ['read',{path:'recipe/notes.txt'}],
+    ['exec',{command:'python -m pytest',workdir:'recipe'}],
+    ['process',{action:'poll',sessionId:'test-process'}],
+  ];
+  for (const [toolName,params] of scenarios) {
+    for (const deferred of [false,true]) {
+      const run=prompt=>{
+        const guard=createToolLoopGuard();
+        const context={agentId:'pixel',runId:'preparation',sessionId:'preparation-session'};
+        guard.observeRun(context,'pixel',{prompt},{executionHost:'sandbox'});
+        const event=deferred ? {toolName:'tool_call',params:{id:'openclaw:core:'+toolName,args:params}} : {toolName,params};
+        return guard.beforeToolCall(event,{...context,toolName:event.toolName});
+      };
+      assert.deepEqual(run('/extensions https://github.com/example/project prepare and test in sandbox'),
+        run('Prepare and test this repository in the sandbox'),toolName);
+    }
+  }
+});
+
+test('extension experiments require an actual sandbox instead of gateway execution', () => {
+  for (const executionHost of [undefined,'gateway']) {
+    const guard=createToolLoopGuard();
+    const context={agentId:'pixel',runId:'isolated-preparation',sessionId:'session'};
+    guard.observeRun(context,'pixel',{prompt:'/extensions https://github.com/example/project install'},{executionHost});
+    for (const toolName of ['write','edit','apply_patch','exec','process']) {
+      for (const event of [{toolName,params:{}},{toolName:'tool_call',params:{id:'openclaw:core:'+toolName,args:{}}}]) {
+        const result=guard.beforeToolCall(event,{...context,toolName:event.toolName});
+        assert.equal(result.block,true);
+        assert.match(result.blockReason,/outside the sandbox/);
+      }
+    }
+  }
+});
 
 test('malformed dispatch failures stop only their active run and retain its verified preview', () => {
   const aborted = [];
@@ -1111,7 +1145,7 @@ test("allows materially different repeated writes while blocking identical no-pr
         params: { id: "write", args: { path: "cache.py", content: "replacement\n" } },
       },
     }),
-    { block: true, blockReason: REPEATED_WRITE_RETRY_EXHAUSTED_REASON }
+    { block: true, blockReason: REPEATED_WRITE_REQUIRES_PATCH_REASON }
   );
 });
 
@@ -1241,108 +1275,44 @@ test("workspace discovery permits new capabilities without authorizing their eff
   );
   assert.deepEqual(call(guard, "tool_search", {
     event: { params: { query: "write read edit apply_patch exec process" } },
-  }), { params: { query: "write read edit apply_patch exec process", limit: 6 } });
+  }), undefined);
   for (const query of ["pixel_ods_workspace_preview", "browser verification", "pixel_ods_host_observe"]) {
     assert.equal(call(guard, "tool_search", { event: { params: { query } } }), undefined);
     assert.deepEqual(call(guard, "tool_search", {
       event: { params: { query: `  ${query.toUpperCase().replaceAll(" ", "   ")}  ` } },
-    }), { block: true, blockReason: WORKSPACE_TOOL_SEARCH_COMPLETE_REASON });
+    }), undefined);
   }
   assert.equal(call(guard, "pixel_ops_shell_propose", {
     event: { params: { target: "ods-host", command: "pwd" } },
   }).blockReason, OPERATIONS_NOT_REQUESTED_REASON);
 });
 
-test("routes a compact workspace task to core tools and blocks unrequested Operations", () => {
-  const prepared = [];
-  const guard = createToolLoopGuard({
-    execControl: {
-      prepare: (runId, command) => {
-        prepared.push([runId, command]);
-        return command;
-      },
-    },
-  });
-  const prompt =
-    "Work autonomously in /workspace/project. Inspect it, create probe.py, and run its tests.";
-  assert.equal(userMessageRequestsWorkspaceTools([], prompt), true);
-  assert.equal(userMessageWorkspaceContinuationPath([], prompt), "project");
-  guard.observeRun(
-    { agentId: "pixel", runId: "run-1", sessionId: "session-1" },
-    "pixel",
-    { prompt }
-  );
-  assert.deepEqual(
-    call(guard, "tool_search", {
-      event: { params: { query: "probe.py" } },
-      context: { sessionId: undefined },
-    }),
-    {
-      params: {
-        query: "write read edit apply_patch exec process",
-        limit: 6,
-      },
+test("workspace inspection preserves effects instead of scripting the next action", () => {
+  for (const wrapped of [false, true]) {
+    const prepared = [];
+    const guard = createToolLoopGuard({execControl: {prepare: (_run, command) => {
+      prepared.push(command); return command;
+    }}});
+    guard.observeRun({agentId: "pixel", runId: "run-1", sessionId: "session-1"}, "pixel", {
+      prompt: "Work autonomously in /workspace/project. Inspect it, create probe.py, and run its tests.",
+    });
+    const invoke = (name, args) => wrapped
+      ? call(guard, "tool_call", {event: {params: {id: name, args}}})
+      : call(guard, name, {event: {params: args}});
+    for (const name of ["pixel_ods_status", "pixel_ods_apps_list"]) {
+      assert.notEqual(invoke(name, {})?.block, true);
     }
-  );
-  assert.deepEqual(
-    call(guard, "tool_search", {
-      event: { params: { query: "probe.py" } },
-      context: { sessionId: undefined },
-    }),
-    { block: true, blockReason: WORKSPACE_TOOL_SEARCH_COMPLETE_REASON }
-  );
-  const adaptedInspection = call(guard, "tool_call", {
-    event: {
-      params: {
-        id: "ls",
-        args: { path: "project" },
-      },
-    },
-    context: { sessionId: undefined },
-  });
-  assert.deepEqual(adaptedInspection, {
-    params: {
-      id: "openclaw:core:exec",
-      args: {
-        command: "mkdir -p -- project && pwd && uname -sr && ls -la -- project",
-      },
-    },
-  });
-  assert.deepEqual(prepared, [[
-    "run-1",
-    "mkdir -p -- project && pwd && uname -sr && ls -la -- project",
-  ]]);
-  const invalidPoll = call(guard, "tool_call", {
-    event: {
-      params: {
-        id: "openclaw:core:exec",
-        args: { yieldMs: 100, action: "poll" },
-      },
-    },
-    context: { sessionId: undefined },
-  });
-  assert.equal(invalidPoll.block, true);
-  assert.match(invalidPoll.blockReason, /Inspection complete/);
-  assert.match(invalidPoll.blockReason, /openclaw:core:write/);
-  assert.match(invalidPoll.blockReason, /project\/probe\.py/);
-  assert.equal(prepared.length, 1);
-  assert.equal(
-    call(guard, "pixel_ops_shell_propose", {
-      event: { params: { target: "ods-host", command: "pwd" } },
-    }).blockReason,
-    OPERATIONS_NOT_REQUESTED_REASON
-  );
-  assert.equal(
-    call(guard, "tool_call", {
-      event: {
-        params: {
-          id: "openclaw:pixel-operations-broker:pixel_ops_shell_propose",
-          args: { target: "ods-host", command: "pwd" },
-        },
-      },
-    }).blockReason,
-    UNREQUESTED_OPERATIONS_TERMINAL_REASON
-  );
+    const read = invoke("read", {path: "project"});
+    assert.notEqual(read?.block, true);
+    assert.notEqual(read?.params?.id, "openclaw:core:exec");
+    assert.notEqual(invoke("process", {action: "list"})?.block, true);
+    assert.deepEqual(prepared, [], "read/list/projection cannot create a directory or run shell");
+    assert.notEqual(invoke("tool_search", {query: "Python csv documentation", limit: 2})?.block, true);
+    assert.notEqual(invoke("exec", {command: "ls -la /workspace/project"})?.block, true);
+    assert.deepEqual(prepared, ["ls -la /workspace/project"], "execute only the model-selected command before any write");
+    assert.equal(invoke("pixel_ops_shell_propose", {target: "ods-host", command: "pwd"}).blockReason,
+      OPERATIONS_NOT_REQUESTED_REASON, "read-only discovery does not authorize host mutation");
+  }
 });
 
 test("first unrequested Operations correction allows authorized workspace write and read", () => {
@@ -1460,168 +1430,23 @@ test("unrequested Operations abort failures remain closed and do not poison a di
   }), { params: { actions: ["host.cpu"] } });
 });
 
-test("adapts common small-model inspection aliases only to the owner workspace", () => {
-  const shapes = [
-    { id: "openclaw:core:process", args: { action: "list" } },
-    { id: "openclaw:core:exec", args: { action: "list" } },
-    { id: "read", args: { path: "project" } },
-    {
-      id: "exec",
-      args: {
-        command: "ls   -la   /workspace/project/",
-        pty: true,
-        yieldMs: 100,
-      },
-    },
-  ];
-  for (const [index, shape] of shapes.entries()) {
-    const prepared = [];
-    const guard = createToolLoopGuard({
-      execControl: {
-        prepare: (runId, command) => {
-          prepared.push([runId, command]);
-          return command;
-        },
-      },
-    });
-    const prompt =
-      "Work autonomously in /workspace/project. Inspect it, create probe.py, and run its tests.";
-    guard.observeRun(
-      { agentId: "pixel", runId: `alias-${index}`, sessionId: `alias-session-${index}` },
-      "pixel",
-      { prompt }
-    );
-    assert.deepEqual(
-      call(guard, "tool_call", {
-        event: { runId: `alias-${index}`, params: shape },
-        context: { runId: `alias-${index}`, sessionId: undefined },
-      }),
-      {
-        params: {
-          id: "openclaw:core:exec",
-          args: {
-            command: "mkdir -p -- project && pwd && uname -sr && ls -la -- project",
-          },
-        },
-      }
-    );
-    assert.deepEqual(prepared, [[
-      `alias-${index}`,
-      "mkdir -p -- project && pwd && uname -sr && ls -la -- project",
-    ]]);
-    const repeatedInspection = call(guard, "tool_call", {
-      event: { runId: `alias-${index}`, params: shape },
-      context: { runId: `alias-${index}`, sessionId: undefined },
-    });
-    assert.equal(repeatedInspection.block, true);
-    assert.match(repeatedInspection.blockReason, /Inspection complete/);
-    assert.match(repeatedInspection.blockReason, /openclaw:core:write/);
-    assert.equal(prepared.length, 1);
-  }
-
-  const guard = createToolLoopGuard();
-  const prompt =
-    "Work autonomously in /workspace/project. Inspect it, create probe.py, and run its tests.";
-  guard.observeRun(
-    { agentId: "pixel", runId: "wrong-path", sessionId: "wrong-path-session" },
-    "pixel",
-    { prompt }
-  );
-  assert.deepEqual(
-    call(guard, "tool_call", {
-      event: {
-        runId: "wrong-path",
-        params: { id: "read", args: { path: "another-project" } },
-      },
-      context: { runId: "wrong-path", sessionId: undefined },
-    }),
-    {
-      params: {
-        id: "read",
-        args: { path: "project/another-project" },
-      },
-    }
-  );
-});
-
-test("keeps unrequested ODS projections out of workspace-only tasks", () => {
+test("malformed workspace calls are not repaired into invented shell effects", () => {
   const prepared = [];
-  const guard = createToolLoopGuard({
-    execControl: {
-      prepare: (runId, command) => {
-        prepared.push([runId, command]);
-        return command;
-      },
-    },
+  const guard = createToolLoopGuard({execControl: {prepare: (_run, command) => {
+    prepared.push(command); return command;
+  }}});
+  guard.observeRun({agentId: "pixel", runId: "run-1", sessionId: "session-1"}, "pixel", {
+    prompt: "Work autonomously in /workspace/project. Inspect it, create probe.py, and run its tests.",
   });
-  const prompt =
-    "Work autonomously in /workspace/project. Inspect it, create probe.py, and run its tests.";
-  guard.observeRun(
-    { agentId: "pixel", runId: "projection-detour", sessionId: "projection-session" },
-    "pixel",
-    { prompt }
-  );
-
-  assert.deepEqual(
-    call(guard, "tool_call", {
-      event: {
-        runId: "projection-detour",
-        params: { id: "pixel_ods_status", args: { action: "status" } },
-      },
-      context: { runId: "projection-detour", sessionId: undefined },
-    }),
-    {
-      params: {
-        id: "openclaw:core:exec",
-        args: {
-          command: "mkdir -p -- project && pwd && uname -sr && ls -la -- project",
-        },
-      },
-    }
-  );
-  assert.deepEqual(prepared, [[
-    "projection-detour",
-    "mkdir -p -- project && pwd && uname -sr && ls -la -- project",
-  ]]);
-
-  const repeatedProjection = call(guard, "pixel_ods_apps_list", {
-    event: { runId: "projection-detour", params: {} },
-    context: { runId: "projection-detour", sessionId: undefined },
-  });
-  assert.equal(repeatedProjection.block, true);
-  assert.match(repeatedProjection.blockReason, /Inspection complete/);
-  assert.match(repeatedProjection.blockReason, /openclaw:core:write/);
-
-  const directGuard = createToolLoopGuard();
-  directGuard.observeRun(
-    { agentId: "pixel", runId: "direct-projection", sessionId: "direct-session" },
-    "pixel",
-    { prompt }
-  );
-  assert.deepEqual(
-    call(directGuard, "pixel_ods_status", {
-      event: { runId: "direct-projection", params: {} },
-      context: { runId: "direct-projection", sessionId: undefined },
-    }),
-    { block: true, blockReason: WORKSPACE_UNREQUESTED_PROJECTION_REASON }
-  );
-
-  const mixedGuard = createToolLoopGuard();
-  mixedGuard.observeRun(
-    { agentId: "pixel", runId: "mixed-projection", sessionId: "mixed-session" },
-    "pixel",
-    {
-      prompt:
-        "Use ODS tools to identify the exact active model, then inspect /workspace/project and create probe.py.",
-    }
-  );
-  assert.equal(
-    call(mixedGuard, "pixel_ods_status", {
-      event: { runId: "mixed-projection", params: {} },
-      context: { runId: "mixed-projection", sessionId: undefined },
-    }),
-    undefined
-  );
+  for (const shape of [
+    {id: "ls", args: {path: "project"}},
+    {id: "exec", args: {path: "project"}},
+    {id: "exec", args: {action: "list"}},
+  ]) {
+    const result = call(guard, "tool_call", {event: {params: shape}});
+    assert.equal(result?.params?.args?.command, undefined);
+    assert.deepEqual(prepared, [], "schema/discovery errors must not manufacture execution");
+  }
 });
 
 test("binds a basename-relative file path under the exact nested owner directory", () => {
@@ -1886,43 +1711,10 @@ test("keeps compact-model workspace files, commands, and repair evidence in the 
     "pixel",
     { prompt }
   );
-  const inspection = call(guard, "tool_call", {
-    event: {
-      toolCallId: "inspect-project",
-      params: { id: "read", args: { path: "project" } },
-    },
-    context: { toolCallId: "inspect-project" },
-  });
-  assert.deepEqual(inspection, {
-      params: {
-        id: "openclaw:core:exec",
-        args: {
-          command: "mkdir -p -- project && pwd && uname -sr && ls -la -- project",
-        },
-      },
-  });
-  const inspectionResult = wrappedCoreResult("exec", {
-    content: [{ type: "text", text: "/workspace\nLinux test\ntotal 0" }],
-    details: { status: "completed", exitCode: 0, cwd: "/workspace" },
-  });
-  afterCall(guard, "tool_call", {
-    event: {
-      toolCallId: "inspect-project",
-      params: inspection.params,
-      result: inspectionResult,
-    },
-    context: { toolCallId: "inspect-project" },
-  });
-  const persistedInspection = persistToolResult(
-    guard,
-    "tool_call",
-    "inspect-project",
-    inspectionResult
-  );
-  assert.match(
-    persistedInspection.message.content.at(-1).text,
-    /project\/normalize_name\.py/
-  );
+  // Read-only inspection stays a read; no mkdir or substitute execution.
+  assert.equal(call(guard, "tool_call", {
+    event: {params: {id: "read", args: {path: "project"}}},
+  }), undefined);
 
   const write = call(guard, "tool_call", {
     event: {
@@ -2708,11 +2500,14 @@ test("native extension read reports a terminal failed inspection without inventi
   assert.equal(call(guard, "pixel_ods_extensions", { event: { params } })?.block, undefined);
   afterCall(guard, "pixel_ods_extensions", { event: { params, result: { details: {
     jobId: "ops-1234567890123-dddddddddddd", status: "succeeded", waitTimedOut: false,
-    steps: [lifecycleStep("inspect", lifecycleResult("inspect", { extensionId: "comfyui", outcome: "failed" }))],
+    steps: [lifecycleStep("inspect", lifecycleResult("inspect", { extensionId: "comfyui", outcome: "failed",
+      previousStatus: "unknown", currentStatus: "unknown" }))],
   } } } });
   const verification = guard.deliveryVerificationForRun("run-1");
   assert.equal(verification.status, "passed");
   assert.match(verification.text, /Inspection: `failed`/);
+  assert.match(verification.text, /current state: `unknown`/);
+  assert.doesNotMatch(verification.text, /Pixel verified|not_installed/);
   assert.match(verification.text, /configuration could not be established/);
   assert.doesNotMatch(verification.text, /configuration keys: none|Inspection: `ready`/);
   // A terminal read failure is evidence, never permission for a mutation.
@@ -3287,7 +3082,8 @@ test("requires terminal artifact evidence after a staged-download submission", (
   });
 });
 
-test("accepts a matching terminal staged-download artifact receipt", () => {
+for (const artifactsRoot of ["/var/lib/pixel-ops-broker/artifacts", ...(process.platform === "darwin" ? ["/private/var/lib/pixel-ops-broker/artifacts"] : [])]) {
+test(`accepts a matching terminal staged-download artifact receipt: ${artifactsRoot}`, () => {
   const guard = createToolLoopGuard();
   const jobId = "ops-1234567890123-abcdef123456";
   guard.observeRun(
@@ -3314,7 +3110,7 @@ test("accepts a matching terminal staged-download artifact receipt", () => {
             target: "broker",
             exitCode: 0,
             artifact: {
-              path: `/var/lib/pixel-ops-broker/artifacts/${jobId}/example.html`,
+              path: `${artifactsRoot}/${jobId}/example.html`,
               filename: "example.html",
               bytes: 559,
               sha256: "a".repeat(64),
@@ -3378,6 +3174,8 @@ test("accepts a matching terminal staged-download artifact receipt", () => {
   assert.match(delivered, /a{64}/);
   assert.match(delivered, /Executable: no; overwrite: no/);
 });
+
+}
 
 function verifiedDownloadGuard() {
   const guard = createToolLoopGuard();
@@ -3850,7 +3648,7 @@ test("explicit negative ODS status intent never creates a compulsory projection"
   assert.notEqual(call(guard, "tool_call", { event: { params: {
     id: "write", args: { path: "health-conversion-demo/input.csv", text: "item,count\nDesk lamp,2\n" },
   } } })?.block, true);
-  assert.equal(call(guard, "pixel_ods_status").blockReason, WORKSPACE_UNREQUESTED_PROJECTION_REASON);
+  assert.match(call(guard, "pixel_ods_status").blockReason, /owner explicitly excluded/);
   for (const verb of ["inspect", "check", "observe", "report", "list"]) {
     assert.deepEqual(userMessageOdsToolRequirements([], `Create input.csv in the workspace. Do not ${verb} ODS status or ODS applications.`), []);
   }
@@ -5256,6 +5054,33 @@ test("renders a strictly validated live extension inventory receipt", () => {
   assert.match(text, /grants no installation, configuration, credential, Docker, or shell authority/);
 });
 
+for (const inflatedCount of [false, true]) {
+  test(`inventory keeps pending and failed installations distinct: inflated=${inflatedCount}`, () => {
+    const guard = createToolLoopGuard();
+    guard.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel",
+      { prompt: "List installed ODS extensions." });
+    const action = "ods.extensions.list";
+    const step = discoveryStep(action);
+    const result = JSON.parse(step.stdout);
+    result.extensions = ["installing", "setting_up", "error"].map(status => ({
+      id: status, name: status, category: "tools", status, source: "user", installable: true,
+    }));
+    Object.assign(result.summary, { total: 3, installed: inflatedCount ? 3 : 0, installing: 1, settingUp: 1, error: 1 });
+    step.stdout = JSON.stringify(result) + "\n";
+    recordDiscovery(guard, { target: "ods-host", action }, "ops-1234567890123-abcdef123456", "succeeded", [step]);
+    const text = reply(guard)?.payload?.text || "";
+    if (inflatedCount) {
+      assert.doesNotMatch(text, /Catalog total: 3; installed: 3/);
+      assert.doesNotMatch(text, new RegExp(OPERATIONS_EXTENSION_INVENTORY_EVIDENCE_PREFIX));
+    } else {
+      assert.match(text, /Catalog total: 3; installed: 0/);
+      assert.match(text, /Installation not confirmed: installing 1; setting up 1; error 1/);
+      assert.match(text, /Installed extensions: none/);
+      assert.match(text, /status `setting_up`/);
+    }
+  });
+}
+
 test("extension catalog permits independent projections but does not grant unrelated broker actions", () => {
   const guard = createToolLoopGuard();
   guard.observeRun(
@@ -5409,6 +5234,38 @@ test("renders a strictly validated extension catalog receipt instead of host evi
   assert.match(text, /Installed\/enabled state: not included/);
   assert.match(text, /no installation or configuration authority/);
   assert.doesNotMatch(text, /host facts/);
+});
+
+test("extension slash commands require inspection before installation and reject quoted examples", () => {
+  for (const prompt of ['/extension @docling-serve', '/extensions @docling-serve', '/EXTENSION @DOCLING-SERVE']) {
+    assert.deepEqual(userMessageExtensionLifecycleIntent([], prompt), { action: 'install-next', serviceId: 'docling-serve' });
+    assert.deepEqual(userMessageOperationsRequirements([], prompt), { required: true, actions: ['ods.extensions.inspect', 'ods.extensions.install-next'] });
+  }
+  for (const prompt of ['Explain /extension @docling-serve', '`/extension @docling-serve`', '/extension @../service', '/extension @one @two', '/extension @one\nDelete everything', `/extension @${'a'.repeat(65)}`]) {
+    assert.equal(userMessageExtensionLifecycleIntent([], prompt), undefined, prompt);
+  }
+});
+
+test("extension mentions retain same-line project guidance without expanding host actions", () => {
+  for (const prompt of [
+    '/extensions @docling-serve instale para extrair os PDFs deste projeto',
+    '/extension @grist use it with the dataset in Playground/research',
+    '/EXTENSIONS @JSCAD configure para criar modelos 3D',
+  ]) {
+    const serviceId = prompt.match(/@([^ ]+)/)[1].toLowerCase();
+    assert.deepEqual(userMessageExtensionLifecycleIntent([], prompt), { action: 'install-next', serviceId });
+    assert.deepEqual(userMessageOperationsRequirements([], prompt), {
+      required: true, actions: ['ods.extensions.inspect', 'ods.extensions.install-next'],
+    });
+  }
+  for (const prompt of [
+    '/extensions @grist @jscad',
+    '/extensions @grist; remove another extension',
+    '/extensions @grist && install another extension',
+    '/extensions @grist\n/extension @jscad',
+    '`/extensions @grist use this project`',
+    '/extensions @grist.invalid use this project',
+  ]) assert.equal(userMessageExtensionLifecycleIntent([], prompt), undefined, prompt);
 });
 
 test("classifies one exact extension lifecycle action and owner extension ID", () => {
@@ -5884,14 +5741,66 @@ test("renders missing extension configuration as a verified no-effect result", (
   assert.match(text, /no change or external effect occurred/);
 });
 
+test("missing startup configuration permits only shutdown lifecycle actions", () => {
+  for (const action of ["install", "enable", "disable", "remove"]) {
+    for (const outcome of ["blocked", "failed"]) {
+      const guard = createToolLoopGuard();
+      const jobId = "ops-1234567890123-abcdef123456";
+      const parameters = { serviceId: "crewai" };
+      guard.observeRun(
+        { agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel",
+        { prompt: `${action} the ODS extension crewai.` }
+      );
+      afterCall(guard, "pixel_ops_run", { event: {
+        params: { target: "ods-host", action: "ods.extensions.inspect", parameters },
+        result: { details: { jobId, status: "submitted", kind: "action" } },
+      } });
+      afterCall(guard, "pixel_ops_job_wait", { event: {
+        params: { jobId }, result: { details: {
+          jobId, status: "succeeded", waitTimedOut: false,
+          steps: [lifecycleStep("inspect", lifecycleResult("inspect", {
+            outcome, previousStatus: "enabled", currentStatus: "enabled",
+            requiredConfiguration: ["APP_TOKEN"], missingConfiguration: ["APP_TOKEN"],
+          }))],
+        } },
+      } });
+      const params = { target: "ods-host", action: `ods.extensions.${action}`, parameters };
+      const result = call(guard, "pixel_ops_run", { event: { params } });
+      if (outcome === "blocked" && ["disable", "remove"].includes(action)) {
+        assert.deepEqual(result, { params });
+        // Inspection alone cannot claim that a running service was stopped.
+        assert.equal(reply(guard)?.payload?.text, OPERATIONS_UNVERIFIED_DELIVERY_PREFIX);
+        const mutationJob = "ops-1234567890124-abcdef123457";
+        afterCall(guard, "pixel_ops_run", { event: {
+          params, result: { details: { jobId: mutationJob, status: "submitted", kind: "action" } },
+        } });
+        afterCall(guard, "pixel_ops_job_wait", { event: {
+          params: { jobId: mutationJob }, result: { details: {
+            jobId: mutationJob, status: "succeeded", waitTimedOut: false,
+            steps: [lifecycleStep(action, lifecycleResult(action, {
+              previousStatus: "enabled", currentStatus: action === "disable" ? "disabled" : "not_installed",
+              requiredConfiguration: ["APP_TOKEN"],
+            }))],
+          } },
+        } });
+        assert.match(reply(guard)?.payload?.text, new RegExp(`^${OPERATIONS_EXTENSION_LIFECYCLE_EVIDENCE_PREFIX}`));
+      } else {
+        assert.equal(result?.blockReason, OPERATIONS_EXTENSION_LIFECYCLE_SEQUENCE_REASON);
+      }
+    }
+  }
+});
+
 test("accepts verified lifecycle no-ops when inspection already satisfies the request", async (t) => {
   const cases = [
     ["install", "Install the ODS extension continue.", "enabled"],
     ["enable", "Inspect and enable the installed ODS extension continue.", "cli_installed"],
     ["disable", "Disable the ODS extension continue.", "disabled"],
     ["remove", "Remove the ODS extension continue.", "not_installed"],
+    ["disable", "Disable the ODS extension continue.", "disabled", true],
+    ["remove", "Remove the ODS extension continue.", "not_installed", true],
   ];
-  for (const [action, prompt, status] of cases) {
+  for (const [action, prompt, status, missing] of cases) {
     await t.test(action, () => {
       const guard = createToolLoopGuard();
       const inspectJob = "ops-1234567890123-abcdef123456";
@@ -5919,6 +5828,10 @@ test("accepts verified lifecycle no-ops when inspection already satisfies the re
                 extensionId: "continue",
                 previousStatus: status,
                 currentStatus: status,
+                ...(missing ? {
+                  outcome: "blocked", requiredConfiguration: ["APP_TOKEN"],
+                  missingConfiguration: ["APP_TOKEN"],
+                } : {}),
               }))],
             },
           },
@@ -8150,6 +8063,36 @@ test("repository research can search before reading a non-README canonical sourc
   assert.equal(reply(guard), undefined);
 });
 
+test("scoped repository observations satisfy source reading only after matching terminal receipts", () => {
+  for (const variant of ["valid", "inspect", "wrong-repo", "failed", "unsubmitted", "mutation", "wrong-commit", "truncated-transport"]) {
+    const guard = createToolLoopGuard();
+    guard.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel", {
+      prompt: "Inspect https://github.com/Osmantic/ODS for an extension recipe.",
+    });
+    const params = { target: "ods-host", action: "ods.extensions.github-file", parameters: {
+      repositoryUrl: "https://github.com/Osmantic/ODS", commit: "a".repeat(40), path: "README.md",
+    } };
+    const jobId = "ops-1234567890123-aaaaaaaaaaaa";
+    if (variant === "inspect") params.action = "ods.extensions.github-inspect";
+    if (variant !== "unsubmitted") afterCall(guard, "pixel_ops_run", {event: {params,
+      result: {details: {jobId, status: "submitted", kind: "action"}}}});
+    const value = {schemaVersion: 1, kind: "ods-pixel-extension-repository-file",
+      repository: variant === "wrong-repo" ? "https://github.com/other/project" : params.parameters.repositoryUrl,
+      commit: variant === "wrong-commit" ? "b".repeat(40) : params.parameters.commit, path: "README.md",
+      content: "Repository evidence", contentTruncated: false, contentTrust: "untrusted-upstream-evidence",
+      evidenceScope: "repository-file-at-commit", installationStarted: variant === "mutation", registered: false};
+    if (variant === "inspect") Object.assign(value, {kind: "ods-pixel-extension-repository",
+      evidenceScope: "repository-documents-at-commit", requiresRecipeReview: true, archived: false,
+      readme: "Read repository documentation", readmeTruncated: false});
+    afterCall(guard, "pixel_ops_job_wait", {event: {params: {jobId}, result: {details: {
+      jobId, status: variant === "failed" ? "failed" : "succeeded", waitTimedOut: false,
+      steps: [{target: "ods-host", action: params.action, exitCode: 0, stdout: JSON.stringify(value),
+        stderr: "", outputTruncated: {stdout: variant === "truncated-transport", stderr: false}, riskSignals: []}],
+    }}}});
+    assert.equal(guard.verificationForRun("run-1").status, ["valid", "inspect"].includes(variant) ? "none" : "failed", variant);
+  }
+});
+
 test("replaces GitHub repository claims when the model skipped the canonical README", () => {
   const guard = createToolLoopGuard();
   guard.observeRun(
@@ -8223,6 +8166,22 @@ test("canonical source matching rejects unrelated repositories and origins", () 
   const repository = "https://github.com/Osmantic/ODS";
   for (const source of [repository, `${repository}/issues/3385`, "https://raw.githubusercontent.com/osmantic/ods/main/README.md", "https://api.github.com/repos/Osmantic/ODS/contents/docs"]) assert.equal(canonicalGitHubSourceMatches(source, repository), true, source);
   for (const source of ["http://github.com/Osmantic/ODS", "https://user:secret@github.com/Osmantic/ODS", "https://github.com:444/Osmantic/ODS", "https://github.com.evil.example/Osmantic/ODS", "https://github.com/Osmantic/ODS-other", "https://raw.githubusercontent.com/other/ODS/main/README.md", "https://api.github.com/users/Osmantic/ODS", "https://github.com/Osmantic%2FODS", "not a URL"]) assert.equal(canonicalGitHubSourceMatches(source, repository), false, source);
+});
+
+test('repository pre-read evidence is scoped to the requested repository and run', () => {
+  for (const variant of ['valid','other','failed','missing-evidence','unknown-run']) {
+    const guard=createToolLoopGuard();
+    guard.observeRun({agentId:'pixel',runId:'run-1',sessionId:'session-1'},'pixel',{
+      prompt:'/extensions https://github.com/NandhaKishorM/laya analyze only',
+    });
+    guard.observeRepositorySource(variant==='unknown-run'?'other-run':'run-1', {
+      isError:variant==='failed',
+      details:{boundary:'public-web-read-only',source_url:variant==='other'
+        ?'https://github.com/layabox/LayaAir':'https://raw.githubusercontent.com/NandhaKishorM/laya/HEAD/README.md'},
+      content:variant==='missing-evidence'?[]:[{type:'text',text:'<<<EXTERNAL_UNTRUSTED_CONTENT>>> actual README'}],
+    });
+    assert.equal(guard.verificationForRun('run-1').status,variant==='valid'?'none':'failed');
+  }
 });
 
 test("counts targeted public extraction as a bounded fetch", () => {
@@ -11035,9 +10994,7 @@ test("requires the model to author a game before publication", () => {
       },
     },
   });
-  assert.equal(setupOnly.block, true);
-  assert.match(setupOnly.blockReason, /id write/);
-  assert.match(setupOnly.blockReason, /breakout\/index\.html/);
+  assert.notEqual(setupOnly?.block, true);
 
   const generated = call(guard, "tool_call", {
     event: {
@@ -11803,7 +11760,7 @@ test("permits an explicitly requested preview after inspecting an existing site"
   );
 });
 
-test("blocks sandbox web servers and requires the verified preview tool", () => {
+test("sandbox testing servers do not establish a verified preview", () => {
   const guard = createToolLoopGuard();
   guard.observeRun(
     { agentId: "pixel", runId: "run-1", sessionId: "session-1" },
@@ -11821,8 +11778,7 @@ test("blocks sandbox web servers and requires the verified preview tool", () => 
   const server = call(guard, "exec", {
     event: { params: { command: "python3 -m http.server 3000 &" } },
   });
-  assert.equal(server.block, true);
-  assert.equal(server.blockReason, WORKSPACE_PREVIEW_REQUIRES_TOOL_REASON);
+  assert.notEqual(server?.block, true);
   assert.match(
     guard.beforeAgentFinalize(
       { runId: "run-1", lastAssistantMessage: "It is running." },
@@ -11834,7 +11790,7 @@ test("blocks sandbox web servers and requires the verified preview tool", () => 
   assert.equal(reply(guard).payload.text, WORKSPACE_PREVIEW_UNVERIFIED_DELIVERY_PREFIX);
 });
 
-test("turns a setup-only preview mkdir into an immediate bounded write correction", () => {
+test("preview preparation permits mkdir without claiming publication", () => {
   const guard = createToolLoopGuard();
   guard.observeRun(
     { agentId: "pixel", runId: "run-1", sessionId: "session-1" },
@@ -11852,14 +11808,7 @@ test("turns a setup-only preview mkdir into an immediate bounded write correctio
       },
     },
   });
-  assert.equal(mkdir.block, true);
-  assert.match(mkdir.blockReason, /id write/);
-  assert.match(mkdir.blockReason, /demo-interactive\/index\.html/);
-  assert.match(mkdir.blockReason, /authored entirely by the active model/);
-  assert.match(mkdir.blockReason, /local assets inside that artifact directory/);
-  assert.match(mkdir.blockReason, /ODS supplies no creative bytes/);
-  assert.doesNotMatch(mkdir.blockReason, /<!doctype html>/);
-  assert.doesNotMatch(mkdir.blockReason, /under 7000 characters/);
+  assert.notEqual(mkdir?.block, true);
   assert.equal(
     reply(guard).payload.text,
     WORKSPACE_PREVIEW_NOT_CREATED_DELIVERY_PREFIX
@@ -13518,14 +13467,14 @@ test("identical write no-op protection: without missing-file evidence, identical
     { block: true, blockReason: REPEATED_WRITE_REQUIRES_PATCH_REASON }
   );
 
-  // Second identical retry → REPEATED_WRITE_RETRY_EXHAUSTED_REASON
+  // Second identical retry → REPEATED_WRITE_REQUIRES_PATCH_REASON
   assert.deepEqual(
     call(guard, "tool_call", {
       event: {
         params: { id: "write", args: { path: "nop.py", content: "a = 2\n" } },
       },
     }),
-    { block: true, blockReason: REPEATED_WRITE_RETRY_EXHAUSTED_REASON }
+    { block: true, blockReason: REPEATED_WRITE_REQUIRES_PATCH_REASON }
   );
 });
 
@@ -14803,5 +14752,351 @@ test('review workers remain read-only with identity/history wrappers and impleme
     assert.equal(guard.beforeToolCall({toolName:'tool_call',params:{id:'openclaw:core:'+toolName,args:{}}},context).block,true,toolName);
     assert.notEqual(guard.beforeToolCall({toolName:'read',params:{path:'index.html'}},context)?.block,true);
     assert.notEqual(guard.verificationStatus('review'),'pending');
+  }
+});
+
+for (const [name, overrides, accepted] of [
+  ["active setup", {outcome: "pending", currentStatus: "setting_up"}, true],
+  ["active download", {outcome: "pending", currentStatus: "installing"}, true],
+  ["pending with ready state", {outcome: "pending", currentStatus: "enabled"}, false],
+  ["pending without effect", {outcome: "pending", currentStatus: "installing", externalEffectOccurred: false}, false],
+  ["pending with rollback", {outcome: "pending", currentStatus: "installing", rollback: {attempted: true, succeeded: false}}, false],
+]) {
+  test(`extension pending receipt: ${name}`, () => {
+    const guard = createToolLoopGuard();
+    guard.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel", {prompt: "Install ODS extension crewai"});
+    for (const [action, jobId, step] of [
+      ["ods.extensions.inspect", "ops-1234567890123-abcdef123456", lifecycleStep("inspect")],
+      ["ods.extensions.install", "ops-1234567890124-fedcba654321", lifecycleStep("install", lifecycleResult("install", overrides))],
+    ]) {
+      afterCall(guard, "pixel_ops_run", {event: {
+        params: {target: "ods-host", action, parameters: {serviceId: "crewai"}},
+        result: {details: {jobId, status: "submitted", kind: "action"}},
+      }});
+      afterCall(guard, "pixel_ops_job_wait", {event: {
+        params: {jobId}, result: {details: {jobId, status: "succeeded", waitTimedOut: false, steps: [step]}},
+      }});
+    }
+    const text = reply(guard)?.payload?.text ?? "";
+    if (accepted) {
+      assert.match(text, /verified outcome: `pending`/);
+      assert.match(text, /Setup is still active/);
+      assert.match(text, /without replaying installation/);
+    } else {
+      assert.doesNotMatch(text, /verified outcome: `pending`/);
+    }
+  });
+}
+
+test("reconciles pending installation with sequential inspections without mutation replay", () => {
+  const guard = createToolLoopGuard();
+  guard.observeRun({agentId: "pixel", runId: "run-1", sessionId: "session-1"}, "pixel", {prompt: "Install ODS extension crewai"});
+  const parameters = {serviceId: "crewai"};
+  function submit(action, jobId, result) {
+    const params = {target: "ods-host", action: `ods.extensions.${action}`, parameters};
+    const gate = call(guard, "pixel_ops_run", {event: {params}});
+    assert.notEqual(gate?.block, true);
+    afterCall(guard, "pixel_ops_run", {event: {params, result: {details: {jobId, status: "submitted", kind: "action"}}}});
+    if (result) finish(action, jobId, result);
+  }
+  function finish(action, jobId, result) {
+    afterCall(guard, "pixel_ops_job_wait", {event: {params: {jobId}, result: {details: {
+      jobId, status: "succeeded", waitTimedOut: false, steps: [lifecycleStep(action, result)],
+    }}}});
+  }
+  function blocked(action) {
+    return call(guard, "pixel_ops_run", {event: {params: {target: "ods-host", action: `ods.extensions.${action}`, parameters}}})?.block;
+  }
+  submit("inspect", "ops-1234567890123-abcdef123456", lifecycleResult("inspect"));
+  assert.equal(blocked("inspect"), true);
+  submit("install", "ops-1234567890124-abcdef123456", lifecycleResult("install", {outcome: "pending", currentStatus: "installing"}));
+  assert.equal(blocked("install"), true);
+  submit("inspect", "ops-1234567890125-abcdef123456");
+  assert.equal(blocked("inspect"), true);
+  finish("inspect", "ops-1234567890125-abcdef123456", lifecycleResult("inspect", {previousStatus: "setting_up", currentStatus: "setting_up"}));
+  submit("inspect", "ops-1234567890126-abcdef123456", lifecycleResult("inspect", {previousStatus: "enabled", currentStatus: "enabled"}));
+  assert.equal(blocked("inspect"), true);
+  assert.equal(blocked("install"), true);
+  const text = reply(guard)?.payload?.text;
+  assert.match(text, /Latest observed state: `enabled`/);
+  assert.match(text, /confirmed by a subsequent inspection/);
+  assert.match(text, /Installation was not repeated/);
+});
+
+for (const [state, status, action, missing, allowed] of [
+  ["ready", "enabled", "none", [], true],
+  ["dependencies_required", "not_installed", "install", [], false],
+  ["configuration_required", "not_installed", "install", ["DB_PASSWORD"], false],
+  ["pending", "installing", "wait", [], false],
+  ["blocked", "error", "blocked", [], false],
+  ["ready", "not_installed", "install", [], false], // A forged summary cannot hide a dependency.
+  ["unavailable", null, null, [], false],
+]) {
+  test(`installation prerequisite receipt ${state}/${status}`, () => {
+    const guard = createToolLoopGuard();
+    guard.observeRun({agentId: "pixel", runId: "run-1", sessionId: "session-1"}, "pixel", {prompt: "Install ODS extension crewai"});
+    const parameters = {serviceId: "crewai"};
+    const jobId = "ops-1234567890123-abcdef123456";
+    const installationPrerequisites = {state, steps: status === null ? [] : [
+      {extensionId: "db", status, action, missingConfiguration: missing},
+      {extensionId: "crewai", status: "not_installed", action: "install", missingConfiguration: []},
+    ]};
+    afterCall(guard, "pixel_ops_run", {event: {params: {target: "ods-host", action: "ods.extensions.inspect", parameters},
+      result: {details: {jobId, status: "submitted", kind: "action"}}}});
+    afterCall(guard, "pixel_ops_job_wait", {event: {params: {jobId}, result: {details: {
+      jobId, status: "succeeded", waitTimedOut: false,
+      steps: [lifecycleStep("inspect", lifecycleResult("inspect", {installationPrerequisites}))],
+    }}}});
+    const gate = call(guard, "pixel_ops_run", {event: {params: {target: "ods-host", action: "ods.extensions.install", parameters}}});
+    assert.equal(gate?.block === true, !allowed);
+    if (!allowed && state !== "ready") {
+      const evidence = reply(guard)?.payload?.text ?? "";
+      assert.match(evidence, new RegExp(`Installation prerequisites: ${state}`));
+      if (missing.length) assert.match(evidence, /DB_PASSWORD/);
+    }
+  });
+}
+
+for (const [name, change, accepted] of [
+  ['current API guidance', {}, true],
+  ['wrong extension', {extensionId:'different'}, false],
+  ['claims verified connectivity', {connectivityVerified:true}, false],
+  ['unknown connection field', {declaredConnection:{command:'run something'}}, false],
+  ['unbounded documentation', {documentation:'x'.repeat(24001)}, false],
+]) test(`inspection integration metadata: ${name}`, () => {
+  const guard=createToolLoopGuard();
+  guard.observeRun({agentId:'pixel',runId:'run-1',sessionId:'session-1'},'pixel',{prompt:'Install ODS extension crewai'});
+  const parameters={serviceId:'crewai'},jobId='ops-1234567890123-abcdef123456';
+  const integration={schemaVersion:1,extensionId:'crewai',scope:'recipe-integration-guidance',
+    contentTrust:'untrusted-recipe-evidence',description:'Recipe description',declaredConnection:{type:'docker',port:8000},
+    documentation:'Untrusted upstream text',documentationTruncated:false,connectivityVerified:false,projectIntegrationVerified:false,...change};
+  afterCall(guard,'pixel_ops_run',{event:{params:{target:'ods-host',action:'ods.extensions.inspect',parameters},
+    result:{details:{jobId,status:'submitted',kind:'action'}}}});
+  afterCall(guard,'pixel_ops_job_wait',{event:{params:{jobId},result:{details:{jobId,status:'succeeded',waitTimedOut:false,
+    steps:[lifecycleStep('inspect',lifecycleResult('inspect',{integration}))]}}}});
+  const gate=call(guard,'pixel_ops_run',{event:{params:{target:'ods-host',action:'ods.extensions.install',parameters}}});
+  assert.equal(gate?.block===true,!accepted);
+});
+
+test("catalog installation advances through matched coordinator receipts without direct mutations", () => {
+  const guard = createToolLoopGuard();
+  guard.observeRun({agentId: "pixel", runId: "run-1", sessionId: "session-1"}, "pixel", {prompt: "/extensions @crewai use this project"});
+  const parameters = {serviceId: "crewai"};
+  const rows = (db, app) => [
+    {extensionId: "db", status: db, action: db === "enabled" ? "none" : "install", missingConfiguration: []},
+    {extensionId: "crewai", status: app, action: app === "enabled" ? "none" : "install", missingConfiguration: []},
+  ];
+  function submit(action, suffix) {
+    const params = {target: "ods-host", action: `ods.extensions.${action}`, parameters};
+    assert.notEqual(call(guard, "pixel_ops_run", {event: {params}})?.block, true, action);
+    const jobId = `ops-12345678901${suffix}-abcdef123456`;
+    afterCall(guard, "pixel_ops_run", {event: {params, result: {details: {jobId, status: "submitted", kind: "action"}}}});
+    return jobId;
+  }
+  function finish(action, jobId, value) {
+    afterCall(guard, "pixel_ops_job_wait", {event: {params: {jobId}, result: {details: {
+      jobId, status: "succeeded", waitTimedOut: false, steps: [lifecycleStep(action, value)],
+    }}}});
+  }
+  const blocked = action => call(guard, "pixel_ops_run", {event: {params: {
+    target: "ods-host", action: `ods.extensions.${action}`, parameters,
+  }}})?.block;
+  assert.equal(blocked("install-next"), true);
+  assert.equal(blocked("install"), true);
+  const inspect = submit("inspect", "23");
+  finish("inspect", inspect, lifecycleResult("inspect", {installationPrerequisites: {
+    state: "dependencies_required", steps: rows("not_installed", "not_installed"),
+  }}));
+  for (const action of ["install", "enable"]) {
+    const normalized = call(guard, "pixel_ops_run", {event: {params: {
+      target: "ods-host", action: `ods.extensions.${action}`, parameters,
+    }}});
+    assert.equal(normalized.params.action, "ods.extensions.install-next");
+    assert.deepEqual(normalized.params.parameters, parameters);
+  }
+  assert.equal(call(guard, "pixel_ops_run", {event: {params: {target: "ods-host", action: "ods.extensions.install-next",
+    parameters: {serviceId: "db"}}}})?.block, true);
+  const value = (state, steps, active, effect) => ({schemaVersion: 1, kind: "ods-pixel-extension-installation",
+    action: "install-next", extensionId: "crewai", state, activeExtensionId: active, externalEffectAttempted: effect,
+    prerequisites: {state: steps[0].action === "none" ? "ready" : "dependencies_required", steps},
+    boundary: lifecycleResult("inspect").boundary});
+  const first = submit("install-next", "24");
+  assert.equal(blocked("install-next"), true);
+  finish("install-next", first, value("pending", rows("not_installed", "not_installed"), "db", true));
+  assert.match(reply(guard)?.payload?.text ?? "", /installation state: `pending`/);
+  const second = submit("install-next", "25");
+  finish("install-next", second, value("pending", rows("enabled", "not_installed"), "crewai", true));
+  const last = submit("install-next", "26");
+  finish("install-next", last, value("succeeded", rows("enabled", "enabled"), null, false));
+  assert.match(reply(guard)?.payload?.text ?? "", /installation state: `succeeded`/);
+  assert.equal(blocked("install-next"), true);
+});
+
+for (const initial of ["disabled", "stopped", "not_installed", "enabled"]) {
+  test(`single-service request chooses retained activation from ${initial}`, () => {
+    const guard = createToolLoopGuard();
+    guard.observeRun({agentId: "pixel", runId: "run-1", sessionId: "session-1"}, "pixel", {prompt: "Install ODS extension crewai"});
+    const inspectJob = "ops-1234567890123-abcdef123456";
+    const parameters = {serviceId: "crewai"};
+    afterCall(guard, "pixel_ops_run", {event: {params: {target: "ods-host", action: "ods.extensions.inspect", parameters}, result: {details: {jobId: inspectJob, status: "submitted", kind: "action"}}}});
+    afterCall(guard, "pixel_ops_job_wait", {event: {params: {jobId: inspectJob}, result: {details: {
+      jobId: inspectJob, status: "succeeded", waitTimedOut: false,
+      steps: [lifecycleStep("inspect", lifecycleResult("inspect", {previousStatus: initial, currentStatus: initial}))],
+    }}}});
+    const gate = call(guard, "pixel_ops_run", {event: {params: {target: "ods-host", action: "ods.extensions.install", parameters}}});
+    const expected = ["disabled", "stopped"].includes(initial) ? "enable" : "install";
+    assert.notEqual(gate?.block, true);
+    assert.equal(gate.params.action, `ods.extensions.${expected}`);
+    if (expected !== "enable") return;
+    const jobId = "ops-1234567890124-abcdef123456";
+    afterCall(guard, "pixel_ops_run", {event: {params: gate.params, result: {details: {jobId, status: "submitted", kind: "action"}}}});
+    afterCall(guard, "pixel_ops_job_wait", {event: {params: {jobId}, result: {details: {
+      jobId, status: "succeeded", waitTimedOut: false,
+      steps: [lifecycleStep("enable", lifecycleResult("enable", {previousStatus: initial, currentStatus: "enabled"}))],
+    }}}});
+    assert.match(reply(guard)?.payload?.text, /Requested action: `enable`; verified outcome: `succeeded`/);
+    assert.equal(call(guard, "pixel_ops_run", {event: {params: gate.params}})?.block, true);
+  });
+}
+
+
+test("catalog wrong-tool correction gives an executable next step without changing the selected extension", () => {
+  for (const extension of ["invoiceshelf", "distribution", "crewai"]) {
+    const guard = createToolLoopGuard();
+    guard.observeRun({agentId: "pixel", runId: "run-1", sessionId: "session-1"}, "pixel",
+      {prompt: `/extensions @${extension} instale pra mim`});
+    const rejected = call(guard, "pixel_ods_extension_proposal", {event: {params: {}}});
+    assert.equal(rejected.block, true);
+    assert.match(rejected.blockReason, /id pixel_ops_inventory and args \{\}/);
+    assert.doesNotMatch(rejected.blockReason, /id pixel_ods_host_observe/);
+    assert.equal(call(guard, "pixel_ops_run", {event: {params: {
+      target: "ods-host", action: "ods.extensions.install-next", parameters: {serviceId: extension},
+    }}})?.block, true, "guidance never bypasses required inspection");
+  }
+});
+
+
+test('an unacknowledged progress abort is retried at model end until confirmed', () => {
+  const attempts=[];
+  const guard=createToolLoopGuard({abortRun:(id,key)=>{attempts.push([id,key]);return attempts.length===2;}});
+  const context={agentId:'pixel',runId:'retry-abort',sessionId:'session-retry',sessionKey:'agent:pixel:retry'};
+  guard.observeRun(context,'pixel',{prompt:'Make a site'});
+  for(let i=0;i<9;i++) guard.observeModelCall({},context);
+  guard.observeModelEnd({},context);
+  assert.equal(attempts.length,1);
+  guard.observeModelEnd({},context);
+  guard.observeModelEnd({},context);
+  assert.deepEqual(attempts,[['session-retry','agent:pixel:retry'],['session-retry','agent:pixel:retry']]);
+  assert.equal(guard.deliveryVerificationForRun('retry-abort').status,'failed');
+});
+
+test('native rejected calls with session-only persistence exhaust the owning run', () => {
+  const attempts = [];
+  const guard = createToolLoopGuard({abortRun: id => {attempts.push(id); return true;}});
+  const context = {agentId: 'pixel', runId: 'native-errors', sessionId: 'native-session',
+    sessionKey: 'agent:pixel:openai-user:ods-' + 'a'.repeat(64)};
+  guard.observeRun(context, 'pixel', {prompt: 'Install the requested extension'});
+  for (let i = 0; i < 4; i++) {
+    guard.toolResultPersist({message: {toolCallId: 'native-' + i, toolName: 'tool_call',
+      isError: true, content: [{type: 'text', text: 'Native validation rejected the call.'}]}},
+      {agentId: 'pixel', sessionKey: context.sessionKey});
+  }
+  guard.observeModelEnd({}, context);
+  assert.deepEqual(attempts, ['native-session']);
+  assert.equal(guard.deliveryVerificationForRun(context.runId).status, 'failed');
+});
+
+
+test("repeated writes allow a different repair but remain bounded by actual failed results", () => {
+  for (const repair of [true, false]) {
+    const guard = createToolLoopGuard();
+    const args = {path: "recover.txt", content: "old"};
+    call(guard, "write", {event: {params: args}, context: {toolCallId: "initial"}});
+    afterCall(guard, "write", {event: {params: args, result: {
+      content: [{type: "text", text: "Successfully wrote recover.txt"}],
+    }}, context: {toolCallId: "initial"}});
+    const attempts = repair ? 2 : 4;
+    for (let i = 0; i < attempts; i++) {
+      const id = `repeat-${i}`;
+      const blocked = call(guard, "write", {event: {params: args}, context: {toolCallId: id}});
+      assert.equal(blocked.blockReason, REPEATED_WRITE_REQUIRES_PATCH_REASON);
+      afterCall(guard, "write", {event: {params: args, result: {
+        isError: true, content: [{type: "text", text: blocked.blockReason}],
+      }}, context: {toolCallId: id}});
+    }
+    const different = call(guard, "edit", {event: {params: {
+      path: "recover.txt", oldText: "old", newText: "fixed",
+    }}, context: {toolCallId: "repair"}});
+    if (repair) {
+      assert.notEqual(different?.block, true, "two failed no-ops must not prohibit a changed repair");
+    } else {
+      assert.equal(different.blockReason, RUN_PROGRESS_STOP_REASON,
+        "four consecutive failed results exhaust the shared budget");
+    }
+  }
+});
+
+
+test("preview testing servers retain process tracking without granting publication", () => {
+  for (const wrapped of [false, true]) {
+    const guard = createToolLoopGuard();
+    guard.observeRun({agentId: "pixel", runId: "run-1", sessionId: "session-1"}, "pixel", {
+      prompt: "Build and show a website, testing it before publication.",
+    });
+    const invoke = (name, args) => wrapped
+      ? call(guard, "tool_call", {event: {params: {id: name, args}}})
+      : call(guard, name, {event: {params: args}});
+    const args = {command: "npm run dev", background: true, workdir: "/workspace/site"};
+    assert.notEqual(invoke("exec", args)?.block, true);
+    afterCall(guard, "exec", {event: {params: args, result: {
+      details: {status: "running", sessionId: "preview-server"},
+    }}});
+    assert.equal(invoke("exec", args).blockReason, PENDING_EXEC_REQUIRES_POLL_REASON);
+    assert.notEqual(invoke("process", {action: "poll", sessionId: "preview-server"})?.block, true);
+    assert.notEqual(invoke("process", {action: "kill", sessionId: "preview-server"})?.block, true);
+    assert.notEqual(guard.verificationStatus("run-1"), "passed");
+    assert.doesNotMatch(reply(guard).payload.text, /http:\/\/localhost/);
+  }
+});
+
+
+test("later failed preview work retains only the same session's historical publication", () => {
+  for (const sessionId of ["session-1", "other-session"]) {
+    const guard = createToolLoopGuard();
+    const {details} = seedNamedPreview(guard);
+    guard.observeRun({agentId: "pixel", runId: "later-run", sessionId}, "pixel", {
+      prompt: "Build and publish another website in a new directory.",
+    });
+    const evidence = guard.verificationForRun("later-run");
+    assert.equal(evidence.status, "failed", "previous publication does not complete the new request");
+    if (sessionId === "session-1") {
+      assert.equal(evidence.preview.url, details.url);
+      assert.match(evidence.text, /last published preview/);
+      assert.doesNotMatch(evidence.text, /No localhost URL is live/);
+    } else {
+      assert.equal(evidence.preview, undefined, "never expose a different session's publication");
+    }
+  }
+});
+
+
+test("publication preserves its receipt without hiding a failed or pending check", () => {
+  for (const status of ["failed", "pending"]) {
+    const guard = createToolLoopGuard();
+    const {details, params} = seedNamedPreview(guard);
+    const check = {command: "npm test", workdir: "/workspace/log-viewer-lab"};
+    call(guard, "exec", {event: {params: check}, context: {toolCallId: "check"}});
+    afterCall(guard, "exec", {event: {params: check, result: {
+      details: status === "pending" ? {status: "running", sessionId: "check-process"}
+        : {status: "completed", exitCode: 1},
+    }}, context: {toolCallId: "check"}});
+    // The later publication succeeds; it verifies bytes, not test outcomes.
+    afterCall(guard, "pixel_ods_workspace_preview", {event: {params, result: {details}}});
+    const result = guard.verificationForRun("run-1");
+    assert.equal(result.status, status);
+    assert.equal(result.preview.url, details.url);
+    assert.ok(result.text.includes(status === "pending"
+      ? VERIFICATION_PENDING_DELIVERY_PREFIX : VERIFICATION_FAILED_DELIVERY_PREFIX));
+    assert.match(result.text, /Open preview/);
   }
 });

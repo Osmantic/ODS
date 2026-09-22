@@ -1,0 +1,13 @@
+{
+  "repository": "https://github.com/RSS-Bridge/rss-bridge",
+  "license": "Unlicense",
+  "source_ref": "f4aa9e0419d79e9545c53a7231721680ed8bafd4",
+  "image": "rssbridge/rss-bridge:latest@sha256:606896116558c57e3d381dec6874457f7a69216103d77c78b5bd38b92b251902",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Official digest-pinned image, native nginx/PHP-FPM startup, persistent config and file cache. Explicit selector/transform bridge allowlist; feeds and reader subscriptions are owner-configured."
+}

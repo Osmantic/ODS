@@ -12,25 +12,16 @@ service:
   external_port_default: 0
   health: ""
   type: docker
-  startup_check: false  # one-shot CLI tool; container exits 0 by design
+  startup_check: false  # real aider --version exits without inference
+  external_link: false
   # Aider is a one-shot CLI container and does not require GPU access. ODS
   # writes GPU_BACKEND=cpu for its fallback; retain legacy `none` as well.
   gpu_backends: [amd, nvidia, apple, cpu, none]
   compose_file: compose.yaml
   category: optional
-  depends_on: []
-  description: "AI pair programming tool that lets you edit code in your terminal using GPT-4 and Claude."
-  env_vars:
-    - key: OPENAI_API_KEY
-      required: false
-      secret: true
-      default: ""
-      description: OpenAI API key (leave empty to use local LLM)
-    - key: ANTHROPIC_API_KEY
-      required: false
-      secret: true
-      default: ""
-      description: Anthropic API key (leave empty to use local LLM)
+  depends_on: [litellm]
+  description: "Terminal pair programming against the active ODS model gateway, with project files mounted in /app."
+  env_vars: []
 
 features:
   - id: ai-pair-programming
@@ -45,3 +36,5 @@ features:
     enabled_services_all: [aider]
     setup_time: ~1 minute
     priority: 11
+    launch:
+      type: none

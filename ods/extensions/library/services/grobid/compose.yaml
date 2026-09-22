@@ -1,0 +1,39 @@
+services:
+  grobid:
+    image: grobid/grobid:0.9.0-crf@sha256:24ba90eb1c959f65d812bcdb2cf79c677fa5fd7b95235de616b8bc9fa1317849
+    container_name: ods-grobid
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - ${BIND_ADDRESS:-127.0.0.1}:${GROBID_PORT:-11012}:8070
+    healthcheck:
+      test:
+      - CMD
+      - bash
+      - -ec
+      - 'exec 3<>/dev/tcp/127.0.0.1/8070; printf ''GET /api/isalive HTTP/1.0\r\nHost:
+        localhost\r\n\r\n'' >&3; head -n 1 <&3 | grep -q '' 200 '''
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    init: true
+    ulimits:
+      core: 0
+networks:
+  ods-network:
+    external: true
+    name: ods-network

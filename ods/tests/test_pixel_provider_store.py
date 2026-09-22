@@ -171,6 +171,34 @@ class Persistence(unittest.TestCase):
         self.assertEqual(list(target.iterdir()), [])
         self.assertEqual(list(moved.glob(".provider-*.tmp")), [])
 
+    def test_transient_lock_creation_race_is_retried(self):
+        original_open = os.open
+        attempts = []
+        def racing_open(name, flags, *args, **kwargs):
+            if name == store.LOCK_NAME:
+                attempts.append(name)
+                if len(attempts) == 1:
+                    raise FileNotFoundError()
+            return original_open(name, flags, *args, **kwargs)
+        with patch.object(store.os, "open", side_effect=racing_open):
+            self.assertEqual(self.seed()["revision"], 1)
+        self.assertEqual(len(attempts), 2)
+
+    def test_missing_lock_creation_retry_is_bounded(self):
+        original_open = os.open
+        attempts = []
+        def missing_open(name, flags, *args, **kwargs):
+            if name == store.LOCK_NAME:
+                attempts.append(name)
+                raise FileNotFoundError()
+            return original_open(name, flags, *args, **kwargs)
+        with patch.object(store.os, "open", side_effect=missing_open):
+            with self.assertRaises(store.StoreError) as error:
+                self.seed()
+        self.assertEqual(error.exception.code, "storage-unavailable")
+        self.assertEqual(len(attempts), 3)
+        self.assertFalse(self.config.exists())
+
     def test_threads_exactly_one_wins(self):
         barrier = threading.Barrier(2)
         outcomes = []

@@ -1,0 +1,57 @@
+services:
+  sqlpage:
+    image: ods/sqlpage:0.46.3-local-v1
+    container_name: ods-sqlpage
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${SQLPAGE_PORT:-11126}:8080
+    healthcheck:
+      test:
+      - CMD
+      - wget
+      - -q
+      - -O
+      - /dev/null
+      - http://127.0.0.1:8080/ods-health.sql
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    user: 1000:1000
+    environment:
+      SQLPAGE_WEB_ROOT: /var/www
+      SQLPAGE_CONFIGURATION_DIRECTORY: /etc/sqlpage
+      DATABASE_URL: sqlite:///etc/sqlpage/project.db?mode=rwc
+      ALLOW_EXEC: 'false'
+    init: true
+    build:
+      context: .
+      dockerfile: Dockerfile
+    stop_grace_period: 60s
+    read_only: true
+    tmpfs:
+    - /tmp:rw,noexec,nosuid,size=64m
+    volumes:
+    - sqlpage-web:/var/www
+    - sqlpage-data:/etc/sqlpage
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  sqlpage-web: {}
+  sqlpage-data: {}

@@ -4,6 +4,7 @@ import multiprocessing
 import os
 from pathlib import Path
 import sys
+import threading
 import time
 import uuid
 
@@ -81,12 +82,30 @@ def test_two_global_slots_across_independent_managers_and_cancel(manager):
 
 
 def test_status_does_not_leak_descriptors(manager):
-    body=request(); manager.start(body)
-    initial=len(os.listdir('/proc/self/fd'))
-    for _ in range(100):
-        manager.status(body['requestId'])
-    assert len(os.listdir('/proc/self/fd')) <= initial
-    manager.cancel(body['requestId']); wait(manager,body['requestId'])
+    class HeldCall(FakeCall):
+        entered = threading.Event()
+        release = threading.Event()
+
+        def run(self, *, cancelled, lock_fds):
+            assert len(lock_fds) == 2
+            self.entered.set()
+            while not self.release.wait(.02):
+                if cancelled():
+                    raise asyncio.CancelledError()
+            return dict(text='Fictional advice', trusted=False)
+
+    active = AdvisoryJobs(manager.providers, call_factory=HeldCall)
+    body=request(); active.start(body)
+    descriptors = '/dev/fd' if sys.platform == 'darwin' else '/proc/self/fd'
+    try:
+        assert HeldCall.entered.wait(3), 'advice worker did not reach the running state'
+        initial=len(os.listdir(descriptors))
+        for _ in range(100):
+            active.status(body['requestId'])
+        assert len(os.listdir(descriptors)) <= initial
+    finally:
+        HeldCall.release.set()
+        active.cancel(body['requestId']); wait(active,body['requestId'])
 
 
 def child_job(root,body,ready):

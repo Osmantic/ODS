@@ -1,0 +1,62 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: 2.6.0
+service:
+  id: reactive-resume
+  name: Reactive Resume
+  aliases: []
+  container_name: ods-reactive-resume
+  host_env: REACTIVE_RESUME_HOST
+  default_host: reactive-resume
+  port: 3000
+  external_port_env: REACTIVE_RESUME_PORT
+  external_port_default: 11093
+  health: /api/health
+  type: docker
+  startup_check: true
+  startup_timeout: 240
+  gpu_backends:
+  - all
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  description: Build and export resumes with templates, structured content and persistent
+    local accounts and uploads.
+  env_vars:
+  - key: REACTIVE_RESUME_DB_PASSWORD
+    required: true
+    secret: true
+    description: 64 random hexadecimal characters for the dedicated PostgreSQL account.
+  - key: REACTIVE_RESUME_AUTH_SECRET
+    required: true
+    secret: true
+    description: Stable 64-hex authentication secret; retain with backups.
+  - key: REACTIVE_RESUME_DISABLE_SIGNUPS
+    required: false
+    default: 'false'
+    description: Set true after creating the intended accounts to close registration.
+  ui_path: /
+tags:
+- resume
+- documents
+- productivity
+- open-source
+features:
+- id: reactive-resume-builder
+  name: Reactive Resume
+  description: Build and export resumes with templates, structured content and persistent
+    local accounts and uploads.
+  icon: FileUser
+  category: productivity
+  requirements:
+    services:
+    - reactive-resume
+    vram_gb: 0
+  enabled_services_all:
+  - reactive-resume
+  setup_time: Initial image download; see README
+  priority: 48
+  launch:
+    type: service
+    service: reactive-resume
+    path: /

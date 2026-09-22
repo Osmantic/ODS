@@ -1,0 +1,50 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: 2.6.0
+service:
+  id: minipaint
+  name: miniPaint
+  aliases: []
+  container_name: ods-minipaint
+  host_env: MINIPAINT_HOST
+  default_host: minipaint
+  port: 8080
+  external_port_env: MINIPAINT_PORT
+  external_port_default: 11078
+  health: /
+  type: docker
+  startup_check: true
+  startup_timeout: 180
+  gpu_backends:
+  - all
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  description: Edit raster images with layers, selections, retouching and filters;
+    export project images and preserve editable layered JSON.
+  env_vars: []
+  ui_path: /
+tags:
+- images
+- raster
+- layers
+- open-source
+features:
+- id: minipaint-images
+  name: miniPaint
+  description: Edit raster images with layers, selections, retouching and filters;
+    export project images and preserve editable layered JSON.
+  icon: Palette
+  category: productivity
+  requirements:
+    services:
+    - minipaint
+    vram_gb: 0
+  enabled_services_all:
+  - minipaint
+  setup_time: Initial source build; see README
+  priority: 48
+  launch:
+    type: service
+    service: minipaint
+    path: /

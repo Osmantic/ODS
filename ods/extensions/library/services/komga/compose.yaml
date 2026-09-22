@@ -1,0 +1,56 @@
+services:
+  komga:
+    image: ods/komga:1.27.0-local-v1
+    container_name: ods-komga
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${KOMGA_PORT:-11049}:25600
+    healthcheck:
+      test:
+      - CMD
+      - curl
+      - --fail
+      - --silent
+      - --max-time
+      - '5'
+      - http://127.0.0.1:25600/actuator/health
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    user: 1000:1000
+    environment:
+      SERVER_ADDRESS: 0.0.0.0
+      SERVER_PORT: '25600'
+      KOMGA_CONFIGDIR: /config
+      TZ: UTC
+      JAVA_TOOL_OPTIONS: -Xms128m -Xmx1536m -Duser.home=/config
+      MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: health
+      MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS: never
+    volumes:
+    - komga-config:/config
+    - komga-books:/data
+    build:
+      context: .
+      dockerfile: Dockerfile
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  komga-config: {}
+  komga-books: {}

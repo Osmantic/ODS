@@ -1,0 +1,54 @@
+services:
+  docuseal:
+    image: ods/docuseal:3.2.5-local-v1
+    container_name: ods-docuseal
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${DOCUSEAL_PORT:-11084}:3000
+    healthcheck:
+      test:
+      - CMD
+      - ruby
+      - -rnet/http
+      - -e
+      - 'exit(Net::HTTP.get_response(URI(''http://127.0.0.1:3000/up'')).code == ''200''
+        ? 0 : 1)'
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    user: 2000:2000
+    environment:
+      SECRET_KEY_BASE: ${DOCUSEAL_SECRET_KEY_BASE:?Set a persistent random application
+        secret}
+      FORCE_SSL: 'false'
+      WEB_CONCURRENCY: '0'
+      RAILS_MAX_THREADS: '5'
+      SIDEKIQ_THREADS: '2'
+    volumes:
+    - docuseal-data:/data/docuseal
+    init: true
+    build:
+      context: .
+      dockerfile: Dockerfile
+    stop_grace_period: 60s
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  docuseal-data: {}

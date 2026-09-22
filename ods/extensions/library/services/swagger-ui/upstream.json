@@ -1,0 +1,15 @@
+{
+  "repository": "https://github.com/swagger-api/swagger-ui",
+  "license": "Apache-2.0",
+  "image": "docker.swagger.io/swaggerapi/swagger-ui:v5.33.0@sha256:f9b8432be04e320406157e26c3ff52a7e9a4bea7eabe5477e9636791737eb119",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm",
+    "linux/arm64",
+    "linux/386",
+    "linux/ppc64le"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Official v5.33.0 UI assets; ODS entry page loads user JSON/URL instead of a Petstore demo. Online validator disabled, query config disabled, no authorization persistence. Nonroot readonly nginx, no server upload or invented data volume."
+}

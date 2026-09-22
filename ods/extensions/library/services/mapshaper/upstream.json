@@ -1,0 +1,15 @@
+{
+  "repository": "https://github.com/mbloch/mapshaper",
+  "license": "MPL-2.0",
+  "image": "nginx:1.28-alpine@sha256:a8b39bd9cf0f83869a2162827a0caf6137ddf759d50a171451b335cecc87d236",
+  "build_image": "node:24.16.0-alpine3.22@sha256:191c9f0080fcbbc6547a85dc0ff7988072214a355aabdc1d2ec55a7dae5eea8a",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "source_commit": "629049657b54242552d3488b39e75b3a78cd68d2",
+  "source_sha256": "0810daa530a2b7020e98c2f02ed58cfa32c8151eb048ee7b79ad59774b79f0b7",
+  "notes": "v0.7.62 source and npm lock pinned; full Rollup bundles/WASM plus local documentation built. Mapbox basemap config disabled instead of reusing upstream public-site keys. Browser processing and explicit project exports; no API/CLI daemon claimed."
+}

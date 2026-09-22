@@ -76,6 +76,7 @@ export function createContextCompaction({agentId = 'pixel', readSession, readCon
       typeof callGateway !== 'function' || !admission || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 ||
       timeoutMs > 1920000 || !Number.isSafeInteger(maximumRequests) || maximumRequests < 1 || maximumRequests > 512) throw ERROR();
   const pending = new Map();
+  const modelAttempts = new Map();
   const keyFor = user => { if (!USER.test(user ?? '')) throw ERROR(); return `agent:${agentId}:openai-user:${user}`; };
 
   function check(target, isDirectory = false) {
@@ -147,14 +148,17 @@ export function createContextCompaction({agentId = 'pixel', readSession, readCon
   function project(user, entry, ledger, preferred) {
     const model = modelFor(readConfig(),entry,agentId), {provider,id,window} = model;
     const sessionRevision = revisionFor(user, entry);
-    if (ledger.measurement && (ledger.measurement.modelRevision !== model.revision || ledger.measurement.sessionRevision !== sessionRevision)) {
+    if (ledger.measurement && (ledger.measurement.modelRevision !== model.revision || ledger.measurement.sessionRevision !== sessionRevision ||
+        requireModelObservation && !['model-call-v2','native-compaction'].includes(ledger.measurement.source))) {
       // Persist invalidation so selecting the previous route/budget again does
       // not resurrect a measurement from before the intervening transition.
       delete ledger.measurement; save(user,ledger);
     }
     const proof = ledger.measurement?.modelRevision === model.revision && ledger.measurement.sessionRevision === sessionRevision
       ? ledger.measurement : null;
-    const nativeFresh = entry?.totalTokensFresh === true && (!proof || entry.updatedAt >= proof.measuredAt);
+    // OpenClaw can mark cumulative session usage fresh after tool continuations.
+    // It is not the occupancy of one model call and must not replace its proof.
+    const nativeFresh = !requireModelObservation && entry?.totalTokensFresh === true && (!proof || entry.updatedAt >= proof.measuredAt);
     // Session metadata is saved after llm_output and may have a newer timestamp.
     // That alone does not invalidate this model's measured usage. A subsequent
     // compaction does, unless it supplied its own post-compaction measurement.
@@ -211,7 +215,7 @@ export function createContextCompaction({agentId = 'pixel', readSession, readCon
       if (item.status === 'completed' && item.tokensAfter !== null) {
         const latest=entryFor(user), model=modelFor(readConfig(),latest,agentId), revision=revisionFor(user,latest);
         if (model.window && revision) ledger.measurement={modelRevision:model.revision,sessionRevision:revision,
-          used:item.tokensAfter,window:model.window,measuredAt:now(),compactionCount:integer(latest?.compactionCount) ?? 0};
+          source:'native-compaction',used:item.tokensAfter,window:model.window,measuredAt:now(),compactionCount:integer(latest?.compactionCount) ?? 0};
       }
       await modelLease.close(); modelLease = undefined;
       save(user, ledger);
@@ -279,18 +283,36 @@ export function createContextCompaction({agentId = 'pixel', readSession, readCon
       return await callback({sessionKey,session:before ?? null,readSession:() => entryFor(user) ?? null});
     } finally { admission.release(token); delete ledger.maintenance; save(user,ledger); }
   }
+  function observeModelInput(event, context) {
+    const prefix=`agent:${agentId}:openai-user:`, key=context?.sessionKey, runId=text(context?.runId ?? event?.runId);
+    if(context?.agentId!==agentId || !key?.startsWith(prefix) || !USER.test(key.slice(prefix.length)) || !runId) return;
+    try {
+      const user=key.slice(prefix.length), entry=entryFor(user), model=modelFor(readConfig(),entry,agentId);
+      modelAttempts.delete(key);
+      modelAttempts.set(key,{runId,startedAt:now(),modelRevision:model.revision,sessionId:context.sessionId});
+      if(modelAttempts.size>128) modelAttempts.delete(modelAttempts.keys().next().value);
+    } catch { /* Missing identity cannot establish usage evidence. */ }
+  }
   function observeModelOutput(event, context) {
     const prefix=`agent:${agentId}:openai-user:`, key=context?.sessionKey;
     if(context?.agentId!==agentId || typeof key!=='string' || !key.startsWith(prefix)) return;
     const user=key.slice(prefix.length), usage=event?.lastAssistant?.usage, window=integer(event?.contextTokenBudget);
     if(!USER.test(user) || !window || !usage) return;
+    const attempt=modelAttempts.get(key), assistant=event.lastAssistant;
+    // An overflow precheck can emit llm_output with the previous turn's final
+    // assistant, including cumulative usage. Only this attempt's model reply
+    // is evidence of current occupancy; never relabel history after a switch.
+    if(!attempt || attempt.runId!==(context?.runId ?? event?.runId) || attempt.sessionId!==context.sessionId ||
+        !Number.isSafeInteger(assistant.timestamp) || assistant.timestamp<attempt.startedAt ||
+        ['error','aborted'].includes(assistant.stopReason)) return;
     const counts=['input','output','cacheRead','cacheWrite'].map(field=>usage[field]===undefined?0:integer(usage[field]));
     if(counts.some(value=>value===null)) return;
     const used=integer(counts.reduce((a,b)=>a+b,0));if(!used) return;
+    if(usage.totalTokens!==undefined && integer(usage.totalTokens)!==used) return;
     try {
       const entry=entryFor(user), model=modelFor(readConfig(),entry,agentId), revision=revisionFor(user,{sessionId:context.sessionId});
-      if(!revision || model.window && window>model.window) return;
-      const ledger=read(user);ledger.measurement={modelRevision:model.revision,sessionRevision:revision,used,window,measuredAt:now(),compactionCount:integer(entry?.compactionCount) ?? 0};
+      if(!revision || model.revision!==attempt.modelRevision || model.window && window>model.window) return;
+      const ledger=read(user);ledger.measurement={source:'model-call-v2',modelRevision:model.revision,sessionRevision:revision,used,window,measuredAt:now(),compactionCount:integer(entry?.compactionCount) ?? 0};
       save(user,ledger);
     } catch { /* Unknown metadata stays unknown; never break the agent reply. */ }
   }
@@ -319,5 +341,5 @@ export function createContextCompaction({agentId = 'pixel', readSession, readCon
     finally { entries?.closeSync(); }
   }
   recoverOwnedAtStartup();
-  return {context, compact, withMaintenance, observeModelOutput};
+  return {context, compact, withMaintenance, observeModelInput, observeModelOutput};
 }

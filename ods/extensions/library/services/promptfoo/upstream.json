@@ -1,0 +1,12 @@
+{
+  "repository": "https://github.com/promptfoo/promptfoo",
+  "license": "MIT",
+  "image": "ghcr.io/promptfoo/promptfoo:0.123.1@sha256:2dfddde000886e9a0bcce799478095a2e7d1e4438a6c6669ac04001e8ae29b85",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/arm64",
+    "linux/amd64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "The included evaluation example routes to ods/current. Custom evaluation files can intentionally select other providers; keep them local when privacy is required."
+}

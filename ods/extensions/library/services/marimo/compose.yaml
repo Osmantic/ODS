@@ -1,0 +1,51 @@
+services:
+  marimo:
+    image: ods/marimo:0.24.2-local-v1
+    container_name: ods-marimo
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${MARIMO_PORT:-11110}:8080
+    healthcheck:
+      test:
+      - CMD
+      - python
+      - /opt/ods/health.py
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    user: 1000:1000
+    environment:
+      MARIMO_TOKEN: ${MARIMO_TOKEN:?Set a 64-hex editor token}
+    init: true
+    build:
+      context: .
+      dockerfile: Dockerfile
+    stop_grace_period: 60s
+    read_only: true
+    tmpfs:
+    - /tmp:rw,noexec,nosuid,size=256m
+    volumes:
+    - marimo-workspace:/workspace
+    - marimo-data:/data
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  marimo-workspace: {}
+  marimo-data: {}

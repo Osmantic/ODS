@@ -1,0 +1,18 @@
+{
+  "repository": "https://github.com/usememos/memos",
+  "license": "MIT",
+  "image": "neosmemo/memos:stable@sha256:24c2707ddd8fbd2ceaa7a61ecab86a53cdcde640b24ce572b73da14b00b5785f",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/arm64",
+    "linux/amd64",
+    "linux/arm"
+  ],
+  "runtime_validation": "pending",
+  "sources": [
+    "https://usememos.com/docs/deploy/docker",
+    "https://github.com/usememos/memos/blob/main/scripts/Dockerfile",
+    "https://github.com/usememos/memos/blob/main/scripts/entrypoint.sh"
+  ],
+  "notes": "SQLite notebook and attachments in a named volume. Explicit upstream nonroot UID/GID for a fresh Docker-owned volume. No inference dependency or cloud account. HTTP root probe verifies the web listener, not authenticated note creation."
+}

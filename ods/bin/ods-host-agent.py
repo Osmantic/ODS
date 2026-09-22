@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import atexit
 import base64
 import collections
@@ -4035,6 +4036,15 @@ def _begin_or_resume_external_pixel_transaction(config: dict, target: dict):
     return transaction.begin()
 
 
+def _pixel_local_identity_matches(config: dict, identity: str, expected: str) -> bool:
+    if identity == expected:
+        return True
+    gguf = str(config.get('GGUF_FILE') or '')
+    if not gguf or expected != gguf or Path(gguf).name != gguf:
+        return False
+    return identity == str(_active_model_directory(config) / gguf)
+
+
 def _prove_pixel_model_contract(config: dict, contract: dict) -> bool:
     if 'routeFingerprint' in contract:
         route = _read_remote_provider_route_state_for_update()
@@ -4061,7 +4071,7 @@ def _prove_pixel_model_contract(config: dict, contract: dict) -> bool:
         gguf_file=gguf,llm_model_name=str(config.get('LLM_MODEL') or gguf),
         lemonade_model_id=str(config.get('LEMONADE_MODEL') or ''),attempts=1,initial_delay=0,
         interval=0,return_proof=True,require_exact_context=True,allow_model_warmup=False)
-    return (isinstance(proof,dict) and proof.get('identity')==contract['model']
+    return (isinstance(proof,dict) and _pixel_local_identity_matches(config, proof.get('identity'), contract['model'])
             and proof.get('contextVerified') is True and proof.get('contextLength')==contract['contextLength'])
 
 
@@ -5686,6 +5696,41 @@ def _repair_rootless_data_ownership(service_id: str) -> None:
         )
 
 
+def _extension_stop_targets(service_id: str) -> list[str]:
+    """Include namespaced companions owned by this extension's compose fragment.
+
+    Never walk depends_on: those dependencies may be shared ODS services.
+    A separately registered extension retains its independent lifecycle.
+    """
+    targets = [service_id]
+    ext_dir = _find_ext_dir(service_id)
+    if ext_dir is None:
+        return targets
+    compose_path = ext_dir / "compose.yaml"
+    if not compose_path.exists():
+        return targets
+    if compose_path.is_symlink():
+        raise RuntimeError("Cannot resolve extension companions from a symlink")
+    try:
+        import yaml
+        data = yaml.safe_load(compose_path.read_text(encoding="utf-8"))
+    except (ImportError, OSError, UnicodeError) as exc:
+        raise RuntimeError(f"Cannot read extension stop targets: {exc}") from exc
+    except yaml.YAMLError as exc:
+        raise RuntimeError("Invalid extension compose file") from exc
+    services = data.get("services") if isinstance(data, dict) else None
+    if not isinstance(services, dict) or service_id not in services:
+        raise RuntimeError("Extension compose file does not declare its service")
+    for name in services:
+        if (isinstance(name, str) and SERVICE_ID_RE.fullmatch(name)
+                and name.startswith(service_id + "-")
+                and name not in ALWAYS_ON_SERVICES
+                and name not in CORE_SERVICE_IDS
+                and _find_ext_dir(name) is None):
+            targets.append(name)
+    return targets
+
+
 def docker_compose_action(service_id: str, action: str) -> tuple:
     flags = resolve_compose_flags()
     compose_env = os.environ.copy()
@@ -5706,7 +5751,11 @@ def docker_compose_action(service_id: str, action: str) -> tuple:
             return False, str(exc)
         cmd = ["docker", "compose"] + flags + ["up", "-d", service_id]
     elif action == "stop":
-        cmd = ["docker", "compose"] + flags + ["stop", service_id]
+        try:
+            targets = _extension_stop_targets(service_id)
+        except RuntimeError as exc:
+            return False, str(exc)
+        cmd = ["docker", "compose"] + flags + ["stop", *targets]
     else:
         return False, f"Unknown action: {action}"
     timeout = SUBPROCESS_TIMEOUT_START if action == "start" else SUBPROCESS_TIMEOUT_STOP
@@ -5715,6 +5764,15 @@ def docker_compose_action(service_id: str, action: str) -> tuple:
             cmd, cwd=str(INSTALL_DIR),
             capture_output=True, text=True, timeout=timeout, env=compose_env,
         )
+        if result.returncode == 0 and action == 'start':
+            ext_dir = _find_ext_dir(service_id)
+            manifest = _read_manifest(ext_dir) if ext_dir else {}
+            definition = (manifest or {}).get('service', {})
+            if isinstance(definition, dict) and definition.get('port') == 0 and definition.get('startup_check', True) is False:
+                ok, error = _verify_one_shot_exit(flags, service_id, definition.get('startup_timeout', 60))
+                _write_progress(service_id, 'started' if ok else 'error', 'CLI verification complete' if ok else 'CLI verification failed',
+                                error=error or None, exit_verified=ok)
+                return ok, error
         return (True, "") if result.returncode == 0 else (False, result.stderr[:500])
     except subprocess.TimeoutExpired:
         return False, f"Docker compose operation timed out ({timeout}s)"
@@ -5793,13 +5851,89 @@ def validate_core_recreate_ids(service_ids: list[str]) -> tuple[bool, str]:
     return True, ""
 
 
+def _core_recreate_compose_flags(flags: list[str]) -> list[str]:
+    """Exclude unrelated extension fragments before Compose interpolates them.
+
+    Preserve core overlays and whole extension fragment groups that contribute
+    to core services, including their service references. Missing configuration
+    in a selected fragment must still fail; never fill it with dummy secrets.
+    """
+    import yaml
+
+    roots = (EXTENSIONS_DIR.resolve(), USER_EXTENSIONS_DIR.resolve())
+    groups = {}
+    file_groups = {}
+    needed = set(CORE_SERVICE_IDS)
+    for index, flag in enumerate(flags[:-1]):
+        if flag != "-f":
+            continue
+        value = flags[index + 1]
+        path = Path(value)
+        if not path.is_absolute():
+            path = INSTALL_DIR / path
+        resolved = path.resolve()
+        group = None
+        for root in roots:
+            try:
+                relative = resolved.relative_to(root)
+            except ValueError:
+                continue
+            if len(relative.parts) > 1:
+                group = str(root / relative.parts[0])
+            break
+        if group is None:
+            continue
+        try:
+            document = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except yaml.YAMLError as exc:
+            raise ValueError("Invalid extension Compose YAML during core recreation") from exc
+        if not isinstance(document, dict) or not isinstance(document.get("services"), dict):
+            raise ValueError("Invalid extension Compose fragment during core recreation")
+        services = document["services"]
+        names, references = groups.setdefault(group, (set(), set()))
+        names.update(services)
+        for service in services.values():
+            if not isinstance(service, dict):
+                continue
+            dependencies = service.get("depends_on", [])
+            if isinstance(dependencies, (dict, list)):
+                references.update(dependencies)
+            for key in ("network_mode", "ipc", "pid"):
+                reference = service.get(key)
+                if isinstance(reference, str) and reference.startswith("service:"):
+                    references.add(reference.removeprefix("service:"))
+            extends = service.get("extends")
+            if isinstance(extends, dict) and not extends.get("file") and isinstance(extends.get("service"), str):
+                references.add(extends["service"])
+            for key in ("links", "volumes_from"):
+                for reference in service.get(key, []) or []:
+                    if isinstance(reference, str) and not reference.startswith("container:"):
+                        references.add(reference.split(":", 1)[0])
+        file_groups[index] = group
+    selected = set()
+    while True:
+        additions = {group for group, (names, _) in groups.items() if names & needed} - selected
+        if not additions:
+            break
+        selected.update(additions)
+        for group in additions:
+            needed.update(groups[group][0])
+            needed.update(groups[group][1])
+    excluded = {index for index, group in file_groups.items() if group not in selected}
+    return [value for index, value in enumerate(flags)
+            if index not in excluded and index - 1 not in excluded]
+
+
 def docker_compose_recreate(service_ids: list[str]) -> tuple:
     """Force-recreate a set of allowed core services using the current compose stack."""
     ok, error = validate_core_recreate_ids(service_ids)
     if not ok:
         return False, error
 
-    flags = resolve_compose_flags()
+    try:
+        flags = _core_recreate_compose_flags(resolve_compose_flags())
+    except (OSError, ValueError) as exc:
+        return False, f"Could not resolve core Compose fragments: {exc}"
     cmd = ["docker", "compose"] + flags + ["up", "-d", "--no-deps", "--force-recreate"] + service_ids
     compose_env = os.environ.copy()
     for key in ("GGUF_FILE", "LLM_MODEL", "LEMONADE_MODEL", "MAX_CONTEXT", "CTX_SIZE"):
@@ -6375,10 +6509,94 @@ def _iso_now() -> str:
 
 
 _BEARER_RE = re.compile(r"Bearer\s+[A-Za-z0-9._\-=+/]+", re.IGNORECASE)
+_install_operation_context = threading.local()
+_install_operation_guard = threading.Lock()
+_install_operation_live = set()
+
+
+def _install_operation_path(service_id, operation_id):
+    if (not isinstance(service_id, str) or not SERVICE_ID_RE.fullmatch(service_id)
+            or not isinstance(operation_id, str) or not re.fullmatch(r'[a-f0-9]{32}', operation_id)):
+        raise ValueError('Invalid installation operation identity')
+    directory = DATA_DIR / 'extension-operations' / service_id
+    if directory.parent.is_symlink() or directory.is_symlink():
+        raise ValueError('Invalid installation operation directory')
+    path = directory / (operation_id + '.json')
+    if path.is_symlink():
+        raise ValueError('Invalid installation operation record')
+    return path
+
+
+def _read_install_operation(service_id, operation_id):
+    path = _install_operation_path(service_id, operation_id)
+    if not path.exists():
+        return None
+    if path.stat().st_size > 16384:
+        raise ValueError('Invalid installation operation size')
+    value = json.loads(path.read_text(encoding='utf-8'))
+    if (not isinstance(value, dict) or value.get('service_id') != service_id
+            or value.get('operation_id') != operation_id
+            or value.get('state') not in {'accepted', 'running', 'succeeded', 'failed', 'uncertain'}
+            or type(value.get('run_setup_hook')) is not bool):
+        raise ValueError('Invalid installation operation record')
+    # A missing worker is not proof that external Docker effects stopped.
+    with _install_operation_guard:
+        live = (service_id, operation_id) in _install_operation_live
+    if value['state'] in {'accepted', 'running'} and not live:
+        value = {**value, 'state': 'uncertain'}
+    elif value['state'] in {'succeeded', 'failed'} and live:
+        # Progress can record a terminal result before the worker's finally
+        # block releases its resources. Recipe recovery must not overwrite
+        # files that this worker may still be using.
+        value = {**value, 'state': 'running', 'exit_verified': False}
+    return value
+
+
+def _save_install_operation(value):
+    path = _install_operation_path(value['service_id'], value['operation_id'])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if os.name == 'posix':
+        # A newly created service directory must itself survive a crash before
+        # its receipt can be trusted as the no-replay admission record.
+        for directory in (path.parent.parent.parent, path.parent.parent):
+            directory_fd = os.open(directory, os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0))
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+    fd, temporary = tempfile.mkstemp(prefix='.operation-', dir=path.parent)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as stream:
+            json.dump(value, stream)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        if os.name == 'posix':
+            directory_fd = os.open(path.parent, os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0))
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def _record_install_operation_progress(service_id, status, phase_label, exit_verified):
+    value = getattr(_install_operation_context, 'value', None)
+    if value is None or value['service_id'] != service_id:
+        return
+    # Raw command output/configuration is deliberately absent from this receipt.
+    value = {**value, 'state': ('uncertain' if value.get('state') == 'uncertain' else
+             {'started': 'succeeded', 'error': 'failed'}.get(status, 'running')),
+             'phase': status, 'updated_at': _iso_now(),
+             'exit_verified': bool(status == 'started' and exit_verified)}
+    _save_install_operation(value)
+    _install_operation_context.value = value
 
 
 def _write_progress(service_id: str, status: str, phase_label: str = "",
-                    error: str | None = None) -> None:
+                    error: str | None = None, *, exit_verified: bool = False) -> None:
     """Atomically write install progress file."""
     progress_dir = DATA_DIR / "extension-progress"
     progress_dir.mkdir(parents=True, exist_ok=True)
@@ -6387,10 +6605,13 @@ def _write_progress(service_id: str, status: str, phase_label: str = "",
 
     # Preserve started_at from existing file
     started_at = _iso_now()
+    operation = getattr(_install_operation_context, 'value', None)
+    operation_id = operation.get('operation_id') if operation and operation['service_id'] == service_id else None
     if progress_file.exists():
         try:
             existing = json.loads(progress_file.read_text(encoding="utf-8"))
-            started_at = existing.get("started_at", started_at)
+            if not operation_id or existing.get('operation_id') == operation_id:
+                started_at = existing.get("started_at", started_at)
         except (json.JSONDecodeError, OSError):
             pass
 
@@ -6403,6 +6624,8 @@ def _write_progress(service_id: str, status: str, phase_label: str = "",
         "error": sanitized_error,
         "started_at": started_at,
         "updated_at": _iso_now(),
+        **({'operation_id': operation_id} if operation_id else {}),
+        **({'exit_verified': True} if status == 'started' and exit_verified else {}),
     }
     tmp_file.write_text(json.dumps(data), encoding="utf-8")
     # os.replace (not os.rename) — Windows os.rename raises FileExistsError
@@ -6411,6 +6634,7 @@ def _write_progress(service_id: str, status: str, phase_label: str = "",
     for attempt in range(6):
         try:
             os.replace(str(tmp_file), str(progress_file))
+            _record_install_operation_progress(service_id, status, phase_label, exit_verified)
             return
         except PermissionError as exc:
             last_error = exc
@@ -6671,7 +6895,8 @@ def _enable_retry_work(service_id: str) -> None:
                 _write_progress(service_id, "error", "Start failed", error=msg)
                 return
 
-        _write_progress(service_id, "started", "Service started")
+        _write_progress(service_id, "started", "Service started",
+                        exit_verified=not startup_check and retry_service_def.get('port') == 0)
     except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
         logger.exception("Enable-retry failed for %s", service_id)
         _write_progress(service_id, "error", "Retry failed",
@@ -7033,6 +7258,170 @@ def _declared_docker_containers() -> dict[str, str]:
     return containers
 
 
+def _verify_one_shot_exit(flags: list[str], service_id: str, timeout: int = 60) -> tuple[bool, str]:
+    """Compose accepting up -d is not evidence that a CLI command succeeded."""
+    timeout = timeout if type(timeout) is int and 1 <= timeout <= 600 else 60
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        result = subprocess.run(['docker', 'compose', *flags, 'ps', '-a', '-q', service_id],
+            cwd=str(INSTALL_DIR), capture_output=True, text=True, timeout=5)
+        ids = result.stdout.split() if result.returncode == 0 else []
+        if len(ids) == 1 and re.fullmatch(r'[a-f0-9]{12,64}', ids[0]):
+            observed = subprocess.run(['docker', 'inspect', '--format', '{{json .State}}', ids[0]],
+                capture_output=True, text=True, timeout=5)
+            if observed.returncode == 0:
+                try:
+                    state = json.loads(observed.stdout)
+                except (ValueError, TypeError):
+                    state = {}
+                if isinstance(state, dict) and state.get('Status') in ('exited', 'dead'):
+                    if (state.get('Status') == 'exited' and type(state.get('ExitCode')) is int
+                            and state['ExitCode'] == 0 and not state.get('OOMKilled') and not state.get('Error')):
+                        return True, ''
+                    return False, 'The CLI verification command exited unsuccessfully. Inspect the extension logs before retrying.'
+        time.sleep(1)
+    return False, 'The CLI verification command did not reach a confirmed successful exit.'
+
+
+def _build_install_sources(base, builds, services):
+    """Keep Compose's resolved build plan without treating remote URLs as files.
+
+    Compose 5 on Windows emits an fs.read entitlement for a Git URL. Buildx
+    interprets that entitlement as a Windows path and fails before building.
+    Compile the same selected targets with Compose, then execute that plan
+    directly. Do not grant wildcard filesystem entitlements or rebuild images
+    after a failed build (which may already have executed Dockerfile steps).
+    """
+    remote = any(
+        isinstance(services[name].get('build'), dict)
+        and urlparse(str(services[name]['build'].get('context', ''))).scheme
+        in ('https', 'http', 'git', 'ssh')
+        for name in builds
+    )
+    options = dict(cwd=str(INSTALL_DIR), capture_output=True, text=True,
+                   timeout=SUBPROCESS_TIMEOUT_START)
+    # Preserve commit metadata used by SCM-based package builders. BuildKit
+    # otherwise silently strips .git from remote Git contexts.
+    source_args = ['--build-arg', 'BUILDKIT_CONTEXT_KEEP_GIT_DIR=1'] if remote else []
+    if platform.system() != 'Windows' or not remote:
+        return subprocess.run(base + ['build', *source_args, *sorted(builds)], **options)
+    compiled = subprocess.run(base + ['build', *source_args, '--print', *sorted(builds)], **options)
+    if compiled.returncode:
+        return compiled
+    try:
+        plan = json.loads(compiled.stdout)
+        if not isinstance(plan, dict) or not isinstance(plan.get('target'), dict):
+            raise ValueError()
+        if not all(name in plan['target'] for name in builds):
+            raise ValueError()
+    except (ValueError, TypeError):
+        return subprocess.CompletedProcess(base, 1, '', 'Invalid Compose build plan')
+    return subprocess.run(
+        ['docker', 'buildx', 'bake', '--file', '-', '--load', '--progress', 'plain',
+         *sorted(builds)], input=compiled.stdout, **options)
+
+
+def _install_build_diagnostic(result, services: dict) -> str:
+    """Bound untrusted build evidence and remove configured credential values.
+
+    Redact before truncating so a tail cannot expose part of a credential.
+    Never include the resolved Compose configuration or build plan.
+    """
+    output = '\n'.join(str(getattr(result, stream, '') or '')
+                       for stream in ('stdout', 'stderr'))
+    secrets = set()
+    sensitive = re.compile(r'(?i)(secret|token|password|passwd|credential|api.?key|private.?key|authorization)')
+    def collect(values):
+        if isinstance(values, dict):
+            for key, value in values.items():
+                if sensitive.search(str(key)) and isinstance(value, str) and value:
+                    secrets.add(value)
+    collect(dict(os.environ))
+    try:
+        collect(load_env(INSTALL_DIR / '.env'))
+    except (OSError, UnicodeError):
+        # Do not disclose output if persisted credentials cannot be checked.
+        return 'Build diagnostics unavailable: credential redaction could not be completed.'
+    for definition in services.values():
+        if not isinstance(definition, dict):
+            continue
+        collect(definition.get('environment'))
+        build = definition.get('build')
+        if isinstance(build, dict):
+            collect(build.get('args'))
+    output = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', output)
+    if secrets:
+        output = re.sub('|'.join(re.escape(value) for value in sorted(secrets, key=len, reverse=True)),
+                        '[REDACTED]', output)
+    output = re.sub(r'(?i)(bearer\s+)[^\s\x22\x27]+', r'\1[REDACTED]', output)
+    output = re.sub(r'([a-zA-Z][a-zA-Z0-9+.-]*://)[^/\s@]+@', r'\1[REDACTED]@', output)
+    output = re.sub(r'(?im)((?:[\w-]*(?:token|password|passwd|secret|api[_-]?key|credential)[\w-]*)[\x22\x27]?\s*[:=]\s*)(?:\x22[^\x22]*\x22|\x27[^\x27]*\x27|[^\s,;]+)',
+                    r'\1[REDACTED]', output)
+    output = ''.join(c for c in output if c in '\n\t' or ord(c) >= 32).strip()
+    return output[-7600:] or 'No build diagnostic output was returned.'
+
+
+def _prepare_install_images(flags: list[str], service_id: str) -> tuple[bool, str]:
+    """Prepare only the requested service's effective Compose dependency graph.
+
+    Compose owns interpolation/overlays. Never infer a build from a single
+    manifest or pull a locally built image from an unrelated registry.
+    """
+    base = ["docker", "compose", *flags]
+    result = subprocess.run(base + ["config", "--format", "json"],
+                            cwd=str(INSTALL_DIR), capture_output=True, text=True, timeout=30)
+    if result.returncode:
+        return False, "Could not resolve installation Compose configuration"
+    try:
+        services = json.loads(result.stdout)['services']
+        if not isinstance(services, dict):
+            raise ValueError()
+        pending, seen, pulls, builds = [service_id], set(), [], []
+        while pending:
+            name = pending.pop()
+            if name in seen:
+                continue
+            if not isinstance(name, str) or not SERVICE_ID_RE.fullmatch(name):
+                raise ValueError()
+            seen.add(name)
+            definition = services[name]
+            if not isinstance(definition, dict):
+                raise ValueError()
+            dependencies = definition.get('depends_on', {})
+            if not isinstance(dependencies, (dict, list)):
+                raise ValueError()
+            for dependency in dependencies:
+                options = dependencies[dependency] if isinstance(dependencies, dict) else {}
+                if (dependency not in services and isinstance(options, dict)
+                        and options.get('required') is False):
+                    continue
+                pending.append(dependency)
+            if definition.get('build'):
+                builds.append(name)
+            elif definition.get('image'):
+                pulls.append(name)
+            else:
+                raise ValueError()
+    except (ValueError, KeyError, TypeError):
+        return False, "Invalid installation Compose dependency graph"
+    if pulls:
+        _write_progress(service_id, "pulling", "Downloading images...")
+        result = subprocess.run(base + ["pull", *sorted(pulls)], cwd=str(INSTALL_DIR),
+                                capture_output=True, text=True, timeout=SUBPROCESS_TIMEOUT_START)
+        if result.returncode:
+            # A cached image may still satisfy Compose up. Startup remains the
+            # authority; this does not report installation as successful.
+            logger.warning("Image pull failed for %s; checking cached images at startup", service_id)
+    if builds:
+        _write_progress(service_id, "pulling", "Building images from source...")
+        result = _build_install_sources(base, builds, services)
+        if result.returncode:
+            return False, ("Source image build failed; containers were not started. "
+                           "Untrusted build diagnostic (tail):\n" +
+                           _install_build_diagnostic(result, services))
+    return True, ""
+
+
 def _is_other_ext_compose(fpath: str, service_id: str, ext_roots: tuple) -> bool:
     """True if fpath points to an extension compose file owned by an
     extension other than service_id. Used to filter `-f` args from the
@@ -7207,6 +7596,18 @@ class AgentHandler(BaseHTTPRequestHandler):
         path = parsed.path
         if path == "/health":
             json_response(self, 200, {"status": "ok", "version": VERSION})
+        elif path == '/v1/extension/operation':
+            if not check_auth(self):
+                return
+            query = parse_qs(parsed.query)
+            try:
+                value = _read_install_operation(query.get('service_id', [''])[0],
+                                                query.get('operation_id', [''])[0])
+            except (ValueError, OSError):
+                json_response(self, 409, {'error': 'Installation operation requires inspection'})
+                return
+            json_response(self, 200 if value is not None else 404,
+                          {'operation': value} if value is not None else {'error': 'Operation not found'})
         elif path == "/v1/gpu/metrics":
             self._handle_gpu_metrics()
         elif path == "/v1/llm/status":
@@ -7288,6 +7689,38 @@ class AgentHandler(BaseHTTPRequestHandler):
             json_response(self, 503, {"error": "access-transition-unavailable"})
         finally:
             _end_model_lifecycle("pixel_access_mode")
+
+    def _handle_pixel_open_app(self):
+        if not check_auth(self):
+            return
+        body = read_json_body(self)
+        if body is None:
+            return
+        from pixel_macos_apps import launch_application, AppLaunchError
+        from pixel_access_relay import request_runtime_access
+        acquired, _active = _begin_model_lifecycle('pixel_open_app')
+        if not acquired:
+            json_response(self, 409, {'error': 'model-lifecycle-busy'})
+            return
+        try:
+            approvals = INSTALL_DIR / 'config/pixel-approved-apps.json'
+            if approvals.is_symlink() or approvals.stat().st_size > 65536:
+                raise AppLaunchError('app-approvals-invalid')
+            approved = json.loads(approvals.read_text())
+            config = load_env(INSTALL_DIR / '.env')
+            def status():
+                code, value = request_runtime_access('status', config=config)
+                if code != 200:
+                    raise AppLaunchError('access-service-unavailable')
+                return value
+            result = launch_application(body, approved_apps=approved, access_status=status)
+            json_response(self, 200, result)
+        except AppLaunchError as error:
+            json_response(self, 403, {'error': str(error)})
+        except (OSError, ValueError):
+            json_response(self, 503, {'error': 'app-launch-unavailable'})
+        finally:
+            _end_model_lifecycle('pixel_open_app')
 
     def _handle_pixel_ops_status(self, query: dict[str, list[str]]):
         """Return one exact, nonsecret Operations result projection.
@@ -7734,6 +8167,8 @@ class AgentHandler(BaseHTTPRequestHandler):
         self.close_connection = True
         if self.path == "/v1/pixel/access-mode":
             self._handle_pixel_access_mode(True)
+        elif self.path == "/v1/pixel/apps/open":
+            self._handle_pixel_open_app()
         elif self.path in ("/v1/extension/start", "/v1/extension/stop"):
             action = "start" if self.path.endswith("/start") else "stop"
             self._handle_extension(action)
@@ -7801,6 +8236,8 @@ class AgentHandler(BaseHTTPRequestHandler):
             self._handle_model_delete()
         elif self.path == "/v1/compose/invalidate-cache":
             self._handle_invalidate_compose_cache()
+        elif self.path == "/v1/extensions/configure":
+            self._handle_extension_configure()
         elif self.path == "/v1/env/update":
             self._handle_env_update()
         elif self.path == "/v1/setup/persona":
@@ -8967,6 +9404,82 @@ class AgentHandler(BaseHTTPRequestHandler):
             "wifi_connected": wifi_connected,
         })
 
+    def _handle_extension_configure(self):
+        """Fill missing extension-owned settings without replacing the host env."""
+        if not check_auth(self):
+            return
+        body = read_json_body(self)
+        if body is None:
+            return
+        sid, values = body.get("service_id"), body.get("values")
+        if (set(body) != {"service_id", "values"} or not isinstance(sid, str)
+                or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", sid)
+                or sid in ALWAYS_ON_SERVICES or not isinstance(values, dict)
+                or not 1 <= len(values) <= 128):
+            json_response(self, 400, {"error": "Invalid extension configuration request"})
+            return
+        # Installed definitions shadow the library, including broken ones.
+        roots = (USER_EXTENSIONS_DIR, EXTENSIONS_DIR, DATA_DIR / "extensions-library")
+        directory = next((root / sid for root in roots if (root / sid).exists() or (root / sid).is_symlink()), None)
+        try:
+            if directory is None or directory.is_symlink() or not directory.is_dir():
+                raise ValueError()
+            for name in ("manifest.yaml", "manifest.yml"):
+                candidate = directory / name
+                if candidate.is_symlink() or (candidate.exists() and candidate.stat().st_size > 1024 * 1024):
+                    raise ValueError()
+            manifest = _read_manifest(directory)
+            service = manifest.get("service", {}) if manifest else {}
+            fields = service.get("env_vars", [])
+            if service.get("id") != sid or not isinstance(fields, list):
+                raise ValueError()
+            declared = [field.get("key") for field in fields if isinstance(field, dict)]
+            if len(declared) != len(fields) or any(not isinstance(key, str) for key in declared) or len(set(declared)) != len(declared):
+                raise ValueError()
+            prefix = sid.upper().replace("-", "_") + "_"
+            # Native upstream names retained by these existing ODS recipes.
+            aliases = {"librechat": {"JWT_SECRET", "JWT_REFRESH_SECRET", "CREDS_KEY", "CREDS_IV"},
+                       "paperless-ngx": {"PAPERLESS_SECRET_KEY"}, "piper-audio": {"PIPER_VOICE"}}
+            for key, value in values.items():
+                if (key not in declared or not re.fullmatch(r"[A-Z][A-Z0-9_]{0,127}", key)
+                        or not (key.startswith(prefix) or key in aliases.get(sid, set()))
+                        or not isinstance(value, str) or not value or len(value) > 4096
+                        or any(ord(c) < 32 or ord(c) == 127 for c in value)):
+                    raise ValueError()
+        except (ValueError, OSError):
+            json_response(self, 400, {"error": "Use declared extension-owned configuration keys and single-line values"})
+            return
+        if not _model_activate_lock.acquire(blocking=False):
+            json_response(self, 409, {"error": "Another configuration operation is in progress"})
+            return
+        try:
+            env_path = INSTALL_DIR / ".env"
+            if env_path.is_symlink():
+                raise ValueError()
+            text = env_path.read_text(encoding="utf-8")
+            # Never rotate an existing password or encryption key during
+            # installation. Treat even an export-prefixed assignment as owned.
+            pattern = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$")
+            for line in text.splitlines():
+                match = pattern.fullmatch(line)
+                if match and match[1] in values and match[2].strip() not in ("", "''", '""'):
+                    json_response(self, 409, {"error": "A requested setting is already configured; existing values were preserved"})
+                    return
+            lines = [line for line in text.splitlines()
+                     if not ((match := pattern.fullmatch(line)) and match[1] in values)]
+            for key, value in values.items():
+                # Literal dotenv escaping understood by Compose and load_env;
+                # never use shell concatenation or evaluate substitutions.
+                escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("$", "\\$")
+                lines.append(f'{key}="{escaped}"')
+            _copy_unique_env_backup(env_path, DATA_DIR / "config-backups")
+            _write_bound_env_text(env_path, "\n".join(lines) + "\n")
+            json_response(self, 200, {"service_id": sid, "saved_keys": sorted(values), "status": "saved"})
+        except (ValueError, OSError, RuntimeError):
+            json_response(self, 500, {"error": "Configuration could not be saved; inspect the retained backup before retrying"})
+        finally:
+            _model_activate_lock.release()
+
     def _handle_env_update(self):
         """Write a validated .env file. Dashboard-api delegates here because the
         container mount is :ro — only the host agent may write secrets to disk.
@@ -9265,12 +9778,14 @@ class AgentHandler(BaseHTTPRequestHandler):
         ext_dir = USER_EXTENSIONS_DIR / sid
         if not ext_dir.is_dir():
             # Not a user extension — no-op (built-ins handled by installer).
-            json_response(self, 200, {"status": "ok", "service_id": sid, "synced": []})
+            json_response(self, 200, {"status": "ok", "service_id": sid, "synced": [],
+                                       "preserve_existing": preserve_existing})
             return
 
         ext_config = ext_dir / "config"
         if not ext_config.is_dir():
-            json_response(self, 200, {"status": "ok", "service_id": sid, "synced": []})
+            json_response(self, 200, {"status": "ok", "service_id": sid, "synced": [],
+                                       "preserve_existing": preserve_existing})
             return
 
         # Reject ANY symlink in the config/ tree (or if config/ itself is a
@@ -9332,6 +9847,7 @@ class AgentHandler(BaseHTTPRequestHandler):
                 "service_id": sid,
                 "synced": [],
                 "skipped": out_of_scope,
+                "preserve_existing": preserve_existing,
             })
             return
         if not src_svc.is_dir():
@@ -9390,9 +9906,13 @@ class AgentHandler(BaseHTTPRequestHandler):
                         target_path = target / relative
                         if source_path.is_dir():
                             target_path.mkdir(parents=True, exist_ok=True)
-                        elif source_path.is_file() and not target_path.exists():
-                            target_path.parent.mkdir(parents=True, exist_ok=True)
-                            shutil.copy2(source_path, target_path)
+                        elif source_path.is_file():
+                            if target_path.exists():
+                                if not target_path.is_file():
+                                    raise OSError(f"Config target must be a file: {relative}")
+                            else:
+                                target_path.parent.mkdir(parents=True, exist_ok=True)
+                                shutil.copy2(source_path, target_path)
                 else:
                     shutil.copytree(
                         str(src_svc), str(target),
@@ -9765,7 +10285,7 @@ class AgentHandler(BaseHTTPRequestHandler):
         json_response(self, 200, {"status": "ok", "service_id": service_id, "hook": hook_name})
 
     def _handle_install(self):
-        """Combined install: setup_hook → pull → start with progress tracking."""
+        """Combined install: setup_hook → pull/build → start with progress tracking."""
         if not check_auth(self):
             return
         body = read_json_body(self)
@@ -9775,13 +10295,60 @@ class AgentHandler(BaseHTTPRequestHandler):
         if service_id is None:
             return
         run_setup_hook = body.get("run_setup_hook", False)
+        operation_id = body.get('operation_id', secrets.token_hex(16))
+        if type(run_setup_hook) is not bool:
+            json_response(self, 400, {'error': 'run_setup_hook must be boolean'})
+            return
+        try:
+            previous = _read_install_operation(service_id, operation_id)
+        except (ValueError, OSError):
+            json_response(self, 409, {'error': 'Installation operation requires inspection'})
+            return
+        if previous is not None:
+            if previous['run_setup_hook'] != run_setup_hook:
+                json_response(self, 409, {'error': 'Installation operation identity conflict'})
+                return
+            json_response(self, 200, {'status': 'observed', 'operation': previous})
+            return
 
         lock = _service_locks[service_id]
         if not lock.acquire(blocking=False):
             json_response(self, 409, {"error": f"Operation in progress for {service_id}"})
             return
 
+        # Persist before acknowledging or causing effects. Recheck under the
+        # service lock because another request may have finished meanwhile.
+        try:
+            previous = _read_install_operation(service_id, operation_id)
+            if previous is not None:
+                lock.release()
+                if previous['run_setup_hook'] != run_setup_hook:
+                    json_response(self, 409, {'error': 'Installation operation identity conflict'})
+                else:
+                    json_response(self, 200, {'status': 'observed', 'operation': previous})
+                return
+            directory = _install_operation_path(service_id, operation_id).parent
+            for saved in directory.glob('*.json'):
+                older = _read_install_operation(service_id, saved.stem)
+                if older and older['state'] not in {'succeeded', 'failed'}:
+                    lock.release()
+                    json_response(self, 409, {'error': 'Previous installation requires reconciliation',
+                                             'operation_id': saved.stem})
+                    return
+            operation = {'schema_version': 1, 'service_id': service_id,
+                         'operation_id': operation_id, 'run_setup_hook': run_setup_hook,
+                         'state': 'accepted', 'phase': 'queued', 'updated_at': _iso_now(),
+                         'exit_verified': False}
+            _save_install_operation(operation)
+            with _install_operation_guard:
+                _install_operation_live.add((service_id, operation_id))
+        except (ValueError, OSError):
+            lock.release()
+            json_response(self, 409, {'error': 'Could not persist installation operation'})
+            return
+
         def _run_install():
+            _install_operation_context.value = operation
             try:
                 flags = resolve_compose_flags()
 
@@ -9800,7 +10367,8 @@ class AgentHandler(BaseHTTPRequestHandler):
                     if not ok:
                         return
 
-                # Step 2: Pull (best-effort — failure is non-fatal if cached image exists).
+                # Step 2: Prepare images. Pulls may use a cached image on
+                # failure; source builds must succeed before starting.
                 # Narrow the pull to base + GPU overlay + this extension's own
                 # compose so we don't refetch images for every other installed
                 # extension on each install. The `up` step below keeps full
@@ -9828,16 +10396,14 @@ class AgentHandler(BaseHTTPRequestHandler):
                         )
                     pull_flags = flags
 
-                _write_progress(service_id, "pulling", "Downloading image...")
-                pull_result = subprocess.run(
-                    ["docker", "compose"] + pull_flags + ["pull", service_id],
-                    cwd=str(INSTALL_DIR), capture_output=True, text=True,
-                    timeout=SUBPROCESS_TIMEOUT_START,
-                )
-                if pull_result.returncode != 0:
-                    logger.warning("Pull failed for %s (rc=%d), proceeding to start: %s",
-                                   service_id, pull_result.returncode, pull_result.stderr[-200:])
+                prepared, image_error = _prepare_install_images(pull_flags, service_id)
+                if not prepared:
+                    _write_progress(service_id, "error", "Installation failed", error=image_error)
+                    return
 
+                # Use the same dependency-validated graph for startup. Unrelated
+                # installed recipes may require configuration not supplied yet.
+                flags = pull_flags
                 # Step 3: Start
                 _write_progress(service_id, "starting", "Starting container...")
                 _precreate_data_dirs(service_id)
@@ -9868,7 +10434,7 @@ class AgentHandler(BaseHTTPRequestHandler):
                 # after init (one-shot setup containers, extensions whose
                 # value is purely the setup_hook) can opt out via the
                 # manifest's `service.startup_check: false`, in which
-                # case compose's 0 exit is taken as success.
+                # case portless CLI tools must instead prove a successful exit.
                 install_manifest = _read_manifest(ext_dir)
                 install_service_def = install_manifest.get("service", {}) if install_manifest else {}
                 if not isinstance(install_service_def, dict):
@@ -9879,9 +10445,16 @@ class AgentHandler(BaseHTTPRequestHandler):
                 # whose containers intentionally exit (init containers,
                 # extensions whose value is purely the setup_hook). Setting
                 # `service.startup_check: false` skips the running-state poll
-                # — compose up's clean exit is taken as success. Default is
+                # — portless CLI tools use exit verification below. Default is
                 # True so existing long-running services are unchanged.
                 startup_check = install_service_def.get("startup_check", True)
+
+                one_shot = not startup_check and install_service_def.get('port') == 0
+                if one_shot:
+                    ok, error = _verify_one_shot_exit(flags, service_id, install_service_def.get('startup_timeout', 60))
+                    if not ok:
+                        _write_progress(service_id, 'error', 'CLI verification failed', error=error)
+                        return
 
                 if startup_check:
                     # Per-extension startup deadline; manifests with heavy init
@@ -9917,7 +10490,7 @@ class AgentHandler(BaseHTTPRequestHandler):
                         return
 
                 # Step 4: Success
-                _write_progress(service_id, "started", "Service started")
+                _write_progress(service_id, "started", "Service started", exit_verified=one_shot)
 
                 # Step 5: Post-install core recreate (best-effort, non-fatal).
                 # Some extensions (e.g. openclaw) add overlay env to already-
@@ -9932,6 +10505,9 @@ class AgentHandler(BaseHTTPRequestHandler):
                     )
 
             except subprocess.TimeoutExpired:
+                # Docker can continue daemon-side after its CLI times out.
+                _install_operation_context.value = {**_install_operation_context.value,
+                                                     'state': 'uncertain'}
                 _write_progress(service_id, "error", "Installation failed",
                                 error=f"timed out ({SUBPROCESS_TIMEOUT_START}s)")
             except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
@@ -9939,14 +10515,21 @@ class AgentHandler(BaseHTTPRequestHandler):
                 _write_progress(service_id, "error", "Installation failed",
                                 error=str(exc)[:500])
             finally:
+                _install_operation_context.value = None
+                with _install_operation_guard:
+                    _install_operation_live.discard((service_id, operation_id))
                 lock.release()
 
         try:
-            json_response(self, 202, {"status": "accepted", "service_id": service_id, "action": "install"})
             threading.Thread(target=_run_install, daemon=True).start()
         except Exception:
+            with _install_operation_guard:
+                _install_operation_live.discard((service_id, operation_id))
             lock.release()
             raise
+        # A disconnected observer must not cancel or replay an accepted worker.
+        json_response(self, 202, {"status": "accepted", "service_id": service_id,
+                                 "action": "install", 'operation_id': operation_id})
 
 
     # ── Model management handlers ──
@@ -11407,7 +11990,7 @@ class AgentHandler(BaseHTTPRequestHandler):
                     )
                 if pixel_transaction is not None and (
                     not isinstance(previous_proof, dict)
-                    or previous_proof.get('identity') != pixel_transaction.previous['model']
+                    or not _pixel_local_identity_matches(rollback_env, previous_proof.get('identity'), pixel_transaction.previous['model'])
                     or previous_proof.get('contextVerified') is not True
                     or previous_proof.get('contextLength') != pixel_transaction.previous['contextLength']
                 ):
@@ -16227,6 +16810,28 @@ def _stop_macos_native_llama_server(pid_file: Path) -> None:
         pid_file.unlink(missing_ok=True)
 
 
+def _native_llama_tuning_arguments(env: dict, llama_bin: Path) -> list[str]:
+    """Qualify optional tuning before disrupting an existing listener."""
+    tuning = INSTALL_DIR / "installers/macos/lib/native-checkpoint-args.py"
+    tuning_keys = (
+        ("LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS", "--interval"),
+        ("LLAMA_ARG_CTX_CHECKPOINTS", "--checkpoints"),
+        ("LLAMA_ARG_CACHE_RAM", "--cache-mib"),
+        ("LLAMA_ARG_SLEEP_IDLE_SECONDS", "--idle-seconds"),
+        ("LLAMA_ARG_CHECKPOINT_MIN_STEP", "--min-spacing"),
+    )
+    if platform.system() == "Darwin" and any(env.get(key, "").strip() for key, _ in tuning_keys):
+        if not tuning.is_file():
+            raise RuntimeError("Native runtime tuning validator is missing")
+        command = [sys.executable, str(tuning), "--binary", str(llama_bin)]
+        command.extend(option + "=" + env.get(key, "").strip() for key, option in tuning_keys)
+        result = subprocess.run(command, capture_output=True, timeout=20)
+        if result.returncode:
+            raise RuntimeError("Native runtime tuning was rejected")
+        return [part.decode("utf-8") for part in result.stdout.split(b"\0") if part]
+    return []
+
+
 def _restart_macos_native_llama_server(
     env_path: Path,
     llama_bin: Path,
@@ -16238,6 +16843,10 @@ def _restart_macos_native_llama_server(
     # listener. The actual bridge mutation must happen after shutdown so a
     # direct-bound listener cannot collide with a newly recreated bridge.
     _require_macos_bridge_manager(env_path)
+    env = load_env(env_path)
+    profile = _model_stores.lemonade_profile(INSTALL_DIR / "data", env.get("GGUF_FILE", ""))
+    selected_binary = Path(profile["executable"]) if profile else llama_bin
+    _native_llama_tuning_arguments(env, selected_binary)
     _stop_macos_native_llama_server(pid_file)
     _configure_macos_llm_bridge(env_path)
     _launch_native_llama_server(env_path, llama_bin, llama_log, pid_file)
@@ -16272,6 +16881,7 @@ def _launch_native_llama_server(env_path: Path, llama_bin: Path, llama_log: Path
         str(llama_bin),
         "--host", bind_addr, "--port", str(port),
         "--model", str(model_path),
+        "--alias", gguf_file,
         "--ctx-size", ctx_size,
         "--n-gpu-layers", gpu_layers,
         "--parallel", env.get("LLAMA_PARALLEL", "1"),
@@ -16283,7 +16893,6 @@ def _launch_native_llama_server(env_path: Path, llama_bin: Path, llama_log: Path
         "LLAMA_ARG_CACHE_TYPE_K": "--cache-type-k",
         "LLAMA_ARG_CACHE_TYPE_V": "--cache-type-v",
         "LLAMA_ARG_N_CPU_MOE": "--n-cpu-moe",
-        "LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS": "--checkpoint-every-n-tokens",
         "LLAMA_ARG_SPEC_TYPE": "--spec-type",
         "LLAMA_ARG_SPEC_DRAFT_N_MAX": "--spec-draft-n-max",
         "LLAMA_ARG_SPEC_DRAFT_TYPE_K": "--spec-draft-type-k",
@@ -16293,6 +16902,7 @@ def _launch_native_llama_server(env_path: Path, llama_bin: Path, llama_log: Path
         value = env.get(env_key, "").strip()
         if value:
             args.extend([flag, value])
+    args.extend(_native_llama_tuning_arguments(env, llama_bin))
     if _normalize_key(env.get("LLAMA_ARG_NO_CACHE_PROMPT")) not in {"", "0", "false", "off", "no"}:
         args.append("--no-cache-prompt")
     llama_log.parent.mkdir(parents=True, exist_ok=True)
@@ -16983,6 +17593,87 @@ def _request_server_shutdown(server, signum=None):
     ).start()
 
 
+def _reconcile_native_pixel_startup():
+    """Re-prove an unchanged native policy, serialized with model operations."""
+    helper = Path('/usr/local/libexec/ods-pixel-access/pixel_access_reconcile.py')
+    if platform.system() != 'Darwin' or not helper.exists():
+        return
+    # Execute only the installed root-owned helper, never an owner checkout.
+    try:
+        for entry in (helper, *helper.parents):
+            info = entry.lstat()
+            if (stat_mod.S_ISLNK(info.st_mode) or info.st_uid != 0
+                    or info.st_mode & 0o022):
+                raise ValueError('custody')
+        if not stat_mod.S_ISREG(helper.lstat().st_mode):
+            raise ValueError('custody')
+        if helper.stat().st_size > 65536:
+            raise ValueError('helper-size')
+        declarations = [node for node in ast.parse(helper.read_text()).body
+                        if isinstance(node, ast.Assign) and any(
+                            isinstance(target, ast.Name) and target.id == 'STARTUP_REPROOF_VERSION'
+                            for target in node.targets)]
+        if (len(declarations) != 1 or not isinstance(declarations[0].value, ast.Constant)
+                or type(declarations[0].value.value) is not int or declarations[0].value.value != 1):
+            logger.warning('Pixel startup reproof requires a compatible installed helper')
+            return
+    except (OSError, ValueError, SyntaxError):
+        logger.warning('Pixel startup reproof refused: helper custody')
+        return
+    for attempt in range(12):
+        acquired, _active = _begin_model_lifecycle('pixel_startup_reproof')
+        if acquired:
+            try:
+                result = subprocess.run(
+                    ['/usr/bin/python3', '-I', str(helper), '--startup'],
+                    capture_output=True, timeout=360, check=False,
+                )
+                if result.returncode == 0:
+                    logger.debug('Pixel access reproof check completed')
+                    return True
+                if len(result.stderr) > 8192:
+                    raise ValueError('diagnostic-size')
+                diagnostic = json.loads(result.stderr)
+                projection = diagnostic.get('projection', {})
+                if (diagnostic.get('stage') == 'unsafe-state'
+                        and projection.get('scope') == 'owner-host'
+                        and projection.get('available') is True
+                        and projection.get('pending') is False
+                        and projection.get('busy') is True):
+                    return True
+                # Retry only an unavailable preflight. Never replay an
+                # uncertain mutation or consume another pending transaction.
+                retry = (diagnostic.get('stage') == 'status-transport-unavailable' or (
+                         diagnostic.get('stage') in ('status-unavailable', 'unsafe-state')
+                         and projection.get('available') is False
+                         and projection.get('pending') is False
+                         and projection.get('busy') is False
+                         and projection.get('reason') in (
+                             'admission-gate-unavailable', 'runtime-unavailable-or-busy',
+                             'managed-runtime-unavailable')))
+                if not retry:
+                    logger.warning('Pixel startup reproof requires attention')
+                    return
+            except (OSError, ValueError, TypeError, AttributeError, subprocess.TimeoutExpired):
+                logger.warning('Pixel startup reproof failed; no automatic mutation retry')
+                return
+            finally:
+                _end_model_lifecycle('pixel_startup_reproof')
+        if attempt < 11:
+            time.sleep(5)
+    logger.warning('Pixel startup reproof readiness window exhausted')
+    # Every exhausted attempt was either lock contention or read-only
+    # unavailability. No uncertain change is eligible for another cycle.
+    return True
+
+
+def _monitor_native_pixel_access():
+    """Recheck healthy/busy instances; stop on uncertain policy mutations."""
+    while _reconcile_native_pixel_startup() is True:
+        time.sleep(30)
+    logger.warning('Pixel access monitor stopped; recovery requires attention')
+
+
 def main():
     global INSTALL_DIR, DATA_DIR, AGENT_API_KEY, GPU_BACKEND, STARTUP_ODS_MODE
     global TIER, GPU_COUNT, CORE_SERVICE_IDS
@@ -17095,6 +17786,9 @@ def main():
         STARTUP_ODS_MODE,
     )
     try:
+        if platform.system() == 'Darwin':
+            threading.Thread(target=_monitor_native_pixel_access,
+                             name='ods-pixel-startup-reproof', daemon=True).start()
         server.serve_forever()
     except KeyboardInterrupt:
         logger.info("Shutting down")

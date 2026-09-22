@@ -1,0 +1,69 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: 2.6.0
+service:
+  id: penpot
+  name: Penpot
+  aliases: []
+  container_name: ods-penpot
+  host_env: PENPOT_HOST
+  default_host: penpot
+  port: 8080
+  external_port_env: PENPOT_PORT
+  external_port_default: 11026
+  health: /readyz
+  type: docker
+  startup_check: true
+  startup_timeout: 240
+  gpu_backends:
+  - all
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  description: Collaborative vector design, reusable components, interactive prototypes
+    and design exports in a persistent local workspace.
+  env_vars:
+  - key: PENPOT_DATABASE_PASSWORD
+    required: true
+    secret: true
+    description: Random persistent password for the private PostgreSQL database.
+  - key: PENPOT_SECRET_KEY
+    required: true
+    secret: true
+    description: 'Persistent session/signing secret: generate 64 random bytes, URL-safe
+      base64 encoded.'
+  - key: PENPOT_PUBLIC_URI
+    required: false
+    default: http://localhost:11026
+    description: Browser-facing URL; update when changing the port or reverse proxy.
+  - key: PENPOT_FLAGS
+    required: false
+    default: enable-registration enable-login-with-password disable-email-verification
+      disable-smtp disable-prepl-server disable-secure-session-cookies disable-telemetry
+      enable-mcp enable-air-gapped-conf
+    description: Local installation flags. Disable registration after creating accounts;
+      see README before exposing remotely.
+  ui_path: /
+tags:
+- design
+- local
+- open-source
+features:
+- id: penpot-workspace
+  name: Penpot
+  description: Collaborative vector design, reusable components, interactive prototypes
+    and design exports in a persistent local workspace.
+  icon: PenTool
+  category: productivity
+  requirements:
+    services:
+    - penpot
+    vram_gb: 0
+  enabled_services_all:
+  - penpot
+  setup_time: Initial image download; see README
+  priority: 54
+  launch:
+    type: service
+    service: penpot
+    path: /

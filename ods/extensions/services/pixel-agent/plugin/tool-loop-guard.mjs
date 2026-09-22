@@ -19,7 +19,7 @@ import { projectWebResult } from "./web-result-projection.mjs";
 import { createCompletionAssurance } from "./completion-assurance.mjs";
 import { parseQuestions, questionsText, requestsChoiceQuestion, choiceQuestionFromText } from "./ask-user.mjs";
 import { createRunProgressBudget, failedToolOutcome, isLiteralEcho, RUN_PROGRESS_STOP_REASON } from "./run-progress-budget.mjs";
-import { canonicalWorkspaceParams, extensionlessHtmlWrite, workspaceFileParent } from "./workspace-path-contract.mjs";
+import { canonicalWorkspaceParams, extensionlessHtmlWrite, workspaceFileParent, nativeExecWorkdir } from "./workspace-path-contract.mjs";
 import { routePlaygroundTool, requestsNewPlaygroundProject } from "./playground-projects.mjs";
 import { workspaceMutationFiles } from "./workspace-projects.mjs";
 
@@ -104,10 +104,8 @@ export const EDIT_CREATE_LOOP_ABORT_REASON =
   "Pixel stopped this response because it kept retrying edit after the new-file write correction. The workspace is preserved; start a fresh message to retry with write.";
 
 export const REPEATED_WRITE_REQUIRES_PATCH_REASON =
-  "The write content matches what was previously recorded for that path in this turn. Use edit or apply_patch for the smallest relevant correction instead of rewriting the whole file with identical content; the file on disk may have been deleted or changed externally.";
+  "This write repeats content already recorded for this path in the current turn and makes no observed progress. Inspect the file if its state may have changed, or make a materially different correction. Other authorized tools remain available within the run progress budget.";
 
-export const REPEATED_WRITE_RETRY_EXHAUSTED_REASON =
-  "Pixel blocked a second identical-content rewrite of that path after already directing a focused edit. Do not call another tool in this turn; start a fresh message and continue with edit or apply_patch.";
 
 export const FOCUSED_EDIT_REQUIRED_REASON =
   "This edit repeats a large existing file in oldText and newText. Preserve context and make only the smallest unique replacements with edit, or use a focused apply_patch; do not resend the whole file.";
@@ -163,8 +161,6 @@ export const CANCELLABLE_EXEC_UNAVAILABLE_REASON =
 export const EXEC_ARGUMENTS_REQUIRE_COMMAND_REASON =
   "The exec command was not a non-empty string, so nothing was executed. Retry with command containing the shell text and workdir as a separate field, not an object inside command. For tool_call, use id exec and args containing those fields. Do not change the intended command or its authority.";
 
-export const WORKSPACE_PREVIEW_REQUIRES_TOOL_REASON =
-  "A server started inside Pixel's disposable sandbox is not reachable from the owner's browser. Do not start python http.server, npm dev, Vite, or another background server and do not claim any localhost port. Finish the static files, then call pixel_ods_workspace_preview with their one workspace-relative directory; share only its independently verified URL.";
 
 export const WORKSPACE_PREVIEW_REQUIRES_FILES_REASON =
   "Pixel cannot publish this website yet because this response has not created or inspected an index.html in the requested workspace directory. Create the static site files first, then call pixel_ods_workspace_preview with that one relative directory.";
@@ -269,11 +265,6 @@ export const OPERATIONS_HOST_COMMAND_COMPLETE_REASON =
 export const OPERATIONS_HOST_COMMAND_EVIDENCE_PREFIX =
   "Pixel verified this owner-approved ODS host command through a structurally matched terminal Operations Broker receipt:";
 
-export const WORKSPACE_TOOL_SEARCH_COMPLETE_REASON =
-  "Pixel already resolved the deferred workspace tools. Do not search again. Call tool_call now with the returned exact id, such as openclaw:core:exec, openclaw:core:write, openclaw:core:read, openclaw:core:edit, openclaw:core:apply_patch, or openclaw:core:process, and put that tool's normal arguments in args.";
-
-export const WORKSPACE_UNREQUESTED_PROJECTION_REASON =
-  "This is a sandbox workspace task, not an ODS status or application-list request. Do not call pixel_ods_status or pixel_ods_apps_list. Call tool_search once for write read edit apply_patch exec process, then use the returned exact workspace tool id to inspect or change only the owner-requested workspace path.";
 
 export const OPERATIONS_REQUIRES_PROJECTIONS_REASON =
   "Pixel completed the requested host Operations jobs, but the owner also requested ODS status evidence that is still missing. Call each requested pixel_ods_status or pixel_ods_apps_list projection exactly once now. After every requested projection is verified, continue any explicitly requested workspace work.";
@@ -299,7 +290,7 @@ export const OPERATIONS_REQUIRES_WORKFLOW_REASON =
   "Pixel blocked a fragmented host inventory. Submit exactly one pixel_ops_workflow_submit containing every required ods-host action, then call pixel_ops_job_wait once for that workflow job. Do not submit separate pixel_ops_run jobs.";
 
 export const OPERATIONS_EXTENSION_LIFECYCLE_SEQUENCE_REASON =
-  "Pixel blocked an extension lifecycle shortcut. Submit exactly one ods.extensions.inspect action for the owner's extension ID and wait for its terminal receipt before submitting the requested lifecycle action. Do not combine lifecycle actions in a workflow or continue when inspection reports missing configuration.";
+  "Pixel blocked an extension lifecycle shortcut. Submit ods.extensions.inspect for the owner's extension ID and wait for its terminal receipt before submitting the requested lifecycle action once. If the lifecycle receipt is pending, inspect that same extension again sequentially to reconcile its current state; never repeat the mutation. Do not combine lifecycle actions in a workflow. Missing startup configuration blocks install/enable; a validated inspection can still precede the owner's requested disable/remove action.";
 
 export const OPERATIONS_CONTINUATION_REQUIRES_STATUS_REASON =
   "Pixel blocked a new action while checking an existing immutable Operations plan. Query only the exact owner-supplied job with pixel_ops_job_get or pixel_ops_job_wait; do not resubmit, repeat, approve, or widen the operation.";
@@ -339,9 +330,6 @@ const WORKSPACE_CONTINUATION_TOOLS = new Set([
   "read", "write", "edit", "apply_patch", "exec", "process",
   "pixel_ods_evidence_report", "pixel_ods_evidence_readback",
 ]);
-const WORKSPACE_TOOL_SEARCH_QUERY = "write read edit apply_patch exec process";
-const WORKSPACE_INSPECTION_COMPLETE_REASON =
-  "The workspace inspection already completed and returned the directory, kernel, and listing; do not search, list, read the directory, or poll again. Continue the owner's requested task now. If the owner requested new files, call tool_call with id openclaw:core:write and args containing the first workspace-relative path and its full content. Do not call exec or process before that write.";
 const FAILED_TEST_READ_REPAIR_REASON =
   "The verification command failed. Preserve the owner's explicit behavior contract: correct a test only when its expectation contradicts the owner; otherwise repair the implementation, and never weaken an assertion merely to match broken output. A blank label such as `Invalid integer:` is not a helpful empty-input message. When the failure already contains actual and expected evidence, apply one focused edit to the file implicated by the failure (test or implementation), then rerun the same verification command. If the failure is a missing-file error for a file you previously wrote, recreate it before rerunning. If evidence is insufficient, read the relevant file or run a focused diagnostic, then repair and rerun verification. Report an unresolved blocker honestly when the available tools cannot resolve it.";
 const EXACT_DOWNLOAD_BROKER_TOOLS = new Set([
@@ -398,9 +386,30 @@ function execMarkerId(runId) {
   return createHash("sha256").update(runId, "utf8").digest("hex");
 }
 
+export function nativeRuntimeExecWrapper(executable = process.execPath, platform = process.platform, stat = fs.lstatSync) {
+  if (platform !== "darwin" || !/^\/usr\/local\/libexec\/ods-pixel-runtimes\/[a-f0-9]{64}\/node$/.test(executable)) return undefined;
+  const directory = path.dirname(executable);
+  const wrapper = path.join(directory, "cancellable-exec.sh");
+  let entry;
+  try { entry = stat(wrapper); } catch (error) {
+    // Older attested bundles predate the immutable wrapper and retain the
+    // verified owner-side wrapper. Other failures must not downgrade silently.
+    if (error?.code === "ENOENT") return undefined;
+    throw error;
+  }
+  const parent = stat(directory);
+  if (!entry.isFile() || entry.isSymbolicLink() || entry.uid !== 0 || entry.nlink !== 1
+      || (entry.mode & 0o7777) !== 0o755 || !parent.isDirectory() || parent.isSymbolicLink()
+      || parent.uid !== 0 || (parent.mode & 0o7777) !== 0o755) {
+    throw new Error("unsafe native runtime exec wrapper");
+  }
+  return wrapper;
+}
+
 export function createExecCancellationControl({
   root = path.join(homedir(), ".openclaw", ".ods-exec-control"),
   executionHost = "sandbox",
+  platform = process.platform,
 } = {}) {
   if (executionHost !== "sandbox" && executionHost !== "gateway") {
     throw new Error("invalid Pixel execution control host mode");
@@ -432,6 +441,10 @@ export function createExecCancellationControl({
   }
 
   return {
+    resolveWorkdir(value, workspaceRoot) {
+      return executionHost === "gateway" && platform === "darwin"
+        ? nativeExecWorkdir(value, workspaceRoot) : undefined;
+    },
     prepare(runId, command) {
       if (typeof command !== "string" || !command.trim() || command.includes("\0")) {
         throw new Error("invalid Pixel exec command");
@@ -445,10 +458,12 @@ export function createExecCancellationControl({
       const encoded = Buffer.from(command, "utf8").toString("base64");
       // Validate the owner-side file above even when execution uses its sandbox
       // bind mount. Gateway execution uses that same verified file directly.
+      const immutableWrapper = executionHost === "gateway" ? nativeRuntimeExecWrapper(process.execPath, platform) : undefined;
       const wrapper = executionHost === "sandbox"
         ? EXEC_CONTROL_WRAPPER
-        : `'${hostWrapper.replace(/'/g, "'\"'\"'")}'`;
-      return `${wrapper} ${execMarkerId(runId)} ${encoded}`;
+        : `'${(immutableWrapper ?? hostWrapper).replace(/'/g, "'\"'\"'")}'`;
+      const markers = immutableWrapper ? ` '${resolvedRoot.replace(/'/g, "'\"'\"'")}'` : "";
+      return `${wrapper} ${execMarkerId(runId)} ${encoded}${markers}`;
     },
 
     signal(runId) {
@@ -1480,8 +1495,12 @@ function exactDownloadTerminalArtifact(event, submissions) {
     typeof artifact !== "object" ||
     Array.isArray(artifact) ||
     typeof artifact.path !== "string" ||
-    artifact.path !==
-      `/var/lib/pixel-ops-broker/artifacts/${requestedJobId}/${submission.filename}` ||
+    ![
+      `/var/lib/pixel-ops-broker/artifacts/${requestedJobId}/${submission.filename}`,
+      ...(process.platform === "darwin"
+        ? [`/private/var/lib/pixel-ops-broker/artifacts/${requestedJobId}/${submission.filename}`]
+        : []),
+    ].includes(artifact.path) ||
     typeof artifact.filename !== "string" ||
     artifact.filename !== submission.filename ||
     !Number.isSafeInteger(artifact.bytes) ||
@@ -1730,6 +1749,32 @@ function operationsTerminalOutcome(event, submittedJobs) {
     steps: details.steps,
     ...(submission.requiredNetworkPeer ? { requiredNetworkPeer: submission.requiredNetworkPeer } : {}),
   };
+}
+
+function repositoryObservationMatches(outcome, repository) {
+  if (outcome?.status !== "succeeded" || outcome.actions?.length !== 1 || outcome.steps?.length !== 1) return false;
+  const action = outcome.actions[0], step = outcome.steps[0];
+  if (action.target !== "ods-host" || !["ods.extensions.github-inspect", "ods.extensions.github-file"].includes(action.action)) return false;
+  if (!canonicalGitHubSourceMatches(action.parameters?.repositoryUrl, repository) || step.stdout.length > 256 * 1024) return false;
+  let value;
+  try { value = JSON.parse(step.stdout); } catch { return false; }
+  if (!value || value.schemaVersion !== 1 ||
+      !canonicalGitHubSourceMatches(value.repository, repository) ||
+      typeof value.commit !== "string" || !/^[a-f0-9]{40}$/.test(value.commit) ||
+      value.contentTrust !== "untrusted-upstream-evidence" ||
+      value.installationStarted !== false || value.registered !== false) return false;
+  if (action.action === "ods.extensions.github-file") {
+    return value.kind === "ods-pixel-extension-repository-file" &&
+      value.evidenceScope === "repository-file-at-commit" &&
+      value.commit === action.parameters?.commit && value.path === action.parameters?.path &&
+      typeof value.content === "string" && value.content.length <= 32000 &&
+      typeof value.contentTruncated === "boolean";
+  }
+  return value.kind === "ods-pixel-extension-repository" &&
+    value.evidenceScope === "repository-documents-at-commit" && value.requiresRecipeReview === true &&
+    typeof value.archived === "boolean" &&
+    (value.readme === null || (typeof value.readme === "string" && value.readme.length <= 24000)) &&
+    typeof value.readmeTruncated === "boolean";
 }
 
 function requiredHostObservationActions(state) {
@@ -3199,6 +3244,45 @@ function sameEffectiveLifecycleStatus(left, right) {
     [left, right].every((status) => ["enabled", "cli_installed"].includes(status));
 }
 
+function validInstallationPrerequisites(value, extensionId) {
+  if (!exactKeys(value, ["state", "steps"]) || !Array.isArray(value.steps) || value.steps.length > 128) return false;
+  if (value.state === "unavailable") return value.steps.length === 0;
+  if (!value.steps.length || value.steps.at(-1)?.extensionId !== extensionId) return false;
+  const seen = new Set();
+  for (const step of value.steps) {
+    if (!exactKeys(step, ["extensionId", "status", "action", "missingConfiguration"]) ||
+        typeof step.extensionId !== "string" || !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(step.extensionId) ||
+        seen.has(step.extensionId) || !EXTENSION_LIFECYCLE_STATUSES.has(step.status) ||
+        !sortedConfigurationKeys(step.missingConfiguration)) return false;
+    const expected = ({enabled: "none", cli_installed: "none", disabled: "enable", stopped: "enable",
+      not_installed: "install", installing: "wait", setting_up: "wait"})[step.status] ?? "blocked";
+    if (step.action !== expected && step.action !== "blocked") return false;
+    seen.add(step.extensionId);
+  }
+  const expected = value.steps.some(s => s.action === "blocked") ? "blocked"
+    : value.steps.some(s => s.missingConfiguration.length) ? "configuration_required"
+    : value.steps.some(s => s.action === "wait") ? "pending"
+    : value.steps.slice(0, -1).some(s => s.action !== "none") ? "dependencies_required" : "ready";
+  return value.state === expected;
+}
+
+function validExtensionIntegration(value, extensionId) {
+  if (value === null) return true;
+  if (!exactKeys(value, ['schemaVersion','extensionId','scope','contentTrust','description',
+    'declaredConnection','documentation','documentationTruncated','connectivityVerified','projectIntegrationVerified']) ||
+      value.schemaVersion !== 1 || value.extensionId !== extensionId ||
+      value.scope !== 'recipe-integration-guidance' || value.contentTrust !== 'untrusted-recipe-evidence' ||
+      value.connectivityVerified !== false || value.projectIntegrationVerified !== false ||
+      typeof value.description !== 'string' || [...value.description].length > 2000 ||
+      !(value.documentation === null || typeof value.documentation === 'string' && [...value.documentation].length <= 24000) ||
+      typeof value.documentationTruncated !== 'boolean' ||
+      !value.declaredConnection || typeof value.declaredConnection !== 'object' || Array.isArray(value.declaredConnection)) return false;
+  return Object.entries(value.declaredConnection).every(([key, field]) =>
+    ['type','container_name','default_host','host_env','external_port_env'].includes(key)
+      ? typeof field === 'string' && /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(field)
+      : ['port','external_port_default'].includes(key) && Number.isInteger(field) && field >= 1 && field <= 65535);
+}
+
 function extensionLifecycleResult(step, submittedAction) {
   const expectedAction = submittedAction?.action?.replace(/^ods\.extensions\./, "");
   const submittedParameters = submittedAction?.parameters;
@@ -3211,7 +3295,7 @@ function extensionLifecycleResult(step, submittedAction) {
     step.riskSignals.length > 0 ||
     typeof step.stdout !== "string" ||
     step.stdout.length > 256 * 1024 ||
-    !["inspect", "install", "enable", "disable", "remove"].includes(expectedAction) ||
+    !["inspect", "install", "install-next", "enable", "disable", "remove"].includes(expectedAction) ||
     !exactKeys(submittedParameters, ["serviceId"]) ||
     boundedCatalogString(submittedParameters.serviceId, /^[a-z0-9][a-z0-9._-]{0,63}$/, 64) === undefined
   ) {
@@ -3223,6 +3307,23 @@ function extensionLifecycleResult(step, submittedAction) {
   } catch {
     return undefined;
   }
+  if (expectedAction === "install-next") {
+    if (!exactKeys(value, ["schemaVersion", "kind", "action", "extensionId", "state", "activeExtensionId",
+      "externalEffectAttempted", "prerequisites", "boundary"]) || value.schemaVersion !== 1 ||
+      value.kind !== "ods-pixel-extension-installation" || value.action !== expectedAction ||
+      value.extensionId !== submittedParameters.serviceId || value.boundary !== EXTENSION_LIFECYCLE_BOUNDARY ||
+      typeof value.externalEffectAttempted !== "boolean" ||
+      !validInstallationPrerequisites(value.prerequisites, value.extensionId) ||
+      !["succeeded", "pending", "blocked", "configuration_required", "reconciliation_required"].includes(value.state)) return undefined;
+    const steps = value.prerequisites.steps;
+    if (value.activeExtensionId !== null && !steps.some(s => s.extensionId === value.activeExtensionId)) return undefined;
+    if (value.state === "succeeded" && (value.externalEffectAttempted || value.activeExtensionId !== null ||
+      !steps.length || steps.some(s => s.action !== "none"))) return undefined;
+    if (value.prerequisites.state === "unavailable" && value.state !== "reconciliation_required") return undefined;
+    if (value.externalEffectAttempted && !["pending", "reconciliation_required"].includes(value.state)) return undefined;
+    if (value.state === "pending" && value.activeExtensionId === null) return undefined;
+    return value;
+  }
   const topKeys = [
     "schemaVersion", "kind", "action", "extensionId", "outcome",
     "previousStatus", "currentStatus", "changed", "externalEffectOccurred",
@@ -3231,8 +3332,15 @@ function extensionLifecycleResult(step, submittedAction) {
   ];
   const scopedConfiguration = Object.prototype.hasOwnProperty.call(value ?? {}, "configurationScope");
   if (scopedConfiguration) topKeys.push("configurationScope", "runtimeRequirementsVerified");
+  const prerequisites = Object.prototype.hasOwnProperty.call(value ?? {}, "installationPrerequisites");
+  if (prerequisites) topKeys.push("installationPrerequisites");
+  const integration = Object.prototype.hasOwnProperty.call(value ?? {}, "integration");
+  if (integration) topKeys.push("integration");
   if (
     !exactKeys(value, topKeys) ||
+    (integration && (expectedAction !== 'inspect' || !validExtensionIntegration(value.integration, value.extensionId))) ||
+    (prerequisites && (expectedAction !== "inspect" ||
+      !validInstallationPrerequisites(value.installationPrerequisites, value.extensionId))) ||
     (scopedConfiguration && (value.configurationScope !== "declared-environment-keys" ||
       value.runtimeRequirementsVerified !== false)) ||
     value.schemaVersion !== 1 ||
@@ -3240,9 +3348,11 @@ function extensionLifecycleResult(step, submittedAction) {
     value.boundary !== EXTENSION_LIFECYCLE_BOUNDARY ||
     value.action !== expectedAction ||
     value.extensionId !== submittedParameters.serviceId ||
-    !["ready", "inspected", "blocked", "noop", "succeeded", "failed"].includes(value.outcome) ||
-    !EXTENSION_LIFECYCLE_STATUSES.has(value.previousStatus) ||
-    !EXTENSION_LIFECYCLE_STATUSES.has(value.currentStatus) ||
+    !["ready", "inspected", "blocked", "noop", "succeeded", "pending", "failed"].includes(value.outcome) ||
+    !(EXTENSION_LIFECYCLE_STATUSES.has(value.previousStatus) ||
+      (value.outcome === "failed" && value.previousStatus === "unknown")) ||
+    !(EXTENSION_LIFECYCLE_STATUSES.has(value.currentStatus) ||
+      (value.outcome === "failed" && value.currentStatus === "unknown")) ||
     typeof value.changed !== "boolean" ||
     typeof value.externalEffectOccurred !== "boolean" ||
     !exactKeys(value.rollback, ["attempted", "succeeded"]) ||
@@ -3293,10 +3403,17 @@ function extensionLifecycleResult(step, submittedAction) {
     ) {
       return undefined;
     }
+  } else if (value.outcome === "pending") {
+    if (
+      !["install", "enable", "disable"].includes(expectedAction) ||
+      !["installing", "setting_up"].includes(value.currentStatus) ||
+      !value.externalEffectOccurred || missing.length > 0 ||
+      value.rollback.attempted ||
+      value.changed !== !sameEffectiveLifecycleStatus(value.currentStatus, value.previousStatus)
+    ) return undefined;
   } else if (value.outcome === "failed") {
     if (
       value.changed && !value.externalEffectOccurred ||
-      (value.externalEffectOccurred && expectedAction !== "remove" && !value.rollback.attempted) ||
       (value.rollback.succeeded === true &&
         !sameEffectiveLifecycleStatus(value.currentStatus, value.previousStatus))
     ) {
@@ -3423,6 +3540,7 @@ function operationsContinuationEvidenceText(outcome) {
   }
   const result = outcome.result;
   if (!result) return undefined;
+  if (result.action === "install-next") return installationEvidence(result, outcome.jobId);
   return [
     OPERATIONS_EXTENSION_LIFECYCLE_EVIDENCE_PREFIX,
     `- Extension: \`${result.extensionId}\`.`,
@@ -3430,7 +3548,7 @@ function operationsContinuationEvidenceText(outcome) {
     `- State: \`${result.previousStatus}\` -> \`${result.currentStatus}\`.`,
     `- Change observed: ${result.changed ? "yes" : "no"}; external effect attempted: ${result.externalEffectOccurred ? "yes" : "no"}.`,
     `- Missing required configuration keys: ${result.missingConfiguration.length ? result.missingConfiguration.map((key) => `\`${key}\``).join(", ") : "none"}.`,
-    `- Rollback: ${result.rollback.attempted ? (result.rollback.succeeded ? "succeeded" : "failed") : "not required"}.`,
+    `- Rollback: ${result.rollback.attempted ? (result.rollback.succeeded ? "succeeded" : "failed") : "not attempted"}.`,
     `- Authority: ${EXTENSION_LIFECYCLE_BOUNDARY}`,
     `- Continued lifecycle job: \`${outcome.jobId}\`; plan SHA-256: \`${outcome.planHash}\`.`,
   ].join("\n");
@@ -3441,6 +3559,12 @@ function lifecycleOutcomeForAction(terminalJobs, action) {
   const matches = [...terminalJobs.values()].filter(
     (outcome) => outcome.actions?.length === 1 && outcome.actions[0]?.action === action
   );
+  if (["ods.extensions.inspect", "ods.extensions.install-next"].includes(action) && matches.length > 1) {
+    const first = matches[0].actions[0];
+    if (!matches.every((entry) => entry.actions[0].target === first.target &&
+      entry.actions[0].parameters?.serviceId === first.parameters?.serviceId)) return undefined;
+    return matches.at(-1);
+  }
   return matches.length === 1 ? matches[0] : undefined;
 }
 
@@ -3453,9 +3577,20 @@ function parsedLifecycleOutcome(terminalJobs, action) {
   return result ? { outcome, result } : undefined;
 }
 
+function inspectionPermitsLifecycleAction(inspection, mutationAction) {
+  const result = inspection?.result;
+  if (["ods.extensions.install", "ods.extensions.enable"].includes(mutationAction) &&
+      result?.installationPrerequisites && result.installationPrerequisites.state !== "ready") return false;
+  if (["ready", "inspected"].includes(result?.outcome)) return true;
+  // Configuration required for startup is not a prerequisite for stopping or
+  // removing a retained definition. Only validated, read-only receipts reach here.
+  return ["ods.extensions.disable", "ods.extensions.remove"].includes(mutationAction) &&
+    result?.outcome === "blocked" && result.missingConfiguration.length > 0;
+}
+
 function inspectionAlreadySatisfiesLifecycleAction(inspection, mutationAction) {
   const action = mutationAction?.replace(/^ods\.extensions\./, "");
-  return ["ready", "inspected"].includes(inspection?.result?.outcome) &&
+  return inspectionPermitsLifecycleAction(inspection, mutationAction) &&
     EXTENSION_LIFECYCLE_SUCCESS.get(action)?.has(inspection.result.currentStatus) === true;
 }
 
@@ -3487,7 +3622,9 @@ function extensionInspectionEvidence(step, action, jobId) {
   const result = extensionLifecycleResult(step, action);
   if (!result || result.action !== "inspect") return undefined;
   return [
-    OPERATIONS_EXTENSION_LIFECYCLE_EVIDENCE_PREFIX,
+    result.outcome === "failed"
+      ? "ODS could not verify this extension through the Operations Broker. A failed lookup does not establish that an extension is absent."
+      : OPERATIONS_EXTENSION_LIFECYCLE_EVIDENCE_PREFIX,
     `- Target: \`${action.target}\`; extension: \`${result.extensionId}\`.`,
     `- Inspection: \`${result.outcome}\`; current state: \`${result.currentStatus}\`.`,
     result.outcome === "failed"
@@ -3561,6 +3698,18 @@ function extensionDiscoveryVerification(state) {
   return { status: successes > 0 ? "passed" : "failed", text: evidence.join("\n\n") };
 }
 
+function installationEvidence(result, jobId) {
+  return [OPERATIONS_EXTENSION_LIFECYCLE_EVIDENCE_PREFIX,
+    `- Extension: \`${result.extensionId}\`; installation state: \`${result.state}\`.`,
+    `- External effect attempted by this step: ${result.externalEffectAttempted ? "yes" : "no"}.`,
+    ...result.prerequisites.steps.map(s =>
+      `- \`${s.extensionId}\`: observed \`${s.status}\`; next action ${s.action}${s.missingConfiguration.length ? `; missing keys ${s.missingConfiguration.join(", ")}` : ""}.`),
+    ...(result.state === "pending" ? ["- Installation is still in progress; application readiness is not confirmed."] : []),
+    ...(result.state === "reconciliation_required" ? ["- The last request needs reconciliation; do not repeat a direct installation or remove retained work."] : []),
+    `- Installation job: \`${jobId}\`.`,
+  ].join("\n");
+}
+
 function extensionLifecycleEvidenceText(requiredActions, terminalJobs) {
   const mutationActions = [...requiredActions].filter(
     (action) => action.startsWith("ods.extensions.") && action !== "ods.extensions.inspect"
@@ -3582,13 +3731,31 @@ function extensionLifecycleEvidenceText(requiredActions, terminalJobs) {
   }
   const inspection = parsedLifecycleOutcome(terminalJobs, "ods.extensions.inspect");
   if (!inspection || !["ready", "inspected", "blocked"].includes(inspection.result.outcome)) return undefined;
-  if (inspection.result.outcome === "blocked") {
+  if (mutationActions[0] === "ods.extensions.install-next") {
+    const latest = parsedLifecycleOutcome(terminalJobs, "ods.extensions.install-next");
+    if (latest) return installationEvidence(latest.result, latest.outcome.jobId);
+    const prerequisites = inspection.result.installationPrerequisites;
+    if (prerequisites && !["ready", "dependencies_required", "pending"].includes(prerequisites.state)) {
+      return [OPERATIONS_EXTENSION_LIFECYCLE_EVIDENCE_PREFIX,
+        `- Extension: \`${inspection.result.extensionId}\`; installation prerequisites: ${prerequisites.state}.`,
+        ...prerequisites.steps.filter(s => s.missingConfiguration.length).map(s =>
+          `- \`${s.extensionId}\`: missing configuration keys ${s.missingConfiguration.join(", ")}.`),
+        "- No installation step was submitted."].join("\n");
+    }
+    return undefined;
+  }
+  if (!inspectionPermitsLifecycleAction(inspection, mutationActions[0])) {
     if (terminalJobs.size !== 1) return undefined;
     return [
       OPERATIONS_EXTENSION_LIFECYCLE_EVIDENCE_PREFIX,
       `- Extension: \`${inspection.result.extensionId}\`.`,
       `- Inspection: blocked in state \`${inspection.result.currentStatus}\`; no change or external effect occurred.`,
       `- Missing required configuration keys: ${inspection.result.missingConfiguration.map((key) => `\`${key}\``).join(", ")}.`,
+      ...(inspection.result.installationPrerequisites ? [
+        `- Installation prerequisites: ${inspection.result.installationPrerequisites.state}.`,
+        ...inspection.result.installationPrerequisites.steps.filter(s => s.action !== "none").map(s =>
+          `- \`${s.extensionId}\`: ${s.action}; current state \`${s.status}\`${s.missingConfiguration.length ? `; missing keys: ${s.missingConfiguration.join(", ")}` : ""}.`),
+      ] : []),
       `- Authority: ${EXTENSION_LIFECYCLE_BOUNDARY}`,
       `- Inspection job: \`${inspection.outcome.jobId}\`.`,
     ].join("\n");
@@ -3622,6 +3789,23 @@ function extensionLifecycleEvidenceText(requiredActions, terminalJobs) {
   const mutation = parsedLifecycleOutcome(terminalJobs, mutationAction);
   if (!mutation || mutation.result.extensionId !== inspection.result.extensionId) return undefined;
   const result = mutation.result;
+  if (result.outcome === "pending") {
+    const orderedJobs = [...terminalJobs.keys()];
+    const observedAfterMutation = orderedJobs.indexOf(inspection.outcome.jobId) >
+      orderedJobs.indexOf(mutation.outcome.jobId);
+    if (observedAfterMutation) {
+      return [
+        OPERATIONS_EXTENSION_LIFECYCLE_EVIDENCE_PREFIX,
+        `- Extension: \`${result.extensionId}\`; requested action: \`${result.action}\`.`,
+        `- Latest observed state: \`${inspection.result.currentStatus}\`.`,
+        inspectionAlreadySatisfiesLifecycleAction(inspection, mutationAction)
+          ? "- The requested lifecycle state is now confirmed by a subsequent inspection. Installation was not repeated."
+          : "- Completion is not confirmed. Use the latest inspection state to decide the next step; do not replay the original mutation.",
+        "- This confirms lifecycle state only, not every application feature.",
+        `- Lifecycle job: \`${mutation.outcome.jobId}\`; latest inspection job: \`${inspection.outcome.jobId}\`.`,
+      ].join("\n");
+    }
+  }
   const lines = [
     OPERATIONS_EXTENSION_LIFECYCLE_EVIDENCE_PREFIX,
     `- Extension: \`${result.extensionId}\`.`,
@@ -3633,6 +3817,9 @@ function extensionLifecycleEvidenceText(requiredActions, terminalJobs) {
     `- Authority: ${EXTENSION_LIFECYCLE_BOUNDARY}`,
     `- Inspection job: \`${inspection.outcome.jobId}\`; lifecycle job: \`${mutation.outcome.jobId}\`.`,
   ];
+  if (result.outcome === "pending") {
+    lines.push("- Setup is still active. Completion is not confirmed; inspect the extension again without replaying installation or rolling it back.");
+  }
   return lines.join("\n");
 }
 
@@ -3732,19 +3919,21 @@ function operationsEvidenceText(
       OPERATIONS_EXTENSION_INVENTORY_EVIDENCE_PREFIX,
       `- Target: \`${outcome.actions[0].target}\`.`,
       `- Catalog total: ${result.summary.total}; installed: ${result.summary.installed}; enabled: ${result.summary.enabled}; CLI-installed: ${result.summary.cliInstalled}.`,
-      `- Degraded or inactive installed state: disabled ${result.summary.disabled}; stopped ${result.summary.stopped}; unhealthy ${result.summary.unhealthy}; installing ${result.summary.installing}; setting up ${result.summary.settingUp}; error ${result.summary.error}.`,
+      `- Degraded or inactive installed state: disabled ${result.summary.disabled}; stopped ${result.summary.stopped}; unhealthy ${result.summary.unhealthy}.`,
+      `- Installation not confirmed: installing ${result.summary.installing}; setting up ${result.summary.settingUp}; error ${result.summary.error}.`,
       `- Not installed: ${result.summary.notInstalled}; incompatible: ${result.summary.incompatible}.`,
     ];
-    const installed = result.extensions.filter(
+    const observed = result.extensions.filter(
       (entry) => !["not_installed", "incompatible"].includes(entry.status)
     );
-    if (installed.length) {
-      for (const entry of installed) {
+    if (observed.length) {
+      for (const entry of observed) {
         lines.push(
           `- \`${entry.name}\` (\`${entry.id}\`): status \`${entry.status}\`; source \`${entry.source}\`; category \`${entry.category}\`; installable ${entry.installable ? "yes" : "no"}.`
         );
       }
-    } else {
+    }
+    if (result.summary.installed === 0) {
       lines.push("- Installed extensions: none.");
     }
     if (odsAppsProjection) {
@@ -4137,49 +4326,6 @@ function requestsRecursiveForcedDelete(params) {
   return false;
 }
 
-function execLaunchesWorkspaceServer(params) {
-  if (!params || typeof params !== "object" || Array.isArray(params)) return false;
-  const command = params.command;
-  if (typeof command !== "string" || !command.trim()) return false;
-  return (
-    /\bpython(?:3(?:\.\d+)?)?\s+-m\s+http\.server\b/i.test(command) ||
-    /\b(?:npx|pnpm\s+dlx|bunx)\s+(?:--yes\s+)?(?:vite|serve|http-server)\b/i.test(command) ||
-    /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:dev|start|serve|preview)\b/i.test(command) ||
-    /\b(?:vite|next\s+dev|astro\s+dev|hugo\s+server|jekyll\s+serve)\b/i.test(command)
-  );
-}
-
-function workspacePreviewMkdirDirectory(params) {
-  if (!params || typeof params !== "object" || Array.isArray(params)) return undefined;
-  const command = params.command;
-  if (typeof command !== "string" || !command.trim()) return undefined;
-  const match = command.trim().match(
-    /^mkdir\s+-p\s+(?:--\s+)?(?:"([^"\r\n]+)"|'([^'\r\n]+)'|([^\s;&|><`$()]+))$/i
-  );
-  if (!match) return undefined;
-  const rawDirectory = match[1] ?? match[2] ?? match[3];
-  const absoluteWorkspacePath = rawDirectory.startsWith("/workspace/");
-  if (
-    !absoluteWorkspacePath &&
-    normalizeExecWorkdir(params.workdir ?? ".") !== "."
-  ) {
-    return undefined;
-  }
-  const directory = normalizeWorkspaceFilePath(rawDirectory);
-  const parts = typeof directory === "string" ? directory.split("/") : [];
-  if (
-    parts.length === 0 ||
-    parts.length > 16 ||
-    parts.some(
-      (part) =>
-        ["", ".", ".."].includes(part) || !WORKSPACE_PATH_COMPONENT.test(part)
-    )
-  ) {
-    return undefined;
-  }
-  return directory;
-}
-
 // Keep status UI elements separate from requests for platform facts.
 function statusKeywordIsUiNounPhrase(clause, keywordIndex, keywordLen) {
   const uiWords =
@@ -4451,8 +4597,7 @@ function extensionInventoryResult(step, submittedAction) {
     }
   }
   const installedStatuses = new Set([
-    "enabled", "cli_installed", "disabled", "stopped", "unhealthy", "installing",
-    "setting_up", "error",
+    "enabled", "cli_installed", "disabled", "stopped", "unhealthy",
   ]);
   if (value.summary.installed !== extensions.filter((entry) => installedStatuses.has(entry.status)).length) {
     return undefined;
@@ -4498,6 +4643,15 @@ export function userMessageExtensionCatalogExactQuery(messages, prompt = undefin
 export function userMessageExtensionLifecycleIntent(messages, prompt = undefined) {
   const text = currentOwnerIntentText(messages, prompt);
   if (!text) return undefined;
+  // A leading owner-entered mention selects exactly one extension. Keep a
+  // same-line usage request in the original model prompt; it is not a host
+  // command or authority to mutate another extension. Quoted examples,
+  // multiple mentions and compound commands remain outside this shorthand.
+  const command = text.match(/^[ \t]*(?:\/goal[ \t]+)?\/extensions?[ \t]+@([a-z0-9][a-z0-9_-]{0,63})(?:[ \t]+[^\r\n@;|&`]*?)?[ \t]*$/i);
+  if (command) return { action: "install-next", serviceId: command[1].toLowerCase() };
+  // Do not reinterpret a malformed slash request as an unrelated natural
+  // language action found in its trailing text.
+  if (/^[ \t]*\/extensions?\b/i.test(text)) return undefined;
   const match = text.match(
     /\b(install|enable|disable|remove|uninstall)\s+(?:the\s+)?(?:(?:installed|existing|enabled|disabled)\s+)?(?:ODS\s+)?extension\s+(?:(?:with\s+)?(?:the\s+)?(?:exact\s+)?id\s+)?[`"']?([a-z0-9](?:[a-z0-9_-]|\.(?=[a-z0-9])){0,63})(?![a-z0-9_-]|\.(?=[a-z0-9]))[`"']?/i
   ) ?? text.match(
@@ -4815,7 +4969,11 @@ export function userMessageOperationsRequirements(messages, prompt = undefined) 
     actions.push("host.architecture");
   }
   if (/\bhost platform\b/i.test(hostText)) actions.push("host.platform");
-  if (/\b(?:operating[- ]system(?: signature)?|(?:host\s+)?os(?:\s+(?:signature|release))?|linux distribution|distro)\b/i.test(hostText)) {
+  // Bare lowercase "os" is also a Portuguese article. Require a technical
+  // phrase or an explicit inspection request before treating it as the OS.
+  if (/\b(?:operating[- ]system(?: signature)?|host\s+os|os\s+(?:signature|release|version)|linux distribution|distro)\b/i.test(hostText) ||
+      /\bOS\b/.test(hostText) ||
+      /\b(?:check|inspect|report|show|identify)\s+(?:the\s+)?os\b/i.test(hostText)) {
     actions.push("host.os-release");
   }
   if (broadHostExploration || (hostContext && /\b(?:uptime|load averages?|system load)\b/i.test(hostText))) {
@@ -6079,7 +6237,6 @@ export function createToolLoopGuard({
         successfulWriteContentByPath: new Map(),
         compareSwapRepairCounts: new Map(),
         successfulReadPaths: new Set(),
-        repeatedWriteBlocks: new Map(),
         privateNetworkExhausted: false,
         privateNetworkRequestDenied: false,
         privateNetworkPrompt: false,
@@ -6089,6 +6246,7 @@ export function createToolLoopGuard({
         githubCanonicalSatisfied: false,
         odsRoutingInitialized: false,
         odsRequestedTools: new Set(),
+        odsExcludedTools: new Set(),
         odsRequiredTools: new Set(),
         exactDownloadRequested: false,
         researchDownloadSubmissions: new Map(),
@@ -6161,10 +6319,6 @@ export function createToolLoopGuard({
         workspacePreview: undefined,
         workspaceLastVerifiedPreview: undefined,
         workspacePreviewVerifiedDirectory: undefined,
-        workspaceToolSearchRouted: false,
-        workspaceToolSearchQueries: new Set(),
-        workspaceInspectionRouted: false,
-        workspaceInspectionPollCorrections: 0,
         invalidUnittestBlocks: 0,
         invalidParsedJsonBlocks: 0,
         noOpEditBlocks: 0,
@@ -6253,7 +6407,6 @@ export function createToolLoopGuard({
     if (!state?.progressBudget.exhausted || state.progressAbortAttempted) return;
     const sessionId = state.currentSessionId;
     if (!sessionId || sessionRuns.get(sessionId) !== runId) return;
-    state.progressAbortAttempted = true;
     try { execControl?.signal?.(runId); }
     catch (error) { warn(`Pixel progress-limit execution signal failed: ${String(error)}`); }
     // Do not clear the session or its history. Abort only its active harness
@@ -6262,7 +6415,10 @@ export function createToolLoopGuard({
     // construction can strand the provider prompt and its session write lock.
     // Tool hooks enforce the terminal budget while this boundary is pending.
     try {
-      const aborted = abortRun?.(sessionId);
+      const aborted = abortRun?.(sessionId, state.currentSessionKey);
+      // A rejected abort is not completion. Retry at the next model-end
+      // boundary, while ownership still matches this exact run.
+      state.progressAbortAttempted = aborted === true;
       warn(`Pixel progress-limit abort ${aborted ? "requested" : "not acknowledged"}: ${runId}`);
     } catch (error) { warn(`Pixel progress-limit abort failed: ${String(error)}`); }
   }
@@ -6291,15 +6447,22 @@ export function createToolLoopGuard({
     if (state?.managedTeamWorker && ['task','hub','sessions_spawn','sessions_send','subagents'].includes(delegatedName)) {
       return {block:true,blockReason:'This team is already managed by the owner. Do your assigned work in this session; creating or steering more agents is disabled for team workers.'};
     }
-    if (state?.managedTeamReadOnly && !['tool_search','read','web_search','web_fetch','pixel_ods_research','pixel_ods_web_extract','pixel_ods_ask_user','pixel_ods_goal','pixel_ods_activity','pixel_ods_history','session_status','memory_search','memory_get'].includes(delegatedName)) {
+    if (state?.managedTeamReadOnly && !['tool_search','read','web_search','web_fetch','pixel_ods_research','pixel_ods_web_extract','pixel_ods_ask_user','pixel_ods_goal','pixel_ods_activity','pixel_ods_history','pixel_ods_skill','session_status','memory_search','memory_get'].includes(delegatedName)) {
       return {block:true,blockReason:'Your team role is read-only. Do not create, edit, execute commands, publish, or operate services. Review the supplied evidence using read/search tools if needed, then return your findings as text. The Builder owns implementation and test execution.'};
     }
     if (state?.ownerQuestions) return {block:true, blockReason:'Waiting for the owner to answer the clarification questions. End this turn without further tools; never choose answers for the owner.'};
     if (state?.progressBudget.exhausted) {
       return { block: true, blockReason: RUN_PROGRESS_STOP_REASON };
     }
+    if (state?.githubExtensionRequest && ['write','edit','apply_patch','exec','process'].includes(delegatedName)
+        && state.preparationExecutionHost !== 'sandbox') {
+      return {block:true,blockReason:'Isolated extension preparation is unavailable in this execution mode. Workspace commands would run outside the sandbox. Research and managed request tools remain available; do not use host commands as a substitute for isolated experiments.'};
+    }
+    // Extension preparation uses the ordinary workspace and sandbox controls.
+    // A command result is not an ODS installation receipt; managed installation
+    // stays in the request coordinator regardless of the model's wording.
     const asksOwner = toolName === 'pixel_ods_ask_user' || (toolName === 'tool_call' && ['pixel_ods_ask_user','openclaw:pixel-ods:pixel_ods_ask_user'].includes(event?.params?.id));
-    if (asksOwner || ['pixel_ods_goal','pixel_ods_activity'].includes(delegatedName)) return state?.clientCancelled ? {block:true,blockReason:CLIENT_CANCELLED_REASON} : undefined;
+    if (asksOwner || ['pixel_ods_goal','pixel_ods_activity','pixel_ods_skill'].includes(delegatedName)) return state?.clientCancelled ? {block:true,blockReason:CLIENT_CANCELLED_REASON} : undefined;
     if (state && !state.clientCancelled && !state.recursiveDeleteDenied && !state.unrequestedOperationsTerminal
       && !state.privateNetworkPrompt && !state.operationsRequired && !state.exactDownloadRequested && !state.codingExhausted) {
       state.playgroundRouting ??= {};
@@ -6634,100 +6797,9 @@ export function createToolLoopGuard({
         }
       }
     }
-    let workspaceInspectionShape = false;
-    let workspaceInspectionAdapted = false;
-    if (
-      state?.workspaceTaskDirectory &&
-      state.workspaceTaskPath &&
-      !state.workspaceVisualContinuationRequested &&
-      toolName === "tool_call" &&
-      pendingParams &&
-      typeof pendingParams === "object" &&
-      !Array.isArray(pendingParams) &&
-      typeof pendingParams.id === "string" &&
-      pendingParams.args &&
-      typeof pendingParams.args === "object" &&
-      !Array.isArray(pendingParams.args)
-    ) {
-      const nestedName = pendingParams.id.split(":").at(-1);
-      const keys = Object.keys(pendingParams.args);
-      const requestedPath = normalizeWorkspaceFilePath(pendingParams.args.path);
-      const basename = state.workspaceTaskPath.split("/").at(-1);
-      const matchesAuthorizedPath =
-        requestedPath === state.workspaceTaskPath || requestedPath === basename;
-      // Small models commonly call an invented `ls` catalog id, or call the
-      // exact exec id with only a path. Adapt only that read-first shape, only
-      // for the one workspace path explicitly authorized in this live owner
-      // request. Creating the named directory is already required by the
-      // requested workspace task; no host or Operations authority is added.
-      const exactAuthorizedPathShape =
-        keys.length === 1 &&
-        keys[0] === "path" &&
-        matchesAuthorizedPath &&
-        (pendingParams.id === "ls" || nestedName === "exec");
-      const readDirectoryShape =
-        keys.length === 1 &&
-        keys[0] === "path" &&
-        matchesAuthorizedPath &&
-        nestedName === "read";
-      const emptyProcessListShape =
-        keys.length === 1 &&
-        keys[0] === "action" &&
-        pendingParams.args.action === "list" &&
-        (nestedName === "process" || nestedName === "exec") &&
-        state.pendingExecSessions.size === 0;
-      const normalizedInspectionCommand =
-        typeof pendingParams.args.command === "string"
-          ? pendingParams.args.command.trim().replace(/\s+/g, " ")
-          : undefined;
-      const execDirectoryShape =
-        nestedName === "exec" &&
-        // PTY/background/yield controls do not change the semantics of this
-        // exact read-only listing. Compact models frequently copy them from
-        // the catalog description, so include them without accepting any
-        // additional command, cwd, environment, or input surface.
-        keys.every((key) =>
-          ["command", "yieldMs", "timeout", "pty", "background"].includes(key)
-        ) &&
-        new Set([
-          `ls -la /workspace/${state.workspaceTaskPath}`,
-          `ls -la /workspace/${state.workspaceTaskPath}/`,
-          `ls -la ${state.workspaceTaskPath}`,
-          `ls -la ${state.workspaceTaskPath}/`,
-        ]).has(normalizedInspectionCommand);
-      const unrelatedProjectionShape =
-        state.workspaceTaskRequested &&
-        !state.operationsRequired &&
-        state.odsRequiredTools.size === 0 &&
-        (nestedName === "pixel_ods_status" || nestedName === "pixel_ods_apps_list");
-      // Once the exact owner-named artifact has been written, a read of that
-      // path is verification, not a confused directory-inspection attempt.
-      // Preserve it byte-for-byte instead of routing it back through exec.
-      workspaceInspectionShape =
-        !state.successfulWritePaths.has(state.workspaceTaskPath) &&
-        (
-          exactAuthorizedPathShape ||
-          readDirectoryShape ||
-          emptyProcessListShape ||
-          execDirectoryShape ||
-          unrelatedProjectionShape
-        );
-      if (!state.workspaceInspectionRouted && workspaceInspectionShape) {
-        const inspectionPath = state.workspaceTaskPath;
-        const command =
-          `mkdir -p -- ${inspectionPath} && pwd && uname -sr && ls -la -- ${inspectionPath}`;
-        pendingParams = {
-          id: "openclaw:core:exec",
-          args: { command },
-        };
-        state.workspaceInspectionRouted = true;
-        workspaceInspectionAdapted = true;
-      }
-    }
     const workspaceDirectoryReady = Boolean(
       state?.workspaceTaskDirectory &&
       (
-        state.workspaceInspectionRouted ||
         state.workspaceRequestedFiles.some((file) =>
           state.successfulWritePaths.has(`${state.workspaceTaskDirectory}/${file}`) ||
           state.successfulReadPaths.has(`${state.workspaceTaskDirectory}/${file}`)
@@ -6737,8 +6809,6 @@ export function createToolLoopGuard({
     if (
       state?.workspaceTaskDirectory &&
       workspaceDirectoryReady &&
-      !workspaceInspectionAdapted &&
-      !workspaceInspectionShape &&
       toolName === "tool_call" &&
       pendingParams &&
       typeof pendingParams === "object" &&
@@ -6984,90 +7054,6 @@ export function createToolLoopGuard({
     const selectedEvent = selectedToolName === toolName
       ? { ...event, params: selectedParams }
       : { ...event, toolName: selectedToolName, params: selectedParams };
-    const inspectionCompleteReason = () => {
-      const nextFile = state?.workspaceRequestedFiles?.find((file) => {
-        const path = state.workspaceTaskDirectory
-          ? `${state.workspaceTaskDirectory}/${file}`
-          : file;
-        return !state.successfulWritePaths.has(path);
-      });
-      if (!nextFile) return WORKSPACE_INSPECTION_COMPLETE_REASON;
-      const nextPath = state.workspaceTaskDirectory
-        ? `${state.workspaceTaskDirectory}/${nextFile}`
-        : nextFile;
-      const pythonTestFile =
-        /^(?:test(?:_[A-Za-z0-9._-]+)?|[A-Za-z0-9._-]+_test)\.py$/i.test(nextFile);
-      const testFileHint = !pythonTestFile
-        ? ""
-        : state.workspacePythonUnittestRequested
-          ? " The owner explicitly requires unittest: include import unittest, at least one " +
-            "class inheriting unittest.TestCase, and only the requested test_* methods; omit " +
-            "comments, docstrings, helper cases, and a custom print runner."
-          : " For a Python test file, include every required test-framework and implementation import.";
-      return (
-        "Inspection complete. Make exactly one tool call next: call tool_call with " +
-        `id openclaw:core:write and args path ${JSON.stringify(nextPath)} plus content ` +
-        "containing the complete requested file you compose. Keep it concise (under 1000 " +
-        `characters when the requirements fit) and omit unrequested demos or CLI wrappers.${testFileHint} ` +
-        "Do not call tool_search, read, exec, or process before this write."
-      );
-    };
-    if (state?.workspaceTaskRequested && toolName === "tool_search") {
-      const query = typeof event?.params?.query === "string"
-        ? event.params.query.trim().replace(/\s+/g, " ").toLowerCase()
-        : "";
-      if (!state.workspaceToolSearchRouted) {
-        state.workspaceToolSearchRouted = true;
-        if (query) state.workspaceToolSearchQueries.add(query);
-        state.workspaceToolSearchQueries.add(WORKSPACE_TOOL_SEARCH_QUERY);
-        return {
-          params: { query: WORKSPACE_TOOL_SEARCH_QUERY, limit: 6 },
-        };
-      }
-      // Resolving core file tools does not resolve every capability a task may
-      // need. Let the model discover a different capability (for example the
-      // preview publisher after writing a site). Discovery grants no execution
-      // authority; normal tool permissions and turn limits still apply.
-      if (query && !state.workspaceToolSearchQueries.has(query)) {
-        state.workspaceToolSearchQueries.add(query);
-        return undefined;
-      }
-      if (state.workspaceInspectionRouted) {
-        if (state.workspaceInspectionPollCorrections === 0) {
-          state.workspaceInspectionPollCorrections = 1;
-          return { block: true, blockReason: inspectionCompleteReason() };
-        }
-        state.codingExhausted = true;
-        state.codingTerminalBlocks = 1;
-        return { block: true, blockReason: CODING_RETRY_EXHAUSTED_REASON };
-      }
-      return { block: true, blockReason: WORKSPACE_TOOL_SEARCH_COMPLETE_REASON };
-    }
-    if (
-      state?.workspaceInspectionRouted &&
-      toolName === "tool_call" &&
-      !workspaceInspectionAdapted &&
-      (
-        workspaceInspectionShape ||
-        (
-          (selectedToolName === "exec" || selectedToolName === "process") &&
-          selectedParams?.action === "poll" &&
-          typeof selectedParams.sessionId !== "string" &&
-          state.pendingExecSessions.size === 0
-        )
-      )
-    ) {
-      if (state.workspaceInspectionPollCorrections === 0) {
-        state.workspaceInspectionPollCorrections = 1;
-        return {
-          block: true,
-          blockReason: inspectionCompleteReason(),
-        };
-      }
-      state.codingExhausted = true;
-      state.codingTerminalBlocks = 1;
-      return { block: true, blockReason: CODING_RETRY_EXHAUSTED_REASON };
-    }
     if (state) {
       const writePath = selectedToolName === "write"
         ? normalizeWorkspaceFilePath(selectedParams?.path)
@@ -7087,21 +7073,9 @@ export function createToolLoopGuard({
           typeof newContent === "string" &&
           previousContent === newContent
         ) {
-          const blocks =
-            state.repeatedWriteBlocks.get(writePath) ?? 0;
-          state.repeatedWriteBlocks.set(writePath, blocks + 1);
-          if (blocks === 0) {
-            return {
-              block: true,
-              blockReason: REPEATED_WRITE_REQUIRES_PATCH_REASON,
-            };
-          }
-          state.codingExhausted = true;
-          state.codingTerminalBlocks = 1;
-          return {
-            block: true,
-            blockReason: REPEATED_WRITE_RETRY_EXHAUSTED_REASON,
-          };
+          // Refuse this no-op, not a subsequent corrective action. Persisted
+          // failed tool results and model rounds feed the shared run budget.
+          return {block: true, blockReason: REPEATED_WRITE_REQUIRES_PATCH_REASON};
         }
       }
       if (selectedToolName === "edit" && noOpEdit(selectedParams)) {
@@ -7121,28 +7095,6 @@ export function createToolLoopGuard({
         state.codingExhausted = true;
         state.codingTerminalBlocks = 1;
         return { block: true, blockReason: FOCUSED_EDIT_RETRY_EXHAUSTED_REASON };
-      }
-      if (
-        state.workspacePreviewRequired &&
-        selectedToolName === "exec" &&
-        execLaunchesWorkspaceServer(selectedParams)
-      ) {
-        return { block: true, blockReason: WORKSPACE_PREVIEW_REQUIRES_TOOL_REASON };
-      }
-      const setupDirectory =
-        state.workspacePreviewRequired && selectedToolName === "exec"
-          ? workspacePreviewMkdirDirectory(selectedParams)
-          : undefined;
-      if (setupDirectory) {
-        return {
-          block: true,
-          blockReason:
-            "Pixel does not need a separate directory-preparation command for this preview. " +
-            `Call tool_call now with id write and path "${setupDirectory}/index.html" plus ` +
-            "HTML authored entirely by the active model. Use a polished self-contained document, " +
-            "or write any local assets inside that artifact directory before calling " +
-            "pixel_ods_workspace_preview for that directory. ODS supplies no creative bytes.",
-        };
       }
       rememberToolRun(
         context?.toolCallId ?? event?.toolCallId,
@@ -7232,6 +7184,9 @@ export function createToolLoopGuard({
       ? wrappedToolTarget.split(":").at(-1)
       : undefined;
     const effectiveToolName = wrappedToolName ?? toolName;
+    if (state?.odsExcludedTools.has(effectiveToolName)) {
+      return {block: true, blockReason: "The owner explicitly excluded this ODS observation from the current request. Continue within the requested scope."};
+    }
     if (state?.ownerIntentObserved && state.operationsRequired &&
         ["pixel_ods_status", "pixel_ods_apps_list"].includes(effectiveToolName)) {
       const permitted = effectiveToolName === "pixel_ods_status"
@@ -7242,21 +7197,6 @@ export function createToolLoopGuard({
       return normalizedParams === undefined ? undefined : { params: normalizedParams };
     }
 
-    if (
-      state?.workspaceTaskRequested &&
-      !state.operationsRequired &&
-      state.odsRequiredTools.size === 0 &&
-      !state.odsRequestedTools.has(effectiveToolName) &&
-      (effectiveToolName === "pixel_ods_status" ||
-        effectiveToolName === "pixel_ods_apps_list")
-    ) {
-      return {
-        block: true,
-        blockReason: state.workspaceInspectionRouted
-          ? inspectionCompleteReason()
-          : WORKSPACE_UNREQUESTED_PROJECTION_REASON,
-      };
-    }
     const workspaceOperation =
       effectiveToolName === EVIDENCE_REPORT_TOOL
         ? "write"
@@ -7593,9 +7533,12 @@ export function createToolLoopGuard({
           );
         return {
           block: true,
-          blockReason: missingProjection
+          blockReason: catalogInstallationContinuation(state)?.instruction ??
+            (state.operationsExpectedExtensionLifecycle?.action === "install-next"
+              ? extensionLifecycleEvidenceText(state.operationsRequiredActions, state.operationsTerminalJobs)
+              : undefined) ?? (missingProjection
             ? OPERATIONS_REQUIRES_PROJECTIONS_REASON
-            : OPERATIONS_REQUIRES_BROKER_REASON,
+            : OPERATIONS_REQUIRES_BROKER_REASON),
         };
       }
       let aborted = false;
@@ -7632,7 +7575,55 @@ export function createToolLoopGuard({
           blockReason: OPERATIONS_EXTENSION_LIFECYCLE_SEQUENCE_REASON,
         };
       }
-      if (lifecycle && toolName === "pixel_ops_run") {
+      if (lifecycle?.action === "install-next" && toolName === "pixel_ops_run") {
+        // The owner selected the catalog coordinator. Normalize equivalent
+        // install/start verbs to that coordinator, never to a direct mutation.
+        // The receipt and sequencing checks below still gate every request.
+        if (["ods.extensions.install", "ods.extensions.enable"].includes(params?.action) &&
+            params?.target === "ods-host" && exactKeys(params?.parameters, ["serviceId"]) &&
+            params.parameters.serviceId === lifecycle.serviceId) {
+          params = { ...params, action: "ods.extensions.install-next" };
+          normalizedParams = params;
+        }
+        if (!["ods.extensions.inspect", "ods.extensions.install-next"].includes(params?.action) ||
+            params?.target !== "ods-host" || !exactKeys(params?.parameters, ["serviceId"]) ||
+            params.parameters.serviceId !== lifecycle.serviceId) {
+          return {block: true, blockReason: OPERATIONS_WRONG_ACTION_REASON};
+        }
+        const submissions = [...state.operationsSubmittedJobs.entries()];
+        if (submissions.some(([id]) => !state.operationsTerminalJobs.has(id))) {
+          return {block: true, blockReason: OPERATIONS_EXTENSION_LIFECYCLE_SEQUENCE_REASON};
+        }
+        const inspection = parsedLifecycleOutcome(state.operationsTerminalJobs, "ods.extensions.inspect");
+        const latest = parsedLifecycleOutcome(state.operationsTerminalJobs, "ods.extensions.install-next");
+        const mutations = submissions.filter(([, s]) => s.actions?.some(a => a.action === "ods.extensions.install-next"));
+        if (params.action === "ods.extensions.inspect") {
+          if (submissions.length) return {block: true, blockReason: OPERATIONS_EXTENSION_LIFECYCLE_SEQUENCE_REASON};
+        } else if (!inspection || inspection.result.extensionId !== lifecycle.serviceId ||
+            !["ready", "dependencies_required", "pending"].includes(inspection.result.installationPrerequisites?.state) ||
+            mutations.length >= 256 || (mutations.length && latest?.result.state !== "pending")) {
+          return {block: true, blockReason: OPERATIONS_EXTENSION_LIFECYCLE_SEQUENCE_REASON};
+        }
+      }
+      if (lifecycle && lifecycle.action !== "install-next" && toolName === "pixel_ops_run") {
+        // Installing an existing inactive extension means starting its retained
+        // definition. Choose the exact action from the host inspection before
+        // creating a broker plan, never after that plan has been submitted.
+        if (lifecycle.action === "install" &&
+          ["ods.extensions.install", "ods.extensions.enable"].includes(params?.action)) {
+          const inspected = parsedLifecycleOutcome(state.operationsTerminalJobs, "ods.extensions.inspect");
+          const mutationSubmitted = [...state.operationsSubmittedJobs.values()].some(
+            (submission) => submission.actions?.some((entry) =>
+              entry.action !== "ods.extensions.inspect"));
+          if (!mutationSubmitted && inspected?.result.extensionId === lifecycle.serviceId &&
+            ["ready", "inspected"].includes(inspected.result.outcome) &&
+            ["disabled", "stopped"].includes(inspected.result.currentStatus)) {
+            lifecycle.action = "enable";
+            state.operationsRequiredActions.delete("ods.extensions.install");
+            state.operationsRequiredActions.add("ods.extensions.enable");
+            params = { ...params, action: "ods.extensions.enable" };
+          }
+        }
         const permittedLifecycleActions = new Set([
           "ods.extensions.inspect",
           `ods.extensions.${lifecycle.action}`,
@@ -7648,10 +7639,18 @@ export function createToolLoopGuard({
             (submission) => submission.actions?.some((entry) => entry.action === params.action)
           );
           if (alreadySubmitted) {
-            return {
-              block: true,
-              blockReason: OPERATIONS_EXTENSION_LIFECYCLE_SEQUENCE_REASON,
-            };
+            const mutation = parsedLifecycleOutcome(state.operationsTerminalJobs,
+              `ods.extensions.${lifecycle.action}`);
+            const inspections = [...state.operationsSubmittedJobs.entries()].filter(
+              ([, submission]) => submission.actions?.some((entry) => entry.action === "ods.extensions.inspect"));
+            const lastInspection = parsedLifecycleOutcome(state.operationsTerminalJobs, "ods.extensions.inspect");
+            const canReconcile = params.action === "ods.extensions.inspect" &&
+              mutation?.result.outcome === "pending" &&
+              inspections.every(([id]) => state.operationsTerminalJobs.has(id)) &&
+              lastInspection && !inspectionAlreadySatisfiesLifecycleAction(lastInspection, `ods.extensions.${lifecycle.action}`);
+            if (!canReconcile) {
+              return { block: true, blockReason: OPERATIONS_EXTENSION_LIFECYCLE_SEQUENCE_REASON };
+            }
           }
           if (params.action !== "ods.extensions.inspect") {
             const inspection = parsedLifecycleOutcome(
@@ -7660,7 +7659,7 @@ export function createToolLoopGuard({
             );
             if (
               !inspection ||
-              !["ready", "inspected"].includes(inspection.result.outcome) ||
+              !inspectionPermitsLifecycleAction(inspection, params.action) ||
               inspection.result.extensionId !== lifecycle.serviceId
             ) {
               return {
@@ -8038,6 +8037,9 @@ export function createToolLoopGuard({
         const params = { ...selectedParams };
         const originalFingerprint = execFingerprint(params);
         const originalVerificationFingerprint = verificationExecFingerprint(params);
+        const directory = execControl.resolveWorkdir?.(params.workdir, state?.configuredWorkspaceRoot);
+        if (directory?.block) return directory;
+        if (directory) params.workdir = directory.workdir;
         try {
           params.command = execControl.prepare(runId, params.command);
         } catch (error) {
@@ -8120,6 +8122,8 @@ export function createToolLoopGuard({
       const state = stateFor(runId);
       state.completionAssurance.begin(currentOwnerIntentText(event?.messages, event?.prompt), event);
       const ownerIntent=currentOwnerIntentText(event?.messages,event?.prompt);
+      if (/^\s*(?:\/goal\s+)?\/extensions?\s+https:\/\/github\.com\//i.test(ownerIntent ?? '')) state.githubExtensionRequest = true;
+      if (capabilities !== undefined) state.preparationExecutionHost = capabilities.executionHost;
       if (ownerIntent) state.playgroundOwnerIntent = ownerIntent;
       if (ownerIntent) state.ownerQuestionIntent=requestsChoiceQuestion(ownerIntent);
       if (teamRole) {state.managedTeamWorker=true;state.managedTeamReadOnly=teamRole!=='Builder';state.managedTeamCoordinator=teamRole==='Coordinator';state.ownerQuestionIntent=teamQuestionIntent;}
@@ -8143,6 +8147,10 @@ export function createToolLoopGuard({
         const previousPreview = typeof sessionId === "string" && sessionId
           ? sessionPreviews.get(sessionId)
           : undefined;
+        // A failed verification in a later turn cannot erase an immutable
+        // publication from this session. This is historical evidence only;
+        // it neither verifies current files nor grants continuation scope.
+        if (previousPreview) state.workspaceLastVerifiedPreview ??= previousPreview;
         const namedPreviewRequested = requestsNamedSessionPreview(
           currentOwnerIntentText(event?.messages, event?.prompt), previousPreview
         );
@@ -8229,8 +8237,6 @@ export function createToolLoopGuard({
             /\b(?:(?:run|execute)\s+(?:the\s+)?(?:unit\s*)?tests?|test\s+suite)\b/i.test(
               currentOwnerIntentText(event?.messages, event?.prompt) ?? ""
             ));
-        state.workspaceToolSearchRouted = false;
-        state.workspaceToolSearchQueries.clear();
         state.recursiveDeleteAuthorized = userMessageAuthorizesRecursiveDelete(
           event?.messages,
           event?.prompt
@@ -8297,6 +8303,13 @@ export function createToolLoopGuard({
           state.operationsWorkspaceContinuationRequested
             ? userMessageWorkspaceContinuationPath(event?.messages, event?.prompt)
             : undefined;
+      }
+      const observationIntent = currentOwnerIntentText(event?.messages, event?.prompt) ?? "";
+      for (const [name, pattern] of [
+        ["pixel_ods_status", "ODS\\s+status|pixel_ods_status"],
+        ["pixel_ods_apps_list", "ODS\\s+(?:apps?|applications?)|pixel_ods_apps_list"],
+      ]) {
+        if (explicitlyRejectsOdsTool(observationIntent, pattern)) state.odsExcludedTools.add(name);
       }
       if (!state.operationsRequired && !state.odsRoutingInitialized) {
         const requirements = userMessageOdsToolRequirements(event?.messages, event?.prompt);
@@ -8546,7 +8559,6 @@ export function createToolLoopGuard({
       : undefined;
     if (completedWritePath) {
       state.successfulWritePaths.add(completedWritePath);
-      state.repeatedWriteBlocks.delete(completedWritePath);
       const writtenContent = successfulMutation.event?.params?.content;
       if (
         typeof writtenContent === "string" &&
@@ -8656,7 +8668,6 @@ export function createToolLoopGuard({
         state.successfulWritePaths.has(readPath)
       ) {
         state.successfulWriteContentByPath.delete(readPath);
-        state.repeatedWriteBlocks.delete(readPath);
         state.compareSwapRepairCounts.delete(readPath);
       }
     }
@@ -8951,6 +8962,14 @@ export function createToolLoopGuard({
         state.exactDownloadTerminalBlocks = 0;
       }
     }
+    if (state.githubCanonicalUrl) {
+      const submission = operationsSubmission(event, toolName);
+      if (submission) state.operationsSubmittedJobs.set(submission.jobId, submission);
+      if (toolName === "pixel_ops_job_get" || toolName === "pixel_ops_job_wait") {
+        const outcome = operationsTerminalOutcome(event, state.operationsSubmittedJobs);
+        if (repositoryObservationMatches(outcome, state.githubCanonicalUrl)) state.githubCanonicalSatisfied = true;
+      }
+    }
     if (
       state.githubCanonicalUrl && toolName === "web_fetch" &&
       canonicalGitHubSourceMatches(canonicalFetchUrl(event), state.githubCanonicalUrl) &&
@@ -9098,9 +9117,48 @@ export function createToolLoopGuard({
     }
   }
 
+  // The host state chooses the next catalog step. Small models need the exact
+  // callable tool and arguments, not another description of the broker boundary.
+  // This is guidance only: submissions still pass all authority/receipt checks.
+  function catalogInstallationContinuation(state) {
+    const lifecycle = state?.operationsExpectedExtensionLifecycle;
+    if (!state?.operationsRequired || lifecycle?.action !== "install-next") return undefined;
+    const next = (stage, id, args) => ({
+      stage: `catalog-${stage}`,
+      instruction: `Call tool_call with id ${id} and args ${JSON.stringify(args)}. ` +
+        "Use the returned host receipt; do not substitute a GitHub proposal, shell command, or direct service installation.",
+    });
+    const pending = [...state.operationsSubmittedJobs.keys()].filter(
+      id => !state.operationsTerminalJobs.has(id));
+    if (pending.length === 1) return next(`wait-${pending[0]}`, "pixel_ops_job_wait", {jobId: pending[0]});
+    if (pending.length) return undefined;
+    if (!state.operationsInventory) {
+      return state.operationsInventoryAttempted ? undefined : next("inventory", "pixel_ops_inventory", {});
+    }
+    const inspection = parsedLifecycleOutcome(state.operationsTerminalJobs, "ods.extensions.inspect");
+    if (!inspection) {
+      // A failed or malformed completed read is not permission to replay it.
+      if (state.operationsSubmittedJobs.size) return undefined;
+      return next("inspect", "pixel_ops_run", {target: "ods-host", action: "ods.extensions.inspect",
+        parameters: {serviceId: lifecycle.serviceId}});
+    }
+    if (inspection.result.extensionId !== lifecycle.serviceId ||
+        !["ready", "dependencies_required", "pending"].includes(inspection.result.installationPrerequisites?.state)) return undefined;
+    const latest = parsedLifecycleOutcome(state.operationsTerminalJobs, "ods.extensions.install-next");
+    if (latest && latest.result.state !== "pending") return undefined;
+    const submitted = [...state.operationsSubmittedJobs.values()].filter(
+      value => value.actions?.some(action => action.action === "ods.extensions.install-next"));
+    if ((submitted.length && !latest) || submitted.length >= 256) return undefined;
+    return next(`advance-${submitted.length}`, "pixel_ops_run", {target: "ods-host", action: "ods.extensions.install-next",
+      parameters: {serviceId: lifecycle.serviceId}});
+  }
+
   function trustedOperationsContinuation(state, runId) {
     if (!state?.operationsRequired) return undefined;
     if (extensionDiscoveryActive(state)) return undefined;
+    if (state.operationsExpectedExtensionLifecycle?.action === "install-next") {
+      return catalogInstallationContinuation(state);
+    }
     if (state.operationsInventoryOnly) {
       if (state.operationsInventory || state.operationsInventoryAttempted) return undefined;
       return {
@@ -9262,7 +9320,7 @@ export function createToolLoopGuard({
       return {
         stage: "workspace-preview-files",
         instruction:
-          "Do not reply yet. Deliver the visual project in Workbench: prepare a browser-ready version in one workspace-relative directory with index.html and its local CSS, JavaScript, SVG and image assets. Preserve the project source files. Raw JSX/TSX/Vue/Svelte source is not a browser preview: prepare the runnable output first and inspect its entry point. For a standalone visual asset, create an index.html that displays it. Do not start a server or claim an unverified preview. After index.html has been written or read in this response, call pixel_ods_workspace_preview with that relative directory.",
+          "Do not reply yet. Deliver the visual project in Workbench: prepare a browser-ready version in one workspace-relative directory with index.html and its local CSS, JavaScript, SVG and image assets. Preserve the project source files. Raw JSX/TSX/Vue/Svelte source is not a browser preview: prepare the runnable output first and inspect its entry point. For a standalone visual asset, create an index.html that displays it. A sandbox server is not an owner-accessible preview; do not claim an unverified URL. After index.html has been written or read in this response, call pixel_ods_workspace_preview with that relative directory.",
       };
     }
     state.workspacePreviewDirectory = directory;
@@ -9280,10 +9338,16 @@ export function createToolLoopGuard({
 
   function toolResultPersist(event, context, agentId = "pixel") {
     if (context?.agentId !== agentId) return undefined;
-    const toolCallId = context?.toolCallId ?? event?.toolCallId;
+    const toolCallId = context?.toolCallId ?? event?.toolCallId ?? event?.message?.toolCallId;
     const pending = pendingToolRuns.get(toolCallId);
     pendingToolRuns.delete(toolCallId);
-    const runId = pending?.runId ?? context?.runId ?? event?.runId;
+    // Native validation/loop rejections skip before_tool_call and persist with
+    // a sessionKey but no runId. Resolve only the currently owned session;
+    // otherwise these failures never consume the run's progress budget.
+    const active = typeof context?.sessionKey === 'string'
+      ? [...activeUsers.values()].find(item => item.sessionKey === context.sessionKey
+        && sessionRuns.get(item.sessionId) === item.runId) : undefined;
+    const runId = pending?.runId ?? context?.runId ?? event?.runId ?? active?.runId;
     const state = runs.get(runId);
     const continuation = trustedOperationsContinuation(state, runId);
     if (!event?.message || typeof event.message !== "object") {
@@ -9359,7 +9423,7 @@ export function createToolLoopGuard({
           "Finish all requested files, edits and checks first, then publish BEFORE your final answer. " +
           (directory ? `Call tool_call with id ${WORKSPACE_PREVIEW_TOOL} and args ${JSON.stringify({relativeDirectory:directory})}. ` :
             "Prepare a browser-ready directory with index.html and local assets, preserve the source files, then call pixel_ods_workspace_preview with that relativeDirectory. ") +
-          "Do not start a server. A saved file or a previous snapshot is not a verified current preview.";
+          "A sandbox server, saved file or previous snapshot is not a verified current preview.";
       }
       if (state?.workspacePreviewVerifiedDirectory && !state.workspacePreview &&
           state.workspacePreviewRequired && !state.workspacePreviewForbidden &&
@@ -9541,9 +9605,16 @@ export function createToolLoopGuard({
             : WORKSPACE_PREVIEW_NOT_CREATED_DELIVERY_PREFIX,
         };
       }
+      // Publication and verification are independent evidence. A successful
+      // snapshot cannot turn a failed or still-running check into completion.
+      const checkStatus = state.latestVerificationStatus;
+      const checkIncomplete = checkStatus === "failed" || checkStatus === "pending";
+      const checkText = checkStatus === "failed" ? VERIFICATION_FAILED_DELIVERY_PREFIX
+        : checkStatus === "pending" ? VERIFICATION_PENDING_DELIVERY_PREFIX : "";
       return {
-        status: "passed",
+        status: checkIncomplete ? checkStatus : "passed",
         text:
+          (checkText ? `${checkText}\n\n` : "") +
           `${WORKSPACE_PREVIEW_PUBLISHED_DELIVERY_PREFIX}\n\n` +
           `[Open preview](${state.workspacePreview.url})\n\n` +
           (state.workspacePreviewModelAuthored
@@ -9833,6 +9904,14 @@ export function createToolLoopGuard({
 
   return {
     beforeToolCall,
+    observeRepositorySource(runId, result) {
+      const state = runs.get(runId);
+      if (!state?.githubCanonicalUrl || result?.isError ||
+          result?.details?.boundary !== 'public-web-read-only' ||
+          !canonicalGitHubSourceMatches(result.details.source_url, state.githubCanonicalUrl) ||
+          !result.content?.some(part => part?.type === 'text' && part.text?.includes('EXTERNAL_UNTRUSTED_CONTENT'))) return;
+      state.githubCanonicalSatisfied = true;
+    },
     afterToolCall,
     toolResultPersist,
     beforeAgentFinalize,

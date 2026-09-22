@@ -1,0 +1,16 @@
+{
+  "repository": "https://github.com/pocketbase/pocketbase",
+  "license": "MIT",
+  "image": "alpine:3.23@sha256:85fe1e81d6758c208f3e1eed4338a1997e19d4be002d4dd32d3100c9a8c010a0",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "No official application Docker image assumed. Official v0.40.4 Linux release binaries are downloaded and SHA256 verified at build using pinned Alpine. Native CLI, owned unified backend workspace, no preset superuser or collections.",
+  "release_assets": {
+    "linux/amd64": "9042ec818570e79c3628dadcd0a756c1496d9e1173918ec409d133c02f82e5fa",
+    "linux/arm64": "86095bf8ed9345954f0d2bf0a5fb9b57584ae60b77ebf3b6cd23a8003a3fd418"
+  }
+}

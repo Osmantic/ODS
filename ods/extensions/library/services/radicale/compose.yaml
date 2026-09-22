@@ -1,0 +1,49 @@
+services:
+  radicale:
+    image: ods/radicale:3.8.0-local-v1
+    container_name: ods-radicale
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${RADICALE_PORT:-11097}:5232
+    healthcheck:
+      test:
+      - CMD
+      - python
+      - /opt/ods/health.py
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    user: 1000:1000
+    environment:
+      RADICALE_PASSWORD: ${RADICALE_PASSWORD:?Set a 64-hex DAV password}
+    init: true
+    build:
+      context: .
+      dockerfile: Dockerfile
+    stop_grace_period: 60s
+    read_only: true
+    tmpfs:
+    - /tmp:rw,noexec,nosuid,size=64m
+    volumes:
+    - radicale-data:/data
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  radicale-data: {}

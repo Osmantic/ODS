@@ -1,0 +1,28 @@
+server:
+  port: 8080
+  listen: 0.0.0.0
+  baseURL: /
+  cacheDir: /home/filebrowser/data/tmp
+  disableUpdateCheck: true
+  sources:
+  - path: /srv
+    config:
+      defaultEnabled: true
+auth:
+  adminUsername: admin
+  methods:
+    password:
+      enabled: true
+      minLength: 12
+      signup: false
+    noauth: false
+userDefaults:
+  account:
+    permissions:
+      admin: false
+      api: false
+      modify: false
+      share: false
+      delete: false
+      create: false
+      download: true

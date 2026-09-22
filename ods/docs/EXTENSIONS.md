@@ -11,6 +11,73 @@
 
 This guide is the fastest path to extend ODS without editing core internals.
 
+## Installing from the Portal conversation
+
+The catalog contains 200 distinct available extensions. Availability means ODS
+has a configuration or activation path; it does not mean the application has
+been downloaded, configured or started.
+
+- `/extensions @name` selects an exact catalog extension. The installer checks
+  dependencies and required settings, advances one operation at a time, and
+  reports readiness separately from acceptance of an installation request.
+- `/extensions https://github.com/owner/repository` asks the model to inspect
+  that public repository and propose an ODS recipe at an immutable commit.
+  A validated proposal is bound to the current conversation request before
+  becoming available and entering the normal installation coordinator.
+- Required secrets are entered into the configuration form, outside the
+  conversation. Saving the missing values resumes the GitHub request without
+  asking the model to create a second recipe.
+
+GitHub proposals support validated Compose recipes with pinned image digests
+or source builds from the selected GitHub repository at an exact commit.
+Source contexts use `https://github.com/OWNER/REPO.git#FULL_COMMIT[:subdir]`;
+the upstream Dockerfile is inspected at that revision before preparation.
+Build settings accept `context`, `dockerfile` and optional `target`; source
+services use `image: ods-source-SERVICE:FULL_COMMIT` and `pull_policy: never`.
+Container restrictions still apply. Open-source license evidence is required.
+For a project without an upstream Dockerfile, the model can research its build
+inputs and propose `dockerfile_inline` instead of `dockerfile` (Compose 2.17+).
+Those bytes are part of the recipe digest and have a separate SHA-256 receipt;
+ODS does not present them as an upstream file. Inline content is limited to
+24 KiB and must escape dollar signs as `$$` to avoid host interpolation.
+Custom installation hooks, build secrets/SSH, additional contexts and unknown licenses require further work;
+they are not silently executed or represented as installed extensions.
+Repository documentation is evidence for the model, never execution authority.
+
+Cancelling or switching conversations stops further automatic advancement. An
+operation already accepted by the host may still finish. ODS preserves uncertain
+operation records instead of repeating a download or start request after a lost
+acknowledgement. Viewing saved conversation history does not start installation.
+
+When a successful current request has an identified Playground project, Portal
+continues with a real model turn to apply the requested integration to existing
+project files. After a reload, a saved pending integration offers **Continue
+integration**: it checks current readiness without replaying installation.
+The continuation has a stable request ID so duplicate tabs use the retained
+chat request boundary. A dispatched continuation is not a claim that project
+code integration succeeded; its model result still needs to be assessed.
+
+For use inside a project, the extension inspection tool exposes documentation
+and declared connection fields from the installed recipe first. These defaults
+do not prove an endpoint is reachable. The model must inspect the actual project
+and runtime before changing application code. A saved project association is
+not proof that the application has been integrated or tested.
+
+See [current expansion readiness](EXTENSION-READINESS.md) for implementation and
+verification limits.
+
+
+For an installation where Windows owns the environment file and the WSL manager
+uses a private credential projection, the service operator can append
+`--credential-source /mnt/<drive>/<installation>/.env` to the manager's `serve`
+command. The destination must already be a private `.env` containing only
+`DASHBOARD_API_KEY`, inside a directory owned by the service user with mode 0700.
+The systemd unit must expose that private directory as a writable bind and the
+source as read-only. This path option is not accepted from model tool requests.
+Before API-bound operations, the manager refreshes only that key atomically;
+invalid, duplicate, symlinked or changing sources cannot replace the valid copy.
+The ordinary native environment reader retains its ownership/mode checks.
+
 ## Extension Directory Structure
 
 Each extension service is a directory under `extensions/services/`:

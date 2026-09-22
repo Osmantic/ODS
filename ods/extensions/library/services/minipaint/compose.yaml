@@ -1,0 +1,50 @@
+services:
+  minipaint:
+    image: ods/minipaint:4.14.3-a79733e-local-v1
+    container_name: ods-minipaint
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${MINIPAINT_PORT:-11078}:8080
+    healthcheck:
+      test:
+      - CMD
+      - wget
+      - --spider
+      - -q
+      - -T
+      - '5'
+      - http://127.0.0.1:8080/
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    user: 101:101
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command:
+    - -g
+    - daemon off;
+    entrypoint:
+    - nginx
+    read_only: true
+    tmpfs:
+    - /tmp:rw,noexec,nosuid,size=32m
+networks:
+  ods-network:
+    external: true
+    name: ods-network

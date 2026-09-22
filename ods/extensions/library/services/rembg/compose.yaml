@@ -1,0 +1,47 @@
+services:
+  rembg:
+    image: danielgatis/rembg:latest@sha256:98e72b790093dec3b21967e22c8eb75a0a67d458fdba7ef5fcc1900cad76396b
+    container_name: ods-rembg
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - ${BIND_ADDRESS:-127.0.0.1}:${REMBG_PORT:-11001}:7000
+    healthcheck:
+      test:
+      - CMD
+      - python
+      - -c
+      - import urllib.request; urllib.request.urlopen('http://127.0.0.1:7000/api',
+        timeout=8).read()
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    volumes:
+    - rembg-models:/root/.u2net
+    command:
+    - s
+    - --host
+    - 0.0.0.0
+    - --port
+    - '7000'
+    platform: linux/amd64
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  rembg-models: {}

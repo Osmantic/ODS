@@ -39,9 +39,11 @@ MAX_REQUEST_BYTES = 4096
 MAX_RESPONSE_BYTES = 8192
 MAX_RESULT_BYTES = 1024 * 1024
 MAX_ARTIFACT_BYTES = 512 * 1024 * 1024
-RESULTS_ROOT = pathlib.Path("/var/lib/pixel-ops-broker/results")
-ARTIFACTS_ROOT = pathlib.Path("/var/lib/pixel-ops-broker/artifacts")
-SOCKET_PATH = pathlib.Path("/run/ods-pixel-artifact-promoter/promoter.sock")
+BROKER_USER = "_ods_pixel_ops" if sys.platform == "darwin" else "pixel-ops-broker"
+STATE_ROOT = pathlib.Path("/private/var/lib/pixel-ops-broker" if sys.platform == "darwin" else "/var/lib/pixel-ops-broker")
+RESULTS_ROOT = STATE_ROOT / "results"
+ARTIFACTS_ROOT = STATE_ROOT / "artifacts"
+SOCKET_PATH = pathlib.Path("/private/var/lib/ods-pixel-artifact-promoter/promoter.sock" if sys.platform == "darwin" else "/run/ods-pixel-artifact-promoter/promoter.sock")
 BOUNDARY = (
     "Verified create-only promotion from Pixel Operations quarantine into the "
     "configured owner workspace; no arbitrary source, overwrite, execution, or "
@@ -659,8 +661,18 @@ def serve(
     ):
         raise PromotionError("invalid promotion service configuration")
     owner_entry = pwd.getpwnam(owner)
-    broker_uid = pwd.getpwnam("pixel-ops-broker").pw_uid
+    broker_uid = pwd.getpwnam(BROKER_USER).pw_uid
     parent = socket_path.parent
+    if sys.platform == "darwin":
+        # Runtime sockets may disappear across reboot. Walk only root-owned,
+        # non-writable, ACL-free ancestors before creating the fixed directory.
+        spec = importlib.util.spec_from_file_location(
+            "promoter_custody", pathlib.Path(__file__).with_name("pixel_macos_custody.py")
+        )
+        custody = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(custody)
+        with custody.protected_directory(parent, create=True):
+            pass
     parent_info = parent.lstat()
     if (
         not stat.S_ISDIR(parent_info.st_mode)

@@ -12,7 +12,7 @@ import re
 import stat
 import time
 
-from pixel_access_bridge import AccessError, atomic_json, digest, remaining
+from pixel_access_bridge import AccessError, atomic_json, digest, remaining, runtime_config_path
 from pixel_access_protocol import decode_frame, HEX
 from .contract import SettingsError, preview_preferences
 from .runtime import compare_readback, declared_capabilities, saved_document
@@ -89,7 +89,7 @@ def _inputs(bridge, directory):
     bridge.settings_source()
     saved, saved_hash = _read(directory / "pixel-settings.json", bridge.owner.pw_uid, 256 * 1024)
     saved = saved_document(saved)
-    config, config_hash = _read(bridge.home / ".openclaw/openclaw.json", bridge.owner.pw_uid)
+    config, config_hash = _read(runtime_config_path(bridge), bridge.owner.pw_uid)
     provider_file = directory / "provider-config.json"
     providers, provider_hash = _read(provider_file, bridge.owner.pw_uid, 256 * 1024) if provider_file.exists() else (None, None)
     caps = declared_capabilities(config, providers)
@@ -170,7 +170,7 @@ def _verify(bridge, journal):
     bridge.settings_source()
     if _busy(bridge, journal): raise AccessError("runtime-busy")
     identity = _identity(bridge)
-    current, config_hash = _read(bridge.home / ".openclaw/openclaw.json", bridge.owner.pw_uid)
+    current, config_hash = _read(runtime_config_path(bridge), bridge.owner.pw_uid)
     native = bridge.native()
     if native.get("pid") != identity["pid"]: raise AccessError("settings-process-changed")
     envelope = bridge.http(bridge.native_origin, "/pixel-ods/access-runtime", bridge.native_key,
@@ -182,7 +182,7 @@ def _verify(bridge, journal):
     proof = bridge.native("probe", journal["token"])
     if (proof.get("pid") != identity["pid"] or proof.get("proof", {}).get("mode") != journal["mode"]
             or proof.get("proof", {}).get("executed") is not True or _identity(bridge) != identity
-            or _read(bridge.home / ".openclaw/openclaw.json", bridge.owner.pw_uid)[1] != config_hash
+            or _read(runtime_config_path(bridge), bridge.owner.pw_uid)[1] != config_hash
             or bridge.unit_boundary() != journal["boundary"] or _busy(bridge, journal)):
         raise AccessError("settings-runtime-proof-failed")
     atomic_json(bridge.state / "verified.json", {"pid": proof["pid"], "proof": proof["proof"],
@@ -321,7 +321,7 @@ def change(bridge, request):
 
 def _check_completion(bridge, journal, result, state):
     outcome = {"runtime-verified": "applied", "rolled-back": "rolled-back"}.get(result.get("status"))
-    current_hash = _read(bridge.home / ".openclaw/openclaw.json", bridge.owner.pw_uid)[1]
+    current_hash = _read(runtime_config_path(bridge), bridge.owner.pw_uid)[1]
     revision = journal["settingsRevision"] if outcome == "applied" else journal["previousManagedRevision"]
     if (outcome is None or state["pending"] or state["configSha256"] != current_hash
             or result.get("configSha256") != current_hash or state["managedRevision"] != revision

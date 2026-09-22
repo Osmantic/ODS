@@ -2,13 +2,17 @@
 
 **Osmantic Deployment System**
 
-[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](../LICENSE)
+[![License: Apache 2.0 + Pixel ODS-only](https://img.shields.io/badge/License-Apache%202.0%20%2B%20Pixel%20ODS--only-blue.svg)](LICENSING.md)
 [![Docker](https://img.shields.io/badge/Docker-Required-2496ED?logo=docker)](https://docs.docker.com/get-docker/)
 [![NVIDIA](https://img.shields.io/badge/NVIDIA-GPU%20Accelerated-76B900?logo=nvidia)](https://developer.nvidia.com/cuda-toolkit)
 [![AMD](https://img.shields.io/badge/AMD-Strix%20Halo%20ROCm-ED1C24?logo=amd)](https://rocm.docs.amd.com/)
 [![n8n](https://img.shields.io/badge/n8n-Workflows-FF6D5A?logo=n8n)](https://n8n.io)
 
 **Your turnkey local AI stack.** Buy hardware. Run installer. AI running.
+
+Pixel source ships inside ODS with an ODS-only use and distribution grant;
+other ODS code remains Apache-2.0. See [Licensing](LICENSING.md) for the
+boundary and third-party notices.
 
 ---
 
@@ -165,7 +169,7 @@ source checkout with `.\ods\installers\windows\ods.ps1 uninstall --force`.
 | **LiteLLM** | Multi-model API gateway | 4000 | Recommended |
 | **Token Spy** | Token usage monitor | 3005 | Recommended |
 | **SearXNG** | Self-hosted web search | 8888 | Recommended |
-| **Pixel** | Core conversational agent in Dashboard; default Open WebUI model on qualified/licensed Linux hosts | Private Unix socket; no host TCP port | Core feature on qualified/licensed hosts |
+| **Pixel** | Core conversational agent in Dashboard; default Open WebUI model on qualified Linux hosts | Private Unix socket; no host TCP port | Core feature on qualified hosts |
 | **Hermes Agent** | Independent general-purpose agent | 9120 via auth proxy; 9119 internal | Default |
 | **OpenClaw** | Deprecated legacy autonomous agent, opt-in during migration | 7860 | Deprecated optional |
 | **APE** | Agent Policy Engine for policy/audit controls | 7890 | Optional |
@@ -437,7 +441,7 @@ ods mode                               # Show current mode
 | Hardware auto-detect + model selection | **NVIDIA + AMD Strix Halo + Apple Silicon + Intel Arc + CPU/cloud fallback** | No | No |
 | AMD APU / unified memory support | **Platform-specific accelerated backend selected by installer** | Partial (Vulkan) | No |
 | Inference engine | **llama-server** (all GPUs) | llama.cpp | llama.cpp |
-| Autonomous AI agent | **Pixel at the heart of ODS on qualified/licensed Linux; Hermes alongside it; OpenClaw legacy opt-in** | No | No |
+| Autonomous AI agent | **Pixel at the heart of ODS on qualified Linux; Hermes alongside it; OpenClaw legacy opt-in** | No | No |
 | Workflow automation | **n8n (400+ integrations)** | No | No |
 | LLM usage monitoring | **Open WebUI built-in** | No | No |
 | Multi-GPU | **Yes** (NVIDIA) | Partial | Partial |

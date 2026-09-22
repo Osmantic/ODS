@@ -1,0 +1,51 @@
+services:
+  dokuwiki:
+    image: ods/dokuwiki:2026.07.14c-local-v1
+    container_name: ods-dokuwiki
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${DOKUWIKI_PORT:-11065}:8080
+    healthcheck:
+      test:
+      - CMD
+      - curl
+      - --silent
+      - --fail
+      - --max-time
+      - '5'
+      - http://127.0.0.1:8080/health.php
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    user: 1000:1000
+    environment:
+      PHP_UPLOADLIMIT: 64M
+      PHP_MEMORYLIMIT: 256M
+      PHP_TIMEZONE: UTC
+    volumes:
+    - dokuwiki-storage:/storage
+    init: true
+    build:
+      context: .
+      dockerfile: Dockerfile
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  dokuwiki-storage: {}

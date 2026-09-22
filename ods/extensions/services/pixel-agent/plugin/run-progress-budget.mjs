@@ -50,6 +50,10 @@ export function createRunProgressBudget() {
           failures >= RUN_PROGRESS_LIMITS.totalFailures;
         return;
       }
+      // Discovery changes the available schemas, not the task's outcome. A
+      // successful search between failed actions must not erase their history
+      // or let differently worded searches keep a run alive indefinitely.
+      if (tool === 'tool_search' || tool === 'tool_describe' || tool === 'pixel_ods_skill') return;
       consecutiveFailures = 0;
       // An actual running-process receipt is a verified wait, not a failure.
       // Plain text saying "running" must never be supplied as this signal.

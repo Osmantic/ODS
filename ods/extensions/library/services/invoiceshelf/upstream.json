@@ -1,0 +1,13 @@
+{
+  "repository": "https://github.com/InvoiceShelf/InvoiceShelf",
+  "license": "AGPL-3.0",
+  "source_ref": "2.4.2",
+  "image": "invoiceshelf/invoiceshelf:2.4.2@sha256:76f13fbf45f4bad494bb360ec062c7268c71ad6d91f96ae1319de414a9959080",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Stable 2.x native setup, persistent SQLite/storage/modules and required stable Laravel encryption key. Preserved upstream www-data entrypoint/S6 behavior. No email/payment provider, customers or invoices created by ODS."
+}

@@ -1,0 +1,61 @@
+services:
+  pdfding:
+    image: ods/pdfding:1.14.0-local-v1
+    container_name: ods-pdfding
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${PDFDING_PORT:-11058}:8000
+    healthcheck:
+      test:
+      - CMD
+      - python
+      - -c
+      - import urllib.request; r=urllib.request.urlopen('http://127.0.0.1:8000/healthz',
+        timeout=5); assert r.status == 200
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    user: 1000:1000
+    environment:
+      SECRET_KEY: ${PDFDING_SECRET_KEY:?Set a persistent Django secret}
+      DATA_DIR: /data
+      HOST_NAME: localhost,127.0.0.1,pdfding
+      HOST_PORT: '8000'
+      CSRF_COOKIE_SECURE: 'FALSE'
+      SESSION_COOKIE_SECURE: 'FALSE'
+      ACCOUNT_DEFAULT_HTTP_PROTOCOL: http
+      DISABLE_USER_SIGNUP: 'TRUE'
+      ACCOUNT_EMAIL_VERIFICATION: 'FALSE'
+      CONSUME_ENABLE: 'FALSE'
+      OIDC_ENABLE: 'FALSE'
+      DEMO_MODE: 'FALSE'
+      DEFAULT_THEME: system
+      WORKERS: '1'
+      THREADS: '3'
+    volumes:
+    - pdfding-data:/data
+    init: true
+    build:
+      context: .
+      dockerfile: Dockerfile
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  pdfding-data: {}

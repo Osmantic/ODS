@@ -1,0 +1,12 @@
+{
+  "repository": "https://github.com/typesense/typesense",
+  "license": "GPL-3.0",
+  "image": "typesense/typesense:30.2@sha256:610f2d34b1f93d00762869da2c67736775e5798d19a2c8b91b014b8a0cc1e110",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "API-only extension: no misleading Open UI button. Set an API key in extension settings before enabling. Collections persist in the data volume."
+}

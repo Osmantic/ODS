@@ -1,0 +1,54 @@
+services:
+  audiobookshelf:
+    image: ods/audiobookshelf:2.36.1-local-v1
+    container_name: ods-audiobookshelf
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${AUDIOBOOKSHELF_PORT:-11047}:8080
+    healthcheck:
+      test:
+      - CMD
+      - node
+      - -e
+      - const r=require('http').get('http://127.0.0.1:8080/healthcheck',res=>{res.resume();process.exit(res.statusCode===200?0:1)});r.setTimeout(4000,()=>r.destroy());r.on('error',()=>process.exit(1));
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    user: 1000:1000
+    environment:
+      PORT: '8080'
+      CONFIG_PATH: /config
+      METADATA_PATH: /metadata
+      TZ: UTC
+    volumes:
+    - audiobookshelf-config:/config
+    - audiobookshelf-metadata:/metadata
+    - audiobookshelf-audiobooks:/audiobooks
+    - audiobookshelf-podcasts:/podcasts
+    build:
+      context: .
+      dockerfile: Dockerfile
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  audiobookshelf-config: {}
+  audiobookshelf-metadata: {}
+  audiobookshelf-audiobooks: {}
+  audiobookshelf-podcasts: {}

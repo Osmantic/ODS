@@ -1,0 +1,3 @@
+user ods
+topic readwrite ods/#
+topic read $SYS/broker/version

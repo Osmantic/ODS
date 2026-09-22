@@ -710,11 +710,25 @@ async def check_service_health(
         # route the request correctly instead of returning 404.
         headers = {"Host": "localhost"}
         get_kwargs: dict = {"headers": headers}
+        health_auth_env = config.get("health_auth_env")
+        if health_auth_env is not None:
+            prefix = service_id.upper().replace("-", "_") + "_"
+            if (not isinstance(health_auth_env, str)
+                    or not re.fullmatch(r"[A-Z][A-Z0-9_]{1,127}", health_auth_env)
+                    or not health_auth_env.startswith(prefix)
+                    or host != service_id):
+                return _service_status_from_config(service_id, config, "unhealthy")
+            token = read_live_env_value(health_auth_env)
+            if not isinstance(token, str) or not token or len(token) > 8192 or any(ord(char) <= 32 or ord(char) >= 127 for char in token):
+                return _service_status_from_config(service_id, config, "unhealthy")
+            headers["Authorization"] = "Bearer " + token
+            # Never forward a local extension credential to a redirect target.
+            get_kwargs["allow_redirects"] = False
         if timeout is not None:
             get_kwargs["timeout"] = timeout
         async with session.get(url, **get_kwargs) as resp:
             response_time = (asyncio.get_event_loop().time() - start) * 1000
-            status = "healthy" if resp.status < 400 else "unhealthy"
+            status = "healthy" if resp.status < (300 if health_auth_env is not None else 400) else "unhealthy"
     except asyncio.TimeoutError:
         # Service is reachable but slow — report degraded rather than down
         # to avoid false "offline" flashes during startup or heavy load.
@@ -725,7 +739,10 @@ async def check_service_health(
         else:
             status = "down"
     except (aiohttp.ClientError, OSError, ValueError) as e:
-        logger.debug(f"Health check failed for {service_id} at {url}: {e}")
+        if config.get("health_auth_env") is None:
+            logger.debug(f"Health check failed for {service_id} at {url}: {e}")
+        else:
+            logger.debug("Authenticated health check failed for %s", service_id)
         status = "down"
 
     return ServiceStatus(

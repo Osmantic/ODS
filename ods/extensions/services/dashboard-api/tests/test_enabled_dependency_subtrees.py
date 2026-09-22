@@ -87,3 +87,53 @@ def test_healthy_dependency_tree_does_not_require_confirmation(test_client, inst
     assert response.status_code == 200
     assert response.json()["enabled_services"] == ["hermes-proxy"]
     start.assert_called_once_with("start", "hermes-proxy")
+
+
+@pytest.mark.parametrize("user_definition", ["disabled", "missing-compose"])
+def test_user_definition_cannot_borrow_bundled_dependency_activation(
+    test_client, installation, user_definition,
+):
+    bundled, start = installation
+    user_search = extensions.USER_EXTENSIONS_DIR / "searxng"
+    user_search.mkdir(parents=True)
+    (user_search / "manifest.yaml").write_bytes((bundled / "searxng/manifest.yaml").read_bytes())
+    if user_definition == "disabled":
+        (user_search / "compose.yaml.disabled").write_text(
+            "services:\n  searxng:\n    image: alpine:3.22\n")
+
+    response = test_client.post("/api/extensions/hermes-proxy/enable",
+                                headers=test_client.auth_headers)
+
+    assert response.status_code == 400
+    assert response.json()["detail"]["missing_dependencies"] == ["searxng"]
+    start.assert_not_called()
+    assert (bundled / "searxng/compose.yaml").is_file()
+    assert not (user_search / "compose.yaml").exists()
+
+
+def test_corrupt_transitive_manifest_blocks_activation(test_client, installation):
+    bundled, start = installation
+    target = bundled / "hermes-proxy"
+    active_before = (target / "compose.yaml").exists()
+    (bundled / "hermes" / "manifest.yaml").write_text(
+        "service:\n  id: hermes\n  depends_on: searxng\n", encoding="utf-8",
+    )
+
+    response = test_client.post(
+        "/api/extensions/hermes-proxy/enable?auto_enable_deps=true",
+        headers=test_client.auth_headers,
+    )
+
+    assert response.status_code == 400
+    assert "Invalid dependency manifest" in response.json()["detail"]
+    assert (target / "compose.yaml").exists() is active_before
+    start.assert_not_called()
+
+
+def test_enabled_user_definition_wins_over_disabled_bundle(installation):
+    bundled, _ = installation
+    (bundled / "searxng/compose.yaml").rename(bundled / "searxng/compose.yaml.disabled")
+    user_search = extensions.USER_EXTENSIONS_DIR / "searxng"
+    user_search.mkdir(parents=True)
+    (user_search / "compose.yaml").write_text("services: {}\n")
+    assert extensions._is_dep_satisfied("searxng")

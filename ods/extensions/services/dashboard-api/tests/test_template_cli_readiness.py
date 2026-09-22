@@ -2,6 +2,7 @@
 
 from contextlib import nullcontext
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -37,8 +38,20 @@ def cli_template(tmp_path, monkeypatch):
     monkeypatch.setattr(templates, "USER_EXTENSIONS_DIR", user_dir)
     monkeypatch.setattr(extensions, "EXTENSIONS_DIR", tmp_path / "builtins")
     monkeypatch.setattr(extensions, "EXTENSIONS_LIBRARY_DIR", tmp_path / "library")
-    monkeypatch.setattr(helpers, "get_cached_services", lambda: [])
-    monkeypatch.setattr(extensions, "_read_progress", lambda _sid: None)
+    # Aider now uses the selected ODS model through the existing gateway.
+    # Model its real dependency as installed and healthy, without starting it.
+    gateway = tmp_path / "builtins" / "litellm"
+    gateway.mkdir(parents=True)
+    (gateway / "manifest.yaml").write_text(yaml.safe_dump({"service": {
+        "id": "litellm", "depends_on": [], "type": "docker", "category": "optional",
+    }}))
+    (gateway / "compose.yaml").write_text("services: {litellm: {image: example/gateway:fixture}}")
+    monkeypatch.setattr(helpers, "get_cached_services", lambda: [SimpleNamespace(id="litellm", status="healthy")])
+    # A shipped manifest/configuration is not an installation receipt. Model
+    # the host's observed successful CLI exit for these installed-tool tests.
+    monkeypatch.setattr(extensions, "_read_progress", lambda sid: (
+        {"status": "started", "exit_verified": True} if sid == "aider" else None
+    ))
     monkeypatch.setattr(extensions, "_extensions_lock", nullcontext)
     monkeypatch.setattr(extensions, "_call_agent_invalidate_compose_cache", lambda: None)
     agent = MagicMock(return_value=True)
@@ -74,14 +87,16 @@ def test_apply_keeps_installed_aider_ready_without_rerunning_it(cli_template):
     hook.assert_not_called()
 
 
-@pytest.mark.parametrize("kind", ["disabled-cli", "stopped-daemon", "errored-cli"])
+@pytest.mark.parametrize("kind", ["disabled-cli", "stopped-daemon", "errored-cli", "configuration-only"])
 def test_non_ready_extensions_can_still_be_started(cli_template, monkeypatch, kind):
     client, tool, aider, agent, _hook = cli_template
+    # Disabled/stopped/configured states have no current successful receipt.
+    monkeypatch.setattr("routers.extensions._read_progress", lambda _sid: None)
     if kind == "disabled-cli":
         (tool / "compose.yaml").rename(tool / "compose.yaml.disabled")
     elif kind == "stopped-daemon":
         aider.update(port=8080, startup_check=True)
-    else:
+    elif kind == "errored-cli":
         monkeypatch.setattr("routers.extensions._read_progress", lambda _sid: {"status": "error"})
     result = client.post("/api/templates/coding/apply")
     assert result.status_code == 200

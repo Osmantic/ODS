@@ -1,0 +1,48 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: 2.6.0
+service:
+  id: presidio
+  name: Presidio
+  aliases: []
+  container_name: ods-presidio
+  host_env: PRESIDIO_HOST
+  default_host: presidio
+  port: 3000
+  external_port_env: PRESIDIO_PORT
+  external_port_default: 11020
+  health: /health
+  type: docker
+  startup_check: true
+  startup_timeout: 180
+  gpu_backends:
+  - all
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  description: Detect personal information and anonymize text with local NLP and configurable
+    redaction operators.
+  env_vars: []
+  external_link: false
+tags:
+- privacy
+- documents
+- local
+- open-source
+features:
+- id: presidio-workspace
+  name: Presidio
+  description: Detect personal information and anonymize text with local NLP and configurable
+    redaction operators.
+  icon: ShieldCheck
+  category: documents
+  requirements:
+    services:
+    - presidio
+    vram_gb: 0
+  enabled_services_all:
+  - presidio
+  setup_time: Initial image download; see README
+  priority: 50
+  launch:
+    type: none

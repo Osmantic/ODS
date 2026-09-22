@@ -1,0 +1,70 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: 2.6.0
+service:
+  id: kestra
+  name: Kestra
+  aliases: []
+  container_name: ods-kestra
+  host_env: KESTRA_HOST
+  default_host: kestra
+  port: 8080
+  external_port_env: KESTRA_PORT
+  external_port_default: 11025
+  health: /ping
+  type: docker
+  startup_check: true
+  startup_timeout: 240
+  gpu_backends:
+  - all
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  description: Schedule and orchestrate reproducible workflows with persisted executions,
+    local artifacts and a visual editor.
+  env_vars:
+  - key: KESTRA_DATABASE_PASSWORD
+    required: true
+    secret: true
+    description: Persistent private PostgreSQL password.
+  - key: KESTRA_ADMIN_EMAIL
+    required: true
+    secret: false
+    description: Administrator email address for initial Basic Auth setup.
+  - key: KESTRA_ADMIN_PASSWORD
+    required: true
+    secret: true
+    description: Administrator password, at least eight characters with uppercase
+      and a number.
+  - key: KESTRA_MANAGEMENT_PASSWORD
+    required: true
+    secret: true
+    description: Separate random password for the internal management endpoints.
+  - key: KESTRA_URL
+    required: false
+    default: http://localhost:11025/
+    description: Browser-facing URL; update when changing the host port.
+  ui_path: /
+tags:
+- automation
+- local
+- open-source
+features:
+- id: kestra-workspace
+  name: Kestra
+  description: Schedule and orchestrate reproducible workflows with persisted executions,
+    local artifacts and a visual editor.
+  icon: Workflow
+  category: productivity
+  requirements:
+    services:
+    - kestra
+    vram_gb: 0
+  enabled_services_all:
+  - kestra
+  setup_time: Initial image download; see README
+  priority: 54
+  launch:
+    type: service
+    service: kestra
+    path: /

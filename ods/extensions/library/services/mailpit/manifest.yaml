@@ -1,0 +1,63 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: 2.6.0
+service:
+  id: mailpit
+  name: Mailpit
+  aliases: []
+  container_name: ods-mailpit
+  host_env: MAILPIT_HOST
+  default_host: mailpit
+  port: 8025
+  external_port_env: MAILPIT_PORT
+  external_port_default: 11052
+  health: /readyz
+  type: docker
+  startup_check: true
+  startup_timeout: 180
+  gpu_backends:
+  - all
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  description: Capture development SMTP messages, inspect HTML and headers, and test
+    application email flows without forwarding to real recipients.
+  env_vars:
+  - key: MAILPIT_UI_AUTH
+    required: true
+    secret: true
+    description: UI credentials in username:password format; separate multiple pairs
+      with spaces. No whitespace inside a username/password.
+  - key: MAILPIT_SMTP_AUTH
+    required: true
+    secret: true
+    description: SMTP credentials in username:password format; use separate development-only
+      credentials.
+  - key: MAILPIT_SMTP_PORT
+    required: false
+    default: '11053'
+    description: Loopback host port for SMTP capture, separate from the web UI port.
+  ui_path: /
+tags:
+- development
+- email
+- open-source
+features:
+- id: mailpit-inbox
+  name: Mailpit
+  description: Capture development SMTP messages, inspect HTML and headers, and test
+    application email flows without forwarding to real recipients.
+  icon: Mail
+  category: productivity
+  requirements:
+    services:
+    - mailpit
+    vram_gb: 0
+  enabled_services_all:
+  - mailpit
+  setup_time: Initial image download; see README
+  priority: 48
+  launch:
+    type: service
+    service: mailpit
+    path: /

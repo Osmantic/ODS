@@ -68,6 +68,7 @@ export default function Models({ compact = false }) {
     configuredModel,
     odsMode,
     configuredMode,
+    externalLemonade,
     canActivateModels,
     activationModeError,
     recommendationAlternatives,
@@ -351,7 +352,7 @@ export default function Models({ compact = false }) {
       />
 
       <ExternalLemonadeAdoption
-        enabled={odsMode === 'lemonade'}
+        enabled={odsMode === 'lemonade' && externalLemonade === true}
         minimumContext={pixelMinimumContext}
         onSettled={refresh}
         compact={compact}

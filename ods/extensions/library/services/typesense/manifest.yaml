@@ -1,0 +1,49 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: 2.6.0
+service:
+  id: typesense
+  name: Typesense
+  aliases: []
+  container_name: ods-typesense
+  host_env: TYPESENSE_HOST
+  default_host: typesense
+  port: 8108
+  external_port_env: TYPESENSE_PORT
+  external_port_default: 11005
+  health: /health
+  type: docker
+  startup_check: true
+  startup_timeout: 90
+  gpu_backends:
+  - all
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  description: Local text and vector search API for document collections and AI applications.
+  env_vars:
+  - key: TYPESENSE_API_KEY
+    required: true
+    secret: true
+    description: A long random API key for the Typesense server.
+  external_link: false
+tags:
+- data
+- local
+- open-source
+features:
+- id: typesense-workspace
+  name: Typesense
+  description: Local text and vector search API for document collections and AI applications.
+  icon: Search
+  category: data
+  requirements:
+    services:
+    - typesense
+    vram_gb: 0
+  enabled_services_all:
+  - typesense
+  setup_time: Initial image download; see README
+  priority: 35
+  launch:
+    type: none

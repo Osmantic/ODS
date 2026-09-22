@@ -1,0 +1,14 @@
+{
+  "repository": "https://github.com/jscad/OpenJSCAD.org",
+  "license": "MIT",
+  "image": "nginx:1.28-alpine@sha256:a8b39bd9cf0f83869a2162827a0caf6137ddf759d50a171451b335cecc87d236",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "source_commit": "f245ea3a5072024b789f276c6fb9ce6c3eb3fd0d",
+  "source_sha256": "5232a1e5c40d97dd1b6036a036bcd3b1753af6f074d475ae821e058558076df6",
+  "notes": "Web package 2.6.13 at exact upstream source snapshot; not a new GitHub release. Locked workspace build/postinstall generates example metadata. Upstream demo is entry page; PHP/Perl URL proxies not deployed. Browser geometry/WebGL and model export remain runtime-pending."
+}

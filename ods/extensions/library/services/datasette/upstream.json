@@ -1,0 +1,13 @@
+{
+  "repository": "https://github.com/simonw/datasette",
+  "license": "Apache-2.0",
+  "source_ref": "0.65.5",
+  "image": "python:3.13-slim@sha256:8d9d0b8bcf6506481eae4907c18f5e3e7902e629f5f6d684f9e7c32e85e3ddf0",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Exact PyPI dependency versions on pinned Python base. Explicitly imported immutable SQLite snapshots; no automatic host mounts/plugins/authentication. Loopback reader with bounded queries; data readable to other containers on the ODS network."
+}

@@ -1,0 +1,55 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: 2.6.0
+service:
+  id: distribution
+  name: CNCF Distribution
+  aliases: []
+  container_name: ods-distribution
+  host_env: DISTRIBUTION_HOST
+  default_host: distribution
+  port: 5000
+  external_port_env: DISTRIBUTION_PORT
+  external_port_default: 11136
+  health: ''
+  type: docker
+  startup_check: false
+  startup_timeout: 180
+  gpu_backends:
+  - all
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  description: Store project OCI container images in an authenticated local registry.
+  env_vars:
+  - key: DISTRIBUTION_PASSWORD
+    required: true
+    secret: true
+    description: Random 64-hex password for local registry user ods; reapplied on
+      startup.
+  - key: DISTRIBUTION_HTTP_SECRET
+    required: true
+    secret: true
+    description: Distinct stable random 64-hex secret for registry upload state.
+  external_link: false
+tags:
+- containers
+- registry
+- development
+- open-source
+features:
+- id: distribution-registry
+  name: CNCF Distribution
+  description: Store project OCI container images in an authenticated local registry.
+  icon: Container
+  category: productivity
+  requirements:
+    services:
+    - distribution
+    vram_gb: 0
+  enabled_services_all:
+  - distribution
+  setup_time: Initial image download; see README
+  priority: 48
+  launch:
+    type: none

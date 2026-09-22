@@ -1,0 +1,13 @@
+{
+  "repository": "https://github.com/gotson/komga",
+  "license": "MIT",
+  "image": "ghcr.io/gotson/komga:1.27.0@sha256:341f1e7dbd48a42f4df7d0af40f7a6644d7db0b2ed6ea8cbc8c0ccaa71e48b66",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Official 1.27.0 multiarch image, derived owned config/books volumes for UID 1000, original Java entrypoint. JVM heap bounded below container limit. Only actuator health is exposed; no preset accounts or host media mounts."
+}

@@ -1,0 +1,49 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: 2.6.0
+service:
+  id: komga
+  name: Komga
+  aliases: []
+  container_name: ods-komga
+  host_env: KOMGA_HOST
+  default_host: komga
+  port: 25600
+  external_port_env: KOMGA_PORT
+  external_port_default: 11049
+  health: /actuator/health
+  type: docker
+  startup_check: true
+  startup_timeout: 180
+  gpu_backends:
+  - all
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  description: Organize comics, manga and ebooks with browser reading, reading progress,
+    library accounts and OPDS access.
+  env_vars: []
+  ui_path: /
+tags:
+- media
+- local
+- open-source
+features:
+- id: komga-library
+  name: Komga
+  description: Organize comics, manga and ebooks with browser reading, reading progress,
+    library accounts and OPDS access.
+  icon: BookOpen
+  category: productivity
+  requirements:
+    services:
+    - komga
+    vram_gb: 0
+  enabled_services_all:
+  - komga
+  setup_time: Initial image download; see README
+  priority: 48
+  launch:
+    type: service
+    service: komga
+    path: /

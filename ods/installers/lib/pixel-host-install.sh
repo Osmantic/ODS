@@ -1470,7 +1470,7 @@ normalized_agent_tools["deny"] = [
     if item not in {
         "web_search", "web_fetch", "pixel_ods_status", "pixel_ods_apps_list", "pixel_ods_extensions", "pixel_ods_host_observe", "pixel_ods_host_command_propose",
         "pixel_ods_evidence_report", "pixel_ods_evidence_readback",
-        "pixel_ods_research", "pixel_ods_web_extract", "pixel_ods_download_promote", "pixel_ods_workspace_preview", "pixel_ods_ask_user", "pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history",
+        "pixel_ods_research", "pixel_ods_web_extract", "pixel_ods_download_promote", "pixel_ods_workspace_preview", "pixel_ods_ask_user", "pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance",
         "pixel_web_extract"
     }
 ]
@@ -1480,7 +1480,7 @@ for extension_tool in (
     "cron", "create_goal", "get_goal", "update_goal", "update_plan",
     "pixel_ods_status", "pixel_ods_apps_list", "pixel_ods_extensions", "pixel_ods_host_observe", "pixel_ods_host_command_propose",
     "pixel_ods_evidence_report", "pixel_ods_evidence_readback",
-    "pixel_ods_research", "pixel_ods_web_extract", "pixel_ods_download_promote", "pixel_ods_workspace_preview", "pixel_ods_ask_user", "pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history"
+    "pixel_ods_research", "pixel_ods_web_extract", "pixel_ods_download_promote", "pixel_ods_workspace_preview", "pixel_ods_ask_user", "pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance"
 ):
     if extension_tool not in normalized_also_allow:
         normalized_also_allow.append(extension_tool)
@@ -1488,7 +1488,7 @@ for permitted_tool in (
     "cron", "create_goal", "get_goal", "update_goal", "update_plan",
     "web_search", "web_fetch", "pixel_ods_status", "pixel_ods_apps_list", "pixel_ods_extensions", "pixel_ods_host_observe", "pixel_ods_host_command_propose",
     "pixel_ods_evidence_report", "pixel_ods_evidence_readback",
-    "pixel_ods_research", "pixel_ods_web_extract", "pixel_ods_download_promote", "pixel_ods_workspace_preview", "pixel_ods_ask_user", "pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history"
+    "pixel_ods_research", "pixel_ods_web_extract", "pixel_ods_download_promote", "pixel_ods_workspace_preview", "pixel_ods_ask_user", "pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance"
 ):
     if permitted_tool not in normalized_sandbox_allow:
         normalized_sandbox_allow.append(permitted_tool)
@@ -1629,7 +1629,7 @@ _ods_pixel_refresh_plugin_registry() {
     registry="$(ods_pixel_run_as_owner "$owner" "$home" "$openclaw_bin" \
         plugins registry --refresh --json 2>/dev/null)" || return 1
     jq -e --arg root "$plugin_root" '
-        (["pixel_ods_apps_list", "pixel_ods_download_promote", "pixel_ods_evidence_readback", "pixel_ods_evidence_report", "pixel_ods_extensions", "pixel_ods_host_command_propose", "pixel_ods_host_observe", "pixel_ods_status", "pixel_ods_research", "pixel_ods_web_extract", "pixel_ods_workspace_preview", "pixel_ods_ask_user", "pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history"] | sort) as $tools
+        (["pixel_ods_apps_list", "pixel_ods_download_promote", "pixel_ods_evidence_readback", "pixel_ods_evidence_report", "pixel_ods_extensions", "pixel_ods_host_command_propose", "pixel_ods_host_observe", "pixel_ods_status", "pixel_ods_research", "pixel_ods_web_extract", "pixel_ods_workspace_preview", "pixel_ods_ask_user", "pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance"] | sort) as $tools
         | .refreshed == true
         and .registry.version == 1
         and .registry.refreshReason == "manual"
@@ -1649,7 +1649,7 @@ _ods_pixel_verify_plugin_loaded() {
     local owner="$1" home="$2" openclaw_bin="$3" plugin_root="$4"
     ods_pixel_run_as_owner "$owner" "$home" "$openclaw_bin" plugins list --json 2>/dev/null \
         | jq -e --arg root "$plugin_root" '
-            ["pixel_ods_apps_list", "pixel_ods_download_promote", "pixel_ods_evidence_readback", "pixel_ods_evidence_report", "pixel_ods_extensions", "pixel_ods_host_command_propose", "pixel_ods_host_observe", "pixel_ods_status", "pixel_ods_research", "pixel_ods_web_extract", "pixel_ods_workspace_preview", "pixel_ods_ask_user", "pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history"] as $tools
+            ["pixel_ods_apps_list", "pixel_ods_download_promote", "pixel_ods_evidence_readback", "pixel_ods_evidence_report", "pixel_ods_extensions", "pixel_ods_host_command_propose", "pixel_ods_host_observe", "pixel_ods_status", "pixel_ods_research", "pixel_ods_web_extract", "pixel_ods_workspace_preview", "pixel_ods_ask_user", "pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance"] as $tools
             | [
                 .plugins[]?
                 | select(
@@ -1750,384 +1750,10 @@ _ods_pixel_apply_runtime_budget() {
     # OpenClaw's default session watchdogs assume a responsive remote model.
     # Keep the larger CPU-only budgets deterministic and confined to this
     # ODS-owned Pixel route.
-    # macOS Bash 3.2 reparses this command-substitution heredoc; keep the
-    # embedded Python body free of literal apostrophe characters.
-    staged="$(ods_pixel_run_as_owner "$owner" "$home" python3 - "$config" "${PERPLEXICA_PORT:-3004}" "$answers" <<'PY'
-import copy, json, os, pathlib, re, stat, sys, tempfile
-
-path = pathlib.Path(sys.argv[1])
-if not sys.argv[2].isdigit() or not 1 <= int(sys.argv[2]) <= 65535:
-    raise SystemExit("invalid Perplexica service port")
-research_port = int(sys.argv[2])
-info = path.lstat()
-if (not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode) or info.st_nlink != 1
-        or info.st_uid != os.getuid() or info.st_mode & 0o077
-        or info.st_size > 2 * 1024 * 1024):
-    raise SystemExit("unsafe ODS-managed OpenClaw configuration")
-parent_info = path.parent.lstat()
-if (not stat.S_ISDIR(parent_info.st_mode) or stat.S_ISLNK(parent_info.st_mode)
-        or parent_info.st_uid != os.getuid() or parent_info.st_mode & 0o022):
-    raise SystemExit("unsafe ODS-managed OpenClaw configuration directory")
-value = json.loads(path.read_text(encoding="utf-8"))
-if not isinstance(value, dict):
-    raise SystemExit("ODS-managed OpenClaw configuration must be an object")
-
-providers = value.get("models", {}).get("providers", {})
-agents = value.get("agents", {})
-agent_list = agents.get("list", []) if isinstance(agents, dict) else []
-selected = [item for item in agent_list if isinstance(item, dict) and item.get("id") == "pixel"]
-if (not isinstance(providers, dict) or len(providers) != 1
-        or next(iter(providers), None) not in {"ods-local", "ods-gateway"}
-        or len(selected) != 1):
-    raise SystemExit("OpenClaw configuration is outside the ODS Pixel runtime boundary")
-provider_id = next(iter(providers))
-provider = providers[provider_id]
-models = provider.get("models") if isinstance(provider, dict) else None
-defaults = agents.get("defaults") if isinstance(agents, dict) else None
-session = value.get("session")
-model_id = models[0].get("id") if isinstance(models, list) and len(models) == 1 and isinstance(models[0], dict) else None
-if (not isinstance(models, list) or len(models) != 1 or not isinstance(models[0], dict)
-        or not isinstance(defaults, dict) or not isinstance(session, dict)
-        or provider.get("api") != "openai-completions"
-        or selected[0].get("model") != f"{provider_id}/{model_id}"):
-    raise SystemExit("OpenClaw configuration is outside the ODS Pixel runtime contract")
-if provider_id == "ods-local":
-    if (provider.get("apiKey") != "local-no-auth"
-            or provider.get("baseUrl") != "http://127.0.0.1:11434/v1"
-            or not isinstance(model_id, str)
-            or models[0].get("name") != f"ODS Local {model_id}"):
-        raise SystemExit("OpenClaw local route is outside the ODS Pixel runtime contract")
-else:
-    gateway_key = provider.get("apiKey")
-    gateway_url = provider.get("baseUrl")
-    alias_label = "Current" if model_id == "ods/current" else "Default"
-    if (model_id not in {"default", "ods/current"}
-            or not isinstance(gateway_key, str) or not gateway_key or len(gateway_key) > 4096
-            or any(ord(character) < 32 or ord(character) == 127 for character in gateway_key)
-            or not isinstance(gateway_url, str)
-            or not re.fullmatch(r"http://127\.0\.0\.1:[1-9][0-9]{0,4}/v1", gateway_url)
-            or int(gateway_url.rsplit(":", 1)[1].split("/", 1)[0]) > 65535
-            or not isinstance(models[0].get("name"), str)
-            or not re.fullmatch(
-                rf"ODS {alias_label} \([A-Za-z0-9][A-Za-z0-9._+:/ @(),=-]{{0,255}}\)",
-                models[0]["name"],
-            )):
-        raise SystemExit("OpenClaw gateway route is outside the ODS Pixel runtime contract")
-
-updated = copy.deepcopy(value)
-updated_provider = updated["models"]["providers"][provider_id]
-updated_defaults = updated["agents"]["defaults"]
-updated_agent = next(item for item in updated["agents"]["list"] if isinstance(item, dict) and item.get("id") == "pixel")
-updated_agent_experimental = updated_agent.setdefault("experimental", {})
-updated_model = updated_provider["models"][0]
-updated_session = updated["session"]
-updated_agent_sandbox = updated_defaults.setdefault("sandbox", {})
-updated_sandbox_docker = updated_agent_sandbox.setdefault("docker", {})
-updated_diagnostics = updated.setdefault("diagnostics", {})
-updated_compaction = updated_defaults.setdefault("compaction", {})
-write_lock = updated_session.setdefault("writeLock", {})
-updated_tools = updated.setdefault("tools", {})
-updated_also_allow = updated_tools.setdefault("alsoAllow", [])
-updated_web = updated_tools.setdefault("web", {})
-updated_fetch = updated_web.setdefault("fetch", {})
-updated_agent_tools = updated_agent.setdefault("tools", {})
-updated_agent_deny = updated_agent_tools.setdefault("deny", [])
-updated_sandbox = updated_tools.setdefault("sandbox", {})
-updated_sandbox_tools = updated_sandbox.setdefault("tools", {})
-updated_sandbox_allow = updated_sandbox_tools.setdefault("allow", [])
-updated_plugins = updated.setdefault("plugins", {})
-updated_plugin_entries = updated_plugins.setdefault("entries", {}) if isinstance(updated_plugins, dict) else None
-updated_pixel_plugin = updated_plugin_entries.setdefault("pixel-ods", {}) if isinstance(updated_plugin_entries, dict) else None
-updated_pixel_hooks = updated_pixel_plugin.setdefault("hooks", {}) if isinstance(updated_pixel_plugin, dict) else None
-updated_pixel_config = updated_pixel_plugin.setdefault("config", {}) if isinstance(updated_pixel_plugin, dict) else None
-if not isinstance(updated_compaction, dict):
-    raise SystemExit("OpenClaw compaction configuration must be an object")
-if not isinstance(write_lock, dict):
-    raise SystemExit("OpenClaw session write-lock configuration must be an object")
-if not isinstance(updated_diagnostics, dict):
-    raise SystemExit("OpenClaw diagnostics configuration must be an object")
-if not isinstance(updated_agent_sandbox, dict) or not isinstance(updated_sandbox_docker, dict):
-    raise SystemExit("OpenClaw sandbox configuration must be an object")
-if (not isinstance(updated_tools, dict)
-        or not isinstance(updated_also_allow, list)
-        or not all(isinstance(item, str) for item in updated_also_allow)
-        or not isinstance(updated_agent_tools, dict)
-        or not isinstance(updated_agent_experimental, dict)
-        or not isinstance(updated_agent_deny, list)
-        or not all(isinstance(item, str) for item in updated_agent_deny)
-        or not isinstance(updated_sandbox, dict)
-        or not isinstance(updated_sandbox_tools, dict)
-        or not isinstance(updated_sandbox_allow, list)
-        or not all(isinstance(item, str) for item in updated_sandbox_allow)
-        or not isinstance(updated_plugins, dict)
-        or not isinstance(updated_plugin_entries, dict)
-        or not isinstance(updated_pixel_plugin, dict)
-        or not isinstance(updated_pixel_hooks, dict)
-        or not isinstance(updated_pixel_config, dict)):
-    raise SystemExit("OpenClaw tool policy is outside the ODS Pixel runtime contract")
-if not isinstance(updated_web, dict) or not isinstance(updated_fetch, dict):
-    raise SystemExit("OpenClaw web tool policy is outside the ODS Pixel runtime contract")
-exec_control_bind = "{}:/run/pixel-ods-control:ro".format(
-    pathlib.Path.home() / ".openclaw" / ".ods-exec-control"
-)
-existing_binds = updated_sandbox_docker.get("binds", [])
-if existing_binds not in ([], [exec_control_bind]):
-    raise SystemExit("OpenClaw sandbox binds are outside the ODS Pixel runtime contract")
-# OpenClaw accepts this owner-private source only with its explicit external
-# bind opt-in. ODS still pins the sole source and destination above, validates
-# the host tree owner/mode, and exposes it read-only inside the sandbox.
-updated_sandbox_docker["binds"] = [exec_control_bind]
-updated_sandbox_docker["dangerouslyAllowExternalBindSources"] = True
-# RLIMIT_NPROC follows the real host UID across containers and host services.
-# The sandbox already has a per-container pidsLimit, so retaining the OpenClaw
-# default nproc=1024 can starve exec on large local-inference installations.
-updated_sandbox_docker["pidsLimit"] = 1024
-updated_sandbox_ulimits = updated_sandbox_docker.get("ulimits")
-if updated_sandbox_ulimits is not None:
-    if not isinstance(updated_sandbox_ulimits, dict):
-        raise SystemExit("OpenClaw sandbox ulimits are outside the ODS Pixel runtime contract")
-    updated_sandbox_ulimits.pop("nproc", None)
-    if not updated_sandbox_ulimits:
-        updated_sandbox_docker.pop("ulimits", None)
-# Model budgets must preserve native web-search provider choices.
-# OpenClaw validates the complete candidate below; search provisioning and
-# readiness belong to bootstrap, not this context/sandbox budget overlay.
-updated_provider["timeoutSeconds"] = 1800
-updated_defaults["timeoutSeconds"] = 1800
-updated_defaults["bootstrapMaxChars"] = 32000
-updated_defaults["bootstrapTotalMaxChars"] = 96000
-updated_defaults["contextInjection"] = "continuation-skip"
-updated_agent_context_limits = updated_agent.setdefault("contextLimits", {})
-# Tool Search below keeps schemas compact for every model. The separate
-# upstream localModelLean switch removes cron and browser from the catalog,
-# even when policy otherwise permits them. Keep that capability filter off;
-# model size must not silently remove core agent features. Existing explicit
-# tool denials, sandbox policy, and ODS authority checks still apply.
-updated_agent_experimental["localModelLean"] = False
-updated_tools["toolSearch"] = {
-    "enabled": True,
-    "mode": "tools",
-    "searchDefaultLimit": 5,
-    "maxSearchLimit": 10,
-}
-# The finalization hook consumes only per-run structured guard state and
-# does not inspect or persist conversation text. OpenClaw nevertheless requires
-# this explicit trust bit before any installed plugin may register the hook.
-updated_pixel_hooks["allowConversationAccess"] = True
-context_window = updated_model.get("contextWindow")
-model_max_tokens = updated_model.get("maxTokens")
-if (type(context_window) is not int or type(model_max_tokens) is not int
-        or context_window < 4096 or not 1 <= model_max_tokens <= context_window):
-    raise SystemExit("OpenClaw model limits are outside the ODS Pixel runtime contract")
-# Preserve complete upstream workspace contracts when the selected route can
-# carry and follow them. Small checkpoints and compact contexts receive the
-# equivalent concise plugin core and on-demand capability contracts. This
-# generic size/context profile never rejects a model or hides a callable tool.
-compact_context = context_window < 32768
-model_label = "{} {}".format(updated_model.get("id", ""), updated_model.get("name", "")).casefold()
-parameter_markers = re.findall(
-    r"(?<![a-z0-9.])(\d+(?:\.\d+)?)\s*b(?![a-z0-9])",
-    model_label,
-)
-small_model = (
-    any(float(marker) <= 4 for marker in parameter_markers)
-    or (not parameter_markers and re.search(
-        r"(?<![a-z0-9])(mini|micro|tiny)(?![a-z0-9])", model_label,
-    ) is not None)
-)
-lean_prompt = compact_context or small_model
-updated_pixel_config["modelContextWindow"] = context_window
-updated_pixel_config["leanPrompt"] = lean_prompt
-updated_pixel_config["perplexicaPort"] = research_port
-if sys.argv[3]:
-    answers_path = pathlib.Path(sys.argv[3])
-    answers_info = answers_path.lstat()
-    if (not stat.S_ISREG(answers_info.st_mode) or stat.S_ISLNK(answers_info.st_mode)
-            or answers_info.st_nlink != 1 or answers_info.st_uid != os.getuid()
-            or answers_info.st_mode & 0o077 or answers_info.st_size > 2 * 1024 * 1024):
-        raise SystemExit("unsafe ODS Pixel route identity contract")
-    answers = json.loads(answers_path.read_text(encoding="utf-8"))
-    route_fingerprint = answers.get("modelRouteFingerprint")
-    if route_fingerprint is not None and (answers.get("modelProvider") != "ods-gateway"
-            or not isinstance(route_fingerprint, str) or not re.fullmatch(r"[a-f0-9]{64}", route_fingerprint)):
-        raise SystemExit("invalid ODS Pixel route identity")
-    if route_fingerprint is None:
-        updated_pixel_config.pop("modelRouteFingerprint", None)
-    else:
-        updated_pixel_config["modelRouteFingerprint"] = route_fingerprint
-updated_agent["bootstrapMaxChars"] = 2000 if lean_prompt else 14000
-updated_agent["bootstrapTotalMaxChars"] = 6000 if lean_prompt else 36000
-updated_agent["contextInjection"] = "never" if lean_prompt else "continuation-skip"
-# Bound each live tool result by the real context capacity of the selected model.
-# This is capability-based prompt shaping, never a model allowlist: failures
-# retain OpenClaw diagnostic head/tail projection and every tool remains
-# callable, while one large read or verbose suite cannot crowd out the next
-# model continuation on compact local contexts.
-updated_agent_context_limits["toolResultMaxChars"] = max(
-    4000,
-    min(16000, context_window // 4),
-)
-# The OpenClaw OpenAI-compatible transport applies a 1.25 input estimate after
-# the pre-prompt compaction check. Leave enough precheck headroom for the real
-# model output ceiling before that later transport clamp can reduce a
-# continuation to one token. This remains context-derived for every model and
-# does not change its tools or authority.
-updated_compaction["reserveTokens"] = (
-    context_window + 4 * model_max_tokens + 4
-) // 5
-# The computed reserve already includes output and transport headroom.
-# A redundant half-window floor can reject otherwise usable compacted history.
-updated_compaction["reserveTokensFloor"] = 0
-# The fixed OpenClaw 20K keep-recent default is larger than every compact ODS
-# profile. Scale it for all contexts so compaction always drops real history
-# instead of writing an empty no-op summary and blocking the recovery retry.
-updated_compaction["keepRecentTokens"] = max(
-    512,
-    min(20000, context_window // 16),
-)
-# The legacy OpenAI-completions transport in OpenClaw 2026.6.33 coerces the literal
-# reasoning effort "off" with Boolean("off"), which wrongly sends
-# chat_template_kwargs.enable_thinking=true. With the llama.cpp Qwen template
-# that can spend the complete output budget in hidden reasoning after a tool
-# call and leave no user-visible answer. When ODS reasoning is disabled, keep
-# the model non-reasoning and omit the Qwen compatibility knob so the llama.cpp
-# independently pinned no-think default remains authoritative. When the owner
-# explicitly enables reasoning, advertise the capability and use a real
-# non-off effort so both affected and corrected OpenClaw transports agree.
-model_reasoning = updated_model.get("reasoning", False)
-if type(model_reasoning) is not bool:
-    raise SystemExit("OpenClaw model reasoning configuration must be boolean")
-updated_model["reasoning"] = model_reasoning
-if "qwen" in model_label and model_reasoning:
-    model_compat = updated_model.setdefault("compat", {})
-    if not isinstance(model_compat, dict):
-        raise SystemExit("OpenClaw Qwen compatibility configuration must be an object")
-    model_compat["thinkingFormat"] = "qwen-chat-template"
-    updated_agent["thinkingDefault"] = "low"
-else:
-    updated_model.pop("compat", None)
-    updated_agent.pop("thinkingDefault", None)
-updated_agent_params = updated_agent.setdefault("params", {})
-if not isinstance(updated_agent_params, dict):
-    raise SystemExit("OpenClaw Pixel agent parameters must be an object")
-if "qwen" in model_label:
-    template_kwargs = updated_agent_params.setdefault("chat_template_kwargs", {})
-    if not isinstance(template_kwargs, dict):
-        raise SystemExit("OpenClaw Pixel chat-template parameters must be an object")
-    template_kwargs["enable_thinking"] = model_reasoning
-else:
-    template_kwargs = updated_agent_params.get("chat_template_kwargs")
-    if isinstance(template_kwargs, dict):
-        template_kwargs.pop("enable_thinking", None)
-        if not template_kwargs:
-            updated_agent_params.pop("chat_template_kwargs", None)
-    if not updated_agent_params:
-        updated_agent.pop("params", None)
-# Small or compact local checkpoints can get trapped repeating a valid prefix inside a
-# JSON tool argument even though their plain-text generation is healthy. The
-# standard OpenAI sampling controls below made the same 2B route terminate its
-# minimal write call in 81 tokens instead of exhausting 1024. Apply the profile
-# by generic size/context capability rather than an allowlist or readiness
-# gate, and remove it transactionally when a larger route is promoted.
-compact_sampling = {
-    "temperature": 0.7,
-    "topP": 0.8,
-    "frequencyPenalty": 0.6,
-    "presencePenalty": 0.2,
-}
-if lean_prompt:
-    updated_agent["params"] = updated_agent_params
-    updated_agent_params.update(compact_sampling)
-else:
-    for key in compact_sampling:
-        updated_agent_params.pop(key, None)
-if not updated_agent_params:
-    updated_agent.pop("params", None)
-# A CPU-only model call can emit no progress while evaluating a long prompt.
-# Let the 30-minute provider own its terminal timeout, then retain one minute
-# for the OpenClaw stalled-session recovery before the 32-minute host ingress.
-updated_diagnostics["stuckSessionAbortMs"] = 1860000
-write_lock["maxHoldMs"] = 1920000
-write_lock["staleMs"] = 3600000
-updated_tools["loopDetection"] = {
-    "enabled": True,
-    "historySize": 12,
-    "warningThreshold": 2,
-    "unknownToolThreshold": 2,
-    "criticalThreshold": 4,
-    "globalCircuitBreakerThreshold": 6,
-    "detectors": {
-        "genericRepeat": True,
-        "knownPollNoProgress": True,
-        "pingPong": True,
-    },
-}
-# Search stays private through loopback-only SearXNG. Page retrieval uses
-# OpenClaw public-network SSRF guard with deliberately tighter ODS bounds;
-# private/link-local targets and trusted environment proxies remain disabled.
-updated_fetch.update({
-    "enabled": True,
-    "maxChars": 12000,
-    "maxCharsCap": 20000,
-    "maxResponseBytes": 1000000,
-    "timeoutSeconds": 20,
-    "cacheTtlMinutes": 15,
-    "maxRedirects": 3,
-    "readability": True,
-    "useTrustedEnvProxy": False,
-    "ssrfPolicy": {
-        "allowRfc2544BenchmarkRange": False,
-        "allowIpv6UniqueLocalRange": False,
-    },
-})
-updated_agent_tools["deny"] = [
-    item for item in updated_agent_deny
-    if item not in {
-        "web_search", "web_fetch", "pixel_ods_status", "pixel_ods_apps_list", "pixel_ods_extensions", "pixel_ods_host_observe", "pixel_ods_host_command_propose",
-        "pixel_ods_evidence_report", "pixel_ods_evidence_readback",
-        "pixel_ods_research", "pixel_ods_web_extract", "pixel_ods_download_promote", "pixel_ods_workspace_preview", "pixel_ods_ask_user", "pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history",
-        "pixel_web_extract"
-    }
-]
-updated_also_allow = [item for item in updated_also_allow if item != "pixel_web_extract"]
-updated_sandbox_allow = [item for item in updated_sandbox_allow if item != "pixel_web_extract"]
-for extension_tool in (
-    "cron", "create_goal", "get_goal", "update_goal", "update_plan",
-    "pixel_ods_status", "pixel_ods_apps_list", "pixel_ods_extensions", "pixel_ods_host_observe", "pixel_ods_host_command_propose",
-    "pixel_ods_evidence_report", "pixel_ods_evidence_readback",
-    "pixel_ods_research", "pixel_ods_web_extract", "pixel_ods_download_promote", "pixel_ods_workspace_preview", "pixel_ods_ask_user", "pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history"
-):
-    if extension_tool not in updated_also_allow:
-        updated_also_allow.append(extension_tool)
-for permitted_tool in (
-    "cron", "create_goal", "get_goal", "update_goal", "update_plan",
-    "web_search", "web_fetch", "pixel_ods_status", "pixel_ods_apps_list", "pixel_ods_extensions", "pixel_ods_host_observe", "pixel_ods_host_command_propose",
-    "pixel_ods_evidence_report", "pixel_ods_evidence_readback",
-    "pixel_ods_research", "pixel_ods_web_extract", "pixel_ods_download_promote", "pixel_ods_workspace_preview", "pixel_ods_ask_user", "pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history"
-):
-    if permitted_tool not in updated_sandbox_allow:
-        updated_sandbox_allow.append(permitted_tool)
-updated_tools["alsoAllow"] = sorted(set(updated_also_allow))
-updated_sandbox_tools["allow"] = sorted(set(updated_sandbox_allow))
-if updated == value:
-    print("unchanged")
-    raise SystemExit(0)
-
-fd, temporary = tempfile.mkstemp(prefix=".ods-pixel-runtime-budget.", dir=path.parent)
-try:
-    with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
-        json.dump(updated, handle, indent=2, sort_keys=True)
-        handle.write("\n")
-        handle.flush()
-        os.fsync(handle.fileno())
-    os.chmod(temporary, 0o600)
-    print(temporary)
-except BaseException:
-    if os.path.exists(temporary):
-        os.unlink(temporary)
-    raise
-PY
-)" || return 1
+    local budget_writer
+    budget_writer="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/pixel-runtime-budget.py"
+    staged="$(ods_pixel_run_as_owner "$owner" "$home" python3 "$budget_writer" \
+        "$config" "${PERPLEXICA_PORT:-3004}" "$answers")" || return 1
     if [[ "$staged" == unchanged ]]; then
         printf '%s\n' unchanged
         return 0
@@ -3505,7 +3131,7 @@ PY
 
 _ods_pixel_write_operations_policy() {
     local owner="$1" home="$2" policy="$3" install_root="${INSTALL_DIR:?}"
-    local workspace="$home/.openclaw/workspace-pixel"
+    local workspace="${4:-$home/.openclaw/workspace-pixel}"
     local system_observer_source="$install_root/extensions/services/pixel-agent/host/system_observe.py"
 
     ods_pixel_run_as_owner "$owner" "$home" install -d -m 0700 -- "${policy%/*}" || return 1
@@ -3542,10 +3168,14 @@ def normalized_root(value, label):
 
 install_root = normalized_root(install_root, "ODS install root")
 workspace = normalized_root(workspace, "Pixel workspace")
-manager_socket_root = "/run/ods-pixel-manager"
+native_macos = sys.platform == "darwin"
+broker_state = "/private/var/lib/pixel-ops-broker" if native_macos else "/var/lib/pixel-ops-broker"
+manager_socket_root = "/private/var/lib/ods-pixel-manager" if native_macos else "/run/ods-pixel-manager"
 manager_socket = manager_socket_root + "/extension-manager.sock"
-manager_program = "/opt/pixel-ops-broker/ods-extension-manager.py"
-system_observer = "/usr/local/libexec/ods-pixel-system-observe.py"
+manager_program = "/usr/local/libexec/ods-pixel-services/manager/extension_manager.py" if native_macos else "/opt/pixel-ops-broker/ods-extension-manager.py"
+extension_search = "/usr/local/libexec/ods-pixel-services/helpers/extension_search.py" if native_macos else "/opt/pixel-ops-broker/ods-extension-search.py"
+extension_catalog = "/usr/local/libexec/ods-pixel-services/helpers/extension-catalog.json" if native_macos else "/opt/pixel-ops-broker/ods-extension-catalog.json"
+system_observer = "/usr/local/libexec/ods-pixel-services/helpers/system_observe.py" if native_macos else "/usr/local/libexec/ods-pixel-system-observe.py"
 system_observer_source = pathlib.Path(system_observer_source_raw)
 
 def required_binary(name):
@@ -3560,16 +3190,18 @@ uname_binary = required_binary("uname")
 cat_binary = required_binary("cat")
 uptime_binary = required_binary("uptime")
 ps_binary = required_binary("ps")
-systemctl_binary = required_binary("systemctl")
-lscpu_binary = required_binary("lscpu")
-free_binary = required_binary("free")
+systemctl_binary = None if native_macos else required_binary("systemctl")
+lscpu_binary = None if native_macos else required_binary("lscpu")
+free_binary = None if native_macos else required_binary("free")
 df_binary = required_binary("df")
-ip_binary = required_binary("ip")
-ss_binary = required_binary("ss")
+ip_binary = None if native_macos else required_binary("ip")
+ss_binary = None if native_macos else required_binary("ss")
 for binary in (
     python_binary, hostname_binary, uname_binary, cat_binary, uptime_binary, ps_binary,
     systemctl_binary, lscpu_binary, free_binary, df_binary, ip_binary, ss_binary,
 ):
+    if binary is None:
+        continue
     info = pathlib.Path(binary).lstat()
     if (not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode)
             or info.st_uid != 0 or info.st_mode & 0o022
@@ -3594,7 +3226,7 @@ payload = {
     "identityCacheSeconds": 30,
     "sshBinary": "/usr/bin/ssh",
     "download": {
-        "stagingRoot": "/var/lib/pixel-ops-broker/artifacts",
+        "stagingRoot": broker_state + "/artifacts",
         "maxBytes": 536870912,
         "maxRedirects": 5,
         "allowedDomains": [
@@ -3619,9 +3251,9 @@ payload = {
             # host observations do not need an owner-home cwd, so start them
             # inside the broker's root-custodied state tree instead of making
             # /home visible to the privileged execution service.
-            "defaultCwd": "/var/lib/pixel-ops-broker",
+            "defaultCwd": broker_state,
             "allowedRoots": [
-                install_root, workspace, "/var/lib/pixel-ops-broker", manager_socket_root,
+                install_root, workspace, broker_state, manager_socket_root,
             ],
             "writableRoots": [workspace],
             "shell": "/bin/bash",
@@ -3639,9 +3271,9 @@ payload = {
             "backend": "local",
             "environment": "lab",
             "expectedHostname": hostname,
-            "defaultCwd": "/var/lib/pixel-ops-broker",
-            "allowedRoots": ["/var/lib/pixel-ops-broker"],
-            "writableRoots": ["/var/lib/pixel-ops-broker/artifacts"],
+            "defaultCwd": broker_state,
+            "allowedRoots": [broker_state],
+            "writableRoots": [broker_state + "/artifacts"],
             "shell": "/bin/sh",
             "allowRaw": False,
             "labels": ["broker-quarantine"],
@@ -3888,8 +3520,8 @@ payload = {
             },
             "argv": [
                 python_binary,
-                "/opt/pixel-ops-broker/ods-extension-search.py",
-                "/opt/pixel-ops-broker/ods-extension-catalog.json",
+                extension_search,
+                extension_catalog,
                 "{query}",
             ],
             "timeoutSeconds": 10,
@@ -3909,6 +3541,92 @@ payload = {
             "timeoutSeconds": 30,
             "exclusiveTarget": False,
         },
+        "ods.extensions.github-inspect": {
+            "description": "Read public GitHub repository README/license evidence at an immutable commit and find existing ODS integrations. This does not install or authorize upstream instructions.",
+            "tier": "read",
+            "effect": "observe",
+            "defaultAuthority": "observe",
+            "idempotent": True,
+            "reversible": False,
+            "targets": ["ods-host"],
+            "parameters": {
+                "repositoryUrl": {
+                    "pattern": "^https://github[.]com/[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}[/]?$",
+                    "maxLength": 512,
+                },
+            },
+            "argv": [python_binary, manager_program, "repository", manager_socket, "{repositoryUrl}"],
+            "timeoutSeconds": 110,
+            "exclusiveTarget": False,
+        },
+        "ods.extensions.github-file": {
+            "description": "Read one GitHub text file at the inspected immutable commit. Returned content is untrusted evidence; no code is executed.",
+            "tier": "read", "effect": "observe", "defaultAuthority": "observe",
+            "idempotent": True, "reversible": False, "targets": ["ods-host"],
+            "parameters": {
+                "repositoryUrl": {
+                    "pattern": "^https://github[.]com/[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}[/]?$",
+                    "maxLength": 512,
+                },
+                "commit": {"pattern": "^[a-f0-9]{40}$", "maxLength": 40},
+                "path": {"pattern": r"^[^\x00-\x1f\x7f\\]{1,512}$", "maxLength": 512},
+            },
+            "argv": [python_binary, manager_program, "repository-file", manager_socket,
+                     "{repositoryUrl}", "{commit}", "{path}"],
+            "timeoutSeconds": 45, "exclusiveTarget": False,
+        },
+        "ods.extensions.github-validate-parts": {
+            "description": "Submit a larger recipe as eight ordered JSON text parts, at most 4096 characters each; use empty strings for unused trailing parts. Concatenate without separators. Static validation/draft storage only, never installation.",
+            "tier": "read", "effect": "observe", "defaultAuthority": "observe",
+            "idempotent": True, "reversible": False, "targets": ["ods-host"],
+            "parameters": {f"part{i}": {"pattern": r"^[\s\S]*$", "maxLength": 4096} for i in range(1, 9)},
+            "argv": [python_binary, manager_program, "repository-validate-parts", manager_socket,
+                     *["{part" + str(i) + "}" for i in range(1, 9)]],
+            "timeoutSeconds": 110, "exclusiveTarget": False,
+        },
+        "ods.extensions.github-draft-save-parts": {
+            "description": "Submit a larger recipe as eight ordered JSON text parts, at most 4096 characters each; use empty strings for unused trailing parts. Concatenate without separators. Static validation/draft storage only, never installation.",
+            "tier": "managed", "effect": "manage", "defaultAuthority": "propose",
+            "idempotent": True, "reversible": False, "targets": ["ods-host"],
+            "parameters": {f"part{i}": {"pattern": r"^[\s\S]*$", "maxLength": 4096} for i in range(1, 9)},
+            "argv": [python_binary, manager_program, "repository-draft-save-parts", manager_socket,
+                     *["{part" + str(i) + "}" for i in range(1, 9)]],
+            "timeoutSeconds": 110, "exclusiveTarget": True,
+        },
+        "ods.extensions.github-draft-prepare": {
+            "description": "Prepare an exact saved GitHub recipe as an available extension configuration. Does not download, start or mark the application installed.",
+            "tier": "managed", "effect": "manage", "defaultAuthority": "propose",
+            "idempotent": True, "reversible": False, "targets": ["ods-host"],
+            "parameters": {"draftId": {"pattern": "^[a-f0-9]{64}$", "maxLength": 64}},
+            "argv": [python_binary, manager_program, "repository-draft-prepare", manager_socket, "{draftId}"],
+            "timeoutSeconds": 150, "exclusiveTarget": True,
+        },
+        "ods.extensions.github-draft-read": {
+            "description": "Recover a saved extension recipe by its exact draft ID. Recovered proposals require fresh validation and do not prove installation.",
+            "tier": "read", "effect": "observe", "defaultAuthority": "observe",
+            "idempotent": True, "reversible": False, "targets": ["ods-host"],
+            "parameters": {"draftId": {"pattern": "^[a-f0-9]{64}$", "maxLength": 64}},
+            "argv": [python_binary, manager_program, "repository-draft-read", manager_socket, "{draftId}"],
+            "timeoutSeconds": 45, "exclusiveTarget": False,
+        },
+        "ods.extensions.github-draft-save": {
+            "description": "Save an immutable, statically validated extension recipe for recovery. This stores a draft only; it does not install or register an extension.",
+            "tier": "managed", "effect": "manage", "defaultAuthority": "propose",
+            "idempotent": True, "reversible": False, "targets": ["ods-host"],
+            "parameters": {"recipeJson": {"pattern": r"^[\s\S]+$", "maxLength": 4096}},
+            "argv": [python_binary, manager_program, "repository-draft-save", manager_socket, "{recipeJson}"],
+            "timeoutSeconds": 110, "exclusiveTarget": True,
+        },
+        "ods.extensions.github-validate": {
+            "description": "Validate a proposed GitHub extension manifest and Compose recipe; returns static diagnostics only, without installation or registration.",
+            "tier": "read", "effect": "observe", "defaultAuthority": "observe",
+            "idempotent": True, "reversible": False, "targets": ["ods-host"],
+            "parameters": {
+                "recipeJson": {"pattern": r"^[\s\S]+$", "maxLength": 4096},
+            },
+            "argv": [python_binary, manager_program, "repository-validate", manager_socket, "{recipeJson}"],
+            "timeoutSeconds": 110, "exclusiveTarget": False,
+        },
         "ods.extensions.inspect": {
             "description": "Inspect one ODS extension's installed state and configuration prerequisites through the scoped lifecycle proxy.",
             "tier": "read",
@@ -3926,7 +3644,7 @@ payload = {
             "argv": [
                 python_binary, manager_program, "client", manager_socket, "inspect", "{serviceId}",
             ],
-            "timeoutSeconds": 30,
+            "timeoutSeconds": 90,
             "exclusiveTarget": False,
         },
         "ods.extensions.install": {
@@ -3949,6 +3667,27 @@ payload = {
                 python_binary, manager_program, "client", manager_socket, "install", "{serviceId}",
             ],
             "timeoutSeconds": 900,
+            "exclusiveTarget": True,
+        },
+        "ods.extensions.install-next": {
+            "description": "Advance one installation step for a cataloged ODS extension and its declared dependencies. Retains uncertain effects; acceptance is not readiness.",
+            "tier": "managed",
+            "effect": "manage",
+            "defaultAuthority": "propose",
+            "idempotent": True,
+            "reversible": False,
+            "verificationAction": "ods.extensions.inspect",
+            "targets": ["ods-host"],
+            "parameters": {
+                "serviceId": {
+                    "pattern": "^([a-z0-9]|[a-z0-9][a-z0-9._-]{0,62}[a-z0-9])$",
+                    "maxLength": 64,
+                },
+            },
+            "argv": [
+                python_binary, manager_program, "client", manager_socket, "install-next", "{serviceId}",
+            ],
+            "timeoutSeconds": 240,
             "exclusiveTarget": True,
         },
         "ods.extensions.enable": {
@@ -4035,6 +3774,10 @@ payload = {
         }],
     },
 }
+if native_macos:
+    for observation in ("os-release", "cpu", "memory", "processes", "services", "storage",
+                        "network-addresses", "network-routes", "listening-ports"):
+        payload["actions"]["host." + observation]["argv"] = [python_binary, system_observer, observation]
 content = json.dumps(payload, indent=2, sort_keys=True) + "\n"
 descriptor, temporary = tempfile.mkstemp(prefix=".pixel-ops-policy.", dir=path.parent)
 try:
@@ -4098,6 +3841,9 @@ _ods_pixel_write_onboarding() {
         return 1
     }
 
+    local renderer
+    renderer="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/pixel-onboarding.py" || return 1
+    [[ -f "$renderer" ]] || return 1
     ods_pixel_run_as_owner "$owner" "$home" install -d -m 0700 -- "${answers%/*}" || return 1
     gateway_key_file="$(ods_pixel_run_as_owner "$owner" "$home" \
         mktemp "${answers%/*}/.pixel-gateway-key.XXXXXX")" || return 1
@@ -4107,160 +3853,11 @@ _ods_pixel_write_onboarding() {
         ods_pixel_run_as_owner "$owner" "$home" rm -f -- "$gateway_key_file" || true
         return 1
     fi
-    ods_pixel_run_as_owner "$owner" "$home" python3 - "$answers" \
+    ods_pixel_run_as_owner "$owner" "$home" python3 "$renderer" "$answers" \
         "$openclaw_bin" "$home" "$runtime_model" "$context" "$max_tokens" "$reasoning" \
         "$gateway_alias" "$gateway_label" "$model_gateway_port" "$pixel_gateway_port" "$gateway_key_file" \
         "${SEARXNG_PORT:-8888}" "$plugin_path" "$plugin_digest" \
-        "$web_search_provider" "$parallel_path" "$parallel_digest" <<'PY' || write_status=$?
-import json, os, pathlib, re, stat, sys, tempfile
-
-(out, openclaw_bin, home, model, context, max_tokens, reasoning,
- gateway_alias, gateway_label, model_gateway_port, pixel_gateway_port, gateway_key_path,
- search_port, plugin_path, plugin_digest, web_search_provider, parallel_path, parallel_digest) = sys.argv[1:]
-if web_search_provider not in {"searxng", "parallel-free"}:
-    raise SystemExit("invalid native search provider")
-if web_search_provider == "parallel-free" and (
-        not pathlib.Path(parallel_path).is_absolute()
-        or not re.fullmatch(r"[0-9a-f]{64}", parallel_digest)):
-    raise SystemExit("native search requires a provisioned and verified parallel plugin")
-gateway_key_path = pathlib.Path(gateway_key_path)
-gateway_key_info = gateway_key_path.lstat()
-if (not stat.S_ISREG(gateway_key_info.st_mode) or stat.S_ISLNK(gateway_key_info.st_mode)
-        or gateway_key_info.st_nlink != 1 or gateway_key_info.st_uid != os.getuid()
-        or gateway_key_info.st_mode & 0o077 or gateway_key_info.st_size > 4096):
-    raise SystemExit("unsafe ODS Pixel gateway credential")
-gateway_key = gateway_key_path.read_text(encoding="utf-8")
-if gateway_alias not in {"default", "ods/current"}:
-    raise SystemExit("invalid ODS Pixel gateway alias")
-if gateway_label not in {"Default", "Current"}:
-    raise SystemExit("invalid ODS Pixel gateway label")
-if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+:/ @(),=-]{0,255}", model):
-    raise SystemExit("invalid ODS Pixel model id")
-if (not model_gateway_port.isdigit() or not 1 <= int(model_gateway_port) <= 65535
-        or not pixel_gateway_port.isdigit() or not 1 <= int(pixel_gateway_port) <= 65535
-        or not gateway_key or len(gateway_key) > 4096
-        or any(ord(character) < 32 or ord(character) == 127 for character in gateway_key)):
-    raise SystemExit("invalid ODS Pixel gateway route")
-home = pathlib.Path(home)
-path = pathlib.Path(out)
-# A source/plugin upgrade is not a request to reset the owner's output budget.
-# Preserve it for the same model route and context; explicit model settings are
-# still applied by _ods_pixel_update_onboarding_model.
-route_fingerprint = None
-try:
-    previous_fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-except FileNotFoundError:
-    if path.is_symlink():
-        raise SystemExit("ODS Pixel onboarding contract cannot be a symlink")
-else:
-    with os.fdopen(previous_fd, "rb") as previous_file:
-        info = os.fstat(previous_file.fileno())
-        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
-                or info.st_uid != os.getuid() or info.st_mode & 0o077
-                or info.st_size > 2 * 1024 * 1024):
-            raise SystemExit("unsafe existing ODS Pixel onboarding contract")
-        previous_bytes = previous_file.read(2 * 1024 * 1024 + 1)
-    if len(previous_bytes) > 2 * 1024 * 1024:
-        raise SystemExit("oversized existing ODS Pixel onboarding contract")
-    previous = json.loads(previous_bytes)
-    if (not isinstance(previous, dict)
-            or previous.get("deploymentName") != "ods-default" or previous.get("agentId") != "pixel"
-            or type(previous.get("modelContextWindow")) is not int
-            or type(previous.get("modelMaxTokens")) is not int
-            or type(previous.get("modelReasoning")) is not bool
-            or not 4096 <= previous["modelContextWindow"] <= 10_000_000
-            or not 1 <= previous["modelMaxTokens"] <= previous["modelContextWindow"]):
-        raise SystemExit("invalid existing ODS Pixel model contract")
-    same_model = {
-        "modelProvider": "ods-gateway", "modelId": gateway_alias,
-        "modelName": f"ODS {gateway_label} ({model})",
-        "modelBaseUrl": f"http://127.0.0.1:{model_gateway_port}/v1",
-        "modelContextWindow": int(context), "modelReasoning": reasoning == "true",
-    }
-    if all(previous.get(key) == value for key, value in same_model.items()):
-        max_tokens = str(previous["modelMaxTokens"])
-        route_fingerprint = previous.get("modelRouteFingerprint")
-        if route_fingerprint is not None and (not isinstance(route_fingerprint, str)
-                or not re.fullmatch(r"[a-f0-9]{64}", route_fingerprint)):
-            raise SystemExit("invalid existing ODS Pixel route identity")
-payload = {
-    "deploymentProfile": "prepared",
-    "capabilityProfile": "engineering-operator",
-    "ownerName": "ODS Owner",
-    "organization": "Local ODS",
-    "deploymentName": "ods-default",
-    "timeZone": "UTC",
-    "agentId": "pixel",
-    "agentName": "Pixel",
-    "openclawBin": openclaw_bin,
-    "openclawHome": str(home / ".openclaw"),
-    "installDir": str(home / ".local" / "share" / "pixel"),
-    "workspace": str(home / ".openclaw" / "workspace-pixel"),
-    "modelProvider": "ods-gateway",
-    "modelId": gateway_alias,
-    "modelName": f"ODS {gateway_label} ({model})",
-    "modelBaseUrl": f"http://127.0.0.1:{model_gateway_port}/v1",
-    "modelApiKey": gateway_key,
-    "modelReasoning": reasoning == "true",
-    "modelContextWindow": int(context),
-    "modelMaxTokens": int(max_tokens),
-    "modelPrivateHosts": [],
-    "webSearchProvider": web_search_provider,
-    "searxngBaseUrl": f"http://127.0.0.1:{search_port}",
-    "embeddingModel": "embeddinggemma-300m-qat-Q8_0.gguf",
-    "embeddingCache": str(home / ".cache" / "openclaw" / "embeddings"),
-    "googleAccount": "ods@localhost.local",
-    "calendarId": "primary",
-    "gatewayPort": int(pixel_gateway_port),
-    "gatewayExtensions": [{
-        "id": "pixel-ods",
-        "path": plugin_path,
-        "sha256": plugin_digest,
-        "tools": ["pixel_ods_status", "pixel_ods_apps_list", "pixel_ods_extensions", "pixel_ods_host_observe", "pixel_ods_host_command_propose", "pixel_ods_evidence_report", "pixel_ods_evidence_readback", "pixel_ods_research", "pixel_ods_web_extract", "pixel_ods_download_promote", "pixel_ods_workspace_preview", "pixel_ods_ask_user", "pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history"],
-    }],
-    "localCapabilityPacks": [],
-    "agentSkills": [],
-    "emailLimbEnabled": False,
-    "calendarLimbEnabled": False,
-    "calendarDirectEnabled": False,
-    "socialLimbEnabled": False,
-    "webLimbEnabled": False,
-    "operationsLimbEnabled": True,
-    "operationsPolicyFile": str(path.parent / "operations-policy.json"),
-    "frontierLimbEnabled": False,
-    "frontierAuthMode": "api-key",
-    # Pixel still validates the managed Frontier policy while the limb is
-    # disabled. Use its smallest built-in budget rather than "custom", which
-    # is reserved for a separate private policy and otherwise renders an empty
-    # budget object during configure.
-    "frontierBudgetProfile": "starter",
-    "frontierTaskPacks": [],
-    "operationsActionPacks": [],
-}
-if route_fingerprint is not None:
-    payload["modelRouteFingerprint"] = route_fingerprint
-if web_search_provider == "parallel-free":
-    payload["gatewayExtensions"].append({"id": "parallel", "path": parallel_path, "sha256": parallel_digest})
-path.parent.mkdir(parents=True, exist_ok=True)
-if path.is_symlink():
-    raise SystemExit("ODS Pixel onboarding contract cannot be a symlink")
-if path.exists():
-    info = path.stat()
-    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_size > 2 * 1024 * 1024:
-        raise SystemExit("invalid existing ODS Pixel onboarding contract")
-content = json.dumps(payload, indent=2, sort_keys=True) + "\n"
-fd, temporary = tempfile.mkstemp(prefix=".pixel-onboarding.", dir=path.parent)
-try:
-    with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
-        handle.write(content)
-        handle.flush()
-        os.fsync(handle.fileno())
-    os.chmod(temporary, 0o600)
-    os.replace(temporary, path)
-finally:
-    if os.path.exists(temporary):
-        os.unlink(temporary)
-PY
+        "$web_search_provider" "$parallel_path" "$parallel_digest" || write_status=$?
     ods_pixel_run_as_owner "$owner" "$home" rm -f -- "$gateway_key_file" || write_status=1
     return "$write_status"
 }
@@ -5083,6 +4680,15 @@ ods_pixel_install_default_agent() {
         --state-dir "$home/.openclaw/ods-runtime-patches/compaction-resume" \
         >>"$pixel_log" 2>&1; then
         ai_bad "Pixel's compaction continuation repair could not verify its package bytes. See $pixel_log."
+        return 1
+    fi
+    # Honor the configured compaction budget on slow local providers.
+    if ! ods_pixel_run_as_owner "$owner" "$home" python3 \
+        "$plugin_root/host/openclaw_tool_recovery.py" \
+        --openclaw-bin "$openclaw_bin" --compaction-budget \
+        --state-dir "$home/.openclaw/ods-runtime-patches/compaction-budget" \
+        >>"$pixel_log" 2>&1; then
+        ai_bad "Pixel's compaction budget repair could not verify its package bytes. See $pixel_log."
         return 1
     fi
     # The runtime overlay above replaces the live configuration atomically.

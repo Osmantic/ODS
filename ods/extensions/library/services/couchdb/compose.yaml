@@ -1,0 +1,48 @@
+services:
+  couchdb:
+    image: ods/couchdb:3.5.2.1-local-v1
+    container_name: ods-couchdb
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${COUCHDB_PORT:-11045}:5984
+    healthcheck:
+      test:
+      - CMD
+      - /bin/bash
+      - /opt/couchdb/ods-health.sh
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    user: 5984:5984
+    environment:
+      COUCHDB_USER: ods
+      COUCHDB_PASSWORD: ${COUCHDB_PASSWORD:?Set the initial CouchDB administrator
+        password}
+    volumes:
+    - couchdb-data:/opt/couchdb/data
+    - couchdb-config:/opt/couchdb/etc/local.d
+    build:
+      context: .
+      dockerfile: Dockerfile
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  couchdb-data: {}
+  couchdb-config: {}

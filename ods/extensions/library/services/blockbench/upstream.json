@@ -1,0 +1,15 @@
+{
+  "repository": "https://github.com/JannisX11/blockbench",
+  "license": "GPL-3.0-or-later",
+  "image": "nginx:1.28-alpine@sha256:a8b39bd9cf0f83869a2162827a0caf6137ddf759d50a171451b335cecc87d236",
+  "build_image": "node:24.16.0-alpine3.22@sha256:191c9f0080fcbbc6547a85dc0ff7988072214a355aabdc1d2ec55a7dae5eea8a",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "source_commit": "2569d0245d600030760cf0b8429b1b0017b871f1",
+  "source_sha256": "f520c672a2295b342b1f29dc203914240fb92b2abec6936d7ac549fdbf782751",
+  "notes": "v5.2.0 web target, not Electron. npm lifecycle scripts disabled except explicit esbuild rebuild. Complete pinned upstream source archive served under /source/; ODS recipe files alongside it. Client-side WebGL, browser storage and explicit model exports; no server project volume."
+}

@@ -152,6 +152,54 @@ class TraversalTests(unittest.TestCase):
         self.assertEqual(self.verify.call_count, len(self.file.parts) + 1)
         self.assertFalse(self.verify.call_args.kwargs['directory'])
 
+    def test_protected_directory_creates_new_paths_with_stable_modes(self):
+        previous = os.umask(0o077)
+        try:
+            path = self.root / 'new' / 'child'
+            with custody.protected_directory(path, create=True) as fd:
+                self.assertEqual(stat.S_IMODE(os.fstat(fd).st_mode), 0o755)
+            self.assertEqual(stat.S_IMODE(path.parent.stat().st_mode), 0o755)
+            self.assertEqual(stat.S_IMODE(self.root.stat().st_mode), 0o700)
+        finally:
+            os.umask(previous)
+
+    def test_protected_directory_never_follows_symlink_during_creation(self):
+        link = self.root / 'alias'
+        link.symlink_to(self.root, target_is_directory=True)
+        with self.assertRaises(OSError):
+            with custody.protected_directory(link / 'never-created', create=True):
+                self.fail('symlink accepted')
+        self.assertFalse((self.root / 'never-created').exists())
+
+    def test_protected_directory_rejects_parent_before_creating_child(self):
+        path = self.root / 'never-created'
+        self.verify.side_effect = custody.CustodyError('unsafe parent')
+        with self.assertRaises(custody.CustodyError):
+            with custody.protected_directory(path, create=True):
+                self.fail('unsafe parent accepted')
+        self.assertFalse(path.exists())
+
+    def test_tree_metadata_checks_every_regular_entry(self):
+        child = self.root / 'nested'
+        child.mkdir()
+        (child / 'file').write_text('fixture')
+        custody.protected_tree_metadata(self.root)
+        file_checks = [call for call in self.verify.call_args_list if not call.kwargs['directory']]
+        self.assertEqual(len(file_checks), 2)
+
+    @unittest.skipUnless(sys.platform == 'darwin', 'real macOS ACL check required')
+    def test_tree_refuses_real_acl_on_nested_file(self):
+        def check_acl(fd, **_):
+            custody._require_no_acl(fd)
+            return os.fstat(fd)
+        self.verify.side_effect = check_acl
+        subprocess.run(['/bin/chmod', '+a', 'everyone allow write', str(self.file)], check=True)
+        try:
+            with self.assertRaisesRegex(custody.CustodyError, 'acl-present'):
+                custody.protected_tree_metadata(self.root)
+        finally:
+            subprocess.run(['/bin/chmod', '-N', str(self.file)], check=True)
+
     def test_rejects_ambiguous_paths_before_open(self):
         for path in ('relative', '/', '//Library/file', '/Library/../file', '/Library/./file', '/Library/file/', '/a\0b'):
             with self.subTest(path=path), patch.object(custody.os, 'open') as opened:

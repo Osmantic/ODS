@@ -275,6 +275,123 @@ def _split_port_host(port_str):
     return host, rest
 
 
+_extension_build_contexts = {}
+
+
+def _extension_build_context(compose_path, build):
+    """Accept bounded build inputs; never forward arbitrary host paths/options."""
+    root = script_dir / "data" / "user-extensions"
+    directory = compose_path.parent
+    if directory.parent.resolve() != root.resolve() or directory.is_symlink():
+        raise ValueError("build must belong to an installed extension")
+    if isinstance(build, str):
+        build = {"context": build}
+    if not isinstance(build, dict):
+        raise ValueError("unsupported build options")
+    context = build.get("context", ".")
+    if isinstance(context, str) and context.startswith("https://github.com/"):
+        # The API publishes commit-bound GitHub recipes. Preserve their remote
+        # context across Windows/Linux/macOS rather than treating it as a path.
+        # Revalidate the complete installed recipe before forwarding to Docker.
+        import hashlib
+        from urllib.parse import urlsplit
+        if set(build) - {"context", "dockerfile", "dockerfile_inline", "target"}:
+            raise ValueError("unsupported remote build options")
+        parsed = urlsplit(context)
+        match = re.fullmatch(r"/([A-Za-z0-9][A-Za-z0-9-]{0,38})/([A-Za-z0-9][A-Za-z0-9._-]{0,99})\.git", parsed.path)
+        revision, separator, subdir = parsed.fragment.partition(":")
+        if (parsed.netloc != "github.com" or parsed.query or not match
+                or not re.fullmatch(r"[a-f0-9]{40}", revision) or (separator and not subdir)):
+            raise ValueError("remote build requires an immutable public GitHub commit")
+        repository = "https://github.com/" + match[1] + "/" + match[2]
+        for name in ("upstream.json", "manifest.yaml", compose_path.name):
+            source = directory / name
+            if source.is_symlink() or not source.is_file() or source.stat().st_size > 524288:
+                raise ValueError("invalid installed recipe file")
+        upstream = json.loads((directory / "upstream.json").read_text(encoding="utf-8"))
+        manifest = yaml.safe_load((directory / "manifest.yaml").read_text(encoding="utf-8"))
+        compose = yaml.safe_load(compose_path.read_text(encoding="utf-8"))
+        if (not isinstance(upstream, dict) or upstream.get("origin") != "github-proposal"
+                or not isinstance(upstream.get("repository"), str)
+                or upstream["repository"].rstrip("/").removesuffix(".git").lower() != repository.lower()
+                or upstream.get("commit") != revision):
+            raise ValueError("remote build does not match installed provenance")
+        if not isinstance(manifest, dict) or not isinstance(compose, dict) or not isinstance(compose.get("services"), dict):
+            raise ValueError("invalid source recipe documents")
+        candidate = {"repository": upstream["repository"], "commit": revision, "manifest": manifest, "compose": compose}
+        digest = hashlib.sha256(json.dumps(candidate, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
+        if upstream.get("recipeDigest") != digest:
+            raise ValueError("installed source recipe changed")
+        dockerfile = build.get("dockerfile", "Dockerfile")
+        for value, required in ((subdir, False), (dockerfile, True)):
+            if (not isinstance(value, str) or len(value) > 256 or (required and not value)
+                    or (value and any(not re.fullmatch(r"[A-Za-z0-9_.-]+", part)
+                                      or part in {".", ".."} for part in value.split("/")))):
+                raise ValueError("Dockerfile must stay inside the source context")
+        target = build.get("target")
+        if target is not None and (not isinstance(target, str) or not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}", target)):
+            raise ValueError("invalid build target")
+        inline = build.get("dockerfile_inline")
+        if "dockerfile_inline" in build and ("dockerfile" in build or not isinstance(inline, str)
+                or not inline.strip() or len(inline.encode("utf-8")) > 24576
+                or any(ord(char) < 32 and char not in "\n\r\t" for char in inline)
+                or "$" in re.findall(r"\$\$|\$", inline)):
+            raise ValueError("invalid inline Dockerfile")
+        receipts = upstream.get("sourceFiles")
+        if not isinstance(receipts, list):
+            raise ValueError("missing source build evidence")
+        matched = False
+        for service_name, service in compose["services"].items():
+            if not isinstance(service, dict) or service.get("build") != build:
+                continue
+            matched = True
+            if service.get("image") != f"ods-source-{service_name}:{revision}" or service.get("pull_policy") != "never":
+                raise ValueError("source image must be owned and commit-bound")
+            receipt = next((item for item in receipts if isinstance(item, dict) and item.get("service") == service_name), None)
+            if inline is not None:
+                expected = {"service": service_name, "kind": "proposed-dockerfile", "sha256": hashlib.sha256(inline.encode("utf-8")).hexdigest()}
+                if receipt != expected:
+                    raise ValueError("inline Dockerfile evidence changed")
+            elif (not isinstance(receipt, dict) or receipt.get("path") != "/".join(filter(None, (subdir, dockerfile)))
+                    or not isinstance(receipt.get("blob"), str) or not re.fullmatch(r"[a-f0-9]{40}", receipt["blob"])):
+                raise ValueError("upstream Dockerfile evidence changed")
+        if not matched:
+            raise ValueError("source build absent from installed recipe")
+        return context
+    if set(build) - {"context", "dockerfile", "target", "args"}:
+        raise ValueError("unsupported build options")
+    if not isinstance(context, str) or "$" in context or ("\\" in context and os.name != "nt"):
+        raise ValueError("invalid build context")
+    # The API stages files in its /data mount. Resolve that precise alias on
+    # the host; Linux, macOS and Windows do not share the container's root.
+    alias = "/data/user-extensions/" + directory.name
+    if context == alias or context.startswith(alias + "/"):
+        context = "." + context[len(alias):]
+    candidate = pathlib.Path(context)
+    if not candidate.is_absolute():
+        candidate = directory / candidate
+    resolved = candidate.resolve()
+    if not resolved.is_relative_to(directory.resolve()) or not resolved.is_dir():
+        raise ValueError("build context escapes extension or is missing")
+    dockerfile = build.get("dockerfile", "Dockerfile")
+    if not isinstance(dockerfile, str) or "$" in dockerfile or ("\\" in dockerfile and os.name != "nt"):
+        raise ValueError("invalid Dockerfile path")
+    source = resolved / dockerfile
+    if not source.resolve().is_relative_to(resolved) or not source.is_file():
+        raise ValueError("Dockerfile escapes context or is missing")
+    # Build contexts may otherwise follow links outside their permitted tree.
+    for entry in resolved.rglob("*"):
+        if entry.is_symlink() or not entry.resolve().is_relative_to(resolved):
+            raise ValueError("symlinks are not supported in extension builds")
+    args = build.get("args", {})
+    if not isinstance(args, dict) or any(not isinstance(k, str) or not isinstance(v, (str, int, float, bool)) for k, v in args.items()):
+        raise ValueError("build arguments must have explicit values")
+    target = build.get("target")
+    if target is not None and (not isinstance(target, str) or not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}", target)):
+        raise ValueError("invalid build target")
+    return str(resolved)
+
+
 def _scan_user_compose_content(compose_path):
     """Reject compose fragments containing dangerous directives.
 
@@ -298,6 +415,7 @@ def _scan_user_compose_content(compose_path):
         return (True, warnings)
 
     ok = True
+    build_contexts = {}
 
     def reject(msg):
         nonlocal ok
@@ -315,7 +433,10 @@ def _scan_user_compose_content(compose_path):
         if svc_def.get("privileged") is True:
             reject(f"service '{svc_name}' uses privileged mode")
         if "build" in svc_def:
-            reject(f"service '{svc_name}' uses a local build — only pre-built images are allowed for user extensions")
+            try:
+                build_contexts[svc_name] = {"build": {"context": _extension_build_context(compose_path, svc_def["build"])}}
+            except (ValueError, OSError, yaml.YAMLError) as exc:
+                reject(f"service '{svc_name}' build rejected: {exc}")
         user = svc_def.get("user")
         if user is not None and str(user).split(":")[0] in ("root", "0"):
             reject(f"service '{svc_name}' runs as root")
@@ -411,6 +532,8 @@ def _scan_user_compose_content(compose_path):
             if vol_type in ("none", "bind") and device.startswith("/"):
                 reject(f"named volume '{vol_name}' uses driver_opts to bind-mount host path '{device}'")
 
+    if ok:
+        _extension_build_contexts[str(compose_path.resolve())] = build_contexts
     return (ok, warnings)
 
 
@@ -843,6 +966,46 @@ if override.exists():
 # to local/non-Apple stacks or placing it before a user override.
 if ods_mode == "cloud" and gpu_backend == "apple" and macos_cloud_auth.exists():
     _append_macos_cloud_auth_overlay(resolved, macos_cloud_auth)
+
+# A successful native Pixel installation keeps these fragments disabled for
+# generic extension discovery. Restore their explicit selection after cache
+# invalidation, with the same final override order as the macOS installer.
+native_activation = script_dir / 'data/pixel-native/preparation/activation.json'
+if os.path.lexists(native_activation):
+    import importlib.util
+    try:
+        native_spec = importlib.util.spec_from_file_location('ods_native_stack',
+            script_dir / 'installers/macos/lib/pixel-native-stack.py')
+        native_stack = importlib.util.module_from_spec(native_spec)
+        native_spec.loader.exec_module(native_stack)
+        resolved = native_stack.resolve_files(script_dir, resolved)
+    except (ValueError, OSError, ImportError):
+        print('ERROR: Native Pixel Compose selection needs recovery; retain its installation receipts.', file=sys.stderr)
+        sys.exit(1)
+
+# Each extension owns its projection so narrowed installs cannot accidentally
+# include unrelated services or require their missing configuration.
+import tempfile
+projected = []
+for fragment in resolved:
+    projected.append(fragment)
+    path = (script_dir / fragment).resolve()
+    contexts = _extension_build_contexts.get(str(path))
+    if not contexts:
+        continue
+    overlay = path.parent / (".ods-build-context-" + path.name + ".json")
+    if overlay.is_symlink():
+        raise ValueError("Invalid build context overlay")
+    fd, temporary = tempfile.mkstemp(prefix=".build-context-", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump({"services": contexts}, stream)
+        os.replace(temporary, overlay)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+    projected.append(str(overlay.relative_to(script_dir)))
+resolved = projected
 
 def to_flags(files):
     return " ".join(f"-f {f}" for f in files)

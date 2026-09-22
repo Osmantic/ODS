@@ -1,0 +1,14 @@
+{
+  "repository": "https://github.com/verdaccio/verdaccio",
+  "license": "MIT",
+  "source_ref": "6862cd700b1a9e210c13bcff9d4ababe444b935e",
+  "version": "6.10.4",
+  "image": "verdaccio/verdaccio:6@sha256:43c4067288b050422265407ea2fe747e511fcd0c407a85ec90ab9a326d9400cd",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Digest-pinned major tag reports 6.10.4. Authenticated registry with managed bcrypt account, private @ods scope without uplink and public npm proxy for other packages. No global npm configuration or automatic project installation."
+}

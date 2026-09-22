@@ -1,0 +1,56 @@
+services:
+  wakapi:
+    image: ghcr.io/muety/wakapi:2.18.0@sha256:9ee43d15009730928ed4c3506bdfb410522d9e6543d364d8c063e1e02348ba78
+    container_name: ods-wakapi
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${WAKAPI_PORT:-11050}:3000
+    healthcheck:
+      test:
+      - CMD
+      - /app/healthcheck
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    user: 65532:65532
+    environment:
+      ENVIRONMENT: prod
+      WAKAPI_PORT: '3000'
+      WAKAPI_LISTEN_IPV4: 0.0.0.0
+      WAKAPI_LISTEN_IPV6: '-'
+      WAKAPI_PUBLIC_URL: http://localhost:${WAKAPI_PORT:-11050}
+      WAKAPI_DB_TYPE: sqlite3
+      WAKAPI_DB_NAME: /data/wakapi.db
+      WAKAPI_PASSWORD_SALT: ${WAKAPI_PASSWORD_SALT:?Set a persistent random password
+        pepper}
+      WAKAPI_ALLOW_SIGNUP: ${WAKAPI_ALLOW_SIGNUP:-true}
+      WAKAPI_INSECURE_COOKIES: 'true'
+      WAKAPI_LEADERBOARD_ENABLED: 'false'
+      WAKAPI_IMPORT_ENABLED: 'false'
+      WAKAPI_MAIL_ENABLED: 'false'
+      WAKAPI_TRUSTED_HEADER_AUTH: 'false'
+      WAKAPI_EXPOSE_METRICS: 'false'
+    volumes:
+    - wakapi-data:/data
+    init: true
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  wakapi-data: {}

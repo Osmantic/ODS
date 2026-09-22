@@ -103,6 +103,11 @@ def parse_args() -> argparse.Namespace:
         help="Emit JSON instead of the human-readable report.",
     )
     parser.add_argument(
+        "--include-library",
+        action="store_true",
+        help="Also audit installable library recipes; native services override matching IDs.",
+    )
+    parser.add_argument(
         "--strict",
         action="store_true",
         help="Treat warnings as failures.",
@@ -145,7 +150,7 @@ def resolve_compose_path(service_dir: Path, compose_file: str) -> tuple[Path | N
     return enabled, False
 
 
-def discover_services(project_dir: Path) -> tuple[list[ServiceRecord], list[Issue]]:
+def discover_services(project_dir: Path, *, include_library: bool = False) -> tuple[list[ServiceRecord], list[Issue]]:
     ext_dir = project_dir / "extensions" / "services"
     records: list[ServiceRecord] = []
     global_issues: list[Issue] = []
@@ -161,7 +166,13 @@ def discover_services(project_dir: Path) -> tuple[list[ServiceRecord], list[Issu
         )
         return records, global_issues
 
-    for service_dir in sorted(ext_dir.iterdir()):
+    directories: dict[str, Path] = {}
+    if include_library:
+        library_dir = project_dir / "extensions" / "library" / "services"
+        if library_dir.exists():
+            directories.update({path.name: path for path in library_dir.iterdir() if path.is_dir()})
+    directories.update({path.name: path for path in ext_dir.iterdir() if path.is_dir()})
+    for service_dir in sorted(directories.values(), key=lambda path: path.name):
         if not service_dir.is_dir():
             continue
 
@@ -511,12 +522,19 @@ def validate_records(
                 path=record.manifest_path,
             )
 
+        one_shot = (record.service_type == "docker" and service.get("port") == 0
+                    and service.get("startup_check") is False and not service.get("health"))
         port = parse_positive_int(service.get("port"))
-        if port is None and not host_network and not socket_only:
+        if port is None and not host_network and not socket_only and not one_shot:
             record.add_issue("error", "service-port-invalid", "service.port must be a positive integer", path=record.manifest_path)
 
         health = str(service.get("health") or "")
-        if not health.startswith("/") and not host_network and not socket_only:
+        native_health = (
+            record.service_type == "docker"
+            and health == ""
+            and service.get("startup_check") is False
+        )
+        if not health.startswith("/") and not host_network and not socket_only and not native_health:
             record.add_issue(
                 "error",
                 "service-health-invalid",
@@ -753,7 +771,29 @@ def validate_records(
             if isinstance(definition, dict) and "healthcheck" in definition:
                 healthcheck_found = True
                 break
-        if not healthcheck_found and record.category != "core":
+        if native_health and not one_shot:
+            # No HTTP probe exists: require an executable native probe on this
+            # service, not merely a healthcheck stanza on a dependency.
+            native_probe_found = False
+            for definition in definitions.values():
+                check = definition.get("healthcheck") if isinstance(definition, dict) else None
+                if not isinstance(check, dict) or check.get("disable") is True:
+                    continue
+                test = check.get("test")
+                if isinstance(test, str) and test.strip():
+                    native_probe_found = True
+                elif (isinstance(test, list) and len(test) > 1
+                      and all(isinstance(arg, str) for arg in test)
+                      and test[0] in {"CMD", "CMD-SHELL"}
+                      and any(arg.strip() for arg in test[1:])):
+                    native_probe_found = True
+            if not native_probe_found:
+                record.add_issue(
+                    "error", "native-healthcheck-required",
+                    "docker services without HTTP health require an enabled native healthcheck",
+                    path=source_paths.get("base", record.manifest_path),
+                )
+        if not healthcheck_found and record.category != "core" and not one_shot:
             record.add_issue(
                 "warning",
                 "healthcheck-missing",
@@ -869,7 +909,7 @@ def main() -> int:
     args = parse_args()
     project_dir = args.project_dir.resolve()
 
-    records, global_issues = discover_services(project_dir)
+    records, global_issues = discover_services(project_dir, include_library=args.include_library)
     filtered_records, filter_issues = filter_records(records, args.services)
     global_issues.extend(filter_issues)
     validate_records(filtered_records, global_issues, reference_records=records)

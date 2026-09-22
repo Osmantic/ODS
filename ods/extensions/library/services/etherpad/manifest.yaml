@@ -1,0 +1,69 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: 2.6.0
+service:
+  id: etherpad
+  name: Etherpad
+  aliases: []
+  container_name: ods-etherpad
+  host_env: ETHERPAD_HOST
+  default_host: etherpad
+  port: 9001
+  external_port_env: ETHERPAD_PORT
+  external_port_default: 11070
+  health: /health
+  type: docker
+  startup_check: true
+  startup_timeout: 180
+  gpu_backends:
+  - all
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  description: Collaboratively edit text pads with revision history, authorship and
+    synchronized changes.
+  env_vars:
+  - key: ETHERPAD_ADMIN_PASSWORD
+    required: true
+    secret: true
+    description: Password for the admin account.
+  - key: ETHERPAD_USER_PASSWORD
+    required: true
+    secret: true
+    description: Password for the non-administrator user account.
+  - key: ETHERPAD_DATABASE_PASSWORD
+    required: true
+    secret: true
+    description: Persistent dedicated PostgreSQL password.
+  - key: ETHERPAD_ADMIN_SECRET
+    required: true
+    secret: true
+    description: Random secret for the built-in admin OAuth client.
+  - key: ETHERPAD_USER_SECRET
+    required: true
+    secret: true
+    description: Independent random secret for the built-in user OAuth client.
+  ui_path: /
+tags:
+- collaboration
+- editor
+- open-source
+features:
+- id: etherpad-documents
+  name: Etherpad
+  description: Collaboratively edit text pads with revision history, authorship and
+    synchronized changes.
+  icon: FilePenLine
+  category: productivity
+  requirements:
+    services:
+    - etherpad
+    vram_gb: 0
+  enabled_services_all:
+  - etherpad
+  setup_time: Initial image download; see README
+  priority: 48
+  launch:
+    type: service
+    service: etherpad
+    path: /

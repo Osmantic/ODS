@@ -337,3 +337,14 @@ async def test_empty_model_answer_is_never_completed(tmp_path):
     manager.start(OWNER,'chat','empty','Do work',1,'')
     await settle(manager)
     assert manager.list(OWNER,'chat')[0]['status']=='failed'
+
+
+@pytest.mark.parametrize('mode', ['team', 'goal'])
+@pytest.mark.parametrize('command', ['/extensions https://github.com/o/r install', '/goal /extensions @demo install'])
+def test_extension_commands_cannot_create_unbound_worker_requests(tmp_path, mode, command):
+    async def unexpected(*_):
+        raise AssertionError('No model worker should start')
+    manager = TeamManager(TeamStore(tmp_path / 'teams'), unexpected, yes)
+    with pytest.raises(TeamConflict, match='chat installation coordinator'):
+        manager.start(OWNER, 'chat', 'attempt', command, 1, '', mode)
+    assert manager.list(OWNER, 'chat') == []

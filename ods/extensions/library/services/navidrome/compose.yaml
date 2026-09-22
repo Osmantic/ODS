@@ -1,0 +1,59 @@
+services:
+  navidrome:
+    image: ods/navidrome:0.64.0-local-v1
+    container_name: ods-navidrome
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${NAVIDROME_PORT:-11048}:4533
+    healthcheck:
+      test:
+      - CMD
+      - curl
+      - --fail
+      - --silent
+      - --max-time
+      - '4'
+      - http://127.0.0.1:4533/ping
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    user: 1000:1000
+    environment:
+      ND_ADDRESS: 0.0.0.0
+      ND_PORT: '4533'
+      ND_DATAFOLDER: /data
+      ND_MUSICFOLDER: /music
+      ND_SCANNER_SCHEDULE: '@every 1h'
+      ND_SCANNER_SCANONSTARTUP: 'true'
+      ND_ENABLEEXTERNALSERVICES: 'false'
+      ND_ENABLEINSIGHTSCOLLECTOR: 'false'
+      ND_ENABLESHARING: 'false'
+      ND_LOGLEVEL: info
+    volumes:
+    - navidrome-data:/data
+    - navidrome-music:/music
+    build:
+      context: .
+      dockerfile: Dockerfile
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  navidrome-data: {}
+  navidrome-music: {}

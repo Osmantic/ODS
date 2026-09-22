@@ -1,0 +1,95 @@
+services:
+  hedgedoc:
+    image: ods/hedgedoc:1.12.0-storage-v1
+    container_name: ods-hedgedoc
+    restart: unless-stopped
+    ports:
+    - 127.0.0.1:${HEDGEDOC_PORT:-11043}:3000
+    healthcheck:
+      test:
+      - CMD
+      - node
+      - /hedgedoc/healthcheck.mjs
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+    logging: &id001
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    environment:
+      CMD_DB_DIALECT: postgres
+      CMD_DB_DATABASE: hedgedoc
+      CMD_DB_HOST: hedgedoc-db
+      CMD_DB_PORT: '5432'
+      CMD_DB_USERNAME: hedgedoc
+      CMD_DB_PASSWORD: ${HEDGEDOC_DATABASE_PASSWORD:?Set the dedicated database password}
+      CMD_SESSION_SECRET: ${HEDGEDOC_SESSION_SECRET:?Set a persistent random session
+        secret}
+      CMD_DOMAIN: ${HEDGEDOC_DOMAIN:-localhost:11043}
+      CMD_URL_ADDPORT: 'false'
+      CMD_PROTOCOL_USESSL: 'false'
+      CMD_HOST: 0.0.0.0
+      CMD_PORT: '3000'
+      CMD_IMAGE_UPLOAD_TYPE: filesystem
+      CMD_ALLOW_ANONYMOUS: 'false'
+      CMD_ALLOW_ANONYMOUS_EDITS: 'false'
+      CMD_DEFAULT_PERMISSION: private
+      CMD_EMAIL: 'true'
+      CMD_ALLOW_EMAIL_REGISTER: ${HEDGEDOC_ALLOW_REGISTER:-false}
+      CMD_ALLOW_GRAVATAR: 'false'
+    depends_on:
+      hedgedoc-db:
+        condition: service_healthy
+    build:
+      context: .
+      dockerfile: Dockerfile
+    user: 10000:10000
+    security_opt:
+    - no-new-privileges:true
+    volumes:
+    - hedgedoc-uploads:/hedgedoc/public/uploads
+  hedgedoc-db:
+    image: postgres:16-alpine@sha256:3c5c8892d184f738f4fe282d14ddaa613a38f00f4189d2d94725ebe6f2909ddb
+    restart: unless-stopped
+    networks:
+    - ods-network
+    environment:
+      POSTGRES_DB: hedgedoc
+      POSTGRES_USER: hedgedoc
+      POSTGRES_PASSWORD: ${HEDGEDOC_DATABASE_PASSWORD:?Set the dedicated database
+        password}
+    volumes:
+    - hedgedoc-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+      - CMD
+      - pg_isready
+      - -U
+      - hedgedoc
+      - -d
+      - hedgedoc
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    logging: *id001
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  hedgedoc-db-data: {}
+  hedgedoc-uploads: {}

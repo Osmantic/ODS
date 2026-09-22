@@ -1,0 +1,46 @@
+services:
+  evidently:
+    image: evidently/evidently-service:latest@sha256:5b38690426408061068eb5391e7c1fd3cff760a4f44e950c84977a69c271f385
+    container_name: ods-evidently
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - ${BIND_ADDRESS:-127.0.0.1}:${EVIDENTLY_PORT:-11016}:8000
+    healthcheck:
+      test:
+      - CMD
+      - python
+      - -c
+      - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/', timeout=8)
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    volumes:
+    - evidently-workspace:/app/workspace
+    command:
+    - --port
+    - '8000'
+    - --workspace
+    - /app/workspace
+    - --secret
+    - ${EVIDENTLY_SECRET:?Set an Evidently write secret}
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  evidently-workspace: {}

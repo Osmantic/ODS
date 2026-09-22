@@ -423,6 +423,49 @@ class TestGetRamMetrics:
 
 class TestCheckServiceHealth:
 
+    @pytest.mark.asyncio
+    async def test_authenticated_health_resolves_current_secret_without_redirects(self, mock_aiohttp_session, monkeypatch):
+        session = mock_aiohttp_session(status=200)
+        monkeypatch.setattr('helpers._get_aio_session', AsyncMock(return_value=session))
+        secrets = iter(['first-test-key', 'rotated-test-key'])
+        monkeypatch.setattr('helpers.read_live_env_value', lambda _: next(secrets))
+        config = {**self._CONFIG, 'host': 'test-svc', 'health_auth_env': 'TEST_SVC_API_KEY'}
+        for expected in ['first-test-key', 'rotated-test-key']:
+            result = await check_service_health('test-svc', config)
+            assert result.status == 'healthy'
+            assert expected not in result.model_dump_json()
+            assert session.get.call_args.kwargs['headers']['Authorization'] == 'Bearer ' + expected
+            assert session.get.call_args.kwargs['allow_redirects'] is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('code', [302, 401, 403, 500])
+    async def test_authenticated_health_does_not_accept_redirect_or_auth_failure(self, mock_aiohttp_session, monkeypatch, code):
+        session = mock_aiohttp_session(status=code)
+        monkeypatch.setattr('helpers._get_aio_session', AsyncMock(return_value=session))
+        monkeypatch.setattr('helpers.read_live_env_value', lambda _: 'test-key')
+        result = await check_service_health('test-svc', {**self._CONFIG, 'host': 'test-svc', 'health_auth_env': 'TEST_SVC_API_KEY'})
+        assert result.status == 'unhealthy'
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('token', ['', 'bad\r\nheader', 'has space', 'x' * 8193, None])
+    async def test_invalid_health_credential_never_sends_a_request(self, mock_aiohttp_session, monkeypatch, token):
+        session = mock_aiohttp_session(status=200)
+        monkeypatch.setattr('helpers._get_aio_session', AsyncMock(return_value=session))
+        monkeypatch.setattr('helpers.read_live_env_value', lambda _: token)
+        result = await check_service_health('test-svc', {**self._CONFIG, 'host': 'test-svc', 'health_auth_env': 'TEST_SVC_API_KEY'})
+        assert result.status == 'unhealthy'
+        session.get.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('field,value', [('host', 'remote.example'), ('health_auth_env', 'LITELLM_KEY'), ('health_auth_env', 42)])
+    async def test_health_auth_cannot_read_another_service_secret(self, mock_aiohttp_session, monkeypatch, field, value):
+        session = mock_aiohttp_session(status=200)
+        monkeypatch.setattr('helpers._get_aio_session', AsyncMock(return_value=session))
+        monkeypatch.setattr('helpers.read_live_env_value', lambda _: pytest.fail('Must not resolve foreign credentials'))
+        result = await check_service_health('test-svc', {**self._CONFIG, 'host': 'test-svc', 'health_auth_env': 'TEST_SVC_API_KEY', field: value})
+        assert result.status == 'unhealthy'
+        session.get.assert_not_called()
+
     _CONFIG = {
         "name": "test-svc",
         "port": 8080,

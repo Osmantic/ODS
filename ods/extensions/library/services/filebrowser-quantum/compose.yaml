@@ -1,0 +1,55 @@
+services:
+  filebrowser-quantum:
+    image: ods/filebrowser-quantum:1.5.6-storage-v1
+    container_name: ods-filebrowser-quantum
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${FILEBROWSER_QUANTUM_PORT:-11041}:8080
+    healthcheck:
+      test:
+      - CMD
+      - curl
+      - --fail
+      - --silent
+      - --max-time
+      - '5'
+      - http://127.0.0.1:8080/health
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    user: 1000:1000
+    environment:
+      FILEBROWSER_CONFIG: /home/filebrowser/data/config.yaml
+      FILEBROWSER_DATABASE: /home/filebrowser/data/database.db
+      FILEBROWSER_ADMIN_PASSWORD: ${FILEBROWSER_QUANTUM_ADMIN_PASSWORD:?Set the FileBrowser
+        initial administrator password}
+      FILEBROWSER_JWT_TOKEN_SECRET: ${FILEBROWSER_QUANTUM_JWT_SECRET:?Set a persistent
+        random token signing secret}
+    volumes:
+    - filebrowser-quantum-data:/home/filebrowser/data
+    - filebrowser-quantum-files:/srv
+    build:
+      context: .
+      dockerfile: Dockerfile
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  filebrowser-quantum-data: {}
+  filebrowser-quantum-files: {}

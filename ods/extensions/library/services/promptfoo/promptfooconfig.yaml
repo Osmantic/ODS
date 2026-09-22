@@ -1,0 +1,14 @@
+description: ODS current model smoke evaluation
+prompts:
+  - "Answer with exactly the word: {{word}}"
+providers:
+  - id: openai:chat:ods/current
+    config:
+      apiBaseUrl: http://litellm:4000/v1
+      apiKeyEnvar: OPENAI_API_KEY
+tests:
+  - vars:
+      word: READY
+    assert:
+      - type: equals
+        value: READY

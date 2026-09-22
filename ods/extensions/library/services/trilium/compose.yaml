@@ -1,0 +1,49 @@
+services:
+  trilium:
+    image: ods/trilium:0.105.0-storage-v1
+    container_name: ods-trilium
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${TRILIUM_PORT:-11037}:8080
+    healthcheck:
+      test:
+      - CMD
+      - node
+      - /usr/src/app/docker_healthcheck.cjs
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    user: 1000:1000
+    environment:
+      TRILIUM_DATA_DIR: /home/node/trilium-data
+      TRILIUM_HOST: 0.0.0.0
+      TRILIUM_PORT: '8080'
+    volumes:
+    - trilium-data:/home/node/trilium-data
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command:
+    - node
+    - ./main.cjs
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  trilium-data: {}

@@ -1,0 +1,85 @@
+services:
+  metabase:
+    image: metabase/metabase:v0.63.18@sha256:1160b570cb11c107bce00e71293552df8a8363e01a32c2c7a048cee002dc8a73
+    container_name: ods-metabase
+    restart: unless-stopped
+    ports:
+    - 127.0.0.1:${METABASE_PORT:-11033}:3000
+    healthcheck:
+      test:
+      - CMD
+      - curl
+      - --fail
+      - --silent
+      - --output
+      - /dev/null
+      - --max-time
+      - '5'
+      - http://127.0.0.1:3000/api/health
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+    logging: &id001
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    environment:
+      MB_DB_TYPE: postgres
+      MB_DB_DBNAME: metabase
+      MB_DB_HOST: metabase-db
+      MB_DB_PORT: '5432'
+      MB_DB_USER: metabase
+      MB_DB_PASS: ${METABASE_DATABASE_PASSWORD:?Set a persistent application database
+        password}
+      MB_ENCRYPTION_SECRET_KEY: ${METABASE_ENCRYPTION_KEY:?Set and preserve the connection
+        encryption key}
+      MB_SITE_URL: ${METABASE_SITE_URL:-http://localhost:11033}
+      MB_ANON_TRACKING_ENABLED: 'false'
+      MB_CHECK_FOR_UPDATES: 'false'
+      JAVA_OPTS: -XX:MaxRAMPercentage=70.0
+    depends_on:
+      metabase-db:
+        condition: service_healthy
+  metabase-db:
+    image: postgres:16-alpine@sha256:3c5c8892d184f738f4fe282d14ddaa613a38f00f4189d2d94725ebe6f2909ddb
+    restart: unless-stopped
+    networks:
+    - ods-network
+    environment:
+      POSTGRES_DB: metabase
+      POSTGRES_USER: metabase
+      POSTGRES_PASSWORD: ${METABASE_DATABASE_PASSWORD:?Set a persistent application
+        database password}
+    volumes:
+    - metabase-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+      - CMD
+      - pg_isready
+      - -U
+      - metabase
+      - -d
+      - metabase
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    logging: *id001
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  metabase-db-data: {}

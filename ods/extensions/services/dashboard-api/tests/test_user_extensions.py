@@ -33,6 +33,76 @@ def _make_manifest(service_id: str, port: int = 8080, health: str = "/health",
 
 class TestScanUserExtensions:
 
+    @pytest.mark.parametrize('url,valid', [
+        ('https://localhost:11146/nifi/', True),
+        ('https://flows.example.test/nifi', True),
+        ('http://127.0.0.1:8080/app', True),
+        ('javascript:alert(1)', False),
+        ('https://user:secret@example.test/', False),
+        ('https://example.test/?token=secret', False),
+        ('https://example.test/#secret', False),
+        ('https://example.test:99999/', False),
+        ('https://example.test:0/', False),
+        ('https://example.test/\\bad', False),
+        ('https://example.test/\nbad', False),
+    ])
+    def test_public_url_is_projected_without_changing_health_target(self, tmp_path, monkeypatch, url, valid):
+        monkeypatch.setattr('user_extensions._read_env_value', lambda key: url)
+        manifest = _make_manifest('my-ext')
+        manifest['service'].update(public_url_env='MY_EXT_PUBLIC_URL', env_vars=[{'key': 'MY_EXT_PUBLIC_URL'}])
+        ext = tmp_path / 'my-ext'
+        _write_manifest(ext, manifest)
+        (ext / 'compose.yaml').write_text('services: {}\n')
+        result = scan_user_extension_services(tmp_path)
+        if valid:
+            assert result['my-ext']['public_url'] == url.rstrip('/')
+            assert result['my-ext']['host'] == 'my-ext'
+            assert result['my-ext']['port'] == 8080
+        else:
+            assert result == {}
+
+    @pytest.mark.parametrize('key,secret', [('DASHBOARD_API_KEY', False), ('MY_EXT_PUBLIC_URL', True)])
+    def test_public_url_cannot_project_unrelated_or_secret_environment(self, tmp_path, monkeypatch, key, secret):
+        def unexpected(_):
+            pytest.fail('invalid declaration must not read environment')
+        monkeypatch.setattr('user_extensions._read_env_value', unexpected)
+        manifest = _make_manifest('my-ext')
+        manifest['service'].update(public_url_env=key, env_vars=[{'key': key, 'secret': secret}])
+        ext = tmp_path / 'my-ext'
+        _write_manifest(ext, manifest)
+        (ext / 'compose.yaml').write_text('services: {}\n')
+        assert scan_user_extension_services(tmp_path) == {}
+
+    def test_public_url_uses_declared_default_when_owner_has_not_overridden_it(self, tmp_path, monkeypatch):
+        monkeypatch.setattr('user_extensions._read_env_value', lambda key: '')
+        manifest = _make_manifest('my-ext')
+        manifest['service'].update(public_url_env='MY_EXT_PUBLIC_URL', env_vars=[{
+            'key': 'MY_EXT_PUBLIC_URL', 'default': 'https://localhost:11146/nifi/',
+        }])
+        ext = tmp_path / 'my-ext'
+        _write_manifest(ext, manifest)
+        (ext / 'compose.yaml').write_text('services: {}\n')
+        assert scan_user_extension_services(tmp_path)['my-ext']['public_url'] == 'https://localhost:11146/nifi'
+
+    @pytest.mark.parametrize('key,declared,valid', [
+        ('my-ext', True, False),
+        ('MY_EXT_API_KEY', True, True),
+        ('MY_EXT_API_KEY', False, False),
+        ('LITELLM_KEY', True, False),
+        ('MY_EXT_API_KEY\n', True, False),
+    ])
+    def test_health_auth_requires_owned_declared_secret(self, tmp_path, key, declared, valid):
+        manifest = _make_manifest('my-ext')
+        manifest['service'].update(health_auth_env=key, env_vars=[{'key': key, 'secret': declared}])
+        ext = tmp_path / 'my-ext'
+        _write_manifest(ext, manifest)
+        (ext / 'compose.yaml').write_text('services: {}\n')
+        result = scan_user_extension_services(tmp_path)
+        if valid:
+            assert result['my-ext']['health_auth_env'] == key
+        else:
+            assert result == {}
+
     @pytest.mark.parametrize("field", ["port", "external_port_default", "health_port"])
     @pytest.mark.parametrize("value", [-1, 65536, True, 8080.5, float("inf"), None, "broken"])
     def test_bad_port_field_cannot_change_probe_target(self, tmp_path, field, value):

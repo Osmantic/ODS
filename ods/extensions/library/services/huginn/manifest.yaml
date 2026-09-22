@@ -1,0 +1,77 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: 2.6.0
+service:
+  id: huginn
+  name: Huginn
+  aliases: []
+  container_name: ods-huginn
+  host_env: HUGINN_HOST
+  default_host: huginn
+  port: 3000
+  external_port_env: HUGINN_PORT
+  external_port_default: 11022
+  health: /users/sign_in
+  type: docker
+  startup_check: true
+  startup_timeout: 180
+  gpu_backends:
+  - all
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  description: Build event-driven agents for feeds, web monitoring and personal automation
+    with persistent scenarios.
+  env_vars:
+  - key: HUGINN_DATABASE_PASSWORD
+    required: true
+    secret: true
+    description: Persistent password for the private Huginn PostgreSQL database.
+  - key: HUGINN_SECRET_TOKEN
+    required: true
+    secret: true
+    description: Persistent random Rails secret, at least 64 random characters.
+  - key: HUGINN_ADMIN_PASSWORD
+    required: true
+    secret: true
+    description: Strong initial owner password; does not reset an existing account.
+  - key: HUGINN_INVITATION_CODE
+    required: true
+    secret: true
+    description: Private invitation code needed for additional registrations.
+  - key: HUGINN_ADMIN_USER
+    required: false
+    default: admin
+    description: Initial owner username.
+  - key: HUGINN_DOMAIN
+    required: false
+    default: localhost:11022
+    description: Browser-facing hostname and port.
+  - key: HUGINN_TIMEZONE
+    required: false
+    default: UTC
+    description: Application timezone name supported by Rails.
+  ui_path: /
+tags:
+- automation
+- local
+- open-source
+features:
+- id: huginn-workspace
+  name: Huginn
+  description: Build event-driven agents for feeds, web monitoring and personal automation
+    with persistent scenarios.
+  icon: Workflow
+  category: productivity
+  requirements:
+    services:
+    - huginn
+    vram_gb: 0
+  enabled_services_all:
+  - huginn
+  setup_time: Initial image download; see README
+  priority: 51
+  launch:
+    type: service
+    service: huginn
+    path: /

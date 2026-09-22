@@ -27,7 +27,8 @@ function sourceUrls(result) {
 }
 
 export function executionContext(now = new Date()) {
-  return `Current time from the host clock: ${now.toISOString()} (UTC). This is the actual date, not your training cutoff. Honor the owner's explicit date and timezone. For current news, verify publication dates in sources; do not label older results as today's news. ` +
+  return 'For exact file contents, prefer write and verify the bytes with read. If shell writing is required, use portable printf with a literal format, not echo -n or echo escape handling, which differs between shells. Do not claim a match when readback differs. ' +
+    `Current time from the host clock: ${now.toISOString()} (UTC). This is the actual date, not your training cutoff. Honor the owner's explicit date and timezone. For current news, verify publication dates in sources; do not label older results as today's news. ` +
     'An action request requires execution, not a final promise. Short follow-ups such as "ok, consulte" continue the preceding owner task. Tool Search discovers capabilities, not news or files: use tool names in its query, then invoke the returned exact ID and schema. Empty search results do not prove that an event did not occur or that a date is future. Try a relevant public source directly or state what remains unverified. When a material preference is missing, discover pixel_ods_ask_user to present 1–3 questions with choices, then wait. Its exact arguments look like {"questions":[{"id":"style","question":"Which style?","options":["Minimal","Colorful"]}]}; translate the question and options into the owner language. Do not ask about routine steps or use choices as permission for unrelated actions.';
 }
 
@@ -42,8 +43,8 @@ export function researchRequested(text) {
 export function promisesExecution(text) {
   // Only first-person statements in the reply, not quoted/code examples.
   const value = normalize(text).replace(/```[\s\S]*?```/g, '').replace(/^\s*>.*$/gm, '');
-  return /(?:^|[.!?\n]\s*)(?:\s*|agora\s+)(?:eu\s+)?(?:vou|irei)\s+(?:agora\s+)?(?:pesquisar|procurar|buscar|consultar|acessar|abrir|verificar|executar|criar|editar|salvar|testar|corrigir)\b/.test(value) ||
-    /(?:^|[.!?\n]\s*)\s*i(?: will|'ll| am going to)\s+(?:now\s+)?(?:search|look up|browse|check|run|create|edit|save|test|fix|open)\b/.test(value);
+  return /(?:^|[.!?\n])\s*(?:(?:ok|sim|certo|claro|agora)[,!]?\s+)?(?:eu\s+)?(?:vou|irei)\s+(?:agora\s+)?(?:(?:comecar|continuar)\s+a\s+)?(?:pesquisar|procurar|buscar|consultar|acessar|abrir|verificar|executar|criar|editar|salvar|testar|corrigir|instalar|baixar|configurar)\b/.test(value) ||
+    /(?:^|[.!?\n])\s*(?:(?:ok|okay|yes|sure)[,!]?\s+)?i(?: will|'ll| am going to)\s+(?:now\s+)?(?:(?:start|continue|begin)\s+to\s+)?(?:search|look up|browse|check|run|create|edit|save|test|fix|open|install|download|configure)\b/.test(value);
 }
 
 function followsResearch(ownerText, event) {
@@ -71,7 +72,7 @@ export function createCompletionAssurance() {
       initialized = true;
       research = researchRequested(ownerText) || followsResearch(ownerText, event);
       conversational = /^(?:(?:please|por favor)[,\s]+)?(?:traduza|translate|reescreva|rewrite|repita|repeat|diga apenas|say exactly|responda apenas|return exactly|explique|explain|rascunho|draft|exemplo|example)\b/.test(normalize(ownerText).trim()) && !research;
-      portuguese = /\b(qual|voce|vc|noticias|hoje|consulte|pesquise|busque|procure|crie|arquivo|internet)\b/.test(normalize(ownerText));
+      portuguese = /\b(qual|voce|vc|noticias|hoje|consulte|pesquise|busque|procure|crie|arquivo|internet|instale|instalar|baixar|configure|configurar)\b/.test(normalize(ownerText));
     },
     observe(tool, event) {
       if (!tool || DISCOVERY.has(tool) || !event?.result || event.error || event.result.isError) return;

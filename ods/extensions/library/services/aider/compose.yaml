@@ -8,12 +8,12 @@ services:
       # - ${HOME}/.gitconfig:/home/aider/.gitconfig:ro
       # - ${HOME}/.ssh:/home/aider/.ssh:ro
     environment:
-      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
-      - AIDER_MODEL=${AIDER_MODEL:-openrouter/anthropic/claude-sonnet-4}
-      - AIDER_WEAK_MODEL=${AIDER_WEAK_MODEL:-openrouter/anthropic/claude-haiku-3}
-      - AIDER_OPENAI_API_BASE=${AIDER_OPENAI_API_BASE:-}
-      - LLM_API_URL=${LLM_API_URL:-http://localhost:8000}
+      - OPENAI_API_KEY=${LITELLM_KEY:-no-key}
+      - AIDER_MODEL=openai/ods/current
+      - AIDER_WEAK_MODEL=openai/ods/current
+      - AIDER_OPENAI_API_BASE=http://litellm:4000/v1
+      - AIDER_ANALYTICS=false
+      - AIDER_CHECK_UPDATE=false
     working_dir: /app
     stdin_open: true
     tty: true
@@ -27,8 +27,9 @@ services:
           memory: 512M
     networks:
       - ods-network
-    entrypoint: ["echo"]
-    command: ["Aider is a CLI tool. Run: docker compose run --rm aider <files>"]
+    # Keep upstream /venv/bin/aider. Installation checks the real executable
+    # without starting an inference request; compose run arguments replace this.
+    command: ["--version"]
 
 # Named volumes removed — using bind mounts only
 

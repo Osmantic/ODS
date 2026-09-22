@@ -1,0 +1,49 @@
+services:
+  openwebui-pipelines:
+    image: ods/openwebui-pipelines:039f9c54-local-v1
+    container_name: ods-openwebui-pipelines
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${OPENWEBUI_PIPELINES_PORT:-11109}:9099
+    healthcheck:
+      test:
+      - CMD
+      - python
+      - /opt/ods/health.py
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    user: 1000:1000
+    environment:
+      PIPELINES_API_KEY: ${OPENWEBUI_PIPELINES_API_KEY:?Set a 64-hex API key}
+    init: true
+    build:
+      context: .
+      dockerfile: Dockerfile
+    stop_grace_period: 60s
+    read_only: true
+    tmpfs:
+    - /tmp:rw,noexec,nosuid,size=256m
+    volumes:
+    - openwebui-pipelines-data:/data
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  openwebui-pipelines-data: {}

@@ -122,6 +122,9 @@ services:
         max-file: '3'
 
   pixel-edge:
+    environment:
+      PIXEL_ACCESS_TRANSPORT: docker-desktop-host
+      PIXEL_NATIVE_ACCESS_PORT: "${PIXEL_NATIVE_ACCESS_PORT:-18790}"
     # Replace the Linux host UDS bind with the ingress-owned Docker volume.
     # Keep preview and transition storage from the shared Edge contract.
     volumes: !override

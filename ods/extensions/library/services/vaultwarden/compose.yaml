@@ -1,0 +1,63 @@
+services:
+  vaultwarden:
+    image: ods/vaultwarden:1.37.3-local-v1
+    container_name: ods-vaultwarden
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${VAULTWARDEN_PORT:-11124}:8000
+    healthcheck:
+      test:
+      - CMD
+      - /healthcheck.sh
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    user: 1000:1000
+    environment:
+      ADMIN_TOKEN: ${VAULTWARDEN_ADMIN_TOKEN:?Set a random 64-hex administrator token}
+      DOMAIN: http://localhost:${VAULTWARDEN_PORT:-11124}
+      ROCKET_ADDRESS: 0.0.0.0
+      ROCKET_PORT: '8000'
+      ROCKET_WORKERS: '2'
+      SIGNUPS_ALLOWED: 'false'
+      SIGNUPS_DOMAINS_WHITELIST: ''
+      INVITATIONS_ALLOWED: 'false'
+      DISABLE_ADMIN_TOKEN: 'false'
+      DISABLE_ICON_DOWNLOAD: 'true'
+      ICON_CACHE_TTL: '0'
+      IP_HEADER: none
+      PUSH_ENABLED: 'false'
+      SHOW_PASSWORD_HINT: 'false'
+      UMASK: '077'
+      DATA_FOLDER: /data
+    init: true
+    build:
+      context: .
+      dockerfile: Dockerfile
+    stop_grace_period: 60s
+    read_only: true
+    tmpfs:
+    - /tmp:rw,noexec,nosuid,size=64m
+    volumes:
+    - vaultwarden-data:/data
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  vaultwarden-data: {}

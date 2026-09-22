@@ -1,0 +1,12 @@
+{
+  "repository": "https://github.com/advplyr/audiobookshelf",
+  "license": "GPL-3.0",
+  "image": "ghcr.io/advplyr/audiobookshelf:2.36.1@sha256:3528a93b6442ffe54bd46771bbbab7c97084e1101071586d9dc2254f30bb4358",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "2.36.1 official image; derived layer prepares four persistent directories for UID 1000. Retains native tini and node index.js startup. First-run root account is created through upstream UI; no media seeded or external library mounted."
+}

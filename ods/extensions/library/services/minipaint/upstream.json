@@ -1,0 +1,15 @@
+{
+  "repository": "https://github.com/viliusle/miniPaint",
+  "license": "MIT",
+  "image": "nginx:1.28-alpine@sha256:a8b39bd9cf0f83869a2162827a0caf6137ddf759d50a171451b335cecc87d236",
+  "build_image": "node:24.16.0-alpine3.22@sha256:191c9f0080fcbbc6547a85dc0ff7988072214a355aabdc1d2ec55a7dae5eea8a",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "source_commit": "a79733eb803fc97084ef0ee4faa96b031e69e1c0",
+  "source_sha256": "21f1cadb54397f21927194d762fcef32282b0b2ec501a2cfaf65af9008c34fb4",
+  "notes": "Package 4.14.3; exact source plus lockfile. MIT-LICENSE.txt inspected directly despite NOASSERTION API metadata. Preserve src assets and GIF worker at original paths. Browser-local editing/quicksave and explicit layered JSON exports."
+}

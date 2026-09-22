@@ -10,6 +10,11 @@ import {createContextCompaction,readContextRequest} from '../plugin/context-comp
 const user = `ods-${'a'.repeat(64)}`, other = `ods-${'b'.repeat(64)}`;
 const sessionKey = `agent:pixel:openai-user:${user}`;
 const tick = () => new Promise(resolve => setImmediate(resolve));
+function observed(runtime,event,context) {
+  const ctx={...context,runId:'test-run'};
+  runtime.observeModelInput({},ctx);
+  runtime.observeModelOutput({...event,lastAssistant:{...event.lastAssistant,timestamp:Date.now()+10000}},ctx);
+}
 const deferred = () => {let resolve,reject;const promise = new Promise((ok,no) => {resolve=ok;reject=no;});return {promise,resolve,reject};};
 function fixture(t, overrides = {}) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(),'ods-context-'));
@@ -180,16 +185,47 @@ test('model-bound measurement survives restart but invalidates same-window alias
   assert.equal(f.runtime.context(user).context,null,'legacy alias has no proof of the actual model used');
   const event={lastAssistant:{usage:{input:9000,output:100,cacheRead:200}},contextTokenBudget:32000};
   const ctx={agentId:'pixel',sessionKey,sessionId:f.entry.sessionId};
-  f.runtime.observeModelOutput(event,ctx);
+  observed(f.runtime,event,ctx);
   assert.equal(f.runtime.context(user).context.used,9300);assert.equal(f.runtime.context(user).context.window,32000);
   assert.equal(createContextCompaction(f.args).context(user).context.used,9300);
   model='model-b.gguf';assert.equal(f.runtime.context(user).context,null);assert.equal(f.runtime.context(user).model.id,model);
-  time++;f.runtime.observeModelOutput(event,ctx);assert.equal(f.runtime.context(user).context.used,9300);
+  time++;observed(f.runtime,event,ctx);assert.equal(f.runtime.context(user).context.used,9300);
   f.entry.updatedAt=time+100;f.entry.totalTokensFresh=false;
   assert.equal(f.runtime.context(user).context.used,9300,'session metadata writes preserve the last measured call');
+  f.entry.totalTokensFresh=true;f.entry.totalTokens=111195;
+  assert.equal(f.runtime.context(user).context.used,9300,'cumulative session tokens are not context occupancy');
   assert.equal(f.runtime.context(user).model.contextWindow,32000,'reported model budget matches the measured effective budget');
   f.entry.compactionCount++;
   assert.equal(f.runtime.context(user).context,null,'a later compaction invalidates the old occupancy');
+});
+
+test('overflow precheck cannot attribute a historical cumulative reply to the new model',t=>{
+  let time=200000;
+  const f=fixture(t,{requireModelObservation:true,now:()=>time});
+  const ctx={agentId:'pixel',sessionKey,sessionId:f.entry.sessionId,runId:'new-turn'};
+  const output=(timestamp,usage)=>({contextTokenBudget:16384,lastAssistant:{timestamp,stopReason:'stop',usage}});
+  f.runtime.observeModelInput({},ctx);
+  f.runtime.observeModelOutput(output(time-1000,{input:68203,output:649,totalTokens:18145}),ctx);
+  assert.equal(f.runtime.context(user).context,null,'reproduces the stale 420% report');
+  f.runtime.observeModelOutput(output(time,{input:68203,output:649,totalTokens:18145}),ctx);
+  assert.equal(f.runtime.context(user).context,null,'synthetic aggregate usage is not a model-call measurement');
+  f.runtime.observeModelOutput(output(time,{input:7000,output:200,totalTokens:7200}),{...ctx,runId:'other-turn'});
+  assert.equal(f.runtime.context(user).context,null);
+  f.runtime.observeModelOutput(output(time,{input:7000,output:200,totalTokens:7200}),ctx);
+  assert.equal(f.runtime.context(user).context.used,7200);
+  f.runtime.observeModelOutput({...output(time,{input:0,output:0,totalTokens:0}),lastAssistant:{timestamp:time,stopReason:'aborted',usage:{input:8000,output:0}}},ctx);
+  assert.equal(f.runtime.context(user).context.used,7200,'aborted output preserves the last verified call');
+});
+
+test('a model change between input and output cannot relabel usage',t=>{
+  let model='before';
+  const time=Date.now();
+  const f=fixture(t,{requireModelObservation:true,now:()=>time,
+    readConfig:()=>({agents:{list:[{id:'pixel',model:'ods-gateway/ods/current'}]},models:{providers:{'ods-gateway':{models:[{id:'ods/current',name:`ODS Current (${model})`,contextWindow:32768}]}}}})});
+  const ctx={agentId:'pixel',sessionKey,sessionId:f.entry.sessionId,runId:'switch-race'};
+  f.runtime.observeModelInput({},ctx); model='after';
+  f.runtime.observeModelOutput({contextTokenBudget:32768,lastAssistant:{timestamp:time,usage:{input:9000,output:100}}},ctx);
+  assert.equal(f.runtime.context(user).context,null);
 });
 
 test('native RPC explicit busy refusal releases admission without falsely reporting compaction',async t=>{
@@ -206,19 +242,19 @@ test('remote route identity invalidates same-model usage across providers and re
       plugins:{entries:{'pixel-ods':{config:fingerprint===undefined?{}:{modelRouteFingerprint:fingerprint}}}}})});
   const event={lastAssistant:{usage:{input:9000,output:100}},contextTokenBudget:32768};
   const ctx={agentId:'pixel',sessionKey,sessionId:f.entry.sessionId};
-  f.runtime.observeModelOutput(event,ctx);
+  observed(f.runtime,event,ctx);
   assert.equal(createContextCompaction(f.args).context(user).context.used,9100);
   assert.equal(f.runtime.context(user).model.routeFingerprint,fingerprint);
   fingerprint='b'.repeat(64);
   assert.equal(f.runtime.context(user).context,null);
   assert.equal(createContextCompaction(f.args).context(user).context,null);
   assert.equal(f.runtime.context(user).model.id,'same-model');
-  time++;f.runtime.observeModelOutput(event,ctx);
+  time++;observed(f.runtime,event,ctx);
   assert.equal(f.runtime.context(user).context.used,9100);
   fingerprint=undefined;
   assert.equal(f.runtime.context(user).context,null,'returning to local clears remote measurement');
   assert.equal('routeFingerprint' in f.runtime.context(user).model,false);
-  time++;f.runtime.observeModelOutput(event,ctx);
+  time++;observed(f.runtime,event,ctx);
   assert.equal(f.runtime.context(user).context.used,9100,'legacy/local route remains measurable');
   fingerprint='https://provider.invalid/secret';
   assert.equal(f.runtime.context(user).status,'unavailable');
@@ -227,7 +263,7 @@ test('remote route identity invalidates same-model usage across providers and re
   assert.equal(f.runtime.context(user).status,'unavailable');
 });
 
-test('local persisted usage from before route identities remains valid without a new run',t=>{
+test('legacy measurements without attempt provenance are invalidated after upgrade',t=>{
   const f=fixture(t,{requireModelObservation:true});
   const sha=value=>createHash('sha256').update(value).digest('hex');
   const measurement={
@@ -237,7 +273,7 @@ test('local persisted usage from before route identities remains valid without a
   };
   fs.writeFileSync(path.join(f.directory,`${user}.json`),JSON.stringify({version:1,operations:[],measurement}),{mode:0o600});
   f.entry.totalTokensFresh=false;
-  assert.equal(createContextCompaction(f.args).context(user).context.used,7654);
+  assert.equal(createContextCompaction(f.args).context(user).context,null);
 });
 
 test('settings cap reduction invalidates persisted usage across restart and restoration of the previous cap',t=>{
@@ -248,18 +284,18 @@ test('settings cap reduction invalidates persisted usage across restart and rest
   const f=fixture(t,{requireModelObservation:true,readConfig});f.entry.totalTokensFresh=false;
   const ctx={agentId:'pixel',sessionKey,sessionId:f.entry.sessionId};
   const event=window=>({contextTokenBudget:window,lastAssistant:{usage:{input:800,output:100}}});
-  f.runtime.observeModelOutput(event(32768),ctx);
+  observed(f.runtime,event(32768),ctx);
   assert.equal(f.runtime.context(user).context.window,32768,'explicit agent cap overrides the inherited default');
   cap=8192;
   const restarted=createContextCompaction({...f.args,instanceId:'smaller-context'});
   assert.equal(restarted.context(user).context,null);
   assert.equal(restarted.context(user).model.contextWindow,8192);
-  restarted.observeModelOutput(event(32768),ctx);
+  observed(restarted,event(32768),ctx);
   assert.equal(restarted.context(user).context,null,'old larger-budget event cannot validate the reduced budget');
   cap=32768;
   assert.equal(createContextCompaction({...f.args,instanceId:'restored-context'}).context(user).context,null,'old usage is not resurrected');
   cap=8192;
-  restarted.observeModelOutput(event(8192),ctx);
+  observed(restarted,event(8192),ctx);
   assert.equal(restarted.context(user).context.window,8192);
   assert.equal(restarted.context(user).context.used,900);
 });

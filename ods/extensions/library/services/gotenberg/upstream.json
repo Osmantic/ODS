@@ -1,0 +1,15 @@
+{
+  "repository": "https://github.com/gotenberg/gotenberg",
+  "license": "MIT",
+  "image": "gotenberg/gotenberg:8@sha256:f29984bd1e226bf1b93ba90af06000afa8b315853e99d27b9aaa41b93f15c769",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/386",
+    "linux/ppc64le",
+    "linux/arm64",
+    "linux/arm"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Stateless document conversion API, useful for exported AI reports. Submit multipart requests to /forms/chromium/convert/html or /forms/libreoffice/convert. Converted documents are returned to the client. Remote URL conversion accesses the URLs submitted by the caller."
+}

@@ -108,12 +108,11 @@ if ! $INTERACTIVE && [[ "$ENABLE_COMFYUI" == "true" ]]; then
     esac
 fi
 
-# Pixel is the preferred agent only where its narrower host predicate and
-# separately executed license agreement are both satisfied. ODS platform
-# support remains unchanged; auto mode falls back to Hermes without failing.
+# Pixel is the preferred agent on qualified hosts. ODS platform support is
+# unchanged; auto mode falls back to Hermes without failing.
 if ! PIXEL_AGENT_MODE="$(ods_pixel_resolve_enablement "${ENABLE_PIXEL:-auto}" 2>/dev/null)"; then
-    ai_bad "Pixel was explicitly required, but this host or license is not qualified."
-    ai "Pixel requires Ubuntu 24.04/26.04 or Debian 12 with PID1 systemd and PIXEL_LICENSE_ACCEPTED=true after a separate written agreement."
+    ai_bad "Pixel was explicitly required, but this host is not qualified."
+    ai "Pixel requires Ubuntu 24.04/26.04 or Debian 12 with PID1 systemd."
     return 1 2>/dev/null || exit 1
 fi
 ENABLE_PIXEL_RUNTIME=false
@@ -289,8 +288,8 @@ if ! $DRY_RUN; then
     # is exposed on the LAN with no auth. Same flag drives both.
     _sync_extension_compose "${ENABLE_HERMES:-}"     hermes        "Hermes Agent"  "Hermes agent not enabled"
     _sync_extension_compose "${ENABLE_HERMES:-}"     hermes-proxy  "Hermes proxy"  "Hermes agent not enabled"
-    _sync_extension_compose "${ENABLE_PIXEL_RUNTIME:-false}" pixel-edge "Pixel edge" "Pixel host or license not qualified"
-    _sync_extension_compose "${ENABLE_PIXEL_RUNTIME:-false}" pixel-model-relay "Pixel model relay" "Pixel host or license not qualified"
+    _sync_extension_compose "${ENABLE_PIXEL_RUNTIME:-false}" pixel-edge "Pixel edge" "Pixel host not qualified"
+    _sync_extension_compose "${ENABLE_PIXEL_RUNTIME:-false}" pixel-model-relay "Pixel model relay" "Pixel host not qualified"
     _sync_extension_compose "${ENABLE_OPENCLAW:-}"   openclaw   "OpenClaw"      "agent framework not enabled"
     _sync_extension_compose "${ENABLE_APE:-}"        ape        "APE"           "agent governance not enabled"
     _sync_extension_compose "${ENABLE_COMFYUI:-}"    comfyui    "ComfyUI"       "image generation not enabled"

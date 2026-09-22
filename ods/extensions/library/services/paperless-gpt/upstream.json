@@ -1,0 +1,12 @@
+{
+  "repository": "https://github.com/icereed/paperless-gpt",
+  "license": "MIT",
+  "image": "icereed/paperless-gpt:v0.28.0@sha256:413af73ff5415e1f61327ccb1c63cb14e84e86b761969be6eaaee61b4f39bef4",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Requires a Paperless-ngx API token created in your existing Paperless account. Documents are processed through explicit paperless-gpt tags; install does not import or tag the entire archive. OCR uses Docling standard/EasyOCR, without a cloud OCR account. The web UI has no built-in login and stays loopback-bound by default."
+}

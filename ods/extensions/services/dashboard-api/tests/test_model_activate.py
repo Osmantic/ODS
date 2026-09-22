@@ -388,7 +388,11 @@ def test_external_adoption_endpoint_requires_auth_and_preserves_pending_hold(mon
     monkeypatch.setattr(_mod, "_begin_model_activation", lambda model: (
         actions.append(("begin", model)) or (True, None)
     ))
-    monkeypatch.setattr(_mod, "_end_model_activation", lambda: actions.append(("end", None)))
+    activation_ended = threading.Event()
+    def end_activation():
+        actions.append(("end", None))
+        activation_ended.set()
+    monkeypatch.setattr(_mod, "_end_model_activation", end_activation)
     monkeypatch.setattr(_mod, "_adopt_external_lemonade_model", lambda _model: (
         (_ for _ in ()).throw(_mod._PixelModelTransactionUncertain("private detail"))
     ))
@@ -413,6 +417,9 @@ def test_external_adoption_endpoint_requires_auth_and_preserves_pending_hold(mon
         assert payload["code"] == "managed_model_recovery_required"
         assert payload["pending"] is True
         assert "private detail" not in json.dumps(payload)
+        # The HTTP body can reach the client before the handler's finally
+        # finishes. Synchronize on that cleanup instead of scheduler timing.
+        assert activation_ended.wait(timeout=5)
         assert actions == [("begin", "loaded-B"), ("end", None)]
         monkeypatch.setattr(_mod, "_adopt_external_lemonade_model", lambda _model: (
             (_ for _ in ()).throw(_mod._ExternalAdoptionReceiptUnavailable("private detail"))
@@ -3008,6 +3015,19 @@ class TestRestartWindowsLemonade:
         shell = shutil.which("pwsh") or shutil.which("powershell.exe")
         if not shell:
             pytest.skip("PowerShell is unavailable")
+        if sys.platform != "win32":
+            # WSL can expose powershell.exe on PATH even when Windows interop
+            # is disabled. Only run this cross-OS fixture when the shell can
+            # actually start; native Windows must still fail if it cannot.
+            try:
+                probe = _real_subprocess_run(
+                    [shell, "-NoProfile", "-NonInteractive", "-Command", "exit 0"],
+                    capture_output=True, text=True, timeout=5,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                pytest.skip("PowerShell is present but not runnable")
+            if probe.returncode != 0:
+                pytest.skip("PowerShell is present but not runnable")
 
         local_app_data = tmp_path / "AppData" / "Local"
         lemonade_exe = (

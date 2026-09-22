@@ -1,0 +1,58 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: 2.6.0
+service:
+  id: promptfoo
+  name: Promptfoo
+  aliases: []
+  container_name: ods-promptfoo
+  host_env: PROMPTFOO_HOST
+  default_host: promptfoo
+  port: 3000
+  external_port_env: PROMPTFOO_PORT
+  external_port_default: 11003
+  health: /health
+  type: docker
+  startup_check: true
+  startup_timeout: 90
+  gpu_backends:
+  - all
+  compose_file: compose.yaml
+  category: optional
+  depends_on:
+  - litellm
+  description: Compare prompts and models, inspect evaluation results and run local
+    AI quality checks.
+  env_vars: []
+  ui_path: /
+  llm:
+    consumes: true
+    route: gateway
+    pinning: none
+    probe:
+      kind: chat
+      path: /v1/chat/completions
+      auth: env:LITELLM_KEY
+tags:
+- development
+- local
+- open-source
+features:
+- id: promptfoo-workspace
+  name: Promptfoo
+  description: Compare prompts and models, inspect evaluation results and run local
+    AI quality checks.
+  icon: FlaskConical
+  category: development
+  requirements:
+    services:
+    - promptfoo
+    vram_gb: 0
+  enabled_services_all:
+  - promptfoo
+  setup_time: Initial image download; see README
+  priority: 33
+  launch:
+    type: service
+    service: promptfoo
+    path: /

@@ -1,0 +1,55 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: 2.6.0
+service:
+  id: wikijs
+  name: Wiki.js
+  aliases: []
+  container_name: ods-wikijs
+  host_env: WIKIJS_HOST
+  default_host: wikijs
+  port: 3000
+  external_port_env: WIKIJS_PORT
+  external_port_default: 11107
+  health: /healthz
+  type: docker
+  startup_check: true
+  startup_timeout: 90
+  gpu_backends:
+  - all
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  description: Write and organize shared project documentation with native page permissions
+    and revision history.
+  env_vars:
+  - key: WIKIJS_DB_PASSWORD
+    required: true
+    secret: true
+    description: 64-hex private database password; browser administrator is created
+      in native setup.
+  ui_path: /
+tags:
+- documentation
+- knowledge
+- collaboration
+- open-source
+features:
+- id: wikijs-documentation
+  name: Wiki.js
+  description: Write and organize shared project documentation with native page permissions
+    and revision history.
+  icon: BookOpen
+  category: productivity
+  requirements:
+    services:
+    - wikijs
+    vram_gb: 0
+  enabled_services_all:
+  - wikijs
+  setup_time: Initial image download; see README
+  priority: 48
+  launch:
+    type: service
+    service: wikijs
+    path: /

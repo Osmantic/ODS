@@ -1,0 +1,69 @@
+services:
+  backrest:
+    image: ods/backrest:1.14.1-local-v1
+    container_name: ods-backrest
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${BACKREST_PORT:-11108}:9898
+    healthcheck:
+      test:
+      - CMD
+      - curl
+      - --fail
+      - --silent
+      - --max-time
+      - '5'
+      - http://127.0.0.1:9898/
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    user: 1000:1000
+    build:
+      context: .
+      dockerfile: Dockerfile
+    stop_grace_period: 60s
+    read_only: true
+    tmpfs:
+    - /tmp:rw,noexec,nosuid,size=256m
+    volumes:
+    - backrest-data:/data
+    - backrest-config:/config
+    - backrest-cache:/cache
+    - backrest-sources:/sources
+    - backrest-repos:/repos
+    - backrest-restore:/restore
+    environment:
+      BACKREST_PORT: 0.0.0.0:9898
+      BACKREST_DATA: /data
+      BACKREST_CONFIG: /config/config.json
+      BACKREST_RESTIC_COMMAND: /bin/restic
+      XDG_CACHE_HOME: /cache
+      HOME: /config
+      TMPDIR: /tmp
+      TZ: Etc/UTC
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  backrest-data: {}
+  backrest-config: {}
+  backrest-cache: {}
+  backrest-sources: {}
+  backrest-repos: {}
+  backrest-restore: {}

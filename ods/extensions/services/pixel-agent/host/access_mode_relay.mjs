@@ -3,6 +3,10 @@ import fs from 'node:fs';
 import net from 'node:net';
 import {timingSafeEqual} from 'node:crypto';
 
+export const ACCESS_SOCKET_PATH = process.platform === 'darwin'
+  ? '/private/var/run/ods-pixel-access/control.sock'
+  : '/run/ods-pixel-access/control.sock';
+
 export function readAccessOwnerKey(filename, uid = process.geteuid?.()) {
   if (!filename || !filename.startsWith('/') || filename.includes('\0')) return null;
   let fd;
@@ -88,7 +92,7 @@ export async function handleModelControl(req, res, {ownerKey, request = requestA
   } catch {return reply(503,{error:'model-control-unavailable'});}
 }
 
-export function requestAccessController(payload, {socketPath = '/run/ods-pixel-access/control.sock', timeout = 305000} = {}) {
+export function requestAccessController(payload, {socketPath = ACCESS_SOCKET_PATH, timeout = 305000} = {}) {
   return new Promise((resolve, reject) => {
     const socket = net.createConnection(socketPath);
     let chunks = [], bytes = 0, settled = false;

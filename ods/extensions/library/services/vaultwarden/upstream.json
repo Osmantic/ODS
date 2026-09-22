@@ -1,0 +1,13 @@
+{
+  "repository": "https://github.com/dani-garcia/vaultwarden",
+  "license": "AGPL-3.0",
+  "source_ref": "1.37.3",
+  "image": "vaultwarden/server:1.37.3-alpine@sha256:9a905c5cf5df61bb827da3805e160170741c0b53b0c63bb07e1afd3d2e21b1c8",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Official image with bundled web vault; nonroot persistent data, native start/health scripts, closed signups and organization invitations. Separate random admin token; owner invited manually. No vault contents or master password provisioned."
+}

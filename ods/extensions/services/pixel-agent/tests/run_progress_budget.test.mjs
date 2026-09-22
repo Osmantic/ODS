@@ -20,13 +20,24 @@ test('consecutive malformed calls trip a sticky run-wide fuse', () => {
   assert.equal(budget.exhausted, true);
 });
 
-test('alternating discovery and failures cannot reset total failure allowance', () => {
+test('alternating discovery and failures cannot reset consecutive failure allowance', () => {
   const budget = createRunProgressBudget();
-  for (let i = 0; i < 12; i++) {
+  for (let i = 0; i < 4; i++) {
     budget.observeResult({callId:`search-${i}`, tool:'tool_search', params:{query:String(i)}, failed:false});
     budget.observeResult({callId:`bad-${i}`, tool:'tool_call', failed:true});
+    assert.equal(budget.exhausted, i === 3);
   }
   assert.equal(budget.exhausted, true);
+});
+
+test('discovery-only rounds are bounded even with distinct successful searches', () => {
+  const budget = createRunProgressBudget();
+  for (let i = 0; i < 8; i++) {
+    assert.equal(budget.beginModelRound(), false);
+    budget.observeResult({callId:`discover-${i}`, tool:i % 2 ? 'tool_describe' : 'tool_search',
+      params:{query:String(i)}, failed:false});
+  }
+  assert.equal(budget.beginModelRound(), true);
 });
 
 test('missing tool hooks are bounded at model continuation level', () => {

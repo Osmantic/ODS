@@ -1,0 +1,60 @@
+services:
+  grist:
+    image: ods/grist:1.7.19-local-v1
+    container_name: ods-grist
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${GRIST_PORT:-11082}:8484
+    healthcheck:
+      test:
+      - CMD
+      - node
+      - -e
+      - 'require(''http'').get(''http://127.0.0.1:8484/status'', r => {r.resume();
+        process.exitCode = r.statusCode === 200 ? 0 : 1}).on(''error'', () => {process.exitCode
+        = 1})'
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 3G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    user: grist
+    environment:
+      HOME: /persist/home
+      GRIST_DEFAULT_EMAIL: ${GRIST_OWNER_EMAIL:?Set your local document identity}
+      GRIST_SESSION_SECRET: ${GRIST_SESSION_SECRET:?Set a persistent random session
+        secret}
+      APP_HOME_URL: http://localhost:${GRIST_PORT:-11082}
+      APP_HOME_INTERNAL_URL: http://grist:8484
+      GRIST_SANDBOX_FLAVOR: pyodide
+      GRIST_TELEMETRY_LEVEL: 'off'
+      GRIST_ALLOW_AUTOMATIC_VERSION_CHECKING: 'false'
+      GRIST_ANON_PLAYGROUND: 'false'
+      GRIST_WIDGET_LIST_URL: ''
+      GRIST_SESSION_COOKIE: ods_grist
+      GRIST_HIDE_UI_ELEMENTS: billing,sendToDrive,importFromAirtable
+    volumes:
+    - grist-data:/persist
+    build:
+      context: .
+      dockerfile: Dockerfile
+    stop_grace_period: 60s
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  grist-data: {}

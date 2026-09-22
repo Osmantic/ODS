@@ -1,0 +1,45 @@
+services:
+  memos:
+    image: neosmemo/memos:stable@sha256:24c2707ddd8fbd2ceaa7a61ecab86a53cdcde640b24ce572b73da14b00b5785f
+    container_name: ods-memos
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - ${BIND_ADDRESS:-127.0.0.1}:${MEMOS_PORT:-11018}:5230
+    healthcheck:
+      test:
+      - CMD
+      - wget
+      - --quiet
+      - --spider
+      - http://127.0.0.1:5230/
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    user: 10001:10001
+    environment:
+      MEMOS_PORT: '5230'
+      MEMOS_DATA: /var/opt/memos
+      MEMOS_DRIVER: sqlite
+    volumes:
+    - memos-data:/var/opt/memos
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  memos-data: {}

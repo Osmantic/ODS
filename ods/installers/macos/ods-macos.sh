@@ -120,6 +120,17 @@ test_install() {
 }
 
 get_compose_flags() {
+    local flags helper
+    flags="$(_get_base_compose_flags)" || return $?
+    helper="${INSTALL_DIR}/installers/macos/lib/pixel-native-stack.py"
+    if [[ -e "${INSTALL_DIR}/data/pixel-native/preparation/activation.json" || -L "${INSTALL_DIR}/data/pixel-native/preparation/activation.json" ]]; then
+        /usr/bin/python3 "$helper" --install-dir "$INSTALL_DIR" --flags="$flags"
+    else
+        printf '%s\n' "$flags"
+    fi
+}
+
+_get_base_compose_flags() {
     ensure_hermes_dashboard_session_token
 
     local flags_file="${INSTALL_DIR}/.compose-flags"
@@ -161,6 +172,38 @@ get_compose_flags() {
 
 compose_pull_with_retry() {
     local flags="$1"
+    local -a pull_services=()
+    if [[ -f "${INSTALL_DIR}/data/pixel-native/preparation/activation.json" ]]; then
+        local image actual services service found=false
+        image="$(read_env_value "${INSTALL_DIR}/.env" PIXEL_NATIVE_INGRESS_IMAGE)"
+        if [[ ! "$image" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            ai_err "Native Pixel ingress image identity is missing; retain its installation receipts."
+            return 1
+        fi
+        actual="$(docker image inspect --format '{{.Id}}' "$image" 2>/dev/null)" || actual=""
+        if [[ "$actual" != "$image" ]]; then
+            ai_err "The pinned native Pixel ingress image is unavailable locally; recover it before updating."
+            return 1
+        fi
+        # A local image ID is not a registry reference. Keep the verified native
+        # transport image while pulling the remaining updatable services.
+        # shellcheck disable=SC2086
+        services="$(docker compose $flags config --services)" || return 1
+        while IFS= read -r service; do
+            if [[ "$service" == pixel-native-ingress ]]; then
+                found=true
+            elif [[ "$service" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]]; then
+                pull_services+=("$service")
+            else
+                ai_err "Invalid Compose service selection."
+                return 1
+            fi
+        done <<< "$services"
+        if ! $found || [[ ${#pull_services[@]} -eq 0 ]]; then
+            ai_err "Native Pixel Compose selection is incomplete."
+            return 1
+        fi
+    fi
     local log_file
     log_file="$(mktemp)"
     local max_attempts="${ODS_COMPOSE_PULL_RETRY_ATTEMPTS:-3}"
@@ -173,7 +216,7 @@ compose_pull_with_retry() {
         : > "$log_file"
         rc=0
         # shellcheck disable=SC2086
-        docker compose $flags pull --ignore-buildable >"$log_file" 2>&1 || rc=$?
+        docker compose $flags pull --ignore-buildable "${pull_services[@]}" >"$log_file" 2>&1 || rc=$?
         if (( rc == 0 )); then
             rm -f "$log_file"
             return 0
@@ -1053,6 +1096,16 @@ cmd_chat() {
     echo ""
 }
 
+cmd_update_pixel() {
+    test_install
+    if [[ "${PIXEL_LICENSE_ACCEPTED:-$(read_env_value "$INSTALL_DIR/.env" PIXEL_LICENSE_ACCEPTED)}" != true ]]; then
+        ai_err "Pixel update requires PIXEL_LICENSE_ACCEPTED=true after separate written authorization."
+        return 1
+    fi
+    /usr/bin/python3 "${INSTALL_DIR}/installers/macos/lib/pixel-native-update.py" \
+        --install-dir "$INSTALL_DIR" --ods-source "$INSTALL_DIR" --license-authorized "$@"
+}
+
 cmd_update() {
     test_install
     cd "$INSTALL_DIR"
@@ -1107,6 +1160,7 @@ show_help() {
     echo -e "  ${GRN}  config edit${NC}         ${DGRN}Open .env in \$EDITOR${NC}"
     echo -e "  ${GRN}  chat \"message\"${NC}      ${DGRN}Quick chat via API${NC}"
     echo -e "  ${GRN}  update${NC}              ${DGRN}Pull latest images and restart${NC}"
+    echo -e "  ${GRN}  update-pixel${NC}        ${DGRN}Update the native Pixel runtime and services${NC}"
     echo -e "  ${GRN}  version${NC}             ${DGRN}Show version${NC}"
     echo -e "  ${GRN}  help${NC}                ${DGRN}Show this help${NC}"
     echo ""
@@ -1145,6 +1199,7 @@ case "$COMMAND" in
         ;;
     chat)       cmd_chat "$*" ;;
     update)     cmd_update ;;
+    update-pixel) cmd_update_pixel "$@" ;;
     version)    cmd_version ;;
     help)       show_help ;;
     *)

@@ -26,6 +26,21 @@ async def start(app):
 
 
 class RelayTests(unittest.IsolatedAsyncioTestCase):
+    def test_generation_summary_allowlists_only_safe_scalars(self):
+        payload = {"model": "ods/current", "stream": True, "max_tokens": 4096, "max_completion_tokens": 2048,
+                   "chat_template_kwargs": {"enable_thinking": False, "secret": "private"},
+                   "tools": [{"secret": "private"}], "messages": ["private"]}
+        self.assertEqual(relay._generation_summary(payload), {
+            "stream": True, "max_tokens": 4096, "max_completion_tokens": 2048, "enable_thinking": False, "tool_count": 1})
+        self.assertEqual(payload["messages"], ["private"])
+
+    def test_generation_summary_never_echoes_unexpected_values(self):
+        self.assertEqual(relay._generation_summary({
+            "stream": "private", "max_tokens": "private",
+            "chat_template_kwargs": {"enable_thinking": "private"}, "tools": "private"}),
+            {"stream": False, "max_tokens": None, "max_completion_tokens": None, "enable_thinking": None, "tool_count": 0})
+        self.assertIsNone(relay._generation_summary({"max_tokens": True})["max_tokens"])
+
     async def asyncSetUp(self):
         self.disconnected = asyncio.Event()
 

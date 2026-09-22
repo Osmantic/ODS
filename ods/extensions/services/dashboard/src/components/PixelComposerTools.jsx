@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { AtSign, Slash, ShieldCheck, ListChecks, Globe2, CheckCheck, Users, Minimize2 } from 'lucide-react'
+import { AtSign, Slash, ShieldCheck, ListChecks, Globe2, CheckCheck, Users, Minimize2, Package } from 'lucide-react'
+import PortalExtensionMention, { extensionMentionQuery } from './PortalExtensionMention'
 import PixelMascot from './PixelMascot'
 import PixelPromptLibrary from './PixelPromptLibrary'
 import { usePortalIdentity } from '../contexts/PortalIdentityContext'
@@ -11,6 +12,7 @@ const commands = [
   { title: 'Research', detail: 'Current sources and visible provenance', icon: Globe2, text: 'Research this using current sources, inline citations, and evidence-versus-inference labels: ' },
   { title: 'Agents', detail: 'Let Portal plan the team', icon: Users, text: '/agents ' },
   { title: 'Compact', detail: 'Free context while keeping conversation history', icon: Minimize2, action: 'compact' },
+  { title: 'Extensions', detail: 'Choose an extension from the ODS catalog', icon: Package, text: '/extensions @' },
   { title: 'Review', detail: 'Risks and concrete next actions', icon: CheckCheck, text: 'Review this critically, identify real risks, and recommend concrete next actions: ' },
 ]
 const sources = [
@@ -20,6 +22,8 @@ const sources = [
 export default function PixelComposerTools({ disabled, input, onInsert, onCompact, children }) {
   const {displayName} = usePortalIdentity()
   const [menu, setMenu] = useState(null)
+  const [dismissedMention, setDismissedMention] = useState(null)
+  const extensionQuery = extensionMentionQuery(input)
   const root = useRef(null)
   const lastTrigger = useRef(null)
   useEffect(() => {
@@ -35,6 +39,7 @@ export default function PixelComposerTools({ disabled, input, onInsert, onCompac
   }, [menu])
   function toggle(kind, event) { lastTrigger.current = event.currentTarget; setMenu(value => value === kind ? null : kind) }
   return <div ref={root} className="pixel-composer-tools">
+    {!disabled && extensionQuery !== undefined && dismissedMention !== input && <PortalExtensionMention query={extensionQuery} onDismiss={() => setDismissedMention(input)} onSelect={text => onInsert(text, { replace: true })}/>}
     {menu && <div className="pixel-composer-popover" role="group" onKeyDown={event => {
       const keys = ['ArrowDown', 'ArrowUp', 'Home', 'End']
       if (!keys.includes(event.key)) return

@@ -1,0 +1,56 @@
+services:
+  cloudbeaver:
+    image: ods/cloudbeaver:25.3.5-local-v1
+    container_name: ods-cloudbeaver
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${CLOUDBEAVER_PORT:-11057}:8978
+    healthcheck:
+      test:
+      - CMD
+      - curl
+      - --fail
+      - --silent
+      - --max-time
+      - '5'
+      - http://127.0.0.1:8978/
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    user: 8978:8978
+    environment:
+      CLOUDBEAVER_WEB_SERVER_PORT: '8978'
+      CLOUDBEAVER_APP_ANONYMOUS_ACCESS_ENABLED: 'false'
+      CLOUDBEAVER_APP_GRANT_CONNECTIONS_ACCESS_TO_ANONYMOUS_TEAM: 'false'
+      CLOUDBEAVER_APP_SUPPORTS_CUSTOM_CONNECTIONS: 'true'
+      CLOUDBEAVER_APP_PUBLIC_CREDENTIALS_SAVE_ENABLED: 'false'
+      CLOUDBEAVER_SYSTEM_VARIABLES_RESOLVING_ENABLED: 'false'
+      JAVA_OPTS: -Xms128m -Xmx1536m
+      TZ: UTC
+    volumes:
+    - cloudbeaver-workspace:/opt/cloudbeaver/workspace
+    build:
+      context: .
+      dockerfile: Dockerfile
+    init: true
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  cloudbeaver-workspace: {}

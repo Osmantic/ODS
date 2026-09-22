@@ -1,0 +1,59 @@
+services:
+  homebox:
+    image: ods/homebox:0.26.2-local-v1
+    container_name: ods-homebox
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${HOMEBOX_PORT:-11089}:7745
+    healthcheck:
+      test:
+      - CMD
+      - wget
+      - --quiet
+      - --tries=1
+      - -O
+      - /dev/null
+      - http://127.0.0.1:7745/api/v1/status
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    user: 1000:1000
+    environment:
+      HBOX_AUTH_API_KEY_PEPPER: ${HOMEBOX_API_KEY_PEPPER:?Set a stable API-key pepper
+        of at least 32 bytes}
+      HBOX_OPTIONS_ALLOW_REGISTRATION: ${HOMEBOX_ALLOW_REGISTRATION:-true}
+      HBOX_OPTIONS_ALLOW_ANALYTICS: 'false'
+      HBOX_OTEL_ENABLED: 'false'
+      HBOX_DEMO: 'false'
+      HBOX_WEB_MAX_UPLOAD_SIZE: '20'
+    init: true
+    build:
+      context: .
+      dockerfile: Dockerfile
+    stop_grace_period: 60s
+    read_only: true
+    tmpfs:
+    - /tmp:rw,noexec,nosuid,size=64m
+    volumes:
+    - homebox-data:/data
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  homebox-data: {}

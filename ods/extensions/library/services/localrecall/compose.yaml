@@ -1,0 +1,76 @@
+services:
+  localrecall:
+    image: ods/localrecall-access:v1
+    container_name: ods-localrecall
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - ${BIND_ADDRESS:-127.0.0.1}:${LOCALRECALL_PORT:-11024}:8080
+    healthcheck:
+      test:
+      - CMD
+      - /bridge
+      - healthcheck
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 128M
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    user: 65532:65532
+    environment:
+      LOCALRECALL_API_KEY: ${LOCALRECALL_API_KEY:?Set the LocalRecall access key}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      localrecall-backend:
+        condition: service_started
+  localrecall-backend:
+    image: quay.io/mudler/localrecall:latest@sha256:3f61e3e693fee5819e6925ccbf13663a92911b86ad43ef78155bb28803ccb8af
+    container_name: ods-localrecall-backend
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    environment:
+      API_KEYS: ${LOCALRECALL_API_KEY:?Set the LocalRecall access key}
+      LISTENING_ADDRESS: :8080
+      VECTOR_ENGINE: chromem
+      COLLECTION_DB_PATH: /state/db
+      FILE_ASSETS: /state/assets
+      OPENAI_BASE_URL: http://embeddings:80/v1
+      OPENAI_API_KEY: local-embeddings
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-BAAI/bge-base-en-v1.5}
+      MAX_CHUNKING_SIZE: '1024'
+      CHUNK_OVERLAP: '128'
+    volumes:
+    - localrecall-data:/state
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  localrecall-data: {}

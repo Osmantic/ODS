@@ -12,7 +12,9 @@ service:
   external_port_default: 10200
   health: ""
   type: docker
-  gpu_backends: [amd, nvidia, apple]
+  startup_check: false  # Wyoming TCP; readiness uses the Compose healthcheck
+  external_link: false
+  gpu_backends: [all]
   compose_file: compose.yaml
   category: optional
   depends_on: []
@@ -35,3 +37,5 @@ features:
     enabled_services_all: [piper-audio]
     setup_time: ~1 minute
     priority: 10
+    launch:
+      type: none

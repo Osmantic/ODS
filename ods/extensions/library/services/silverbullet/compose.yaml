@@ -1,0 +1,55 @@
+services:
+  silverbullet:
+    image: ods/silverbullet:2.11.0-storage-v1
+    container_name: ods-silverbullet
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${SILVERBULLET_PORT:-11040}:3000
+    healthcheck:
+      test:
+      - CMD
+      - curl
+      - --fail
+      - --silent
+      - --max-time
+      - '5'
+      - http://127.0.0.1:3000/.instance
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    user: 1000:1000
+    environment:
+      SB_FOLDER: /data
+      SB_HOSTNAME: 0.0.0.0
+      SB_PORT: '3000'
+      PUID: '1000'
+      PGID: '1000'
+      HOME: /home/silverbullet
+    volumes:
+    - silverbullet-data:/data
+    - silverbullet-home:/home/silverbullet
+    build:
+      context: .
+      dockerfile: Dockerfile
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  silverbullet-data: {}
+  silverbullet-home: {}

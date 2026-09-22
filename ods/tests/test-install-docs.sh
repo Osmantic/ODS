@@ -122,7 +122,6 @@ if not all(has_retired_reference(sample) for sample in positive_samples):
     raise SystemExit("[FAIL] Retired-name guard misses a supported identifier form")
 if any(has_retired_reference(sample) for sample in negative_samples):
     raise SystemExit("[FAIL] Retired-name guard rejects unrelated language")
-
 repo_path = pathlib.Path(repo_root)
 tracked_output = subprocess.check_output(
     ["git", "-C", repo_root, "ls-files", "-z"]

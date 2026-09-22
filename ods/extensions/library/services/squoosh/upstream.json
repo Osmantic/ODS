@@ -1,0 +1,12 @@
+{
+  "repository": "https://github.com/GoogleChromeLabs/squoosh",
+  "license": "Apache-2.0",
+  "commit": "e8d35e0fb66eb16eff6fe8fc773eabcbb7128de3",
+  "archive_sha256": "8a4caf8744066d08005ce32034ba654d8114aa6875ff3267b56a68a9021d1c08",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Official dev head dated 2024-08-19, not advertised as recently maintained. Source build with bundled WASM assets, pinned Node/nginx, analytics bootstrap removed and same-origin connect policy. No image upload endpoint, API wrapper or fake persistence."
+}

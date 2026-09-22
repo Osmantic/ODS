@@ -1,0 +1,50 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: 2.6.0
+service:
+  id: datasette
+  name: Datasette
+  aliases: []
+  container_name: ods-datasette
+  host_env: DATASETTE_HOST
+  default_host: datasette
+  port: 8001
+  external_port_env: DATASETTE_PORT
+  external_port_default: 11117
+  health: /-/versions.json
+  type: docker
+  startup_check: true
+  startup_timeout: 90
+  gpu_backends:
+  - all
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  description: Explore selected SQLite snapshots with read-only SQL, faceted tables
+    and JSON/CSV APIs.
+  env_vars: []
+  ui_path: /
+tags:
+- data
+- sqlite
+- research
+- open-source
+features:
+- id: datasette-explorer
+  name: Datasette
+  description: Explore selected SQLite snapshots with read-only SQL, faceted tables
+    and JSON/CSV APIs.
+  icon: Table
+  category: productivity
+  requirements:
+    services:
+    - datasette
+    vram_gb: 0
+  enabled_services_all:
+  - datasette
+  setup_time: Initial image download; see README
+  priority: 48
+  launch:
+    type: service
+    service: datasette
+    path: /

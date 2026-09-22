@@ -2,10 +2,12 @@ import json
 import os
 from pathlib import Path
 import sys
+import socket
 import tempfile
 import unittest
 from unittest.mock import patch
-from aiohttp import web, ClientSession
+from aiohttp import web, ClientSession, TCPConnector
+from aiohttp.abc import AbstractResolver
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 os.environ.setdefault('PIXEL_OPENWEBUI_KEY','c'*64)
@@ -25,19 +27,23 @@ class ModelTransportTests(unittest.IsolatedAsyncioTestCase):
         self.calls=[]
         self.reply={**STATE,'privateJournal':{'credential':'private'}}
         self.reply_status=200
+        self.reply_headers={}
         async def upstream(request):
             self.calls.append((request.method,request.headers.get('Authorization'),await request.text()))
-            return web.json_response(self.reply,status=self.reply_status)
+            return web.json_response(self.reply,status=self.reply_status,headers=self.reply_headers)
         app=web.Application()
         app.router.add_post('/v1/model-control',upstream)
+        app.router.add_get('/v1/access-mode',upstream)
         self.upstream=web.AppRunner(app)
         await self.upstream.setup()
         socket=str(Path(self.directory.name)/'control.sock')
         await web.UnixSite(self.upstream,socket).start()
-        self.patches=[patch.object(edge,'_SOCKET_PATH',socket),patch.object(edge,'config_token','c'*64),patch.object(edge,'preview_proxy_token','o'*64)]
+        self.patches=[patch.object(edge,'_SOCKET_PATH',socket),patch.object(edge,'config_token','c'*64),patch.object(edge,'preview_proxy_token','o'*64),
+                      patch.dict(os.environ, {'PIXEL_ACCESS_TRANSPORT': 'unix'})]
         for item in self.patches: item.start()
         app=web.Application()
         app.router.add_post('/v1/model-control',edge.handle_model_control)
+        app.router.add_get('/v1/access-mode',edge.handle_access_mode)
         self.runner=web.AppRunner(app)
         await self.runner.setup()
         site=web.TCPSite(self.runner,'127.0.0.1',0)
@@ -83,6 +89,72 @@ class ModelTransportTests(unittest.IsolatedAsyncioTestCase):
                       {**STATE,'status':'completed'}, {**STATE,'transactionId':None}):
             self.reply=value
             self.assertEqual((await self.send({'operation':'model-status'}))[0],503)
+
+    async def native_transport(self):
+        site = web.TCPSite(self.upstream, '127.0.0.1', 0)
+        await site.start()
+        port = site._server.sockets[0].getsockname()[1]
+        resolved = []
+        class Resolver(AbstractResolver):
+            async def resolve(self, host, port=0, family=socket.AF_INET):
+                resolved.append(host)
+                if host != 'host.docker.internal':
+                    raise OSError('unexpected host')
+                return [dict(hostname=host, host='127.0.0.1', port=port,
+                             family=socket.AF_INET, proto=0, flags=0)]
+            async def close(self):
+                pass
+        patches = [patch.dict(os.environ, {'PIXEL_ACCESS_TRANSPORT': 'docker-desktop-host',
+                                            'PIXEL_NATIVE_ACCESS_PORT': str(port),
+                                            'HTTP_PROXY': 'http://untrusted.invalid:1'}),
+                   patch.object(edge, 'TCPConnector', lambda: TCPConnector(resolver=Resolver())),
+                   patch.object(edge, 'UnixConnector', side_effect=AssertionError('native transport cannot fall back'))]
+        for item in patches:
+            item.start()
+            self.patches.append(item)
+        return site, resolved
+
+    async def test_native_tcp_transport_preserves_owner_contract(self):
+        _, resolved = await self.native_transport()
+        self.assertEqual(await self.send(BEGIN), (200, STATE))
+        self.assertEqual(resolved, ['host.docker.internal'])
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(self.calls[0][:2], ('POST', 'Bearer ' + 'o' * 64))
+        self.assertEqual(json.loads(self.calls[0][2]), BEGIN)
+
+    async def test_native_redirect_does_not_replay_or_send_credentials(self):
+        await self.native_transport()
+        self.reply_status = 307
+        self.reply_headers = {'Location': self.url}
+        self.assertEqual(await self.send(BEGIN), (503, {'error': 'model-change-unconfirmed'}))
+        self.assertEqual(len(self.calls), 1)
+
+    async def test_native_unavailable_does_not_use_unix_or_retry(self):
+        site, _ = await self.native_transport()
+        await site.stop()
+        self.assertEqual(await self.send(BEGIN), (503, {'error': 'model-control-unavailable'}))
+        self.assertEqual(self.calls, [])
+
+    async def test_native_invalid_configuration_never_contacts_controller(self):
+        await self.native_transport()
+        for port in ('0', '65536', '18790/path', '018790', '18790\n', 'other:18790'):
+            with patch.dict(os.environ, {'PIXEL_NATIVE_ACCESS_PORT': port}):
+                self.assertEqual((await self.send(BEGIN))[0], 503)
+        with patch.dict(os.environ, {'PIXEL_ACCESS_TRANSPORT': 'http://other'}):
+            self.assertEqual((await self.send(BEGIN))[0], 503)
+        self.assertEqual(self.calls, [])
+
+    async def test_native_access_status_uses_same_transport_and_public_projection(self):
+        await self.native_transport()
+        value = dict(available=True, surface='darwin', configured_mode='sandboxed',
+                     effective_mode='sandboxed', runtime_verified=True, revision=REV,
+                     busy=False, pending=False, reason=None, scope='owner-host')
+        self.reply = {**value, 'privateJournal': 'not-public'}
+        url = self.url.replace('/v1/model-control', '/v1/access-mode')
+        async with self.client.get(url, headers={'Authorization': 'Bearer ' + 'o' * 64}) as response:
+            self.assertEqual(response.status, 200)
+            self.assertEqual(await response.json(), value)
+        self.assertEqual(self.calls, [('GET', 'Bearer ' + 'o' * 64, '')])
 
 
 if __name__=='__main__': unittest.main()

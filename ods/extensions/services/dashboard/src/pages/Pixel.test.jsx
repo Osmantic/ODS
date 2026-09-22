@@ -901,11 +901,13 @@ describe('Pixel', () => {
     await screen.findByText('Available')
     fireEvent.change(screen.getByPlaceholderText('Message Portal...'), {target: {value: 'continue'}})
     fireEvent.click(screen.getByTitle('Send'))
-    await screen.findByText('Latest answer')
+    // Rendering sixty Markdown messages plus animated text can exceed the
+    // default one-second DOM wait on Windows CI. Keep the same visible/persisted contract.
+    await screen.findByText('Latest answer', {}, {timeout: 5000})
     expect(screen.getByText('History item 0')).toBeVisible()
     const call = globalThis.fetch.mock.calls.find(([url]) => url === '/api/pixel/chat/stream')
     expect(JSON.parse(call[1].body).messages.length).toBeLessThanOrEqual(50)
-    expect(JSON.parse(localStorage.getItem('ods.pixel.chat.v1')).messages).toHaveLength(62)
+    await waitFor(() => expect(JSON.parse(localStorage.getItem('ods.pixel.chat.v1')).messages).toHaveLength(62))
     view.unmount()
     render(<Pixel />)
     expect(screen.getByText('History item 0')).toBeVisible()
@@ -1091,6 +1093,29 @@ describe('Pixel', () => {
     expect(screen.queryByText('forged-runtime')).not.toBeInTheDocument()
   })
 
+  it.each([200, 409])('starts catalog installation only after an accepted owner chat command (%s)', async status => {
+    const plan = {schemaVersion: 1, extensionId: 'demo', steps: [{extensionId: 'demo', action: 'none',
+      status: 'enabled', missingConfiguration: [], configuration: []}]}
+    globalThis.fetch.mockImplementation(async url => {
+      if (url === '/api/pixel/status') return response({available: true, model: 'pixel/default', detail: 'local'})
+      if (url === '/api/pixel/chat/stream') return status === 200
+        ? sseResponse([JSON.stringify({choices: [{delta: {content: 'Checking extension.'}}]}), '[DONE]'])
+        : response({detail: 'Model switch pending'}, 409)
+      if (url === '/api/extensions/demo/install-next') return response({schemaVersion: 1, extensionId: 'demo',
+        state: 'succeeded', dispatched: false, plan})
+      if (url === '/api/extensions/demo/install-plan') return response(plan)
+      return response({extensions: []})
+    })
+    render(<Pixel />)
+    await screen.findByText('Available')
+    fireEvent.change(screen.getByPlaceholderText('Message Portal...'), {target: {value: '/extensions @demo '}})
+    fireEvent.click(screen.getByTitle('Send'))
+    if (status === 200) await screen.findByText('Checking extension.')
+    else await waitFor(() => expect(screen.getByRole('textbox')).toHaveValue('/extensions @demo'))
+    const installs = globalThis.fetch.mock.calls.filter(([url]) => url === '/api/extensions/demo/install-next')
+    expect(installs).toHaveLength(status === 200 ? 1 : 0)
+  })
+
   it('sends exact body to stream endpoint', async () => {
     globalThis.fetch.mockResolvedValueOnce(
       response({ available: true, model: 'pixel/default', detail: 'local' })
@@ -1239,7 +1264,10 @@ describe('Pixel', () => {
     expect(savedRecovery.messages[contextStart].content).toBe('old context')
     expect(screen.getByText('old answer')).toBeVisible()
 
+    // Text can render before the stream's final cleanup enables the composer.
+    await waitFor(() => expect(textarea).not.toBeDisabled())
     fireEvent.change(textarea, { target: { value: 'Continue from that verified result.' } })
+    await waitFor(() => expect(screen.getByTitle('Send')).not.toBeDisabled())
     fireEvent.click(screen.getByTitle('Send'))
     expect(await screen.findByText('Follow-up result')).toBeInTheDocument()
     const chatCalls = globalThis.fetch.mock.calls.filter(call => call[0] === '/api/pixel/chat/stream')

@@ -11,7 +11,7 @@ import os
 import re
 import uuid
 
-from pixel_access_bridge import AccessError, atomic_json, digest
+from pixel_access_bridge import AccessError, atomic_json, digest, runtime_config_path
 from pixel_access_protocol import HEX
 from pixel_settings import coordinator as settings
 
@@ -100,7 +100,7 @@ def _inputs(bridge, directory):
     bridge.settings_source()
     saved, source_hash = settings._read(directory / 'provider-config.json', bridge.owner.pw_uid, 256 * 1024)
     saved = normalize_config(saved)
-    config, checksum = settings._read(bridge.home / '.openclaw/openclaw.json', bridge.owner.pw_uid)
+    config, checksum = settings._read(runtime_config_path(bridge), bridge.owner.pw_uid)
     managed = _managed(_read_root(bridge, MANAGED))
     return saved, source_hash, config, checksum, managed
 
@@ -187,7 +187,7 @@ def _completion(bridge, journal, record, state, result):
     checksum = record['afterSha' if outcome == 'applied' else 'beforeSha']
     if (outcome is None or state['pending'] or state['configSha256'] != checksum or state['binding'] != binding
             or result.get('configSha256') != checksum or result.get('binding') != binding
-            or settings._read(bridge.home / '.openclaw/openclaw.json', bridge.owner.pw_uid)[1] != checksum):
+            or settings._read(runtime_config_path(bridge), bridge.owner.pw_uid)[1] != checksum):
         raise AccessError('provider-completion-mismatch')
     expected = {'transactionId': journal['transactionId'], 'binding': binding, 'outcome': outcome, 'configSha256': checksum}
     if journal.get('noOwnerWrite'):

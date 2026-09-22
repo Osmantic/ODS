@@ -1,0 +1,13 @@
+{
+  "repository": "https://github.com/TwiN/gatus",
+  "license": "Apache-2.0",
+  "image": "twinproduction/gatus:v5.36.0@sha256:c5f210d095fa78e6efaa20ffeb14803f2ba4f10615e16a6d12087697149617f0",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Official scratch image, owned SQLite volume, explicit HTTP target and safe JSON configuration adapter. Local dashboard has no authentication; no alerts, external telemetry or seeded public endpoints. Native /health probe through static helper."
+}

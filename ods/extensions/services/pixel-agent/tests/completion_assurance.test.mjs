@@ -60,6 +60,34 @@ test('actual guard wires bounded recovery and truthful delivery', () => {
   assert.match(guard.deliveryVerificationForRun(context.runId).text,/incompleta/);
   assert.equal(guard.beforeAgentFinalize(event,{...context,agentId:'other'}),undefined);
 });
+
+test('installation promises trigger bounded recovery rather than a successful empty turn', () => {
+  for (const text of ['OK, vou começar a instalar o pacote agora mesmo.',
+    'Sim, vou instalar a extensão.', 'Vou configurar o serviço.',
+    'Okay, I will start to install the package.', "I'll download the source."]) {
+    const guard = createCompletionAssurance();
+    guard.begin('/extensions https://github.com/example/package pode começar a instalar.');
+    assert.equal(guard.finalize(text)?.action, 'revise', text);
+    assert.equal(guard.finalize(text)?.action, 'revise', text);
+    assert.equal(guard.finalize(text)?.action, 'finalize', text);
+    assert.equal(guard.terminalStatus, 'failed');
+    assert.match(guard.terminal, /incompleta/);
+  }
+});
+
+test('installation examples, permission questions and failures never authorize execution', () => {
+  for (const [request, reply] of [
+    ['Traduza: I will install the package.', 'Vou instalar o pacote.'],
+    ['Explique a instalação.', 'OK, vou começar a instalar.'],
+    ['Prepare a instalação.', 'Vou instalar. Posso confirmar?'],
+    ['Instale a extensão.', 'Não consegui instalar: runtime indisponível.'],
+    ['Mostre um exemplo.', '> OK, vou começar a instalar.'],
+  ]) {
+    const guard = createCompletionAssurance();
+    guard.begin(request);
+    assert.equal(guard.finalize(reply), undefined, reply);
+  }
+});
 test('literal promise requests and approval questions must never initiate execution', () => {
   const guard=createCompletionAssurance();guard.begin('Repita exatamente: Vou pesquisar agora.');
   assert.equal(guard.finalize('Vou pesquisar agora.'),undefined);
@@ -75,6 +103,9 @@ test('clock context is explicit, portable and preserves requested dates', () => 
   const value=executionContext(new Date('2026-09-16T00:03:00Z'));
   assert.match(value,/2026-09-16T00:03:00.000Z/);
   assert.match(value,/owner's explicit date and timezone/);
+  assert.match(value,/prefer write and verify the bytes with read/);
+  assert.match(value,/portable printf/);
+  assert.match(value,/Do not claim a match when readback differs/);
 });
 test('sources must come from structured tool evidence, not invented prose links', () => {
   const guard=createCompletionAssurance();guard.begin('Notícias de hoje');

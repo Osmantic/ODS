@@ -1,0 +1,61 @@
+services:
+  mumble:
+    image: ods/mumble:1.5.915-local-v1
+    container_name: ods-mumble
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - 127.0.0.1:${MUMBLE_PORT:-11131}:64738/tcp
+    - 127.0.0.1:${MUMBLE_PORT:-11131}:64738/udp
+    healthcheck:
+      test:
+      - CMD
+      - timeout
+      - '5'
+      - bash
+      - -c
+      - exec 3<>/dev/tcp/127.0.0.1/64738
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    user: 10000:10000
+    environment:
+      MUMBLE_CONFIG_SERVER_PASSWORD: ${MUMBLE_SERVER_PASSWORD:?Set a random 64-hex
+        connection password}
+      MUMBLE_SUPERUSER_PASSWORD: ${MUMBLE_SUPERUSER_PASSWORD:?Set a distinct random
+        64-hex SuperUser password}
+      MUMBLE_CONFIG_USERS: '25'
+      MUMBLE_CONFIG_BANDWIDTH: '72000'
+      MUMBLE_CONFIG_ICE: ''
+      MUMBLE_CONFIG_SENDVERSION: 'false'
+      MUMBLE_CONFIG_DATABASE: /data/mumble-server.sqlite
+    init: true
+    build:
+      context: .
+      dockerfile: Dockerfile
+    stop_grace_period: 60s
+    read_only: true
+    tmpfs:
+    - /tmp:rw,noexec,nosuid,size=64m
+    volumes:
+    - mumble-data:/data
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  mumble-data: {}

@@ -1,0 +1,13 @@
+{
+  "repository": "https://github.com/distribution/distribution",
+  "license": "Apache-2.0",
+  "source_ref": "v3.1.1",
+  "image": "registry:3@sha256:fd374bae807c225661adfe2c0c1f9970a0b8fab1761fd7dfb91e0fd9a8748f9b",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Official OCI registry image with bcrypt authentication, stable upload secret and nonroot persistent filesystem. Loopback HTTP for local development; no Docker daemon configuration or automatic pushes. API-only launch."
+}

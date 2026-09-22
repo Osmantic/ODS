@@ -1,0 +1,12 @@
+{
+  "repository": "https://github.com/mudler/LocalRecall",
+  "license": "MIT",
+  "image": "quay.io/mudler/localrecall:latest@sha256:3f61e3e693fee5819e6925ccbf13663a92911b86ad43ef78155bb28803ccb8af",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Official v0.6.5 backend plus ODS stdlib Go access adapter built from a pinned toolchain. Browser Basic auth and API Bearer auth share the extension key, injected upstream only after validation. Public health returns no data and checks authenticated backend availability. Shared TEI embeddings, not chat inference; current ODS TEI uses amd64 emulation on Apple Silicon. Document/index persistence is a named volume."
+}

@@ -131,7 +131,16 @@ class ProviderStore:
             if not _private(prior):
                 raise StoreError("unsafe-file")
         flags = os.O_NOFOLLOW | os.O_NONBLOCK | (os.O_RDWR | os.O_CREAT if create else os.O_RDONLY)
-        fd = os.open(name, flags, 0o600, dir_fd=directory_fd)
+        # Concurrent first creation can return ENOENT on macOS even with O_CREAT.
+        # Retry only creation, retaining descriptor-relative custody checks.
+        for attempt in range(3):
+            try:
+                fd = os.open(name, flags, 0o600, dir_fd=directory_fd)
+                break
+            except FileNotFoundError:
+                if not create or attempt == 2:
+                    raise
+                time.sleep(0.001)
         if not _private(os.fstat(fd)):
             os.close(fd)
             raise StoreError("unsafe-file")

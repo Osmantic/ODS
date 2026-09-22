@@ -1,0 +1,55 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: 2.6.0
+service:
+  id: localrecall
+  name: LocalRecall
+  aliases: []
+  container_name: ods-localrecall
+  host_env: LOCALRECALL_HOST
+  default_host: localrecall
+  port: 8080
+  external_port_env: LOCALRECALL_PORT
+  external_port_default: 11024
+  health: /health
+  type: docker
+  startup_check: true
+  startup_timeout: 180
+  gpu_backends:
+  - all
+  compose_file: compose.yaml
+  category: optional
+  depends_on:
+  - embeddings
+  description: Maintain searchable document collections and agent memory with a local
+    vector store and the ODS embedding service.
+  env_vars:
+  - key: LOCALRECALL_API_KEY
+    required: true
+    secret: true
+    description: At least 24 random ASCII characters without spaces or commas. Browser
+      username is ods; this key is the password and API Bearer token.
+  ui_path: /
+tags:
+- productivity
+- local
+- open-source
+features:
+- id: localrecall-workspace
+  name: LocalRecall
+  description: Maintain searchable document collections and agent memory with a local
+    vector store and the ODS embedding service.
+  icon: Brain
+  category: productivity
+  requirements:
+    services:
+    - localrecall
+    vram_gb: 0
+  enabled_services_all:
+  - localrecall
+  setup_time: Initial image download; see README
+  priority: 53
+  launch:
+    type: service
+    service: localrecall
+    path: /

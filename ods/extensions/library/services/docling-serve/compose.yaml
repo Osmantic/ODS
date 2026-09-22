@@ -1,0 +1,42 @@
+services:
+  docling-serve:
+    image: ghcr.io/docling-project/docling-serve-cpu:v1.34.0@sha256:0525640504db7ed8a53e0e443882727888f6a3746948b1b7a8820efe95567bd3
+    container_name: ods-docling-serve
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    ports:
+    - ${BIND_ADDRESS:-127.0.0.1}:${DOCLING_SERVE_PORT:-11000}:5001
+    healthcheck:
+      test:
+      - CMD
+      - python
+      - -c
+      - import urllib.request; urllib.request.urlopen('http://127.0.0.1:5001/health',
+        timeout=8).read()
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 6G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks:
+    - ods-network
+    volumes:
+    - docling-serve-cache:/opt/app-root/src/.cache
+    environment:
+      DOCLING_SERVE_ENABLE_UI: 'true'
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+volumes:
+  docling-serve-cache: {}
