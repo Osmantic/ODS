@@ -1111,6 +1111,14 @@ function ConsoleModal({ ext, onClose }) {
     // We also keep the raw failure count locally for the exponential
     // backoff calculation (trackers don't expose internal state on success).
     let failCount = 0
+    let pollTimer = null
+    const schedulePoll = (delay) => {
+      if (!active) return
+      pollTimer = window.setTimeout(() => {
+        pollTimer = null
+        poll()
+      }, delay)
+    }
     const tracker = createRecoveryTracker({
       threshold: 3,
       onThresholdReached: () => setDisconnected(true),
@@ -1121,7 +1129,7 @@ function ConsoleModal({ ext, onClose }) {
     const poll = async () => {
       if (!active) return
       if (logRequestInFlight.current) {
-        setTimeout(poll, 2000)
+        schedulePoll(2000)
         return
       }
       logRequestInFlight.current = true
@@ -1151,11 +1159,14 @@ function ConsoleModal({ ext, onClose }) {
       }
       if (active) {
         const delay = failCount > 0 ? Math.min(2000 * Math.pow(2, failCount - 1), 30000) : 2000
-        setTimeout(poll, delay)
+        schedulePoll(delay)
       }
     }
     poll()
-    return () => { active = false }
+    return () => {
+      active = false
+      if (pollTimer != null) window.clearTimeout(pollTimer)
+    }
   }, [ext.id])
 
   useEffect(() => {

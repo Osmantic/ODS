@@ -68,3 +68,12 @@ test('releases the read gate after both automatic and manual failures', async ()
   expect(consoleView.getByText('Recovered logs')).toBeInTheDocument()
   expect(consoleView.queryByText('Host agent unavailable')).not.toBeInTheDocument()
 })
+
+test('cancels scheduled log polling when the console closes', async () => {
+  const readLogs = vi.fn().mockResolvedValue(json({ logs: 'Initial snapshot' }))
+  const consoleView = await openConsole(readLogs)
+  expect(consoleView.getByText('Initial snapshot')).toBeInTheDocument()
+  fireEvent.click(screen.getByRole('dialog').querySelector('button'))
+  await act(async () => { await vi.advanceTimersByTimeAsync(6000) })
+  expect(readLogs).toHaveBeenCalledTimes(1)
+})
