@@ -173,6 +173,8 @@ def _validate_state(state):
     if (type(budgets) is not dict or set(budgets) != {"contextTokens", "maxOutputTokens"}
             or any(type(value) is not int for value in budgets.values())):
         raise SettingsError("invalid-settings-state")
+    if budgets["maxOutputTokens"] > budgets["contextTokens"]:
+        raise SettingsError("invalid-settings-state")
     validate_preferences(budgets)
 
 
