@@ -1417,3 +1417,17 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+import re
+
+def string_mask_credit_card_safe(card_number: str | None, mask_char: str = "*") -> str:
+    """Safely mask credit card numbers leaving only the last 4 digits visible.
+    Returns "" on None or non-string inputs.
+    """
+    if card_number is None or not isinstance(card_number, str):
+        return ""
+    digits = re.sub(r'\D', '', card_number)
+    if len(digits) < 4:
+        return mask_char * len(card_number)
+    masked_digits = (mask_char * (len(digits) - 4)) + digits[-4:]
+    return masked_digits
