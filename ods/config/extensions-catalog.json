@@ -3159,6 +3159,67 @@
       "configuration_scope": "declared-environment-keys"
     },
     {
+      "id": "pocketbase",
+      "name": "PocketBase (Local App Backend)",
+      "description": "Local SQLite application backend with native collection rules, account authentication and file storage.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 8090,
+      "external_port_default": 8090,
+      "health_endpoint": "/api/health",
+      "env_vars": [
+        {
+          "key": "POCKETBASE_PORT",
+          "description": "Loopback application API and admin UI port",
+          "default": "8090"
+        },
+        {
+          "key": "POCKETBASE_PASSWORD",
+          "description": "Initial ods@localhost.invalid superuser password; 16-72 URL-safe characters",
+          "required": true
+        },
+        {
+          "key": "POCKETBASE_ENCRYPTION_KEY",
+          "description": "Stable settings encryption key; exactly 32 URL-safe characters; keep with backups",
+          "required": true
+        }
+      ],
+      "tags": [
+        "database",
+        "development",
+        "files"
+      ],
+      "features": [
+        {
+          "id": "local-app-backend",
+          "name": "Build Local Applications",
+          "description": "Define authenticated collections and keep application files locally",
+          "icon": "Database",
+          "category": "productivity",
+          "requirements": {
+            "services": [
+              "pocketbase"
+            ],
+            "vram_gb": 0
+          },
+          "enabled_services_all": [
+            "pocketbase"
+          ],
+          "setup_time": "~2 minutes to build the pinned release",
+          "priority": 40,
+          "launch": {
+            "type": "service",
+            "service": "pocketbase"
+          }
+        }
+      ],
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
       "id": "qdrant",
       "name": "Qdrant (Vector DB)",
       "description": "Qdrant (Vector DB)",
