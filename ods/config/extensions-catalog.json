@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-13T16:53:56Z",
+  "generated_at": "2026-09-14T16:04:59Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -3159,6 +3159,28 @@
       "configuration_scope": "declared-environment-keys"
     },
     {
+      "id": "pixel-inference",
+      "name": "Pixel inference sharing (development)",
+      "description": "Disabled by default. Owner-provisioned, inference-only device credentials; loopback transport only. Does not provide Pixel agent or computer access. Private state must be provisioned before service activation. Native Windows private-state support and guided setup are not yet implemented.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [
+        "model-router"
+      ],
+      "port": 8093,
+      "external_port_default": 4005,
+      "health_endpoint": "/health",
+      "env_vars": [],
+      "tags": [],
+      "features": [],
+      "startup_check": false,
+      "catalog_source": "builtin",
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
       "id": "qdrant",
       "name": "Qdrant (Vector DB)",
       "description": "Qdrant (Vector DB)",
@@ -3588,6 +3610,61 @@
       "tags": [],
       "features": [],
       "catalog_source": "builtin",
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
+      "id": "vaultwarden",
+      "name": "Vaultwarden",
+      "description": "Self-hosted Bitwarden-compatible password vault server written in Rust for private credential management.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 80,
+      "external_port_default": 7840,
+      "health_endpoint": "/alive",
+      "env_vars": [
+        {
+          "key": "VAULTWARDEN_PORT",
+          "default": "7840",
+          "description": "Published Vaultwarden web vault and API port"
+        },
+        {
+          "key": "SIGNUPS_ALLOWED",
+          "default": "false",
+          "description": "Whether new user registrations are permitted (default false for security)"
+        }
+      ],
+      "tags": [
+        "security",
+        "passwords",
+        "encryption",
+        "privacy",
+        "local"
+      ],
+      "features": [
+        {
+          "id": "password-vault",
+          "name": "Password Vault",
+          "description": "Store passwords, notes, and identity cards in an encrypted private vault",
+          "icon": "Shield",
+          "category": "security",
+          "requirements": {
+            "services": [
+              "vaultwarden"
+            ],
+            "vram_gb": 0,
+            "disk_gb": 1
+          },
+          "enabled_services_all": [
+            "vaultwarden"
+          ],
+          "setup_time": "~1 minute",
+          "priority": 34
+        }
+      ],
       "configuration_scope": "declared-environment-keys"
     },
     {
