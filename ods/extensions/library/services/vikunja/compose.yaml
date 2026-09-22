@@ -1,0 +1,30 @@
+services:
+  vikunja:
+    image: vikunja/vikunja:0.24.6
+    container_name: ods-vikunja
+    restart: unless-stopped
+    security_opt: [no-new-privileges:true]
+    environment:
+      VIKUNJA_SERVICE_JWTSECRET: ${VIKUNJA_SERVICE_JWTSECRET:-vikunja-change-me-to-a-secure-secret-token}
+      VIKUNJA_DATABASE_TYPE: sqlite
+      VIKUNJA_DATABASE_PATH: /app/vikunja/files/vikunja.db
+      VIKUNJA_SERVICE_ENABLEREGISTRATION: "true"
+    volumes:
+      - ./data/vikunja:/app/vikunja/files
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${VIKUNJA_PORT:-7855}:3456"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:3456/api/v1/info"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks: [ods-network]
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+networks:
+  ods-network:
+    external: true
