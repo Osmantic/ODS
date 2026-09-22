@@ -133,4 +133,7 @@ def test_actual_stalled_response_child_is_killed_and_reaped(monkeypatch):
         assert mod._lock.acquire(blocking=False)
         mod._lock.release()
     finally:
-        release.set(); peer.shutdown(); peer.server_close(); thread.join(timeout=2)
+        release.set()
+        peer.shutdown()
+        peer.server_close()
+        thread.join(timeout=2)

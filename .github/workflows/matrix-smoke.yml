@@ -6,6 +6,7 @@ on:
     branches:
       - main
       - master
+      - public-beta
 
 permissions:
   contents: read

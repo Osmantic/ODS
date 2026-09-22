@@ -43,7 +43,9 @@ def artifact(tmp_path, monkeypatch):
     source_entry.write_bytes(b'# fixture only\n')
     source_entry.chmod(0o600)
     node, python, launcher = tmp_path / 'node', tmp_path / 'python', tmp_path / 'launcher'
-    for path in (node, python): path.write_bytes(b'not executable fixture\n'); path.chmod(0o755)
+    for path in (node, python):
+        path.write_bytes(b'not executable fixture\n')
+        path.chmod(0o755)
     launcher.write_text('#!/bin/sh\nexec /usr/bin/env -u NODE_OPTIONS -u NODE_PATH '+str(node)+' '+str(runtime)+'/openclaw.mjs "$@"\n')
     launcher.chmod(0o755)
     manifest = {'runtime': r.tree_manifest(runtime), 'source': r.tree_manifest(source),

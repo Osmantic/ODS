@@ -5,7 +5,7 @@ import time
 
 import httpx
 import pytest
-from test_router import router  # noqa: F401
+from test_router import router as router
 
 
 @pytest.mark.parametrize('phase', ['admission','route-queue','headers','json-body','stream-body'])
