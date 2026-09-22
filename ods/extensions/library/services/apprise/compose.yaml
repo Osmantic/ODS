@@ -1,0 +1,84 @@
+services:
+  apprise:
+    image: nginxinc/nginx-unprivileged:1.30.1-alpine@sha256:acc3239879a65d9e3d250b21847ec3f34f33367017394d22830242af15cf1cb0
+    container_name: ods-apprise
+    user: "101:101"
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    entrypoint: [/bin/sh, /etc/ods-apprise/start-gateway.sh]
+    environment:
+      APPRISE_AUTH_HASH: "${APPRISE_AUTH_HASH:?Set APPRISE_AUTH_HASH before enabling Apprise}"
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${APPRISE_PORT:-8094}:8080"
+    volumes:
+      - ./extensions/library/services/apprise/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./extensions/library/services/apprise/start-gateway.sh:/etc/ods-apprise/start-gateway.sh:ro
+    tmpfs:
+      - /tmp:size=32m,mode=0700,uid=101,gid=101
+    healthcheck:
+      test: [CMD, wget, -q, --spider, http://127.0.0.1:8080/status]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    networks: [ods-network]
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 128M
+  apprise-api:
+    image: caronc/apprise:1.5.4@sha256:c5ea17408c10fd84c8fdb05a421114a1a677b16343c274bf9b1a55701b530829
+    container_name: ods-apprise-api
+    user: "1000:1000"
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    init: true
+    entrypoint: [python, /etc/ods-apprise/start-api.py]
+    environment:
+      APPRISE_CONFIG_TEXT: "${APPRISE_CONFIG_TEXT:?Set APPRISE_CONFIG_TEXT before enabling Apprise}"
+      SECRET_KEY: "${APPRISE_DJANGO_SECRET:?Set APPRISE_DJANGO_SECRET before enabling Apprise}"
+      APPRISE_CONFIG_DIR: /tmp/apprise/config
+      APPRISE_STORAGE_DIR: /tmp/apprise/store
+      APPRISE_STORAGE_MODE: memory
+      APPRISE_STATEFUL_MODE: simple
+      APPRISE_CONFIG_LOCK: "yes"
+      APPRISE_ADMIN: "no"
+      APPRISE_API_ONLY: "yes"
+      APPRISE_ATTACH_SIZE: "0"
+      APPRISE_ATTACH_DIR: /tmp/apprise/attach
+      APPRISE_PLUGIN_PATHS: /tmp/apprise/plugin
+      APPRISE_UPLOAD_MAX_MEMORY_SIZE: "1"
+      APPRISE_RECURSION_MAX: "0"
+      APPRISE_HTTP_REDIRECTS: "no"
+      APPRISE_WORKER_COUNT: "1"
+      APPRISE_WORKER_TIMEOUT: "30"
+      LOG_LEVEL: WARNING
+      DEBUG: "no"
+    network_mode: service:apprise
+    volumes:
+      - ./extensions/library/services/apprise/start-api.py:/etc/ods-apprise/start-api.py:ro
+    tmpfs:
+      - /tmp:size=64m,mode=0700,uid=1000,gid=1000
+      - /config:size=1m,mode=0700,uid=1000,gid=1000
+      - /attach:size=1m,mode=0700,uid=1000,gid=1000
+      - /plugin:size=1m,mode=0700,uid=1000,gid=1000
+    stop_grace_period: 40s
+    healthcheck:
+      test: [CMD, curl, --fail, --silent, --show-error, http://127.0.0.1:8000/status]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+networks:
+  ods-network:
+    external: true
