@@ -269,16 +269,23 @@ def check_http(
 # -----------------------------
 
 
-def with_retries(fn, *, retries: int, base_sleep: float = 0.15):
+def with_retries(fn, *, retries: int, timeout: float, base_sleep: float = 0.15):
+    deadline = time.monotonic() + timeout
     last = None
     for attempt in range(retries + 1):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
         if attempt > 0:
-            time.sleep(base_sleep * (1.6 ** (attempt - 1)))
-        last = fn()
+            time.sleep(min(base_sleep * (1.6 ** (attempt - 1)), remaining))
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+        last = fn(remaining)
         ok = last[0]
         if ok:
             return last
-    return last
+    return last or (False, "overall timeout exceeded", None)
 
 
 # -----------------------------
@@ -392,22 +399,27 @@ def main(argv: Sequence[str]) -> int:
                 print(f"[FAIL] {res.detail}")
             return 2
 
-        ok, detail = with_retries(lambda: check_tcp(host, port, args.timeout), retries=args.retries)
+        ok, detail = with_retries(
+            lambda timeout: check_tcp(host, port, timeout),
+            retries=args.retries,
+            timeout=args.timeout,
+        )
         elapsed_ms = int((time.perf_counter() - start) * 1000)
         res = Result(ok=bool(ok), target=args.target, kind=kind, detail=str(detail), elapsed_ms=elapsed_ms)
 
     else:
         ok, detail, status = with_retries(
-            lambda: check_http(
+            lambda timeout: check_http(
                 norm,
                 method=args.method,
-                timeout=args.timeout,
+                timeout=timeout,
                 allowed_status=allowed_status,
                 body_regex=body_re,
                 user_agent=args.user_agent,
                 follow_redirects=not args.no_redirects,
             ),
             retries=args.retries,
+            timeout=args.timeout,
         )
         elapsed_ms = int((time.perf_counter() - start) * 1000)
         res = Result(
