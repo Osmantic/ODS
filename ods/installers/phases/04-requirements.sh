@@ -54,13 +54,16 @@ if [[ -x "$SCRIPT_DIR/scripts/preflight-engine.sh" ]]; then
             PYTHON_CMD="python"
         fi
 
-        "$PYTHON_CMD" - "$PREFLIGHT_REPORT_FILE" << 'PY'
+        "$PYTHON_CMD" - "$PREFLIGHT_REPORT_FILE" << 'PY' 2>/dev/null || true
 import json
 import sys
 
-path = sys.argv[1]
+path = sys.argv[1] if len(sys.argv) > 1 else ""
+if not path:
+    sys.exit(0)
 try:
-    data = json.load(open(path, "r", encoding="utf-8"))
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
 except Exception:
     sys.exit(0)
 for check in data.get("checks", []):
