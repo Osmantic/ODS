@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 
+const REQUEST_TIMEOUT = 15000
+
 // Auth: nginx injects the Authorization header for /api/ requests
 // (see nginx.conf). The fetch below is a plain relative URL.
 //
@@ -26,8 +28,10 @@ export function useFirstRun() {
 
   const refresh = useCallback(async () => {
     setLoading(true)
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT)
     try {
-      const resp = await fetch('/api/setup/status')
+      const resp = await fetch('/api/setup/status', { signal: controller.signal })
       if (!resp.ok) throw new Error(`setup-status returned ${resp.status}`)
       const data = await resp.json()
       setFirstRun(!!data.first_run)
@@ -38,6 +42,7 @@ export function useFirstRun() {
       setFirstRun(false)
       setError(err.message)
     } finally {
+      clearTimeout(timeout)
       setLoading(false)
     }
   }, [])
