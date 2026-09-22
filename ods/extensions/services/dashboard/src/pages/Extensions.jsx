@@ -910,12 +910,29 @@ function ExtensionCard({ ext, gpuBackend, agentAvailable, onDetails, onConsole, 
 }
 
 function DetailModal({ ext, gpuBackend, onClose }) {
+  const modalRef = useRef(null)
   useEffect(() => {
     if (!ext) return
     const handler = (e) => { if (e.key === 'Escape') onClose() }
     document.addEventListener('keydown', handler)
     return () => document.removeEventListener('keydown', handler)
   }, [ext, onClose])
+
+  const trapFocus = (event) => {
+    if (event.key !== 'Tab' || !modalRef.current) return
+    const focusable = [...modalRef.current.querySelectorAll('button, a, input, select, textarea, [tabindex]:not([tabindex="-1"])')]
+      .filter(element => !element.disabled && element.getAttribute('aria-hidden') !== 'true')
+    if (!focusable.length) return
+    const first = focusable[0]
+    const last = focusable[focusable.length - 1]
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault()
+      last.focus()
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault()
+      first.focus()
+    }
+  }
 
   if (!ext) return null
 
@@ -931,6 +948,8 @@ function DetailModal({ ext, gpuBackend, onClose }) {
       <div
         className="bg-theme-card border border-theme-border rounded-xl w-full max-w-lg max-h-[80vh] overflow-y-auto mx-4"
         onClick={e => e.stopPropagation()}
+        onKeyDown={trapFocus}
+        ref={modalRef}
         role="dialog" aria-modal="true" aria-label={ext.name}
       >
         {/* Header */}

@@ -75,6 +75,19 @@ it('hides collections that require unsupported services while retaining usable c
   expect(screen.queryByText('Blocked collection')).toBeNull()
 })
 
+it('wraps keyboard focus inside extension details', async () => {
+  installFetchMock({ agent_available: true, extensions: [{ id: 'demo', name: 'Demo', status: 'enabled', source: 'user', features: [] }], summary: baseSummary() })
+  render(<Extensions compact />)
+  fireEvent.click(await screen.findByRole('button', { name: 'Details for Demo' }))
+  const dialog = screen.getByRole('dialog', { name: 'Demo' })
+  const buttons = [...dialog.querySelectorAll('button')]
+  const first = buttons[0]
+  const last = buttons[buttons.length - 1]
+  last.focus()
+  fireEvent.keyDown(dialog, { key: 'Tab' })
+  expect(document.activeElement).toBe(first)
+})
+
 // Find the per-extension toggle <button> by its uniquely-shaped width class.
 // L680 uses Tailwind arbitrary values: `inline-flex h-[18px] w-[32px] ...`
 // — the only button on the card with that footprint is the toggle.
