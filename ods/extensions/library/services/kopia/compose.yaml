@@ -1,0 +1,49 @@
+services:
+  kopia:
+    image: kopia/kopia:0.23.1@sha256:89fd95ee2942880ca00eae964266958a394421ddbdf69bca62e38afc55f5900e
+    container_name: ods-kopia
+    hostname: ods-kopia
+    command:
+      - --metrics-listen-addr=0.0.0.0:51516
+      - server
+      - start
+      - --address=0.0.0.0:51515
+      - --insecure
+      - --server-username=ods
+      - --no-grpc
+      - --no-control-api
+    environment:
+      KOPIA_PASSWORD: "${KOPIA_PASSWORD:?Set the repository encryption password before enabling Kopia}"
+      KOPIA_SERVER_PASSWORD: "${KOPIA_SERVER_PASSWORD:?Set a separate Kopia UI password before enabling Kopia}"
+      KOPIA_CHECK_FOR_UPDATES: "false"
+      KOPIA_PERSIST_CREDENTIALS_ON_CONNECT: "false"
+      USER: ods
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: ["/tmp:size=128m,mode=1777"]
+    volumes:
+      - ./data/kopia/config:/app/config
+      - ./data/kopia/cache:/app/cache
+      - ./data/kopia/logs:/app/logs
+      - ./data/kopia/repository:/repository
+      - ./data/kopia/source:/source:ro
+      - ./data/kopia/restore:/restore
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${KOPIA_PORT:-51515}:51515"
+    healthcheck:
+      test: [CMD, curl, --fail, --silent, --max-time, "3", --output, /dev/null, "http://127.0.0.1:51516/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    networks: [ods-network]
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+networks:
+  ods-network:
+    external: true
