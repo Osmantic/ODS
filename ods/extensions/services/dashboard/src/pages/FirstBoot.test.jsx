@@ -43,6 +43,21 @@ describe('FirstBoot', () => {
     globalThis.localStorage.removeItem('ods-firstboot-progress')
   })
 
+  test('exposes the current setup step to assistive technology', async () => {
+    vi.stubGlobal('fetch', vi.fn(async url => {
+      if (url === '/api/auth/magic-link/owner-card/status') return response(ownerCardReady)
+      throw new Error(`unexpected request: ${url}`)
+    }))
+
+    render(<FirstBoot onComplete={vi.fn()} />)
+
+    const progress = screen.getByRole('progressbar', { name: 'Setup progress: step 1 of 4' })
+    expect(progress).toHaveAttribute('aria-valuenow', '1')
+    fireEvent.change(screen.getByDisplayValue('ods'), { target: { value: 'spark' } })
+    fireEvent.click(screen.getByRole('button', { name: /^continue$/i }))
+    expect(screen.getByRole('progressbar', { name: 'Setup progress: step 2 of 4' })).toHaveAttribute('aria-valuenow', '2')
+  })
+
   test('generates the owner card, marks setup complete, and shows the QR', async () => {
     const onComplete = vi.fn()
     const fetchMock = vi.fn(async (url, options = {}) => {
