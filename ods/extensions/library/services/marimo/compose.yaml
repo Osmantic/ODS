@@ -1,0 +1,39 @@
+services:
+  marimo:
+    image: ods-marimo:0.24.2-r1
+    pull_policy: never
+    container_name: ods-marimo
+    restart: unless-stopped
+    user: "1000:1000"
+    init: true
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    environment:
+      MARIMO_PASSWORD: "${MARIMO_PASSWORD:?Set MARIMO_PASSWORD before enabling marimo}"
+      MARIMO_SKIP_UPDATE_CHECK: "1"
+      MARIMO_RESTRICT_SHARING: "true"
+      HOME: /home/appuser
+      UV_CACHE_DIR: /home/appuser/.cache/uv
+    volumes:
+      - ./data/marimo/workspace:/workspace
+      - ./data/marimo/home:/home/appuser
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=256m,mode=1777
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${MARIMO_PORT:-2718}:8080"
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3).read()"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    networks: [ods-network]
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+networks:
+  ods-network:
+    external: true

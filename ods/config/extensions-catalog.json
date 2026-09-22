@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-13T16:53:56Z",
+  "generated_at": "2026-09-15T01:45:20Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -2290,6 +2290,59 @@
             "localai"
           ],
           "priority": 9
+        }
+      ],
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
+      "id": "marimo",
+      "name": "marimo",
+      "description": "Reactive Python notebooks stored as ordinary Python files for reproducible local analysis.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 8080,
+      "external_port_default": 2718,
+      "health_endpoint": "/health",
+      "env_vars": [
+        {
+          "key": "MARIMO_PASSWORD",
+          "required": true,
+          "description": "Editor access password; at least 16 characters"
+        },
+        {
+          "key": "MARIMO_PORT",
+          "default": "2718",
+          "description": "Local notebook editor port"
+        }
+      ],
+      "tags": [],
+      "features": [
+        {
+          "id": "reactive-python-workspace",
+          "name": "Reactive Python Notebooks",
+          "description": "Recompute dependent cells and keep notebooks as versionable Python files.",
+          "icon": "BookOpen",
+          "category": "development",
+          "requirements": {
+            "services": [
+              "marimo"
+            ],
+            "vram_gb": 0
+          },
+          "enabled_services_all": [
+            "marimo"
+          ],
+          "setup_time": "~3 minutes",
+          "priority": 30,
+          "launch": {
+            "type": "service",
+            "service": "marimo",
+            "path": "/"
+          }
         }
       ],
       "configuration_scope": "declared-environment-keys"

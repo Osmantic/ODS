@@ -1,0 +1,44 @@
+schema_version: ods.services.v1
+service:
+  id: marimo
+  name: marimo
+  aliases: [reactive-notebooks]
+  container_name: ods-marimo
+  host_env: MARIMO_HOST
+  default_host: marimo
+  port: 8080
+  external_port_env: MARIMO_PORT
+  external_port_default: 2718
+  health: /health
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  uid: 1000
+  setup_hook: setup.sh
+  description: Reactive Python notebooks stored as ordinary Python files for reproducible local analysis.
+  env_vars:
+    - key: MARIMO_PASSWORD
+      required: true
+      secret: true
+      description: Editor access password; at least 16 characters
+    - key: MARIMO_PORT
+      default: "2718"
+      description: Local notebook editor port
+features:
+  - id: reactive-python-workspace
+    name: Reactive Python Notebooks
+    description: Recompute dependent cells and keep notebooks as versionable Python files.
+    icon: BookOpen
+    category: development
+    requirements:
+      services: [marimo]
+      vram_gb: 0
+    enabled_services_all: [marimo]
+    setup_time: ~3 minutes
+    priority: 30
+    launch:
+      type: service
+      service: marimo
+      path: /
