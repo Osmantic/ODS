@@ -72,7 +72,7 @@ jobs:
       - name: macOS TCP bridge lifecycle contracts
         run: python -m pytest tests/test_macos_llm_bridge.py tests/test_macos_upsert_env_value.py -q
       - name: Sharing credential and owner control tests
-        run: python -m pytest tests/pixel_inference -q
+        run: python -m pytest tests/pixel_inference tests/test_pixel_gateway_trailing_slash.py -q
       - name: Inference perimeter and cancellation tests
         run: python -m pytest extensions/services/pixel-inference/tests -q
       - name: Model router compatibility and route pins

@@ -93,7 +93,8 @@ async def pinned_target(provider):
         raise httpx.ConnectError('provider-unavailable')
     address = checked[0]
     host = '['+str(address)+']' if address.version == 6 else str(address)
-    url = f'{parts.scheme}://{host}:{port}{parts.path}/chat/completions'
+    base_path = parts.path.rstrip('/')
+    url = f'{parts.scheme}://{host}:{port}{base_path}/chat/completions'
     headers = {'Host':parts.netloc,'Content-Type':'application/json','X-ODS-Pixel-Route-Hop':'1'}
     extensions = {'sni_hostname':parts.hostname} if parts.scheme == 'https' else {}
     return url,headers,extensions
