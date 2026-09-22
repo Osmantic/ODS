@@ -260,13 +260,17 @@ _phase04_lemonade_uses_host_9000() {
 }
 
 if [[ "${ENABLE_VOICE:-false}" == "true" ]] && _phase04_lemonade_uses_host_9000; then
-    _whisper_port_for_check="${WHISPER_PORT:-${SERVICE_PORTS[whisper]:-9000}}"
+    _default_whisper_port=9000
+    if [[ declare -p SERVICE_PORTS 2>/dev/null =~ "declare -A" ]] && [[ -n "${SERVICE_PORTS[whisper]:-}" ]]; then
+        _default_whisper_port="${SERVICE_PORTS[whisper]}"
+    fi
+    _whisper_port_for_check="${WHISPER_PORT:-$_default_whisper_port}"
+
     if [[ "$_whisper_port_for_check" == "9000" ]]; then
-        # Lemonade's native router can reserve host port 9000 on AMD systems.
-        # Keep Whisper's container port unchanged, but check/use 9100 on the host
-        # unless the user explicitly selected another non-9000 port.
         WHISPER_PORT=9100
-        SERVICE_PORTS[whisper]=9100
+        if declare -p SERVICE_PORTS 2>/dev/null =~ "declare -A"; then
+            SERVICE_PORTS[whisper]=9100
+        fi
         log "AMD/Lemonade detected; reserving host port 9000 for Lemonade and checking Whisper on 9100"
     fi
     unset _whisper_port_for_check
