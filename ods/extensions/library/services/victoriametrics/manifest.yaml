@@ -1,0 +1,47 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: victoriametrics
+  name: VictoriaMetrics (Metric History)
+  description: "Authenticated local time-series storage and query UI for explicitly connected metric producers."
+  aliases: [metric-history]
+  container_name: ods-victoriametrics
+  default_host: victoriametrics
+  port: 8428
+  external_port_env: VMETRICS_PORT
+  external_port_default: 8428
+  health: /health
+  ui_path: /vmui/
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [metrics, monitoring, time-series]
+  env_vars:
+    - key: VMETRICS_PORT
+      description: "Published HTTP port; internal listener remains 8428"
+      default: "8428"
+    - key: VMETRICS_PASSWORD
+      description: "Strong HTTP Basic Auth password for the fixed ods account; protects read and write APIs"
+      required: true
+      secret: true
+    - key: VMETRICS_RETENTION
+      description: "Metric retention duration, for example 30d; shortening retention can delete old samples"
+      default: "30d"
+features:
+  - id: persistent-metrics
+    name: Persistent Metric History
+    description: "Store and query numeric time series from configured local producers"
+    icon: Code
+    category: monitoring
+    requirements:
+      services: [victoriametrics]
+      vram_gb: 0
+    enabled_services_all: [victoriametrics]
+    setup_time: "~1 minute after setting credentials"
+    priority: 34
+    launch:
+      type: service
+      service: victoriametrics
