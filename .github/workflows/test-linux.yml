@@ -373,7 +373,9 @@ jobs:
           python3 tests/test_external_model_validation.py
 
       - name: Runtime Config Renderer Tests
-        run: python3 tests/test-render-runtime-configs.py
+        run: |
+          python3 tests/test-render-runtime-configs.py
+          python3 tests/test_validate_generated_configs_file_guard.py
 
       - name: Runtime Renderer Environment Modes
         run: |
