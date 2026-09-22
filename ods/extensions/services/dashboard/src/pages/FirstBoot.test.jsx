@@ -75,6 +75,7 @@ describe('FirstBoot', () => {
     await finishWizard()
 
     expect(await screen.findByRole('heading', { name: /you're set/i })).toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: 'Owner card link' })).toHaveValue('http://auth.spark.local/magic-link/first-token')
     const generateCall = fetchMock.mock.calls.find(([url]) => url === '/api/auth/magic-link/generate')
     expect(JSON.parse(generateCall[1].body)).toMatchObject({
       target_username: 'sam',
