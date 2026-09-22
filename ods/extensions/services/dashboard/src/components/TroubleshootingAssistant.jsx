@@ -107,12 +107,18 @@ const commonIssues = [
 export function TroubleshootingAssistant({ serviceStatus }) {
   const [expanded, setExpanded] = useState(null)
   const [copied, setCopied] = useState(null)
+  const [copyError, setCopyError] = useState(null)
   const [search, setSearch] = useState('')
 
-  const copyToClipboard = (text, id) => {
-    navigator.clipboard.writeText(text)
-    setCopied(id)
-    setTimeout(() => setCopied(null), 2000)
+  const copyToClipboard = async (text, id) => {
+    setCopyError(null)
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopied(id)
+      setTimeout(() => setCopied(null), 2000)
+    } catch {
+      setCopyError(id)
+    }
   }
 
   const filteredIssues = search 
@@ -229,6 +235,8 @@ export function TroubleshootingAssistant({ serviceStatus }) {
                             {solution.command}
                           </pre>
                           <button
+                            type="button"
+                            aria-label={`Copy ${solution.title}`}
                             onClick={() => copyToClipboard(solution.command, `${issue.id}-${i}`)}
                             className="absolute top-1 right-1 p-1 bg-theme-card hover:bg-theme-surface-hover rounded text-theme-text-muted hover:text-theme-text transition-colors"
                           >
@@ -238,6 +246,7 @@ export function TroubleshootingAssistant({ serviceStatus }) {
                               <Copy className="w-3 h-3" />
                             )}
                           </button>
+                          {copyError === `${issue.id}-${i}` && <p role="alert" className="mt-1 text-xs text-red-300">Clipboard access failed. Select the command and copy it manually.</p>}
                         </div>
                       )}
                     </div>
