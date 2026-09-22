@@ -606,7 +606,11 @@ LLAMA_ARG_TENSOR_SPLIT=$(echo "$GPU_ASSIGNMENT_JSON" | jq -r '
   end')
 
 # Persist topology for the dashboard API (mounted read-only at /ods/config)
-mkdir -p "$INSTALL_DIR/config"
-cp "$TOPOLOGY_FILE" "$INSTALL_DIR/config/gpu-topology.json"
-chmod 644 "$INSTALL_DIR/config/gpu-topology.json"
+_target_config_dir="${INSTALL_DIR:-.}/config"
+mkdir -p "$_target_config_dir" 2>/dev/null || true
+if [[ -d "$_target_config_dir" ]]; then
+    cp "$TOPOLOGY_FILE" "$_target_config_dir/gpu-topology.json"
+    chmod 644 "$_target_config_dir/gpu-topology.json"
+fi
 rm -f "$TOPOLOGY_FILE"
+unset _target_config_dir
