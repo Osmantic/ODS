@@ -1967,7 +1967,7 @@ class TestComposeScanEdgeCases:
             headers=test_client.auth_headers,
         )
         assert resp.status_code == 400
-        assert "bind-mount host path" in resp.json()["detail"]
+        assert "bind-mount absolute host path" in resp.json()["detail"]
 
     def test_scan_rejects_dict_port_without_localhost(
         self, test_client, monkeypatch, tmp_path,
@@ -2330,6 +2330,247 @@ class TestScanComposeVolumeBypass:
             "services:\n  svc:\n    image: test\n"
             "    volumes:\n      - ./data:/data\n",
         )
+
+
+class TestScanComposeHostPathEscapes:
+    """Host-path escapes that bypass the absolute-path check: $VAR/${VAR}
+    interpolation resolves on the host to paths the scanner cannot see, '~'
+    expands to a home directory, and env_file/secrets/configs file: entries
+    read host files without a volume mount."""
+
+    def _scan(self, tmp_path, compose_text, **kwargs):
+        from routers.extensions import _scan_compose_content
+        compose = tmp_path / "compose.yaml"
+        compose.write_text(compose_text)
+        _scan_compose_content(compose, **kwargs)
+
+    def test_rejects_brace_interpolated_volume_source(self, tmp_path):
+        with pytest.raises(HTTPException) as exc:
+            self._scan(
+                tmp_path,
+                "services:\n  svc:\n    image: test\n"
+                "    volumes:\n      - ${HOST_DIR}:/data\n",
+            )
+        assert exc.value.status_code == 400
+        assert "env-interpolated" in exc.value.detail
+
+    def test_rejects_bare_dollar_volume_source(self, tmp_path):
+        with pytest.raises(HTTPException) as exc:
+            self._scan(
+                tmp_path,
+                "services:\n  svc:\n    image: test\n"
+                "    volumes:\n      - $HOST_DIR:/data\n",
+            )
+        assert exc.value.status_code == 400
+        assert "env-interpolated" in exc.value.detail
+
+    def test_rejects_interpolated_suffix_volume_source(self, tmp_path):
+        # Interpolation anywhere in the source is unverifiable.
+        with pytest.raises(HTTPException) as exc:
+            self._scan(
+                tmp_path,
+                "services:\n  svc:\n    image: test\n"
+                "    volumes:\n      - ./data/${SUFFIX}:/data\n",
+            )
+        assert exc.value.status_code == 400
+        assert "env-interpolated" in exc.value.detail
+
+    def test_rejects_tilde_volume_source(self, tmp_path):
+        with pytest.raises(HTTPException) as exc:
+            self._scan(
+                tmp_path,
+                "services:\n  svc:\n    image: test\n"
+                "    volumes:\n      - ~/secrets:/data\n",
+            )
+        assert exc.value.status_code == 400
+        assert "home-relative" in exc.value.detail
+
+    def test_rejects_long_form_interpolated_source(self, tmp_path):
+        with pytest.raises(HTTPException) as exc:
+            self._scan(
+                tmp_path,
+                "services:\n  svc:\n    image: test\n    volumes:\n"
+                "      - type: bind\n        source: ${HOST_DIR}\n"
+                "        target: /data\n",
+            )
+        assert exc.value.status_code == 400
+        assert "env-interpolated" in exc.value.detail
+
+    def test_rejects_long_form_tilde_source(self, tmp_path):
+        with pytest.raises(HTTPException) as exc:
+            self._scan(
+                tmp_path,
+                "services:\n  svc:\n    image: test\n    volumes:\n"
+                "      - type: bind\n        source: ~/data\n"
+                "        target: /data\n",
+            )
+        assert exc.value.status_code == 400
+        assert "home-relative" in exc.value.detail
+
+    def test_allows_escaped_dollar_volume_source(self, tmp_path):
+        # '$$' is Compose's escape for a literal '$' — not interpolation.
+        self._scan(
+            tmp_path,
+            "services:\n  svc:\n    image: test\n"
+            "    volumes:\n      - ./$$cache:/data\n",
+        )
+
+    def test_allows_interpolated_source_for_builtin(self, tmp_path):
+        # Bundled extensions legitimately interpolate relative config paths
+        # (e.g. litellm's ./config/litellm/${ODS_MODE:-local}.yaml).
+        self._scan(
+            tmp_path,
+            "services:\n  svc:\n    image: test\n"
+            "    volumes:\n      - ./config/${MODE:-local}.yaml:/app/cfg.yaml\n",
+            allow_interpolated_paths=True,
+        )
+
+    def test_tilde_still_rejected_for_builtin(self, tmp_path):
+        # '~' is not env interpolation — builtins get no exemption.
+        with pytest.raises(HTTPException) as exc:
+            self._scan(
+                tmp_path,
+                "services:\n  svc:\n    image: test\n"
+                "    volumes:\n      - ~/data:/data\n",
+                allow_interpolated_paths=True,
+            )
+        assert "home-relative" in exc.value.detail
+
+    def test_rejects_absolute_env_file(self, tmp_path):
+        with pytest.raises(HTTPException) as exc:
+            self._scan(
+                tmp_path,
+                "services:\n  svc:\n    image: test\n"
+                "    env_file:\n      - /etc/environment\n",
+            )
+        assert exc.value.status_code == 400
+        assert "env_file absolute host path" in exc.value.detail
+
+    def test_rejects_traversal_env_file(self, tmp_path):
+        with pytest.raises(HTTPException) as exc:
+            self._scan(
+                tmp_path,
+                "services:\n  svc:\n    image: test\n"
+                "    env_file: ../../.env\n",
+            )
+        assert exc.value.status_code == 400
+        assert "env_file" in exc.value.detail
+
+    def test_rejects_interpolated_env_file(self, tmp_path):
+        with pytest.raises(HTTPException) as exc:
+            self._scan(
+                tmp_path,
+                "services:\n  svc:\n    image: test\n"
+                "    env_file:\n      - ${ENV_PATH}\n",
+            )
+        assert exc.value.status_code == 400
+        assert "env-interpolated" in exc.value.detail
+
+    def test_rejects_dict_form_env_file(self, tmp_path):
+        with pytest.raises(HTTPException) as exc:
+            self._scan(
+                tmp_path,
+                "services:\n  svc:\n    image: test\n    env_file:\n"
+                "      - path: /etc/environment\n        required: false\n",
+            )
+        assert exc.value.status_code == 400
+        assert "env_file absolute host path" in exc.value.detail
+
+    def test_allows_relative_env_file(self, tmp_path):
+        self._scan(
+            tmp_path,
+            "services:\n  svc:\n    image: test\n"
+            "    env_file:\n      - ./service.env\n",
+        )
+
+    def test_rejects_secret_file_absolute(self, tmp_path):
+        with pytest.raises(HTTPException) as exc:
+            self._scan(
+                tmp_path,
+                "services:\n  svc:\n    image: test\n"
+                "    secrets:\n      - leak\n"
+                "secrets:\n  leak:\n    file: /etc/shadow\n",
+            )
+        assert exc.value.status_code == 400
+        assert "reads absolute host path" in exc.value.detail
+
+    def test_rejects_secret_file_traversal(self, tmp_path):
+        with pytest.raises(HTTPException) as exc:
+            self._scan(
+                tmp_path,
+                "services:\n  svc:\n    image: test\n"
+                "    secrets:\n      - leak\n"
+                "secrets:\n  leak:\n    file: ../../id_rsa\n",
+            )
+        assert exc.value.status_code == 400
+        assert "escaping the project directory" in exc.value.detail
+
+    def test_rejects_config_file_interpolated(self, tmp_path):
+        with pytest.raises(HTTPException) as exc:
+            self._scan(
+                tmp_path,
+                "services:\n  svc:\n    image: test\n"
+                "    configs:\n      - leak\n"
+                "configs:\n  leak:\n    file: ${HOST_FILE}\n",
+            )
+        assert exc.value.status_code == 400
+        assert "env-interpolated" in exc.value.detail
+
+    def test_rejects_secret_from_environment(self, tmp_path):
+        # environment: injects a host env var's value into the container —
+        # a direct exfil channel for secrets like DASHBOARD_API_KEY.
+        with pytest.raises(HTTPException) as exc:
+            self._scan(
+                tmp_path,
+                "services:\n  svc:\n    image: test\n"
+                "    secrets:\n      - leak\n"
+                "secrets:\n  leak:\n    environment: DASHBOARD_API_KEY\n",
+            )
+        assert exc.value.status_code == 400
+        assert "host environment variable" in exc.value.detail
+
+    def test_allows_external_secret(self, tmp_path):
+        # external: references a pre-existing docker secret — no host path.
+        self._scan(
+            tmp_path,
+            "services:\n  svc:\n    image: test\n"
+            "    secrets:\n      - shared\n"
+            "secrets:\n  shared:\n    external: true\n",
+        )
+
+    def test_allows_relative_secret_file(self, tmp_path):
+        self._scan(
+            tmp_path,
+            "services:\n  svc:\n    image: test\n"
+            "    secrets:\n      - cert\n"
+            "secrets:\n  cert:\n    file: ./certs/tls.pem\n",
+        )
+
+    def test_rejects_driver_opts_interpolated_device(self, tmp_path):
+        with pytest.raises(HTTPException) as exc:
+            self._scan(
+                tmp_path,
+                "services:\n  svc:\n    image: test\n"
+                "    volumes:\n      - data:/data\n"
+                "volumes:\n  data:\n    driver: local\n"
+                "    driver_opts:\n      type: none\n      o: bind\n"
+                "      device: ${HOST_DIR}\n",
+            )
+        assert exc.value.status_code == 400
+        assert "env-interpolated" in exc.value.detail
+
+    def test_rejects_driver_opts_tilde_device(self, tmp_path):
+        with pytest.raises(HTTPException) as exc:
+            self._scan(
+                tmp_path,
+                "services:\n  svc:\n    image: test\n"
+                "    volumes:\n      - data:/data\n"
+                "volumes:\n  data:\n    driver: local\n"
+                "    driver_opts:\n      type: none\n      o: bind\n"
+                "      device: ~/mnt\n",
+            )
+        assert exc.value.status_code == 400
+        assert "home-relative" in exc.value.detail
 
 
 # --- skip_gpu_passthrough_check flag isolation ---

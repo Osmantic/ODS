@@ -512,6 +512,33 @@ def _split_port_host(port_str: str) -> tuple[Optional[str], str]:
     return host, rest
 
 
+def _has_env_interpolation(value: str) -> bool:
+    """True when a compose value interpolates a host env var ($VAR / ${VAR}).
+
+    '$$' is Compose's escape for a literal dollar sign, so strip it before
+    checking — "$$CACHE/x" is a literal path, "${CACHE}/x" is interpolation.
+    """
+    return "$" in value.replace("$$", "")
+
+
+def _path_probe_rejected(source: str, *, allow_interpolation: bool) -> str | None:
+    """Return a rejection reason for host-side paths, or None when safe.
+
+    Checks absolute paths, '~' home-relative paths, '..' traversal segments,
+    and (unless allow_interpolation) $VAR/${VAR} interpolation, which could
+    resolve to an arbitrary host path the scanner cannot see.
+    """
+    if source.startswith("/"):
+        return "absolute host path"
+    if source.startswith("~"):
+        return "home-relative host path"
+    if ".." in source.split("/"):
+        return "path escaping the project directory"
+    if not allow_interpolation and _has_env_interpolation(source):
+        return "env-interpolated host path"
+    return None
+
+
 def _scan_compose_content(
     compose_path: Path,
     *,
@@ -519,6 +546,7 @@ def _scan_compose_content(
     skip_name_collision: bool = False,
     skip_gpu_passthrough_check: bool = False,
     skip_root_user_check: bool = False,
+    allow_interpolated_paths: bool = False,
 ) -> None:
     """Reject compose files containing dangerous directives."""
     allowed_trusted_extra_hosts = {"host.docker.internal:host-gateway"}
@@ -583,16 +611,35 @@ def _scan_compose_content(
                     vol_source = str(vol.get("source", ""))
                 else:
                     vol_source = vol_str.split(":", 1)[0]
-                if vol_source.startswith("/"):
+                vol_reject = _path_probe_rejected(
+                    vol_source, allow_interpolation=allow_interpolated_paths
+                )
+                if vol_reject:
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Extension rejected: absolute host path mount '{vol_source}' in {svc_name}",
+                        detail=f"Extension rejected: {vol_reject} mount '{vol_source}' in {svc_name}",
                     )
-                if ".." in vol_source.split("/"):
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Extension rejected: relative host path mount '{vol_source}' escaping the project directory in {svc_name}",
-                    )
+        # env_file resolves paths on the host — same exfil surface as a
+        # bind mount, so each entry gets the same path probe. Entries may be
+        # bare strings or dicts ({path: ..., required: ...}).
+        env_file = svc_def.get("env_file")
+        env_entries = env_file if isinstance(env_file, list) else [env_file]
+        for env_entry in env_entries:
+            if isinstance(env_entry, dict):
+                env_path = env_entry.get("path", "")
+            else:
+                env_path = env_entry
+            if env_path is None:
+                continue
+            env_source = str(env_path)
+            env_reject = _path_probe_rejected(
+                env_source, allow_interpolation=allow_interpolated_paths
+            )
+            if env_reject:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Extension rejected: env_file {env_reject} '{env_source}' in {svc_name}",
+                )
         cap_add = svc_def.get("cap_add", [])
         if isinstance(cap_add, list):
             for cap in cap_add:
@@ -756,10 +803,40 @@ def _scan_compose_content(
                 continue
             vol_type = str(driver_opts.get("type", "")).lower()
             device = str(driver_opts.get("device", ""))
-            if vol_type in ("none", "bind") and device.startswith("/"):
+            device_reject = _path_probe_rejected(
+                device, allow_interpolation=allow_interpolated_paths
+            )
+            if vol_type in ("none", "bind") and device_reject:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Extension rejected: named volume '{vol_name}' uses driver_opts to bind-mount host path '{device}'",
+                    detail=f"Extension rejected: named volume '{vol_name}' uses driver_opts to bind-mount {device_reject} '{device}'",
+                )
+
+    # secrets/configs 'file:' entries read host files into the container —
+    # the same exfil surface as a bind mount. 'environment:' entries inject
+    # a host env var's value, leaking secrets like DASHBOARD_API_KEY.
+    for top_section in ("secrets", "configs"):
+        top_defs = data.get(top_section, {})
+        if not isinstance(top_defs, dict):
+            continue
+        for def_name, def_body in top_defs.items():
+            if not isinstance(def_body, dict):
+                continue
+            file_val = def_body.get("file")
+            if file_val is not None:
+                file_source = str(file_val)
+                file_reject = _path_probe_rejected(
+                    file_source, allow_interpolation=allow_interpolated_paths
+                )
+                if file_reject:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Extension rejected: {top_section[:-1]} '{def_name}' reads {file_reject} '{file_source}'",
+                    )
+            if not allow_interpolated_paths and def_body.get("environment") is not None:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Extension rejected: {top_section[:-1]} '{def_name}' sources a host environment variable",
                 )
 
 
@@ -2195,6 +2272,7 @@ def _activate_service(service_id: str) -> dict:
         skip_name_collision=is_builtin,
         skip_gpu_passthrough_check=is_builtin,
         skip_root_user_check=is_builtin,
+        allow_interpolated_paths=is_builtin,
     )
 
     # Reject symlinks
@@ -2268,6 +2346,7 @@ def enable_extension(
                 skip_name_collision=is_builtin,
                 skip_gpu_passthrough_check=is_builtin,
                 skip_root_user_check=is_builtin,
+                allow_interpolated_paths=is_builtin,
             )
     elif not disabled_compose.exists():
         raise HTTPException(

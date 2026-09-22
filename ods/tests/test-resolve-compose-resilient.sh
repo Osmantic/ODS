@@ -776,6 +776,196 @@ else
     skip "Docker Compose unavailable; real external-LLM render skipped"
 fi
 
+# ============================================================================
+# 27. User-ext compose with env-interpolated volume source must be rejected
+# ============================================================================
+mkdir -p "$TEMP_DIR/data/user-extensions/user-interp-mount"
+cat > "$TEMP_DIR/data/user-extensions/user-interp-mount/manifest.yaml" <<'EOF'
+schema_version: ods.services.v1
+service:
+  id: user-interp-mount
+  name: User Interp Mount
+  compose_file: compose.yaml
+  gpu_backends: ["nvidia", "amd", "apple"]
+EOF
+cat > "$TEMP_DIR/data/user-extensions/user-interp-mount/compose.yaml" <<'EOF'
+services:
+  user-interp-mount-svc:
+    image: nginx:latest
+    volumes:
+      - ${HOST_DIR}:/data
+EOF
+
+interp_stderr_file="$TEMP_DIR/user-interp-mount.stderr"
+interp_stdout=$(bash "$ROOT_DIR/scripts/resolve-compose-stack.sh" \
+    --script-dir "$TEMP_DIR" --tier 1 --gpu-backend nvidia --skip-broken \
+    2>"$interp_stderr_file") || true
+interp_stderr=$(cat "$interp_stderr_file")
+
+if contains_path "$interp_stdout" "user-interp-mount/compose.yaml"; then
+    fail "User-ext env-interpolated mount INCLUDED in resolved stack"
+else
+    pass "User-ext env-interpolated mount excluded from resolved stack"
+fi
+
+if echo "$interp_stderr" | grep -qi "WARNING.*user-interp-mount.*env-interpolated"; then
+    pass "WARNING emitted for user-ext env-interpolated mount"
+else
+    fail "Expected WARNING for user-ext env-interpolated mount (got: $(echo "$interp_stderr" | tail -3))"
+fi
+
+# ============================================================================
+# 28. User-ext compose with home-relative volume source must be rejected
+# ============================================================================
+mkdir -p "$TEMP_DIR/data/user-extensions/user-tilde-mount"
+cat > "$TEMP_DIR/data/user-extensions/user-tilde-mount/manifest.yaml" <<'EOF'
+schema_version: ods.services.v1
+service:
+  id: user-tilde-mount
+  name: User Tilde Mount
+  compose_file: compose.yaml
+  gpu_backends: ["nvidia", "amd", "apple"]
+EOF
+cat > "$TEMP_DIR/data/user-extensions/user-tilde-mount/compose.yaml" <<'EOF'
+services:
+  user-tilde-mount-svc:
+    image: nginx:latest
+    volumes:
+      - ~/secrets:/data
+EOF
+
+tilde_stderr_file="$TEMP_DIR/user-tilde-mount.stderr"
+tilde_stdout=$(bash "$ROOT_DIR/scripts/resolve-compose-stack.sh" \
+    --script-dir "$TEMP_DIR" --tier 1 --gpu-backend nvidia --skip-broken \
+    2>"$tilde_stderr_file") || true
+tilde_stderr=$(cat "$tilde_stderr_file")
+
+if contains_path "$tilde_stdout" "user-tilde-mount/compose.yaml"; then
+    fail "User-ext home-relative mount INCLUDED in resolved stack"
+else
+    pass "User-ext home-relative mount excluded from resolved stack"
+fi
+
+if echo "$tilde_stderr" | grep -qi "WARNING.*user-tilde-mount.*home-relative"; then
+    pass "WARNING emitted for user-ext home-relative mount"
+else
+    fail "Expected WARNING for user-ext home-relative mount (got: $(echo "$tilde_stderr" | tail -3))"
+fi
+
+# ============================================================================
+# 29. User-ext compose with host-path env_file must be rejected
+# ============================================================================
+mkdir -p "$TEMP_DIR/data/user-extensions/user-envfile"
+cat > "$TEMP_DIR/data/user-extensions/user-envfile/manifest.yaml" <<'EOF'
+schema_version: ods.services.v1
+service:
+  id: user-envfile
+  name: User Envfile
+  compose_file: compose.yaml
+  gpu_backends: ["nvidia", "amd", "apple"]
+EOF
+cat > "$TEMP_DIR/data/user-extensions/user-envfile/compose.yaml" <<'EOF'
+services:
+  user-envfile-svc:
+    image: nginx:latest
+    env_file:
+      - /etc/environment
+EOF
+
+envfile_stderr_file="$TEMP_DIR/user-envfile.stderr"
+envfile_stdout=$(bash "$ROOT_DIR/scripts/resolve-compose-stack.sh" \
+    --script-dir "$TEMP_DIR" --tier 1 --gpu-backend nvidia --skip-broken \
+    2>"$envfile_stderr_file") || true
+envfile_stderr=$(cat "$envfile_stderr_file")
+
+if contains_path "$envfile_stdout" "user-envfile/compose.yaml"; then
+    fail "User-ext host-path env_file INCLUDED in resolved stack"
+else
+    pass "User-ext host-path env_file excluded from resolved stack"
+fi
+
+if echo "$envfile_stderr" | grep -qi "WARNING.*user-envfile.*env_file"; then
+    pass "WARNING emitted for user-ext host-path env_file"
+else
+    fail "Expected WARNING for user-ext host-path env_file (got: $(echo "$envfile_stderr" | tail -3))"
+fi
+
+# ============================================================================
+# 30. User-ext compose with secrets file: traversal must be rejected
+# ============================================================================
+mkdir -p "$TEMP_DIR/data/user-extensions/user-secret-file"
+cat > "$TEMP_DIR/data/user-extensions/user-secret-file/manifest.yaml" <<'EOF'
+schema_version: ods.services.v1
+service:
+  id: user-secret-file
+  name: User Secret File
+  compose_file: compose.yaml
+  gpu_backends: ["nvidia", "amd", "apple"]
+EOF
+cat > "$TEMP_DIR/data/user-extensions/user-secret-file/compose.yaml" <<'EOF'
+services:
+  user-secret-file-svc:
+    image: nginx:latest
+    secrets:
+      - leak
+secrets:
+  leak:
+    file: ../../id_rsa
+EOF
+
+secfile_stderr_file="$TEMP_DIR/user-secret-file.stderr"
+secfile_stdout=$(bash "$ROOT_DIR/scripts/resolve-compose-stack.sh" \
+    --script-dir "$TEMP_DIR" --tier 1 --gpu-backend nvidia --skip-broken \
+    2>"$secfile_stderr_file") || true
+secfile_stderr=$(cat "$secfile_stderr_file")
+
+if contains_path "$secfile_stdout" "user-secret-file/compose.yaml"; then
+    fail "User-ext secrets file traversal INCLUDED in resolved stack"
+else
+    pass "User-ext secrets file traversal excluded from resolved stack"
+fi
+
+if echo "$secfile_stderr" | grep -qi "WARNING.*user-secret-file.*secret.*escaping"; then
+    pass "WARNING emitted for user-ext secrets file traversal"
+else
+    fail "Expected WARNING for user-ext secrets file traversal (got: $(echo "$secfile_stderr" | tail -3))"
+fi
+
+# ============================================================================
+# 31. User-ext compose with safe relative env_file/secrets must be ACCEPTED
+# ============================================================================
+mkdir -p "$TEMP_DIR/data/user-extensions/user-safe-paths"
+cat > "$TEMP_DIR/data/user-extensions/user-safe-paths/manifest.yaml" <<'EOF'
+schema_version: ods.services.v1
+service:
+  id: user-safe-paths
+  name: User Safe Paths
+  compose_file: compose.yaml
+  gpu_backends: ["nvidia", "amd", "apple"]
+EOF
+cat > "$TEMP_DIR/data/user-extensions/user-safe-paths/compose.yaml" <<'EOF'
+services:
+  user-safe-paths-svc:
+    image: nginx:latest
+    env_file:
+      - ./service.env
+    secrets:
+      - cert
+secrets:
+  cert:
+    file: ./certs/tls.pem
+EOF
+
+safe_paths_stdout=$(bash "$ROOT_DIR/scripts/resolve-compose-stack.sh" \
+    --script-dir "$TEMP_DIR" --tier 1 --gpu-backend nvidia --skip-broken \
+    2>/dev/null) || true
+
+if contains_path "$safe_paths_stdout" "user-safe-paths/compose.yaml"; then
+    pass "User-ext with relative env_file/secrets accepted"
+else
+    fail "User-ext with relative env_file/secrets should be accepted"
+fi
+
 echo ""
 echo "Result: $PASSED passed, $FAILED failed"
 [[ $FAILED -eq 0 ]]

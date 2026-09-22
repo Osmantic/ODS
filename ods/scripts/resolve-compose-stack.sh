@@ -275,6 +275,35 @@ def _split_port_host(port_str):
     return host, rest
 
 
+def _has_env_interpolation(value):
+    """True when a compose value interpolates a host env var ($VAR / ${VAR}).
+
+    '$$' is Compose's escape for a literal dollar sign, so strip it before
+    checking. Mirrors dashboard-api/_has_env_interpolation.
+    """
+    return "$" in value.replace("$$", "")
+
+
+def _path_probe_rejected(source):
+    """Return a rejection reason for host-side paths, or None when safe.
+
+    Checks absolute paths, '~' home-relative paths, '..' traversal segments,
+    and $VAR/${VAR} interpolation, which could resolve to an arbitrary host
+    path the scanner cannot see. User extensions are always untrusted, so
+    interpolation is always rejected here. Mirrors
+    dashboard-api/_path_probe_rejected.
+    """
+    if source.startswith("/"):
+        return "absolute host path"
+    if source.startswith("~"):
+        return "home-relative host path"
+    if ".." in source.split("/"):
+        return "path escaping the project directory"
+    if _has_env_interpolation(source):
+        return "env-interpolated host path"
+    return None
+
+
 def _scan_user_compose_content(compose_path):
     """Reject compose fragments containing dangerous directives.
 
@@ -355,15 +384,34 @@ def _scan_user_compose_content(compose_path):
                     target = str(vol.get("target", ""))
                     if "docker.sock" in source or "docker.sock" in target:
                         reject(f"service '{svc_name}' mounts the Docker socket")
-                    if source.startswith("/"):
-                        reject(f"service '{svc_name}' bind-mounts absolute host path '{source}'")
+                    source_reject = _path_probe_rejected(source)
+                    if source_reject:
+                        reject(f"service '{svc_name}' bind-mounts {source_reject} '{source}'")
                     continue
                 vol_str = str(vol)
                 if "docker.sock" in vol_str:
                     reject(f"service '{svc_name}' mounts the Docker socket")
                 vol_parts = vol_str.split(":")
-                if len(vol_parts) >= 2 and vol_parts[0].startswith("/"):
-                    reject(f"service '{svc_name}' bind-mounts absolute host path '{vol_parts[0]}'")
+                if len(vol_parts) >= 2:
+                    source_reject = _path_probe_rejected(vol_parts[0])
+                    if source_reject:
+                        reject(f"service '{svc_name}' bind-mounts {source_reject} '{vol_parts[0]}'")
+        # env_file resolves paths on the host — same exfil surface as a
+        # bind mount, so each entry gets the same path probe. Entries may be
+        # bare strings or dicts ({path: ..., required: ...}).
+        env_file = svc_def.get("env_file")
+        env_entries = env_file if isinstance(env_file, list) else [env_file]
+        for env_entry in env_entries:
+            if isinstance(env_entry, dict):
+                env_path = env_entry.get("path", "")
+            else:
+                env_path = env_entry
+            if env_path is None:
+                continue
+            env_source = str(env_path)
+            env_reject = _path_probe_rejected(env_source)
+            if env_reject:
+                reject(f"service '{svc_name}' env_file {env_reject} '{env_source}'")
         if svc_def.get("extra_hosts"):
             reject(f"service '{svc_name}' declares extra_hosts")
         if svc_def.get("sysctls"):
@@ -408,8 +456,28 @@ def _scan_user_compose_content(compose_path):
                 continue
             vol_type = str(driver_opts.get("type", "")).lower()
             device = str(driver_opts.get("device", ""))
-            if vol_type in ("none", "bind") and device.startswith("/"):
-                reject(f"named volume '{vol_name}' uses driver_opts to bind-mount host path '{device}'")
+            device_reject = _path_probe_rejected(device)
+            if vol_type in ("none", "bind") and device_reject:
+                reject(f"named volume '{vol_name}' uses driver_opts to bind-mount {device_reject} '{device}'")
+
+    # secrets/configs 'file:' entries read host files into the container —
+    # the same exfil surface as a bind mount. 'environment:' entries inject
+    # a host env var's value, leaking secrets like DASHBOARD_API_KEY.
+    for top_section in ("secrets", "configs"):
+        top_defs = data.get(top_section, {})
+        if not isinstance(top_defs, dict):
+            continue
+        for def_name, def_body in top_defs.items():
+            if not isinstance(def_body, dict):
+                continue
+            file_val = def_body.get("file")
+            if file_val is not None:
+                file_source = str(file_val)
+                file_reject = _path_probe_rejected(file_source)
+                if file_reject:
+                    reject(f"{top_section[:-1]} '{def_name}' reads {file_reject} '{file_source}'")
+            if def_body.get("environment") is not None:
+                reject(f"{top_section[:-1]} '{def_name}' sources a host environment variable")
 
     return (ok, warnings)
 
