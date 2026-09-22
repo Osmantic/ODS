@@ -35,14 +35,20 @@ export function useDownloadProgress(pollIntervalMs = 1000) {
   const progressRequestRef = useRef(0)
   const latestAppliedProgressRequestRef = useRef(0)
   const cancelInFlightRef = useRef(false)
+  const mountedRef = useRef(true)
+  const progressControllersRef = useRef(new Set())
 
   const fetchProgress = useCallback(async () => {
+    if (!mountedRef.current) return null
     const requestId = ++progressRequestRef.current
+    const controller = new AbortController()
+    progressControllersRef.current.add(controller)
     try {
-      const response = await fetch('/api/models/download-status')
+      const response = await fetch('/api/models/download-status', { signal: controller.signal })
       if (!response.ok) return
       
       const data = await response.json()
+      if (!mountedRef.current || controller.signal.aborted) return null
       if (requestId < latestAppliedProgressRequestRef.current) return data
       latestAppliedProgressRequestRef.current = requestId
       
@@ -95,6 +101,16 @@ export function useDownloadProgress(pollIntervalMs = 1000) {
     } catch {
       // Silently fail - API might not be available
       return null
+    } finally {
+      progressControllersRef.current.delete(controller)
+    }
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      mountedRef.current = false
+      progressControllersRef.current.forEach(controller => controller.abort())
+      progressControllersRef.current.clear()
     }
   }, [])
 
