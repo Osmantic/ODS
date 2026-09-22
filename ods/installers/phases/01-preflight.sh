@@ -28,10 +28,8 @@ if [[ ! -f /etc/os-release ]]; then
     error "Unsupported OS. This installer requires Linux."
 fi
 
-_installer_version="$VERSION"
-source /etc/os-release
-VERSION="$_installer_version"
-log "Detected OS: $PRETTY_NAME"
+local_pretty_name=$( . /etc/os-release 2>/dev/null && printf '%s' "${PRETTY_NAME:-Linux}" )
+log "Detected OS: ${local_pretty_name:-Linux}"
 
 # Check for required tools
 if ! command -v curl &> /dev/null; then
