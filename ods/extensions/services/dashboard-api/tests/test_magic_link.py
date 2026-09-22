@@ -1259,3 +1259,11 @@ def test_store_falls_back_when_primary_parent_is_unwritable(
 
     assert fallback_store.exists()
     assert magic_link_module._ensure_store() == {"tokens": []}
+
+
+def test_store_reports_empty_candidate_set(magic_link_module, monkeypatch):
+    """An empty store candidate set must produce a diagnostic error."""
+    monkeypatch.setattr(magic_link_module, "_magic_link_store_candidates", lambda: [])
+
+    with pytest.raises(RuntimeError, match="unable to create magic-link store"):
+        magic_link_module._writable_store_path()
