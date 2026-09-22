@@ -112,6 +112,29 @@ def questions_valid(value):
     return True
 
 
+def _projectable_agent(agent):
+    """view() reads these agent fields for every projected record."""
+    return (isinstance(agent, dict) and type(agent.get("status")) is str
+            and type(agent.get("role")) is str
+            and isinstance(agent.get("conversation"), list)
+            and all(isinstance(m, dict) and "role" in m for m in agent["conversation"])
+            and (agent.get("retries") is None or type(agent.get("retries")) is int))
+
+
+def _projectable(row, team_id):
+    """Only records the listing pipeline can safely project and sort."""
+    if (not isinstance(row, dict) or row.get("id") != team_id
+            or type(row.get("chat_id")) is not str
+            or not isinstance(row.get("created"), (int, float))
+            or type(row.get("status")) is not str
+            or type(row.get("instance")) is not str
+            or not isinstance(row.get("agents"), list)):
+        return False
+    planning = row.get("planning")
+    return all(_projectable_agent(agent)
+               for agent in row["agents"] + ([planning] if planning else []))
+
+
 class TeamConflict(Exception):
     pass
 
@@ -154,8 +177,13 @@ class TeamStore:
         # A single bounded directory; names never include owner-supplied paths.
         rows = []
         for path in self.directory.glob(f"{owner}-*.json"):
-            row = self.get(owner, path.stem[65:])
-            if row["chat_id"] == chat:
+            try:
+                row = self.get(owner, path.stem[65:])
+            except (OSError, ValueError):
+                # Stray names and unsafe or corrupt files must not wedge the
+                # listing (or start(), which scans it for active teams).
+                continue
+            if _projectable(row, path.stem[65:]) and row["chat_id"] == chat:
                 rows.append(row)
         return sorted(rows, key=lambda x: x["created"], reverse=True)
 

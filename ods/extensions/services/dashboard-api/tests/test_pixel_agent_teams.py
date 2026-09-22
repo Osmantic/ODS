@@ -337,3 +337,32 @@ async def test_empty_model_answer_is_never_completed(tmp_path):
     manager.start(OWNER,'chat','empty','Do work',1,'')
     await settle(manager)
     assert manager.list(OWNER,'chat')[0]['status']=='failed'
+
+@pytest.mark.asyncio
+async def test_list_skips_corrupt_and_foreign_team_files(tmp_path):
+    async def run(*_):
+        for frame in finish():
+            yield frame
+    directory = tmp_path / 'teams'
+    manager = TeamManager(TeamStore(directory), run, yes)
+    one = manager.start(OWNER, 'chat', 'attempt', 'Write a concise proposal', 1, '')
+    await settle(manager)
+
+    def write(name, content):
+        path = directory / f'{OWNER}-{name}.json'
+        path.write_text(content)
+        path.chmod(0o600)
+
+    write('nothex', '{}')                       # invalid team-id suffix
+    write('b' * 32, 'not json')                 # unparseable
+    write('c' * 32, '"scalar"')                 # non-dict
+    write('d' * 32, '{"id":"' + 'd' * 32 + '","chat_id":"chat","created":1}')  # wrong shape
+    write('e' * 32, '{"id":"' + 'e' * 32 + '","chat_id":"chat","created":1,'
+          '"status":"done","instance":"x","agents":[{"status":"failed"}]}')    # shallow agents
+
+    rows = manager.list(OWNER, 'chat')
+    assert [row['id'] for row in rows] == [one['id']]
+
+    # start() scans the same listing for active teams; it must not wedge.
+    two = manager.start(OWNER, 'chat', 'attempt-2', 'Write a second proposal', 1, '')
+    assert two['id'] != one['id']
