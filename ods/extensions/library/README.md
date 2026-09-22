@@ -1,6 +1,6 @@
 # ODS Extensions Library
 
-**35 service extensions being tested for ODS. 17 are already in production — these are next.**
+**36 service extensions being tested for ODS. 17 are already in production — these are next.**
 
 Each extension is a self-contained directory with a `manifest.yaml` (service metadata), `compose.yaml` (Docker Compose fragment), and optional Dockerfiles, workflows, and documentation. Drop any of these into your ODS's `extensions/services/` directory and run `ods enable <service-id>`.
 
@@ -81,6 +81,7 @@ Each extension is a self-contained directory with a `manifest.yaml` (service met
 
 | Service | Description | GPU |
 |---------|------------|-----|
+| [`datasette/`](services/datasette/) | Datasette — private, read-only SQLite dataset explorer | CPU (x86-64) |
 | [`label-studio/`](services/label-studio/) | Label Studio — data labeling for ML training | CPU |
 | [`anythingllm/`](services/anythingllm/) | AnythingLLM — all-in-one RAG + chat + agents | AMD, NVIDIA |
 

@@ -1,0 +1,36 @@
+services:
+  datasette:
+    image: datasetteproject/datasette:0.65.4@sha256:04ad0a3eb3d253b8c066d9491b7205ede911074d819c1f56dd40952a611b857d
+    platform: linux/amd64
+    container_name: ods-datasette
+    restart: unless-stopped
+    user: "1000:1000"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m,mode=1777
+    entrypoint: [/bin/bash, /ods-entrypoint.sh]
+    environment:
+      DATASETTE_SECRET: ${DATASETTE_SECRET:?Set a stable random DATASETTE_SECRET before installation}
+    volumes:
+      - ./data/datasette:/data:ro
+      - ./extensions/services/datasette/entrypoint.sh:/ods-entrypoint.sh:ro
+      - ./extensions/services/datasette/metadata.json:/ods-metadata.json:ro
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${DATASETTE_PORT:-7827}:8001"
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/-/static/app.css', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks: [ods-network]
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 512M
+networks:
+  ods-network:
+    external: true
