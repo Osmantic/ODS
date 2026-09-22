@@ -575,7 +575,14 @@ if [[ "${ODS_DISABLE_CATALOG_MODEL_SELECTOR:-false}" != "true" && "${TIER:-}" !=
 fi
 
 # Display hardware summary with nice formatting
-CPU_INFO=$(grep "model name" /proc/cpuinfo 2>/dev/null | head -1 | cut -d: -f2 | xargs || echo "Unknown")
+if [[ -f /proc/cpuinfo ]]; then
+    CPU_INFO=$(grep "model name" /proc/cpuinfo 2>/dev/null | head -1 | cut -d: -f2 | xargs || true)
+elif command -v sysctl &>/dev/null; then
+    CPU_INFO=$(sysctl -n machdep.cpu.brand_string 2>/dev/null || true)
+elif command -v lscpu &>/dev/null; then
+    CPU_INFO=$(lscpu 2>/dev/null | grep "Model name:" | cut -d: -f2 | xargs || true)
+fi
+CPU_INFO="${CPU_INFO:-Unknown CPU}"
 if [[ "$INTERACTIVE" == "true" ]]; then
     show_hardware_summary "$GPU_NAME" "$((GPU_VRAM / 1024))" "$CPU_INFO" "$RAM_GB" "$DISK_AVAIL"
 
