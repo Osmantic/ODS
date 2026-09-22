@@ -36,6 +36,12 @@ export default function HuggingFaceModelBrowser({ gpu, downloadBusy, onImportSta
   const [importingArtifact, setImportingArtifact] = useState(null)
   const [searchAttempt, setSearchAttempt] = useState(0)
   const detailsRequestRef = useRef(0)
+  const mounted = useRef(false)
+
+  useEffect(() => {
+    mounted.current = true
+    return () => { mounted.current = false; detailsRequestRef.current += 1 }
+  }, [])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -83,6 +89,7 @@ export default function HuggingFaceModelBrowser({ gpu, downloadBusy, onImportSta
     try {
       const response = await fetch(`/api/models/huggingface/repositories/${encodeURI(model.id)}`)
       const body = await responseJson(response)
+      if (!mounted.current) return
       if (!response.ok) throw new Error(errorMessage(body, 'Could not inspect this repository'))
       if (detailsRequestRef.current !== requestId) return
       if (body?.id !== model.id || !Array.isArray(body.artifacts)) {
@@ -90,9 +97,9 @@ export default function HuggingFaceModelBrowser({ gpu, downloadBusy, onImportSta
       }
       setDetails(body)
     } catch (requestError) {
-      if (detailsRequestRef.current === requestId) setDetailsError(requestError.message)
+      if (mounted.current && detailsRequestRef.current === requestId) setDetailsError(requestError.message)
     } finally {
-      if (detailsRequestRef.current === requestId) setDetailsLoading(false)
+      if (mounted.current && detailsRequestRef.current === requestId) setDetailsLoading(false)
     }
   }
 
@@ -115,14 +122,16 @@ export default function HuggingFaceModelBrowser({ gpu, downloadBusy, onImportSta
         body: JSON.stringify({ repoId: details.id, artifactId: artifact.id }),
       })
       const body = await responseJson(response)
+      if (!mounted.current) return
       if (!response.ok) throw new Error(errorMessage(body, 'Could not start the GGUF import'))
       await onImportStarted?.(body)
+      if (!mounted.current) return
       setSelectedRepo(null)
       setDetails(null)
     } catch (requestError) {
-      setDetailsError(requestError.message)
+      if (mounted.current) setDetailsError(requestError.message)
     } finally {
-      setImportingArtifact(null)
+      if (mounted.current) setImportingArtifact(null)
     }
   }
 
