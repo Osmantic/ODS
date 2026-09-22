@@ -689,6 +689,6 @@ test('keeps the HTTP status when an error response is not JSON', async () => {
   render(createElement(RemoteProvider))
   await fillConfigureForm()
   fireEvent.click(screen.getByRole('button', { name: 'Configure', exact: true }))
-  expect(await screen.findByText('Request failed (502)')).toBeInTheDocument()
+  expect(await screen.findByRole('alert')).toHaveTextContent('Request failed (502)')
   expect(screen.getByLabelText('API key')).toHaveValue('unit-test-provider-token')
 })
