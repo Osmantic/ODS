@@ -1417,3 +1417,14 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def dict_pick_keys_safe(d: dict | None, keys: list | set | None) -> dict:
+    """Safely extract a new dictionary containing only specified pick keys.
+    Returns {} on None or non-dict inputs.
+    """
+    if not isinstance(d, dict) or d is None:
+        return {}
+    if not keys or not isinstance(keys, (list, tuple, set)):
+        return {}
+    return {k: d[k] for k in keys if k in d}
