@@ -869,3 +869,22 @@ def load_templates() -> list[dict]:
 
 
 TEMPLATES = load_templates()
+
+
+# ── config guard: mask_sensitive_config ───────────────────────
+_SENSITIVE_CONFIG_KEYS = frozenset({
+    "password", "secret", "token", "api_key", "apikey",
+    "private_key", "privatekey", "credential", "auth",
+})
+
+def mask_sensitive_config(key: str, value: Any) -> str:
+    """Return ``'***'`` when *key* is a known sensitive config name,
+    otherwise return ``str(value)``.
+
+    Key matching is case-insensitive and ignores surrounding underscores.
+    """
+    normalised = key.strip().lower().strip("_")
+    for sensitive in _SENSITIVE_CONFIG_KEYS:
+        if sensitive in normalised:
+            return "***"
+    return str(value)
