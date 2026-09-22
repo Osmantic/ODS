@@ -1,0 +1,54 @@
+services:
+  uptime-kuma-init:
+    image: louislam/uptime-kuma:2.5.4-slim@sha256:6054e0b9b7c3798b8ac066b58fd9bb37afe79bd6a3d8baf21ec6745e4ff0d17b
+    container_name: ods-uptime-kuma-init
+    user: "0:0"
+    entrypoint: [node, -e, "const fs = require('fs'); fs.mkdirSync('/app/data', {recursive: true}); fs.chownSync('/app/data', 1000, 1000);"]
+    restart: "no"
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [CHOWN]
+    security_opt: [no-new-privileges:true]
+    volumes:
+      - ./data/uptime-kuma:/app/data
+
+  uptime-kuma:
+    image: louislam/uptime-kuma:2.5.4-slim@sha256:6054e0b9b7c3798b8ac066b58fd9bb37afe79bd6a3d8baf21ec6745e4ff0d17b
+    container_name: ods-uptime-kuma
+    user: "1000:1000"
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    depends_on:
+      uptime-kuma-init:
+        condition: service_completed_successfully
+    environment:
+      UPTIME_KUMA_HOST: 0.0.0.0
+      UPTIME_KUMA_PORT: "3001"
+      UPTIME_KUMA_DB_TYPE: sqlite
+      UPTIME_KUMA_ENABLE_EMBEDDED_MARIADB: "0"
+      DATA_DIR: /app/data
+    volumes:
+      - ./data/uptime-kuma:/app/data
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${UPTIME_KUMA_WEB_PORT:-8102}:3001"
+    healthcheck:
+      test: [CMD, /app/extra/healthcheck]
+      interval: 30s
+      timeout: 30s
+      retries: 3
+      start_period: 60s
+    networks: [ods-network]
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+
+networks:
+  ods-network:
+    external: true
