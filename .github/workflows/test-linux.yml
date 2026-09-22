@@ -227,6 +227,7 @@ jobs:
         run: |
           python3 tests/test_compatibility_compose_list.py
           python3 tests/test_detection_darwin_cpu_cores.py
+          python3 tests/test_classify_hardware_numeric_bounds.py
           bash scripts/check-compatibility.sh
           bash scripts/check-release-claims.sh
 
