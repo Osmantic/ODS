@@ -1801,3 +1801,14 @@ def test_flatten_bounds_cycles_and_large_depth_without_losing_empty_leaves():
         nested = {"child": nested}
     result = dict_flatten_nested_safe(nested, max_depth=100000)
     assert len(next(iter(result)).split(".")) == 128
+
+
+class TestListSlidingWindowSumSafe:
+    def test_valid_window_sum(self):
+        from helpers import list_sliding_window_sum_safe
+        assert list_sliding_window_sum_safe([1, 2, 3, 4], 2) == [1.0, 3.0, 5.0, 7.0]
+
+    def test_invalid_inputs(self):
+        from helpers import list_sliding_window_sum_safe
+        assert list_sliding_window_sum_safe(None) == []
+        assert list_sliding_window_sum_safe(["a", "b"]) == []
