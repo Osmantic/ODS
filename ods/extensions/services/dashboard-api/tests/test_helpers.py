@@ -1801,3 +1801,14 @@ def test_flatten_bounds_cycles_and_large_depth_without_losing_empty_leaves():
         nested = {"child": nested}
     result = dict_flatten_nested_safe(nested, max_depth=100000)
     assert len(next(iter(result)).split(".")) == 128
+
+
+class TestStringTruncateMiddleSafe:
+    def test_valid_truncation(self):
+        from helpers import string_truncate_middle_safe
+        assert string_truncate_middle_safe("12345678901234567890", 10) == "123...7890"
+
+    def test_invalid_inputs(self):
+        from helpers import string_truncate_middle_safe
+        assert string_truncate_middle_safe(None) == ""
+        assert string_truncate_middle_safe("short", 2) == "short"
