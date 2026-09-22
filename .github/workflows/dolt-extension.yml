@@ -1,0 +1,30 @@
+name: Dolt extension
+on:
+  pull_request:
+    paths:
+      - 'ods/extensions/library/services/dolt/**'
+      - 'ods/tests/test_dolt.py'
+      - '.github/workflows/dolt-extension.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install pytest PyYAML
+      - run: python -m pytest ods/tests/test_dolt.py -q
+  live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install pytest PyYAML 'PyMySQL==1.1.2'
+      - run: sudo --preserve-env=PATH env ODS_TEST_DOLT=1 python -m pytest ods/tests/test_dolt.py -q -s

@@ -1,0 +1,32 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: dolt
+  name: Dolt (Versioned Datasets)
+  description: "Use MySQL-compatible SQL with native commits, branches, and historical queries for local evaluation datasets."
+  aliases: [versioned-sql]
+  container_name: ods-dolt
+  container_uid: 1000
+  default_host: dolt
+  # No browser interface. Health uses the private metrics listener below.
+  port: 0
+  external_port_default: 0
+  health: /metrics
+  health_port: 11112
+  health_source: container
+  startup_check: true
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [database, version-control, evaluation]
+  env_vars:
+    - key: DOLT_SQL_PORT
+      description: "Dolt MySQL protocol host port (no browser UI)"
+      default: "3312"
+    - key: DOLT_ROOT_PASSWORD
+      description: "Initial root SQL password; rotate with ALTER USER after initialization"
+      required: true
+      secret: true

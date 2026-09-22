@@ -882,6 +882,40 @@
       "configuration_scope": "declared-environment-keys"
     },
     {
+      "id": "dolt",
+      "name": "Dolt (Versioned Datasets)",
+      "description": "Use MySQL-compatible SQL with native commits, branches, and historical queries for local evaluation datasets.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 0,
+      "external_port_default": 0,
+      "health_endpoint": "/metrics",
+      "env_vars": [
+        {
+          "key": "DOLT_SQL_PORT",
+          "description": "Dolt MySQL protocol host port (no browser UI)",
+          "default": "3312"
+        },
+        {
+          "key": "DOLT_ROOT_PASSWORD",
+          "description": "Initial root SQL password; rotate with ALTER USER after initialization",
+          "required": true
+        }
+      ],
+      "tags": [
+        "database",
+        "version-control",
+        "evaluation"
+      ],
+      "features": [],
+      "startup_check": true,
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
       "id": "embeddings",
       "name": "TEI (Embeddings)",
       "description": "TEI (Embeddings)",

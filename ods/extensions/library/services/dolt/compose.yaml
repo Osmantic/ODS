@@ -1,0 +1,44 @@
+services:
+  dolt:
+    image: dolthub/dolt-sql-server:2.3.4@sha256:1cf3ecc52fe49872b77ceeba92ea6468809a80f69e27fa248c529c881cdb97f7
+    container_name: ods-dolt
+    user: "1000:1000"
+    # Native server initializes privileges before accepting SQL connections.
+    entrypoint: [tini, --, dolt]
+    command: [sql-server, --config, /etc/dolt/ods-server.yaml]
+    working_dir: /var/lib/dolt
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+    environment:
+      HOME: /var/lib/dolt
+      DOLT_ROOT_HOST: "%"
+      DOLT_ROOT_PASSWORD: "${DOLT_ROOT_PASSWORD:?Set DOLT_ROOT_PASSWORD before enabling Dolt}"
+      GOMAXPROCS: "2"
+      GOMEMLIMIT: 1GiB
+    volumes:
+      - ./data/dolt:/var/lib/dolt
+      - ./data/dolt/.dolt:/var/lib/dolt/.dolt
+      - ./config/dolt-server.yaml:/etc/dolt/ods-server.yaml:ro
+      - ./config/dolt-global.json:/var/lib/dolt/.dolt/config_global.json:ro
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${DOLT_SQL_PORT:-3312}:3306"
+    healthcheck:
+      test: [CMD, curl, --fail, --silent, --output, /dev/null, "http://127.0.0.1:11112/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    networks: [ods-network]
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+
+networks:
+  ods-network:
+    external: true
