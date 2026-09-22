@@ -76,6 +76,12 @@ ods doctor --json > report.json
 
 - **capability_profile**: Hardware detection snapshot
 - **preflight**: Blocker/warning analysis
+  - Installer preflight requires the full tier disk floor before images and
+    models are downloaded.
+  - Doctor evaluates an already-installed runtime: falling below the tier's
+    install recommendation is a warning, while less than 10GB free remains a
+    blocker so updates, logs, and container writes cannot silently exhaust the
+    filesystem.
 - **install_artifacts**: Presence and paths for installer evidence such as
   `.env`, `.compose-flags`, `logs/compose-launch.txt`, `logs/compose-up.log`,
   and the latest `install-report-*.txt`.
@@ -160,8 +166,9 @@ adds diagnoses when the evidence contradicts the selected mode:
   clients to local `llama-server`.
 - `ODS-RUNTIME-LOCAL-CLOUD-OVERLAY`: local mode still has the cloud overlay in
   cached `.compose-flags`.
-- `ODS-RUNTIME-LOCAL-LITELLM-ROUTE`: non-AMD local mode unexpectedly routes
-  through LiteLLM.
+- `ODS-RUNTIME-LOCAL-LITELLM-ROUTE`: non-AMD managed-local mode unexpectedly
+  routes through LiteLLM. Explicit `LLM_BACKEND=external` /
+  `EXTERNAL_LLM_URL` installs expect LiteLLM and do not emit this warning.
 
 The support bundle embeds the same contract evidence in
 `manifest/evidence.json`. Its Compose validation resolves the stack with the

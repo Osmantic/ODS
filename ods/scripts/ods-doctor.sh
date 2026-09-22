@@ -165,6 +165,7 @@ if [[ -x "$SCRIPT_DIR/scripts/preflight-engine.sh" ]]; then
         --tier "${CAP_RECOMMENDED_TIER:-T1}" \
         --ram-gb "$RAM_GB" \
         --disk-gb "$DISK_GB" \
+        --disk-policy runtime \
         --gpu-backend "${CAP_LLM_BACKEND:-cpu}" \
         --gpu-vram-mb "${CAP_GPU_VRAM_MB:-0}" \
         --gpu-name "${CAP_GPU_NAME:-Unknown}" \
@@ -1050,6 +1051,7 @@ def _collect_inference_contract():
     ods_mode = (env_get("ODS_MODE", "local") or "local").strip().lower()
     gpu_backend = (env_get("GPU_BACKEND", "") or "").strip().lower()
     llm_backend = env_get("LLM_BACKEND", "")
+    external_llm_url = env_get("EXTERNAL_LLM_URL", "")
     llm_api_url = env_get("LLM_API_URL", "")
     hermes_base_url = env_get("HERMES_LLM_BASE_URL", "")
     lemonade_external = (
@@ -1088,7 +1090,8 @@ def _collect_inference_contract():
         )
     )
 
-    external_inference = ods_mode == "cloud" or lemonade_external
+    generic_external = bool(external_llm_url.strip()) or llm_backend.strip().lower() == "external"
+    external_inference = ods_mode == "cloud" or lemonade_external or generic_external
     expected_owner = "external" if external_inference else "ods"
     expected_gateway = (
         "litellm"
@@ -1192,7 +1195,7 @@ def _collect_inference_contract():
                 )
             )
 
-    if ods_mode == "local" and not lemonade_external:
+    if ods_mode == "local" and not lemonade_external and not generic_external:
         if compose_flags_exists and cloud_overlay:
             issues.append(
                 _inference_issue(

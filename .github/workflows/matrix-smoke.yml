@@ -239,6 +239,9 @@ jobs:
       - name: macOS Dispatch Smoke
         run: bash tests/smoke/macos-dispatch.sh
 
+      - name: macOS Installer Presentation Contract
+        run: /bin/bash tests/contracts/test-macos-installer-presentation.sh
+
       - name: Native Model Store Restart Tests
         run: /bin/bash tests/test-macos-native-model-store.sh
 

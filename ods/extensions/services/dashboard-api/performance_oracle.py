@@ -16,6 +16,7 @@ import json
 import os
 import platform
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -369,11 +370,41 @@ def _compatibility_scope_matches(raw: Any, runtime_context: Optional[dict[str, A
     return True
 
 
+def _fresh_compatibility_override(raw: dict[str, Any]) -> bool:
+    """Do not promote an undated, malformed, or expired host-specific claim."""
+    expires_at = raw.get("expiresAt")
+    if not isinstance(expires_at, str):
+        return False
+    try:
+        expiry = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return expiry.tzinfo is not None and expiry > datetime.now(timezone.utc)
+
+
 def _app_compatibility_entry(
     raw: Any,
     default_label: str,
     runtime_context: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
+    if isinstance(raw, dict):
+        # A fresh positive result on one host must not erase an older negative
+        # result on other hosts. Only an explicitly host-scoped override can
+        # replace the default record for a matching runtime context.
+        overrides = raw.get("scopedOverrides")
+        if isinstance(overrides, list):
+            for override in overrides:
+                if (
+                    isinstance(override, dict)
+                    and _scope_values(
+                        override, "hostScope", "host_scope", "fleetHostScope", "fleet_host_scope"
+                    )
+                    and str(override.get("status") or "").strip()
+                    and _fresh_compatibility_override(override)
+                    and _compatibility_scope_matches(override, runtime_context)
+                ):
+                    raw = override
+                    break
     if isinstance(raw, dict) and not _compatibility_scope_matches(raw, runtime_context):
         return {
             "status": "unknown",

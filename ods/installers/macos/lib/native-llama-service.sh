@@ -30,8 +30,53 @@ stop_loaded_service() {
     return 1
 }
 
+stop_install_owned_processes() {
+    local line pid command executable attempt still_running=false
+
+    process_is_live() {
+        local state
+        state="$(ps -p "$1" -o stat= 2>/dev/null | tr -d '[:space:]')"
+        [[ -n "$state" && "$state" != Z* ]]
+    }
+
+    while IFS= read -r line; do
+        line="${line#"${line%%[![:space:]]*}"}"
+        pid="${line%%[[:space:]]*}"
+        command="${line#"$pid"}"
+        command="${command#"${command%%[![:space:]]*}"}"
+        [[ "$pid" =~ ^[0-9]+$ ]] || continue
+        [[ "$pid" != "$$" ]] || continue
+        executable="${command%%[[:space:]]*}"
+        if [[ "$executable" == "$binary" ]]; then
+            :
+        elif [[ "${executable##*/}" == llama-server \
+            && "$command" == *" --model $install_dir/data/models/"* ]]; then
+            :
+        else
+            continue
+        fi
+
+        kill -TERM "$pid" 2>/dev/null || true
+        for attempt in {1..20}; do
+            if ! process_is_live "$pid"; then
+                break
+            fi
+            sleep 0.25
+        done
+        if process_is_live "$pid"; then
+            kill -KILL "$pid" 2>/dev/null || true
+        fi
+        if process_is_live "$pid"; then
+            echo "Native llama process $pid survived shutdown; refusing to continue." >&2
+            still_running=true
+        fi
+    done < <(ps -axo pid=,command=)
+    [[ "$still_running" == false ]]
+}
+
 if [[ "$action" == stop ]]; then
     stop_loaded_service || exit 1
+    stop_install_owned_processes || exit 1
     [[ ! -f "$plist" ]] || rm "$plist"
     [[ ! -f "$pid_file" ]] || rm "$pid_file"
     exit 0
@@ -49,6 +94,7 @@ if [[ -n "$model_path" && -f "$memory_check" ]]; then
         echo 'ODS: native memory estimate failed; review resource settings.' >&2
 fi
 stop_loaded_service || exit 1
+stop_install_owned_processes || exit 1
 mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs/ODS" "$(dirname "$pid_file")"
 "${ODS_PYTHON_CMD:-python3}" - "$plist" "$install_dir" "$binary" "$HOME/Library/Logs/ODS/llama-server.log" "$@" <<'PY'
 import os

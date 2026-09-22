@@ -327,6 +327,12 @@ bash tests/test-macos-installer-transitions.sh
 echo "[contract] macOS Compose pre-pull reuses matching platform caches"
 bash tests/test-macos-compose-image-cache.sh
 
+echo "[contract] macOS private networking preserves the active Colima profile"
+bash tests/test-macos-colima-profile.sh
+
+echo "[contract] macOS port conflicts include root-hidden listeners"
+bash tests/test-macos-port-detection.sh
+
 echo "[contract] AMD reassign keeps HSA override Strix-only"
 grep -q '_env_set "HSA_OVERRIDE_GFX_VERSION" "11.5.1"' ods-cli \
   || { echo "[FAIL] ods-cli must set HSA override to 11.5.1 for gfx1151"; exit 1; }
@@ -383,6 +389,14 @@ grep -A16 -F 'location ~ ^/api/models/.+/load$ {' "$dashboard_nginx" | grep -qF 
 echo "[contract] bundled service CPU limits are env-driven"
 grep -qF "cpus: '\${TTS_CPU_LIMIT:-1.0}'" extensions/services/tts/compose.yaml \
   || { echo "[FAIL] Kokoro TTS CPU limit must be env-driven with safe fallback"; exit 1; }
+grep -qF 'UVICORN_WORKERS=${TTS_WORKERS:-2}' extensions/services/tts/compose.yaml \
+  || { echo "[FAIL] Kokoro TTS must preserve its non-macOS worker default and allow an override"; exit 1; }
+jq -e '.properties.TTS_WORKERS.type == "integer" and .properties.TTS_WORKERS.minimum == 1' .env.schema.json >/dev/null \
+  || { echo "[FAIL] TTS_WORKERS must be a positive integer in the env schema"; exit 1; }
+grep -qF 'TTS_WORKERS=1' installers/macos/lib/env-generator.sh \
+  || { echo "[FAIL] macOS installs must conserve VM memory with one TTS worker"; exit 1; }
+grep -qF 'upsert_env_value "$env_path" "TTS_WORKERS" "$tts_workers"' installers/macos/lib/env-generator.sh \
+  || { echo "[FAIL] macOS reinstalls must preserve an explicit TTS worker override"; exit 1; }
 grep -qF "cpus: '\${WHISPER_CPU_LIMIT:-1.0}'" extensions/services/whisper/compose.yaml \
   || { echo "[FAIL] Whisper CPU limit must be env-driven with safe fallback"; exit 1; }
 grep -qF "cpus: '\${WHISPER_CPU_LIMIT:-1.0}'" extensions/services/whisper/compose.nvidia.yaml \

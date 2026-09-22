@@ -20,23 +20,12 @@ if ! cd "$ODS_BOOTSTRAP_ROOT" 2>/dev/null; then
     }
 fi
 
-# Colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-CYAN='\033[0;36m'
-BOLD='\033[1m'
-NC='\033[0m'
-
-REPO_URL="${ODS_REPO_URL:-https://github.com/Osmantic/ODS.git}"
-INSTALL_DIR="${ODS_INSTALL_DIR:-$ODS_BOOTSTRAP_ROOT/ods}"
-PRE_ODS_INSTALL_DIR="${ODS_LEGACY_INSTALL_DIR:-}"
-ODS_REF="${ODS_REF:-${ODS_BOOTSTRAP_REF:-}}"
+# Parse presentation-affecting flags before any bootstrap output. A GUI or
+# unattended caller can still own a real TTY, so TTY detection alone is not a
+# sufficient signal that ANSI color is safe.
 BOOTSTRAP_FORCE=false
 BOOTSTRAP_NON_INTERACTIVE=false
 BOOTSTRAP_REINSTALL=false
-
 for _arg in "$@"; do
     case "$_arg" in
         --force) BOOTSTRAP_FORCE=true ;;
@@ -44,6 +33,29 @@ for _arg in "$@"; do
     esac
 done
 
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+MAGENTA='\033[0;35m'
+BRIGHT_MAGENTA='\033[1;35m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+if [[ -n "${NO_COLOR:-}" \
+    || "${TERM:-}" == "dumb" \
+    || "${BOOTSTRAP_NON_INTERACTIVE}" == "true" \
+    || -n "${ODS_INSTALLER_GUI:-}" \
+    || "${ODS_UI_MODE:-auto}" == "plain" \
+    || ! -t 1 ]]; then
+    RED='' GREEN='' YELLOW='' CYAN='' MAGENTA='' BRIGHT_MAGENTA='' BOLD='' NC=''
+fi
+
+REPO_URL="${ODS_REPO_URL:-https://github.com/Osmantic/ODS.git}"
+INSTALL_DIR="${ODS_INSTALL_DIR:-$ODS_BOOTSTRAP_ROOT/ods}"
+PRE_ODS_INSTALL_DIR="${ODS_LEGACY_INSTALL_DIR:-}"
+ODS_REF="${ODS_REF:-${ODS_BOOTSTRAP_REF:-}}"
 log()     { echo -e "${CYAN}[ods]${NC} $1"; }
 success() { echo -e "${GREEN}[  ok ]${NC} $1"; }
 warn()    { echo -e "${YELLOW}[warn ]${NC} $1"; }
@@ -52,6 +64,11 @@ error()   { echo -e "${RED}[error]${NC} $1"; exit 1; }
 secure_pixel_catalog_sources() {
     local install_dir="$1" source
     local sources=()
+
+    # BSD chmod (macOS) does not accept GNU's `--` option. Keep every operand
+    # absolute instead so a user-supplied relative install path cannot be
+    # interpreted as an option on either platform.
+    [[ "$install_dir" == /* ]] || install_dir="$PWD/$install_dir"
 
     for source in \
         "$install_dir/config/extensions-catalog.json" \
@@ -62,7 +79,7 @@ secure_pixel_catalog_sources() {
         fi
     done
 
-    (( ${#sources[@]} == 0 )) || chmod -R go-w -- "${sources[@]}"
+    (( ${#sources[@]} == 0 )) || chmod -R go-w "${sources[@]}"
 }
 
 
@@ -250,16 +267,17 @@ refuse_legacy_install() {
 
 # ── Banner ──────────────────────────────────────
 echo ""
-echo -e "${BOLD}${BLUE}"
+echo -e "${BOLD}${GREEN}"
 cat << 'BANNER'
-   OOOOO  DDDD   SSSSS
-  OO   OO DD DD SS
-  OO   OO DD DD  SSS
-  OO   OO DD DD    SS
-   OOOOO  DDDD  SSSS
+    ____   ____    _____
+   / __ \ / __ \  / ___/
+  / / / // / / /  \__ \
+ / /_/ // /_/ /  ___/ /
+ \____//_____/  /____/
 BANNER
 echo -e "${NC}"
-echo -e "${BOLD}  Osmantic Deployment System - Local AI for Everyone${NC}"
+echo -e "${BRIGHT_MAGENTA}  O D S   B O O T S T R A P${NC}  ${GREEN}Acquiring the local stack${NC}"
+echo -e "${CYAN}  The full ODSGATE sequence begins after the source is verified.${NC}"
 echo ""
 
 # ── Detect OS ──────────────────────────────────────
@@ -573,8 +591,8 @@ chmod +x "$INSTALL_DIR/scripts/"*.sh 2>/dev/null || true
 
 # ── Run installer ──────────────────────────────
 echo ""
-log "Launching ODS installer..."
-echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+log "Source acquired. Opening the ODS gateway..."
+echo -e "${MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
 
 cd "$INSTALL_DIR"

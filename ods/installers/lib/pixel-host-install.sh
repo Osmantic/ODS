@@ -1314,7 +1314,15 @@ normalized_parameter_markers = re.findall(
     r"(?<![a-z0-9.])(\d+(?:\.\d+)?)\s*b(?![a-z0-9])",
     model_label,
 )
-normalized_small_model = any(float(marker) <= 4 for marker in normalized_parameter_markers)
+# Some published small checkpoints use size classes (Mini, Micro, Tiny)
+# instead of a parameter count in their runtime name. Prefer any explicit
+# count, so a hypothetical "Micro 70B" cannot be silently compacted.
+normalized_small_model = (
+    any(float(marker) <= 4 for marker in normalized_parameter_markers)
+    or (not normalized_parameter_markers and re.search(
+        r"(?<![a-z0-9])(mini|micro|tiny)(?![a-z0-9])", model_label,
+    ) is not None)
+)
 normalized_lean_prompt = normalized_compact_context or normalized_small_model
 normalized_agent["bootstrapMaxChars"] = 2000 if normalized_lean_prompt else 14000
 normalized_agent["bootstrapTotalMaxChars"] = 6000 if normalized_lean_prompt else 36000
@@ -1395,6 +1403,19 @@ if existing_binds not in ([], [exec_control_bind]):
     raise SystemExit("live Pixel sandbox binds are outside the ODS contract")
 normalized_sandbox_docker["binds"] = [exec_control_bind]
 normalized_sandbox_docker["dangerouslyAllowExternalBindSources"] = True
+# Docker's nproc ulimit is accounted against the host UID, not only this
+# container. On a busy inference host it can therefore prevent even the fixed
+# sandbox proof from forking while the independent per-container pidsLimit is
+# still almost empty. Keep that cgroup limit and any other ulimits, but remove
+# the cross-service nproc ceiling from the ODS-managed Pixel sandbox.
+normalized_sandbox_docker["pidsLimit"] = 1024
+normalized_sandbox_ulimits = normalized_sandbox_docker.get("ulimits")
+if normalized_sandbox_ulimits is not None:
+    if not isinstance(normalized_sandbox_ulimits, dict):
+        raise SystemExit("live Pixel sandbox ulimits are outside the ODS contract")
+    normalized_sandbox_ulimits.pop("nproc", None)
+    if not normalized_sandbox_ulimits:
+        normalized_sandbox_docker.pop("ulimits", None)
 # OpenClaw's OpenAI-compatible transport adds a 1.25 character-based input
 # safety margin after its independent pre-prompt compaction estimate. Reserve
 # enough headroom that the precheck runs before that transport can silently

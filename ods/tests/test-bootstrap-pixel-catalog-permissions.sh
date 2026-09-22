@@ -23,7 +23,18 @@ install_root="$TEST_ROOT/ods"
 [[ "$(stat -c '%a' "$install_root/config/extensions-catalog.json")" == 664 ]]
 [[ "$(stat -c '%a' "$install_root/extensions/services")" == 775 ]]
 
+# Match BSD/macOS chmod's option surface while still applying the permission
+# change on Linux. The bootstrap helper must not rely on GNU-only `--`.
+# shellcheck disable=SC2317
+chmod() {
+    local arg
+    for arg in "$@"; do
+        [[ "$arg" != "--" ]] || return 64
+    done
+    command chmod "$@"
+}
 secure_pixel_catalog_sources "$install_root"
+unset -f chmod
 
 while IFS= read -r -d '' path; do
     mode="$(stat -c '%a' "$path")"

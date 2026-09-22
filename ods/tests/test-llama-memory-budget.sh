@@ -18,6 +18,12 @@ assert_eq "$(ods_effective_container_memory_gb 8 64)" "8" "physical host can be 
 assert_eq "$(ods_effective_container_memory_gb 32 0)" "32" "host fallback"
 assert_eq "$(ods_effective_container_memory_gb invalid 0)" "0" "invalid detection fallback"
 
+assert_eq "$(ods_default_tts_workers 0)" "2" "unknown memory preserves prior default"
+assert_eq "$(ods_default_tts_workers 8)" "1" "Colima-size Docker guest uses one TTS worker"
+assert_eq "$(ods_default_tts_workers 11)" "1" "sub-12 GiB Docker guest uses one TTS worker"
+assert_eq "$(ods_default_tts_workers 12)" "2" "12 GiB Docker guest uses two TTS workers"
+assert_eq "$(ods_default_tts_workers invalid)" "2" "invalid memory preserves prior default"
+
 assert_eq "$(ods_default_nvidia_llama_memory_limit 0)" "64G" "unknown RAM fallback"
 assert_eq "$(ods_default_nvidia_llama_memory_limit 2)" "1G" "minimum usable limit"
 assert_eq "$(ods_default_nvidia_llama_memory_limit 8)" "5G" "8 GiB host"
@@ -28,7 +34,7 @@ assert_eq "$(ods_default_nvidia_llama_memory_limit 128)" "64G" "absolute cap"
 
 # These are intentional source-contract literals, not shell expansions.
 # shellcheck disable=SC2016
-grep -qF 'LLAMA_SERVER_MEMORY_LIMIT_VALUE="$(_env_get LLAMA_SERVER_MEMORY_LIMIT "$_llama_memory_default")"' \
+grep -qF 'LLAMA_SERVER_MEMORY_LIMIT_VALUE="$(_env_get LLAMA_SERVER_MEMORY_LIMIT "${LLAMA_SERVER_MEMORY_LIMIT:-$_llama_memory_default}")"' \
     "$ROOT_DIR/installers/phases/06-directories.sh"
 # shellcheck disable=SC2016
 grep -qF 'LLAMA_SERVER_MEMORY_LIMIT=${LLAMA_SERVER_MEMORY_LIMIT_VALUE}' \

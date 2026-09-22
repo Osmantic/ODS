@@ -1598,9 +1598,9 @@ cmd_logs() {
 
 _ods_cli_wait_for_hermes_ready() {
     local timeout interval attempts state i
-    timeout="${ODS_HERMES_READY_TIMEOUT:-180}"
+    timeout="${ODS_HERMES_READY_TIMEOUT:-300}"
     interval="${ODS_HERMES_READY_INTERVAL:-3}"
-    [[ "$timeout" =~ ^[1-9][0-9]*$ ]] || timeout=180
+    [[ "$timeout" =~ ^[1-9][0-9]*$ ]] || timeout=300
     [[ "$interval" =~ ^[1-9][0-9]*$ ]] || interval=3
 
     # Hermes is optional. A restart that does not include it must not acquire
@@ -1618,7 +1618,7 @@ _ods_cli_wait_for_hermes_ready() {
                 success "Hermes agent — ready"
                 return 0
                 ;;
-            unhealthy|exited|dead|restarting)
+            exited|dead)
                 log_error "Hermes agent did not recover after restart (state: $state)."
                 return 1
                 ;;

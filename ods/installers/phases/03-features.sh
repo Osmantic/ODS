@@ -42,8 +42,10 @@ if ! declare -F ods_pixel_resolve_enablement >/dev/null 2>&1; then
 fi
 
 ods_progress 18 "features" "Selecting features"
-if $INTERACTIVE && ! $DRY_RUN; then
+if declare -F show_phase >/dev/null 2>&1; then
     show_phase 2 6 "Feature Selection" "~1 minute"
+fi
+if $INTERACTIVE && ! $DRY_RUN; then
     show_install_menu
 
     # Only show individual feature prompts for Custom installs
@@ -88,6 +90,10 @@ if $INTERACTIVE && ! $DRY_RUN; then
                     ;;
             esac
         fi
+    fi
+else
+    if declare -F ai >/dev/null 2>&1; then
+        ai "Using feature selections from flags and installer defaults."
     fi
 fi
 

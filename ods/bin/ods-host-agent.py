@@ -4112,9 +4112,49 @@ def _recover_pixel_model_transaction(config: dict) -> dict:
             return pending
         outcome = None
         current = _pixel_model_config_digests()
+        if journal['phase']=='applying' and journal['target'] is not None:
+            # The native coordinator can durably apply the exact target before
+            # the host participant receives its reply.  Explicit recovery may
+            # complete that same transaction, but only after the native hold,
+            # target contract, host files, and live inference all agree.  This
+            # never replays model-apply (or any other inference mutation).
+            if (status is None or status['status'] not in {'applied','completed'}
+                    or status['contract']!=journal['target']
+                    or (status['status']=='applied' and (
+                        status['pending'] is not True or status['outcome'] is not None))
+                    or (status['status']=='completed' and (
+                        status['pending'] is not False or status['outcome']!='commit'))
+                    or 'unavailable' in current.values()
+                    or not _prove_pixel_model_contract(config,journal['target'])
+                    or _pixel_model_config_digests()!=current):
+                return pending
+            transaction=_PixelModelTransaction(config)
+            transaction.id=journal['transactionId'];transaction.previous=journal['previous']
+            transaction.target=journal['target'];transaction.journal=journal
+            if status['status']=='completed':
+                transaction._save('completed','commit')
+            else:
+                transaction.finish('commit')
+            return {'pending':False,'phase':'completed','transactionId':journal['transactionId'],'outcome':'commit'}
+        after = journal['after']
+        # A concurrent settings save can rewrite the complete .env after the
+        # host committed every model consumer.  Do not strand the native hold
+        # when that is the *only* changed artifact: the transaction/target must
+        # still be exact, and the live proof plus the stable-digest check below
+        # must independently confirm the target before model-finish is sent.
+        env_only_drift = (
+            after is not None
+            and status is not None
+            and status['contract'] == journal['target']
+            and status['status'] in {'applied', 'completed'}
+            and set(current) == set(after)
+            and current.get('.env') not in {None, 'unavailable'}
+            and current.get('.env') != after.get('.env')
+            and all(current[name] == digest for name, digest in after.items() if name != '.env')
+        )
         if (journal['phase']=='committing' and journal['target'] is not None
-                and journal['after'] is not None and 'unavailable' not in journal['after'].values()
-                and current==journal['after'] and (status is None or (
+                and after is not None and 'unavailable' not in after.values()
+                and (current==after or env_only_drift) and (status is None or (
                     status['contract']==journal['target'] and status['status'] in {'applied','completed'}))):
             outcome='commit'
         elif (((status is None and journal['phase'] in {'prepared','rolling-back'})
@@ -16173,20 +16213,25 @@ def _select_runtime_profile(model: dict, env: dict) -> dict | None:
 
 def _stop_macos_native_llama_server(pid_file: Path) -> None:
     """Stop only the PID-file-owned native llama-server process."""
-    recorded_pid = pid_file.read_text(encoding="utf-8").strip() if pid_file.exists() else None
-    manager = INSTALL_DIR / "installers/macos/lib/native-llama-service.sh"
-    if manager.is_file():
+    service_script = INSTALL_DIR / "installers" / "macos" / "lib" / "native-llama-service.sh"
+    llama_bin = INSTALL_DIR / "bin" / "llama-server"
+    if platform.system() == "Darwin" and service_script.is_file():
+        bash = _find_usable_bash()
+        if not bash:
+            raise RuntimeError("macOS native llama service requires Bash")
         result = subprocess.run(
-            ["/bin/bash", str(manager), "stop", str(INSTALL_DIR),
-             str(INSTALL_DIR / "bin/llama-server"), str(pid_file)],
-            capture_output=True, text=True, timeout=45,
+            [bash, str(service_script), "stop", str(INSTALL_DIR),
+             str(llama_bin), str(pid_file)],
+            capture_output=True, text=True, timeout=90, check=False,
         )
-        if result.returncode:
-            raise RuntimeError("Managed native llama shutdown failed")
-    if recorded_pid is None:
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "").strip() or "no output"
+            raise RuntimeError(f"macOS native llama shutdown failed: {detail}")
+        return
+    if not pid_file.exists():
         return
     try:
-        old_pid = int(recorded_pid)
+        old_pid = int(pid_file.read_text(encoding="utf-8").strip())
         if old_pid <= 1:
             raise OSError("invalid llama-server PID")
         try:
@@ -16324,6 +16369,36 @@ def _launch_native_llama_server(env_path: Path, llama_bin: Path, llama_log: Path
         return
     llama_log.parent.mkdir(parents=True, exist_ok=True)
     pid_file.parent.mkdir(parents=True, exist_ok=True)
+    service_script = INSTALL_DIR / "installers" / "macos" / "lib" / "native-llama-service.sh"
+    if platform.system() == "Darwin" and service_script.is_file():
+        bash = _find_usable_bash()
+        if not bash:
+            raise RuntimeError("macOS native llama service requires Bash")
+        result = subprocess.run(
+            [
+                bash,
+                str(service_script),
+                "start",
+                str(INSTALL_DIR),
+                str(llama_bin),
+                str(pid_file),
+                *args[1:],
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "").strip() or "no output"
+            raise RuntimeError(f"macOS native llama launch failed: {detail}")
+        try:
+            managed_pid = int(pid_file.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError) as exc:
+            raise RuntimeError("macOS native llama service did not record its PID") from exc
+        logger.info("Native llama-server LaunchAgent started (pid %d, model %s)", managed_pid, gguf_file)
+        return
+
     popen_kwargs = {}
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     if platform.system().lower() == "windows" and creationflags:

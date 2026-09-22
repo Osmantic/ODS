@@ -1449,9 +1449,14 @@ for tool in ("create_goal", "get_goal", "update_goal", "update_plan"):
     assert tool in value["tools"]["sandbox"]["tools"]["allow"]
 compact_context = model["contextWindow"] < 32768
 model_label = "{} {}".format(model.get("id", ""), model.get("name", "")).casefold()
-small_model = any(
-    float(marker) <= 4
-    for marker in re.findall(r"(?<![a-z0-9.])(\d+(?:\.\d+)?)\s*b(?![a-z0-9])", model_label)
+parameter_markers = re.findall(
+    r"(?<![a-z0-9.])(\d+(?:\.\d+)?)\s*b(?![a-z0-9])", model_label,
+)
+small_model = (
+    any(float(marker) <= 4 for marker in parameter_markers)
+    or (not parameter_markers and re.search(
+        r"(?<![a-z0-9])(mini|micro|tiny)(?![a-z0-9])", model_label,
+    ) is not None)
 )
 lean_prompt = compact_context or small_model
 assert agent["bootstrapMaxChars"] == (2000 if lean_prompt else 14000)
@@ -1545,9 +1550,32 @@ cp "$runtime_config" "$runtime_recovery_candidate"
 chmod 0600 "$runtime_recovery_candidate"
 check test "$(_ods_pixel_apply_runtime_budget "$owner" "$runtime_home" "$runtime_config" "$runtime_validator")" = changed
 runtime_sha256="$(sha256sum "$runtime_config" | awk '{print $1}')"
-check python3 -c 'import json,sys; v=json.load(open(sys.argv[1])); d=v["agents"]["defaults"]; assert d["timeoutSeconds"] == 1800 and d["bootstrapMaxChars"] == 32000 and d["bootstrapTotalMaxChars"] == 96000 and d["contextInjection"] == "continuation-skip"; assert d["compaction"] == {"reserveTokens":9831,"reserveTokensFloor":0,"keepRecentTokens":2048}; assert d["sandbox"]["docker"]["binds"] == [sys.argv[2] + "/.openclaw/.ods-exec-control:/run/pixel-ods-control:ro"] and d["sandbox"]["docker"]["dangerouslyAllowExternalBindSources"] is True; a=v["agents"]["list"][0]; assert "thinkingDefault" not in a and a["tools"]["deny"] == [] and a["experimental"] == {"localModelLean":False} and a["bootstrapMaxChars"] == 14000 and a["bootstrapTotalMaxChars"] == 36000 and a["contextInjection"] == "continuation-skip" and a["contextLimits"] == {"toolResultMaxChars":8192} and a["params"]["chat_template_kwargs"]["enable_thinking"] is False; assert v["models"]["providers"]["ods-local"]["timeoutSeconds"] == 1800; m=v["models"]["providers"]["ods-local"]["models"][0]; assert m["reasoning"] is False and "compat" not in m; assert v["diagnostics"]["stuckSessionAbortMs"] == 1860000; assert v["session"]["writeLock"] == {"maxHoldMs":1920000,"staleMs":3600000}; assert {"pixel_ods_status","pixel_ods_apps_list","pixel_ods_extensions", "pixel_ods_host_observe","pixel_ods_host_command_propose","pixel_ods_evidence_report","pixel_ods_evidence_readback","pixel_ods_research","pixel_ods_web_extract","pixel_ods_download_promote","pixel_ods_workspace_preview","pixel_ods_ask_user","pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history"}.issubset(v["tools"]["alsoAllow"]); assert v["tools"]["toolSearch"] == {"enabled":True,"mode":"tools","searchDefaultLimit":5,"maxSearchLimit":10}; assert {"web_search","web_fetch","pixel_ods_status","pixel_ods_apps_list","pixel_ods_extensions", "pixel_ods_host_observe","pixel_ods_host_command_propose","pixel_ods_evidence_report","pixel_ods_evidence_readback","pixel_ods_research","pixel_ods_web_extract","pixel_ods_download_promote","pixel_ods_workspace_preview","pixel_ods_ask_user","pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history"}.issubset(v["tools"]["sandbox"]["tools"]["allow"]) and v["tools"]["loopDetection"]["globalCircuitBreakerThreshold"] == 6; assert v["plugins"]["entries"]["pixel-ods"]["hooks"]["allowConversationAccess"] is True and v["plugins"]["entries"]["pixel-ods"]["config"] == {"modelContextWindow":32768,"leanPrompt":False,"perplexicaPort":3004}; assert v["tools"]["web"]["fetch"]["enabled"] is True and v["tools"]["web"]["fetch"]["maxChars"] == 12000 and v["tools"]["web"]["fetch"]["timeoutSeconds"] == 20 and v["tools"]["web"]["fetch"]["ssrfPolicy"] == {"allowRfc2544BenchmarkRange":False,"allowIpv6UniqueLocalRange":False}' "$runtime_config" "$runtime_home"
+check python3 -c 'import json,sys; v=json.load(open(sys.argv[1])); d=v["agents"]["defaults"]; assert d["timeoutSeconds"] == 1800 and d["bootstrapMaxChars"] == 32000 and d["bootstrapTotalMaxChars"] == 96000 and d["contextInjection"] == "continuation-skip"; assert d["compaction"] == {"reserveTokens":9831,"reserveTokensFloor":0,"keepRecentTokens":2048}; assert d["sandbox"]["docker"]["binds"] == [sys.argv[2] + "/.openclaw/.ods-exec-control:/run/pixel-ods-control:ro"] and d["sandbox"]["docker"]["dangerouslyAllowExternalBindSources"] is True; assert d["sandbox"]["docker"]["pidsLimit"] == 1024 and "ulimits" not in d["sandbox"]["docker"]; a=v["agents"]["list"][0]; assert "thinkingDefault" not in a and a["tools"]["deny"] == [] and a["experimental"] == {"localModelLean":False} and a["bootstrapMaxChars"] == 14000 and a["bootstrapTotalMaxChars"] == 36000 and a["contextInjection"] == "continuation-skip" and a["contextLimits"] == {"toolResultMaxChars":8192} and a["params"]["chat_template_kwargs"]["enable_thinking"] is False; assert v["models"]["providers"]["ods-local"]["timeoutSeconds"] == 1800; m=v["models"]["providers"]["ods-local"]["models"][0]; assert m["reasoning"] is False and "compat" not in m; assert v["diagnostics"]["stuckSessionAbortMs"] == 1860000; assert v["session"]["writeLock"] == {"maxHoldMs":1920000,"staleMs":3600000}; assert {"pixel_ods_status","pixel_ods_apps_list","pixel_ods_extensions", "pixel_ods_host_observe","pixel_ods_host_command_propose","pixel_ods_evidence_report","pixel_ods_evidence_readback","pixel_ods_research","pixel_ods_web_extract","pixel_ods_download_promote","pixel_ods_workspace_preview","pixel_ods_ask_user","pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history"}.issubset(v["tools"]["alsoAllow"]); assert v["tools"]["toolSearch"] == {"enabled":True,"mode":"tools","searchDefaultLimit":5,"maxSearchLimit":10}; assert {"web_search","web_fetch","pixel_ods_status","pixel_ods_apps_list","pixel_ods_extensions", "pixel_ods_host_observe","pixel_ods_host_command_propose","pixel_ods_evidence_report","pixel_ods_evidence_readback","pixel_ods_research","pixel_ods_web_extract","pixel_ods_download_promote","pixel_ods_workspace_preview","pixel_ods_ask_user","pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history"}.issubset(v["tools"]["sandbox"]["tools"]["allow"]) and v["tools"]["loopDetection"]["globalCircuitBreakerThreshold"] == 6; assert v["plugins"]["entries"]["pixel-ods"]["hooks"]["allowConversationAccess"] is True and v["plugins"]["entries"]["pixel-ods"]["config"] == {"modelContextWindow":32768,"leanPrompt":False,"perplexicaPort":3004}; assert v["tools"]["web"]["fetch"]["enabled"] is True and v["tools"]["web"]["fetch"]["maxChars"] == 12000 and v["tools"]["web"]["fetch"]["timeoutSeconds"] == 20 and v["tools"]["web"]["fetch"]["ssrfPolicy"] == {"allowRfc2544BenchmarkRange":False,"allowIpv6UniqueLocalRange":False}' "$runtime_config" "$runtime_home"
 check test "$(_ods_pixel_apply_runtime_budget "$owner" "$runtime_home" "$runtime_config" "$runtime_validator")" = unchanged
 check test "$(sha256sum "$runtime_config" | awk '{print $1}')" = "$runtime_sha256"
+runtime_nproc_config="$runtime_home/.openclaw/nproc-config.json"
+cp "$runtime_config" "$runtime_nproc_config"
+check python3 - "$runtime_nproc_config" <<'PY'
+import json, sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as source:
+    value = json.load(source)
+docker = value["agents"]["defaults"]["sandbox"]["docker"]
+docker["pidsLimit"] = 77
+docker["ulimits"] = {
+    "nofile": {"soft": 4096, "hard": 4096},
+    "nproc": {"soft": 1024, "hard": 1024},
+}
+with open(path, "w", encoding="utf-8") as target:
+    json.dump(value, target, indent=2)
+    target.write("\n")
+PY
+check test "$(_ods_pixel_apply_runtime_budget "$owner" "$runtime_home" "$runtime_nproc_config" "$runtime_validator")" = changed
+check python3 -c 'import json,sys; d=json.load(open(sys.argv[1]))["agents"]["defaults"]["sandbox"]["docker"]; assert d["pidsLimit"] == 1024 and d["ulimits"] == {"nofile":{"soft":4096,"hard":4096}}' "$runtime_nproc_config"
+runtime_nproc_sha256="$(sha256sum "$runtime_nproc_config" | awk '{print $1}')"
+check test "$(_ods_pixel_apply_runtime_budget "$owner" "$runtime_home" "$runtime_nproc_config" "$runtime_validator")" = unchanged
+check test "$(sha256sum "$runtime_nproc_config" | awk '{print $1}')" = "$runtime_nproc_sha256"
 check test "$(PERPLEXICA_PORT=43004 _ods_pixel_apply_runtime_budget "$owner" "$runtime_home" "$runtime_config" "$runtime_validator")" = changed
 check python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))["plugins"]["entries"]["pixel-ods"]["config"]["perplexicaPort"] == 43004' "$runtime_config"
 check test "$(_ods_pixel_apply_runtime_budget "$owner" "$runtime_home" "$runtime_config" "$runtime_validator")" = changed
@@ -1614,6 +1642,30 @@ destination.chmod(0o600)
 PY
 check test "$(_ods_pixel_apply_runtime_budget "$owner" "$runtime_home" "$runtime_small_large_config" "$runtime_validator")" = changed
 check python3 -c 'import json,sys; v=json.load(open(sys.argv[1])); a=v["agents"]["list"][0]; m=v["models"]["providers"]["ods-local"]["models"][0]; assert m["contextWindow"] == 65536; assert a["bootstrapMaxChars"] == 2000 and a["bootstrapTotalMaxChars"] == 6000 and a["contextInjection"] == "never" and a["contextLimits"] == {"toolResultMaxChars":16000}; assert {k:a["params"][k] for k in ("temperature","topP","frequencyPenalty","presencePenalty")} == {"temperature":0.7,"topP":0.8,"frequencyPenalty":0.6,"presencePenalty":0.2}; assert v["plugins"]["entries"]["pixel-ods"]["config"] == {"modelContextWindow":65536,"leanPrompt":True,"perplexicaPort":3004}' "$runtime_small_large_config"
+for size_class_id in phi4-mini-q4 granite4.0-h-micro-q4 granite4.0-h-tiny-q4 micro-70b-q4; do
+    runtime_size_class_config="$runtime_home/.openclaw/size-class-$size_class_id.json"
+    python3 - "$runtime_config" "$runtime_size_class_config" "$size_class_id" <<'PY'
+import json, pathlib, sys
+
+source, destination = map(pathlib.Path, sys.argv[1:3])
+model_id = sys.argv[3]
+value = json.loads(source.read_text(encoding="utf-8"))
+model = value["models"]["providers"]["ods-local"]["models"][0]
+model.update({
+    "id": model_id,
+    "name": f"ODS Local {model_id}",
+    "contextWindow": 65536,
+    "maxTokens": 4096,
+})
+value["agents"]["list"][0]["model"] = f"ods-local/{model_id}"
+destination.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
+destination.chmod(0o600)
+PY
+    check test "$(_ods_pixel_apply_runtime_budget "$owner" "$runtime_home" "$runtime_size_class_config" "$runtime_validator")" = changed
+    expected_lean=true
+    if [[ "$size_class_id" == micro-70b-q4 ]]; then expected_lean=false; fi
+    check python3 -c 'import json,sys; v=json.load(open(sys.argv[1])); expected=sys.argv[2]=="true"; a=v["agents"]["list"][0]; assert v["plugins"]["entries"]["pixel-ods"]["config"]["leanPrompt"] is expected; assert a["bootstrapMaxChars"] == (2000 if expected else 14000); assert a["bootstrapTotalMaxChars"] == (6000 if expected else 36000)' "$runtime_size_class_config" "$expected_lean"
+done
 runtime_full_candidate="$TEST_ROOT/runtime-full-candidate.json"
 runtime_transition_answers="$TEST_ROOT/runtime-transition-onboarding.json"
 cp "$runtime_config" "$runtime_full_candidate"
@@ -1926,7 +1978,7 @@ check _ods_pixel_candidate_is_managed_runtime_update "$owner" "$reconcile_home" 
     "$non_qwen_candidate" "$non_qwen_answers"
 check _ods_pixel_atomic_replace_managed_file "$owner" "$reconcile_home" \
     "$non_qwen_candidate" "$reconcile_config"
-check python3 -c 'import json,sys; v=json.load(open(sys.argv[1])); a=v["agents"]["list"][0]; m=v["models"]["providers"]["ods-local"]["models"][0]; assert m["id"] == "phi-4-mini" and m["contextWindow"] == 128000 and m["maxTokens"] == 4096 and m["reasoning"] is False and "compat" not in m and "thinkingDefault" not in a and "params" not in a' "$reconcile_config"
+check python3 -c 'import json,sys; v=json.load(open(sys.argv[1])); a=v["agents"]["list"][0]; m=v["models"]["providers"]["ods-local"]["models"][0]; assert m["id"] == "phi-4-mini" and m["contextWindow"] == 128000 and m["maxTokens"] == 4096 and m["reasoning"] is False and "compat" not in m and "thinkingDefault" not in a; assert a["bootstrapMaxChars"] == 2000 and a["bootstrapTotalMaxChars"] == 6000 and a["contextInjection"] == "never"; assert {k:a["params"][k] for k in ("temperature","topP","frequencyPenalty","presencePenalty")} == {"temperature":0.7,"topP":0.8,"frequencyPenalty":0.6,"presencePenalty":0.2}; assert v["plugins"]["entries"]["pixel-ods"]["config"]["leanPrompt"] is True' "$reconcile_config"
 
 # Migrate an already verified direct llama.cpp route to the authenticated ODS
 # model gateway. Only the provider route, stable alias, concrete-model metadata,

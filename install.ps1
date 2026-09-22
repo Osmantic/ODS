@@ -29,9 +29,6 @@ param(
 $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 
-Write-Host "ODS Installer" -ForegroundColor Cyan
-Write-Host ""
-
 # Delegate to Windows installer
 $ODSInstaller = Join-Path (Join-Path (Join-Path $ScriptDir "ods") "installers") "windows" | Join-Path -ChildPath "install-windows.ps1"
 if (-not (Test-Path $ODSInstaller)) {

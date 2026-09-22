@@ -109,6 +109,15 @@ setup() {
     assert_output --partial "be careful"
 }
 
+@test "logging: plain presentation strips ANSI even when colors were initialized" {
+    ods_ui_cinematic() { return 1; }
+    GRN=$'\033[32m' BGRN=$'\033[1;32m' AMB=$'\033[33m' RED=$'\033[31m' NC=$'\033[0m'
+    run warn "plain output"
+    assert_success
+    assert_output "[WARN] plain output"
+    refute_output --partial $'\033'
+}
+
 # ── error ───────────────────────────────────────────────────────────────────
 
 @test "error: writes to stderr and exits 1" {

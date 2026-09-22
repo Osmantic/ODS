@@ -71,8 +71,8 @@ grep -qF 'ODS_MACOS_HOST_GATEWAY=${macos_host_gateway}' "$env_generator" \
     || fail "macOS env generator must persist the private Colima host gateway"
 grep -qF 'ODS_MACOS_VM_IP=${macos_vm_ip}' "$env_generator" \
     || fail "macOS env generator must persist the authorized Colima VM peer"
-grep -qF 'colima start --network-address --network-preferred-route' "$installer" \
-    || fail "macOS installer must prefer Colima private vmnet routing"
+grep -qF '_active_colima start --network-address --network-preferred-route' "$installer" \
+    || fail "macOS installer must prefer private vmnet routing on the active Colima profile"
 grep -qF '_configure_macos_llm_bridge' "$installer" \
     || fail "macOS installer must launch the Colima LLM bridge before native llama"
 grep -qF '_configure_macos_host_agent_bridge' "$installer" \

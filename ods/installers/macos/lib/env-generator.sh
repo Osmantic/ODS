@@ -247,6 +247,10 @@ generate_ods_env() {
         comfyui_cpu_reservation="$(select_env_service_cpu_reservation "$env_path" "COMFYUI_CPU_RESERVATION" "2.0" "$comfyui_cpu_limit")"
         upsert_env_value "$env_path" "TTS_CPU_LIMIT" "$tts_cpu_limit"
         upsert_env_value "$env_path" "TTS_CPU_RESERVATION" "$tts_cpu_reservation"
+        local tts_workers
+        tts_workers="$(read_env_value "$env_path" "TTS_WORKERS")"
+        [[ "$tts_workers" =~ ^[1-9][0-9]*$ ]] || tts_workers=1
+        upsert_env_value "$env_path" "TTS_WORKERS" "$tts_workers"
         upsert_env_value "$env_path" "WHISPER_CPU_LIMIT" "$whisper_cpu_limit"
         upsert_env_value "$env_path" "WHISPER_CPU_RESERVATION" "$whisper_cpu_reservation"
         upsert_env_value "$env_path" "HERMES_CPU_LIMIT" "$hermes_cpu_limit"
@@ -650,6 +654,7 @@ LLAMA_CPU_RESERVATION=${detected_cpu_reservation}
 #=== Bundled Service CPU Budgets ===
 TTS_CPU_LIMIT=${tts_cpu_limit}
 TTS_CPU_RESERVATION=${tts_cpu_reservation}
+TTS_WORKERS=1
 WHISPER_CPU_LIMIT=${whisper_cpu_limit}
 WHISPER_CPU_RESERVATION=${whisper_cpu_reservation}
 HERMES_CPU_LIMIT=${hermes_cpu_limit}

@@ -24,8 +24,8 @@ export INSTALL_PHASE="init"
 cleanup_on_error() {
     local exit_code=$?
     echo ""
-    echo -e "\033[0;31m[ERROR] Installation failed during phase: ${INSTALL_PHASE}\033[0m"
-    echo -e "\033[0;33m        Log file: ${LOG_FILE:-/tmp/ods-install.log}\033[0m"
+    echo -e "${RED:-}[ERROR] Installation failed during phase: ${INSTALL_PHASE}${NC:-}"
+    echo -e "${AMB:-}        Log file: ${LOG_FILE:-/tmp/ods-install.log}${NC:-}"
     echo ""
     echo "The install did not complete. Partial state may exist at:"
     echo "  ${INSTALL_DIR:-~/ods}"
@@ -48,16 +48,16 @@ interrupt_handler() {
     now=$(date +%s)
     if (( now - LAST_SIGINT <= 3 )); then
         echo ""
-        echo -e "\033[0;33m[!] Install cancelled by user.\033[0m"
+        echo -e "${AMB:-}[!] Install cancelled by user.${NC:-}"
         if declare -F cancel_active_download >/dev/null 2>&1; then
             cancel_active_download
         fi
-        echo -e "\033[0;32m    Log file: ${LOG_FILE:-/tmp/ods-install.log}\033[0m"
+        echo -e "${GRN:-}    Log file: ${LOG_FILE:-/tmp/ods-install.log}${NC:-}"
         exit 130
     fi
     LAST_SIGINT=$now
     echo ""
-    echo -e "\033[0;33m[!] Press Ctrl+C again within 3 seconds to cancel the install.\033[0m"
+    echo -e "${AMB:-}[!] Press Ctrl+C again within 3 seconds to cancel the install.${NC:-}"
 }
 trap interrupt_handler INT
 # Ignore Ctrl+Z (SIGTSTP) entirely — backgrounding the installer breaks things
@@ -290,6 +290,10 @@ while [[ $# -gt 0 ]]; do
         *) error "Unknown option: $1" ;;
     esac
 done
+
+# Argument parsing establishes interactivity. Resolve the presentation once so
+# non-interactive/CI/GUI output cannot inherit terminal color from a real TTY.
+ods_apply_presentation_mode
 
 _requested_ods_mode="$ODS_MODE"
 ODS_MODE="$(ods_preserve_existing_install_mode "$ODS_MODE" "$ODS_MODE_EXPLICIT" "$INSTALL_DIR/.env")"
