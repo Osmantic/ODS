@@ -354,6 +354,33 @@ test('renders remote provider status and proof receipt', async () => {
   expect(screen.getByRole('button', { name: /test route/i })).toBeEnabled()
 })
 
+test('keeps the newest status when a probe refresh overtakes a manual refresh', async () => {
+  let finishProbe
+  let finishManualRefresh
+  let finishProbeRefresh
+  const probe = new Promise(resolve => { finishProbe = resolve })
+  const manualRefresh = new Promise(resolve => { finishManualRefresh = resolve })
+  const probeRefresh = new Promise(resolve => { finishProbeRefresh = resolve })
+  globalThis.fetch
+    .mockResolvedValueOnce(response(statusPayload))
+    .mockReturnValueOnce(probe)
+    .mockReturnValueOnce(manualRefresh)
+    .mockReturnValueOnce(probeRefresh)
+
+  render(createElement(RemoteProvider))
+  fireEvent.click(await screen.findByRole('button', { name: /test route/i }))
+  fireEvent.click(screen.getByRole('button', { name: 'Refresh', exact: true }))
+  await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledTimes(3))
+
+  await act(async () => { finishProbe(response(probePayload)) })
+  await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledTimes(4))
+  await act(async () => { finishProbeRefresh(response(driftedStatusPayload)) })
+  expect(await screen.findByText(/ODS and Pixel are not using its exact model contract/i)).toBeInTheDocument()
+
+  await act(async () => { finishManualRefresh(response(statusPayload)) })
+  expect(screen.getByText(/ODS and Pixel are not using its exact model contract/i)).toBeInTheDocument()
+})
+
 test('compact views keep the connection draft and never apply changes on navigation', async () => {
   globalThis.fetch.mockResolvedValue(response(statusPayload))
   render(createElement(RemoteProvider, { compact: true }))

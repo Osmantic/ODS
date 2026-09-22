@@ -327,6 +327,7 @@ export default function RemoteProvider({ compact = false }) {
   const [testError, setTestError] = useState(null)
   const [form, setForm] = useState(INITIAL_FORM)
   const formEdit = useRef({ dirty: false, revision: 0 })
+  const statusRequestGeneration = useRef(0)
   const [planning, setPlanning] = useState(false)
   const [applyingAction, setApplyingAction] = useState(null)
   const [planResult, setPlanResult] = useState(null)
@@ -339,9 +340,11 @@ export default function RemoteProvider({ compact = false }) {
   const [peerAction, setPeerAction] = useState(null)
 
   const loadStatus = useCallback(async ({ quiet = false } = {}) => {
+    const requestGeneration = ++statusRequestGeneration.current
     if (!quiet) setLoading(true)
     try {
       const payload = await fetchJson('/api/remote-provider/status')
+      if (requestGeneration !== statusRequestGeneration.current) return null
       setStatusData(payload)
       const provider = payload?.routeState?.provider
       if (!formEdit.current.dirty && provider) {
@@ -357,10 +360,11 @@ export default function RemoteProvider({ compact = false }) {
       setError(null)
       return payload
     } catch (err) {
+      if (requestGeneration !== statusRequestGeneration.current) return null
       setError(err?.message || 'Failed to load remote GPU status')
       return null
     } finally {
-      if (!quiet) setLoading(false)
+      if (requestGeneration === statusRequestGeneration.current) setLoading(false)
     }
   }, [])
 
