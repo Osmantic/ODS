@@ -1,0 +1,56 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: hedgedoc
+  name: HedgeDoc
+  description: "Local collaborative Markdown with managed accounts and private notes by default."
+  aliases: [collaborative-markdown]
+  container_name: ods-hedgedoc
+  container_uid: 10000
+  default_host: hedgedoc
+  port: 3000
+  external_port_env: HEDGEDOC_PORT
+  external_port_default: 7824
+  health: /_health
+  ui_path: /
+  startup_timeout: 300
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [notes, markdown, collaboration, local]
+  env_vars:
+    - key: HEDGEDOC_PORT
+      default: "7824"
+      description: Published port for the Markdown workspace
+    - key: HEDGEDOC_PUBLIC_HOST
+      description: Browser-facing hostname and port; defaults to localhost with HEDGEDOC_PORT
+    - key: HEDGEDOC_USE_SSL
+      default: "false"
+      description: Generate HTTPS URLs when an external TLS reverse proxy is configured
+    - key: HEDGEDOC_DB_PASSWORD
+      required: true
+      secret: true
+      description: PostgreSQL password; retain this value with the database
+    - key: HEDGEDOC_SESSION_SECRET
+      required: true
+      secret: true
+      description: Stable random session secret, generated with openssl rand -hex 32
+features:
+  - id: collaborative-markdown
+    name: Collaborative Markdown
+    description: "Write and share Markdown notes on your own server"
+    icon: FileText
+    category: productivity
+    requirements:
+      services: [hedgedoc]
+      vram_gb: 0
+      disk_gb: 3
+    enabled_services_all: [hedgedoc]
+    setup_time: "~2-5 minutes"
+    priority: 32
+    launch:
+      type: service
+      service: hedgedoc
