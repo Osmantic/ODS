@@ -1,0 +1,37 @@
+services:
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:v26.2.2@sha256:468bd13a9f2bd24794cb7fddc867c767fb1008b9a07b297b89fde48c564d7d96
+    container_name: ods-redpanda
+    user: "101:101"
+    restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    entrypoint: ["/bin/bash", "/etc/ods-redpanda/start.sh"]
+    environment:
+      REDPANDA_PASSWORD: ${REDPANDA_PASSWORD:?Set REDPANDA_PASSWORD}
+      REDPANDA_PORT: ${REDPANDA_PORT:-19092}
+      REDPANDA_ADVERTISE_HOST: ${REDPANDA_ADVERTISE_HOST:-127.0.0.1}
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${REDPANDA_PORT:-19092}:19092"
+    volumes:
+      - ./data/redpanda:/var/lib/redpanda/data
+      - ./extensions/redpanda:/etc/ods-redpanda:ro
+    tmpfs:
+      - /tmp:size=64m,uid=101,gid=101,mode=0700
+    healthcheck:
+      test: ["CMD", "/bin/bash", "/etc/ods-redpanda/health.sh"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 3G
+    networks: [ods-network]
+networks:
+  ods-network:
+    external: true
