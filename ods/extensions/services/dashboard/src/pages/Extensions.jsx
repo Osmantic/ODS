@@ -910,11 +910,25 @@ function ExtensionCard({ ext, gpuBackend, agentAvailable, onDetails, onConsole, 
 }
 
 function DetailModal({ ext, gpuBackend, onClose }) {
+  const dialogRef = useRef(null)
   useEffect(() => {
     if (!ext) return
-    const handler = (e) => { if (e.key === 'Escape') onClose() }
+    const previousFocus = document.activeElement
+    const handler = (e) => {
+      if (e.key === 'Escape') { onClose(); return }
+      if (e.key !== 'Tab' || !dialogRef.current) return
+      const focusable = [...dialogRef.current.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')]
+      if (!focusable.length) return
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus() }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus() }
+    }
     document.addEventListener('keydown', handler)
-    return () => document.removeEventListener('keydown', handler)
+    return () => {
+      document.removeEventListener('keydown', handler)
+      if (previousFocus && typeof previousFocus.focus === 'function') previousFocus.focus()
+    }
   }, [ext, onClose])
 
   if (!ext) return null
@@ -929,6 +943,7 @@ function DetailModal({ ext, gpuBackend, onClose }) {
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={onClose}>
       <div
+        ref={dialogRef}
         className="bg-theme-card border border-theme-border rounded-xl w-full max-w-lg max-h-[80vh] overflow-y-auto mx-4"
         onClick={e => e.stopPropagation()}
         role="dialog" aria-modal="true" aria-label={ext.name}
