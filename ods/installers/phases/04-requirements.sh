@@ -173,10 +173,9 @@ check_port_conflict() {
     # but cannot observe the listener, which can happen under restricted users.
     if command -v ss &> /dev/null; then
         port_tool_found=true
-        if ss -tln 2>/dev/null | grep -qE ":${port}(\s|$)"; then
-            # Try to extract PID from ss output (format: users:(("process",pid=1234,fd=5)))
+        if ss -tln 2>/dev/null | grep -qE ":${port}([[:space:]]|$)"; then
             local ss_line
-            ss_line=$(ss -tlnp 2>/dev/null | grep -E ":${port}(\s|$)" | head -1)
+            ss_line=$(ss -tlnp 2>/dev/null | grep -E ":${port}([[:space:]]|$)" | head -1)
             if [[ "$ss_line" =~ pid=([0-9]+) ]]; then
                 PORT_CONFLICT_PID="${BASH_REMATCH[1]}"
                 PORT_CONFLICT_PROC=$(ps -p "$PORT_CONFLICT_PID" -o comm= 2>/dev/null || echo "unknown")
