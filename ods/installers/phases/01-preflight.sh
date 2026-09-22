@@ -209,7 +209,7 @@ check_install_dir_filesystem() {
 
     local fs_type=""
     fs_type=$(stat -fc %T "$probe" 2>/dev/null || true)
-    fs_type="${fs_type,,}"  # lowercase
+    fs_type=$(printf '%s' "$fs_type" | tr '[:upper:]' '[:lower:]')
     INSTALL_FS_TYPE="${fs_type:-unknown}"
 
     case "$fs_type" in
