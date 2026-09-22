@@ -1,0 +1,61 @@
+services:
+  prefect:
+    image: prefecthq/prefect:3.8.6-python3.12@sha256:ec9e58deaf30002dd65ebb755ca3d9eb5f169902882abf18c79261a4aa95bfe3
+    container_name: ods-prefect
+    user: "1000:1000"
+    entrypoint: [/usr/bin/tini, -g, --, /bin/bash, -euc]
+    command:
+      - |
+        set -o pipefail
+        if [[ ! "$$PREFECT_PASSWORD" =~ ^[A-Za-z0-9_-]+$$ ]] || [ "$${#PREFECT_PASSWORD}" -lt 16 ] || [ "$${#PREFECT_PASSWORD}" -gt 128 ]; then
+          printf 'PREFECT_PASSWORD requires 16-128 URL-safe characters\n' >&2
+          exit 1
+        fi
+        umask 077
+        unset PREFECT_PASSWORD
+        exec prefect server start --host 0.0.0.0 --port 4200
+    environment:
+      PREFECT_PASSWORD: "${PREFECT_PASSWORD:?Set PREFECT_PASSWORD before enabling Prefect}"
+      PREFECT_SERVER_API_AUTH_STRING: "ods:${PREFECT_PASSWORD:?Set PREFECT_PASSWORD before enabling Prefect}"
+      PREFECT_API_AUTH_STRING: "ods:${PREFECT_PASSWORD:?Set PREFECT_PASSWORD before enabling Prefect}"
+      PREFECT_HOME: /prefect
+      PREFECT_SERVER_DATABASE_CONNECTION_URL: sqlite+aiosqlite:////prefect/prefect.db
+      PREFECT_API_URL: http://127.0.0.1:4200/api
+      PREFECT_SERVER_UI_API_URL: /api
+      PREFECT_SERVER_UI_STATIC_DIRECTORY: /tmp/prefect-ui
+      PREFECT_SERVER_API_CSRF_PROTECTION_ENABLED: "true"
+      PREFECT_SERVER_API_CORS_ALLOWED_ORIGINS: ""
+      PREFECT_SERVER_ANALYTICS_ENABLED: "false"
+      PREFECT_CLOUD_ENABLE_ORCHESTRATION_TELEMETRY: "false"
+      PREFECT_SERVER_UI_SHOW_PROMOTIONAL_CONTENT: "false"
+      HOME: /prefect
+      USER: ods
+      PYTHONDONTWRITEBYTECODE: "1"
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${PREFECT_PORT:-4200}:4200"
+    volumes:
+      - ./data/prefect:/prefect
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=256m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+    stop_grace_period: 45s
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4200/api/ready', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 90s
+    networks: [ods-network]
+
+networks:
+  ods-network:
+    external: true
+    name: ods-network
