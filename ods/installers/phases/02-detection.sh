@@ -31,9 +31,10 @@ chapter "SYSTEM DETECTION"
 
 GPU_BACKEND_REQUESTED="${GPU_BACKEND:-}"
 GPU_BACKEND_FORCED=false
-[[ "${GPU_BACKEND_REQUESTED,,}" == "amd" ]] && GPU_BACKEND_FORCED=true
+_gpu_backend_req_lower=$(printf '%s' "${GPU_BACKEND_REQUESTED}" | tr '[:upper:]' '[:lower:]')
+[[ "$_gpu_backend_req_lower" == "amd" ]] && GPU_BACKEND_FORCED=true
 GPU_BACKEND_FORCED_CPU=false
-[[ "${GPU_BACKEND_REQUESTED,,}" == "cpu" ]] && GPU_BACKEND_FORCED_CPU=true
+[[ "$_gpu_backend_req_lower" == "cpu" ]] && GPU_BACKEND_FORCED_CPU=true
 TIER_REQUESTED="${TIER:-}"
 TIER_FORCED=false
 [[ -n "$TIER_REQUESTED" ]] && TIER_FORCED=true
