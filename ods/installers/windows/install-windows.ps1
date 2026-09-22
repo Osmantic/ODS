@@ -90,6 +90,7 @@ $LibDir = Join-Path $ScriptDir "lib"
 . (Join-Path $LibDir "opencode-config.ps1")
 . (Join-Path $LibDir "readiness-summary.ps1")
 . (Join-Path $LibDir "service-plan.ps1")
+. (Join-Path $LibDir "install-receipt.ps1")
 
 # Preserve the caller's Docker client configuration before any installer phase
 # changes location. Docker accepts relative DOCKER_CONFIG values, whose meaning
@@ -130,6 +131,10 @@ $noLangfuseFlag = $NoLangfuse.IsPresent
 $noBootstrapFlag = $NoBootstrap.IsPresent
 $installDir     = $script:ODS_INSTALL_DIR
 $sourceRoot     = $SourceRoot
+$script:ODSDegradedCapabilities = [System.Collections.Generic.List[string]]::new()
+$script:ODSFailedOptionalSetup = [System.Collections.Generic.List[string]]::new()
+$script:ODSSkippedServices = [System.Collections.Generic.List[string]]::new()
+$script:ODSStartupFallbacks = [System.Collections.Generic.List[string]]::new()
 
 # ── Phase dispatcher ──────────────────────────────────────────────────────────
 function Get-UsableWindowsBash {
@@ -1027,10 +1032,12 @@ litellm_settings:
                     -Enabled $decision.Enabled
                 if (-not $decision.Enabled) {
                     $skippedExtensionServices += "$svcName ($($decision.DisabledReason))"
+                    $script:ODSSkippedServices.Add("$svcName ($($decision.DisabledReason))")
                     continue
                 }
                 if (-not $composeEnabled) {
                     Write-AIWarn "Skipping $svcName because its compose fragment is unavailable."
+                    $script:ODSSkippedServices.Add("$svcName (compose fragment unavailable)")
                     continue
                 }
 
@@ -2547,6 +2554,33 @@ try {
     Write-AISuccess "Setup wizard pre-marked complete"
 } catch {
     Write-AIWarn "Could not write setup-complete.json (non-fatal): $_"
+}
+
+# ── Final machine-readable install receipt ───────────────────────────────────
+$receiptPath = Join-Path $installDir "install-receipt.json"
+$receiptDegraded = @()
+if (-not $llmModelReady) { $receiptDegraded += "llm-model-not-ready" }
+if (-not $sttModelReady) { $receiptDegraded += "stt-model-not-ready" }
+if ($installReadiness -and -not $installReadiness.AllReady) { $receiptDegraded += "service-readiness-incomplete" }
+try {
+    $receiptPayload = New-ODSWindowsInstallReceiptPayload `
+        -AllHealthy $allHealthy `
+        -DegradedCapabilities @($receiptDegraded + @($script:ODSDegradedCapabilities)) `
+        -FailedOptionalSetup @($script:ODSFailedOptionalSetup) `
+        -SkippedServices @($script:ODSSkippedServices) `
+        -StartupFallbacks @($script:ODSStartupFallbacks) `
+        -Features @{
+            voice = $enableVoice; workflows = $enableWorkflows; rag = $enableRag
+            recommended = $enableRecommended; hermes = $enableHermes; openclaw = $enableOpenClaw
+            comfyui = $enableComfyui; deepResearch = $enableDeepResearch; privacyShield = $enablePrivacyShield
+        }
+        -Readiness $(if ($installReadiness) { $installReadiness } else { @{} })
+    Write-ODSWindowsInstallReceipt -Path $receiptPath -Payload $receiptPayload | Out-Null
+    Write-AI "Install receipt written to $receiptPath"
+} catch {
+    Write-AIError "Could not write final install receipt: $_"
+    Write-AIError "Installation evidence is incomplete; refusing to report a successful install."
+    exit 1
 }
 
 # ── Summary JSON (for CI / automation) ───────────────────────────────────────
