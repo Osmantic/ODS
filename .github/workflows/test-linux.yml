@@ -403,6 +403,7 @@ jobs:
         run: |
           bash tests/test-hermes-slash-worker-prune.sh
           python3 tests/contracts/test-hermes-worker-guardrails.py
+          python3 tests/test_patch_hermes_config_trailing_newline.py
 
       - name: Installer Contract Checks
         run: |

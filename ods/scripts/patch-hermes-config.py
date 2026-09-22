@@ -285,9 +285,7 @@ def patch_config(
     _ensure_whatsapp_bridge(lines)
     _ensure_compression(lines)
 
-    updated = "\n".join(lines)
-    if trailing_newline:
-        updated += "\n"
+    updated = "\n".join(lines) + "\n"
     if updated == original:
         return False
     path.write_text(updated, encoding="utf-8")
