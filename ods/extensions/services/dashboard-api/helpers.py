@@ -1417,3 +1417,19 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def list_batch_window_sliding_safe(items: list | None, size: int = 3, step: int = 1) -> list[list]:
+    """Safely generate sliding window batches over a sequence.
+    Returns [] on None or non-sequence inputs.
+    """
+    if not items or not isinstance(items, (list, tuple)):
+        return []
+    if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
+        size = 3
+    if not isinstance(step, int) or isinstance(step, bool) or step <= 0:
+        step = 1
+    result = []
+    for i in range(0, len(items) - size + 1, step):
+        result.append(list(items[i:i + size]))
+    return result
