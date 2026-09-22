@@ -337,3 +337,25 @@ async def test_empty_model_answer_is_never_completed(tmp_path):
     manager.start(OWNER,'chat','empty','Do work',1,'')
     await settle(manager)
     assert manager.list(OWNER,'chat')[0]['status']=='failed'
+
+
+@pytest.mark.asyncio
+async def test_split_utf8_chunks_stream_smoothly(monkeypatch):
+    from unittest.mock import AsyncMock
+    agent = {"chat_id": "c1", "request_id": "r1", "messages": [{"role": "user", "content": "hi"}]}
+    class MockStreamResponse:
+        def __init__(self, chunks):
+            self.body_iterator = self._gen(chunks)
+        async def _gen(self, chunks):
+            for c in chunks:
+                yield c
+    chunk1 = b'data: {"choices": [{"delta": {"content": "' + b"\xf0\x9f"
+    chunk2 = b'\x9a\x80"}}]}\n\n'
+    monkeypatch.setattr(pixel_teams.pixel, '_host_model_status', AsyncMock(return_value={}))
+    monkeypatch.setattr(pixel_teams.pixel, '_local_inference_issue', AsyncMock(return_value=None))
+    monkeypatch.setattr(pixel_teams.pixel, '_retained_chat_stream', AsyncMock(return_value=MockStreamResponse([chunk1, chunk2])))
+    monkeypatch.setattr(pixel_teams.pixel, '_result_state', lambda *_: {"state": "complete"})
+    monkeypatch.setattr(pixel_teams.pixel, '_chat_results', lambda: None)
+    frames = [x async for x in pixel_teams._run(OWNER, agent)]
+    assert frames[1] == {"choices": [{"delta": {"content": "🚀"}}]}
+
