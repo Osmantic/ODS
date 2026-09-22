@@ -410,6 +410,7 @@ jobs:
           bash tests/test-linux-ollama-port-override.sh
           bash tests/test-external-services.sh
           bash tests/test-resolve-compose-resilient.sh
+          python3 tests/test_resolve_compose_tier0_overlay.py
           bash tests/test-phase03-multigpu-tty.sh
           bash tests/test-pixel-support-services.sh
           bash tests/contracts/test-preflight-fixtures.sh
