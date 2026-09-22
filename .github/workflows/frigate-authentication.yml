@@ -1,0 +1,28 @@
+name: Frigate authenticated listener contract
+
+on:
+  pull_request:
+    paths:
+      - 'ods/extensions/library/services/frigate/**'
+      - 'ods/tests/test_frigate_authentication.py'
+      - '.github/workflows/frigate-authentication.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  authentication:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: '3.12'
+      - name: Install boundary test dependencies
+        run: python -m pip install pytest==8.3.5 httpx==0.28.1 PyYAML==6.0.3
+      - name: Verify authenticated TLS and persisted accounts without cameras
+        env:
+          ODS_TEST_FRIGATE_AUTH: '1'
+        run: python -m pytest -q ods/tests/test_frigate_authentication.py

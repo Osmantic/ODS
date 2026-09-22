@@ -100,6 +100,7 @@ def scan_user_extension_services(
                 "external_port": ext_port,
                 "health": health,
                 "name": name,
+                **({"ui_scheme": "https"} if svc.get("ui_scheme") == "https" else {}),
                 # Optional: extensions whose health endpoint lives on a
                 # secondary port (e.g. milvus 9091) need an explicit
                 # health_port; check_service_health() falls back to "port"

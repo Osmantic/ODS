@@ -524,6 +524,7 @@ def load_extension_manifests(
                     "health": service.get("health", "/health"),
                     "name": service.get("name", service_id),
                     "ui_path": service.get("ui_path", "/"),
+                    **({"ui_scheme": "https"} if service.get("ui_scheme") == "https" else {}),
                     "public_url": public_url,
                     "external_link": bool(service.get("external_link", True)),
                     "macos_host_supported": bool(service.get("macos_host_supported", False)),

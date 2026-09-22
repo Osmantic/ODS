@@ -66,7 +66,9 @@ export function getSidebarExternalLinks(context = {}) {
       healthy,
       alwaysVisible: Boolean(link.alwaysVisible),
       url: link.public_url || appendPath(
-        typeof getExternalUrl === 'function' ? getExternalUrl(link.port) : `http://localhost:${link.port}`,
+        typeof getExternalUrl === 'function'
+          ? (link.ui_scheme === 'https' ? getExternalUrl(link.port, '', 'https') : getExternalUrl(link.port))
+          : `${link.ui_scheme === 'https' ? 'https' : 'http'}://localhost:${link.port}`,
         link.ui_path,
       ),
     }
