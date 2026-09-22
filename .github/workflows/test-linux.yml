@@ -229,6 +229,7 @@ jobs:
           python3 tests/test_detection_darwin_cpu_cores.py
           bash scripts/check-compatibility.sh
           bash scripts/check-release-claims.sh
+          python3 tests/test_backend_contract_traversal.py
 
       - name: BATS Unit Tests
         run: bash tests/run-bats.sh
