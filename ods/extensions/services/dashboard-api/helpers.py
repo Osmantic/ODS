@@ -1417,3 +1417,17 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+import itertools
+
+def list_zip_longest_padded_safe(seq1: list | None, seq2: list | None, fillvalue=None) -> list[tuple]:
+    """Safely zip two sequences padding the shorter sequence with fillvalue.
+    Returns [] on None or non-sequence inputs.
+    """
+    if not isinstance(seq1, (list, tuple)):
+        seq1 = []
+    if not isinstance(seq2, (list, tuple)):
+        seq2 = []
+    if not seq1 and not seq2:
+        return []
+    return list(itertools.zip_longest(seq1, seq2, fillvalue=fillvalue))
