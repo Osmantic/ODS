@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { render } from '../test/test-utils'
 import Dashboard from './Dashboard' // eslint-disable-line no-unused-vars
 
@@ -35,6 +35,7 @@ const baseStatus = {
 let mockResources
 let mockFeatures
 let mockFeatureSuggestions
+let mockResourceResponses
 let restartCalls
 let restartDeferred
 
@@ -73,6 +74,7 @@ function installFetchMock() {
       }
     }
     if (String(url).includes('/api/services/resources')) {
+      if (mockResourceResponses?.length) return mockResourceResponses.shift()
       return {
         ok: true,
         json: async () => mockResources,
@@ -93,6 +95,7 @@ describe('Dashboard system overview', () => {
     document.documentElement.dataset.theme = 'light'
     mockFeatures = []
     mockFeatureSuggestions = []
+    mockResourceResponses = []
     mockResources = {
       services: services.map(service => ({
         id: service.name.toLowerCase().replace(/\([^)]*\)/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''),
@@ -487,6 +490,24 @@ describe('Dashboard system overview', () => {
 
     const row = await screen.findByTestId('service-row-ape')
     expect(within(row).getAllByText('—')).toHaveLength(2)
+  })
+
+  it('ignores an older resource response after a newer poll completes', async () => {
+    const older = createDeferred()
+    mockResourceResponses = [
+      { ok: true, json: async () => older.promise },
+      { ok: true, json: async () => ({ services: [{ id: 'ape', name: 'APE (Agent Policy Engine)', container: { cpu_percent: 22, memory_used_mb: 128 } }] }) },
+    ]
+    render(<Dashboard status={baseStatus} loading={false} />)
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/services/resources'))
+    fireEvent(document, new Event('visibilitychange'))
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(4))
+    expect(await screen.findByText('22.0%')).toBeInTheDocument()
+
+    older.resolve({ services: [{ id: 'ape', name: 'APE (Agent Policy Engine)', container: { cpu_percent: 3, memory_used_mb: 64 } }] })
+    await act(async () => {})
+    expect(screen.getByText('22.0%')).toBeInTheDocument()
+    expect(screen.queryByText('3.0%')).toBeNull()
   })
 
   it('shows measured auxiliary containers without granting service restart actions', async () => {
