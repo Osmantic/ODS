@@ -85,6 +85,30 @@ async function navigateToStep6() {
   await act(async () => fireEvent.click(screen.getByRole('button', { name: /^Next$/ })))
 }
 
+async function navigateToStep5() {
+  await act(async () => fireEvent.click(screen.getByRole('button', { name: /^Next$/ })))
+  await act(async () => fireEvent.click(screen.getByRole('button', { name: /^Next$/ })))
+  await act(async () => fireEvent.click(screen.getByRole('button', { name: /^Next$/ })))
+  const nameInput = screen.getByPlaceholderText('Enter your name')
+  await act(async () => fireEvent.change(nameInput, { target: { value: 'Tester' } }))
+  await act(async () => fireEvent.click(screen.getByRole('button', { name: /^Next$/ })))
+}
+
+test('voice choices expose a labelled radio group and selected state', async () => {
+  render(<SetupWizard onComplete={() => {}} />)
+  await navigateToStep5()
+
+  const group = screen.getByRole('group', { name: 'Assistant voice' })
+  const voices = screen.getAllByRole('radio')
+  expect(group).toContainElement(voices[0])
+  expect(voices).toHaveLength(5)
+  expect(voices.filter(voice => voice.getAttribute('aria-checked') === 'true')).toHaveLength(1)
+
+  await act(async () => fireEvent.click(voices[1]))
+  expect(voices[1]).toHaveAttribute('aria-checked', 'true')
+  expect(voices[0]).toHaveAttribute('aria-checked', 'false')
+})
+
 /**
  * Build a URL-dispatched fetch mock. Step 2 of the wizard fetches
  * `/api/templates` and `/api/extensions/catalog` BEFORE the diagnostic
