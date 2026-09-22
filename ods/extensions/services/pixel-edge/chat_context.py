@@ -80,4 +80,7 @@ def valid_history_snapshot(data):
         size += len(message["content"].encode("utf-8"))
         if size > 4 * 1024 * 1024:
             return False
-    return bool(data.get("messages")) and snapshot["messages"][-1] == data["messages"][-1] and snapshot["messages"][-1]["role"] == "user"
+    messages = data.get("messages")
+    return (isinstance(messages, list) and bool(messages)
+            and snapshot["messages"][-1] == messages[-1]
+            and snapshot["messages"][-1]["role"] == "user")
