@@ -2399,6 +2399,50 @@
       "configuration_scope": "declared-environment-keys"
     },
     {
+      "id": "mosquitto",
+      "name": "Mosquitto (MQTT Events)",
+      "description": "Exchange local sensor and workflow events over MQTT 5 or native MQTT WebSockets with separate publisher and reader credentials.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 0,
+      "external_port_default": 0,
+      "health_endpoint": "/api/v1/version",
+      "env_vars": [
+        {
+          "key": "MOSQUITTO_PORT",
+          "description": "MQTT TCP host port (no browser UI)",
+          "default": "1883"
+        },
+        {
+          "key": "MOSQUITTO_WEBSOCKET_PORT",
+          "description": "MQTT WebSocket host port, path /mqtt",
+          "default": "9001"
+        },
+        {
+          "key": "MOSQUITTO_PUBLISH_PASSWORD",
+          "description": "Password for publisher, allowed to publish under ods/#; reapplied on recreation",
+          "required": true
+        },
+        {
+          "key": "MOSQUITTO_READ_PASSWORD",
+          "description": "Password for reader, allowed to receive under ods/#; reapplied on recreation",
+          "required": true
+        }
+      ],
+      "tags": [
+        "mqtt",
+        "events",
+        "sensors"
+      ],
+      "features": [],
+      "startup_check": true,
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
       "id": "n8n",
       "name": "n8n (Workflows)",
       "description": "Automate tasks with AI-powered workflows",

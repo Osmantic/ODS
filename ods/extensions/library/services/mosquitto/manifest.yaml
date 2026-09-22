@@ -1,0 +1,38 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: mosquitto
+  name: Mosquitto (MQTT Events)
+  description: "Exchange local sensor and workflow events over MQTT 5 or native MQTT WebSockets with separate publisher and reader credentials."
+  aliases: [mqtt]
+  container_name: ods-mosquitto
+  container_uid: 1883
+  default_host: mosquitto
+  port: 0
+  external_port_default: 0
+  health: /api/v1/version
+  health_port: 8081
+  health_source: container
+  startup_check: true
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [mqtt, events, sensors]
+  env_vars:
+    - key: MOSQUITTO_PORT
+      description: "MQTT TCP host port (no browser UI)"
+      default: "1883"
+    - key: MOSQUITTO_WEBSOCKET_PORT
+      description: "MQTT WebSocket host port, path /mqtt"
+      default: "9001"
+    - key: MOSQUITTO_PUBLISH_PASSWORD
+      description: "Password for publisher, allowed to publish under ods/#; reapplied on recreation"
+      required: true
+      secret: true
+    - key: MOSQUITTO_READ_PASSWORD
+      description: "Password for reader, allowed to receive under ods/#; reapplied on recreation"
+      required: true
+      secret: true
