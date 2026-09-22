@@ -49,6 +49,17 @@ const STACK_OPTIONS = [
 ]
 
 const TOTAL_STEPS = 4
+const FINISH_TIMEOUT_MS = 30000
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = FINISH_TIMEOUT_MS) {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    return await fetch(url, { ...options, signal: controller.signal })
+  } finally {
+    clearTimeout(timeout)
+  }
+}
 
 function readProgress() {
   try {
@@ -140,7 +151,7 @@ export default function FirstBoot({ onComplete }) {
       }
 
       if (selectedStack.templateId) {
-        const applyResp = await fetch(`/api/templates/${selectedStack.templateId}/apply`, {
+        const applyResp = await fetchWithTimeout(`/api/templates/${selectedStack.templateId}/apply`, {
           method: 'POST',
         })
         if (!applyResp.ok) {
@@ -179,7 +190,7 @@ export default function FirstBoot({ onComplete }) {
       if (!ownerCardUnavailable) {
         // Generate the owner magic-link for the named user. Reuses the same
         // backend the Setup / Owner page consumes.
-        const genResp = await fetch('/api/auth/magic-link/generate', {
+        const genResp = await fetchWithTimeout('/api/auth/magic-link/generate', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -203,7 +214,7 @@ export default function FirstBoot({ onComplete }) {
       // first-run mode while the UI said "You're set." If complete
       // fails, throw and let the catch surface the error to the user
       // (with the owner card still safely visible on the previous screen).
-      const completeResp = await fetch('/api/setup/complete', { method: 'POST' })
+      const completeResp = await fetchWithTimeout('/api/setup/complete', { method: 'POST' })
       if (!completeResp.ok) {
         const body = await completeResp.json().catch(() => ({}))
         const fallback = inviteData
@@ -246,7 +257,7 @@ export default function FirstBoot({ onComplete }) {
         onComplete?.()
       }
     } catch (err) {
-      setFinishError(err.message)
+      setFinishError(err.name === 'AbortError' ? 'This operation timed out. Please retry Finish.' : err.message)
     } finally {
       setFinishing(false)
     }
