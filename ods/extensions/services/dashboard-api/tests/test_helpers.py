@@ -1801,3 +1801,14 @@ def test_flatten_bounds_cycles_and_large_depth_without_losing_empty_leaves():
         nested = {"child": nested}
     result = dict_flatten_nested_safe(nested, max_depth=100000)
     assert len(next(iter(result)).split(".")) == 128
+
+
+class TestNumericZScoreNormalizeSafe:
+    def test_valid_normalization(self):
+        from helpers import numeric_z_score_normalize_safe
+        assert numeric_z_score_normalize_safe([10, 20, 30]) == [-1.2247, 0.0, 1.2247]
+
+    def test_invalid_inputs(self):
+        from helpers import numeric_z_score_normalize_safe
+        assert numeric_z_score_normalize_safe(None) == []
+        assert numeric_z_score_normalize_safe([5, 5, 5]) == [0.0, 0.0, 0.0]
