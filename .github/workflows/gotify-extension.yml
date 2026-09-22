@@ -1,0 +1,25 @@
+name: Gotify notification server contract
+
+on:
+  pull_request:
+    paths:
+      - 'ods/extensions/library/services/gotify/**'
+      - 'ods/tests/test_gotify_extension.py'
+      - '.github/workflows/gotify-extension.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  gotify-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install pytest PyYAML
+      - name: Verify Gotify extension contract
+        run: python -m pytest -q ods/tests/test_gotify_extension.py
