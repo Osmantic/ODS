@@ -1296,11 +1296,17 @@ function ConsoleModal({ ext, onClose }) {
 
 function CopyableCommand({ command }) {
   const [copied, setCopied] = useState(false)
+  const [copyError, setCopyError] = useState(false)
 
   const handleCopy = () => {
+    setCopyError(false)
+    if (!navigator.clipboard?.writeText) {
+      setCopyError(true)
+      return
+    }
     navigator.clipboard?.writeText(command)
       .then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000) })
-      .catch(() => {})
+      .catch(() => setCopyError(true))
   }
 
   return (
@@ -1310,9 +1316,11 @@ function CopyableCommand({ command }) {
         onClick={handleCopy}
         className="shrink-0 text-theme-text-muted hover:text-theme-text-secondary transition-colors"
         title="Copy to clipboard"
+        aria-label={copyError ? 'Copy failed' : copied ? 'Copied' : 'Copy command'}
       >
         {copied ? <Check size={13} className="text-green-400" /> : <Copy size={13} />}
       </button>
+      {copyError && <span role="status" className="sr-only">Copy failed. Select the command and copy it manually.</span>}
     </div>
   )
 }
