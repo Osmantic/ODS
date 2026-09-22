@@ -1,6 +1,8 @@
 import { memo } from 'react'
 import { Network } from 'lucide-react'
 
+const MAX_GPU_COUNT = 16
+
 // Rank → visual style mapping
 function linkStyle(rank) {
   if (rank >= 100) return { bg: 'bg-green-500/20', text: 'text-green-400', dot: 'bg-green-400' }
@@ -25,6 +27,13 @@ export const TopologyView = memo(function TopologyView({ topology }) {
 
   const { gpus = [], links = [], gpu_count, vendor, driver_version, mig_enabled } = topology
   const n = gpu_count || gpus.length
+  if (!Number.isInteger(n) || n < 0 || n > MAX_GPU_COUNT) {
+    return (
+      <div role="alert" className="p-5 bg-zinc-900/50 border border-zinc-800 rounded-xl text-sm text-amber-400">
+        Topology data exceeds the supported GPU limit and was not rendered.
+      </div>
+    )
+  }
   const matrix = buildMatrix(n, links)
 
   return (
