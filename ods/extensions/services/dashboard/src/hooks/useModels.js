@@ -227,14 +227,24 @@ export function useModels() {
   const pollInFlightRef = useRef(false)
   const loadActiveRef = useRef(false)
   const activationControllerRef = useRef(null)
+  const mountedRef = useRef(true)
 
-  useEffect(() => () => {
+  const setMutationErrorIfMounted = useCallback(value => {
+    if (mountedRef.current) setMutationError(value)
+  }, [])
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+    mountedRef.current = false
     // Navigation ends this page's observation. The host still owns any
     // accepted activation, and a new page reads its lifecycle on mount.
     activationControllerRef.current?.abort()
+    }
   }, [])
 
   const updatePendingActions = useCallback((update) => {
+    if (!mountedRef.current) return
     const nextActions = typeof update === 'function'
       ? update(pendingActionsRef.current)
       : update
@@ -380,14 +390,14 @@ export function useModels() {
   const loadModel = async (modelId, options = {}) => {
     const modeError = modelActivationModeError(odsMode, configuredMode, llmBackend)
     if (modeError) {
-      setMutationError(modeError)
+      setMutationErrorIfMounted(modeError)
       return
     }
 
     // Prevent concurrent activations - only one model can load at a time.
     if (loadActiveRef.current) {
       const activeModelId = pendingActionsRef.current.find(action => action.kind === 'load')?.modelId
-      setMutationError(activeModelId
+      setMutationErrorIfMounted(activeModelId
         ? `Model activation is already in progress for ${activeModelId}.`
         : 'A model activation is already in progress.')
       return
@@ -397,7 +407,7 @@ export function useModels() {
     // describe the previous route even if no newer poll has settled yet.
     latestSettledModelsRequestRef.current = ++modelsRequestRef.current
     const action = startAction(modelId, 'load')
-    setMutationError(null)
+    setMutationErrorIfMounted(null)
 
     // Model activation can consume the host's 45-minute budget plus retry grace. The
     // browser connection may still disappear while the server completes, so
@@ -481,7 +491,7 @@ export function useModels() {
       const confirmed = !activationError && activationMatches(finalData)
 
       if (!confirmed) {
-        setMutationError(activationError || (targetLoaded
+        setMutationErrorIfMounted(activationError || (targetLoaded
           ? `Could not confirm activation of ${modelId} against the latest model status. Refresh before retrying.`
           : `Timed out after 47 minutes waiting for ${modelId} to activate. The server may still be finishing; refresh before retrying.`))
       }
@@ -498,7 +508,7 @@ export function useModels() {
   }
 
   const deleteModel = async (modelId) => {
-    setMutationError(null)
+    setMutationErrorIfMounted(null)
     const action = startAction(modelId, 'delete')
     try {
       await modelActionRequest(
@@ -509,14 +519,14 @@ export function useModels() {
       )
       await fetchModels() // Refresh
     } catch (err) {
-      setMutationError(err.message)
+      setMutationErrorIfMounted(err.message)
     } finally {
       finishAction(action.token)
     }
   }
 
   const benchmarkModel = async (modelId) => {
-    setMutationError(null)
+    setMutationErrorIfMounted(null)
     const action = startAction(modelId, 'benchmark')
     try {
       await modelActionRequest(
@@ -531,7 +541,7 @@ export function useModels() {
       )
       await fetchModels()
     } catch (err) {
-      setMutationError(err.message)
+      setMutationErrorIfMounted(err.message)
     } finally {
       finishAction(action.token)
     }
