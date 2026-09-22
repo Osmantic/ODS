@@ -1417,3 +1417,23 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+import math
+
+def numeric_geometric_mean_safe(values: list | None) -> float:
+    """Safely calculate geometric mean of a positive numeric sequence.
+    Returns 0.0 on None, non-sequence, empty, or <= 0 values.
+    """
+    if not values or not isinstance(values, (list, tuple)):
+        return 0.0
+    cleaned = []
+    for v in values:
+        if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0:
+            cleaned.append(float(v))
+    if not cleaned:
+        return 0.0
+    try:
+        log_sum = sum(math.log(x) for x in cleaned)
+        return round(math.exp(log_sum / len(cleaned)), 4)
+    except Exception:
+        return 0.0
