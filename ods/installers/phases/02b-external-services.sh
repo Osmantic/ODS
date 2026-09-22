@@ -51,7 +51,12 @@ if [[ -z "$_external_url" && "${ODS_MODE:-local}" == "local" && "${LEMONADE_EXTE
         if [[ "${INTERACTIVE:-false}" == "true" && "${DRY_RUN:-false}" != "true" ]]; then
             ai_ok "Found ${_detected_model} in the running ${_detected_provider} service"
             ai "ODS can reuse it and skip the duplicate GGUF download."
-            read -r -p "  Reuse this external model service? [Y/n] " _external_reply < /dev/tty
+            
+            _external_reply="y"
+            if [[ -r /dev/tty ]]; then
+                read -r -p "  Reuse this external model service? [Y/n] " _external_reply < /dev/tty
+            fi
+            
             if [[ ! "$_external_reply" =~ ^[Nn] ]]; then
                 _external_url="$_detected_url"
                 _external_provider="$_detected_provider"
