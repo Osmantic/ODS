@@ -61,6 +61,7 @@ def estimated_context_kv_gb(
         )
     except (TypeError, ValueError):
         context = 0
+    context = max(context, 0)
     context = max(context, 8192)
     block_count = _positive_number(model.get("block_count"))
     kv_heads_raw = model.get("attention_head_count_kv") or model.get("head_count_kv")
