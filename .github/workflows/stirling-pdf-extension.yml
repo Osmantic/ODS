@@ -1,0 +1,28 @@
+name: Stirling-PDF extension contract
+
+on:
+  pull_request:
+    paths:
+      - 'ods/extensions/library/services/stirling-pdf/**'
+      - 'ods/tests/test_stirling_pdf_extension.py'
+      - '.github/workflows/stirling-pdf-extension.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pdf:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: '3.12'
+      - name: Install the boundary test dependencies
+        run: python -m pip install pytest==8.3.5 httpx==0.28.1 PyYAML==6.0.3 pypdf==6.18.1
+      - name: Verify authenticated PDF rotation and persisted accounts
+        env:
+          ODS_TEST_STIRLING_PDF_DOCKER: '1'
+        run: python -m pytest -q ods/tests/test_stirling_pdf_extension.py
