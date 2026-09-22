@@ -172,7 +172,7 @@ for f in "$SESSIONS_DIR"/*.jsonl; do
         else
             SIZE_BYTES=$(stat -c%s "$f" 2>&1) || stat_exit=$?
         fi
-        if [[ $stat_exit -ne 0 ]]; then
+        if [[ $stat_exit -ne 0 ]] || [[ ! "$SIZE_BYTES" =~ ^[0-9]+$ ]]; then
             SIZE_BYTES=0
         fi
         if [ "$SIZE_BYTES" -gt "$MAX_SIZE" ]; then
