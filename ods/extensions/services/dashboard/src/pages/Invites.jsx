@@ -641,6 +641,7 @@ async function responseError(resp, label) {
 
 function GeneratedTokenModal({ record, onClose }) {
   const [copied, setCopied] = useState(false)
+  const [copyError, setCopyError] = useState(null)
   const [qrDataUrl, setQrDataUrl] = useState(null)
   const [qrError, setQrError] = useState(null)
   const owner = record.token_type === 'owner'
@@ -665,12 +666,13 @@ function GeneratedTokenModal({ record, onClose }) {
   }, [record.url])
 
   const copy = async () => {
+    setCopyError(null)
     try {
       await navigator.clipboard.writeText(record.url)
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
     } catch {
-      // Fallback: select the visible input manually.
+      setCopyError('Copy was blocked. Select the link and copy it manually.')
     }
   }
 
@@ -741,6 +743,7 @@ function GeneratedTokenModal({ record, onClose }) {
             />
             <button
               onClick={copy}
+              aria-label={owner ? 'Copy owner link' : 'Copy invite link'}
               className="flex items-center gap-1 px-3 py-2 bg-theme-bg border border-theme-border rounded-lg text-theme-text hover:bg-theme-surface-hover text-sm"
               title="Copy link"
             >
@@ -749,6 +752,7 @@ function GeneratedTokenModal({ record, onClose }) {
             </button>
           </div>
         </label>
+        {copyError && <p role="alert" className="mb-4 text-sm text-amber-200">{copyError}</p>}
 
         <div className="flex justify-between items-center gap-4">
           <p className="text-xs text-theme-text-muted">
