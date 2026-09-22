@@ -1417,3 +1417,14 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def numeric_safe_remainder_safe(a: int | float | None, b: int | float | None, default_val: float = 0.0) -> float:
+    """Safely calculate modulo remainder (a % b) protecting against zero division.
+    Returns default_val on None, non-numeric, or b == 0 inputs.
+    """
+    if a is None or b is None or not isinstance(a, (int, float)) or not isinstance(b, (int, float)):
+        return float(default_val)
+    if isinstance(a, bool) or isinstance(b, bool) or b == 0:
+        return float(default_val)
+    return float(a) % float(b)
