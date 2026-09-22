@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-13T16:53:56Z",
+  "generated_at": "2026-09-15T05:49:26Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -3159,6 +3159,28 @@
       "configuration_scope": "declared-environment-keys"
     },
     {
+      "id": "pixel-inference",
+      "name": "Pixel inference sharing (development)",
+      "description": "Disabled by default. Owner-provisioned, inference-only device credentials; loopback transport only. Does not provide Pixel agent or computer access. Private state must be provisioned before service activation. Native Windows private-state support and guided setup are not yet implemented.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [
+        "model-router"
+      ],
+      "port": 8093,
+      "external_port_default": 4005,
+      "health_endpoint": "/health",
+      "env_vars": [],
+      "tags": [],
+      "features": [],
+      "startup_check": false,
+      "catalog_source": "builtin",
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
       "id": "qdrant",
       "name": "Qdrant (Vector DB)",
       "description": "Qdrant (Vector DB)",
@@ -3588,6 +3610,64 @@
       "tags": [],
       "features": [],
       "catalog_source": "builtin",
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
+      "id": "typesense",
+      "name": "Typesense (In-Memory Search)",
+      "description": "Fast, typo-tolerant in-memory search engine supporting hybrid faceted search and vector similarity indexing for local applications.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 8108,
+      "external_port_default": 8108,
+      "health_endpoint": "/health",
+      "env_vars": [
+        {
+          "key": "TYPESENSE_PORT",
+          "description": "Published HTTP port for Typesense search API",
+          "default": "8108"
+        },
+        {
+          "key": "TYPESENSE_API_KEY",
+          "description": "Master API key for all Typesense index, search, and admin operations",
+          "required": true
+        }
+      ],
+      "tags": [
+        "search",
+        "vector-search",
+        "indexing",
+        "in-memory",
+        "typo-tolerant"
+      ],
+      "features": [
+        {
+          "id": "in-memory-search",
+          "name": "Fast Typo-Tolerant Search",
+          "description": "Sub-50ms typo-tolerant search and vector similarity indexing for local catalogs and documentation",
+          "icon": "Search",
+          "category": "search",
+          "requirements": {
+            "services": [
+              "typesense"
+            ],
+            "vram_gb": 0
+          },
+          "enabled_services_all": [
+            "typesense"
+          ],
+          "setup_time": "~1 minute after setting credentials",
+          "priority": 36,
+          "launch": {
+            "type": "service",
+            "service": "typesense"
+          }
+        }
+      ],
       "configuration_scope": "declared-environment-keys"
     },
     {
