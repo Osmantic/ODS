@@ -20,12 +20,23 @@ function buildMatrix(gpuCount, links) {
   return m
 }
 
+function validTopologyLinks(links, gpuCount) {
+  return links.filter(link => Number.isInteger(link?.gpu_a)
+    && Number.isInteger(link?.gpu_b)
+    && link.gpu_a >= 0
+    && link.gpu_b >= 0
+    && link.gpu_a < gpuCount
+    && link.gpu_b < gpuCount
+    && link.gpu_a !== link.gpu_b)
+}
+
 export const TopologyView = memo(function TopologyView({ topology }) {
   if (!topology) return null
 
   const { gpus = [], links = [], gpu_count, vendor, driver_version, mig_enabled } = topology
   const n = gpu_count || gpus.length
-  const matrix = buildMatrix(n, links)
+  const validLinks = validTopologyLinks(links, n)
+  const matrix = buildMatrix(n, validLinks)
 
   return (
     <div className="p-5 bg-zinc-900/50 border border-zinc-800 rounded-xl">
@@ -56,7 +67,7 @@ export const TopologyView = memo(function TopologyView({ topology }) {
       </div>
 
       {/* Topology matrix table */}
-      {n > 1 && links.length > 0 ? (
+      {n > 1 && validLinks.length > 0 ? (
         <div className="overflow-x-auto">
           <table className="w-auto border-collapse text-xs font-mono">
             <thead>
@@ -113,7 +124,7 @@ export const TopologyView = memo(function TopologyView({ topology }) {
       )}
 
       {/* Legend */}
-      {links.length > 0 && (
+      {validLinks.length > 0 && (
         <div className="flex flex-wrap gap-3 mt-4 pt-4 border-t border-zinc-800 text-[10px] text-zinc-500">
           {[
             { label: 'NVLink', rank: 100 },
