@@ -1417,3 +1417,21 @@ def numeric_exponential_moving_average_safe(values: list, alpha: float = 0.2) ->
         current = alpha * v + (1 - alpha) * current
         ema.append(current)
     return ema
+
+
+def numeric_percentile_rank_safe(values: list | None, val: int | float | None) -> float:
+    """Safely calculate percentile rank of val within values list [0.0, 100.0].
+    Returns 0.0 on None, empty, or non-numeric inputs.
+    """
+    if not values or not isinstance(values, (list, tuple)):
+        return 0.0
+    if val is None or not isinstance(val, (int, float)) or isinstance(val, bool):
+        return 0.0
+    cleaned = [float(v) for v in values if isinstance(v, (int, float)) and not isinstance(v, bool)]
+    if not cleaned:
+        return 0.0
+    val = float(val)
+    count_below = sum(1 for v in cleaned if v < val)
+    count_equal = sum(1 for v in cleaned if v == val)
+    rank = (count_below + 0.5 * count_equal) / len(cleaned) * 100.0
+    return round(rank, 2)
