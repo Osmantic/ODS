@@ -1,0 +1,40 @@
+services:
+  meilisearch:
+    image: getmeili/meilisearch:v1.12.0
+    container_name: ods-meilisearch
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      - MEILI_MASTER_KEY=${MEILI_MASTER_KEY:?MEILI_MASTER_KEY must be set}
+      - MEILI_ENV=${MEILI_ENV:-production}
+      - MEILI_NO_ANALYTICS=true
+    volumes:
+      - ./data/meilisearch:/meili_data:z
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${MEILISEARCH_PORT:-7700}:7700"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:7700/health || wget -qO- http://127.0.0.1:7700/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    networks:
+      - ods-network
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  ods-network:
+    external: true
