@@ -3159,6 +3159,50 @@
       "configuration_scope": "declared-environment-keys"
     },
     {
+      "id": "postgrest",
+      "name": "PostgREST (Workflow Artifact API)",
+      "description": "Expose structured local workflow artifacts through native PostgREST filters, transactions and PostgreSQL reader/writer grants.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 0,
+      "external_port_default": 0,
+      "health_endpoint": "/ready",
+      "env_vars": [
+        {
+          "key": "POSTGREST_PORT",
+          "description": "Native JWT-authenticated REST host port; no browser UI",
+          "default": "3005"
+        },
+        {
+          "key": "POSTGREST_DB_PASSWORD",
+          "description": "Initial PostgreSQL authenticator password; rotate existing database roles natively",
+          "required": true
+        },
+        {
+          "key": "POSTGREST_POSTGRES_PASSWORD",
+          "description": "Separate initial database administrator password; never used by the API",
+          "required": true
+        },
+        {
+          "key": "POSTGREST_JWT_SECRET",
+          "description": "At least 32 random characters for a trusted HS256 token issuer; never distribute to readers or browsers",
+          "required": true
+        }
+      ],
+      "tags": [
+        "database",
+        "workflows",
+        "rest"
+      ],
+      "features": [],
+      "startup_check": true,
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
       "id": "qdrant",
       "name": "Qdrant (Vector DB)",
       "description": "Qdrant (Vector DB)",

@@ -1,0 +1,80 @@
+services:
+  postgrest:
+    image: postgrest/postgrest:v16.3@sha256:ec0e25a4e24b0a3bc5e4f011369bfc736bd1b19f513bd01079b86329a7636962
+    container_name: ods-postgrest
+    user: "1000:1000"
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      PGRST_DB_URI: ""
+      PGHOST: postgrest-db
+      PGPORT: "5432"
+      PGDATABASE: ods
+      PGUSER: authenticator
+      PGPASSWORD: "${POSTGREST_DB_PASSWORD:?Set POSTGREST_DB_PASSWORD before enabling PostgREST}"
+      PGRST_DB_SCHEMAS: api
+      PGRST_DB_CONFIG: "false"
+      PGRST_DB_POOL: "5"
+      PGRST_DB_MAX_ROWS: "1000"
+      PGRST_JWT_SECRET: "${POSTGREST_JWT_SECRET:?Set POSTGREST_JWT_SECRET before enabling PostgREST}"
+      PGRST_JWT_AUD: ods-postgrest
+      PGRST_SERVER_HOST: 0.0.0.0
+      PGRST_SERVER_PORT: "3000"
+      PGRST_ADMIN_SERVER_HOST: 0.0.0.0
+      PGRST_ADMIN_SERVER_PORT: "3001"
+      PGRST_LOG_LEVEL: warn
+      PGRST_OPENAPI_MODE: follow-privileges
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${POSTGREST_PORT:-3005}:3000"
+    depends_on:
+      postgrest-db:
+        condition: service_healthy
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    networks: [ods-network, postgrest-private]
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 256M
+  postgrest-db:
+    image: postgres:17.11-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
+    container_name: ods-postgrest-db
+    user: "70:70"
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      POSTGRES_DB: ods
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: "${POSTGREST_POSTGRES_PASSWORD:?Set POSTGREST_POSTGRES_PASSWORD before enabling PostgREST}"
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
+      POSTGREST_DB_PASSWORD: "${POSTGREST_DB_PASSWORD:?Set POSTGREST_DB_PASSWORD before enabling PostgREST}"
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - ./data/postgrest:/var/lib/postgresql/data
+      - ./extensions/library/services/postgrest/init.sql:/docker-entrypoint-initdb.d/10-ods.sql:ro
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+      - /var/run/postgresql:size=8m,mode=0775,uid=70,gid=70
+    healthcheck:
+      test: [CMD, pg_isready, -U, postgres, -d, ods]
+      interval: 5s
+      timeout: 3s
+      retries: 6
+      start_period: 20s
+    stop_grace_period: 45s
+    networks: [postgrest-private]
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+networks:
+  ods-network:
+    external: true
+  postgrest-private:
+    internal: true
