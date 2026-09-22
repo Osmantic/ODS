@@ -27,15 +27,17 @@ export default function PixelProviderScopes({ chatId, sending = false }) {
   const queuedInspection = useRef(null)
   const generation = useRef(0)
   const controllers = useRef(new Set())
+  const mounted = useRef(true)
   const trigger = useRef(null)
   const panel = useRef(null)
   const resetConsent = () => { setReviewed(false); setCloud(false); setCost(false) }
 
   useEffect(() => {
     const pending = controllers.current
+    mounted.current = true
     generation.current++; setState(null); setConfiguration(null); setOpen(false)
     setReviewed(false); setCloud(false); setCost(false)
-    return () => { generation.current++; queuedInspection.current = null; for (const controller of pending) controller.abort() }
+    return () => { mounted.current = false; generation.current++; queuedInspection.current = null; for (const controller of pending) controller.abort() }
   }, [chatId])
 
   const request = async (url, body) => {
@@ -49,8 +51,10 @@ export default function PixelProviderScopes({ chatId, sending = false }) {
     } finally { clearTimeout(timer); controllers.current.delete(controller) }
   }
 
-  function finishOperation() {
-    active.current = false; setBusy(false)
+  function finishOperation(operationGeneration) {
+    if (!mounted.current || (operationGeneration !== generation.current && !queuedInspection.current)) return
+    active.current = false
+    setBusy(false)
     const next = queuedInspection.current
     queuedInspection.current = null
     if (next) void next()
@@ -70,7 +74,7 @@ export default function PixelProviderScopes({ chatId, sending = false }) {
       setState(result); setConfiguration(providers.configuration); setUncertain(false); setError('')
     } catch {
       if (current === generation.current) { setUncertain(true); setError('Provider preferences unavailable. Reload before making changes.') }
-    } finally { finishOperation() }
+    } finally { finishOperation(current) }
   }
 
   const target = configuration?.providers.find(provider => provider.id === configuration.roles?.handoff)
@@ -94,7 +98,7 @@ export default function PixelProviderScopes({ chatId, sending = false }) {
       if (current === generation.current) {
         setUncertain(true); setError('Change outcome uncertain. Reload to inspect saved state; do not repeat the action.')
       }
-    } finally { finishOperation(); resetConsent() }
+    } finally { finishOperation(current); if (mounted.current && current === generation.current) resetConsent() }
   }
 
   const close = () => {
