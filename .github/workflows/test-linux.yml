@@ -350,7 +350,9 @@ jobs:
         run: bash tests/test-preset-export-permissions.sh
 
       - name: Legacy Update Fallback Backup Round Trip
-        run: python3 tests/test-cli-legacy-update-backup.py
+        run: |
+          python3 tests/test-cli-legacy-update-backup.py
+          python3 tests/test_restore_script_lib_fallback.py
 
       - name: Validate Simulation Summary Tests
         run: bash tests/test-validate-sim-summary.sh
