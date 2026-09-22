@@ -9,6 +9,6 @@ template:
   tier_minimum: T2
   estimated_disk_gb: 15
   service_notes:
-    aider: "CLI tool — run with 'docker compose run --rm aider' in your project directory. Not a background service."
+    aider: "CLI tool — from the ODS install directory, run with 'bash data/user-extensions/aider/run.sh'. Not a background service."
     gitea: "Self-hosted Git — access at port 7830, SSH at 2222"
     chromadb: "Vector database for codebase memory and RAG"

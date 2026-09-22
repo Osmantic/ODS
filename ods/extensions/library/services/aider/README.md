@@ -18,31 +18,42 @@ Your data is preserved when disabling. To re-enable later: `ods enable aider`
 
 ## Access
 
-Aider is a CLI tool with no web interface. Run it via Docker:
+Aider is a CLI tool with no web interface. From the ODS install directory,
+use the installed launcher below. It selects the extension's Compose file and
+the image's actual Aider executable. The normal enable/install container only
+prints a help message and exits successfully.
+
+Project paths are relative to `data/aider`, mounted at `/app` inside Aider.
+The launcher reads the ODS `.env`; quote filenames containing spaces as usual.
+For example, `bash data/user-extensions/aider/run.sh "my project/main.py"`.
+`--version` checks the CLI without contacting a model provider.
 
 ```bash
 # Start an interactive session
-docker compose run --rm aider
+bash data/user-extensions/aider/run.sh
 
 # Edit specific files
-docker compose run --rm aider src/main.py src/utils.py
+bash data/user-extensions/aider/run.sh src/main.py src/utils.py
 
 # With a specific model
-docker compose run --rm aider --model ollama/llama3 src/
+bash data/user-extensions/aider/run.sh --model ollama/llama3 src/
 ```
 
 ## First-Time Setup
 
 1. Enable the service: `ods enable aider`
 2. Place your projects in `./data/aider/` to make them available
-3. Run `docker compose run --rm aider` to start a session
+3. Run `bash data/user-extensions/aider/run.sh` to start a session
 
-### Using with Local Models
+### Using with the Local llama-server
+
+Use your loaded model name and configured API key where required. For a different
+backend, use its OpenAI-compatible API base in place of the example below.
 
 ```bash
-docker compose run --rm aider \
+bash data/user-extensions/aider/run.sh \
   --model openai/local-model \
-  --openai-api-base http://host.docker.internal:8000/v1 \
+  --openai-api-base http://llama-server:8080/v1 \
   src/
 ```
 
