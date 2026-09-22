@@ -3183,6 +3183,22 @@ if $DRY_RUN; then
     exit 0
 fi
 
+# Resolve post-install probe ports from .env — operator overrides written by
+# env-generator survive reruns, so hardcoded defaults would probe dead ports.
+_health_env_port() {
+    local _v
+    _v="$(read_env_value "$INSTALL_DIR/.env" "$1")"
+    [[ "$_v" =~ ^[0-9]+$ ]] || _v="$2"
+    printf '%s\n' "$_v"
+}
+_health_webui_port="$(_health_env_port WEBUI_PORT 3000)"
+_health_litellm_port="$(_health_env_port LITELLM_PORT 4000)"
+_health_n8n_port="$(_health_env_port N8N_PORT 5678)"
+_health_whisper_port="$(_health_env_port WHISPER_PORT 9000)"
+_health_dashboard_port="$(_health_env_port DASHBOARD_PORT 3001)"
+_health_dashboard_api_port="$(_health_env_port DASHBOARD_API_PORT 3002)"
+_health_perplexica_port="$(_health_env_port PERPLEXICA_PORT 3004)"
+
 # Health check loop
 ai "Running health checks..."
 MAX_ATTEMPTS=90   # 90 * 2s = 180s -- covers base compose start_period (60s) + image pull
@@ -3197,7 +3213,7 @@ CLOUD_REQUIRED_HEALTHY=true
 # host-native services fall back to an HTTP probe on 127.0.0.1.
 if $CLOUD_MODE; then
     HEALTH_NAMES=("LiteLLM gateway" "Chat UI (Open WebUI)")
-    HEALTH_URLS=("http://127.0.0.1:4000/health/readiness" "http://127.0.0.1:3000")
+    HEALTH_URLS=("http://127.0.0.1:${_health_litellm_port}/health/readiness" "http://127.0.0.1:${_health_webui_port}")
     HEALTH_CONTAINERS=("ods-litellm" "ods-webui")
 else
     _health_bind="$(read_env_value "$INSTALL_DIR/.env" "BIND_ADDRESS")"
@@ -3205,11 +3221,11 @@ else
     _health_llama_port="$(read_env_value "$INSTALL_DIR/.env" "ODS_NATIVE_LLAMA_PORT")"
     [[ "$_health_llama_port" =~ ^[0-9]+$ ]] || _health_llama_port="8080"
     HEALTH_NAMES=("LLM (llama-server)" "Chat UI (Open WebUI)")
-    HEALTH_URLS=("http://${_health_llama_host}:${_health_llama_port}/health" "http://127.0.0.1:3000")
+    HEALTH_URLS=("http://${_health_llama_host}:${_health_llama_port}/health" "http://127.0.0.1:${_health_webui_port}")
     HEALTH_CONTAINERS=("" "ods-webui")
 fi
-$ENABLE_VOICE && HEALTH_NAMES+=("Whisper (STT)") && HEALTH_URLS+=("http://127.0.0.1:${WHISPER_PORT:-9000}/health") && HEALTH_CONTAINERS+=("ods-whisper")
-$ENABLE_WORKFLOWS && HEALTH_NAMES+=("n8n (Workflows)") && HEALTH_URLS+=("http://127.0.0.1:5678/healthz") && HEALTH_CONTAINERS+=("ods-n8n")
+$ENABLE_VOICE && HEALTH_NAMES+=("Whisper (STT)") && HEALTH_URLS+=("http://127.0.0.1:${_health_whisper_port}/health") && HEALTH_CONTAINERS+=("ods-whisper")
+$ENABLE_WORKFLOWS && HEALTH_NAMES+=("n8n (Workflows)") && HEALTH_URLS+=("http://127.0.0.1:${_health_n8n_port}/healthz") && HEALTH_CONTAINERS+=("ods-n8n")
 [[ -x "$OPENCODE_BIN" ]] && HEALTH_NAMES+=("OpenCode (IDE)") && HEALTH_URLS+=("http://127.0.0.1:${OPENCODE_PORT}") && HEALTH_CONTAINERS+=("")
 
 for ((idx=0; idx<${#HEALTH_NAMES[@]}; idx++)); do
@@ -3435,18 +3451,18 @@ if ! $ALL_HEALTHY; then
 fi
 
 {
-    printf 'Dashboard|http://127.0.0.1:3001|ods-dashboard|http://localhost:3001\n'
-    printf 'Chat UI (Open WebUI)|http://127.0.0.1:3000|ods-webui|http://localhost:3000\n'
+    printf 'Dashboard|http://127.0.0.1:%s|ods-dashboard|http://localhost:%s\n' "$_health_dashboard_port" "$_health_dashboard_port"
+    printf 'Chat UI (Open WebUI)|http://127.0.0.1:%s|ods-webui|http://localhost:%s\n' "$_health_webui_port" "$_health_webui_port"
     if $CLOUD_MODE; then
-        printf 'LiteLLM|http://127.0.0.1:4000/health/readiness|ods-litellm|http://localhost:4000\n'
+        printf 'LiteLLM|http://127.0.0.1:%s/health/readiness|ods-litellm|http://localhost:%s\n' "$_health_litellm_port" "$_health_litellm_port"
     else
         printf 'llama-server|http://%s:%s/health||http://localhost:%s/v1\n' "$_health_llama_host" "$_health_llama_port" "$_health_llama_port"
     fi
-    printf 'Dashboard API|http://127.0.0.1:3002/health|ods-dashboard-api|http://localhost:3002\n'
-    printf 'Perplexica|http://127.0.0.1:3004|ods-perplexica|http://localhost:3004\n'
-    $ENABLE_VOICE && printf 'Whisper (STT)|http://127.0.0.1:%s/health|ods-whisper|http://localhost:%s\n' "${WHISPER_PORT:-9000}" "${WHISPER_PORT:-9000}"
-    $ENABLE_WORKFLOWS && printf 'n8n|http://127.0.0.1:5678/healthz|ods-n8n|http://localhost:5678\n'
+    printf 'Dashboard API|http://127.0.0.1:%s/health|ods-dashboard-api|http://localhost:%s\n' "$_health_dashboard_api_port" "$_health_dashboard_api_port"
+    printf 'Perplexica|http://127.0.0.1:%s|ods-perplexica|http://localhost:%s\n' "$_health_perplexica_port" "$_health_perplexica_port"
+    $ENABLE_VOICE && printf 'Whisper (STT)|http://127.0.0.1:%s/health|ods-whisper|http://localhost:%s\n' "$_health_whisper_port" "$_health_whisper_port"
+    $ENABLE_WORKFLOWS && printf 'n8n|http://127.0.0.1:%s/healthz|ods-n8n|http://localhost:%s\n' "$_health_n8n_port" "$_health_n8n_port"
     [[ -x "$OPENCODE_BIN" ]] && printf 'OpenCode (IDE)|http://127.0.0.1:%s||http://localhost:%s\n' "$OPENCODE_PORT" "$OPENCODE_PORT"
-} | ods_readiness_summary "./ods-macos.sh status" "$ODS_LOG_FILE" "http://localhost:3001"
+} | ods_readiness_summary "./ods-macos.sh status" "$ODS_LOG_FILE" "http://localhost:${_health_dashboard_port}"
 
 show_success_card
