@@ -1,10 +1,16 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { CheckCircle, XCircle, Loader2, MessageSquare, Mic, FileText, Zap, RefreshCw } from 'lucide-react'
 
 export function SuccessValidation({ status, onAllPassed }) {
   const [tests, setTests] = useState([])
   const [running, setRunning] = useState(false)
   const [allPassed, setAllPassed] = useState(false)
+  const mounted = useRef(false)
+  const runId = useRef(0)
+  useEffect(() => {
+    mounted.current = true
+    return () => { mounted.current = false; runId.current += 1 }
+  }, [])
 
   useEffect(() => {
     if (status?.services) {
@@ -62,6 +68,9 @@ export function SuccessValidation({ status, onAllPassed }) {
   }
 
   const runLiveTests = async () => {
+    if (!mounted.current) return
+    const currentRun = ++runId.current
+    const current = () => mounted.current && runId.current === currentRun
     setRunning(true)
     
     const updatedTests = [...tests]
@@ -70,6 +79,7 @@ export function SuccessValidation({ status, onAllPassed }) {
       if (updatedTests[i].status === 'passed') continue
       
       updatedTests[i] = { ...updatedTests[i], status: 'running' }
+      if (!current()) return
       setTests([...updatedTests])
       
       try {
@@ -78,6 +88,7 @@ export function SuccessValidation({ status, onAllPassed }) {
         const success = Boolean(result.success ?? result.available)
         
         await new Promise(r => setTimeout(r, 800)) // Visual feedback
+        if (!current()) return
         
         updatedTests[i] = { 
           ...updatedTests[i], 
@@ -86,6 +97,7 @@ export function SuccessValidation({ status, onAllPassed }) {
         }
       } catch (err) {
         await new Promise(r => setTimeout(r, 800))
+        if (!current()) return
         updatedTests[i] = { 
           ...updatedTests[i], 
           status: 'failed',
@@ -95,7 +107,8 @@ export function SuccessValidation({ status, onAllPassed }) {
       
       setTests([...updatedTests])
     }
-    
+
+    if (!current()) return
     const passed = updatedTests.every(t => t.status === 'passed')
     setAllPassed(passed)
     if (passed) onAllPassed?.()
