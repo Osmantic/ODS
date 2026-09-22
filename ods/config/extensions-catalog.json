@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-13T16:53:56Z",
+  "generated_at": "2026-09-14T16:10:44Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -3159,6 +3159,28 @@
       "configuration_scope": "declared-environment-keys"
     },
     {
+      "id": "pixel-inference",
+      "name": "Pixel inference sharing (development)",
+      "description": "Disabled by default. Owner-provisioned, inference-only device credentials; loopback transport only. Does not provide Pixel agent or computer access. Private state must be provisioned before service activation. Native Windows private-state support and guided setup are not yet implemented.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [
+        "model-router"
+      ],
+      "port": 8093,
+      "external_port_default": 4005,
+      "health_endpoint": "/health",
+      "env_vars": [],
+      "tags": [],
+      "features": [],
+      "startup_check": false,
+      "catalog_source": "builtin",
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
       "id": "qdrant",
       "name": "Qdrant (Vector DB)",
       "description": "Qdrant (Vector DB)",
@@ -3588,6 +3610,61 @@
       "tags": [],
       "features": [],
       "catalog_source": "builtin",
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
+      "id": "wallabag",
+      "name": "Wallabag",
+      "description": "Self-hosted read-it-later web application for saving, tagging, and archiving online articles.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 80,
+      "external_port_default": 7853,
+      "health_endpoint": "/api/version",
+      "env_vars": [
+        {
+          "key": "WALLABAG_PORT",
+          "default": "7853",
+          "description": "Published Wallabag web reader and API port"
+        },
+        {
+          "key": "SYMFONY__ENV__DOMAIN_NAME",
+          "default": "http://localhost:7853",
+          "description": "Base URL for article assets and browser callbacks"
+        }
+      ],
+      "tags": [
+        "articles",
+        "read-it-later",
+        "archive",
+        "reading",
+        "local"
+      ],
+      "features": [
+        {
+          "id": "article-archiving",
+          "name": "Article Archiving",
+          "description": "Extract, save, and read web articles and documentation offline in distraction-free format",
+          "icon": "Bookmark",
+          "category": "productivity",
+          "requirements": {
+            "services": [
+              "wallabag"
+            ],
+            "vram_gb": 0,
+            "disk_gb": 2
+          },
+          "enabled_services_all": [
+            "wallabag"
+          ],
+          "setup_time": "~1 minute",
+          "priority": 40
+        }
+      ],
       "configuration_scope": "declared-environment-keys"
     },
     {
