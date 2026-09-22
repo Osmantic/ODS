@@ -2465,6 +2465,85 @@
       "configuration_scope": "declared-environment-keys"
     },
     {
+      "id": "nocodb",
+      "name": "NocoDB (Local Structured Tables)",
+      "description": "Edit structured local tables in a browser and expose authenticated row APIs to workflows.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 8080,
+      "external_port_default": 8087,
+      "health_endpoint": "/api/v1/health",
+      "env_vars": [
+        {
+          "key": "NOCODB_PORT",
+          "description": "NocoDB browser and authenticated row API host port",
+          "default": "8087"
+        },
+        {
+          "key": "NOCODB_SITE_URL",
+          "description": "Optional public URL; empty derives http://localhost from NOCODB_PORT",
+          "default": ""
+        },
+        {
+          "key": "NOCODB_ADMIN_PASSWORD",
+          "description": "Managed admin@ods.local password, reapplied at startup; 8+ characters with uppercase, digit and symbol",
+          "required": true
+        },
+        {
+          "key": "NOCODB_DB_PASSWORD",
+          "description": "Initial password for the private PostgreSQL database",
+          "required": true
+        },
+        {
+          "key": "NOCODB_JWT_SECRET",
+          "description": "Persistent random authentication signing secret; keep with private backups",
+          "required": true
+        },
+        {
+          "key": "NOCODB_CONNECTION_KEY",
+          "description": "Persistent native connection-encryption secret; keep with private backups",
+          "required": true
+        }
+      ],
+      "tags": [
+        "database",
+        "tables",
+        "workflows"
+      ],
+      "features": [
+        {
+          "id": "local-structured-tables",
+          "name": "Local Structured Tables",
+          "description": "Manage typed workflow records through native tables and authenticated row APIs",
+          "icon": "Table",
+          "category": "productivity",
+          "requirements": {
+            "services": [
+              "nocodb"
+            ],
+            "vram_gb": 0
+          },
+          "enabled_services_all": [
+            "nocodb"
+          ],
+          "setup_time": "~3 minutes",
+          "priority": 40,
+          "launch": {
+            "type": "service",
+            "service": "nocodb",
+            "path": "/"
+          }
+        }
+      ],
+      "startup_timeout": 240,
+      "configuration_scope": "declared-environment-keys",
+      "container_uid": 101
+    },
+    {
       "id": "ntfy",
       "name": "ntfy (Local Notifications)",
       "description": "Authenticated local HTTP notifications for workflows and operator alerts.",
