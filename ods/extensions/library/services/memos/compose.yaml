@@ -1,0 +1,37 @@
+services:
+  memos:
+    image: neosmemo/memos:0.30.0@sha256:71a5b4738d1bed96e92112004054f0888e92791b64eb78afd79077c96e6f9327
+    container_name: ods-memos
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    # The pinned entrypoint repairs volume ownership, then drops to UID 10001.
+    cap_add: [CHOWN, DAC_OVERRIDE, SETUID, SETGID]
+    security_opt: [no-new-privileges:true]
+    tmpfs: ["/tmp:size=32m,mode=1777"]
+    environment:
+      MEMOS_PORT: "5230"
+      MEMOS_DATA: /var/opt/memos
+      MEMOS_DRIVER: sqlite
+      MEMOS_INSTANCE_URL: ""
+      MEMOS_ALLOW_PRIVATE_WEBHOOKS: "false"
+    volumes:
+      - ./data/memos:/var/opt/memos
+      - ./extensions/services/memos/memos-instance-setting-general.json:/etc/secrets/memos-instance-setting-general.json:ro
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${MEMOS_PORT:-8099}:5230"
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, http://127.0.0.1:5230/healthz]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks: [ods-network]
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+networks:
+  ods-network:
+    external: true
