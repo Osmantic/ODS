@@ -92,6 +92,23 @@ const renderSettings = (override = null) => {
 }
 
 describe('Settings', () => {
+  it('does not download an API error as configuration', async () => {
+    const createObjectURL = vi.fn()
+    vi.stubGlobal('URL', { ...globalThis.URL, createObjectURL, revokeObjectURL: vi.fn() })
+    const { fetchMock } = renderSettings(url => {
+      if (url === '/api/settings/summary') return response({ detail: 'summary unavailable' }, 503)
+      if (url === '/api/status') return response({ detail: 'status unavailable' }, 503)
+      return null
+    })
+
+    const exportButtons = await screen.findAllByRole('button', { name: 'Export configuration' })
+    fireEvent.click(exportButtons.find(button => button.classList.contains('settings-export-config')))
+
+    expect(await screen.findByText('Export failed: status unavailable')).toBeVisible()
+    expect(createObjectURL).not.toHaveBeenCalled()
+    expect(fetchMock.mock.calls.some(([url]) => url === '/api/status')).toBe(true)
+  })
+
   it('shows a confirmed release with notes and performs only a read when checking', async () => {
     const { fetchMock } = renderSettings(url => String(url).startsWith('/api/version') ? response({ current:'2.6.0', latest:'2.7.0', update_available:true, check_status:'checked', checked_at:'2026-09-16T00:00:00Z' }) : null)
     expect(await screen.findByText('A new version of ODS is available')).toBeVisible()
