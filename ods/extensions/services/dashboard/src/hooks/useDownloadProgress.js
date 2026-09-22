@@ -35,6 +35,11 @@ export function useDownloadProgress(pollIntervalMs = 1000) {
   const progressRequestRef = useRef(0)
   const latestAppliedProgressRequestRef = useRef(0)
   const cancelInFlightRef = useRef(false)
+  const mountedRef = useRef(true)
+
+  useEffect(() => () => {
+    mountedRef.current = false
+  }, [])
 
   const fetchProgress = useCallback(async () => {
     const requestId = ++progressRequestRef.current
@@ -149,8 +154,10 @@ export function useDownloadProgress(pollIntervalMs = 1000) {
   const cancelDownload = useCallback(async () => {
     if (cancelInFlightRef.current) return null
     cancelInFlightRef.current = true
-    setIsCancelling(true)
-    setCancelError(null)
+    if (mountedRef.current) {
+      setIsCancelling(true)
+      setCancelError(null)
+    }
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), CANCEL_ACK_TIMEOUT_MS)
     try {
@@ -163,14 +170,16 @@ export function useDownloadProgress(pollIntervalMs = 1000) {
       // about the transfer and must not keep the Cancel button locked on a stall.
       return fetchProgress()
     } catch (err) {
-      setCancelError(controller.signal.aborted
-        ? 'Cancellation was not acknowledged within 45 seconds. Check download progress before retrying.'
-        : err?.message || 'Failed to cancel download.')
+      if (mountedRef.current) {
+        setCancelError(controller.signal.aborted
+          ? 'Cancellation was not acknowledged within 45 seconds. Check download progress before retrying.'
+          : err?.message || 'Failed to cancel download.')
+      }
       return null
     } finally {
       clearTimeout(timeout)
       cancelInFlightRef.current = false
-      setIsCancelling(false)
+      if (mountedRef.current) setIsCancelling(false)
     }
   }, [fetchProgress])
 
