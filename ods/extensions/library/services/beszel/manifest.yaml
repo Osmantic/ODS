@@ -1,0 +1,38 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: beszel
+  name: Beszel
+  description: "Lightweight self-hosted server monitoring hub with real-time docker container metrics and historical graphs."
+  aliases: [monitoring, server-metrics]
+  container_name: ods-beszel
+  host_env: BESZEL_HOST
+  default_host: beszel
+  port: 8090
+  external_port_env: BESZEL_PORT
+  external_port_default: 7848
+  health: /api/health
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [monitoring, metrics, system, docker, telemetry, local]
+  env_vars:
+    - key: BESZEL_PORT
+      default: "7848"
+      description: Published Beszel web hub port
+features:
+  - id: server-monitoring
+    name: Server Monitoring
+    description: "Track CPU, memory, disk, network, and container resource metrics in real time"
+    icon: Activity
+    category: productivity
+    requirements:
+      services: [beszel]
+      vram_gb: 0
+      disk_gb: 1
+    enabled_services_all: [beszel]
+    setup_time: "~1 minute"
+    priority: 36
