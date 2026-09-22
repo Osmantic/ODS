@@ -1,0 +1,35 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: loki
+  name: Loki (Local LogQL)
+  description: "Ingest and query local logs through a credential-separated LogQL gateway and persistent single-node Loki."
+  aliases: [logql]
+  container_name: ods-loki
+  container_uid: 10001
+  default_host: loki
+  port: 0
+  external_port_default: 0
+  health: /ready
+  health_port: 8080
+  health_source: container
+  startup_check: true
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [observability, logs, logql]
+  env_vars:
+    - key: LOKI_PORT
+      description: "Authenticated Loki HTTP gateway host port; no browser UI"
+      default: "3100"
+    - key: LOKI_WRITER_HASH
+      description: "bcrypt hash for the writer account; only the native push endpoint is allowed"
+      required: true
+      secret: true
+    - key: LOKI_READER_HASH
+      description: "Different bcrypt hash for the reader account; only supported read endpoints are allowed"
+      required: true
+      secret: true
