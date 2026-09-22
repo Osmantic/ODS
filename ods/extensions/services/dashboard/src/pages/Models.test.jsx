@@ -542,6 +542,19 @@ test('keeps Run and Delete visible for downloaded models', () => {
   expect(deleteModel).toHaveBeenCalledWith('qwen3.5-9b-q4')
 })
 
+test('reconciles the delete dialog with a refreshed catalog entry', () => {
+  const state = baseState({ models: [model({ id: 'delete-me', name: 'Original model', status: 'downloaded' })] })
+  useModelsMock.mockReturnValue(state)
+  const view = render(createElement(MemoryRouter, null, createElement(Models)))
+  fireEvent.click(screen.getByRole('button', { name: /delete original model/i }))
+  expect(screen.getByRole('dialog', { name: /delete original model/i })).toBeInTheDocument()
+
+  state.models = [{ ...state.models[0], name: 'Refreshed model', status: 'loaded' }]
+  view.rerender(createElement(MemoryRouter, null, createElement(Models)))
+  expect(screen.queryByRole('dialog', { name: /delete original model/i })).toBeNull()
+  expect(screen.getByText('Refreshed model')).toBeVisible()
+})
+
 test('chooses the full catalog context before running a downloaded model', async () => {
   const loadModel = vi.fn()
   useModelsMock.mockReturnValue(baseState({

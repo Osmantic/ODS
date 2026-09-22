@@ -94,10 +94,13 @@ export default function Models({ compact = false }) {
   const [compatibilityFilter, setCompatibilityFilter] = useState('all')
   const [speedFilter, setSpeedFilter] = useState('any')
   const [contextFloor, setContextFloor] = useState(0)
-  const [deleteConfirmModel, setDeleteConfirmModel] = useState(null)
+  const [deleteConfirmModelId, setDeleteConfirmModelId] = useState(null)
   const [activationConfigModel, setActivationConfigModel] = useState(null)
   const [libraryScope, setLibraryScope] = useState(compact ? 'installed' : 'recommended')
   const libraryRef = useRef(null)
+  const deleteConfirmModel = deleteConfirmModelId
+    ? models.find(model => model.id === deleteConfirmModelId) || null
+    : null
 
   useEffect(() => {
     const terminalProgress = downloadProgress.progress?.error ||
@@ -216,7 +219,7 @@ export default function Models({ compact = false }) {
   const handleConfirmDelete = async () => {
     if (!deleteConfirmModel?.id) return
     const modelId = deleteConfirmModel.id
-    setDeleteConfirmModel(null)
+    setDeleteConfirmModelId(null)
     await deleteModel(modelId)
   }
 
@@ -254,7 +257,7 @@ export default function Models({ compact = false }) {
     loadBusy={pendingModelActions.length > 0} activationBusy={Boolean(activationLoading)}
     downloadBusy={downloadProgress.isDownloading || !!downloadStarting} downloadStarting={downloadStarting === model.id}
     onDownload={() => handleDownload(model.id)} onLoad={() => setActivationConfigModel(model)}
-    onBenchmark={() => benchmarkModel(model.id)} onDelete={() => setDeleteConfirmModel(model)}/>
+    onBenchmark={() => benchmarkModel(model.id)} onDelete={() => setDeleteConfirmModelId(model.id)}/>
 
   if (loading) {
     return (
@@ -465,7 +468,7 @@ export default function Models({ compact = false }) {
       {deleteConfirmModel && (
         <DeleteModelDialog
           model={deleteConfirmModel}
-          onCancel={() => setDeleteConfirmModel(null)}
+          onCancel={() => setDeleteConfirmModelId(null)}
           onConfirm={handleConfirmDelete}
         />
       )}
