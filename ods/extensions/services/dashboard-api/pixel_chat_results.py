@@ -135,6 +135,8 @@ class ChatResultStore:
                             (len(data), *key))
 
     def finish(self, key, state):
+        if not isinstance(key, (tuple, list)) or len(key) != 3 or any(not isinstance(k, str) or not k for k in key):
+            raise ValueError("Invalid attempt key")
         if state not in {"complete", "interrupted", "cancelled", "unresolved"}:
             raise ValueError("Invalid receipt state")
         with self.db:
