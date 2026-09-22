@@ -114,6 +114,7 @@ export default function Extensions({ compact = false }) {
   const [pollingLost, setPollingLost] = useState(false)
   const installProgressRef = useRef(null)
   const activePollers = useRef({})
+  const mountedRef = useRef(true)
   // Per-service recovery tracker: counts consecutive fetch failures and
   // fires onThresholdReached/onRecovered to drive the polling-lost banner.
   // Keyed by serviceId because multiple installs can be polling concurrently.
@@ -132,6 +133,11 @@ export default function Extensions({ compact = false }) {
       onRecovered: () => setPollingLost(prev => (prev ? false : prev)),
     })
     activePollers.current[serviceId] = setInterval(async () => {
+      if (!mountedRef.current) {
+        clearInterval(activePollers.current[serviceId])
+        delete activePollers.current[serviceId]
+        return
+      }
       try {
         const res = await fetchJson(`/api/extensions/${serviceId}/progress`)
         // Successful fetch (regardless of HTTP status) means the dashboard
@@ -139,6 +145,7 @@ export default function Extensions({ compact = false }) {
         recoveryTrackers.current[serviceId]?.recordSuccess()
         if (!res.ok) return
         const data = await res.json()
+        if (!mountedRef.current) return
         if (data.status === 'idle') return
         setProgressMap(prev => ({ ...prev, [serviceId]: data }))
         if (data.status === 'error') {
@@ -156,6 +163,7 @@ export default function Extensions({ compact = false }) {
           const catRes = await fetchJson('/api/extensions/catalog')
           if (!catRes.ok) return
           const catData = await catRes.json()
+          if (!mountedRef.current) return
           setCatalog(catData)
           const ext = catData.extensions?.find(e => e.id === serviceId)
           if (ext && (ext.status === 'enabled' || ext.status === 'cli_installed')) {
@@ -188,6 +196,7 @@ export default function Extensions({ compact = false }) {
       .then(d => setTemplates(d.templates || []))
       .catch(() => {})
     return () => {
+      mountedRef.current = false
       Object.values(activePollers.current).forEach(clearInterval)
       activePollers.current = {}
       recoveryTrackers.current = {}
