@@ -869,3 +869,19 @@ def load_templates() -> list[dict]:
 
 
 TEMPLATES = load_templates()
+
+
+# ── config guard: normalize_gpu_backend ───────────────────────
+_GPU_BACKENDS = frozenset({"nvidia", "amd", "intel", "cpu", "mps"})
+
+def normalize_gpu_backend(value: Any) -> str:
+    """Return a canonical GPU backend identifier or ``'cpu'`` as fallback.
+
+    Recognises ``nvidia``, ``amd``, ``intel``, ``cpu``, and ``mps``
+    (Apple Metal Performance Shaders) regardless of case or surrounding
+    whitespace.  Returns ``'cpu'`` for None, empty, or unknown values.
+    """
+    if not value:
+        return "cpu"
+    candidate = str(value).strip().lower()
+    return candidate if candidate in _GPU_BACKENDS else "cpu"
