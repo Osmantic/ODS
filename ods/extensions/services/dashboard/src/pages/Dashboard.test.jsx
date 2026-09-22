@@ -37,6 +37,7 @@ let mockFeatures
 let mockFeatureSuggestions
 let restartCalls
 let restartDeferred
+let restartResponse
 
 function createDeferred() {
   let resolve
@@ -51,6 +52,7 @@ function createDeferred() {
 function installFetchMock() {
   restartCalls = []
   restartDeferred = null
+  restartResponse = null
   vi.stubGlobal('fetch', vi.fn(async (url, options = {}) => {
     if (String(url).includes('/api/features')) {
       return {
@@ -68,8 +70,10 @@ function installFetchMock() {
         await restartDeferred.promise
       }
       return {
-        ok: true,
-        json: async () => ({ status: 'ok', service_id: 'ape', action: 'restart' }),
+        ...(restartResponse || {
+          ok: true,
+          json: async () => ({ status: 'ok', service_id: 'ape', action: 'restart' }),
+        }),
       }
     }
     if (String(url).includes('/api/services/resources')) {
@@ -540,6 +544,19 @@ describe('Dashboard system overview', () => {
     expect(restartCalls).toHaveLength(1)
     expect(restartCalls[0].url).toBe('/api/services/ape/restart')
     expect(restartCalls[0].options.method).toBe('POST')
+  })
+
+  it('preserves plain-text restart errors for the service row', async () => {
+    restartResponse = { ok: false, status: 502, text: async () => 'upstream restart gateway unavailable' }
+    mockResources = { services: [{
+      id: 'ape', name: 'APE (Agent Policy Engine)', type: 'docker', restartable: true,
+      restart_unavailable_reason: null, container: null, disk: null,
+    }] }
+    await renderDashboard()
+    const row = await screen.findByTestId('service-row-ape')
+    fireEvent.click(within(row).getByRole('button', { name: 'APE (Agent Policy Engine) actions' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /Restart service/i }))
+    expect(await within(row).findByText('upstream restart gateway unavailable')).toBeInTheDocument()
   })
 
   it('closes a service action menu with Escape', async () => {

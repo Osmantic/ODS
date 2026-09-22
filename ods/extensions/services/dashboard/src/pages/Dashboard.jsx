@@ -1407,7 +1407,13 @@ const ServicesPanel = memo(function ServicesPanel({ services }) {
                   setActionState(current => ({ ...current, [service.id]: { type: 'loading', text: 'Restarting...' } }))
                   try {
                     const res = await fetch(`/api/services/${encodeURIComponent(service.id)}/restart`, { method: 'POST' })
-                    const data = await res.json().catch(() => ({}))
+                    let data = {}
+                    if (typeof res.text === 'function') {
+                      const body = await res.text()
+                      try { data = body ? JSON.parse(body) : {} } catch { data = { detail: body.trim() } }
+                    } else {
+                      data = await res.json().catch(() => ({}))
+                    }
                     if (!res.ok) throw new Error(data.detail || data.error || 'Restart failed')
                     setActionState(current => ({ ...current, [service.id]: { type: 'success', text: 'Restarted' } }))
                     window.setTimeout(() => {
