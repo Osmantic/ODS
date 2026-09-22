@@ -85,7 +85,9 @@ def _prepare(payload, grant):
             or not isinstance(payload.get('messages'), list) or not payload['messages']
             or type(payload.get('stream', False)) is not bool
             or type(payload.get('n', 1)) is not int or payload.get('n', 1) != 1
-            or 'max_tokens' in payload and 'max_completion_tokens' in payload):
+            or 'max_tokens' in payload and 'max_completion_tokens' in payload
+            or ('stream_options' in payload and (not payload.get('stream', False) or not isinstance(payload['stream_options'], dict)))
+            or ('parallel_tool_calls' in payload and type(payload['parallel_tool_calls']) is not bool)):
         raise ShareError(400, 'unsupported_inference_request')
     # Inline images are permitted; inference-only access must not cause the
     # backend to fetch arbitrary URLs, local files or instance metadata.
