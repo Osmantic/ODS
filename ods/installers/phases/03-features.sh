@@ -23,8 +23,8 @@
 # ============================================================================
 
 # Require Bash 4+ (associative arrays used for GPU topology/link maps)
-if (( BASH_VERSINFO[0] < 4 )); then
-    echo "ERROR: $(basename "${BASH_SOURCE[0]}") requires Bash 4.0+ (current: $BASH_VERSION)" >&2
+if [[ -z "${BASH_VERSINFO:-}" ]] || (( BASH_VERSINFO[0] < 4 )); then
+    echo "ERROR: $(basename "${BASH_SOURCE[0]:-$0}") requires Bash 4.0+ (current: ${BASH_VERSION:-unknown})" >&2
     echo "  macOS ships Bash 3.2 due to licensing. Install a modern version:" >&2
     echo "    brew install bash" >&2
     return 1 2>/dev/null || exit 1
