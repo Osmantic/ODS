@@ -581,7 +581,7 @@ export default function Extensions({ compact = false }) {
         }`}>
           <div className="flex items-center justify-between gap-3">
             <span className="leading-relaxed">{toast.text}</span>
-            <button onClick={() => setToast(null)} className="text-theme-text-muted/45 hover:text-theme-text-secondary transition-colors">×</button>
+            <button type="button" aria-label="Dismiss notification" onClick={() => setToast(null)} className="text-theme-text-muted/45 hover:text-theme-text-secondary transition-colors">×</button>
           </div>
         </div>
       )}

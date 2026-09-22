@@ -42,6 +42,7 @@ test.each([
   expect(update).toHaveBeenCalledTimes(1)
   expect(update.mock.calls[0][0]).toBe('/api/extensions/gitea/update?force=true')
   expect(await screen.findByText('Gitea refreshed successfully.')).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Dismiss notification' })).toBeInTheDocument()
 })
 
 test.each([
