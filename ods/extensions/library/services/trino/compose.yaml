@@ -1,0 +1,37 @@
+services:
+  trino:
+    image: trinodb/trino:483@sha256:db58cc93e593a2706553745f276bb119c9810e69918be56ecde088ba7ccb0534
+    container_name: ods-trino
+    user: "1000:1000"
+    restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    entrypoint: ["/bin/bash", "/etc/ods-trino/start.sh"]
+    environment:
+      TRINO_PASSWORD_HASH: ${TRINO_PASSWORD_HASH:?Set TRINO_PASSWORD_HASH}
+      TRINO_INTERNAL_SECRET: ${TRINO_INTERNAL_SECRET:?Set TRINO_INTERNAL_SECRET}
+      TRINO_TLS_PASSWORD: ${TRINO_TLS_PASSWORD:?Set TRINO_TLS_PASSWORD}
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${TRINO_HTTPS_PORT:-8448}:8443"
+    volumes:
+      - ./data/trino/tls:/var/lib/ods-trino/tls
+      - ./extensions/trino:/etc/ods-trino:ro
+    tmpfs:
+      - /tmp:size=256m,uid=1000,gid=1000,mode=0700
+    healthcheck:
+      test: ["CMD", "/bin/bash", "/etc/ods-trino/health.sh"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 90s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 3G
+    networks: [ods-network]
+networks:
+  ods-network:
+    external: true
