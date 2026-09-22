@@ -1,0 +1,2 @@
+Flask-WTF==1.3.0 --hash=sha256:dc5e3a4ce97f75c47bf6c1c72ad2c3b7bdf579a2ed13aebcc5d3d81fe2571160
+WTForms==3.2.2 --hash=sha256:72b90d5d921bd3119252069cf0301e9c13915f9e52792652bc91c5dda4b79e56
