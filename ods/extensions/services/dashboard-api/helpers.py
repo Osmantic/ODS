@@ -831,7 +831,7 @@ def dir_size_gb(path: Path) -> float:
     cached = _dir_size_cache.get(path)
     if cached is not None:
         return cached
-    if not path.exists():
+    if not path.exists() or not path.is_dir():
         _dir_size_cache.set(path, 0.0)
         return 0.0
     total = 0

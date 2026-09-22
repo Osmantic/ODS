@@ -1584,6 +1584,12 @@ class TestDirSizeGb:
         empty.mkdir()
         assert dir_size_gb(empty) == 0.0
 
+    def test_file_passed_returns_zero(self, tmp_path):
+        clear_dir_size_cache()
+        regular_file = tmp_path / "regular.txt"
+        regular_file.write_text("not a directory")
+        assert dir_size_gb(regular_file) == 0.0
+
     def test_directory_with_files(self, tmp_path):
         clear_dir_size_cache()
         d = tmp_path / "data"
