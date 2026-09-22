@@ -339,6 +339,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  vi.useRealTimers()
   vi.restoreAllMocks()
 })
 
@@ -594,6 +595,26 @@ test('starts and cancels peer model download through proxy endpoints', async () 
   })
   expect(globalThis.fetch.mock.calls[6][0]).toBe('/api/remote-provider/peer/models/download/cancel')
   expect(globalThis.fetch.mock.calls[6][1].method).toBe('POST')
+})
+
+test('polls active peer downloads until they complete', async () => {
+  vi.useFakeTimers()
+  globalThis.fetch
+    .mockResolvedValueOnce(response(peerReadyStatusPayload))
+    .mockResolvedValueOnce(response(peerModelsPayload))
+    .mockResolvedValueOnce(response(peerActiveDownloadStatusPayload))
+    .mockResolvedValueOnce(response(peerModelsPayload))
+    .mockResolvedValueOnce(response(peerDownloadStatusPayload))
+
+  render(createElement(RemoteProvider))
+  await act(async () => {})
+  expect(screen.getByText('Downloading - remote-available - 42%')).toBeInTheDocument()
+  await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+  expect(screen.getByText('Idle')).toBeInTheDocument()
+  expect(globalThis.fetch.mock.calls.slice(3).map(call => call[0])).toEqual([
+    '/api/remote-provider/peer/models',
+    '/api/remote-provider/peer/models/download-status',
+  ])
 })
 
 test('confirms peer model delete before proxying removal', async () => {

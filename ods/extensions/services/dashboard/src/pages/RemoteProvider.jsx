@@ -398,6 +398,17 @@ export default function RemoteProvider({ compact = false }) {
     void loadPeerModels()
   }, [loadPeerModels, statusData?.capabilities?.odsPeerLifecycle, statusData])
 
+  useEffect(() => {
+    if (!peerDownloadActive(peerDownloadStatus)) return
+    const refresh = () => { if (!document.hidden) void loadPeerModels({ quiet: true }) }
+    const timer = setInterval(refresh, 5000)
+    document.addEventListener('visibilitychange', refresh)
+    return () => {
+      clearInterval(timer)
+      document.removeEventListener('visibilitychange', refresh)
+    }
+  }, [loadPeerModels, peerDownloadStatus])
+
 
   const updateForm = (key, value) => {
     formEdit.current.dirty = true
