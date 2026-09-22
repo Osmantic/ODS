@@ -671,7 +671,13 @@ cap_file, preflight_file, report_file, docker_cli, docker_daemon, compose_cli, d
 
 cap = json.load(open(cap_file, "r", encoding="utf-8"))
 pre = json.load(open(preflight_file, "r", encoding="utf-8"))
-ext_diagnostics = json.loads(ext_diagnostics_json)
+try:
+    ext_diagnostics = json.loads(ext_diagnostics_json) if ext_diagnostics_json.strip() else []
+except (TypeError, ValueError):
+    ext_diagnostics = []
+if not isinstance(ext_diagnostics, list):
+    ext_diagnostics = []
+ext_diagnostics = [e for e in ext_diagnostics if isinstance(e, dict)]
 root_dir = pathlib.Path(root_dir_arg).resolve()
 
 def _int_value(raw, default=0):
