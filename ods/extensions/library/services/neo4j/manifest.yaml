@@ -1,0 +1,50 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: neo4j
+  name: Neo4j (Bolt Graph Store)
+  description: "Authenticated local graph database and Browser for applications using Neo4j Bolt and Cypher."
+  aliases: [bolt-graph]
+  container_name: ods-neo4j
+  default_host: neo4j
+  port: 7474
+  external_port_env: NEO4J_PORT
+  external_port_default: 7474
+  health: /
+  ui_path: /browser/
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [graph, cypher, database]
+  env_vars:
+    - key: NEO4J_PASSWORD
+      description: "Initial neo4j administrator password, at least 12 characters without slash or line break; does not reset an existing database"
+      required: true
+      secret: true
+    - key: NEO4J_PORT
+      description: "Published Browser and HTTP Query API port"
+      default: "7474"
+    - key: NEO4J_BOLT_PORT
+      description: "Published Bolt driver port"
+      default: "7687"
+    - key: NEO4J_PUBLIC_HOST
+      description: "Host advertised to Browser and external drivers; set deliberately for remote access"
+      default: localhost
+features:
+  - id: bolt-graph-store
+    name: Neo4j Graph Store
+    description: "Query local entity relationships with Neo4j-compatible applications"
+    icon: Workflow
+    category: productivity
+    requirements:
+      services: [neo4j]
+      vram_gb: 0
+    enabled_services_all: [neo4j]
+    setup_time: "~2 minutes after setting credentials"
+    priority: 30
+    launch:
+      type: service
+      service: neo4j
