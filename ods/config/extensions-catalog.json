@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-13T16:53:56Z",
+  "generated_at": "2026-09-15T05:42:27Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -3159,6 +3159,28 @@
       "configuration_scope": "declared-environment-keys"
     },
     {
+      "id": "pixel-inference",
+      "name": "Pixel inference sharing (development)",
+      "description": "Disabled by default. Owner-provisioned, inference-only device credentials; loopback transport only. Does not provide Pixel agent or computer access. Private state must be provisioned before service activation. Native Windows private-state support and guided setup are not yet implemented.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [
+        "model-router"
+      ],
+      "port": 8093,
+      "external_port_default": 4005,
+      "health_endpoint": "/health",
+      "env_vars": [],
+      "tags": [],
+      "features": [],
+      "startup_check": false,
+      "catalog_source": "builtin",
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
       "id": "qdrant",
       "name": "Qdrant (Vector DB)",
       "description": "Qdrant (Vector DB)",
@@ -3175,6 +3197,65 @@
       "tags": [],
       "features": [],
       "catalog_source": "builtin",
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
+      "id": "redis",
+      "name": "Redis (In-Memory Cache & Broker)",
+      "description": "In-memory key-value data store, cache, and message broker for high-throughput LLM prompt caching, job queues, and agent session state.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 6379,
+      "external_port_default": 6380,
+      "health_endpoint": "/",
+      "env_vars": [
+        {
+          "key": "REDIS_PORT",
+          "description": "Published Redis port on host (defaults to 6380 to prevent conflict with native Redis on 6379)",
+          "default": "6380"
+        },
+        {
+          "key": "REDIS_PASSWORD",
+          "description": "Authentication password required for all Redis operations (auto-generated on setup)",
+          "required": true
+        }
+      ],
+      "tags": [
+        "redis",
+        "cache",
+        "broker",
+        "memory",
+        "queues",
+        "sessions"
+      ],
+      "features": [
+        {
+          "id": "in-memory-cache",
+          "name": "Redis In-Memory Cache",
+          "description": "Provide high-speed in-memory caching and publish-subscribe messaging for local AI pipelines",
+          "icon": "Zap",
+          "category": "storage",
+          "requirements": {
+            "services": [
+              "redis"
+            ],
+            "vram_gb": 0
+          },
+          "enabled_services_all": [
+            "redis"
+          ],
+          "setup_time": "~1 minute after setting credentials",
+          "priority": 34,
+          "launch": {
+            "type": "service",
+            "service": "redis"
+          }
+        }
+      ],
       "configuration_scope": "declared-environment-keys"
     },
     {
