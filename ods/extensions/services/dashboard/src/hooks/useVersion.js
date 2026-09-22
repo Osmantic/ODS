@@ -92,8 +92,10 @@ export async function triggerUpdate(action) {
   })
   
   if (!response.ok) {
-    const error = await response.json()
-    throw new Error(error.detail || 'Update action failed')
+    const raw = await response.text().catch(() => '')
+    let detail = ''
+    try { detail = JSON.parse(raw)?.detail || JSON.parse(raw)?.message || '' } catch { detail = raw.trim() }
+    throw new Error(detail || `Update action failed (${response.status})`)
   }
   
   return response.json()
