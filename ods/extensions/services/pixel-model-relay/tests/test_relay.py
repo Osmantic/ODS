@@ -94,6 +94,13 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         finally:
             relay.WRITE_TIMEOUT_SECONDS = original
 
+    async def test_deeply_nested_json_returns_400(self):
+        headers = {"Authorization": "Bearer test-only-pixel-relay-key"}
+        deep = ("[" * 50000 + "]" * 50000).encode("utf-8")
+        async with ClientSession() as client:
+            async with client.post(self.url + "/v1/chat/completions", headers=headers, data=deep) as response:
+                self.assertEqual(response.status, 400)
+
     async def test_non_ascii_key_fails_at_startup(self):
         original = relay.KEY
         relay.KEY = "not-ascii-\u00e9"
