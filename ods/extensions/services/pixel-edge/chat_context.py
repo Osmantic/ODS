@@ -64,6 +64,8 @@ def project_context(value):
 
 
 def valid_history_snapshot(data):
+    if not isinstance(data, dict):
+        return False
     snapshot = data.get("history_snapshot")
     if snapshot is None:
         return True  # Existing OpenAI-compatible clients remain supported.
