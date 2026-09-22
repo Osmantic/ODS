@@ -90,6 +90,7 @@ $LibDir = Join-Path $ScriptDir "lib"
 . (Join-Path $LibDir "opencode-config.ps1")
 . (Join-Path $LibDir "readiness-summary.ps1")
 . (Join-Path $LibDir "service-plan.ps1")
+. (Join-Path $LibDir "service-smoke.ps1")
 
 # Preserve the caller's Docker client configuration before any installer phase
 # changes location. Docker accepts relative DOCKER_CONFIG values, whose meaning
@@ -1937,6 +1938,25 @@ litellm_settings:
             exit 1
         }
         Write-AISuccess "Docker services started"
+        try {
+            $smoke = Get-ODSWindowsComposeServiceSmokeRecords `
+                -DockerClientArgs $script:ODSWindowsDockerClientArgs -ComposeFlags $composeFlags
+            $smokeResult = Test-ODSWindowsComposeServiceRecords `
+                -EnabledServices $smoke.Services -ServiceRecords $smoke.Records
+            if (-not $smokeResult.Passed) {
+                Write-AIError "Post-install smoke gate failed for enabled services: $($smokeResult.Failures -join ', ')"
+                Write-ODSComposeDiagnostics -InstallDir $installDir -ComposeFlags $composeFlags `
+                    -ComposeArgs @("ps", "--format", "json") -ComposeLogPath $_composeLog `
+                    -Phase "install-windows.ps1 post-install smoke gate" `
+                    -NextStep "Fix the failed enabled service checks, then re-run .\install-windows.ps1." `
+                    -SaveReport
+                exit 1
+            }
+            Write-AISuccess "Post-install smoke gate passed for $($smoke.Services.Count) enabled services"
+        } catch {
+            Write-AIError "Post-install smoke gate could not verify enabled services: $_"
+            exit 1
+        }
         if (-not (Assert-ODSWindowsManagedContainers -InstallDir $installDir -ComposeFlags $composeFlags `
                     -RequiredServices @("dashboard", "dashboard-api", "open-webui"))) {
             Write-ODSComposeDiagnostics -InstallDir $installDir -ComposeFlags $composeFlags `
