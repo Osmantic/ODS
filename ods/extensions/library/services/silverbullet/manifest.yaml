@@ -1,0 +1,48 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: "2.6.0"
+service:
+  id: silverbullet
+  name: SilverBullet (Markdown Workspace)
+  description: "Private local Markdown pages, attachments and programmable browser-side notes."
+  aliases: [markdown-workspace]
+  container_name: ods-silverbullet
+  container_uid: 1000
+  default_host: silverbullet
+  port: 3000
+  external_port_env: SILVERBULLET_PORT
+  external_port_default: 3034
+  health: /.ping
+  type: docker
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  tags: [markdown, notes, knowledge]
+  env_vars:
+    - key: SILVERBULLET_PORT
+      description: "Loopback workspace port"
+      default: "3034"
+    - key: SILVERBULLET_PASSWORD
+      description: "ods login password; 16-128 URL-safe characters"
+      required: true
+      secret: true
+    - key: SILVERBULLET_API_TOKEN
+      description: "Full-workspace API token; 16-128 URL-safe characters"
+      required: true
+      secret: true
+features:
+  - id: local-markdown-workspace
+    name: Write Local Markdown Notes
+    description: "Keep linked pages and attachments in a private local workspace"
+    icon: FileText
+    category: productivity
+    requirements:
+      services: [silverbullet]
+      vram_gb: 0
+    enabled_services_all: [silverbullet]
+    setup_time: "~1 minute"
+    priority: 40
+    launch:
+      type: service
+      service: silverbullet

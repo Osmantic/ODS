@@ -3386,6 +3386,67 @@
       "configuration_scope": "declared-environment-keys"
     },
     {
+      "id": "silverbullet",
+      "name": "SilverBullet (Markdown Workspace)",
+      "description": "Private local Markdown pages, attachments and programmable browser-side notes.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 3000,
+      "external_port_default": 3034,
+      "health_endpoint": "/.ping",
+      "env_vars": [
+        {
+          "key": "SILVERBULLET_PORT",
+          "description": "Loopback workspace port",
+          "default": "3034"
+        },
+        {
+          "key": "SILVERBULLET_PASSWORD",
+          "description": "ods login password; 16-128 URL-safe characters",
+          "required": true
+        },
+        {
+          "key": "SILVERBULLET_API_TOKEN",
+          "description": "Full-workspace API token; 16-128 URL-safe characters",
+          "required": true
+        }
+      ],
+      "tags": [
+        "markdown",
+        "notes",
+        "knowledge"
+      ],
+      "features": [
+        {
+          "id": "local-markdown-workspace",
+          "name": "Write Local Markdown Notes",
+          "description": "Keep linked pages and attachments in a private local workspace",
+          "icon": "FileText",
+          "category": "productivity",
+          "requirements": {
+            "services": [
+              "silverbullet"
+            ],
+            "vram_gb": 0
+          },
+          "enabled_services_all": [
+            "silverbullet"
+          ],
+          "setup_time": "~1 minute",
+          "priority": 40,
+          "launch": {
+            "type": "service",
+            "service": "silverbullet"
+          }
+        }
+      ],
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
       "id": "tailscale",
       "name": "Tailscale (Remote Access)",
       "description": "Reach ODS from any device, anywhere via Tailscale VPN.",
