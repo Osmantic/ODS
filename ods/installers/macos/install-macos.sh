@@ -117,6 +117,22 @@ ENABLE_WEB_SEARCH=false
 ENABLE_LANGFUSE=false
 NO_LANGFUSE_EXPLICIT=false
 OPENCLAW_EXPLICIT=false
+# Track which feature flags were explicitly passed this run. A rerun that
+# does not restate them restores the selection recorded in the installed
+# tree instead of resetting every opt-in to the (mostly off) macOS defaults
+# — see _macos_preserve_feature_selections below.
+VOICE_EXPLICIT=false
+WORKFLOWS_EXPLICIT=false
+RAG_EXPLICIT=false
+RECOMMENDED_EXPLICIT=false
+HERMES_EXPLICIT=false
+APE_EXPLICIT=false
+PERPLEXICA_EXPLICIT=false
+PRIVACY_SHIELD_EXPLICIT=false
+LANGFUSE_EXPLICIT=false
+ODS_PROXY_EXPLICIT=false
+TAILSCALE_EXPLICIT=false
+BRAVE_SEARCH_EXPLICIT=false
 ALL_FEATURES=false
 CLOUD_MODE=false
 NO_BOOTSTRAP=false
@@ -128,18 +144,18 @@ while [[ $# -gt 0 ]]; do
         --force)         FORCE=true; shift ;;
         --non-interactive) NON_INTERACTIVE=true; shift ;;
         --tier)          TIER_OVERRIDE="${2:-}"; shift 2 ;;
-        --voice)         ENABLE_VOICE=true; shift ;;
-        --workflows)     ENABLE_WORKFLOWS=true; shift ;;
-        --rag)           ENABLE_RAG=true; shift ;;
-        --recommended)   ENABLE_RECOMMENDED=true; shift ;;
-        --no-recommended) ENABLE_RECOMMENDED=false; shift ;;
-        --hermes)        ENABLE_HERMES=true; shift ;;
-        --no-hermes)     ENABLE_HERMES=false; shift ;;
+        --voice)         ENABLE_VOICE=true; VOICE_EXPLICIT=true; shift ;;
+        --workflows)     ENABLE_WORKFLOWS=true; WORKFLOWS_EXPLICIT=true; shift ;;
+        --rag)           ENABLE_RAG=true; RAG_EXPLICIT=true; shift ;;
+        --recommended)   ENABLE_RECOMMENDED=true; RECOMMENDED_EXPLICIT=true; shift ;;
+        --no-recommended) ENABLE_RECOMMENDED=false; RECOMMENDED_EXPLICIT=true; shift ;;
+        --hermes)        ENABLE_HERMES=true; HERMES_EXPLICIT=true; shift ;;
+        --no-hermes)     ENABLE_HERMES=false; HERMES_EXPLICIT=true; shift ;;
         --openclaw)      ENABLE_OPENCLAW=true; OPENCLAW_EXPLICIT=true; shift ;;
         --no-openclaw)   ENABLE_OPENCLAW=false; OPENCLAW_EXPLICIT=true; shift ;;
-        --langfuse)      ENABLE_LANGFUSE=true; shift ;;
-        --no-langfuse)   ENABLE_LANGFUSE=false; NO_LANGFUSE_EXPLICIT=true; shift ;;
-        --all)           ALL_FEATURES=true; shift ;;
+        --langfuse)      ENABLE_LANGFUSE=true; LANGFUSE_EXPLICIT=true; shift ;;
+        --no-langfuse)   ENABLE_LANGFUSE=false; NO_LANGFUSE_EXPLICIT=true; LANGFUSE_EXPLICIT=true; shift ;;
+        --all)           ALL_FEATURES=true; VOICE_EXPLICIT=true; WORKFLOWS_EXPLICIT=true; RAG_EXPLICIT=true; RECOMMENDED_EXPLICIT=true; HERMES_EXPLICIT=true; APE_EXPLICIT=true; PERPLEXICA_EXPLICIT=true; PRIVACY_SHIELD_EXPLICIT=true; LANGFUSE_EXPLICIT=true; ODS_PROXY_EXPLICIT=true; shift ;;
         --cloud)         CLOUD_MODE=true; shift ;;
         --no-bootstrap)  NO_BOOTSTRAP=true; shift ;;
         *)               echo "Unknown option: $1"; exit 1 ;;
@@ -272,6 +288,67 @@ _macos_set_builtin_compose_state() {
         mv -f "$active" "$disabled"
         log "Disabled built-in extension compose: ${service_id}"
     fi
+}
+
+# Read the recorded enablement of an optional service from the installed
+# tree. The sync helpers below rename each optional service's compose.yaml
+# to compose.yaml.disabled when its feature is off, so the installed marker
+# pair is the authoritative record of the last selection — the same record
+# the compose resolver consumes. Prints "true" or "false"; returns 1 when
+# there is no record (fresh install) or both markers exist (ambiguous).
+_macos_existing_feature_enabled() {
+    local svc_dir="$1" install_root="$2"
+    local compose="$install_root/extensions/services/$svc_dir/compose.yaml"
+
+    if [[ -f "$compose" && ! -e "${compose}.disabled" ]]; then
+        printf 'true\n'
+        return 0
+    fi
+    if [[ -f "${compose}.disabled" && ! -e "$compose" ]]; then
+        printf 'false\n'
+        return 0
+    fi
+    return 1
+}
+
+# Keep a feature flag at its caller value when it was explicitly set this
+# run; when it was not, restore the selection recorded by the previous
+# install. Unknown or ambiguous records keep the caller value.
+_macos_preserve_feature_flag() {
+    local current="$1" explicit="$2" svc_dir="$3" install_root="$4" existing
+
+    if [[ "$explicit" == "true" ]]; then
+        printf '%s\n' "$current"
+        return 0
+    fi
+    if existing="$(_macos_existing_feature_enabled "$svc_dir" "$install_root")"; then
+        printf '%s\n' "$existing"
+    else
+        printf '%s\n' "$current"
+    fi
+}
+
+# Preserve the prior feature selection on reruns that do not restate it. The
+# installed tree records each optional service's enablement as
+# compose.yaml / compose.yaml.disabled — the record the compose resolver
+# consumes — so a flagless reinstall must not reset every opt-in to the
+# (mostly off) macOS defaults and silently disable running services.
+# Services a flag cannot name (ape, perplexica, privacy-shield, ods-proxy,
+# tailscale, brave-search) are only ever toggled by `ods enable`, so the
+# recorded marker is always their authoritative state.
+_macos_preserve_feature_selections() {
+    ENABLE_VOICE="$(_macos_preserve_feature_flag "$ENABLE_VOICE" "$VOICE_EXPLICIT" whisper "$INSTALL_DIR")"
+    ENABLE_WORKFLOWS="$(_macos_preserve_feature_flag "$ENABLE_WORKFLOWS" "$WORKFLOWS_EXPLICIT" n8n "$INSTALL_DIR")"
+    ENABLE_RAG="$(_macos_preserve_feature_flag "$ENABLE_RAG" "$RAG_EXPLICIT" qdrant "$INSTALL_DIR")"
+    ENABLE_RECOMMENDED="$(_macos_preserve_feature_flag "$ENABLE_RECOMMENDED" "$RECOMMENDED_EXPLICIT" token-spy "$INSTALL_DIR")"
+    ENABLE_HERMES="$(_macos_preserve_feature_flag "$ENABLE_HERMES" "$HERMES_EXPLICIT" hermes "$INSTALL_DIR")"
+    ENABLE_APE="$(_macos_preserve_feature_flag "$ENABLE_APE" "$APE_EXPLICIT" ape "$INSTALL_DIR")"
+    ENABLE_PERPLEXICA="$(_macos_preserve_feature_flag "$ENABLE_PERPLEXICA" "$PERPLEXICA_EXPLICIT" perplexica "$INSTALL_DIR")"
+    ENABLE_PRIVACY_SHIELD="$(_macos_preserve_feature_flag "$ENABLE_PRIVACY_SHIELD" "$PRIVACY_SHIELD_EXPLICIT" privacy-shield "$INSTALL_DIR")"
+    ENABLE_LANGFUSE="$(_macos_preserve_feature_flag "$ENABLE_LANGFUSE" "$LANGFUSE_EXPLICIT" langfuse "$INSTALL_DIR")"
+    ENABLE_ODS_PROXY="$(_macos_preserve_feature_flag "$ENABLE_ODS_PROXY" "$ODS_PROXY_EXPLICIT" ods-proxy "$INSTALL_DIR")"
+    ENABLE_TAILSCALE="$(_macos_preserve_feature_flag "$ENABLE_TAILSCALE" "$TAILSCALE_EXPLICIT" tailscale "$INSTALL_DIR")"
+    ENABLE_BRAVE_SEARCH="$(_macos_preserve_feature_flag "$ENABLE_BRAVE_SEARCH" "$BRAVE_SEARCH_EXPLICIT" brave-search "$INSTALL_DIR")"
 }
 
 _macos_sync_builtin_compose_states() {
@@ -1203,6 +1280,8 @@ if ! $OPENCLAW_EXPLICIT; then
     fi
     unset _existing_openclaw
 fi
+
+_macos_preserve_feature_selections
 
 # Initialize log file
 mkdir -p "$(dirname "$ODS_LOG_FILE")"

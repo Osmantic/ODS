@@ -386,4 +386,44 @@ brew_install_line="$(grep -n '^  brew install bash' "$INSTALLER" | head -1 | cut
     || fail "Bash bootstrap can hand off to an unsupported shell and recurse"
 pass "cloud health fails closed and dry-run skips host-agent mutation"
 
+# A flagless rerun must preserve the recorded feature selection instead of
+# resetting every ENABLE_* flag to its (mostly off) macOS default. The
+# installed marker pair compose.yaml / compose.yaml.disabled is the record.
+eval "$(extract_installer_function _macos_existing_feature_enabled)"
+eval "$(extract_installer_function _macos_preserve_feature_flag)"
+eval "$(extract_installer_function _macos_preserve_feature_selections)"
+
+PRESERVE_INSTALL="$TMP_DIR/feature-preserve-install"
+mkdir -p "$PRESERVE_INSTALL/extensions/services/whisper" \
+    "$PRESERVE_INSTALL/extensions/services/n8n" \
+    "$PRESERVE_INSTALL/extensions/services/langfuse"
+printf 'services: {}\n' > "$PRESERVE_INSTALL/extensions/services/whisper/compose.yaml"
+printf 'services: {}\n' > "$PRESERVE_INSTALL/extensions/services/n8n/compose.yaml.disabled"
+printf 'services: {}\n' > "$PRESERVE_INSTALL/extensions/services/langfuse/compose.yaml.disabled"
+
+INSTALL_DIR="$PRESERVE_INSTALL"
+ENABLE_VOICE=false ENABLE_WORKFLOWS=true ENABLE_RAG=false
+ENABLE_RECOMMENDED=false ENABLE_HERMES=true ENABLE_APE=false
+ENABLE_PERPLEXICA=false ENABLE_PRIVACY_SHIELD=false ENABLE_LANGFUSE=false
+ENABLE_ODS_PROXY=false ENABLE_TAILSCALE=false ENABLE_BRAVE_SEARCH=false
+VOICE_EXPLICIT=false WORKFLOWS_EXPLICIT=false RAG_EXPLICIT=false
+RECOMMENDED_EXPLICIT=false HERMES_EXPLICIT=false APE_EXPLICIT=false
+PERPLEXICA_EXPLICIT=false PRIVACY_SHIELD_EXPLICIT=false LANGFUSE_EXPLICIT=false
+ODS_PROXY_EXPLICIT=false TAILSCALE_EXPLICIT=false BRAVE_SEARCH_EXPLICIT=false
+
+_macos_preserve_feature_selections
+[[ "$ENABLE_VOICE" == "true" ]] || fail "enabled whisper marker was not preserved on macOS rerun"
+[[ "$ENABLE_WORKFLOWS" == "false" ]] || fail "disabled n8n marker was not preserved on macOS rerun"
+[[ "$ENABLE_LANGFUSE" == "false" ]] || fail "disabled langfuse marker was not preserved on macOS rerun"
+[[ "$ENABLE_RAG" == "false" ]] || fail "missing qdrant record did not keep the caller default"
+pass "flagless macOS rerun preserves recorded feature selections"
+
+VOICE_EXPLICIT=true
+_macos_preserve_feature_selections
+[[ "$ENABLE_VOICE" == "true" ]] || fail "explicit flag handling changed on macOS rerun"
+ENABLE_VOICE=false
+_macos_preserve_feature_selections
+[[ "$ENABLE_VOICE" == "false" ]] || fail "explicit --no-voice style value did not beat the marker"
+pass "explicit macOS feature flags override recorded selections"
+
 echo "[OK] macOS installer transition contracts hold"
