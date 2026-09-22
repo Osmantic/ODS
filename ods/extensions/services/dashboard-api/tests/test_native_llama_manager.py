@@ -13,6 +13,7 @@ def managed(tmp_path, monkeypatch):
     manager.touch()
     monkeypatch.setattr(host, 'INSTALL_DIR', tmp_path)
     monkeypatch.setattr(host.platform, 'system', lambda: 'Darwin')
+    monkeypatch.setattr(host, '_find_usable_bash', lambda: '/bin/bash')
     return tmp_path, manager
 
 
@@ -39,7 +40,11 @@ def test_launch_uses_shared_manager_not_popen(managed, monkeypatch):
     monkeypatch.setattr(host, '_active_model_directory', lambda _: root / 'data/models')
     monkeypatch.setattr(host, '_disable_conflicting_macos_bridge', lambda *_: None)
     calls = []
-    monkeypatch.setattr(host.subprocess, 'run', lambda args, **kw: calls.append(args) or subprocess.CompletedProcess(args, 0))
+    def run(args, **kw):
+        calls.append(args)
+        (root / 'pid').write_text('4321\n', encoding='utf-8')
+        return subprocess.CompletedProcess(args, 0)
+    monkeypatch.setattr(host.subprocess, 'run', run)
     monkeypatch.setattr(host.subprocess, 'Popen', lambda *_a, **_k: pytest.fail('unmanaged launch'))
     host._launch_native_llama_server(root / '.env', root / 'bin/llama-server', root / 'log', root / 'pid')
     assert calls[0][:3] == ['/bin/bash', str(manager), 'start']

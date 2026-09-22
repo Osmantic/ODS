@@ -16356,17 +16356,6 @@ def _launch_native_llama_server(env_path: Path, llama_bin: Path, llama_log: Path
     args.extend(_native_llama_tuning_arguments(env, llama_bin))
     if _normalize_key(env.get("LLAMA_ARG_NO_CACHE_PROMPT")) not in {"", "0", "false", "off", "no"}:
         args.append("--no-cache-prompt")
-    manager = INSTALL_DIR / "installers/macos/lib/native-llama-service.sh"
-    if platform.system() == "Darwin" and manager.is_file():
-        result = subprocess.run(
-            ["/bin/bash", str(manager), "start", str(INSTALL_DIR),
-             str(llama_bin), str(pid_file), *args[1:]],
-            capture_output=True, text=True, timeout=120,
-        )
-        if result.returncode:
-            raise RuntimeError("Managed native llama startup failed")
-        logger.info("Native llama-server started through launchd (model %s)", gguf_file)
-        return
     llama_log.parent.mkdir(parents=True, exist_ok=True)
     pid_file.parent.mkdir(parents=True, exist_ok=True)
     service_script = INSTALL_DIR / "installers" / "macos" / "lib" / "native-llama-service.sh"

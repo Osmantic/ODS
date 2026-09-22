@@ -5265,6 +5265,8 @@ class TestModelActivationModeAndMacosBridge:
             "8080",
             "--model",
             str(install_dir / "data" / "models" / "model.gguf"),
+            "--alias",
+            "model.gguf",
             "--ctx-size",
             "4096",
             "--n-gpu-layers",
