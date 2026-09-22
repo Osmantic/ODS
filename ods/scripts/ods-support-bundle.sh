@@ -298,6 +298,7 @@ from pathlib import Path
 path = Path(sys.argv[1])
 target = sys.argv[2]
 default = sys.argv[3]
+found = default
 
 for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
     stripped = line.strip()
@@ -308,10 +309,15 @@ for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
     if key.startswith("export "):
         key = key[7:].strip()
     if key == target:
-        print(value.strip().strip('"').strip("'"))
-        break
-else:
-    print(default)
+        val = value.strip()
+        if (val.startswith('"') and '"' in val[1:]) or (val.startswith("'") and "'" in val[1:]):
+            q = val[0]
+            val = val[1:val.find(q, 1)]
+        else:
+            val = val.split(" #", 1)[0].rstrip()
+        found = val
+
+print(found)
 PY
 }
 
