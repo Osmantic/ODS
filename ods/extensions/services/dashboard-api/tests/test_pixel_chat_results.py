@@ -338,6 +338,19 @@ def test_orphaned_receipts_do_not_reserve_future_output_capacity(tmp_path, monke
     finally: second.close()
 
 
+def test_active_capacity_is_shared_across_workers(tmp_path, monkeypatch):
+    monkeypatch.setattr(receipts, 'MAX_ACTIVE', 1)
+    first = receipts.ChatResultStore(tmp_path / 'private')
+    second = receipts.ChatResultStore(tmp_path / 'private')
+    try:
+        first.reserve(IDENTITY, 'hash')
+        with pytest.raises(receipts.ResultCapacity):
+            second.reserve((IDENTITY[0], 'another-chat', 'next'), 'hash')
+    finally:
+        first.close()
+        second.close()
+
+
 def test_api_task_shutdown_is_not_reported_as_owner_stop(store, monkeypatch):
     async def run():
         started = asyncio.Event()
