@@ -139,6 +139,7 @@ function App() {
 
       <main className="pixel-workspace dashboard-market-shell portal-workspace flex-1 transition-all duration-200">
         <div className="portal-chat">
+          {error && <p role="alert" className="mx-4 mt-4 rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">Live system status unavailable; showing the last known snapshot.</p>}
           {showUpdate && <PortalUpdateNotice version={version} onDismiss={dismissUpdate} onReview={() => navigate('/settings?section=updates')} />}
           {status?.bootstrap?.active && <BootstrapBanner bootstrap={status.bootstrap} />}
           <Suspense fallback={<p className="p-6 text-theme-text-muted">Opening Pixel…</p>}><Pixel systemStatus={status} /></Suspense>

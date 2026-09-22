@@ -71,10 +71,10 @@ describe('useSystemStatus', () => {
 
   test('does not clear status on error (preserves previous data)', async () => {
     const mockStatus = { gpu: { name: 'RTX 4090' }, services: [], model: null, bootstrap: null, uptime: 100 }
-    fetch.mockResolvedValue({
+    fetch.mockResolvedValueOnce({
       ok: true,
       json: () => Promise.resolve(mockStatus)
-    })
+    }).mockRejectedValueOnce(new Error('network down'))
 
     const { result } = renderHook(() => useSystemStatus())
 
@@ -85,6 +85,10 @@ describe('useSystemStatus', () => {
     // The hook keeps previous status on error by design
     // (see source: catch block only sets error, doesn't clear status)
     expect(result.current.status.gpu).toBeTruthy()
+    expect(result.current.status.stale).toBe(false)
+    document.dispatchEvent(new Event('visibilitychange'))
+    await waitFor(() => expect(result.current.error).toBe('network down'))
+    expect(result.current.status.stale).toBe(true)
   })
 
   test('cleans up interval on unmount', async () => {

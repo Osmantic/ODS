@@ -46,7 +46,8 @@ export function useSystemStatus() {
     services: [],
     model: null,
     bootstrap: null,
-    uptime: 0
+    uptime: 0,
+    stale: false
   })
   const [loading, setLoading] = useState(!USE_MOCK_DATA)
   const [error, setError] = useState(null)
@@ -80,10 +81,11 @@ export function useSystemStatus() {
         const response = await fetch('/api/status')
         if (!response.ok) throw new Error('Failed to fetch status')
         const data = await response.json()
-        setStatus(data)
+        setStatus({ ...data, stale: false })
         setError(null)
         hasInitialData.current = true
       } catch (err) {
+        setStatus(previous => previous ? { ...previous, stale: true } : previous)
         setError(err.message)
       } finally {
         fetchInFlight.current = false
