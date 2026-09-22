@@ -238,6 +238,7 @@ def test_sandbox_build_and_proof_are_owner_bound(tmp_path, release, monkeypatch,
         mount = args[args.index('--mount') + 1]
         workspace = Path(mount.removeprefix('type=bind,source=').removesuffix(',target=/workspace'))
         assert workspace.name.startswith('ods-sandbox-workspace-')
+        assert workspace.parent == tmp_path.parent
         (workspace / 'ods-proof.txt').write_text('ods-sandbox-proof')
         return json.dumps({'uid': 0 if fault == 'uid' else 501,
                            'readback': 'ods-sandbox-proof', 'tools': fault != 'tools'})

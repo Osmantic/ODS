@@ -288,7 +288,10 @@ def prepare_sandbox(*, source, ref, docker):
                'print(json.dumps({"uid":os.getuid(),"readback":p.read_text(),'
                '"tools":all(shutil.which(x) for x in '
                '["bash","curl","git","jq","python3","rg","rsync"])}))')
-    with tempfile.TemporaryDirectory(prefix='ods-sandbox-workspace-') as workspace:
+    # Colima does not share macOS's per-user TMPDIR (/var/folders) with its VM.
+    # The selected source is staged beside the installed ODS data, a filesystem
+    # already shared with Docker, and the proof must not dirty the Git checkout.
+    with tempfile.TemporaryDirectory(prefix='ods-sandbox-workspace-', dir=source.parent) as workspace:
         try:
             result = json.loads(command([docker, 'run', '--rm', '--name', name,
                 '--network', 'none', '--read-only', '--cap-drop', 'ALL',
