@@ -68,7 +68,7 @@ function App() {
   // was per-browser and gave the wrong answer on re-imaged devices or fresh
   // browsers. The hook returns firstRun=false while it's loading or if the
   // API call fails, so the normal app shell is the safe default.
-  const { firstRun, refresh: refreshFirstRun } = useFirstRun()
+  const { firstRun, loading: firstRunLoading, refresh: refreshFirstRun } = useFirstRun()
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     return getStorageValue('localStorage', 'ods-sidebar-collapsed') === 'true'
   })
@@ -96,6 +96,17 @@ function App() {
         }>
           <ODSTalk />
         </Suspense>
+      </div>
+    )
+  }
+
+  // Do not expose the normal workspace until the server has answered the
+  // authoritative first-run check. A fresh device must not briefly render
+  // dashboard routes while onboarding status is still unknown.
+  if (firstRunLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-theme-bg text-theme-text" role="status" aria-live="polite">
+        <span className="font-mono text-sm text-theme-accent tracking-widest animate-pulse">Checking setup status...</span>
       </div>
     )
   }
