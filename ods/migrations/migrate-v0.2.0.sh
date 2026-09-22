@@ -18,12 +18,6 @@ if [[ -f "$ENV_FILE" ]]; then
         echo "ENABLE_VOICE=true" >> "$ENV_FILE"
         echo "Added ENABLE_VOICE to .env"
     fi
-    
-    # Check if VOICE_PROFILE exists
-    if ! grep -q "^VOICE_PROFILE=" "$ENV_FILE"; then
-        echo "VOICE_PROFILE=voice" >> "$ENV_FILE"
-        echo "Added VOICE_PROFILE to .env"
-    fi
 fi
 
 echo "Migration v0.2.0 complete"
