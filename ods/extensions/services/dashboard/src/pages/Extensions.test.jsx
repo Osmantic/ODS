@@ -93,6 +93,25 @@ afterEach(() => {
 })
 
 describe('Extensions page — unhealthy + install derivations', () => {
+  it('names the toast close control after a successful extension action', async () => {
+    const extension = { id: 'toast-ext', name: 'Toast Extension', status: 'enabled', source: 'user', features: [baseFeature], description: 'desc' }
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url).includes('/api/extensions/catalog')) return makeJsonResponse({ extensions: [extension], summary: baseSummary({ installed: 1 }), agent_available: true })
+      if (String(url).includes('/api/templates')) return makeJsonResponse({ templates: [] })
+      if (String(url).includes('/api/extensions/toast-ext/disable')) return makeJsonResponse({ message: 'Extension stopped' })
+      throw new Error(`Unmocked fetch: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<Extensions />)
+    await screen.findByText('Toast Extension')
+    fireEvent.click(screen.getByRole('button', { name: 'Disable Toast Extension' }))
+    fireEvent.click(screen.getAllByRole('button', { name: 'Disable' }).at(-1))
+
+    expect(await screen.findByText('Extension stopped')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss notification' }))
+    expect(screen.queryByText('Extension stopped')).toBeNull()
+  })
+
   it('shows starter collections as a matching paginated library with an explicit preview', async () => {
     vi.stubGlobal('fetch', vi.fn(async url => String(url).includes('/api/templates')
       ? makeJsonResponse({templates:Array.from({length:8}, (_,index) => ({id:`collection-${index}`,name:`Collection ${index}`,description:'A useful collection',services:['a','b']}))})
