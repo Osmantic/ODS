@@ -869,3 +869,37 @@ def load_templates() -> list[dict]:
 
 
 TEMPLATES = load_templates()
+
+
+# ── config guard: extract_host_port ───────────────────────────
+def extract_host_port(endpoint: Any) -> tuple[str, int | None]:
+    """Split an ``'host:port'`` or bare ``'host'`` string.
+
+    Returns ``(host, port)`` where *port* is an ``int`` when present
+    and valid, otherwise ``None``.  Returns ``('', None)`` for falsy
+    or non-string inputs.
+    """
+    if not endpoint or not isinstance(endpoint, str):
+        return ("", None)
+    stripped = endpoint.strip()
+    # Handle IPv6 bracketed addresses [::1]:8080
+    if stripped.startswith("["):
+        bracket_end = stripped.find("]")
+        if bracket_end == -1:
+            return (stripped, None)
+        host = stripped[1:bracket_end]
+        rest = stripped[bracket_end + 1 :]
+        if rest.startswith(":"):
+            try:
+                return (host, int(rest[1:]))
+            except ValueError:
+                pass
+        return (host, None)
+    parts = stripped.rsplit(":", 1)
+    host = parts[0]
+    if len(parts) == 2:
+        try:
+            return (host, int(parts[1]))
+        except ValueError:
+            pass
+    return (host, None)
