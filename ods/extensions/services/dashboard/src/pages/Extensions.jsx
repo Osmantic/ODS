@@ -114,6 +114,7 @@ export default function Extensions({ compact = false }) {
   const [pollingLost, setPollingLost] = useState(false)
   const installProgressRef = useRef(null)
   const activePollers = useRef({})
+  const progressGenerations = useRef({})
   // Per-service recovery tracker: counts consecutive fetch failures and
   // fires onThresholdReached/onRecovered to drive the polling-lost banner.
   // Keyed by serviceId because multiple installs can be polling concurrently.
@@ -132,6 +133,9 @@ export default function Extensions({ compact = false }) {
       onRecovered: () => setPollingLost(prev => (prev ? false : prev)),
     })
     activePollers.current[serviceId] = setInterval(async () => {
+      const generation = (progressGenerations.current[serviceId] || 0) + 1
+      progressGenerations.current[serviceId] = generation
+      const isCurrent = () => progressGenerations.current[serviceId] === generation
       try {
         const res = await fetchJson(`/api/extensions/${serviceId}/progress`)
         // Successful fetch (regardless of HTTP status) means the dashboard
@@ -139,6 +143,7 @@ export default function Extensions({ compact = false }) {
         recoveryTrackers.current[serviceId]?.recordSuccess()
         if (!res.ok) return
         const data = await res.json()
+        if (!isCurrent()) return
         if (data.status === 'idle') return
         setProgressMap(prev => ({ ...prev, [serviceId]: data }))
         if (data.status === 'error') {
@@ -156,6 +161,7 @@ export default function Extensions({ compact = false }) {
           const catRes = await fetchJson('/api/extensions/catalog')
           if (!catRes.ok) return
           const catData = await catRes.json()
+          if (!isCurrent()) return
           setCatalog(catData)
           const ext = catData.extensions?.find(e => e.id === serviceId)
           if (ext && (ext.status === 'enabled' || ext.status === 'cli_installed')) {
