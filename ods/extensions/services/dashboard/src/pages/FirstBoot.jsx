@@ -81,6 +81,7 @@ export default function FirstBoot({ onComplete }) {
   const [deviceName, setDeviceName] = useState(initial.deviceName || 'ods')
   const [username, setUsername] = useState(initial.username || '')
   const [stack, setStack] = useState(initial.stack || 'chat')
+  const [finishPhase, setFinishPhase] = useState(initial.finishPhase || null)
   const [finishing, setFinishing] = useState(false)
   const [finishError, setFinishError] = useState(null)
   const [invite, setInvite] = useState(null)
@@ -88,8 +89,8 @@ export default function FirstBoot({ onComplete }) {
 
   // Persist progress whenever the user moves forward.
   useEffect(() => {
-    writeProgress({ step, deviceName, username, stack })
-  }, [step, deviceName, username, stack])
+    writeProgress({ step, deviceName, username, stack, finishPhase })
+  }, [step, deviceName, username, stack, finishPhase])
 
   const next = () => setStep(s => Math.min(s + 1, TOTAL_STEPS))
   const prev = () => setStep(s => Math.max(s - 1, 1))
@@ -139,7 +140,7 @@ export default function FirstBoot({ onComplete }) {
         throw new Error('The selected stack is no longer available. Go back and choose another option.')
       }
 
-      if (selectedStack.templateId) {
+      if (selectedStack.templateId && finishPhase !== `template-applied:${selectedStack.id}`) {
         const applyResp = await fetch(`/api/templates/${selectedStack.templateId}/apply`, {
           method: 'POST',
         })
@@ -173,6 +174,7 @@ export default function FirstBoot({ onComplete }) {
             : ' Go back and choose another stack, or resolve the listed services and retry.'
           throw new Error(`${selectedStack.title} was only partially configured (${details}).${recovery}`)
         }
+        setFinishPhase(`template-applied:${selectedStack.id}`)
       }
 
       let inviteData = null
@@ -237,6 +239,7 @@ export default function FirstBoot({ onComplete }) {
       }
 
       clearProgress()
+      setFinishPhase(null)
       if (inviteData) {
         setInvite(inviteData)
         // Stay on the success screen until the user taps "Open dashboard".
@@ -287,7 +290,7 @@ export default function FirstBoot({ onComplete }) {
               {step === 3 && (
                 <StackStep
                   stack={stack}
-                  setStack={setStack}
+                  setStack={value => { setFinishPhase(null); setStack(value) }}
                   onNext={next}
                   onBack={prev}
                 />
