@@ -365,12 +365,16 @@ GPU_HAS_NVLINK="false"
 GPU_TOTAL_VRAM=0
 if [[ $GPU_COUNT -gt 1 && "$GPU_BACKEND" == "nvidia" ]]; then
     ai "Detecting multi-GPU topology..."
-    if [[ -f "$SCRIPT_DIR/installers/lib/nvidia-topo.sh" ]]; then
-        # Source the topology detection script
-        source "$SCRIPT_DIR/installers/lib/nvidia-topo.sh"
+    if [[ -f "${SCRIPT_DIR:-}/installers/lib/nvidia-topo.sh" ]]; then
+        # Source topology helpers cleanly
+        . "${SCRIPT_DIR}/installers/lib/nvidia-topo.sh" 2>/dev/null || true
         
-        # Run topology detection and capture JSON output
-        GPU_TOPOLOGY_JSON=$(detect_nvidia_topo 2>>"$LOG_FILE") || {
+        if command -v detect_nvidia_topo &>/dev/null; then
+            GPU_TOPOLOGY_JSON=$(detect_nvidia_topo 2>>"$LOG_FILE") || {
+                warn "Multi-GPU topology detection failed — multi-GPU configuration disabled"
+                GPU_TOPOLOGY_JSON="{}"
+            }
+        fi
             warn "Multi-GPU topology detection failed — multi-GPU configuration disabled"
             ai_warn "Could not detect GPU topology. Multi-GPU features will be skipped."
             ai_warn "Check $LOG_FILE for details. You can re-run the installer after fixing the issue."
