@@ -1295,24 +1295,32 @@ function ConsoleModal({ ext, onClose }) {
 }
 
 function CopyableCommand({ command }) {
-  const [copied, setCopied] = useState(false)
+  const [copyState, setCopyState] = useState('idle')
 
-  const handleCopy = () => {
-    navigator.clipboard?.writeText(command)
-      .then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000) })
-      .catch(() => {})
+  const handleCopy = async () => {
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error('Clipboard unavailable')
+      await navigator.clipboard.writeText(command)
+      setCopyState('copied')
+      setTimeout(() => setCopyState('idle'), 2000)
+    } catch {
+      setCopyState('failed')
+    }
   }
 
   return (
     <div className="group flex items-center justify-between bg-theme-card rounded px-3 py-1.5 font-mono text-sm text-theme-text-secondary">
       <span className="truncate mr-2">{command}</span>
       <button
+        type="button"
         onClick={handleCopy}
         className="shrink-0 text-theme-text-muted hover:text-theme-text-secondary transition-colors"
-        title="Copy to clipboard"
+        title={copyState === 'failed' ? 'Copy failed' : 'Copy to clipboard'}
+        aria-label={copyState === 'failed' ? 'Copy failed' : 'Copy to clipboard'}
       >
-        {copied ? <Check size={13} className="text-green-400" /> : <Copy size={13} />}
+        {copyState === 'copied' ? <Check size={13} className="text-green-400" /> : <Copy size={13} />}
       </button>
+      {copyState === 'failed' && <span role="alert" className="sr-only">Copy failed. Select and copy the command manually.</span>}
     </div>
   )
 }
