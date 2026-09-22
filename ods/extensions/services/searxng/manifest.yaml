@@ -20,3 +20,12 @@ service:
   compose_file: compose.yaml
   category: recommended
   depends_on: []
+  tags: [search, web-search, metasearch, privacy]
+  env_vars:
+    - key: SEARXNG_PORT
+      description: "Published Web UI and search API port"
+      default: "8888"
+    - key: SEARXNG_SECRET
+      description: "Secret key for SearXNG session encryption and CSRF protection"
+      required: true
+      secret: true
