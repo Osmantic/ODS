@@ -30,9 +30,11 @@ cleanup_on_error() {
     echo "The install did not complete. Partial state may exist at:"
     echo "  ${INSTALL_DIR:-~/ods}"
     echo ""
-    echo "To retry, run the installer again. It will resume safely."
-    echo "To start fresh, remove the install directory first:"
-    echo "  rm -rf ${INSTALL_DIR:-~/ods} && ./install.sh"
+    echo "Keep this directory and its recovery receipts intact."
+    echo "Review the failed phase and log before retrying; some phases require recovery."
+    echo "For a fresh install, use the installed ods-uninstall.sh and resolve any"
+    echo "cleanup refusal before reinstalling. Do not delete the directory manually:"
+    echo "ODS services and protected Pixel state may exist outside it."
     exit "$exit_code"
 }
 trap cleanup_on_error ERR
