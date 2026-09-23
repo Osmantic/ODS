@@ -66,6 +66,23 @@ class RetirementSelection(unittest.TestCase):
                 retirement.retire(str(self.root), 'owner')
             command.assert_not_called()
 
+    def test_resume_requires_same_boot_and_authority(self):
+        witness = dict(schema=1, owner=501, boot='boot', hashes={'file': 'digest'},
+            trees={'system/com.ods.pixel-access': [[123, 456, 789]]})
+        kwargs = dict(owner=501, boot='boot', hashes={'file': 'digest'},
+            targets=['system/com.ods.pixel-access'])
+        self.assertEqual(retirement.verify_witness(witness, **kwargs), witness['trees'])
+        for key, bad in [('boot', 'next-boot'), ('owner', 502), ('hashes', {'file': 'changed'})]:
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                retirement.verify_witness({**witness, key: bad}, **kwargs)
+
+    def test_absence_without_process_birth_witness_is_not_accepted(self):
+        kwargs = dict(owner=501, boot='boot', hashes={}, targets=['target'])
+        for tree in ([], [[123]], [[True, 456, 789]], [[123, 456, 1000000]]):
+            with self.subTest(tree=tree), self.assertRaises(ValueError):
+                retirement.verify_witness(dict(schema=1, owner=501, boot='boot', hashes={},
+                    trees={'target': tree}), **kwargs)
+
     def test_uninstaller_orders_retirement_before_container_mutation(self):
         source = (ROOT / 'ods-uninstall.sh').read_text()
         self.assertLess(source.index('pixel-native-uninstall.py'), source.index('# A pending Pixel transition'))

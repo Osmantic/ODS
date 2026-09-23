@@ -68,7 +68,7 @@ def selected(settings, installation, services, *, owner, install_dir):
 
 def state_name_allowed(name):
     return (name in RETAIN | {'installation.json', 'installation-edge.json', 'lock',
-             'service-installation.json', 'service-baseline.json', 'verified.json'}
+             'service-installation.json', 'service-baseline.json', 'verified.json', 'retirement.json'}
         or re.fullmatch(r'runtime-upgrade-[a-f0-9]{64}\.completed\.json', name)
         or re.fullmatch(r'runtime-upgrade-(?:context|edge)-[a-f0-9]{64}\.json', name)
         or re.fullmatch(r'runtime-upgrade-stop-[a-f0-9]{64}-(?:candidate|previous)-(?:access|gateway|manager|operations|promoter|relay)\.json', name)
@@ -81,8 +81,21 @@ def command(args):
 
 
 def prove_absent(target):
-    if command(['/bin/launchctl', 'print', target]).returncode != 113:
-        raise ValueError('native-retirement-job-not-absent')
+    return command(['/bin/launchctl', 'print', target]).returncode == 113
+
+
+def verify_witness(value, *, owner, boot, hashes, targets):
+    if (type(value) is not dict or value.get('schema') != 1 or value.get('owner') != owner
+            or value.get('boot') != boot or value.get('hashes') != hashes
+            or type(value.get('trees')) is not dict or set(value['trees']) != set(targets)):
+        raise ValueError('native-retirement-stop-witness-mismatch')
+    for tree in value['trees'].values():
+        if (type(tree) is not list or not 1 <= len(tree) <= 4096
+                or any(type(row) is not list or len(row) != 3
+                    or any(type(n) is not int for n in row)
+                    or row[0] <= 0 or row[1] <= 0 or not 0 <= row[2] < 1000000 for row in tree)):
+            raise ValueError('native-retirement-stop-witness-invalid')
+    return value['trees']
 
 
 def retire(install_dir, owner_name, *, validate_only=False):
@@ -92,6 +105,7 @@ def retire(install_dir, owner_name, *, validate_only=False):
     import pixel_macos_custody as custody
     from pixel_macos_process import process_tree_snapshot, process_birth, ProcessIdentityError
     from pixel_gateway_service import launchd_definition_digest
+    from pixel_access_bridge import atomic_json
     owner = pwd.getpwnam(owner_name)
     root = Path(install_dir)
     if (not root.is_absolute() or root == Path('/') or str(root) != str(root.resolve())
@@ -153,7 +167,7 @@ def retire(install_dir, owner_name, *, validate_only=False):
                 raise ValueError('native-retirement-foreign-config-owner')
             # Snapshot all root-controlled files used as retirement authority.
             snapshots = {str(p): custody.protected_bytes(p, limit=32 * 1024 * 1024)
-                         for p in [SETTINGS, *plists, *(STATE / n for n in os.listdir(directory))]}
+                         for p in [SETTINGS, *plists, *(STATE / n for n in os.listdir(directory) if n != 'retirement.json')]}
             jobs = []
             for path in plists:
                 definition = plistlib.loads(snapshots[str(path)])
@@ -185,17 +199,37 @@ def retire(install_dir, owner_name, *, validate_only=False):
                 if len(pids) > 1 or not pids and not re.search(r'^\s*state = (?:not running|waiting|spawn scheduled)\s*$', result.stdout, re.M):
                     raise ValueError('native-retirement-process-unconfirmed')
                 jobs.append((target, process_tree_snapshot(int(pids[0])) if pids else (), True))
+            hashes = {path: hashlib.sha256(body).hexdigest() for path, body in snapshots.items()}
+            boot_result = command(['/usr/sbin/sysctl', '-n', 'kern.bootsessionuuid'])
+            if boot_result.returncode: raise ValueError('native-retirement-boot-identity-unavailable')
+            boot = str(uuid.UUID(boot_result.stdout.strip()))
+            witness_path = STATE / 'retirement.json'
+            targets = [target for target, _, _ in jobs]
+            if os.path.lexists(witness_path):
+                trees = verify_witness(record(witness_path), owner=owner.pw_uid,
+                    boot=boot, hashes=hashes, targets=targets)
+                for target, tree, loaded in jobs:
+                    if loaded and [list(row) for row in tree] != trees[target]:
+                        raise ValueError('native-retirement-job-restarted')
+                jobs = [(target, trees[target], loaded) for target, _, loaded in jobs]
+            else:
+                if any(not loaded or not tree for _, tree, loaded in jobs):
+                    raise ValueError('native-retirement-stopped-job-needs-witness')
+                trees = {target: [list(row) for row in tree] for target, tree, _ in jobs}
             if validate_only:
                 return {'status': 'validated', 'owner': owner.pw_uid, 'installDir': str(root)}
             for path, body in snapshots.items():
                 if custody.protected_bytes(path, limit=32 * 1024 * 1024) != body:
                     raise ValueError('native-retirement-authority-changed')
+            if not os.path.lexists(witness_path):
+                atomic_json(witness_path, {'schema': 1, 'owner': owner.pw_uid,
+                    'boot': boot, 'hashes': hashes, 'trees': trees})
             for target, tree, loaded in jobs:
                 if loaded and command(['/bin/launchctl', 'bootout', target]).returncode:
                     raise ValueError('native-retirement-stop-failed')
             deadline = time.monotonic() + 30
             while True:
-                for target, _, _ in jobs: prove_absent(target)
+                absent = all(prove_absent(target) for target, _, _ in jobs)
                 survivors = []
                 for _, tree, _ in jobs:
                     for pid, sec, usec in tree:
@@ -203,7 +237,7 @@ def retire(install_dir, owner_name, *, validate_only=False):
                             if process_birth(pid) == (sec, usec): survivors.append(pid)
                         except ProcessIdentityError as error:
                             if getattr(error, 'errno', None) != errno.ESRCH: raise
-                if not survivors: break
+                if absent and not survivors: break
                 if time.monotonic() >= deadline: raise ValueError('native-retirement-processes-survive')
                 time.sleep(0.25)
             for path, body in snapshots.items():
