@@ -1,5 +1,6 @@
 import { RUN_PROGRESS_STOP_REASON } from "../plugin/run-progress-budget.mjs";
 import test from "node:test";
+import vm from 'node:vm';
 
 test('sandbox host workspace lookup failures give call-bound path guidance without rewriting commands', () => {
   const root='/home/owner/.openclaw/workspace-pixel';
@@ -15889,4 +15890,127 @@ for (const [name, options] of [
   assert.notEqual(guard.beforeAgentFinalize({}, context, "pixel")?.retry?.idempotencyKey,
     "pixel-ods-workspace-preview-historical-entry");
   assert.doesNotMatch(persisted?.message?.content?.at(-1)?.text ?? "", /same project's earlier verified publication/);
+});
+
+for (const deferred of [false,true]) test(`trusted final host revalidation restores only unchanged publication: deferred=${deferred}`, async()=>{
+  const context={agentId:'pixel',runId:'run-1',sessionId:'session-1',sessionKey:'agent:pixel:test'};
+  let probes=0,matched=true;
+  const guard=createToolLoopGuard({verifyWorkspacePreview:async()=>{probes++;return matched;}});
+  guard.observeRun(context,'pixel',{prompt:'Build and publish a website in existing signal-garden.'});
+  const writes=[{path:'signal-garden/index.html',content:'<!doctype html><title>Model-authored garden</title>'}];
+  const invoke=(name,params,result,id)=>{
+    const ctx={...context,toolName:name,toolCallId:id};
+    const prepared=guard.beforeToolCall({toolName:name,params,toolCallId:id},ctx);
+    assert.notEqual(prepared?.block,true);
+    guard.afterToolCall({toolName:name,params:prepared?.params??params,result,toolCallId:id},ctx);
+    guard.toolResultPersist({toolName:name,toolCallId:id,message:{role:'toolResult',toolName:name,toolCallId:id,...result}},ctx);
+  };
+  invoke('write',writes[0],{content:[{type:'text',text:'written'}],details:{status:'completed'}},'write');
+  const snapshot=workspacePreviewSnapshot('signal-garden',writes);
+  const details={schemaVersion:1,kind:'ods-pixel-workspace-preview',status:'succeeded',relativeDirectory:'signal-garden',port:9437,url:`http://${snapshot.siteId}.localhost:9437/${snapshot.siteId}/`,...snapshot,httpStatus:200,readbackVerified:true,executable:false,overwritten:false};
+  invoke('pixel_ods_workspace_preview',{relativeDirectory:'signal-garden'},{content:[{type:'text',text:'published'}],details},'preview');
+  const args={command:'ls -la signal-garden/'};
+  const result={content:[{type:'text',text:'index.html'}],details:{status:'completed',exitCode:0}};
+  invoke(deferred?'tool_call':'exec',deferred?{id:'openclaw:core:exec',args}:args,deferred?wrappedCoreResult('exec',result):result,'inspection');
+  assert.equal(guard.verificationForRun('run-1').status,'failed','immediate invalidation preserved');
+  matched=false;assert.equal(await guard.revalidateWorkspacePreview({},context),false);
+  assert.equal(guard.verificationForRun('run-1').status,'failed');
+  matched=true;
+  assert.equal(await guard.revalidateWorkspacePreview({},context),false,'same generation cannot retry a probe');
+  invoke(deferred?'tool_call':'exec',deferred?{id:'openclaw:core:exec',args:{command:'pwd'}}:{command:'pwd'},deferred?wrappedCoreResult('exec',result):result,'second-inspection');
+  assert.equal(await guard.revalidateWorkspacePreview({},context),true);
+  assert.equal(probes,2);assert.equal(guard.verificationForRun('run-1').status,'passed');
+  invoke('write',{path:'signal-garden/README.txt',content:'changed'},{content:[{type:'text',text:'written'}],details:{status:'completed'}},'changed');
+  assert.equal(await guard.revalidateWorkspacePreview({},context),false);
+  assert.equal(probes,2,'write can never recover through host equality');
+});
+
+function revalidationGuardFixture(verify) {
+  const context={agentId:'pixel',runId:'run-1',sessionId:'session-1',sessionKey:'agent:pixel:test'};
+  const guard=createToolLoopGuard({verifyWorkspacePreview:verify});
+  guard.observeRun(context,'pixel',{prompt:'Build and publish a website in existing signal-garden.'});
+  const invoke=(name,params,result,id)=>{
+    const ctx={...context,toolName:name,toolCallId:id};
+    const prepared=guard.beforeToolCall({toolName:name,params,toolCallId:id},ctx);
+    assert.notEqual(prepared?.block,true);
+    if(!result)return;
+    guard.afterToolCall({toolName:name,params:prepared?.params??params,result,toolCallId:id},ctx);
+    guard.toolResultPersist({toolName:name,toolCallId:id,message:{role:'toolResult',toolName:name,toolCallId:id,...result}},ctx);
+  };
+  const write={path:'signal-garden/index.html',content:'<!doctype html><title>Model-authored garden</title>'};
+  invoke('write',write,{content:[{type:'text',text:'written'}],details:{status:'completed'}},'write');
+  const snapshot=workspacePreviewSnapshot('signal-garden',[write]);
+  const details={schemaVersion:1,kind:'ods-pixel-workspace-preview',status:'succeeded',relativeDirectory:'signal-garden',port:9437,url:`http://${snapshot.siteId}.localhost:9437/${snapshot.siteId}/`,...snapshot,httpStatus:200,readbackVerified:true,executable:false,overwritten:false};
+  invoke('pixel_ods_workspace_preview',{relativeDirectory:'signal-garden'},{content:[{type:'text',text:'published'}],details},'preview');
+  return {guard,context,invoke};
+}
+
+for(const fault of ['unknown-exec','failed','running','env','pending-read','wrong-run','wrong-session','wrong-key','ended']) test(`final preview revalidation fails closed: ${fault}`,async()=>{
+  let probes=0;const {guard,context,invoke}=revalidationGuardFixture(async()=>{probes++;return true;});
+  const params={command:fault==='unknown-exec'?'python3 test.py':'ls -la signal-garden/'};
+  if(fault==='env')params.env={PATH:'/workspace'};
+  const result={content:[{type:'text',text:'observed'}],details:{status:'completed',exitCode:0}};
+  if(fault==='failed'){result.isError=true;result.details.exitCode=1;}
+  if(fault==='running'){result.details={status:'running',sessionId:'background-session'};}
+  invoke('exec',params,result,'inspection');
+  if(fault==='pending-read')invoke('read',{path:'signal-garden/index.html'},null,'pending');
+  if(fault==='ended')guard.endPreviewRevalidation({},context);
+  const altered={...context};
+  if(fault==='wrong-run')altered.runId='different';
+  if(fault==='wrong-session')altered.sessionId='different';
+  if(fault==='wrong-key')altered.sessionKey='different';
+  assert.equal(await guard.revalidateWorkspacePreview({},altered),false);
+  assert.equal(probes,0);
+});
+
+for(const change of ['new-write','end','new-run']) test(`late host verification cannot restore stale preview: ${change}`,async()=>{
+  let resolve;const answer=new Promise(r=>resolve=r);
+  const {guard,context,invoke}=revalidationGuardFixture(()=>answer);
+  invoke('exec',{command:'ls -la signal-garden/'},{content:[{type:'text',text:'index.html'}],details:{status:'completed',exitCode:0}},'inspection');
+  const pending=guard.revalidateWorkspacePreview({},context);
+  await Promise.resolve();
+  if(change==='new-write')invoke('write',{path:'signal-garden/index.html',content:'changed'},null,'late-write');
+  if(change==='end')guard.endPreviewRevalidation({},context);
+  if(change==='new-run')guard.observeRun({...context,runId:'new-run'},'pixel',{prompt:'Inspect another project.'});
+  resolve(true);assert.equal(await pending,false);
+  assert.notEqual(guard.verificationForRun('run-1').status,'passed');
+});
+
+test('actual registered finalize hook awaits trusted revalidation before goal and delivery decisions',async()=>{
+  let resolve;const answer=new Promise(r=>resolve=r),order=[];
+  const {guard,context,invoke}=revalidationGuardFixture(()=>{order.push('verify');return answer;});
+  invoke('exec',{command:'ls -la signal-garden/'},{content:[{type:'text',text:'index.html'}],details:{status:'completed',exitCode:0}},'inspection');
+  const source=readFileSync(new URL('../plugin/index.js',import.meta.url),'utf8');
+  const start=source.indexOf('    api.on("before_agent_finalize",');
+  const end=source.indexOf('    // Delivery rewriting',start);
+  assert.ok(start>=0&&end>start);
+  let finalize;
+  vm.runInNewContext(source.slice(start,end),{
+    api:{on:(_name,callback)=>{finalize=callback;}},toolLoopGuard:guard,AGENT_ID:'pixel',
+    goalProgress:{finalize(_event,_context,decision){order.push('goal');return decision;}},
+  });
+  const pending=finalize({},context);
+  await Promise.resolve();assert.deepEqual(order,['verify']);
+  assert.equal(guard.verificationForRun('run-1').status,'failed');
+  resolve(true);await pending;
+  assert.deepEqual(order,['verify','goal']);
+  assert.equal(guard.verificationForRun('run-1').status,'passed');
+});
+
+for(const change of ['end','write']) test(`final restore rejects ${change} in the nested async resolution microtask gap`,async()=>{
+  let fixture,changed=false;
+  fixture=revalidationGuardFixture(()=>{
+    queueMicrotask(()=>queueMicrotask(()=>queueMicrotask(()=>{
+      changed=true;
+      if(change==='end')fixture.guard.endPreviewRevalidation({},fixture.context);
+      else fixture.invoke('write',{path:'signal-garden/index.html',content:'changed'},null,'gap-write');
+    })));
+    return true;
+  });
+  const {guard,context,invoke}=fixture;
+  invoke('exec',{command:'ls -la signal-garden/'},{content:[{type:'text',text:'index.html'}],details:{status:'completed',exitCode:0}},'inspection');
+  const result=await guard.revalidateWorkspacePreview({},context);
+  assert.equal(changed,true);
+  assert.equal(result,false);
+  assert.notEqual(guard.verificationForRun('run-1').status,'passed');
 });

@@ -23,6 +23,7 @@ import { createRunProgressBudget, failedToolOutcome, isLiteralEcho, progressLane
 import { canonicalWorkspaceParams, extensionlessHtmlWrite, workspaceFileParent, nativeExecWorkdir, sandboxHostWorkspaceFailure, malformedRelativeWorkspacePath } from "./workspace-path-contract.mjs";
 import { routePlaygroundTool, requestsNewPlaygroundProject } from "./playground-projects.mjs";
 import { workspaceMutationFiles } from "./workspace-projects.mjs";
+import { inspectionRevalidationCandidate, boundedPreviewVerification } from "./preview-revalidation.mjs";
 
 export const DEFAULT_WEB_TOOL_LIMITS = Object.freeze({
   search: 8,
@@ -6552,6 +6553,7 @@ export function createToolLoopGuard({
   execControl,
   evidenceArtifactWriter,
   onWorkspaceMutation = () => {},
+  verifyWorkspacePreview,
   execMarkerCleanupDelayMs = 5000,
   limits,
   warn = () => {},
@@ -6891,6 +6893,16 @@ export function createToolLoopGuard({
     // policy and deterministic routing active from runId alone; operations
     // that truly need a session still fail closed on the optional sessionId.
     const state = runId ? stateFor(runId) : undefined;
+    if (state) {
+      state.previewVerificationGeneration = (state.previewVerificationGeneration ?? 0) + 1;
+      const selected = toolName === 'tool_call'
+        ? /^(?:openclaw:core:)?(?:exec|read)$/.test(event?.params?.id ?? '')
+          ? {name:event.params.id.split(':').at(-1),params:event.params.args} : undefined
+        : {name:toolName,params:event?.params};
+      if (selected?.name !== 'read' && !(selected?.name === 'exec' && inspectionRevalidationCandidate(selected.params))) {
+        state.previewRevalidationCandidate = undefined;
+      }
+    }
     const malformedPath = malformedRelativeWorkspacePath(toolName, normalizedParams ?? event?.params,
       state?.configuredWorkspaceRoot, state?.playgroundOwnerIntent);
     if (malformedPath) return {block:true, blockReason:malformedPath};
@@ -9034,6 +9046,7 @@ export function createToolLoopGuard({
     const toolCallId = context?.toolCallId ?? event?.toolCallId;
     event = {...event, params: canonicalWorkspaceParams(toolName, event?.params, state.configuredWorkspaceRoot)};
     const pendingToolRun = pendingToolRuns.get(toolCallId);
+    state.previewVerificationGeneration = (state.previewVerificationGeneration ?? 0) + 1;
     // Nested Tool Search executions also emit hooks. Count only the outer
     // call (or an ordinary direct call), never both receipts for one action.
     if ((event?.result || event?.error) && !String(toolCallId).startsWith('tool_search_code:')) {
@@ -9156,6 +9169,11 @@ export function createToolLoopGuard({
     const completedCommand = pendingToolRun?.runId === runId && pendingToolRun.selectedToolName === 'exec'
       ? pendingToolRun.selectedParams?.command
       : originalExecFingerprint ? JSON.parse(originalExecFingerprint)[0] : completedExecution?.params?.command;
+    if (successfulMutation || (completedExecution && (
+        pendingToolRun?.runId !== runId || pendingToolRun.selectedToolName !== 'exec' ||
+        pendingToolRun.transport !== toolName || !inspectionRevalidationCandidate(pendingToolRun.selectedParams) ||
+        toolCallFailed(completedExecution) || completedExecution.result?.details?.exitCode !== 0 ||
+        runningExecSessionId(completedExecution)))) state.previewRevalidationCandidate = undefined;
     if (state.workspacePreview && (successfulMutation ||
         (completedExecution?.result && !toolCallFailed(completedExecution) &&
           !isLiteralEcho(completedCommand)))) {
@@ -9316,6 +9334,8 @@ export function createToolLoopGuard({
         state.workspacePreviewDirectory = preview.relativeDirectory;
         state.workspacePreviewModelAuthored = workspacePreviewAuthorshipMatches(state, preview);
         state.workspacePreview = preview;
+        state.previewRevalidationCandidate = Object.freeze({preview:Object.freeze({...preview}),
+          sessionId:state.currentSessionId,sessionKey:state.currentSessionKey,workspaceRoot:state.configuredWorkspaceRoot});
         state.workspaceLastVerifiedPreview = Object.freeze({ ...preview });
         state.successfulWriteContentByPath.clear();
         rememberSessionPreview(state.currentSessionId, preview);
@@ -10299,6 +10319,36 @@ export function createToolLoopGuard({
     };
   }
 
+  async function revalidateWorkspacePreview(event, context, agentId = 'pixel') {
+    if (context?.agentId !== agentId || typeof verifyWorkspacePreview !== 'function') return false;
+    const runId = context?.runId ?? event?.runId;
+    const state = runs.get(runId);
+    const candidate = state?.previewRevalidationCandidate;
+    const generation = state?.previewVerificationGeneration;
+    if (!candidate || state.previewRevalidationAttemptedGeneration === generation) return false;
+    const valid = () => Boolean(candidate && runs.get(runId) === state && !state.workspacePreview &&
+      state.previewRevalidationCandidate === candidate && state.previewVerificationGeneration === generation &&
+      context.sessionId && context.sessionId === candidate.sessionId && state.currentSessionId === candidate.sessionId &&
+      context.sessionKey && context.sessionKey === candidate.sessionKey && state.currentSessionKey === candidate.sessionKey &&
+      state.configuredWorkspaceRoot === candidate.workspaceRoot &&
+      sessionRuns.get(candidate.sessionId) === runId && !state.clientCancelled && !state.progressBudget.exhausted &&
+      !state.progressBudget.laneExhausted('workspace') && !state.workspacePreviewForbidden &&
+      state.workspacePreviewVerifiedDirectory === candidate.preview.relativeDirectory &&
+      !state.pendingExecSessions.size && !state.pendingProjectExecs?.size &&
+      ![...pendingToolRuns.values()].some(pending=>pending.runId===runId));
+    if (!valid()) return false;
+    state.previewRevalidationAttemptedGeneration = generation;
+    if (!await boundedPreviewVerification(verifyWorkspacePreview, candidate.preview, valid) || !valid()) return false;
+    state.workspacePreview = candidate.preview;
+    rememberSessionPreview(candidate.sessionId, candidate.preview);
+    return true;
+  }
+
+  function endPreviewRevalidation(event, context) {
+    const state = runs.get(context?.runId ?? event?.runId);
+    if (state) {state.previewRevalidationCandidate=undefined;state.previewVerificationGeneration=(state.previewVerificationGeneration ?? 0)+1;}
+  }
+
   function beforeAgentFinalize(event, context, agentId = "pixel") {
     if (context?.agentId !== agentId) return undefined;
     const runId = context?.runId ?? event?.runId;
@@ -10760,6 +10810,8 @@ export function createToolLoopGuard({
     afterToolCall,
     toolResultPersist,
     beforeAgentFinalize,
+    revalidateWorkspacePreview,
+    endPreviewRevalidation,
     replyPayloadSending,
     observeRun,
     observeModelCall,

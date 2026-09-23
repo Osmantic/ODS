@@ -270,6 +270,23 @@ export function createWorkspacePreviewTool({ request, transport = "unix" } = {})
   };
 }
 
+// Internal trusted finalization probe. This is not a model-callable tool and
+// never publishes files or changes the immutable receipt it verifies.
+export function createWorkspacePreviewVerifier({request, transport = "unix"} = {}) {
+  if (!["unix", "docker-desktop"].includes(transport)) throw new Error("invalid preview transport");
+  request ??= transport === "docker-desktop" ? dockerWorkspacePreviewRequest : socketRequest;
+  return async (receipt, {signal} = {}) => {
+    const normalized = normalizeWorkspacePreviewParams({relativeDirectory:receipt?.relativeDirectory});
+    if (!SITE_ID.test(receipt?.siteId) || !SHA256.test(receipt?.sha256) || receipt.siteId !== `site-${receipt.sha256.slice(0,24)}`) return false;
+    const result = await request({...normalized, action:'verify-current', siteId:receipt.siteId, sha256:receipt.sha256}, {signal});
+    signal?.throwIfAborted();
+    return result && Object.keys(result).sort().join(',') === 'boundary,bytes,entrySha256,files,kind,relativeDirectory,schemaVersion,sha256,siteId,status'
+      && result.schemaVersion === 1 && result.kind === 'ods-pixel-workspace-preview-verification'
+      && result.status === 'matched' && result.boundary === BOUNDARY
+      && ['relativeDirectory','siteId','sha256','entrySha256','files','bytes'].every(key=>result[key]===receipt[key]);
+  };
+}
+
 export const testing = Object.freeze({
   BOUNDARY,
   validRelativeDirectory,

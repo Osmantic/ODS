@@ -63,7 +63,7 @@ import {
   createHostObserveTool,
 } from "./host-observe.mjs";
 import { createEvidenceArtifactWriter } from "./evidence-artifact.mjs";
-import { createWorkspacePreviewTool } from "./workspace-preview.mjs";
+import { createWorkspacePreviewTool, createWorkspacePreviewVerifier } from "./workspace-preview.mjs";
 import { createTaskActivity } from "./task-activity.mjs";
 import { createWorkspaceProjects } from "./workspace-projects.mjs";
 import { createAccessRuntime, executionHostForAgent } from "./access-runtime.mjs";
@@ -298,6 +298,7 @@ export default definePluginEntry({
       execControl: execCancellationControl,
       evidenceArtifactWriter,
       onWorkspaceMutation:mutation=>workspaceProjects.record(mutation),
+      verifyWorkspacePreview:createWorkspacePreviewVerifier({transport:api.pluginConfig?.workspacePreviewTransport}),
       warn: (message) => api.logger.warn(message),
     });
 
@@ -341,6 +342,7 @@ export default definePluginEntry({
       api.on("before_agent_run", (event, context) => accessRuntime.admit(undefined, context));
     }
     api.on("agent_end", (event, context) => {
+      toolLoopGuard.endPreviewRevalidation(event, context);
       if (!accessRuntime.isProbe(context)) { goalProgress.finish(event, context); taskActivity.finish(event, context); }
       if (!managedRuntime) return accessRuntime.finish({runId: event.runId}, context);
     });
@@ -433,7 +435,8 @@ export default definePluginEntry({
       const message = compactToolResultEnvelope(original);
       return message !== original ? {...decision, message} : decision;
     });
-    api.on("before_agent_finalize", (event, context) => {
+    api.on("before_agent_finalize", async (event, context) => {
+      await toolLoopGuard.revalidateWorkspacePreview(event, context, AGENT_ID);
       const guardDecision = toolLoopGuard.beforeAgentFinalize(event, context, AGENT_ID);
       const verification = toolLoopGuard.deliveryVerificationForRun(context?.runId ?? event?.runId);
       return goalProgress.finalize(event, context, {guardDecision,

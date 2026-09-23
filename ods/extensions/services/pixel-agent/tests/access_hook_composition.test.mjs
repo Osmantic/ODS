@@ -25,6 +25,7 @@ function hooks(guardResult, managedRuntime = false) {
     toolLoopGuard: {
       beforeToolCall: () => { calls.push('guard'); return guardResult; },
       afterToolCall: () => { calls.push('observe'); },
+      endPreviewRevalidation() {},
     },
     taskActivity: {
       before: (_event, _context, blocked) => activity.push(blocked ? 'blocked' : 'before'),

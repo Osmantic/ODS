@@ -152,13 +152,21 @@ def parse_request(payload: bytes) -> dict[str, Any]:
         raise PreviewError("invalid preview request") from exc
     if (
         not isinstance(value, dict)
-        or set(value) != {"schemaVersion", "action", "relativeDirectory", *_profile_fields()}
+        or not isinstance(value.get("action"), str)
+        or set(value) != {"schemaVersion", "action", "relativeDirectory", *_profile_fields(),
+                           *({"siteId", "sha256"} if value.get("action") == "verify-current" else set())}
         or type(value.get("schemaVersion")) is not int or value.get("schemaVersion") != SCHEMA_VERSION
-        or value.get("action") != "publish"
+        or value.get("action") not in {"publish", "verify-current"}
         or (PROFILE_ID is not None and value.get("profileId") != PROFILE_ID)
     ):
         raise PreviewError("invalid preview request")
     _parts(value.get("relativeDirectory"))
+    if value["action"] == "verify-current" and (
+        not isinstance(value.get("siteId"), str) or SITE_ID.fullmatch(value["siteId"]) is None
+        or not isinstance(value.get("sha256"), str) or re.fullmatch(r"[a-f0-9]{64}", value["sha256"]) is None
+        or value["siteId"] != "site-" + value["sha256"][:24]
+    ):
+        raise PreviewError("invalid preview request")
     return value
 
 
@@ -412,6 +420,40 @@ def publish_snapshot(
         "overwritten": overwritten,
         "boundary": BOUNDARY,
     }
+
+
+def verify_current_snapshot(workspace, previews, request, owner_uid):
+    """Read-only point-in-time equality, never a new publication or execution."""
+    manifest = json.loads(snapshot_manifest(previews, request["siteId"]))
+    if manifest["sha256"] != request["sha256"]:
+        raise PreviewError("preview snapshot verification failed")
+    sources = _source_files(workspace, request["relativeDirectory"], owner_uid)
+    def identities(rows):
+        return [(name, info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns,
+                 info.st_ctime_ns, info.st_mode, info.st_uid, info.st_nlink)
+                for name, _, info in rows]
+    entries = []
+    digest = hashlib.sha256()
+    total = 0
+    for name, source, info in sources:
+        data = _read_stable(source, info)
+        total += len(data)
+        if total > MAX_TOTAL_BYTES:
+            raise PreviewError("preview is too large")
+        encoded = name.encode("utf-8")
+        digest.update(len(encoded).to_bytes(4, "big"))
+        digest.update(encoded)
+        digest.update(len(data).to_bytes(8, "big"))
+        digest.update(data)
+        entries.append({"path": name, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()})
+    if identities(sources) != identities(_source_files(workspace, request["relativeDirectory"], owner_uid)):
+        raise PreviewError("preview source changed")
+    matched = entries == manifest["files"] and total == manifest["bytes"] and digest.hexdigest() == manifest["sha256"]
+    return {"schemaVersion": 1, "kind": "ods-pixel-workspace-preview-verification",
+            "status": "matched" if matched else "mismatched", "relativeDirectory": request["relativeDirectory"],
+            "siteId": request["siteId"], "sha256": request["sha256"], "files": len(entries), "bytes": total,
+            "entrySha256": next((entry["sha256"] for entry in entries if entry["path"] == "index.html"), None),
+            "boundary": BOUNDARY, **_profile_fields()}
 
 
 def _published_path_feedback(paths):
@@ -757,24 +799,27 @@ def _serve_connection(
             }
         else:
             request = parse_request(raw)
-            response = publish_snapshot(
-                workspace,
-                previews,
-                request["relativeDirectory"],
-                owner_uid,
-            )
-            _verify_http(port, response["siteId"], response["entrySha256"])
-            response.update(
-                {
-                    "port": port,
-                    "url": (
-                        f"http://{response['siteId']}.localhost:{port}/"
-                        f"{response['siteId']}/"
-                    ),
-                    "httpStatus": 200,
-                    "readbackVerified": True,
-                }
-            )
+            if request["action"] == "verify-current":
+                response = verify_current_snapshot(workspace, previews, request, owner_uid)
+            else:
+                response = publish_snapshot(
+                    workspace,
+                    previews,
+                    request["relativeDirectory"],
+                    owner_uid,
+                )
+                _verify_http(port, response["siteId"], response["entrySha256"])
+                response.update(
+                    {
+                        "port": port,
+                        "url": (
+                            f"http://{response['siteId']}.localhost:{port}/"
+                            f"{response['siteId']}/"
+                        ),
+                        "httpStatus": 200,
+                        "readbackVerified": True,
+                    }
+                )
     except PreviewError as error:
         # Only fixed categories cross the socket, never arbitrary exception
         # text, paths, file contents, or operating-system error details.
