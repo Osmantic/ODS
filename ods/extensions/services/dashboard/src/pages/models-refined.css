@@ -1,5 +1,5 @@
 .models-refined { container-type:inline-size; min-width:0; padding:18px!important; color:#d8dcdf; }
-.models-toolbar { display:flex; align-items:center; gap:12px; margin-bottom:20px; }
+.models-toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:12px; margin-bottom:20px; }
 .models-toolbar h2 { font-size:14px; font-weight:550; letter-spacing:-.2px; }
 .models-toolbar > span { margin-left:auto; color:#85909a; font-size:10px; }
 .models-browse-link { flex-shrink:0; border:1px solid #495965; border-radius:6px; padding:5px 8px; color:#d1e5f2; font-size:10px; font-weight:600; }

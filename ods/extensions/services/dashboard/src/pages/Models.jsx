@@ -156,7 +156,7 @@ export default function Models({ compact = false }) {
   )
   const odsCatalogModels = useMemo(
     () => models
-      .filter(model => model.metadata?.catalogSource !== 'huggingface')
+      .filter(model => model.metadata?.catalogSource !== 'huggingface' && model.metadata?.source !== 'runtime')
       .sort((left, right) => Number(Boolean(right.recommended)) - Number(Boolean(left.recommended)) || Number(Boolean(right.fitsVram)) - Number(Boolean(left.fitsVram))),
     [models]
   )

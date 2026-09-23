@@ -1589,9 +1589,9 @@ def test_model_activation_mode_policy_rejects_external_backend():
         "code": "external_llm_managed",
         "reason": "external_backend_selected",
         "message": (
-            "Local model activation is unavailable while ODS is using an "
-            "external Ollama or LM Studio backend. Re-run the installer with "
-            "--no-external-llm before activating a downloaded local model."
+            "Local model activation is unavailable with a generic external "
+            "model service. Select an ODS-managed backend or a supported "
+            "Lemonade integration before activating downloaded models."
         ),
         "effectiveMode": "local",
         "configuredMode": "local",
