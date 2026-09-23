@@ -168,15 +168,78 @@ class ModelTermsTests(unittest.TestCase):
         followup, added = gate.load_license_review(ROOT / "docs/MODEL_LICENSE_REVIEWS_FOLLOWUP.json", ROOT.parent)
         self.assertEqual(len(added), 10)
         self.assertFalse(set(entries) & set(added))
-        snapshots = {fingerprint: entries, followup: added}
+        custom, reconciled = gate.load_license_review(ROOT / "docs/MODEL_LICENSE_REVIEWS_CUSTOM.json", ROOT.parent)
+        self.assertEqual(set(reconciled), {"jamba-reasoning-3b-q4"})
+        self.assertFalse((set(entries) | set(added)) & set(reconciled))
+        snapshots = {fingerprint: entries, followup: added, custom: reconciled}
+        self.assertEqual(sum(len(records) for records in snapshots.values()), 41)
         for model in catalog["models"]:
             with self.subTest(model=model["id"]):
                 self.assertEqual(validate_terms(model), [])
-                reviewed = model["id"] in entries or model["id"] in added
+                reviewed = any(model["id"] in records for records in snapshots.values())
                 self.assertEqual(project_terms(model)["releaseReady"], reviewed)
                 self.assertEqual(model["terms"]["review_status"], "reviewed" if reviewed else "not_assessed")
                 self.assertEqual(gate.license_review_errors(model, snapshots), [])
         self.assertEqual(sum(m["terms"]["commercial_use"] == "restricted" for m in catalog["models"]), 1)
+
+    def test_jamba_review_preserves_anomaly_and_rejects_changed_identity_or_notice(self):
+        catalog = json.loads((ROOT / "config/model-library.json").read_bytes())
+        model = next(m for m in catalog["models"] if m["id"] == "jamba-reasoning-3b-q4")
+        path = ROOT / "docs/MODEL_LICENSE_REVIEWS_CUSTOM.json"
+        fingerprint, entries = gate.load_license_review(path, ROOT.parent)
+        entry = entries[model["id"]]
+        self.assertEqual(model["terms"]["sources"], entry["sources"])
+        self.assertTrue(all(s["license_name"] == "jamba-open-model-license" for s in model["terms"]["sources"]))
+        self.assertEqual(entry["metadata_anomalies"][0]["observed_link_documents"][0]["url"],
+                         "https://www.ai21.com/jamba-open-model-license/")
+        self.assertEqual(model["terms"]["upstream_acceptance"], "not_required")
+        self.assertEqual(model["terms"]["commercial_use"], "permitted_with_conditions")
+        self.assertEqual(len(model["terms"]["conditions"]), 5)
+        self.assertEqual(gate.license_review_errors(model, {fingerprint: entries}), [])
+        for field in ("gguf_file", "gguf_url", "gguf_sha256", "source_repo", "source_revision"):
+            with self.subTest(field=field):
+                changed = copy.deepcopy(model)
+                changed[field] = "changed"
+                self.assertTrue(gate.license_review_errors(changed, {fingerprint: entries}))
+        changed = copy.deepcopy(model)
+        changed["terms"]["sources"][0]["license_name"] = None
+        self.assertTrue(gate.license_review_errors(changed, {fingerprint: entries}))
+        notice = entry["review"]["local_notices"][0]
+        data = (ROOT.parent / notice["path"]).read_bytes()
+        self.assertEqual(hashlib.sha256(data).hexdigest(), "53c512bdc2892ce78925732eaa87373290ec208bbbfc917c6d42f8c4821c6cc9")
+        self.assertIn(b"END OF TERMS AND CONDITIONS", data)
+        self.assertIn(b"APPENDIX", data)
+        with tempfile.TemporaryDirectory() as temporary:
+            repository = Path(temporary)
+            target = repository / notice["path"]
+            target.parent.mkdir(parents=True)
+            declarations = [source["declaration_url"] for source in entry["sources"]]
+            self.assertTrue(gate.retained_notice_errors(entry["review"], repository, declarations))
+            target.write_bytes(data)
+            self.assertEqual(gate.retained_notice_errors(entry["review"], repository, declarations), [])
+            target.write_bytes(data + b"tampered")
+            self.assertTrue(gate.retained_notice_errors(entry["review"], repository, declarations))
+
+    def test_custom_review_is_required_and_its_bytes_cannot_be_substituted(self):
+        original = ROOT / "docs/MODEL_LICENSE_REVIEWS.json"
+        followup = ROOT / "docs/MODEL_LICENSE_REVIEWS_FOLLOWUP.json"
+        custom = ROOT / "docs/MODEL_LICENSE_REVIEWS_CUSTOM.json"
+        with tempfile.TemporaryDirectory() as temporary:
+            changed = Path(temporary) / "changed-review.json"
+            # Even a semantically identical snapshot has a distinct byte binding.
+            changed.write_bytes(custom.read_bytes() + b"\n")
+            for third in (None, changed):
+                with self.subTest(third=third):
+                    command = [sys.executable, str(ROOT / "scripts/check-model-terms.py"),
+                               "--review-evidence", str(original), "--review-evidence", str(followup)]
+                    if third is not None:
+                        command.extend(["--review-evidence", str(third)])
+                    result = subprocess.run(command, capture_output=True, text=True, timeout=15)
+                    self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                    body = json.loads(result.stdout)
+                    self.assertEqual(body["invalidRecords"], [])
+                    self.assertEqual([error["modelId"] for error in body["evidenceErrors"]], ["jamba-reasoning-3b-q4"])
+                    self.assertTrue(any("fingerprint differs" in error for error in body["evidenceErrors"][0]["errors"]))
 
     def test_review_cannot_be_reused_after_model_source_condition_or_artifact_changes(self):
         catalog = json.loads((ROOT / "config/model-library.json").read_text(encoding="utf-8"))
@@ -305,7 +368,11 @@ class ModelTermsTests(unittest.TestCase):
             self.assertEqual(body["models"], 57)
             self.assertEqual(body["invalidRecords"], [])
             self.assertEqual(body["evidenceErrors"], [])
-            self.assertEqual(len(body["pendingReview"]), 17)
+            self.assertEqual(len(body["pendingReview"]), 16)
+            self.assertNotIn("jamba-reasoning-3b-q4", body["pendingReview"])
+            for pending in ("gemma3-4b-it-q4", "nvidia-nemotron3-nano-4b-q4", "llama3.2-1b-instruct-q4",
+                            "llama3.1-8b-instruct-q4", "deepseek-r1-70b-q4", "llama4-scout-q4"):
+                self.assertIn(pending, body["pendingReview"])
 
     def test_malformed_observations_return_errors_instead_of_crashing(self):
         catalog, evidence = fixture()

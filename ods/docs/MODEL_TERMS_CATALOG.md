@@ -84,15 +84,16 @@ explanation. Embedding, speech and image service downloads remain separate work.
 The initial [license review snapshot](MODEL_LICENSE_REVIEWS.json) records
 30 exact source chains. The [supplemental review](MODEL_LICENSE_REVIEWS_FOLLOWUP.json)
 adds nine Granite chains and SmolLM3 without rewriting that snapshot or changing
-any download identity. Together they record 39 chains with permissive licenses
-subject to conditions and one with research/evaluation restrictions. The other
-17 remain unassessed.
+any download identity. A separate [Jamba factual supplement](MODEL_LICENSE_REVIEWS_CUSTOM.json)
+adds the exact AI21 Jamba Reasoning 3B chain. Together the three snapshots record
+40 chains with permissive licenses subject to conditions and one with
+research/evaluation restrictions. The other 16 remain unassessed.
 Reviewed status records the findings; it does not make a restricted model
 permissive or establish permission for a particular use. Conditions for each
 layer remain visible instead of applying a quantizer's declaration to every
 ancestor.
 
-Thirteen [retained license and notice files](../config/model-notices/) preserve
+Fourteen [retained license and notice files](../config/model-notices/) preserve
 the reviewed bytes, including full license text, the Phi component notice and
 the complete Google license HTML block plus its extracted text. The review
 records the full response fingerprint and the verified extraction; unrelated
@@ -105,13 +106,23 @@ pinned IBM documentation, source-card declarations and response fingerprints.
 Those are consulted documentation revisions, not asserted training-input commits.
 Displayed conditions summarize the retained full license; they do not replace it.
 
+For Jamba Reasoning 3B specifically, the full pinned GGUF `LICENSE.txt`, both
+pinned model-card declarations and AI21's model-specific announcement support
+Apache 2.0. The unchanged source records still show the stale
+`jamba-open-model-license` name; the supplement preserves the legacy link and
+its original fingerprint as a metadata anomaly. Its Jamba 1.5 restrictions are
+not applied to Reasoning 3B or generalized to other Jamba models. The complete
+Apache text is retained byte for byte; artifact identity, source ancestry and
+the original source snapshot are unchanged. No Llama, Nemotron or Gemma review
+was promoted by this supplement.
+
 ## Validation and remaining work
 
 `python ods/scripts/check-model-terms.py` validates structured observations;
 `--release-ready` additionally rejects incomplete license reviews. The dedicated
 model-provenance workflow runs structural regressions and offers the explicit
 release qualification check. Its structural success must not be reported as
-completed legal review. The release check still fails because 17 reviews are
+completed legal review. The release check still fails because 16 reviews are
 pending.
 The validator accepts multiple observation snapshots and binds each model to
 the declared snapshot hash. Supplemental artifact identities must be complete;
@@ -152,6 +163,15 @@ isolated copy installed from the current lock because the workspace dependencies
 contain Windows-native binaries. Focused Ruff and ESLint checks passed. These
 tests preserve default-deny confirmation, the strict boolean and changed-digest
 rejection; they do not verify an external account or constitute legal acceptance.
+
+The Jamba integration passed all 28 source/evidence tests on Windows Python 3.11
+and WSL Python 3.11. These include refusal when the third supplement is omitted
+or its bytes change, changed artifact/source metadata, and missing or tampered
+retained license bytes. Structural validation passes for all 57 records;
+`--release-ready` still exits unsuccessfully for the 16 pending reviews. The
+earlier two license-review snapshots and two source snapshots remain byte for
+byte unchanged. Focused Ruff and whitespace checks pass; no new document fetch,
+weight download, external acceptance or runtime qualification was performed.
 
 Still outstanding:
 

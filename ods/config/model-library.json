@@ -310,7 +310,7 @@
         "schema_version": 1,
         "evidence_sha256": "065358dc435ec333e9fd91c3991abb46935b423ed4e73ea31b8c3944ed0e0efb",
         "observed_at": "2026-09-23T07:35:44.253572+00:00",
-        "review_status": "not_assessed",
+        "review_status": "reviewed",
         "sources": [
           {
             "role": "artifact_publisher",
@@ -346,12 +346,6 @@
             "kind": "repository_license_document",
             "url": "https://huggingface.co/ai21labs/AI21-Jamba-Reasoning-3B-GGUF/blob/462e08a43c3c32f6b8b85f79ff0796e484d7b65a/LICENSE.txt",
             "sha256": "53c512bdc2892ce78925732eaa87373290ec208bbbfc917c6d42f8c4821c6cc9"
-          },
-          {
-            "repo": "ai21labs/AI21-Jamba-Reasoning-3B",
-            "kind": "declared_license_link",
-            "url": "https://www.ai21.com/jamba-open-model-license/",
-            "sha256": "3c5f18a0ed5c59fe040877b4bfef89cf38cd5651852dd151db6747898b0a504b"
           }
         ],
         "notice_documents": [
@@ -374,12 +368,53 @@
             "sha256": "8e6cb0d800dcdf5ca849e02be4886032be5a32aef1d533f39cc6944d3858f4ef"
           }
         ],
-        "commercial_use": "not_assessed",
-        "upstream_acceptance": "not_assessed",
-        "issues": [
-          "BASE_MODEL_FROM_CARD_PROSE"
+        "commercial_use": "permitted_with_conditions",
+        "upstream_acceptance": "not_required",
+        "issues": [],
+        "note": "Specific Reasoning 3B evidence supports Apache 2.0: publisher-pinned GGUF LICENSE.txt is the full Apache license, both pinned cards identify Apache in their license section, and AI21’s model release announcement explicitly calls Reasoning 3B Apache 2.0. Preserve the stale jamba-open-model-license license_name/link as a metadata anomaly; do not apply Jamba 1.5 revenue limits to this separately licensed model or infer terms for other Jamba releases. Base identity is explicitly established by the publisher card prose.",
+        "conditions": [
+          {
+            "trigger": "redistribution",
+            "requirement": "Provide recipients a copy of Apache License 2.0.",
+            "basis": "section 4(a)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing changed files",
+            "requirement": "Include prominent change notices.",
+            "basis": "section 4(b)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "distributing derivative source",
+            "requirement": "Retain applicable copyright, patent, trademark and attribution notices.",
+            "basis": "section 4(c)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "derivatives of a distribution containing NOTICE",
+            "requirement": "Include the applicable NOTICE attributions in a readable permitted location.",
+            "basis": "section 4(d)",
+            "license_group": "apache-2.0"
+          },
+          {
+            "trigger": "all use",
+            "requirement": "No general trademark permission; the contributory patent grant has a patent-litigation termination condition.",
+            "basis": "sections 3 and 6",
+            "license_group": "apache-2.0"
+          }
         ],
-        "note": "Publisher LICENSE.txt and card body say Apache 2.0; license_name/license_link instead identify the Jamba custom agreement. Reconcile these fields before selecting terms."
+        "local_notices": [
+          {
+            "path": "ods/config/model-notices/custom-53c512bdc2892ce7-LICENSE.txt",
+            "sha256": "53c512bdc2892ce78925732eaa87373290ec208bbbfc917c6d42f8c4821c6cc9",
+            "source_url": "https://huggingface.co/ai21labs/AI21-Jamba-Reasoning-3B-GGUF/blob/462e08a43c3c32f6b8b85f79ff0796e484d7b65a/LICENSE.txt",
+            "source_sha256": "53c512bdc2892ce78925732eaa87373290ec208bbbfc917c6d42f8c4821c6cc9",
+            "content_type": "text/plain; charset=utf-8",
+            "extraction": "identity"
+          }
+        ],
+        "license_review_evidence_sha256": "9ce07220a4b64e9874cf904c5148c5342eec574b8772f9939e319b5f866ece54"
       }
     },
     {

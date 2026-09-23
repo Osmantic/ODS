@@ -275,6 +275,7 @@ def main():
         review_paths = args.review_evidence or ([] if args.evidence else [
             ROOT / "docs/MODEL_LICENSE_REVIEWS.json",
             ROOT / "docs/MODEL_LICENSE_REVIEWS_FOLLOWUP.json",
+            ROOT / "docs/MODEL_LICENSE_REVIEWS_CUSTOM.json",
         ])
         for path in review_paths:
             fingerprint, entries = load_license_review(path, ROOT.parent)
