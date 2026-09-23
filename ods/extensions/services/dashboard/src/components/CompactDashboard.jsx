@@ -58,10 +58,13 @@ export default function CompactDashboard({ metrics, services, health }) {
       <dd><span title={String(value)}>{alert && <StatusDot tone="orange"/>}{value}</span>{Number.isFinite(usage) && <Meter value={usage} label={`${label} utilization`}/>}</dd>
     </div>)}</dl>
     <header className="dashboard-services-heading"><div><h2>Services</h2><p>Current service health</p></div><span>{services.length} services</span></header>
-    <div ref={list} className="dashboard-service-list">{services.slice((currentPage - 1) * pageSize,currentPage * pageSize).map((service,index) => <details key={service.id || service.name || index}>
+    <div ref={list} className="dashboard-service-list">{services.slice((currentPage - 1) * pageSize,currentPage * pageSize).map((service,index) => {
+      const rowKey = `${service.id || service.name || 'service'}-${(services.slice(0, (currentPage - 1) * pageSize + index).filter(item => (item.id || item.name) === (service.id || service.name)).length)}`
+      return <details key={rowKey}>
       <summary><Activity size={13}/><span className="dashboard-service-name">{service.name || service.id}</span><span className="dashboard-status-badge"><StatusDot tone={tone(service.status)}/>{(service.status || 'unknown').replaceAll('_',' ')}</span><ChevronRight className="dashboard-service-chevron" size={12}/></summary>
       <dl><div><dt>Status</dt><dd>{(service.status || 'unknown').replaceAll('_',' ')}</dd></div>{service.port && <div><dt>Port</dt><dd>{service.port}</dd></div>}{service.id && <div><dt>Service</dt><dd>{service.id}</dd></div>}</dl>
-    </details>)}</div>
+      </details>
+    })}</div>
     {!services.length && <p className="dashboard-empty">No service telemetry available.</p>}
     {pages > 1 && <nav className="dashboard-pagination" aria-label="Service pages">{Array.from({length:pages},(_,index) => index + 1).map(number => <button key={number} aria-label={`Page ${number}`} aria-current={currentPage === number ? 'page' : undefined} onClick={() => setPage(number)}>{number}</button>)}</nav>}
     </>}
