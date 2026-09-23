@@ -4,13 +4,17 @@ doc_type: policy
 audience: [contributor, security-reviewer, maintainer]
 feature_status: supported
 owners: [documentation]
-sources_of_truth: [scripts/docs/, tests/docs-inventory.test.mjs, .github/workflows/docs.yml]
+sources_of_truth: [scripts/docs/, tests/docs-inventory.test.mjs]
 last_verified_at: 2026-08-27
 ---
 
 # Pixel documentation contract
 
 Pixel documentation is part of the product boundary. It must say what source, configuration, and evidence prove without upgrading a Candidate, disabled surface, synthetic result, or historical record into a stronger claim.
+
+The upstream documentation CI workflow is not part of this public source
+export. The documented local commands and their regression tests remain
+available; a passing local run does not attest to a private CI result.
 
 ## Page metadata
 

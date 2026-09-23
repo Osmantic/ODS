@@ -1,6 +1,6 @@
 import { screen } from '@testing-library/react'
 import { render } from '../test/test-utils'
-import { GPUCard } from './GPUCard' // eslint-disable-line no-unused-vars
+import { GPUCard } from './GPUCard'
 
 describe('GPUCard sensor availability', () => {
   it('does not present unavailable Windows counters as zero', () => {

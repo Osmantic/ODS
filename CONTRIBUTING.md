@@ -1,6 +1,6 @@
 # Contributing to ODS
 
-Thanks for wanting to contribute. ODS is open source and we welcome help from everyone — whether you're fixing a bug, adding a service integration, or tackling a full feature.
+Thanks for wanting to contribute. ODS combines Apache-2.0 code with a separately licensed Pixel component, and we welcome help from everyone — whether you're fixing a bug, adding a service integration, or tackling a full feature.
 
 ## Quick Start
 
@@ -12,7 +12,7 @@ Thanks for wanting to contribute. ODS is open source and we welcome help from ev
 3. Make your changes, test them locally, and commit.
 4. Open a **pull request** against `main`.
 
-No CLA, no hoops.
+Read the path-specific [contribution terms](ods/LICENSING.md#contributions) before submitting a change.
 
 ## Forks and Custom Editions
 
@@ -72,4 +72,9 @@ Not sure about something? Open a thread in [GitHub Discussions](https://github.c
 
 ## License
 
-By contributing, you agree that your work will be licensed under the [Apache License 2.0](LICENSE).
+Contributions to Apache-2.0 ODS files are submitted under the [Apache License 2.0](LICENSE).
+This does not apply to `ods/vendor/pixel/` or third-party material. Pixel is
+source-available under its existing [Pixel License for ODS](ods/vendor/pixel/LICENSE.md).
+Before accepting changes to Pixel, maintainers and the contributor must document
+an appropriate inbound grant; the general Apache contribution statement cannot
+supply it. See [Licensing](ods/LICENSING.md#contributions).

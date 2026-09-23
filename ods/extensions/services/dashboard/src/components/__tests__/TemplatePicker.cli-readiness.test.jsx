@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from '@testing-library/react'
-import { TemplatePicker } from '../TemplatePicker' // eslint-disable-line no-unused-vars
+import { TemplatePicker } from '../TemplatePicker'
 import { getTemplateStatus } from '../../lib/templates'
 
 const template = { id: 'coding', name: 'Coding', services: ['aider', 'gitea'] }

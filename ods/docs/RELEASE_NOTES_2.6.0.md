@@ -1,8 +1,9 @@
 # ODS 2.6.0 Release Notes
 
-Publication status: current stable release. A strict User Green stamp is not
-claimed for this release because the long six-cycle model-management matrix was
-intentionally waived.
+Historical release record for `v2.6.0`. A strict User Green stamp was not
+claimed because the long six-cycle model-management matrix was intentionally
+waived. This page does not establish the current stable channel or qualify
+a later public-beta revision.
 
 ## Summary
 
@@ -11,9 +12,9 @@ switchboard, verified context selection, GPU reassignment rollback, rootless
 Linux installs, Windows and macOS native-runtime stability, dashboard polish,
 and release hygiene.
 
-Use this release for new stable installs. Continue to pin `v2.5.3` only when
-an appliance or fork needs the old 2.5 behavior and cannot move to the 2.6 line
-yet.
+Select the intended channel using [Release channels](RELEASE_CHANNELS.md).
+A downstream pinned to an older release needs its own update and compatibility
+review before changing versions.
 
 ## Highlights
 
@@ -64,17 +65,12 @@ yet.
   - dashboard API focused regressions: `502 passed, 5 skipped`
   - Perplexica, remote-provider egress, and Token Spy cursor tests:
     `35 passed, 1 skipped`
-  - Tower2 rootless ownership contract: `25 passed`
+  - Linux NVIDIA rootless ownership contract: `25 passed`
 - Release-prep fleet receipt on 2026-07-28:
-  - run id:
-    `2026-07-28T12-58-00Z-release-product-07e2a21e3cca-harness-19d43e6f9f25-hosts-tower2-strix-halo-spark-m5-mbp-windows-laptop-strixy`
-  - harness: `main@19d43e6f9f2533e8768ed85b33de9f4ace232129`
-    (clean)
-  - command:
-    `./run.sh --phase release --hosts tower2,strix-halo,spark,m5-mbp,windows-laptop,strixy --smoke-host tower2`
-  - selected hosts: `tower2`, `strix-halo`, `spark`, `m5-mbp`,
-    `windows-laptop`, `strixy`
-  - excluded enabled host: `dgx-gpu01`
+  - Historical scope: Linux NVIDIA (x86_64 and aarch64), Linux AMD,
+    macOS arm64, Windows NVIDIA, and Windows AMD hardware classes.
+  - Private run identifiers, host aliases, and harness paths are omitted.
+    The following are recorded historical results, not a new verification.
   - zero-prereq bootstrap: `6/6` lanes passed
   - regressions: `16/16` fixtures passed
   - install: all six selected hosts installed from the public bootstrap at the
@@ -90,15 +86,13 @@ yet.
 - Explicitly waived or excluded surfaces:
   - six-cycle release model-management matrix was started but intentionally
     stopped as too time-consuming for this release-prep need; cycle 1 passed on
-    `tower2` and `strix-halo`, while the remaining generated `143`
+    Linux NVIDIA and Linux AMD, while the remaining generated `143`
     interruption receipts from the operator stop
   - because that matrix was waived, this candidate is not stamped strict User
     Green; publication should describe the waiver rather than claiming Model UI
     Green
-  - `dgx-gpu01` was excluded after strict SSH host-key verification failed;
-    Tower2's pinned ED25519 key is
-    `SHA256:hPPRpUClgK0nCDrZujmfHgbMIIYV70zSpKfBw4VWmdo`, while the endpoint
-    currently presents `SHA256:zgUNklRWH+N/aaQ1MmZEzmN6ABu/6XMOw2Mm3ITzwfM`
+  - An additional Linux aarch64 GPU target was excluded after SSH
+    host-key verification failed. No result is claimed for that target.
 
 ## Known Limits
 

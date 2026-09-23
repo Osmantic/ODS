@@ -1,6 +1,6 @@
 import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import { render } from '../../test/test-utils'
-import { TemplatePreview } from '../TemplatePicker' // eslint-disable-line no-unused-vars
+import { TemplatePreview } from '../TemplatePicker'
 
 const template = {
   id: 'test-template',

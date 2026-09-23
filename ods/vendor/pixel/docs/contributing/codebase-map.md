@@ -4,7 +4,7 @@ doc_type: reference
 audience: [contributor, maintainer, security-reviewer]
 feature_status: mixed
 owners: [documentation, maintainers]
-sources_of_truth: [CONTRIBUTING.md, pixel, control/, deploy/, plugin/, plugin-ops/, plugin-frontier/, scripts/, schemas/, tests/, security-evals/, workspace-template/, .github/workflows/]
+sources_of_truth: [CONTRIBUTING.md, pixel, control/, deploy/, plugin/, plugin-ops/, plugin-frontier/, scripts/, schemas/, tests/, security-evals/, workspace-template/]
 last_verified_at: 2026-08-27
 ---
 
@@ -68,7 +68,9 @@ Important ownership clusters:
 
 - `tests/` contains Node, Python, shell, e2e, live-lane, crash, race, schema, and release tests.
 - `security-evals/` contains named adversarial/isolation/pressure/live harnesses. Each proves only its declared boundary.
-- `.github/workflows/` runs docs, security, product-qualification, upstream-compatibility, and upstream-discovery jobs.
+- The upstream `.github/workflows/` directory is not included in this public
+  source export. The local scripts and tests above are inspectable here;
+  their presence does not establish which upstream CI jobs ran or passed.
 
 Use [testing](testing.md) and the [high-risk change map](high-risk-change-map.md) to choose checks.
 

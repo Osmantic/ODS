@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import PixelConversationRecovery from '../components/PixelConversationRecovery'
 import { readConversations, saveConversation, createConversationWriter, SELECT_EVENT, DELETE_EVENT, deleteConversation, isConversationDeleted } from '../lib/pixelConversations'
 import {usePixelAutoScroll} from '../lib/usePixelAutoScroll'
-import { Link } from 'react-router-dom'
 import PixelAdvice from '../components/PixelAdvice.jsx'
 import PixelMascot from '../components/PixelMascot.jsx'
 import UserAvatar from '../components/UserAvatar'
@@ -40,16 +39,13 @@ import PixelTurnNavigation from '../components/PixelTurnNavigation'
 import PixelSnapshotChanges from '../components/PixelSnapshotChanges'
 import PortalWorkspace from '../components/PortalWorkspace'
 import { parseTaskActivity, parseTaskActivityFrame } from '../lib/pixelTaskActivity'
-import MetalMetricIcon from '../components/MetalMetricIcon'
 import PanelResizeHandle from '../components/PanelResizeHandle.jsx'
 import PixelHandoffApproval from '../components/PixelHandoffApproval.jsx'
 import PixelProviderScopes from '../components/PixelProviderScopes.jsx'
 import { usePortalIdentity } from '../contexts/PortalIdentityContext'
 import {usePixelSendKey, shouldSendMessage} from '../lib/usePixelSendKey'
 import {
-  AlertCircle,
   CheckCircle2,
-  Code2,
   Copy,
   Loader2,
   Plus,
@@ -57,10 +53,8 @@ import {
   Send,
   Search,
   ShieldCheck,
-  Sparkles,
   Square,
   Terminal,
-  X,
 } from 'lucide-react'
 
 const MARKDOWN_COMPONENTS = {

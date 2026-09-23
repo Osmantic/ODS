@@ -55,7 +55,14 @@ commit and keep your own validation receipt. Stable patch fixes land on
 [Installer Trust](ods/docs/INSTALLER_TRUST.md), and
 [Forkability](ods/docs/FORKABILITY.md).
 
-## Get Started
+## Public-beta testers
+
+Use the [verified beta installation guide](ods/docs/PUBLIC_BETA_INSTALL.md).
+The hosted commands below follow `main` and do **not** test this beta. A beta
+release needs a frozen commit and its reviewed checksum-bound install kit before
+it is advertised for installation; that release gate is not complete yet.
+
+## Get Started (main channel)
 
 Choose your system, copy the block, run it in a normal terminal. ODS installs the stack, picks a model for your hardware, starts the services, and gives you the local web UI.
 
@@ -486,7 +493,7 @@ Other tools get you part of the way. ODS gets you the whole way.
 
 ODS is built by a growing group of contributors across installers, GPU support, dashboard, security, extensions, docs, and release validation. The README keeps the product overview focused; the long-form credits, upstream acknowledgements, and contributor history live in [CONTRIBUTORS.md](CONTRIBUTORS.md).
 
-ODS has been recognized by the local AI and developer community, including AMD Featured Developer recognition, selection as a May 2026 AMD Lemonade Developer Challenge winner, and a feature at [(Co)nnect: Philly's AI Ecosystem Summit](https://luma.com/xdwih64h) at Pennovation Works.
+The [commit-derived beta contributor ledger](ods/docs/CONTRIBUTOR-LEDGER.md) records the reviewed author history. Community acknowledgements are kept separate from award or growth claims that require dated primary-source evidence.
 
 ---
 

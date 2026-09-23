@@ -1,5 +1,8 @@
 # ODS macOS Quickstart
 
+**Testing public-beta?** Use the [verified beta installation guide](PUBLIC_BETA_INSTALL.md).
+The unqualified clone below selects the main channel, not the beta candidate.
+
 > **Status: Supported**
 >
 > The macOS installer runs end-to-end on Apple Silicon. One command gives you a full local AI stack with Metal-accelerated inference.
@@ -23,9 +26,8 @@ cd ODS/ods
 ./install.sh
 ```
 
-For the public beta, add `--single-branch --branch public-beta` to the clone
-command. The hosted installer and an unqualified clone select `main`, not the
-beta. Back up existing configuration and data before updating. Existing native
+For public-beta installation, follow the verified guide linked above. Back up
+existing configuration and data before updating. Existing native
 Pixel installations use the managed native update/migration path; the base
 installer intentionally stops instead of overwriting protected runtime state.
 

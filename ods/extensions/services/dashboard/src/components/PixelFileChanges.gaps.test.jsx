@@ -1,5 +1,5 @@
 import {render, screen, within} from '@testing-library/react'
-import PixelFileChanges from './PixelFileChanges' // eslint-disable-line no-unused-vars
+import PixelFileChanges from './PixelFileChanges'
 import receipt from './__tests__/fixtures/published-diff-gap.json'
 
 // Real snapshot_changes output for two publications whose middle line contains

@@ -15,6 +15,11 @@ docker-entrypoint* text eol=lf
 
 # Source patches are hash-bound build inputs; checkout/archive must preserve LF.
 ods/extensions/services/pixel-agent/runtime-source/*.patch text eol=lf
+# Unified-diff blank context lines and the format-patch '-- ' trailer carry
+# required whitespace. Preserve these two digest-bound inputs byte-for-byte.
+ods/extensions/services/pixel-agent/runtime-source/openclaw-2026.6.33-command-lifecycle.patch whitespace=-blank-at-eol,-blank-at-eof
+ods/extensions/services/pixel-agent/runtime-source/openclaw-2026.6.33-required-plugins.patch whitespace=-blank-at-eol
+ods/tests/test_portal_identity.py text eol=lf
 
 # PowerShell scripts can use CRLF (native Windows)
 *.ps1 text eol=crlf

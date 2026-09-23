@@ -17,6 +17,10 @@
 #   Change model download logic or compose launch flags here.
 # ============================================================================
 
+if ! declare -F ods_prepare_install_log_var >/dev/null 2>&1; then
+    source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)/secure-log.sh"
+fi
+
 # Keep standalone phase harnesses usable; production defines this in ui.sh.
 if ! declare -F ui_status_line >/dev/null 2>&1; then
     ui_status_line() {
@@ -42,6 +46,8 @@ _phase11_build_local_images() {
     for svc in "${build_services[@]}"; do
         build_count=$((build_count + 1))
         build_log="${LOG_FILE}.${svc}.build.log"
+        [[ "$LOG_FILE" != /dev/null ]] || build_log=/dev/null
+        ods_prepare_install_log_var build_log || return 1
         : > "$build_log"
         build_failed=true
 
@@ -558,6 +564,7 @@ else
 
     _phase11_write_compose_launch_record() {
         local path="$INSTALL_DIR/logs/compose-launch.txt"
+        ods_prepare_install_log_var path || return 1
         local command_text up_suffix
         command_text="$(_phase11_compose_command_text)"
         up_suffix="$(_phase11_compose_up_suffix)"
@@ -795,13 +802,15 @@ else
             echo ""
 
             # Retry loop: up to 3 attempts with resume support (-c flag)
+            _model_download_log="$INSTALL_DIR/logs/model-download.log"
+            ods_prepare_install_log_var _model_download_log || exit 1
             _dl_success=false
             for _attempt in 1 2 3; do
                 [[ $_attempt -gt 1 ]] && ai "Retry attempt $_attempt of 3..."
                 curl -fSL -C - --connect-timeout 30 --max-time 3600 \
                     --retry 3 --retry-delay 5 --retry-all-errors \
                     -o "$ODS_ACTIVE_DOWNLOAD_PART" "$GGUF_URL" \
-                    >> "$INSTALL_DIR/logs/model-download.log" 2>&1 &
+                    >> "$_model_download_log" 2>&1 &
                 dl_pid=$!
                 ODS_ACTIVE_DOWNLOAD_PID="$dl_pid"
 
@@ -825,7 +834,7 @@ else
                     fi
                 else
                     ODS_ACTIVE_DOWNLOAD_PID=""
-                    if _phase11_download_hf_artifact "$GGUF_URL" "$ODS_ACTIVE_DOWNLOAD_PART" "$INSTALL_DIR/logs/model-download.log"; then
+                    if _phase11_download_hf_artifact "$GGUF_URL" "$ODS_ACTIVE_DOWNLOAD_PART" "$_model_download_log"; then
                         if mv "$ODS_ACTIVE_DOWNLOAD_PART" "$GGUF_DIR/$GGUF_FILE" && [[ -s "$GGUF_DIR/$GGUF_FILE" ]]; then
                             ui_status_line ok "Model downloaded via Hugging Face client: $GGUF_FILE"
                             _dl_success=true
@@ -937,6 +946,8 @@ else
             # This daemon must not inherit the installer model lifecycle lock;
             # otherwise full-model activation waits for an unrelated 6.5 GB
             # image download after the installer itself releases the lock.
+            _sdxl_download_log="$INSTALL_DIR/logs/sdxl-download.log"
+            ods_prepare_install_log_var _sdxl_download_log || exit 1
             (
                 _phase11_close_inherited_fds_for_daemon
                 exec nohup env \
@@ -956,7 +967,7 @@ else
                                 echo "[SDXL] ERROR: Failed to download $SDXL_MODEL"
                         fi
                         echo "[SDXL] SDXL Lightning model download finished."
-                    ' > "$INSTALL_DIR/logs/sdxl-download.log" 2>&1
+                    ' > "$_sdxl_download_log" 2>&1
             ) &
 
             sdxl_pid=$!
@@ -1189,10 +1200,13 @@ MODELS_INI_EOF
 
     # ── Compose syntax validation ──────────────────────────────
     ai "Validating compose stack configuration..."
-    if ! $DOCKER_COMPOSE_CMD "${COMPOSE_FLAGS_ARR[@]}" config --quiet 1>/dev/null 2>"$LOG_FILE.compose-check"; then
+    _compose_check_log="$LOG_FILE.compose-check"
+    [[ "$LOG_FILE" != /dev/null ]] || _compose_check_log=/dev/null
+    ods_prepare_install_log_var _compose_check_log || exit 1
+    if ! $DOCKER_COMPOSE_CMD "${COMPOSE_FLAGS_ARR[@]}" config --quiet 1>/dev/null 2>"$_compose_check_log"; then
         ai_bad "Compose configuration is invalid"
         ai "Check $LOG_FILE.compose-check for details"
-        cat "$LOG_FILE.compose-check" >&2
+        cat "$_compose_check_log" >&2
         exit 1
     fi
     ai_ok "Compose configuration valid"
@@ -1421,6 +1435,7 @@ MODELS_INI_EOF
         # for hosts without a reachable systemd user manager.
         _upgrade_unit=ods-model-upgrade.service
         _upgrade_log="$INSTALL_DIR/logs/model-upgrade.log"
+        ods_prepare_install_log_var _upgrade_log || exit 1
         _upgrade_pid=""
         _upgrade_systemd_started=false
         _upgrade_uid="$(id -u)"

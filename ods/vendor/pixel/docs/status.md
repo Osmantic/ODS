@@ -13,14 +13,14 @@ last_verified_at: generated
 
 # Pixel status
 
-This page reports repository and release-contract facts. It does **not** report what is installed or active on any live host.
+This page reports repository and release-contract facts. It does **not** report what is installed or active on any live host. Recorded compatibility labels whose evidence is omitted from the public source export are historical metadata, not public release qualification.
 
 | Surface | Source-derived status | Evidence boundary |
 |---|---|---|
 | Repository version | `4.3.27` | `VERSION` and `RELEASE-MANIFEST.json` agree |
-| Repository compatibility row | **candidate** | [LIVE-AUDIT-4.3.27.md](../LIVE-AUDIT-4.3.27.md) binds source `5983c27edb1c41d6e944abd13b6e6f780dd6cb4c` |
+| Repository compatibility row | **candidate** | `LIVE-AUDIT-4.3.27.md` (not included in public export; evidence not verified here); recorded source `5983c27edb1c41d6e944abd13b6e6f780dd6cb4c` |
 | OpenClaw compatibility | Canonical release pin is maintained in [OPENCLAW-COMPATIBILITY.json](../OPENCLAW-COMPATIBILITY.json) | This page does not duplicate an authored release pin |
-| Latest Supported compatibility row | Pixel `4.3.26` | [LIVE-AUDIT-4.3.26.md](../LIVE-AUDIT-4.3.26.md) |
+| Latest recorded Supported compatibility row | Pixel `4.3.26` | `LIVE-AUDIT-4.3.26.md` (not included in public export; evidence not verified here) |
 | Deep Work runtime | **development-disabled** | `deepWorkCapability.runtimeEnabled` is `false`; source presence and admission do not imply runtime authority |
 | Documented host scope | Ubuntu 24.04 LTS; Debian 12 | Manifest and qualification matrix agree; this is not a fresh clean-host qualification |
 

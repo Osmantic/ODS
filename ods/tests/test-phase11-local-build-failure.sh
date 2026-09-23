@@ -21,6 +21,7 @@ extract_phase11_function() {
     sed -n "/^${1}() {/,/^}$/p" "$PHASE11"
 }
 
+source "$(dirname "$PHASE11")/../lib/secure-log.sh"
 eval "$(extract_phase11_function _phase11_build_local_images)"
 declare -F _phase11_build_local_images >/dev/null \
     || fail "could not extract _phase11_build_local_images"

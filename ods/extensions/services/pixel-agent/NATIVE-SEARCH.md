@@ -35,10 +35,9 @@ or prevent subsequent sandbox work, and it grants no host-command or remote
 transfer authority. Explicit byte-for-byte requests retain their source and
 digest binding.
 
-The paired Pixel source candidate is tracked in
-[Pixel PR #240](https://github.com/Osmantic/Pixel/pull/240). Source and disposable
-runtime tests do not establish installed chat or fresh-install acceptance. Keep
-[ODS PR #3385](https://github.com/Osmantic/ODS/pull/3385) open until user acceptance.
+Review the [bundled Pixel source](../../../vendor/pixel/README.md) for this
+distribution. Source and disposable runtime tests do not establish installed
+chat or fresh-install acceptance; use commit-bound release evidence.
 
 ## Attribution
 
@@ -47,6 +46,6 @@ The provisioned Parallel plugin is part of the official
 Its upstream implementation and dependencies remain governed by their original
 terms. OpenClaw is copyright (c) 2026 OpenClaw Foundation and is MIT licensed.
 The full upstream MIT notice is retained in ODS's distributed
-[third-party notices](../../../docs/pixel/upstream/THIRD_PARTY_NOTICES.md).
+[third-party notices](../../../vendor/pixel/THIRD_PARTY_NOTICES.md).
 See the [upstream license](https://github.com/openclaw/openclaw/blob/v2026.6.33/LICENSE)
 and [provider documentation](https://github.com/openclaw/openclaw/blob/v2026.6.33/docs/tools/parallel-search.md).

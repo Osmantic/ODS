@@ -23,7 +23,7 @@ function revealNewText() {
   }
 }
 
-function StreamSpan({node,...props}) {return <span {...props}/>}
+function StreamSpan({node:_node,...props}) {return <span {...props}/>}
 const EMPTY_COMPONENTS={}
 const PLUGINS=[rehypeHighlight,revealNewText]
 export default function PortalStreamingText({children, active=false, animate=active, instant=false, onReveal, components=EMPTY_COMPONENTS}) {

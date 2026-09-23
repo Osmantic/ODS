@@ -65,4 +65,4 @@ No application container or model was started during preparation.
 
 - [Versioned source](https://github.com/gotson/komga/tree/1.27.0)
 - [Docker installation](https://komga.org/docs/installation/docker/)
-- [Documentation](https://komga.org/docs/)
+- [Documentation](https://komga.org/docs/introduction/)

@@ -8,6 +8,20 @@ on:
       - master
 
 jobs:
+  installer-log-boundaries:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+      - name: Isolated diagnostic path and ownership tests
+        run: bash ods/tests/test-installer-log-safety.sh
+      - name: Derived build log and failure contracts
+        run: bash ods/tests/test-phase11-local-build-failure.sh
+
   backup-space:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 5
@@ -126,7 +140,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:16-alpine
+        image: postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
         env:
           POSTGRES_DB: tokenspy
           POSTGRES_USER: tokenspy
@@ -181,6 +195,11 @@ jobs:
 
       - name: Branch cleanup release exclusions
         run: python3 tests/test-stale-branch-release-refs.py
+
+      - name: Set up Node for documentation link validation
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: "22"
 
       - name: Docs Link Checks
         run: bash tests/test-doc-links.sh
@@ -431,6 +450,8 @@ jobs:
           python3 scripts/verify-pixel-bundle.py
           bash vendor/pixel/scripts/check-no-secrets.sh vendor/pixel
           bash tests/test-pixel-bundled-source.sh
+          bash tests/test-pixel-bundle-upgrade.sh
+          node --test vendor/pixel/tests/docs-inventory.test.mjs vendor/pixel/tests/public-export.test.mjs
 
       - name: Pixel Default Agent Contract Tests
         run: |

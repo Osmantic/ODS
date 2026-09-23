@@ -44,37 +44,37 @@ jobs:
       matrix:
         include:
           - distro: ubuntu-26.04
-            container: ubuntu:26.04
+            container: ubuntu:26.04@sha256:da6fc2be547864451aa253836dd926da33623312df4a9a243e35dc877c378a78
             expected_pkg: apt
           - distro: ubuntu-24.04
-            container: ubuntu:24.04
+            container: ubuntu:24.04@sha256:008173c23f95b170204355c12626cb5a965d779a7e1283b09e9cffbb1bf33ca3
             expected_pkg: apt
           - distro: ubuntu-22.04
-            container: ubuntu:22.04
+            container: ubuntu:22.04@sha256:b8b6ee6aa931ecd9d0d952abc34dc0e5f7c6a30c6bb71b079fe399fde0329c02
             expected_pkg: apt
           - distro: debian-12
-            container: debian:12
+            container: debian:12@sha256:f37a335e82bca302e955fa39f9dfe28f1be618f016f8a2b56318e5a5111afc26
             expected_pkg: apt
           - distro: linux-mint-21.3
-            container: linuxmintd/mint21.3-amd64:latest
+            container: linuxmintd/mint21.3-amd64:latest@sha256:c21780951eb8b1a626078d06e761047d21b3479aa242c11569e141581f012d11
             expected_pkg: apt
           - distro: fedora-41
-            container: fedora:41
+            container: fedora:41@sha256:f1a3fab47bcb3c3ddf3135d5ee7ba8b7b25f2e809a47440936212a3a50957f3d
             expected_pkg: dnf
           - distro: rocky-9
-            container: rockylinux:9
+            container: rockylinux:9@sha256:d7be1c094cc5845ee815d4632fe377514ee6ebcf8efaed6892889657e5ddaaa6
             expected_pkg: dnf
           - distro: archlinux
-            container: archlinux:latest
+            container: archlinux:latest@sha256:f3691b4dde62ba4c4b6f0ae2c1fbf28e8c0c8c4b9a35c7e06dc1f70e21aa29f6
             expected_pkg: pacman
           - distro: manjaro
-            container: manjarolinux/base:latest
+            container: manjarolinux/base:latest@sha256:bbf1f1d746f28e138eea610e140d2f28cbb5b7c5da2fbff034b883527aa604e9
             expected_pkg: pacman
           - distro: cachyos
-            container: cachyos/cachyos:latest
+            container: cachyos/cachyos:latest@sha256:8b4b0f636bef9e5d091be5f753725e3309b9d8e20e23ed4cc3b61e626ab78428
             expected_pkg: pacman
           - distro: opensuse-tw
-            container: opensuse/tumbleweed:latest
+            container: opensuse/tumbleweed:latest@sha256:4a2d9146d8565555a85d212f36009b1631ef63bbe1bf2eaf2c9f5b666f661e31
             expected_pkg: zypper
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -86,6 +86,7 @@ jobs:
     steps:
       - name: Install checkout prerequisites (distro-aware)
         working-directory: /
+        shell: bash
         run: |
           retry() {
             attempt=1

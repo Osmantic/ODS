@@ -1,0 +1,11 @@
+{
+  "name": "ods-optional-ai-clis",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Reviewed optional command-line tools installed only with ODS_INSTALL_AI_CLIS=true",
+  "engines": { "node": ">=22" },
+  "dependencies": {
+    "@anthropic-ai/claude-code": "2.1.280",
+    "@openai/codex": "0.156.1"
+  }
+}

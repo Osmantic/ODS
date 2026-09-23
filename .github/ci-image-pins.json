@@ -1,0 +1,152 @@
+{
+  "resolved_at_utc": "2026-09-23T06:52:04.949805+00:00",
+  "registry": "registry-1.docker.io",
+  "images": [
+    {
+      "source": "archlinux:latest",
+      "digest": "sha256:f3691b4dde62ba4c4b6f0ae2c1fbf28e8c0c8c4b9a35c7e06dc1f70e21aa29f6",
+      "media_type": "application/vnd.oci.image.index.v1+json",
+      "platforms": [
+        "linux/amd64"
+      ],
+      "verified_manifest_sha256": true
+    },
+    {
+      "source": "cachyos/cachyos:latest",
+      "digest": "sha256:8b4b0f636bef9e5d091be5f753725e3309b9d8e20e23ed4cc3b61e626ab78428",
+      "media_type": "application/vnd.oci.image.index.v1+json",
+      "platforms": [
+        "linux/amd64"
+      ],
+      "verified_manifest_sha256": true
+    },
+    {
+      "source": "debian:12",
+      "digest": "sha256:f37a335e82bca302e955fa39f9dfe28f1be618f016f8a2b56318e5a5111afc26",
+      "media_type": "application/vnd.oci.image.index.v1+json",
+      "platforms": [
+        "linux/386",
+        "linux/amd64",
+        "linux/arm/v7",
+        "linux/arm64/v8",
+        "linux/ppc64le"
+      ],
+      "verified_manifest_sha256": true
+    },
+    {
+      "source": "fedora:41",
+      "digest": "sha256:f1a3fab47bcb3c3ddf3135d5ee7ba8b7b25f2e809a47440936212a3a50957f3d",
+      "media_type": "application/vnd.oci.image.index.v1+json",
+      "platforms": [
+        "linux/amd64",
+        "linux/arm64/v8",
+        "linux/ppc64le",
+        "linux/s390x"
+      ],
+      "verified_manifest_sha256": true
+    },
+    {
+      "source": "linuxmintd/mint21.3-amd64:latest",
+      "digest": "sha256:c21780951eb8b1a626078d06e761047d21b3479aa242c11569e141581f012d11",
+      "media_type": "application/vnd.docker.distribution.manifest.v2+json",
+      "platforms": [],
+      "verified_manifest_sha256": true
+    },
+    {
+      "source": "manjarolinux/base:latest",
+      "digest": "sha256:bbf1f1d746f28e138eea610e140d2f28cbb5b7c5da2fbff034b883527aa604e9",
+      "media_type": "application/vnd.oci.image.index.v1+json",
+      "platforms": [
+        "linux/amd64",
+        "linux/arm64"
+      ],
+      "verified_manifest_sha256": true
+    },
+    {
+      "source": "opensuse/tumbleweed:latest",
+      "digest": "sha256:4a2d9146d8565555a85d212f36009b1631ef63bbe1bf2eaf2c9f5b666f661e31",
+      "media_type": "application/vnd.docker.distribution.manifest.list.v2+json",
+      "platforms": [
+        "linux/386",
+        "linux/amd64",
+        "linux/arm/v6",
+        "linux/arm/v7",
+        "linux/arm64/v8",
+        "linux/ppc64le",
+        "linux/riscv64",
+        "linux/s390x"
+      ],
+      "verified_manifest_sha256": true
+    },
+    {
+      "source": "postgres:16-alpine",
+      "digest": "sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea",
+      "media_type": "application/vnd.oci.image.index.v1+json",
+      "platforms": [
+        "linux/386",
+        "linux/amd64",
+        "linux/arm/v6",
+        "linux/arm/v7",
+        "linux/arm64/v8",
+        "linux/ppc64le",
+        "linux/riscv64",
+        "linux/s390x"
+      ],
+      "verified_manifest_sha256": true
+    },
+    {
+      "source": "rockylinux:9",
+      "digest": "sha256:d7be1c094cc5845ee815d4632fe377514ee6ebcf8efaed6892889657e5ddaaa6",
+      "media_type": "application/vnd.oci.image.index.v1+json",
+      "platforms": [
+        "linux/amd64",
+        "linux/arm64/v8",
+        "linux/ppc64le",
+        "linux/s390x"
+      ],
+      "verified_manifest_sha256": true
+    },
+    {
+      "source": "ubuntu:22.04",
+      "digest": "sha256:b8b6ee6aa931ecd9d0d952abc34dc0e5f7c6a30c6bb71b079fe399fde0329c02",
+      "media_type": "application/vnd.oci.image.index.v1+json",
+      "platforms": [
+        "linux/amd64",
+        "linux/arm/v7",
+        "linux/arm64/v8",
+        "linux/ppc64le",
+        "linux/riscv64",
+        "linux/s390x"
+      ],
+      "verified_manifest_sha256": true
+    },
+    {
+      "source": "ubuntu:24.04",
+      "digest": "sha256:008173c23f95b170204355c12626cb5a965d779a7e1283b09e9cffbb1bf33ca3",
+      "media_type": "application/vnd.oci.image.index.v1+json",
+      "platforms": [
+        "linux/amd64",
+        "linux/arm/v7",
+        "linux/arm64/v8",
+        "linux/ppc64le",
+        "linux/riscv64",
+        "linux/s390x"
+      ],
+      "verified_manifest_sha256": true
+    },
+    {
+      "source": "ubuntu:26.04",
+      "digest": "sha256:da6fc2be547864451aa253836dd926da33623312df4a9a243e35dc877c378a78",
+      "media_type": "application/vnd.oci.image.index.v1+json",
+      "platforms": [
+        "linux/amd64",
+        "linux/arm/v7",
+        "linux/arm64/v8",
+        "linux/ppc64le",
+        "linux/riscv64",
+        "linux/s390x"
+      ],
+      "verified_manifest_sha256": true
+    }
+  ]
+}

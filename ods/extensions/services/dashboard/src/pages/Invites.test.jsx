@@ -1,6 +1,6 @@
 import { fireEvent, screen, waitFor } from '@testing-library/react'
 import { render } from '../test/test-utils'
-import Invites from './Invites' // eslint-disable-line no-unused-vars
+import Invites from './Invites'
 
 const response = (body, status = 200) => ({
   ok: status >= 200 && status < 300,

@@ -1,5 +1,5 @@
 import { render, screen, within } from '@testing-library/react'
-import { TemplatePicker } from '../TemplatePicker' // eslint-disable-line no-unused-vars
+import { TemplatePicker } from '../TemplatePicker'
 
 const baseTemplate = {
   id: 'chat',

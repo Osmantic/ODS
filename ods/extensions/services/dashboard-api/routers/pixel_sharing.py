@@ -85,5 +85,3 @@ async def change_sharing(action: str, request: Request, _key: str = Depends(veri
     if action not in ('issue','enable','revoke','start','stop'):
         raise HTTPException(404, 'Sharing action not found')
     return await _request(action, await _body(request, action))
-
-

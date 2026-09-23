@@ -1,0 +1,7 @@
+# Regenerate requirements.txt for the Docker runtime with:
+# uv pip compile --python-version 3.12 --python-platform linux --generate-hashes \
+#   --output-file requirements.txt requirements.in
+fastapi==0.141.1
+uvicorn[standard]==0.53.0
+pydantic==2.13.5
+pyyaml==6.0.3

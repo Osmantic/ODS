@@ -12,7 +12,7 @@ export default function SetupWizard({ onComplete }) {
     preflightPassed: false
   })
   const [testStatus, setTestStatus] = useState({ running: false, output: [], done: false, success: false })
-  const [preflightIssues, setPreflightIssues] = useState([])
+  const [, setPreflightIssues] = useState([])
   const [templates, setTemplates] = useState([])
   const [extensions, setExtensions] = useState([])
   const totalSteps = 6

@@ -80,4 +80,3 @@ def public_model_control(value):
             or (value['status'] != 'completed' and value['outcome'] is not None)):
         raise ValueError('invalid-model-control-response')
     return {key: value[key] for key in keys}
-

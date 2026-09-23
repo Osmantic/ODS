@@ -1,6 +1,6 @@
 import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { render } from '../test/test-utils'
-import Usage from './Usage' // eslint-disable-line no-unused-vars
+import Usage from './Usage'
 
 const currentReport = {
   period: { start: '2026-05-01', end: '2026-05-31' },

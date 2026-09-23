@@ -1,0 +1,57 @@
+name: Beta install kit
+
+on:
+  pull_request:
+    branches: [main, public-beta]
+    paths:
+      - 'install.sh'
+      - 'install.ps1'
+      - 'ods/scripts/build-beta-install-kit.py'
+      - 'ods/tests/test_beta_install_kit.py'
+      - 'ods/installers/lib/verified-download.sh'
+      - 'ods/tests/test-verified-download.sh'
+      - 'ods/installers/ai-clis/**'
+      - 'ods/installers/phases/07-devtools.sh'
+      - 'ods/installers/macos/install-macos.sh'
+      - 'ods/installers/windows/phases/07-devtools.ps1'
+      - 'ods/tests/test-opencode-artifact-selection.sh'
+      - 'ods/tests/test-macos-opencode-verified.sh'
+      - 'ods/tests/test-windows-opencode-integrity.ps1'
+      - '.gitattributes'
+      - '.github/workflows/beta-install-kit.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: '22'
+      - name: Verify receipts and reject tampered downloads
+        run: python ods/tests/test_beta_install_kit.py
+      - name: Reject unverified prerequisite downloads
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          bash ods/tests/test-verified-download.sh
+          bash ods/tests/test-opencode-artifact-selection.sh
+          bash ods/tests/test-macos-opencode-verified.sh
+      - name: Reject tampered OpenCode on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./ods/tests/test-windows-opencode-integrity.ps1
+      - name: Verify optional AI CLI install boundaries without installing tools
+        run: node --test ods/installers/ai-clis/install.test.mjs

@@ -7,8 +7,8 @@
 - **Current operator guide:** [`ods/SECURITY.md`](ods/SECURITY.md)
 
 This document tracks the remediation status of the March 2026 static security
-audit. It is not a live list of active vulnerabilities. Treat a finding as
-currently active only when its status says `Open` or `Needs confirmation`.
+audit. It is not a live list of active vulnerabilities. Status labels are historical review results, not a complete statement of current
+security. Revalidate them against the release being assessed.
 
 The original audit used gitleaks 8.x, bandit 1.9.4, semgrep auto config,
 shellcheck, and manual review. The status review below was based on the current
@@ -44,9 +44,9 @@ repository tree, targeted regression tests, and security-relevant docs.
 | M1 | Token-spy SQL migration interpolated identifiers | Remediated in tree | [`ods/extensions/services/token-spy/db.py`](ods/extensions/services/token-spy/db.py) uses `ALLOWED_COLUMNS` and a safe SQL identifier regex before `ALTER TABLE`. | Preserve the allowlist if columns are made dynamic later. |
 | M2 | Dashboard and token-spy containers ran as root | Remediated in tree | [`ods/extensions/services/dashboard/Dockerfile`](ods/extensions/services/dashboard/Dockerfile) and [`ods/extensions/services/token-spy/Dockerfile`](ods/extensions/services/token-spy/Dockerfile) create and run as non-root users. | Keep new service Dockerfiles covered by extension audit and review. |
 | M3 | Dashboard nginx config had H2C smuggling conditions | Remediated in tree | [`ods/extensions/services/dashboard/nginx.conf`](ods/extensions/services/dashboard/nginx.conf) sets `proxy_set_header Connection "close"` on the API proxy path. | If WebSocket upgrade support is added to that path, re-review the proxy headers. |
-| M4 | Voice agent defaulted to unencrypted `ws://` | Mitigated / accepted local risk | [`ods/extensions/services/dashboard/src/hooks/useVoiceAgent.js`](ods/extensions/services/dashboard/src/hooks/useVoiceAgent.js) now derives `wss:` when the dashboard is served over HTTPS and `ws:` for local HTTP. [`ods/SECURITY.md`](ods/SECURITY.md) recommends TLS or VPN for network exposure. | Plain HTTP on localhost/LAN remains cleartext by design; use TLS or Tailscale/WireGuard for sensitive shared deployments. |
+| M4 | Voice agent defaulted to unencrypted `ws://` | Historical mitigation; current implementation changed | The historical `useVoiceAgent.js` hook is no longer shipped. The current [ODS Talk page](ods/extensions/services/dashboard/src/pages/ODSTalk.jsx) uses the dashboard API; the old hook is not evidence for its transport behavior. [Security guidance](ods/SECURITY.md) recommends TLS or VPN for network exposure. | Revalidate transport security against the selected release and deployment. |
 | M5 | `local` was used outside function scope in installer service phase | Remediated in tree | Current [`ods/installers/phases/11-services.sh`](ods/installers/phases/11-services.sh) keeps `local` declarations inside functions. | Continue running shellcheck or installer contract tests on shell changes. |
-| L1 | CDN-loaded dashboard assets lacked Subresource Integrity | Remediated in tree | [`ods/extensions/services/dashboard/public/agents.html`](ods/extensions/services/dashboard/public/agents.html) and [`ods/extensions/services/dashboard/templates/index.html`](ods/extensions/services/dashboard/templates/index.html) include `integrity` and `crossorigin` on CDN assets. | Keep SRI hashes updated when CDN versions change. |
+| L1 | CDN-loaded dashboard assets lacked Subresource Integrity | Remediated in tree | [`ods/extensions/services/dashboard/public/agents.html`](ods/extensions/services/dashboard/public/agents.html) includes `integrity` and `crossorigin` on CDN assets. The historical `templates/index.html` is no longer shipped. | Keep SRI hashes updated when CDN versions change. |
 | L2 | `ods.ai` marketing site missed common security headers | External / out of repo | This repository does not contain the marketing-site hosting config, CDN config, or deployed headers. | Track separately with the website host/CDN owner; re-check with a live header scan before claiming fixed. |
 
 ## Current Security Receipts

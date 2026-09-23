@@ -1,9 +1,11 @@
 import js from "@eslint/js";
+import react from "eslint-plugin-react";
 
 export default [
   js.configs.recommended,
   {
     files: ["**/*.{js,jsx}"],
+    plugins: { react },
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: "module",
@@ -67,6 +69,8 @@ export default [
       },
     },
     rules: {
+      // A component referenced by JSX is used even without a JavaScript call.
+      "react/jsx-uses-vars": "error",
       "no-unused-vars": ["warn", { argsIgnorePattern: "^_" }],
     },
   },

@@ -95,7 +95,6 @@ export default function FirstBoot({ onComplete }) {
   const prev = () => setStep(s => Math.max(s - 1, 1))
   const ownerCardStatusLoading = ownerCardStatus === null
   const ownerCardUnavailable = ownerCardStatus?.ready === false
-  const ownerCardUnavailableReason = ownerCardStatus?.reason || 'Enable ODS proxy before generating owner cards.'
 
   useEffect(() => {
     let cancelled = false
@@ -228,11 +227,11 @@ export default function FirstBoot({ onComplete }) {
         if (!adminResp.ok && adminResp.status !== 503) {
           // 503 = signing not configured server-side; surfaced elsewhere.
           // Other errors are operationally interesting but non-fatal here.
-          // eslint-disable-next-line no-console
+
           console.warn('[ods-session] admin-session returned', adminResp.status)
         }
       } catch (err) {
-        // eslint-disable-next-line no-console
+
         console.warn('[ods-session] admin-session network failure:', err)
       }
 

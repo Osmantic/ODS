@@ -959,7 +959,6 @@ function PrimaryAction({
   downloadBusy,
   downloadStarting,
   runDisabledReason,
-  hermesMinimumContext,
   onDownload,
   onLoad,
   onBenchmark,
@@ -1507,7 +1506,6 @@ function getRunDisabledReason({
   gpu,
   canActivateModels,
   activationModeError,
-  hermesMinimumContext,
   pixelMinimumContext,
   loadBusy,
   activationBusy,
@@ -1880,11 +1878,6 @@ const CORE_MODEL_COMPATIBILITY_KEYS = new Set([
   'openaiChat',
   'pixelAgent',
 ])
-
-function isHermesTalkBlocked(compatibility) {
-  const status = String(compatibility?.status || '').toLowerCase()
-  return BLOCKING_MODEL_COMPATIBILITY_STATUSES.includes(status)
-}
 
 function isHermesTalkVerified(compatibility) {
   const status = String(compatibility?.status || '').toLowerCase()

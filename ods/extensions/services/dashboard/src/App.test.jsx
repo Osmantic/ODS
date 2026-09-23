@@ -1,9 +1,9 @@
 import { screen, fireEvent } from '@testing-library/react'
 import { render } from './test/test-utils'
 import { render as rtlRender } from '@testing-library/react'
-import { MemoryRouter } from 'react-router-dom' // eslint-disable-line no-unused-vars
-import { ThemeProvider } from './contexts/ThemeContext' // eslint-disable-line no-unused-vars
-import App from './App' // eslint-disable-line no-unused-vars
+import { MemoryRouter } from 'react-router-dom'
+import { ThemeProvider } from './contexts/ThemeContext'
+import App from './App'
 import { useFirstRun } from './hooks/useFirstRun'
 import { useVersion } from './hooks/useVersion'
 import { getInternalRoutes } from './plugins/registry'

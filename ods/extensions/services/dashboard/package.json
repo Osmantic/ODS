@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "lint": "eslint src",
+    "lint": "eslint src --max-warnings 0",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage"
@@ -21,7 +21,7 @@
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-markdown": "^10.1.0",
-    "react-router-dom": "^6.26.0",
+    "react-router-dom": "7.18.4",
     "rehype-highlight": "^7.0.2",
     "remark-gfm": "^4.0.1"
   },
@@ -33,6 +33,7 @@
     "@vitejs/plugin-react": "^5.2.0",
     "autoprefixer": "^10.4.20",
     "eslint": "^9.9.0",
+    "eslint-plugin-react": "7.37.5",
     "jsdom": "^29.0.0",
     "postcss": "^8.5.15",
     "tailwindcss": "^3.4.10",

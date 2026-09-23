@@ -9,7 +9,7 @@
 #           ENABLE_OPENCODE,
 #           PKG_MANAGER,
 #           ai(), ai_ok(), ai_warn(), log()
-# Provides: (developer tools installed to ~/.npm-global)
+# Provides: (opt-in developer tools installed to ~/.ods/ai-clis)
 #
 # Modder notes:
 #   Add new developer tools or change installation methods here.
@@ -18,8 +18,13 @@
 ods_progress 42 "devtools" "Installing developer tools"
 # shellcheck source=../lib/node-runtime.sh
 . "$SCRIPT_DIR/installers/lib/node-runtime.sh"
+. "$SCRIPT_DIR/installers/lib/verified-download.sh"
 if $DRY_RUN; then
-    log "[DRY RUN] Would install AI developer tools (Claude Code and Codex CLI)"
+    if [[ "${ODS_INSTALL_AI_CLIS:-false}" == "true" ]]; then
+        log "[DRY RUN] Would install locked Claude Code and Codex CLI packages"
+    else
+        log "[DRY RUN] Optional AI CLIs disabled (ODS_INSTALL_AI_CLIS=true enables them)"
+    fi
     if [[ "${ENABLE_OPENCODE:-false}" == "true" ]]; then
         log "[DRY RUN] Would install and configure the optional OpenCode browser IDE (user-level systemd service on port 3003)"
     else
@@ -28,6 +33,7 @@ if $DRY_RUN; then
     log "[DRY RUN] Would install ODS host agent systemd service (system-mode, port 7710)"
     log "[DRY RUN] Would install ODS mDNS announcer systemd service (if zeroconf available)"
 else
+    if [[ "${ODS_INSTALL_AI_CLIS:-false}" == "true" ]]; then
     ai "Installing AI developer tools..."
 
     # Ensure Node.js/npm is available (needed for Claude Code and Codex)
@@ -45,7 +51,9 @@ else
             case "$PKG_MANAGER" in
                 apt)
                     tmpfile=$(mktemp /tmp/nodesource-setup.XXXXXX.sh)
-                    if curl -fsSL --max-time 300 https://deb.nodesource.com/setup_22.x -o "$tmpfile" 2>/dev/null; then
+                    if ods_download_verified \
+                        'https://raw.githubusercontent.com/nodesource/distributions/9b431d8ae0f10df272598585855c6eca6c0e1bd2/scripts/deb/setup_22.x' \
+                        '575583bbac2fccc0b5edd0dbc03e222d9f9dc8d724da996d22754d6411104fd1' "$tmpfile"; then
                         ods_sudo -E bash "$tmpfile" 2>&1 | tee -a "$LOG_FILE" || ai_warn "Failed to run NodeSource apt setup script (non-fatal — Claude Code/Codex CLI will be skipped)"
                     fi
                     rm -f "$tmpfile"
@@ -70,41 +78,22 @@ else
     fi
 
     if ods_linux_node_tools_available; then
-        # Set up user-level npm global prefix (no sudo needed)
-        NPM_GLOBAL_DIR="$HOME/.npm-global"
-        if [[ ! -d "$NPM_GLOBAL_DIR" ]]; then
-            mkdir -p "$NPM_GLOBAL_DIR"
-            npm config set prefix "$NPM_GLOBAL_DIR" 2>/dev/null || true
-        fi
-        # Ensure user-level bin is on PATH for this session
-        export PATH="$NPM_GLOBAL_DIR/bin:$PATH"
-
-        # Install Claude Code (Anthropic's CLI for Claude)
-        if ! command -v claude &> /dev/null; then
-            npm install -g @anthropic-ai/claude-code >> "$LOG_FILE" 2>&1 && \
-                ai_ok "Claude Code installed (run 'claude' to start)" || \
-                ai_warn "Claude Code install failed — install later with: npm i -g @anthropic-ai/claude-code"
+        if ODS_INSTALL_AI_CLIS=true node "$SCRIPT_DIR/installers/ai-clis/install.mjs" >> "$LOG_FILE" 2>&1; then
+            export PATH="$HOME/.ods/ai-clis/bin:$PATH"
+            if ! grep -Fq '.ods/ai-clis/bin' "$HOME/.bashrc" 2>/dev/null; then
+                printf '%s\n' 'export PATH="$HOME/.ods/ai-clis/bin:$PATH"' >> "$HOME/.bashrc"
+            fi
+            ai_ok "Locked Claude Code and Codex CLI installed"
         else
-            ai_ok "Claude Code already installed"
-        fi
-
-        # Install Codex CLI (OpenAI's terminal agent)
-        if ! command -v codex &> /dev/null; then
-            npm install -g @openai/codex >> "$LOG_FILE" 2>&1 && \
-                ai_ok "Codex CLI installed (run 'codex' to start)" || \
-                ai_warn "Codex CLI install failed — install later with: npm i -g @openai/codex"
-        else
-            ai_ok "Codex CLI already installed"
-        fi
-
-        # Ensure ~/.npm-global/bin is on PATH permanently
-        if [[ -d "$NPM_GLOBAL_DIR/bin" ]] && ! grep -q 'npm-global' "$HOME/.bashrc" 2>/dev/null; then
-            echo 'export PATH="$HOME/.npm-global/bin:$PATH"' >> "$HOME/.bashrc"
-            ai "Added ~/.npm-global/bin to PATH in ~/.bashrc"
+            ai_warn "Locked AI CLI install failed; inspect the installer log and retry with Node.js 22+."
         fi
     else
-        ai_warn "Linux Node.js 20+ and npm are not available — skipping Claude Code and Codex CLI install"
+        ai_warn "Linux Node.js 22+ and npm are required — skipping Claude Code and Codex CLI install"
         ai "  Install Linux Node.js 22+ and re-run to add Claude Code / Codex."
+    fi
+
+    else
+        ai "Optional AI CLIs disabled; set ODS_INSTALL_AI_CLIS=true to install the reviewed versions."
     fi
 
     if [[ "${ENABLE_OPENCODE:-false}" == "true" ]]; then
@@ -132,14 +121,12 @@ else
     OPENCODE_BIN="$(_find_opencode_bin || true)"
     if [[ -z "$OPENCODE_BIN" ]]; then
         ai "Installing OpenCode..."
-        tmpfile=$(mktemp /tmp/opencode-install.XXXXXX.sh)
-        if curl -fsSL --max-time 300 https://opencode.ai/install -o "$tmpfile" 2>/dev/null && bash "$tmpfile" >> "$LOG_FILE" 2>&1; then
+        if ods_install_verified_opencode >> "$LOG_FILE" 2>&1; then
             OPENCODE_BIN="$(_find_opencode_bin || true)"
             ai_ok "OpenCode installer completed"
         else
-            ai_warn "OpenCode install failed — install later with: curl -fsSL https://opencode.ai/install | bash"
+            ai_warn "Verified OpenCode install failed — inspect the installer log and retry."
         fi
-        rm -f "$tmpfile"
         [[ -n "$OPENCODE_BIN" ]] && ai_ok "OpenCode installed ($OPENCODE_BIN)" || ai_warn "OpenCode installer completed but opencode was not found"
     else
         ai_ok "OpenCode already installed ($OPENCODE_BIN)"

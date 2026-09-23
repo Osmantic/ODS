@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-21T07:01:49Z",
+  "generated_at": "2026-09-23T06:59:55Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -329,7 +329,7 @@
     {
       "id": "audiocraft",
       "name": "AudioCraft",
-      "description": "Meta's AudioCraft is a generative AI for audio. Features MusicGen for\ntext-to-music generation and AudioGen for text-to-sound effects.\nCreate royalty-free music and sound effects from text descriptions.\n",
+      "description": "Meta's AudioCraft is a generative AI for audio. Features MusicGen for\ntext-to-music generation and AudioGen for text-to-sound effects.\nModel weights are licensed under CC BY-NC 4.0 for noncommercial use.\nThis extension does not grant commercial clearance for generated audio.\n",
       "category": "optional",
       "gpu_backends": [
         "nvidia"

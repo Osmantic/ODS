@@ -294,7 +294,7 @@ done
 
 # Help and malformed options exit without creating a log. Every remaining
 # path prepares a private diagnostic file before the first logging call.
-if ! ods_prepare_install_log "$LOG_FILE"; then
+if ! ods_prepare_install_log_var LOG_FILE "${TMPDIR:-/tmp}/ods-install.log"; then
     exit 1
 fi
 

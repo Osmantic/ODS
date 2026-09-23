@@ -173,6 +173,17 @@ else
         _phase06_requested_pixel_url="$(_env_get_explicit_first PIXEL_SOURCE_URL bundled)"
         _phase06_requested_pixel_ref="$(_env_get_explicit_first PIXEL_SOURCE_REF "$ODS_PIXEL_BUNDLED_REF")"
         _phase06_requested_pixel_dir="$(_env_get_explicit_first PIXEL_SOURCE_DIR "")"
+        # The prior public bundle is a persisted installer default, not a pin
+        # for this release's one-commit bundle. Upgrade only that known default;
+        # an explicit ref or local checkout must keep its exact source contract.
+        # The current bundle is still verified below before any runtime retires.
+        if [[ -z "${PIXEL_SOURCE_REF:-}" \
+            && "$_phase06_requested_pixel_url" == bundled \
+            && -z "$_phase06_requested_pixel_dir" \
+            && "$_phase06_requested_pixel_ref" == '817214d5ec3d8aa583fe50c1dc7561f3c1a16dff' ]]; then
+            _phase06_requested_pixel_ref="$ODS_PIXEL_BUNDLED_REF"
+            ai "Upgrading the prior bundled Pixel source to the verified ODS release."
+        fi
         # This is an upgrade sentinel only; no private repository is fetched.
         if [[ "$_phase06_requested_pixel_url" == 'https://github.com/Osmantic/Pixel.git' \
             && "$_phase06_requested_pixel_ref" == 'b33730436baf5d98bf58f7d57c090318fe19f433' ]]; then

@@ -27,8 +27,10 @@ if ($dryRun) {
     Write-AI "[DRY RUN] Would install OpenCode v$($script:OPENCODE_VERSION) to $($script:OPENCODE_EXE)"
     Write-AI "[DRY RUN] Would configure OpenCode for local llama-server (model: $($tierConfig.LlmModel))"
     Write-AI "[DRY RUN] Would register and start $($script:OPENCODE_TASK_NAME) for the OpenCode web app"
-    if (-not $cloudMode) {
-        Write-AI "[DRY RUN] Would check for Node.js and install Claude Code + Codex CLI via npm"
+    if ($env:ODS_INSTALL_AI_CLIS -ceq "true") {
+        Write-AI "[DRY RUN] Would check for Node.js 22+ and install locked Claude Code + Codex CLI packages"
+    } else {
+        Write-AI "[DRY RUN] Optional AI CLIs disabled (ODS_INSTALL_AI_CLIS=true enables them)"
     }
     Write-AI "[DRY RUN] Would start ODS Host Agent on port $($script:ODS_AGENT_PORT)"
     Write-AI "[DRY RUN] Would register $($script:ODS_AGENT_TASK_NAME) scheduled task for login persistence"
@@ -56,8 +58,15 @@ if (-not (Test-Path $script:OPENCODE_EXE)) {
     }
 
     if (Test-Path $_ocZip) {
-        # Validate zip before extraction
-        $_zipCheck = Test-ZipIntegrity -Path $_ocZip
+        # Verify publisher bytes before allowing any ZIP parsing or extraction.
+        $_ocExpectedSha256 = "fa6c3bcf13670fd7c404e875a026decc4df420d5fd0456bda08f7948a689de4e"
+        $_ocActualSha256 = (Get-FileHash -LiteralPath $_ocZip -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
+        if ($script:OPENCODE_VERSION -ne "1.2.18" -or $_ocActualSha256 -ne $_ocExpectedSha256) {
+            $_zipCheck = [pscustomobject]@{ Valid = $false; ErrorMessage = "SHA-256 does not match the reviewed OpenCode v1.2.18 archive" }
+        } else {
+            Write-AI "Verified OpenCode v1.2.18 SHA-256: $_ocActualSha256"
+            $_zipCheck = Test-ZipIntegrity -Path $_ocZip
+        }
         if (-not $_zipCheck.Valid) {
             Write-AIWarn "OpenCode archive is corrupt: $($_zipCheck.ErrorMessage)"
             Remove-Item $_ocZip -Force -ErrorAction SilentlyContinue
@@ -217,71 +226,36 @@ WshShell.Run "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hid
 # These are optional developer tools that require Node.js and npm.
 # Installation is best-effort: failures are non-fatal and clearly reported.
 
-Write-AI "Checking for Node.js (needed for Claude Code + Codex CLI)..."
-$_npmCmd  = Get-Command npm  -ErrorAction SilentlyContinue
-$_nodeCmd = Get-Command node -ErrorAction SilentlyContinue
-
-if (-not $_npmCmd -or -not $_nodeCmd) {
-    # Attempt to install Node.js LTS silently via winget (Windows 10 1809+ built-in)
-    Write-AIWarn "Node.js not found. Attempting to install via winget..."
-    $_winget = Get-Command winget -ErrorAction SilentlyContinue
-    if ($_winget) {
-        $prevEAP = $ErrorActionPreference
-        $ErrorActionPreference = "SilentlyContinue"
-        & winget install OpenJS.NodeJS.LTS --silent --accept-source-agreements --accept-package-agreements 2>&1 | Out-Null
-        $ErrorActionPreference = $prevEAP
-
-        # Refresh PATH so npm/node are visible in this session without a new shell
-        $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" +
-                    [System.Environment]::GetEnvironmentVariable("PATH", "User")
-        $_npmCmd  = Get-Command npm  -ErrorAction SilentlyContinue
-        $_nodeCmd = Get-Command node -ErrorAction SilentlyContinue
-    }
-
-    if (-not $_npmCmd) {
-        Write-AIWarn "Node.js not installed. Claude Code and Codex CLI will be skipped."
-        Write-AI "  Install manually: https://nodejs.org/en/download"
-        Write-AI "  Then run: npm install -g @anthropic-ai/claude-code @openai/codex"
-    }
-}
-
-if ($_npmCmd) {
-    $_npmVer = & npm --version 2>$null
-    Write-AISuccess "Node.js / npm $_npmVer available"
-
-    # Install Claude Code (Anthropic's terminal agent)
-    $_claudeCmd = Get-Command claude -ErrorAction SilentlyContinue
-    if (-not $_claudeCmd) {
-        Write-AI "Installing Claude Code (@anthropic-ai/claude-code)..."
-        $prevEAP = $ErrorActionPreference
-        $ErrorActionPreference = "SilentlyContinue"
-        & npm install -g "@anthropic-ai/claude-code" 2>&1 | Out-Null
-        $ErrorActionPreference = $prevEAP
-        if (Get-Command claude -ErrorAction SilentlyContinue) {
-            Write-AISuccess "Claude Code installed (run: claude)"
-        } else {
-            Write-AIWarn "Claude Code install failed -- install later: npm install -g @anthropic-ai/claude-code"
-        }
+if ($env:ODS_INSTALL_AI_CLIS -ceq "true") {
+    $_npmCmd = Get-Command npm -ErrorAction SilentlyContinue
+    $_nodeCmd = Get-Command node -ErrorAction SilentlyContinue
+    if (-not $_npmCmd -or -not $_nodeCmd) {
+        Write-AIWarn "Optional AI CLIs require Node.js 22+ and npm; install them and re-run with ODS_INSTALL_AI_CLIS=true."
     } else {
-        Write-AISuccess "Claude Code already installed"
-    }
-
-    # Install Codex CLI (OpenAI's terminal agent)
-    $_codexCmd = Get-Command codex -ErrorAction SilentlyContinue
-    if (-not $_codexCmd) {
-        Write-AI "Installing Codex CLI (@openai/codex)..."
-        $prevEAP = $ErrorActionPreference
-        $ErrorActionPreference = "SilentlyContinue"
-        & npm install -g "@openai/codex" 2>&1 | Out-Null
-        $ErrorActionPreference = $prevEAP
-        if (Get-Command codex -ErrorAction SilentlyContinue) {
-            Write-AISuccess "Codex CLI installed (run: codex)"
-        } else {
-            Write-AIWarn "Codex CLI install failed -- install later: npm install -g @openai/codex"
+        $_cliInstaller = Join-Path $SourceRoot "installers\ai-clis\install.mjs"
+        $_cliPreviousErrorPreference = $ErrorActionPreference
+        $_cliExit = 1
+        try {
+            $ErrorActionPreference = "SilentlyContinue"
+            & node $_cliInstaller 2>&1 | Tee-Object -FilePath $script:LOG_FILE -Append | Out-Null
+            $_cliExit = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $_cliPreviousErrorPreference
         }
-    } else {
-        Write-AISuccess "Codex CLI already installed"
+        if ($_cliExit -eq 0) {
+            $_cliBin = Join-Path $env:USERPROFILE ".ods\ai-clis\bin"
+            $env:PATH = "$_cliBin;" + $env:PATH
+            $_userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
+            if ($_cliBin -notin ($_userPath -split ';')) {
+                [Environment]::SetEnvironmentVariable("PATH", "$_cliBin;$_userPath", "User")
+            }
+            Write-AISuccess "Locked Claude Code and Codex CLI installed"
+        } else {
+            Write-AIWarn "Locked AI CLI installation failed; inspect the installer log and retry with Node.js 22+."
+        }
     }
+} else {
+    Write-AI "Optional AI CLIs disabled; set ODS_INSTALL_AI_CLIS=true to install the reviewed versions."
 }
 
 function Test-ODSHostAgentPythonCandidate {

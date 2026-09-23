@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen } from '@testing-library/react'
-import SplashScreen from '../SplashScreen' // eslint-disable-line no-unused-vars
+import SplashScreen from '../SplashScreen'
 
 vi.mock('gsap', () => {
   const createTimeline = () => {

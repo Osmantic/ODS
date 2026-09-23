@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { documentAvailability, evidenceReference } from './public-export.mjs';
 import {
   compareSemver,
   generatedNotice,
@@ -38,12 +39,14 @@ export function buildStatus(root = repoRoot) {
       qualifiedAt: current.qualifiedAt,
       evidenceSourceCommit: current.evidence?.sourceCommit,
       evidenceDocument: current.evidence?.liveAudit,
+      evidenceAvailable: documentAvailability(current.evidence?.liveAudit, root),
     },
     latestSupportedCompatibility: {
       pixelVersion: latestSupported.pixel,
       qualifiedAt: latestSupported.qualifiedAt,
       evidenceSourceCommit: latestSupported.evidence?.sourceCommit,
       evidenceDocument: latestSupported.evidence?.liveAudit,
+      evidenceAvailable: documentAvailability(latestSupported.evidence?.liveAudit, root),
     },
     documentedHostScope: qualification.supportedHosts,
     capabilityProfiles: qualification.capabilityProfiles.map((profile) => profile.id),
@@ -78,14 +81,14 @@ ${generatedNotice}
 
 # Pixel status
 
-This page reports repository and release-contract facts. It does **not** report what is installed or active on any live host.
+This page reports repository and release-contract facts. It does **not** report what is installed or active on any live host. Recorded compatibility labels whose evidence is omitted from the public source export are historical metadata, not public release qualification.
 
 | Surface | Source-derived status | Evidence boundary |
 |---|---|---|
 | Repository version | \`${markdownEscape(status.repository.pixelVersion)}\` | \`VERSION\` and \`RELEASE-MANIFEST.json\` agree |
-| Repository compatibility row | **${markdownEscape(status.repository.compatibilityStatus)}** | [${markdownEscape(status.repository.evidenceDocument)}](${currentEvidence}) binds source \`${markdownEscape(status.repository.evidenceSourceCommit)}\` |
+| Repository compatibility row | **${markdownEscape(status.repository.compatibilityStatus)}** | ${evidenceReference(status.repository.evidenceDocument, currentEvidence, status.repository.evidenceAvailable)}; recorded source \`${markdownEscape(status.repository.evidenceSourceCommit)}\` |
 | OpenClaw compatibility | Canonical release pin is maintained in [OPENCLAW-COMPATIBILITY.json](../OPENCLAW-COMPATIBILITY.json) | This page does not duplicate an authored release pin |
-| Latest Supported compatibility row | Pixel \`${markdownEscape(status.latestSupportedCompatibility.pixelVersion)}\` | [${markdownEscape(status.latestSupportedCompatibility.evidenceDocument)}](${supportedEvidence}) |
+| Latest recorded Supported compatibility row | Pixel \`${markdownEscape(status.latestSupportedCompatibility.pixelVersion)}\` | ${evidenceReference(status.latestSupportedCompatibility.evidenceDocument, supportedEvidence, status.latestSupportedCompatibility.evidenceAvailable)} |
 | Deep Work runtime | **${markdownEscape(status.deepWork.featureStatus)}** | \`deepWorkCapability.runtimeEnabled\` is \`${status.deepWork.runtimeEnabled}\`; source presence and admission do not imply runtime authority |
 | Documented host scope | ${status.documentedHostScope.map(markdownEscape).join('; ')} | Manifest and qualification matrix agree; this is not a fresh clean-host qualification |
 

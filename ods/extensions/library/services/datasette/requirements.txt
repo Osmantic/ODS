@@ -8,6 +8,9 @@ asgiref==3.12.1
 certifi==2026.7.22
 click-default-group==1.2.4
 click==8.5.0
+# PYSEC-2023-154 / CVE-2023-40570: upstream limits the affected API explorer
+# to 1.0a0-1.0a3; stable 0.65.5 does not expose /-/api. Keep the stable release.
+# https://github.com/simonw/datasette/security/advisories/GHSA-7ch3-7pp7-7cpq
 datasette==0.65.5
 flexcache==0.3
 flexparser==0.4

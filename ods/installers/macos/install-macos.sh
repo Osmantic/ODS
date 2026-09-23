@@ -192,6 +192,7 @@ if [[ -f "${SOURCE_ROOT}/lib/python-cmd.sh" ]]; then
 fi
 source "${SOURCE_ROOT}/installers/lib/readiness-summary.sh"
 source "${SOURCE_ROOT}/installers/lib/secure-log.sh"
+ods_prepare_install_log_var ODS_LOG_FILE /tmp/ods-install-macos.log || exit 1
 
 # ── File-local helpers ──
 _close_inherited_fds_for_daemon() {
@@ -652,6 +653,8 @@ _macos_launch_detached_bootstrap_upgrade() {
     shift
     local pid_file="${INSTALL_DIR}/data/bootstrap-upgrade.pid"
     local log_file="${INSTALL_DIR}/logs/model-upgrade.log"
+    mkdir -p "${INSTALL_DIR}/logs" || return 1
+    ods_prepare_install_log_var log_file || return 1
     local python_cmd="${PYTHON_CMD:-/usr/bin/python3}"
     local bash_cmd="${BASH:-bash}"
     [[ -x "$python_cmd" ]] || python_cmd="/usr/bin/python3"
@@ -1035,35 +1038,18 @@ _install_opencode() {
         return 0
     fi
 
-    if command -v brew >/dev/null 2>&1; then
-        ai "Installing OpenCode with Homebrew..."
-        if brew install opencode >> "$ODS_LOG_FILE" 2>&1; then
-            OPENCODE_BIN="$(_find_opencode_bin 2>/dev/null || true)"
-            if [[ -n "$OPENCODE_BIN" ]]; then
-                ai_ok "OpenCode installed with Homebrew ($OPENCODE_BIN)"
-                return 0
-            fi
-            ai_warn "Homebrew reported success but opencode was not found on PATH"
-        else
-            ai_warn "Homebrew OpenCode install failed — falling back to upstream installer"
-        fi
-    fi
-
-    ai "Installing OpenCode with upstream installer..."
-    local tmpfile
-    tmpfile=$(mktemp /tmp/opencode-install.XXXXXX.sh)
-    if curl -fsSL --max-time 300 https://opencode.ai/install -o "$tmpfile" 2>/dev/null \
-       && bash "$tmpfile" >> "$ODS_LOG_FILE" 2>&1; then
+    source "${SOURCE_ROOT}/installers/lib/verified-download.sh"
+    ai "Installing verified OpenCode v1.2.18..."
+    if ods_install_verified_opencode >> "$ODS_LOG_FILE" 2>&1; then
         OPENCODE_BIN="$(_find_opencode_bin 2>/dev/null || true)"
         if [[ -n "$OPENCODE_BIN" ]]; then
             ai_ok "OpenCode installed ($OPENCODE_BIN)"
         else
-            ai_warn "OpenCode installer completed but opencode was not found"
+            ai_warn "Verified OpenCode install completed but opencode was not found"
         fi
     else
-        ai_warn "OpenCode install failed — install later with: brew install opencode"
+        ai_warn "Verified OpenCode install failed; inspect the installer log and retry."
     fi
-    rm -f "$tmpfile"
 }
 
 _require_docker_cpu_budget() {
@@ -1221,10 +1207,6 @@ if ! $OPENCLAW_EXPLICIT; then
     fi
     unset _existing_openclaw
 fi
-
-# Reuse the same private-log guard as Linux. In particular, an existing log
-# under macOS /tmp must be privatized before any diagnostic can append to it.
-ods_prepare_install_log "$ODS_LOG_FILE" || exit 1
 
 # ============================================================================
 # PHASE 1 -- PREFLIGHT CHECKS
@@ -2789,6 +2771,7 @@ for service in (data.get("services") or {}).values():
 
     mkdir -p "${INSTALL_DIR}/logs"
     _compose_up_log="${INSTALL_DIR}/logs/compose-up.log"
+    ods_prepare_install_log_var _compose_up_log || exit 1
     : > "$_compose_up_log"
 
     if ! _macos_pre_pull_compose_images; then
@@ -2807,6 +2790,7 @@ for service in (data.get("services") or {}).values():
     fi
 
     _compose_launch_record="${INSTALL_DIR}/logs/compose-launch.txt"
+    ods_prepare_install_log_var _compose_launch_record || exit 1
     {
         printf 'timestamp=%s\n' "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
         printf 'cwd=%s\n' "$INSTALL_DIR"
@@ -2994,6 +2978,22 @@ for service in (data.get("services") or {}).values():
             ai "Check progress: tail -f $INSTALL_DIR/logs/model-upgrade.log"
         else
             ai_warn "bootstrap-upgrade.sh not found. Download the full model manually."
+        fi
+    fi
+
+    if [[ "${ODS_INSTALL_AI_CLIS:-false}" == "true" ]]; then
+        if command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then
+            if ODS_INSTALL_AI_CLIS=true node "$SOURCE_ROOT/installers/ai-clis/install.mjs" >> "$ODS_LOG_FILE" 2>&1; then
+                export PATH="$HOME/.ods/ai-clis/bin:$PATH"
+                if ! grep -Fq '.ods/ai-clis/bin' "$HOME/.zprofile" 2>/dev/null; then
+                    printf '%s\n' 'export PATH="$HOME/.ods/ai-clis/bin:$PATH"' >> "$HOME/.zprofile"
+                fi
+                ai_ok "Locked Claude Code and Codex CLI installed"
+            else
+                ai_warn "Locked AI CLI install failed; inspect the installer log and retry with Node.js 22+."
+            fi
+        else
+            ai_warn "Optional AI CLIs require Node.js 22+ and npm; install them and re-run with ODS_INSTALL_AI_CLIS=true."
         fi
     fi
 

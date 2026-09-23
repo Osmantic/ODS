@@ -13,15 +13,7 @@ last_verified_at: generated
 
 # Pixel documentation inventory
 
-This inventory makes **178 existing Markdown files** discoverable without moving path-sensitive release evidence, root contracts, component guides, or installed template content. Classification is a reading boundary, not a claim that every older document is current. Start with the [job-oriented documentation hub](../README.md) and [generated status](../status.md); use this catalog when tracing specialist or historical source material.
-
-## Colocated specialist document
-
-| Document | Reading boundary |
-|---|---|
-| [`.github/pull_request_template.md`](../../.github/pull_request_template.md) | Owning subsystem scope; verify its feature/evidence status before use. |
-| [`deploy/agent-comparison/codex-0.147.0-prompt.md`](../../deploy/agent-comparison/codex-0.147.0-prompt.md) | Owning subsystem scope; verify its feature/evidence status before use. |
-| [`deploy/work-runner/builder-agent.md`](../../deploy/work-runner/builder-agent.md) | Owning subsystem scope; verify its feature/evidence status before use. |
+This inventory makes **144 existing Markdown files** discoverable without moving path-sensitive release evidence, root contracts, component guides, or installed template content. Classification is a reading boundary, not a claim that every older document is current. Start with the [job-oriented documentation hub](../README.md) and [generated status](../status.md); use this catalog when tracing specialist or historical source material.
 
 ## Path-stable root contract or entry point
 
@@ -60,6 +52,13 @@ This inventory makes **178 existing Markdown files** discoverable without moving
 | [`UPSTREAM-FAILURE-GUIDE.md`](../../UPSTREAM-FAILURE-GUIDE.md) | Canonical or specialist source; pair with generated status and job-oriented docs. |
 | [`UPSTREAM-INTAKE.md`](../../UPSTREAM-INTAKE.md) | Canonical or specialist source; pair with generated status and job-oriented docs. |
 | [`UPSTREAM-RELEASE-CHECKLIST.md`](../../UPSTREAM-RELEASE-CHECKLIST.md) | Canonical or specialist source; pair with generated status and job-oriented docs. |
+
+## Colocated specialist document
+
+| Document | Reading boundary |
+|---|---|
+| [`deploy/agent-comparison/codex-0.147.0-prompt.md`](../../deploy/agent-comparison/codex-0.147.0-prompt.md) | Owning subsystem scope; verify its feature/evidence status before use. |
+| [`deploy/work-runner/builder-agent.md`](../../deploy/work-runner/builder-agent.md) | Owning subsystem scope; verify its feature/evidence status before use. |
 
 ## Colocated component guide
 
@@ -168,44 +167,6 @@ This inventory makes **178 existing Markdown files** discoverable without moving
 | [`docs/use/frontier-review.md`](../../docs/use/frontier-review.md) | Current indexed guide or generated reference; feature status remains page-specific. |
 | [`docs/use/operations.md`](../../docs/use/operations.md) | Current indexed guide or generated reference; feature status remains page-specific. |
 | [`docs/use/sources-and-proposals.md`](../../docs/use/sources-and-proposals.md) | Current indexed guide or generated reference; feature status remains page-specific. |
-
-## Release or historical evidence
-
-| Document | Reading boundary |
-|---|---|
-| [`DREAM-FORGE-SOURCE-AUDIT.md`](../../DREAM-FORGE-SOURCE-AUDIT.md) | Point-in-time evidence only; read exact source identity and current compatibility status. |
-| [`LIVE-AUDIT-4.0.0.md`](../../LIVE-AUDIT-4.0.0.md) | Point-in-time evidence only; read exact source identity and current compatibility status. |
-| [`LIVE-AUDIT-4.1.0.md`](../../LIVE-AUDIT-4.1.0.md) | Point-in-time evidence only; read exact source identity and current compatibility status. |
-| [`LIVE-AUDIT-4.2.0.md`](../../LIVE-AUDIT-4.2.0.md) | Point-in-time evidence only; read exact source identity and current compatibility status. |
-| [`LIVE-AUDIT-4.3.0.md`](../../LIVE-AUDIT-4.3.0.md) | Point-in-time evidence only; read exact source identity and current compatibility status. |
-| [`LIVE-AUDIT-4.3.1.md`](../../LIVE-AUDIT-4.3.1.md) | Point-in-time evidence only; read exact source identity and current compatibility status. |
-| [`LIVE-AUDIT-4.3.10.md`](../../LIVE-AUDIT-4.3.10.md) | Point-in-time evidence only; read exact source identity and current compatibility status. |
-| [`LIVE-AUDIT-4.3.11.md`](../../LIVE-AUDIT-4.3.11.md) | Point-in-time evidence only; read exact source identity and current compatibility status. |
-| [`LIVE-AUDIT-4.3.12.md`](../../LIVE-AUDIT-4.3.12.md) | Point-in-time evidence only; read exact source identity and current compatibility status. |
-| [`LIVE-AUDIT-4.3.13.md`](../../LIVE-AUDIT-4.3.13.md) | Point-in-time evidence only; read exact source identity and current compatibility status. |
-| [`LIVE-AUDIT-4.3.14.md`](../../LIVE-AUDIT-4.3.14.md) | Point-in-time evidence only; read exact source identity and current compatibility status. |
-| [`LIVE-AUDIT-4.3.15.md`](../../LIVE-AUDIT-4.3.15.md) | Point-in-time evidence only; read exact source identity and current compatibility status. |
-| [`LIVE-AUDIT-4.3.16.md`](../../LIVE-AUDIT-4.3.16.md) | Point-in-time evidence only; read exact source identity and current compatibility status. |
-| [`LIVE-AUDIT-4.3.17.md`](../../LIVE-AUDIT-4.3.17.md) | Point-in-time evidence only; read exact source identity and current compatibility status. |
-| [`LIVE-AUDIT-4.3.18.md`](../../LIVE-AUDIT-4.3.18.md) | Point-in-time evidence only; read exact source identity and current compatibility status. |
-| [`LIVE-AUDIT-4.3.19.md`](../../LIVE-AUDIT-4.3.19.md) | Point-in-time evidence only; read exact source identity and current compatibility status. |
-| [`LIVE-AUDIT-4.3.2.md`](../../LIVE-AUDIT-4.3.2.md) | Point-in-time evidence only; read exact source identity and current compatibility status. |
-| [`LIVE-AUDIT-4.3.20.md`](../../LIVE-AUDIT-4.3.20.md) | Point-in-time evidence only; read exact source identity and current compatibility status. |
-| [`LIVE-AUDIT-4.3.21.md`](../../LIVE-AUDIT-4.3.21.md) | Point-in-time evidence only; read exact source identity and current compatibility status. |
-| [`LIVE-AUDIT-4.3.22.md`](../../LIVE-AUDIT-4.3.22.md) | Point-in-time evidence only; read exact source identity and current compatibility status. |
-| [`LIVE-AUDIT-4.3.23.md`](../../LIVE-AUDIT-4.3.23.md) | Point-in-time evidence only; read exact source identity and current compatibility status. |
-| [`LIVE-AUDIT-4.3.24.md`](../../LIVE-AUDIT-4.3.24.md) | Point-in-time evidence only; read exact source identity and current compatibility status. |
-| [`LIVE-AUDIT-4.3.25.md`](../../LIVE-AUDIT-4.3.25.md) | Point-in-time evidence only; read exact source identity and current compatibility status. |
-| [`LIVE-AUDIT-4.3.26.md`](../../LIVE-AUDIT-4.3.26.md) | Point-in-time evidence only; read exact source identity and current compatibility status. |
-| [`LIVE-AUDIT-4.3.27.md`](../../LIVE-AUDIT-4.3.27.md) | Point-in-time evidence only; read exact source identity and current compatibility status. |
-| [`LIVE-AUDIT-4.3.3.md`](../../LIVE-AUDIT-4.3.3.md) | Point-in-time evidence only; read exact source identity and current compatibility status. |
-| [`LIVE-AUDIT-4.3.4.md`](../../LIVE-AUDIT-4.3.4.md) | Point-in-time evidence only; read exact source identity and current compatibility status. |
-| [`LIVE-AUDIT-4.3.5.md`](../../LIVE-AUDIT-4.3.5.md) | Point-in-time evidence only; read exact source identity and current compatibility status. |
-| [`LIVE-AUDIT-4.3.6.md`](../../LIVE-AUDIT-4.3.6.md) | Point-in-time evidence only; read exact source identity and current compatibility status. |
-| [`LIVE-AUDIT-4.3.7.md`](../../LIVE-AUDIT-4.3.7.md) | Point-in-time evidence only; read exact source identity and current compatibility status. |
-| [`LIVE-AUDIT-4.3.8.md`](../../LIVE-AUDIT-4.3.8.md) | Point-in-time evidence only; read exact source identity and current compatibility status. |
-| [`LIVE-AUDIT-4.3.9.md`](../../LIVE-AUDIT-4.3.9.md) | Point-in-time evidence only; read exact source identity and current compatibility status. |
-| [`LIVE-AUDIT.md`](../../LIVE-AUDIT.md) | Point-in-time evidence only; read exact source identity and current compatibility status. |
 
 ## Plan or program record
 

@@ -84,7 +84,7 @@ export function SuccessValidation({ status, onAllPassed }) {
           status: success ? 'passed' : 'failed',
           error: result.error
         }
-      } catch (err) {
+      } catch {
         await new Promise(r => setTimeout(r, 800))
         updatedTests[i] = { 
           ...updatedTests[i], 

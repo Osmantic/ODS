@@ -6,7 +6,7 @@ import {saveConversation,readConversations,DELETE_EVENT} from '../lib/pixelConve
 import { StrictMode } from 'react'
 
 // The repository's base ESLint profile does not mark JSX identifiers as uses.
-// eslint-disable-next-line no-unused-vars
+
 import Pixel, {
   OperationsApprovalCard,
   formatElapsed,

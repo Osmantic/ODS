@@ -1,5 +1,8 @@
 # ODS Quick Start
 
+**Testing public-beta?** Follow the [verified beta installation guide](docs/PUBLIC_BETA_INSTALL.md).
+The ordinary commands below install the main channel, not the beta candidate.
+
 One command to a running local AI stack. The installer detects your hardware,
 chooses a model, writes the config, starts the services, and leaves you with a
 chat UI plus the `ods` management command.

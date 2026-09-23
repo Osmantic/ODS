@@ -1,6 +1,7 @@
 # Pixel connections, provider roles and access modes
 
-Status: development in PR #3818, stacked on ODS PR #3385. The Settings UI,
+Historical development design associated with PR #3818 and PR #3385.
+This page does not establish current PR state or installed release qualification. The Settings UI,
 POSIX credential vault, inference-only sharing perimeter and host owner controls
 are implemented, including guided host sharing and an isolated POSIX client CLI.
 Turn-scoped provider runtime activation is available for the isolated client.
@@ -231,7 +232,7 @@ data, `.env`, models and unrelated services. This does not isolate the grant
 store from a malicious process already running as that same OS owner.
 
 Disposable source integration has completed real JSON and SSE inference on
-Tower2's GLM model, model-identity checks and post-call revocation. The routing
+a remote GLM model, model-identity checks and post-call revocation. The routing
 state in that test was synthetic. This is not installed Pixel, laptop pairing,
 production deployment or native-privilege acceptance.
 
@@ -309,7 +310,7 @@ state; these warnings do not qualify those plugins as installed. Full installer,
 plugin setup, reconnect/repair UI and native adapters remain delivery work.
 
 An isolated laptop Ubuntu 24.04 WSL guest completed two real Pixel write/read
-turns using physical Tower2 GLM inference. Tool receipts and laptop artifacts
+turns using remote GLM inference. Tool receipts and laptop artifacts
 were independently checked; Docker inspection confirmed a nonprivileged,
 network-none, read-only-root sandbox. Existing Pixel configuration stayed
 unchanged. After key revocation, both probe and run were denied, and no new run
@@ -373,7 +374,7 @@ must be disabled. Direct vendor-specific protocols, durable crash checkpoints,
 cost budgets, default-runtime/UI activation and full guided repair remain pending.
 
 A real isolated laptop Pixel completed one write, then a fixture leader returned
-503. Physical Tower2 GLM received the preserved tool result and continued with
+503. The remote GLM endpoint received the preserved tool result and continued with
 read/final output, with exactly one write. Repeated with a turn-unique provider
 identity. Separate real Pixel partial-SSE and 401 fixtures produced no tool calls
 and no backup calls; both returned failure. Production config remained unchanged.
@@ -464,7 +465,7 @@ Linux checks do not qualify native Windows/macOS, and optional runtime preparati
 does not complete whole-product installation acceptance. Existing installs are
 not changed by saving profiles.
 
-An isolated actual dashboard/host fixture completed a real Tower2 GLM advisory
+An isolated actual dashboard/host fixture completed a remote GLM advisory
 request, recovered its result after reload without another call, and pasted it
 without sending. A controlled delayed upstream demonstrated cancellation after
 fixing a disconnect-consuming test middleware; the failed observation is

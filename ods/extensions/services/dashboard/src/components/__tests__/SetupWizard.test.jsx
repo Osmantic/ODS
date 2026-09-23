@@ -15,7 +15,7 @@ vi.mock('../../lib/templates', () => ({
   getTemplateStatus: () => 'available'
 }))
 
-import SetupWizard from '../SetupWizard' // eslint-disable-line no-unused-vars
+import SetupWizard from '../SetupWizard'
 
 /**
  * Build a minimal Response-shaped object whose body.getReader() yields the

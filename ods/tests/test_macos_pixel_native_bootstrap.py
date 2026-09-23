@@ -62,6 +62,21 @@ def test_standalone_acquisition_defaults_to_ods_bundle(tmp_path, monkeypatch):
     assert len(local_git_calls) == 2
 
 
+@pytest.mark.parametrize('explicit_source', [False, True])
+def test_previous_bundled_ref_is_not_silently_remapped(tmp_path, monkeypatch, explicit_source):
+    previous_ref = '817214d5ec3d8aa583fe50c1dc7561f3c1a16dff'
+    assert bootstrap.ODS_BUNDLED_REF != previous_ref
+    monkeypatch.setattr(bootstrap.sys, 'platform', 'darwin')
+    monkeypatch.setattr(bootstrap.os, 'geteuid', lambda: 501)
+    monkeypatch.setattr(bootstrap, 'command',
+        lambda *args, **kwargs: pytest.fail('mismatched bundled ref must fail before git'))
+    destination = tmp_path / 'source'
+    options = {'source_url': str(bootstrap.ODS_BUNDLED_SOURCE)} if explicit_source else {}
+    with pytest.raises(bootstrap.BootstrapError, match='invalid-bundled-pixel-source'):
+        bootstrap.acquire_source(ref=previous_ref, destination=destination, **options)
+    assert not destination.exists()
+
+
 @pytest.mark.parametrize('source_url', [
     'https://github.com/Osmantic/Pixel.git',
     'git@github.com:Osmantic/Pixel.git',

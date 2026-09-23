@@ -26,7 +26,8 @@ else
     INSTALL_DIR="${INSTALL_DIR:-$HOME/ods}"
 fi
 
-LOG_FILE="${LOG_FILE:-${TMPDIR:-/tmp}/ods-install.log}"
+# The default is allocated in a new private directory after argument parsing.
+LOG_FILE="${LOG_FILE:-}"
 CAPABILITY_PROFILE_FILE="${CAPABILITY_PROFILE_FILE:-${TMPDIR:-/tmp}/ods-capabilities.json}"
 PREFLIGHT_REPORT_FILE="${PREFLIGHT_REPORT_FILE:-${TMPDIR:-/tmp}/ods-preflight-report.json}"
 INSTALL_START_EPOCH=$(date +%s)

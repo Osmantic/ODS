@@ -216,7 +216,7 @@ explicit permanent HTTPS evidence reference:
   --allowed-signers /secure/release-allowed-signers \
   --identity osmantic-pixel-release \
   --evidence-dir /evidence \
-  --evidence-reference https://github.com/Osmantic/Pixel/actions/runs/RUN_ID \
+  --evidence-reference https://github.com/Osmantic/ODS/actions/runs/RUN_ID \
   --confirm
 ```
 

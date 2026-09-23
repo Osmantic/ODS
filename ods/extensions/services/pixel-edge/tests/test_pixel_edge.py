@@ -32,6 +32,7 @@ if str(SERVICE_ROOT) not in sys.path:
     sys.path.insert(0, str(SERVICE_ROOT))
 
 TOKEN = "test-token-abc123-0123456789abcdef"
+PREVIEW_TOKEN = "test-owner-preview-0123456789abcdef"
 FRAGMENTED_CSV = b"id,amount\n" + b"123,45.67\n" * 64000
 
 
@@ -242,7 +243,7 @@ async def _stop_upstream(runner, path=None):
 def _set_env(sock_path):
     os.environ["PIXEL_OPENWEBUI_KEY"] = TOKEN
     os.environ["PIXEL_INGRESS_SOCKET"] = sock_path
-    os.environ["PIXEL_PREVIEW_PROXY_KEY"] = TOKEN
+    os.environ["PIXEL_PREVIEW_PROXY_KEY"] = PREVIEW_TOKEN
     os.environ["PIXEL_PREVIEW_SOCKET"] = sock_path
 
 
@@ -252,6 +253,12 @@ def _set_env(sock_path):
 
 class BaseEdgeTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
+        # These transport tests use the optional, disabled-gate profile.
+        # Do not inherit a production image's private state directory.
+        # test_transition_gate provisions and exercises the enabled gate.
+        self.environment = patch.dict(os.environ, {"PIXEL_TRANSITION_STATE_DIR": ""})
+        self.environment.start()
+        self.addCleanup(self.environment.stop)
         self.up_sock, self.up_runner = await _start_upstream()
         _set_env(self.up_sock)
 
@@ -290,6 +297,9 @@ class BaseEdgeTest(unittest.IsolatedAsyncioTestCase):
 
 class TestConfigValidation(unittest.TestCase):
     def setUp(self):
+        self.environment = patch.dict(os.environ)
+        self.environment.start()
+        self.addCleanup(self.environment.stop)
         # Pytest preserves source order and reaches this class before any
         # BaseEdgeTest has imported pixel_edge. Load one known-good module
         # first so each case exercises the intended reload boundary rather
@@ -452,6 +462,8 @@ class TestAuth(BaseEdgeTest):
 
 
 class TestPreviewRelay(BaseEdgeTest):
+    def auth(self):
+        return {"Authorization": f"Bearer {PREVIEW_TOKEN}"}
 
     async def test_nested_directory_links_resolve_to_published_index(self):
         site = "site-" + "a" * 24
@@ -528,9 +540,13 @@ class TestPreviewRelay(BaseEdgeTest):
 
     async def test_preview_requires_the_dashboard_proxy_token(self):
         site_id = "site-" + "a" * 24
-        async with self.client.get(f"http://localhost/preview/{site_id}/") as resp:
-            self.assertEqual(resp.status, 401)
-            self.assertNotIn("Access-Control-Allow-Origin", resp.headers)
+        for headers in ({}, BaseEdgeTest.auth(self)):
+            async with self.client.get(
+                f"http://localhost/preview/{site_id}/", headers=headers
+            ) as resp:
+                self.assertEqual(resp.status, 401)
+                self.assertNotIn("Access-Control-Allow-Origin", resp.headers)
+        self.assertEqual(self.up_runner.app["preview_paths"], [])
 
     async def test_preview_relays_exact_bytes_with_an_opaque_browser_sandbox(self):
         site_id = "site-" + "a" * 24
@@ -559,11 +575,12 @@ class TestPreviewRelay(BaseEdgeTest):
         self.assertEqual(self.up_runner.app["preview_hosts"], ["pixel-preview.internal"])
 
     async def test_preview_cors_does_not_extend_to_control_endpoints(self):
-        async with self.client.get(
-            "http://localhost/v1/activity", headers={**self.auth(), "Origin": "null"}
-        ) as resp:
-            self.assertEqual(resp.status, 200)
-            self.assertNotIn("Access-Control-Allow-Origin", resp.headers)
+        for headers, status in ((BaseEdgeTest.auth(self), 200), (self.auth(), 401)):
+            async with self.client.get(
+                "http://localhost/v1/activity", headers={**headers, "Origin": "null"}
+            ) as resp:
+                self.assertEqual(resp.status, status)
+                self.assertNotIn("Access-Control-Allow-Origin", resp.headers)
 
     async def test_preview_rejects_invalid_or_unknown_snapshot_paths(self):
         async with self.client.get(
@@ -1862,7 +1879,7 @@ class TestSSEPreludeBudget(BaseEdgeTest):
 
 class TaskDetailSchemaTest(unittest.TestCase):
     def setUp(self):
-        self.environment = patch.dict(os.environ, {'PIXEL_OPENWEBUI_KEY': TOKEN, 'PIXEL_PREVIEW_PROXY_KEY': TOKEN})
+        self.environment = patch.dict(os.environ, {'PIXEL_OPENWEBUI_KEY': TOKEN, 'PIXEL_PREVIEW_PROXY_KEY': PREVIEW_TOKEN})
         self.environment.start()
         self.addCleanup(self.environment.stop)
 

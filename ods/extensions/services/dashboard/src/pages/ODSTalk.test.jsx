@@ -1,6 +1,6 @@
 import { fireEvent, screen, waitFor } from '@testing-library/react'
 import { render } from '../test/test-utils'
-import ODSTalk from './ODSTalk' // eslint-disable-line no-unused-vars
+import ODSTalk from './ODSTalk'
 
 const response = (body, status = 200) => ({
   ok: status >= 200 && status < 300,

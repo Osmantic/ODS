@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { fireEvent, screen, waitFor } from '@testing-library/react'
 import { render } from '../test/test-utils'
-import Extensions from './Extensions' // eslint-disable-line no-unused-vars
+import Extensions from './Extensions'
 
 /**
  * Tests for the Extensions page rendering of unhealthy/installable derivations

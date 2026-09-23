@@ -228,10 +228,6 @@
       "documents": ["docs/contributing/generated-files.md"]
     },
     {
-      "source": ".github/workflows/",
-      "documents": ["docs/contributing/codebase-map.md", "docs/contributing/pull-request-guide.md"]
-    },
-    {
       "source": "scripts/configure.mjs",
       "documents": ["docs/configure/README.md", "docs/configure/deployment-profiles.md", "docs/configure/capability-profiles.md", "docs/configure/models-and-providers.md", "docs/configure/source-limbs.md", "docs/configure/operations-and-frontier.md", "docs/NATIVE-SEARCH.md"]
     },

@@ -86,6 +86,52 @@ assert_runtime_lock_release() {
     rm -f "$lock_file" "$pid_file" "$log_file"
 }
 
+assert_uninstall_user_bus() (
+    # Load only the helper; never execute the uninstaller or contact systemd.
+    local fixture expected_runtime probe
+    fixture="$(mktemp -d "${TMPDIR:-/tmp}/ods-uninstall-bus.XXXXXX")"
+    trap 'rm -rf "$fixture"' EXIT
+    mkdir "$fixture/bin"
+    cat > "$fixture/bin/systemctl" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'runtime=%s\nbus=%s\nargs=%s\n' \
+    "${XDG_RUNTIME_DIR:-}" "${DBUS_SESSION_BUS_ADDRESS:-}" "$*" > "$SYSTEMCTL_CAPTURE"
+STUB
+    chmod +x "$fixture/bin/systemctl"
+    probe='source <(sed -n "/^ods_uninstall_systemctl_user() {/,/^}/p" "$1"); ods_uninstall_systemctl_user stop ods-model-upgrade.service'
+    expected_runtime="/run/user/$(id -u)"
+
+    env -u XDG_RUNTIME_DIR -u DBUS_SESSION_BUS_ADDRESS \
+        PATH="$fixture/bin:$PATH" SYSTEMCTL_CAPTURE="$fixture/default" \
+        bash -c "$probe" _ "$uninstaller"
+    grep -Fxq "runtime=$expected_runtime" "$fixture/default" \
+        || fail "uninstaller: missing session variables must default to the owner runtime directory"
+    grep -Fxq "bus=unix:path=$expected_runtime/bus" "$fixture/default" \
+        || fail "uninstaller: missing session variables must reconstruct the owner user-bus address"
+    grep -Fxq 'args=--user stop ods-model-upgrade.service' "$fixture/default" \
+        || fail "uninstaller: model upgrade cleanup must stop the user service"
+
+    env -u DBUS_SESSION_BUS_ADDRESS XDG_RUNTIME_DIR="$fixture/runtime" \
+        PATH="$fixture/bin:$PATH" SYSTEMCTL_CAPTURE="$fixture/runtime-only" \
+        bash -c "$probe" _ "$uninstaller"
+    grep -Fxq "runtime=$fixture/runtime" "$fixture/runtime-only" \
+        || fail "uninstaller: supplied runtime directory must be preserved"
+    grep -Fxq "bus=unix:path=$fixture/runtime/bus" "$fixture/runtime-only" \
+        || fail "uninstaller: default bus address must use the supplied runtime directory"
+
+    env XDG_RUNTIME_DIR="$fixture/runtime" DBUS_SESSION_BUS_ADDRESS="unix:path=$fixture/session-bus" \
+        PATH="$fixture/bin:$PATH" SYSTEMCTL_CAPTURE="$fixture/existing" \
+        bash -c "$probe" _ "$uninstaller"
+    grep -Fxq "runtime=$fixture/runtime" "$fixture/existing" \
+        || fail "uninstaller: supplied runtime directory must be preserved with a session bus"
+    grep -Fxq "bus=unix:path=$fixture/session-bus" "$fixture/existing" \
+        || fail "uninstaller: supplied session bus must be preserved"
+    grep -Fxq 'args=--user stop ods-model-upgrade.service' "$fixture/existing" \
+        || fail "uninstaller: supplied session variables must retain the service stop command"
+    pass "uninstaller: isolated service stop reconstructs or preserves the owner user-bus environment"
+)
+
 assert_fd_close_spawn "$ROOT_DIR/installers/phases/11-services.sh"   "linux/wsl phase 11"
 assert_fd_close_spawn "$ROOT_DIR/installers/macos/install-macos.sh" "macos installer"
 
@@ -110,10 +156,9 @@ grep -q 'DBUS_SESSION_BUS_ADDRESS=unix:path=$_upgrade_runtime_dir/bus' "$linux_p
     || fail "linux phase 11: service launch must reconstruct the owner user-bus address"
 grep -q "trap .*exit 75.*HUP TERM INT" "$ROOT_DIR/scripts/bootstrap-upgrade.sh" \
     || fail "bootstrap upgrade must identify session interruption as supervisor-retryable"
-grep -q 'DBUS_SESSION_BUS_ADDRESS="unix:path=$_ods_uninstall_runtime_dir/bus"' "$uninstaller" \
-    || fail "uninstaller: model-upgrade cleanup must reach the owner user manager without login-session variables"
-grep -q 'systemctl --user stop ods-model-upgrade.service' "$uninstaller" \
+grep -q 'ods_uninstall_systemctl_user stop ods-model-upgrade.service' "$uninstaller" \
     || fail "uninstaller: transient model upgrade service must stop before install-tree removal"
+assert_uninstall_user_bus
 systemd_line="$(grep -n 'systemd-run --user --unit=' "$linux_phase" | head -1 | cut -d: -f1)"
 nohup_line="$(grep -n 'exec nohup bash "$SCRIPT_DIR/scripts/bootstrap-upgrade.sh"' "$linux_phase" | tail -1 | cut -d: -f1)"
 [[ "$systemd_line" =~ ^[0-9]+$ && "$nohup_line" =~ ^[0-9]+$ && "$systemd_line" -lt "$nohup_line" ]] \

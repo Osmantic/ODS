@@ -1,26 +1,23 @@
-# Pixel attribution snapshot
+# Historical Pixel 4.3.24 attribution snapshot
 
-These two notices are retained verbatim from the default Pixel source selected
-by `installers/phases/06-directories.sh`:
+**Historical notices only.** The `LICENSE.md` and `THIRD_PARTY_NOTICES.md`
+in this directory are retained verbatim from upstream Pixel revision
+`70f44c90ac40b8409ebc965becc5b085a053e270` (4.3.24). The old proprietary
+notice is not the operative license for the Pixel source bundled with ODS.
 
-- Repository: https://github.com/Osmantic/Pixel
-- Revision: `70f44c90ac40b8409ebc965becc5b085a053e270` (Pixel 4.3.24)
-- [Pixel license notice](LICENSE.md)
-- [Third-party notices](THIRD_PARTY_NOTICES.md), including OpenClaw's MIT notice
-  and the pinned OpenClaw runtime/plugin versions
+For this distribution, read:
 
-Pixel's proprietary terms and third-party terms remain distinct from ODS's
-license. These copies do not grant additional rights or change those terms.
-The installer also retains the pinned Pixel source checkout, including these
-notices and `RELEASE-MANIFEST.json`; the upstream runtime packages retain their
-own notices. This directory is a source attribution snapshot, not a claim that
-every production Pixel capability has been qualified inside ODS.
+- [Pixel License for ODS](../../../vendor/pixel/LICENSE.md), the operative
+  source-available, ODS-only grant;
+- [bundled Pixel third-party notices](../../../vendor/pixel/THIRD_PARTY_NOTICES.md);
+- [ODS licensing and contribution scope](../../../LICENSING.md).
 
-When changing the default Pixel source revision, refresh these files from that
-exact revision and review its release manifest and runtime notices together.
-Do not edit the upstream notices independently or replace them with a summary.
+The upstream development repository is not a public dependency for reading
+these terms. The visible source and the verified local installation bundle are
+under `ods/vendor/`. This historical snapshot is not installation or release
+qualification evidence, and its notices must not be used as the current grant.
 
-SHA-256 of the upstream UTF-8 files with LF line endings:
+Original SHA-256 values (UTF-8, LF), retained so the historical texts can be checked:
 
 | File | SHA-256 |
 | --- | --- |
