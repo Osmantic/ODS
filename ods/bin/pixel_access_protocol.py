@@ -186,7 +186,7 @@ def provider_binding(value):
     try:
         if str(uuid.UUID(value["activationId"])) != value["activationId"]:
             raise ValueError()
-    except ValueError:
+    except (ValueError, TypeError, AttributeError):
         raise ProtocolError("owner-protocol-failed") from None
 
 
