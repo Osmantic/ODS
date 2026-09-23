@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import './invites.css'
 import {
   UserPlus, Copy, Check, Trash2, RefreshCw, QrCode, Share2, X,
@@ -86,6 +86,7 @@ export default function Invites() {
   const [showGuestCreate, setShowGuestCreate] = useState(false)
   const [generated, setGenerated] = useState(null)
   const [refreshing, setRefreshing] = useState(false)
+  const guestCreateButtonRef = useRef(null)
   const [ownerCardStatus, setOwnerCardStatus] = useState(null)
 
   useEffect(() => {
@@ -252,6 +253,7 @@ export default function Invites() {
             </p>
           </div>
           <button
+            ref={guestCreateButtonRef}
             onClick={() => setShowGuestCreate(true)}
             className="owner-access-action"
           >
@@ -302,7 +304,7 @@ export default function Invites() {
       {generated && (
         <GeneratedTokenModal
           record={generated}
-          onClose={() => setGenerated(null)}
+          onClose={() => { setGenerated(null); Promise.resolve().then(() => guestCreateButtonRef.current?.focus()) }}
         />
       )}
     </div>
