@@ -27,9 +27,9 @@ test('working tools are direct while specialist tools remain in the real catalog
   const proposal = tool('pixel_ods_source_proposal');
   const advanced = tool('pixel_ods_extension_proposal');
   const library = tool('pixel_ods_python_library_proposal');
-  const specialist = tool('pixel_ods_workspace_preview');
-  const result = run([read, status, prepare, advance, retry, proposal, library, specialist, advanced]);
-  assert.deepEqual(result.tools, [...controls, read, status]);
+  const preview = tool('pixel_ods_workspace_preview');
+  const result = run([read, status, prepare, advance, retry, proposal, library, preview, advanced]);
+  assert.deepEqual(result.tools, [...controls, read, status, preview]);
   assert.equal(result.catalogToolCount, 9);
   assert.equal(result.catalogRegistered, true);
   assert.ok(result.catalogRef.current);
@@ -38,13 +38,13 @@ test('working tools are direct while specialist tools remain in the real catalog
 test('the ordinary direct surface stays small while every specialist stays catalogued', () => {
   const nativeNames = ['read', 'write', 'edit', 'apply_patch', 'exec', 'process',
     'web_fetch', 'web_search', 'pixel_ods_skill', 'pixel_ods_ask_user',
-    'pixel_ods_extensions', 'pixel_ods_extension_request_status'];
+    'pixel_ods_extensions', 'pixel_ods_extension_request_status', 'pixel_ods_workspace_preview'];
   const specialistNames = ['pixel_ods_extension_request_prepare', 'pixel_ods_extension_request_advance',
     'pixel_ods_extension_request_retry', 'pixel_ods_source_proposal',
-    'pixel_ods_python_library_proposal', 'pixel_ods_extension_proposal', 'pixel_ods_workspace_preview'];
+    'pixel_ods_python_library_proposal', 'pixel_ods_extension_proposal'];
   const result = run([...nativeNames, ...specialistNames].map(tool));
   assert.deepEqual(result.tools.map(t => t.name), [...controls.map(t => t.name), ...nativeNames]);
-  assert.equal(result.tools.length, 15); // Twelve native tools plus the three search controls.
+  assert.equal(result.tools.length, 16); // Thirteen native tools plus the three search controls.
   assert.equal(result.catalogToolCount, nativeNames.length + specialistNames.length);
 });
 
@@ -104,4 +104,28 @@ test('tool visibility is independent of owner language and request content', () 
   for (const prompt of ['instale a extensÃ£o', 'do not install; research only', 'sim', 'éŸ³æ¥½']) {
     assert.deepEqual(run(tools, { prompt }).tools, [...controls, ...tools.slice(0, 2)]);
   }
+});
+
+
+test('preview is directly callable through the exact policy-filtered object', async () => {
+  const {createWorkspacePreviewTool} = await import('../plugin/workspace-preview.mjs');
+  let calls=0;
+  const preview=createWorkspacePreviewTool({request:async () => {calls++; return {status:'failed'};}});
+  const result=run([preview]);
+  const direct=result.tools.find(t => t.name === preview.name);
+  assert.equal(direct,preview);
+  assert.deepEqual(direct.parameters.required,['relativeDirectory']);
+  assert.equal(direct.parameters.additionalProperties,false);
+  // Direct exposure changes no execution/receipt policy: an unverified response
+  // is still a failure, never a fabricated published URL.
+  const response=await direct.execute('preview',{relativeDirectory:'Playground/example'});
+  assert.equal(calls,1); assert.equal(response.isError,true);
+  assert.equal(result.catalogToolCount,1);
+});
+
+test('denied and ambiguous preview tools remain unavailable directly', () => {
+  assert.ok(!run([]).tools.some(t => t.name === 'pixel_ods_workspace_preview'));
+  const result=run([tool('pixel_ods_workspace_preview'),tool('pixel_ods_workspace_preview')]);
+  assert.deepEqual(result.tools,controls); assert.equal(result.catalogToolCount,2);
+  assert.deepEqual(run([tool('pixel_ods_workspace_preview')],{agentId:'another-agent'}).tools,controls);
 });

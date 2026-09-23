@@ -1,6 +1,6 @@
 {
   "sourceSha256": "9597e4765bdcafc5f51ba0640c94790dfd5fc5445879408827524ff4b02a78f0",
-  "patchedSha256": "4591dff37a4956a277b83a2083eb5e52aff65fb313ebbc1de88cb8d39016e940",
+  "patchedSha256": "7407c3b1bb588de74ff69589c5f4df98db7605a6aa2d896f9a16b18202bfabad",
   "replacements": [
     [
       "async function runCodeMode(params) {",
@@ -12,7 +12,7 @@
     ],
     [
       "function applyToolSearchCatalog(params) {\n\tconst config = resolveToolSearchConfig(params.config);\n\treturn applyToolCatalogCompaction({\n\t\t...params,\n\t\tenabled: config.enabled,\n\t\tisVisibleControlTool: (tool) => TOOL_SEARCH_CONTROL_TOOL_NAMES.has(tool.name) && shouldExposeControlTool(tool.name, config.mode)\n\t});\n}",
-      "function applyToolSearchCatalog(params) {\n\tconst config = resolveToolSearchConfig(params.config);\n\t// ODS exposes a stable working surface, never a prompt-keyword tool plan.\n\t// Policy has already filtered params.tools; every other permitted tool stays\n\t// in the catalog. Ambiguous names remain deferred, with qualified IDs.\n\tconst odsNativeNames = params.agentId === \"pixel\" && config.mode === \"tools\"\n\t\t? new Set([\"read\", \"write\", \"edit\", \"apply_patch\", \"exec\", \"process\",\n\t\t\t\"web_fetch\", \"web_search\", \"pixel_ods_skill\", \"pixel_ods_ask_user\",\n\t\t\t\"pixel_ods_extensions\", \"pixel_ods_extension_request_status\"])\n\t\t: new Set();\n\tconst uniqueNames = collectUniqueCatalogToolNames(params.tools);\n\treturn applyToolCatalogCompaction({\n\t\t...params,\n\t\tenabled: config.enabled,\n\t\t...(odsNativeNames.size ? {\n\t\t\tisVisibleCatalogTool: (tool) => odsNativeNames.has(tool.name) && uniqueNames.has(tool.name)\n\t\t} : {}),\n\t\tisVisibleControlTool: (tool) => TOOL_SEARCH_CONTROL_TOOL_NAMES.has(tool.name) && shouldExposeControlTool(tool.name, config.mode)\n\t});\n}"
+      "function applyToolSearchCatalog(params) {\n\tconst config = resolveToolSearchConfig(params.config);\n\t// ODS exposes a stable working surface, never a prompt-keyword tool plan.\n\t// Policy has already filtered params.tools; every other permitted tool stays\n\t// in the catalog. Ambiguous names remain deferred, with qualified IDs.\n\tconst odsNativeNames = params.agentId === \"pixel\" && config.mode === \"tools\"\n\t\t? new Set([\"read\", \"write\", \"edit\", \"apply_patch\", \"exec\", \"process\",\n\t\t\t\"web_fetch\", \"web_search\", \"pixel_ods_skill\", \"pixel_ods_ask_user\",\n\t\t\t\"pixel_ods_extensions\", \"pixel_ods_extension_request_status\", \"pixel_ods_workspace_preview\"])\n\t\t: new Set();\n\tconst uniqueNames = collectUniqueCatalogToolNames(params.tools);\n\treturn applyToolCatalogCompaction({\n\t\t...params,\n\t\tenabled: config.enabled,\n\t\t...(odsNativeNames.size ? {\n\t\t\tisVisibleCatalogTool: (tool) => odsNativeNames.has(tool.name) && uniqueNames.has(tool.name)\n\t\t} : {}),\n\t\tisVisibleControlTool: (tool) => TOOL_SEARCH_CONTROL_TOOL_NAMES.has(tool.name) && shouldExposeControlTool(tool.name, config.mode)\n\t});\n}"
     ]
   ],
   "previousReplacements": {
