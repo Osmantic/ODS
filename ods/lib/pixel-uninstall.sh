@@ -1394,7 +1394,8 @@ if workspace_preview_state.exists() or workspace_preview_state.is_symlink():
 
 if gateway_unit.exists():
     text = gateway_unit.read_text(encoding="utf-8")
-    if "Description=OpenClaw Gateway - Pixel" not in text or str(install_dir) not in text:
+    managed_descriptions = {"Description=OpenClaw Gateway - Pixel", "Description=OpenClaw Gateway - Portal"}
+    if not managed_descriptions.intersection(text.splitlines()) or str(install_dir) not in text:
         raise SystemExit("gateway unit is not the ODS-managed Pixel unit")
 
 if ingress_unit.exists():

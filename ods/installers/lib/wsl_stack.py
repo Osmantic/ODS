@@ -53,7 +53,8 @@ def managed_units(root, home, unit_dir=Path("/etc/systemd/system"), root_uid=0):
         content = regular(path, root_uid)
         text = content.decode("utf-8")
         if name == "openclaw-gateway.service":
-            if "Description=OpenClaw Gateway - Pixel" not in text or f"{root}/extensions/services/pixel-agent/plugin" not in text:
+            managed_descriptions = {"Description=OpenClaw Gateway - Pixel", "Description=OpenClaw Gateway - Portal"}
+            if not managed_descriptions.intersection(text.splitlines()) or f"{root}/extensions/services/pixel-agent/plugin" not in text:
                 raise RuntimeError("Gateway unit does not belong to this ODS installation")
         elif name == "pixel-ingress.service":
             program = "/usr/local/libexec/ods-pixel-ingress.mjs"

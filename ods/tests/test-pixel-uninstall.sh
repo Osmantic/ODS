@@ -744,6 +744,32 @@ PY
 }
 
 write_fixture
+sed -i 's/Description=OpenClaw Gateway - Pixel/Description=OpenClaw Gateway - Portal/' "$SYSTEMD_DIR/openclaw-gateway.service"
+if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME_DIR"; then
+    [[ ! -e "$HOME_DIR/.config/ods/pixel-managed.json" && ! -e "$SYSTEMD_DIR/openclaw-gateway.service" ]] \
+        && pass "exact ODS-managed Portal gateway remains removable after the product rename" \
+        || fail "Portal gateway cleanup left owned state"
+else
+    fail "valid managed Portal gateway cleanup failed"
+fi
+
+for invalid_gateway in foreign-root unexpected-description; do
+    write_fixture
+    if [[ "$invalid_gateway" == foreign-root ]]; then
+        printf '[Unit]\nDescription=OpenClaw Gateway - Portal\n[Service]\nBindReadOnlyPaths=/home/another/ods/extensions/services/pixel-agent/plugin\n' >"$SYSTEMD_DIR/openclaw-gateway.service"
+    else
+        sed -i 's/Description=OpenClaw Gateway - Pixel/Description=OpenClaw Gateway - Portal Personal/' "$SYSTEMD_DIR/openclaw-gateway.service"
+    fi
+    if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME_DIR"; then
+        fail "Portal gateway accepted $invalid_gateway"
+    elif [[ -e "$HOME_DIR/.config/ods/pixel-managed.json" && -e "$SYSTEMD_DIR/openclaw-gateway.service" && ! -s "$SYSTEMCTL_LOG" ]]; then
+        pass "Portal gateway $invalid_gateway fails closed before service mutation"
+    else
+        fail "Portal gateway $invalid_gateway caused partial cleanup"
+    fi
+done
+
+write_fixture
 printf '%s\n' 'PIXEL_STATUS_FILE=/tmp/drifted-status.json' >>"$ETC_DIR/pixel-agent.env"
 if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME_DIR"; then
     fail "Pixel uninstall accepted a drifted protected ingress environment"

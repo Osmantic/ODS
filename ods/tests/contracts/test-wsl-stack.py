@@ -43,6 +43,22 @@ class StackContract(unittest.TestCase):
         self.assertNotIn('pixel-ops-broker.service', result)
         self.assertNotIn('docker.service', result)
 
+    def test_portal_gateway_keeps_exact_owner_contract(self):
+        path = Path('/etc/systemd/system/openclaw-gateway.service')
+        self.contents[path] = self.contents[path].replace(b'Gateway - Pixel', b'Gateway - Portal')
+        self.assertEqual(module.managed_units(self.root, self.home), list(module.NATIVE_UNITS))
+        self.contents[path] = self.contents[path].replace(str(self.root).encode(), b'/home/another/ods')
+        with self.assertRaisesRegex(RuntimeError, 'Gateway unit'):
+            module.managed_units(self.root, self.home)
+
+    def test_gateway_description_must_be_an_exact_known_line(self):
+        path = Path('/etc/systemd/system/openclaw-gateway.service')
+        for name in (b'Pixel Personal', b'Portal Personal'):
+            self.contents[path] = (b'Description=OpenClaw Gateway - ' + name +
+                b'\nBindReadOnlyPaths=' + str(self.root).encode() + b'/extensions/services/pixel-agent/plugin\n')
+            with self.assertRaisesRegex(RuntimeError, 'Gateway unit'):
+                module.managed_units(self.root, self.home)
+
     def test_foreign_install_root_rejected(self):
         self.marker['install_dir'] = '/home/another/ods'
         self.contents[self.home / '.config/ods/pixel-managed.json'] = json.dumps(self.marker).encode()
