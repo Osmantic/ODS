@@ -46,9 +46,9 @@ const {tools: offered} = applyCatalog({tools: allTools, config, agentId: 'pixel'
   runId: randomUUID(), catalogRef: createCatalogRef()});
 const names = tools => tools.map(tool => tool.name).sort();
 const directNames = ['apply_patch', 'edit', 'exec', 'pixel_ods_ask_user', 'pixel_ods_extension_request_status',
-  'pixel_ods_extensions', 'pixel_ods_skill', 'process', 'read', 'tool_call', 'tool_describe',
+  'pixel_ods_extensions', 'pixel_ods_skill', 'pixel_ods_workspace_preview', 'process', 'read', 'tool_call', 'tool_describe',
   'tool_search', 'web_fetch', 'web_search', 'write'];
-const historicalNames = [...directNames, 'pixel_ods_extension_request_advance',
+const historicalNames = [...directNames.filter(name => name !== 'pixel_ods_workspace_preview'), 'pixel_ods_extension_request_advance',
   'pixel_ods_extension_request_prepare', 'pixel_ods_extension_request_retry',
   'pixel_ods_python_library_proposal', 'pixel_ods_source_proposal'];
 const select = selected => selected.map(name => {
@@ -64,6 +64,7 @@ function run(input) {
   return result;
 }
 function compile(tools) {
+  assert.equal(new Set(names(tools)).size, tools.length, 'compile each offered tool exactly once');
   for (const input of [
     {schema: combinedToolSchema(tools)},
     {chatTemplate: template, tools: tools.map(({name, description, parameters}) => ({name, description, parameters}))},
@@ -78,7 +79,10 @@ test('actual catalog offers the reviewed general-purpose surface', () => {
   assert.deepEqual(names(offered), directNames);
 });
 test('actual directly offered tools compile together as JSON and Qwen3.5 template grammar', () => compile(offered));
-test('workspace preview compiles alongside the ordinary surface', () => compile([...offered, ...select(['pixel_ods_workspace_preview'])]));
+test('workspace preview is present exactly once in the compiled ordinary surface', () => {
+  assert.equal(offered.length, 16);
+  assert.equal(offered.filter(tool => tool.name === 'pixel_ods_workspace_preview').length, 1);
+});
 
 for (const specialist of pluginTools.filter(tool => !directNames.includes(tool.name))) {
   test(`discovered ${specialist.name} compiles alongside the ordinary surface`, () => compile([...offered, specialist]));
