@@ -129,6 +129,17 @@ describe('Extensions page — unhealthy + install derivations', () => {
     fireEvent.change(screen.getByLabelText('Search extensions'),{target:{value:'missing'}})
     expect(screen.queryByText('Demo extension')).toBeNull()
   })
+
+  it('restores focus to compact filters after a result remount', async () => {
+    installFetchMock({extensions:[
+      {id:'core',name:'Core extension',status:'enabled',source:'system',features:[{category:'core'}]},
+      {id:'tool',name:'Tool extension',status:'enabled',source:'system',features:[{category:'tools'}]},
+    ],summary:baseSummary({total:2}),agent_available:true})
+    render(<Extensions compact />)
+    const category = await screen.findByRole('combobox',{name:'Category'})
+    fireEvent.change(category,{target:{value:'core'}})
+    expect(category).toHaveFocus()
+  })
   it('renders amber unhealthy badge for unhealthy user ext', async () => {
     installFetchMock({
       extensions: [

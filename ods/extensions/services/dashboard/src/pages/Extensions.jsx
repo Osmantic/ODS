@@ -428,8 +428,8 @@ export default function Extensions({ compact = false }) {
       {/* Status filter row */}
       {compact ? <div className="portal-extension-filters">
         <div className="extensions-search"><Search size={15} aria-hidden="true"/><input aria-label="Search extensions" placeholder="Find an extension…" value={search} onChange={event => setSearch(event.target.value)} /></div>
-        {!showingCollections && <><label>Status<select value={statusFilter} onChange={event => setStatusFilter(event.target.value)}>{STATUS_FILTERS.map(value => <option key={value} value={value}>{STATUS_LABELS[value]}</option>)}</select></label>
-        <label>Category<select value={category} onChange={event => setCategory(event.target.value)}>{categories.map(value => <option key={value} value={value}>{value === 'all' ? 'All categories' : value}</option>)}</select></label></>}
+        {!showingCollections && <><label>Status<select value={statusFilter} onChange={event => { const select = event.currentTarget; setStatusFilter(select.value); select.focus() }}>{STATUS_FILTERS.map(value => <option key={value} value={value}>{STATUS_LABELS[value]}</option>)}</select></label>
+        <label>Category<select value={category} onChange={event => { const select = event.currentTarget; setCategory(select.value); select.focus() }}>{categories.map(value => <option key={value} value={value}>{value === 'all' ? 'All categories' : value}</option>)}</select></label></>}
       </div> : <>
       <div className="flex flex-wrap gap-1.5 mb-3">
         {STATUS_FILTERS.map(s => (
