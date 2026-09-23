@@ -15721,6 +15721,7 @@ for (const [name, options] of [
   ["no verified prior preview", {prior: false}],
   ["no current mutation", {mutation: false}],
   ["different source project", {mutationPath: "another-project/report.py"}],
+  ["root-level filename", {mutationPath: "expense-reportx"}],
   ["new project", {prompt: "Preserve the same project. Create a new Python project and publish its verified Pixel workspace preview."}],
   ["different explicit output", {prompt: "Edit the same report project and publish a verified Pixel workspace preview in /workspace/another-project/public."}],
   ["read only", {mutation: false, prompt: "Read the same report project only. Do not change files or publish anything."}],

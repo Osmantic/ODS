@@ -9948,7 +9948,8 @@ export function createToolLoopGuard({
     if (named && named !== directory && !directory.startsWith(`${named}/`)) return undefined;
     const mutations = [...state.successfulWritePaths, ...state.successfulEditPaths];
     if (!mutations.length || !mutations.every(file => {
-      const parent = file.slice(0, file.lastIndexOf("/"));
+      const slash = file.lastIndexOf("/");
+      const parent = slash > 0 ? file.slice(0, slash) : undefined;
       return parent && (parent === directory || directory.startsWith(`${parent}/`) || parent.startsWith(`${directory}/`));
     })) return undefined;
     return {
