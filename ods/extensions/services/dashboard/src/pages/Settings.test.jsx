@@ -108,6 +108,14 @@ describe('Settings', () => {
     expect(await screen.findByText('Could not confirm the latest release. Try checking again.')).toBeVisible()
     expect(screen.queryByText('Current release')).toBeNull()
   })
+  it('restores focus to Check after dismissing the update notice', async () => {
+    renderSettings(url => String(url).startsWith('/api/version') ? response({ current:'2.6.0', latest:'2.6.0', update_available:false, check_status:'checked', checked_at:'2026-09-16T00:00:00Z' }) : null)
+    const check = await screen.findByRole('button', { name:'Check', exact:true })
+    fireEvent.click(check)
+    const close = await screen.findByRole('button', { name:'x', exact:true })
+    fireEvent.click(close)
+    await waitFor(() => expect(check).toHaveFocus())
+  })
   it('does not invent uptime or a live state when uptime is missing', async () => {
     renderSettings(url => url === '/api/settings/summary' ? response({...summary,uptime:undefined}) : null)
     const label = await screen.findByText('Uptime')
