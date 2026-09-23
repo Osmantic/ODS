@@ -681,6 +681,7 @@ function DoneScreen({ invite, onDone }) {
       <div className="flex gap-2 mb-6">
         <input
           readOnly
+          aria-label="Owner card link"
           value={invite.url}
           onFocus={e => e.target.select()}
           className="flex-1 bg-theme-card border border-theme-border rounded-lg px-3 py-2 text-xs font-mono text-theme-text"
