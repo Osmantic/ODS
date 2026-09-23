@@ -112,6 +112,7 @@ export default function Extensions({ compact = false }) {
   const [depConfirm, setDepConfirm] = useState(null)
   const [templates, setTemplates] = useState([])
   const [pollingLost, setPollingLost] = useState(false)
+  const confirmTriggerRef = useRef(null)
   const installProgressRef = useRef(null)
   const activePollers = useRef({})
   // Per-service recovery tracker: counts consecutive fetch failures and
@@ -224,6 +225,13 @@ export default function Extensions({ compact = false }) {
     return () => document.removeEventListener('keydown', handler)
   }, [confirm])
 
+  useEffect(() => {
+    if (confirm || !confirmTriggerRef.current) return
+    const trigger = confirmTriggerRef.current
+    confirmTriggerRef.current = null
+    trigger.focus?.()
+  }, [confirm])
+
   const fetchCatalog = async () => {
     try {
       if (!catalog) setLoading(true)
@@ -243,7 +251,7 @@ export default function Extensions({ compact = false }) {
 
   const handleMutation = async (serviceId, action, { autoEnableDeps = false, force = false } = {}) => {
     setMutating(serviceId)
-    setConfirm(null)
+    closeConfirm()
     setDepConfirm(null)
     try {
       let url = action === 'uninstall'
@@ -324,6 +332,7 @@ export default function Extensions({ compact = false }) {
   }
 
   const requestAction = (ext, action) => {
+    confirmTriggerRef.current = document.activeElement?.focus ? document.activeElement : null
     const messages = {
       install: `Install ${ext.name}? This will download and start the service.`,
       enable: `Enable ${ext.name}? The service will be started.`,
@@ -340,6 +349,10 @@ export default function Extensions({ compact = false }) {
       rollback: `Restore the previous ${ext.name} extension definition? Current service data and configuration will be preserved.`,
     }
     setConfirm({ action, ext, message: messages[action] })
+  }
+
+  const closeConfirm = () => {
+    setConfirm(null)
   }
 
   if (loading && !catalog) {
@@ -533,7 +546,7 @@ export default function Extensions({ compact = false }) {
 
       {/* Confirmation dialog */}
       {confirm && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={() => setConfirm(null)}>
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={closeConfirm}>
           <div className="bg-theme-card border border-theme-border rounded-xl p-6 max-w-md mx-4 shadow-2xl" onClick={e => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="Confirm action">
             <h3 className="text-base font-semibold text-theme-text mb-2">
               {confirm.action === 'uninstall' ? 'Remove' : confirm.action === 'purge' ? 'Purge Data' : confirm.action.charAt(0).toUpperCase() + confirm.action.slice(1)} Extension
@@ -543,7 +556,7 @@ export default function Extensions({ compact = false }) {
               <DisableDependentWarning dependents={confirm.ext.dependents} />
             )}
             <div className="flex justify-end gap-3">
-              <button onClick={() => setConfirm(null)} autoFocus className="px-4 py-2 text-[10px] font-mono uppercase tracking-[0.16em] text-theme-text-muted/65 hover:text-theme-text transition-colors">Cancel</button>
+              <button onClick={closeConfirm} autoFocus className="px-4 py-2 text-[10px] font-mono uppercase tracking-[0.16em] text-theme-text-muted/65 hover:text-theme-text transition-colors">Cancel</button>
               <button
                 onClick={() => handleMutation(confirm.ext.id, confirm.action, {
                   force: confirm.action === 'update' && (
