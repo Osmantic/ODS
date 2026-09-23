@@ -875,8 +875,11 @@ async def _produce_retained_result(store, identity, body, config, messages, *, o
                                             continue
                                         for field in ("delta", "message"):
                                             payload = choice.get(field)
-                                            if isinstance(payload, dict) and isinstance(payload.get("content"), str) \
-                                                    and payload["content"]:
+                                            if isinstance(payload, dict) and (
+                                                (isinstance(payload.get("content"), str) and payload["content"])
+                                                or bool(payload.get("tool_calls"))
+                                                or bool(payload.get("function_call"))
+                                            ):
                                                 answer_seen = True
                             if stripped == b"data: [DONE]":
                                 if not answer_seen and not terminal_error_seen:
@@ -1092,17 +1095,24 @@ async def pixel_chat_stream(request: Request, body: ChatStreamRequest, owner: st
                         del buffered[: newline + 1]
                         if len(line.rstrip(b"\r\n")) > _MAX_SSE_LINE_BYTES:
                             yield _error_event("Pixel stream exceeded its safety limit")
-                            yield b"data: [DONE]\n\n"
+                            if not done_seen:
+                                yield b"data: [DONE]\n\n"
                             return
                         yield line
                         if line.rstrip(b"\r\n") == b"data: [DONE]":
                             done_seen = True
                     if len(buffered) > _MAX_SSE_LINE_BYTES:
                         yield _error_event("Pixel stream exceeded its safety limit")
-                        yield b"data: [DONE]\n\n"
+                        if not done_seen:
+                            yield b"data: [DONE]\n\n"
                         return
                 if buffered:
-                    yield bytes(buffered)
+                    # The final upstream line may lack a newline. Forward it
+                    # terminated so it cannot fuse with the appended [DONE],
+                    # and recognize a bare trailing marker as a real [DONE].
+                    if buffered.rstrip(b"\r\n") == b"data: [DONE]":
+                        done_seen = True
+                    yield bytes(buffered) + b"\n"
         except _ClientDisconnected:
             return
         except (GeneratorExit, asyncio.CancelledError):

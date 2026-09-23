@@ -30,6 +30,16 @@ function verifiedNativeProfile(model) {
     && Number.isInteger(support.contextLength) && support.contextLength===model.contextLength
 }
 
+function quickSwitchProfile(model) {
+  if(model.fitsVram===true || verifiedNativeProfile(model))return model
+  const limit=Number(model.maxContextLength || model.contextLength || 0)
+  const fitting=(Array.isArray(model.contextOptions)?model.contextOptions:[])
+    .filter(option=>option?.fitsVram===true && Number.isSafeInteger(option.contextLength)
+      && option.contextLength>=4096 && option.contextLength<=limit)
+    .sort((a,b)=>b.contextLength-a.contextLength)[0]
+  return fitting?{...model,contextLength:fitting.contextLength,fitsVram:true}:model
+}
+
 /** A closed, unused selector must not start model-catalog requests or polling. */
 export default function PortalModelSelector(props) {
   const [started,setStarted]=useState(false)
@@ -47,6 +57,7 @@ function LoadedModelSelector({activeModel='',runtimeSource,busy=false,onSwitchin
   const {currentModel,activationReadyModel,loading,error,canActivateModels,activationModeError,activationLoading,modelLifecycle,actionLoadingModels=[],loadModel,refresh,clearMutationError}=catalog
   const models=Array.isArray(catalog.models)?catalog.models:[]
   const installed=models.filter(model=>model && typeof model.id==='string' && ['loaded','downloaded'].includes(model.status))
+    .map(quickSwitchProfile)
   const [open,setOpen]=useState(true),[confirmId,setConfirmId]=useState(null),[pending,setPending]=useState(false),[localError,setLocalError]=useState('')
   const [recoveryPending,setRecoveryPending]=useState(false),[recoveryBusy,setRecoveryBusy]=useState(false)
   const root=useRef(null),trigger=useRef(null),list=useRef(null),mounted=useRef(true),submitLock=useRef(false)

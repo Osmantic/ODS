@@ -364,6 +364,11 @@ const OPERATIONS_TOOLS = new Set([
   "pixel_ops_job_events",
   "pixel_ops_job_cancel",
 ]);
+const EXTENSION_LIFECYCLE_BROKER_TOOLS = new Set([
+  "pixel_ops_inventory", "pixel_ops_run", "pixel_ops_workflow_submit",
+  "pixel_ops_job_get", "pixel_ops_job_wait", "pixel_ops_job_events",
+  "pixel_ops_job_cancel",
+]);
 const OPERATIONS_SUBMISSION_TOOLS = new Set([
   "pixel_ops_run",
   "pixel_ops_workflow_submit",
@@ -4696,6 +4701,13 @@ export function userMessageExtensionLifecycleIntent(messages, prompt = undefined
   };
 }
 
+function userMessageRequestsLifecyclePlanOnly(messages, prompt = undefined) {
+  const text = currentOwnerIntentText(messages, prompt);
+  return Boolean(text &&
+    /\b(?:prepare|create|draft|generate|submit)\b[^.!?\n]{0,160}\b(?:approval\s+plan|plan\s+for\s+approval|immutable\s+plan)\b/i.test(text) &&
+    /\b(?:do\s+not|don['’]t|never)\s+(?:actually\s+|yet\s+)?(?:execute|run|apply|install)\b|\bwithout\s+(?:executing|running|applying|installing)\b/i.test(text));
+}
+
 export function userMessageOperationsContinuation(messages, prompt = undefined) {
   const text = currentUserText(messages, prompt);
   if (
@@ -6313,6 +6325,7 @@ export function createToolLoopGuard({
         operationsInventory: undefined,
         operationsExpectedQuery: undefined,
         operationsExpectedExtensionLifecycle: undefined,
+        operationsPlanOnly: false,
         operationsContinuation: undefined,
         operationsContinuationOutcome: undefined,
         operationsSubmittedJobs: new Map(),
@@ -6514,7 +6527,8 @@ export function createToolLoopGuard({
     // A command result is not an ODS installation receipt; managed installation
     // stays in the request coordinator regardless of the model's wording.
     const asksOwner = toolName === 'pixel_ods_ask_user' || (toolName === 'tool_call' && ['pixel_ods_ask_user','openclaw:pixel-ods:pixel_ods_ask_user'].includes(event?.params?.id));
-    if (asksOwner || ['pixel_ods_goal','pixel_ods_activity','pixel_ods_skill'].includes(delegatedName)) return state?.clientCancelled ? {block:true,blockReason:CLIENT_CANCELLED_REASON} : undefined;
+    if ((asksOwner || ['pixel_ods_goal','pixel_ods_activity','pixel_ods_skill'].includes(delegatedName)) &&
+        !state?.operationsExpectedExtensionLifecycle) return state?.clientCancelled ? {block:true,blockReason:CLIENT_CANCELLED_REASON} : undefined;
     if (state && !state.clientCancelled && !state.recursiveDeleteDenied && !state.unrequestedOperationsTerminal
       && !state.privateNetworkPrompt && !state.operationsRequired && !state.exactDownloadRequested && !state.codingExhausted) {
       state.playgroundRouting ??= {};
@@ -7400,7 +7414,9 @@ export function createToolLoopGuard({
     if (
       state?.operationsRequired &&
       toolName === "tool_call" &&
-      OPERATIONS_TOOLS.has(effectiveToolName)
+      OPERATIONS_TOOLS.has(effectiveToolName) &&
+      (!state.operationsExpectedExtensionLifecycle ||
+        EXTENSION_LIFECYCLE_BROKER_TOOLS.has(effectiveToolName))
     ) {
       return undefined;
     }
@@ -7570,7 +7586,9 @@ export function createToolLoopGuard({
     if (
       state?.operationsRequired &&
       !extensionDiscoveryActive(state) &&
-      !OPERATIONS_TOOLS.has(toolName) &&
+      (!OPERATIONS_TOOLS.has(toolName) ||
+        (state.operationsExpectedExtensionLifecycle &&
+          !EXTENSION_LIFECYCLE_BROKER_TOOLS.has(effectiveToolName))) &&
       effectiveToolName !== "tool_search" &&
       effectiveToolName !== "tool_describe" &&
       !operationsMayContinueWithIndependentTools
@@ -8348,6 +8366,8 @@ export function createToolLoopGuard({
         state.operationsExpectedExtensionLifecycle = state.operationsRequired && !operationsContinuation
           ? userMessageExtensionLifecycleIntent(event?.messages, event?.prompt)
           : undefined;
+        state.operationsPlanOnly = Boolean(state.operationsExpectedExtensionLifecycle &&
+          userMessageRequestsLifecyclePlanOnly(event?.messages, event?.prompt));
         state.operationsRequiresOdsAppsProjection =
           state.operationsRequired &&
           !operationsContinuation &&
@@ -9248,11 +9268,51 @@ export function createToolLoopGuard({
       parameters: {serviceId: lifecycle.serviceId}});
   }
 
+  function extensionLifecycleContinuation(state) {
+    const lifecycle = state?.operationsExpectedExtensionLifecycle;
+    if (!state?.operationsRequired || !lifecycle || lifecycle.action === "install-next") return undefined;
+    const next = (stage, id, args, explanation = "") => ({
+      stage: `lifecycle-${stage}`,
+      instruction: `${explanation}Do not reply yet. Call tool_call now with id ${id} and args ${JSON.stringify(args)}. ` +
+        "Use only the returned Operations Broker receipt; never approve a job yourself or replay a submitted mutation.",
+    });
+    const pending = [...state.operationsSubmittedJobs.keys()].filter(
+      (id) => !state.operationsTerminalJobs.has(id));
+    if (pending.length === 1) return next(`wait-${pending[0]}`, "pixel_ops_job_wait", {jobId: pending[0]});
+    if (pending.length > 1) return undefined;
+    const submissions = [...state.operationsSubmittedJobs.values()];
+    if (submissions.length === 0 && !state.operationsInventory) {
+      return state.operationsInventoryAttempted ? undefined
+        : next("inventory", "pixel_ops_inventory", {});
+    }
+    const inspected = submissions.some((submission) =>
+      submission.actions?.some((action) => action.action === "ods.extensions.inspect"));
+    if (!inspected) {
+      return next("inspect", "pixel_ops_run", {target: "ods-host", action: "ods.extensions.inspect",
+        parameters: {serviceId: lifecycle.serviceId}});
+    }
+    const inspection = parsedLifecycleOutcome(state.operationsTerminalJobs, "ods.extensions.inspect");
+    if (!inspection || inspection.result.extensionId !== lifecycle.serviceId) return undefined;
+    const action = lifecycle.action === "install" &&
+      ["disabled", "stopped"].includes(inspection.result.currentStatus)
+      ? "ods.extensions.enable" : `ods.extensions.${lifecycle.action}`;
+    if (inspectionAlreadySatisfiesLifecycleAction(inspection, action) ||
+        !inspectionPermitsLifecycleAction(inspection, action) ||
+        submissions.some((submission) => submission.actions?.some((item) =>
+          item.action !== "ods.extensions.inspect"))) return undefined;
+    return next(`action-${action}`, "pixel_ops_run", {target: "ods-host", action,
+      parameters: {serviceId: lifecycle.serviceId}},
+      "The inspection job's planHash is only an inspection receipt, not an approval plan for the requested action. ");
+  }
+
   function trustedOperationsContinuation(state, runId) {
     if (!state?.operationsRequired) return undefined;
     if (extensionDiscoveryActive(state)) return undefined;
     if (state.operationsExpectedExtensionLifecycle?.action === "install-next") {
       return catalogInstallationContinuation(state);
+    }
+    if (state.operationsExpectedExtensionLifecycle) {
+      return extensionLifecycleContinuation(state);
     }
     if (state.operationsInventoryOnly) {
       if (state.operationsInventory || state.operationsInventoryAttempted) return undefined;
@@ -9869,8 +9929,15 @@ export function createToolLoopGuard({
               : "- Workspace continuation: the requested workspace artifact was not both written and read back successfully in this response."
           }`
           : evidenceText;
+        // A requested approval plan is complete only when the requested
+        // action's own broker job is awaiting external approval. An inspection
+        // hash is not that plan, and an unexpectedly executed mutation cannot
+        // satisfy an explicit "do not execute" owner request.
+        const lifecyclePlanPrepared = state.operationsPlanOnly &&
+          /^Pixel prepared the exact ods\.extensions\.(?:install|enable|disable|remove) plan for extension /.test(evidenceText);
         return {
           status:
+            state.operationsPlanOnly ? (lifecyclePlanPrepared ? "passed" : "failed") :
             !state.operationsNetworkDiscoveryRequested && (
             evidenceText.startsWith(OPERATIONS_HOST_EVIDENCE_PREFIX) ||
             evidenceText.startsWith(OPERATIONS_HOST_COMMAND_EVIDENCE_PREFIX) ||

@@ -103,7 +103,62 @@ function linuxProcessIdentity(pid, format = 'auto') {
   return {version: 3, pid, invocationId, startTicks};
 }
 
-function previousProcessAlive(previous) {
+function provenManagedIngressReuse(pid, startTicks) {
+  // WSL can reuse the old gateway PID in the same kernel tick after a distro
+  // restart. Pixel ingress has a different, root-owned systemd service, but
+  // ProtectHome can make its /proc/environ unreadable to the gateway owner.
+  // Accept only this exact other managed role, then pin the same incarnation
+  // across both reads. All unknown processes continue to fence admission.
+  const groupPath = `/proc/${pid}/cgroup`, commandPath = `/proc/${pid}/cmdline`;
+  const expectedGroup = '0::/system.slice/pixel-ingress.service\n';
+  const expectedCommand = Buffer.from('node\0/usr/local/libexec/ods-pixel-ingress.mjs\0');
+  try {
+    const group = fs.readFileSync(groupPath, 'utf8');
+    const command = fs.readFileSync(commandPath);
+    return group === expectedGroup && Buffer.isBuffer(command) && command.equals(expectedCommand) &&
+      processStartTicks(pid) === startTicks &&
+      fs.readFileSync(groupPath, 'utf8') === group && fs.readFileSync(commandPath).equals(command);
+  } catch { return false; }
+}
+
+function systemdUnitIdentity(unit) {
+  const result = spawnSync('/usr/bin/systemctl', ['show', unit,
+    '--property=MainPID,InvocationID,ExecStart,User,Group,ActiveState,FragmentPath,ExecMainStartTimestampMonotonic'],
+  {encoding: 'utf8', timeout: 5000, maxBuffer: 4096});
+  if (result.error || result.status !== 0 || typeof result.stdout !== 'string' || result.stdout.length > 4096) return null;
+  const fields = Object.create(null);
+  for (const line of result.stdout.trimEnd().split('\n')) {
+    const separator = line.indexOf('=');
+    if (separator < 1 || Object.hasOwn(fields, line.slice(0, separator))) return null;
+    fields[line.slice(0, separator)] = line.slice(separator + 1);
+  }
+  return fields;
+}
+
+function provenManagedIngressBySystemd(previous, current) {
+  if (previous.version !== 3 || current?.version !== 3) return false;
+  // ProtectProc=invisible can hide every /proc entry for another systemd
+  // service. Ask the root-owned manager for both exact unit identities; no
+  // command is executed in the other process. A stable, separately invoked
+  // ingress service cannot also be the old live gateway lock owner.
+  const snapshot = () => ({gateway: systemdUnitIdentity('openclaw-gateway.service'),
+    ingress: systemdUnitIdentity('pixel-ingress.service')});
+  const first = snapshot(), second = snapshot();
+  if (!first.gateway || !first.ingress || JSON.stringify(first) !== JSON.stringify(second)) return false;
+  const {gateway, ingress} = first, owner = os.userInfo().username;
+  return gateway.ActiveState === 'active' && gateway.MainPID === String(process.pid) &&
+    gateway.InvocationID === current.invocationId && gateway.User === owner &&
+    ingress.ActiveState === 'active' && ingress.MainPID === String(previous.pid) &&
+    ingress.User === owner && ingress.Group === 'ods-pixel' &&
+    ingress.FragmentPath === '/etc/systemd/system/pixel-ingress.service' &&
+    /^[a-f0-9]{32}$/.test(ingress.InvocationID ?? '') &&
+    ingress.InvocationID !== previous.invocationId && ingress.InvocationID !== current.invocationId &&
+    /^[1-9][0-9]*$/.test(ingress.ExecMainStartTimestampMonotonic ?? '') &&
+    Number.isSafeInteger(Number(ingress.ExecMainStartTimestampMonotonic)) &&
+    /^\{ path=\/usr\/bin\/env ; argv\[\]=\/usr\/bin\/env node \/usr\/local\/libexec\/ods-pixel-ingress\.mjs ; ignore_errors=no ;/.test(ingress.ExecStart ?? '');
+}
+
+function previousProcessAlive(previous, currentIdentity) {
   if (!previous || Array.isArray(previous) || !Number.isSafeInteger(previous.pid) || previous.pid < 1) {
     throw new Error('invalid process lock');
   }
@@ -122,8 +177,22 @@ function previousProcessAlive(previous) {
   // unreadable under proc restrictions. A different start time already proves
   // that the recorded owner is gone; do not require that stranger's identity.
   // Matching start times still require the full boot/invocation check below.
-  if (processStartTicks(previous.pid) !== previous.startTicks) return false;
-  const current = linuxProcessIdentity(previous.pid, boot ? 'boot' : 'invocation');
+  let startTicks;
+  try { startTicks = processStartTicks(previous.pid); }
+  catch (error) {
+    if (['ENOENT', 'EACCES', 'EPERM'].includes(error.code) &&
+        provenManagedIngressBySystemd(previous, currentIdentity)) return false;
+    throw error;
+  }
+  if (startTicks !== previous.startTicks) return false;
+  let current;
+  try { current = linuxProcessIdentity(previous.pid, boot ? 'boot' : 'invocation'); }
+  catch (error) {
+    if (!boot && ['EACCES', 'EPERM'].includes(error.code) &&
+        (provenManagedIngressReuse(previous.pid, previous.startTicks) ||
+         provenManagedIngressBySystemd(previous, currentIdentity))) return false;
+    throw error;
+  }
   return current !== null && current.startTicks === previous.startTicks &&
     (boot ? current.bootId === previous.bootId : current.invocationId === previous.invocationId);
 }
@@ -245,7 +314,7 @@ export function createAccessRuntime({directory = path.join(os.homedir(), '.openc
         const entry = privateEntry(lock);
         if (entry.size > 4096) throw new Error('oversized process lock');
         const previous = JSON.parse(fs.readFileSync(lock, 'utf8'));
-        if (previousProcessAlive(previous)) throw new Error('another runtime owns admission');
+        if (previousProcessAlive(previous, identity)) throw new Error('another runtime owns admission');
         const current = privateEntry(lock);
         if (current.dev !== entry.dev || current.ino !== entry.ino) throw new Error('process lock changed');
         fs.unlinkSync(lock);

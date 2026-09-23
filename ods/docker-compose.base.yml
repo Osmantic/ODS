@@ -277,14 +277,9 @@ services:
       # name we register on AMD install (Qwen3.6-35B-A3B + mmproj-F16).
       - ODS_TALK_VISION_MODEL=${ODS_TALK_VISION_MODEL:-user.Qwen3.6-35B-A3B-Vision}
     volumes:
-      - ./scripts:/ods/scripts:ro,z
-      - ./config:/ods/config:ro,z
-      - ./extensions:/ods/extensions:ro,z
-      - ./.env:/ods/.env:ro,z
-      - ./.env.example:/ods/.env.example:ro,z
-      - ./.env.schema.json:/ods/.env.schema.json:ro,z
+      # .env is atomically replaced; mounting the parent keeps updates visible.
+      - ./:/ods:ro,z
       - ./data:/data:z
-      - ./templates:/ods/templates:ro,z
     deploy:
       resources:
         limits:

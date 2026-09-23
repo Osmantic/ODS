@@ -76,6 +76,31 @@ def adapter(tmp_path,monkeypatch,request):
         instance.use_launchd_fixture(monkeypatch)
     return instance
 
+@pytest.fixture
+def native_mac_adapter(tmp_path, monkeypatch):
+    tmp_path.chmod(0o700)
+    original = access.private_json
+    read = lambda path, _uid, maximum=1048576: original(path, os.getuid(), maximum)
+    monkeypatch.setattr(access, 'private_json', read)
+    monkeypatch.setattr(c, 'private_json', read)
+    instance = ModelBridge(tmp_path)
+    instance.use_launchd_fixture(monkeypatch)
+    instance.marker_path.unlink()
+    instance.marker_path.parent.rmdir()
+    instance.marker_path.parent.parent.rmdir()
+    instance.gateway_binding = {'definition': 'protected-launchd-fixture'}
+    instance.binding_valid = True
+    original_discover = instance.discover
+    def discover(*, allow_installing=False):
+        original_discover(allow_installing=allow_installing)
+        instance.surface = 'darwin'
+    def verify_binding():
+        if not instance.binding_valid:
+            raise AccessError('gateway-installation-changed')
+    monkeypatch.setattr(instance, 'discover', discover)
+    monkeypatch.setattr(instance, 'verify_gateway_installation_binding', verify_binding)
+    return instance
+
 def begin(a):return c.control(a,'model-begin',{'revision':c.control(a,'model-status')['revision'],'transactionId':ID})
 def apply(a):return c.control(a,'model-apply',{'transactionId':ID,'target':NEW})
 def finish(a,outcome='commit'):return c.control(a,'model-finish',{'transactionId':ID,'outcome':outcome})
@@ -94,6 +119,47 @@ def test_64k_to_16k_holds_through_actual_runtime_readback(adapter):
     assert adapter.native_phase==adapter.edge_phase=='idle'
     assert finish(adapter)==done
     assert 'PRIVATE' not in json.dumps(done)
+
+def test_native_macos_switches_without_linux_owner_marker(native_mac_adapter):
+    adapter = native_mac_adapter
+    assert not (adapter.home / '.config/ods/pixel-managed.json').exists()
+    old = projection(config())['contract']
+    for cycle, target in enumerate((NEW, old), 1):
+        transaction_id = f'{cycle:x}' * 64
+        revision = c.control(adapter, 'model-status')['revision']
+        held = c.control(adapter, 'model-begin', {'revision': revision, 'transactionId': transaction_id})
+        assert held['status'] == 'held' and held['pending']
+        assert adapter.pending()['markerBeforeSha'] == c._marker_digest(json.loads(
+            (adapter.state / 'model-before.json').read_text()))
+        applied = c.control(adapter, 'model-apply', {'transactionId': transaction_id, 'target': target})
+        assert applied['status'] == 'applied' and applied['contract'] == target
+        done = c.control(adapter, 'model-finish', {'transactionId': transaction_id, 'outcome': 'commit'})
+        assert done['status'] == 'completed' and done['contract'] == target
+    assert not (adapter.home / '.config/ods/pixel-managed.json').exists()
+
+def test_native_macos_model_begin_requires_protected_gateway_binding(native_mac_adapter):
+    adapter = native_mac_adapter
+    adapter.binding_valid = False
+    with pytest.raises(AccessError, match='gateway-installation-changed'):
+        begin(adapter)
+    assert not adapter.pending()
+
+def test_native_macos_model_finish_rechecks_gateway_binding(native_mac_adapter):
+    adapter = native_mac_adapter
+    begin(adapter)
+    apply(adapter)
+    adapter.binding_valid = False
+    with pytest.raises(AccessError, match='gateway-installation-changed'):
+        finish(adapter)
+    assert adapter.pending()
+    adapter.binding_valid = True
+    assert finish(adapter)['outcome'] == 'commit'
+
+def test_linux_model_begin_requires_owner_marker(adapter):
+    adapter.marker_path.unlink()
+    with pytest.raises(AccessError, match='model-marker-missing'):
+        begin(adapter)
+    assert not adapter.pending()
 
 def test_bootstrap_completion_does_not_block_browser_model_switch(adapter):
     # Fresh installs leave the old shared receipt in this exact format.

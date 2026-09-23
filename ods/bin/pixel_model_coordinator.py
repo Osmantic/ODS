@@ -48,13 +48,26 @@ def _marker_digest(config):
 
 
 def _managed_marker(bridge):
+    if bridge.surface == "darwin":
+        # Native macOS installs are bound by the protected launchd deployment,
+        # not the Linux/WSL owner marker.
+        if bridge.gateway_binding is None:
+            raise AccessError("gateway-installation-changed")
+        bridge.verify_gateway_installation_binding()
+        return None, None
     path = bridge.home / ".config/ods/pixel-managed.json"
     for directory, unsafe_bits in ((path.parent.parent, 0o022), (path.parent, 0o077)):
-        info = directory.lstat()
+        try:
+            info = directory.lstat()
+        except FileNotFoundError:
+            raise AccessError("model-marker-missing") from None
         if (not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode)
                 or info.st_uid != bridge.owner.pw_uid or info.st_mode & unsafe_bits):
             raise AccessError("model-marker-unsafe")
-    marker = private_json(path, bridge.owner.pw_uid, 65536)
+    try:
+        marker = private_json(path, bridge.owner.pw_uid, 65536)
+    except FileNotFoundError:
+        raise AccessError("model-marker-missing") from None
     if (type(marker) is not dict or marker.get("schema_version") != 2
             or marker.get("manager") != "ods" or marker.get("state") != "ready"
             or marker.get("initial_active_state") != "absent"
@@ -77,6 +90,8 @@ def _bind_managed_marker(bridge, journal, expected_sha):
     if config_sha != expected_sha:
         raise AccessError("model-config-changed")
     path, marker = _managed_marker(bridge)
+    if marker is None:
+        return
     current = _marker_digest(config)
     if marker["configuration_sha256"] == current:
         directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
@@ -268,12 +283,13 @@ def control(bridge, operation, request=None):
             if access["configured_mode"] not in ("sandboxed", "full-access"): raise AccessError("model-access-mode-unknown")
             config, config_sha = _config(bridge)
             _, marker = _managed_marker(bridge)
-            if marker["configuration_sha256"] != _marker_digest(config):
+            marker_before = _marker_digest(config) if marker is None else marker["configuration_sha256"]
+            if marker_before != _marker_digest(config):
                 raise AccessError("model-marker-drifted")
             journal = dict(kind="model", phase="acquiring", token=os.urandom(32).hex(), transactionId=request["transactionId"],
                            edge_revision=access["_edge"]["revision"], edgeHeld=False, beforeSha=config_sha, afterSha=None, target=None,
                            boundary=bridge.unit_boundary(), mode=access["configured_mode"], beforeIdentity=_identity(bridge),
-                           markerBeforeSha=marker["configuration_sha256"])
+                           markerBeforeSha=marker_before)
             atomic_json(bridge.state / "model-before.json", config)
             _write(bridge, journal)
         _hold(bridge, journal)

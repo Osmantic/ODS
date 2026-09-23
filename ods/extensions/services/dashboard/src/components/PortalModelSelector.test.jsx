@@ -72,6 +72,31 @@ it('shows readable names and an installed-model menu, with an explicit switch co
   expect(posts()).toHaveLength(0)
 })
 
+it('offers a verified fitting context instead of disabling a large installed model',async()=>{
+  const candidate=inventory[2]
+  candidate.contextLength=262144
+  candidate.contextOptions=[
+    {contextLength:16384,fitsVram:true},
+    {contextLength:32768,fitsVram:true},
+    {contextLength:65536,fitsVram:false},
+  ]
+  try {
+    render(view())
+    await open()
+    const option=screen.getByRole('menuitemradio',{name:/Large 100B.*32K context/})
+    expect(option).toBeEnabled()
+    fireEvent.click(option)
+    expect(screen.getByText('32K context')).toBeVisible()
+    fireEvent.click(screen.getByRole('button',{name:'Switch model',exact:true}))
+    await waitFor(()=>expect(posts()).toHaveLength(1))
+    expect(posts()[0][0]).toBe('/api/models/remote%2Fhuge/load')
+    expect(JSON.parse(posts()[0][1].body)).toEqual({context_length:32768})
+  } finally {
+    candidate.contextLength=32768
+    delete candidate.contextOptions
+  }
+})
+
 it('accepts a measured native profile only at its proven context while retaining the switch confirmation',async()=>{
   const candidate=inventory[2]
   candidate.activationSupport={available:true,source:'measured-native',mode:'native-profile',contextLength:candidate.contextLength}

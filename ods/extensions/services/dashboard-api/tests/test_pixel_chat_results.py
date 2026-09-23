@@ -300,6 +300,31 @@ def test_done_without_user_answer_is_never_a_complete_receipt(store, monkeypatch
     asyncio.run(run())
 
 
+def test_done_with_tool_call_delta_is_a_complete_receipt(store, monkeypatch):
+    """When a model generates tool_calls without text content, it must be recognized as an answer."""
+    async def run():
+        tool_chunk = b'data: {"choices":[{"delta":{"tool_calls":[{"id":"call_1","type":"function","function":{"name":"search","arguments":"{}"}}]}}]}\n\n'
+        done_chunk = b"data: [DONE]\n\n"
+        monkeypatch.setattr(pixel.httpx, "AsyncClient", lambda **kw: FakeClient(
+            FakeResponse(content_type="text/event-stream", chunks=[tool_chunk, done_chunk])))
+        cancels = []
+        async def cancel(*args):
+            cancels.append(args)
+            return False
+        monkeypatch.setattr(pixel, "_cancel_edge_run", cancel)
+        await pixel.pixel_chat_stream(ConnectedRequest(), body(), OWNER)
+        await asyncio.gather(*list(pixel._result_tasks.values()))
+        result = await pixel.pixel_chat_result(
+            pixel.ChatResultRequest(chat_id="chat-test", request_id="attempt-one"), OWNER)
+        assert result["state"] == "complete"
+        assert "call_1" in result["events"]
+        assert "Pixel returned no answer" not in result["events"]
+        assert not store.has_pending(IDENTITY[:2])
+        assert not cancels
+    asyncio.run(run())
+
+
+
 def test_terminal_write_failure_still_releases_known_stopped_attempt(store, monkeypatch):
     async def run():
         append = store.append
