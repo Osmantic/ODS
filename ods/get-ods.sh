@@ -189,14 +189,16 @@ _ods_is_related_install_dir() {
 }
 
 _ods_related_compose_containers() {
+    local reinstall_root="${1:-}"
     command -v docker >/dev/null 2>&1 || return 0
 
     docker ps -a \
-        --format '{{.Names}}|{{.Label "com.docker.compose.project"}}|{{.Label "com.docker.compose.service"}}' \
+        --format '{{.Names}}|{{.Label "com.docker.compose.project"}}|{{.Label "com.docker.compose.service"}}|{{.Label "com.docker.compose.project.working_dir"}}' \
         2>/dev/null |
-        awk -F '|' '
+        awk -F '|' -v reinstall_root="$reinstall_root" '
             $2 != "" {
                 project = $2
+                if (reinstall_root == "" || $4 != reinstall_root) foreign[project] = 1
                 if (names[project] == "") {
                     names[project] = $1
                 } else {
@@ -208,7 +210,7 @@ _ods_related_compose_containers() {
             }
             END {
                 for (project in names) {
-                    if (open_webui[project] && dashboard_api[project] && inference[project]) {
+                    if (open_webui[project] && dashboard_api[project] && inference[project] && foreign[project]) {
                         print names[project]
                     }
                 }
@@ -222,6 +224,16 @@ refuse_legacy_install() {
     local findings=()
     local candidate=""
     local related_containers=""
+    local reinstall_root=""
+
+    # The candidate uninstaller will remove this validated installation. Its
+    # own Compose stack is not a parallel legacy install. Require every row in
+    # the project to carry the exact canonical root; missing or foreign labels
+    # must still block, including projects that reuse the same Compose name.
+    if [[ "${BOOTSTRAP_REINSTALL:-false}" == "true" ]] &&
+        validate_force_reinstall_target "$INSTALL_DIR"; then
+        reinstall_root="$(cd -P -- "$INSTALL_DIR" && pwd -P)"
+    fi
 
     if [[ -n "$PRE_ODS_INSTALL_DIR" && -d "$PRE_ODS_INSTALL_DIR" ]] && {
         [[ -f "$PRE_ODS_INSTALL_DIR/.env" ]] ||
@@ -242,7 +254,7 @@ refuse_legacy_install() {
         done < <(find "$ODS_BOOTSTRAP_ROOT" -mindepth 1 -maxdepth 1 \( -type d -o -type l \) -print0 2>/dev/null)
     fi
 
-    related_containers="$(_ods_related_compose_containers || true)"
+    related_containers="$(_ods_related_compose_containers "$reinstall_root" || true)"
     if [[ -n "$related_containers" ]]; then
         findings+=("related Compose containers: $(printf '%s\n' "$related_containers" | tr '\n' ' ')")
     fi

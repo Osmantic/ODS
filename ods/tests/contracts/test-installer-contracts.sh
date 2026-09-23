@@ -263,6 +263,9 @@ if ! PRE_ODS_INSTALL_DIR="" ODS_ALLOW_LEGACY_PARALLEL="" \
 fi
 rm -rf "$_pre_ods_guard_tmp"
 
+echo "[contract] forced bootstrap reinstall distinguishes owned and foreign Compose stacks"
+bash tests/test-bootstrap-force-own-compose.sh
+
 echo "[contract] bootstrap download finalization is non-destructive"
 bash tests/test-bootstrap-upgrade-download-finalization.sh
 

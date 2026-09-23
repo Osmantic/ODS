@@ -144,14 +144,16 @@ _ods_is_related_install_dir() {
 }
 
 _ods_related_compose_containers() {
+    local reinstall_root="${1:-}"
     command -v docker >/dev/null 2>&1 || return 0
 
     docker ps -a \
-        --format '{{.Names}}|{{.Label "com.docker.compose.project"}}|{{.Label "com.docker.compose.service"}}' \
+        --format '{{.Names}}|{{.Label "com.docker.compose.project"}}|{{.Label "com.docker.compose.service"}}|{{.Label "com.docker.compose.project.working_dir"}}' \
         2>/dev/null |
-        awk -F '|' '
+        awk -F '|' -v reinstall_root="$reinstall_root" '
             $2 != "" {
                 project = $2
+                if (reinstall_root == "" || $4 != reinstall_root) foreign[project] = 1
                 if (names[project] == "") {
                     names[project] = $1
                 } else {
@@ -163,7 +165,7 @@ _ods_related_compose_containers() {
             }
             END {
                 for (project in names) {
-                    if (open_webui[project] && dashboard_api[project] && inference[project]) {
+                    if (open_webui[project] && dashboard_api[project] && inference[project] && foreign[project]) {
                         print names[project]
                     }
                 }
