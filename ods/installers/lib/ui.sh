@@ -324,6 +324,19 @@ spin_task() {
       plain_label="$msg — $(format_download_progress "$(download_part_bytes "$progress_part")" "$progress_total_mb")"
     fi
     printf "  ... %s\n" "$plain_label"
+    if [[ -n "$progress_part" ]]; then
+      # Plain/redirected installs have no spinner: retain a bounded heartbeat
+      # for large downloads instead of leaving the initial byte count frozen.
+      while kill -0 "$pid" 2>/dev/null; do
+        sleep 1
+        elapsed=$((elapsed + 1))
+        if (( elapsed % 30 == 0 )); then
+          printf "  ... [%02d:%02d] %s — %s\n" \
+            "$((elapsed / 60))" "$((elapsed % 60))" "$msg" \
+            "$(format_download_progress "$(download_part_bytes "$progress_part")" "$progress_total_mb")"
+        fi
+      done
+    fi
     local plain_rc=0
     wait "$pid" || plain_rc=$?
     return "$plain_rc"

@@ -515,3 +515,45 @@ MOCK
     [[ "$rc" -eq 29 ]]
     grep -qF "Expected cinematic failure" "$rendered"
 }
+
+
+@test "spin_task: plain download reports changing bytes before the child exits" {
+    local part="$BATS_TEST_TMPDIR/growing.gguf.part"
+    local rendered="$BATS_TEST_TMPDIR/growing.out"
+    head -c 1048576 /dev/zero > "$part"
+    command sleep 60 &
+    local task_pid=$!
+    local ticks=0
+
+    # Advance polling deterministically while keeping the actual owned child
+    # alive through the heartbeat. No thirty-second wall-clock test delay.
+    sleep() {
+        ticks=$((ticks + 1))
+        if [[ "$ticks" -eq 1 ]]; then
+            head -c 5242880 /dev/zero > "$part"
+        elif [[ "$ticks" -eq 31 ]]; then
+            grep -qF "[00:30] Downloading model.gguf — 5 MB / 10 MB (50%)" "$rendered"
+            kill -TERM "$task_pid"
+            wait "$task_pid" 2>/dev/null || :
+        fi
+    }
+    local rc=0
+    spin_task "$task_pid" "Downloading model.gguf" "$part" 10 > "$rendered" || rc=$?
+    unset -f sleep
+
+    [[ "$rc" -eq 143 ]]
+    grep -qF "1 MB / 10 MB (10%)" "$rendered"
+    grep -qF "[00:30] Downloading model.gguf — 5 MB / 10 MB (50%)" "$rendered"
+    [[ "$(grep -cF 'Downloading model.gguf' "$rendered")" -eq 2 ]]
+    ! grep -q $'\r' "$rendered"
+}
+
+@test "spin_task: plain progress preserves a completed download failure" {
+    local part="$BATS_TEST_TMPDIR/failed.gguf.part"
+    head -c 1048576 /dev/zero > "$part"
+    (exit 23) &
+    local task_pid=$!
+    local rc=0
+    spin_task "$task_pid" "Downloading model.gguf" "$part" 10 > "$BATS_TEST_TMPDIR/failed.out" || rc=$?
+    [[ "$rc" -eq 23 ]]
+}
