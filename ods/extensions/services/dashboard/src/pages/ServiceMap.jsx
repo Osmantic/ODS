@@ -378,6 +378,12 @@ export default function ServiceMap({ compact = false }) {
   }, [fetchTopology])
 
   const { nodes, edges, capturedAt } = topology
+  useEffect(() => {
+    if (!selectedNode) return
+    const refreshedNode = nodes.find(node => node.id === selectedNode.id)
+    setSelectedNode(refreshedNode || null)
+  }, [nodes, selectedNode?.id])
+
   const { positions, layerY, svgWidth, svgHeight } = useMemo(() => computeLayout(nodes), [nodes])
   const counts = useMemo(() => ({
     healthy: nodes.filter(node => node.status === 'healthy').length,
