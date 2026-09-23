@@ -24,6 +24,11 @@ class LegacyUpdateBackupTests(unittest.TestCase):
         for relative in ("ods-backup.sh", "lib/rsync.sh", "lib/backup-paths.sh",
                          "installers/lib/compose-images.sh", "docker-compose.base.yml", "manifest.json"):
             shutil.copy2(ODS / relative, self.install / relative)
+        # Use the real safety checks, with their trusted source dependencies,
+        # while keeping the synthetic installation and its data separate.
+        (self.install / "scripts").mkdir()
+        for helper in ("backup-native-preflight.py", "source-update-preflight.py"):
+            (self.install / "scripts" / helper).symlink_to(ODS / "scripts" / helper)
         (self.install / ".compose-flags").write_text("-f docker-compose.base.yml\n")
         (self.install / ".version").write_text("2.6.0\n")
         (self.install / ".env").write_text(
