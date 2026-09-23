@@ -13,6 +13,7 @@ workspace paths; this document is the sanitized summary.
 | PB-004 image tooling | Pin Python base image indices; update the build installer and remove pip/setuptools/wheel from final runtime images. | Trivy finds zero Python package vulnerabilities in all three final images. |
 | Datasette | Retain latest stable 0.65.5, document the advisory applicability next to the pin. | The only OSV Python finding is PYSEC-2023-154. The [upstream advisory](https://github.com/simonw/datasette/security/advisories/GHSA-7ch3-7pp7-7cpq) explicitly limits impact to 1.0a0–1.0a3. GET /-/api against the built 0.65.5 image returns 404. No blanket scanner suppression was added. |
 | PB-010 dashboard | React Router DOM 7.18.4 with regenerated npm lock; six navigation regression cases. | npm production audit: zero findings. Upstream [navigation advisory](https://github.com/remix-run/react-router/security/advisories/GHSA-wrjc-x8rr-h8h6) requires >=7.18.0; v6.30.6 is insufficient. |
+| Dashboard development tools | Raised the Vite minimum to 7.3.5 and resolved 7.3.6 with compatible development-package updates. No forced major upgrades or overrides were added. | The [Vite Windows file-access advisory](https://github.com/vitejs/vite/security/advisories/GHSA-fx2h-pf6j-xcff) is fixed from 7.3.5. Both full and production official-registry npm audits now report zero findings. |
 
 ## Remaining image findings
 
@@ -66,13 +67,22 @@ test accepted an approved wheel and rejected substituted bytes on Windows and
 Linux. No new Dashboard API image was built or scanned in this follow-up; Debian
 package resolution and image-level findings remain outside that result.
 
-- Dashboard final suite after lint cleanup: 197 test files, 1,596 tests passed;
-  production build passed. This includes the six added slash/backslash navigation
-  security cases. The complete dashboard ESLint gate has no warnings/errors.
-- Dashboard `npm audit --omit=dev --registry=https://registry.npmjs.org`: zero.
-  The complete dependency graph still has 14 npm development-tool findings
-  (7 high, 4 moderate, 3 low), reconfirmed after the ESLint plugin lock update;
-  full OSV output is preserved separately.
+- Dashboard follow-up after public-beta integration and compatible tool updates:
+  200 test files, 1,626 tests passed on Windows Node 22.18.0; production build
+  passed. This includes the six added slash/backslash navigation security cases.
+  The complete dashboard ESLint gate has no warnings/errors.
+- Dashboard `npm audit --registry=https://registry.npmjs.org` and its
+  `--omit=dev` variant both report zero findings. The earlier 14 development
+  findings were resolved by the Vite minimum change followed by compatible
+  updates to the remaining 13 affected package records. Affected tool families
+  include Babel, HumanFS, browser mapping, Vitest, YAML, PostCSS, Undici and
+  esbuild. Vite 7.3.6 permits patched esbuild 0.28.2 in its declared range;
+  no dependency override or production-package change was needed in this
+  follow-up. This is a dated advisory observation, not a vulnerability-free
+  guarantee. Full OSV output is preserved separately.
+- A fresh isolated `npm ci --ignore-scripts` passed with npm 10.9.3. Regenerating
+  the lock used a temporary integrity-verified npm 11.20.0 because the old
+  resolver crashed on a Vitest peer cycle; the global npm was not changed.
 - Pixel Relay: nine socket-level authorization/disconnect tests pass in the
   runtime image.
 - APE: 81 tests pass; a separately started nonroot runtime serves HTTP 200 on
@@ -90,4 +100,7 @@ Raw evidence: `dependencies-*-trivy.json`, `dependencies-runtime-osv.json`,
 `dependencies-dashboard-osv.json`, `dependencies-dashboard-npm-audit.json`,
 `dependencies-*-tests.log`, `dependencies-edge-pytest.log`,
 `dependencies-edge-baseline-pytest.log`, `edge-fixture-remediation-pytest.log`,
-and dashboard build/test logs.
+and dashboard build/test logs. The development-tool follow-up retained
+`dashboard-dev-audit-after.json`, `dashboard-dev-production-audit-after.json`,
+`dashboard-dev-graph-changes.json`, `dashboard-dev-npm10-ci.json` and
+`dashboard-dev-{lint,tests,build}.log` under `output/`.
