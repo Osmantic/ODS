@@ -9902,6 +9902,19 @@ export function createToolLoopGuard({
     return undefined;
   }
 
+  function visualContinuationPrerequisite(state) {
+    if (!state?.workspaceVisualContinuationRequested || state.workspaceVisualContinuationEdited) return undefined;
+    const directory = state.workspaceTaskDirectory;
+    const hasRead = typeof directory === "string" && [...state.successfulReadPaths].some(
+      path => path.startsWith(`${directory}/`)
+    );
+    return {
+      stage: hasRead ? "workspace-visual-continuation-edit" : "workspace-visual-continuation-read",
+      instruction: hasRead ? WORKSPACE_VISUAL_CONTINUATION_REQUIRES_EDIT_REASON
+        : WORKSPACE_VISUAL_CONTINUATION_REQUIRES_READ_REASON,
+    };
+  }
+
   function trustedWorkspacePreviewContinuation(state) {
     if (
       !state?.workspacePreviewRequired ||
@@ -9913,6 +9926,8 @@ export function createToolLoopGuard({
     // A failed publish-only probe is the requested evidence. Do not retry it
     // or manufacture the missing artifact when the owner prohibited writes.
     if (state.workspacePreviewRestrictions?.mutation && state.workspacePreviewAttempted && !state.workspacePreview) return undefined;
+    const prerequisite = visualContinuationPrerequisite(state);
+    if (prerequisite) return prerequisite;
     if (state.workspacePreview) {
       if (workspacePreviewReadbackComplete(state)) return undefined;
       const nextPath = workspacePreviewNextKnownReadPath(state);
@@ -10038,7 +10053,14 @@ export function createToolLoopGuard({
       return undefined;
     })();
     const previewStageInstruction = (() => {
+      // Preserve a blocked tool's prerequisite or repair instruction as the
+      // next action. Publication coaching resumes after a successful result;
+      // appending it to a rejection can send the model straight to preview.
+      if (message.isError === true) return undefined;
       if (state?.progressBudget.laneExhausted('workspace')) return undefined;
+      const prerequisite = state?.workspacePreviewRequired && !state.workspacePreviewForbidden &&
+        !state.operationsRequired && !state.exactDownloadRequested && visualContinuationPrerequisite(state);
+      if (prerequisite) return `[ODS Pixel next step] ${prerequisite.instruction}`;
       if (state?.workspacePreviewRequired && !state.workspacePreview && !state.workspacePreviewVerifiedDirectory &&
           !state.workspacePreviewForbidden && !state.operationsRequired && !state.exactDownloadRequested) {
         const directory = workspacePreviewDirectoryFromState(state);

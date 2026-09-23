@@ -11613,6 +11613,35 @@ test(`binds a natural visual follow-up via ${mutationName} to the same session's
   });
   assert.equal(blindWrite.blockReason, WORKSPACE_VISUAL_CONTINUATION_REQUIRES_READ_REASON);
 
+  const persistFollowup = (toolName, toolCallId, result) => {
+    const message = { role: "toolResult", toolName, toolCallId, ...result };
+    return guard.toolResultPersist(
+      { toolName, toolCallId, message },
+      { agentId: "pixel", ...run2.context, toolName, toolCallId },
+      "pixel"
+    )?.message ?? message;
+  };
+  const finalizeFollowup = () => guard.beforeAgentFinalize({}, { agentId: "pixel", ...run2.context });
+  assert.equal(finalizeFollowup().retry.instruction, WORKSPACE_VISUAL_CONTINUATION_REQUIRES_READ_REASON);
+  assert.equal(finalizeFollowup().retry.idempotencyKey, "pixel-ods-workspace-visual-continuation-read");
+  assert.equal(finalizeFollowup().retry.maxAttempts, 1);
+  // Replay before-tool rejection -> persisted tool result, the chain observed
+  // on the Mac. Error guidance must survive without a contradictory publish hint.
+  for (const [toolName, id, rejection] of [
+    ["tool_call", "blind-catalog-edit", blindEdit],
+    [mutationName, "blind-native-edit", call(guard, mutationName, {
+      ...run2, event: { ...run2.event, params: {
+        path: "index.html", content: "replacement", edits: [{ oldText: "slow", newText: "fast" }],
+      } },
+    })],
+  ]) {
+    assert.equal(rejection.blockReason, WORKSPACE_VISUAL_CONTINUATION_REQUIRES_READ_REASON);
+    const error = { isError: true, content: [{ type: "text", text: rejection.blockReason }] };
+    const persisted = persistFollowup(toolName, id, error);
+    assert.equal(persisted.isError, true);
+    assert.deepEqual(persisted.content, error.content);
+  }
+
   const read = call(guard, "tool_call", {
     ...run2,
     event: {
@@ -11643,6 +11672,14 @@ test(`binds a natural visual follow-up via ${mutationName} to the same session's
     },
   });
 
+  const readProgress = persistFollowup("tool_call", "continuation-read", wrappedCoreResult("read", {
+    details: { status: "completed" }, content: [{ type: "text", text: "<!doctype html>slow" }],
+  }));
+  assert.equal(readProgress.content.at(-1).text, `[ODS Pixel next step] ${WORKSPACE_VISUAL_CONTINUATION_REQUIRES_EDIT_REASON}`);
+  assert.equal(finalizeFollowup().retry.instruction, WORKSPACE_VISUAL_CONTINUATION_REQUIRES_EDIT_REASON);
+  assert.equal(finalizeFollowup().retry.idempotencyKey, "pixel-ods-workspace-visual-continuation-edit");
+  assert.equal(finalizeFollowup().retry.maxAttempts, 1);
+
   const unchangedPreview = call(guard, "tool_call", {
     ...run2,
     event: {
@@ -11658,6 +11695,8 @@ test(`binds a natural visual follow-up via ${mutationName} to the same session's
     unchangedPreview.blockReason,
     WORKSPACE_VISUAL_CONTINUATION_REQUIRES_EDIT_REASON
   );
+  const unchangedError = { isError: true, content: [{ type: "text", text: unchangedPreview.blockReason }] };
+  assert.deepEqual(persistFollowup("tool_call", "unchanged-preview", unchangedError).content, unchangedError.content);
 
   const escaped = call(guard, "tool_call", {
     ...run2,
@@ -11731,6 +11770,13 @@ test(`binds a natural visual follow-up via ${mutationName} to the same session's
       toolCallId: "continuation-edit",
     },
   });
+
+  const successfulEdit = persistFollowup("tool_call", "continuation-edit", wrappedCoreResult(
+    mutationName, { details: { status: "completed" }, content: [{ type: "text", text: "Changed requested file." }] }
+  ));
+  assert.match(successfulEdit.content.map(item => item.text ?? "").join("\n"), /Call tool_call with id pixel_ods_workspace_preview/);
+  assert.match(finalizeFollowup().retry.instruction, /Call tool_call now with id pixel_ods_workspace_preview/);
+  assert.equal(finalizeFollowup().retry.maxAttempts, 1);
 
   if (mutationName === "write") {
     assert.equal(call(guard, "tool_call", {
