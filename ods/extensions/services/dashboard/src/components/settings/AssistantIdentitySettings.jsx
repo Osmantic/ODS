@@ -6,11 +6,19 @@ export default function AssistantIdentitySettings() {
   const { document, ready, busy, error, notice, reload, save } = usePortalIdentity()
   const [draft, setDraft] = useState('')
   const previousDocument = useRef(null)
+  const refreshButtonRef = useRef(null)
+  const restoreRefreshFocus = useRef(false)
   useEffect(() => {
     const previous = previousDocument.current
     previousDocument.current = document
     if (document) setDraft(current => !previous || current === previous.displayName ? document.displayName : current)
   }, [document])
+  useEffect(() => {
+    if (!busy && restoreRefreshFocus.current) {
+      restoreRefreshFocus.current = false
+      refreshButtonRef.current?.focus()
+    }
+  }, [busy])
   async function submit(event) {
     event.preventDefault()
     if (await save(draft)) setDraft(normalizeDisplayName(draft))
@@ -27,7 +35,7 @@ export default function AssistantIdentitySettings() {
       <div className="profile-settings-actions assistant-identity-actions">
         <button type="submit" disabled={busy || !ready}>Save name</button>
         <button type="button" disabled={busy || !ready} onClick={() => setDraft('Portal')}>Reset to Portal</button>
-        <button type="button" disabled={busy} onClick={() => { void reload() }}>Refresh saved name</button>
+        <button ref={refreshButtonRef} type="button" disabled={busy} onClick={() => { restoreRefreshFocus.current = true; void reload() }}>Refresh saved name</button>
         {document && draft !== document.displayName && <button type="button" disabled={busy || !ready} onClick={() => setDraft(document.displayName)}>Use saved name</button>}
       </div>
     </form>
