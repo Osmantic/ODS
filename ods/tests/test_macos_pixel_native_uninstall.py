@@ -147,6 +147,45 @@ class RetirementSelection(unittest.TestCase):
             self.assertEqual(commands.call_args_list[1].args, ('rename', 'a' * 64, 'ods-pixel-retired-' + 'a' * 16))
             commands.reset_mock(); client.preserve([plan]); commands.assert_not_called()
 
+    def test_sandbox_mount_order_changes_between_inspections(self):
+        value = self.sandbox(); plan = copy.deepcopy(self.select_sandbox(value))
+        client = object.__new__(retirement.NativeSandboxes)
+        def inspect(_):
+            value['Mounts'].reverse()
+            return copy.deepcopy(value)
+        def call(*args):
+            if args[0] == 'stop': value['State']['Running'] = False
+            elif args[0] == 'rename': value['Name'] = '/' + args[2]
+        with patch.object(client, 'inspect', side_effect=inspect), \
+                patch.object(client, 'call', side_effect=call) as commands:
+            client.preserve([plan])
+            self.assertEqual([c.args[0] for c in commands.call_args_list], ['stop', 'rename'])
+            commands.reset_mock(); client.preserve([plan]); commands.assert_not_called()
+
+    def test_sandbox_changed_mount_fields_fail_before_stop(self):
+        for field, replacement in [('Source', '/foreign'), ('RW', False),
+                ('Type', 'volume'), ('Mode', 'unexpected'), ('Propagation', 'rshared'),
+                ('Destination', '/foreign')]:
+            value = self.sandbox(); plan = copy.deepcopy(self.select_sandbox(value))
+            value['Mounts'][0][field] = replacement
+            value['Mounts'].reverse()
+            client = object.__new__(retirement.NativeSandboxes)
+            with self.subTest(field=field), patch.object(client, 'inspect', return_value=value), \
+                    patch.object(client, 'call') as commands:
+                with self.assertRaisesRegex(ValueError, 'identity-changed'): client.preserve([plan])
+                commands.assert_not_called()
+
+    def test_sandbox_duplicate_missing_and_malformed_mounts_fail_before_stop(self):
+        original = self.sandbox(); plan = copy.deepcopy(self.select_sandbox(original))
+        for mounts in [original['Mounts'][:1], original['Mounts'] * 2, None, {},
+                ['bad'], [{'Destination': None}], [{'Destination': ''}]]:
+            value = copy.deepcopy(original); value['Mounts'] = mounts
+            client = object.__new__(retirement.NativeSandboxes)
+            with self.subTest(mounts=mounts), patch.object(client, 'inspect', return_value=value), \
+                    patch.object(client, 'call') as commands:
+                with self.assertRaisesRegex(ValueError, 'identity-changed'): client.preserve([plan])
+                commands.assert_not_called()
+
     def test_sandbox_identity_changed_fails_before_stop(self):
         value = self.sandbox(); plan = self.select_sandbox(value)
         changed = copy.deepcopy(value); changed['Image'] = 'sha256:' + 'c' * 64

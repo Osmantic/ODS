@@ -128,6 +128,19 @@ def sandbox_selection(value, *, owner, root):
             'inspect': value}
 
 
+def mount_inventory(mounts):
+    """Compare full mount objects by unique destination, not Docker list order."""
+    if type(mounts) is not list:
+        raise ValueError('native-retirement-sandbox-identity-changed')
+    result = {}
+    for mount in mounts:
+        if (type(mount) is not dict or type(mount.get('Destination')) is not str
+                or not mount['Destination'] or mount['Destination'] in result):
+            raise ValueError('native-retirement-sandbox-identity-changed')
+        result[mount['Destination']] = mount
+    return result
+
+
 class NativeSandboxes:
     def __init__(self, definition, *, owner, root):
         self.owner, self.root = owner, root
@@ -171,7 +184,7 @@ class NativeSandboxes:
     def preserve(self, plans):
         for plan in plans:
             current = self.inspect(plan['id'])
-            if (current.get('Image') != plan['image'] or current.get('Mounts') != plan['mounts']
+            if (current.get('Image') != plan['image'] or mount_inventory(current.get('Mounts')) != mount_inventory(plan['mounts'])
                     or current.get('Config', {}).get('Labels') != plan['labels']
                     or current.get('Name') not in (plan['name'], plan['retiredName'])):
                 raise ValueError('native-retirement-sandbox-identity-changed')
