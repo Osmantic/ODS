@@ -378,6 +378,10 @@ main() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --tier)
+                if [[ $# -lt 2 || -z "${2:-}" ]]; then
+                    error "Option --tier requires an argument"
+                    exit 1
+                fi
                 tier="$2"
                 action="download"
                 shift 2
