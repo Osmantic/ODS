@@ -106,6 +106,9 @@ OPTIONS:
     --config-only           Restore only config, not user data
     --skip-verify           Skip checksum verification (NOT RECOMMENDED)
 
+Native Pixel installations permit inspection/dry-run only. Applying config or data
+requires a supported native restore path; ordinary ODS restore refuses it.
+
 BACKUP_ID:
     The backup identifier to restore from (e.g., 20260212-071500)
     If not provided, shows interactive selection
@@ -602,6 +605,12 @@ do_restore() {
         return 1
     fi
 
+    local -a native_check=(restore --install-dir "$ODS_DIR")
+    [[ "$dry_run" == true ]] && native_check+=(--dry-run)
+    if ! python3 "$SCRIPT_DIR/scripts/backup-native-preflight.py" "${native_check[@]}" >/dev/null; then
+        return 1
+    fi
+
     log_info "Starting restore from backup: $backup_id"
 
     # Disk space preflight (best-effort)
@@ -618,6 +627,12 @@ do_restore() {
     # Validate backup (with optional checksum verification)
     if ! validate_backup "$backup_dir" "$skip_verify"; then
         log_error "Backup validation failed"
+        return 1
+    fi
+
+    local -a native_archive_check=(archive --manifest "$backup_dir/manifest.json")
+    [[ "$dry_run" == true ]] && native_archive_check+=(--dry-run)
+    if ! python3 "$SCRIPT_DIR/scripts/backup-native-preflight.py" "${native_archive_check[@]}" >/dev/null; then
         return 1
     fi
 
