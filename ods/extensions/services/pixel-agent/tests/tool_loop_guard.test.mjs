@@ -978,6 +978,85 @@ test("compacts an owner-workspace unittest failure to its actionable traceback t
   assert.doesNotMatch(assertionText, /framework output/);
 });
 
+
+// Captured native laptop unittest failure. Only the generated project folder
+// was normalized to "project"; the traceback, failure type, and summary remain.
+const nativeUnittestFailure = readFileSync(new URL("./fixtures/native-unittest-name-error.txt", import.meta.url), "utf8");
+function nativeFailureRun({ command = "python3 -m unittest -v test_totals", wrap = false,
+  after = true, afterRun = "run-1", afterCommand, resultOverride } = {}) {
+  const guard = createToolLoopGuard(wrap ? {
+    execControl: { prepare: (runId, text) => `/control/wrapper ${runId} ${Buffer.from(text).toString("base64")}` },
+  } : {});
+  guard.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel", {
+    prompt: "Work in /workspace/project. Run the existing Python unittest tests and diagnose the failure.",
+  });
+  const params = { command, workdir: "/workspace/project" };
+  const before = call(guard, "exec", { event: { params, toolCallId: "native-failure" }, context: { toolCallId: "native-failure" } });
+  assert.notEqual(before?.block, true);
+  const result = resultOverride ?? { isError: true, content: [{ type: "text", text: nativeUnittestFailure }],
+    details: { status: "completed", exitCode: 1, durationMs: 147, aggregated: nativeUnittestFailure, cwd: "/workspace/project" } };
+  if (after) afterCall(guard, "exec", {
+    event: { runId: afterRun, toolCallId: "native-failure", params: afterCommand ? { ...params, command: afterCommand } : before?.params ?? params, result },
+    context: { runId: afterRun, toolCallId: "native-failure" },
+  });
+  return { guard, result };
+}
+for (const wrap of [false, true]) {
+  test(`native unittest failure retains actionable evidence through persistence (wrapped=${wrap})`, () => {
+    const { guard, result } = nativeFailureRun({ wrap });
+    const persisted = persistToolResult(guard, "exec", "native-failure", {
+      ...result, content: [{ type: "text", text: "[framework text already truncated]" }],
+    });
+    const text = persisted.message.content[0].text;
+    assert.ok(text.length < 1400);
+    assert.match(text, /Earlier unittest framework frames compacted/);
+    assert.match(text, /ERROR: test_wrong_column_count/);
+    assert.match(text, /\/workspace\/project\/test_totals\.py/);
+    assert.match(text, /sys\.executable/);
+    assert.match(text, /NameError: name 'sys' is not defined/);
+    assert.match(text, /Ran 36 tests/);
+    assert.match(text, /FAILED \(errors=6\)/);
+    assert.equal(persisted.message.isError, true);
+    assert.equal(persisted.message.details.exitCode, 1);
+    assert.equal(persisted.message.details.durationMs, 147);
+    assert.equal(persisted.message.details.cwd, "/workspace/project");
+    assert.equal(persisted.message.details.aggregated, text);
+    const catalog = createToolLoopGuard();
+    catalog.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel", {
+      prompt: "Work in /workspace/project. Run the existing Python unittest tests and diagnose the failure.",
+    });
+    call(catalog, "tool_call", { event: { toolCallId: "catalog-failure", params: {
+      id: "exec", args: { command: "python3 -m unittest -v test_totals", workdir: "/workspace/project" },
+    } }, context: { toolCallId: "catalog-failure" } });
+    assert.equal(persistToolResult(catalog, "tool_call", "catalog-failure", wrappedCoreResult("exec", result)).message.content[0].text, text);
+    assert.equal(persistToolResult(guard, "exec", "native-failure", result), undefined, "consumed call cannot replay a projection");
+  });
+}
+for (const [name, setup, callId, toolName, persistRun] of [
+  ["clean unittest result", { resultOverride: { isError: false,
+    content: [{ type: "text", text: "Ran 1 test in 0.001s\n\nOK" }],
+    details: { status: "completed", exitCode: 0 } } }, "native-failure", "exec", "run-1"],
+  ["pending execution", { resultOverride: { isError: false,
+    content: [{ type: "text", text: nativeUnittestFailure }],
+    details: { status: "running", sessionId: "native-running" } } }, "native-failure", "exec", "run-1"],
+  ["no matched after hook", { after: false }, "native-failure", "exec", "run-1"],
+  ["non-unittest command", { command: "python3 report.py input.csv" }, "native-failure", "exec", "run-1"],
+  ["different executed command", { afterCommand: "python3 report.py input.csv" }, "native-failure", "exec", "run-1"],
+  ["different after-hook run", { afterRun: "other-run" }, "native-failure", "exec", "run-1"],
+  ["unknown call id", {}, "unknown", "exec", "run-1"],
+  ["different tool", {}, "native-failure", "read", "run-1"],
+  ["different persistence run", {}, "native-failure", "exec", "other-run"],
+]) {
+  test(`native unittest projection leaves ${name} unchanged`, () => {
+    const { guard, result } = nativeFailureRun(setup);
+    const message = { role: "toolResult", toolName, toolCallId: callId, ...result };
+    assert.equal(guard.toolResultPersist({ toolCallId: callId, message }, {
+      agentId: "pixel", toolCallId: callId, toolName, runId: persistRun,
+    }), undefined);
+    assert.equal(message.content[0].text, result.content[0].text);
+  });
+}
+
 test("compacts a truncated Tool Search unittest envelope from structured details", () => {
   const guard = createToolLoopGuard({
     execControl: {

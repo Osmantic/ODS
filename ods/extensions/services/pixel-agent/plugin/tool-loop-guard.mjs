@@ -9642,6 +9642,19 @@ export function createToolLoopGuard({
         verificationFingerprintIsPythonUnittest(verificationFingerprint) &&
         execResultHasNonCleanUnittestOutcome(execEvent)
       );
+    // Native exec has no Tool Search envelope. Capture the same bounded
+    // failure projection only after this exact call's terminal unittest result;
+    // later framework truncation must not erase the actionable traceback.
+    if (toolName === "exec" && state.workspaceTaskRequested && verificationFailed &&
+        pendingToolRun?.transport === "exec" && pendingToolRun.runId === runId &&
+        pendingToolRun.selectedToolName === "exec" &&
+        pendingToolRun.verificationFingerprint === verificationFingerprint &&
+        verificationFingerprintIsPythonUnittest(verificationFingerprint) &&
+        execEvent?.result?.details?.status === "completed" &&
+        Number.isInteger(execEvent.result.details.exitCode)) {
+      const summary = compactFailedUnittestText(execEvent.result);
+      if (summary) pendingToolRun.nativeUnittestFailure = summary;
+    }
     // OpenClaw conservatively classifies its deferred `tool_call` wrapper as a
     // mutation. A failed wrapped exec therefore remains its last tool error
     // even after a later wrapped exec succeeds, unlike a native exec. Preserve
@@ -10006,11 +10019,22 @@ export function createToolLoopGuard({
       (!event?.runId || event.runId === pending.runId)
       ? projectWebResult(message, pending.capturedToolSearchEnvelope)
       : undefined;
+    const nativeFailure = pending?.nativeUnittestFailure;
+    const compactNativeVerification = nativeFailure && pending.transport === "exec" &&
+      message.role === "toolResult" && message.toolName === "exec" &&
+      (!message.toolCallId || message.toolCallId === toolCallId) &&
+      (!event?.toolCallId || event.toolCallId === toolCallId) &&
+      (!context?.runId || context.runId === pending.runId) &&
+      (!event?.runId || event.runId === pending.runId)
+      ? { ...message, content: [{ type: "text", text: nativeFailure }],
+          details: { ...message.details, aggregated: nativeFailure } }
+      : undefined;
     const compactVerification = compactCleanVerificationResult(message, pending);
     const compactCoreResult = compactVerification
       ? undefined
       : compactWorkspaceCoreResult(message, pending, state);
-    const failedToolResult = message.isError === true || compactCoreResult?.details?.result?.isError === true;
+    const failedToolResult = message.isError === true || Boolean(compactNativeVerification) ||
+      compactCoreResult?.details?.result?.isError === true;
     const workspaceStageInstruction = (() => {
       if (failedToolResult) return undefined;
       if (!compactCoreResult || !state?.workspaceTaskDirectory || state.progressBudget.laneExhausted('workspace')) return undefined;
@@ -10133,13 +10157,14 @@ export function createToolLoopGuard({
       !continuation &&
       !hostEvidence &&
       !compactVerification &&
+      !compactNativeVerification &&
       !compactCoreResult &&
       !compactWebResult &&
       !previewStageInstruction
     ) {
       return undefined;
     }
-    const compactMessage = compactVerification ?? compactCoreResult ?? compactWebResult ?? message;
+    const compactMessage = compactNativeVerification ?? compactVerification ?? compactCoreResult ?? compactWebResult ?? message;
     const content = hostEvidence
       ? [{
         type: "text",

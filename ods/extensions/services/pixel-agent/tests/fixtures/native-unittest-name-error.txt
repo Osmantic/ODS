@@ -1,0 +1,118 @@
+test_decimal_precision (test_totals.TestAggregateExpenses.test_decimal_precision) ... ok
+test_empty_category_in_row (test_totals.TestAggregateExpenses.test_empty_category_in_row) ... ok
+test_empty_file (test_totals.TestAggregateExpenses.test_empty_file) ... ok
+test_header_only (test_totals.TestAggregateExpenses.test_header_only) ... ok
+test_large_values (test_totals.TestAggregateExpenses.test_large_values) ... ok
+test_lexical_sorting (test_totals.TestAggregateExpenses.test_lexical_sorting) ... ok
+test_malformed_amount_negative (test_totals.TestAggregateExpenses.test_malformed_amount_negative) ... ok
+test_malformed_amount_too_many_decimals (test_totals.TestAggregateExpenses.test_malformed_amount_too_many_decimals) ... ok
+test_malformed_header (test_totals.TestAggregateExpenses.test_malformed_header) ... ok
+test_malformed_row_count (test_totals.TestAggregateExpenses.test_malformed_row_count) ... ok
+test_mixed_whitespace (test_totals.TestAggregateExpenses.test_mixed_whitespace) ... ok
+test_multiple_categories (test_totals.TestAggregateExpenses.test_multiple_categories) ... ok
+test_single_entry (test_totals.TestAggregateExpenses.test_single_entry) ... ok
+test_unicode_category (test_totals.TestAggregateExpenses.test_unicode_category) ... ok
+test_zero_amount (test_totals.TestAggregateExpenses.test_zero_amount) ... ok
+test_empty_rejected (test_totals.TestParseAmount.test_empty_rejected) ... ok
+test_exponent_rejected (test_totals.TestParseAmount.test_exponent_rejected) ... ok
+test_invalid_format (test_totals.TestParseAmount.test_invalid_format) ... ok
+test_negative_rejected (test_totals.TestParseAmount.test_negative_rejected) ... ok
+test_too_many_decimal_places (test_totals.TestParseAmount.test_too_many_decimal_places) ... ok
+test_valid_decimal_two_places (test_totals.TestParseAmount.test_valid_decimal_two_places) ... ok
+test_valid_integer (test_totals.TestParseAmount.test_valid_integer) ... ok
+test_whitespace_handling (test_totals.TestParseAmount.test_whitespace_handling) ... ok
+test_zero (test_totals.TestParseAmount.test_zero) ... ok
+test_amount_trimmed (test_totals.TestParseRow.test_amount_trimmed) ... ok
+test_category_trimmed (test_totals.TestParseRow.test_category_trimmed) ... ok
+test_column_count_wrong (test_totals.TestParseRow.test_column_count_wrong) ... ok
+test_empty_amount (test_totals.TestParseRow.test_empty_amount) ... ok
+test_empty_category (test_totals.TestParseRow.test_empty_category) ... ok
+test_valid_row (test_totals.TestParseRow.test_valid_row) ... ok
+test_empty_data (test_totals.TestReportCLI.test_empty_data) ... /workspace/project/test_totals.py:264: ResourceWarning: unclosed file <_io.TextIOWrapper name='/workspace/project/report.py' mode='r' encoding='UTF-8'>
+  f.write(open(__file__.replace('test_totals.py', 'report.py')).read())
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+ERROR
+test_malformed_header (test_totals.TestReportCLI.test_malformed_header) ... ERROR
+test_missing_file (test_totals.TestReportCLI.test_missing_file) ... ERROR
+test_no_arguments (test_totals.TestReportCLI.test_no_arguments) ... ERROR
+test_valid_input (test_totals.TestReportCLI.test_valid_input) ... ERROR
+test_wrong_column_count (test_totals.TestReportCLI.test_wrong_column_count) ... ERROR
+
+======================================================================
+ERROR: test_empty_data (test_totals.TestReportCLI.test_empty_data)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/project/test_totals.py", line 301, in test_empty_data
+    stdout, stderr, code = self.run_cli([csv_path])
+                           ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/project/test_totals.py", line 282, in run_cli
+    [sys.executable, self.script_path] + args,
+     ^^^
+NameError: name 'sys' is not defined
+
+======================================================================
+ERROR: test_malformed_header (test_totals.TestReportCLI.test_malformed_header)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/project/test_totals.py", line 317, in test_malformed_header
+    stdout, stderr, code = self.run_cli([csv_path])
+                           ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/project/test_totals.py", line 282, in run_cli
+    [sys.executable, self.script_path] + args,
+     ^^^
+NameError: name 'sys' is not defined
+
+======================================================================
+ERROR: test_missing_file (test_totals.TestReportCLI.test_missing_file)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/project/test_totals.py", line 307, in test_missing_file
+    stdout, stderr, code = self.run_cli(["nonexistent.csv"])
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/project/test_totals.py", line 282, in run_cli
+    [sys.executable, self.script_path] + args,
+     ^^^
+NameError: name 'sys' is not defined
+
+======================================================================
+ERROR: test_no_arguments (test_totals.TestReportCLI.test_no_arguments)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/project/test_totals.py", line 333, in test_no_arguments
+    stdout, stderr, code = self.run_cli([])
+                           ^^^^^^^^^^^^^^^^
+  File "/workspace/project/test_totals.py", line 282, in run_cli
+    [sys.executable, self.script_path] + args,
+     ^^^
+NameError: name 'sys' is not defined
+
+======================================================================
+ERROR: test_valid_input (test_totals.TestReportCLI.test_valid_input)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/project/test_totals.py", line 294, in test_valid_input
+    stdout, stderr, code = self.run_cli([csv_path])
+                           ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/project/test_totals.py", line 282, in run_cli
+    [sys.executable, self.script_path] + args,
+     ^^^
+NameError: name 'sys' is not defined
+
+======================================================================
+ERROR: test_wrong_column_count (test_totals.TestReportCLI.test_wrong_column_count)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/project/test_totals.py", line 327, in test_wrong_column_count
+    stdout, stderr, code = self.run_cli([csv_path])
+                           ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/project/test_totals.py", line 282, in run_cli
+    [sys.executable, self.script_path] + args,
+     ^^^
+NameError: name 'sys' is not defined
+
+----------------------------------------------------------------------
+Ran 36 tests in 0.008s
+
+FAILED (errors=6)
+
+(Command exited with code 1)
