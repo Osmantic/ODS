@@ -609,6 +609,8 @@ function buildChartPoints(values, maxValue) {
 
 export default function Dashboard({ status, loading, compact = false }) {
   const [featuresData, setFeaturesData] = useState(null)
+  const [featuresError, setFeaturesError] = useState(false)
+  const [featuresRetry, setFeaturesRetry] = useState(0)
   const [serviceResources, setServiceResources] = useState(null)
 
   useEffect(() => {
@@ -617,11 +619,14 @@ export default function Dashboard({ status, loading, compact = false }) {
     const fetchFeatures = async () => {
       try {
         const res = await fetch('/api/features')
-        if (!res.ok) return
+        if (!res.ok) throw new Error(`Feature metadata request failed (${res.status})`)
         const data = await res.json()
-        if (mounted) setFeaturesData(data)
+        if (mounted) {
+          setFeaturesData(data)
+          setFeaturesError(false)
+        }
       } catch {
-        // Feature cards degrade gracefully to status-only view when API fails.
+        if (mounted) setFeaturesError(true)
       }
     }
 
@@ -636,7 +641,7 @@ export default function Dashboard({ status, loading, compact = false }) {
       clearInterval(timer)
       document.removeEventListener('visibilitychange', onVisibility)
     }
-  }, [])
+  }, [featuresRetry])
 
   useEffect(() => {
     let mounted = true
@@ -851,6 +856,16 @@ export default function Dashboard({ status, loading, compact = false }) {
               }
             />
           ))
+        ) : featuresError ? (
+          <FeatureCard
+            icon={MessageSquare}
+            title="AI Chat"
+            description="Feature metadata is unavailable."
+            href={null}
+            status="disabled"
+            hint="Unable to load /api/features"
+            onRetry={() => setFeaturesRetry(value => value + 1)}
+          />
         ) : (
           <FeatureCard
             icon={MessageSquare}
@@ -908,7 +923,7 @@ export default function Dashboard({ status, loading, compact = false }) {
 }
 
 
-const FeatureCard = memo(function FeatureCard({ icon: Icon, title, description, href, status, hint }) {
+const FeatureCard = memo(function FeatureCard({ icon: Icon, title, description, href, status, hint, onRetry }) {
   const isExternal = href?.startsWith('http')
   const isInteractive = status !== 'disabled' && status !== 'coming' && Boolean(href)
   const statusColors = {
@@ -953,6 +968,12 @@ const FeatureCard = memo(function FeatureCard({ icon: Icon, title, description, 
           )}
         </div>
       </div>
+
+      {onRetry && (
+        <button type="button" className="shrink-0 rounded-md border border-theme-border px-2 py-1 text-xs text-theme-text-secondary" onClick={onRetry}>
+          Retry
+        </button>
+      )}
 
       <div className="relative shrink-0 group/info" title={detailText}>
         <div className="flex h-6.5 w-6.5 items-center justify-center rounded-full border border-theme-border bg-theme-bg/45 text-theme-text-muted/75 transition-colors group-hover:border-theme-accent/20 group-hover:text-theme-text-secondary">
