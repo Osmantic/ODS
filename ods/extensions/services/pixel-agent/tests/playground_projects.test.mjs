@@ -4,8 +4,10 @@ import * as fs from 'node:fs';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
+import {execFileSync} from 'node:child_process';
 import {routePlaygroundTool, requestsNewPlaygroundProject} from '../plugin/playground-projects.mjs';
 import {createToolLoopGuard} from '../plugin/tool-loop-guard.mjs';
+import {nativeExecWorkdir} from '../plugin/workspace-path-contract.mjs';
 
 function fixture(t) {
   const root=fs.mkdtempSync(path.join(tmpdir(),'ods-playground-'));
@@ -27,15 +29,48 @@ test('creates a real descriptive project, routes files of every type and stores 
   assert.equal(call('write',{path:'README.md',content:'Docs'}).params.path,'Playground/weather-tool/README.md');
   assert.equal(call('edit',{path:'src/main.py',oldText:'1',newText:'2'}).params.path,'Playground/weather-tool/src/main.py');
   assert.equal(call('read',{path:'/workspace/weather-tool/main.py'}).params.path,'Playground/weather-tool/main.py');
-  assert.equal(call('exec',{command:'python main.py',workdir:'weather-tool'}).params.workdir,'Playground/weather-tool');
-  assert.equal(call('exec',{command:'python main.py'}).params.workdir,'Playground/weather-tool');
-  assert.equal(call('exec',{command:'python weather-tool/main.py'}).params.workdir,'Playground');
+  assert.equal(call('exec',{command:'python main.py',workdir:'weather-tool'}).params.workdir,'/workspace/Playground/weather-tool');
+  assert.equal(call('exec',{command:'python main.py'}).params.workdir,'/workspace/Playground/weather-tool');
+  assert.equal(call('exec',{command:'python weather-tool/main.py'}).params.workdir,'/workspace/Playground');
   const record=fs.readdirSync(path.join(root,'.ods-projects'));
   assert.equal(record.length,1);
   assert.match(record[0],/^[a-f0-9]{64}\.json$/);
   const content=fs.readFileSync(path.join(root,'.ods-projects',record[0]),'utf8');
   assert.doesNotMatch(content,/owner-session|Crie|print/);
   assert.equal(state.binding.directory,'Playground/weather-tool');
+});
+
+test('write then exec keeps a sandbox-absolute project cwd through the complete hook chain',t=>{
+  for (const tool of ['exec','tool_call']) {
+    for (const native of [false,true]) {
+      const {root}=fixture(t);
+      const context={agentId:'pixel',runId:`cwd-${tool}-${native}`,sessionId:'cwd-session'};
+      let resolvedAlias;
+      const guard=createToolLoopGuard({execControl:{
+        resolveWorkdir:(value,workspace)=>{
+          resolvedAlias=value;
+          return native ? nativeExecWorkdir(value,workspace) : undefined;
+        },
+        prepare:(_run,command)=>command,
+      }});
+      guard.observeRun(context,'pixel',{prompt:'Create a Python utility in a new descriptive project.'},{workspaceRoot:root});
+      const write=guard.beforeToolCall({toolName:'write',params:{path:'cwd-check/main.py',content:'print(42)'}},context);
+      assert.notEqual(write?.block,true,write?.blockReason);
+      fs.writeFileSync(path.join(root,write.params.path),write.params.content);
+      guard.afterToolCall({toolName:'write',params:write.params,result:{content:[{type:'text',text:'File written'}]}},context);
+      const command='python main.py';
+      const params={command};
+      const decision=guard.beforeToolCall({toolName:tool,params:tool==='exec'?params:{id:'openclaw:core:exec',args:params}},context);
+      assert.notEqual(decision?.block,true,decision?.blockReason);
+      const actual=tool==='exec'?decision.params:decision.params.args;
+      assert.equal(resolvedAlias,'/workspace/Playground/cwd-check');
+      assert.equal(actual.workdir,native?path.join(root,'Playground/cwd-check'):resolvedAlias);
+      assert.equal(actual.command,command);
+      // The same cwd selects the file actually written, in both execution modes.
+      const cwd=native?actual.workdir:path.join(root,actual.workdir.slice('/workspace/'.length));
+      assert.equal(execFileSync(process.execPath,['-e','process.stdout.write(require("node:fs").readFileSync("main.py","utf8"))'],{cwd,encoding:'utf8'}),'print(42)');
+    }
+  }
 });
 
 test('category words inside file operands do not turn ordinary writes into new projects',t=>{
@@ -132,7 +167,7 @@ test('first exec/patch creation must establish project with write; later patches
   assert.equal(call('exec',{command:'node snake-game/game.js'},restored).block,true);
   const command='node game.js';
   const scoped=call('exec',{command,workdir:'snake-game'},restored);
-  assert.deepEqual(scoped.params,{command,workdir:'Playground/snake-game-2'});
+  assert.deepEqual(scoped.params,{command,workdir:'/workspace/Playground/snake-game-2'});
 });
 
 test('explicit legacy paths and trusted legacy continuation invalidate stale session default',t=>{

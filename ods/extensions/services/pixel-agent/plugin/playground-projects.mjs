@@ -221,6 +221,11 @@ export function routePlaygroundTool({state,tool,params,root,session,intent,exist
         mapped = 'Playground';
       } else mapped = directory;
     }
+    // Core sandbox exec resolves a relative cwd against the gateway process,
+    // not the mounted owner workspace. This hook runs after generic argument
+    // normalization, so preserve the sandbox alias when injecting a project.
+    // Native execution translates the same alias to its configured workspace.
+    if (selected.tool === 'exec' && mapped) mapped = `/workspace/${mapped}`;
     if (!mapped || mapped === args[key]) return undefined;
     if (selected.tool === 'read' && target?.includes('/') && !target.startsWith(`${source}/`) && !target.startsWith('Playground/')) {
       try { fs.lstatSync(path.join(root,...target.split('/'))); return undefined; } catch (error) { if (error.code !== 'ENOENT') throw error; }
