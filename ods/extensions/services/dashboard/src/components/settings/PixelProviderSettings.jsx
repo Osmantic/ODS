@@ -39,6 +39,8 @@ export default function PixelProviderSettings({ showHeading = true }) {
   const sequence = useRef(0)
   const controller = useRef(null)
   const writePending = useRef(false)
+  const reloadButtonRef = useRef(null)
+  const restoreReloadFocusRef = useRef(false)
   const runtimeBusyChanged = useCallback(value => {
     if (value && (writePending.current || connectionBusyRef.current)) return false
     runtimeBusyRef.current = value
@@ -115,6 +117,12 @@ export default function PixelProviderSettings({ showHeading = true }) {
     load()
     return () => { mounted.current = false; sequence.current++; writePending.current = false; controller.current?.abort() }
   }, [load])
+  useEffect(() => {
+    if (!loading && restoreReloadFocusRef.current) {
+      restoreReloadFocusRef.current = false
+      Promise.resolve().then(() => reloadButtonRef.current?.focus())
+    }
+  }, [loading])
 
   const edit = mutate => {
     if (writePending.current || runtimeBusyRef.current || connectionBusyRef.current) return
@@ -180,7 +188,7 @@ export default function PixelProviderSettings({ showHeading = true }) {
       <div><h2 id="pixel-connections-title" className={showHeading ? 'text-lg font-semibold' : 'sr-only'}>Portal connections</h2>
         <p className="text-sm text-theme-text-muted">{dirty ? 'Unsaved provider changes' : 'Inference providers and routing'}</p></div>
       <div className="flex flex-wrap gap-2">
-        <button className={buttonStyle} disabled={loading || saving || runtimeBusy || connectionBusy} onClick={reload}>Reload providers</button>
+        <button ref={reloadButtonRef} className={buttonStyle} disabled={loading || saving || runtimeBusy || connectionBusy} onClick={() => { restoreReloadFocusRef.current = true; reload() }}>Reload providers</button>
         <button className={buttonStyle} disabled={!dirty || loading || saving || runtimeBusy || connectionBusy} onClick={() => {
           if (writePending.current || runtimeBusyRef.current || connectionBusyRef.current) return
           setImportReset(value => value + 1)

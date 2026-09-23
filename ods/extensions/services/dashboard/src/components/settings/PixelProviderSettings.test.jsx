@@ -150,6 +150,16 @@ it('requires a successful reload after conflict even if edits are cancelled', as
   expect(fetchMock.mock.calls.filter(([url]) => url.endsWith('/save'))).toHaveLength(1)
 })
 
+it('restores focus to Reload providers after a reload settles', async () => {
+  const fetchMock = setup(tower())
+  await loaded()
+  const reload = screen.getByRole('button', { name: 'Reload providers' })
+  reload.focus()
+  fireEvent.click(reload)
+  await waitFor(() => expect(fetchMock.mock.calls.filter(([url]) => url === '/api/pixel/providers')).toHaveLength(2))
+  await waitFor(() => expect(reload).toHaveFocus())
+})
+
 it('blocks sending an existing key to a changed endpoint without explicit replacement or removal', async () => {
   const fetchMock = setup(tower())
   await loaded()
