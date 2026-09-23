@@ -85,6 +85,8 @@ describe('FirstBoot', () => {
     })
     expect(JSON.parse(generateCall[1].body)).not.toHaveProperty('expires_in')
     expect(fetchMock).toHaveBeenCalledWith('/api/setup/complete', { method: 'POST' })
+    const adminSessionCall = fetchMock.mock.calls.find(([url]) => url === '/api/auth/admin-session')
+    expect(adminSessionCall?.[1]?.signal).toBeInstanceOf(AbortSignal)
     expect(await screen.findByAltText('QR code for owner card')).toHaveAttribute('src', 'data:image/png;base64,qrpayload')
 
     fireEvent.click(screen.getByRole('button', { name: /open dashboard/i }))
