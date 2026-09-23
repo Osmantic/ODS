@@ -640,13 +640,15 @@ export default function Dashboard({ status, loading, compact = false }) {
 
   useEffect(() => {
     let mounted = true
+    let requestGeneration = 0
 
     const fetchServiceResources = async () => {
+      const generation = ++requestGeneration
       try {
         const res = await fetch('/api/services/resources')
         if (!res.ok) return
         const data = await res.json()
-        if (mounted) setServiceResources(data)
+        if (mounted && generation === requestGeneration) setServiceResources(data)
       } catch {
         // Service rows keep rendering status data when per-container metrics are unavailable.
       }

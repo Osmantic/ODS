@@ -37,6 +37,7 @@ let mockFeatures
 let mockFeatureSuggestions
 let restartCalls
 let restartDeferred
+let resourceDeferreds
 
 function createDeferred() {
   let resolve
@@ -73,6 +74,7 @@ function installFetchMock() {
       }
     }
     if (String(url).includes('/api/services/resources')) {
+      if (resourceDeferreds?.length) return resourceDeferreds.shift().promise
       return {
         ok: true,
         json: async () => mockResources,
@@ -104,6 +106,7 @@ describe('Dashboard system overview', () => {
         disk: null,
       })),
     }
+    resourceDeferreds = null
     installFetchMock()
     localStorage.clear()
   })
@@ -123,6 +126,25 @@ describe('Dashboard system overview', () => {
     expect(screen.getByText('TOKENS GENERATED')).toBeInTheDocument()
     expect(screen.getByText('Live Throughput')).toBeInTheDocument()
     expect(screen.getByText('Accumulated Output')).toBeInTheDocument()
+  })
+
+  it('keeps an older resource response from replacing a newer poll', async () => {
+    const first = createDeferred()
+    const second = createDeferred()
+    resourceDeferreds = [first, second]
+    render(<Dashboard status={baseStatus} loading={false} />)
+
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/services/resources'))
+    fireEvent(document, new Event('visibilitychange'))
+    await waitFor(() => expect(fetch.mock.calls.filter(([url]) => String(url).includes('/api/services/resources'))).toHaveLength(2))
+
+    const newer = { services: [{ id: 'new', name: 'New service' }] }
+    const older = { services: [{ id: 'old', name: 'Old service' }] }
+    second.resolve({ ok: true, json: async () => newer })
+    await Promise.resolve()
+    first.resolve({ ok: true, json: async () => older })
+    await Promise.resolve()
+    expect(screen.queryByText('Old service')).not.toBeInTheDocument()
   })
 
   it.each([[8.25, '8.3 tok/s'], [0, '0.0 tok/s'], [null, '—'], [undefined, '—']])('shows a real compact throughput reading for %s', async (tokensPerSecond, expected) => {
