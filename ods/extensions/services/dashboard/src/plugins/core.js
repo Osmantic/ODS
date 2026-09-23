@@ -34,7 +34,7 @@ export const coreRoutes = [
     label: 'Dashboard',
     icon: LayoutDashboard,
     component: Dashboard,
-    getProps: ({ status, loading }) => ({ status, loading }),
+    getProps: ({ status, loading, error }) => ({ status, loading, statusError: error }),
     sidebar: true,
     order: 0,
   },

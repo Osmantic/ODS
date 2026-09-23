@@ -82,8 +82,8 @@ function installFetchMock() {
   }))
 }
 
-async function renderDashboard(status = baseStatus) {
-  render(<Dashboard status={status} loading={false} />)
+async function renderDashboard(status = baseStatus, statusError) {
+  render(<Dashboard status={status} statusError={statusError} loading={false} />)
   await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/features'))
   await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/services/resources'))
 }
@@ -123,6 +123,12 @@ describe('Dashboard system overview', () => {
     expect(screen.getByText('TOKENS GENERATED')).toBeInTheDocument()
     expect(screen.getByText('Live Throughput')).toBeInTheDocument()
     expect(screen.getByText('Accumulated Output')).toBeInTheDocument()
+  })
+
+  it('marks retained system metrics as stale after a status refresh failure', async () => {
+    await renderDashboard(baseStatus, 'Dashboard API unavailable')
+    expect(screen.getByRole('alert')).toHaveTextContent(/last successful system status snapshot/i)
+    expect(screen.getByRole('alert')).toHaveTextContent(/Dashboard API unavailable/i)
   })
 
   it.each([[8.25, '8.3 tok/s'], [0, '0.0 tok/s'], [null, '—'], [undefined, '—']])('shows a real compact throughput reading for %s', async (tokensPerSecond, expected) => {

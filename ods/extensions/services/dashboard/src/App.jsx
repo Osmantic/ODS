@@ -83,7 +83,7 @@ function App() {
     refreshFirstRun()
   }, [refreshFirstRun])
 
-  const routes = useMemo(() => getInternalRoutes({ status, loading }), [status, loading])
+  const routes = useMemo(() => getInternalRoutes({ status, loading, error }), [status, loading, error])
   const handleToggle = useCallback(() => setSidebarCollapsed(c => !c), [])
 
   if (isTalkPath) {
@@ -162,7 +162,7 @@ function App() {
             <Route path="/remote-provider" element={<Navigate to="/settings?section=remote" replace />} />
             {routes.filter(route => !['/', '/pixel', '/pixel/settings', '/settings', '/extensions/integrations', '/remote-provider'].includes(route.path)).map(route => {
               const Component = route.component
-              const props = typeof route.getProps === 'function' ? route.getProps({ status, loading }) : {}
+              const props = typeof route.getProps === 'function' ? route.getProps({ status, loading, error }) : {}
               return (
                 <Route
                   key={route.id || route.path}
