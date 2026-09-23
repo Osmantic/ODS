@@ -1,4 +1,4 @@
-import { renderHook, waitFor } from '@testing-library/react'
+import { act, renderHook, waitFor } from '@testing-library/react'
 import { useSystemStatus } from '../useSystemStatus'
 
 describe('useSystemStatus', () => {
@@ -7,6 +7,7 @@ describe('useSystemStatus', () => {
   })
 
   afterEach(() => {
+    vi.useRealTimers()
     vi.restoreAllMocks()
   })
 
@@ -67,6 +68,41 @@ describe('useSystemStatus', () => {
       expect(result.current.error).toBe('network down')
     })
     expect(result.current.loading).toBe(false)
+  })
+
+  test('times out a hung request so a later poll can retry', async () => {
+    vi.useFakeTimers()
+    const hung = (_url, options) => new Promise((_resolve, reject) => {
+      options.signal.addEventListener('abort', () => {
+        const error = new Error('aborted')
+        error.name = 'AbortError'
+        reject(error)
+      })
+    })
+    let calls = 0
+    let firstSignal
+    fetch.mockImplementation((...args) => {
+      calls += 1
+      if (calls === 1) firstSignal = args[1].signal
+      return calls === 1 ? hung(...args) : Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ gpu: null, services: [] }),
+      })
+    })
+
+    const { result } = renderHook(() => useSystemStatus())
+    await act(async () => { await vi.advanceTimersByTimeAsync(15000) })
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10000)
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(fetch.mock.calls.length).toBeGreaterThanOrEqual(2)
+    expect(firstSignal.aborted).toBe(true)
+    expect(result.current.loading).toBe(false)
+    await act(async () => {})
+    expect(result.current.error).toBeNull()
   })
 
   test('does not clear status on error (preserves previous data)', async () => {
