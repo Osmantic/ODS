@@ -253,6 +253,7 @@ jobs:
 
       - name: Service Registry Tests
         run: |
+          python3 tests/test_agents_metrics_null_throughput.py
           python3 tests/test_pixel_agent_teams_roles_count.py
           bash tests/test-service-registry.sh
 
