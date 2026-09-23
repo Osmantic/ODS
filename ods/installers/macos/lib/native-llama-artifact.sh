@@ -3,7 +3,7 @@
 # Return 10 only for a transport/HTTP failure eligible for the Homebrew fallback;
 # 20 means configuration, integrity, staging or extraction failure (no fallback).
 ods_install_verified_macos_llama() (
-    local source_root="$1" tag="$2" binary="$3" artifact asset url digest stage temp_parent download_rc found found_dir target_dir
+    local source_root="$1" tag="$2" binary="$3" artifact asset url digest stage temp_parent download_rc found found_dir target_dir cleanup_cmd
     local verifier="$source_root/installers/lib/native-llama-artifact.py"
     local manifest="$source_root/installers/native-llama-artifacts.json"
     local python_cmd="${ODS_PYTHON_CMD:-python3}"
@@ -14,7 +14,10 @@ ods_install_verified_macos_llama() (
     umask 077
     stage=$(mktemp -d "$temp_parent/ods-native-llama.XXXXXXXX") || return 20
     [[ -d "$stage" && ! -L "$stage" && -O "$stage" ]] || return 20
-    trap 'case "$stage" in "$temp_parent"/ods-native-llama.*) rm -rf -- "$stage" ;; esac' EXIT
+    # Freeze the validated paths while the locals still exist; cleanup must
+    # not depend on their lifetime when the Bash 3.2 subshell exits on failure.
+    printf -v cleanup_cmd 'case %q in %q/ods-native-llama.*) rm -rf -- %q ;; esac' "$stage" "$temp_parent" "$stage"
+    trap "$cleanup_cmd" EXIT
     chmod 700 "$stage" || return 20
     if curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
         --connect-timeout 30 --max-time 300 --output "$stage/$asset" "$url"; then

@@ -139,7 +139,7 @@ curl() {
     done
     printf 'download:%s\n' "$output" >> "$TEST_TRACE"
     case "$TEST_MODE" in
-        valid) command cp "$TEST_ARCHIVE" "$output" ;;
+        valid|extraction-error) command cp "$TEST_ARCHIVE" "$output" ;;
         changed) printf substituted > "$output" ;;
         empty) : > "$output" ;;
         symlink) ln -s "$TEST_ARCHIVE" "$output" ;;
@@ -148,7 +148,11 @@ curl() {
         *) return 23 ;;
     esac
 }
-tar() { printf 'extract\n' >> "$TEST_TRACE"; command tar "$@"; }
+tar() {
+    printf 'extract\n' >> "$TEST_TRACE"
+    if [[ "$TEST_MODE" == extraction-error ]]; then return 2; fi
+    command tar "$@"
+}
 chmod() { printf 'chmod:%s\n' "$*" >> "$TEST_TRACE"; command chmod "$@"; }
 xattr() { printf 'quarantine\n' >> "$TEST_TRACE"; }
 brew() {
@@ -225,7 +229,18 @@ source "$TEST_BRANCH"
         self.assertNotIn("brew", self.events)
         self.assertNotIn("quarantine", self.events)
         self.assertFalse(self.binary.exists())
-        self.assertEqual(list(self.downloads.iterdir()), [])
+        self.assertEqual(list(self.downloads.iterdir()), [], result.stdout + result.stderr)
+
+    def test_failed_extraction_cleans_the_literal_staging_path(self):
+        self.downloads = self.stage / "downloads [literal] 'quoted'"
+        self.downloads.mkdir()
+        result = self.run_boundary(mode="extraction-error")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("extract", self.events)
+        self.assertNotIn("brew", self.events)
+        self.assertNotIn("quarantine", self.events)
+        self.assertFalse(self.binary.exists())
+        self.assertEqual(list(self.downloads.iterdir()), [], result.stdout + result.stderr)
 
     def test_network_failure_preserves_only_the_explicit_package_manager_fallback(self):
         result = self.run_boundary(mode="timeout")
