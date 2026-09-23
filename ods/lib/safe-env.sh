@@ -41,7 +41,7 @@ load_env_file() {
         # Bash exposes UID as a readonly shell variable. A .env line such as
         # UID=1000 is valid for Docker Compose, but exporting it here aborts
         # lifecycle commands under set -e before they can reach compose.
-        [[ "$key" == "UID" ]] && continue
+        [[ "$key" =~ ^(UID|EUID|PPID|GROUPS|SHELLOPTS|BASHOPTS)$ ]] && continue
         _safe_env_decode_value "$value"
         export "$key=$_SAFE_ENV_VALUE"
     done < "$path"
