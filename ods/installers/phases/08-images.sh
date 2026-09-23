@@ -30,7 +30,7 @@ case "${LEMONADE_EXTERNAL:-false}" in
     true|TRUE|1|yes|YES|on|ON) _lemonade_external=true ;;
     *) _lemonade_external=false ;;
 esac
-if [[ "$_lemonade_external" == "true" ]]; then
+if [[ "$_lemonade_external" == "true" || -n "${EXTERNAL_LLM_URL:-}" || "${ODS_MODE:-local}" == "cloud" ]]; then
     # The external host owns inference. In WSL the Linux capability probe can
     # legitimately fall back to CPU even though Windows Lemonade has full NPU/
     # GPU access; pulling a dormant llama.cpp image wastes time and disk and
@@ -46,7 +46,7 @@ else
     PULL_LIST+=("${LLAMA_SERVER_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-cuda-b9014}|LLAMA-SERVER — downloading the brain (NVIDIA CUDA)")
 fi
 PULL_LIST+=("ghcr.io/open-webui/open-webui:v0.7.2|OPEN WEBUI — interface module")
-PULL_LIST+=("itzcrazykns1337/perplexica:slim-latest@sha256:6e399abf4ff587822b0ef0df11f36088fb928e17ac61556fe89beb68d48c378e|PERPLEXICA — deep research engine")
+[[ "${ENABLE_PERPLEXICA:-false}" == "true" ]] && PULL_LIST+=("itzcrazykns1337/perplexica:slim-latest@sha256:6e399abf4ff587822b0ef0df11f36088fb928e17ac61556fe89beb68d48c378e|PERPLEXICA — deep research engine")
 if [[ "$ENABLE_VOICE" == "true" ]]; then
     if [[ "$GPU_BACKEND" == "nvidia" && "${WHISPER_ACCELERATION:-cuda}" == "cuda" ]]; then
         PULL_LIST+=("ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cuda|WHISPER — ears online (Speaches STT, CUDA)")
@@ -68,10 +68,21 @@ fi
 [[ "${ENABLE_EMBEDDINGS:-${ENABLE_RAG:-false}}" == "true" ]] && PULL_LIST+=("ghcr.io/huggingface/text-embeddings-inference:cpu-1.9.1|TEI — embedding engine")
 
 if command -v ods_compose_external_images >/dev/null 2>&1 && [[ -n "${COMPOSE_FLAGS:-}" ]]; then
-    read -ra _phase08_compose_flags_arr <<< "$COMPOSE_FLAGS"
+    _phase08_compose_flags="$COMPOSE_FLAGS"
+    # Phase 06 materializes .env and runtime overlays in the install directory.
+    # Resolve there just as Phase 11 does, rather than auditing the source tree
+    # with its earlier flags or missing .env.
+    if [[ -x "$INSTALL_DIR/scripts/resolve-compose-stack.sh" ]]; then
+        _phase08_refreshed_flags=""
+        _phase08_refreshed_flags=$("$INSTALL_DIR/scripts/resolve-compose-stack.sh" \
+            --script-dir "$INSTALL_DIR" --tier "${TIER:-1}" --gpu-backend "${GPU_BACKEND:-nvidia}" \
+            --gpu-count "${GPU_COUNT:-1}" --ods-mode "${ODS_MODE:-local}" 2>>"$LOG_FILE") || true
+        [[ -n "$_phase08_refreshed_flags" ]] && _phase08_compose_flags="$_phase08_refreshed_flags"
+    fi
+    read -ra _phase08_compose_flags_arr <<< "$_phase08_compose_flags"
     _phase08_compose_images=()
     _phase08_compose_image_output=""
-    if _phase08_compose_image_output="$(ods_compose_external_images "${DOCKER_COMPOSE_CMD:-docker compose}" "${_phase08_compose_flags_arr[@]}" 2>>"$LOG_FILE")"; then
+    if _phase08_compose_image_output="$(cd "$INSTALL_DIR" && ods_compose_external_images "${DOCKER_COMPOSE_CMD:-docker compose}" "${_phase08_compose_flags_arr[@]}" 2>>"$LOG_FILE")"; then
         if [[ -n "$_phase08_compose_image_output" ]]; then
             mapfile -t _phase08_compose_images <<< "$_phase08_compose_image_output"
         fi
