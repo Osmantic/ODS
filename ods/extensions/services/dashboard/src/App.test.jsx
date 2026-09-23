@@ -150,6 +150,13 @@ describe('App', () => {
     expect(document.querySelector('aside')).not.toBeInTheDocument()
   })
 
+  test('holds the normal workspace behind the first-run status gate', () => {
+    useFirstRun.mockReturnValue({ firstRun: false, loading: true, error: null, refresh: vi.fn() })
+    render(<App />)
+    expect(screen.getByRole('status')).toHaveTextContent('Checking setup status...')
+    expect(document.querySelector('aside')).not.toBeInTheDocument()
+  })
+
   test('hides FirstBoot when server reports first_run=false', () => {
     useFirstRun.mockReturnValue({ firstRun: false, loading: false, error: null, refresh: vi.fn() })
     render(<App />)
