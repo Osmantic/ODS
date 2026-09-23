@@ -111,7 +111,7 @@ def _parse_host_port(raw: str) -> Tuple[str, int]:
     host, port_s = raw.rsplit(":", 1)
     host = host.strip()
     if host.startswith("[") and host.endswith("]"):
-        host = host[1:-1]
+        host = host[1:-1].strip()
     if not host:
         raise ValueError("host is empty")
     try:
