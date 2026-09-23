@@ -295,7 +295,7 @@ export function useModels() {
       if (signal?.aborted) return null
 
       // A slower, older request must not overwrite a newer snapshot.
-      if (requestId < latestSettledModelsRequestRef.current) return null
+      if (requestId !== modelsRequestRef.current || requestId < latestSettledModelsRequestRef.current) return null
       latestSettledModelsRequestRef.current = requestId
 
       setModels(data.models)
@@ -318,7 +318,7 @@ export function useModels() {
       return data
     } catch (err) {
       if (signal?.aborted) return null
-      if (requestId >= latestSettledModelsRequestRef.current) {
+      if (requestId === modelsRequestRef.current && requestId >= latestSettledModelsRequestRef.current) {
         latestSettledModelsRequestRef.current = requestId
         setFetchError(err.message)
       }
@@ -326,7 +326,7 @@ export function useModels() {
     } finally {
       clearTimeout(timeout)
       signal?.removeEventListener('abort', cancel)
-      if (!signal?.aborted) setLoading(false)
+      if (!signal?.aborted && requestId === modelsRequestRef.current) setLoading(false)
     }
   }, [reconcilePendingActions])
 
