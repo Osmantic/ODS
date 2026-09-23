@@ -77,17 +77,35 @@ files. A later online scan included 524 Markdown files and reached the earlier
 480-second deadline before producing final JSON. Its log retained 37 unique
 failure observations: 33 Hugging Face 429 responses, one Microbin timeout, one
 Intel 403 response, and two 404 responses. This was an **incomplete** observation,
-not a repository-wide pass; the final slower configuration has not yet completed
-a full online run.
+not a repository-wide pass. At that checkpoint, the slower configuration had
+not yet completed a full online run.
+
+The subsequent [PR CI run](https://github.com/Osmantic/ODS/actions/runs/35844320298)
+completed its inventory of 562 Markdown files with 16 unresolved findings and
+zero deferrals. Eight were Hugging Face rate limits; the remainder comprised
+two occurrences of one Discord invite, the repository stargazers route, Intel,
+two Unsplash pages, Orthanc and MicroBin. This completed scan still failed the
+gate; completion is not a public-access pass.
+
+A bounded anonymous recheck of those findings returned 200 for the eight
+Hugging Face URLs, both Discord occurrences and Orthanc. The repository homepage
+and public metadata were accessible while `/stargazers` still returned 404, so
+the stars badge now links to the repository homepage. Intel returned 403, the
+two Unsplash pages returned 401 through an access challenge, and MicroBin still
+timed out. Their original links remain pending; browser-readable content is
+not presented as a successful anonymous HTTP check. Historical evidence and
+the empty exception ledger remain intact. The final candidate still requires
+a fresh complete scan and review of unresolved links.
 
 The obsolete LocalAI `/gallery/` link was corrected in its
 [service README](../extensions/library/services/localai/README.md) using the
 upstream [model setup guide](https://localai.io/docs/getting-started/models/).
 A focused anonymous check passed all three external links in that README after
-the edit. The other 404 was the ODS stargazers link; a separate anonymous API
-probe returned 401, so public access remains unconfirmed. Intel's 403 and the
-Microbin timeout also remain unresolved. Hugging Face evidence URLs were
-preserved; 429 does not establish that their targets are wrong.
+the edit. During that initial check, the stargazers route returned 404 and an
+anonymous API probe returned 401; the later bounded recheck and badge correction
+are recorded above. Intel's access restriction and the MicroBin timeout remain
+unresolved. Hugging Face evidence URLs were preserved; 429 does not establish
+that their targets are wrong.
 
 The metadata sweep of current nonvendor documentation found generic user-path
 examples, container paths, and source or artifact hashes. No additional concrete
