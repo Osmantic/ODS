@@ -1,4 +1,4 @@
-"""Pure, versioned customization contract. This module neither saves nor applies.
+"""Pure, versioned customization contract. Validates scalar controls strictly.
 
 Capabilities must come from the authenticated owner/runtime adapter, never the
 preference request. Unknown allocation stays unknown; an owner-declared remote
