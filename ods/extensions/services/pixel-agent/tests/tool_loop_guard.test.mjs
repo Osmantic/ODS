@@ -11748,6 +11748,12 @@ test(`binds a natural visual follow-up via ${mutationName} to the same session's
         result: wrappedCoreResult("write", { isError: true, details: { status: "error" } }) },
       context: { ...run2.context, toolCallId: "continuation-edit" },
     });
+    const failedReplacement = wrappedCoreResult("write", {
+      isError: true, details: { status: "error" }, content: [{ type: "text", text: "Write failed: preserve this repair instruction." }],
+    });
+    const persistedFailure = persistFollowup("tool_call", "continuation-edit", failedReplacement);
+    assert.deepEqual(persistedFailure.content, [{ type: "text", text: "Write failed: preserve this repair instruction." }]);
+    assert.equal(persistedFailure.details.result.isError, true);
     assert.equal(call(guard, "tool_call", {
       ...run2, event: { ...run2.event, params: { id: "pixel_ods_workspace_preview",
         args: { relativeDirectory: "signal-garden" } } },

@@ -10010,7 +10010,9 @@ export function createToolLoopGuard({
     const compactCoreResult = compactVerification
       ? undefined
       : compactWorkspaceCoreResult(message, pending, state);
+    const failedToolResult = message.isError === true || compactCoreResult?.details?.result?.isError === true;
     const workspaceStageInstruction = (() => {
+      if (failedToolResult) return undefined;
       if (!compactCoreResult || !state?.workspaceTaskDirectory || state.progressBudget.laneExhausted('workspace')) return undefined;
       const nextFile = state.workspaceMutationRequested
         ? state.workspaceRequestedFiles.find((file) =>
@@ -10056,7 +10058,7 @@ export function createToolLoopGuard({
       // Preserve a blocked tool's prerequisite or repair instruction as the
       // next action. Publication coaching resumes after a successful result;
       // appending it to a rejection can send the model straight to preview.
-      if (message.isError === true) return undefined;
+      if (failedToolResult) return undefined;
       if (state?.progressBudget.laneExhausted('workspace')) return undefined;
       const prerequisite = state?.workspacePreviewRequired && !state.workspacePreviewForbidden &&
         !state.operationsRequired && !state.exactDownloadRequested && visualContinuationPrerequisite(state);
