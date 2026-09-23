@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import MetalMetricIcon from './MetalMetricIcon'
 import {
   MessageSquare, Image, Code, Shield, Layers, Package,
@@ -136,7 +136,35 @@ export function TemplatePreview({ template, onClose, onApplied }) {
   const [error, setError] = useState(null)
   const [applied, setApplied] = useState(false)
   const [applyResult, setApplyResult] = useState(null)
+  const dialogRef = useRef(null)
   const requestClose = () => { if (!applying) onClose() }
+
+  useEffect(() => {
+    const dialog = dialogRef.current
+    const focusable = () => [...dialog.querySelectorAll('button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])')]
+    focusable()[0]?.focus()
+    const handleKeyDown = event => {
+      if (event.key === 'Escape') {
+        event.stopPropagation()
+        requestClose()
+        return
+      }
+      if (event.key !== 'Tab') return
+      const controls = focusable()
+      if (!controls.length) return
+      const first = controls[0]
+      const last = controls[controls.length - 1]
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault()
+        first.focus()
+      }
+    }
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  })
 
   const Icon = ICON_MAP[template.icon] || Package
 
@@ -196,6 +224,7 @@ export function TemplatePreview({ template, onClose, onApplied }) {
       <div
         className="bg-theme-card border border-theme-border rounded-xl p-6 max-w-lg mx-4 w-full"
         onClick={e => e.stopPropagation()}
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-label={`${template.name} template preview`}
