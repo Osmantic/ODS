@@ -2,8 +2,10 @@ import importlib.util
 import hashlib
 import json
 import os
+import shutil
 from pathlib import Path
 import stat
+import subprocess
 import sys
 import tempfile
 
@@ -136,6 +138,122 @@ def test_stream_progress_patch_rejects_unknown_runtime_without_publication(artif
         bundle.build(**artifacts, stream_progress_fix=True)
     assert not artifacts['destination'].exists()
     assert path.read_text() == 'unreviewed runtime'
+
+
+@pytest.fixture
+def shared_repairs(artifacts, monkeypatch):
+    manifests = artifacts['runtime'].parent / 'repair-manifests'
+    manifests.mkdir()
+    shutil.copyfile(bundle.REPAIR_ROOT / 'openclaw_tool_recovery.py', manifests / 'openclaw_tool_recovery.py')
+    dist = artifacts['runtime'] / 'dist'
+    dist.mkdir()
+    for index, (name, module) in enumerate(bundle.SHARED_REPAIRS):
+        old, new = f'const repair{index} = false;', f'const repair{index} = true;'
+        original = old
+        if name == 'openclaw-compaction-budget.json':
+            original += ('\n\t\t\tconst innerStreamFn = activeSession.agent.streamFn;\n'
+                         '\t\t\tactiveSession.agent.streamFn = buffer(innerStreamFn);\n'
+                         '\t\t\tconst configuredRunTimeoutMs = resolveAgentTimeoutMs({ cfg: params.config });\n'
+                         '\t\t\tactiveSession.agent.streamFn = observe(activeSession.agent.streamFn);\n'
+                         '\t\t\ttry {\n\t\t\t\tif (isRawModelRun) {\n')
+            monkeypatch.setattr(bundle, 'STREAM_PROGRESS_SOURCE_SHA256', hashlib.sha256(original.encode()).hexdigest())
+        (dist / module).write_text(original)
+        manifest = {'sourceSha256': hashlib.sha256(original.encode()).hexdigest(),
+                    'patchedSha256': hashlib.sha256(original.replace(old, new).encode()).hexdigest(),
+                    'replacements': [[old, new]]}
+        if name == 'openclaw-compaction-export.json':
+            dependency = 'embedded-agent-subscribe.handlers.compaction.runtime-BcFOW95l.js'
+            (dist / dependency).write_bytes(b'reviewed dependency')
+            manifest['reviewedDependencies'] = {dependency: hashlib.sha256(b'reviewed dependency').hexdigest()}
+        (manifests / name).write_text(json.dumps(manifest))
+    monkeypatch.setattr(bundle, 'REPAIR_ROOT', manifests)
+    return manifests
+
+
+def test_shared_repairs_compose_deterministically_only_in_staging(artifacts, shared_repairs):
+    before = bundle.inventory(artifacts['runtime'])
+    digest = bundle.build(**artifacts, shared_runtime_repairs=True, stream_progress_fix=True)
+    second = dict(artifacts, destination=artifacts['destination'].with_name('second'))
+    assert bundle.build(**second, shared_runtime_repairs=True, stream_progress_fix=True) == digest
+    assert bundle.inventory(artifacts['runtime']) == before
+    root = artifacts['destination']
+    manifest, _ = bundle.verify(root, expected_digest=digest)
+    repairs = json.loads((root / 'ods-runtime-repairs.json').read_bytes())
+    stream = json.loads((root / 'ods-runtime-patches.json').read_bytes())[0]
+    assert len(repairs) == 7
+    for receipt, (name, module) in zip(repairs, bundle.SHARED_REPAIRS):
+        assert receipt['manifestSha256'] == hashlib.sha256((shared_repairs / name).read_bytes()).hexdigest()
+        expected = stream['patchedSha256'] if module == bundle.SHARED_REPAIRS[-1][1] else receipt['patchedSha256']
+        assert bundle._file(root / 'runtime', 'dist/' + module)[3] == expected
+        assert not {'backup', 'status', 'restored'} & receipt.keys()
+    assert repairs[-1]['patchedSha256'] == stream['sourceSha256']
+    content = (root / 'runtime' / bundle.STREAM_PROGRESS_FILE).read_text()
+    assert content.index('observe(') < content.index('const innerStreamFn') < content.index('buffer(')
+    assert 'ods-runtime-repairs.json' in manifest['entries']
+    assert not list(root.parent.glob('.ods-shared-repairs-*'))
+    assert not any('receipt.json' in entry or entry.endswith('/lock') for entry in manifest['entries'])
+    (root / 'ods-runtime-repairs.json').write_text('[]')
+    with pytest.raises(bundle.BundleError, match='content-changed'):
+        bundle.verify(root, expected_digest=digest)
+
+
+@pytest.mark.parametrize('module', [module for _, module in bundle.SHARED_REPAIRS])
+def test_shared_repairs_fail_closed_on_any_unknown_bytes(artifacts, shared_repairs, module):
+    path = artifacts['runtime'] / 'dist' / module
+    path.write_bytes(path.read_bytes() + b'unknown')
+    before = bundle.inventory(artifacts['runtime'])
+    with pytest.raises(ValueError, match='differs from reviewed bytes'):
+        bundle.build(**artifacts, shared_runtime_repairs=True, stream_progress_fix=True)
+    assert not artifacts['destination'].exists()
+    assert bundle.inventory(artifacts['runtime']) == before
+    assert not list(path.parents[2].glob('.ods-shared-repairs-*'))
+    assert not list(path.parents[2].glob('.ods-pixel-bundle-*'))
+
+
+def test_shared_repairs_reject_unqualified_version_even_when_selected(artifacts):
+    (artifacts['runtime'] / 'package.json').write_text(json.dumps({'name': 'openclaw', 'version': '2026.7.1'}))
+    with pytest.raises(bundle.BundleError, match='unqualified-version'):
+        bundle.build(**artifacts, expected_version='2026.7.1', shared_runtime_repairs=True)
+    assert not artifacts['destination'].exists()
+
+
+@pytest.mark.parametrize('fault', ['receipt', 'manifest-binding', 'bytes', 'missing-receipt'])
+def test_stream_requires_exact_manifest_bound_budget_result(artifacts, shared_repairs, fault):
+    bundle.build(**artifacts, shared_runtime_repairs=True)
+    runtime = artifacts['destination'] / 'runtime'
+    receipt = json.loads((artifacts['destination'] / 'ods-runtime-repairs.json').read_bytes())[-1]
+    if fault == 'receipt': receipt['patchedSha256'] = '0' * 64
+    if fault == 'manifest-binding': receipt['manifestSha256'] = '0' * 64
+    path = runtime / bundle.STREAM_PROGRESS_FILE
+    if fault == 'bytes': path.write_bytes(path.read_bytes() + b'unknown')
+    before = path.read_bytes()
+    with pytest.raises(bundle.BundleError, match='stream-progress-unqualified'):
+        bundle._patch_stream_progress(runtime, budget_receipt=None if fault == 'missing-receipt' else receipt)
+    assert path.read_bytes() == before
+
+
+@pytest.mark.skipif(not os.environ.get('ODS_TEST_OPENCLAW_RUNTIME'), reason='explicit read-only runtime input required')
+def test_real_shared_repairs_and_stream_composition_preserve_input(tmp_path):
+    runtime = Path(os.environ['ODS_TEST_OPENCLAW_RUNTIME']).resolve(strict=True)
+    node = Path(subprocess.check_output(['node', '-p', 'process.execPath'], text=True).strip())
+    before = bundle.inventory(runtime, normalize_modes=False)
+    options = dict(node=node, runtime=runtime, shared_runtime_repairs=True, stream_progress_fix=True)
+    first, second = tmp_path / 'first', tmp_path / 'second'
+    digest = bundle.build(**options, destination=first)
+    assert bundle.build(**options, destination=second) == digest
+    assert bundle.inventory(runtime, normalize_modes=False) == before
+    manifest, _ = bundle.verify(first, expected_digest=digest)
+    receipts = json.loads((first / 'ods-runtime-repairs.json').read_bytes())
+    assert receipts == [bundle._shared_repair_contract(*item) for item in bundle.SHARED_REPAIRS]
+    stream = json.loads((first / 'ods-runtime-patches.json').read_bytes())[0]
+    assert stream['sourceSha256'] == receipts[-1]['patchedSha256']
+    for receipt in receipts:
+        path = first / 'runtime/dist' / receipt['module']
+        expected = stream['patchedSha256'] if receipt is receipts[-1] else receipt['patchedSha256']
+        assert hashlib.sha256(path.read_bytes()).hexdigest() == expected
+        subprocess.run([str(node), '--check', str(path)], check=True, capture_output=True)
+    assert 'ods-runtime-repairs.json' in manifest['entries']
+    assert not list(tmp_path.glob('.ods-shared-repairs-*'))
 
 
 def test_stream_progress_patch_precedes_buffers_and_is_manifest_bound(artifacts, monkeypatch):

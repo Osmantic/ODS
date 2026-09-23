@@ -361,7 +361,7 @@ def stage_bundle(*, source, ref, candidate, node, runtime, destination, services
         protected_node = native_node.acquire(temporary, minimum_major=int(release['node'][2:]))
         digest = bundle.build(node=protected_node, runtime=runtime / 'node_modules/openclaw',
             destination=staged, plugins=paths, expected_version=release['openclaw'],
-            stream_progress_fix=True, services_digest=services_digest,
+            stream_progress_fix=True, shared_runtime_repairs=True, services_digest=services_digest,
             exec_wrapper=Path(__file__).resolve().parents[3] / 'extensions/services/pixel-agent/host/cancellable-exec.sh')
         relocated = copy.deepcopy(config)
         relocated['plugins']['load']['paths'] = [str(staged / ('plugins/' + str(i)))

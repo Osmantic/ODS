@@ -70,6 +70,7 @@ def test_package_preserves_source_and_requires_relocated_loader(tmp_path, monkey
         calls.append('build')
         assert kwargs['plugins'] == plugins
         assert kwargs['stream_progress_fix'] is True
+        assert kwargs['shared_runtime_repairs'] is True
         assert kwargs['exec_wrapper'] == Path(__file__).resolve().parents[1] / 'extensions/services/pixel-agent/host/cancellable-exec.sh'
         assert kwargs['exec_wrapper'].is_file()
         kwargs['destination'].mkdir()

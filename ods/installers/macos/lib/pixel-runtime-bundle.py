@@ -8,6 +8,7 @@ configuration activation and runtime behavior need separate gates.
 import argparse
 import fcntl
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -24,6 +25,16 @@ MAX_MANIFEST = 32 * 1024 * 1024
 INSTALL_ROOT = Path('/usr/local/libexec/ods-pixel-runtimes')
 STREAM_PROGRESS_FILE = 'dist/selection-BEwSQKM-.js'
 STREAM_PROGRESS_SOURCE_SHA256 = 'ae83457af1947f3eaf3e08f8fbde869a1c023a80acfbf0f27d3db887af1d36d3'
+REPAIR_ROOT = Path(__file__).resolve().parents[3] / 'extensions/services/pixel-agent/host'
+SHARED_REPAIRS = (
+    ('openclaw-tool-recovery.json', 'tool-loop-detection-C0oQKkXZ.js'),
+    ('openclaw-completion-recovery.json', 'agent-command-DeS125kF.js'),
+    ('openclaw-image-envelope.json', 'tool-search-BInRpkE3.js'),
+    ('openclaw-compaction-export.json', 'embedded-agent-subscribe.handlers.compaction.runtime.js'),
+    ('openclaw-compaction-idle.json', 'sessions-KE_Xmzwf.js'),
+    ('openclaw-compaction-resume.json', 'sessions-CZbwb3_c.js'),
+    ('openclaw-compaction-budget.json', 'selection-BEwSQKM-.js'),
+)
 
 
 class BundleError(ValueError):
@@ -172,11 +183,57 @@ def verify(root, *, expected_digest=None):
     return value, checksum
 
 
-def _patch_stream_progress(runtime):
-    """Relocate observers before buffering, only for the reviewed upstream bytes."""
+def _shared_repair_contract(manifest_name, module_name):
+    with os.fdopen(_open_file(REPAIR_ROOT, manifest_name), 'rb') as handle:
+        body = handle.read()
+    manifest = json.loads(body)
+    if (type(manifest) is not dict or manifest.get('version', '2026.6.33') != '2026.6.33'
+            or any(not isinstance(manifest.get(key), str)
+                   or not re.fullmatch('[a-f0-9]{64}', manifest[key])
+                   for key in ('sourceSha256', 'patchedSha256'))):
+        raise BundleError('shared-repair-unqualified-manifest')
+    return {'schemaVersion': 1, 'version': '2026.6.33', 'module': module_name,
+            'manifest': manifest_name, 'manifestSha256': hashlib.sha256(body).hexdigest(),
+            'sourceSha256': manifest['sourceSha256'], 'patchedSha256': manifest['patchedSha256'],
+            'reviewedDependencies': manifest.get('reviewedDependencies', {})}
+
+
+def _apply_shared_repairs(runtime, state_parent):
+    spec = importlib.util.spec_from_file_location('ods_shared_runtime_repair',
+                                                 REPAIR_ROOT / 'openclaw_tool_recovery.py')
+    recovery = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(recovery)
+    contracts = [_shared_repair_contract(*item) for item in SHARED_REPAIRS]
+    # Private provenance backups must not enter the normalized, public bundle tree.
+    with tempfile.TemporaryDirectory(prefix='.ods-shared-repairs-', dir=state_parent) as directory:
+        for contract in contracts:
+            result = recovery.repair(runtime, Path(directory) / contract['manifest'][:-5],
+                manifest_path=REPAIR_ROOT / contract['manifest'], module_name=contract['module'])
+            if (result.get('schemaVersion') != 1
+                    or result.get('status') not in ('changed', 'unchanged') or result.get('restored') is not False
+                    or any(result.get(key) != contract[key]
+                           for key in ('version', 'module', 'sourceSha256', 'patchedSha256'))
+                    or result.get('reviewedDependencies', {}) != contract['reviewedDependencies']
+                    or result.get('desiredSha256') != contract['patchedSha256']
+                    or _file(runtime, 'dist/' + contract['module'])[3] != contract['patchedSha256']):
+                raise BundleError('shared-repair-receipt-mismatch')
+        if contracts != [_shared_repair_contract(*item) for item in SHARED_REPAIRS]:
+            raise BundleError('shared-repair-manifest-changed')
+    return contracts
+
+
+def _patch_stream_progress(runtime, *, budget_receipt=None):
+    """Relocate observers only for exact pristine or qualified budget-repaired bytes."""
     with os.fdopen(_open_file(runtime, STREAM_PROGRESS_FILE), 'rb') as handle:
         original = handle.read()
-    if hashlib.sha256(original).hexdigest() != STREAM_PROGRESS_SOURCE_SHA256:
+    source_sha256 = STREAM_PROGRESS_SOURCE_SHA256
+    if budget_receipt is not None:
+        contract = _shared_repair_contract(*SHARED_REPAIRS[-1])
+        if (budget_receipt != contract or contract['sourceSha256'] != STREAM_PROGRESS_SOURCE_SHA256
+                or 'dist/' + contract['module'] != STREAM_PROGRESS_FILE):
+            raise BundleError('stream-progress-unqualified-budget-receipt')
+        source_sha256 = contract['patchedSha256']
+    if hashlib.sha256(original).hexdigest() != source_sha256:
         raise BundleError('stream-progress-unqualified-source')
     source = original.decode('utf-8')
     start = '\t\t\tconst configuredRunTimeoutMs = resolveAgentTimeoutMs({ cfg: params.config });'
@@ -191,7 +248,7 @@ def _patch_stream_progress(runtime):
     patched = (source[:insertion] + observers + '\n' + source[insertion:begin] + source[finish:]).encode('utf-8')
     (runtime / STREAM_PROGRESS_FILE).write_bytes(patched)
     return {'id': 'openclaw-buffered-stream-progress-v1', 'file': STREAM_PROGRESS_FILE,
-            'sourceSha256': STREAM_PROGRESS_SOURCE_SHA256,
+            'sourceSha256': source_sha256,
             'patchedSha256': hashlib.sha256(patched).hexdigest()}
 
 
@@ -259,7 +316,10 @@ def verify_service_binding(root, services_digest):
 
 
 def build(*, node, runtime, destination, plugins=(), expected_version='2026.6.33',
-          stream_progress_fix=False, services_digest=None, exec_wrapper=None):
+          stream_progress_fix=False, services_digest=None, exec_wrapper=None,
+          shared_runtime_repairs=False):
+    if shared_runtime_repairs and expected_version != '2026.6.33':
+        raise BundleError('shared-repairs-unqualified-version')
     if services_digest is not None and (type(services_digest) is not str
             or not re.fullmatch('[a-f0-9]{64}', services_digest)):
         raise BundleError('invalid-service-bundle-digest')
@@ -299,8 +359,14 @@ def build(*, node, runtime, destination, plugins=(), expected_version='2026.6.33
                 os.fsync(output.fileno())
             (staged / 'cancellable-exec.sh').chmod(0o755)
         _copy_tree(runtime, staged / 'runtime', snapshots[0])
+        repairs = []
+        if shared_runtime_repairs:
+            repairs = _apply_shared_repairs(staged / 'runtime', parent)
+            (staged / 'ods-runtime-repairs.json').write_bytes(_encode(repairs))
+            (staged / 'ods-runtime-repairs.json').chmod(0o644)
         if stream_progress_fix:
-            receipt = _patch_stream_progress(staged / 'runtime')
+            receipt = _patch_stream_progress(staged / 'runtime',
+                                             budget_receipt=repairs[-1] if repairs else None)
             (staged / 'ods-runtime-patches.json').write_bytes(_encode([receipt]))
             (staged / 'ods-runtime-patches.json').chmod(0o644)
         (staged / 'plugins').mkdir(mode=0o755)
