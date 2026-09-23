@@ -417,6 +417,7 @@ jobs:
           bash tests/test-pixel-support-services.sh
           bash tests/contracts/test-preflight-fixtures.sh
           bash tests/test-preflight-resolver-bug.sh
+          python3 tests/test_preflight_engine_option_args.py
           bash tests/test-desktop-agent-host-env.sh
           bash tests/test-pixel-uninstall.sh
           python3 tests/test_healthcheck_ipv6.py
