@@ -258,6 +258,23 @@ if [[ "$(uname -s)" == "Linux" ]]; then
     unset _ods_pixel_marker
 fi
 
+# Native Pixel owns protected launchd services outside the ODS install tree.
+# Retire those receipt-bound resources before removing that tree; otherwise a
+# forced reinstall deletes its owner data but strands active native services.
+if [[ "$(uname -s)" == "Darwin" ]]; then
+    _ods_native_pixel_helper="$SCRIPT_DIR/installers/macos/lib/pixel-native-uninstall.py"
+    if [[ ! -f "$_ods_native_pixel_helper" || -L "$_ods_native_pixel_helper" ]]; then
+        log_error "Native Pixel retirement helper is missing; installation retained"
+        exit 1
+    fi
+    if ! run_sudo /usr/bin/python3 -I "$_ods_native_pixel_helper" \
+        --install-dir "$INSTALL_DIR" --owner "${SUDO_USER:-$(id -un)}"; then
+        log_error "Native Pixel retirement failed before ODS uninstall mutation"
+        exit 1
+    fi
+    unset _ods_native_pixel_helper
+fi
+
 # A pending Pixel transition must retain its host-agent and other recovery
 # services. Only retire verified system units after Pixel's fail-closed
 # uninstall has succeeded; the old ordering stopped the host agent first and
