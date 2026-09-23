@@ -9928,6 +9928,38 @@ export function createToolLoopGuard({
     };
   }
 
+  function historicalWorkspaceEntryReadback(state) {
+    if (!state?.workspacePreviewRequired || state.workspacePreviewForbidden ||
+        state.workspacePreview || state.workspacePreviewRestrictions?.mutation ||
+        state.workspacePreviewRestrictions?.existingFile ||
+        state.operationsRequired || state.exactDownloadRequested ||
+        workspacePreviewDirectoryFromState(state)) return undefined;
+    const directory = state.workspaceLastVerifiedPreview?.relativeDirectory;
+    if (typeof directory !== "string" || normalizeWorkspaceFilePath(directory) !== directory) return undefined;
+    // A historical receipt is a discovery hint only. Require an explicit
+    // same-project repair and current mutations in that project's ancestry;
+    // never turn another session/project's publication into current evidence.
+    const owner = (state.playgroundOwnerIntent ?? "").split(/\n\s*\[ODS (?:Portal|Pixel) (?:delivery requirement|workspace task route):/)[0];
+    const intent = workspacePreviewInstructionText(owner, {preserveFileTargets: true});
+    const positive = intent.replace(/\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\b[^.!?;\n]*/gi, " ");
+    if (!/\b(?:edit|modify|update|continue|extend|improve|repair|fix|work\s+on)\b[^.!?;\n]{0,96}\b(?:same|existing|current|previous)\b[^.!?;\n]{0,64}\bproject\b/i.test(positive) ||
+        /\b(?:new|different|another|separate)\s+(?:[A-Za-z-]+\s+){0,3}(?:project|directory|folder|site|website|app)\b/i.test(intent)) return undefined;
+    const named = userMessageWorkspaceDirectoryPath([], owner);
+    if (named && named !== directory && !directory.startsWith(`${named}/`)) return undefined;
+    const mutations = [...state.successfulWritePaths, ...state.successfulEditPaths];
+    if (!mutations.length || !mutations.every(file => {
+      const parent = file.slice(0, file.lastIndexOf("/"));
+      return parent && (parent === directory || directory.startsWith(`${parent}/`) || parent.startsWith(`${directory}/`));
+    })) return undefined;
+    return {
+      stage: "workspace-preview-historical-entry",
+      instruction: `The same project's earlier verified publication used ${JSON.stringify(directory)}. ` +
+        "Finish the owner's requested source edits, generated output updates and checks first. " +
+        `Before republishing, read the existing entry with read and args ${JSON.stringify({path: `${directory}/index.html`})} to locate the browser output. ` +
+        "Do not rebuild or move the project merely to rediscover it. The historical directory is not proof of current files or completed work; publish only after the requested outputs and checks are complete, through the normal verified preview tool.",
+    };
+  }
+
   function trustedWorkspacePreviewContinuation(state) {
     if (
       !state?.workspacePreviewRequired ||
@@ -9955,6 +9987,8 @@ export function createToolLoopGuard({
     const directory = (state.workspacePreviewRestrictions?.mutation && state.workspacePreviewRestrictions.directory) ||
       workspacePreviewDirectoryFromState(state);
     if (!directory) {
+      const historicalReadback = historicalWorkspaceEntryReadback(state);
+      if (historicalReadback) return historicalReadback;
       if (state.workspacePreviewRestrictions?.mutation) return {
         stage: "workspace-preview-existing",
         instruction: "Call pixel_ods_workspace_preview with the exact directory requested by the owner. Do not create or change files or substitute a different directory. Report the tool's actual result, including failure; do not invent a preview URL.",
@@ -10090,6 +10124,8 @@ export function createToolLoopGuard({
       if (state?.workspacePreviewRequired && !state.workspacePreview && !state.workspacePreviewVerifiedDirectory &&
           !state.workspacePreviewForbidden && !state.operationsRequired && !state.exactDownloadRequested) {
         const directory = workspacePreviewDirectoryFromState(state);
+        const historicalReadback = !directory && historicalWorkspaceEntryReadback(state);
+        if (historicalReadback) return `[ODS Pixel next step] ${historicalReadback.instruction}`;
         return "[ODS Pixel next step] This visual project must be delivered in Workbench. " +
           "Finish all requested files, edits and checks first, then publish BEFORE your final answer. " +
           (directory ? `Call tool_call with id ${WORKSPACE_PREVIEW_TOOL} and args ${JSON.stringify({relativeDirectory:directory})}. ` :

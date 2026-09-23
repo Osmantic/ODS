@@ -15658,3 +15658,77 @@ test("publication preserves its receipt without hiding a failed or pending check
     assert.match(result.text, /Open preview/);
   }
 });
+
+
+function historicalCodingProjectGuard({sessionId = "session-1", prior = true, prompt, mutation = true, mutationPath = "expense-report/report.py"} = {}) {
+  const guard = createToolLoopGuard();
+  if (prior) {
+    guard.observeRun({agentId: "pixel", runId: "run-1", sessionId: "session-1"}, "pixel", {
+      prompt: "Create a Python report and publish its browser output at expense-report/public/index.html.",
+    });
+    const write = {path: "expense-report/public/index.html", content: "<!doctype html><p>Report</p>"};
+    call(guard, "write", {event: {params: write}});
+    afterCall(guard, "write", {event: {params: write, result: {details: {status: "completed"}}}});
+    const snapshot = workspacePreviewSnapshot("expense-report/public", [write]);
+    const details = {schemaVersion: 1, kind: "ods-pixel-workspace-preview", status: "succeeded",
+      relativeDirectory: "expense-report/public", ...snapshot, port: 9437,
+      url: `http://${snapshot.siteId}.localhost:9437/${snapshot.siteId}/`, httpStatus: 200,
+      readbackVerified: true, executable: false, overwritten: false};
+    afterCall(guard, "pixel_ods_workspace_preview", {event: {params: {relativeDirectory: details.relativeDirectory}, result: {details}}});
+    assert.equal(guard.verificationForRun("run-1").status, "passed");
+  }
+  const context = {agentId: "pixel", runId: "followup", sessionId};
+  guard.observeRun(context, "pixel", {prompt: prompt ?? "Edit the same three-file CSV expense report project. Add a minimum-total filter and regression tests. Regenerate public/sources.json from the executed files and publish a new verified Pixel workspace preview."});
+  let persisted, mutationBefore;
+  if (mutation) {
+    const params = {path: mutationPath, content: "print('updated report')\n"};
+    const event = {toolName: "write", runId: "followup", toolCallId: "source-write", params};
+    const before = guard.beforeToolCall(event, {...context, toolCallId: "source-write"}, "pixel");
+    mutationBefore = before;
+    if (!before?.block) guard.afterToolCall({...event, params: before?.params ?? params,
+      result: {details: {status: "completed"}}}, {...context, toolCallId: "source-write"}, "pixel");
+    persisted = guard.toolResultPersist({toolName: "write", toolCallId: "source-write",
+      message: {role: "toolResult", toolName: "write", toolCallId: "source-write", content: [{type: "text", text: "Written"}]}},
+      {...context, toolCallId: "source-write"}, "pixel");
+  }
+  return {guard, context, persisted, mutationBefore};
+}
+
+test("same-project source repair discovers historical browser entry without claiming current publication", () => {
+  const {guard, context, persisted, mutationBefore} = historicalCodingProjectGuard();
+  assert.notEqual(mutationBefore?.block, true, "CLI source mutation outside public remains allowed");
+  const continuation = guard.beforeAgentFinalize({}, context, "pixel");
+  assert.equal(continuation.retry.idempotencyKey, "pixel-ods-workspace-preview-historical-entry");
+  assert.equal(continuation.retry.maxAttempts, 1);
+  assert.match(continuation.retry.instruction, /read and args \{"path":"expense-report\/public\/index.html"\}/);
+  assert.match(continuation.retry.instruction, /generated output updates and checks first/);
+  assert.match(continuation.retry.instruction, /not proof of current files/);
+  assert.doesNotMatch(continuation.retry.instruction, /Call tool_call now/);
+  assert.match(persisted.message.content.at(-1).text, /expense-report\/public\/index.html/);
+  assert.equal(guard.verificationForRun("followup").status, "failed");
+  // Discovery is not a visual-edit scope: CLI sources remain outside public.
+  assert.notEqual(guard.beforeToolCall({toolName: "exec", params: {command: "python3 -m unittest", workdir: "/workspace/expense-report"}}, context, "pixel")?.block, true);
+  assert.equal(guard.beforeAgentFinalize({}, context, "pixel").retry.idempotencyKey, continuation.retry.idempotencyKey);
+  const read = {path: "expense-report/public/index.html"};
+  guard.afterToolCall({toolName: "read", params: read, result: {content: [{type: "text", text: "<!doctype html><p>Report</p>"}]}}, context, "pixel");
+  const next = guard.beforeAgentFinalize({}, context, "pixel");
+  assert.notEqual(next?.retry?.idempotencyKey, continuation.retry.idempotencyKey);
+  assert.equal(guard.verificationForRun("followup").status, "failed", "fresh entry read is not a publication receipt");
+});
+
+for (const [name, options] of [
+  ["different session", {sessionId: "another-session"}],
+  ["no verified prior preview", {prior: false}],
+  ["no current mutation", {mutation: false}],
+  ["different source project", {mutationPath: "another-project/report.py"}],
+  ["new project", {prompt: "Preserve the same project. Create a new Python project and publish its verified Pixel workspace preview."}],
+  ["different explicit output", {prompt: "Edit the same report project and publish a verified Pixel workspace preview in /workspace/another-project/public."}],
+  ["read only", {mutation: false, prompt: "Read the same report project only. Do not change files or publish anything."}],
+  ["publish only", {mutation: false, prompt: "Publish the same report project as a verified Pixel workspace preview. Do not read, create, edit or change files."}],
+  ["quoted repair instruction", {prompt: 'Explain the text "Edit the same project and publish a preview". Do not modify files.'}],
+]) test(`historical entry discovery does not override ${name}`, () => {
+  const {guard, context, persisted} = historicalCodingProjectGuard(options);
+  assert.notEqual(guard.beforeAgentFinalize({}, context, "pixel")?.retry?.idempotencyKey,
+    "pixel-ods-workspace-preview-historical-entry");
+  assert.doesNotMatch(persisted?.message?.content?.at(-1)?.text ?? "", /same project's earlier verified publication/);
+});
