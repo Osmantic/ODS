@@ -11,6 +11,22 @@ const kinds = [
 
 afterEach(() => vi.unstubAllGlobals())
 
+test('restores focus to New guest invite after cancelling the form', async () => {
+  vi.stubGlobal('fetch', vi.fn(async url => {
+    if (url.endsWith('/list')) return response({ tokens: [] })
+    if (url.endsWith('/status')) return response({ ready: true })
+    throw new Error('Unexpected request')
+  }))
+  render(<Invites />)
+  await screen.findByText('No owner cards yet')
+  const trigger = screen.getByRole('button', { name: 'New guest invite' })
+  trigger.focus()
+  fireEvent.click(trigger)
+  fireEvent.click(screen.getByRole('button', { name: 'Cancel', exact: true }))
+  expect(screen.queryByRole('dialog', { name: 'Create guest invite' })).toBeNull()
+  expect(trigger).toHaveFocus()
+})
+
 async function start(kind) {
   let settle
   const pending = new Promise(resolve => { settle = resolve })
