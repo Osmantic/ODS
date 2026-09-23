@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import Invites from './Invites' // eslint-disable-line no-unused-vars
 
 const response = (body, status = 200) => ({
@@ -30,6 +30,24 @@ async function start(kind) {
   fireEvent.click(within(dialog).getByRole('button', { name: kind[3], exact: true }))
   return { dialog, settle, fetcher }
 }
+
+test('restores focus to New guest invite after Escape closes the form', async () => {
+  const fetcher = vi.fn(async url => {
+    if (url.endsWith('/list')) return response({ tokens: [] })
+    if (url.endsWith('/status')) return response({ ready: true })
+    throw new Error(`Unexpected request: ${url}`)
+  })
+  vi.stubGlobal('fetch', fetcher)
+  render(<Invites />)
+  await screen.findByText('No guest invites yet')
+  const trigger = screen.getByRole('button', { name: 'New guest invite' })
+  fireEvent.click(trigger)
+  const dialog = screen.getByRole('dialog', { name: 'Create guest invite' })
+  fireEvent.keyDown(document, { key: 'Escape' })
+  expect(screen.queryByRole('dialog', { name: 'Create guest invite' })).toBeNull()
+  await waitFor(() => expect(trigger).toHaveFocus())
+  expect(dialog).toBeTruthy()
+})
 
 describe.each(kinds)('%s creation ownership', (...kind) => {
   test.each(['Cancel', 'Close', 'Escape', 'backdrop'])('retains the result owner during %s', async dismissal => {
