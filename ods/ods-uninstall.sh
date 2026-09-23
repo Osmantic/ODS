@@ -317,7 +317,10 @@ if command -v docker &>/dev/null; then
     # Remove any remaining ods-* containers.
     # Docker's name filter matches anywhere in the name, so filter on the
     # printed names instead: only this project's ods-<service> containers.
-    ods_containers=$(docker ps -a --format "{{.Names}}" 2>/dev/null | grep -E '^ods-' || true)
+    # Native Pixel retirement already stopped and receipt-bound these archived
+    # sandboxes. Keep their writable layers available for rollback.
+    ods_containers=$(docker ps -a --format "{{.Names}}" 2>/dev/null | grep -E '^ods-' |
+        grep -Ev '^ods-pixel-retired-[a-f0-9]{16}$' || true)
     if [[ -n "$ods_containers" ]]; then
         log_info "Removing ODS containers..."
         echo "$ods_containers" | xargs docker rm -f 2>/dev/null || true

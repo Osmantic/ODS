@@ -44,7 +44,7 @@ emit_filtered() {
 }
 
 if [[ "${1:-}" == "ps" ]]; then
-    NAMES="ods-litellm ods-llama-server kube-pods-proxy methods-runner"
+    NAMES="ods-litellm ods-llama-server kube-pods-proxy methods-runner ods-pixel-retired-0123456789abcdef"
     emit_filtered "$@"
     exit 0
 fi
@@ -250,11 +250,11 @@ EOF
         [[ "$removed_containers" == *"$name"* ]] \
             || fail "uninstall must remove project container $name (got: '$removed_containers')"
     done
-    for name in kube-pods-proxy methods-runner; do
+    for name in kube-pods-proxy methods-runner ods-pixel-retired-0123456789abcdef; do
         [[ "$removed_containers" != *"$name"* ]] \
             || fail "uninstall must not remove unrelated container $name (got: '$removed_containers')"
     done
-    pass "container discovery stays on the ods- prefix"
+    pass "container discovery stays on the ods- prefix and preserves native sandbox archives"
 
     for name in ods_perplexica-data ods-legacy-cache; do
         [[ "$removed_volumes" == *"$name"* ]] \
