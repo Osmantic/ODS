@@ -790,13 +790,16 @@ cmd_update() {
         return 1
     fi
 
-    # ── Step 1: rollback snapshot ─────────────────────────────────────────────
-    local timestamp
-    timestamp=$(date +%Y%m%d-%H%M%S)
-    local snap_dir
-    snap_dir=$(snapshot_pre_update "$timestamp")
-
-    # Resolve compose flags once — used in restart and rollback paths.
+    # Verify the runtime/source transition before snapshots or git mutation.
+    # These guards do not affect the image-only `ods update` command.
+    local preflight="${INSTALL_DIR}/scripts/source-update-preflight.py"
+    if [[ ! -f "$preflight" ]] || ! command -v python3 >/dev/null 2>&1; then
+        log_error "Source update safety helper or Python 3 is unavailable; no files were changed."
+        return 1
+    fi
+    if ! python3 "$preflight" native --install-dir "$INSTALL_DIR"; then
+        return 1
+    fi
     local compose_flags=""
     compose_flags=$(resolve_compose_flags 2>/dev/null || true)
     local -a compose_args=()
@@ -805,6 +808,21 @@ cmd_update() {
         return 1
     fi
     compose_args=("${COMPOSE_PARSED_ARGS[@]}")
+    if [[ ${#compose_args[@]} -gt 0 ]]; then
+        if ! (cd "$INSTALL_DIR" && docker compose "${compose_args[@]}" config --format json) | python3 "$preflight" compose; then
+            log_error "Source update requires a verified image-only Compose stack and Compose v2 JSON configuration; no files were changed."
+            return 1
+        fi
+    else
+        log_error "Cannot verify the active Compose stack for a source update; no files were changed."
+        return 1
+    fi
+
+    # ── Step 1: rollback snapshot ─────────────────────────────────────────────
+    local timestamp
+    timestamp=$(date +%Y%m%d-%H%M%S)
+    local snap_dir
+    snap_dir=$(snapshot_pre_update "$timestamp")
 
     # ── Step 2: pull latest changes ───────────────────────────────────────────
     log_info "Pulling latest changes..."

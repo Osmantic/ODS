@@ -6,6 +6,9 @@ trap 'rm -rf "$TMP"' EXIT
 sed '$d' "$ROOT/ods-update.sh" > "$TMP/functions.sh"
 source "$TMP/functions.sh"
 INSTALL_DIR="$TMP/install";VERSION_FILE="$INSTALL_DIR/.version";mkdir -p "$INSTALL_DIR";printf '{}\n' > "$VERSION_FILE"
+mkdir -p "$INSTALL_DIR/scripts"; touch "$INSTALL_DIR/scripts/source-update-preflight.py"
+# Identity/build admission is independently covered by test_source_update_preflight.py.
+python3(){ if [[ $2 == compose ]];then cat >/dev/null;fi; return 0; }
 log_info(){ :; };log_ok(){ :; };log_warn(){ :; };log_error(){ :; }
 get_current_version(){ printf 2.6.0; };ensure_source_checkout_for_update(){ return 0; };snapshot_pre_update(){ printf '%s' "$TMP/snapshot"; }
 resolve_compose_flags(){ printf '%s' "-f 'custom stack/compose.yaml'"; }
@@ -14,10 +17,10 @@ git(){ case "$1" in branch) printf main;; describe) printf v2.6.0;; esac; }
 validate_compose(){
  local -a args=("$@")
  [[ ${args[0]} == -f && ${args[1]} == 'custom stack/compose.yaml' ]] || return 1
- [[ ${args[2]} == up || ${args[2]} == down ]] || return 1
+ [[ ${args[2]} == up || ${args[2]} == down || ${args[2]} == config ]] || return 1
  printf '%s\n' "$1" "$2" "$3" >> "$TMP/calls"
 }
-docker(){ [[ $1 == compose ]];shift;validate_compose "$@" || exit 91;[[ ${FORCE_V1:-false} != true ]]; }
+docker(){ [[ $1 == compose ]];shift;validate_compose "$@" || exit 91; if [[ $3 == config ]];then echo '{"services":{"app":{"image":"app:v1"}}}';return 0;fi;[[ ${FORCE_V1:-false} != true ]]; }
 docker-compose(){ validate_compose "$@" || exit 92; }
 wait_for_healthy(){ [[ ${HEALTH_FAILURE:-false} != true ]]; }
 for FORCE_V1 in false true; do
