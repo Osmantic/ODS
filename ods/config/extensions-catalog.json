@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-23T06:59:55Z",
+  "generated_at": "2026-09-23T08:18:04Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -11298,7 +11298,13 @@
       "port": 80,
       "external_port_default": 8100,
       "health_endpoint": "/health",
-      "env_vars": [],
+      "env_vars": [
+        {
+          "key": "COQUI_TOS_AGREED",
+          "required": true,
+          "description": "Set exactly 1 only after reviewing and accepting the XTTS model terms in NOTICE.md. No acceptance is supplied by ODS."
+        }
+      ],
       "tags": [],
       "features": [],
       "configuration_scope": "declared-environment-keys"

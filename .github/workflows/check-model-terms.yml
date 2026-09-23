@@ -1,0 +1,48 @@
+name: Check model provenance records
+
+on:
+  push:
+    branches: [main, public-beta]
+    paths:
+      - '.github/workflows/check-model-terms.yml'
+      - 'ods/config/model-library.json'
+      - 'ods/docs/MODEL_TERMS_AUDIT.json'
+      - 'ods/scripts/*model-terms.py'
+      - 'ods/extensions/services/dashboard-api/model_terms.py'
+      - 'ods/tests/test_model_terms.py'
+  pull_request:
+    branches: [main, public-beta]
+    paths:
+      - '.github/workflows/check-model-terms.yml'
+      - 'ods/config/model-library.json'
+      - 'ods/docs/MODEL_TERMS_AUDIT.json'
+      - 'ods/scripts/*model-terms.py'
+      - 'ods/extensions/services/dashboard-api/model_terms.py'
+      - 'ods/tests/test_model_terms.py'
+  workflow_dispatch:
+    inputs:
+      release_ready:
+        description: Require every model's terms review to be complete
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  model-provenance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: '3.12'
+      - name: Validate source observations and regression tests
+        run: |
+          python ods/scripts/check-model-terms.py
+          python ods/tests/test_model_terms.py
+      - name: Require reviewed model terms for release qualification
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release_ready }}
+        run: python ods/scripts/check-model-terms.py --release-ready

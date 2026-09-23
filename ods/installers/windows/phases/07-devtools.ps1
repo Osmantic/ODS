@@ -402,7 +402,8 @@ if (Test-Path $_agentScript) {
         $_checkExit = Invoke-ODSNativeQuiet -FilePath $_python3.FilePath -Arguments $_checkArgs
         if ($_checkExit -ne 0) {
             Write-AI "Installing ODS host-agent model downloader dependencies..."
-            $_installArgs = @($_python3.PrefixArgs) + @("-m", "pip", "install", "--user", "-q", "huggingface_hub[hf_xet]>=0.27")
+            $_hostAgentLock = Join-Path $SourceRoot "installers\python-deps\host-agent.txt"
+            $_installArgs = @($_python3.PrefixArgs) + @("-m", "pip", "install", "--user", "-q", "--require-hashes", "--only-binary=:all:", "-r", $_hostAgentLock)
             $_installExit = Invoke-ODSNativeQuiet -FilePath $_python3.FilePath -Arguments $_installArgs -LogPath $script:LOG_FILE
             if ($_installExit -eq 0) {
                 Write-AISuccess "ODS host-agent Hugging Face downloader ready"

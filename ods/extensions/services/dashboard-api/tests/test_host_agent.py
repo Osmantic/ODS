@@ -972,7 +972,11 @@ class TestResolveComposeFlags:
 
         assert [python_cmd, "-m", "pip", "install"] == calls[1][:4]
         assert "--user" in calls[1]
-        assert "PyYAML" in calls[1]
+        assert "--require-hashes" in calls[1]
+        assert "--only-binary=:all:" in calls[1]
+        lock = Path(calls[1][calls[1].index("-r") + 1])
+        assert lock == Path(_mod.__file__).resolve().parents[1] / "installers/python-deps/pyyaml.txt"
+        assert lock.is_file()
         assert import_attempts["count"] == 2
         assert process_attempts["count"] == 1
 
@@ -8805,7 +8809,8 @@ def test_install_disconnect_does_not_replay_or_release_worker_twice(install_oper
     invoke, responses, launches = install_operation_host
     responder = _mod.json_response
     monkeypatch.setattr(_mod, 'json_response', lambda *args: (_ for _ in ()).throw(BrokenPipeError()))
-    with pytest.raises(BrokenPipeError): invoke('e' * 32)
+    with pytest.raises(BrokenPipeError):
+        invoke('e' * 32)
     assert _mod._read_install_operation('operation-test', 'e' * 32)['state'] == 'failed'
     monkeypatch.setattr(_mod, 'json_response', responder)
     invoke('e' * 32)

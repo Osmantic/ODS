@@ -1,0 +1,90 @@
+{
+  "schema_version": "ods.upstream.v1",
+  "repository": "https://github.com/ollama/ollama",
+  "source_ref": "v0.5.7",
+  "source_revision": "a420a453b4783841e3e79c248ef0fe9548df6914",
+  "source_revision_scope": "configured_version_reference",
+  "source_url": "https://github.com/ollama/ollama/tree/a420a453b4783841e3e79c248ef0fe9548df6914",
+  "license": "MIT",
+  "license_scope": "application_source_only; excludes container base, dependencies, third-party assets and model weights",
+  "license_url": "https://github.com/ollama/ollama/blob/a420a453b4783841e3e79c248ef0fe9548df6914/LICENSE",
+  "license_documents": [
+    {
+      "path": "LICENSE",
+      "url": "https://github.com/ollama/ollama/blob/a420a453b4783841e3e79c248ef0fe9548df6914/LICENSE",
+      "sha256": "5934ed2ce0d15154bcdb9c85203210abac0da4314af34081e36df4599f90b226"
+    }
+  ],
+  "notice_urls": [],
+  "provenance_checked_at": "2026-09-23",
+  "review_status": "provenance_recorded_with_gaps",
+  "runtime_validation": "not_run",
+  "notes": "Ollama source at v0.5.7 is MIT. Downloaded models and their upstream/base-model terms remain separate; this recipe does not select weights.",
+  "deployment": {
+    "kind": "container_image",
+    "recipe_files": [
+      {
+        "path": "compose.amd.yaml",
+        "sha256": "3e7ab8a5eae0f7b2a929d09d53ab7f25231810e26242c242786fa1b7aed10c1d"
+      },
+      {
+        "path": "compose.nvidia.yaml",
+        "sha256": "7dad8f3d8648d264fd413c5b880081844bdf5fae617a22b5bbf8da9393a7ba65"
+      },
+      {
+        "path": "compose.yaml",
+        "sha256": "9597c0456698df61682d373a372a36bf40cd621414039d551701a74be05e798c"
+      },
+      {
+        "path": "manifest.yaml",
+        "sha256": "fd953583594bf0053846ac1e071d91bf58fbd3c3400a5b49c9f25e883c5f01e8"
+      }
+    ],
+    "hash_normalization": "CRLF_to_LF",
+    "images": [
+      {
+        "file": "compose.yaml",
+        "service": "ollama",
+        "image": "ollama/ollama:0.5.7@sha256:7e672211886f8bd4448a98ed577e26c816b9e8b052112860564afaa2c105800e",
+        "scope": "application"
+      }
+    ]
+  },
+  "code_components": [],
+  "model_terms": {
+    "status": "not_selected_by_recipe",
+    "summary": "Application code licensing does not grant rights to downloaded or bundled model weights. No model eligibility or acceptance decision is made by this record.",
+    "sources": []
+  },
+  "source_evidence": [
+    {
+      "url": "https://api.github.com/repos/ollama/ollama",
+      "retrieved_at": "2026-09-23T07:53:50.771052+00:00",
+      "success": true,
+      "response_sha256": "8236087f502ff61fdc7ea0fb22aa15a76c7df5fe6133f76ad2e8b0a48977a0cb"
+    },
+    {
+      "url": "https://api.github.com/repos/ollama/ollama/commits/v0.5.7",
+      "retrieved_at": "2026-09-23T07:53:51.427541+00:00",
+      "success": true,
+      "response_sha256": "9cadd9dd94cae9955779f7f4378670025ba4009c8ab47ecffeefc806eebb4b2e"
+    },
+    {
+      "url": "https://api.github.com/repos/ollama/ollama/license?ref=a420a453b4783841e3e79c248ef0fe9548df6914",
+      "retrieved_at": "2026-09-23T07:53:52.236016+00:00",
+      "success": true,
+      "response_sha256": "1867ee0109b47aaea230296b2f35d042225abdce1da8a08f3eadf6a36c233eed"
+    },
+    {
+      "url": "https://api.github.com/repos/ollama/ollama/contents?ref=a420a453b4783841e3e79c248ef0fe9548df6914",
+      "retrieved_at": "2026-09-23T07:53:52.787794+00:00",
+      "success": true,
+      "response_sha256": "b236f7f9dedf7b96db4a0d24cd606043800c0c794e55f0aaf5fa6adb72ea5b6e"
+    }
+  ],
+  "gaps": [
+    "Source release reference matches the configured version; an image digest does not by itself prove the image was built from this commit.",
+    "This application-level record is not a complete image SBOM or an assessment of redistribution/notice obligations for every dependency."
+  ],
+  "image": "ollama/ollama:0.5.7@sha256:7e672211886f8bd4448a98ed577e26c816b9e8b052112860564afaa2c105800e"
+}

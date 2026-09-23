@@ -312,7 +312,8 @@ def _ensure_windows_resolver_pyyaml(python_cmd: str) -> None:
     )
     pip_cmd = [
         python_cmd, "-m", "pip", "install",
-        "--user", "--disable-pip-version-check", "--quiet", "PyYAML",
+        "--user", "--disable-pip-version-check", "--quiet", "--require-hashes", "--only-binary=:all:",
+        "-r", str(Path(__file__).resolve().parents[1] / "installers/python-deps/pyyaml.txt"),
     ]
     try:
         result = subprocess.run(

@@ -1,0 +1,82 @@
+{
+  "schema_version": "ods.upstream.v1",
+  "repository": "https://github.com/go-gitea/gitea",
+  "source_ref": "v1.23.5",
+  "source_revision": "92f2d904f0d33d6a6a7f1a53dbe00ad38b135cce",
+  "source_revision_scope": "configured_version_reference",
+  "source_url": "https://github.com/go-gitea/gitea/tree/92f2d904f0d33d6a6a7f1a53dbe00ad38b135cce",
+  "license": "MIT",
+  "license_scope": "application_source_only; excludes container base, dependencies, third-party assets and model weights",
+  "license_url": "https://github.com/go-gitea/gitea/blob/92f2d904f0d33d6a6a7f1a53dbe00ad38b135cce/LICENSE",
+  "license_documents": [
+    {
+      "path": "LICENSE",
+      "url": "https://github.com/go-gitea/gitea/blob/92f2d904f0d33d6a6a7f1a53dbe00ad38b135cce/LICENSE",
+      "sha256": "ed2f10a9d78b8c6c9ef33f1420d0eb266981891caf2f15d630553f02dc60d3ae"
+    }
+  ],
+  "notice_urls": [],
+  "provenance_checked_at": "2026-09-23",
+  "review_status": "provenance_recorded_with_gaps",
+  "runtime_validation": "not_run",
+  "notes": "Gitea source at v1.23.5 is MIT. The rootless image digest is recorded separately from the reviewed release source commit.",
+  "deployment": {
+    "kind": "container_image",
+    "recipe_files": [
+      {
+        "path": "compose.yaml",
+        "sha256": "9f977d2892313de602e899deaa632da88ded72eb1f0947d163517ad5071e56da"
+      },
+      {
+        "path": "manifest.yaml",
+        "sha256": "2a4af159c72f38c8e21971be672dd8c31d32495c6bf9e7e6d9d6169d67e8808d"
+      }
+    ],
+    "hash_normalization": "CRLF_to_LF",
+    "images": [
+      {
+        "file": "compose.yaml",
+        "service": "gitea",
+        "image": "gitea/gitea:1.23.5-rootless@sha256:3a335645ca700660ac6c10d6f3223b6611ed6959441f6d2f7cd5fa607baf1425",
+        "scope": "application"
+      }
+    ]
+  },
+  "code_components": [],
+  "model_terms": {
+    "status": "not_applicable_to_primary_application",
+    "summary": "Application code licensing does not grant rights to downloaded or bundled model weights. No model eligibility or acceptance decision is made by this record.",
+    "sources": []
+  },
+  "source_evidence": [
+    {
+      "url": "https://api.github.com/repos/go-gitea/gitea",
+      "retrieved_at": "2026-09-23T07:53:40.532874+00:00",
+      "success": true,
+      "response_sha256": "1248e1e8c14f8d6645e229415d8c74b1cafa1644eeba875711cc108dd7716a80"
+    },
+    {
+      "url": "https://api.github.com/repos/go-gitea/gitea/commits/v1.23.5",
+      "retrieved_at": "2026-09-23T07:53:41.190197+00:00",
+      "success": true,
+      "response_sha256": "0e1efe439b3c33122eb4513abc2877141b6b181f1987c77a3a9989c194f6bc5b"
+    },
+    {
+      "url": "https://api.github.com/repos/go-gitea/gitea/license?ref=92f2d904f0d33d6a6a7f1a53dbe00ad38b135cce",
+      "retrieved_at": "2026-09-23T07:53:42.072849+00:00",
+      "success": true,
+      "response_sha256": "346a62480c81b3e8aa2c3be8d5de532d4fd95e930655b390b788676eb577d5cb"
+    },
+    {
+      "url": "https://api.github.com/repos/go-gitea/gitea/contents?ref=92f2d904f0d33d6a6a7f1a53dbe00ad38b135cce",
+      "retrieved_at": "2026-09-23T07:53:42.737162+00:00",
+      "success": true,
+      "response_sha256": "a7918216a4b120c84dd1c2a0e2672aa2f5917cefbd240d2ad7ad1929ed61586d"
+    }
+  ],
+  "gaps": [
+    "Source release reference matches the configured version; an image digest does not by itself prove the image was built from this commit.",
+    "This application-level record is not a complete image SBOM or an assessment of redistribution/notice obligations for every dependency."
+  ],
+  "image": "gitea/gitea:1.23.5-rootless@sha256:3a335645ca700660ac6c10d6f3223b6611ed6959441f6d2f7cd5fa607baf1425"
+}

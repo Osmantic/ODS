@@ -1,0 +1,209 @@
+{
+  "schema_version": "ods.upstream.v1",
+  "repository": "https://github.com/linuxserver/docker-piper",
+  "source_ref": "c39513360e5b9b57c964157e37df1799a2989d05",
+  "source_revision": "c39513360e5b9b57c964157e37df1799a2989d05",
+  "source_revision_scope": "image_declared_revision",
+  "source_url": "https://github.com/linuxserver/docker-piper/tree/c39513360e5b9b57c964157e37df1799a2989d05",
+  "license": "GPL-3.0-only",
+  "license_scope": "container_packager_source_only; bundled application, runtime dependencies and weights have separate terms",
+  "license_url": "https://github.com/linuxserver/docker-piper/blob/c39513360e5b9b57c964157e37df1799a2989d05/LICENSE",
+  "license_documents": [
+    {
+      "path": "LICENSE",
+      "url": "https://github.com/linuxserver/docker-piper/blob/c39513360e5b9b57c964157e37df1799a2989d05/LICENSE",
+      "sha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986"
+    }
+  ],
+  "notice_urls": [],
+  "provenance_checked_at": "2026-09-23",
+  "review_status": "provenance_recorded_with_gaps",
+  "runtime_validation": "not_run",
+  "notes": "The image labels identify linuxserver/docker-piper revision c39513360e5b9b57c964157e37df1799a2989d05 and GPL-3.0-only. The Wyoming server and legacy Piper engine are separate MIT projects. The default lessac-medium voice has its own model card and restricted dataset terms.",
+  "deployment": {
+    "kind": "container_image",
+    "recipe_files": [
+      {
+        "path": "compose.yaml",
+        "sha256": "7cc8f013abbd103cccc855753031f495cfe9650a163bd423c03574d4801dd417"
+      },
+      {
+        "path": "manifest.yaml",
+        "sha256": "532842f769e725fd016e8b9116fdfa7e47442ce854855ac46b229cdfca830d24"
+      }
+    ],
+    "hash_normalization": "CRLF_to_LF",
+    "images": [
+      {
+        "file": "compose.yaml",
+        "service": "piper-audio",
+        "image": "lscr.io/linuxserver/piper:1.6.3",
+        "scope": "application"
+      }
+    ]
+  },
+  "code_components": [
+    {
+      "repository": "https://github.com/rhasspy/piper",
+      "source_ref": "master",
+      "source_revision": "73c04d81d5590ecc46e522de3601ce7fb29fc2be",
+      "source_revision_scope": "reviewed_current_source_only",
+      "license_url": "https://github.com/rhasspy/piper/blob/73c04d81d5590ecc46e522de3601ce7fb29fc2be/LICENSE.md",
+      "license": "MIT",
+      "scope": "Legacy Piper engine current source only; installed package revision unverified",
+      "documents": [
+        {
+          "path": "LICENSE.md",
+          "url": "https://github.com/rhasspy/piper/blob/73c04d81d5590ecc46e522de3601ce7fb29fc2be/LICENSE.md",
+          "sha256": "4cd71dece7037f1d6d93cce7570c57ab75ea9ac566fd4990be2f3ab08d15b47f"
+        }
+      ]
+    },
+    {
+      "repository": "https://github.com/OHF-Voice/wyoming-piper",
+      "source_ref": "main",
+      "source_revision": "544902bc7fd75a7c31f3d90a18289e425c601f84",
+      "source_revision_scope": "reviewed_current_source_only",
+      "license_url": "https://github.com/OHF-Voice/wyoming-piper/blob/544902bc7fd75a7c31f3d90a18289e425c601f84/LICENSE.md",
+      "license": "MIT",
+      "scope": "Wyoming protocol server current source only; installed package revision unverified",
+      "documents": [
+        {
+          "path": "LICENSE.md",
+          "url": "https://github.com/OHF-Voice/wyoming-piper/blob/544902bc7fd75a7c31f3d90a18289e425c601f84/LICENSE.md",
+          "sha256": "13746d509d74e55ea2265fbef204bb7cdbf84a8315b0207e988326cb54387028"
+        }
+      ]
+    }
+  ],
+  "model_terms": {
+    "status": "separate_review_required",
+    "summary": "The linked dataset agreement is limited to research and requires named acceptance; applicability and a distinct grant for the trained voice weights remain unresolved.",
+    "sources": [
+      {
+        "repository": "https://huggingface.co/rhasspy/piper-voices",
+        "reviewed_revision": "c10ece1aade47bb51c153c893d14e5bf8e5b7117",
+        "revision_scope": "public_metadata_observation_not_runtime_pin",
+        "license_metadata": "mit",
+        "gated": false,
+        "scope": "Default en_US-lessac-medium voice card links a separate Lessac research dataset license; repository MIT metadata is not treated as a resolved per-voice grant",
+        "documents": [
+          {
+            "url": "https://huggingface.co/rhasspy/piper-voices/resolve/c10ece1aade47bb51c153c893d14e5bf8e5b7117/en/en_US/lessac/medium/MODEL_CARD",
+            "sha256": "ce49eb457742208166d399a40cdec2c7fa9db77960930031564ab56f12882645",
+            "path": "en/en_US/lessac/medium/MODEL_CARD"
+          }
+        ],
+        "api_evidence": [
+          {
+            "url": "https://huggingface.co/api/models/rhasspy/piper-voices",
+            "sha256": "0c0fdfc04d9910a4b64ef0a332fa86b2ec36b76c6477605290f7b95dc8f82181"
+          }
+        ]
+      }
+    ],
+    "dataset_terms_url": "https://www.cstr.ed.ac.uk/projects/blizzard/2013/lessac_blizzard2013/license.html"
+  },
+  "source_evidence": [
+    {
+      "url": "https://api.github.com/repos/linuxserver/docker-piper",
+      "retrieved_at": "2026-09-23T07:53:53.500454+00:00",
+      "success": true,
+      "response_sha256": "f0e686a915aa400aa43911d6df36afd5fb8d65f19d139e9d5d8bc45ea09f0473"
+    },
+    {
+      "url": "https://api.github.com/repos/linuxserver/docker-piper/commits/c39513360e5b9b57c964157e37df1799a2989d05",
+      "retrieved_at": "2026-09-23T07:59:05.280215+00:00",
+      "success": true,
+      "response_sha256": "d91e135a3f0c0a707d4d0ad9c973f41385f7f11387573208b8825a1edcf465a7"
+    },
+    {
+      "url": "https://api.github.com/repos/linuxserver/docker-piper/license?ref=c39513360e5b9b57c964157e37df1799a2989d05",
+      "retrieved_at": "2026-09-23T07:59:06.273921+00:00",
+      "success": true,
+      "response_sha256": "8b25b1982aac291dec8bc803606b614cacc423c730e25b247595b29f01716165"
+    },
+    {
+      "url": "https://api.github.com/repos/linuxserver/docker-piper/contents?ref=c39513360e5b9b57c964157e37df1799a2989d05",
+      "retrieved_at": "2026-09-23T07:59:06.894903+00:00",
+      "success": true,
+      "response_sha256": "a3bcec27c6f34a2a1e25754c252e86ee3d66730826b0c85c5644ab11c6f8a309"
+    }
+  ],
+  "gaps": [
+    "Image tag 1.6.3 remains mutable; OCI labels are an observation, not a signature or reproducible build proof.",
+    "The exact installed Piper/Wyoming package revisions are not proven by current engine/server source records.",
+    "Repository-level MIT metadata for piper-voices conflicts in scope with the voice card linked Lessac research dataset license; a distinct grant for the exact lessac-medium weights has not been established.",
+    "OCI source labels are publisher claims; no signature, attestation or reproducible build was verified.",
+    "One or more configured image/base references are mutable tags; registry digest and full component inventory remain pending.",
+    "This application-level record is not a complete image SBOM or an assessment of redistribution/notice obligations for every dependency."
+  ],
+  "image": "lscr.io/linuxserver/piper:1.6.3",
+  "image_observation": {
+    "id": "piper-audio",
+    "image": "lscr.io/linuxserver/piper:1.6.3",
+    "checked_at": "2026-09-23T07:54:20.308267+00:00",
+    "success": true,
+    "response_sha256": "f1e2681f666dd6f2a21ba6e955229c1ab4b85ecf225360a3c4c942a492385397",
+    "variants": [
+      {
+        "architecture": "amd64",
+        "os": "linux",
+        "created": "2025-10-27T08:59:35.666621323Z",
+        "labels": {
+          "build_version": "Linuxserver.io version:- 1.6.3-ls82 Build-date:- 2025-10-27T08:57:36+00:00",
+          "maintainer": "thespad",
+          "org.opencontainers.image.authors": "linuxserver.io",
+          "org.opencontainers.image.created": "2025-10-27T08:57:36+00:00",
+          "org.opencontainers.image.description": "[Piper](https://github.com/rhasspy/piper/) is a fast, local neural text to speech system that sounds great and is optimized for the Raspberry Pi 4. This container provides a Wyoming protocol server for Piper.",
+          "org.opencontainers.image.documentation": "https://docs.linuxserver.io/images/docker-piper",
+          "org.opencontainers.image.licenses": "GPL-3.0-only",
+          "org.opencontainers.image.ref.name": "c39513360e5b9b57c964157e37df1799a2989d05",
+          "org.opencontainers.image.revision": "c39513360e5b9b57c964157e37df1799a2989d05",
+          "org.opencontainers.image.source": "https://github.com/linuxserver/docker-piper",
+          "org.opencontainers.image.title": "Piper",
+          "org.opencontainers.image.url": "https://github.com/linuxserver/docker-piper/packages",
+          "org.opencontainers.image.vendor": "linuxserver.io",
+          "org.opencontainers.image.version": "1.6.3-ls82"
+        },
+        "upstream_urls_in_build_history": [
+          "https://pypi.python.org/pypi/wyoming-piper/json",
+          "https://raw.githubusercontent.com/linuxserver/docker-mods/mod-scripts/docker-mods.v3",
+          "https://raw.githubusercontent.com/linuxserver/docker-mods/mod-scripts/lsiown.v1",
+          "https://raw.githubusercontent.com/linuxserver/docker-mods/mod-scripts/package-install.v1",
+          "https://raw.githubusercontent.com/linuxserver/docker-mods/mod-scripts/with-contenv.v1",
+          "https://wheel-index.linuxserver.io/ubuntu/"
+        ]
+      },
+      {
+        "architecture": "arm64",
+        "os": "linux",
+        "created": "2025-10-27T08:59:30.084511391Z",
+        "labels": {
+          "build_version": "Linuxserver.io version:- 1.6.3-ls82 Build-date:- 2025-10-27T08:57:36+00:00",
+          "maintainer": "thespad",
+          "org.opencontainers.image.authors": "linuxserver.io",
+          "org.opencontainers.image.created": "2025-10-27T08:57:36+00:00",
+          "org.opencontainers.image.description": "[Piper](https://github.com/rhasspy/piper/) is a fast, local neural text to speech system that sounds great and is optimized for the Raspberry Pi 4. This container provides a Wyoming protocol server for Piper.",
+          "org.opencontainers.image.documentation": "https://docs.linuxserver.io/images/docker-piper",
+          "org.opencontainers.image.licenses": "GPL-3.0-only",
+          "org.opencontainers.image.ref.name": "c39513360e5b9b57c964157e37df1799a2989d05",
+          "org.opencontainers.image.revision": "c39513360e5b9b57c964157e37df1799a2989d05",
+          "org.opencontainers.image.source": "https://github.com/linuxserver/docker-piper",
+          "org.opencontainers.image.title": "Piper",
+          "org.opencontainers.image.url": "https://github.com/linuxserver/docker-piper/packages",
+          "org.opencontainers.image.vendor": "linuxserver.io",
+          "org.opencontainers.image.version": "1.6.3-ls82"
+        },
+        "upstream_urls_in_build_history": [
+          "https://pypi.python.org/pypi/wyoming-piper/json",
+          "https://raw.githubusercontent.com/linuxserver/docker-mods/mod-scripts/docker-mods.v3",
+          "https://raw.githubusercontent.com/linuxserver/docker-mods/mod-scripts/lsiown.v1",
+          "https://raw.githubusercontent.com/linuxserver/docker-mods/mod-scripts/package-install.v1",
+          "https://raw.githubusercontent.com/linuxserver/docker-mods/mod-scripts/with-contenv.v1",
+          "https://wheel-index.linuxserver.io/ubuntu/"
+        ]
+      }
+    ]
+  }
+}

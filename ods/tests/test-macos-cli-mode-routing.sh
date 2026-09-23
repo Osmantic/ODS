@@ -69,12 +69,17 @@ chmod +x "$MOCK_BIN/jq" "$MOCK_BIN/curl" "$MOCK_BIN/docker"
 
 run_cli() {
     PATH="$MOCK_BIN:$PATH" \
+    TMPDIR="$TMP_DIR" \
     ODS_HOME="$INSTALL_DIR" \
     CURL_LOG="$CURL_LOG" \
     DOCKER_LOG="$DOCKER_LOG" \
     RESOLVER_LOG="$RESOLVER_LOG" \
         bash "$CLI" "$@"
 }
+
+# Exercise the default without a preseeded ODS_LOG_FILE. The CLI must prepare
+# its private destination, just like the installer, before a narrator writes.
+unset ODS_LOG_FILE
 
 write_local_env() {
     cat > "$INSTALL_DIR/.env" <<'LOCAL_ENV'
@@ -197,5 +202,22 @@ resolved_flags="${resolved_flags//\\//}"
 [[ "$resolved_flags" == *'-f docker-compose.base.yml -f docker-compose.cloud.yml -f data/generated/docker-compose.macos-cloud-auth.yml' ]] \
     || fail "cache rebuild dropped or misordered the generated macOS cloud-auth overlay: $resolved_flags"
 pass "cloud cache rebuild preserves the generated client-auth overlay"
+
+found_private_log=false
+for cli_log in "$TMP_DIR"/ods-install.*/install.log; do
+    [[ -f "$cli_log" ]] || continue
+    found_private_log=true
+    if [[ "$(uname -s)" == Darwin ]]; then
+        file_mode="$(stat -f '%Lp' "$cli_log")"
+        directory_mode="$(stat -f '%Lp' "$(dirname "$cli_log")")"
+    else
+        file_mode="$(stat -c '%a' "$cli_log")"
+        directory_mode="$(stat -c '%a' "$(dirname "$cli_log")")"
+    fi
+    [[ "$file_mode" == 600 && "$directory_mode" == 700 ]] \
+        || fail "CLI diagnostic path is not private"
+done
+$found_private_log || fail "CLI did not prepare its default diagnostic log"
+pass "CLI default logs remain private without an environment override"
 
 echo "[OK] macOS CLI mode-aware routing contract holds"

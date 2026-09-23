@@ -1,0 +1,93 @@
+{
+  "schema_version": "ods.upstream.v1",
+  "repository": "https://github.com/langgenius/dify",
+  "source_ref": "0.6.16",
+  "source_revision": "23ed15d19f138fd0bf555f17303fdafb1d74c3f7",
+  "source_revision_scope": "configured_version_reference",
+  "source_url": "https://github.com/langgenius/dify/tree/23ed15d19f138fd0bf555f17303fdafb1d74c3f7",
+  "license": "LicenseRef-Dify-0.6.16",
+  "license_scope": "application_source_only; excludes container base, dependencies, third-party assets and model weights",
+  "license_url": "https://github.com/langgenius/dify/blob/23ed15d19f138fd0bf555f17303fdafb1d74c3f7/LICENSE",
+  "license_documents": [
+    {
+      "path": "LICENSE",
+      "url": "https://github.com/langgenius/dify/blob/23ed15d19f138fd0bf555f17303fdafb1d74c3f7/LICENSE",
+      "sha256": "1a4edcccf59a8b2aeee81b1eb05baa0b421d1d22bc0a56a3a9e80826d4deef92"
+    }
+  ],
+  "notice_urls": [],
+  "provenance_checked_at": "2026-09-23",
+  "review_status": "provenance_recorded_with_gaps",
+  "runtime_validation": "not_run",
+  "notes": "This recipe is disabled. Dify 0.6.16 has an Apache-derived license with additional multi-tenant SaaS and frontend attribution conditions, so it is not classified as unmodified Apache-2.0. The configured difyai/dify image is not the upstream documented API/web deployment.",
+  "deployment": {
+    "kind": "disabled_recipe",
+    "recipe_files": [
+      {
+        "path": ".env.example",
+        "sha256": "a429fa72c3916e258c637900f1d3ca3e1384cc67c70e035e4a2fd60543e3ec72"
+      },
+      {
+        "path": "compose.yaml.disabled",
+        "sha256": "949a6158efce65e7032b470e649cb5fc6f2bbce160adad355c199f7da78ec5d1"
+      },
+      {
+        "path": "manifest.yaml",
+        "sha256": "952b63bf8cd3b324de216b0d96eef0926092157f92fa1285c0c9ea038915ac4f"
+      },
+      {
+        "path": "setup.sh",
+        "sha256": "9f87c6e815b410f02cd2d89967c8301eaa2cb4d6cd4c4d875b43fcece8085e1b"
+      }
+    ],
+    "hash_normalization": "CRLF_to_LF",
+    "images": [
+      {
+        "file": "compose.yaml.disabled",
+        "service": "dify",
+        "image": "difyai/dify:0.6.16",
+        "scope": "application"
+      }
+    ]
+  },
+  "code_components": [],
+  "model_terms": {
+    "status": "not_selected_by_recipe",
+    "summary": "Application code licensing does not grant rights to downloaded or bundled model weights. No model eligibility or acceptance decision is made by this record.",
+    "sources": []
+  },
+  "source_evidence": [
+    {
+      "url": "https://api.github.com/repos/langgenius/dify",
+      "retrieved_at": "2026-09-23T07:53:34.732713+00:00",
+      "success": true,
+      "response_sha256": "74f74ab2e0fdf1d54c9cde217a93c42b625f5d0da34635ce2d2e13a590c4caec"
+    },
+    {
+      "url": "https://api.github.com/repos/langgenius/dify/commits/0.6.16",
+      "retrieved_at": "2026-09-23T07:53:35.415255+00:00",
+      "success": true,
+      "response_sha256": "7e52f7977ca4315ccb4999edb38187905dd6c3c0ff72ac37fe5560cf5d419ba8"
+    },
+    {
+      "url": "https://api.github.com/repos/langgenius/dify/license?ref=23ed15d19f138fd0bf555f17303fdafb1d74c3f7",
+      "retrieved_at": "2026-09-23T07:53:36.409793+00:00",
+      "success": true,
+      "response_sha256": "1e218e279012652dc22f18d3a9303ef62b826bc3b08ae55dc1de220a43a9823a"
+    },
+    {
+      "url": "https://api.github.com/repos/langgenius/dify/contents?ref=23ed15d19f138fd0bf555f17303fdafb1d74c3f7",
+      "retrieved_at": "2026-09-23T07:53:37.020669+00:00",
+      "success": true,
+      "response_sha256": "6abdd9f14ad83d2f4054f9502b7b29fdb80f2d79dee64609514e601cca238e09"
+    }
+  ],
+  "gaps": [
+    "Disabled recipe image difyai/dify:0.6.16 is not established as an official Dify release artifact.",
+    "Additional license conditions require review before redistribution or multi-tenant use.",
+    "Source release reference matches the configured version; an image digest does not by itself prove the image was built from this commit.",
+    "One or more configured image/base references are mutable tags; registry digest and full component inventory remain pending.",
+    "This application-level record is not a complete image SBOM or an assessment of redistribution/notice obligations for every dependency."
+  ],
+  "image": "difyai/dify:0.6.16"
+}

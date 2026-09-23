@@ -1,0 +1,149 @@
+{
+  "schema_version": "ods.upstream.v1",
+  "repository": "https://github.com/facebookresearch/audiocraft",
+  "source_ref": "v1.3.0",
+  "source_revision": "72cb16f9fb239e9cf03f7bd997198c7d7a67a01c",
+  "source_revision_scope": "configured_version_reference",
+  "source_url": "https://github.com/facebookresearch/audiocraft/tree/72cb16f9fb239e9cf03f7bd997198c7d7a67a01c",
+  "license": "MIT",
+  "license_scope": "application_source_only; excludes container base, dependencies, third-party assets and model weights",
+  "license_url": "https://github.com/facebookresearch/audiocraft/blob/72cb16f9fb239e9cf03f7bd997198c7d7a67a01c/LICENSE",
+  "license_documents": [
+    {
+      "path": "LICENSE",
+      "url": "https://github.com/facebookresearch/audiocraft/blob/72cb16f9fb239e9cf03f7bd997198c7d7a67a01c/LICENSE",
+      "sha256": "da6d3703ed11cbe42bd212c725957c98da23cbff1998c05fa4b3d976d1a58e93"
+    },
+    {
+      "path": "LICENSE_weights",
+      "url": "https://github.com/facebookresearch/audiocraft/blob/72cb16f9fb239e9cf03f7bd997198c7d7a67a01c/LICENSE_weights",
+      "sha256": "336255dc30193e8e15d689d9481bb05673d89055718f3a96923a7ffb99adbbaf"
+    }
+  ],
+  "notice_urls": [],
+  "provenance_checked_at": "2026-09-23",
+  "review_status": "provenance_recorded_with_gaps",
+  "runtime_validation": "not_run",
+  "notes": "AudioCraft 1.3.0 code is MIT. The recipe loads facebook/musicgen-small and facebook/audiogen-medium on startup; those model cards and LICENSE_weights state CC-BY-NC-4.0, separately from code.",
+  "deployment": {
+    "kind": "local_build",
+    "recipe_files": [
+      {
+        "path": "Dockerfile",
+        "sha256": "d54a25dafe508f26467ffb78322eea4a321acf275740e24997d1b2fa610d4a55"
+      },
+      {
+        "path": "compose.nvidia.yaml",
+        "sha256": "97d2902543775ee9bd8e17ed772a79c1a363fefb77801c17ad2044413022b4be"
+      },
+      {
+        "path": "compose.yaml",
+        "sha256": "d1cfabcd2ea4b53e694a01c9225b79911d2b2f60c1d52c74154683f9542ab6be"
+      },
+      {
+        "path": "manifest.yaml",
+        "sha256": "9532421c63af4f152037a033d8278b11f55219fa1e694e11ca1988c5b65da237"
+      }
+    ],
+    "hash_normalization": "CRLF_to_LF",
+    "images": [
+      {
+        "file": "Dockerfile",
+        "image": "python:3.10-slim-bookworm@sha256:4efa69bf17cfbd5eb44b170e40bb8091b1c0fadf3833aeb87b655512e24268e5",
+        "scope": "build_base_not_covered_by_application_license"
+      },
+      {
+        "file": "Dockerfile",
+        "image": "audiocraft.models",
+        "scope": "build_base_not_covered_by_application_license"
+      },
+      {
+        "file": "Dockerfile",
+        "image": "audiocraft.data.audio",
+        "scope": "build_base_not_covered_by_application_license"
+      }
+    ]
+  },
+  "code_components": [],
+  "model_terms": {
+    "status": "separate_review_required",
+    "summary": "Application code licensing does not grant rights to downloaded or bundled model weights. No model eligibility or acceptance decision is made by this record.",
+    "sources": [
+      {
+        "repository": "https://huggingface.co/facebook/musicgen-small",
+        "reviewed_revision": "4c8334b02c6ec4e8664a91979669a501ec497792",
+        "revision_scope": "public_metadata_observation_not_runtime_pin",
+        "license_metadata": "cc-by-nc-4.0",
+        "gated": false,
+        "scope": "Selected by local app startup; weights CC-BY-NC-4.0",
+        "documents": [
+          {
+            "url": "https://huggingface.co/facebook/musicgen-small/resolve/4c8334b02c6ec4e8664a91979669a501ec497792/README.md",
+            "sha256": "fd82bcd1695c15550d5a047b911980038fc776f3bf417450c4596c6486d0cd2d",
+            "path": "README.md"
+          }
+        ],
+        "api_evidence": [
+          {
+            "url": "https://huggingface.co/api/models/facebook/musicgen-small",
+            "sha256": "5d0222a62740c10ea94421b6392fdefd4b709ded8e39ae49b4f0aebb463965c3"
+          }
+        ]
+      },
+      {
+        "repository": "https://huggingface.co/facebook/audiogen-medium",
+        "reviewed_revision": "1277dd7dfd8fa57a205a70acc5de0ee90804502f",
+        "revision_scope": "public_metadata_observation_not_runtime_pin",
+        "license_metadata": "cc-by-nc-4.0",
+        "gated": false,
+        "scope": "Selected by local app startup; weights CC-BY-NC-4.0",
+        "documents": [
+          {
+            "url": "https://huggingface.co/facebook/audiogen-medium/resolve/1277dd7dfd8fa57a205a70acc5de0ee90804502f/README.md",
+            "sha256": "d396a9bac8f9bfacc666f72c4c52fbd230135449819f416412f68be1d545babd",
+            "path": "README.md"
+          }
+        ],
+        "api_evidence": [
+          {
+            "url": "https://huggingface.co/api/models/facebook/audiogen-medium",
+            "sha256": "926681172494385dafc88540c096cdf22afe22b2715678aaa3c0c31cba3b1f25"
+          }
+        ]
+      }
+    ]
+  },
+  "source_evidence": [
+    {
+      "url": "https://api.github.com/repos/facebookresearch/audiocraft",
+      "retrieved_at": "2026-09-23T07:53:29.301606+00:00",
+      "success": true,
+      "response_sha256": "723797bf451697d54f39d0ce4da2e8b05f599b191f2e9925dc3a81ea12c9b425"
+    },
+    {
+      "url": "https://api.github.com/repos/facebookresearch/audiocraft/commits/v1.3.0",
+      "retrieved_at": "2026-09-23T07:53:29.901083+00:00",
+      "success": true,
+      "response_sha256": "6d33aae0e17f797d04ab983784345a4e1a9e9777c7963a7222ba716eae04c441"
+    },
+    {
+      "url": "https://api.github.com/repos/facebookresearch/audiocraft/license?ref=72cb16f9fb239e9cf03f7bd997198c7d7a67a01c",
+      "retrieved_at": "2026-09-23T07:53:30.564415+00:00",
+      "success": true,
+      "response_sha256": "2481ac93dba1141447ca6fc1bddd6047ee200c5cafb91c7b139e605225649e00"
+    },
+    {
+      "url": "https://api.github.com/repos/facebookresearch/audiocraft/contents?ref=72cb16f9fb239e9cf03f7bd997198c7d7a67a01c",
+      "retrieved_at": "2026-09-23T07:53:31.154120+00:00",
+      "success": true,
+      "response_sha256": "6647bf1006a9f6bc6e85506520cc72921e19257b89582f8500e822911795ed21"
+    }
+  ],
+  "gaps": [
+    "Startup model downloads have no immutable model revision or digest in the recipe.",
+    "CC-BY-NC-4.0 model restrictions must be carried through model selection and acceptance; this backfill does not implement that flow.",
+    "Source release reference matches the configured version; an image digest does not by itself prove the image was built from this commit.",
+    "One or more configured image/base references are mutable tags; registry digest and full component inventory remain pending.",
+    "This application-level record is not a complete image SBOM or an assessment of redistribution/notice obligations for every dependency."
+  ]
+}

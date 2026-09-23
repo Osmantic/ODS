@@ -30,7 +30,8 @@ jobs:
           python-version: "3.12"
 
       - name: Install PyYAML
-        run: pip install pyyaml
+        run: >-
+          python -m pip install --require-hashes --only-binary=:all: -r ods/installers/python-deps/pyyaml.txt
 
       - name: Regenerate catalog and diff
         run: |

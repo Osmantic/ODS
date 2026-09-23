@@ -1,0 +1,5 @@
+# Shared tooling for standalone contract jobs; application dependencies are separate.
+pytest==8.4.2
+pytest-subtests==0.15.0
+PyYAML>=6.0,<7.0
+jsonschema>=4.21,<5.0

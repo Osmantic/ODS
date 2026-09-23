@@ -1,0 +1,83 @@
+{
+  "schema_version": "ods.upstream.v1",
+  "repository": "https://github.com/Aider-AI/aider",
+  "source_ref": "v0.86.2",
+  "source_revision": "253f0368b873ba30d8ee26e463718f0c03614ddf",
+  "source_revision_scope": "configured_version_reference",
+  "source_url": "https://github.com/Aider-AI/aider/tree/253f0368b873ba30d8ee26e463718f0c03614ddf",
+  "license": "Apache-2.0",
+  "license_scope": "application_source_only; excludes container base, dependencies, third-party assets and model weights",
+  "license_url": "https://github.com/Aider-AI/aider/blob/253f0368b873ba30d8ee26e463718f0c03614ddf/LICENSE.txt",
+  "license_documents": [
+    {
+      "path": "LICENSE.txt",
+      "url": "https://github.com/Aider-AI/aider/blob/253f0368b873ba30d8ee26e463718f0c03614ddf/LICENSE.txt",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    }
+  ],
+  "notice_urls": [],
+  "provenance_checked_at": "2026-09-23",
+  "review_status": "provenance_recorded_with_gaps",
+  "runtime_validation": "not_run",
+  "notes": "Aider CLI source is Apache-2.0. Configured image selects release v0.86.2; LLM providers and user-selected weights retain separate terms.",
+  "deployment": {
+    "kind": "container_image",
+    "recipe_files": [
+      {
+        "path": "compose.yaml",
+        "sha256": "8101ec13a1478b9c019f2faf5a2b52d12bf6930727fea4997ea42287a1f794fe"
+      },
+      {
+        "path": "manifest.yaml",
+        "sha256": "703a5081e6ca2804aae1b7965a2b42406b6235bf19b55951cea2a8a25e308c85"
+      }
+    ],
+    "hash_normalization": "CRLF_to_LF",
+    "images": [
+      {
+        "file": "compose.yaml",
+        "service": "aider",
+        "image": "paulgauthier/aider:v0.86.2",
+        "scope": "application"
+      }
+    ]
+  },
+  "code_components": [],
+  "model_terms": {
+    "status": "not_selected_by_recipe",
+    "summary": "Application code licensing does not grant rights to downloaded or bundled model weights. No model eligibility or acceptance decision is made by this record.",
+    "sources": []
+  },
+  "source_evidence": [
+    {
+      "url": "https://api.github.com/repos/Aider-AI/aider",
+      "retrieved_at": "2026-09-23T07:53:29.272847+00:00",
+      "success": true,
+      "response_sha256": "09e528cc1c179832687d3fa2cd00e54b3b2723f2511759a464755464e529db8e"
+    },
+    {
+      "url": "https://api.github.com/repos/Aider-AI/aider/commits/v0.86.2",
+      "retrieved_at": "2026-09-23T07:53:29.934503+00:00",
+      "success": true,
+      "response_sha256": "a8d16456408308a46bdbb8df650366e99293dbc87cb29e55af7969dc49a6e344"
+    },
+    {
+      "url": "https://api.github.com/repos/Aider-AI/aider/license?ref=253f0368b873ba30d8ee26e463718f0c03614ddf",
+      "retrieved_at": "2026-09-23T07:53:30.556614+00:00",
+      "success": true,
+      "response_sha256": "9125be25c32e72866170cbebd7c8f75ec6ae6ed4fbacc067507c3859790e6785"
+    },
+    {
+      "url": "https://api.github.com/repos/Aider-AI/aider/contents?ref=253f0368b873ba30d8ee26e463718f0c03614ddf",
+      "retrieved_at": "2026-09-23T07:53:31.128489+00:00",
+      "success": true,
+      "response_sha256": "a52de1a30cc5f597aadc3a8a7a502db4da2fff0562e0abeca1229eb199be8cea"
+    }
+  ],
+  "gaps": [
+    "Source release reference matches the configured version; an image digest does not by itself prove the image was built from this commit.",
+    "One or more configured image/base references are mutable tags; registry digest and full component inventory remain pending.",
+    "This application-level record is not a complete image SBOM or an assessment of redistribution/notice obligations for every dependency."
+  ],
+  "image": "paulgauthier/aider:v0.86.2"
+}

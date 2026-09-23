@@ -1,0 +1,151 @@
+{
+  "schema_version": "ods.upstream.v1",
+  "repository": "https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI",
+  "source_ref": "main",
+  "source_revision": "81eed5e8f68b6bed1789f682fe78cdd324495afc",
+  "source_revision_scope": "reviewed_current_source_only",
+  "source_url": "https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI/tree/81eed5e8f68b6bed1789f682fe78cdd324495afc",
+  "license": "MIT",
+  "license_scope": "application_source_only; excludes container base, dependencies, third-party assets and model weights",
+  "license_url": "https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI/blob/81eed5e8f68b6bed1789f682fe78cdd324495afc/LICENSE",
+  "license_documents": [
+    {
+      "path": "LICENSE",
+      "url": "https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI/blob/81eed5e8f68b6bed1789f682fe78cdd324495afc/LICENSE",
+      "sha256": "bec61ed1eb9a3748644ddbc50303aa6978e14eeaba46822e59a006c722b52585"
+    }
+  ],
+  "notice_urls": [],
+  "provenance_checked_at": "2026-09-23",
+  "review_status": "provenance_recorded_with_gaps",
+  "runtime_validation": "not_run",
+  "notes": "RVC application source is MIT, but the aladdin1234 image does not identify its source revision. OCI build history downloads multiple weights from lj1995/VoiceConversionWebUI main. A repository-level MIT card alone does not establish each inherited weight grant.",
+  "deployment": {
+    "kind": "container_image",
+    "recipe_files": [
+      {
+        "path": "compose.amd.yaml",
+        "sha256": "b13b6ea836ed464a795e94cb2619439a4c26708e168f95afd13b32584544cd7f"
+      },
+      {
+        "path": "compose.nvidia.yaml",
+        "sha256": "91a4fc9ccde1fed7029e017eee8dbcd770f21ba659931f23bed39b25ccf8746e"
+      },
+      {
+        "path": "compose.yaml",
+        "sha256": "373c86fbf8ae1f3c29cb02c651a3c29b9160a5c732d2fa9c692b92bf3cc46917"
+      },
+      {
+        "path": "manifest.yaml",
+        "sha256": "b27397346cd87af5d1f86e66cb9eb2ab4284f7d92c2a43a1ae6396abfbe2f5aa"
+      },
+      {
+        "path": "workflow-voice-convert.json",
+        "sha256": "613f28cd72e9edcb788eca365a01d07e6627fbcad59f57c3a0df359aad25109a"
+      }
+    ],
+    "hash_normalization": "CRLF_to_LF",
+    "images": [
+      {
+        "file": "compose.yaml",
+        "service": "rvc",
+        "image": "aladdin1234/rvc-webui:0.1@sha256:7f8b4ca826d31d0ea50c56327d9fbfd1dacead37064a5f9745738b728a6271be",
+        "scope": "application"
+      }
+    ]
+  },
+  "code_components": [],
+  "model_terms": {
+    "status": "separate_review_required",
+    "summary": "Application code licensing does not grant rights to downloaded or bundled model weights. No model eligibility or acceptance decision is made by this record.",
+    "sources": [
+      {
+        "repository": "https://huggingface.co/lj1995/VoiceConversionWebUI",
+        "reviewed_revision": "e6d0c1a17da07c33557852f9dfa2bd44cc75737d",
+        "revision_scope": "public_metadata_observation_not_runtime_pin",
+        "license_metadata": "mit",
+        "gated": false,
+        "scope": "OCI history downloads files from mutable main; minimal root MIT metadata does not resolve inherited per-file grants",
+        "documents": [
+          {
+            "url": "https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/e6d0c1a17da07c33557852f9dfa2bd44cc75737d/README.md",
+            "sha256": "3e0e15fa0c5cc81675bd69af8eb469d128a725c1a7bfc71f03b7877b7b650567",
+            "path": "README.md"
+          }
+        ],
+        "api_evidence": [
+          {
+            "url": "https://huggingface.co/api/models/lj1995/VoiceConversionWebUI",
+            "sha256": "bbbb6ed09d5950e038ddeba3f8ba995a7d3f883b82fae60b677fd76f396314fc"
+          }
+        ]
+      }
+    ]
+  },
+  "source_evidence": [
+    {
+      "url": "https://api.github.com/repos/RVC-Boss/Retrieval-based-Voice-Conversion-WebUI",
+      "retrieved_at": "2026-09-23T07:53:54.642754+00:00",
+      "success": true,
+      "response_sha256": "1e801086b259b623963e0a036bb0a010b6ba5dfac978eb05d3bbf7cba7823b64"
+    },
+    {
+      "url": "https://api.github.com/repos/RVC-Project/Retrieval-based-Voice-Conversion-WebUI/commits/main",
+      "retrieved_at": "2026-09-23T07:53:55.638825+00:00",
+      "success": true,
+      "response_sha256": "933ea95ed6d2811db93f6dcec1b70e255c478ee05aed75a4af9f80cc4f439bad"
+    },
+    {
+      "url": "https://api.github.com/repos/RVC-Project/Retrieval-based-Voice-Conversion-WebUI/license?ref=81eed5e8f68b6bed1789f682fe78cdd324495afc",
+      "retrieved_at": "2026-09-23T07:53:56.417393+00:00",
+      "success": true,
+      "response_sha256": "c76387ef1926d4b60541197a5ce8c5f91c0de900d5544bcc2d17f077adca9dd0"
+    },
+    {
+      "url": "https://api.github.com/repos/RVC-Project/Retrieval-based-Voice-Conversion-WebUI/contents?ref=81eed5e8f68b6bed1789f682fe78cdd324495afc",
+      "retrieved_at": "2026-09-23T07:53:56.969053+00:00",
+      "success": true,
+      "response_sha256": "562ca0303f51f6543c4626c0117819c69bc6499791150f44316df3c8eaa0801e"
+    }
+  ],
+  "gaps": [
+    "Application source revision and image publisher-to-source association remain unverified.",
+    "Prebaked Hubert, RMVPE, UVR and pretrained RVC weights have mutable build URLs; per-file provenance, upstream grants and original revisions remain unresolved despite a root MIT model-card label.",
+    "Reviewed current source is not proven to be the source revision of the deployed package/image.",
+    "This application-level record is not a complete image SBOM or an assessment of redistribution/notice obligations for every dependency."
+  ],
+  "image": "aladdin1234/rvc-webui:0.1@sha256:7f8b4ca826d31d0ea50c56327d9fbfd1dacead37064a5f9745738b728a6271be",
+  "image_observation": {
+    "id": "rvc",
+    "image": "aladdin1234/rvc-webui:0.1@sha256:7f8b4ca826d31d0ea50c56327d9fbfd1dacead37064a5f9745738b728a6271be",
+    "checked_at": "2026-09-23T07:54:17.472039+00:00",
+    "success": true,
+    "response_sha256": "a0a745397c30d8cc4ffb9d4360afb70232333e26e6e1518e9c48367d0d5a7e8b",
+    "variants": [
+      {
+        "architecture": "amd64",
+        "os": "linux",
+        "created": "2024-04-12T13:40:00.951660367Z",
+        "labels": {
+          "com.nvidia.cudnn.version": "8.4.0.27",
+          "maintainer": "NVIDIA CORPORATION <cudatools@nvidia.com>",
+          "org.opencontainers.image.ref.name": "ubuntu",
+          "org.opencontainers.image.version": "20.04"
+        },
+        "upstream_urls_in_build_history": [
+          "https://bootstrap.pypa.io/get-pip.py",
+          "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2004/${NVARCH}",
+          "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2004/${NVARCH}/3bf863cc.pub",
+          "https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/hubert_base.pt",
+          "https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/pretrained_v2/D40k.pth",
+          "https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/pretrained_v2/G40k.pth",
+          "https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/pretrained_v2/f0D40k.pth",
+          "https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/pretrained_v2/f0G40k.pth",
+          "https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/rmvpe.pt",
+          "https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/uvr5_weights/HP2-人声vocals+非人声instrumentals.pth",
+          "https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/uvr5_weights/HP5-主旋律人声vocals+其他instrumentals.pth"
+        ]
+      }
+    ]
+  }
+}

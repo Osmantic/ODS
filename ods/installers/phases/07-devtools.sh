@@ -349,7 +349,8 @@ _ods_start_session_host_agent() {
     if ! "$AGENT_PYTHON" -c "import huggingface_hub, hf_xet" >/dev/null 2>&1; then
         ai "Installing ODS host-agent model downloader dependencies..."
         if ods_ensure_python_pip "$AGENT_PYTHON" "ODS host-agent" && \
-           ods_python_pip_install_user "$AGENT_PYTHON" "$LOG_FILE" "huggingface_hub[hf_xet]>=0.27"; then
+           ods_python_pip_install_user "$AGENT_PYTHON" "$LOG_FILE" --require-hashes --only-binary=:all: \
+               -r "$SCRIPT_DIR/installers/python-deps/host-agent.txt"; then
             ai_ok "ODS host-agent Hugging Face downloader ready"
         else
             ai_warn "Could not install huggingface_hub[hf_xet]; model manager downloads may fail on Xet-backed Hugging Face models."
@@ -416,10 +417,12 @@ if [[ -f "$INSTALL_DIR/bin/ods-host-agent.py" ]]; then
                 ai "Installing ODS host-agent model downloader dependencies..."
                 if ods_ensure_python_pip "$AGENT_PYTHON" "ODS host-agent" && {
                     sudo -u "$_agent_user" env HOME="$HOME" \
-                        "$AGENT_PYTHON" -m pip install --user -q "huggingface_hub[hf_xet]>=0.27" \
+                        "$AGENT_PYTHON" -m pip install --user -q --require-hashes --only-binary=:all: \
+                        -r "$SCRIPT_DIR/installers/python-deps/host-agent.txt" \
                         2>&1 | tee -a "$LOG_FILE" >/dev/null || \
                     sudo -u "$_agent_user" env HOME="$HOME" \
-                        "$AGENT_PYTHON" -m pip install --user --break-system-packages -q "huggingface_hub[hf_xet]>=0.27" \
+                        "$AGENT_PYTHON" -m pip install --user --break-system-packages -q --require-hashes --only-binary=:all: \
+                        -r "$SCRIPT_DIR/installers/python-deps/host-agent.txt" \
                         2>&1 | tee -a "$LOG_FILE" >/dev/null
                 }; then
                     ai_ok "ODS host-agent Hugging Face downloader ready"

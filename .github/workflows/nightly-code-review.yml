@@ -108,7 +108,8 @@ jobs:
           python-version: '3.11'
 
       - name: Install tools
-        run: pip install ruff
+        run: >-
+          python -m pip install --require-hashes --only-binary=:all: -r .github/requirements/ruff.txt
 
       - name: Run Claude Code review
         env:

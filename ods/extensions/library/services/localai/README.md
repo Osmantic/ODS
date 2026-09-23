@@ -36,7 +36,7 @@ You have two ways to add a model:
 - **Use the built-in gallery browser.** Open `http://127.0.0.1:7803` and browse the model gallery from the web UI. Pick a model and LocalAI will download and register it for you.
 - **Drop a YAML model config into `data/localai/builds/`.** This directory is mounted at `/builds` inside the container and is where LocalAI loads model definitions from. See LocalAI's model-config docs for the YAML schema: <https://localai.io/docs/advanced/model-configuration/>.
 
-You can browse the upstream LocalAI model gallery at <https://localai.io/gallery/> for ready-made model entries you can copy into `data/localai/builds/`.
+Browse the upstream LocalAI model gallery at <https://models.localai.io/>. The [model setup guide](https://localai.io/docs/getting-started/models/) explains the supported gallery and manual installation methods.
 
 ### API Usage
 

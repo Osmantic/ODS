@@ -1,6 +1,6 @@
 # Model source and terms inventory — PB-013
 
-Reviewed 2026-09-23. **PB-013 remains open.** This is a source inventory for the next verified catalog backfill, not approval to use or redistribute model weights. The catalog, download flow and UI are unchanged. No model weights were downloaded and no credentials were used.
+Reviewed 2026-09-23. **PB-013 remains open.** This is the frozen source inventory used for the [catalog backfill](MODEL_TERMS_CATALOG.md), not approval to use or redistribute model weights. The counts and table below describe the catalog before that backfill. The current catalog now carries these observations and the dashboard can display them; mandatory presentation and acceptance before downloads are still outstanding. No model weights were downloaded and no credentials were used for this review.
 
 The inventory covers all **57 catalog entries**, including three multipart downloads. It records **147 distinct repository/revision observations** from anonymous public Hugging Face endpoints and follows explicitly declared metadata or model-card relationships. The machine-readable [evidence](MODEL_TERMS_AUDIT.json) contains full commit IDs, timestamps, HTTP outcomes, SHA-256 fingerprints of fetched metadata/documents, license links, gating observations, lineage and entry-specific gaps. The source catalog SHA-256 is `7b76c0e413dd5315c14cec0625f185290f3332cee4ef47fc60eba5e332614ad0`.
 

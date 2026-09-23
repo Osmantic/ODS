@@ -1,0 +1,4 @@
+# Preserve the existing downloader lower bound and Python 3.8+ dependency support.
+# Resolution records Python-version markers instead of raising the macOS Python 3.9 floor.
+huggingface_hub[hf_xet]>=0.27
+PyYAML

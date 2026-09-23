@@ -72,6 +72,13 @@ export ODS_SCRIPT_HINT="$SCRIPT_DIR"
 
 # Source only what we need for CLI
 source "${LIB_DIR}/constants.sh"
+# The CLI shares the installer's UI, whose writes require a prepared log too.
+# Support both the source-tree entrypoint and the copy at the install root.
+_cli_log_guard="${SCRIPT_DIR}/installers/lib/secure-log.sh"
+[[ -f "$_cli_log_guard" ]] || _cli_log_guard="${SCRIPT_DIR}/../lib/secure-log.sh"
+source "$_cli_log_guard"
+ods_prepare_install_log_var ODS_LOG_FILE /tmp/ods-install-macos.log || exit 1
+unset _cli_log_guard
 source "${LIB_DIR}/ui.sh"
 source "${LIB_DIR}/bridge-manager.sh"
 source "${LIB_DIR}/native-model.sh"

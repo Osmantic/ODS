@@ -1,0 +1,126 @@
+{
+  "schema_version": "ods.upstream.v1",
+  "repository": "https://github.com/nginx/nginx",
+  "source_ref": "release-1.27.5",
+  "source_revision": "6ac8b69f06bc10d5503f636da888fa70095b151c",
+  "source_revision_scope": "reviewed_source_reference_only",
+  "source_url": "https://github.com/nginx/nginx/tree/6ac8b69f06bc10d5503f636da888fa70095b151c",
+  "license": "BSD-2-Clause",
+  "license_scope": "nginx source reference only; exact floating image patch and bundled component terms remain unverified",
+  "license_url": "https://github.com/nginx/nginx/blob/6ac8b69f06bc10d5503f636da888fa70095b151c/LICENSE",
+  "license_documents": [
+    {
+      "path": "LICENSE",
+      "url": "https://github.com/nginx/nginx/blob/6ac8b69f06bc10d5503f636da888fa70095b151c/LICENSE",
+      "sha256": "77c01620abf36ed747b7eca4bd271e49023fe3a8e2b3525bcf4b09c8e3aa28e4"
+    }
+  ],
+  "notice_urls": [],
+  "provenance_checked_at": "2026-09-23",
+  "review_status": "provenance_recorded_with_gaps",
+  "runtime_validation": "not_run",
+  "notes": "This recipe serves Continue configuration using nginx:1.27-alpine; it does not install the Continue IDE extension. Continue source is Apache-2.0; nginx source has a BSD-2-Clause license. The floating nginx patch version is not established by the reviewed source reference.",
+  "deployment": {
+    "kind": "configuration_server",
+    "recipe_files": [
+      {
+        "path": "compose.amd.yaml",
+        "sha256": "68dfc90567ad70e8befa954d33a3f2c7ab9b94642c7fd956a26e8c0066004e48"
+      },
+      {
+        "path": "compose.apple.yaml",
+        "sha256": "8bf6cd4c659781adb1aa7a2ee201365d61f65c1d89568604ab95e76088e434c5"
+      },
+      {
+        "path": "compose.cpu.yaml",
+        "sha256": "6231262707a5d2561c1532dee0ea3f071f251743b1319c569ca5f45365a0f0e5"
+      },
+      {
+        "path": "compose.nvidia.yaml",
+        "sha256": "7f3381356bfaf36625f91c29f7ca276619665d3d0e41de24233b3758a979d714"
+      },
+      {
+        "path": "compose.yaml",
+        "sha256": "8476c2f40bba6ee756dcf737a88a313c29f61f62c5954b1076bd3273152beb28"
+      },
+      {
+        "path": "config/continue/entrypoint.sh",
+        "sha256": "39f71fe678c6aa78ee6bbd6a640a41e4f97d328b9b2cb0179efa38fd2ad8ed37"
+      },
+      {
+        "path": "config/continue/nginx.conf",
+        "sha256": "dca0d4168e3ae320d846959ccbf8cf3e8bfe40a625ea525288bcb3c6a31aa8fc"
+      },
+      {
+        "path": "manifest.yaml",
+        "sha256": "51f2ce9ac595f2bf209dae10a93ce88ddd506bda25d89c9aa8794bfe487d5666"
+      }
+    ],
+    "hash_normalization": "CRLF_to_LF",
+    "images": [
+      {
+        "file": "compose.yaml",
+        "service": "continue",
+        "image": "nginx:1.27-alpine",
+        "scope": "application"
+      }
+    ]
+  },
+  "code_components": [
+    {
+      "repository": "https://github.com/continuedev/continue",
+      "source_ref": "main",
+      "source_revision": "5522c6f44ca0ac3528b37244818fbfa39b5af470",
+      "source_revision_scope": "reviewed_current_source_only",
+      "license_url": "https://github.com/continuedev/continue/blob/5522c6f44ca0ac3528b37244818fbfa39b5af470/LICENSE",
+      "license": "Apache-2.0",
+      "scope": "Continue IDE extension installed separately by the user; not deployed by this recipe.",
+      "documents": [
+        {
+          "path": "LICENSE",
+          "url": "https://github.com/continuedev/continue/blob/5522c6f44ca0ac3528b37244818fbfa39b5af470/LICENSE",
+          "sha256": "b14a17598cb08c4c7c82c070731126304e0a75d001ed59fb9ea3955a0b561802"
+        }
+      ]
+    }
+  ],
+  "model_terms": {
+    "status": "not_selected_by_recipe",
+    "summary": "Application code licensing does not grant rights to downloaded or bundled model weights. No model eligibility or acceptance decision is made by this record.",
+    "sources": []
+  },
+  "source_evidence": [
+    {
+      "url": "https://api.github.com/repos/nginx/nginx",
+      "retrieved_at": "2026-09-23T07:59:06.575864+00:00",
+      "success": true,
+      "response_sha256": "00c320de22a189cf62e7a29b07f575a7554170559ad22fa20852ba9828295a9d"
+    },
+    {
+      "url": "https://api.github.com/repos/nginx/nginx/commits/release-1.27.5",
+      "retrieved_at": "2026-09-23T07:59:07.259665+00:00",
+      "success": true,
+      "response_sha256": "b6383d090955268e232aee3e9921bc84ac499d4fc6c903975159a3bb6d3bfe6b"
+    },
+    {
+      "url": "https://api.github.com/repos/nginx/nginx/license?ref=6ac8b69f06bc10d5503f636da888fa70095b151c",
+      "retrieved_at": "2026-09-23T07:59:08.615232+00:00",
+      "success": true,
+      "response_sha256": "983f86451c9ad954caa8057616292d7ee156cb5a3ef90bc1bf3906b52c9edc9e"
+    },
+    {
+      "url": "https://api.github.com/repos/nginx/nginx/contents?ref=6ac8b69f06bc10d5503f636da888fa70095b151c",
+      "retrieved_at": "2026-09-23T07:59:09.147410+00:00",
+      "success": true,
+      "response_sha256": "4267f73b7da5102cf199f5f39b7e7e3c6598d8bc5aa58d4874a33d2da78cb25f"
+    }
+  ],
+  "gaps": [
+    "No exact nginx image digest/source revision is recorded for nginx:1.27-alpine.",
+    "Continue source is documentation context for an externally installed IDE extension, not code deployed by this recipe.",
+    "Reviewed current source is not proven to be the source revision of the deployed package/image.",
+    "One or more configured image/base references are mutable tags; registry digest and full component inventory remain pending.",
+    "This application-level record is not a complete image SBOM or an assessment of redistribution/notice obligations for every dependency."
+  ],
+  "image": "nginx:1.27-alpine"
+}

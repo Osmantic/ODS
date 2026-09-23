@@ -1,0 +1,103 @@
+{
+  "schema_version": "ods.upstream.v1",
+  "repository": "https://github.com/strnad/CrewAI-Studio",
+  "source_ref": "main",
+  "source_revision": "8b123b34624f06c1630465fa23e537b02ecaa6eb",
+  "source_revision_scope": "reviewed_current_source_only",
+  "source_url": "https://github.com/strnad/CrewAI-Studio/tree/8b123b34624f06c1630465fa23e537b02ecaa6eb",
+  "license": "MIT",
+  "license_scope": "reviewed_candidate_repository_only; source association with configured image is unverified",
+  "license_url": "https://github.com/strnad/CrewAI-Studio/blob/8b123b34624f06c1630465fa23e537b02ecaa6eb/LICENCE",
+  "license_documents": [
+    {
+      "path": "LICENCE",
+      "url": "https://github.com/strnad/CrewAI-Studio/blob/8b123b34624f06c1630465fa23e537b02ecaa6eb/LICENCE",
+      "sha256": "abe5725cfe3ea7328998cbd4db13493ba530c84f076492969bbd31644626b7cb"
+    }
+  ],
+  "notice_urls": [],
+  "provenance_checked_at": "2026-09-23",
+  "review_status": "provenance_recorded_with_gaps",
+  "runtime_validation": "not_run",
+  "notes": "The recipe actually runs tham0nk/crewai-studio. The reviewed CrewAI Studio repository is MIT, but no public source-revision binding for this image was found in its OCI metadata; its repository association remains unverified.",
+  "deployment": {
+    "kind": "container_image",
+    "recipe_files": [
+      {
+        "path": "compose.yaml",
+        "sha256": "7597f5ea111b168a0b3ef69391f8a1ed808935d1367f798381166ef1286198fc"
+      },
+      {
+        "path": "manifest.yaml",
+        "sha256": "7ab0fd1402764e6c240bcff8982d76b4c9b92a6c466981c778390d685ad40965"
+      }
+    ],
+    "hash_normalization": "CRLF_to_LF",
+    "images": [
+      {
+        "file": "compose.yaml",
+        "service": "crewai",
+        "image": "tham0nk/crewai-studio@sha256:5438b8fbedc5bf98481de10e8fa9be13672c88a2bc9981f30b3747e99eec1e4e",
+        "scope": "application"
+      }
+    ]
+  },
+  "code_components": [],
+  "model_terms": {
+    "status": "not_selected_by_recipe",
+    "summary": "Application code licensing does not grant rights to downloaded or bundled model weights. No model eligibility or acceptance decision is made by this record.",
+    "sources": []
+  },
+  "source_evidence": [
+    {
+      "url": "https://api.github.com/repos/strnad/CrewAI-Studio",
+      "retrieved_at": "2026-09-23T07:53:33.426865+00:00",
+      "success": true,
+      "response_sha256": "08b075424123c62dbb636e41a27352c8cbccab792ed6967982629fc3c9624b97"
+    },
+    {
+      "url": "https://api.github.com/repos/strnad/CrewAI-Studio/commits/main",
+      "retrieved_at": "2026-09-23T07:53:34.064581+00:00",
+      "success": true,
+      "response_sha256": "a58f1f8e86e49e5898842c53588ea92c7a44cd064cbb72474f9987cbad81be0e"
+    },
+    {
+      "url": "https://api.github.com/repos/strnad/CrewAI-Studio/license?ref=8b123b34624f06c1630465fa23e537b02ecaa6eb",
+      "retrieved_at": "2026-09-23T07:53:35.057737+00:00",
+      "success": true,
+      "response_sha256": "948c842bcdd0f3945c905444537f71e6997e0ddbd74f20808567bfd7d7ad15c3"
+    },
+    {
+      "url": "https://api.github.com/repos/strnad/CrewAI-Studio/contents?ref=8b123b34624f06c1630465fa23e537b02ecaa6eb",
+      "retrieved_at": "2026-09-23T07:53:35.656497+00:00",
+      "success": true,
+      "response_sha256": "834de05dc9d03bec5cf7c4396b902954c5a9f6fe8a4dd7f258a71926887a8fbd"
+    }
+  ],
+  "gaps": [
+    "Image publisher tham0nk is not the reviewed strnad repository owner; no source URL/revision label or upstream reference proving this image association was found.",
+    "Reviewed current source is not proven to be the source revision of the deployed package/image.",
+    "This application-level record is not a complete image SBOM or an assessment of redistribution/notice obligations for every dependency."
+  ],
+  "image": "tham0nk/crewai-studio@sha256:5438b8fbedc5bf98481de10e8fa9be13672c88a2bc9981f30b3747e99eec1e4e",
+  "image_observation": {
+    "id": "crewai",
+    "image": "tham0nk/crewai-studio@sha256:5438b8fbedc5bf98481de10e8fa9be13672c88a2bc9981f30b3747e99eec1e4e",
+    "checked_at": "2026-09-23T07:54:17.472593+00:00",
+    "success": true,
+    "response_sha256": "50b9e55b8c3cce9dd8e53c524bfd90f3bba7f7181c79e3609ae8e80d85f0cc68",
+    "variants": [
+      {
+        "architecture": "amd64",
+        "os": "linux",
+        "created": "2024-09-06T12:48:57.51367058Z",
+        "labels": {},
+        "upstream_urls_in_build_history": [
+          "https://github.com/pypa/get-pip/raw/def4aec84b261b939137dd1c69eff0aabb4a7bf4/public/get-pip.py",
+          "https://www.python.org/ftp/python/${PYTHON_VERSION%%[a-z]*}/Python-$PYTHON_VERSION.tar.xz",
+          "https://www.python.org/ftp/python/${PYTHON_VERSION%%[a-z]*}/Python-$PYTHON_VERSION.tar.xz.asc"
+        ]
+      }
+    ]
+  }
+}

@@ -31,7 +31,8 @@ jobs:
         with:
           python-version: '3.12'
       - run: sudo apt-get update && sudo apt-get install -y jq
-      - run: python -m pip install 'pytest>=8,<9'
+      - run: >-
+          python -m pip install --require-hashes --only-binary=:all: -r .github/requirements/test-tools.txt
       - run: python -m pytest -q ods/tests/test_nvidia_mig_current.py
       - run: bash ods/tests/test-nvidia-topo.sh
       - run: bash ods/tests/test-gpu-reassign-manual.sh

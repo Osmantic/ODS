@@ -1114,7 +1114,8 @@ _ensure_macos_agent_python() {
         "$bootstrap_python" -m venv "$venv_dir" >>"$ODS_LOG_FILE" 2>&1 || return 1
     fi
     if ! "$runtime" -c 'import yaml, huggingface_hub, hf_xet' >/dev/null 2>&1; then
-        "$runtime" -m pip install --quiet pyyaml 'huggingface_hub[hf_xet]>=0.27' \
+        "$runtime" -m pip install --quiet --require-hashes --only-binary=:all: \
+            -r "$SOURCE_ROOT/installers/python-deps/host-agent.txt" \
             >>"$ODS_LOG_FILE" 2>&1 || return 1
     fi
     "$runtime" -c 'import yaml, huggingface_hub, hf_xet' >/dev/null 2>&1 || return 1
@@ -1159,7 +1160,8 @@ _ensure_macos_pyyaml() {
         exit 1
     fi
 
-    if "$venv_python" -m pip install --quiet --no-warn-script-location pyyaml 2>&1 | tee -a "$ODS_LOG_FILE" >/dev/null \
+    if "$venv_python" -m pip install --quiet --no-warn-script-location --require-hashes --only-binary=:all: \
+        -r "$SOURCE_ROOT/installers/python-deps/pyyaml.txt" 2>&1 | tee -a "$ODS_LOG_FILE" >/dev/null \
        && _macos_python_imports_yaml "$venv_python"; then
         _set_installer_python_cmd "$venv_python"
         ai_ok "PyYAML available in installer venv"
@@ -1169,7 +1171,7 @@ _ensure_macos_pyyaml() {
     ai_err "Failed to install PyYAML for the macOS compose resolver."
     ai "  Log file: $ODS_LOG_FILE"
     ai "  Manual recovery:"
-    ai "    $pycmd -m venv '$venv_dir' && '$venv_python' -m pip install pyyaml"
+    ai "    $pycmd -m venv '$venv_dir' && '$venv_python' -m pip install --require-hashes --only-binary=:all: -r '$SOURCE_ROOT/installers/python-deps/pyyaml.txt'"
     exit 1
 }
 

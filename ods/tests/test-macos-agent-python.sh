@@ -4,6 +4,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 INSTALL_DIR="$TMP/install"
+SOURCE_ROOT="$ROOT"
 ODS_LOG_FILE="$TMP/install.log"
 eval "$(sed -n '/^_ensure_macos_agent_python() {/,/^}$/p' "$ROOT/installers/macos/install-macos.sh")"
 bootstrap() {
@@ -13,7 +14,8 @@ bootstrap() {
 #!/bin/sh
 case "$*" in
   '-c import yaml, huggingface_hub, hf_xet') test -f "${0}.installed" ;;
-  '-m pip install --quiet pyyaml huggingface_hub[hf_xet]>=0.27') touch "${0}.installed" ;;
+  '-m pip install --quiet --require-hashes --only-binary=:all: -r '*)
+    test -f "$8" && touch "${0}.installed" ;;
   *) exit 1 ;;
 esac
 PYTHON

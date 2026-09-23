@@ -1,0 +1,92 @@
+{
+  "schema_version": "ods.upstream.v1",
+  "repository": "https://github.com/binwiederhier/ntfy",
+  "source_ref": "v2.28.0",
+  "source_revision": "10cb6506f836dbb00bb77e3b52669f6ace37f555",
+  "source_revision_scope": "configured_version_reference",
+  "source_url": "https://github.com/binwiederhier/ntfy/tree/10cb6506f836dbb00bb77e3b52669f6ace37f555",
+  "license": "NOASSERTION",
+  "license_scope": "application_source_only; excludes container base, dependencies, third-party assets and model weights",
+  "license_url": "https://github.com/binwiederhier/ntfy/blob/10cb6506f836dbb00bb77e3b52669f6ace37f555/LICENSE",
+  "license_documents": [
+    {
+      "path": "LICENSE",
+      "url": "https://github.com/binwiederhier/ntfy/blob/10cb6506f836dbb00bb77e3b52669f6ace37f555/LICENSE",
+      "sha256": "41c6b5205cdb17128b6d003732c48e1d1cdf1080160fc8ac8dc9d992dd8dc398"
+    },
+    {
+      "path": "LICENSE.GPLv2",
+      "url": "https://github.com/binwiederhier/ntfy/blob/10cb6506f836dbb00bb77e3b52669f6ace37f555/LICENSE.GPLv2",
+      "sha256": "4e5a9c09473dfc6348286ad82fae8e851a476d7e53cedbed8c9f3bcb5a870469"
+    }
+  ],
+  "notice_urls": [],
+  "provenance_checked_at": "2026-09-23",
+  "review_status": "provenance_recorded_with_gaps",
+  "runtime_validation": "not_run",
+  "notes": "The v2.28.0 README declares dual Apache-2.0 and GPLv2 licensing and lists additional third-party assets. Both source license documents are recorded without collapsing bundled asset licenses into one grant.",
+  "deployment": {
+    "kind": "container_image",
+    "recipe_files": [
+      {
+        "path": "compose.yaml",
+        "sha256": "6071213de16b622d84dac1d9cf4a891dc0fbbc09f930dd1a835a7e0dd3bd26ab"
+      },
+      {
+        "path": "manifest.yaml",
+        "sha256": "dc6d3a0ac75c4d0b7f194086a08145ae2d56420603f36642d8d11942c4fcd657"
+      }
+    ],
+    "hash_normalization": "CRLF_to_LF",
+    "images": [
+      {
+        "file": "compose.yaml",
+        "service": "ntfy",
+        "image": "binwiederhier/ntfy:v2.28.0@sha256:6ef4b819f722fccdc036af611c4774cfdc2de821ab74fdd48bbf4c9d6f8973da",
+        "scope": "application"
+      }
+    ]
+  },
+  "code_components": [],
+  "model_terms": {
+    "status": "not_applicable_to_primary_application",
+    "summary": "Application code licensing does not grant rights to downloaded or bundled model weights. No model eligibility or acceptance decision is made by this record.",
+    "sources": []
+  },
+  "source_evidence": [
+    {
+      "url": "https://api.github.com/repos/binwiederhier/ntfy",
+      "retrieved_at": "2026-09-23T07:53:49.905035+00:00",
+      "success": true,
+      "response_sha256": "5300e783ec8fabceca831394b38f2e5fdd0ac9439e9e1e3aeb9e30b0af4d6643"
+    },
+    {
+      "url": "https://api.github.com/repos/binwiederhier/ntfy/commits/v2.28.0",
+      "retrieved_at": "2026-09-23T07:53:50.453722+00:00",
+      "success": true,
+      "response_sha256": "774b7af80d4cc05728b68072cbdd8705c63de2c2b79e203c56755598df829ca4"
+    },
+    {
+      "url": "https://api.github.com/repos/binwiederhier/ntfy/license?ref=10cb6506f836dbb00bb77e3b52669f6ace37f555",
+      "retrieved_at": "2026-09-23T07:53:51.309210+00:00",
+      "success": true,
+      "response_sha256": "4e3a444e7343083dcfbf802dc6b79181da6f6177f9d364d480428c6e54bebea4"
+    },
+    {
+      "url": "https://api.github.com/repos/binwiederhier/ntfy/contents?ref=10cb6506f836dbb00bb77e3b52669f6ace37f555",
+      "retrieved_at": "2026-09-23T07:53:51.992855+00:00",
+      "success": true,
+      "response_sha256": "ef45b5a995448ab651a88676302935c42e6dc3f94c12a9a62a2bc593d40b119d"
+    }
+  ],
+  "gaps": [
+    "Third-party web fonts, sounds and libraries listed by upstream require their own notices; they are not reclassified by the root dual-license declaration.",
+    "Source release reference matches the configured version; an image digest does not by itself prove the image was built from this commit.",
+    "This application-level record is not a complete image SBOM or an assessment of redistribution/notice obligations for every dependency."
+  ],
+  "image": "binwiederhier/ntfy:v2.28.0@sha256:6ef4b819f722fccdc036af611c4774cfdc2de821ab74fdd48bbf4c9d6f8973da",
+  "license_declaration": {
+    "description": "Upstream README states dual licensing under Apache-2.0 and GPLv2; root license detection is NOASSERTION.",
+    "url": "https://github.com/binwiederhier/ntfy/blob/10cb6506f836dbb00bb77e3b52669f6ace37f555/README.md"
+  }
+}

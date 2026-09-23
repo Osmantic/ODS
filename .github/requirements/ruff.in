@@ -1,0 +1,2 @@
+# Keep the Ruff release used for the audit's existing lint gate.
+ruff==0.15.5

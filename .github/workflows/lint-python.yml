@@ -22,7 +22,8 @@ jobs:
           python-version: "3.12"
 
       - name: Install Ruff
-        run: pip install ruff
+        run: >-
+          python -m pip install --require-hashes --only-binary=:all: -r .github/requirements/ruff.txt
 
       - name: Run Ruff on ods Python files
         run: |

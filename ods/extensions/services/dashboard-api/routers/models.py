@@ -48,6 +48,7 @@ from host_agent_client import (
     request_json as request_agent_json,
 )
 from models import ModelLibraryGpu, ModelLibraryResponse
+from model_terms import project_terms
 from pixel_runtime_state import pixel_stream_active
 from performance_oracle import (
     build_models_payload,
@@ -1955,6 +1956,15 @@ async def _run_current_model_benchmark(model_id: str, max_tokens: int) -> dict:
         "source": "local_benchmark",
         "method": method,
     }
+
+
+@router.get("/api/models/{model_id}/terms")
+def model_terms(model_id: str, api_key: str = Depends(verify_api_key)):
+    """Inspect publisher/base declarations without downloading or accepting terms."""
+    model = _find_model_in_library(model_id)
+    if model is None:
+        raise HTTPException(status_code=404, detail="Unknown model")
+    return project_terms(model)
 
 
 @router.post("/api/models/{model_id}/download")

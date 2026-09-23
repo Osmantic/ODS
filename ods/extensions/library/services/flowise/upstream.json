@@ -1,0 +1,87 @@
+{
+  "schema_version": "ods.upstream.v1",
+  "repository": "https://github.com/FlowiseAI/Flowise",
+  "source_ref": "flowise@2.2.7",
+  "source_revision": "cf7d841f88504bba465790eb906f6d758b91ee2c",
+  "source_revision_scope": "configured_version_reference",
+  "source_url": "https://github.com/FlowiseAI/Flowise/tree/cf7d841f88504bba465790eb906f6d758b91ee2c",
+  "license": "Apache-2.0",
+  "license_scope": "application_source_only; excludes container base, dependencies, third-party assets and model weights",
+  "license_url": "https://github.com/FlowiseAI/Flowise/blob/cf7d841f88504bba465790eb906f6d758b91ee2c/LICENSE.md",
+  "license_documents": [
+    {
+      "path": "LICENSE.md",
+      "url": "https://github.com/FlowiseAI/Flowise/blob/cf7d841f88504bba465790eb906f6d758b91ee2c/LICENSE.md",
+      "sha256": "18f3fc32710356bb6e16e913e4c281c9017ca73967a39064ce5e3d42736e0f2b"
+    }
+  ],
+  "notice_urls": [],
+  "provenance_checked_at": "2026-09-23",
+  "review_status": "provenance_recorded_with_gaps",
+  "runtime_validation": "not_run",
+  "notes": "Flowise source at flowise@2.2.7 is Apache-2.0. Connected provider services, third-party nodes and model weights need separate review.",
+  "deployment": {
+    "kind": "container_image",
+    "recipe_files": [
+      {
+        "path": "compose.yaml",
+        "sha256": "d3d2f1f092833276e5ec2f9722b3e8652c28c8f435792f8f73325df4f05a57c1"
+      },
+      {
+        "path": "manifest.yaml",
+        "sha256": "dab9b17bee1059c3f58df4b914f204ac7b29eab3686e14c86f9fa27a704dfc7b"
+      },
+      {
+        "path": "setup.sh",
+        "sha256": "de8800058c90ae359de23eff7bd3159712978b77b7c18ced3903cf8cae4979bc"
+      }
+    ],
+    "hash_normalization": "CRLF_to_LF",
+    "images": [
+      {
+        "file": "compose.yaml",
+        "service": "flowise",
+        "image": "flowiseai/flowise:2.2.7",
+        "scope": "application"
+      }
+    ]
+  },
+  "code_components": [],
+  "model_terms": {
+    "status": "not_selected_by_recipe",
+    "summary": "Application code licensing does not grant rights to downloaded or bundled model weights. No model eligibility or acceptance decision is made by this record.",
+    "sources": []
+  },
+  "source_evidence": [
+    {
+      "url": "https://api.github.com/repos/FlowiseAI/Flowise",
+      "retrieved_at": "2026-09-23T07:53:36.731282+00:00",
+      "success": true,
+      "response_sha256": "ae80c8279dcfaae74eb79648b742371b640171664cb68e5eaba7ea2fbadd0270"
+    },
+    {
+      "url": "https://api.github.com/repos/FlowiseAI/Flowise/commits/flowise%402.2.7",
+      "retrieved_at": "2026-09-23T07:53:37.415655+00:00",
+      "success": true,
+      "response_sha256": "da504da5fd1df58e7d1c125251339a2c7b46f7c39176749a92b648f9900de078"
+    },
+    {
+      "url": "https://api.github.com/repos/FlowiseAI/Flowise/license?ref=cf7d841f88504bba465790eb906f6d758b91ee2c",
+      "retrieved_at": "2026-09-23T07:53:38.185173+00:00",
+      "success": true,
+      "response_sha256": "1b4862ea8cd0b7c5b61e654fb29b49b4f4c6c65a6afd7160723189877a006a63"
+    },
+    {
+      "url": "https://api.github.com/repos/FlowiseAI/Flowise/contents?ref=cf7d841f88504bba465790eb906f6d758b91ee2c",
+      "retrieved_at": "2026-09-23T07:53:38.765516+00:00",
+      "success": true,
+      "response_sha256": "5548bab222c90b7836efbcc610d0056e70280c9a13df8c48f90fcd7f3a67aac8"
+    }
+  ],
+  "gaps": [
+    "Source release reference matches the configured version; an image digest does not by itself prove the image was built from this commit.",
+    "One or more configured image/base references are mutable tags; registry digest and full component inventory remain pending.",
+    "This application-level record is not a complete image SBOM or an assessment of redistribution/notice obligations for every dependency."
+  ],
+  "image": "flowiseai/flowise:2.2.7"
+}

@@ -191,7 +191,8 @@ jobs:
           python-version: "3.12"
 
       - name: Install manifest validator dependencies
-        run: python3 -m pip install "PyYAML>=6.0,<7.0" "jsonschema>=4.21,<5.0" "pytest>=8,<9"
+        run: >-
+          python3 -m pip install --require-hashes --only-binary=:all: -r ../.github/requirements/test-tools.txt
 
       - name: Branch cleanup release exclusions
         run: python3 tests/test-stale-branch-release-refs.py
@@ -401,7 +402,7 @@ jobs:
 
       - name: Runtime Renderer Environment Modes
         run: |
-          python3 -m pip install pytest==8.4.2
+          python3 -m pip install --require-hashes --only-binary=:all: -r ../.github/requirements/test-tools.txt
           python3 -m pytest -q tests/test_renderer_environment_modes.py
 
       - name: Runtime Config Wiring Tests
@@ -417,7 +418,7 @@ jobs:
         run: sudo env COMFYUI_REQUIRE_NAMESPACE=1 "$(command -v python3)" tests/test_comfyui_template_seeding.py -v
       - name: Perplexica Repair Interpreter Tests
         run: |
-          python3 -m pip install pytest==8.4.2
+          python3 -m pip install --require-hashes --only-binary=:all: -r ../.github/requirements/test-tools.txt
           python3 -m pytest -q tests/test_perplexica_repair_python.py
 
       - name: CPU-Only Path Tests
@@ -514,7 +515,7 @@ jobs:
 
       - name: Test support bundle command deadlines
         run: |
-          python3 -m pip install pytest==8.4.2
+          python3 -m pip install --require-hashes --only-binary=:all: -r ../.github/requirements/test-tools.txt
           python3 -m pytest -q tests/test_support_bundle_timeouts.py tests/test_support_bundle_log_scope.py tests/test_support_bundle_uri_credentials.py
 
       - name: Linux Node runtime path tests
