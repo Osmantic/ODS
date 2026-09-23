@@ -274,6 +274,7 @@ def test_unchanged_compaction_repair_checks_its_dependency(compaction_installati
 @pytest.mark.parametrize('environment,manifest_name,module_name', [
     ('OPENCLAW_TOOL_SEARCH_MODULE', 'openclaw-image-envelope.json', repair_module.IMAGE_MODULE),
     ('OPENCLAW_SELECTION_MODULE', 'openclaw-compaction-budget.json', repair_module.COMPACTION_BUDGET_MODULE),
+    ('OPENCLAW_READ_MODULE', 'openclaw-read-range.json', repair_module.READ_RANGE_MODULE),
 ])
 def test_reviewed_runtime_migrations_round_trip(tmp_path, environment, manifest_name, module_name):
     candidate_path = os.environ.get(environment)

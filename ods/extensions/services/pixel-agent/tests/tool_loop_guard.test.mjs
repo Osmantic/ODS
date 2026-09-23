@@ -756,56 +756,6 @@ function wrappedPluginResult(sourceName, toolName, result) {
   };
 }
 
-test("empty workspace reads retain evidence and explain line ranges for direct and deferred tools", () => {
-  for (const transport of ["read", "tool_call"]) {
-    for (const offset of [undefined, 400]) {
-      const guard = createToolLoopGuard();
-      guard.observeRun({agentId: "pixel", runId: "run-1", sessionId: "session-1"}, "pixel", {
-        prompt: "Read project/index.html and fix its restart button, then publish the preview.",
-      });
-      const args = {path: "project/index.html", ...(offset === undefined ? {} : {offset}), limit: 50};
-      const params = transport === "read" ? args : {id: "read", args};
-      const toolCallId = "empty-range";
-      call(guard, transport, {event: {params, toolCallId}, context: {toolCallId}});
-      const original = {content: [{type: "text", text: ""}], isError: false};
-      const result = transport === "read" ? original : wrappedCoreResult("read", original);
-      afterCall(guard, transport, {event: {params, toolCallId, result}, context: {toolCallId}});
-      const persisted = persistToolResult(guard, transport, toolCallId, result);
-      assert.equal(persisted.message.content[0].text, "");
-      const hint = persisted.message.content.find(part => part.text?.startsWith("[ODS read range]"));
-      assert.ok(hint, transport);
-      assert.ok(hint.text.includes(`line ${offset ?? 1}`));
-      assert.match(hint.text, /limit is a line count/);
-      assert.match(hint.text, /does not prove that the file is missing/);
-      assert.notEqual(guard.verificationForRun("run-1").status, "passed");
-    }
-  }
-});
-
-test("workspace read hints do not reinterpret errors, images, whitespace or nonempty content", () => {
-  for (const transport of ["read", "tool_call"]) {
-    for (const original of [
-      {isError: true, content: [{type: "text", text: ""}]},
-      {content: [{type: "image", data: "aGVsbG8=", mimeType: "image/png"}]},
-      {content: [{type: "text", text: "\n"}]},
-      {content: [{type: "text", text: "const restart = true;"}]},
-    ]) {
-      const guard = createToolLoopGuard();
-      guard.observeRun({agentId: "pixel", runId: "run-1", sessionId: "session-1"}, "pixel", {
-        prompt: "Read project/index.html and fix its restart button, then publish the preview.",
-      });
-      const args = {path: "project/index.html", offset: 400, limit: 50};
-      const params = transport === "read" ? args : {id: "read", args};
-      const toolCallId = "unchanged-read";
-      call(guard, transport, {event: {params, toolCallId}, context: {toolCallId}});
-      const result = transport === "read" ? original : wrappedCoreResult("read", original);
-      afterCall(guard, transport, {event: {params, toolCallId, result}, context: {toolCallId}});
-      const persisted = persistToolResult(guard, transport, toolCallId, result);
-      assert.doesNotMatch(JSON.stringify(persisted ?? result), /\[ODS read range\]/);
-    }
-  }
-});
-
 test("compacts only a guard-validated clean unittest transcript", () => {
   const guard = createToolLoopGuard();
   call(guard, "tool_call", {
