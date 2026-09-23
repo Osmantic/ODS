@@ -36,6 +36,10 @@ DNSMASQ_PID="${RUN_DIR}/dnsmasq.pid"
 
 # Defaults — override in /etc/ods/ap-mode.conf
 ODS_AP_SSID="${ODS_AP_SSID:-ODS-Setup}"
+if (( ${#ODS_AP_SSID} < 1 || ${#ODS_AP_SSID} > 32 )); then
+    echo "Error: ODS_AP_SSID length must be between 1 and 32 octets" >&2
+    exit 1
+fi
 ODS_AP_PASSWORD="${ODS_AP_PASSWORD:-}"
 ODS_AP_INTERFACE="${ODS_AP_INTERFACE:-wlan0}"
 ODS_AP_GATEWAY_IP="${ODS_AP_GATEWAY_IP:-192.168.7.1}"
