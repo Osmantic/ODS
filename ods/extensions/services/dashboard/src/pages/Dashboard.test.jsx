@@ -83,9 +83,10 @@ function installFetchMock() {
 }
 
 async function renderDashboard(status = baseStatus) {
-  render(<Dashboard status={status} loading={false} />)
+  const view = render(<Dashboard status={status} loading={false} />)
   await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/features'))
   await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/services/resources'))
+  return view
 }
 
 describe('Dashboard system overview', () => {
@@ -480,6 +481,14 @@ describe('Dashboard system overview', () => {
     const row = await screen.findByTestId('service-row-ape')
     expect(within(row).getByText('1.2%')).toBeInTheDocument()
     expect(within(row).getByText('128 MB')).toBeInTheDocument()
+  })
+
+  it('keeps a stable service identity when its display name changes', async () => {
+    const status = { ...baseStatus, services: [{ ...services[0], id: 'stable-ape' }] }
+    const view = await renderDashboard(status)
+    expect(screen.getByTestId('service-row-stable-ape')).toBeInTheDocument()
+    view.rerender(<Dashboard status={{ ...status, services: [{ ...status.services[0], name: 'Renamed APE' }] }} loading={false} />)
+    expect(screen.getByTestId('service-row-stable-ape')).toBeInTheDocument()
   })
 
   it('renders unavailable service metrics as dashes instead of fake values', async () => {

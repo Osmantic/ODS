@@ -455,7 +455,9 @@ function buildServiceRows(statusServices, resourceServices) {
     .filter(service => service.status !== 'not_deployed')
     .forEach((service, index) => {
       const resource = resourcesByName.get(normalizeServiceKey(service.name))
-      const id = resource?.id || normalizeServiceKey(service.name) || `service-${index}`
+      // Prefer the status API's stable identity so display-name changes do not
+      // strand CPU history under the old derived name key.
+      const id = service.id || resource?.id || normalizeServiceKey(service.name) || `service-${index}`
       const hasSemantics = typeof service.required === 'boolean' || service.impact || service.category
       seen.add(id)
       rows.push({
