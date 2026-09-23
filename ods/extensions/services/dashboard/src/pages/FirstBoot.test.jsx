@@ -1,6 +1,7 @@
-import { fireEvent, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import { render } from '../test/test-utils'
 import FirstBoot from './FirstBoot' // eslint-disable-line no-unused-vars
+import { vi } from 'vitest'
 
 const response = (body, status = 200) => ({
   ok: status >= 200 && status < 300,
@@ -16,6 +17,24 @@ const ownerCardPublicReady = {
   url_mode: 'public',
   public_url: 'https://ods.example.test',
 }
+
+test('turns a hung owner-card readiness check into an actionable timeout', async () => {
+  vi.useFakeTimers()
+  try {
+    globalThis.fetch = vi.fn((_, { signal } = {}) => new Promise((_, reject) => {
+      signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true })
+    }))
+    render(<FirstBoot />)
+    fireEvent.click(screen.getByRole('button', { name: /^continue$/i }))
+    fireEvent.change(screen.getByPlaceholderText('alice'), { target: { value: 'sam' } })
+    fireEvent.click(screen.getByRole('button', { name: /^continue$/i }))
+    fireEvent.click(screen.getByRole('button', { name: /^continue$/i }))
+    await act(async () => { vi.advanceTimersByTime(15000); await Promise.resolve() })
+    expect(screen.getByText(/owner-card status check timed out/i)).toBeInTheDocument()
+  } finally {
+    vi.useRealTimers()
+  }
+})
 
 async function finishWizard(stackName = null) {
   fireEvent.change(screen.getByDisplayValue('ods'), { target: { value: 'spark' } })

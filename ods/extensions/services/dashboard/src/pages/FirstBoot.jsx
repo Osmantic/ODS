@@ -23,6 +23,7 @@ import {
 } from 'lucide-react'
 
 const PROGRESS_KEY = 'ods-firstboot-progress'
+const OWNER_CARD_STATUS_TIMEOUT_MS = 15000
 
 const STACK_OPTIONS = [
   {
@@ -100,8 +101,10 @@ export default function FirstBoot({ onComplete }) {
   useEffect(() => {
     let cancelled = false
     const loadOwnerCardStatus = async () => {
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), OWNER_CARD_STATUS_TIMEOUT_MS)
       try {
-        const resp = await fetch('/api/auth/magic-link/owner-card/status')
+        const resp = await fetch('/api/auth/magic-link/owner-card/status', { signal: controller.signal })
         if (!resp.ok) {
           if (!cancelled) {
             setOwnerCardStatus({
@@ -113,13 +116,17 @@ export default function FirstBoot({ onComplete }) {
         }
         const data = await resp.json()
         if (!cancelled) setOwnerCardStatus(data)
-      } catch {
+      } catch (error) {
         if (!cancelled) {
           setOwnerCardStatus({
             ready: false,
-            reason: 'Owner-card status unavailable.',
+            reason: error?.name === 'AbortError'
+              ? 'Owner-card status check timed out. Retry Finish after checking ODS proxy.'
+              : 'Owner-card status unavailable.',
           })
         }
+      } finally {
+        clearTimeout(timeout)
       }
     }
     loadOwnerCardStatus()
