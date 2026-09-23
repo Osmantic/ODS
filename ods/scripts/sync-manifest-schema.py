@@ -16,6 +16,8 @@ LIBRARY_SCHEMA = ROOT_DIR / "extensions" / "library" / "schema" / "service-manif
 
 def canonical_schema_path() -> Path:
     manifest = json.loads(MANIFEST_FILE.read_text(encoding="utf-8"))
+    if not isinstance(manifest, dict) or "contracts" not in manifest or "extensions" not in manifest["contracts"]:
+        raise ValueError("invalid manifest: missing contracts.extensions section")
     relative_path = manifest["contracts"]["extensions"]["serviceManifestSchema"]
     schema_path = (ROOT_DIR / relative_path).resolve()
     if not schema_path.is_file():
