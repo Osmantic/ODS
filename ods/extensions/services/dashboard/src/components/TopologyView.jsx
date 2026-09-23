@@ -49,7 +49,7 @@ export const TopologyView = memo(function TopologyView({ topology }) {
         {gpus.map(g => (
           <div key={g.index} className="flex items-center gap-1.5 px-2 py-1 bg-zinc-800 rounded-lg text-xs">
             <span className="text-indigo-300 font-mono">GPU{g.index}</span>
-            <span className="text-zinc-400">{g.name.replace('NVIDIA ', '').replace('AMD Radeon ', '')}</span>
+            <span className="text-zinc-400">{typeof g.name === 'string' && g.name.trim() ? g.name.replace('NVIDIA ', '').replace('AMD Radeon ', '') : 'Unknown GPU'}</span>
             <span className="text-zinc-600 font-mono">{g.memory_gb}GB</span>
           </div>
         ))}
