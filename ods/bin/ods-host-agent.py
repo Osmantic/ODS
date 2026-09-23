@@ -3091,15 +3091,19 @@ def _reconcile_ods_managed_pixel_model(
         or (
             "bundled"
             if configured_ref == "817214d5ec3d8aa583fe50c1dc7561f3c1a16dff"
-            else "https://github.com/Osmantic/Pixel.git"
+            else ""
         )
     )
     if any(character in source_url for character in "\r\n\x00"):
         raise RuntimeError("The configured Pixel source URL is invalid")
-    if source_url not in {"bundled", "https://github.com/Osmantic/Pixel.git"}:
+    # Let the shell reconcile the managed runtime's verified local checkout.
+    # Never turn an absent or legacy setting into a remote acquisition.
+    if source_url == "https://github.com/Osmantic/Pixel.git":
+        source_url = ""
+    if source_url not in {"", "bundled"}:
         source_path = Path(source_url)
         if not source_path.is_absolute() or source_path == Path("/"):
-            raise RuntimeError("The configured Pixel source must be bundled, the canonical URL, or an absolute local checkout")
+            raise RuntimeError("The configured Pixel source must be bundled or an absolute local checkout")
     configured_pixel_gateway_port = env_values.get("PIXEL_GATEWAY_PORT")
     pixel_gateway_port = (
         "18789"

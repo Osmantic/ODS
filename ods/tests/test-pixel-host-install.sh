@@ -827,7 +827,7 @@ cat > "$mock_bin/git" <<'SH'
 sleep 10
 SH
 chmod +x "$mock_bin/git"
-PIXEL_SOURCE_URL="https://github.com/Osmantic/Pixel.git"
+PIXEL_SOURCE_URL="$source_fixture"
 PIXEL_SOURCE_REF="$(printf 'f%.0s' {1..40})"
 timed_checkout="$TEST_ROOT/timed-checkouts/source-$PIXEL_SOURCE_REF"
 if PATH="$mock_bin:$PATH" ODS_PIXEL_SOURCE_TIMEOUT_SECONDS=1 \
@@ -1896,7 +1896,7 @@ check test "$(_ods_pixel_managed_source_ref "$owner" "$reconcile_home")" = "$rec
 if (
     unset PIXEL_SOURCE_URL
     [[ "$(_ods_pixel_reconciliation_source_url 817214d5ec3d8aa583fe50c1dc7561f3c1a16dff)" == bundled ]]
-    [[ "$(_ods_pixel_reconciliation_source_url b33730436baf5d98bf58f7d57c090318fe19f433)" == 'https://github.com/Osmantic/Pixel.git' ]]
+    ! _ods_pixel_reconciliation_source_url b33730436baf5d98bf58f7d57c090318fe19f433 2>/dev/null
     PIXEL_SOURCE_URL=/safe/developer-checkout
     [[ "$(_ods_pixel_reconciliation_source_url 817214d5ec3d8aa583fe50c1dc7561f3c1a16dff)" == /safe/developer-checkout ]]
 ); then

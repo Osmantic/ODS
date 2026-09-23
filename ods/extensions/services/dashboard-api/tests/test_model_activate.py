@@ -4468,9 +4468,7 @@ def test_managed_pixel_reconcile_uses_positional_args_and_minimal_environment(
     ]
     assert captured["kwargs"]["timeout"] == 900
     assert captured["kwargs"]["check"] is False
-    assert captured["kwargs"]["env"]["PIXEL_SOURCE_URL"] == (
-        "https://github.com/Osmantic/Pixel.git"
-    )
+    assert captured["kwargs"]["env"]["PIXEL_SOURCE_URL"] == ""
     assert captured["kwargs"]["env"]["PIXEL_GATEWAY_PORT"] == expected_gateway_port
     assert "UNRELATED_SECRET" not in captured["kwargs"]["env"]
 
@@ -4505,12 +4503,14 @@ def test_managed_pixel_reconcile_accepts_bundled_source(
     assert captured["env"]["PIXEL_SOURCE_URL"] == "bundled"
 
 
-def test_managed_pixel_reconcile_rejects_relative_source(tmp_path, monkeypatch):
+@pytest.mark.parametrize("source", ["../pixel", "https://example.com/pixel.git",
+    "git@github.com:Osmantic/Pixel.git", "ssh://git@github.com/Osmantic/Pixel.git"])
+def test_managed_pixel_reconcile_rejects_nonlocal_source(tmp_path, monkeypatch, source):
     install_dir = tmp_path / "install"
     home = tmp_path / "owner-home"
     install_dir.mkdir()
     home.mkdir()
-    (install_dir / ".env").write_text("PIXEL_SOURCE_URL=../pixel\n", encoding="utf-8")
+    (install_dir / ".env").write_text(f"PIXEL_SOURCE_URL={source}\n", encoding="utf-8")
     monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
     monkeypatch.setattr(
         _mod, "_ods_managed_pixel_identity", lambda: ("pixel-owner", home),

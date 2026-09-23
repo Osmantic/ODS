@@ -443,13 +443,13 @@ else
 fi
 unset INSTALL_DIR PIXEL_SOURCE_URL PIXEL_SOURCE_REF
 
-# Valid GitHub URL + valid ref
+# The former remote is refused even with an immutable ref.
 PIXEL_SOURCE_URL="https://github.com/Osmantic/Pixel.git"
 PIXEL_SOURCE_REF="abcdef0123456789abcdef0123456789abcdef01"
-if ods_pixel_validate_source; then
-    pass "Valid GitHub URL + valid ref accepted"
+if ! ods_pixel_validate_source 2>/dev/null; then
+    pass "Remote Pixel source rejected even with a valid ref"
 else
-    fail "Valid GitHub URL + valid ref should be accepted"
+    fail "Remote Pixel source should not be accepted"
 fi
 
 # URL with credentials
@@ -594,12 +594,12 @@ section "ods_pixel_activate_source_contract"
 
 if (
     unset PIXEL_SOURCE_URL PIXEL_SOURCE_REF PIXEL_SOURCE_DIR
+    INSTALL_DIR="$SCRIPT_DIR/.."
     ods_pixel_activate_source_contract \
-        "https://github.com/Osmantic/Pixel.git" \
-        "abcdef0123456789abcdef0123456789abcdef01" ""
+        "bundled" "$ODS_PIXEL_BUNDLED_REF" ""
     python3 -c 'import os
-assert os.environ["PIXEL_SOURCE_URL"] == "https://github.com/Osmantic/Pixel.git"
-assert os.environ["PIXEL_SOURCE_REF"] == "abcdef0123456789abcdef0123456789abcdef01"
+assert os.environ["PIXEL_SOURCE_URL"] == "bundled"
+assert os.environ["PIXEL_SOURCE_REF"] == "817214d5ec3d8aa583fe50c1dc7561f3c1a16dff"
 assert os.environ["PIXEL_SOURCE_DIR"] == ""'
 ); then
     pass "Validated Pixel source contract persists across installer phases"

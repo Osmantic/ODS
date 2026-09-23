@@ -198,10 +198,6 @@ ods_pixel_validate_source() {
         return
     fi
 
-    if [[ "$source" == "https://github.com/Osmantic/Pixel.git" ]]; then
-        return 0
-    fi
-
     [[ "$source" == /* && "$owner_root" == /* ]] || {
         printf '%s\n' 'error: invalid-pixel-source' >&2
         return 1
