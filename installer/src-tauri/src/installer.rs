@@ -38,11 +38,11 @@ pub fn run_install(
     features: Vec<String>,
 ) -> Result<(), String> {
     // Phase 1: Clone the repo
-    update_progress(&state, "Downloading ODS", 5);
+    update_progress(&state, "Downloading ODS", 5)?;
 
     ensure_checkout(&install_dir)?;
 
-    update_progress(&state, "Configuring installation", 15);
+    update_progress(&state, "Configuring installation", 15)?;
 
     // Phase 2: Build installer arguments
     let ods_dir = install_dir.join("ods");
@@ -65,7 +65,7 @@ pub fn run_install(
     }
 
     // Phase 3: Run the installer with progress parsing
-    update_progress(&state, "Running installer", 20);
+    update_progress(&state, "Running installer", 20)?;
 
     let install_script = ods_dir.join("install.sh");
     let install_ps1 = install_dir.join("install.ps1");
@@ -136,7 +136,7 @@ pub fn run_install(
         for line in reader.lines() {
             if let Ok(line) = line {
                 if let Some(progress) = parse_progress_line(&line) {
-                    update_progress(&state, &progress.message, progress.percent);
+                    update_progress(&state, &progress.message, progress.percent)?;
                 }
             }
         }
@@ -150,7 +150,7 @@ pub fn run_install(
         .unwrap_or_default();
 
     if output.success() {
-        update_progress(&state, "Installation complete!", 100);
+        update_progress(&state, "Installation complete!", 100)?;
         let mut s = state.lock().unwrap();
         s.phase = InstallPhase::Complete;
         let _ = s.save();
@@ -338,13 +338,22 @@ fn parse_progress_line(line: &str) -> Option<ProgressEvent> {
     })
 }
 
-fn update_progress(state: &Arc<Mutex<InstallState>>, message: &str, percent: u8) {
-    if let Ok(mut s) = state.lock() {
-        s.progress_pct = percent;
-        s.progress_message = message.to_string();
-        s.phase = InstallPhase::Installing;
-        let _ = s.save();
-    }
+fn update_progress(
+    state: &Arc<Mutex<InstallState>>,
+    message: &str,
+    percent: u8,
+) -> Result<(), String> {
+    let mut s = state
+        .lock()
+        .map_err(|_| "Installer state lock poisoned".to_string())?;
+    s.progress_pct = percent;
+    s.progress_message = message.to_string();
+    s.phase = InstallPhase::Installing;
+    s.save().map_err(|error| {
+        format!(
+            "Unable to persist installer progress at {percent}% ({message}): {error}"
+        )
+    })
 }
 
 /// Default install directory per platform.
@@ -428,5 +437,12 @@ mod tests {
             "https://github.com/example/ODS.git",
             DEFAULT_REPO_URL
         ));
+    }
+
+    #[test]
+    fn progress_update_reports_persistence_failures_to_install_flow() {
+        let state = Arc::new(Mutex::new(InstallState::default()));
+        let result = update_progress(&state, "Testing progress", 42);
+        assert!(result.is_ok() || result.unwrap_err().contains("persist installer progress"));
     }
 }
