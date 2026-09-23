@@ -133,6 +133,29 @@ $installDir     = $script:ODS_INSTALL_DIR
 $sourceRoot     = $SourceRoot
 
 # ── Phase dispatcher ──────────────────────────────────────────────────────────
+function Test-ODSVerifiedLemonadeMsi {
+    <# Verify local bytes only. This function never downloads or runs an installer. #>
+    [CmdletBinding()]
+    param(
+        [string]$Path,
+        [string]$ExpectedSha256
+    )
+
+    if ($ExpectedSha256 -notmatch '\A[0-9a-fA-F]{64}\z') {
+        throw "The Lemonade MSI contract has no valid reviewed SHA-256."
+    }
+    $msiItem = Get-Item -LiteralPath $Path -ErrorAction Stop
+    if ($msiItem.PSIsContainer -or $msiItem.Length -le 0 -or
+        ($msiItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+        throw "The Lemonade download is not a regular nonempty MSI file."
+    }
+    $msiSha256 = (Get-FileHash -LiteralPath $Path -Algorithm SHA256 -ErrorAction Stop).Hash
+    if ($msiSha256 -ine $ExpectedSha256) {
+        throw "The Lemonade MSI SHA-256 does not match the reviewed artifact."
+    }
+    return $true
+}
+
 function Get-UsableWindowsBash {
     <#
     .SYNOPSIS
@@ -221,6 +244,7 @@ if ($gpuInfo.Backend -eq "amd") {
     $amdLemonadeRuntime = Get-ODSAmdLemonadeRuntime -RootPath $SourceRoot
     $script:LEMONADE_VERSION = [string]$amdLemonadeRuntime.windows_version
     $script:LEMONADE_MSI_FILE = [string]$amdLemonadeRuntime.windows_msi_file
+    $script:LEMONADE_MSI_SHA256 = [string]$amdLemonadeRuntime.windows_msi_sha256
     $script:LEMONADE_MSI_URL = "https://github.com/lemonade-sdk/lemonade/releases/download/v$($script:LEMONADE_VERSION)/$($script:LEMONADE_MSI_FILE)"
     $script:LEMONADE_EXE = Join-Path (Join-Path $script:LEMONADE_INSTALL_DIR "bin") ([string]$amdLemonadeRuntime.windows_executable)
     $_resolvedLemonadeExe = Resolve-ODSLemonadeExe -ExecutableName ([string]$amdLemonadeRuntime.windows_executable)
@@ -453,11 +477,27 @@ if ($dryRun) {
 
                 if ($lemonadeChoice -match "^[Yy]") {
                     Write-AI "Installing AMD Lemonade Server..."
-                    $msiPath = Join-Path $env:TEMP $script:LEMONADE_MSI_FILE
+                    # A unique staging name prevents reusing a stale partial MSI.
+                    $msiPath = Join-Path $env:TEMP ("ods-lemonade-{0}.msi" -f [guid]::NewGuid().ToString("N"))
                     $lemonadeInstallDir = Get-ODSLemonadeUserInstallDir
                     $lemonadeMsiLog = Join-Path (Join-Path $installDir "logs") "lemonade-msi-install.log"
-                    $dlOk = Invoke-DownloadWithRetry -Url $script:LEMONADE_MSI_URL `
-                        -Destination $msiPath -Label "Downloading Lemonade Server (~3MB)"
+                    $dlOk = $false
+                    try {
+                        # This digest is reviewed and committed with the version contract;
+                        # never trust a checksum fetched alongside the install-time download.
+                        if ($script:LEMONADE_MSI_SHA256 -notmatch '\A[0-9a-fA-F]{64}\z') {
+                            throw "The Lemonade MSI contract has no valid reviewed SHA-256."
+                        }
+                        $dlOk = Invoke-DownloadWithRetry -Url $script:LEMONADE_MSI_URL `
+                            -Destination $msiPath -Label "Downloading Lemonade Server (~5MB)"
+                        if ($dlOk) {
+                            $dlOk = Test-ODSVerifiedLemonadeMsi -Path $msiPath `
+                                -ExpectedSha256 $script:LEMONADE_MSI_SHA256
+                        }
+                    } catch {
+                        $dlOk = $false
+                        Write-AIWarn "Lemonade MSI verification failed: $($_.Exception.Message)"
+                    }
                     if ($dlOk) {
                         if ([string]::IsNullOrWhiteSpace($lemonadeInstallDir)) {
                             Write-AIWarn "Could not determine the current user's Lemonade install directory."
@@ -469,7 +509,13 @@ if ($dryRun) {
                             # Keep Lemonade in its supported per-user location. ODS installs from a
                             # normal PowerShell and must not require an all-users MSI elevation.
                             $msiArgs = "/i `"$msiPath`" /quiet /norestart INSTALLDIR=`"$lemonadeInstallDir`" /L*V `"$lemonadeMsiLog`""
-                            $msiProc = Start-Process msiexec.exe -ArgumentList $msiArgs -Wait -NoNewWindow -PassThru
+                            try {
+                                $msiProc = Start-Process msiexec.exe -ArgumentList $msiArgs -Wait -NoNewWindow -PassThru
+                            } finally {
+                                if (Test-Path -LiteralPath $msiPath -PathType Leaf) {
+                                    Remove-Item -LiteralPath $msiPath -Force -ErrorAction SilentlyContinue
+                                }
+                            }
                             $_msiExit = $(if ($msiProc) { [int]$msiProc.ExitCode } else { 0 })
                             if ($_msiExit -eq 0) {
                                 $_resolvedLemonadeExe = Resolve-ODSLemonadeExe -ExecutableName ([string]$amdLemonadeRuntime.windows_executable)
@@ -493,7 +539,10 @@ if ($dryRun) {
                             }
                         }
                     } else {
-                        Write-AIWarn "Lemonade download failed. Falling back to llama-server (Vulkan)."
+                        Write-AIWarn "Lemonade download or verification failed. Falling back to llama-server (Vulkan)."
+                    }
+                    if (Test-Path -LiteralPath $msiPath -PathType Leaf) {
+                        Remove-Item -LiteralPath $msiPath -Force -ErrorAction SilentlyContinue
                     }
                 } else {
                     Write-AI "Skipped Lemonade. Using llama-server (Vulkan) instead."

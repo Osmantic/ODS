@@ -72,6 +72,15 @@ jobs:
         shell: pwsh
         run: ./tests/contracts/test-windows-lemonade-task-cleanup.ps1
 
+      - name: Windows Lemonade MSI Integrity Contract
+        shell: pwsh
+        run: ./tests/test-windows-lemonade-msi-integrity.ps1
+
+      - name: Windows Lemonade MSI Integrity Contract (PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/test-windows-lemonade-msi-integrity.ps1
+
       - name: Windows Hermes Config Runtime Contract
         shell: pwsh
         run: ./tests/contracts/test-windows-hermes-config-runtime.ps1

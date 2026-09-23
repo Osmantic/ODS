@@ -11,6 +11,7 @@
       "container_image": "ghcr.io/lemonade-sdk/lemonade-server:v10.2.0",
       "windows_version": "10.0.0",
       "windows_msi_file": "lemonade-server-minimal.msi",
+      "windows_msi_sha256": "a02bfe9a3809e0709098143a003ed755b7ea4aafd813c9fd71137745dbc6422e",
       "windows_executable": "lemonade-server.exe",
       "api_port": 8080,
       "health_path": "/api/v1/health",

@@ -57,6 +57,15 @@ release checksum file: `e0ed7644118b717b028c249ee9d3515024e55e8510747ca08906eb96
 
 ## Validation and limits
 
+Follow-up: the Dashboard API container now installs a complete
+[runtime wheel lock](../extensions/services/dashboard-api/PYTHON_DEPENDENCIES.md)
+with mandatory hashes, matching the versions already tested by dashboard CI.
+Fresh Linux Python 3.11 installation, imports and dependency consistency passed;
+36 wheels resolved with verified hashes for each of amd64 and arm64. The offline
+test accepted an approved wheel and rejected substituted bytes on Windows and
+Linux. No new Dashboard API image was built or scanned in this follow-up; Debian
+package resolution and image-level findings remain outside that result.
+
 - Dashboard final suite after lint cleanup: 197 test files, 1,596 tests passed;
   production build passed. This includes the six added slash/backslash navigation
   security cases. The complete dashboard ESLint gate has no warnings/errors.

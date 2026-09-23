@@ -1,7 +1,7 @@
 # ODS Dashboard API
 # Lightweight system status backend for the Dashboard UI
 
-FROM python:3.11-slim
+FROM python:3.11-slim@sha256:da047cb8f9d1d98e5c070f5300ba9f7274e33b8fc0e5be5ed88740aed1b95ba9
 
 LABEL org.opencontainers.image.source="https://github.com/Osmantic/ODS"
 LABEL org.opencontainers.image.description="ODS Dashboard API"
@@ -13,9 +13,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Install reviewed wheels, including the complete transitive dependency graph.
+COPY requirements-runtime.lock .
+RUN python -m pip --isolated install --no-cache-dir \
+    --index-url https://pypi.org/simple --require-hashes --only-binary=:all: \
+    -r requirements-runtime.lock
 
 # Copy application
 # Use glob to pick up every top-level .py file. The old explicit list
