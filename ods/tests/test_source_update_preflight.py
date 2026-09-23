@@ -21,7 +21,12 @@ def linux_identity(tmp_path, monkeypatch):
     marker.parent.mkdir(parents=True)
     real_load = guard.load_helper
     agent = real_load(ROOT / 'bin/ods-host-agent.py', 'source_guard_real_agent')
-    monkeypatch.setattr(guard, 'load_helper', lambda path, name: agent)
+    def trusted_load(path, name):
+        assert path.is_relative_to(ROOT)
+        if path == ROOT / 'bin/ods-host-agent.py':
+            return agent
+        return real_load(path, name)
+    monkeypatch.setattr(guard, 'load_helper', trusted_load)
     monkeypatch.setattr(guard.platform, 'system', lambda: 'Linux')
     monkeypatch.setattr(pwd, 'getpwuid', lambda uid: types.SimpleNamespace(pw_name='fixture-owner', pw_dir=str(home)))
     record = {'manager': 'ods', 'schema_version': 2, 'state': 'ready', 'install_dir': str(install)}
@@ -247,3 +252,25 @@ def test_untrusted_target_validator_never_imported(linux_identity):
     (install / 'bin').mkdir()
     (install / 'bin/ods-host-agent.py').write_text('raise AssertionError("target code executed")')
     assert guard.managed_pixel_identity(install) is None
+
+
+@pytest.mark.parametrize('value', ['pixel # selected', '"pixel" # selected', "'pixel' # selected"])
+def test_native_env_comments_use_actual_parser(linux_identity, value):
+    install, _, _ = linux_identity
+    (install / '.env').write_text('PIXEL_AGENT_MODE=' + value + '\n')
+    with pytest.raises(ValueError, match='selected'):
+        guard.managed_pixel_identity(install)
+
+
+@pytest.mark.parametrize('value', ['hermes # disabled', '"hermes" # disabled', "'hermes' # disabled", 'false', ''])
+def test_disabled_env_comments_are_not_native(linux_identity, value):
+    install, _, _ = linux_identity
+    (install / '.env').write_text('PIXEL_AGENT_MODE=' + value + '\nPIXEL_NATIVE_WORKSPACE="" # absent\n')
+    assert guard.managed_pixel_identity(install) is None
+
+
+def test_export_native_assignment_is_ambiguous_not_absent(linux_identity):
+    install, _, _ = linux_identity
+    (install / '.env').write_text('export PIXEL_AGENT_MODE=pixel\n')
+    with pytest.raises(ValueError, match='Unsupported export syntax'):
+        guard.managed_pixel_identity(install)

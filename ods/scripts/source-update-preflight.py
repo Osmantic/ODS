@@ -33,11 +33,21 @@ def locally_selected_native(install_dir):
         if not stat.S_ISREG(info.st_mode) or info.st_size > 1024 * 1024:
             raise ValueError("Cannot inspect native selection in the installation environment.")
         text = stream.read(1024 * 1024 + 1).decode("utf-8")
+    values = load_helper(ROOT / "extensions/services/dashboard-api/env_values.py", "ods_native_identity_env_values")
+    native_keys = {"PIXEL_AGENT_MODE", "PIXEL_NATIVE_UID", "PIXEL_NATIVE_CONFIG_PATH", "PIXEL_NATIVE_WORKSPACE"}
     for line in text.splitlines():
         key, separator, value = line.partition("=")
-        value = value.strip().strip("\"'")
-        if separator and ((key.strip() == "PIXEL_AGENT_MODE" and value == "pixel")
-                          or (key.strip() in {"PIXEL_NATIVE_UID", "PIXEL_NATIVE_CONFIG_PATH", "PIXEL_NATIVE_WORKSPACE"} and value)):
+        key = key.strip()
+        if not separator:
+            continue
+        # ODS safe-env rejects `export KEY=...`; do not let a different Compose
+        # interpretation make native state look absent to this safety probe.
+        if key.startswith("export ") and key[7:].strip() in native_keys:
+            raise ValueError("Unsupported export syntax for native selection; use ODS KEY=value syntax before retrying.")
+        if key not in native_keys:
+            continue
+        value = values.parse_env_value(value)
+        if (key == "PIXEL_AGENT_MODE" and value == "pixel") or (key != "PIXEL_AGENT_MODE" and value):
             return True
     return False
 
