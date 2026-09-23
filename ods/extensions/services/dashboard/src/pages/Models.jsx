@@ -381,6 +381,7 @@ export default function Models({ compact = false }) {
         recommendedCount={odsCatalogModels.length}
       />
 
+      <div role="tabpanel" id={`model-panel-${libraryScope}`} aria-labelledby={`model-tab-${libraryScope}`} tabIndex={0}>
       {libraryScope === 'huggingface' ? (
         <section
           ref={libraryRef}
@@ -461,6 +462,7 @@ export default function Models({ compact = false }) {
         </section>}
       </div>
       )}
+      </div>
 
       {deleteConfirmModel && (
         <DeleteModelDialog
@@ -562,7 +564,7 @@ function ModelSourceTabs({ value, onChange, installedCount, recommendedCount, co
       tone: 'amber',
     },
   ]
-  if (compact) return <div className="portal-model-tabs" role="tablist" aria-label="Model sources">{tabs.map(tab => <button key={tab.id} role="tab" aria-selected={value === tab.id} onClick={() => onChange(tab.id)}>{tab.label}{tab.count !== null && <small>{tab.count}</small>}</button>)}</div>
+  if (compact) return <div className="portal-model-tabs" role="tablist" aria-label="Model sources">{tabs.map(tab => <button key={tab.id} id={`model-tab-${tab.id}`} role="tab" aria-selected={value === tab.id} aria-controls={`model-panel-${tab.id}`} onClick={() => onChange(tab.id)}>{tab.label}{tab.count !== null && <small>{tab.count}</small>}</button>)}</div>
   const activeStyles = {
     emerald: {
       borderColor: 'rgba(52, 211, 153, 0.48)',
@@ -607,8 +609,10 @@ function ModelSourceTabs({ value, onChange, installedCount, recommendedCount, co
           <button
             key={id}
             type="button"
+            id={`model-tab-${id}`}
             role="tab"
             aria-selected={active}
+            aria-controls={`model-panel-${id}`}
             onClick={() => onChange(id)}
             style={active ? activeStyles[tone] : undefined}
             className={`group relative flex min-h-[86px] items-center gap-3 overflow-hidden rounded-lg border px-3.5 text-left transition-[border-color,background-color,box-shadow,transform] duration-200 sm:px-4 ${active ? 'text-theme-text' : 'border-theme-border bg-theme-bg/45 text-theme-text-muted hover:-translate-y-px hover:border-theme-accent/30 hover:bg-theme-surface-hover hover:text-theme-text'}`}
