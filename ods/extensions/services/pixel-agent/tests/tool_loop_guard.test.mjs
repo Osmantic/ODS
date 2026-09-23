@@ -1,5 +1,52 @@
 import { RUN_PROGRESS_STOP_REASON } from "../plugin/run-progress-budget.mjs";
 import test from "node:test";
+
+test('sandbox host workspace lookup failures give call-bound path guidance without rewriting commands', () => {
+  const root='/home/owner/.openclaw/workspace-pixel';
+  const directory=root+'/calc-project';
+  for (const deferred of [false,true]) for (const pythonFile of [false,true]) {
+    const guard=createToolLoopGuard();
+    const context={agentId:'pixel',runId:'run-1',sessionId:'session-1',toolCallId:'path-failure'};
+    guard.observeRun(context,'pixel',{prompt:'Run the existing project script and read its result.'},{executionHost:'sandbox',workspaceRoot:root});
+    const command=pythonFile ? `python3 ${directory}/calculate.py` : `cd ${directory} && python3 calculate.py`;
+    const args={command,workdir:directory};
+    const toolName=deferred?'tool_call':'exec';
+    const params=deferred?{id:'openclaw:core:exec',args}:args;
+    const prepared=guard.beforeToolCall({toolName,params},{...context,toolName});
+    assert.notEqual(prepared?.block,true);
+    assert.equal((deferred?prepared?.params?.args:prepared?.params)?.command ?? command,command);
+    const text=pythonFile ? `python3: can't open file '${directory}/calculate.py': [Errno 2] No such file or directory` : `sh: 1: cd: can't cd to ${directory}\n\n(Command exited with code 2)`;
+    const result={isError:true,content:[{type:'text',text}],details:{status:'completed',exitCode:2,aggregated:text,cwd:directory}};
+    const observed=deferred?wrappedCoreResult('exec',result):result;
+    guard.afterToolCall({toolName,params,result:observed},{...context,toolName});
+    const persisted=persistToolResult(guard,toolName,context.toolCallId,observed)?.message;
+    assert.match(JSON.stringify(persisted),/ODS Pixel path correction/);
+    assert.match(JSON.stringify(persisted),/Shell commands see that workspace at \/workspace/);
+    assert.match(JSON.stringify(persisted),/host-side cwd.*not an in-sandbox path/);
+    assert.match(JSON.stringify(persisted),/Keep the existing project files/);
+    assert.match(JSON.stringify(persisted),/can't (?:cd|open file)/);
+    assert.notEqual(guard.beforeToolCall({toolName:'exec',params:{command:'python3 calculate.py',workdir:'/workspace/calc-project'}},{...context,toolName:'exec',toolCallId:'corrected'})?.block,true);
+  }
+});
+
+test('sandbox path guidance rejects native, unbound, successful and unrelated failures', () => {
+  const root='/home/owner/.openclaw/workspace-pixel';
+  for(const variant of ['gateway','unknown-mode','missing-root','other-root','prefix-collision','traversal','success','running','permission','stdout-only','data-argument','multiline','wrong-call','wrong-run','malformed-envelope']) {
+    const guard=createToolLoopGuard(),deferred=variant==='malformed-envelope';
+    const context={agentId:'pixel',runId:'run-1',sessionId:'session-1',toolCallId:'path-failure'};
+    guard.observeRun(context,'pixel',{prompt:'Run the existing project script.'},{executionHost:variant==='gateway'?'gateway':variant==='unknown-mode'?undefined:'sandbox',workspaceRoot:variant==='missing-root'?undefined:root});
+    const directory=variant==='other-root'?'/home/other/project':variant==='prefix-collision'?root+'-other/project':variant==='traversal'?root+'/../other':root+'/project';
+    const text=variant==='permission'?`sh: 1: cd: ${directory}: Permission denied`:`sh: 1: cd: can't cd to ${directory}`;
+    const args={command:variant==='data-argument'?`printf '%s' "${directory}"`:variant==='multiline'?`echo first\ncd ${directory}`:`cd ${directory}`,workdir:directory};
+    const toolName=deferred?'tool_call':'exec',params=deferred?{id:'openclaw:core:exec',args}:args;
+    guard.beforeToolCall({toolName,params},{...context,toolName});
+    const result={isError:true,content:[{type:'text',text}],details:{status:variant==='running'?'running':'completed',exitCode:variant==='success'?0:2,aggregated:variant==='stdout-only'?'':text,cwd:directory}};
+    const observed=deferred?wrappedCoreResult('read',result):result;
+    guard.afterToolCall({toolName,params,result:observed},{...context,toolName});
+    const persisted=guard.toolResultPersist({toolCallId:variant==='wrong-call'?'other':context.toolCallId,message:{role:'toolResult',toolName,toolCallId:context.toolCallId,...observed}},{agentId:'pixel',runId:variant==='wrong-run'?'other':'run-1',toolName});
+    assert.doesNotMatch(JSON.stringify(persisted)??'',/ODS Pixel path correction/,variant);
+  }
+});
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";

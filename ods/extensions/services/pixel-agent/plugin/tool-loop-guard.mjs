@@ -20,7 +20,7 @@ import { createCompletionAssurance } from "./completion-assurance.mjs";
 import { createExtensionCompletionGate } from "./extension-completion-gate.mjs";
 import { parseQuestions, questionsText, requestsChoiceQuestion, choiceQuestionFromText } from "./ask-user.mjs";
 import { createRunProgressBudget, failedToolOutcome, isLiteralEcho, progressLaneStopReason, RUN_PROGRESS_STOP_REASON } from "./run-progress-budget.mjs";
-import { canonicalWorkspaceParams, extensionlessHtmlWrite, workspaceFileParent, nativeExecWorkdir } from "./workspace-path-contract.mjs";
+import { canonicalWorkspaceParams, extensionlessHtmlWrite, workspaceFileParent, nativeExecWorkdir, sandboxHostWorkspaceFailure } from "./workspace-path-contract.mjs";
 import { routePlaygroundTool, requestsNewPlaygroundProject } from "./playground-projects.mjs";
 import { workspaceMutationFiles } from "./workspace-projects.mjs";
 
@@ -9071,6 +9071,12 @@ export function createToolLoopGuard({
       : toolName === "tool_call"
         ? toolSearchSelectedToolEvent(event, "exec", "core")
         : undefined;
+    if (completedExecution && pendingToolRun?.runId === runId &&
+        pendingToolRun.selectedToolName === 'exec' && pendingToolRun.transport === toolName) {
+      pendingToolRun.sandboxPathCorrection = sandboxHostWorkspaceFailure(
+        pendingToolRun.selectedParams, completedExecution.result,
+        state.configuredWorkspaceRoot, state.preparationExecutionHost);
+    }
     const associateExecProject = directory => {
       if(typeof directory!=='string') return;
       try {onWorkspaceMutation({sessionKey:state.currentSessionKey,workspaceRoot:state.configuredWorkspaceRoot,directory,kind:'exec'});}
@@ -10030,6 +10036,13 @@ export function createToolLoopGuard({
           details: { ...message.details, aggregated: nativeFailure } }
       : undefined;
     const compactVerification = compactCleanVerificationResult(message, pending);
+    const sandboxPathCorrection = pending?.sandboxPathCorrection &&
+      message.role === 'toolResult' && message.toolName === pending.transport &&
+      (!message.toolCallId || message.toolCallId === toolCallId) &&
+      (!event?.toolCallId || event.toolCallId === toolCallId) &&
+      (!context?.runId || context.runId === pending.runId) &&
+      (!event?.runId || event.runId === pending.runId)
+      ? pending.sandboxPathCorrection : undefined;
     const compactCoreResult = compactVerification
       ? undefined
       : compactWorkspaceCoreResult(message, pending, state);
@@ -10160,7 +10173,8 @@ export function createToolLoopGuard({
       !compactNativeVerification &&
       !compactCoreResult &&
       !compactWebResult &&
-      !previewStageInstruction
+      !previewStageInstruction &&
+      !sandboxPathCorrection
     ) {
       return undefined;
     }
@@ -10176,6 +10190,7 @@ export function createToolLoopGuard({
     if (workspaceStageInstruction) {
       content.push({ type: "text", text: workspaceStageInstruction });
     }
+    if (sandboxPathCorrection) content.push({type:'text',text:sandboxPathCorrection});
     if (previewStageInstruction) {
       content.push({ type: "text", text: previewStageInstruction });
     }

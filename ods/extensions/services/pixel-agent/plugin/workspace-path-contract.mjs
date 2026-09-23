@@ -6,6 +6,30 @@ import path from 'node:path';
 const selectedTool = id => typeof id === 'string' && /^(?:openclaw:core:)?(?:read|write|edit|exec)$/.test(id)
   ? id.split(':').at(-1) : id === 'pixel_ods_workspace_preview' ? id : undefined;
 
+// Diagnose a terminal path lookup failure, never rewrite shell source or infer
+// a host root from model arguments. The exec cwd receipt is host-side metadata;
+// it does not establish that the same absolute path exists inside the sandbox.
+export function sandboxHostWorkspaceFailure(params, result, root, executionHost) {
+  if (executionHost !== 'sandbox' || typeof root !== 'string' || !root.startsWith('/') ||
+      root === '/' || root === '/workspace' || root.includes('\0') || root.split('/').includes('..') ||
+      typeof params?.command !== 'string' || /[\r\n\0]/.test(params.command) || params.command.length > 8192 ||
+      result?.details?.status !== 'completed' || !Number.isInteger(result.details.exitCode) || result.details.exitCode === 0) return undefined;
+  const text = typeof result.details.aggregated === 'string' ? result.details.aggregated : '';
+  if (text.length > 16000) return undefined;
+  const configured = root.replace(/\/+$/, '');
+  const escape = value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  for (const line of text.split('\n')) {
+    const match = line.match(/(?:can't cd to|cannot cd to|can't open file)\s+['"]?([^'"\r\n]+)/);
+    const failedPath = match?.[1]?.trim();
+    if (!failedPath || !(failedPath === configured || failedPath.startsWith(configured + '/')) || failedPath.split('/').includes('..')) continue;
+    const literal = escape(failedPath);
+    const invocation = new RegExp(`(?:^|&&\\s*)(?:cd|python(?:3(?:\\.\\d+)?)?)\\s+(?:'${literal}'|"${literal}"|${literal}(?=\\s|$|[;&]))`);
+    if (!invocation.test(params.command)) continue;
+    return '[ODS Pixel path correction] This failed sandbox command used the configured host workspace path. Shell commands see that workspace at /workspace; the host-side cwd in tool metadata is not an in-sandbox path. Keep the existing project files: use /workspace plus the same project-relative subdirectory as workdir, then run relative filenames. Inspect that project if needed; do not recreate the files in a different directory. No command was rewritten or retried.';
+  }
+  return undefined;
+}
+
 // Core exec falls back to its process cwd for missing directories. Native
 // execution must not silently move a workspace mutation into that directory.
 export function nativeExecWorkdir(value, root, stat = statSync) {
