@@ -146,3 +146,29 @@ The metadata sweep of current nonvendor documentation found generic user-path
 examples, container paths, and source or artifact hashes. No additional concrete
 personal machine path or transient machine identifier was identified. Technical
 evidence and contributor attribution were retained.
+
+## Exact access-challenge review, 2026-09-23
+
+The [complete scan at c9adf3d5](https://github.com/Osmantic/ODS/actions/runs/35863059308)
+checked 568 Markdown files and reported four unresolved URLs. Three were the
+same Unsplash/Intel access challenges; the fourth was a transient response for
+the versioned Uptime Kuma source link. No general domain/status bypass was added.
+
+A separate public web-reader consultation on September 23 returned the actual
+content of each challenged page: the photo page identified Luis Del Río Camacho
+and linked the Unsplash License; the official license page contained its license
+section; Intel's Arc Windows page contained the driver description and download
+section. No authenticated account, downloaded image/driver or accepted publisher
+terms was used in this review. A web reader's access is not evidence that the
+anonymous CI client received a successful HTTP response.
+
+The [exception ledger](../../.github/external-link-exceptions.json) therefore
+records three exact-URL `access-unconfirmed` deferrals owned by this PR's
+documentation review, expiring October 7, 2026. They remain visible in CI's
+reviewed-deferral report. A 404, timeout, transport failure, changed URL or expired
+entry still fails; the Uptime Kuma transient has no exception. The next complete
+candidate scan must pass all other links. These limited deferrals neither clear
+wallpaper rights nor make the complete audit release-ready.
+
+A bounded anonymous curl recheck returned HTTP 200 for the Uptime Kuma link.
+That one recovered response does not replace the next full candidate scan.
