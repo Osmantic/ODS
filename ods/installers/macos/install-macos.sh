@@ -193,7 +193,6 @@ fi
 source "${SOURCE_ROOT}/installers/lib/readiness-summary.sh"
 source "${SOURCE_ROOT}/installers/lib/secure-log.sh"
 source "${SOURCE_ROOT}/installers/lib/model-download-review.sh"
-ods_prepare_install_log_var ODS_LOG_FILE /tmp/ods-install-macos.log || exit 1
 
 # ── File-local helpers ──
 _close_inherited_fds_for_daemon() {
@@ -1192,6 +1191,9 @@ if $ENABLE_PIXEL; then
     ENABLE_OPENCLAW=false
     OPENCLAW_EXPLICIT=true
 fi
+
+# Refuse incompatible native installs before creating even the installer log.
+ods_prepare_install_log_var ODS_LOG_FILE /tmp/ods-install-macos.log || exit 1
 
 if ! $OPENCLAW_EXPLICIT; then
     _existing_openclaw=false

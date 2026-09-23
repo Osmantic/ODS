@@ -622,5 +622,26 @@ else
     fail "Library port was rejected for the wrong reason: $out"
 fi
 
+# Validate the explicit XTTS choice without manufacturing acceptance.
+for choice in 0 1 true yes 2; do
+    cp "$TMP_DIR/valid.env" "$TMP_DIR/xtts-choice.env"
+    printf 'COQUI_TOS_AGREED=%s\n' "$choice" >> "$TMP_DIR/xtts-choice.env"
+    if out=$("$VALIDATE_ENV_BASH" "$ROOT_DIR/scripts/validate-env.sh" "$TMP_DIR/xtts-choice.env" "$ROOT_DIR/.env.schema.json" 2>&1); then
+        case "$choice" in
+            0|1) pass "Explicit XTTS choice $choice is recognized" ;;
+            *) fail "Invalid XTTS choice $choice was accepted" ;;
+        esac
+    elif [[ "$choice" != 0 && "$choice" != 1 && "$out" == *"COQUI_TOS_AGREED: invalid value"* ]]; then
+        pass "Invalid XTTS choice $choice is rejected"
+    else
+        fail "XTTS choice $choice failed for the wrong reason: $out"
+    fi
+done
+if jq -e '(.properties.COQUI_TOS_AGREED | has("default") | not) and (.required | index("COQUI_TOS_AGREED") == null)' "$ROOT_DIR/.env.schema.json" >/dev/null; then
+    pass "XTTS acceptance has no default and is not required for other services"
+else
+    fail "XTTS acceptance must remain an optional explicit choice"
+fi
+
 echo "Result: $PASSED passed, $FAILED failed"
 [[ $FAILED -eq 0 ]]
