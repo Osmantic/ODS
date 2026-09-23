@@ -49,6 +49,7 @@ const STACK_OPTIONS = [
 ]
 
 const TOTAL_STEPS = 4
+const ADMIN_SESSION_TIMEOUT_MS = 5000
 
 function readProgress() {
   try {
@@ -224,7 +225,14 @@ export default function FirstBoot({ onComplete }) {
       // wizard still finishes; the user can re-mint by reloading the
       // dashboard (App.jsx's useSessionBootstrap retries on every load).
       try {
-        const adminResp = await fetch('/api/auth/admin-session', { method: 'POST' })
+        const controller = new AbortController()
+        const timeout = setTimeout(() => controller.abort(), ADMIN_SESSION_TIMEOUT_MS)
+        let adminResp
+        try {
+          adminResp = await fetch('/api/auth/admin-session', { method: 'POST', signal: controller.signal })
+        } finally {
+          clearTimeout(timeout)
+        }
         if (!adminResp.ok && adminResp.status !== 503) {
           // 503 = signing not configured server-side; surfaced elsewhere.
           // Other errors are operationally interesting but non-fatal here.
