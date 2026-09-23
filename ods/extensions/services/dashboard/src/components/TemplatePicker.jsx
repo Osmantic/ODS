@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import MetalMetricIcon from './MetalMetricIcon'
 import {
   MessageSquare, Image, Code, Shield, Layers, Package,
@@ -136,6 +136,7 @@ export function TemplatePreview({ template, onClose, onApplied }) {
   const [error, setError] = useState(null)
   const [applied, setApplied] = useState(false)
   const [applyResult, setApplyResult] = useState(null)
+  const applyInFlightRef = useRef(false)
   const requestClose = () => { if (!applying) onClose() }
 
   const Icon = ICON_MAP[template.icon] || Package
@@ -155,7 +156,8 @@ export function TemplatePreview({ template, onClose, onApplied }) {
   }
 
   const handleApply = async () => {
-    if (applying || !canApply) return
+    if (applying || applyInFlightRef.current || !canApply) return
+    applyInFlightRef.current = true
     setApplying(true)
     setError(null)
     try {
@@ -177,6 +179,7 @@ export function TemplatePreview({ template, onClose, onApplied }) {
     } catch (err) {
       setError(err.name === 'AbortError' ? 'Request timed out. Close and check extension status before retrying.' : 'Failed to apply template')
     } finally {
+      applyInFlightRef.current = false
       setApplying(false)
     }
   }

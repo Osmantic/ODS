@@ -61,6 +61,19 @@ describe('TemplatePreview apply result', () => {
     expect(await screen.findByText(/template applied/i)).toBeInTheDocument()
   })
 
+  test('ignores same-turn duplicate apply activations', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response({ changes: { to_enable: ['svc-a'], already_enabled: [], incompatible: [] }, warnings: [] }))
+      .mockImplementationOnce(() => new Promise(() => {}))
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<TemplatePreview template={template} onClose={vi.fn()} />)
+    const applyButton = await screen.findByRole('button', { name: /apply template/i })
+    fireEvent.click(applyButton)
+    fireEvent.click(applyButton)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
   test('does not report all services active when apply skipped a service', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(response({
