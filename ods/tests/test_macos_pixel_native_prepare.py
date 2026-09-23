@@ -158,6 +158,10 @@ def test_initial_preparation_orders_stages_and_records_failures(tmp_path, monkey
     def stage(name, **kwargs):
         calls.append(name)
         assert not home.exists()
+        if name == 'runtime':
+            assert kwargs['services_bundle'] == destination / 'services'
+            assert kwargs['ods_source'] == tmp_path
+            assert kwargs['services_digest'] == 'services-digest'
         if fault == name: raise ValueError('private credential must not enter receipt')
         if name == 'layout':
             assert kwargs['home'] == home
@@ -266,6 +270,10 @@ def test_legacy_preparation_preserves_active_files_and_keeps_phase_receipts(tmp_
     events = []
     def stage(name, **kwargs):
         events.append(name)
+        if name == 'runtime':
+            assert kwargs['services_bundle'] == destination / 'services'
+            assert kwargs['ods_source'] == tmp_path
+            assert kwargs['services_digest'] == 'b' * 64
         if fault == name: raise ValueError('private failure text')
         if name == 'joint-plan':
             if fault == 'source-drift': previous.write_bytes(body + b' ')

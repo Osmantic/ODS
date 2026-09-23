@@ -1,7 +1,8 @@
 """Stage and publish a reproducible native Pixel runtime without executing it.
 
-Sources are explicitly selected local artifacts, not an upstream provenance
-claim. The manifest binds every entry, including internal relative symlinks.
+The manifest binds every entry, including internal relative symlinks. Optional
+release selection proves only recorded ODS source bindings, not a whole release
+or a running process. Other inputs remain explicitly selected local artifacts.
 Publication requires a selected digest and root custody; loader compatibility,
 configuration activation and runtime behavior need separate gates.
 """
@@ -15,11 +16,30 @@ from pathlib import Path
 import re
 import shutil
 import stat
+import subprocess
 import sys
 import tempfile
 
 
 MANIFEST = 'bundle.json'
+RELEASE_SELECTION = 'ods-release-selection.json'
+MAX_SELECTION = 2 * 1024 * 1024
+SELECTION_KIND = 'ods-pixel-expected-release-selection'
+SELECTION_SCOPE = 'expected-artifacts-not-running'
+UNKNOWN_SOURCE_REASONS = {'source-unavailable', 'source-dirty', 'source-ref-mismatch',
+    'source-inputs-unmapped', 'source-bytes-mismatch', 'legacy-bundle',
+    'service-source-unavailable', 'source-phase-mismatch'}
+SOURCE_SCOPE = 'recorded-bindings-only'
+ODS_SERVICE_SOURCES = {
+    'manager/extension_manager.py': 'extensions/services/pixel-agent/host/extension_manager.py',
+    'manager/unix_peer.py': 'extensions/services/pixel-agent/host/unix_peer.py',
+    'promoter/artifact_promoter.py': 'extensions/services/pixel-agent/host/artifact_promoter.py',
+    'promoter/unix_peer.py': 'extensions/services/pixel-agent/host/unix_peer.py',
+    'promoter/pixel_macos_custody.py': 'bin/pixel_macos_custody.py',
+    'helpers/extension_search.py': 'extensions/services/pixel-agent/host/extension_search.py',
+    'helpers/system_observe.py': 'extensions/services/pixel-agent/host/system_observe.py',
+}
+GENERATED_SERVICE_ARTIFACTS = {'operations/policy.json', 'helpers/extension-catalog.json'}
 MAX_ENTRIES = 200000
 MAX_MANIFEST = 32 * 1024 * 1024
 INSTALL_ROOT = Path('/usr/local/libexec/ods-pixel-runtimes')
@@ -51,6 +71,333 @@ def _relative(value):
 
 def _encode(value):
     return (json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=True) + '\n').encode()
+
+
+def _git(root, *args, limit=MAX_SELECTION):
+    result = subprocess.run(['git', '--no-replace-objects', '--no-optional-locks', '--no-pager',
+        '-c', 'core.fsmonitor=false', '-c', 'core.untrackedCache=false', *args],
+        cwd=root, stdin=subprocess.DEVNULL, capture_output=True, timeout=20)
+    if result.returncode or len(result.stdout) > limit:
+        raise ValueError('source-unavailable')
+    return result.stdout
+
+
+def _git_blob(body):
+    return hashlib.sha1(b'blob ' + str(len(body)).encode() + b'\0' + body).hexdigest()
+
+
+def _service_source_prefix(bindings):
+    """All service mappings must describe one repository-relative ODS root."""
+    prefixes = set()
+    for name, record in bindings.items():
+        source, relative = _relative(record['source']), ODS_SERVICE_SOURCES[name]
+        if source != relative and not source.endswith('/' + relative):
+            raise BundleError('service-source-binding-changed')
+        prefixes.add(source[:-len(relative)])
+    if len(prefixes) != 1:
+        raise BundleError('service-source-binding-changed')
+    return prefixes.pop()
+
+
+def service_source_provenance(selected, files):
+    value = {'scope': SOURCE_SCOPE,
+        'odsSource': {'state': 'unknown', 'commit': None, 'reason': selected['reason']},
+        'sourceBindings': {},
+        'generatedArtifacts': {name: {'sha256': hashlib.sha256(files[name]).hexdigest(), 'sourceState': 'unknown'}
+                               for name in sorted(GENERATED_SERVICE_ARTIFACTS)}}
+    if selected['reason'] is not None:
+        return value
+    bindings = {}
+    for name, relative in ODS_SERVICE_SOURCES.items():
+        source = selected['prefix'] + relative
+        mode, oid = selected['objects'].get(source, (None, None))
+        if mode not in ('100644', '100755') or oid != _git_blob(files[name]):
+            value['odsSource']['reason'] = 'source-bytes-mismatch'
+            return value
+        bindings[name] = {'source': source, 'sha256': hashlib.sha256(files[name]).hexdigest()}
+    value['odsSource'] = {'state': 'verified-source-bindings', 'commit': selected['commit'], 'reason': None}
+    value['sourceBindings'] = bindings
+    return value
+
+
+def validate_service_manifest_provenance(manifest):
+    """Validate an expected service snapshot, not the installed service bytes."""
+    keys = {'schemaVersion', 'status', 'requiresServiceQualification', 'pixelSourceRef',
+            'candidateConfigSha256', 'files'}
+    names = set(ODS_SERVICE_SOURCES) | GENERATED_SERVICE_ARTIFACTS | {'operations/broker.py'}
+    if (type(manifest) is not dict or set(manifest) not in (keys, keys | {'sourceProvenance'})
+            or type(manifest['schemaVersion']) is not int or manifest['schemaVersion'] != 1
+            or manifest['status'] != 'staged' or manifest['requiresServiceQualification'] is not True
+            or type(manifest['pixelSourceRef']) is not str or not re.fullmatch('[a-f0-9]{40}', manifest['pixelSourceRef'])
+            or type(manifest['candidateConfigSha256']) is not str or not re.fullmatch('[a-f0-9]{64}', manifest['candidateConfigSha256'])
+            or type(manifest['files']) is not dict or set(manifest['files']) != names):
+        raise BundleError('invalid-service-source-provenance')
+    for record in manifest['files'].values():
+        if (type(record) is not dict or set(record) != {'sha256', 'bytes'}
+                or type(record['bytes']) is not int or not 0 < record['bytes'] <= MAX_SELECTION
+                or type(record['sha256']) is not str or not re.fullmatch('[a-f0-9]{64}', record['sha256'])):
+            raise BundleError('invalid-service-source-provenance')
+    provenance = manifest.get('sourceProvenance')
+    if 'sourceProvenance' not in manifest:
+        return {'scope': SOURCE_SCOPE, 'odsSource': {'state': 'unknown', 'commit': None, 'reason': 'legacy-bundle'}}
+    if (type(provenance) is not dict or set(provenance) != {'scope', 'odsSource', 'sourceBindings', 'generatedArtifacts'}
+            or provenance['scope'] != SOURCE_SCOPE or type(provenance['odsSource']) is not dict
+            or set(provenance['odsSource']) != {'state', 'commit', 'reason'}
+            or type(provenance['sourceBindings']) is not dict or type(provenance['generatedArtifacts']) is not dict
+            or set(provenance['generatedArtifacts']) != GENERATED_SERVICE_ARTIFACTS):
+        raise BundleError('invalid-service-source-provenance')
+    for name, record in provenance['generatedArtifacts'].items():
+        if record != {'sha256': manifest['files'][name]['sha256'], 'sourceState': 'unknown'}:
+            raise BundleError('invalid-generated-source-provenance')
+    source = provenance['odsSource']
+    if source['state'] == 'unknown':
+        if source['commit'] is not None or type(source['reason']) is not str or source['reason'] not in UNKNOWN_SOURCE_REASONS or provenance['sourceBindings']:
+            raise BundleError('invalid-service-source-provenance')
+    elif (source['state'] != 'verified-source-bindings' or source['reason'] is not None
+            or type(source['commit']) is not str or not re.fullmatch('[a-f0-9]{40}', source['commit'])
+            or set(provenance['sourceBindings']) != set(ODS_SERVICE_SOURCES)):
+        raise BundleError('invalid-service-source-provenance')
+    for name, record in provenance['sourceBindings'].items():
+        if (type(record) is not dict or set(record) != {'source', 'sha256'}
+                or _relative(record['source']) != record['source']
+                or record['sha256'] != manifest['files'][name]['sha256']):
+            raise BundleError('service-source-binding-changed')
+    if provenance['sourceBindings']:
+        _service_source_prefix(provenance['sourceBindings'])
+    return provenance
+
+
+def _selected_release_source(root, plugin_indices, *, wrapper, repairs, expected_ref=None, source_paths=()):
+    """Pin Git identity before copying; later comparisons use this commit only.
+
+    A checkout, installed archive, or external plugin may legitimately lack
+    provable provenance. That limits identity reporting, not installation.
+    """
+    selected = {'reason': 'source-unavailable', 'commit': None, 'objects': {},
+                'plugins': list(plugin_indices), 'repairInputs': {}}
+    try:
+        root = Path(root).resolve(strict=True)
+        repository = Path(_git(root, 'rev-parse', '--show-toplevel', limit=4096).decode().strip()).resolve(strict=True)
+        prefix = root.relative_to(repository).as_posix()
+        prefix = '' if prefix == '.' else prefix + '/'
+        # Reuse the service-stage selection when present. Never replace it with
+        # a later checkout HEAD after service source has already been copied.
+        commit = expected_ref if expected_ref is not None else _git(root, 'rev-parse', '--verify', 'HEAD^{commit}', limit=128).decode().strip()
+        if type(commit) is not str or not re.fullmatch('[a-f0-9]{40}', commit):
+            return selected
+        if _git(repository, 'status', '--porcelain=v1', '--untracked-files=all'):
+            return {**selected, 'reason': 'source-dirty'}
+        if not plugin_indices and not source_paths:
+            return {**selected, 'reason': 'source-inputs-unmapped'}
+        inputs = (['extensions/services/pixel-agent/plugin'] if plugin_indices else []) + sorted(source_paths)
+        if wrapper:
+            inputs.append('extensions/services/pixel-agent/host/cancellable-exec.sh')
+        if repairs:
+            inputs.extend('extensions/services/pixel-agent/host/' + name for name, _ in SHARED_REPAIRS)
+        objects = {}
+        for item in _git(repository, 'ls-tree', '-r', '-z', commit, '--',
+                         *(prefix + name for name in inputs)).split(b'\0'):
+            if not item:
+                continue
+            metadata, name = item.split(b'\t', 1)
+            mode, kind, oid = metadata.decode('ascii').split(' ')
+            name = name.decode('utf-8')
+            if kind != 'blob' or mode not in ('100644', '100755', '120000'):
+                return {**selected, 'reason': 'source-inputs-unmapped'}
+            objects[name] = (mode, oid)
+        repair_inputs = {}
+        if repairs:
+            for name, _ in SHARED_REPAIRS:
+                relative = prefix + 'extensions/services/pixel-agent/host/' + name
+                with os.fdopen(_open_file(REPAIR_ROOT, name), 'rb') as handle:
+                    body = handle.read(MAX_SELECTION + 1)
+                if len(body) > MAX_SELECTION or objects.get(relative, (None, None))[1] != _git_blob(body):
+                    return {**selected, 'reason': 'source-bytes-mismatch'}
+                repair_inputs[name] = {'source': relative, 'sha256': hashlib.sha256(body).hexdigest()}
+        return {**selected, 'reason': None, 'commit': commit, 'prefix': prefix,
+                'objects': objects, 'repairInputs': repair_inputs}
+    except (OSError, ValueError, UnicodeError, subprocess.SubprocessError):
+        return selected
+
+
+def _artifact_source_record(root, path, record):
+    if record[0] == 'link':
+        body = os.readlink(Path(root) / path).encode('utf-8')
+        return '120000', _git_blob(body), hashlib.sha256(body).hexdigest()
+    if record[0] != 'file':
+        raise ValueError('source-inputs-unmapped')
+    digest, blob = hashlib.sha256(), hashlib.sha1(b'blob ' + str(record[2]).encode() + b'\0')
+    with os.fdopen(_open_file(root, path), 'rb') as handle:
+        before = os.fstat(handle.fileno())
+        for block in iter(lambda: handle.read(1024 * 1024), b''):
+            digest.update(block)
+            blob.update(block)
+        if _signature(before) != _signature(os.fstat(handle.fileno())) or digest.hexdigest() != record[3]:
+            raise ValueError('source-bytes-mismatch')
+    return '100755' if record[1] == 0o755 else '100644', blob.hexdigest(), digest.hexdigest()
+
+
+def _release_selection(root, entries, selected, *, pixel_ref, services_digest, repairs, service_manifest=None):
+    value = {'schemaVersion': 1, 'kind': SELECTION_KIND, 'scope': SELECTION_SCOPE,
+        'sourceScope': SOURCE_SCOPE,
+        'odsSource': {'state': 'unknown', 'commit': None, 'reason': selected['reason']},
+        'pixelSourceRevision': pixel_ref, 'serviceBundleDigest': services_digest,
+        'odsPluginDirectories': ['plugins/' + str(index) for index in selected['plugins']],
+        'sourceBindings': {}, 'repairManifestBindings': {},
+        'serviceManifest': service_manifest,
+        'artifactInventorySha256': hashlib.sha256(_encode(entries)).hexdigest(),
+        'runtimeMatchesRelease': None}
+    if selected['reason'] is not None:
+        return value
+    service_source = (service_manifest or {}).get('sourceProvenance', {}).get('odsSource', {})
+    if service_source.get('state') != 'verified-source-bindings':
+        value['odsSource']['reason'] = 'service-source-unavailable'
+        return value
+    if service_source.get('commit') != selected['commit']:
+        value['odsSource']['reason'] = 'source-phase-mismatch'
+        return value
+    bindings = {}
+    try:
+        prefix = selected['prefix']
+        expected_plugin = prefix + 'extensions/services/pixel-agent/plugin/'
+        expected_files = {name for name in selected['objects'] if name.startswith(expected_plugin)}
+        if not expected_files:
+            raise ValueError('source-inputs-unmapped')
+        for directory in value['odsPluginDirectories']:
+            matched = set()
+            for path, record in entries.items():
+                if not path.startswith(directory + '/') or record[0] == 'directory':
+                    continue
+                source = expected_plugin + path[len(directory) + 1:]
+                mode, oid, checksum = _artifact_source_record(root, path, record)
+                if selected['objects'].get(source) != (mode, oid):
+                    raise ValueError('source-bytes-mismatch')
+                matched.add(source)
+                bindings[path] = {'source': source, 'sha256': checksum}
+            if matched != expected_files:
+                raise ValueError('source-bytes-mismatch')
+        if 'cancellable-exec.sh' in entries:
+            source = prefix + 'extensions/services/pixel-agent/host/cancellable-exec.sh'
+            _, oid, checksum = _artifact_source_record(root, 'cancellable-exec.sh', entries['cancellable-exec.sh'])
+            source_mode, source_oid = selected['objects'].get(source, (None, None))
+            if source_mode not in ('100644', '100755') or source_oid != oid:
+                raise ValueError('source-bytes-mismatch')
+            bindings['cancellable-exec.sh'] = {'source': source, 'sha256': checksum}
+        if {item['manifest']: item['manifestSha256'] for item in repairs} != {
+                name: record['sha256'] for name, record in selected['repairInputs'].items()}:
+            raise ValueError('source-bytes-mismatch')
+    except (OSError, ValueError):
+        value['odsSource']['reason'] = 'source-bytes-mismatch'
+        return value
+    value['odsSource'] = {'state': 'verified-source-bindings', 'commit': selected['commit'], 'reason': None}
+    value['sourceBindings'] = bindings
+    value['repairManifestBindings'] = selected['repairInputs']
+    return value
+
+
+def _validate_release_selection(value, entries, repair_receipts=()):
+    keys = {'schemaVersion', 'kind', 'scope', 'odsSource', 'pixelSourceRevision',
+        'serviceBundleDigest', 'odsPluginDirectories', 'sourceBindings',
+        'repairManifestBindings', 'artifactInventorySha256', 'runtimeMatchesRelease', 'sourceScope', 'serviceManifest'}
+    if (type(value) is not dict or set(value) != keys or type(value['schemaVersion']) is not int
+            or value['schemaVersion'] != 1 or value['kind'] != SELECTION_KIND
+            or value['scope'] != SELECTION_SCOPE or value['sourceScope'] != SOURCE_SCOPE or value['runtimeMatchesRelease'] is not None
+            or type(value['odsSource']) is not dict or set(value['odsSource']) != {'state', 'commit', 'reason'}
+            or type(value['odsPluginDirectories']) is not list
+            or any(type(path) is not str or not re.fullmatch(r'plugins/[0-9]+', path)
+                   or entries.get(path) != ['directory', 0o755] for path in value['odsPluginDirectories'])
+            or len(value['odsPluginDirectories']) != len(set(value['odsPluginDirectories']))
+            or type(value['sourceBindings']) is not dict or type(value['repairManifestBindings']) is not dict):
+        raise BundleError('invalid-release-selection')
+    for field, length in (('pixelSourceRevision', 40), ('serviceBundleDigest', 64)):
+        if value[field] is not None and (type(value[field]) is not str or not re.fullmatch('[a-f0-9]{%d}' % length, value[field])):
+            raise BundleError('invalid-release-selection')
+    if value['artifactInventorySha256'] != hashlib.sha256(_encode(entries)).hexdigest():
+        raise BundleError('release-selection-artifacts-changed')
+    service_manifest = value['serviceManifest']
+    if service_manifest is not None:
+        validate_service_manifest_provenance(service_manifest)
+        if (hashlib.sha256(_encode(service_manifest)).hexdigest() != value['serviceBundleDigest']
+                or service_manifest['pixelSourceRef'] != value['pixelSourceRevision']):
+            raise BundleError('release-selection-service-mismatch')
+    source = value['odsSource']
+    if source['state'] == 'unknown':
+        if source['commit'] is not None or type(source['reason']) is not str or source['reason'] not in UNKNOWN_SOURCE_REASONS or value['sourceBindings'] or value['repairManifestBindings']:
+            raise BundleError('invalid-release-selection')
+        return value
+    if (source['state'] != 'verified-source-bindings' or source['reason'] is not None
+            or type(source['commit']) is not str or not re.fullmatch('[a-f0-9]{40}', source['commit'])
+            or not value['odsPluginDirectories']):
+        raise BundleError('invalid-release-selection')
+    if (service_manifest is None or service_manifest.get('sourceProvenance', {}).get('odsSource') != source):
+        raise BundleError('release-selection-source-phase-mismatch')
+    prefix = _service_source_prefix(service_manifest['sourceProvenance']['sourceBindings'])
+    expected = {name for name, record in entries.items() if record[0] != 'directory' and
+        (name == 'cancellable-exec.sh' or any(name.startswith(path + '/') for path in value['odsPluginDirectories']))}
+    if set(value['sourceBindings']) != expected:
+        raise BundleError('release-selection-source-coverage')
+    for path, record in value['sourceBindings'].items():
+        if (type(record) is not dict or set(record) != {'source', 'sha256'}
+                or _relative(record['source']) != record['source']):
+            raise BundleError('invalid-release-selection')
+        entry = entries[path]
+        checksum = entry[3] if entry[0] == 'file' else hashlib.sha256(entry[1].encode()).hexdigest()
+        relative = ('host/cancellable-exec.sh' if path == 'cancellable-exec.sh'
+                    else 'plugin/' + path.split('/', 2)[2])
+        if (record['sha256'] != checksum
+                or record['source'] != prefix + 'extensions/services/pixel-agent/' + relative):
+            raise BundleError('release-selection-source-changed')
+    if (type(repair_receipts) not in (list, tuple) or any(type(item) is not dict
+            or type(item.get('manifest')) is not str or type(item.get('manifestSha256')) is not str
+            for item in repair_receipts)):
+        raise BundleError('invalid-release-selection-repairs')
+    expected_repairs = {item['manifest']: item['manifestSha256'] for item in repair_receipts}
+    if (len(expected_repairs) != len(repair_receipts)
+            or not set(expected_repairs) <= {name for name, _ in SHARED_REPAIRS}
+            or set(value['repairManifestBindings']) != set(expected_repairs)):
+        raise BundleError('release-selection-repair-coverage')
+    for name, record in value['repairManifestBindings'].items():
+        if (type(record) is not dict or set(record) != {'source', 'sha256'}
+                or record['source'] != prefix + 'extensions/services/pixel-agent/host/' + name
+                or record['sha256'] != expected_repairs[name]):
+            raise BundleError('release-selection-repair-changed')
+    return value
+
+
+def _read_release_selection(root, entries):
+    artifacts = {name: record for name, record in entries.items() if name != RELEASE_SELECTION}
+    if RELEASE_SELECTION not in entries:
+        return _release_selection(root, artifacts,
+            {'reason': 'legacy-bundle', 'plugins': []}, pixel_ref=None, services_digest=None, repairs=[])
+    try:
+        with os.fdopen(_open_file(root, RELEASE_SELECTION), 'rb') as handle:
+            body = handle.read(MAX_SELECTION + 1)
+        value = json.loads(body)
+        if len(body) > MAX_SELECTION or _encode(value) != body:
+            raise BundleError('invalid-release-selection')
+        repairs = []
+        if 'ods-runtime-repairs.json' in entries:
+            with os.fdopen(_open_file(root, 'ods-runtime-repairs.json'), 'rb') as handle:
+                repair_body = handle.read(MAX_SELECTION + 1)
+            if len(repair_body) > MAX_SELECTION:
+                raise BundleError('invalid-release-selection-repairs')
+            repairs = json.loads(repair_body)
+        _validate_release_selection(value, artifacts, repairs)
+        if value['serviceBundleDigest'] is not None:
+            verify_service_binding(root, value['serviceBundleDigest'])
+            if 'ods-service-binding.json' not in entries:
+                raise BundleError('release-selection-service-binding-missing')
+        return value
+    except (ValueError, TypeError, KeyError, RecursionError, UnicodeError) as error:
+        if isinstance(error, BundleError):
+            raise
+        raise BundleError('invalid-release-selection') from None
+
+
+def expected_release_selection(root, *, expected_digest=None):
+    """Installed expected artifacts only; never a running-process assertion."""
+    manifest, _ = verify(root, expected_digest=expected_digest)
+    return _read_release_selection(root, manifest['entries'])
 
 
 def _signature(info):
@@ -180,6 +527,7 @@ def verify(root, *, expected_digest=None):
     package = json.loads((root / 'runtime/package.json').read_bytes())
     if package.get('name') != 'openclaw' or package.get('version') != value['openclawVersion']:
         raise BundleError('bundle-version-mismatch')
+    _read_release_selection(root, value['entries'])
     return value, checksum
 
 
@@ -317,7 +665,8 @@ def verify_service_binding(root, services_digest):
 
 def build(*, node, runtime, destination, plugins=(), expected_version='2026.6.33',
           stream_progress_fix=False, services_digest=None, exec_wrapper=None,
-          shared_runtime_repairs=False):
+          shared_runtime_repairs=False, ods_source=None, pixel_source_ref=None,
+          ods_plugin_indices=(), service_manifest=None):
     if shared_runtime_repairs and expected_version != '2026.6.33':
         raise BundleError('shared-repairs-unqualified-version')
     if services_digest is not None and (type(services_digest) is not str
@@ -325,6 +674,25 @@ def build(*, node, runtime, destination, plugins=(), expected_version='2026.6.33
         raise BundleError('invalid-service-bundle-digest')
     node, runtime = Path(node).resolve(strict=True), Path(runtime).resolve(strict=True)
     plugins = [Path(path).resolve(strict=True) for path in plugins]
+    if (pixel_source_ref is not None and (type(pixel_source_ref) is not str
+            or not re.fullmatch('[a-f0-9]{40}', pixel_source_ref))):
+        raise BundleError('invalid-pixel-source-revision')
+    if (type(ods_plugin_indices) not in (list, tuple) or
+            any(type(index) is not int or not 0 <= index < len(plugins) for index in ods_plugin_indices)
+            or len(set(ods_plugin_indices)) != len(ods_plugin_indices)):
+        raise BundleError('invalid-ods-plugin-mapping')
+    service_source = None
+    if service_manifest is not None:
+        service_manifest = json.loads(_encode(service_manifest))
+        service_source = validate_service_manifest_provenance(service_manifest)
+        if (hashlib.sha256(_encode(service_manifest)).hexdigest() != services_digest
+                or service_manifest['pixelSourceRef'] != pixel_source_ref):
+            raise BundleError('selected-service-manifest-mismatch')
+    selected = None
+    if ods_source is not None:
+        selected = _selected_release_source(ods_source, ods_plugin_indices,
+            wrapper=exec_wrapper is not None, repairs=shared_runtime_repairs,
+            expected_ref=service_source['odsSource']['commit'] if service_source else None)
     destination = Path(destination)
     if not destination.is_absolute() or os.path.lexists(destination):
         raise BundleError('new-absolute-bundle-destination-required')
@@ -377,6 +745,15 @@ def build(*, node, runtime, destination, plugins=(), expected_version='2026.6.33
             binding = staged / 'ods-service-binding.json'
             binding.write_bytes(_encode({'schemaVersion': 1, 'serviceBundleDigest': services_digest}))
             binding.chmod(0o644)
+        if selected is not None:
+            selection = _release_selection(staged, inventory(staged), selected,
+                pixel_ref=pixel_source_ref, services_digest=services_digest,
+                repairs=repairs, service_manifest=service_manifest)
+            selection_body = _encode(selection)
+            if len(selection_body) > MAX_SELECTION:
+                raise BundleError('release-selection-too-large')
+            (staged / RELEASE_SELECTION).write_bytes(selection_body)
+            (staged / RELEASE_SELECTION).chmod(0o644)
         value = {'schemaVersion': 1, 'openclawVersion': expected_version,
                  'plugins': ['plugins/' + str(i) for i in range(len(plugins))],
                  'entries': inventory(staged)}

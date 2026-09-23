@@ -308,7 +308,8 @@ def prepare_migration(*, source, ref, node, runtime, docker, ods_source, install
             candidate=candidate, destination=destination / 'services')
         checkpoint('runtime')
         record['runtimeDigest'] = config.stage_bundle(source=source, ref=ref, candidate=candidate,
-            node=node, runtime=runtime, destination=destination / 'runtime', services_digest=record['serviceDigest'])
+            node=node, runtime=runtime, destination=destination / 'runtime', services_digest=record['serviceDigest'],
+            services_bundle=destination / 'services', ods_source=ods_source)
         checkpoint('joint-plan')
         plan = installer.make_migration_plan(install_dir=install_dir, owner_name=owner.pw_name,
             openclaw_bin=installer.GATEWAY_LAUNCHER, gateway_port=gateway_port, access_port=access_port,
@@ -403,7 +404,8 @@ def prepare(*, source=None, ref, answers=None, node, runtime=None, sandbox_image
         record['phase'] = 'runtime'
         checkpoint()
         record['runtimeDigest'] = config.stage_bundle(source=source, ref=ref, candidate=candidate,
-            node=node, runtime=runtime, destination=destination / 'runtime', services_digest=record['serviceDigest'])
+            node=node, runtime=runtime, destination=destination / 'runtime', services_digest=record['serviceDigest'],
+            services_bundle=destination / 'services', ods_source=ods_source)
         record['phase'] = 'layout'
         checkpoint()
         template = helper('layout').prepare(candidate=candidate, home=home, node=node, runtime=runtime,
