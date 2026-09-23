@@ -941,56 +941,28 @@ else
             mkdir -p "$INSTALL_DIR/data/comfyui"/{output,input,workflows,user}
         fi
 
-        SDXL_MODEL="sdxl_lightning_4step.safetensors"
-        SDXL_URL="https://huggingface.co/ByteDance/SDXL-Lightning/resolve/main/sdxl_lightning_4step.safetensors"
-
-        if [[ ! -f "$SDXL_CHECKPOINT_DIR/$SDXL_MODEL" ]]; then
-            ai "Downloading SDXL Lightning 4-step (~6.5GB) for image generation..."
-
-            # Source background task tracking
-            if [[ -f "$SCRIPT_DIR/installers/lib/background-tasks.sh" ]]; then
-                . "$SCRIPT_DIR/installers/lib/background-tasks.sh"
-            fi
-
-            # This daemon must not inherit the installer model lifecycle lock;
-            # otherwise full-model activation waits for an unrelated 6.5 GB
-            # image download after the installer itself releases the lock.
-            _sdxl_download_log="$INSTALL_DIR/logs/sdxl-download.log"
-            ods_prepare_install_log_var _sdxl_download_log || exit 1
-            (
-                _phase11_close_inherited_fds_for_daemon
-                exec nohup env \
-                    SDXL_CHECKPOINT_DIR="$SDXL_CHECKPOINT_DIR" \
-                    SDXL_MODEL="$SDXL_MODEL" \
-                    SDXL_URL="$SDXL_URL" \
-                    bash -c '
-                        echo "[SDXL] Starting SDXL Lightning model download..."
-                        if [[ ! -f "$SDXL_CHECKPOINT_DIR/$SDXL_MODEL" ]]; then
-                            echo "[SDXL] Downloading $SDXL_MODEL (~6.5GB)..."
-                            curl -fSL -C - --connect-timeout 30 --max-time 3600 \
-                                --retry 5 --retry-delay 10 --retry-all-errors \
-                                -o "$SDXL_CHECKPOINT_DIR/$SDXL_MODEL.part" \
-                                "$SDXL_URL" 2>&1 && \
-                                mv "$SDXL_CHECKPOINT_DIR/$SDXL_MODEL.part" "$SDXL_CHECKPOINT_DIR/$SDXL_MODEL" && \
-                                echo "[SDXL] $SDXL_MODEL complete" || \
-                                echo "[SDXL] ERROR: Failed to download $SDXL_MODEL"
-                        fi
-                        echo "[SDXL] SDXL Lightning model download finished."
-                    ' > "$_sdxl_download_log" 2>&1
-            ) &
-
-            sdxl_pid=$!
-
-            # Register background task
-            if command -v bg_task_start &>/dev/null; then
-                bg_task_start "sdxl-download" "$sdxl_pid" "SDXL Lightning model download" "$INSTALL_DIR/logs/sdxl-download.log"
-            fi
-
-            log "Background SDXL download started (PID: $sdxl_pid). Check: tail -f $INSTALL_DIR/logs/sdxl-download.log"
-            ai "SDXL Lightning downloading in background (~6.5GB). ComfyUI will be ready once complete."
-        else
-            ai_ok "SDXL Lightning model already present"
+        # The helper pins upstream bytes and also verifies an existing cache.
+        # Keep this off the installer critical path, but propagate failures to
+        # the tracked process instead of reporting an unchecked file as ready.
+        ai "Verifying or downloading SDXL Lightning 4-step (~6.5GB)..."
+        if [[ -f "$SCRIPT_DIR/installers/lib/background-tasks.sh" ]]; then
+            . "$SCRIPT_DIR/installers/lib/background-tasks.sh"
         fi
+        _sdxl_download_log="$INSTALL_DIR/logs/sdxl-download.log"
+        ods_prepare_install_log_var _sdxl_download_log || exit 1
+        (
+            # This daemon must not inherit the installer model lifecycle lock.
+            _phase11_close_inherited_fds_for_daemon
+            exec nohup "${ODS_PYTHON_CMD:-python3}" \
+                "$SCRIPT_DIR/scripts/download-sdxl-model.py" "$SDXL_CHECKPOINT_DIR" \
+                > "$_sdxl_download_log" 2>&1
+        ) &
+        sdxl_pid=$!
+        if command -v bg_task_start &>/dev/null; then
+            bg_task_start "sdxl-download" "$sdxl_pid" "SDXL Lightning checkpoint verification" "$INSTALL_DIR/logs/sdxl-download.log"
+        fi
+        log "Background SDXL verification started (PID: $sdxl_pid). Check: tail -f $INSTALL_DIR/logs/sdxl-download.log"
+        ai "SDXL checkpoint verification is running. Image generation requires a successful verification."
     fi
 
     # Generate models.ini for llama-server (skip in cloud mode)

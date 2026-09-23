@@ -37,6 +37,12 @@ below is the release checklist; a passing structural gate does not close it.
 
 ## Evidence boundaries
 
+- The [non-chat model inventory](NON_CHAT_MODEL_DOWNLOADS.md) now identifies
+  the embedding, speech, image and snapshot download boundaries separately.
+  The automatic SDXL checkpoint is pinned and verifies both downloads and
+  reused caches before reporting success. Ten inert publication/failure cases
+  passed on Windows and Ubuntu/WSL; a three-OS CI matrix was added. This does not
+  close the remaining embedding/speech integrity or license-review gaps.
 - September 23 live Windows/Ubuntu 24.04 WSL checkpoint: the Core Only + Pixel
   installer completed at `7c6128e0`, reusing the owner's existing 4B runtime.
   Docker and Ubuntu storage were migrated to D: with backups retained. This was

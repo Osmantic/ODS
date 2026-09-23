@@ -1,0 +1,32 @@
+name: Model asset download integrity
+
+on:
+  pull_request:
+    paths:
+      - 'ods/scripts/download-sdxl-model.py'
+      - 'ods/installers/phases/11-services.sh'
+      - 'ods/tests/test_sdxl_download.py'
+      - '.github/workflows/test-model-asset-download.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  checkpoint-fixtures:
+    name: Checkpoint publication (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: '3.12'
+      - name: Verify atomic publication, corrupted bytes, cache and failure cleanup
+        run: python ods/tests/test_sdxl_download.py -v

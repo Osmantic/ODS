@@ -142,8 +142,8 @@ test_file_has_timeout \
     "GGUF model download"
 
 test_file_has_timeout \
-    "$ROOT_DIR/installers/phases/11-services.sh" \
-    "curl.*SDXL_URL" \
+    "$ROOT_DIR/scripts/download-sdxl-model.py" \
+    '"curl",' \
     "--max-time" \
     "SDXL Lightning model download"
 
